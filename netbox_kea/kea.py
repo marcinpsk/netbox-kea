@@ -252,6 +252,85 @@ class KeaClient:
         # Kea returns the host fields directly inside "arguments" (not nested under "host")
         return resp[0].get("arguments") or None
 
+    def subnet_add(
+        self,
+        version: int,
+        subnet_cidr: str,
+        subnet_id: int | None = None,
+        pools: list[str] | None = None,
+        gateway: str | None = None,
+        dns_servers: list[str] | None = None,
+        ntp_servers: list[str] | None = None,
+    ) -> None:
+        """Add a new subnet to Kea and persist the change.
+
+        Args:
+            version: DHCP version (4 or 6).
+            subnet_cidr: Subnet in CIDR notation, e.g. ``"10.0.0.0/24"``.
+            subnet_id: Optional Kea subnet ID. If ``None``, Kea auto-assigns.
+            pools: Optional list of initial pool ranges (e.g. ``["10.0.0.100-10.0.0.200"]``).
+            gateway: Optional default gateway IP (option ``routers`` / ``dns-servers``).
+            dns_servers: Optional list of DNS server IPs.
+            ntp_servers: Optional list of NTP server hostnames/IPs.
+
+        Raises:
+            KeaException: If Kea returns a non-zero result code.
+
+        """
+        service = f"dhcp{version}"
+        subnet_key = f"subnet{version}"
+        subnet_def: dict[str, Any] = {"subnet": subnet_cidr}
+        if subnet_id is not None:
+            subnet_def["id"] = subnet_id
+        else:
+            # Kea 3.x requires an explicit id — auto-assign max + 1
+            try:
+                list_resp = self.command(
+                    f"subnet{version}-list",
+                    service=[service],
+                )
+                existing = list_resp[0].get("arguments", {}).get("subnets", [])
+                max_id = max((s.get("id", 0) for s in existing), default=0)
+                subnet_def["id"] = max_id + 1
+            except Exception:
+                pass  # some Kea versions auto-assign; leave it out and let Kea decide
+        if pools:
+            subnet_def["pools"] = [{"pool": p} for p in pools]
+        option_data: list[dict[str, str]] = []
+        if gateway:
+            option_data.append({"name": "routers", "data": gateway})
+        if dns_servers:
+            option_data.append({"name": "domain-name-servers", "data": ", ".join(dns_servers)})
+        if ntp_servers:
+            option_data.append({"name": "ntp-servers", "data": ", ".join(ntp_servers)})
+        if option_data:
+            subnet_def["option-data"] = option_data
+        self.command(
+            f"subnet{version}-add",
+            service=[service],
+            arguments={subnet_key: [subnet_def]},
+        )
+        self.command("config-write", service=[service])
+
+    def subnet_del(self, version: int, subnet_id: int) -> None:
+        """Delete an existing subnet from Kea and persist the change.
+
+        Args:
+            version: DHCP version (4 or 6).
+            subnet_id: Kea subnet ID to delete.
+
+        Raises:
+            KeaException: If Kea returns a non-zero result code.
+
+        """
+        service = f"dhcp{version}"
+        self.command(
+            f"subnet{version}-del",
+            service=[service],
+            arguments={"id": subnet_id},
+        )
+        self.command("config-write", service=[service])
+
     def pool_add(self, version: int, subnet_id: int, pool: str) -> None:
         """Add a pool to an existing subnet and persist the change.
 

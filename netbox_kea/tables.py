@@ -37,12 +37,26 @@ SUBNET_ACTIONS = """<span class="btn-group dropdown">
         Add pool
       </a>
     </li>
+    <li>
+      <a href="{% url "plugins:netbox_kea:server_subnet4_delete" record.server_pk record.id %}"
+         class="dropdown-item text-danger">
+        <i class="mdi mdi-trash-can-outline" aria-hidden="true"></i>
+        Delete subnet
+      </a>
+    </li>
     {% else %}
     <li>
       <a href="{% url "plugins:netbox_kea:server_subnet6_pool_add" record.server_pk record.id %}"
          class="dropdown-item">
         <i class="mdi mdi-plus-circle-outline" aria-hidden="true"></i>
         Add pool
+      </a>
+    </li>
+    <li>
+      <a href="{% url "plugins:netbox_kea:server_subnet6_delete" record.server_pk record.id %}"
+         class="dropdown-item text-danger">
+        <i class="mdi mdi-trash-can-outline" aria-hidden="true"></i>
+        Delete subnet
       </a>
     </li>
     {% endif %}

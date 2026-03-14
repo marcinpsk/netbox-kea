@@ -1284,6 +1284,155 @@ class ServerSubnet6PoolDeleteView(_BasePoolDeleteView):
     dhcp_version = 6
 
 
+# ---------------------------------------------------------------------------
+# Subnet add / delete views
+# ---------------------------------------------------------------------------
+
+
+class _BaseSubnetAddView(generic.ObjectView):
+    """Base view for adding a new subnet to Kea."""
+
+    queryset = Server.objects.all()
+    template_name = "netbox_kea/server_subnet_add.html"
+    dhcp_version: int
+
+    def _subnets_url(self, pk: int) -> str:
+        return reverse(
+            f"plugins:netbox_kea:server_subnets{self.dhcp_version}", args=[pk]
+        )
+
+    def get(self, request: HttpRequest, pk: int) -> HttpResponse:
+        server = self.get_object(pk=pk)
+        return render(
+            request,
+            self.template_name,
+            {
+                "object": server,
+                "form": forms.SubnetAddForm(),
+                "dhcp_version": self.dhcp_version,
+                "return_url": self._subnets_url(pk),
+            },
+        )
+
+    def post(self, request: HttpRequest, pk: int) -> HttpResponse:
+        server = self.get_object(pk=pk)
+        return_url = self._subnets_url(pk)
+        form = forms.SubnetAddForm(request.POST)
+        if not form.is_valid():
+            return render(
+                request,
+                self.template_name,
+                {
+                    "object": server,
+                    "form": form,
+                    "dhcp_version": self.dhcp_version,
+                    "return_url": return_url,
+                },
+            )
+        cd = form.cleaned_data
+        client = server.get_client(version=self.dhcp_version)
+        try:
+            client.subnet_add(
+                version=self.dhcp_version,
+                subnet_cidr=cd["subnet"],
+                subnet_id=cd.get("subnet_id") or None,
+                pools=cd["pools"],
+                gateway=cd["gateway"] or None,
+                dns_servers=cd["dns_servers"],
+                ntp_servers=cd["ntp_servers"],
+            )
+            messages.success(request, f"Subnet {cd['subnet']} added.")
+        except Exception as exc:
+            messages.error(request, f"Failed to add subnet: {exc}")
+            return render(
+                request,
+                self.template_name,
+                {
+                    "object": server,
+                    "form": form,
+                    "dhcp_version": self.dhcp_version,
+                    "return_url": return_url,
+                },
+            )
+        return redirect(return_url)
+
+
+class ServerSubnet4AddView(_BaseSubnetAddView):
+    """Add a DHCPv4 subnet."""
+
+    dhcp_version = 4
+
+
+class ServerSubnet6AddView(_BaseSubnetAddView):
+    """Add a DHCPv6 subnet."""
+
+    dhcp_version = 6
+
+
+class _BaseSubnetDeleteView(generic.ObjectView):
+    """Base view for deleting a subnet from Kea."""
+
+    queryset = Server.objects.all()
+    template_name = "netbox_kea/server_subnet_delete.html"
+    dhcp_version: int
+
+    def _subnets_url(self, pk: int) -> str:
+        return reverse(
+            f"plugins:netbox_kea:server_subnets{self.dhcp_version}", args=[pk]
+        )
+
+    def get(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
+        server = self.get_object(pk=pk)
+        client = server.get_client(version=self.dhcp_version)
+        subnet_cidr = ""
+        try:
+            resp = client.command(
+                f"subnet{self.dhcp_version}-get",
+                service=[f"dhcp{self.dhcp_version}"],
+                arguments={"id": subnet_id},
+            )
+            key = f"subnet{self.dhcp_version}"
+            subnet_cidr = (
+                resp[0].get("arguments", {}).get(key, [{}])[0].get("subnet", "")
+            )
+        except Exception:
+            pass
+        return render(
+            request,
+            self.template_name,
+            {
+                "object": server,
+                "subnet_id": subnet_id,
+                "subnet_cidr": subnet_cidr,
+                "dhcp_version": self.dhcp_version,
+                "return_url": self._subnets_url(pk),
+            },
+        )
+
+    def post(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
+        server = self.get_object(pk=pk)
+        return_url = self._subnets_url(pk)
+        client = server.get_client(version=self.dhcp_version)
+        try:
+            client.subnet_del(version=self.dhcp_version, subnet_id=subnet_id)
+            messages.success(request, f"Subnet {subnet_id} deleted.")
+        except Exception as exc:
+            messages.error(request, f"Failed to delete subnet: {exc}")
+        return redirect(return_url)
+
+
+class ServerSubnet4DeleteView(_BaseSubnetDeleteView):
+    """Delete a DHCPv4 subnet."""
+
+    dhcp_version = 4
+
+
+class ServerSubnet6DeleteView(_BaseSubnetDeleteView):
+    """Delete a DHCPv6 subnet."""
+
+    dhcp_version = 6
+
+
 def _extract_identifier(reservation: dict[str, Any], version: int) -> tuple[str, str]:
     """Extract the identifier type and value from a Kea reservation dict.
 

@@ -413,3 +413,78 @@ class PoolAddForm(forms.Form):
         ),
         max_length=255,
     )
+
+
+class SubnetAddForm(forms.Form):
+    """Form for adding a new DHCP subnet to Kea."""
+
+    subnet = forms.CharField(
+        label="Subnet CIDR",
+        max_length=50,
+        help_text="e.g. <code>10.0.0.0/24</code> or <code>2001:db8::/48</code>",
+    )
+    subnet_id = forms.IntegerField(
+        label="Subnet ID",
+        required=False,
+        min_value=1,
+        help_text="Leave blank for Kea to auto-assign.",
+    )
+    pools = forms.CharField(
+        label="Initial pools",
+        required=False,
+        widget=forms.Textarea(attrs={"rows": 3}),
+        help_text="One pool per line, e.g. <code>10.0.0.100-10.0.0.200</code>",
+    )
+    gateway = forms.CharField(
+        label="Default gateway",
+        required=False,
+        max_length=50,
+        help_text="IP address of the default gateway (option <code>routers</code>).",
+    )
+    dns_servers = forms.CharField(
+        label="DNS servers",
+        required=False,
+        max_length=255,
+        help_text="Comma-separated IP addresses.",
+    )
+    ntp_servers = forms.CharField(
+        label="NTP servers",
+        required=False,
+        max_length=255,
+        help_text="Comma-separated IP addresses or hostnames.",
+    )
+
+    def clean_subnet(self) -> str:
+        import ipaddress
+
+        value = self.cleaned_data["subnet"].strip()
+        try:
+            ipaddress.ip_network(value, strict=True)
+        except ValueError as exc:
+            raise forms.ValidationError(f"Invalid subnet CIDR: {exc}") from exc
+        return value
+
+    def clean_pools(self) -> list[str]:
+        value = self.cleaned_data["pools"].strip()
+        if not value:
+            return []
+        pools = [p.strip() for p in value.splitlines() if p.strip()]
+        for pool in pools:
+            if "-" not in pool and "/" not in pool:
+                raise forms.ValidationError(
+                    f"Invalid pool format '{pool}': use range (e.g. 10.0.0.1-10.0.0.50) "
+                    "or CIDR (e.g. 10.0.0.0/28)."
+                )
+        return pools
+
+    def clean_dns_servers(self) -> list[str]:
+        value = self.cleaned_data["dns_servers"].strip()
+        if not value:
+            return []
+        return [s.strip() for s in value.split(",") if s.strip()]
+
+    def clean_ntp_servers(self) -> list[str]:
+        value = self.cleaned_data["ntp_servers"].strip()
+        if not value:
+            return []
+        return [s.strip() for s in value.split(",") if s.strip()]

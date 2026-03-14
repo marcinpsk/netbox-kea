@@ -126,6 +126,26 @@ urlpatterns = (
         views.ServerSubnet6PoolDeleteView.as_view(),
         name="server_subnet6_pool_delete",
     ),
+    path(
+        "servers/<int:pk>/subnets4/add/",
+        views.ServerSubnet4AddView.as_view(),
+        name="server_subnet4_add",
+    ),
+    path(
+        "servers/<int:pk>/subnets4/<int:subnet_id>/delete/",
+        views.ServerSubnet4DeleteView.as_view(),
+        name="server_subnet4_delete",
+    ),
+    path(
+        "servers/<int:pk>/subnets6/add/",
+        views.ServerSubnet6AddView.as_view(),
+        name="server_subnet6_add",
+    ),
+    path(
+        "servers/<int:pk>/subnets6/<int:subnet_id>/delete/",
+        views.ServerSubnet6DeleteView.as_view(),
+        name="server_subnet6_delete",
+    ),
     path("servers/<int:pk>/", include(get_model_urls("netbox_kea", "server"))),
     path(
         "ip-addresses/<int:pk>/kea-reservations/",

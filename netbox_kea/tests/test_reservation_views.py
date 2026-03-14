@@ -1061,3 +1061,148 @@ class TestServerSubnet6PoolDeleteView(_ReservationViewBase):
         mock_client.pool_del.assert_called_once_with(
             version=6, subnet_id=self._SUBNET_ID, pool=self._POOL
         )
+
+
+# ---------------------------------------------------------------------------
+# Subnet add / delete views
+# ---------------------------------------------------------------------------
+
+
+class TestServerSubnet4AddView(_ReservationViewBase):
+    """Tests for ServerSubnet4AddView."""
+
+    def _add_url(self):
+        return reverse("plugins:netbox_kea:server_subnet4_add", args=[self.server.pk])
+
+    def test_get_renders_form(self):
+        resp = self.client.get(self._add_url())
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, "id_subnet")
+
+    def test_post_valid_calls_subnet_add_and_redirects(self):
+        mock_client = MagicMock()
+        mock_client.subnet_add.return_value = None
+        with patch("netbox_kea.models.KeaClient", return_value=mock_client):
+            resp = self.client.post(
+                self._add_url(),
+                data={"subnet": "10.99.0.0/24", "subnet_id": "", "pools": "", "gateway": "", "dns_servers": "", "ntp_servers": ""},
+            )
+        self.assertRedirects(resp, reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk]), fetch_redirect_response=False)
+        mock_client.subnet_add.assert_called_once_with(
+            version=4,
+            subnet_cidr="10.99.0.0/24",
+            subnet_id=None,
+            pools=[],
+            gateway=None,
+            dns_servers=[],
+            ntp_servers=[],
+        )
+
+    def test_post_with_options_passes_them_to_subnet_add(self):
+        mock_client = MagicMock()
+        mock_client.subnet_add.return_value = None
+        with patch("netbox_kea.models.KeaClient", return_value=mock_client):
+            self.client.post(
+                self._add_url(),
+                data={
+                    "subnet": "10.99.0.0/24",
+                    "subnet_id": "42",
+                    "pools": "10.99.0.100-10.99.0.200",
+                    "gateway": "10.99.0.1",
+                    "dns_servers": "8.8.8.8",
+                    "ntp_servers": "",
+                },
+            )
+        mock_client.subnet_add.assert_called_once_with(
+            version=4,
+            subnet_cidr="10.99.0.0/24",
+            subnet_id=42,
+            pools=["10.99.0.100-10.99.0.200"],
+            gateway="10.99.0.1",
+            dns_servers=["8.8.8.8"],
+            ntp_servers=[],
+        )
+
+    def test_post_invalid_cidr_rerenders_form(self):
+        resp = self.client.post(
+            self._add_url(),
+            data={"subnet": "not-a-cidr", "subnet_id": "", "pools": "", "gateway": "", "dns_servers": "", "ntp_servers": ""},
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, "Invalid subnet CIDR")
+
+    def test_post_kea_error_shows_message_and_rerenders(self):
+        mock_client = MagicMock()
+        mock_client.subnet_add.side_effect = Exception("subnet already exists")
+        with patch("netbox_kea.models.KeaClient", return_value=mock_client):
+            resp = self.client.post(
+                self._add_url(),
+                data={"subnet": "10.99.0.0/24", "subnet_id": "", "pools": "", "gateway": "", "dns_servers": "", "ntp_servers": ""},
+            )
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, "subnet already exists")
+
+
+class TestServerSubnet4DeleteView(_ReservationViewBase):
+    """Tests for ServerSubnet4DeleteView."""
+
+    def _delete_url(self, subnet_id=5):
+        return reverse("plugins:netbox_kea:server_subnet4_delete", args=[self.server.pk, subnet_id])
+
+    def test_get_renders_confirmation(self):
+        mock_client = MagicMock()
+        mock_client.command.return_value = [{"result": 0, "arguments": {"subnet4": [{"id": 5, "subnet": "10.99.0.0/24", "pools": []}]}}]
+        with patch("netbox_kea.models.KeaClient", return_value=mock_client):
+            resp = self.client.get(self._delete_url())
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, "10.99.0.0/24")
+
+    def test_post_calls_subnet_del_and_redirects(self):
+        mock_client = MagicMock()
+        mock_client.subnet_del.return_value = None
+        with patch("netbox_kea.models.KeaClient", return_value=mock_client):
+            resp = self.client.post(self._delete_url())
+        self.assertRedirects(resp, reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk]), fetch_redirect_response=False)
+        mock_client.subnet_del.assert_called_once_with(version=4, subnet_id=5)
+
+    def test_post_kea_error_shows_message(self):
+        mock_client = MagicMock()
+        mock_client.subnet_del.side_effect = Exception("subnet not found")
+        with patch("netbox_kea.models.KeaClient", return_value=mock_client):
+            resp = self.client.post(self._delete_url())
+        self.assertRedirects(resp, reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk]), fetch_redirect_response=False)
+
+
+class TestServerSubnet6AddView(_ReservationViewBase):
+    """Tests for ServerSubnet6AddView (spot-check version routing)."""
+
+    def _add_url(self):
+        return reverse("plugins:netbox_kea:server_subnet6_add", args=[self.server.pk])
+
+    def test_post_valid_uses_version_6(self):
+        mock_client = MagicMock()
+        mock_client.subnet_add.return_value = None
+        with patch("netbox_kea.models.KeaClient", return_value=mock_client):
+            resp = self.client.post(
+                self._add_url(),
+                data={"subnet": "2001:db8:99::/48", "subnet_id": "", "pools": "", "gateway": "", "dns_servers": "", "ntp_servers": ""},
+            )
+        self.assertRedirects(resp, reverse("plugins:netbox_kea:server_subnets6", args=[self.server.pk]), fetch_redirect_response=False)
+        mock_client.subnet_add.assert_called_once_with(
+            version=6, subnet_cidr="2001:db8:99::/48", subnet_id=None, pools=[], gateway=None, dns_servers=[], ntp_servers=[],
+        )
+
+
+class TestServerSubnet6DeleteView(_ReservationViewBase):
+    """Tests for ServerSubnet6DeleteView (spot-check version routing)."""
+
+    def _delete_url(self, subnet_id=7):
+        return reverse("plugins:netbox_kea:server_subnet6_delete", args=[self.server.pk, subnet_id])
+
+    def test_post_calls_subnet_del_v6(self):
+        mock_client = MagicMock()
+        mock_client.subnet_del.return_value = None
+        with patch("netbox_kea.models.KeaClient", return_value=mock_client):
+            resp = self.client.post(self._delete_url())
+        mock_client.subnet_del.assert_called_once_with(version=6, subnet_id=7)
+        self.assertRedirects(resp, reverse("plugins:netbox_kea:server_subnets6", args=[self.server.pk]), fetch_redirect_response=False)

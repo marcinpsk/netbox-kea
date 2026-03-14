@@ -1333,3 +1333,135 @@ class TestPoolManagementLiveKea:
         assert test_pool not in page.content(), (
             f"Test pool {test_pool} still visible after delete"
         )
+
+
+
+
+class TestSubnetManagementLiveKea:
+    """E2E tests for subnet add/delete against a live Kea server.
+
+    Requires KEA_API_PASSWORD env var.  Run with:
+        KEA_API_PASSWORD=<pw> pytest e2e/ -v -k TestSubnetManagement ...
+    """
+
+    def _kea4_call(self, command: str, arguments: dict | None = None) -> dict:
+        """Call the live Kea DHCPv4 API directly, returning the first response item."""
+        import os
+        import requests as _requests
+
+        kea_url = os.environ.get("KEA_V4_URL", "https://kea-v4-api.cnad.dev")
+        kea_user = os.environ.get("KEA_API_USERNAME", "admin")
+        kea_pass = os.environ.get("KEA_API_PASSWORD", "")
+        payload: dict = {"command": command, "service": ["dhcp4"]}
+        if arguments:
+            payload["arguments"] = arguments
+        resp = _requests.post(
+            kea_url,
+            json=payload,
+            auth=(kea_user, kea_pass),
+            verify=True,
+            timeout=15,
+        )
+        resp.raise_for_status()
+        return resp.json()[0]
+
+    def _kea4_cleanup_subnet(self, cidr: str) -> None:
+        """Remove every Kea subnet whose CIDR matches *cidr* (direct API call)."""
+        data = self._kea4_call("subnet4-list")
+        for s in data.get("arguments", {}).get("subnets", []):
+            if s.get("subnet") == cidr:
+                self._kea4_call("subnet4-del", {"id": s["id"]})
+
+    def test_subnet_add_form_loads(
+        self,
+        page: Page,
+        netbox_login: None,
+        plugin_base: str,
+        live_kea_server: dict,
+        track_http_errors: list,
+    ) -> None:
+        """The add-subnet form renders without error."""
+        server_id = live_kea_server["id"]
+        page.goto(f"{plugin_base}/servers/{server_id}/subnets4/add/")
+        page.wait_for_load_state("networkidle")
+        _check_no_django_error(page)
+        _assert_no_http_errors(track_http_errors)
+        assert page.locator("#id_subnet").is_visible(), "Subnet CIDR input not found"
+
+    def test_subnet_add_and_delete_cycle(
+        self,
+        page: Page,
+        netbox_login: None,
+        plugin_base: str,
+        live_kea_server: dict,
+        track_http_errors: list,
+    ) -> None:
+        """Full add→verify→delete cycle for a DHCPv4 subnet."""
+        import re
+
+        server_id = live_kea_server["id"]
+        test_subnet = "10.254.253.0/24"
+        test_pool = "10.254.253.10-10.254.253.20"
+
+        # ---- PRE-CLEANUP: remove any leftover test subnets via direct Kea API ----
+        self._kea4_cleanup_subnet(test_subnet)
+
+        new_subnet_id = None
+        try:
+            # ---- ADD ----
+            page.goto(f"{plugin_base}/servers/{server_id}/subnets4/add/")
+            page.wait_for_load_state("networkidle")
+            _check_no_django_error(page)
+
+            page.fill("#id_subnet", test_subnet)
+            page.fill("#id_pools", test_pool)
+            page.fill("#id_gateway", "10.254.253.1")
+
+            with page.expect_navigation():
+                page.evaluate("document.getElementById('id_subnet').closest('form').submit()")
+            page.wait_for_load_state("networkidle")
+            _check_no_django_error(page)
+            _assert_no_http_errors(track_http_errors)
+
+            # ---- VERIFY VISIBLE ----
+            page.goto(f"{plugin_base}/servers/{server_id}/subnets4/")
+            page.wait_for_load_state("networkidle")
+            page.wait_for_selector("table tbody tr", timeout=10000)
+            rows_after_add = page.locator("table tbody tr").filter(has_text=test_subnet).all()
+            assert rows_after_add, f"Test subnet {test_subnet} not visible in subnets table after add"
+
+            # Find the new subnet's ID from the delete link in the matching row
+            all_added_ids = []
+            for row in rows_after_add:
+                for link in row.locator("a[href*='subnets4/'][href*='/delete/']").all():
+                    href = link.get_attribute("href") or ""
+                    m = re.search(r"/subnets4/(\d+)/delete/$", href)
+                    if m:
+                        all_added_ids.append(int(m.group(1)))
+            assert all_added_ids, f"Could not find any subnet delete links for {test_subnet}"
+            new_subnet_id = max(all_added_ids)  # highest ID = the one we just added
+
+            # ---- DELETE via UI ----
+            page.goto(f"{plugin_base}/servers/{server_id}/subnets4/{new_subnet_id}/delete/")
+            page.wait_for_load_state("networkidle")
+            _check_no_django_error(page)
+            assert test_subnet in page.content(), "Subnet CIDR not shown on delete confirmation page"
+
+            with page.expect_navigation():
+                page.evaluate("document.querySelector('.card-body form[method=\"post\"]').submit()")
+            page.wait_for_load_state("networkidle")
+            _check_no_django_error(page)
+            _assert_no_http_errors(track_http_errors)
+
+            # ---- VERIFY DELETED via direct Kea API ----
+            data = self._kea4_call("subnet4-list")
+            remaining_ids = {s["id"] for s in data.get("arguments", {}).get("subnets", [])}
+            assert new_subnet_id not in remaining_ids, (
+                f"Subnet ID {new_subnet_id} ({test_subnet}) still present in Kea after UI delete"
+            )
+            new_subnet_id = None  # mark as cleaned up
+
+        finally:
+            # ---- TEARDOWN: remove test subnet if test failed before the delete step ----
+            if new_subnet_id is not None:
+                self._kea4_cleanup_subnet(test_subnet)
