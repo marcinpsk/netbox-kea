@@ -1,0 +1,9 @@
+{# HTMX fragment returned after a successful lease/reservation → NetBox IP sync.
+   Replaces the content of the table cell that triggered the sync. #}
+{% if nb_ip %}
+<a href="{{ nb_ip.get_absolute_url }}"
+   class="badge text-bg-success text-decoration-none"
+   title="{{ nb_ip.address }} — {{ nb_ip.get_status_display }}">
+  <i class="mdi mdi-link-variant"></i>&nbsp;{{ nb_ip.address }}
+</a>
+{% endif %}

@@ -1,0 +1,40 @@
+{% extends "generic/object.html" %}
+{% load render_table from django_tables2 %}
+
+{% block content %}
+<div class="row mb-3">
+  <div class="col">
+    {% if not hook_available %}
+    <div class="alert alert-warning" role="alert">
+      <i class="mdi mdi-alert-circle-outline"></i>
+      The <strong>host_cmds</strong> hook library is not loaded on this Kea server.
+      Reservation management requires the <code>host_cmds</code> hook.
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+<div class="row mb-3">
+  <div class="col text-end">
+    {% if hook_available and bulk_sync_url %}
+    <form method="post" action="{{ bulk_sync_url }}" class="d-inline">
+      {% csrf_token %}
+      <button type="submit" class="btn btn-outline-info btn-sm me-2">
+        <i class="mdi mdi-sync" aria-hidden="true"></i>
+        Sync All to NetBox
+      </button>
+    </form>
+    {% endif %}
+    <a href="{{ add_url }}" class="btn btn-primary btn-sm">
+      <i class="mdi mdi-plus-thick" aria-hidden="true"></i>
+      Add DHCPv{{ dhcp_version }} Reservation
+    </a>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-body">
+    {% render_table table %}
+  </div>
+</div>
+{% endblock %}

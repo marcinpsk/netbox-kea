@@ -2,6 +2,8 @@ from netbox.plugins import PluginConfig
 
 
 class NetBoxKeaConfig(PluginConfig):
+    """NetBox plugin configuration for the Kea DHCP integration."""
+
     name = "netbox_kea"
     verbose_name = "Kea"
     description = "Kea integration for NetBox"

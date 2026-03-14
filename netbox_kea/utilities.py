@@ -14,6 +14,7 @@ from .models import Server
 
 
 def format_duration(s: int | None) -> str | None:
+    """Format a duration in seconds as ``HH:MM:SS``, or ``None`` if input is ``None``."""
     if s is None:
         return None
     hours, rest = divmod(s, 3600)
@@ -23,7 +24,6 @@ def format_duration(s: int | None) -> str | None:
 
 def _enrich_lease(now: datetime, lease: dict[str, Any]) -> dict[str, Any]:
     """Add expires at and expires in to a lease."""
-
     # Need to replace "-" so we can access the values in a template
     lease = {k.replace("-", "_"): v for k, v in lease.items()}
     if "cltt" not in lease and "valid_lft" not in lease:
@@ -42,6 +42,7 @@ def _enrich_lease(now: datetime, lease: dict[str, Any]) -> dict[str, Any]:
 
 
 def format_leases(leases: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Enrich a list of raw Kea lease dicts with expiry metadata."""
     now = datetime.now()
     return [_enrich_lease(now, ls) for ls in leases]
 
@@ -51,6 +52,7 @@ def export_table(
     filename: str,
     use_selected_columns: bool = False,
 ) -> HttpResponse:
+    """Export a django-tables2 table as a CSV HTTP response."""
     exclude_columns = {"pk", "actions"}
 
     if use_selected_columns:
@@ -65,6 +67,7 @@ def export_table(
 
 
 def is_hex_string(s: str, min_octets: int, max_octets: int):
+    """Return True if *s* is a colon/dash-delimited hex string within the given octet length bounds."""
     if not re.match(constants.HEX_STRING_REGEX, s):
         return False
 
@@ -72,18 +75,107 @@ def is_hex_string(s: str, min_octets: int, max_octets: int):
     return octets >= min_octets and octets <= max_octets
 
 
+def format_option_data(option_list: list[dict[str, Any]]) -> dict[str, str]:
+    """Parse a Kea ``option-data`` list into a friendly ``{name: value}`` dict.
+
+    Well-known DHCP option codes are mapped to canonical names.  Unknown codes
+    use the option's own ``name`` field (dashes converted to underscores) or
+    fall back to ``option_<code>`` when no name is present.
+
+    Args:
+        option_list: Raw ``option-data`` list from a Kea response.
+
+    Returns:
+        A ``{field_name: value_str}`` dict suitable for template rendering.
+
+    """
+    # Maps DHCP option code → canonical field name
+    _KNOWN_CODES: dict[int, str] = {
+        # DHCPv4
+        1: "subnet_mask",
+        3: "gateway",
+        6: "dns_servers",
+        15: "domain_name",
+        28: "broadcast_address",
+        42: "ntp_servers",
+        44: "netbios_name_servers",
+        119: "domain_search",
+        121: "classless_static_routes",
+        # DHCPv6 (overlapping codes are intentional — space field disambiguates)
+        23: "dns_servers",
+        24: "domain_search",
+        31: "ntp_servers",
+    }
+
+    result: dict[str, str] = {}
+    for opt in option_list:
+        code = opt.get("code")
+        data = opt.get("data", "")
+        if code in _KNOWN_CODES:
+            key = _KNOWN_CODES[code]
+        elif opt.get("name"):
+            key = opt["name"].replace("-", "_")
+        else:
+            key = f"option_{code}"
+        result[key] = data
+    return result
+
+def parse_subnet_stats(stat_response: list[dict[str, Any]], version: int) -> dict[int, dict[str, Any]]:
+    """Parse a ``stat-lease{4|6}-get`` response into a per-subnet stats dict.
+
+    Args:
+        stat_response: Raw Kea API response list from ``stat-lease4-get`` /
+            ``stat-lease6-get``.
+        version: DHCP version (4 or 6) — determines which column names to look for.
+
+    Returns:
+        ``{subnet_id: {"total": N, "assigned": M, "utilization": "X%"}}`` mapping.
+        Returns an empty dict when the response is missing or malformed.
+
+    """
+    if not stat_response or stat_response[0].get("result") != 0:
+        return {}
+    result_set = stat_response[0].get("arguments", {}).get("result-set", {})
+    columns: list[str] = result_set.get("columns", [])
+    rows: list[list] = result_set.get("rows", [])
+
+    total_col = "total-addresses" if version == 4 else "total-nas"
+    assigned_col = "assigned-addresses" if version == 4 else "assigned-nas"
+
+    try:
+        id_idx = columns.index("subnet-id")
+        total_idx = columns.index(total_col)
+        assigned_idx = columns.index(assigned_col)
+    except ValueError:
+        return {}
+
+    stats: dict[int, dict[str, Any]] = {}
+    for row in rows:
+        subnet_id = row[id_idx]
+        total = row[total_idx] or 0
+        assigned = row[assigned_idx] or 0
+        pct = round(assigned / total * 100) if total > 0 else 0
+        stats[subnet_id] = {"total": total, "assigned": assigned, "utilization": f"{pct}%", "utilization_pct": pct}
+    return stats
+
+
 def check_dhcp_enabled(instance: Server, version: Literal[6, 4]) -> HttpResponse | None:
+    """Return a redirect to the server detail page if the requested DHCP version is disabled, else ``None``."""
     if (version == 6 and instance.dhcp6) or (version == 4 and instance.dhcp4):
         return None
     return redirect(instance.get_absolute_url())
 
 
 class OptionalViewTab(ViewTab):
+    """A NetBox ViewTab that can be conditionally hidden based on a predicate."""
+
     def __init__(self, *args, is_enabled: Callable[[Any], bool], **kwargs) -> None:
+        """Initialise with an ``is_enabled`` callable that receives the view instance."""
         self.is_enabled = is_enabled
         super().__init__(*args, **kwargs)
 
     def render(self, instance):
+        """Return rendered tab HTML, or ``None`` if the tab is disabled for *instance*."""
         if self.is_enabled(instance):
             return super().render(instance)
         return None

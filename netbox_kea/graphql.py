@@ -21,13 +21,18 @@ from . import models
     ),
 )
 class ServerType(NetBoxObjectType):
+    """GraphQL type for the Server model."""
+
     pass
 
 
 @strawberry.type
 class Query:
+    """GraphQL root query type exposing Kea server objects."""
+
     @strawberry.field
     def server(self, id: int) -> ServerType:
+        """Return a single Server by primary key."""
         return models.Server.objects.get(pk=id)
 
     server_list: list[ServerType] = strawberry_django.field()

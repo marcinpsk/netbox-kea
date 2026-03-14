@@ -2,6 +2,11 @@ from netbox.plugins import PluginMenuButton, PluginMenuItem
 
 menu_items = (
     PluginMenuItem(
+        link="plugins:netbox_kea:combined",
+        link_text="Combined View",
+        permissions=["netbox_kea.view_server"],
+    ),
+    PluginMenuItem(
         link="plugins:netbox_kea:server_list",
         link_text="Servers",
         permissions=["netbox_kea.view_server"],

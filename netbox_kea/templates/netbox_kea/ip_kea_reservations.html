@@ -1,0 +1,43 @@
+{% extends "generic/object.html" %}
+
+{% block content %}
+<div class="row">
+  <div class="col">
+    <div class="card">
+      <h5 class="card-header d-flex align-items-center">
+        <i class="mdi mdi-server-network me-2" aria-hidden="true"></i>
+        Create DHCPv{{ version }} Reservation on Kea
+      </h5>
+      <div class="card-body">
+        {% if server_links %}
+        <p class="text-body-secondary mb-3">
+          Select a Kea server to create a host reservation for
+          <strong>{{ nb_ip.address.ip }}</strong>{% if nb_ip.dns_name %} (<em>{{ nb_ip.dns_name }}</em>){% endif %}.
+          The form will be pre-filled with the IP address and hostname.
+        </p>
+        <div class="list-group list-group-flush">
+          {% for item in server_links %}
+          <a href="{{ item.url }}"
+             class="list-group-item list-group-item-action d-flex justify-content-between align-items-center">
+            <span>
+              <i class="mdi mdi-server me-2 text-primary" aria-hidden="true"></i>
+              {{ item.server.name }}
+            </span>
+            <span class="badge bg-primary">
+              <i class="mdi mdi-plus" aria-hidden="true"></i> Create Reservation
+            </span>
+          </a>
+          {% endfor %}
+        </div>
+        {% else %}
+        <div class="text-center text-body-secondary py-4">
+          <i class="mdi mdi-server-off mdi-48px" aria-hidden="true"></i>
+          <p class="mt-2 mb-0">No DHCPv{{ version }} Kea servers configured.</p>
+          <small>Add a server with DHCPv{{ version }} enabled to create reservations.</small>
+        </div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

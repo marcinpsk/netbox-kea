@@ -1,0 +1,19 @@
+{% extends 'netbox_kea/combined_base.html' %}
+{% load render_table from django_tables2 %}
+
+{% block tab_content %}
+
+{% if errors %}
+<div class="alert alert-warning mt-3">
+  <strong>Some servers could not be reached:</strong>
+  <ul class="mb-0 mt-1">
+    {% for name, msg in errors %}
+    <li><strong>{{ name }}</strong>: {{ msg }}</li>
+    {% endfor %}
+  </ul>
+</div>
+{% endif %}
+
+{% render_table table %}
+
+{% endblock tab_content %}

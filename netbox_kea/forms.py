@@ -3,7 +3,7 @@ from typing import Any, Literal
 from django import forms
 from django.core.exceptions import ValidationError
 from netaddr import EUI, AddrFormatError, IPAddress, IPNetwork, mac_unix_expanded
-from netbox.forms import NetBoxModelFilterSetForm, NetBoxModelForm
+from netbox.forms import NetBoxModelBulkEditForm, NetBoxModelFilterSetForm, NetBoxModelForm, NetBoxModelImportForm
 from utilities.forms import BOOLEAN_WITH_BLANK_CHOICES
 from utilities.forms.fields import TagFilterField
 
@@ -13,6 +13,8 @@ from .utilities import is_hex_string
 
 
 class ServerForm(NetBoxModelForm):
+    """NetBox model form for creating and editing Kea Server objects."""
+
     class Meta:
         model = Server
         fields = (
@@ -26,6 +28,9 @@ class ServerForm(NetBoxModelForm):
             "ca_file_path",
             "dhcp6",
             "dhcp4",
+            "dhcp4_url",
+            "dhcp6_url",
+            "has_control_agent",
             "tags",
         )
         widgets = {
@@ -40,10 +45,13 @@ class VeryHiddenInput(forms.HiddenInput):
     template_name = ""
 
     def render(self, name: str, value: Any, attrs: Any, renderer: Any) -> str:
+        """Return an empty string, suppressing all HTML output."""
         return ""
 
 
 class ServerFilterForm(NetBoxModelFilterSetForm):
+    """Filter form for the Server list view."""
+
     model = Server
     tag = TagFilterField(model)
     dhcp4 = forms.NullBooleanField(
@@ -58,11 +66,56 @@ class ServerFilterForm(NetBoxModelFilterSetForm):
     )
 
 
+class ServerBulkEditForm(NetBoxModelBulkEditForm):
+    """Bulk-edit form for Kea Server objects."""
+
+    has_control_agent = forms.NullBooleanField(
+        label="Has Control Agent",
+        required=False,
+        widget=forms.Select(choices=BOOLEAN_WITH_BLANK_CHOICES),
+    )
+    dhcp4 = forms.NullBooleanField(
+        label="DHCPv4 enabled",
+        required=False,
+        widget=forms.Select(choices=BOOLEAN_WITH_BLANK_CHOICES),
+    )
+    dhcp6 = forms.NullBooleanField(
+        label="DHCPv6 enabled",
+        required=False,
+        widget=forms.Select(choices=BOOLEAN_WITH_BLANK_CHOICES),
+    )
+
+    model = Server
+    nullable_fields: list[str] = []
+
+
+class ServerImportForm(NetBoxModelImportForm):
+    """CSV/YAML bulk-import form for Server objects."""
+
+    class Meta:
+        model = Server
+        fields = (
+            "name",
+            "server_url",
+            "username",
+            "password",
+            "ssl_verify",
+            "dhcp4",
+            "dhcp6",
+            "dhcp4_url",
+            "dhcp6_url",
+            "has_control_agent",
+        )
+
+
 class BaseLeasesSarchForm(forms.Form):
+    """Base search form for DHCP lease queries; subclassed per IP version."""
+
     q = forms.CharField(label="Search")
     page = forms.CharField(required=False, widget=VeryHiddenInput)
 
     def clean(self) -> dict[str, Any] | None:
+        """Validate and normalise search fields according to the selected search type."""
         ip_version = self.Meta.ip_version
         cleaned_data = super().clean()
         q = cleaned_data.get("q")
@@ -70,7 +123,7 @@ class BaseLeasesSarchForm(forms.Form):
 
         if q and not by:
             raise ValidationError({"by": "Search attribute is empty."})
-        elif by and not q:
+        if by and not q:
             raise ValidationError({"q": "Search value is empty."})
 
         if by == constants.BY_SUBNET:
@@ -79,9 +132,7 @@ class BaseLeasesSarchForm(forms.Form):
                     raise ValidationError({"q": "CIDR mask is required"})
                 net = IPNetwork(q, version=ip_version)
                 if net.ip != net.cidr.ip:
-                    raise ValidationError(
-                        {"q": f"{net} is not a valid prefix. Did you mean {net.cidr}?"}
-                    )
+                    raise ValidationError({"q": f"{net} is not a valid prefix. Did you mean {net.cidr}?"})
                 cleaned_data["q"] = net
             except (AddrFormatError, TypeError, ValueError) as e:
                 raise ValidationError({"q": f"Invalid IPv{ip_version} subnet."}) from e
@@ -105,15 +156,11 @@ class BaseLeasesSarchForm(forms.Form):
             except (AddrFormatError, TypeError, ValueError) as e:
                 raise ValidationError({"q": "Invalid hardware address."}) from e
         elif by == constants.BY_DUID:
-            if not is_hex_string(
-                q, constants.DUID_MIN_OCTETS, constants.DUID_MAX_OCTETS
-            ):
+            if not is_hex_string(q, constants.DUID_MIN_OCTETS, constants.DUID_MAX_OCTETS):
                 raise ValidationError({"q": "Invalid DUID."})
             cleaned_data["q"] = q.replace("-", "")
         elif by == constants.BY_CLIENT_ID:
-            if not is_hex_string(
-                q, constants.CLIENT_ID_MIN_OCTETS, constants.DUID_MAX_OCTETS
-            ):
+            if not is_hex_string(q, constants.CLIENT_ID_MIN_OCTETS, constants.DUID_MAX_OCTETS):
                 raise ValidationError({"q": "Invalid client ID."})
             cleaned_data["q"] = q.replace("-", "")
 
@@ -132,6 +179,8 @@ class BaseLeasesSarchForm(forms.Form):
 
 
 class Leases4SearchForm(BaseLeasesSarchForm):
+    """Search form for DHCPv4 leases."""
+
     by = forms.ChoiceField(
         label="Attribute",
         choices=(
@@ -150,6 +199,8 @@ class Leases4SearchForm(BaseLeasesSarchForm):
 
 
 class Leases6SearchForm(BaseLeasesSarchForm):
+    """Search form for DHCPv6 leases."""
+
     by = forms.ChoiceField(
         label="Attribute",
         choices=(
@@ -167,11 +218,15 @@ class Leases6SearchForm(BaseLeasesSarchForm):
 
 
 class MultipleIPField(forms.MultipleChoiceField):
+    """Form field accepting a list of IP addresses validated against a specific IP version."""
+
     def __init__(self, version: Literal[6, 4], *args, **kwargs) -> None:
+        """Initialise with the required IP *version* (4 or 6)."""
         self._version = version
         super().__init__(*args, widget=forms.MultipleHiddenInput, **kwargs)
 
     def clean(self, value: Any) -> Any:
+        """Validate and normalise each IP address in the list."""
         if not isinstance(value, list):
             raise forms.ValidationError(f"Expected a list, got {type(value)}.")
 
@@ -185,11 +240,11 @@ class MultipleIPField(forms.MultipleChoiceField):
 
 
 class BaseLeaseDeleteForm(forms.Form):
+    """Base form for confirming bulk deletion of DHCP leases."""
+
     # NetBox v4.4 requires a background_job field for the bulk_delete.html
     # template.
-    background_job = forms.CharField(
-        required=False, widget=VeryHiddenInput, label="background_job"
-    )
+    background_job = forms.CharField(required=False, widget=VeryHiddenInput, label="background_job")
     return_url = forms.CharField(
         required=False,
         widget=forms.HiddenInput(),
@@ -197,8 +252,164 @@ class BaseLeaseDeleteForm(forms.Form):
 
 
 class Lease6DeleteForm(BaseLeaseDeleteForm):
+    """Delete form for DHCPv6 leases; validates a list of IPv6 addresses."""
+
     pk = MultipleIPField(6)
 
 
 class Lease4DeleteForm(BaseLeaseDeleteForm):
+    """Delete form for DHCPv4 leases; validates a list of IPv4 addresses."""
+
     pk = MultipleIPField(4)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Phase 2: Reservation Management forms
+# ─────────────────────────────────────────────────────────────────────────────
+
+_IDENTIFIER_TYPE_CHOICES_V4 = [
+    ("hw-address", "Hardware Address"),
+    ("client-id", "Client ID"),
+    ("circuit-id", "Circuit ID"),
+    ("flex-id", "Flex ID"),
+]
+
+_IDENTIFIER_TYPE_CHOICES_V6 = [
+    ("duid", "DUID"),
+    ("hw-address", "Hardware Address"),
+    ("client-id", "Client ID"),
+    ("flex-id", "Flex ID"),
+]
+
+
+class Reservation4Form(forms.Form):
+    """Form for creating or editing a DHCPv4 host reservation."""
+
+    subnet_id = forms.IntegerField(
+        label="Subnet ID",
+        min_value=1,
+        help_text="Kea subnet ID the reservation belongs to.",
+    )
+    ip_address = forms.CharField(
+        label="IP Address",
+        help_text="Fixed IPv4 address to assign to this reservation.",
+    )
+    identifier_type = forms.ChoiceField(
+        label="Identifier Type",
+        choices=_IDENTIFIER_TYPE_CHOICES_V4,
+        help_text="Method used to identify the DHCP client.",
+    )
+    identifier = forms.CharField(
+        label="Identifier",
+        help_text="Client identifier value (e.g. hw-address: aa:bb:cc:dd:ee:ff).",
+    )
+    hostname = forms.CharField(
+        label="Hostname",
+        required=False,
+        help_text="Optional hostname to assign with this reservation.",
+    )
+
+    def clean_ip_address(self) -> str:
+        """Validate that the value is a valid IPv4 address."""
+        val = self.cleaned_data["ip_address"]
+        try:
+            addr = IPAddress(val)
+        except (AddrFormatError, ValueError) as exc:
+            raise ValidationError("Enter a valid IPv4 address.") from exc
+        if addr.version != 4:
+            raise ValidationError("Must be an IPv4 address.")
+        return str(addr)
+
+
+class Reservation6Form(forms.Form):
+    """Form for creating or editing a DHCPv6 host reservation."""
+
+    subnet_id = forms.IntegerField(
+        label="Subnet ID",
+        min_value=1,
+        help_text="Kea subnet ID the reservation belongs to.",
+    )
+    ip_addresses = forms.CharField(
+        label="IPv6 Addresses",
+        help_text="Comma-separated list of IPv6 addresses to assign.",
+    )
+    identifier_type = forms.ChoiceField(
+        label="Identifier Type",
+        choices=_IDENTIFIER_TYPE_CHOICES_V6,
+        help_text="Method used to identify the DHCP client.",
+    )
+    identifier = forms.CharField(
+        label="Identifier",
+        help_text="Client identifier value (e.g. duid: 00:01:02:03:04:05:06:07).",
+    )
+    hostname = forms.CharField(
+        label="Hostname",
+        required=False,
+        help_text="Optional hostname to assign with this reservation.",
+    )
+
+    def clean_ip_addresses(self) -> str:
+        """Validate that all values are valid IPv6 addresses."""
+        val = self.cleaned_data["ip_addresses"]
+        cleaned: list[str] = []
+        for raw in val.split(","):
+            raw = raw.strip()
+            if not raw:
+                continue
+            try:
+                addr = IPAddress(raw)
+            except (AddrFormatError, ValueError) as exc:
+                raise ValidationError(f"'{raw}' is not a valid IP address.") from exc
+            if addr.version != 6:
+                raise ValidationError(f"'{raw}' is not a valid IPv6 address.")
+            cleaned.append(str(addr))
+        if not cleaned:
+            raise ValidationError("Enter at least one valid IPv6 address.")
+        return ",".join(cleaned)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Phase 6: Global multi-server filter forms
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class GlobalServer4FilterForm(forms.Form):
+    """Server multi-select for the global DHCPv4 views."""
+
+    server = forms.ModelMultipleChoiceField(
+        queryset=Server.objects.filter(dhcp4=True),
+        required=False,
+        label="Servers",
+        widget=forms.CheckboxSelectMultiple,
+        help_text="Leave blank to query all DHCPv4-enabled servers.",
+    )
+
+
+class GlobalServer6FilterForm(forms.Form):
+    """Server multi-select for the global DHCPv6 views."""
+
+    server = forms.ModelMultipleChoiceField(
+        queryset=Server.objects.filter(dhcp6=True),
+        required=False,
+        label="Servers",
+        widget=forms.CheckboxSelectMultiple,
+        help_text="Leave blank to query all DHCPv6-enabled servers.",
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Phase 10: Pool management forms
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class PoolAddForm(forms.Form):
+    """Form for adding a DHCP pool to an existing subnet."""
+
+    pool = forms.CharField(
+        label="Pool",
+        help_text=(
+            "Pool range (e.g. <code>10.0.0.50-10.0.0.99</code>) "
+            "or CIDR (e.g. <code>10.0.0.0/28</code>)."
+        ),
+        max_length=255,
+    )

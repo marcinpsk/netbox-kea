@@ -16,4 +16,22 @@
       </div>
     </div>
   {% endfor %}
+
+  {% if global_options %}
+    {% for label, opts in global_options.items %}
+    <div class="card mt-3">
+      <h5 class="card-header">{{ label }}: Global Options</h5>
+      <div class="card-body">
+        <table class="table table-hover attr-table">
+          {% for k, v in opts.items %}
+          <tr>
+            <th scope="row">{{ k }}</th>
+            <td><code>{{ v }}</code></td>
+          </tr>
+          {% endfor %}
+        </table>
+      </div>
+    </div>
+    {% endfor %}
+  {% endif %}
 {% endblock %}

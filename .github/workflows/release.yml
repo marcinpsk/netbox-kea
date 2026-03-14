@@ -2,24 +2,47 @@
 name: Release
 
 "on":
-  release:
-    types:
-      - published
+  push:
+    branches:
+      - main
+  workflow_dispatch:
 
 jobs:
-  pypi-publish:
+  release:
     runs-on: ubuntu-latest
+    concurrency: release
     permissions:
-      # https://docs.pypi.org/trusted-publishers/
       id-token: write
+      contents: write
+
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
 
-      - run: uv build
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version-file: pyproject.toml
 
-      - run: uv publish
+      - name: Install dev dependencies
+        run: uv sync --group dev
+
+      - name: Run semantic-release
+        id: release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: uv run semantic-release version
+
+      - name: Build
+        if: steps.release.outputs.released == 'true'
+        run: uv build
+
+      - name: Publish to PyPI
+        if: steps.release.outputs.released == 'true'
+        run: uv publish

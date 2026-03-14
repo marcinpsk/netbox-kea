@@ -4,12 +4,37 @@ from utilities.urls import get_model_urls
 from . import views
 
 urlpatterns = (
+    path("combined/", views.CombinedDashboardView.as_view(), name="combined"),
+    path("combined/leases4/", views.CombinedLeases4View.as_view(), name="combined_leases4"),
+    path("combined/leases6/", views.CombinedLeases6View.as_view(), name="combined_leases6"),
+    path("combined/subnets4/", views.CombinedSubnets4View.as_view(), name="combined_subnets4"),
+    path("combined/subnets6/", views.CombinedSubnets6View.as_view(), name="combined_subnets6"),
+    path(
+        "combined/reservations4/",
+        views.CombinedReservations4View.as_view(),
+        name="combined_reservations4",
+    ),
+    path(
+        "combined/reservations6/",
+        views.CombinedReservations6View.as_view(),
+        name="combined_reservations6",
+    ),
     path("servers/", views.ServerListView.as_view(), name="server_list"),
     path("servers/add/", views.ServerEditView.as_view(), name="server_add"),
     path(
         "servers/delete/",
         views.ServerBulkDeleteView.as_view(),
         name="server_bulk_delete",
+    ),
+    path(
+        "servers/edit/",
+        views.ServerBulkEditView.as_view(),
+        name="server_bulk_edit",
+    ),
+    path(
+        "servers/import/",
+        views.ServerBulkImportView.as_view(),
+        name="server_bulk_import",
     ),
     path(
         "servers/<int:pk>/leases6/delete/",
@@ -21,5 +46,90 @@ urlpatterns = (
         views.ServerLeases4DeleteView.as_view(),
         name="server_leases4_delete",
     ),
+    path(
+        "servers/<int:pk>/reservations4/add/",
+        views.ServerReservation4AddView.as_view(),
+        name="server_reservation4_add",
+    ),
+    path(
+        "servers/<int:pk>/reservations4/<int:subnet_id>/<str:ip_address>/edit/",
+        views.ServerReservation4EditView.as_view(),
+        name="server_reservation4_edit",
+    ),
+    path(
+        "servers/<int:pk>/reservations4/<int:subnet_id>/<str:ip_address>/delete/",
+        views.ServerReservation4DeleteView.as_view(),
+        name="server_reservation4_delete",
+    ),
+    path(
+        "servers/<int:pk>/reservations6/add/",
+        views.ServerReservation6AddView.as_view(),
+        name="server_reservation6_add",
+    ),
+    path(
+        "servers/<int:pk>/reservations6/<int:subnet_id>/<str:ip_address>/edit/",
+        views.ServerReservation6EditView.as_view(),
+        name="server_reservation6_edit",
+    ),
+    path(
+        "servers/<int:pk>/reservations6/<int:subnet_id>/<str:ip_address>/delete/",
+        views.ServerReservation6DeleteView.as_view(),
+        name="server_reservation6_delete",
+    ),
+    path(
+        "servers/<int:pk>/leases4/sync/",
+        views.ServerLease4SyncView.as_view(),
+        name="server_lease4_sync",
+    ),
+    path(
+        "servers/<int:pk>/leases6/sync/",
+        views.ServerLease6SyncView.as_view(),
+        name="server_lease6_sync",
+    ),
+    path(
+        "servers/<int:pk>/reservations4/sync/",
+        views.ServerReservation4SyncView.as_view(),
+        name="server_reservation4_sync",
+    ),
+    path(
+        "servers/<int:pk>/reservations6/sync/",
+        views.ServerReservation6SyncView.as_view(),
+        name="server_reservation6_sync",
+    ),
+    path(
+        "servers/<int:pk>/reservations4/bulk-sync/",
+        views.ServerReservation4BulkSyncView.as_view(),
+        name="server_reservation4_bulk_sync",
+    ),
+    path(
+        "servers/<int:pk>/reservations6/bulk-sync/",
+        views.ServerReservation6BulkSyncView.as_view(),
+        name="server_reservation6_bulk_sync",
+    ),
+    path(
+        "servers/<int:pk>/subnets4/<int:subnet_id>/pools/add/",
+        views.ServerSubnet4PoolAddView.as_view(),
+        name="server_subnet4_pool_add",
+    ),
+    path(
+        "servers/<int:pk>/subnets4/<int:subnet_id>/pools/<path:pool>/delete/",
+        views.ServerSubnet4PoolDeleteView.as_view(),
+        name="server_subnet4_pool_delete",
+    ),
+    path(
+        "servers/<int:pk>/subnets6/<int:subnet_id>/pools/add/",
+        views.ServerSubnet6PoolAddView.as_view(),
+        name="server_subnet6_pool_add",
+    ),
+    path(
+        "servers/<int:pk>/subnets6/<int:subnet_id>/pools/<path:pool>/delete/",
+        views.ServerSubnet6PoolDeleteView.as_view(),
+        name="server_subnet6_pool_delete",
+    ),
     path("servers/<int:pk>/", include(get_model_urls("netbox_kea", "server"))),
+    path(
+        "ip-addresses/<int:pk>/kea-reservations/",
+        views.IPAddressKeaReservationsView.as_view(),
+        name="ipaddress_kea_reservations",
+    ),
 )

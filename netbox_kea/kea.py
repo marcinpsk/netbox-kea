@@ -6,12 +6,16 @@ from requests.models import HTTPBasicAuth
 
 
 class KeaResponse(TypedDict):
+    """Typed dict representing a single Kea API response object."""
+
     result: int
     arguments: dict[str, Any] | None
     text: str | None
 
 
 class KeaClient:
+    """HTTP client for the Kea Control API."""
+
     def __init__(
         self,
         url: str,
@@ -22,9 +26,22 @@ class KeaClient:
         client_key: str | None = None,
         timeout: int = 30,
     ):
-        if (client_cert is not None and client_key is None) or (
-            client_cert is None and client_key is not None
-        ):
+        """Initialise a Kea HTTP client session.
+
+        Args:
+            url: Base URL of the Kea Control Agent or DHCP daemon endpoint.
+            username: Optional HTTP Basic Auth username.
+            password: Optional HTTP Basic Auth password.
+            verify: SSL verification — True/False or path to a CA bundle.
+            client_cert: Path to client certificate for mutual TLS.
+            client_key: Path to private key matching client_cert.
+            timeout: Request timeout in seconds.
+
+        Raises:
+            ValueError: If only one of client_cert/client_key is provided.
+
+        """
+        if (client_cert is not None and client_key is None) or (client_cert is None and client_key is not None):
             raise ValueError("Key and Cert must be used together.")
 
         self.url = url
@@ -45,6 +62,22 @@ class KeaClient:
         arguments: dict[str, Any] | None = None,
         check: None | Sequence[int] = (0,),
     ) -> list[KeaResponse]:
+        """Send a command to the Kea API and return the response list.
+
+        Args:
+            command: Kea command name (e.g. ``"lease4-get-all"``).
+            service: List of target services (e.g. ``["dhcp4"]``). Omit for CA-level commands.
+            arguments: Optional command arguments payload.
+            check: Sequence of acceptable result codes. Pass ``None`` to skip checking.
+
+        Returns:
+            Parsed JSON response as a list of KeaResponse dicts.
+
+        Raises:
+            requests.HTTPError: If the HTTP response status is not 2xx.
+            KeaException: If any response result code is not in *check*.
+
+        """
         body: dict[str, Any] = {"command": command}
 
         if service is not None:
@@ -62,10 +95,263 @@ class KeaClient:
         return resp_json
 
 
-class KeaException(Exception):
-    def __init__(
-        self, resp: KeaResponse, msg: str | None = None, index: int | None = None
+    def get_available_commands(self, service: str) -> set[str]:
+        """Return the set of commands available on *service* (e.g. ``"dhcp4"``).
+
+        Args:
+            service: Kea service name to query (``"dhcp4"`` or ``"dhcp6"``).
+
+        Returns:
+            Set of command name strings reported by ``list-commands``.
+
+        """
+        resp = self.command("list-commands", service=[service])
+        return set(resp[0].get("arguments", []))
+
+    def reservation_get_page(
+        self,
+        service: str,
+        source_index: int = 0,
+        from_index: int = 0,
+        limit: int = 100,
+    ) -> tuple[list[dict[str, Any]], int, int]:
+        """Fetch a page of host reservations from Kea.
+
+        Args:
+            service: Target service (``"dhcp4"`` or ``"dhcp6"``).
+            source_index: 0 = all sources, 1+ = specific backend source index.
+            from_index: Starting offset within the source (use ``next_from`` returned
+                by a previous call to continue pagination).
+            limit: Maximum number of hosts to return per page.
+
+        Returns:
+            A ``(hosts, next_from, next_source_index)`` tuple.  When the returned page
+            is smaller than *limit* (i.e. the source is exhausted) both ``next_from``
+            and ``next_source_index`` are 0.  Pass them as ``from_index`` /
+            ``source_index`` on the next call to continue paginating.
+
+        Raises:
+            KeaException: If Kea returns result code 1 or 2 (error / unknown command).
+
+        """
+        resp = self.command(
+            "reservation-get-page",
+            service=[service],
+            arguments={"source-index": source_index, "from": from_index, "limit": limit},
+            check=(0, 3),
+        )
+        if resp[0]["result"] == 3:
+            return [], 0, 0
+        args = resp[0].get("arguments", {})
+        hosts: list[dict[str, Any]] = args.get("hosts", [])
+        if len(hosts) < limit:
+            return hosts, 0, 0
+        next_obj = args.get("next", {})
+        return hosts, next_obj.get("from", 0), next_obj.get("source-index", 0)
+
+    def reservation_add(self, service: str, reservation: dict[str, Any]) -> None:
+        """Add a host reservation to Kea.
+
+        Args:
+            service: Target service (``"dhcp4"`` or ``"dhcp6"``).
+            reservation: Reservation dict matching the Kea ``reservation-add`` schema.
+
+        Raises:
+            KeaException: If Kea returns a non-zero result code.
+
+        """
+        self.command(
+            "reservation-add",
+            service=[service],
+            arguments={"reservation": reservation},
+        )
+
+    def reservation_update(self, service: str, reservation: dict[str, Any]) -> None:
+        """Update an existing host reservation in Kea.
+
+        Args:
+            service: Target service (``"dhcp4"`` or ``"dhcp6"``).
+            reservation: Updated reservation dict.
+
+        Raises:
+            KeaException: If Kea returns a non-zero result code.
+
+        """
+        self.command(
+            "reservation-update",
+            service=[service],
+            arguments={"reservation": reservation},
+        )
+
+    def reservation_del(
+        self,
+        service: str,
+        subnet_id: int,
+        ip_address: str | None = None,
+        identifier_type: str | None = None,
+        identifier: str | None = None,
     ) -> None:
+        """Delete a host reservation from Kea.
+
+        Args:
+            service: Target service (``"dhcp4"`` or ``"dhcp6"``).
+            subnet_id: Subnet ID the reservation belongs to.
+            ip_address: IP address to identify the reservation. Mutually exclusive with
+                *identifier_type* / *identifier*.
+            identifier_type: Identifier type (e.g. ``"hw-address"``). Requires *identifier*.
+            identifier: Identifier value. Requires *identifier_type*.
+
+        Raises:
+            ValueError: If neither *ip_address* nor *identifier_type* is provided.
+            KeaException: If Kea returns a non-zero result code.
+
+        """
+        if ip_address is None and identifier_type is None:
+            raise ValueError("Either ip_address or identifier_type+identifier must be provided.")
+        args: dict[str, Any] = {"subnet-id": subnet_id}
+        if ip_address is not None:
+            args["ip-address"] = ip_address
+        else:
+            args["identifier-type"] = identifier_type
+            args["identifier"] = identifier
+        self.command("reservation-del", service=[service], arguments=args)
+
+    def reservation_get(
+        self,
+        service: str,
+        subnet_id: int,
+        ip_address: str | None = None,
+        identifier_type: str | None = None,
+        identifier: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Fetch a single host reservation from Kea.
+
+        Args:
+            service: Target service (``"dhcp4"`` or ``"dhcp6"``).
+            subnet_id: Subnet ID to look in.
+            ip_address: Lookup by IP address.
+            identifier_type: Lookup by identifier type (e.g. ``"hw-address"``).
+            identifier: Identifier value.
+
+        Returns:
+            The reservation dict, or ``None`` if not found (result code 3).
+
+        Raises:
+            KeaException: If Kea returns result code 1 (error).
+
+        """
+        args: dict[str, Any] = {"subnet-id": subnet_id}
+        if ip_address is not None:
+            args["ip-address"] = ip_address
+        else:
+            args["identifier-type"] = identifier_type
+            args["identifier"] = identifier
+        resp = self.command("reservation-get", service=[service], arguments=args, check=(0, 3))
+        if resp[0]["result"] == 3:
+            return None
+        # Kea returns the host fields directly inside "arguments" (not nested under "host")
+        return resp[0].get("arguments") or None
+
+    def pool_add(self, version: int, subnet_id: int, pool: str) -> None:
+        """Add a pool to an existing subnet and persist the change.
+
+        Supports both Kea 2.x (``subnet{v}-pool-add``) and Kea 3.x
+        (``subnet{v}-delta-add``). The delta command requires the subnet CIDR,
+        which is fetched automatically when the pool-add command is unavailable.
+
+        Args:
+            version: DHCP version (4 or 6).
+            subnet_id: Kea subnet ID to add the pool to.
+            pool: Pool range string (e.g. ``"10.0.0.50-10.0.0.99"`` or CIDR ``"10.0.0.0/28"``).
+
+        Raises:
+            KeaException: If Kea returns a non-zero result code for either command.
+
+        """
+        service = f"dhcp{version}"
+        subnet_key = f"subnet{version}"
+        available = self.get_available_commands(service)
+        if f"subnet{version}-pool-add" in available:
+            self.command(
+                f"subnet{version}-pool-add",
+                service=[service],
+                arguments={subnet_key: [{"id": subnet_id, "pools": [{"pool": pool}]}]},
+            )
+        else:
+            subnet_cidr = self._get_subnet_cidr(version, subnet_id)
+            self.command(
+                f"subnet{version}-delta-add",
+                service=[service],
+                arguments={subnet_key: [{"id": subnet_id, "subnet": subnet_cidr, "pools": [{"pool": pool}]}]},
+            )
+        self.command("config-write", service=[service])
+
+    def pool_del(self, version: int, subnet_id: int, pool: str) -> None:
+        """Remove a pool from an existing subnet and persist the change.
+
+        Supports both Kea 2.x (``subnet{v}-pool-del``) and Kea 3.x
+        (``subnet{v}-delta-del``). The delta command requires the subnet CIDR,
+        which is fetched automatically when the pool-del command is unavailable.
+
+        Args:
+            version: DHCP version (4 or 6).
+            subnet_id: Kea subnet ID to remove the pool from.
+            pool: Pool range string identifying the pool to delete.
+
+        Raises:
+            KeaException: If Kea returns a non-zero result code for either command.
+
+        """
+        service = f"dhcp{version}"
+        subnet_key = f"subnet{version}"
+        available = self.get_available_commands(service)
+        if f"subnet{version}-pool-del" in available:
+            self.command(
+                f"subnet{version}-pool-del",
+                service=[service],
+                arguments={subnet_key: [{"id": subnet_id, "pools": [{"pool": pool}]}]},
+            )
+        else:
+            subnet_cidr = self._get_subnet_cidr(version, subnet_id)
+            self.command(
+                f"subnet{version}-delta-del",
+                service=[service],
+                arguments={subnet_key: [{"id": subnet_id, "subnet": subnet_cidr, "pools": [{"pool": pool}]}]},
+            )
+        self.command("config-write", service=[service])
+
+    def _get_subnet_cidr(self, version: int, subnet_id: int) -> str:
+        """Fetch the CIDR string for *subnet_id* from Kea (e.g. ``"10.0.0.0/24"``).
+
+        Args:
+            version: DHCP version (4 or 6).
+            subnet_id: Kea subnet ID to look up.
+
+        Returns:
+            Subnet CIDR string.
+
+        Raises:
+            KeaException: If the subnet is not found or Kea returns an error.
+
+        """
+        service = f"dhcp{version}"
+        subnet_key = f"subnet{version}"
+        resp = self.command(
+            f"subnet{version}-get",
+            service=[service],
+            arguments={"id": subnet_id},
+        )
+        subnets = resp[0].get("arguments", {}).get(subnet_key, [])
+        if not subnets:
+            raise KeaException(f"subnet{version}-get returned no subnet for id={subnet_id}")
+        return subnets[0]["subnet"]
+
+
+class KeaException(Exception):
+    """Raised when a Kea API response contains an unexpected result code."""
+
+    def __init__(self, resp: KeaResponse, msg: str | None = None, index: int | None = None) -> None:
+        """Initialise with the failing response and optional context."""
         self.index = index
         self.response = resp
 

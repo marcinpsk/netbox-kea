@@ -5,9 +5,9 @@ from ..models import Server
 
 
 class ServerSerializer(NetBoxModelSerializer):
-    url = serializers.HyperlinkedIdentityField(
-        view_name="plugins-api:netbox_kea-api:server-detail"
-    )
+    """DRF serializer for the Server model."""
+
+    url = serializers.HyperlinkedIdentityField(view_name="plugins-api:netbox_kea-api:server-detail")
 
     class Meta:
         model = Server
@@ -23,6 +23,9 @@ class ServerSerializer(NetBoxModelSerializer):
             "ca_file_path",
             "dhcp6",
             "dhcp4",
+            "dhcp4_url",
+            "dhcp6_url",
+            "has_control_agent",
             "url",
             "display",
             "tags",

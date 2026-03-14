@@ -1,0 +1,101 @@
+{% extends 'generic/_base.html' %}
+{% load helpers %}
+
+{% block title %}All Kea Servers{% endblock %}
+
+{% block control-buttons %}
+{# Server selector dropdown — auto-submits on checkbox change #}
+<div class="dropdown">
+  <button class="btn btn-outline-secondary dropdown-toggle" type="button"
+          data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false">
+    <i class="mdi mdi-server-network"></i>
+    Servers
+    {% if selected_server_pks %}
+      <span class="badge text-bg-primary ms-1">{{ selected_server_pks|length }}</span>
+    {% else %}
+      <span class="badge text-bg-secondary ms-1">All</span>
+    {% endif %}
+  </button>
+  <div class="dropdown-menu p-3" style="min-width: 260px;">
+    <form id="server-filter-form" method="get" action="{{ request.path }}">
+      <div class="mb-2 fw-semibold text-muted small text-uppercase">Select servers</div>
+      {% if all_servers %}
+        {% for server in all_servers %}
+        <div class="form-check mb-1">
+          <input class="form-check-input" type="checkbox"
+                 name="server" value="{{ server.pk }}"
+                 id="srv_{{ server.pk }}"
+                 {% if server.pk in selected_server_pks %}checked{% endif %}
+                 onchange="document.getElementById('server-filter-form').submit()">
+          <label class="form-check-label" for="srv_{{ server.pk }}">
+            {{ server.name }}
+            {% if server.dhcp4 %}<span class="badge text-bg-primary ms-1" style="font-size:0.65em">v4</span>{% endif %}
+            {% if server.dhcp6 %}<span class="badge text-bg-info ms-1" style="font-size:0.65em">v6</span>{% endif %}
+          </label>
+        </div>
+        {% endfor %}
+        {% if selected_server_pks %}
+        <div class="mt-2 border-top pt-2">
+          <a href="{{ request.path }}" class="btn btn-sm btn-outline-secondary w-100">
+            <i class="mdi mdi-refresh"></i> Show all servers
+          </a>
+        </div>
+        {% endif %}
+      {% else %}
+        <div class="text-muted small">No servers configured.</div>
+      {% endif %}
+    </form>
+  </div>
+</div>
+{% endblock control-buttons %}
+
+{% block tabs %}
+<ul class="nav nav-tabs" role="presentation">
+  <li class="nav-item">
+    <a class="nav-link{% if active_tab == 'overview' %} active{% endif %}"
+       href="{% url 'plugins:netbox_kea:combined' %}{% if server_qs %}?{{ server_qs }}{% endif %}">
+      <i class="mdi mdi-view-dashboard-outline" aria-hidden="true"></i> Overview
+    </a>
+  </li>
+  <li class="nav-item">
+    <a class="nav-link{% if active_tab == 'leases4' %} active{% endif %}"
+       href="{% url 'plugins:netbox_kea:combined_leases4' %}{% if server_qs %}?{{ server_qs }}{% endif %}">
+      DHCPv4 Leases
+    </a>
+  </li>
+  <li class="nav-item">
+    <a class="nav-link{% if active_tab == 'leases6' %} active{% endif %}"
+       href="{% url 'plugins:netbox_kea:combined_leases6' %}{% if server_qs %}?{{ server_qs }}{% endif %}">
+      DHCPv6 Leases
+    </a>
+  </li>
+  <li class="nav-item">
+    <a class="nav-link{% if active_tab == 'subnets4' %} active{% endif %}"
+       href="{% url 'plugins:netbox_kea:combined_subnets4' %}{% if server_qs %}?{{ server_qs }}{% endif %}">
+      DHCPv4 Subnets
+    </a>
+  </li>
+  <li class="nav-item">
+    <a class="nav-link{% if active_tab == 'subnets6' %} active{% endif %}"
+       href="{% url 'plugins:netbox_kea:combined_subnets6' %}{% if server_qs %}?{{ server_qs }}{% endif %}">
+      DHCPv6 Subnets
+    </a>
+  </li>
+  <li class="nav-item">
+    <a class="nav-link{% if active_tab == 'reservations4' %} active{% endif %}"
+       href="{% url 'plugins:netbox_kea:combined_reservations4' %}{% if server_qs %}?{{ server_qs }}{% endif %}">
+      DHCPv4 Reservations
+    </a>
+  </li>
+  <li class="nav-item">
+    <a class="nav-link{% if active_tab == 'reservations6' %} active{% endif %}"
+       href="{% url 'plugins:netbox_kea:combined_reservations6' %}{% if server_qs %}?{{ server_qs }}{% endif %}">
+      DHCPv6 Reservations
+    </a>
+  </li>
+</ul>
+{% endblock tabs %}
+
+{% block content %}
+  {% block tab_content %}{% endblock %}
+{% endblock content %}
