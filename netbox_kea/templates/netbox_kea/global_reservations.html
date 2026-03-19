@@ -17,7 +17,7 @@
     <form method="get" class="d-flex flex-wrap gap-3 align-items-end">
       {% for field in filter_form %}
       <div>
-        <label class="form-label">{{ field.label }}</label>
+        <label for="{{ field.id_for_label }}" class="form-label">{{ field.label }}</label>
         {{ field }}
       </div>
       {% endfor %}

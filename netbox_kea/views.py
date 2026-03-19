@@ -847,13 +847,6 @@ class ServerReservation4AddView(generic.ObjectView):
         return_url = reverse("plugins:netbox_kea:server_reservations4", args=[pk])
         if form.is_valid():
             cd = form.cleaned_data
-            reservation: dict[str, Any] = {
-                "subnet-id": cd["subnet_id"],
-                "ip-address": cd["ip_address"],
-                cd["identifier_type"].replace("-", "_"): cd["identifier"],
-                cd["identifier_type"]: cd["identifier"],
-            }
-            # Use proper Kea key names
             reservation = {
                 "subnet-id": cd["subnet_id"],
                 "ip-address": cd["ip_address"],
@@ -1724,7 +1717,7 @@ class _CombinedSubnetsView(_CombinedViewMixin):
         all_subnets: list[dict[str, Any]] = []
         errors: list[tuple[str, str]] = []
 
-        with concurrent.futures.ThreadPoolExecutor() as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
             future_to_server = {
                 executor.submit(_fetch_subnets_from_server, s, self.dhcp_version): s
                 for s in servers
@@ -1732,8 +1725,9 @@ class _CombinedSubnetsView(_CombinedViewMixin):
             for future, server in future_to_server.items():
                 try:
                     all_subnets.extend(future.result())
-                except Exception as exc:  # noqa: BLE001
-                    errors.append((server.name, str(exc)))
+                except Exception:  # noqa: BLE001
+                    logger.exception("Failed to query server %s", server.name)
+                    errors.append((server.name, "Failed to query server"))
 
         table_cls = (
             tables.GlobalSubnetTable4 if self.dhcp_version == 4 else tables.GlobalSubnetTable6
@@ -1807,7 +1801,7 @@ class _CombinedReservationsView(_CombinedViewMixin):
         all_records: list[dict[str, Any]] = []
         errors: list[tuple[str, str]] = []
 
-        with concurrent.futures.ThreadPoolExecutor() as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
             future_to_server = {
                 executor.submit(_fetch_reservations_from_server, s, self.dhcp_version): s
                 for s in servers
@@ -1815,8 +1809,9 @@ class _CombinedReservationsView(_CombinedViewMixin):
             for future, server in future_to_server.items():
                 try:
                     all_records.extend(future.result())
-                except Exception as exc:  # noqa: BLE001
-                    errors.append((server.name, str(exc)))
+                except Exception:  # noqa: BLE001
+                    logger.exception("Failed to query server %s", server.name)
+                    errors.append((server.name, "Failed to query server"))
 
         # Enrich in the main thread so Django ORM queries see the test transaction.
         server_map = {s.pk: s for s in servers}
@@ -1907,7 +1902,7 @@ class _CombinedLeasesView(_CombinedViewMixin):
         all_leases: list[dict[str, Any]] = []
         errors: list[tuple[str, str]] = []
 
-        with concurrent.futures.ThreadPoolExecutor() as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
             future_to_server = {
                 executor.submit(_fetch_leases_from_server, s, q, by, self.dhcp_version): s
                 for s in servers
@@ -1915,8 +1910,9 @@ class _CombinedLeasesView(_CombinedViewMixin):
             for future, server in future_to_server.items():
                 try:
                     all_leases.extend(future.result())
-                except Exception as exc:  # noqa: BLE001
-                    errors.append((server.name, str(exc)))
+                except Exception:  # noqa: BLE001
+                    logger.exception("Failed to query server %s", server.name)
+                    errors.append((server.name, "Failed to query server"))
 
         # Enrich in the main thread so Django ORM queries see the test transaction.
         server_map = {s.pk: s for s in servers}
@@ -1971,8 +1967,9 @@ class _BaseSyncView(ConditionalLoginRequiredMixin, View):
         hostname = request.POST.get("hostname", "").strip()
         try:
             nb_ip, _created = self._sync({"ip-address": ip_str, "hostname": hostname})
-        except Exception as exc:  # noqa: BLE001
-            return HttpResponse(f"Sync error: {exc}", status=500)
+        except Exception:  # noqa: BLE001
+            logger.exception("Sync error for ip=%s", ip_str)
+            return HttpResponse("Sync error: an internal error occurred", status=500)
 
         return render(
             request,
@@ -2031,7 +2028,7 @@ class _BaseBulkReservationSyncView(ConditionalLoginRequiredMixin, View):
         server = get_object_or_404(Server, pk=pk)
         from .sync import sync_reservation_to_netbox
 
-        client = server.get_client()
+        client = server.get_client(version=self.dhcp_version)
         reservations, _total, _idx = client.reservation_get_page(
             service=f"dhcp{self.dhcp_version}",
             limit=10_000,

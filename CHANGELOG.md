@@ -7,6 +7,7 @@ This project follows [Conventional Commits](https://www.conventionalcommits.org/
 ## [Unreleased]
 
 ### Changed
+
 - Forked from [netbox-kea](https://github.com/devon-mar/netbox-kea) by Devon Mar
 - Renamed package to `netbox-kea-ng` for independent PyPI publishing
 - Migrated tooling to uv + hatchling

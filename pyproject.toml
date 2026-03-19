@@ -122,7 +122,7 @@ DJANGO_SETTINGS_MODULE = "netbox.settings"
 testpaths = ["netbox_kea/tests"]
 addopts = "--ignore=tests/docker --reuse-db"
 
-
+[tool.coverage.run]
 source = ["netbox_kea"]
 omit = ["*/migrations/*"]
 

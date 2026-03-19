@@ -16,13 +16,9 @@ Run live-Kea tests only:
 
 import re
 import subprocess
-from typing import TYPE_CHECKING
 
 import pytest
 from playwright.sync_api import Page, expect
-
-if TYPE_CHECKING:
-    import requests
 
 
 # ---------------------------------------------------------------------------
@@ -1333,8 +1329,6 @@ class TestPoolManagementLiveKea:
         assert test_pool not in page.content(), (
             f"Test pool {test_pool} still visible after delete"
         )
-
-
 
 
 class TestSubnetManagementLiveKea:

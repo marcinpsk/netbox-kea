@@ -41,7 +41,7 @@ Ruff is configured in `pyproject.toml` — migrations are excluded from linting.
 
 ## Architecture
 
-```
+```text
 URL request
   → urls.py             (routes to view classes)
   → views.py            (view calls server.get_client() → KeaClient)
@@ -64,32 +64,41 @@ URL request
 ## Key Conventions
 
 ### Non-model tables
+
 Lease and subnet tables use `GenericTable(BaseTable)` instead of `NetBoxTable` because they have no Django model backing them. They accept plain `list[dict]`. `GenericTable` defines `objects_count` as a property returning `len(self.data)` to satisfy NetBox's pagination interface.
 
 ### HTMX pagination
+
 Lease views serve two response types from the same `get()` method: a full page render and an HTMX partial (just the table fragment). The split is done with `htmx_partial(request, ...)` from `utilities.htmx`. Pagination state is passed via query params; the hidden `page` field uses `VeryHiddenInput` which renders as an empty string to avoid form conflicts.
 
 ### View registration
+
 Standard CRUD views use `@register_model_view(Server)` / `@register_model_view(Server, "edit")` etc. Custom tabs (Status, Leases, Subnets) use `OptionalViewTab` from `utilities.py` — a subclass of NetBox's `ViewTab` that accepts `is_enabled: Callable[[Server], bool]` to conditionally hide tabs based on model state (e.g. hide DHCPv6 tab if `server.dhcp6` is False).
 
 ### Generic views with TypeVar
+
 `BaseServerLeasesView` is `generic.ObjectView, Generic[T]` where `T = TypeVar("T", bound=BaseTable)`. Concrete subclasses (`ServerLeases6View`, `ServerLeases4View`) only need to declare `table_class`, `form_class`, `dhcp_version`, and `lease_service`. The base class handles pagination, HTMX, search, export, and delete routing.
 
 ### Fake model for GetReturnURLMixin
+
 `BaseServerLeasesDeleteView` mixes in `GetReturnURLMixin` which expects `self.model`. Since leases aren't a real model, `FakeLeaseModel` / `FakeLeaseModelMeta` provide a minimal stand-in with just `app_label` and `model_name` so `get_return_url()` resolves correctly.
 
 ### URL structure
+
 `get_model_urls("netbox_kea", "server")` from `utilities.urls` auto-generates standard NetBox object URLs (detail, edit, delete, changelog, journal). Custom routes (leases, subnets) are declared explicitly before the `include()`.
 
 ### Forms
+
 Lease search forms inherit from `BaseLeasesSarchForm` (note the typo — it's intentional/existing). Each subclass defines an inner `Meta` with `ip_version: Literal[4, 6]` which the base class `clean()` uses to validate subnet CIDR, IP addresses, and hardware addresses (via `is_hex_string()` from `utilities.py`).
 
 ### API URL naming
+
 The serializer's `HyperlinkedIdentityField` uses `view_name="plugins-api:netbox_kea-api:server-detail"` — the `plugins-api:` prefix and `-api:` namespace suffix are NetBox conventions.
 
 ## Feature Roadmap & Development Approach
 
 ### Kea API Reference
+
 - **Primary**: `kea.readthedocs.io/en/latest/api.html` — 206 commands with full JSON schemas. `web_fetch` specific anchors when implementing a new command.
 - **Live discovery**: run `list-commands` against the target server (see `get_available_commands()` pattern) to confirm which hook libraries are loaded. Many commands require hooks (see below).
 - **Key hooks** and the commands they gate:
@@ -102,6 +111,7 @@ The serializer's `HyperlinkedIdentityField` uses `view_name="plugins-api:netbox_
 ### Phase Plan (Priority Order)
 
 #### Phase 1 — Dual-URL Server (model migration) [P1]
+
 Add optional `dhcp4_url` / `dhcp6_url` fields to `Server` so a single object can point to separate
 `kea-v4-api.cnad.dev` and `kea-v6-api.cnad.dev` processes. Also add `has_control_agent` boolean.
 - `get_client()` gains a `version: Literal[4, 6] | None` parameter — returns a `KeaClient` at the
@@ -111,6 +121,7 @@ Add optional `dhcp4_url` / `dhcp6_url` fields to `Server` so a single object can
 - DB migration required. Backward compatible: existing configs (single `server_url`) keep working.
 
 #### Phase 2 — Reservation Management [P2]
+
 Full CRUD against `host_cmds` hook. Requires Phase 1 (protocol-aware client).
 - `ServerReservations4/6View` list tabs with `reservation-get-page` pagination
 - `ServerReservationAdd/Edit/DeleteView` using `reservation-add/update/del`
@@ -118,6 +129,7 @@ Full CRUD against `host_cmds` hook. Requires Phase 1 (protocol-aware client).
 - Degrade gracefully if `host_cmds` not loaded.
 
 #### Phase 3 — NetBox IPAM Integration [P3]
+
 Replace the brittle external IP-update script.
 - **3a**: "Sync to NetBox IP" bulk action on lease table → create/update `IPAddress` (status=active,
   dns_name from hostname, optional interface assignment by MAC).
@@ -125,16 +137,19 @@ Replace the brittle external IP-update script.
 - **3c**: Action on NetBox `IPAddress` detail → "Create Kea Reservation" (prefilled).
 
 #### Phase 4 — DNS via netbox-dns IPAMDNSsync [P4]
+
 No direct netbox-dns API calls needed. Set `dns_name` on `IPAddress` (from lease hostname / reservation) →
 netbox-dns IPAMDNSsync auto-creates A/AAAA/PTR records via Django signals, provided DNS views + zones exist.
 - Check `importlib.util.find_spec("netbox_dns")` at runtime; optional `NETBOX_KEA_DNS_SYNC` plugin setting.
 - No hard dependency.
 
 #### Phase 5 — Subnet Utilization Statistics [P5]
+
 - `stat-lease4/6-get` (requires `stat_cmds`) → add utilization % column to subnet tables.
 - Degrade gracefully.
 
 ### Convention: protocol-aware `get_client()`
+
 After Phase 1, all view code that currently calls `server.get_client()` should pass the protocol
 version where known: `server.get_client(version=self.dhcp_version)`. This is the primary breaking
 change to be aware of when updating views.

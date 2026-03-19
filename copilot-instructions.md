@@ -4,7 +4,7 @@
 
 **NetBox Kea** is a NetBox plugin that integrates Kea DHCP server management into NetBox. It allows viewing Kea daemon status, DHCP leases, and subnets directly from the NetBox UI, with bidirectional linking between NetBox devices/VMs and DHCP leases.
 
-- **Repository**: `/home/mzieba/workspace/netbox-kea`
+- **Repository**: `netbox-kea` (clone from GitHub)
 - **Language**: Python 3.10+
 - **Framework**: Django (via NetBox plugin framework)
 - **Testing**: pytest with Playwright for UI tests

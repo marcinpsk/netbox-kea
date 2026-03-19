@@ -110,7 +110,7 @@ class Server(NetBoxModel):
         super().clean()
 
         if self.dhcp4 is False and self.dhcp6 is False:
-            raise ValidationError({"dhcp6": "At one of DHCPv4 and DHCPv6 needs to be enabled."})
+            raise ValidationError({"dhcp6": "At least one of DHCPv4 and DHCPv6 needs to be enabled."})
 
         if (self.client_cert_path and not self.client_key_path) or (not self.client_cert_path and self.client_key_path):
             raise ValidationError(

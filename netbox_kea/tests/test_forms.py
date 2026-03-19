@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Unit tests for netbox_kea.forms — validation logic for all form classes."""
 
+from django.core.exceptions import ValidationError
 from django.test import SimpleTestCase, TestCase
 
 from netbox_kea.forms import Leases4SearchForm, Leases6SearchForm, MultipleIPField, ServerForm
@@ -159,17 +160,17 @@ class TestMultipleIPField(SimpleTestCase):
 
     def test_empty_list_fails(self):
         field = MultipleIPField(version=4)
-        with self.assertRaises(Exception):
+        with self.assertRaises(ValidationError):
             field.clean([])
 
     def test_non_list_fails(self):
         field = MultipleIPField(version=4)
-        with self.assertRaises(Exception):
+        with self.assertRaises(ValidationError):
             field.clean("192.168.1.1")
 
     def test_invalid_ip_fails(self):
         field = MultipleIPField(version=4)
-        with self.assertRaises(Exception):
+        with self.assertRaises(ValidationError):
             field.clean(["notanip"])
 
 

@@ -279,8 +279,6 @@ class TestReservation6SyncView(_SyncViewBase):
 class TestReservation4BulkSyncView(_SyncViewBase):
     """POST to server_reservation4_bulk_sync syncs all reservations to NetBox."""
 
-    from unittest.mock import patch
-
     def _url(self):
         return reverse(
             "plugins:netbox_kea:server_reservation4_bulk_sync", args=[self.server.pk]

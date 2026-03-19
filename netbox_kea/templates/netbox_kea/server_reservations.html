@@ -25,10 +25,17 @@
       </button>
     </form>
     {% endif %}
+    {% if hook_available %}
     <a href="{{ add_url }}" class="btn btn-primary btn-sm">
       <i class="mdi mdi-plus-thick" aria-hidden="true"></i>
       Add DHCPv{{ dhcp_version }} Reservation
     </a>
+    {% else %}
+    <button type="button" class="btn btn-primary btn-sm" disabled aria-disabled="true">
+      <i class="mdi mdi-plus-thick" aria-hidden="true"></i>
+      Add DHCPv{{ dhcp_version }} Reservation
+    </button>
+    {% endif %}
   </div>
 </div>
 

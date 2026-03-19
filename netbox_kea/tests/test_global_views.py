@@ -581,7 +581,7 @@ class TestCombinedSubnets6View(_CombinedViewBase):
 # ---------------------------------------------------------------------------
 
 
-_MOCK_LEASE_V4 = {
+_MOCK_LEASE_V4_ENRICHMENT = {
     "ip-address": "10.20.0.5",
     "hw-address": "aa:bb:cc:dd:ee:01",
     "subnet-id": 1,
@@ -631,7 +631,7 @@ class TestCombinedLeases4Enrichment(_CombinedViewBase):
         """A lease with a matching reservation must show the 'Reserved' badge."""
         self._mock_command(
             MockKeaClient.return_value,
-            leases=[dict(_MOCK_LEASE_V4)],
+            leases=[dict(_MOCK_LEASE_V4_ENRICHMENT)],
             reservations=[dict(_MOCK_RESERVATION_ENRICHED)],
         )
         response = self.client.get(self._lease_url())
@@ -643,7 +643,7 @@ class TestCombinedLeases4Enrichment(_CombinedViewBase):
         """A lease without a matching reservation must show a create-reservation link."""
         self._mock_command(
             MockKeaClient.return_value,
-            leases=[dict(_MOCK_LEASE_V4)],
+            leases=[dict(_MOCK_LEASE_V4_ENRICHMENT)],
             reservations=[],
         )
         response = self.client.get(self._lease_url())
@@ -657,7 +657,7 @@ class TestCombinedLeases4Enrichment(_CombinedViewBase):
         IPAddress.objects.create(address="10.20.0.5/32")
         self._mock_command(
             MockKeaClient.return_value,
-            leases=[dict(_MOCK_LEASE_V4)],
+            leases=[dict(_MOCK_LEASE_V4_ENRICHMENT)],
             reservations=[],
         )
         response = self.client.get(self._lease_url())
@@ -669,7 +669,7 @@ class TestCombinedLeases4Enrichment(_CombinedViewBase):
         """When the lease IP is not in NetBox IPAM, a 'Sync' button must appear."""
         self._mock_command(
             MockKeaClient.return_value,
-            leases=[dict(_MOCK_LEASE_V4)],
+            leases=[dict(_MOCK_LEASE_V4_ENRICHMENT)],
             reservations=[],
         )
         response = self.client.get(self._lease_url())

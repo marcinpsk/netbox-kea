@@ -6,6 +6,8 @@ Injects a Kea panel onto the NetBox IPAddress detail page, providing
 quick links to create host reservations on configured Kea servers.
 """
 
+from urllib.parse import urlencode
+
 from django.urls import reverse
 from netbox.plugins import PluginTemplateExtension
 
@@ -36,8 +38,6 @@ class IPAddressKeaPanel(PluginTemplateExtension):
         else:
             servers = Server.objects.filter(dhcp6=True)
             add_url_name = "plugins:netbox_kea:server_reservation6_add"
-
-        from urllib.parse import urlencode
 
         server_links = []
         for server in servers:

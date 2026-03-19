@@ -19,7 +19,7 @@
       {% for field in search_form %}
       {% if not field.is_hidden %}
       <div class="col-auto">
-        <label class="form-label">{{ field.label }}</label>
+        <label for="{{ field.id_for_label }}" class="form-label">{{ field.label }}</label>
         {{ field }}
         {% if field.errors %}<div class="invalid-feedback d-block">{{ field.errors }}</div>{% endif %}
       </div>

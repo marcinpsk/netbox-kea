@@ -41,6 +41,7 @@ def find_prefix_length(ip_str: str) -> int:
     to a Python-side scan of all prefixes for SQLite (test environments).
     Returns ``32`` for IPv4 or ``128`` for IPv6 when no prefix is found.
     """
+    from django.db.utils import OperationalError, ProgrammingError
     from ipam.models import Prefix
     from netaddr import IPAddress as NetAddr, IPNetwork
 
@@ -56,7 +57,7 @@ def find_prefix_length(ip_str: str) -> int:
         )
         if prefix is not None:
             return int(str(prefix.prefix).split("/")[1])
-    except Exception:  # noqa: BLE001
+    except (ProgrammingError, OperationalError):
         pass
 
     # SQLite fallback: load all prefixes and filter in Python

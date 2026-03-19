@@ -292,8 +292,8 @@ class KeaClient:
                 existing = list_resp[0].get("arguments", {}).get("subnets", [])
                 max_id = max((s.get("id", 0) for s in existing), default=0)
                 subnet_def["id"] = max_id + 1
-            except Exception:
-                pass  # some Kea versions auto-assign; leave it out and let Kea decide
+            except KeaException:
+                pass  # command unsupported or failed; some Kea versions auto-assign IDs
         if pools:
             subnet_def["pools"] = [{"pool": p} for p in pools]
         option_data: list[dict[str, str]] = []
@@ -422,7 +422,10 @@ class KeaClient:
         )
         subnets = resp[0].get("arguments", {}).get(subnet_key, [])
         if not subnets:
-            raise KeaException(f"subnet{version}-get returned no subnet for id={subnet_id}")
+            raise KeaException(
+                {"result": 3, "text": f"subnet{version}-get returned no subnet for id={subnet_id}", "arguments": None},
+                index=0,
+            )
         return subnets[0]["subnet"]
 
 

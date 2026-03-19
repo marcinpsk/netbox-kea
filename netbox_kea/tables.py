@@ -480,20 +480,22 @@ class ReservationTable6(GenericTable):
         default_columns = ("subnet_id", "duid", "ip_addresses", "hostname", "lease_status", "netbox_ip", "actions")
 # ─────────────────────────────────────────────────────────────────────────────
 
-_SERVER_COLUMN = tables.TemplateColumn(
-    template_code=(
-        '<a href="{% url \'plugins:netbox_kea:server\' record.server_pk %}">'
-        "{{ record.server_name }}</a>"
-    ),
-    verbose_name="Server",
-    orderable=False,
-)
+def _server_column() -> tables.TemplateColumn:
+    """Factory for a Server column linking to the server detail page."""
+    return tables.TemplateColumn(
+        template_code=(
+            '<a href="{% url \'plugins:netbox_kea:server\' record.server_pk %}">'
+            "{{ record.server_name }}</a>"
+        ),
+        verbose_name="Server",
+        orderable=False,
+    )
 
 
 class GlobalReservationTable4(GenericTable):
     """DHCPv4 reservation table aggregated across multiple servers."""
 
-    server = _SERVER_COLUMN
+    server = _server_column()
     subnet_id = tables.Column(verbose_name="Subnet ID", accessor="subnet-id")
     hw_address = MonospaceColumn(verbose_name="Hardware Address", accessor="hw-address")
     ip_address = tables.Column(verbose_name="IP Address", accessor="ip-address")
@@ -533,7 +535,7 @@ class GlobalReservationTable4(GenericTable):
 class GlobalReservationTable6(GenericTable):
     """DHCPv6 reservation table aggregated across multiple servers."""
 
-    server = _SERVER_COLUMN
+    server = _server_column()
     subnet_id = tables.Column(verbose_name="Subnet ID", accessor="subnet-id")
     duid = MonospaceColumn(verbose_name="DUID")
     ip_addresses = tables.Column(verbose_name="IPv6 Addresses", accessor="ip-addresses")
@@ -573,7 +575,7 @@ class GlobalReservationTable6(GenericTable):
 class GlobalLeaseTable4(BaseLeaseTable):
     """DHCPv4 lease table aggregated across multiple servers."""
 
-    server = _SERVER_COLUMN
+    server = _server_column()
 
     class Meta(BaseLeaseTable.Meta):
         fields = ("server", *BaseLeaseTable.Meta.fields)
@@ -583,7 +585,7 @@ class GlobalLeaseTable4(BaseLeaseTable):
 class GlobalLeaseTable6(BaseLeaseTable):
     """DHCPv6 lease table aggregated across multiple servers."""
 
-    server = _SERVER_COLUMN
+    server = _server_column()
     type = tables.Column(verbose_name="Type", accessor="type")
     preferred_lft = DurationColumn(verbose_name="Preferred Lifetime")
     duid = MonospaceColumn(verbose_name="DUID", additional_classes=["text-break"])
@@ -597,7 +599,7 @@ class GlobalLeaseTable6(BaseLeaseTable):
 class GlobalSubnetTable4(GenericTable):
     """DHCPv4 subnet table aggregated across multiple servers."""
 
-    server = _SERVER_COLUMN
+    server = _server_column()
     id = tables.Column(verbose_name="ID")
     subnet = tables.Column(
         linkify=lambda record, table: (

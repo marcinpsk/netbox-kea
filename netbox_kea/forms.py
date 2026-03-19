@@ -377,24 +377,34 @@ class GlobalServer4FilterForm(forms.Form):
     """Server multi-select for the global DHCPv4 views."""
 
     server = forms.ModelMultipleChoiceField(
-        queryset=Server.objects.filter(dhcp4=True),
+        queryset=Server.objects.none(),
         required=False,
         label="Servers",
         widget=forms.CheckboxSelectMultiple,
         help_text="Leave blank to query all DHCPv4-enabled servers.",
     )
 
+    def __init__(self, *args, **kwargs):
+        """Evaluate queryset at instantiation time, not class definition time."""
+        super().__init__(*args, **kwargs)
+        self.fields["server"].queryset = Server.objects.filter(dhcp4=True)
+
 
 class GlobalServer6FilterForm(forms.Form):
     """Server multi-select for the global DHCPv6 views."""
 
     server = forms.ModelMultipleChoiceField(
-        queryset=Server.objects.filter(dhcp6=True),
+        queryset=Server.objects.none(),
         required=False,
         label="Servers",
         widget=forms.CheckboxSelectMultiple,
         help_text="Leave blank to query all DHCPv6-enabled servers.",
     )
+
+    def __init__(self, *args, **kwargs):
+        """Evaluate queryset at instantiation time, not class definition time."""
+        super().__init__(*args, **kwargs)
+        self.fields["server"].queryset = Server.objects.filter(dhcp6=True)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -48,6 +48,10 @@ path = [
     "netbox_kea/templates/netbox_kea/server_reservations.html",
     "netbox_kea/templates/netbox_kea/server_reservation_form.html",
     "netbox_kea/templates/netbox_kea/server_reservation_delete.html",
+    "netbox_kea/templates/netbox_kea/server_pool_add.html",
+    "netbox_kea/templates/netbox_kea/server_pool_delete.html",
+    "netbox_kea/templates/netbox_kea/server_subnet_add.html",
+    "netbox_kea/templates/netbox_kea/server_subnet_delete.html",
     "netbox_kea/templates/netbox_kea/dashboard.html",
     "netbox_kea/templates/netbox_kea/global_leases.html",
     "netbox_kea/templates/netbox_kea/global_reservations.html",
@@ -56,6 +60,10 @@ path = [
     "netbox_kea/templates/netbox_kea/combined_leases.html",
     "netbox_kea/templates/netbox_kea/combined_reservations.html",
     "netbox_kea/templates/netbox_kea/combined_subnets.html",
+    "netbox_kea/templates/netbox_kea/ip_kea_reservations.html",
+    "netbox_kea/templates/netbox_kea/inc/ip_kea_panel.html",
+    "netbox_kea/templates/netbox_kea/inc/sync_badge.html",
+    "CLAUDE.md",
 ]
 SPDX-FileCopyrightText = "2025 Marcin Zieba <marcinpsk@gmail.com>"
 SPDX-License-Identifier = "Apache-2.0"

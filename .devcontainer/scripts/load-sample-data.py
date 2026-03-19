@@ -41,8 +41,8 @@ _SERVERS = [
 ]
 
 for _s in _SERVERS:
-    _obj, _created = Server.objects.get_or_create(name=_s["name"], defaults=_s)
+    _obj, _created = Server.objects.update_or_create(name=_s["name"], defaults=_s)
     if _created:
         print(f"Created: {_obj.name}")
     else:
-        print(f"Already exists: {_obj.name}")
+        print(f"Updated: {_obj.name}")
