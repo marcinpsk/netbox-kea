@@ -596,9 +596,7 @@ class TestActiveLeaseStatusOnReservations(_ReservationViewBase):
         """Reservation present but no active lease."""
         mock_client = MockKeaClient.return_value
         mock_client.reservation_get_page.return_value = ([dict(_SAMPLE_RESERVATION4)], 0, 0)
-        mock_client.command.return_value = [
-            {"result": 0, "arguments": {"leases": [], "count": 0}}
-        ]
+        mock_client.command.return_value = [{"result": 0, "arguments": {"leases": [], "count": 0}}]
         return mock_client
 
     @patch("netbox_kea.models.KeaClient")
@@ -737,9 +735,7 @@ class TestLeaseReserveBadge(_ReservationViewBase):
         """A lease without a matching reservation must show '+ Reserve' link."""
         mock = MockKeaClient.return_value
         mock.reservation_get_page.return_value = ([], 0, 0)
-        mock.command.return_value = [
-            {"result": 0, "arguments": {**self._LEASE}}
-        ]
+        mock.command.return_value = [{"result": 0, "arguments": {**self._LEASE}}]
         response = self._htmx_get({"by": "ip", "q": "192.168.1.200"})
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Reserve")
@@ -751,9 +747,7 @@ class TestLeaseReserveBadge(_ReservationViewBase):
         reservation = dict(_SAMPLE_RESERVATION4)
         reservation["ip-address"] = "192.168.1.200"
         mock.reservation_get_page.return_value = ([reservation], 0, 0)
-        mock.command.return_value = [
-            {"result": 0, "arguments": {**self._LEASE}}
-        ]
+        mock.command.return_value = [{"result": 0, "arguments": {**self._LEASE}}]
         response = self._htmx_get({"by": "ip", "q": "192.168.1.200"})
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Reserved")
@@ -777,9 +771,7 @@ class TestActiveLeaseBadgeLink(TestCase):
     """'Active Lease' badge must be a hyperlink to the per-server lease search."""
 
     def setUp(self):
-        self.client.force_login(
-            User.objects.create_superuser("lslink_user", password="x")
-        )
+        self.client.force_login(User.objects.create_superuser("lslink_user", password="x"))
         self.server = Server.objects.create(
             name="lease-link-srv",
             server_url="http://kea-test:8000",
@@ -794,33 +786,22 @@ class TestActiveLeaseBadgeLink(TestCase):
     def test_active_lease_badge_is_link_to_lease_search(self, MockKeaClient):
         """When active lease exists the badge must be an <a> linking to lease search by IP."""
         mock_client = MockKeaClient.return_value
-        mock_client.reservation_get_page.return_value = (
-            [dict(_SAMPLE_RESERVATION4_WITH_IP)], 0, 0
-        )
-        mock_client.command.return_value = [
-            {"result": 0, "arguments": {"leases": [{"ip-address": "10.50.0.9"}]}}
-        ]
+        mock_client.reservation_get_page.return_value = ([dict(_SAMPLE_RESERVATION4_WITH_IP)], 0, 0)
+        mock_client.command.return_value = [{"result": 0, "arguments": {"leases": [{"ip-address": "10.50.0.9"}]}}]
         response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
         # Badge must be a link, not a plain span
         self.assertContains(response, "Active Lease</a>")
         # Link must point to the lease search with the reservation IP
-        expected_href = (
-            reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
-            + "?q=10.50.0.9&by=ip"
-        )
+        expected_href = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk]) + "?q=10.50.0.9&by=ip"
         self.assertContains(response, expected_href)
 
     @patch("netbox_kea.models.KeaClient")
     def test_no_lease_badge_is_not_a_link(self, MockKeaClient):
         """'No Lease' badge must remain a plain non-clickable element."""
         mock_client = MockKeaClient.return_value
-        mock_client.reservation_get_page.return_value = (
-            [dict(_SAMPLE_RESERVATION4_WITH_IP)], 0, 0
-        )
-        mock_client.command.return_value = [
-            {"result": 0, "arguments": {"leases": []}}
-        ]
+        mock_client.reservation_get_page.return_value = ([dict(_SAMPLE_RESERVATION4_WITH_IP)], 0, 0)
+        mock_client.command.return_value = [{"result": 0, "arguments": {"leases": []}}]
         response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "No Lease")
@@ -845,9 +826,7 @@ class TestActiveLeaseSyncButton(TestCase):
     """When active lease present and IP not yet in NetBox, show Sync button in lease_status cell."""
 
     def setUp(self):
-        self.client.force_login(
-            User.objects.create_superuser("sync_btn_user", password="x")
-        )
+        self.client.force_login(User.objects.create_superuser("sync_btn_user", password="x"))
         self.server = Server.objects.create(
             name="sync-btn-srv",
             server_url="http://kea-test:8000",
@@ -860,9 +839,7 @@ class TestActiveLeaseSyncButton(TestCase):
 
     @patch("netbox_kea.sync.bulk_fetch_netbox_ips")
     @patch("netbox_kea.models.KeaClient")
-    def test_sync_button_shown_when_active_lease_and_no_netbox_ip(
-        self, MockKeaClient, mock_bulk_fetch
-    ):
+    def test_sync_button_shown_when_active_lease_and_no_netbox_ip(self, MockKeaClient, mock_bulk_fetch):
         """When active lease and no NetBox IP: 'Active Lease' badge AND Sync button rendered."""
         mock_client = MockKeaClient.return_value
         mock_client.reservation_get_page.return_value = (
@@ -870,9 +847,7 @@ class TestActiveLeaseSyncButton(TestCase):
             0,
             0,
         )
-        mock_client.command.return_value = [
-            {"result": 0, "arguments": {"leases": [{"ip-address": "10.60.0.5"}]}}
-        ]
+        mock_client.command.return_value = [{"result": 0, "arguments": {"leases": [{"ip-address": "10.60.0.5"}]}}]
         mock_bulk_fetch.return_value = {}  # no NetBox IPs found
         response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
@@ -882,9 +857,7 @@ class TestActiveLeaseSyncButton(TestCase):
 
     @patch("netbox_kea.sync.bulk_fetch_netbox_ips")
     @patch("netbox_kea.models.KeaClient")
-    def test_sync_button_not_shown_when_active_lease_and_netbox_ip_exists(
-        self, MockKeaClient, mock_bulk_fetch
-    ):
+    def test_sync_button_not_shown_when_active_lease_and_netbox_ip_exists(self, MockKeaClient, mock_bulk_fetch):
         """When active lease AND NetBox IP already synced: no Sync button in lease_status cell."""
         from unittest.mock import MagicMock
 
@@ -894,9 +867,7 @@ class TestActiveLeaseSyncButton(TestCase):
             0,
             0,
         )
-        mock_client.command.return_value = [
-            {"result": 0, "arguments": {"leases": [{"ip-address": "10.60.0.5"}]}}
-        ]
+        mock_client.command.return_value = [{"result": 0, "arguments": {"leases": [{"ip-address": "10.60.0.5"}]}}]
         nb_ip = MagicMock()
         nb_ip.get_absolute_url.return_value = "/ipam/ip-addresses/42/"
         mock_bulk_fetch.return_value = {"10.60.0.5": nb_ip}
@@ -937,9 +908,7 @@ class TestServerSubnet4PoolAddView(_ReservationViewBase):
         response = self.client.post(self._url(), {"pool": "10.0.0.50-10.0.0.99"})
         self.assertEqual(response.status_code, 302)
         self.assertNotIn("None", response.url)
-        mock_client.pool_add.assert_called_once_with(
-            version=4, subnet_id=self._SUBNET_ID, pool="10.0.0.50-10.0.0.99"
-        )
+        mock_client.pool_add.assert_called_once_with(version=4, subnet_id=self._SUBNET_ID, pool="10.0.0.50-10.0.0.99")
 
     @patch("netbox_kea.models.KeaClient")
     def test_post_invalid_rerenders_form(self, MockKeaClient):
@@ -949,9 +918,7 @@ class TestServerSubnet4PoolAddView(_ReservationViewBase):
     @patch("netbox_kea.models.KeaClient")
     def test_post_kea_error_shows_message(self, MockKeaClient):
         mock_client = MockKeaClient.return_value
-        mock_client.pool_add.side_effect = KeaException(
-            {"result": 1, "text": "Pool overlap detected."}, index=0
-        )
+        mock_client.pool_add.side_effect = KeaException({"result": 1, "text": "Pool overlap detected."}, index=0)
         response = self.client.post(self._url(), {"pool": "10.0.0.50-10.0.0.99"})
         self.assertIn(response.status_code, (200, 302))
 
@@ -987,16 +954,12 @@ class TestServerSubnet4PoolDeleteView(_ReservationViewBase):
         response = self.client.post(self._url())
         self.assertEqual(response.status_code, 302)
         self.assertNotIn("None", response.url)
-        mock_client.pool_del.assert_called_once_with(
-            version=4, subnet_id=self._SUBNET_ID, pool=self._POOL
-        )
+        mock_client.pool_del.assert_called_once_with(version=4, subnet_id=self._SUBNET_ID, pool=self._POOL)
 
     @patch("netbox_kea.models.KeaClient")
     def test_post_kea_error_redirects_with_message(self, MockKeaClient):
         mock_client = MockKeaClient.return_value
-        mock_client.pool_del.side_effect = KeaException(
-            {"result": 3, "text": "Pool not found."}, index=0
-        )
+        mock_client.pool_del.side_effect = KeaException({"result": 3, "text": "Pool not found."}, index=0)
         response = self.client.post(self._url())
         self.assertIn(response.status_code, (200, 302))
 
@@ -1058,9 +1021,7 @@ class TestServerSubnet6PoolDeleteView(_ReservationViewBase):
         mock_client.pool_del.return_value = None
         response = self.client.post(self._url())
         self.assertEqual(response.status_code, 302)
-        mock_client.pool_del.assert_called_once_with(
-            version=6, subnet_id=self._SUBNET_ID, pool=self._POOL
-        )
+        mock_client.pool_del.assert_called_once_with(version=6, subnet_id=self._SUBNET_ID, pool=self._POOL)
 
 
 # ---------------------------------------------------------------------------
@@ -1085,9 +1046,18 @@ class TestServerSubnet4AddView(_ReservationViewBase):
         with patch("netbox_kea.models.KeaClient", return_value=mock_client):
             resp = self.client.post(
                 self._add_url(),
-                data={"subnet": "10.99.0.0/24", "subnet_id": "", "pools": "", "gateway": "", "dns_servers": "", "ntp_servers": ""},
+                data={
+                    "subnet": "10.99.0.0/24",
+                    "subnet_id": "",
+                    "pools": "",
+                    "gateway": "",
+                    "dns_servers": "",
+                    "ntp_servers": "",
+                },
             )
-        self.assertRedirects(resp, reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk]), fetch_redirect_response=False)
+        self.assertRedirects(
+            resp, reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk]), fetch_redirect_response=False
+        )
         mock_client.subnet_add.assert_called_once_with(
             version=4,
             subnet_cidr="10.99.0.0/24",
@@ -1126,7 +1096,14 @@ class TestServerSubnet4AddView(_ReservationViewBase):
     def test_post_invalid_cidr_rerenders_form(self):
         resp = self.client.post(
             self._add_url(),
-            data={"subnet": "not-a-cidr", "subnet_id": "", "pools": "", "gateway": "", "dns_servers": "", "ntp_servers": ""},
+            data={
+                "subnet": "not-a-cidr",
+                "subnet_id": "",
+                "pools": "",
+                "gateway": "",
+                "dns_servers": "",
+                "ntp_servers": "",
+            },
         )
         self.assertEqual(resp.status_code, 200)
         self.assertContains(resp, "Invalid subnet CIDR")
@@ -1137,10 +1114,17 @@ class TestServerSubnet4AddView(_ReservationViewBase):
         with patch("netbox_kea.models.KeaClient", return_value=mock_client):
             resp = self.client.post(
                 self._add_url(),
-                data={"subnet": "10.99.0.0/24", "subnet_id": "", "pools": "", "gateway": "", "dns_servers": "", "ntp_servers": ""},
+                data={
+                    "subnet": "10.99.0.0/24",
+                    "subnet_id": "",
+                    "pools": "",
+                    "gateway": "",
+                    "dns_servers": "",
+                    "ntp_servers": "",
+                },
             )
         self.assertEqual(resp.status_code, 200)
-        self.assertContains(resp, "subnet already exists")
+        self.assertContains(resp, "see server logs for details")
 
 
 class TestServerSubnet4DeleteView(_ReservationViewBase):
@@ -1151,7 +1135,9 @@ class TestServerSubnet4DeleteView(_ReservationViewBase):
 
     def test_get_renders_confirmation(self):
         mock_client = MagicMock()
-        mock_client.command.return_value = [{"result": 0, "arguments": {"subnet4": [{"id": 5, "subnet": "10.99.0.0/24", "pools": []}]}}]
+        mock_client.command.return_value = [
+            {"result": 0, "arguments": {"subnet4": [{"id": 5, "subnet": "10.99.0.0/24", "pools": []}]}}
+        ]
         with patch("netbox_kea.models.KeaClient", return_value=mock_client):
             resp = self.client.get(self._delete_url())
         self.assertEqual(resp.status_code, 200)
@@ -1162,7 +1148,9 @@ class TestServerSubnet4DeleteView(_ReservationViewBase):
         mock_client.subnet_del.return_value = None
         with patch("netbox_kea.models.KeaClient", return_value=mock_client):
             resp = self.client.post(self._delete_url())
-        self.assertRedirects(resp, reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk]), fetch_redirect_response=False)
+        self.assertRedirects(
+            resp, reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk]), fetch_redirect_response=False
+        )
         mock_client.subnet_del.assert_called_once_with(version=4, subnet_id=5)
 
     def test_post_kea_error_shows_message(self):
@@ -1170,7 +1158,9 @@ class TestServerSubnet4DeleteView(_ReservationViewBase):
         mock_client.subnet_del.side_effect = Exception("subnet not found")
         with patch("netbox_kea.models.KeaClient", return_value=mock_client):
             resp = self.client.post(self._delete_url())
-        self.assertRedirects(resp, reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk]), fetch_redirect_response=False)
+        self.assertRedirects(
+            resp, reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk]), fetch_redirect_response=False
+        )
 
 
 class TestServerSubnet6AddView(_ReservationViewBase):
@@ -1185,11 +1175,26 @@ class TestServerSubnet6AddView(_ReservationViewBase):
         with patch("netbox_kea.models.KeaClient", return_value=mock_client):
             resp = self.client.post(
                 self._add_url(),
-                data={"subnet": "2001:db8:99::/48", "subnet_id": "", "pools": "", "gateway": "", "dns_servers": "", "ntp_servers": ""},
+                data={
+                    "subnet": "2001:db8:99::/48",
+                    "subnet_id": "",
+                    "pools": "",
+                    "gateway": "",
+                    "dns_servers": "",
+                    "ntp_servers": "",
+                },
             )
-        self.assertRedirects(resp, reverse("plugins:netbox_kea:server_subnets6", args=[self.server.pk]), fetch_redirect_response=False)
+        self.assertRedirects(
+            resp, reverse("plugins:netbox_kea:server_subnets6", args=[self.server.pk]), fetch_redirect_response=False
+        )
         mock_client.subnet_add.assert_called_once_with(
-            version=6, subnet_cidr="2001:db8:99::/48", subnet_id=None, pools=[], gateway=None, dns_servers=[], ntp_servers=[],
+            version=6,
+            subnet_cidr="2001:db8:99::/48",
+            subnet_id=None,
+            pools=[],
+            gateway=None,
+            dns_servers=[],
+            ntp_servers=[],
         )
 
 
@@ -1205,4 +1210,6 @@ class TestServerSubnet6DeleteView(_ReservationViewBase):
         with patch("netbox_kea.models.KeaClient", return_value=mock_client):
             resp = self.client.post(self._delete_url())
         mock_client.subnet_del.assert_called_once_with(version=6, subnet_id=7)
-        self.assertRedirects(resp, reverse("plugins:netbox_kea:server_subnets6", args=[self.server.pk]), fetch_redirect_response=False)
+        self.assertRedirects(
+            resp, reverse("plugins:netbox_kea:server_subnets6", args=[self.server.pk]), fetch_redirect_response=False
+        )

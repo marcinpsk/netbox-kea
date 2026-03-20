@@ -256,23 +256,23 @@ class BaseLeaseTable(GenericTable):
         verbose_name="Reserved",
         orderable=False,
         template_code=(
-            '{% if record.reservation_url %}'
+            "{% if record.reservation_url %}"
             '<a href="{{ record.reservation_url }}" class="badge text-bg-success text-decoration-none">'
-            'Reserved</a>'
-            '{% elif record.create_reservation_url %}'
+            "Reserved</a>"
+            "{% elif record.create_reservation_url %}"
             '<a href="{{ record.create_reservation_url }}" class="badge text-bg-warning text-decoration-none">'
-            '+ Reserve</a>'
-            '{% endif %}'
+            "+ Reserve</a>"
+            "{% endif %}"
         ),
     )
     netbox_ip = tables.TemplateColumn(
         verbose_name="NetBox IP",
         orderable=False,
         template_code=(
-            '{% if record.netbox_ip_url %}'
+            "{% if record.netbox_ip_url %}"
             '<a href="{{ record.netbox_ip_url }}" class="badge text-bg-success text-decoration-none">'
             '<i class="mdi mdi-link-variant"></i> Synced</a>'
-            '{% elif record.sync_url %}'
+            "{% elif record.sync_url %}"
             '<button type="button"'
             ' hx-post="{{ record.sync_url }}"'
             ' hx-vals=\'{"ip_address":"{{ record.ip_address|escapejs }}","hostname":"{{ record.hostname|default:""|escapejs }}"}\''
@@ -281,7 +281,7 @@ class BaseLeaseTable(GenericTable):
             ' class="badge text-bg-secondary border-0"'
             ' style="cursor:pointer">'
             '<i class="mdi mdi-sync"></i> Sync</button>'
-            '{% endif %}'
+            "{% endif %}"
         ),
     )
     actions = ActionsColumn(LEASE_ACTIONS)
@@ -360,11 +360,11 @@ RESERVATION_ACTIONS_V6 = """
 
 
 _LEASE_STATUS_LINK_V4 = (
-    '{% if record.has_active_lease is not None %}'
-    '{% if record.has_active_lease %}'
-    '<a href="{% url \'plugins:netbox_kea:server_leases4\' record.server_pk %}?q={{ record.ip_address }}&by=ip"'
+    "{% if record.has_active_lease is not None %}"
+    "{% if record.has_active_lease %}"
+    "<a href=\"{% url 'plugins:netbox_kea:server_leases4' record.server_pk %}?q={{ record.ip_address }}&by=ip\""
     ' class="badge text-bg-success text-decoration-none">Active Lease</a>'
-    '{% if record.sync_url and not record.netbox_ip_url %}'
+    "{% if record.sync_url and not record.netbox_ip_url %}"
     ' <button type="button"'
     ' hx-post="{{ record.sync_url }}"'
     ' hx-vals=\'{"ip_address":"{{ record.ip_address|escapejs }}","hostname":"{{ record.hostname|default:""|escapejs }}"}\''
@@ -373,19 +373,19 @@ _LEASE_STATUS_LINK_V4 = (
     ' class="badge text-bg-secondary border-0 ms-1"'
     ' style="cursor:pointer">'
     '<i class="mdi mdi-sync"></i> Sync</button>'
-    '{% endif %}'
-    '{% else %}'
+    "{% endif %}"
+    "{% else %}"
     '<span class="badge text-bg-secondary">No Lease</span>'
-    '{% endif %}'
-    '{% endif %}'
+    "{% endif %}"
+    "{% endif %}"
 )
 
 _LEASE_STATUS_LINK_V6 = (
-    '{% if record.has_active_lease is not None %}'
-    '{% if record.has_active_lease %}'
-    '<a href="{% url \'plugins:netbox_kea:server_leases6\' record.server_pk %}?q={{ record.ip_address }}&by=ip"'
+    "{% if record.has_active_lease is not None %}"
+    "{% if record.has_active_lease %}"
+    "<a href=\"{% url 'plugins:netbox_kea:server_leases6' record.server_pk %}?q={{ record.ip_address }}&by=ip\""
     ' class="badge text-bg-success text-decoration-none">Active Lease</a>'
-    '{% if record.sync_url and not record.netbox_ip_url %}'
+    "{% if record.sync_url and not record.netbox_ip_url %}"
     ' <button type="button"'
     ' hx-post="{{ record.sync_url }}"'
     ' hx-vals=\'{"ip_address":"{{ record.ip_address|escapejs }}","hostname":"{{ record.hostname|default:""|escapejs }}"}\''
@@ -394,11 +394,11 @@ _LEASE_STATUS_LINK_V6 = (
     ' class="badge text-bg-secondary border-0 ms-1"'
     ' style="cursor:pointer">'
     '<i class="mdi mdi-sync"></i> Sync</button>'
-    '{% endif %}'
-    '{% else %}'
+    "{% endif %}"
+    "{% else %}"
     '<span class="badge text-bg-secondary">No Lease</span>'
-    '{% endif %}'
-    '{% endif %}'
+    "{% endif %}"
+    "{% endif %}"
 )
 
 
@@ -418,10 +418,10 @@ class ReservationTable4(GenericTable):
         verbose_name="NetBox IP",
         orderable=False,
         template_code=(
-            '{% if record.netbox_ip_url %}'
+            "{% if record.netbox_ip_url %}"
             '<a href="{{ record.netbox_ip_url }}" class="badge text-bg-success text-decoration-none">'
             '<i class="mdi mdi-link-variant"></i> Synced</a>'
-            '{% elif record.sync_url %}'
+            "{% elif record.sync_url %}"
             '<button type="button"'
             ' hx-post="{{ record.sync_url }}"'
             ' hx-vals=\'{"ip_address":"{{ record.ip_address|escapejs }}","hostname":"{{ record.hostname|default:""|escapejs }}"}\''
@@ -430,7 +430,7 @@ class ReservationTable4(GenericTable):
             ' class="badge text-bg-secondary border-0"'
             ' style="cursor:pointer">'
             '<i class="mdi mdi-sync"></i> Sync</button>'
-            '{% endif %}'
+            "{% endif %}"
         ),
     )
     actions = ActionsColumn(RESERVATION_ACTIONS_V4)
@@ -457,10 +457,10 @@ class ReservationTable6(GenericTable):
         verbose_name="NetBox IP",
         orderable=False,
         template_code=(
-            '{% if record.netbox_ip_url %}'
+            "{% if record.netbox_ip_url %}"
             '<a href="{{ record.netbox_ip_url }}" class="badge text-bg-success text-decoration-none">'
             '<i class="mdi mdi-link-variant"></i> Synced</a>'
-            '{% elif record.sync_url %}'
+            "{% elif record.sync_url %}"
             '<button type="button"'
             ' hx-post="{{ record.sync_url }}"'
             ' hx-vals=\'{"ip_address":"{{ record.ip_address|escapejs }}","hostname":"{{ record.hostname|default:""|escapejs }}"}\''
@@ -469,7 +469,7 @@ class ReservationTable6(GenericTable):
             ' class="badge text-bg-secondary border-0"'
             ' style="cursor:pointer">'
             '<i class="mdi mdi-sync"></i> Sync</button>'
-            '{% endif %}'
+            "{% endif %}"
         ),
     )
     actions = ActionsColumn(RESERVATION_ACTIONS_V6)
@@ -478,14 +478,16 @@ class ReservationTable6(GenericTable):
         empty_text = "No reservations found."
         fields = ("subnet_id", "duid", "ip_addresses", "hostname", "lease_status", "netbox_ip", "actions")
         default_columns = ("subnet_id", "duid", "ip_addresses", "hostname", "lease_status", "netbox_ip", "actions")
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def _server_column() -> tables.TemplateColumn:
-    """Factory for a Server column linking to the server detail page."""
+    """Create a Server column linking to the server detail page."""
     return tables.TemplateColumn(
         template_code=(
-            '<a href="{% url \'plugins:netbox_kea:server\' record.server_pk %}">'
-            "{{ record.server_name }}</a>"
+            "<a href=\"{% url 'plugins:netbox_kea:server' record.server_pk %}\">{{ record.server_name }}</a>"
         ),
         verbose_name="Server",
         orderable=False,
@@ -509,10 +511,10 @@ class GlobalReservationTable4(GenericTable):
         verbose_name="NetBox IP",
         orderable=False,
         template_code=(
-            '{% if record.netbox_ip_url %}'
+            "{% if record.netbox_ip_url %}"
             '<a href="{{ record.netbox_ip_url }}" class="badge text-bg-success text-decoration-none">'
             '<i class="mdi mdi-link-variant"></i> Synced</a>'
-            '{% elif record.sync_url %}'
+            "{% elif record.sync_url %}"
             '<button type="button"'
             ' hx-post="{{ record.sync_url }}"'
             ' hx-vals=\'{"ip_address":"{{ record.ip_address|escapejs }}","hostname":"{{ record.hostname|default:""|escapejs }}"}\''
@@ -521,7 +523,7 @@ class GlobalReservationTable4(GenericTable):
             ' class="badge text-bg-secondary border-0"'
             ' style="cursor:pointer">'
             '<i class="mdi mdi-sync"></i> Sync</button>'
-            '{% endif %}'
+            "{% endif %}"
         ),
     )
     actions = ActionsColumn(RESERVATION_ACTIONS_V4)
@@ -529,7 +531,16 @@ class GlobalReservationTable4(GenericTable):
     class Meta(GenericTable.Meta):
         empty_text = "No reservations found."
         fields = ("server", "subnet_id", "hw_address", "ip_address", "hostname", "lease_status", "netbox_ip", "actions")
-        default_columns = ("server", "subnet_id", "hw_address", "ip_address", "hostname", "lease_status", "netbox_ip", "actions")
+        default_columns = (
+            "server",
+            "subnet_id",
+            "hw_address",
+            "ip_address",
+            "hostname",
+            "lease_status",
+            "netbox_ip",
+            "actions",
+        )
 
 
 class GlobalReservationTable6(GenericTable):
@@ -549,10 +560,10 @@ class GlobalReservationTable6(GenericTable):
         verbose_name="NetBox IP",
         orderable=False,
         template_code=(
-            '{% if record.netbox_ip_url %}'
+            "{% if record.netbox_ip_url %}"
             '<a href="{{ record.netbox_ip_url }}" class="badge text-bg-success text-decoration-none">'
             '<i class="mdi mdi-link-variant"></i> Synced</a>'
-            '{% elif record.sync_url %}'
+            "{% elif record.sync_url %}"
             '<button type="button"'
             ' hx-post="{{ record.sync_url }}"'
             ' hx-vals=\'{"ip_address":"{{ record.ip_address|escapejs }}","hostname":"{{ record.hostname|default:""|escapejs }}"}\''
@@ -561,7 +572,7 @@ class GlobalReservationTable6(GenericTable):
             ' class="badge text-bg-secondary border-0"'
             ' style="cursor:pointer">'
             '<i class="mdi mdi-sync"></i> Sync</button>'
-            '{% endif %}'
+            "{% endif %}"
         ),
     )
     actions = ActionsColumn(RESERVATION_ACTIONS_V6)
@@ -569,7 +580,16 @@ class GlobalReservationTable6(GenericTable):
     class Meta(GenericTable.Meta):
         empty_text = "No reservations found."
         fields = ("server", "subnet_id", "duid", "ip_addresses", "hostname", "lease_status", "netbox_ip", "actions")
-        default_columns = ("server", "subnet_id", "duid", "ip_addresses", "hostname", "lease_status", "netbox_ip", "actions")
+        default_columns = (
+            "server",
+            "subnet_id",
+            "duid",
+            "ip_addresses",
+            "hostname",
+            "lease_status",
+            "netbox_ip",
+            "actions",
+        )
 
 
 class GlobalLeaseTable4(BaseLeaseTable):

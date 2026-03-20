@@ -1,8 +1,11 @@
+import logging
 from collections.abc import Sequence
 from typing import Any, TypedDict
 
 import requests
 from requests.models import HTTPBasicAuth
+
+logger = logging.getLogger(__name__)
 
 
 class KeaResponse(TypedDict):
@@ -94,7 +97,6 @@ class KeaClient:
             check_response(resp_json, check)
         return resp_json
 
-
     def get_available_commands(self, service: str) -> set[str]:
         """Return the set of commands available on *service* (e.g. ``"dhcp4"``).
 
@@ -125,10 +127,10 @@ class KeaClient:
             limit: Maximum number of hosts to return per page.
 
         Returns:
-            A ``(hosts, next_from, next_source_index)`` tuple.  When the returned page
-            is smaller than *limit* (i.e. the source is exhausted) both ``next_from``
-            and ``next_source_index`` are 0.  Pass them as ``from_index`` /
-            ``source_index`` on the next call to continue paginating.
+            A ``(hosts, next_from, next_source_index)`` tuple.  Both ``next_from``
+            and ``next_source_index`` are always read from Kea's ``next`` cursor.
+            Pass them as ``from_index`` / ``source_index`` on the next call to
+            continue paginating; both will be 0 when the source is exhausted.
 
         Raises:
             KeaException: If Kea returns result code 1 or 2 (error / unknown command).
@@ -144,9 +146,7 @@ class KeaClient:
             return [], 0, 0
         args = resp[0].get("arguments", {})
         hosts: list[dict[str, Any]] = args.get("hosts", [])
-        if len(hosts) < limit:
-            return hosts, 0, 0
-        next_obj = args.get("next", {})
+        next_obj = args.get("next") or {}
         return hosts, next_obj.get("from", 0), next_obj.get("source-index", 0)
 
     def reservation_add(self, service: str, reservation: dict[str, Any]) -> None:
@@ -293,7 +293,7 @@ class KeaClient:
                 max_id = max((s.get("id", 0) for s in existing), default=0)
                 subnet_def["id"] = max_id + 1
             except KeaException:
-                pass  # command unsupported or failed; some Kea versions auto-assign IDs
+                logger.warning("subnet%s-list failed; falling back to no explicit ID", version)
         if pools:
             subnet_def["pools"] = [{"pool": p} for p in pools]
         option_data: list[dict[str, str]] = []

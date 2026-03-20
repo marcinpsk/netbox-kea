@@ -229,9 +229,7 @@ class TestReservationForm4(SimpleTestCase):
         self.assertTrue(form.is_valid(), form.errors)
 
     def test_valid_form_with_client_id_identifier(self):
-        form = self._form(
-            self._valid_data(identifier_type="client-id", identifier="01aabbccddeeff")
-        )
+        form = self._form(self._valid_data(identifier_type="client-id", identifier="01aabbccddeeff"))
         self.assertTrue(form.is_valid(), form.errors)
 
     def test_valid_form_hostname_optional(self):
@@ -340,9 +338,7 @@ class TestReservationForm6(SimpleTestCase):
         self.assertTrue(form.is_valid(), form.errors)
 
     def test_valid_form_with_hw_address_identifier(self):
-        form = self._form(
-            self._valid_data(identifier_type="hw-address", identifier="aa:bb:cc:dd:ee:ff")
-        )
+        form = self._form(self._valid_data(identifier_type="hw-address", identifier="aa:bb:cc:dd:ee:ff"))
         self.assertTrue(form.is_valid(), form.errors)
 
     def test_valid_form_multiple_ip_addresses(self):

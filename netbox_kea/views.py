@@ -1,5 +1,5 @@
-import logging
 import concurrent.futures
+import logging
 from abc import ABCMeta
 from typing import Any, Generic, TypeVar
 from urllib.parse import urlencode as _urlencode
@@ -28,7 +28,6 @@ from .utilities import (
     export_table,
     format_duration,
     format_leases,
-    parse_subnet_stats,
 )
 
 logger = logging.getLogger(__name__)
@@ -70,7 +69,7 @@ def _get_global_options(server: "Server") -> dict[str, dict[str, str]]:
             if opts:
                 # Convert snake_case keys to "Title Case" for display
                 result[label] = {k.replace("_", " ").title(): v for k, v in opts.items()}
-        except Exception:
+        except Exception:  # noqa: PERF203
             pass  # graceful degradation — don't crash the status page
     return result
 
@@ -220,7 +219,7 @@ class ServerStatusView(generic.ObjectView):
         result.update(self._get_dhcp_status(server))
         return result
 
-    def get_extra_context(self, request: HttpResponse, instance: Server) -> dict[str, Any]:
+    def get_extra_context(self, request: HttpRequest, instance: Server) -> dict[str, Any]:
         """Fetch live status and global options from Kea and expose them to the template."""
         return {
             "statuses": self._get_statuses(instance),
@@ -530,8 +529,9 @@ class BaseServerLeasesDeleteView(GetReturnURLMixin, generic.ObjectView, metaclas
         for ip in lease_ips:
             try:
                 self.delete_lease(client, ip)
-            except Exception as e:  # noqa: PERF203
-                messages.error(request, f"Error deleting lease {ip}: {repr(e)}")
+            except Exception:  # noqa: PERF203
+                logger.exception("Error deleting lease %s", ip)
+                messages.error(request, f"Error deleting lease {ip}: see server logs for details.")
                 return redirect(self.get_return_url(request, obj=instance))
 
         messages.success(request, f"Deleted {len(lease_ips)} DHCPv{self.dhcp_version} lease(s).")
@@ -684,9 +684,7 @@ class ServerDHCP4SubnetsView(BaseServerDHCPSubnetsView):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def _enrich_reservations_with_lease_status(
-    client: "KeaClient", reservations: list[dict], version: int
-) -> None:
+def _enrich_reservations_with_lease_status(client: "KeaClient", reservations: list[dict], version: int) -> None:
     """Enrich each reservation dict with ``has_active_lease`` (bool | None).
 
     Queries ``lease4-get-all`` / ``lease6-get-all`` per unique subnet to find
@@ -699,6 +697,7 @@ def _enrich_reservations_with_lease_status(
         client: Connected KeaClient for the server.
         reservations: List of reservation dicts (mutated in-place).
         version: DHCP version (4 or 6).
+
     """
     if not reservations:
         return
@@ -824,8 +823,7 @@ class ServerReservation4AddView(generic.ObjectView):
         """Render add form, optionally pre-filled from query parameters."""
         server = self.get_object(pk=pk)
         initial = {
-            k: request.GET.get(k, "")
-            for k in ("subnet_id", "ip_address", "identifier_type", "identifier", "hostname")
+            k: request.GET.get(k, "") for k in ("subnet_id", "ip_address", "identifier_type", "identifier", "hostname")
         }
         initial = {k: v for k, v in initial.items() if v}
         return render(
@@ -859,8 +857,9 @@ class ServerReservation4AddView(generic.ObjectView):
                 client.reservation_add("dhcp4", reservation)
                 messages.success(request, f"Reservation for {cd['ip_address']} created.")
                 return redirect(return_url)
-            except Exception as exc:
-                messages.error(request, f"Failed to create reservation: {exc}")
+            except Exception:
+                logger.exception("Failed to create DHCPv4 reservation for %s", cd.get("ip_address"))
+                messages.error(request, "Failed to create reservation: see server logs for details.")
         return render(
             request,
             self.template_name,
@@ -917,10 +916,11 @@ class ServerReservation6AddView(generic.ObjectView):
             client = server.get_client(version=6)
             try:
                 client.reservation_add("dhcp6", reservation)
-                messages.success(request, f"DHCPv6 reservation created.")
+                messages.success(request, "DHCPv6 reservation created.")
                 return redirect(return_url)
-            except Exception as exc:
-                messages.error(request, f"Failed to create reservation: {exc}")
+            except Exception:
+                logger.exception("Failed to create DHCPv6 reservation for %s", cd.get("ip_address"))
+                messages.error(request, "Failed to create reservation: see server logs for details.")
         return render(
             request,
             self.template_name,
@@ -950,6 +950,7 @@ class ServerReservation4EditView(generic.ObjectView):
         reservation = self._get_reservation(server, subnet_id, ip_address)
         if reservation is None:
             from django.http import Http404
+
             raise Http404(f"Reservation {ip_address} not found in subnet {subnet_id}")
         # Map Kea keys to form field names
         identifier_type, identifier = _extract_identifier(reservation, 4)
@@ -991,8 +992,9 @@ class ServerReservation4EditView(generic.ObjectView):
                 client.reservation_update("dhcp4", reservation)
                 messages.success(request, f"Reservation for {cd['ip_address']} updated.")
                 return redirect(return_url)
-            except Exception as exc:
-                messages.error(request, f"Failed to update reservation: {exc}")
+            except Exception:
+                logger.exception("Failed to update DHCPv4 reservation for %s", cd.get("ip_address"))
+                messages.error(request, "Failed to update reservation: see server logs for details.")
         return render(
             request,
             self.template_name,
@@ -1022,6 +1024,7 @@ class ServerReservation6EditView(generic.ObjectView):
         reservation = self._get_reservation(server, subnet_id, ip_address)
         if reservation is None:
             from django.http import Http404
+
             raise Http404(f"Reservation {ip_address} not found in subnet {subnet_id}")
         identifier_type, identifier = _extract_identifier(reservation, 6)
         ip_list = reservation.get("ip-addresses", [ip_address])
@@ -1063,8 +1066,9 @@ class ServerReservation6EditView(generic.ObjectView):
                 client.reservation_update("dhcp6", reservation)
                 messages.success(request, "DHCPv6 reservation updated.")
                 return redirect(return_url)
-            except Exception as exc:
-                messages.error(request, f"Failed to update reservation: {exc}")
+            except Exception:
+                logger.exception("Failed to update DHCPv6 reservation for %s", cd.get("ip_address"))
+                messages.error(request, "Failed to update reservation: see server logs for details.")
         return render(
             request,
             self.template_name,
@@ -1107,8 +1111,9 @@ class ServerReservation4DeleteView(generic.ObjectView):
         try:
             client.reservation_del("dhcp4", subnet_id=subnet_id, ip_address=ip_address)
             messages.success(request, f"Reservation for {ip_address} deleted.")
-        except Exception as exc:
-            messages.error(request, f"Failed to delete reservation: {exc}")
+        except Exception:
+            logger.exception("Failed to delete DHCPv4 reservation for %s", ip_address)
+            messages.error(request, "Failed to delete reservation: see server logs for details.")
         return redirect(return_url)
 
 
@@ -1141,8 +1146,9 @@ class ServerReservation6DeleteView(generic.ObjectView):
         try:
             client.reservation_del("dhcp6", subnet_id=subnet_id, ip_address=ip_address)
             messages.success(request, f"DHCPv6 reservation for {ip_address} deleted.")
-        except Exception as exc:
-            messages.error(request, f"Failed to delete reservation: {exc}")
+        except Exception:
+            logger.exception("Failed to delete DHCPv6 reservation for %s", ip_address)
+            messages.error(request, "Failed to delete reservation: see server logs for details.")
         return redirect(return_url)
 
 
@@ -1159,13 +1165,9 @@ class _BasePoolAddView(generic.ObjectView):
     dhcp_version: int  # set on subclasses
 
     def _subnets_url(self, pk: int) -> str:
-        return reverse(
-            f"plugins:netbox_kea:server_subnets{self.dhcp_version}", args=[pk]
-        )
+        return reverse(f"plugins:netbox_kea:server_subnets{self.dhcp_version}", args=[pk])
 
-    def get(
-        self, request: HttpRequest, pk: int, subnet_id: int
-    ) -> HttpResponse:
+    def get(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
         server = self.get_object(pk=pk)
         return render(
             request,
@@ -1179,9 +1181,7 @@ class _BasePoolAddView(generic.ObjectView):
             },
         )
 
-    def post(
-        self, request: HttpRequest, pk: int, subnet_id: int
-    ) -> HttpResponse:
+    def post(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
         server = self.get_object(pk=pk)
         return_url = self._subnets_url(pk)
         form = forms.PoolAddForm(request.POST)
@@ -1200,12 +1200,11 @@ class _BasePoolAddView(generic.ObjectView):
         pool = form.cleaned_data["pool"]
         client = server.get_client(version=self.dhcp_version)
         try:
-            client.pool_add(
-                version=self.dhcp_version, subnet_id=subnet_id, pool=pool
-            )
+            client.pool_add(version=self.dhcp_version, subnet_id=subnet_id, pool=pool)
             messages.success(request, f"Pool {pool} added to subnet {subnet_id}.")
-        except Exception as exc:
-            messages.error(request, f"Failed to add pool: {exc}")
+        except Exception:
+            logger.exception("Failed to add pool to subnet %s", subnet_id)
+            messages.error(request, "Failed to add pool: see server logs for details.")
         return redirect(return_url)
 
 
@@ -1229,13 +1228,9 @@ class _BasePoolDeleteView(generic.ObjectView):
     dhcp_version: int
 
     def _subnets_url(self, pk: int) -> str:
-        return reverse(
-            f"plugins:netbox_kea:server_subnets{self.dhcp_version}", args=[pk]
-        )
+        return reverse(f"plugins:netbox_kea:server_subnets{self.dhcp_version}", args=[pk])
 
-    def get(
-        self, request: HttpRequest, pk: int, subnet_id: int, pool: str
-    ) -> HttpResponse:
+    def get(self, request: HttpRequest, pk: int, subnet_id: int, pool: str) -> HttpResponse:
         server = self.get_object(pk=pk)
         return render(
             request,
@@ -1249,19 +1244,16 @@ class _BasePoolDeleteView(generic.ObjectView):
             },
         )
 
-    def post(
-        self, request: HttpRequest, pk: int, subnet_id: int, pool: str
-    ) -> HttpResponse:
+    def post(self, request: HttpRequest, pk: int, subnet_id: int, pool: str) -> HttpResponse:
         server = self.get_object(pk=pk)
         return_url = self._subnets_url(pk)
         client = server.get_client(version=self.dhcp_version)
         try:
-            client.pool_del(
-                version=self.dhcp_version, subnet_id=subnet_id, pool=pool
-            )
+            client.pool_del(version=self.dhcp_version, subnet_id=subnet_id, pool=pool)
             messages.success(request, f"Pool {pool} removed from subnet {subnet_id}.")
-        except Exception as exc:
-            messages.error(request, f"Failed to remove pool: {exc}")
+        except Exception:
+            logger.exception("Failed to remove pool from subnet %s", subnet_id)
+            messages.error(request, "Failed to remove pool: see server logs for details.")
         return redirect(return_url)
 
 
@@ -1290,9 +1282,7 @@ class _BaseSubnetAddView(generic.ObjectView):
     dhcp_version: int
 
     def _subnets_url(self, pk: int) -> str:
-        return reverse(
-            f"plugins:netbox_kea:server_subnets{self.dhcp_version}", args=[pk]
-        )
+        return reverse(f"plugins:netbox_kea:server_subnets{self.dhcp_version}", args=[pk])
 
     def get(self, request: HttpRequest, pk: int) -> HttpResponse:
         server = self.get_object(pk=pk)
@@ -1335,8 +1325,9 @@ class _BaseSubnetAddView(generic.ObjectView):
                 ntp_servers=cd["ntp_servers"],
             )
             messages.success(request, f"Subnet {cd['subnet']} added.")
-        except Exception as exc:
-            messages.error(request, f"Failed to add subnet: {exc}")
+        except Exception:
+            logger.exception("Failed to add subnet %s", cd.get("subnet"))
+            messages.error(request, "Failed to add subnet: see server logs for details.")
             return render(
                 request,
                 self.template_name,
@@ -1370,9 +1361,7 @@ class _BaseSubnetDeleteView(generic.ObjectView):
     dhcp_version: int
 
     def _subnets_url(self, pk: int) -> str:
-        return reverse(
-            f"plugins:netbox_kea:server_subnets{self.dhcp_version}", args=[pk]
-        )
+        return reverse(f"plugins:netbox_kea:server_subnets{self.dhcp_version}", args=[pk])
 
     def get(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
         server = self.get_object(pk=pk)
@@ -1385,9 +1374,7 @@ class _BaseSubnetDeleteView(generic.ObjectView):
                 arguments={"id": subnet_id},
             )
             key = f"subnet{self.dhcp_version}"
-            subnet_cidr = (
-                resp[0].get("arguments", {}).get(key, [{}])[0].get("subnet", "")
-            )
+            subnet_cidr = resp[0].get("arguments", {}).get(key, [{}])[0].get("subnet", "")
         except Exception:
             pass
         return render(
@@ -1409,8 +1396,9 @@ class _BaseSubnetDeleteView(generic.ObjectView):
         try:
             client.subnet_del(version=self.dhcp_version, subnet_id=subnet_id)
             messages.success(request, f"Subnet {subnet_id} deleted.")
-        except Exception as exc:
-            messages.error(request, f"Failed to delete subnet: {exc}")
+        except Exception:
+            logger.exception("Failed to delete subnet %s", subnet_id)
+            messages.error(request, "Failed to delete subnet: see server logs for details.")
         return redirect(return_url)
 
 
@@ -1450,9 +1438,8 @@ def _extract_identifier(reservation: dict[str, Any], version: int) -> tuple[str,
 # Phase 6: Global multi-server views
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _fetch_leases_from_server(
-    server: Server, q: Any, by: str, version: int
-) -> list[dict[str, Any]]:
+
+def _fetch_leases_from_server(server: Server, q: Any, by: str, version: int) -> list[dict[str, Any]]:
     """Fetch leases matching *q*/*by* from a single server and tag with server info.
 
     Mirrors the logic in ``BaseServerLeasesView.get_leases`` but is a plain
@@ -1509,9 +1496,7 @@ def _fetch_leases_from_server(
     return leases
 
 
-def _enrich_leases_with_badges(
-    leases: list[dict[str, Any]], server: "Server", version: int
-) -> None:
+def _enrich_leases_with_badges(leases: list[dict[str, Any]], server: "Server", version: int) -> None:
     """In-place: add reservation and NetBox IPAM badge fields to lease dicts.
 
     Adds:
@@ -1553,21 +1538,21 @@ def _enrich_leases_with_badges(
         elif host_cmds_available:
             lease["reservation_url"] = None
             base_add = reverse(add_url_name, args=[server.pk])
-            params = {k: v for k, v in {
-                "subnet_id": lease.get("subnet_id", ""),
-                "ip_address": ip,
-                "identifier_type": "hw-address",
-                "identifier": lease.get("hw_address", ""),
-                "hostname": lease.get("hostname", ""),
-            }.items() if v}
-            lease["create_reservation_url"] = (
-                f"{base_add}?{_urlencode(params)}" if params else base_add
-            )
+            params = {
+                k: v
+                for k, v in {
+                    "subnet_id": lease.get("subnet_id", ""),
+                    "ip_address": ip,
+                    "identifier_type": "hw-address",
+                    "identifier": lease.get("hw_address", ""),
+                    "hostname": lease.get("hostname", ""),
+                }.items()
+                if v
+            }
+            lease["create_reservation_url"] = f"{base_add}?{_urlencode(params)}" if params else base_add
 
     sync_url = reverse(f"plugins:netbox_kea:server_lease{version}_sync", args=[server.pk])
-    nb_ips = bulk_fetch_netbox_ips(
-        [l.get("ip_address", "") for l in leases if l.get("ip_address")]
-    )
+    nb_ips = bulk_fetch_netbox_ips([lease.get("ip_address", "") for lease in leases if lease.get("ip_address")])
     for lease in leases:
         ip = lease.get("ip_address", "")
         nb_ip = nb_ips.get(ip)
@@ -1577,9 +1562,7 @@ def _enrich_leases_with_badges(
             lease["sync_url"] = sync_url
 
 
-def _enrich_reservations_with_badges(
-    reservations: list[dict[str, Any]], server: "Server", version: int
-) -> None:
+def _enrich_reservations_with_badges(reservations: list[dict[str, Any]], server: "Server", version: int) -> None:
     """In-place: add active-lease status and NetBox IPAM badge fields to reservation dicts.
 
     Adds:
@@ -1592,12 +1575,8 @@ def _enrich_reservations_with_badges(
     client = server.get_client(version=version)
     _enrich_reservations_with_lease_status(client, reservations, version=version)
 
-    sync_url = reverse(
-        f"plugins:netbox_kea:server_reservation{version}_sync", args=[server.pk]
-    )
-    nb_ips = bulk_fetch_netbox_ips(
-        [r.get("ip_address", "") for r in reservations if r.get("ip_address")]
-    )
+    sync_url = reverse(f"plugins:netbox_kea:server_reservation{version}_sync", args=[server.pk])
+    nb_ips = bulk_fetch_netbox_ips([r.get("ip_address", "") for r in reservations if r.get("ip_address")])
     for r in reservations:
         nb_ip = nb_ips.get(r.get("ip_address", ""))
         if nb_ip:
@@ -1718,20 +1697,15 @@ class _CombinedSubnetsView(_CombinedViewMixin):
         errors: list[tuple[str, str]] = []
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-            future_to_server = {
-                executor.submit(_fetch_subnets_from_server, s, self.dhcp_version): s
-                for s in servers
-            }
+            future_to_server = {executor.submit(_fetch_subnets_from_server, s, self.dhcp_version): s for s in servers}
             for future, server in future_to_server.items():
                 try:
                     all_subnets.extend(future.result())
-                except Exception:  # noqa: BLE001
+                except Exception:  # noqa: BLE001, PERF203
                     logger.exception("Failed to query server %s", server.name)
                     errors.append((server.name, "Failed to query server"))
 
-        table_cls = (
-            tables.GlobalSubnetTable4 if self.dhcp_version == 4 else tables.GlobalSubnetTable6
-        )
+        table_cls = tables.GlobalSubnetTable4 if self.dhcp_version == 4 else tables.GlobalSubnetTable6
         table = table_cls(all_subnets)
 
         ctx.update(
@@ -1776,7 +1750,9 @@ def _fetch_reservations_from_server(server: "Server", version: int) -> list[dict
         )
         for r in page:
             r.setdefault("subnet_id", r.get("subnet-id", 0))
-            r.setdefault("ip_address", r.get("ip-address", r.get("ip-addresses", [""])[0] if r.get("ip-addresses") else ""))
+            r.setdefault(
+                "ip_address", r.get("ip-address", r.get("ip-addresses", [""])[0] if r.get("ip-addresses") else "")
+            )
             r["server_name"] = server.name
             r["server_pk"] = server.pk
         reservations.extend(page)
@@ -1803,13 +1779,12 @@ class _CombinedReservationsView(_CombinedViewMixin):
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
             future_to_server = {
-                executor.submit(_fetch_reservations_from_server, s, self.dhcp_version): s
-                for s in servers
+                executor.submit(_fetch_reservations_from_server, s, self.dhcp_version): s for s in servers
             }
             for future, server in future_to_server.items():
                 try:
                     all_records.extend(future.result())
-                except Exception:  # noqa: BLE001
+                except Exception:  # noqa: BLE001, PERF203
                     logger.exception("Failed to query server %s", server.name)
                     errors.append((server.name, "Failed to query server"))
 
@@ -1820,16 +1795,8 @@ class _CombinedReservationsView(_CombinedViewMixin):
             if server_records:
                 _enrich_reservations_with_badges(server_records, server, self.dhcp_version)
 
-        table_cls = (
-            tables.GlobalReservationTable4
-            if self.dhcp_version == 4
-            else tables.GlobalReservationTable6
-        )
-        filter_form_cls = (
-            forms.GlobalServer4FilterForm
-            if self.dhcp_version == 4
-            else forms.GlobalServer6FilterForm
-        )
+        table_cls = tables.GlobalReservationTable4 if self.dhcp_version == 4 else tables.GlobalReservationTable6
+        filter_form_cls = forms.GlobalServer4FilterForm if self.dhcp_version == 4 else forms.GlobalServer6FilterForm
         table = table_cls(all_records)
         filter_form = filter_form_cls(request.GET or None)
 
@@ -1867,12 +1834,8 @@ class _CombinedLeasesView(_CombinedViewMixin):
 
     def get(self, request: HttpRequest) -> HttpResponse:
         """Render the search form or, when a query is supplied, merge results."""
-        search_form_cls = (
-            forms.Leases4SearchForm if self.dhcp_version == 4 else forms.Leases6SearchForm
-        )
-        table_cls = (
-            tables.GlobalLeaseTable4 if self.dhcp_version == 4 else tables.GlobalLeaseTable6
-        )
+        search_form_cls = forms.Leases4SearchForm if self.dhcp_version == 4 else forms.Leases6SearchForm
+        table_cls = tables.GlobalLeaseTable4 if self.dhcp_version == 4 else tables.GlobalLeaseTable6
 
         ctx = self._combined_context(request)
         search_form = search_form_cls(request.GET) if "q" in request.GET else search_form_cls()
@@ -1904,20 +1867,19 @@ class _CombinedLeasesView(_CombinedViewMixin):
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
             future_to_server = {
-                executor.submit(_fetch_leases_from_server, s, q, by, self.dhcp_version): s
-                for s in servers
+                executor.submit(_fetch_leases_from_server, s, q, by, self.dhcp_version): s for s in servers
             }
             for future, server in future_to_server.items():
                 try:
                     all_leases.extend(future.result())
-                except Exception:  # noqa: BLE001
+                except Exception:  # noqa: BLE001, PERF203
                     logger.exception("Failed to query server %s", server.name)
                     errors.append((server.name, "Failed to query server"))
 
         # Enrich in the main thread so Django ORM queries see the test transaction.
         server_map = {s.pk: s for s in servers}
         for server_pk, server in server_map.items():
-            server_leases = [l for l in all_leases if l.get("server_pk") == server_pk]
+            server_leases = [entry for entry in all_leases if entry.get("server_pk") == server_pk]
             if server_leases:
                 _enrich_leases_with_badges(server_leases, server, self.dhcp_version)
 
@@ -1946,9 +1908,9 @@ class CombinedLeases6View(_CombinedLeasesView):
 
 
 class _BaseSyncView(ConditionalLoginRequiredMixin, View):
-    """POST-only HTMX endpoint that syncs a Kea lease/reservation to a
-    NetBox IPAddress and returns a small HTML badge fragment.
+    """POST-only HTMX endpoint that syncs a Kea lease/reservation to a NetBox IPAddress.
 
+    Returns a small HTML badge fragment.
     Subclasses set ``_status`` to ``"active"`` (leases) or ``"reserved"``
     (reservations) and call the appropriate sync helper.
     """
@@ -1969,7 +1931,7 @@ class _BaseSyncView(ConditionalLoginRequiredMixin, View):
             nb_ip, _created = self._sync({"ip-address": ip_str, "hostname": hostname})
         except Exception:  # noqa: BLE001
             logger.exception("Sync error for ip=%s", ip_str)
-            return HttpResponse("Sync error: an internal error occurred", status=500)
+            return HttpResponse("Sync error: see server logs for details.", status=500)
 
         return render(
             request,
@@ -2040,21 +2002,24 @@ class _BaseBulkReservationSyncView(ConditionalLoginRequiredMixin, View):
             if not res.get("ip-address"):
                 continue
             try:
-                nb_ip = sync_reservation_to_netbox(res)
-                if nb_ip:
+                nb_ip, was_created = sync_reservation_to_netbox(res)
+                if was_created:
                     created += 1
+                elif nb_ip:
+                    updated += 1
             except Exception:
+                logger.exception("Failed to sync reservation %s", res.get("ip-address"))
                 errors += 1
 
         if errors:
             messages.warning(
                 request,
-                f"Bulk sync: {created} IPs synced, {errors} errors.",
+                f"Bulk sync: {created} created, {updated} updated, {errors} errors.",
             )
         else:
             messages.success(
                 request,
-                f"Bulk sync complete: {created} reservation(s) synced to NetBox IPAM.",
+                f"Bulk sync complete: {created} created, {updated} updated.",
             )
         redirect_url = reverse(
             f"plugins:netbox_kea:server_reservations{self.dhcp_version}",
@@ -2087,7 +2052,7 @@ class IPAddressKeaReservationsView(ConditionalLoginRequiredMixin, View):
     Rendered as a standalone page and also embedded via the IPAddress template extension.
     """
 
-    def get(self, request: HttpRequest, pk: int) -> HttpResponse:
+    def get(self, request: HttpRequest, pk: int) -> HttpResponse:  # noqa: D102
         from django.shortcuts import get_object_or_404
         from ipam.models import IPAddress as NbIP
 
@@ -2106,14 +2071,18 @@ class IPAddressKeaReservationsView(ConditionalLoginRequiredMixin, View):
         server_links = []
         for server in servers:
             base_url = reverse(add_url_name, args=[server.pk])
-            params = _urlencode({
-                "ip_address": ip_str,
-                "hostname": nb_ip.dns_name or "",
-            })
-            server_links.append({
-                "server": server,
-                "url": f"{base_url}?{params}",
-            })
+            params = _urlencode(
+                {
+                    "ip_address": ip_str,
+                    "hostname": nb_ip.dns_name or "",
+                }
+            )
+            server_links.append(
+                {
+                    "server": server,
+                    "url": f"{base_url}?{params}",
+                }
+            )
 
         return render(
             request,

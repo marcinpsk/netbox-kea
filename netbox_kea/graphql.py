@@ -18,6 +18,9 @@ from . import models
         "ca_file_path",
         "dhcp6",
         "dhcp4",
+        "dhcp4_url",
+        "dhcp6_url",
+        "has_control_agent",
     ),
 )
 class ServerType(NetBoxObjectType):

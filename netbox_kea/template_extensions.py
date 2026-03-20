@@ -21,9 +21,10 @@ class IPAddressKeaPanel(PluginTemplateExtension):
     with the IP's address family with pre-filled 'Create Reservation' links.
     """
 
-    models = ["ipam.ipaddress"]
+    model = "ipam.ipaddress"  # NetBox <= 4.0
+    models = ["ipam.ipaddress"]  # NetBox >= 4.1
 
-    def right_page(self):
+    def right_page(self):  # noqa: D102
         nb_ip = self.context.get("object")
         if nb_ip is None:
             return ""
@@ -42,14 +43,18 @@ class IPAddressKeaPanel(PluginTemplateExtension):
         server_links = []
         for server in servers:
             base_url = reverse(add_url_name, args=[server.pk])
-            params = urlencode({
-                "ip_address": ip_str,
-                "hostname": nb_ip.dns_name or "",
-            })
-            server_links.append({
-                "server": server,
-                "url": f"{base_url}?{params}",
-            })
+            params = urlencode(
+                {
+                    "ip_address": ip_str,
+                    "hostname": nb_ip.dns_name or "",
+                }
+            )
+            server_links.append(
+                {
+                    "server": server,
+                    "url": f"{base_url}?{params}",
+                }
+            )
 
         return self.render(
             "netbox_kea/inc/ip_kea_panel.html",

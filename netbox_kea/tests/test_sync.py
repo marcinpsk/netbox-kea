@@ -134,9 +134,7 @@ class TestSyncLeaseToNetbox(TestCase):
 
         sync_lease_to_netbox(self._LEASE)
         sync_lease_to_netbox(self._LEASE)
-        self.assertEqual(
-            NbIP.objects.filter(address__startswith="192.168.50.100/").count(), 1
-        )
+        self.assertEqual(NbIP.objects.filter(address__startswith="192.168.50.100/").count(), 1)
 
     def test_updates_dns_name_on_second_call(self):
         """A second sync with a new hostname must update dns_name."""
@@ -233,9 +231,7 @@ class TestSyncReservationToNetbox(TestCase):
 
         sync_reservation_to_netbox(self._RESERVATION)
         sync_reservation_to_netbox(self._RESERVATION)
-        self.assertEqual(
-            NbIP.objects.filter(address__startswith="192.168.51.200/").count(), 1
-        )
+        self.assertEqual(NbIP.objects.filter(address__startswith="192.168.51.200/").count(), 1)
 
     def test_returns_created_false_on_second_call(self):
         from netbox_kea.sync import sync_reservation_to_netbox

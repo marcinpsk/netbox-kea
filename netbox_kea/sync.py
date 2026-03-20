@@ -41,23 +41,21 @@ def find_prefix_length(ip_str: str) -> int:
     to a Python-side scan of all prefixes for SQLite (test environments).
     Returns ``32`` for IPv4 or ``128`` for IPv6 when no prefix is found.
     """
+    from django.core.exceptions import FieldError
     from django.db.utils import OperationalError, ProgrammingError
     from ipam.models import Prefix
-    from netaddr import IPAddress as NetAddr, IPNetwork
+    from netaddr import IPAddress as NetAddr
+    from netaddr import IPNetwork
 
     default = 32 if ":" not in ip_str else 128
     ip = NetAddr(ip_str)
 
     # Try PostgreSQL-native lookup first (O(log n) via GiST index)
     try:
-        prefix = (
-            Prefix.objects.filter(prefix__net_contains=ip_str)
-            .order_by("-prefix__prefixlen")
-            .first()
-        )
+        prefix = Prefix.objects.filter(prefix__net_contains=ip_str).order_by("-prefix__prefixlen").first()
         if prefix is not None:
             return int(str(prefix.prefix).split("/")[1])
-    except (ProgrammingError, OperationalError):
+    except (ProgrammingError, OperationalError, FieldError):
         pass
 
     # SQLite fallback: load all prefixes and filter in Python
@@ -67,7 +65,7 @@ def find_prefix_length(ip_str: str) -> int:
             net = IPNetwork(str(prefix.prefix))
             if ip in net and net.prefixlen > best_len:
                 best_len = net.prefixlen
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001, PERF203
             continue
 
     return best_len if best_len >= 0 else default
@@ -90,7 +88,6 @@ def bulk_fetch_netbox_ips(ip_list: list[str]) -> dict[str, NbIPAddress]:
     are present in the NetBox database.  One database query is issued.
     """
     from django.db.models import Q
-
     from ipam.models import IPAddress as NbIP
 
     if not ip_list:
@@ -191,9 +188,7 @@ def sync_reservation_to_netbox(reservation: dict) -> tuple[NbIPAddress, bool]:
     """
     from ipam.models import IPAddress as NbIP
 
-    ip_str: str = reservation.get("ip-address") or (
-        (reservation.get("ip-addresses") or [""])[0]
-    )
+    ip_str: str = reservation.get("ip-address") or ((reservation.get("ip-addresses") or [""])[0])
     if not ip_str:
         raise ValueError("Reservation has no ip-address or ip-addresses field.")
 

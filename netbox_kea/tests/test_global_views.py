@@ -219,9 +219,7 @@ class TestCombinedReservations4View(_CombinedViewBase):
         url = reverse("plugins:netbox_kea:combined_reservations4")
         self.client.get(url)
         # v4_server + dual_server have dhcp4=True → at least 2 calls
-        self.assertGreaterEqual(
-            MockKeaClient.return_value.reservation_get_page.call_count, 2
-        )
+        self.assertGreaterEqual(MockKeaClient.return_value.reservation_get_page.call_count, 2)
 
     @patch("netbox_kea.models.KeaClient")
     def test_server_filter_limits_queried_servers(self, MockKeaClient):
@@ -298,16 +296,12 @@ class TestCombinedReservations6View(_CombinedViewBase):
         )
         url = reverse("plugins:netbox_kea:combined_reservations6")
         self.client.get(url)
-        self.assertGreaterEqual(
-            MockKeaClient.return_value.reservation_get_page.call_count, 2
-        )
+        self.assertGreaterEqual(MockKeaClient.return_value.reservation_get_page.call_count, 2)
 
     @patch("netbox_kea.models.KeaClient")
     def test_server_filter_limits_queried_servers(self, MockKeaClient):
         MockKeaClient.return_value.reservation_get_page.return_value = ([], 0, 0)
-        url = (
-            reverse("plugins:netbox_kea:combined_reservations6") + f"?server={self.v6_server.pk}"
-        )
+        url = reverse("plugins:netbox_kea:combined_reservations6") + f"?server={self.v6_server.pk}"
         self.client.get(url)
         self.assertEqual(MockKeaClient.return_value.reservation_get_page.call_count, 1)
 
@@ -360,9 +354,7 @@ class TestCombinedLeases4View(_CombinedViewBase):
 
     @patch("netbox_kea.models.KeaClient")
     def test_search_with_server_filter_limits_calls(self, MockKeaClient):
-        MockKeaClient.return_value.command.return_value = [
-            {"result": 0, "arguments": {"leases": []}}
-        ]
+        MockKeaClient.return_value.command.return_value = [{"result": 0, "arguments": {"leases": []}}]
         from netbox_kea import constants
 
         url = (
@@ -440,10 +432,7 @@ class TestCombinedLeases6View(_CombinedViewBase):
         ]
         from netbox_kea import constants
 
-        url = (
-            reverse("plugins:netbox_kea:combined_leases6")
-            + f"?q=lease-host-v6&by={constants.BY_HOSTNAME}"
-        )
+        url = reverse("plugins:netbox_kea:combined_leases6") + f"?q=lease-host-v6&by={constants.BY_HOSTNAME}"
         response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         self.assertGreaterEqual(MockKeaClient.return_value.command.call_count, 2)
@@ -453,10 +442,7 @@ class TestCombinedLeases6View(_CombinedViewBase):
         MockKeaClient.return_value.command.side_effect = Exception("refused")
         from netbox_kea import constants
 
-        url = (
-            reverse("plugins:netbox_kea:combined_leases6")
-            + f"?q=test&by={constants.BY_HOSTNAME}"
-        )
+        url = reverse("plugins:netbox_kea:combined_leases6") + f"?q=test&by={constants.BY_HOSTNAME}"
         response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
 
@@ -604,19 +590,17 @@ class TestCombinedLeases4Enrichment(_CombinedViewBase):
     """Combined DHCPv4 lease view must include the same badge enrichment as per-server view."""
 
     def _lease_url(self, q="10.20.0.5", by="ip"):
-        return (
-            reverse("plugins:netbox_kea:combined_leases4")
-            + f"?q={q}&by={by}&server={self.v4_server.pk}"
-        )
+        return reverse("plugins:netbox_kea:combined_leases4") + f"?q={q}&by={by}&server={self.v4_server.pk}"
 
     def _mock_command(self, mock_client, leases, reservations=()):
         """Configure client mock: lease command + reservation_get_page."""
+
         def command_side_effect(cmd, **kwargs):
             if "lease" in cmd:
                 args = kwargs.get("arguments", {})
                 ip = args.get("ip-address")
                 if ip:
-                    matching = [l for l in leases if l["ip-address"] == ip]
+                    matching = [entry for entry in leases if entry["ip-address"] == ip]
                     if not matching:
                         return [{"result": 3, "arguments": None}]
                     return [{"result": 0, "arguments": matching[0]}]
@@ -654,6 +638,7 @@ class TestCombinedLeases4Enrichment(_CombinedViewBase):
     def test_netbox_ip_synced_link_when_ip_in_netbox(self, MockKeaClient):
         """When the lease IP exists in NetBox IPAM, a 'Synced' link must appear."""
         from ipam.models import IPAddress
+
         IPAddress.objects.create(address="10.20.0.5/32")
         self._mock_command(
             MockKeaClient.return_value,
@@ -692,17 +677,12 @@ class TestCombinedReservations4Enrichment(_CombinedViewBase):
     """Combined DHCPv4 reservation view must include the same badge enrichment as per-server."""
 
     def _url(self):
-        return (
-            reverse("plugins:netbox_kea:combined_reservations4")
-            + f"?server={self.v4_server.pk}"
-        )
+        return reverse("plugins:netbox_kea:combined_reservations4") + f"?server={self.v4_server.pk}"
 
     @patch("netbox_kea.models.KeaClient")
     def test_active_lease_badge_when_lease_exists(self, MockKeaClient):
         """A reservation with an active lease must show 'Active Lease' badge."""
-        MockKeaClient.return_value.reservation_get_page.return_value = (
-            [dict(_MOCK_RESERVATION_ENRICHED)], 0, 0
-        )
+        MockKeaClient.return_value.reservation_get_page.return_value = ([dict(_MOCK_RESERVATION_ENRICHED)], 0, 0)
         MockKeaClient.return_value.command.return_value = [
             {"result": 0, "arguments": {"leases": [{"ip-address": "10.20.0.5"}]}}
         ]
@@ -713,12 +693,8 @@ class TestCombinedReservations4Enrichment(_CombinedViewBase):
     @patch("netbox_kea.models.KeaClient")
     def test_no_lease_badge_when_no_active_lease(self, MockKeaClient):
         """A reservation without active lease must show 'No Lease' badge."""
-        MockKeaClient.return_value.reservation_get_page.return_value = (
-            [dict(_MOCK_RESERVATION_ENRICHED)], 0, 0
-        )
-        MockKeaClient.return_value.command.return_value = [
-            {"result": 0, "arguments": {"leases": []}}
-        ]
+        MockKeaClient.return_value.reservation_get_page.return_value = ([dict(_MOCK_RESERVATION_ENRICHED)], 0, 0)
+        MockKeaClient.return_value.command.return_value = [{"result": 0, "arguments": {"leases": []}}]
         response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "No Lease")
@@ -727,9 +703,7 @@ class TestCombinedReservations4Enrichment(_CombinedViewBase):
     def test_lease_column_header_present(self, MockKeaClient):
         """GlobalReservationTable4 must render a 'Lease' column header."""
         MockKeaClient.return_value.reservation_get_page.return_value = ([], 0, 0)
-        MockKeaClient.return_value.command.return_value = [
-            {"result": 0, "arguments": {"leases": []}}
-        ]
+        MockKeaClient.return_value.command.return_value = [{"result": 0, "arguments": {"leases": []}}]
         response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Lease")
@@ -738,13 +712,10 @@ class TestCombinedReservations4Enrichment(_CombinedViewBase):
     def test_netbox_ip_synced_link_when_ip_in_netbox(self, MockKeaClient):
         """Reservation IP in NetBox IPAM → 'Synced' link in combined table."""
         from ipam.models import IPAddress
+
         IPAddress.objects.create(address="10.20.0.5/32")
-        MockKeaClient.return_value.reservation_get_page.return_value = (
-            [dict(_MOCK_RESERVATION_ENRICHED)], 0, 0
-        )
-        MockKeaClient.return_value.command.return_value = [
-            {"result": 0, "arguments": {"leases": []}}
-        ]
+        MockKeaClient.return_value.reservation_get_page.return_value = ([dict(_MOCK_RESERVATION_ENRICHED)], 0, 0)
+        MockKeaClient.return_value.command.return_value = [{"result": 0, "arguments": {"leases": []}}]
         response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Synced")
@@ -752,12 +723,8 @@ class TestCombinedReservations4Enrichment(_CombinedViewBase):
     @patch("netbox_kea.models.KeaClient")
     def test_edit_action_links_use_server_pk(self, MockKeaClient):
         """Each combined reservation row must have an edit link pointing to the correct server."""
-        MockKeaClient.return_value.reservation_get_page.return_value = (
-            [dict(_MOCK_RESERVATION_ENRICHED)], 0, 0
-        )
-        MockKeaClient.return_value.command.return_value = [
-            {"result": 0, "arguments": {"leases": []}}
-        ]
+        MockKeaClient.return_value.reservation_get_page.return_value = ([dict(_MOCK_RESERVATION_ENRICHED)], 0, 0)
+        MockKeaClient.return_value.command.return_value = [{"result": 0, "arguments": {"leases": []}}]
         response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
         expected = f"/plugins/kea/servers/{self.v4_server.pk}/reservations4/"

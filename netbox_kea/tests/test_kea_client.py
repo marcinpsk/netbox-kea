@@ -306,8 +306,8 @@ class TestReservationGetPage(TestCase):
         self.assertEqual(next_from, 1)
         self.assertEqual(next_src, 1)
 
-    def test_returns_zero_pagination_when_partial_page(self):
-        """When fewer hosts than limit are returned, next pagination is (0, 0) — exhausted."""
+    def test_returns_next_cursor_regardless_of_page_size(self):
+        """Kea's next cursor is always read from the response, even on a partial page."""
         hosts = [{"subnet-id": 1, "ip-address": "192.168.1.100", "hw-address": "aa:bb:cc:dd:ee:ff"}]
         resp = [
             {
@@ -320,11 +320,11 @@ class TestReservationGetPage(TestCase):
             }
         ]
         with self._patched_post(resp):
-            # limit=100 but only 1 host returned → partial page → (hosts, 0, 0)
+            # limit=100 but only 1 host returned — cursor still read from Kea's next field
             result_hosts, next_from, next_src = self.client.reservation_get_page("dhcp4", limit=100)
         self.assertEqual(result_hosts, hosts)
-        self.assertEqual(next_from, 0)
-        self.assertEqual(next_src, 0)
+        self.assertEqual(next_from, 1)
+        self.assertEqual(next_src, 1)
 
     def test_sends_correct_arguments_defaults(self):
         resp = [
@@ -619,10 +619,7 @@ class TestPoolAdd(TestCase):
         self.client = KeaClient(url="http://kea:8000")
 
     def _cmds(self, mock_post):
-        return [
-            (c.kwargs.get("json") or c[1]["json"])["command"]
-            for c in mock_post.call_args_list
-        ]
+        return [(c.kwargs.get("json") or c[1]["json"])["command"] for c in mock_post.call_args_list]
 
     def test_pool_add_uses_pool_add_when_available(self):
         """When subnet4-pool-add is in list-commands, it is used directly."""
@@ -737,10 +734,7 @@ class TestPoolDel(TestCase):
         self.client = KeaClient(url="http://kea:8000")
 
     def _cmds(self, mock_post):
-        return [
-            (c.kwargs.get("json") or c[1]["json"])["command"]
-            for c in mock_post.call_args_list
-        ]
+        return [(c.kwargs.get("json") or c[1]["json"])["command"] for c in mock_post.call_args_list]
 
     def test_pool_del_uses_pool_del_when_available(self):
         """When subnet4-pool-del is in list-commands, it is used directly."""
@@ -852,11 +846,17 @@ class TestPoolDel(TestCase):
 # TestSubnetAdd / TestSubnetDel
 # ---------------------------------------------------------------------------
 
-_SUBNET4_ADD_RESP = [{"result": 0, "arguments": {"subnets": [{"id": 10, "subnet": "10.99.0.0/24"}]}, "text": "IPv4 subnet added"}]
-_SUBNET6_ADD_RESP = [{"result": 0, "arguments": {"subnets": [{"id": 20, "subnet": "2001:db8:99::/48"}]}, "text": "IPv6 subnet added"}]
+_SUBNET4_ADD_RESP = [
+    {"result": 0, "arguments": {"subnets": [{"id": 10, "subnet": "10.99.0.0/24"}]}, "text": "IPv4 subnet added"}
+]
+_SUBNET6_ADD_RESP = [
+    {"result": 0, "arguments": {"subnets": [{"id": 20, "subnet": "2001:db8:99::/48"}]}, "text": "IPv6 subnet added"}
+]
 _SUBNET_DEL_RESP = [{"result": 0, "text": "IPv4 subnet deleted"}]
 # subnet-list response returned before auto-ID lookup
-_SUBNET4_LIST_RESP = [{"result": 0, "arguments": {"subnets": [{"id": 1, "subnet": "10.0.0.0/8"}, {"id": 2, "subnet": "192.168.0.0/16"}]}}]
+_SUBNET4_LIST_RESP = [
+    {"result": 0, "arguments": {"subnets": [{"id": 1, "subnet": "10.0.0.0/8"}, {"id": 2, "subnet": "192.168.0.0/16"}]}}
+]
 _SUBNET6_LIST_RESP = [{"result": 0, "arguments": {"subnets": [{"id": 5, "subnet": "2001:db8::/32"}]}}]
 
 
@@ -867,15 +867,13 @@ class TestSubnetAdd(TestCase):
         self.client = KeaClient(url="http://kea:8000")
 
     def _cmds(self, mock_post):
-        return [
-            (c.kwargs.get("json") or c[1]["json"])["command"]
-            for c in mock_post.call_args_list
-        ]
+        return [(c.kwargs.get("json") or c[1]["json"])["command"] for c in mock_post.call_args_list]
 
     def test_subnet_add_v4_sends_correct_command(self):
         """subnet4-add is sent for version=4."""
         with patch.object(
-            self.client._session, "post",
+            self.client._session,
+            "post",
             side_effect=_side_effects(_SUBNET4_LIST_RESP, _SUBNET4_ADD_RESP, _OK),
         ) as mock_post:
             self.client.subnet_add(version=4, subnet_cidr="10.99.0.0/24")
@@ -884,7 +882,8 @@ class TestSubnetAdd(TestCase):
     def test_subnet_add_v6_sends_correct_command(self):
         """subnet6-add is sent for version=6."""
         with patch.object(
-            self.client._session, "post",
+            self.client._session,
+            "post",
             side_effect=_side_effects(_SUBNET6_LIST_RESP, _SUBNET6_ADD_RESP, _OK),
         ) as mock_post:
             self.client.subnet_add(version=6, subnet_cidr="2001:db8:99::/48")
@@ -894,7 +893,8 @@ class TestSubnetAdd(TestCase):
     def test_subnet_add_sends_subnet_cidr(self):
         """subnet4-add payload includes the subnet CIDR."""
         with patch.object(
-            self.client._session, "post",
+            self.client._session,
+            "post",
             side_effect=_side_effects(_SUBNET4_LIST_RESP, _SUBNET4_ADD_RESP, _OK),
         ) as mock_post:
             self.client.subnet_add(version=4, subnet_cidr="10.99.0.0/24")
@@ -909,7 +909,8 @@ class TestSubnetAdd(TestCase):
     def test_subnet_add_includes_optional_id(self):
         """subnet4-add payload includes id when provided (no list call)."""
         with patch.object(
-            self.client._session, "post",
+            self.client._session,
+            "post",
             side_effect=_side_effects(_SUBNET4_ADD_RESP, _OK),
         ) as mock_post:
             self.client.subnet_add(version=4, subnet_cidr="10.99.0.0/24", subnet_id=42)
@@ -925,7 +926,8 @@ class TestSubnetAdd(TestCase):
     def test_subnet_add_auto_assigns_id_as_max_plus_one(self):
         """When no subnet_id provided, auto-assigns max existing ID + 1."""
         with patch.object(
-            self.client._session, "post",
+            self.client._session,
+            "post",
             side_effect=_side_effects(_SUBNET4_LIST_RESP, _SUBNET4_ADD_RESP, _OK),
         ) as mock_post:
             self.client.subnet_add(version=4, subnet_cidr="10.99.0.0/24")
@@ -940,7 +942,8 @@ class TestSubnetAdd(TestCase):
     def test_subnet_add_includes_pools(self):
         """subnet4-add payload includes pools when provided."""
         with patch.object(
-            self.client._session, "post",
+            self.client._session,
+            "post",
             side_effect=_side_effects(_SUBNET4_LIST_RESP, _SUBNET4_ADD_RESP, _OK),
         ) as mock_post:
             self.client.subnet_add(
@@ -961,7 +964,8 @@ class TestSubnetAdd(TestCase):
     def test_subnet_add_includes_option_data(self):
         """subnet4-add payload includes option-data for gateway/DNS/NTP."""
         with patch.object(
-            self.client._session, "post",
+            self.client._session,
+            "post",
             side_effect=_side_effects(_SUBNET4_LIST_RESP, _SUBNET4_ADD_RESP, _OK),
         ) as mock_post:
             self.client.subnet_add(
@@ -984,7 +988,8 @@ class TestSubnetAdd(TestCase):
     def test_subnet_add_calls_config_write(self):
         """config-write is called after subnet4-add."""
         with patch.object(
-            self.client._session, "post",
+            self.client._session,
+            "post",
             side_effect=_side_effects(_SUBNET4_LIST_RESP, _SUBNET4_ADD_RESP, _OK),
         ) as mock_post:
             self.client.subnet_add(version=4, subnet_cidr="10.99.0.0/24")
@@ -995,7 +1000,8 @@ class TestSubnetAdd(TestCase):
     def test_subnet_add_raises_on_kea_error(self):
         """KeaException is raised when Kea returns result != 0."""
         with patch.object(
-            self.client._session, "post",
+            self.client._session,
+            "post",
             side_effect=_side_effects(_SUBNET4_LIST_RESP, [{"result": 1, "text": "subnet already exists"}]),
         ):
             with self.assertRaises(KeaException):
@@ -1004,7 +1010,8 @@ class TestSubnetAdd(TestCase):
     def test_subnet_add_returns_none_on_success(self):
         """subnet_add returns None on success."""
         with patch.object(
-            self.client._session, "post",
+            self.client._session,
+            "post",
             side_effect=_side_effects(_SUBNET4_LIST_RESP, _SUBNET4_ADD_RESP, _OK),
         ):
             result = self.client.subnet_add(version=4, subnet_cidr="10.99.0.0/24")
@@ -1018,15 +1025,13 @@ class TestSubnetDel(TestCase):
         self.client = KeaClient(url="http://kea:8000")
 
     def _cmds(self, mock_post):
-        return [
-            (c.kwargs.get("json") or c[1]["json"])["command"]
-            for c in mock_post.call_args_list
-        ]
+        return [(c.kwargs.get("json") or c[1]["json"])["command"] for c in mock_post.call_args_list]
 
     def test_subnet_del_v4_sends_correct_command(self):
         """subnet4-del is sent for version=4."""
         with patch.object(
-            self.client._session, "post",
+            self.client._session,
+            "post",
             side_effect=_side_effects(_SUBNET_DEL_RESP, _OK),
         ) as mock_post:
             self.client.subnet_del(version=4, subnet_id=5)
@@ -1035,7 +1040,8 @@ class TestSubnetDel(TestCase):
     def test_subnet_del_v6_sends_correct_command(self):
         """subnet6-del is sent for version=6."""
         with patch.object(
-            self.client._session, "post",
+            self.client._session,
+            "post",
             side_effect=_side_effects(_SUBNET_DEL_RESP, _OK),
         ) as mock_post:
             self.client.subnet_del(version=6, subnet_id=7)
@@ -1045,7 +1051,8 @@ class TestSubnetDel(TestCase):
     def test_subnet_del_sends_correct_id(self):
         """subnet4-del payload contains the correct subnet ID."""
         with patch.object(
-            self.client._session, "post",
+            self.client._session,
+            "post",
             side_effect=_side_effects(_SUBNET_DEL_RESP, _OK),
         ) as mock_post:
             self.client.subnet_del(version=4, subnet_id=42)
@@ -1059,7 +1066,8 @@ class TestSubnetDel(TestCase):
     def test_subnet_del_calls_config_write(self):
         """config-write is called after subnet4-del."""
         with patch.object(
-            self.client._session, "post",
+            self.client._session,
+            "post",
             side_effect=_side_effects(_SUBNET_DEL_RESP, _OK),
         ) as mock_post:
             self.client.subnet_del(version=4, subnet_id=1)
@@ -1070,7 +1078,8 @@ class TestSubnetDel(TestCase):
     def test_subnet_del_raises_on_kea_error(self):
         """KeaException is raised when Kea returns result != 0."""
         with patch.object(
-            self.client._session, "post",
+            self.client._session,
+            "post",
             side_effect=_side_effects([{"result": 3, "text": "subnet not found"}]),
         ):
             with self.assertRaises(KeaException):
@@ -1079,7 +1088,8 @@ class TestSubnetDel(TestCase):
     def test_subnet_del_returns_none_on_success(self):
         """subnet_del returns None on success."""
         with patch.object(
-            self.client._session, "post",
+            self.client._session,
+            "post",
             side_effect=_side_effects(_SUBNET_DEL_RESP, _OK),
         ):
             result = self.client.subnet_del(version=4, subnet_id=1)

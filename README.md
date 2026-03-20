@@ -58,6 +58,7 @@ View Kea status, leases and subnets directly in NetBox — and navigate back and
 1. Add `netbox-kea-ng` to `local_requirements.txt`.
 
 2. Enable the plugin in `configuration.py`:
+
     ```python
     PLUGINS = ["netbox_kea"]
     ```

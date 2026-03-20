@@ -23,13 +23,15 @@ connectivity checks.
 """
 
 import re
-from unittest.mock import MagicMock, patch
+import unittest as _unittest  # alias to avoid pytest collection confusion
+from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
 from django.urls import reverse
 
 from netbox_kea.models import Server
+from netbox_kea.views import _extract_identifier
 
 # Minimal PLUGINS_CONFIG so server.get_client() can read kea_timeout.
 _PLUGINS_CONFIG = {"netbox_kea": {"kea_timeout": 30}}
@@ -582,10 +584,7 @@ class TestServerBulkImportView(_ViewTestBase):
         """Duplicate server name must re-render the form with errors, not 500."""
         url = reverse("plugins:netbox_kea:server_bulk_import")
         # setUp() already created a server named 'test-kea'
-        csv_data = (
-            "name,server_url,dhcp4,dhcp6\r\n"
-            "test-kea,https://dup.example.com,true,false\r\n"
-        )
+        csv_data = "name,server_url,dhcp4,dhcp6\r\ntest-kea,https://dup.example.com,true,false\r\n"
         # No KeaClient mock: clean() should never be reached (unique constraint
         # fires first during model validation)
         response = self.client.post(
@@ -634,9 +633,7 @@ class TestReservedBadgeOnLeases(_ViewTestBase):
         """When a lease IP has a corresponding reservation, the table cell shows 'Reserved'."""
         mock_client = MockKeaClient.return_value
         # Lease search by IP
-        mock_client.command.return_value = [
-            {"result": 0, "arguments": {"ip-address": "192.168.1.100", **self._LEASE4}}
-        ]
+        mock_client.command.return_value = [{"result": 0, "arguments": {"ip-address": "192.168.1.100", **self._LEASE4}}]
         # Reservation lookup returns a matching reservation
         mock_client.reservation_get_page.return_value = ([self._RESERVATION4], 0, 0)
 
@@ -650,9 +647,7 @@ class TestReservedBadgeOnLeases(_ViewTestBase):
     def test_no_reserved_badge_when_no_reservation(self, MockKeaClient):
         """When no reservation exists for the lease IP, no badge is rendered."""
         mock_client = MockKeaClient.return_value
-        mock_client.command.return_value = [
-            {"result": 0, "arguments": {"ip-address": "192.168.1.100", **self._LEASE4}}
-        ]
+        mock_client.command.return_value = [{"result": 0, "arguments": {"ip-address": "192.168.1.100", **self._LEASE4}}]
         # No reservations
         mock_client.reservation_get_page.return_value = ([], 0, 0)
 
@@ -669,9 +664,7 @@ class TestReservedBadgeOnLeases(_ViewTestBase):
         from netbox_kea.kea import KeaException
 
         mock_client = MockKeaClient.return_value
-        mock_client.command.return_value = [
-            {"result": 0, "arguments": {"ip-address": "192.168.1.100", **self._LEASE4}}
-        ]
+        mock_client.command.return_value = [{"result": 0, "arguments": {"ip-address": "192.168.1.100", **self._LEASE4}}]
         # host_cmds not loaded — result=2 means unknown command
         mock_client.reservation_get_page.side_effect = KeaException(
             {"result": 2, "text": "unknown command 'reservation-get-page'"},
@@ -689,10 +682,6 @@ class TestReservedBadgeOnLeases(_ViewTestBase):
 # ─────────────────────────────────────────────────────────────────────────────
 # _extract_identifier — pure unit tests (no DB needed)
 # ─────────────────────────────────────────────────────────────────────────────
-
-import unittest as _unittest  # alias to avoid pytest collection confusion
-
-from netbox_kea.views import _extract_identifier
 
 
 class TestExtractIdentifier(_unittest.TestCase):
@@ -777,11 +766,18 @@ def _kea_command_with_global_options(cmd, service=None, arguments=None, check=No
         return [{"result": 0, "arguments": {"extended": "2.4.1"}}]
     if cmd == "config-get":
         if service and service[0] == "dhcp6":
-            return [{"result": 0, "arguments": {"Dhcp6": {
-                "option-data": [{"code": 23, "name": "dns-servers", "data": "2001:db8::1"}],
-                "subnet6": [],
-                "shared-networks": [],
-            }}}]
+            return [
+                {
+                    "result": 0,
+                    "arguments": {
+                        "Dhcp6": {
+                            "option-data": [{"code": 23, "name": "dns-servers", "data": "2001:db8::1"}],
+                            "subnet6": [],
+                            "shared-networks": [],
+                        }
+                    },
+                }
+            ]
         return [{"result": 0, "arguments": {"Dhcp4": _CONFIG_WITH_OPTIONS_V4}}]
     return [{"result": 0, "arguments": {}}]
 
@@ -862,11 +858,18 @@ def _config_with_one_subnet(service=None):
     version = 6 if (service and service[0] == "dhcp6") else 4
     dhcp_key = f"Dhcp{version}"
     subnet_key = f"subnet{version}"
-    return [{"result": 0, "arguments": {dhcp_key: {
-        "option-data": [],
-        subnet_key: [{"id": 1, "subnet": "192.168.1.0/24", "option-data": [], "pools": []}],
-        "shared-networks": [],
-    }}}]
+    return [
+        {
+            "result": 0,
+            "arguments": {
+                dhcp_key: {
+                    "option-data": [],
+                    subnet_key: [{"id": 1, "subnet": "192.168.1.0/24", "option-data": [], "pools": []}],
+                    "shared-networks": [],
+                }
+            },
+        }
+    ]
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
@@ -918,12 +921,17 @@ class TestSubnetUtilizationStats(_ViewTestBase):
             if cmd == "config-get":
                 return _config_with_one_subnet(service)
             if cmd == "stat-lease4-get":
-                return [{"result": 0, "arguments": {"result-set": {
-                    "columns": [
-                        "subnet-id", "total-addresses", "assigned-addresses", "declined-addresses"
-                    ],
-                    "rows": [[1, 100, 0, 0]],
-                }}}]
+                return [
+                    {
+                        "result": 0,
+                        "arguments": {
+                            "result-set": {
+                                "columns": ["subnet-id", "total-addresses", "assigned-addresses", "declined-addresses"],
+                                "rows": [[1, 100, 0, 0]],
+                            }
+                        },
+                    }
+                ]
             return [{"result": 0, "arguments": {}}]
 
         MockKeaClient.return_value.command.side_effect = side_effect
@@ -940,12 +948,17 @@ class TestSubnetUtilizationStats(_ViewTestBase):
             if cmd == "config-get":
                 return _config_with_one_subnet(service)
             if cmd == "stat-lease4-get":
-                return [{"result": 0, "arguments": {"result-set": {
-                    "columns": [
-                        "subnet-id", "total-addresses", "assigned-addresses", "declined-addresses"
-                    ],
-                    "rows": [[1, 50, 50, 0]],
-                }}}]
+                return [
+                    {
+                        "result": 0,
+                        "arguments": {
+                            "result-set": {
+                                "columns": ["subnet-id", "total-addresses", "assigned-addresses", "declined-addresses"],
+                                "rows": [[1, 50, 50, 0]],
+                            }
+                        },
+                    }
+                ]
             return [{"result": 0, "arguments": {}}]
 
         MockKeaClient.return_value.command.side_effect = side_effect
@@ -987,13 +1000,9 @@ class TestLeaseSearchPaths(_ViewTestBase):
     def _setup_mock(self, MockKeaClient, leases, multiple=True):
         mock_client = MockKeaClient.return_value
         if multiple:
-            mock_client.command.return_value = [
-                {"result": 0, "arguments": {"leases": leases, "count": len(leases)}}
-            ]
+            mock_client.command.return_value = [{"result": 0, "arguments": {"leases": leases, "count": len(leases)}}]
         else:
-            mock_client.command.return_value = [
-                {"result": 0, "arguments": leases[0] if leases else {}}
-            ]
+            mock_client.command.return_value = [{"result": 0, "arguments": leases[0] if leases else {}}]
         mock_client.reservation_get_page.return_value = ([], 0, 0)
         return mock_client
 
@@ -1062,13 +1071,9 @@ class TestLeaseSearchPaths(_ViewTestBase):
     @patch("netbox_kea.models.KeaClient")
     def test_search_by_duid_v6_sends_correct_command(self, MockKeaClient):
         """BY_DUID on the v6 endpoint must call lease6-get-by-duid."""
-        server6 = _make_db_server(
-            name="kea-v6-search", server_url="https://kea6.example.com", dhcp4=False, dhcp6=True
-        )
+        server6 = _make_db_server(name="kea-v6-search", server_url="https://kea6.example.com", dhcp4=False, dhcp6=True)
         mock_client = MockKeaClient.return_value
-        mock_client.command.return_value = [
-            {"result": 0, "arguments": {"leases": [], "count": 0}}
-        ]
+        mock_client.command.return_value = [{"result": 0, "arguments": {"leases": [], "count": 0}}]
         mock_client.reservation_get_page.return_value = ([], 0, 0)
         url = reverse("plugins:netbox_kea:server_leases6", args=[server6.pk])
         response = self._htmx_get(url, {"by": "duid", "q": "00:01:aa:bb:cc:dd"})
@@ -1102,9 +1107,7 @@ class TestLeaseExport(_ViewTestBase):
     def test_export_all_returns_csv_content_type(self, MockKeaClient):
         """?export=all must respond with text/csv Content-Type."""
         mock_client = MockKeaClient.return_value
-        mock_client.command.return_value = [
-            {"result": 0, "arguments": {"ip-address": "10.0.0.5", **self._LEASE4}}
-        ]
+        mock_client.command.return_value = [{"result": 0, "arguments": {"ip-address": "10.0.0.5", **self._LEASE4}}]
         mock_client.reservation_get_page.return_value = ([], 0, 0)
         response = self.client.get(self._url(), {"export": "all", "by": "ip", "q": "10.0.0.5"})
         self.assertEqual(response.status_code, 200)
@@ -1114,9 +1117,7 @@ class TestLeaseExport(_ViewTestBase):
     def test_export_table_returns_csv(self, MockKeaClient):
         """?export=table must also return text/csv (selected columns)."""
         mock_client = MockKeaClient.return_value
-        mock_client.command.return_value = [
-            {"result": 0, "arguments": {"ip-address": "10.0.0.5", **self._LEASE4}}
-        ]
+        mock_client.command.return_value = [{"result": 0, "arguments": {"ip-address": "10.0.0.5", **self._LEASE4}}]
         mock_client.reservation_get_page.return_value = ([], 0, 0)
         response = self.client.get(self._url(), {"export": "table", "by": "ip", "q": "10.0.0.5"})
         self.assertEqual(response.status_code, 200)
@@ -1133,8 +1134,14 @@ class TestLeaseExport(_ViewTestBase):
     def test_export_by_subnet_paginates_all_leases(self, MockKeaClient):
         """?export=all&by=subnet must paginate until next_cursor is None."""
         page1_leases = [
-            {"ip-address": f"10.0.0.{i}", "hw-address": "aa:bb:cc:dd:ee:ff",
-             "hostname": f"h{i}", "subnet-id": 1, "valid-lft": 3600, "cltt": 1_700_000_000}
+            {
+                "ip-address": f"10.0.0.{i}",
+                "hw-address": "aa:bb:cc:dd:ee:ff",
+                "hostname": f"h{i}",
+                "subnet-id": 1,
+                "valid-lft": 3600,
+                "cltt": 1_700_000_000,
+            }
             for i in range(1, 4)
         ]
         call_count = {"n": 0}
@@ -1143,9 +1150,7 @@ class TestLeaseExport(_ViewTestBase):
             call_count["n"] += 1
             if call_count["n"] == 1:
                 # First page: 3 leases; count == per_page (3) signals more data
-                return [{"result": 0, "arguments": {
-                    "leases": page1_leases, "count": 3
-                }}]
+                return [{"result": 0, "arguments": {"leases": page1_leases, "count": 3}}]
             # Second call returns empty — end of pagination
             return [{"result": 3, "arguments": None}]
 
@@ -1250,12 +1255,8 @@ class TestEnrichLeasesErrorPaths(_ViewTestBase):
         from netbox_kea.kea import KeaException
 
         mock_client = MockKeaClient.return_value
-        mock_client.command.return_value = [
-            {"result": 0, "arguments": {"ip-address": "10.0.0.5", **self._LEASE4}}
-        ]
-        mock_client.reservation_get_page.side_effect = KeaException(
-            {"result": 1, "text": "server error"}, index=0
-        )
+        mock_client.command.return_value = [{"result": 0, "arguments": {"ip-address": "10.0.0.5", **self._LEASE4}}]
+        mock_client.reservation_get_page.side_effect = KeaException({"result": 1, "text": "server error"}, index=0)
         url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
         response = self._htmx_get(url, {"by": "ip", "q": "10.0.0.5"})
         self.assertEqual(response.status_code, 200)
@@ -1264,9 +1265,7 @@ class TestEnrichLeasesErrorPaths(_ViewTestBase):
     def test_unexpected_exception_on_reservation_lookup_does_not_crash(self, MockKeaClient):
         """An unexpected exception (e.g. network error) during reservation lookup must not 500."""
         mock_client = MockKeaClient.return_value
-        mock_client.command.return_value = [
-            {"result": 0, "arguments": {"ip-address": "10.0.0.5", **self._LEASE4}}
-        ]
+        mock_client.command.return_value = [{"result": 0, "arguments": {"ip-address": "10.0.0.5", **self._LEASE4}}]
         mock_client.reservation_get_page.side_effect = RuntimeError("socket closed")
         url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
         response = self._htmx_get(url, {"by": "ip", "q": "10.0.0.5"})
@@ -1277,9 +1276,7 @@ class TestEnrichLeasesErrorPaths(_ViewTestBase):
     def test_sync_url_set_when_no_netbox_ip(self, MockKeaClient, mock_bulk_fetch):
         """When the lease IP is absent from NetBox, sync_url must be set on the lease dict."""
         mock_client = MockKeaClient.return_value
-        mock_client.command.return_value = [
-            {"result": 0, "arguments": {"ip-address": "10.0.0.5", **self._LEASE4}}
-        ]
+        mock_client.command.return_value = [{"result": 0, "arguments": {"ip-address": "10.0.0.5", **self._LEASE4}}]
         mock_client.reservation_get_page.return_value = ([], 0, 0)
         mock_bulk_fetch.return_value = {}
         url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
@@ -1295,9 +1292,7 @@ class TestEnrichLeasesErrorPaths(_ViewTestBase):
         from unittest.mock import MagicMock
 
         mock_client = MockKeaClient.return_value
-        mock_client.command.return_value = [
-            {"result": 0, "arguments": {"ip-address": "10.0.0.5", **self._LEASE4}}
-        ]
+        mock_client.command.return_value = [{"result": 0, "arguments": {"ip-address": "10.0.0.5", **self._LEASE4}}]
         mock_client.reservation_get_page.return_value = ([], 0, 0)
         nb_ip = MagicMock()
         nb_ip.get_absolute_url.return_value = "/ipam/ip-addresses/99/"

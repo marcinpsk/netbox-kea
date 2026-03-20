@@ -417,10 +417,7 @@ class PoolAddForm(forms.Form):
 
     pool = forms.CharField(
         label="Pool",
-        help_text=(
-            "Pool range (e.g. <code>10.0.0.50-10.0.0.99</code>) "
-            "or CIDR (e.g. <code>10.0.0.0/28</code>)."
-        ),
+        help_text=("Pool range (e.g. <code>10.0.0.50-10.0.0.99</code>) or CIDR (e.g. <code>10.0.0.0/28</code>)."),
         max_length=255,
     )
 
@@ -464,7 +461,7 @@ class SubnetAddForm(forms.Form):
         help_text="Comma-separated IP addresses or hostnames.",
     )
 
-    def clean_subnet(self) -> str:
+    def clean_subnet(self) -> str:  # noqa: D102
         import ipaddress
 
         value = self.cleaned_data["subnet"].strip()
@@ -474,7 +471,7 @@ class SubnetAddForm(forms.Form):
             raise forms.ValidationError(f"Invalid subnet CIDR: {exc}") from exc
         return value
 
-    def clean_pools(self) -> list[str]:
+    def clean_pools(self) -> list[str]:  # noqa: D102
         value = self.cleaned_data["pools"].strip()
         if not value:
             return []
@@ -482,18 +479,17 @@ class SubnetAddForm(forms.Form):
         for pool in pools:
             if "-" not in pool and "/" not in pool:
                 raise forms.ValidationError(
-                    f"Invalid pool format '{pool}': use range (e.g. 10.0.0.1-10.0.0.50) "
-                    "or CIDR (e.g. 10.0.0.0/28)."
+                    f"Invalid pool format '{pool}': use range (e.g. 10.0.0.1-10.0.0.50) or CIDR (e.g. 10.0.0.0/28)."
                 )
         return pools
 
-    def clean_dns_servers(self) -> list[str]:
+    def clean_dns_servers(self) -> list[str]:  # noqa: D102
         value = self.cleaned_data["dns_servers"].strip()
         if not value:
             return []
         return [s.strip() for s in value.split(",") if s.strip()]
 
-    def clean_ntp_servers(self) -> list[str]:
+    def clean_ntp_servers(self) -> list[str]:  # noqa: D102
         value = self.cleaned_data["ntp_servers"].strip()
         if not value:
             return []

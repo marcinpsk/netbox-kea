@@ -120,6 +120,7 @@ def format_option_data(option_list: list[dict[str, Any]]) -> dict[str, str]:
         result[key] = data
     return result
 
+
 def parse_subnet_stats(stat_response: list[dict[str, Any]], version: int) -> dict[int, dict[str, Any]]:
     """Parse a ``stat-lease{4|6}-get`` response into a per-subnet stats dict.
 
