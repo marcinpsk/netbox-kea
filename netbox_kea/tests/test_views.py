@@ -634,8 +634,8 @@ class TestReservedBadgeOnLeases(_ViewTestBase):
         mock_client = MockKeaClient.return_value
         # Lease search by IP
         mock_client.command.return_value = [{"result": 0, "arguments": {"ip-address": "192.168.1.100", **self._LEASE4}}]
-        # Reservation lookup returns a matching reservation
-        mock_client.reservation_get_page.return_value = ([self._RESERVATION4], 0, 0)
+        # Reservation lookup returns a matching reservation for this specific IP
+        mock_client.reservation_get.return_value = self._RESERVATION4
 
         url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
         response = self._htmx_get(url, {"by": "ip", "q": "192.168.1.100"})
@@ -648,8 +648,8 @@ class TestReservedBadgeOnLeases(_ViewTestBase):
         """When no reservation exists for the lease IP, no badge is rendered."""
         mock_client = MockKeaClient.return_value
         mock_client.command.return_value = [{"result": 0, "arguments": {"ip-address": "192.168.1.100", **self._LEASE4}}]
-        # No reservations
-        mock_client.reservation_get_page.return_value = ([], 0, 0)
+        # No reservation found for this IP
+        mock_client.reservation_get.return_value = None
 
         url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
         response = self._htmx_get(url, {"by": "ip", "q": "192.168.1.100"})
@@ -666,8 +666,8 @@ class TestReservedBadgeOnLeases(_ViewTestBase):
         mock_client = MockKeaClient.return_value
         mock_client.command.return_value = [{"result": 0, "arguments": {"ip-address": "192.168.1.100", **self._LEASE4}}]
         # host_cmds not loaded — result=2 means unknown command
-        mock_client.reservation_get_page.side_effect = KeaException(
-            {"result": 2, "text": "unknown command 'reservation-get-page'"},
+        mock_client.reservation_get.side_effect = KeaException(
+            {"result": 2, "text": "unknown command 'reservation-get'"},
             index=0,
         )
 
@@ -1256,7 +1256,7 @@ class TestEnrichLeasesErrorPaths(_ViewTestBase):
 
         mock_client = MockKeaClient.return_value
         mock_client.command.return_value = [{"result": 0, "arguments": {"ip-address": "10.0.0.5", **self._LEASE4}}]
-        mock_client.reservation_get_page.side_effect = KeaException({"result": 1, "text": "server error"}, index=0)
+        mock_client.reservation_get.side_effect = KeaException({"result": 1, "text": "server error"}, index=0)
         url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
         response = self._htmx_get(url, {"by": "ip", "q": "10.0.0.5"})
         self.assertEqual(response.status_code, 200)
@@ -1266,7 +1266,7 @@ class TestEnrichLeasesErrorPaths(_ViewTestBase):
         """An unexpected exception (e.g. network error) during reservation lookup must not 500."""
         mock_client = MockKeaClient.return_value
         mock_client.command.return_value = [{"result": 0, "arguments": {"ip-address": "10.0.0.5", **self._LEASE4}}]
-        mock_client.reservation_get_page.side_effect = RuntimeError("socket closed")
+        mock_client.reservation_get.side_effect = RuntimeError("socket closed")
         url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
         response = self._htmx_get(url, {"by": "ip", "q": "10.0.0.5"})
         self.assertEqual(response.status_code, 200)
@@ -1277,7 +1277,7 @@ class TestEnrichLeasesErrorPaths(_ViewTestBase):
         """When the lease IP is absent from NetBox, sync_url must be set on the lease dict."""
         mock_client = MockKeaClient.return_value
         mock_client.command.return_value = [{"result": 0, "arguments": {"ip-address": "10.0.0.5", **self._LEASE4}}]
-        mock_client.reservation_get_page.return_value = ([], 0, 0)
+        mock_client.reservation_get.return_value = None
         mock_bulk_fetch.return_value = {}
         url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
         response = self._htmx_get(url, {"by": "ip", "q": "10.0.0.5"})
@@ -1293,7 +1293,7 @@ class TestEnrichLeasesErrorPaths(_ViewTestBase):
 
         mock_client = MockKeaClient.return_value
         mock_client.command.return_value = [{"result": 0, "arguments": {"ip-address": "10.0.0.5", **self._LEASE4}}]
-        mock_client.reservation_get_page.return_value = ([], 0, 0)
+        mock_client.reservation_get.return_value = None
         nb_ip = MagicMock()
         nb_ip.get_absolute_url.return_value = "/ipam/ip-addresses/99/"
         mock_bulk_fetch.return_value = {"10.0.0.5": nb_ip}

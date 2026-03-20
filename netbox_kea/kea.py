@@ -92,7 +92,8 @@ class KeaClient:
         resp = self._session.post(self.url, json=body, timeout=self.timeout)
         resp.raise_for_status()
         resp_json = resp.json()
-        assert isinstance(resp_json, list)
+        if not isinstance(resp_json, list):
+            raise ValueError(f"Expected list response from Kea API, got {type(resp_json).__name__}")
         if check is not None:
             check_response(resp_json, check)
         return resp_json

@@ -85,7 +85,8 @@ def bulk_fetch_netbox_ips(ip_list: list[str]) -> dict[str, NbIPAddress]:
     """Fetch NetBox IPAddress objects for a list of host IP strings.
 
     Returns a ``{ip_str: NbIPAddress}`` mapping containing only the IPs that
-    are present in the NetBox database.  One database query is issued.
+    are present in the NetBox database.  Chunked into batches of 500 to avoid
+    hitting PostgreSQL expression depth limits on large result sets.
     """
     from django.db.models import Q
     from ipam.models import IPAddress as NbIP
@@ -93,15 +94,16 @@ def bulk_fetch_netbox_ips(ip_list: list[str]) -> dict[str, NbIPAddress]:
     if not ip_list:
         return {}
 
-    query = Q()
-    for ip in ip_list:
-        query |= Q(address__startswith=f"{ip}/")
-
+    _CHUNK = 500
     result: dict[str, NbIPAddress] = {}
-    for nb_ip in NbIP.objects.filter(query):
-        # address is stored as "ip/prefix"; extract the host part
-        host = str(nb_ip.address).split("/")[0]
-        result[host] = nb_ip
+    for i in range(0, len(ip_list), _CHUNK):
+        chunk = ip_list[i : i + _CHUNK]
+        query = Q()
+        for ip in chunk:
+            query |= Q(address__startswith=f"{ip}/")
+        for nb_ip in NbIP.objects.filter(query):
+            host = str(nb_ip.address).split("/")[0]
+            result[host] = nb_ip
     return result
 
 

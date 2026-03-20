@@ -1,5 +1,6 @@
 import concurrent.futures
 import logging
+import re
 from abc import ABCMeta
 from typing import Any, Generic, TypeVar
 from urllib.parse import urlencode as _urlencode
@@ -41,6 +42,10 @@ logger = logging.getLogger(__name__)
 
 T = TypeVar("T", bound=BaseTable)
 
+# Allowed characters in a pool range/CIDR string (digits, dots, colons, letters a-f, slash, hyphen).
+# Protects the <path:pool> URL parameter from injection before it reaches the Kea API.
+_POOL_RE = re.compile(r"^[0-9a-fA-F.:/-]{3,100}$")
+
 
 def _get_global_options(server: "Server") -> dict[str, dict[str, str]]:
     """Return parsed global DHCP option-data for each enabled DHCP version.
@@ -76,8 +81,10 @@ def _get_global_options(server: "Server") -> dict[str, dict[str, str]]:
             if opts:
                 # Convert snake_case keys to "Title Case" for display
                 result[label] = {k.replace("_", " ").title(): v for k, v in opts.items()}
-        except Exception:  # noqa: PERF203
-            pass  # graceful degradation — don't crash the status page
+        except KeaException:  # noqa: PERF203
+            logger.debug("config-get failed for %s (%s) — skipping global options", label, svc)
+        except Exception:
+            logger.warning("Unexpected error fetching global options for %s (%s)", label, svc, exc_info=True)
     return result
 
 
@@ -90,7 +97,13 @@ class _KeaChangeMixin:
     """
 
     def dispatch(self, request: HttpRequest, *args: Any, **kwargs: Any) -> HttpResponse:
-        if not request.user.has_perm("netbox_kea.change_server"):
+        pk = kwargs.get("pk")
+        if pk is not None:
+            if not Server.objects.filter(pk=pk).exists():
+                raise Http404
+            if not Server.objects.restrict(request.user, "change").filter(pk=pk).exists():
+                return HttpResponseForbidden("You do not have permission to modify Kea server data.")
+        elif not request.user.has_perm("netbox_kea.change_server"):
             return HttpResponseForbidden("You do not have permission to modify Kea server data.")
         return super().dispatch(request, *args, **kwargs)  # type: ignore[misc]
 
@@ -198,9 +211,11 @@ class ServerStatusView(generic.ObjectView):
             version_resp = svc_client.command("version-get", service=[svc])
 
             args = status[0]["arguments"]
-            assert args is not None
+            if args is None:
+                raise RuntimeError(f"Unexpected None arguments from status-get for service {svc}")
             version_args = version_resp[0]["arguments"]
-            assert version_args is not None
+            if version_args is None:
+                raise RuntimeError(f"Unexpected None arguments from version-get for service {svc}")
 
             entry: dict[str, Any] = {
                 "PID": args["pid"],
@@ -244,8 +259,13 @@ class ServerStatusView(generic.ObjectView):
 
     def get_extra_context(self, request: HttpRequest, instance: Server) -> dict[str, Any]:
         """Fetch live status and global options from Kea and expose them to the template."""
+        try:
+            statuses = self._get_statuses(instance)
+        except Exception:
+            logger.exception("Failed to fetch statuses for server %s", instance.pk)
+            statuses = {}
         return {
-            "statuses": self._get_statuses(instance),
+            "statuses": statuses,
             "global_options": _get_global_options(instance),
         }
 
@@ -285,7 +305,8 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
             return [], None
 
         args = resp[0]["arguments"]
-        assert args is not None
+        if args is None:
+            raise RuntimeError("Unexpected None arguments from lease-get-page")
 
         raw_leases = args["leases"]
         next = f"{raw_leases[-1]['ip-address']}" if args["count"] == per_page else None
@@ -339,7 +360,8 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
             return []
 
         args = resp[0]["arguments"]
-        assert args is not None
+        if args is None:
+            raise RuntimeError(f"Unexpected None arguments from lease{self.dhcp_version}-get{command}")
         if multiple is True:
             return format_leases(args["leases"])
         return format_leases([args])
@@ -600,7 +622,8 @@ class BaseServerDHCPSubnetsView(generic.ObjectChildrenView):
 
         client = server.get_client(version=self.dhcp_version)
         config = client.command("config-get", service=[f"dhcp{self.dhcp_version}"])
-        assert config[0]["arguments"] is not None
+        if config[0]["arguments"] is None:
+            raise RuntimeError(f"Unexpected None arguments from config-get for dhcp{self.dhcp_version}")
         subnets = config[0]["arguments"][f"Dhcp{self.dhcp_version}"][f"subnet{self.dhcp_version}"]
         subnet_list = [
             {
@@ -651,7 +674,6 @@ class BaseServerDHCPSubnetsView(generic.ObjectChildrenView):
             return resp
 
         # We can't use the original get() since it calls get_table_configs which requires a NetBox model.
-        instance = self.get_object(**kwargs)
         child_objects = self.get_children(request, instance)
 
         table_data = self.prep_table_data(request, child_objects, instance)
@@ -733,8 +755,11 @@ def _enrich_reservations_with_lease_status(client: "KeaClient", reservations: li
     unique_subnet_ids = {r.get("subnet-id") for r in reservations if r.get("subnet-id")}
 
     active_lease_ips: set[str] = set()
-    try:
-        for sid in unique_subnet_ids:
+    hook_unavailable = False
+
+    def _fetch_leases_for_subnet(sid: int) -> list[str] | None:
+        """Return list of lease IPs, or None if the lease_cmds hook is not loaded."""
+        try:
             resp = client.command(
                 lease_cmd,
                 service=[service],
@@ -743,12 +768,29 @@ def _enrich_reservations_with_lease_status(client: "KeaClient", reservations: li
             )
             if resp[0]["result"] != 3:
                 args = resp[0].get("arguments", {})
-                for lease in args.get("leases", []):
-                    active_lease_ips.add(lease.get("ip-address", ""))
-    except KeaException:
-        # lease_cmds hook not loaded or command error — leave has_active_lease unset
+                return [lease.get("ip-address", "") for lease in args.get("leases", [])]
+            return []
+        except KeaException as exc:
+            if exc.response.get("result") == 2:
+                return None  # hook not loaded
+            return []
+        except Exception:  # noqa: BLE001
+            return []
+
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(unique_subnet_ids), 10)) as executor:
+            futures = {executor.submit(_fetch_leases_for_subnet, sid): sid for sid in unique_subnet_ids}
+            for future in concurrent.futures.as_completed(futures):
+                result = future.result()
+                if result is None:
+                    hook_unavailable = True
+                else:
+                    for ip in result:
+                        active_lease_ips.add(ip)
+    except Exception:  # noqa: BLE001
         return
-    except Exception:
+
+    if hook_unavailable:
         return
 
     for r in reservations:
@@ -1300,6 +1342,8 @@ class _BasePoolDeleteView(_KeaChangeMixin, generic.ObjectView):
         return reverse(f"plugins:netbox_kea:server_subnets{self.dhcp_version}", args=[pk])
 
     def get(self, request: HttpRequest, pk: int, subnet_id: int, pool: str) -> HttpResponse:
+        if not _POOL_RE.match(pool):
+            return HttpResponse("Invalid pool format.", status=400)
         server = self.get_object(pk=pk)
         return render(
             request,
@@ -1314,6 +1358,8 @@ class _BasePoolDeleteView(_KeaChangeMixin, generic.ObjectView):
         )
 
     def post(self, request: HttpRequest, pk: int, subnet_id: int, pool: str) -> HttpResponse:
+        if not _POOL_RE.match(pool):
+            return HttpResponse("Invalid pool format.", status=400)
         server = self.get_object(pk=pk)
         return_url = self._subnets_url(pk)
         client = server.get_client(version=self.dhcp_version)
@@ -1597,6 +1643,52 @@ def _fetch_reservation_by_ip(client: KeaClient, version: int) -> tuple[dict[str,
     return reservation_by_ip, True
 
 
+def _fetch_reservation_by_ip_for_leases(
+    client: "KeaClient", version: int, leases: list[dict[str, Any]]
+) -> tuple[dict[str, dict], bool]:
+    """Fetch reservations only for the IPs present in *leases* (targeted lookup).
+
+    Uses individual ``reservation-get`` calls (one per lease) in parallel so
+    only the IPs we actually care about are queried — avoiding a full
+    reservation-page scan on servers with large reservation databases.
+
+    Returns ``(reservation_by_ip, host_cmds_available)``.
+    """
+    service = f"dhcp{version}"
+    reservation_by_ip: dict[str, dict] = {}
+    host_cmds_available = True
+
+    def _fetch_one(lease: dict) -> tuple[str, dict | None, bool]:
+        ip = lease.get("ip_address", "")
+        subnet_id = lease.get("subnet_id")
+        if not ip or not subnet_id:
+            return ip, None, True
+        try:
+            r = client.reservation_get(service, subnet_id=int(subnet_id), ip_address=ip)
+            return ip, r, True
+        except KeaException as exc:
+            if exc.response.get("result") == 2:
+                return ip, None, False  # hook not available
+            return ip, None, True
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("reservation-get failed for %s: %s", ip, exc)
+            return ip, None, True
+
+    if not leases:
+        return reservation_by_ip, host_cmds_available
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(leases), 10)) as executor:
+        futures = [executor.submit(_fetch_one, lease) for lease in leases]
+        for future in concurrent.futures.as_completed(futures):
+            ip, rsv, hook_ok = future.result()
+            if not hook_ok:
+                host_cmds_available = False
+            if rsv is not None:
+                reservation_by_ip[ip] = rsv
+
+    return reservation_by_ip, host_cmds_available
+
+
 def _enrich_leases_with_badges(leases: list[dict[str, Any]], server: "Server", version: int) -> None:
     """In-place: add reservation and NetBox IPAM badge fields to lease dicts.
 
@@ -1615,7 +1707,7 @@ def _enrich_leases_with_badges(leases: list[dict[str, Any]], server: "Server", v
     reservation_by_ip: dict[str, dict] = {}
     host_cmds_available = True
     try:
-        reservation_by_ip, host_cmds_available = _fetch_reservation_by_ip(client, version)
+        reservation_by_ip, host_cmds_available = _fetch_reservation_by_ip_for_leases(client, version, leases)
     except KeaException as exc:
         if exc.response.get("result") == 2:
             host_cmds_available = False
@@ -1629,10 +1721,11 @@ def _enrich_leases_with_badges(leases: list[dict[str, Any]], server: "Server", v
     for lease in leases:
         ip = lease.get("ip_address", "")
         rsv = reservation_by_ip.get(ip)
-        if rsv:
+        rsv_subnet_id = rsv.get("subnet-id") if isinstance(rsv, dict) else None
+        if rsv and rsv_subnet_id is not None:
             lease["reservation_url"] = reverse(
                 reservation_url_name,
-                args=[server.pk, rsv["subnet-id"], ip],
+                args=[server.pk, rsv_subnet_id, ip],
             )
             lease["create_reservation_url"] = None
         elif host_cmds_available:
@@ -1759,7 +1852,8 @@ def _fetch_subnets_from_server(server: "Server", version: int) -> list[dict[str,
 
     client = server.get_client(version=version)
     config = client.command("config-get", service=[f"dhcp{version}"])
-    assert config[0]["arguments"] is not None
+    if config[0]["arguments"] is None:
+        raise RuntimeError(f"Unexpected None arguments from config-get for dhcp{version}")
     dhcp_key = f"Dhcp{version}"
     subnet_key = f"subnet{version}"
     args = config[0]["arguments"][dhcp_key]
@@ -2055,11 +2149,16 @@ class _BaseSyncView(ConditionalLoginRequiredMixin, View):
         if not (request.user.has_perm("ipam.add_ipaddress") and request.user.has_perm("ipam.change_ipaddress")):
             return HttpResponseForbidden("You do not have permission to sync to NetBox IPAM.")
 
-        get_object_or_404(Server, pk=pk)
+        get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
 
         ip_str = request.POST.get("ip_address", "").strip()
         if not ip_str:
             return HttpResponse("ip_address is required", status=400)
+
+        try:
+            IPAddress(ip_str)
+        except (ValueError, Exception):
+            return HttpResponse(f"Invalid IP address: {ip_str!r}", status=400)
 
         hostname = request.POST.get("hostname", "").strip()
         try:
@@ -2123,10 +2222,18 @@ class _BaseBulkReservationSyncView(ConditionalLoginRequiredMixin, View):
         if not (request.user.has_perm("ipam.add_ipaddress") and request.user.has_perm("ipam.change_ipaddress")):
             return HttpResponseForbidden("You do not have permission to sync to NetBox IPAM.")
 
-        server = get_object_or_404(Server, pk=pk)
+        server = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
         from .sync import sync_reservation_to_netbox
 
-        reservations = _fetch_reservations_from_server(server, self.dhcp_version)
+        try:
+            reservations = _fetch_reservations_from_server(server, self.dhcp_version)
+        except Exception:
+            logger.exception("Failed to fetch reservations from %s (DHCPv%s)", server.name, self.dhcp_version)
+            messages.error(request, "Failed to fetch reservations: see server logs for details.")
+            return HttpResponseRedirect(
+                reverse(f"plugins:netbox_kea:server_reservations{self.dhcp_version}", args=[pk])
+            )
+
         created = updated = errors = 0
         for res in reservations:
             if not res.get("ip-address") and not res.get("ip-addresses"):
@@ -2185,16 +2292,16 @@ class IPAddressKeaReservationsView(ConditionalLoginRequiredMixin, View):
     def get(self, request: HttpRequest, pk: int) -> HttpResponse:  # noqa: D102
         from ipam.models import IPAddress as NbIP
 
-        nb_ip = get_object_or_404(NbIP, pk=pk)
+        nb_ip = get_object_or_404(NbIP.objects.restrict(request.user, "view"), pk=pk)
         ip_str = str(nb_ip.address.ip)
         is_v6 = ":" in ip_str
         version = 6 if is_v6 else 4
 
         if version == 4:
-            servers = Server.objects.filter(dhcp4=True)
+            servers = Server.objects.restrict(request.user, "view").filter(dhcp4=True)
             add_url_name = "plugins:netbox_kea:server_reservation4_add"
         else:
-            servers = Server.objects.filter(dhcp6=True)
+            servers = Server.objects.restrict(request.user, "view").filter(dhcp6=True)
             add_url_name = "plugins:netbox_kea:server_reservation6_add"
 
         server_links = []

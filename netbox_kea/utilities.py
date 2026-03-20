@@ -1,3 +1,4 @@
+import logging
 import re
 from collections.abc import Callable
 from datetime import datetime
@@ -11,6 +12,8 @@ from utilities.views import ViewTab
 
 from . import constants
 from .models import Server
+
+logger = logging.getLogger(__name__)
 
 
 def format_duration(s: int | None) -> str | None:
@@ -32,8 +35,9 @@ def _enrich_lease(now: datetime, lease: dict[str, Any]) -> dict[str, Any]:
     # https://kea.readthedocs.io/en/kea-2.2.0/arm/hooks.html?highlight=cltt#the-lease4-get-lease6-get-commands
     cltt = lease["cltt"]
     valid_lft = lease["valid_lft"]
-    assert isinstance(cltt, int)
-    assert isinstance(valid_lft, int)
+    if not isinstance(cltt, int) or not isinstance(valid_lft, int):
+        logger.warning("Unexpected non-integer cltt/valid_lft in lease: %s", lease.get("ip-address", "?"))
+        return lease
     expires_at = datetime.fromtimestamp(cltt + valid_lft)
     lease["expires_at"] = expires_at
     lease["expires_in"] = (expires_at - now).seconds

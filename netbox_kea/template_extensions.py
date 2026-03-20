@@ -35,11 +35,12 @@ class IPAddressKeaPanel(PluginTemplateExtension):
         is_v6 = ":" in ip_str
         version = 6 if is_v6 else 4
 
+        request = self.context["request"]
         if version == 4:
-            servers = Server.objects.filter(dhcp4=True)
+            servers = Server.objects.restrict(request.user, "view").filter(dhcp4=True)
             add_url_name = "plugins:netbox_kea:server_reservation4_add"
         else:
-            servers = Server.objects.filter(dhcp6=True)
+            servers = Server.objects.restrict(request.user, "view").filter(dhcp6=True)
             add_url_name = "plugins:netbox_kea:server_reservation6_add"
 
         server_links = []

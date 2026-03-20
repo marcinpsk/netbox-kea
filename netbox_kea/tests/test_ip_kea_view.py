@@ -52,7 +52,7 @@ class TestIPAddressKeaViewAuth(TestCase):
     """Login and 404 behaviour."""
 
     def setUp(self):
-        self.user = User.objects.create_user("tester", password="pass")
+        self.user = User.objects.create_superuser("tester", password="pass")
 
     def test_login_required(self):
         nb_ip = _make_ip("10.0.0.1/24")
@@ -81,7 +81,7 @@ class TestIPv4AddressPanel(TestCase):
     """For an IPv4 address only dhcp4-enabled servers appear."""
 
     def setUp(self):
-        self.user = User.objects.create_user("tester4", password="pass")
+        self.user = User.objects.create_superuser("tester4", password="pass")
         self.client.force_login(self.user)
         self.v4server = _make_server("kea-v4", dhcp4=True, dhcp6=False)
         self.v6server = _make_server("kea-v6", dhcp4=False, dhcp6=True)
@@ -127,7 +127,7 @@ class TestIPv6AddressPanel(TestCase):
     """For an IPv6 address only dhcp6-enabled servers appear."""
 
     def setUp(self):
-        self.user = User.objects.create_user("tester6", password="pass")
+        self.user = User.objects.create_superuser("tester6", password="pass")
         self.client.force_login(self.user)
         self.v4server = _make_server("kea-v4-only", dhcp4=True, dhcp6=False)
         self.v6server = _make_server("kea-v6-only", dhcp4=False, dhcp6=True)
@@ -165,7 +165,7 @@ class TestDualStackServer(TestCase):
     """A server with both dhcp4+dhcp6 appears for both address families."""
 
     def setUp(self):
-        self.user = User.objects.create_user("tester_dual", password="pass")
+        self.user = User.objects.create_superuser("tester_dual", password="pass")
         self.client.force_login(self.user)
         self.dual = _make_server("kea-dual", dhcp4=True, dhcp6=True)
 
@@ -190,7 +190,7 @@ class TestIPWithoutHostname(TestCase):
     """When dns_name is empty the hostname param is omitted or empty."""
 
     def setUp(self):
-        self.user = User.objects.create_user("tester_no_dns", password="pass")
+        self.user = User.objects.create_superuser("tester_no_dns", password="pass")
         self.client.force_login(self.user)
         _make_server("kea-nodns", dhcp4=True)
 

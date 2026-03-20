@@ -795,7 +795,7 @@ class TestLeaseReserveBadge(_ReservationViewBase):
     def test_reserve_badge_shown_when_no_reservation(self, MockKeaClient):
         """A lease without a matching reservation must show '+ Reserve' link."""
         mock = MockKeaClient.return_value
-        mock.reservation_get_page.return_value = ([], 0, 0)
+        mock.reservation_get.return_value = None
         mock.command.return_value = [{"result": 0, "arguments": {**self._LEASE}}]
         response = self._htmx_get({"by": "ip", "q": "192.168.1.200"})
         self.assertEqual(response.status_code, 200)
@@ -807,7 +807,7 @@ class TestLeaseReserveBadge(_ReservationViewBase):
         mock = MockKeaClient.return_value
         reservation = dict(_SAMPLE_RESERVATION4)
         reservation["ip-address"] = "192.168.1.200"
-        mock.reservation_get_page.return_value = ([reservation], 0, 0)
+        mock.reservation_get.return_value = reservation
         mock.command.return_value = [{"result": 0, "arguments": {**self._LEASE}}]
         response = self._htmx_get({"by": "ip", "q": "192.168.1.200"})
         self.assertEqual(response.status_code, 200)

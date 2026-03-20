@@ -73,6 +73,9 @@ class Server(NetBoxModel):
 
     class Meta:
         ordering = ("name",)
+        permissions = [
+            ("bulk_delete_lease_from_server", "Can bulk delete DHCP leases from server"),
+        ]
 
     def __str__(self):
         return self.name

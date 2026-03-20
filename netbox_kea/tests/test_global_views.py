@@ -598,7 +598,7 @@ class TestCombinedLeases4Enrichment(_CombinedViewBase):
             return [{"result": 2, "arguments": {}}]
 
         mock_client.command.side_effect = command_side_effect
-        mock_client.reservation_get_page.return_value = (list(reservations), 0, 0)
+        mock_client.reservation_get.return_value = reservations[0] if reservations else None
 
     @patch("netbox_kea.models.KeaClient")
     def test_reserved_badge_appears_when_reservation_exists(self, MockKeaClient):
@@ -740,7 +740,6 @@ _MOCK_RESERVATION_V6_ENRICHED = {
     "subnet-id": 1,
     "duid": "00:01:aa:bb",
     "ip-addresses": ["2001:db8::5"],
-    "ip_address": "2001:db8::5",
     "hostname": "enriched-host-v6",
 }
 
@@ -766,7 +765,7 @@ class TestCombinedLeases6Enrichment(_CombinedViewBase):
             return [{"result": 2, "arguments": {}}]
 
         mock_client.command.side_effect = command_side_effect
-        mock_client.reservation_get_page.return_value = (list(reservations), 0, 0)
+        mock_client.reservation_get.return_value = reservations[0] if reservations else None
 
     @patch("netbox_kea.models.KeaClient")
     def test_reserved_badge_appears_when_reservation_exists(self, MockKeaClient):

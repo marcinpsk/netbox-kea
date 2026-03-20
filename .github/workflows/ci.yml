@@ -10,6 +10,95 @@ name: CI
     - cron: 0 0 * * 0
 
 jobs:
+  unit-test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: netbox
+          POSTGRES_PASSWORD: netbox
+          POSTGRES_DB: netbox
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout NetBox
+        uses: actions/checkout@v4
+        with:
+          repository: netbox-community/netbox
+          ref: v4.5.5
+          path: netbox
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version-file: pyproject.toml
+
+      - name: Install dependencies
+        run: |
+          uv pip install --system pytest pytest-django pytest-cov tblib
+          uv pip install --system -r netbox/requirements.txt
+          uv pip install --system -e .
+
+      - name: Set up NetBox configuration
+        working-directory: netbox/netbox
+        run: |
+          cat > netbox/configuration.py << 'EOF'
+          ALLOWED_HOSTS = ['*']
+          DATABASE = {
+              'NAME': 'netbox',
+              'USER': 'netbox',
+              'PASSWORD': 'netbox',
+              'HOST': 'localhost',
+              'PORT': '',
+              'CONN_MAX_AGE': 300,
+              'ENGINE': 'django.db.backends.postgresql'
+          }
+          REDIS = {
+              'tasks': {'HOST': 'localhost', 'PORT': 6379, 'DATABASE': 0},
+              'caching': {'HOST': 'localhost', 'PORT': 6379, 'DATABASE': 1}
+          }
+          SECRET_KEY = 'ci-test-secret-key-not-for-production-1234567890123456'
+          API_TOKEN_PEPPERS = {0: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'}
+          PLUGINS = ['netbox_kea']
+          PLUGINS_CONFIG = {'netbox_kea': {'kea_timeout': 30}}
+          EOF
+
+      - name: Run unit tests with coverage
+        working-directory: netbox/netbox
+        env:
+          DJANGO_SETTINGS_MODULE: netbox.configuration
+        run: |
+          pytest ${{ github.workspace }}/netbox_kea/tests/ \
+            --cov=netbox_kea \
+            --cov-report=xml:${{ github.workspace }}/coverage.xml \
+            --no-header -q
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: ./coverage.xml
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
+
   lint:
     runs-on: ubuntu-latest
     steps:
@@ -85,6 +174,7 @@ jobs:
         with:
           name: playwright-traces-${{ matrix.netbox }}
           path: test-results/
+          retention-days: 90
 
       - name: Show Docker logs
         if: ${{ always() }}
