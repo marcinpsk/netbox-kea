@@ -43,9 +43,10 @@ class IPAddressKeaPanel(PluginTemplateExtension):
         server_links = []
         for server in servers:
             base_url = reverse(add_url_name, args=[server.pk])
+            ip_param = "ip_addresses" if version == 6 else "ip_address"
             params = urlencode(
                 {
-                    "ip_address": ip_str,
+                    ip_param: ip_str,
                     "hostname": nb_ip.dns_name or "",
                 }
             )

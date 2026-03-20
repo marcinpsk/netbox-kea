@@ -47,6 +47,10 @@
            class="btn btn-sm btn-outline-info">
           <i class="mdi mdi-bookmark-multiple"></i> v6 Reservations
         </a>
+        <a href="{% url 'plugins:netbox_kea:combined_subnets6' %}?server={{ server.pk }}"
+           class="btn btn-sm btn-outline-info">
+          <i class="mdi mdi-lan"></i> v6 Subnets
+        </a>
         {% endif %}
       </div>
     </div>

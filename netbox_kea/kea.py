@@ -307,7 +307,7 @@ class KeaClient:
         if pools:
             subnet_def["pools"] = [{"pool": p} for p in pools]
         option_data: list[dict[str, str]] = []
-        if gateway:
+        if gateway and version == 4:
             option_data.append({"name": "routers", "data": gateway})
         if dns_servers:
             option_data.append({"name": "domain-name-servers", "data": ", ".join(dns_servers)})
