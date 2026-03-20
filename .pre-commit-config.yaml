@@ -39,7 +39,8 @@ repos:
       - id: reuse-lint
         name: REUSE Compliance (SPDX headers)
         entry: reuse lint
-        language: system
+        language: python
+        additional_dependencies: [reuse]
         pass_filenames: false
 
 # Configuration
