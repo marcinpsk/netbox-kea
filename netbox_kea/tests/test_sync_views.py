@@ -305,3 +305,44 @@ class TestReservation4BulkSyncView(_SyncViewBase):
         self.client.logout()
         response = self.client.post(self._url())
         self.assertIn(response.status_code, [302, 403])
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Issue #9: Authorization checks before IPAM sync mutations
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestSyncViewPermissionChecks(_SyncViewBase):
+    """Sync endpoints must reject users without IPAM write permissions."""
+
+    def setUp(self):
+        super().setUp()
+        # Create a non-privileged user with no IPAM permissions
+        self.limited_user = User.objects.create_user(
+            username="limited_sync_user",
+            email="limited@example.com",
+            password="limitedpass",
+        )
+
+    def _login_limited(self):
+        self.client.logout()
+        self.client.force_login(self.limited_user)
+
+    def test_lease4_sync_requires_ipam_add_permission(self):
+        self._login_limited()
+        url = reverse("plugins:netbox_kea:server_lease4_sync", args=[self.server.pk])
+        response = self.client.post(url, {"ip_address": "192.168.99.1"})
+        self.assertEqual(response.status_code, 403)
+
+    def test_reservation4_sync_requires_ipam_add_permission(self):
+        self._login_limited()
+        url = reverse("plugins:netbox_kea:server_reservation4_sync", args=[self.server.pk])
+        response = self.client.post(url, {"ip_address": "192.168.99.2"})
+        self.assertEqual(response.status_code, 403)
+
+    def test_superuser_can_still_sync(self):
+        # self.user is superuser — should succeed as before
+        url = reverse("plugins:netbox_kea:server_lease4_sync", args=[self.server.pk])
+        response = self.client.post(url, {"ip_address": "192.168.99.3"})
+        self.assertEqual(response.status_code, 200)

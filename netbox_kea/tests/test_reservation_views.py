@@ -182,6 +182,31 @@ class TestServerReservations4View(_ReservationViewBase):
         self.assertEqual(response.status_code, 302)
         self.assertIn("login", response.url)
 
+    @patch("netbox_kea.models.KeaClient")
+    def test_drains_multiple_pages_from_kea(self, MockKeaClient):
+        """View must call reservation_get_page in a loop until all pages are fetched."""
+        mock_client = MockKeaClient.return_value
+        mock_client.get_available_commands.return_value = _RESERVATION_COMMANDS
+        page2 = [dict(_SAMPLE_RESERVATION4, **{"ip-address": "10.0.1.1", "subnet-id": 1})]
+        # Simulate drain: side_effect returns full page then partial page.
+        # The view uses limit=100 internally, so page1 has < 100 items and will
+        # be detected as the last page after 1 call — use side_effect to control
+        # the 2-call sequence explicitly via a larger page1.
+        page1_full = [
+            dict(_SAMPLE_RESERVATION4, **{"ip-address": f"10.0.0.{i}", "subnet-id": 1})
+            for i in range(1, 101)  # exactly 100 items == limit → loop continues
+        ]
+        mock_client.reservation_get_page.side_effect = [
+            (page1_full, 100, 0),
+            (page2, 0, 0),
+        ]
+        mock_client.command.return_value = [{"result": 0, "arguments": {"leases": [], "count": 0}}]
+        url = reverse("plugins:netbox_kea:server_reservations4", args=[self.server.pk])
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        # The crucial assertion: view made exactly 2 calls (drain loop worked)
+        self.assertEqual(mock_client.reservation_get_page.call_count, 2)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TestServerReservations6View
@@ -220,6 +245,29 @@ class TestServerReservations6View(_ReservationViewBase):
         url = reverse("plugins:netbox_kea:server_reservations6", args=[99999])
         response = self.client.get(url)
         self.assertEqual(response.status_code, 404)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_drains_multiple_pages_from_kea(self, MockKeaClient):
+        """View must call reservation_get_page in a loop until all pages are fetched."""
+        mock_client = MockKeaClient.return_value
+        mock_client.get_available_commands.return_value = _RESERVATION_COMMANDS
+        page2 = [dict(_SAMPLE_RESERVATION6, **{"ip-addresses": ["2001:db8::ff01"], "subnet-id": 1})]
+        mock_client.reservation_get_page.side_effect = [
+            (
+                [
+                    dict(_SAMPLE_RESERVATION6, **{"ip-addresses": [f"2001:db8::{i:x}"], "subnet-id": 1})
+                    for i in range(100)
+                ],
+                100,
+                0,
+            ),
+            (page2, 0, 0),
+        ]
+        mock_client.command.return_value = [{"result": 0, "arguments": {"leases": [], "count": 0}}]
+        url = reverse("plugins:netbox_kea:server_reservations6", args=[self.server.pk])
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(mock_client.reservation_get_page.call_count, 2)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

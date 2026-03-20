@@ -302,3 +302,54 @@ class TestBulkFetchNetboxIPs(TestCase):
         ip = NbIP.objects.create(address="10.2.0.5/24", status="reserved")
         result = bulk_fetch_netbox_ips(["10.2.0.5"])
         self.assertEqual(result["10.2.0.5"].pk, ip.pk)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Issue #3: Multi-address IPv6 reservation sync
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestSyncReservationMultiAddressV6(TestCase):
+    """sync_reservation_to_netbox must sync ALL ip-addresses for DHCPv6."""
+
+    def test_syncs_all_addresses_from_ip_addresses_list(self):
+        from ipam.models import IPAddress as NbIP
+
+        from netbox_kea.sync import sync_reservation_to_netbox
+
+        reservation = {
+            "ip-addresses": ["2001:db8::1", "2001:db8::2"],
+            "duid": "aa:bb:cc:dd:ee:ff",
+            "hostname": "v6host.example.com",
+            "subnet-id": 1,
+        }
+        ip_obj, created = sync_reservation_to_netbox(reservation)
+        self.assertTrue(created)
+        self.assertTrue(
+            NbIP.objects.filter(address__startswith="2001:db8::1/").exists(),
+            "First address must be synced",
+        )
+        self.assertTrue(
+            NbIP.objects.filter(address__startswith="2001:db8::2/").exists(),
+            "Second address must also be synced",
+        )
+
+    def test_returns_first_address_as_primary(self):
+        from netbox_kea.sync import sync_reservation_to_netbox
+
+        reservation = {
+            "ip-addresses": ["2001:db8::10", "2001:db8::11"],
+            "duid": "11:22:33:44:55:66",
+            "subnet-id": 2,
+        }
+        ip_obj, _ = sync_reservation_to_netbox(reservation)
+        self.assertTrue(str(ip_obj.address).startswith("2001:db8::10/"))
+
+    def test_single_ip_address_field_still_works(self):
+        """Backward compat: ip-address (singular) still works."""
+        from netbox_kea.sync import sync_reservation_to_netbox
+
+        reservation = {"ip-address": "10.0.0.55", "hw-address": "aa:bb:cc:dd:ee:01", "subnet-id": 1}
+        ip_obj, created = sync_reservation_to_netbox(reservation)
+        self.assertTrue(created)
+        self.assertTrue(str(ip_obj.address).startswith("10.0.0.55/"))

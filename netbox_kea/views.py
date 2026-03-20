@@ -72,7 +72,7 @@ def _get_global_options(server: "Server") -> dict[str, dict[str, str]]:
             resp = client.command("config-get", service=[svc])
             dhcp_key = f"Dhcp{version}"
             option_data = resp[0]["arguments"][dhcp_key].get("option-data", [])
-            opts = format_option_data(option_data)
+            opts = format_option_data(option_data, version=version)
             if opts:
                 # Convert snake_case keys to "Title Case" for display
                 result[label] = {k.replace("_", " ").title(): v for k, v in opts.items()}
@@ -594,7 +594,7 @@ class BaseServerDHCPSubnetsView(generic.ObjectChildrenView):
                 "subnet": s["subnet"],
                 "dhcp_version": self.dhcp_version,
                 "server_pk": server.pk,
-                "options": format_option_data(s.get("option-data", [])),
+                "options": format_option_data(s.get("option-data", []), version=self.dhcp_version),
                 "pools": [p.get("pool", "") for p in s.get("pools", []) if p.get("pool")],
             }
             for s in subnets
@@ -609,7 +609,7 @@ class BaseServerDHCPSubnetsView(generic.ObjectChildrenView):
                     "shared_network": sn["name"],
                     "dhcp_version": self.dhcp_version,
                     "server_pk": server.pk,
-                    "options": format_option_data(s.get("option-data", [])),
+                    "options": format_option_data(s.get("option-data", []), version=self.dhcp_version),
                     "pools": [p.get("pool", "") for p in s.get("pools", []) if p.get("pool")],
                 }
                 for s in sn[f"subnet{self.dhcp_version}"]
@@ -757,7 +757,14 @@ class ServerReservations4View(generic.ObjectView):
         hook_available = True
         reservations: list[dict] = []
         try:
-            reservations, _, _ = client.reservation_get_page("dhcp4")
+            source_index, from_index, limit = 0, 0, 100
+            while True:
+                page, from_index, source_index = client.reservation_get_page(
+                    "dhcp4", source_index=source_index, from_index=from_index, limit=limit
+                )
+                reservations.extend(page)
+                if len(page) < limit:
+                    break
         except KeaException as exc:
             if exc.response.get("result") == 2:
                 hook_available = False
@@ -799,7 +806,14 @@ class ServerReservations6View(generic.ObjectView):
         hook_available = True
         reservations: list[dict] = []
         try:
-            reservations, _, _ = client.reservation_get_page("dhcp6")
+            source_index, from_index, limit = 0, 0, 100
+            while True:
+                page, from_index, source_index = client.reservation_get_page(
+                    "dhcp6", source_index=source_index, from_index=from_index, limit=limit
+                )
+                reservations.extend(page)
+                if len(page) < limit:
+                    break
         except KeaException as exc:
             if exc.response.get("result") == 2:
                 hook_available = False
@@ -1555,17 +1569,28 @@ def _enrich_leases_with_badges(leases: list[dict[str, Any]], server: "Server", v
         elif host_cmds_available:
             lease["reservation_url"] = None
             base_add = reverse(add_url_name, args=[server.pk])
-            params = {
-                k: v
-                for k, v in {
-                    "subnet_id": lease.get("subnet_id", ""),
-                    "ip_address": ip,
-                    "identifier_type": "hw-address",
-                    "identifier": lease.get("hw_address", ""),
-                    "hostname": lease.get("hostname", ""),
-                }.items()
-                if v
-            }
+            if version == 6:
+                params = {
+                    k: v
+                    for k, v in {
+                        "subnet_id": lease.get("subnet_id", ""),
+                        "ip_addresses": ip,
+                        "hostname": lease.get("hostname", ""),
+                    }.items()
+                    if v
+                }
+            else:
+                params = {
+                    k: v
+                    for k, v in {
+                        "subnet_id": lease.get("subnet_id", ""),
+                        "ip_address": ip,
+                        "identifier_type": "hw-address",
+                        "identifier": lease.get("hw_address", ""),
+                        "hostname": lease.get("hostname", ""),
+                    }.items()
+                    if v
+                }
             lease["create_reservation_url"] = f"{base_add}?{_urlencode(params)}" if params else base_add
 
     sync_url = reverse(f"plugins:netbox_kea:server_lease{version}_sync", args=[server.pk])
@@ -1675,7 +1700,7 @@ def _fetch_subnets_from_server(server: "Server", version: int) -> list[dict[str,
             "dhcp_version": version,
             "server_pk": server.pk,
             "server_name": server.name,
-            "options": format_option_data(s.get("option-data", [])),
+            "options": format_option_data(s.get("option-data", []), version=version),
             "pools": [p.get("pool", "") for p in s.get("pools", []) if p.get("pool")],
         }
         for s in args.get(subnet_key, [])
@@ -1690,7 +1715,7 @@ def _fetch_subnets_from_server(server: "Server", version: int) -> list[dict[str,
                 "dhcp_version": version,
                 "server_pk": server.pk,
                 "server_name": server.name,
-                "options": format_option_data(s.get("option-data", [])),
+                "options": format_option_data(s.get("option-data", []), version=version),
                 "pools": [p.get("pool", "") for p in s.get("pools", []) if p.get("pool")],
             }
             for s in sn.get(subnet_key, [])
@@ -1936,6 +1961,9 @@ class _BaseSyncView(ConditionalLoginRequiredMixin, View):
 
     def post(self, request: HttpRequest, pk: int) -> HttpResponse:
         from django.shortcuts import get_object_or_404
+
+        if not (request.user.has_perm("ipam.add_ipaddress") or request.user.has_perm("ipam.change_ipaddress")):
+            return HttpResponseForbidden("You do not have permission to sync to NetBox IPAM.")
 
         get_object_or_404(Server, pk=pk)
 

@@ -181,35 +181,50 @@ def sync_reservation_to_netbox(reservation: dict) -> tuple[NbIPAddress, bool]:
     The ``status`` is set to ``"reserved"`` and ``dns_name`` to the
     reservation hostname.
 
+    For DHCPv6 reservations with multiple ``ip-addresses``, all addresses are
+    synced.  The first address is returned as the primary ``(ip_object, created)``
+    result.
+
     Raises ``ValueError`` when the reservation contains no IP address.
 
-    Returns ``(ip_object, created)`` where *created* is ``True`` on the first
-    call for a given IP.
+    Returns ``(ip_object, created)`` where *created* is ``True`` if any address
+    was created for the first time.
     """
     from ipam.models import IPAddress as NbIP
 
-    ip_str: str = reservation.get("ip-address") or ((reservation.get("ip-addresses") or [""])[0])
-    if not ip_str:
+    primary_ip: str = reservation.get("ip-address") or ((reservation.get("ip-addresses") or [""])[0])
+    if not primary_ip:
         raise ValueError("Reservation has no ip-address or ip-addresses field.")
 
     hostname: str = reservation.get("hostname", "")
+    all_ips: list[str] = [primary_ip]
+    if "ip-addresses" in reservation and len(reservation["ip-addresses"]) > 1:
+        all_ips = reservation["ip-addresses"]
 
-    ip_obj = get_netbox_ip(ip_str)
-    if ip_obj is None:
-        prefix_len = find_prefix_length(ip_str)
-        ip_obj = NbIP(address=f"{ip_str}/{prefix_len}")
-        created = True
-    else:
-        created = False
+    primary_obj: NbIPAddress | None = None
+    any_created = False
 
-    changed = _apply_ip_fields(
-        ip_obj,
-        status="reserved",
-        hostname=hostname,
-        description="Synced from Kea DHCP reservation",
-    )
+    for ip_str in all_ips:
+        ip_obj = get_netbox_ip(ip_str)
+        if ip_obj is None:
+            prefix_len = find_prefix_length(ip_str)
+            ip_obj = NbIP(address=f"{ip_str}/{prefix_len}")
+            created = True
+        else:
+            created = False
 
-    if created or changed:
-        ip_obj.save()
+        changed = _apply_ip_fields(
+            ip_obj,
+            status="reserved",
+            hostname=hostname,
+            description="Synced from Kea DHCP reservation",
+        )
 
-    return ip_obj, created
+        if created or changed:
+            ip_obj.save()
+
+        if primary_obj is None:
+            primary_obj = ip_obj
+            any_created = created
+
+    return primary_obj, any_created  # type: ignore[return-value]

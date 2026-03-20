@@ -213,12 +213,12 @@ class TestFormatOptionData(TestCase):
 
     def test_v6_dns_option23(self):
         opts = [{"code": 23, "name": "dns-servers", "data": "2001:db8::1", "space": "dhcp6"}]
-        result = format_option_data(opts)
+        result = format_option_data(opts, version=6)
         self.assertEqual(result["dns_servers"], "2001:db8::1")
 
     def test_v6_sntp_option31(self):
         opts = [{"code": 31, "name": "sntp-servers", "data": "2001:db8::ntp", "space": "dhcp6"}]
-        result = format_option_data(opts)
+        result = format_option_data(opts, version=6)
         self.assertEqual(result["ntp_servers"], "2001:db8::ntp")
 
     def test_unknown_code_uses_option_name(self):
@@ -250,6 +250,32 @@ class TestFormatOptionData(TestCase):
         result = format_option_data(opts)
         self.assertIn("netbios_name_servers", result)
         self.assertNotIn("netbios-name-servers", result)
+
+    def test_v4_code23_not_dns_servers(self):
+        """Code 23 in v4 context (IP-TTL) should not be treated as dns_servers."""
+        opts = [{"code": 23, "name": "default-ip-ttl", "data": "64"}]
+        result = format_option_data(opts, version=4)
+        # Falls back to name-based lookup — not the v6 dns_servers mapping
+        self.assertNotIn("dns_servers", result)
+        self.assertIn("default_ip_ttl", result)
+
+    def test_v6_code23_is_dns_servers(self):
+        """Code 23 in v6 context is the standard DNS server option."""
+        opts = [{"code": 23, "data": "2001:db8::1"}]
+        result = format_option_data(opts, version=6)
+        self.assertIn("dns_servers", result)
+
+    def test_v4_code6_is_dns_servers(self):
+        """Code 6 in v4 context is DNS servers (standard DHCPv4)."""
+        opts = [{"code": 6, "data": "8.8.8.8"}]
+        result = format_option_data(opts, version=4)
+        self.assertIn("dns_servers", result)
+
+    def test_default_version_is_v4(self):
+        """Calling without version defaults to v4 behaviour."""
+        opts = [{"code": 3, "data": "10.0.0.1"}]
+        result = format_option_data(opts)
+        self.assertIn("gateway", result)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -359,3 +385,42 @@ class TestParseSubnetStats(TestCase):
         self.assertEqual(len(stats), 2)
         self.assertIn(1, stats)
         self.assertIn(2, stats)
+
+    def test_short_row_is_skipped_gracefully(self):
+        """A row with too few columns must be skipped without raising IndexError."""
+        response = [
+            {
+                "result": 0,
+                "arguments": {
+                    "result-set": {
+                        "columns": ["subnet-id", "total-addresses", "assigned-addresses"],
+                        "rows": [
+                            [1, 100, 50],  # valid row
+                            [2],  # malformed — too short
+                            [3, 200, 100],  # valid row
+                        ],
+                    }
+                },
+            }
+        ]
+        stats = parse_subnet_stats(response, version=4)
+        self.assertIn(1, stats)
+        self.assertNotIn(2, stats)
+        self.assertIn(3, stats)
+
+    def test_row_with_none_values_handled(self):
+        """A row with None in numeric fields must not raise."""
+        response = [
+            {
+                "result": 0,
+                "arguments": {
+                    "result-set": {
+                        "columns": ["subnet-id", "total-addresses", "assigned-addresses"],
+                        "rows": [[1, None, None]],
+                    }
+                },
+            }
+        ]
+        stats = parse_subnet_stats(response, version=4)
+        self.assertIn(1, stats)
+        self.assertEqual(stats[1]["utilization"], "0%")

@@ -75,23 +75,24 @@ def is_hex_string(s: str, min_octets: int, max_octets: int):
     return octets >= min_octets and octets <= max_octets
 
 
-def format_option_data(option_list: list[dict[str, Any]]) -> dict[str, str]:
+def format_option_data(option_list: list[dict[str, Any]], version: int = 4) -> dict[str, str]:
     """Parse a Kea ``option-data`` list into a friendly ``{name: value}`` dict.
 
-    Well-known DHCP option codes are mapped to canonical names.  Unknown codes
+    Well-known DHCP option codes are mapped to canonical names using a
+    version-specific lookup table (v4 and v6 share some code numbers with
+    different meanings, so the caller must pass the DHCP version).  Unknown codes
     use the option's own ``name`` field (dashes converted to underscores) or
     fall back to ``option_<code>`` when no name is present.
 
     Args:
         option_list: Raw ``option-data`` list from a Kea response.
+        version: DHCP version (4 or 6). Defaults to 4 for backward compatibility.
 
     Returns:
         A ``{field_name: value_str}`` dict suitable for template rendering.
 
     """
-    # Maps DHCP option code → canonical field name
-    _KNOWN_CODES: dict[int, str] = {
-        # DHCPv4
+    _KNOWN_CODES_V4: dict[int, str] = {
         1: "subnet_mask",
         3: "gateway",
         6: "dns_servers",
@@ -101,18 +102,21 @@ def format_option_data(option_list: list[dict[str, Any]]) -> dict[str, str]:
         44: "netbios_name_servers",
         119: "domain_search",
         121: "classless_static_routes",
-        # DHCPv6 (overlapping codes are intentional — space field disambiguates)
+    }
+    _KNOWN_CODES_V6: dict[int, str] = {
         23: "dns_servers",
         24: "domain_search",
         31: "ntp_servers",
     }
 
+    known_codes = _KNOWN_CODES_V6 if version == 6 else _KNOWN_CODES_V4
+
     result: dict[str, str] = {}
     for opt in option_list:
         code = opt.get("code")
         data = opt.get("data", "")
-        if code in _KNOWN_CODES:
-            key = _KNOWN_CODES[code]
+        if code in known_codes:
+            key = known_codes[code]
         elif opt.get("name"):
             key = opt["name"].replace("-", "_")
         else:
@@ -151,7 +155,10 @@ def parse_subnet_stats(stat_response: list[dict[str, Any]], version: int) -> dic
         return {}
 
     stats: dict[int, dict[str, Any]] = {}
+    min_len = max(id_idx, total_idx, assigned_idx) + 1
     for row in rows:
+        if not isinstance(row, (list, tuple)) or len(row) < min_len:
+            continue
         subnet_id = row[id_idx]
         total = row[total_idx] or 0
         assigned = row[assigned_idx] or 0

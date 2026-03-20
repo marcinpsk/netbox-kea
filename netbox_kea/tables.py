@@ -364,16 +364,6 @@ _LEASE_STATUS_LINK_V4 = (
     "{% if record.has_active_lease %}"
     "<a href=\"{% url 'plugins:netbox_kea:server_leases4' record.server_pk %}?q={{ record.ip_address }}&by=ip\""
     ' class="badge text-bg-success text-decoration-none">Active Lease</a>'
-    "{% if record.sync_url and not record.netbox_ip_url %}"
-    ' <button type="button"'
-    ' hx-post="{{ record.sync_url }}"'
-    ' hx-vals=\'{"ip_address":"{{ record.ip_address|escapejs }}","hostname":"{{ record.hostname|default:""|escapejs }}"}\''
-    ' hx-target="closest td"'
-    ' hx-swap="innerHTML"'
-    ' class="badge text-bg-secondary border-0 ms-1"'
-    ' style="cursor:pointer">'
-    '<i class="mdi mdi-sync"></i> Sync</button>'
-    "{% endif %}"
     "{% else %}"
     '<span class="badge text-bg-secondary">No Lease</span>'
     "{% endif %}"
@@ -385,16 +375,6 @@ _LEASE_STATUS_LINK_V6 = (
     "{% if record.has_active_lease %}"
     "<a href=\"{% url 'plugins:netbox_kea:server_leases6' record.server_pk %}?q={{ record.ip_address }}&by=ip\""
     ' class="badge text-bg-success text-decoration-none">Active Lease</a>'
-    "{% if record.sync_url and not record.netbox_ip_url %}"
-    ' <button type="button"'
-    ' hx-post="{{ record.sync_url }}"'
-    ' hx-vals=\'{"ip_address":"{{ record.ip_address|escapejs }}","hostname":"{{ record.hostname|default:""|escapejs }}"}\''
-    ' hx-target="closest td"'
-    ' hx-swap="innerHTML"'
-    ' class="badge text-bg-secondary border-0 ms-1"'
-    ' style="cursor:pointer">'
-    '<i class="mdi mdi-sync"></i> Sync</button>'
-    "{% endif %}"
     "{% else %}"
     '<span class="badge text-bg-secondary">No Lease</span>'
     "{% endif %}"
