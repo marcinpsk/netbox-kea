@@ -39,16 +39,13 @@ _PLUGINS_CONFIG = {"netbox_kea": {"kea_timeout": 30}}
 
 _MOCK_RESERVATION_V4 = {
     "subnet-id": 1,
-    "subnet_id": 1,
     "hw-address": "aa:bb:cc:dd:ee:ff",
     "ip-address": "10.0.0.100",
-    "ip_address": "10.0.0.100",
     "hostname": "host-v4",
 }
 
 _MOCK_RESERVATION_V6 = {
     "subnet-id": 1,
-    "subnet_id": 1,
     "duid": "00:01:aa:bb",
     "ip-addresses": ["2001:db8::1"],
     "hostname": "host-v6",

@@ -934,8 +934,9 @@ class TestActiveLeaseSyncButton(TestCase):
         response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Active Lease</a>")
-        # Synced link shown in netbox_ip column — but NO individual hx-post Sync button
-        self.assertNotContains(response, "hx-post")
+        # Synced link shown in netbox_ip column — but NO individual reservation4 sync button
+        sync_url = reverse("plugins:netbox_kea:server_reservation4_sync", args=[self.server.pk])
+        self.assertNotContains(response, sync_url)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

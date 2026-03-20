@@ -1714,7 +1714,7 @@ class _CombinedViewMixin(ConditionalLoginRequiredMixin, View):
 
     def _combined_context(self, request: HttpRequest) -> dict[str, Any]:
         """Build context vars shared by every combined view."""
-        all_servers = list(Server.objects.order_by("name"))
+        all_servers = list(Server.objects.restrict(request.user, "view").order_by("name"))
         server_id_strs = request.GET.getlist("server")
         selected_server_pks = {int(pk) for pk in server_id_strs if pk.isdigit()}
         server_qs = "&".join(f"server={pk}" for pk in sorted(selected_server_pks))
@@ -1730,9 +1730,10 @@ class _CombinedViewMixin(ConditionalLoginRequiredMixin, View):
         dhcp_kwarg = f"dhcp{dhcp_version}"
         server_id_strs = request.GET.getlist("server")
         selected_pks = {int(pk) for pk in server_id_strs if pk.isdigit()}
+        base_qs = Server.objects.restrict(request.user, "view").filter(**{dhcp_kwarg: True})
         if selected_pks:
-            return list(Server.objects.filter(pk__in=selected_pks, **{dhcp_kwarg: True}))
-        return list(Server.objects.filter(**{dhcp_kwarg: True}))
+            return list(base_qs.filter(pk__in=selected_pks))
+        return list(base_qs)
 
 
 class CombinedDashboardView(_CombinedViewMixin):
