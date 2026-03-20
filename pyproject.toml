@@ -120,7 +120,7 @@ max-complexity = 15
 pythonpath = ["/opt/netbox/netbox"]
 DJANGO_SETTINGS_MODULE = "netbox.settings"
 testpaths = ["netbox_kea/tests"]
-addopts = "--ignore=tests/docker --reuse-db"
+addopts = "--ignore=tests/docker"
 
 [tool.coverage.run]
 source = ["netbox_kea"]
