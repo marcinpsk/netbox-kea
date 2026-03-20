@@ -75,6 +75,24 @@ def is_hex_string(s: str, min_octets: int, max_octets: int):
     return octets >= min_octets and octets <= max_octets
 
 
+_KNOWN_CODES_V4: dict[int, str] = {
+    1: "subnet_mask",
+    3: "gateway",
+    6: "dns_servers",
+    15: "domain_name",
+    28: "broadcast_address",
+    42: "ntp_servers",
+    44: "netbios_name_servers",
+    119: "domain_search",
+    121: "classless_static_routes",
+}
+_KNOWN_CODES_V6: dict[int, str] = {
+    23: "dns_servers",
+    24: "domain_search",
+    31: "ntp_servers",
+}
+
+
 def format_option_data(option_list: list[dict[str, Any]], version: int = 4) -> dict[str, str]:
     """Parse a Kea ``option-data`` list into a friendly ``{name: value}`` dict.
 
@@ -92,23 +110,6 @@ def format_option_data(option_list: list[dict[str, Any]], version: int = 4) -> d
         A ``{field_name: value_str}`` dict suitable for template rendering.
 
     """
-    _KNOWN_CODES_V4: dict[int, str] = {
-        1: "subnet_mask",
-        3: "gateway",
-        6: "dns_servers",
-        15: "domain_name",
-        28: "broadcast_address",
-        42: "ntp_servers",
-        44: "netbios_name_servers",
-        119: "domain_search",
-        121: "classless_static_routes",
-    }
-    _KNOWN_CODES_V6: dict[int, str] = {
-        23: "dns_servers",
-        24: "domain_search",
-        31: "ntp_servers",
-    }
-
     known_codes = _KNOWN_CODES_V6 if version == 6 else _KNOWN_CODES_V4
 
     result: dict[str, str] = {}

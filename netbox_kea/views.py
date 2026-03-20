@@ -5,9 +5,9 @@ from typing import Any, Generic, TypeVar
 from urllib.parse import urlencode as _urlencode
 
 from django.contrib import messages
-from django.http import HttpResponse, HttpResponseForbidden, HttpResponseRedirect
+from django.http import Http404, HttpResponse, HttpResponseForbidden, HttpResponseRedirect
 from django.http.request import HttpRequest
-from django.shortcuts import redirect, render
+from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.views import View
 from netaddr import IPAddress, IPNetwork
@@ -955,7 +955,7 @@ class ServerReservation6AddView(generic.ObjectView):
                 messages.warning(request, str(exc))
                 return redirect(return_url)
             except Exception:
-                logger.exception("Failed to create DHCPv6 reservation for %s", cd.get("ip_address"))
+                logger.exception("Failed to create DHCPv6 reservation for %s", cd.get("ip_addresses"))
                 messages.error(request, "Failed to create reservation: see server logs for details.")
         return render(
             request,
@@ -985,10 +985,7 @@ class ServerReservation4EditView(generic.ObjectView):
         server = self.get_object(pk=pk)
         reservation = self._get_reservation(server, subnet_id, ip_address)
         if reservation is None:
-            from django.http import Http404
-
             raise Http404(f"Reservation {ip_address} not found in subnet {subnet_id}")
-        # Map Kea keys to form field names
         identifier_type, identifier = _extract_identifier(reservation, 4)
         initial = {
             "subnet_id": reservation.get("subnet-id", subnet_id),
@@ -1062,8 +1059,6 @@ class ServerReservation6EditView(generic.ObjectView):
         server = self.get_object(pk=pk)
         reservation = self._get_reservation(server, subnet_id, ip_address)
         if reservation is None:
-            from django.http import Http404
-
             raise Http404(f"Reservation {ip_address} not found in subnet {subnet_id}")
         identifier_type, identifier = _extract_identifier(reservation, 6)
         ip_list = reservation.get("ip-addresses", [ip_address])
@@ -1109,7 +1104,7 @@ class ServerReservation6EditView(generic.ObjectView):
                 messages.warning(request, str(exc))
                 return redirect(return_url)
             except Exception:
-                logger.exception("Failed to update DHCPv6 reservation for %s", cd.get("ip_address"))
+                logger.exception("Failed to update DHCPv6 reservation for %s", cd.get("ip_addresses"))
                 messages.error(request, "Failed to update reservation: see server logs for details.")
         return render(
             request,
@@ -2022,8 +2017,6 @@ class _BaseSyncView(ConditionalLoginRequiredMixin, View):
     _status: str = "active"
 
     def post(self, request: HttpRequest, pk: int) -> HttpResponse:
-        from django.shortcuts import get_object_or_404
-
         if not (request.user.has_perm("ipam.add_ipaddress") and request.user.has_perm("ipam.change_ipaddress")):
             return HttpResponseForbidden("You do not have permission to sync to NetBox IPAM.")
 
@@ -2092,8 +2085,6 @@ class _BaseBulkReservationSyncView(ConditionalLoginRequiredMixin, View):
     dhcp_version: int = 4  # overridden in subclasses
 
     def post(self, request: HttpRequest, pk: int) -> HttpResponse:
-        from django.shortcuts import get_object_or_404
-
         if not (request.user.has_perm("ipam.add_ipaddress") and request.user.has_perm("ipam.change_ipaddress")):
             return HttpResponseForbidden("You do not have permission to sync to NetBox IPAM.")
 
@@ -2157,7 +2148,6 @@ class IPAddressKeaReservationsView(ConditionalLoginRequiredMixin, View):
     """
 
     def get(self, request: HttpRequest, pk: int) -> HttpResponse:  # noqa: D102
-        from django.shortcuts import get_object_or_404
         from ipam.models import IPAddress as NbIP
 
         nb_ip = get_object_or_404(NbIP, pk=pk)
