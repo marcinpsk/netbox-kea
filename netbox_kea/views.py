@@ -81,6 +81,20 @@ def _get_global_options(server: "Server") -> dict[str, dict[str, str]]:
     return result
 
 
+class _KeaChangeMixin:
+    """Mixin that gates a view behind ``netbox_kea.change_server``.
+
+    Applied to all views that mutate live Kea state (reservation/pool/subnet
+    add, edit, delete).  Both GET (form display) and POST (form submit) are
+    protected so users without write access never see the form.
+    """
+
+    def dispatch(self, request: HttpRequest, *args: Any, **kwargs: Any) -> HttpResponse:
+        if not request.user.has_perm("netbox_kea.change_server"):
+            return HttpResponseForbidden("You do not have permission to modify Kea server data.")
+        return super().dispatch(request, *args, **kwargs)  # type: ignore[misc]
+
+
 @register_model_view(Server)
 class ServerView(generic.ObjectView):
     """Detail view for a single Kea Server."""
@@ -843,7 +857,7 @@ class ServerReservations6View(generic.ObjectView):
         }
 
 
-class ServerReservation4AddView(generic.ObjectView):
+class ServerReservation4AddView(_KeaChangeMixin, generic.ObjectView):
     """Add a DHCPv4 host reservation."""
 
     queryset = Server.objects.all()
@@ -906,7 +920,7 @@ class ServerReservation4AddView(generic.ObjectView):
         )
 
 
-class ServerReservation6AddView(generic.ObjectView):
+class ServerReservation6AddView(_KeaChangeMixin, generic.ObjectView):
     """Add a DHCPv6 host reservation."""
 
     queryset = Server.objects.all()
@@ -970,7 +984,7 @@ class ServerReservation6AddView(generic.ObjectView):
         )
 
 
-class ServerReservation4EditView(generic.ObjectView):
+class ServerReservation4EditView(_KeaChangeMixin, generic.ObjectView):
     """Edit an existing DHCPv4 host reservation."""
 
     queryset = Server.objects.all()
@@ -983,7 +997,13 @@ class ServerReservation4EditView(generic.ObjectView):
     def get(self, request: HttpRequest, pk: int, subnet_id: int, ip_address: str) -> HttpResponse:
         """Pre-populate form with existing reservation data."""
         server = self.get_object(pk=pk)
-        reservation = self._get_reservation(server, subnet_id, ip_address)
+        return_url = reverse("plugins:netbox_kea:server_reservations4", args=[pk])
+        try:
+            reservation = self._get_reservation(server, subnet_id, ip_address)
+        except Exception:
+            logger.exception("Failed to fetch DHCPv4 reservation %s in subnet %s", ip_address, subnet_id)
+            messages.error(request, "Failed to retrieve reservation: see server logs for details.")
+            return redirect(return_url)
         if reservation is None:
             raise Http404(f"Reservation {ip_address} not found in subnet {subnet_id}")
         identifier_type, identifier = _extract_identifier(reservation, 4)
@@ -1002,7 +1022,7 @@ class ServerReservation4EditView(generic.ObjectView):
                 "form": forms.Reservation4Form(initial=initial),
                 "dhcp_version": 4,
                 "action": "Edit",
-                "return_url": reverse("plugins:netbox_kea:server_reservations4", args=[pk]),
+                "return_url": return_url,
             },
         )
 
@@ -1044,7 +1064,7 @@ class ServerReservation4EditView(generic.ObjectView):
         )
 
 
-class ServerReservation6EditView(generic.ObjectView):
+class ServerReservation6EditView(_KeaChangeMixin, generic.ObjectView):
     """Edit an existing DHCPv6 host reservation."""
 
     queryset = Server.objects.all()
@@ -1057,7 +1077,13 @@ class ServerReservation6EditView(generic.ObjectView):
     def get(self, request: HttpRequest, pk: int, subnet_id: int, ip_address: str) -> HttpResponse:
         """Pre-populate form with existing DHCPv6 reservation data."""
         server = self.get_object(pk=pk)
-        reservation = self._get_reservation(server, subnet_id, ip_address)
+        return_url = reverse("plugins:netbox_kea:server_reservations6", args=[pk])
+        try:
+            reservation = self._get_reservation(server, subnet_id, ip_address)
+        except Exception:
+            logger.exception("Failed to fetch DHCPv6 reservation %s in subnet %s", ip_address, subnet_id)
+            messages.error(request, "Failed to retrieve reservation: see server logs for details.")
+            return redirect(return_url)
         if reservation is None:
             raise Http404(f"Reservation {ip_address} not found in subnet {subnet_id}")
         identifier_type, identifier = _extract_identifier(reservation, 6)
@@ -1077,7 +1103,7 @@ class ServerReservation6EditView(generic.ObjectView):
                 "form": forms.Reservation6Form(initial=initial),
                 "dhcp_version": 6,
                 "action": "Edit",
-                "return_url": reverse("plugins:netbox_kea:server_reservations6", args=[pk]),
+                "return_url": return_url,
             },
         )
 
@@ -1119,7 +1145,7 @@ class ServerReservation6EditView(generic.ObjectView):
         )
 
 
-class ServerReservation4DeleteView(generic.ObjectView):
+class ServerReservation4DeleteView(_KeaChangeMixin, generic.ObjectView):
     """Delete confirmation for a DHCPv4 host reservation."""
 
     queryset = Server.objects.all()
@@ -1156,7 +1182,7 @@ class ServerReservation4DeleteView(generic.ObjectView):
         return redirect(return_url)
 
 
-class ServerReservation6DeleteView(generic.ObjectView):
+class ServerReservation6DeleteView(_KeaChangeMixin, generic.ObjectView):
     """Delete confirmation for a DHCPv6 host reservation."""
 
     queryset = Server.objects.all()
@@ -1198,7 +1224,7 @@ class ServerReservation6DeleteView(generic.ObjectView):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-class _BasePoolAddView(generic.ObjectView):
+class _BasePoolAddView(_KeaChangeMixin, generic.ObjectView):
     """Base view for adding a pool to a subnet."""
 
     queryset = Server.objects.all()
@@ -1263,7 +1289,7 @@ class ServerSubnet6PoolAddView(_BasePoolAddView):
     dhcp_version = 6
 
 
-class _BasePoolDeleteView(generic.ObjectView):
+class _BasePoolDeleteView(_KeaChangeMixin, generic.ObjectView):
     """Base view for deleting a pool from a subnet."""
 
     queryset = Server.objects.all()
@@ -1319,7 +1345,7 @@ class ServerSubnet6PoolDeleteView(_BasePoolDeleteView):
 # ---------------------------------------------------------------------------
 
 
-class _BaseSubnetAddView(generic.ObjectView):
+class _BaseSubnetAddView(_KeaChangeMixin, generic.ObjectView):
     """Base view for adding a new subnet to Kea."""
 
     queryset = Server.objects.all()
@@ -1401,7 +1427,7 @@ class ServerSubnet6AddView(_BaseSubnetAddView):
     dhcp_version = 6
 
 
-class _BaseSubnetDeleteView(generic.ObjectView):
+class _BaseSubnetDeleteView(_KeaChangeMixin, generic.ObjectView):
     """Base view for deleting a subnet from Kea."""
 
     queryset = Server.objects.all()
@@ -1805,7 +1831,8 @@ class _CombinedSubnetsView(_CombinedViewMixin):
                     errors.append((server.name, "Failed to query server"))
 
         table_cls = tables.GlobalSubnetTable4 if self.dhcp_version == 4 else tables.GlobalSubnetTable6
-        table = table_cls(all_subnets)
+        table = table_cls(all_subnets, user=request.user)
+        table.configure(request)
 
         ctx.update(
             {
@@ -1896,7 +1923,8 @@ class _CombinedReservationsView(_CombinedViewMixin):
 
         table_cls = tables.GlobalReservationTable4 if self.dhcp_version == 4 else tables.GlobalReservationTable6
         filter_form_cls = forms.GlobalServer4FilterForm if self.dhcp_version == 4 else forms.GlobalServer6FilterForm
-        table = table_cls(all_records)
+        table = table_cls(all_records, user=request.user)
+        table.configure(request)
         filter_form = filter_form_cls(request.GET or None)
 
         ctx.update(
@@ -1948,12 +1976,16 @@ class _CombinedLeasesView(_CombinedViewMixin):
         )
 
         if "q" not in request.GET or not request.GET.get("q"):
-            ctx["table"] = table_cls([])
+            t = table_cls([], user=request.user)
+            t.configure(request)
+            ctx["table"] = t
             ctx["errors"] = []
             return render(request, self.template_name, ctx)
 
         if not search_form.is_valid():
-            ctx["table"] = table_cls([])
+            t = table_cls([], user=request.user)
+            t.configure(request)
+            ctx["table"] = t
             ctx["errors"] = []
             return render(request, self.template_name, ctx)
 
@@ -1982,7 +2014,9 @@ class _CombinedLeasesView(_CombinedViewMixin):
             if server_leases:
                 _enrich_leases_with_badges(server_leases, server, self.dhcp_version)
 
-        ctx["table"] = table_cls(all_leases)
+        table = table_cls(all_leases, user=request.user)
+        table.configure(request)
+        ctx["table"] = table
         ctx["errors"] = errors
         return render(request, self.template_name, ctx)
 

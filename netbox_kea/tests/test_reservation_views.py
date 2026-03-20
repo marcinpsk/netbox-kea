@@ -913,8 +913,9 @@ class TestActiveLeaseSyncButton(TestCase):
         response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Active Lease</a>")
-        # Sync button must also appear in the same page (in lease_status cell)
-        self.assertContains(response, "hx-post")
+        # Sync button must link to the specific reservation4 sync endpoint
+        sync_url = reverse("plugins:netbox_kea:server_reservation4_sync", args=[self.server.pk])
+        self.assertContains(response, sync_url)
 
     @patch("netbox_kea.sync.bulk_fetch_netbox_ips")
     @patch("netbox_kea.models.KeaClient")

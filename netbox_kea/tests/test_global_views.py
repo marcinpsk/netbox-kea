@@ -51,7 +51,6 @@ _MOCK_RESERVATION_V6 = {
     "subnet_id": 1,
     "duid": "00:01:aa:bb",
     "ip-addresses": ["2001:db8::1"],
-    "ip_address": "2001:db8::1",
     "hostname": "host-v6",
 }
 
