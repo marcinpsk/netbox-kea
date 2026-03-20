@@ -170,6 +170,16 @@ class GenericTable(BaseTable):
 
     exempt_columns = ("actions", "pk")
 
+    def __init__(self, *args, **kwargs):
+        # NetBox v4.5.5 removed the ``user=`` kwarg from BaseTable.__init__.
+        # Earlier versions require it to load saved column preferences from the DB.
+        # We try with the kwarg first; on TypeError (v4.5.5+) we retry without it.
+        try:
+            super().__init__(*args, **kwargs)
+        except TypeError:
+            kwargs.pop("user", None)
+            super().__init__(*args, **kwargs)
+
     class Meta(BaseTable.Meta):
         empty_text = "No rows"
         fields: tuple[str, ...] = ()

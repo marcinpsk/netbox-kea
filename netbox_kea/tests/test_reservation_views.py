@@ -920,8 +920,6 @@ class TestActiveLeaseSyncButton(TestCase):
     @patch("netbox_kea.models.KeaClient")
     def test_sync_button_not_shown_when_active_lease_and_netbox_ip_exists(self, MockKeaClient, mock_bulk_fetch):
         """When active lease AND NetBox IP already synced: no Sync button in lease_status cell."""
-        from unittest.mock import MagicMock
-
         mock_client = MockKeaClient.return_value
         mock_client.reservation_get_page.return_value = (
             [dict(_SAMPLE_RESERVATION4_FOR_SYNC)],

@@ -27,6 +27,7 @@ from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
 from django.urls import reverse
 
+from netbox_kea import constants
 from netbox_kea.models import Server
 
 User = get_user_model()
@@ -345,7 +346,6 @@ class TestCombinedLeases4View(_CombinedViewBase):
         MockKeaClient.return_value.command.return_value = [
             {"result": 0, "arguments": {"leases": [dict(_MOCK_LEASE_V4)]}}
         ]
-        from netbox_kea import constants
 
         url = reverse("plugins:netbox_kea:combined_leases4") + f"?q=lease-host-v4&by={constants.BY_HOSTNAME}"
         response = self.client.get(url)
@@ -355,7 +355,6 @@ class TestCombinedLeases4View(_CombinedViewBase):
     @patch("netbox_kea.models.KeaClient")
     def test_search_with_server_filter_limits_calls(self, MockKeaClient):
         MockKeaClient.return_value.command.return_value = [{"result": 0, "arguments": {"leases": []}}]
-        from netbox_kea import constants
 
         url = (
             reverse("plugins:netbox_kea:combined_leases4")
@@ -367,7 +366,6 @@ class TestCombinedLeases4View(_CombinedViewBase):
     @patch("netbox_kea.models.KeaClient")
     def test_unreachable_server_returns_200_with_warning(self, MockKeaClient):
         MockKeaClient.return_value.command.side_effect = Exception("refused")
-        from netbox_kea import constants
 
         url = reverse("plugins:netbox_kea:combined_leases4") + f"?q=test&by={constants.BY_HOSTNAME}"
         response = self.client.get(url)
@@ -378,7 +376,6 @@ class TestCombinedLeases4View(_CombinedViewBase):
         MockKeaClient.return_value.command.return_value = [
             {"result": 0, "arguments": {"leases": [dict(_MOCK_LEASE_V4)]}}
         ]
-        from netbox_kea import constants
 
         url = (
             reverse("plugins:netbox_kea:combined_leases4")
@@ -391,7 +388,6 @@ class TestCombinedLeases4View(_CombinedViewBase):
     @patch("netbox_kea.models.KeaClient")
     def test_context_active_tab(self, MockKeaClient):
         MockKeaClient.return_value.command.return_value = [{"result": 0, "arguments": {"leases": []}}]
-        from netbox_kea import constants
 
         url = reverse("plugins:netbox_kea:combined_leases4") + f"?q=x&by={constants.BY_HOSTNAME}"
         response = self.client.get(url)
@@ -430,7 +426,6 @@ class TestCombinedLeases6View(_CombinedViewBase):
         MockKeaClient.return_value.command.return_value = [
             {"result": 0, "arguments": {"leases": [dict(_MOCK_LEASE_V6)]}}
         ]
-        from netbox_kea import constants
 
         url = reverse("plugins:netbox_kea:combined_leases6") + f"?q=lease-host-v6&by={constants.BY_HOSTNAME}"
         response = self.client.get(url)
@@ -440,7 +435,6 @@ class TestCombinedLeases6View(_CombinedViewBase):
     @patch("netbox_kea.models.KeaClient")
     def test_unreachable_server_returns_200_with_warning(self, MockKeaClient):
         MockKeaClient.return_value.command.side_effect = Exception("refused")
-        from netbox_kea import constants
 
         url = reverse("plugins:netbox_kea:combined_leases6") + f"?q=test&by={constants.BY_HOSTNAME}"
         response = self.client.get(url)
@@ -451,7 +445,6 @@ class TestCombinedLeases6View(_CombinedViewBase):
         MockKeaClient.return_value.command.return_value = [
             {"result": 0, "arguments": {"leases": [dict(_MOCK_LEASE_V6)]}}
         ]
-        from netbox_kea import constants
 
         url = (
             reverse("plugins:netbox_kea:combined_leases6")

@@ -245,7 +245,7 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
 
     def get_table(self, data: list[dict[str, Any]], request: HttpRequest) -> T:
         """Build and configure the lease table for *request*."""
-        table = self.table(data)
+        table = self.table(data, user=request.user)
         table.configure(request)
         return table
 
@@ -782,7 +782,7 @@ class ServerReservations4View(generic.ObjectView):
         # Enrich reservations with lease status + NetBox IPAM badges.
         _enrich_reservations_with_badges(reservations, server, 4)
 
-        table = tables.ReservationTable4(reservations)
+        table = tables.ReservationTable4(reservations, user=request.user)
         table.configure(request)
         return {
             "table": table,
@@ -832,7 +832,7 @@ class ServerReservations6View(generic.ObjectView):
         # Enrich reservations with lease status + NetBox IPAM badges.
         _enrich_reservations_with_badges(reservations, server, 6)
 
-        table = tables.ReservationTable6(reservations)
+        table = tables.ReservationTable6(reservations, user=request.user)
         table.configure(request)
         return {
             "table": table,
