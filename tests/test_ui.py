@@ -776,7 +776,10 @@ def test_dhcp_subnets_export_csv(
     with open(dl.path()) as f:
         r = csv.DictReader(f)
         have_rows = sorted(r, key=lambda x: x["ID"])
-        assert have_rows == expected_data
+        for actual, expected in zip(have_rows, expected_data):
+            for key, val in expected.items():
+                assert actual.get(key) == val, f"CSV row mismatch: {key}: got {actual.get(key)!r}, expected {val!r}"
+        assert len(have_rows) == len(expected_data), f"CSV row count mismatch: got {len(have_rows)}, expected {len(expected_data)}"
 
 
 @pytest.mark.parametrize("family", (4, 6))

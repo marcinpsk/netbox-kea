@@ -27,7 +27,7 @@ except ImportError:
 
 from . import constants, forms, tables
 from .filtersets import ServerFilterSet
-from .kea import KeaClient, KeaException
+from .kea import KeaClient, KeaException, PartialPersistError
 from .models import Server
 from .utilities import (
     OptionalViewTab,
@@ -245,7 +245,7 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
 
     def get_table(self, data: list[dict[str, Any]], request: HttpRequest) -> T:
         """Build and configure the lease table for *request*."""
-        table = self.table(data, user=request.user)
+        table = self.table(data)
         table.configure(request)
         return table
 
@@ -759,12 +759,14 @@ class ServerReservations4View(generic.ObjectView):
         try:
             source_index, from_index, limit = 0, 0, 100
             while True:
-                page, from_index, source_index = client.reservation_get_page(
+                page, next_from, next_source = client.reservation_get_page(
                     "dhcp4", source_index=source_index, from_index=from_index, limit=limit
                 )
                 reservations.extend(page)
-                if len(page) < limit:
+                if next_from == 0 and next_source == 0:
                     break
+                from_index = next_from
+                source_index = next_source
         except KeaException as exc:
             if exc.response.get("result") == 2:
                 hook_available = False
@@ -780,7 +782,7 @@ class ServerReservations4View(generic.ObjectView):
         # Enrich reservations with lease status + NetBox IPAM badges.
         _enrich_reservations_with_badges(reservations, server, 4)
 
-        table = tables.ReservationTable4(reservations, user=request.user)
+        table = tables.ReservationTable4(reservations)
         table.configure(request)
         return {
             "table": table,
@@ -808,12 +810,14 @@ class ServerReservations6View(generic.ObjectView):
         try:
             source_index, from_index, limit = 0, 0, 100
             while True:
-                page, from_index, source_index = client.reservation_get_page(
+                page, next_from, next_source = client.reservation_get_page(
                     "dhcp6", source_index=source_index, from_index=from_index, limit=limit
                 )
                 reservations.extend(page)
-                if len(page) < limit:
+                if next_from == 0 and next_source == 0:
                     break
+                from_index = next_from
+                source_index = next_source
         except KeaException as exc:
             if exc.response.get("result") == 2:
                 hook_available = False
@@ -828,7 +832,7 @@ class ServerReservations6View(generic.ObjectView):
         # Enrich reservations with lease status + NetBox IPAM badges.
         _enrich_reservations_with_badges(reservations, server, 6)
 
-        table = tables.ReservationTable6(reservations, user=request.user)
+        table = tables.ReservationTable6(reservations)
         table.configure(request)
         return {
             "table": table,
@@ -882,6 +886,9 @@ class ServerReservation4AddView(generic.ObjectView):
             try:
                 client.reservation_add("dhcp4", reservation)
                 messages.success(request, f"Reservation for {cd['ip_address']} created.")
+                return redirect(return_url)
+            except PartialPersistError as exc:
+                messages.warning(request, str(exc))
                 return redirect(return_url)
             except Exception:
                 logger.exception("Failed to create DHCPv4 reservation for %s", cd.get("ip_address"))
@@ -943,6 +950,9 @@ class ServerReservation6AddView(generic.ObjectView):
             try:
                 client.reservation_add("dhcp6", reservation)
                 messages.success(request, "DHCPv6 reservation created.")
+                return redirect(return_url)
+            except PartialPersistError as exc:
+                messages.warning(request, str(exc))
                 return redirect(return_url)
             except Exception:
                 logger.exception("Failed to create DHCPv6 reservation for %s", cd.get("ip_address"))
@@ -1018,6 +1028,9 @@ class ServerReservation4EditView(generic.ObjectView):
                 client.reservation_update("dhcp4", reservation)
                 messages.success(request, f"Reservation for {cd['ip_address']} updated.")
                 return redirect(return_url)
+            except PartialPersistError as exc:
+                messages.warning(request, str(exc))
+                return redirect(return_url)
             except Exception:
                 logger.exception("Failed to update DHCPv4 reservation for %s", cd.get("ip_address"))
                 messages.error(request, "Failed to update reservation: see server logs for details.")
@@ -1092,6 +1105,9 @@ class ServerReservation6EditView(generic.ObjectView):
                 client.reservation_update("dhcp6", reservation)
                 messages.success(request, "DHCPv6 reservation updated.")
                 return redirect(return_url)
+            except PartialPersistError as exc:
+                messages.warning(request, str(exc))
+                return redirect(return_url)
             except Exception:
                 logger.exception("Failed to update DHCPv6 reservation for %s", cd.get("ip_address"))
                 messages.error(request, "Failed to update reservation: see server logs for details.")
@@ -1137,6 +1153,8 @@ class ServerReservation4DeleteView(generic.ObjectView):
         try:
             client.reservation_del("dhcp4", subnet_id=subnet_id, ip_address=ip_address)
             messages.success(request, f"Reservation for {ip_address} deleted.")
+        except PartialPersistError as exc:
+            messages.warning(request, str(exc))
         except Exception:
             logger.exception("Failed to delete DHCPv4 reservation for %s", ip_address)
             messages.error(request, "Failed to delete reservation: see server logs for details.")
@@ -1172,6 +1190,8 @@ class ServerReservation6DeleteView(generic.ObjectView):
         try:
             client.reservation_del("dhcp6", subnet_id=subnet_id, ip_address=ip_address)
             messages.success(request, f"DHCPv6 reservation for {ip_address} deleted.")
+        except PartialPersistError as exc:
+            messages.warning(request, str(exc))
         except Exception:
             logger.exception("Failed to delete DHCPv6 reservation for %s", ip_address)
             messages.error(request, "Failed to delete reservation: see server logs for details.")
@@ -1228,6 +1248,8 @@ class _BasePoolAddView(generic.ObjectView):
         try:
             client.pool_add(version=self.dhcp_version, subnet_id=subnet_id, pool=pool)
             messages.success(request, f"Pool {pool} added to subnet {subnet_id}.")
+        except PartialPersistError as exc:
+            messages.warning(request, str(exc))
         except Exception:
             logger.exception("Failed to add pool to subnet %s", subnet_id)
             messages.error(request, "Failed to add pool: see server logs for details.")
@@ -1277,6 +1299,8 @@ class _BasePoolDeleteView(generic.ObjectView):
         try:
             client.pool_del(version=self.dhcp_version, subnet_id=subnet_id, pool=pool)
             messages.success(request, f"Pool {pool} removed from subnet {subnet_id}.")
+        except PartialPersistError as exc:
+            messages.warning(request, str(exc))
         except Exception:
             logger.exception("Failed to remove pool from subnet %s", subnet_id)
             messages.error(request, "Failed to remove pool: see server logs for details.")
@@ -1351,6 +1375,9 @@ class _BaseSubnetAddView(generic.ObjectView):
                 ntp_servers=cd["ntp_servers"],
             )
             messages.success(request, f"Subnet {cd['subnet']} added.")
+        except PartialPersistError as exc:
+            messages.warning(request, str(exc))
+            return redirect(return_url)
         except Exception:
             logger.exception("Failed to add subnet %s", cd.get("subnet"))
             messages.error(request, "Failed to add subnet: see server logs for details.")
@@ -1422,6 +1449,8 @@ class _BaseSubnetDeleteView(generic.ObjectView):
         try:
             client.subnet_del(version=self.dhcp_version, subnet_id=subnet_id)
             messages.success(request, f"Subnet {subnet_id} deleted.")
+        except PartialPersistError as exc:
+            messages.warning(request, str(exc))
         except Exception:
             logger.exception("Failed to delete subnet %s", subnet_id)
             messages.error(request, "Failed to delete subnet: see server logs for details.")
@@ -1522,6 +1551,31 @@ def _fetch_leases_from_server(server: Server, q: Any, by: str, version: int) -> 
     return leases
 
 
+def _fetch_reservation_by_ip(client: KeaClient, version: int) -> tuple[dict[str, dict], bool]:
+    """Drain all reservation pages and return a mapping of IP → reservation dict.
+
+    Returns ``(reservation_by_ip, host_cmds_available)``.
+    """
+    reservation_by_ip: dict[str, dict] = {}
+    from_index = 0
+    source_index = 0
+    while True:
+        page, next_from, next_source = client.reservation_get_page(
+            f"dhcp{version}", limit=1000, source_index=source_index, from_index=from_index
+        )
+        for r in page:
+            if "ip-address" in r:
+                reservation_by_ip[r["ip-address"]] = r
+            elif "ip-addresses" in r:
+                for addr in r["ip-addresses"]:
+                    reservation_by_ip[addr] = r
+        if next_from == 0 and next_source == 0:
+            break
+        from_index = next_from
+        source_index = next_source
+    return reservation_by_ip, True
+
+
 def _enrich_leases_with_badges(leases: list[dict[str, Any]], server: "Server", version: int) -> None:
     """In-place: add reservation and NetBox IPAM badge fields to lease dicts.
 
@@ -1540,13 +1594,7 @@ def _enrich_leases_with_badges(leases: list[dict[str, Any]], server: "Server", v
     reservation_by_ip: dict[str, dict] = {}
     host_cmds_available = True
     try:
-        reservations, _, _ = client.reservation_get_page(f"dhcp{version}", limit=1000)
-        for r in reservations:
-            if "ip-address" in r:
-                reservation_by_ip[r["ip-address"]] = r
-            elif "ip-addresses" in r:
-                for addr in r["ip-addresses"]:
-                    reservation_by_ip[addr] = r
+        reservation_by_ip, host_cmds_available = _fetch_reservation_by_ip(client, version)
     except KeaException as exc:
         if exc.response.get("result") == 2:
             host_cmds_available = False
@@ -1976,7 +2024,7 @@ class _BaseSyncView(ConditionalLoginRequiredMixin, View):
     def post(self, request: HttpRequest, pk: int) -> HttpResponse:
         from django.shortcuts import get_object_or_404
 
-        if not (request.user.has_perm("ipam.add_ipaddress") or request.user.has_perm("ipam.change_ipaddress")):
+        if not (request.user.has_perm("ipam.add_ipaddress") and request.user.has_perm("ipam.change_ipaddress")):
             return HttpResponseForbidden("You do not have permission to sync to NetBox IPAM.")
 
         get_object_or_404(Server, pk=pk)
@@ -2046,16 +2094,13 @@ class _BaseBulkReservationSyncView(ConditionalLoginRequiredMixin, View):
     def post(self, request: HttpRequest, pk: int) -> HttpResponse:
         from django.shortcuts import get_object_or_404
 
+        if not (request.user.has_perm("ipam.add_ipaddress") and request.user.has_perm("ipam.change_ipaddress")):
+            return HttpResponseForbidden("You do not have permission to sync to NetBox IPAM.")
+
         server = get_object_or_404(Server, pk=pk)
         from .sync import sync_reservation_to_netbox
 
-        client = server.get_client(version=self.dhcp_version)
-        reservations, _total, _idx = client.reservation_get_page(
-            service=f"dhcp{self.dhcp_version}",
-            limit=10_000,
-            source_index=0,
-            from_index=0,
-        )
+        reservations = _fetch_reservations_from_server(server, self.dhcp_version)
         created = updated = errors = 0
         for res in reservations:
             if not res.get("ip-address") and not res.get("ip-addresses"):
@@ -2130,9 +2175,10 @@ class IPAddressKeaReservationsView(ConditionalLoginRequiredMixin, View):
         server_links = []
         for server in servers:
             base_url = reverse(add_url_name, args=[server.pk])
+            ip_param = "ip_addresses" if version == 6 else "ip_address"
             params = _urlencode(
                 {
-                    "ip_address": ip_str,
+                    ip_param: ip_str,
                     "hostname": nb_ip.dns_name or "",
                 }
             )

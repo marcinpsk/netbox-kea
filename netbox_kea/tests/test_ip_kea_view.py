@@ -148,7 +148,7 @@ class TestIPv6AddressPanel(TestCase):
 
     def test_create_link_has_ipv6_address_param(self):
         response = self.client.get(_url(self.nb_ip.pk))
-        self.assertContains(response, "ip_address=2001")
+        self.assertContains(response, "ip_addresses=2001")
 
     def test_create_link_has_hostname_param(self):
         response = self.client.get(_url(self.nb_ip.pk))

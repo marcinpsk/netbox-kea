@@ -159,9 +159,18 @@ def parse_subnet_stats(stat_response: list[dict[str, Any]], version: int) -> dic
     for row in rows:
         if not isinstance(row, (list, tuple)) or len(row) < min_len:
             continue
-        subnet_id = row[id_idx]
-        total = row[total_idx] or 0
-        assigned = row[assigned_idx] or 0
+        try:
+            subnet_id = int(row[id_idx])
+        except (TypeError, ValueError):
+            continue
+        try:
+            total = int(row[total_idx])
+        except (TypeError, ValueError):
+            total = 0
+        try:
+            assigned = int(row[assigned_idx])
+        except (TypeError, ValueError):
+            assigned = 0
         pct = round(assigned / total * 100) if total > 0 else 0
         stats[subnet_id] = {"total": total, "assigned": assigned, "utilization": f"{pct}%", "utilization_pct": pct}
     return stats

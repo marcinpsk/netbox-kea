@@ -435,18 +435,17 @@ class KeaClient:
     def _persist_config(self, service: str) -> None:
         """Persist the running config to disk via config-write.
 
-        Logs a warning and re-raises if config-write fails. When this happens,
-        the mutation is already live in the running config but will be lost on
-        next Kea restart.
+        Logs a warning and raises :exc:`PartialPersistError` when config-write fails. When this
+        happens, the mutation is already live in the running config but will be lost on next Kea restart.
         """
         try:
             self.command("config-write", service=[service])
-        except KeaException:
+        except KeaException as exc:
             logger.warning(
                 "config-write failed for service %s — change is live but not persisted to disk",
                 service,
             )
-            raise
+            raise PartialPersistError(service, exc) from exc
 
     def _get_subnet_cidr(self, version: int, subnet_id: int) -> str:
         """Fetch the CIDR string for *subnet_id* from Kea (e.g. ``"10.0.0.0/24"``).
@@ -490,6 +489,24 @@ class KeaException(Exception):
             msg = f"Kea returned result[{index}] {self.response.get('result')}"
         message = f"{msg}: {self.response.get('text')}"
         super().__init__(message)
+
+
+class PartialPersistError(KeaException):
+    """Raised when a Kea mutation is live but config-write failed.
+
+    The change is applied in memory but will be lost on Kea restart.
+    The original :exc:`KeaException` from config-write is stored in ``__cause__``.
+    """
+
+    def __init__(self, service: str, cause: Exception) -> None:
+        super().__init__(
+            {
+                "result": -1,
+                "text": f"config-write failed for service {service!r} — change is live but not persisted to disk",
+            },
+            msg=f"config-write failed for service {service!r} — change is live but not persisted to disk",
+        )
+        self.service = service
 
 
 def check_response(resp: list[KeaResponse], ok_codes: Sequence[int]) -> None:

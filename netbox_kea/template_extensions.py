@@ -28,6 +28,8 @@ class IPAddressKeaPanel(PluginTemplateExtension):
         nb_ip = self.context.get("object")
         if nb_ip is None:
             return ""
+        if not nb_ip.address or not nb_ip.address.ip:
+            return ""
 
         ip_str = str(nb_ip.address.ip)
         is_v6 = ":" in ip_str
