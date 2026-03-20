@@ -1158,3 +1158,86 @@ class TestSubnetDel(TestCase):
         ):
             result = self.client.subnet_del(version=4, subnet_id=1)
         self.assertIsNone(result)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Feature 3.2: lease_wipe — KeaClient.lease_wipe()
+# ─────────────────────────────────────────────────────────────────────────────
+
+_LEASE_WIPE_RESP = [{"result": 0, "text": "204 IPv4 lease(s) wiped."}]
+
+
+class TestLeaseWipe(TestCase):
+    """Tests for KeaClient.lease_wipe()."""
+
+    def setUp(self):
+        self.client = KeaClient(url="http://kea:8000")
+
+    def _cmds(self, mock_post):
+        return [(c.kwargs.get("json") or c[1]["json"])["command"] for c in mock_post.call_args_list]
+
+    def test_lease_wipe_v4_sends_correct_command(self):
+        """lease4-wipe is sent for version=4."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(_LEASE_WIPE_RESP),
+        ) as mock_post:
+            self.client.lease_wipe(version=4, subnet_id=5)
+        self.assertIn("lease4-wipe", self._cmds(mock_post))
+
+    def test_lease_wipe_v6_sends_correct_command(self):
+        """lease6-wipe is sent for version=6."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(_LEASE_WIPE_RESP),
+        ) as mock_post:
+            self.client.lease_wipe(version=6, subnet_id=7)
+        self.assertIn("lease6-wipe", self._cmds(mock_post))
+        self.assertNotIn("lease4-wipe", self._cmds(mock_post))
+
+    def test_lease_wipe_sends_correct_subnet_id(self):
+        """lease4-wipe payload contains the correct subnet-id."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(_LEASE_WIPE_RESP),
+        ) as mock_post:
+            self.client.lease_wipe(version=4, subnet_id=42)
+        wipe_call = next(
+            c.kwargs.get("json") or c[1]["json"]
+            for c in mock_post.call_args_list
+            if (c.kwargs.get("json") or c[1]["json"])["command"] == "lease4-wipe"
+        )
+        self.assertEqual(wipe_call["arguments"]["subnet-id"], 42)
+
+    def test_lease_wipe_does_not_call_config_write(self):
+        """lease_wipe must NOT call config-write (leases don't need persistence)."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(_LEASE_WIPE_RESP),
+        ) as mock_post:
+            self.client.lease_wipe(version=4, subnet_id=1)
+        self.assertNotIn("config-write", self._cmds(mock_post))
+
+    def test_lease_wipe_raises_on_kea_error(self):
+        """KeaException is raised when Kea returns result != 0 (e.g. hook not loaded)."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects([{"result": 1, "text": "hook not loaded"}]),
+        ):
+            with self.assertRaises(KeaException):
+                self.client.lease_wipe(version=4, subnet_id=99)
+
+    def test_lease_wipe_returns_none_on_success(self):
+        """lease_wipe returns None on success."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(_LEASE_WIPE_RESP),
+        ):
+            result = self.client.lease_wipe(version=4, subnet_id=1)
+        self.assertIsNone(result)

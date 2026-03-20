@@ -137,6 +137,11 @@ urlpatterns = (
         name="server_subnet4_delete",
     ),
     path(
+        "servers/<int:pk>/subnets4/<int:subnet_id>/wipe/",
+        views.ServerSubnet4WipeView.as_view(),
+        name="server_subnet4_wipe_leases",
+    ),
+    path(
         "servers/<int:pk>/subnets6/add/",
         views.ServerSubnet6AddView.as_view(),
         name="server_subnet6_add",
@@ -145,6 +150,11 @@ urlpatterns = (
         "servers/<int:pk>/subnets6/<int:subnet_id>/delete/",
         views.ServerSubnet6DeleteView.as_view(),
         name="server_subnet6_delete",
+    ),
+    path(
+        "servers/<int:pk>/subnets6/<int:subnet_id>/wipe/",
+        views.ServerSubnet6WipeView.as_view(),
+        name="server_subnet6_wipe_leases",
     ),
     path("servers/<int:pk>/", include(get_model_urls("netbox_kea", "server"))),
     path(

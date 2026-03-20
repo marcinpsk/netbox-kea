@@ -365,6 +365,26 @@ class KeaClient:
         )
         self._persist_config(service)
 
+    def lease_wipe(self, version: int, subnet_id: int) -> None:
+        """Delete all leases in a subnet using the ``lease{v}-wipe`` command.
+
+        Requires the ``lease_cmds`` hook to be loaded on the Kea server.
+
+        Args:
+            version: DHCP version (4 or 6).
+            subnet_id: Kea subnet ID whose leases should be wiped.
+
+        Raises:
+            KeaException: If Kea returns a non-zero result code (including result=1
+                when ``lease_cmds`` is not loaded).
+
+        """
+        self.command(
+            f"lease{version}-wipe",
+            service=[f"dhcp{version}"],
+            arguments={"subnet-id": subnet_id},
+        )
+
     def pool_add(self, version: int, subnet_id: int, pool: str) -> None:
         """Add a pool to an existing subnet and persist the change.
 

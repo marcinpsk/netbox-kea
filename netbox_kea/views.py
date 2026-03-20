@@ -404,6 +404,42 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
         table = self.get_table(leases, request)
         return export_table(table, "leases.csv", use_selected_columns=request.GET["export"] == "table")
 
+    def get_export_all(self, request: HttpRequest, **kwargs) -> HttpResponse:
+        """Export every lease on the server (no search filter) as a CSV download.
+
+        Paginates through ``lease{v}-get-page`` from the beginning until all
+        leases have been fetched, then streams them as a CSV file.
+        Requires the ``lease_cmds`` hook to be loaded on the Kea server.
+        """
+        instance = self.get_object(**kwargs)
+        client = instance.get_client(version=self.dhcp_version)
+
+        start_ip = "0.0.0.0" if self.dhcp_version == 4 else "::"
+        per_page = 1000
+
+        all_leases: list[dict[str, Any]] = []
+        cursor = start_ip
+        while True:
+            resp = client.command(
+                f"lease{self.dhcp_version}-get-page",
+                service=[f"dhcp{self.dhcp_version}"],
+                arguments={"from": cursor, "limit": per_page},
+                check=(0, 3),
+            )
+            if resp[0]["result"] == 3:
+                break
+            args = resp[0]["arguments"]
+            if args is None:
+                break
+            raw_leases = args["leases"]
+            all_leases += format_leases(raw_leases)
+            if args["count"] < per_page:
+                break
+            cursor = raw_leases[-1]["ip-address"]
+
+        table = self.get_table(all_leases, request)
+        return export_table(table, "leases_all.csv", use_selected_columns=False)
+
     def get(self, request: HttpRequest, **kwargs) -> HttpResponse:
         """Dispatch to export, HTMX partial, or full page render as appropriate."""
         logger = logging.getLogger("netbox_kea.views.BaseServerDHCPLeasesView")
@@ -415,6 +451,9 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
 
         if "export" in request.GET:
             return self.get_export(request, **kwargs)
+
+        if "export_all" in request.GET:
+            return self.get_export_all(request, **kwargs)
 
         if not request.htmx:
             return super().get(request, **kwargs)
@@ -1597,6 +1636,73 @@ class ServerSubnet4DeleteView(_BaseSubnetDeleteView):
 
 class ServerSubnet6DeleteView(_BaseSubnetDeleteView):
     """Delete a DHCPv6 subnet."""
+
+    dhcp_version = 6
+
+
+class _BaseSubnetWipeView(_KeaChangeMixin, generic.ObjectView):
+    """Base view for wiping all leases in a subnet."""
+
+    queryset = Server.objects.all()
+    template_name = "netbox_kea/server_subnet_wipe.html"
+    dhcp_version: int
+
+    def _subnets_url(self, pk: int) -> str:
+        return reverse(f"plugins:netbox_kea:server_subnets{self.dhcp_version}", args=[pk])
+
+    def get(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
+        server = self.get_object(pk=pk)
+        client = server.get_client(version=self.dhcp_version)
+        subnet_cidr = ""
+        try:
+            resp = client.command(
+                f"subnet{self.dhcp_version}-get",
+                service=[f"dhcp{self.dhcp_version}"],
+                arguments={"id": subnet_id},
+            )
+            key = f"subnet{self.dhcp_version}"
+            subnet_cidr = resp[0].get("arguments", {}).get(key, [{}])[0].get("subnet", "")
+        except Exception:
+            pass
+        return render(
+            request,
+            self.template_name,
+            {
+                "object": server,
+                "subnet_id": subnet_id,
+                "subnet_cidr": subnet_cidr,
+                "dhcp_version": self.dhcp_version,
+                "return_url": self._subnets_url(pk),
+            },
+        )
+
+    def post(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
+        server = self.get_object(pk=pk)
+        return_url = self._subnets_url(pk)
+        client = server.get_client(version=self.dhcp_version)
+        try:
+            client.lease_wipe(version=self.dhcp_version, subnet_id=subnet_id)
+            messages.success(request, f"All leases in subnet {subnet_id} wiped.")
+        except KeaException:
+            logger.exception("Failed to wipe leases in subnet %s", subnet_id)
+            messages.error(
+                request,
+                "Failed to wipe leases: see server logs for details. Ensure the lease_cmds hook is loaded.",
+            )
+        except Exception:
+            logger.exception("Failed to wipe leases in subnet %s", subnet_id)
+            messages.error(request, "Failed to wipe leases: see server logs for details.")
+        return redirect(return_url)
+
+
+class ServerSubnet4WipeView(_BaseSubnetWipeView):
+    """Wipe all DHCPv4 leases in a subnet."""
+
+    dhcp_version = 4
+
+
+class ServerSubnet6WipeView(_BaseSubnetWipeView):
+    """Wipe all DHCPv6 leases in a subnet."""
 
     dhcp_version = 6
 

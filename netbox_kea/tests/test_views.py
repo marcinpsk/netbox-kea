@@ -1301,3 +1301,232 @@ class TestEnrichLeasesErrorPaths(_ViewTestBase):
         response = self._htmx_get(url, {"by": "ip", "q": "10.0.0.5"})
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Synced")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Feature 3.2: Subnet Lease Wipe — _BaseSubnetWipeView
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestServerSubnet4WipeView(_ViewTestBase):
+    """Tests for ServerSubnet4WipeView (GET confirmation + POST wipe)."""
+
+    def _url(self, subnet_id=42):
+        return reverse("plugins:netbox_kea:server_subnet4_wipe_leases", args=[self.server.pk, subnet_id])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_get_returns_confirmation_page(self, MockKeaClient):
+        """GET must show the wipe confirmation page with subnet info."""
+        mock_client = MockKeaClient.return_value
+        mock_client.command.return_value = [
+            {"result": 0, "arguments": {"subnet4": [{"id": 42, "subnet": "10.0.0.0/24"}]}}
+        ]
+        response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "10.0.0.0/24")
+        self.assertContains(response, "42")
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_get_shows_form_when_subnet_fetch_fails(self, MockKeaClient):
+        """GET must still return 200 even when the subnet-get Kea call fails."""
+        from netbox_kea.kea import KeaException
+
+        mock_client = MockKeaClient.return_value
+        mock_client.command.side_effect = KeaException({"result": 1, "text": "not found"}, index=0)
+        response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 200)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_calls_lease_wipe_and_redirects(self, MockKeaClient):
+        """POST must call lease_wipe on the client and redirect to the subnets tab."""
+        mock_client = MockKeaClient.return_value
+        mock_client.lease_wipe.return_value = None
+        response = self.client.post(self._url(subnet_id=10))
+        self.assertEqual(response.status_code, 302)
+        self._assert_no_none_pk_redirect(response)
+        mock_client.lease_wipe.assert_called_once_with(version=4, subnet_id=10)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_on_kea_exception_shows_error_message(self, MockKeaClient):
+        """POST that causes a KeaException must flash an error and redirect (no 500)."""
+        from netbox_kea.kea import KeaException
+
+        mock_client = MockKeaClient.return_value
+        mock_client.lease_wipe.side_effect = KeaException({"result": 1, "text": "hook not loaded"}, index=0)
+        response = self.client.post(self._url())
+        self.assertEqual(response.status_code, 302)
+        self._assert_no_none_pk_redirect(response)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_on_unexpected_exception_shows_error_message(self, MockKeaClient):
+        """POST that raises an unexpected exception must redirect (no 500)."""
+        mock_client = MockKeaClient.return_value
+        mock_client.lease_wipe.side_effect = RuntimeError("unexpected")
+        response = self.client.post(self._url())
+        self.assertEqual(response.status_code, 302)
+        self._assert_no_none_pk_redirect(response)
+
+    def test_get_requires_login(self):
+        """Unauthenticated GET must redirect to login."""
+        self.client.logout()
+        response = self.client.get(self._url())
+        self.assertIn(response.status_code, (302, 403))
+
+    def test_post_requires_login(self):
+        """Unauthenticated POST must redirect to login."""
+        self.client.logout()
+        response = self.client.post(self._url())
+        self.assertIn(response.status_code, (302, 403))
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestServerSubnet6WipeView(_ViewTestBase):
+    """Tests for ServerSubnet6WipeView — verifies v6 variant uses correct Kea commands."""
+
+    def _url(self, subnet_id=7):
+        return reverse("plugins:netbox_kea:server_subnet6_wipe_leases", args=[self.server.pk, subnet_id])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_get_returns_200(self, MockKeaClient):
+        mock_client = MockKeaClient.return_value
+        mock_client.command.return_value = [
+            {"result": 0, "arguments": {"subnet6": [{"id": 7, "subnet": "2001:db8::/32"}]}}
+        ]
+        response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "2001:db8::/32")
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_calls_lease_wipe_v6(self, MockKeaClient):
+        """POST must call lease_wipe with version=6."""
+        mock_client = MockKeaClient.return_value
+        mock_client.lease_wipe.return_value = None
+        response = self.client.post(self._url(subnet_id=7))
+        self.assertEqual(response.status_code, 302)
+        mock_client.lease_wipe.assert_called_once_with(version=6, subnet_id=7)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Feature 3.3: Export All Leases — BaseServerDHCPLeasesView.get_export_all()
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestLeaseExportAll(_ViewTestBase):
+    """GET /plugins/kea/servers/<pk>/leases4/?export_all=1 must return a full CSV."""
+
+    _LEASE = {
+        "ip-address": "10.0.0.1",
+        "hw-address": "aa:bb:cc:dd:ee:ff",
+        "hostname": "export-host",
+        "subnet-id": 1,
+        "valid-lft": 3600,
+        "cltt": 1_700_000_000,
+    }
+
+    def _url4(self):
+        return reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+
+    def _url6(self):
+        return reverse("plugins:netbox_kea:server_leases6", args=[self.server.pk])
+
+    def _single_page_side_effect(self, cmd, service=None, arguments=None, check=None):
+        """Kea returns one page with one lease, then empty (result=3) on next call."""
+        if cmd == "lease4-get-page":
+            frm = arguments.get("from", "")
+            if frm == "0.0.0.0":
+                return [{"result": 0, "arguments": {"leases": [self._LEASE], "count": 1}}]
+            return [{"result": 3, "arguments": None}]
+        return [{"result": 0, "arguments": {}}]
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_export_all_returns_csv(self, MockKeaClient):
+        """?export_all=1 must return text/csv."""
+        mock_client = MockKeaClient.return_value
+        mock_client.command.side_effect = self._single_page_side_effect
+        response = self.client.get(self._url4(), {"export_all": "1"})
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("text/csv", response.get("Content-Type", ""))
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_export_all_includes_lease_data(self, MockKeaClient):
+        """?export_all=1 CSV must contain the lease IP address."""
+        mock_client = MockKeaClient.return_value
+        mock_client.command.side_effect = self._single_page_side_effect
+        response = self.client.get(self._url4(), {"export_all": "1"})
+        self.assertEqual(response.status_code, 200)
+        content = (
+            b"".join(response.streaming_content).decode()
+            if hasattr(response, "streaming_content")
+            else response.content.decode()
+        )
+        self.assertIn("10.0.0.1", content)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_export_all_paginates_all_leases(self, MockKeaClient):
+        """?export_all=1 must paginate until Kea returns result=3."""
+        # The view uses per_page=1000. Return count=1000 on the first call so the
+        # view sees a full page and issues a second request; the second call returns
+        # result=3 to signal end-of-data.
+        page1 = [
+            {
+                "ip-address": f"10.0.0.{i}",
+                "hw-address": "aa:bb:cc:dd:ee:ff",
+                "hostname": f"h{i}",
+                "subnet-id": 1,
+                "valid-lft": 3600,
+                "cltt": 1_700_000_000,
+            }
+            for i in range(1, 3)
+        ]
+        call_count = {"n": 0}
+
+        def paginate_side_effect(cmd, service=None, arguments=None, check=None):
+            if cmd != "lease4-get-page":
+                return [{"result": 0, "arguments": {}}]
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                # Report count==1000 so the view thinks there may be more pages.
+                return [{"result": 0, "arguments": {"leases": page1, "count": 1000}}]
+            return [{"result": 3, "arguments": None}]
+
+        MockKeaClient.return_value.command.side_effect = paginate_side_effect
+        response = self.client.get(self._url4(), {"export_all": "1"})
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("text/csv", response.get("Content-Type", ""))
+        self.assertGreaterEqual(call_count["n"], 2)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_export_all_v6_starts_from_double_colon(self, MockKeaClient):
+        """?export_all=1 for v6 must start the cursor from '::'."""
+        call_args_list = []
+
+        def v6_side_effect(cmd, service=None, arguments=None, check=None):
+            if cmd == "lease6-get-page":
+                call_args_list.append(arguments)
+                return [{"result": 3, "arguments": None}]
+            return [{"result": 0, "arguments": {}}]
+
+        MockKeaClient.return_value.command.side_effect = v6_side_effect
+        response = self.client.get(self._url6(), {"export_all": "1"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(call_args_list), 1)
+        self.assertEqual(call_args_list[0]["from"], "::")
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_export_all_v4_starts_from_zero_ip(self, MockKeaClient):
+        """?export_all=1 for v4 must start the cursor from '0.0.0.0'."""
+        call_args_list = []
+
+        def v4_side_effect(cmd, service=None, arguments=None, check=None):
+            if cmd == "lease4-get-page":
+                call_args_list.append(arguments)
+                return [{"result": 3, "arguments": None}]
+            return [{"result": 0, "arguments": {}}]
+
+        MockKeaClient.return_value.command.side_effect = v4_side_effect
+        response = self.client.get(self._url4(), {"export_all": "1"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(call_args_list), 1)
+        self.assertEqual(call_args_list[0]["from"], "0.0.0.0")

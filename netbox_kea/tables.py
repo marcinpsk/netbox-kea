@@ -38,6 +38,13 @@ SUBNET_ACTIONS = """<span class="btn-group dropdown">
       </a>
     </li>
     <li>
+      <a href="{% url "plugins:netbox_kea:server_subnet4_wipe_leases" record.server_pk record.id %}"
+         class="dropdown-item text-warning">
+        <i class="mdi mdi-delete-sweep-outline" aria-hidden="true"></i>
+        Wipe leases
+      </a>
+    </li>
+    <li>
       <a href="{% url "plugins:netbox_kea:server_subnet4_delete" record.server_pk record.id %}"
          class="dropdown-item text-danger">
         <i class="mdi mdi-trash-can-outline" aria-hidden="true"></i>
@@ -50,6 +57,13 @@ SUBNET_ACTIONS = """<span class="btn-group dropdown">
          class="dropdown-item">
         <i class="mdi mdi-plus-circle-outline" aria-hidden="true"></i>
         Add pool
+      </a>
+    </li>
+    <li>
+      <a href="{% url "plugins:netbox_kea:server_subnet6_wipe_leases" record.server_pk record.id %}"
+         class="dropdown-item text-warning">
+        <i class="mdi mdi-delete-sweep-outline" aria-hidden="true"></i>
+        Wipe leases
       </a>
     </li>
     <li>
