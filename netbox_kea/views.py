@@ -99,11 +99,12 @@ class _KeaChangeMixin:
     def dispatch(self, request: HttpRequest, *args: Any, **kwargs: Any) -> HttpResponse:
         pk = kwargs.get("pk")
         if pk is not None:
-            if not Server.objects.filter(pk=pk).exists():
-                raise Http404
-            if not Server.objects.restrict(request.user, "change").filter(pk=pk).exists():
-                return HttpResponseForbidden("You do not have permission to modify Kea server data.")
-        elif not request.user.has_perm("netbox_kea.change_server"):
+            if request.user.is_authenticated:
+                if not Server.objects.restrict(request.user, "view").filter(pk=pk).exists():
+                    raise Http404
+                if not Server.objects.restrict(request.user, "change").filter(pk=pk).exists():
+                    return HttpResponseForbidden("You do not have permission to modify Kea server data.")
+        elif request.user.is_authenticated and not request.user.has_perm("netbox_kea.change_server"):
             return HttpResponseForbidden("You do not have permission to modify Kea server data.")
         return super().dispatch(request, *args, **kwargs)  # type: ignore[misc]
 
@@ -624,7 +625,8 @@ class BaseServerDHCPSubnetsView(generic.ObjectChildrenView):
         config = client.command("config-get", service=[f"dhcp{self.dhcp_version}"])
         if config[0]["arguments"] is None:
             raise RuntimeError(f"Unexpected None arguments from config-get for dhcp{self.dhcp_version}")
-        subnets = config[0]["arguments"][f"Dhcp{self.dhcp_version}"][f"subnet{self.dhcp_version}"]
+        dhcp_conf = config[0]["arguments"].get(f"Dhcp{self.dhcp_version}", {})
+        subnets = dhcp_conf.get(f"subnet{self.dhcp_version}", [])
         subnet_list = [
             {
                 "id": s["id"],
@@ -638,7 +640,7 @@ class BaseServerDHCPSubnetsView(generic.ObjectChildrenView):
             if "id" in s and "subnet" in s
         ]
 
-        for sn in config[0]["arguments"][f"Dhcp{self.dhcp_version}"]["shared-networks"]:
+        for sn in dhcp_conf.get("shared-networks", []):
             subnet_list.extend(
                 {
                     "id": s["id"],
@@ -649,7 +651,7 @@ class BaseServerDHCPSubnetsView(generic.ObjectChildrenView):
                     "options": format_option_data(s.get("option-data", []), version=self.dhcp_version),
                     "pools": [p.get("pool", "") for p in s.get("pools", []) if p.get("pool")],
                 }
-                for s in sn[f"subnet{self.dhcp_version}"]
+                for s in sn.get(f"subnet{self.dhcp_version}", [])
             )
 
         # Enrich with utilisation stats when stat_cmds hook is available.
@@ -2221,7 +2223,7 @@ class _BaseSyncView(ConditionalLoginRequiredMixin, View):
         try:
             IPAddress(ip_str)
         except (ValueError, Exception):
-            return HttpResponse(f"Invalid IP address: {ip_str!r}", status=400)
+            return HttpResponse("Invalid IP address", status=400)
 
         hostname = request.POST.get("hostname", "").strip()
         try:
@@ -2308,7 +2310,8 @@ class _BaseBulkReservationSyncView(ConditionalLoginRequiredMixin, View):
                 elif nb_ip:
                     updated += 1
             except Exception:
-                logger.exception("Failed to sync reservation %s", res.get("ip-address"))
+                ip_log = res.get("ip-address") or ", ".join(res.get("ip-addresses") or []) or "unknown"
+                logger.exception("Failed to sync reservation %s", ip_log)
                 errors += 1
 
         if errors:

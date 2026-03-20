@@ -441,7 +441,7 @@ class KeaClient:
         """
         try:
             self.command("config-write", service=[service])
-        except KeaException as exc:
+        except Exception as exc:
             logger.warning(
                 "config-write failed for service %s — change is live but not persisted to disk",
                 service,
@@ -500,13 +500,12 @@ class PartialPersistError(KeaException):
     """
 
     def __init__(self, service: str, cause: Exception) -> None:
-        super().__init__(
-            {
-                "result": -1,
-                "text": f"config-write failed for service {service!r} — change is live but not persisted to disk",
-            },
-            msg=f"config-write failed for service {service!r} — change is live but not persisted to disk",
-        )
+        response: KeaResponse = {
+            "result": -1,
+            "text": f"config-write failed for service {service!r} — change is live but not persisted to disk",
+            "arguments": [],
+        }
+        super().__init__(response, msg=f"partial persist error for {service!r}")
         self.service = service
 
 

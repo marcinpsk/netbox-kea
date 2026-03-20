@@ -2,11 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """View tests for Phase 2: Reservation Management.
 
-These tests will FAIL until the reservation views, URL patterns, and form classes
-are implemented.  They define the expected HTTP behaviour for all reservation
-CRUD operations on both DHCPv4 and DHCPv6 servers.
-
-URL names expected (not yet registered):
+URL names tested (all registered and working):
   server_reservations4         — GET  /servers/<pk>/reservations4/
   server_reservations6         — GET  /servers/<pk>/reservations6/
   server_reservation4_add      — GET/POST /servers/<pk>/reservations4/add/

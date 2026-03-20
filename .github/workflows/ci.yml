@@ -84,10 +84,10 @@ jobs:
 
       - name: Run unit tests with coverage
         working-directory: netbox/netbox
-        env:
-          DJANGO_SETTINGS_MODULE: netbox.configuration
         run: |
           pytest ${{ github.workspace }}/netbox_kea/tests/ \
+            --override-ini="DJANGO_SETTINGS_MODULE=netbox.configuration" \
+            --override-ini="pythonpath=${{ github.workspace }}/netbox/netbox" \
             --cov=netbox_kea \
             --cov-report=xml:${{ github.workspace }}/coverage.xml \
             --no-header -q
