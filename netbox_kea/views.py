@@ -798,6 +798,47 @@ def _enrich_reservations_with_lease_status(client: "KeaClient", reservations: li
         r["has_active_lease"] = ip in active_lease_ips
 
 
+def _filter_reservations(
+    reservations: list[dict[str, Any]], q: str, subnet_id: int | None, version: int
+) -> list[dict[str, Any]]:
+    """Filter a list of reservation dicts by free-text query and/or subnet ID.
+
+    Filtering is done in-memory (client-side) because ``reservation-get-page``
+    does not support server-side search.
+
+    Args:
+        reservations: List of reservation dicts (Kea wire format + normalised keys).
+        q: Free-text query; matched case-insensitively against IP, hostname, and
+           ``hw-address`` (DHCPv4) or ``duid`` (DHCPv6).
+        subnet_id: If non-None, only reservations in this subnet ID are returned.
+        version: 4 or 6 — determines which identifier field to search.
+
+    """
+    result = reservations
+    if subnet_id is not None:
+        result = [r for r in result if r.get("subnet-id") == subnet_id or r.get("subnet_id") == subnet_id]
+    if q:
+        q_lower = q.lower()
+        if version == 4:
+            result = [
+                r
+                for r in result
+                if q_lower in r.get("ip_address", r.get("ip-address", "")).lower()
+                or q_lower in r.get("hostname", "").lower()
+                or q_lower in r.get("hw-address", "").lower()
+            ]
+        else:
+            result = [
+                r
+                for r in result
+                if q_lower in r.get("ip_address", "").lower()
+                or any(q_lower in ip.lower() for ip in r.get("ip-addresses", []))
+                or q_lower in r.get("hostname", "").lower()
+                or q_lower in r.get("duid", "").lower()
+            ]
+    return result
+
+
 @register_model_view(Server, "reservations4")
 class ServerReservations4View(generic.ObjectView):
     """DHCPv4 reservations tab — lists all reservations from host_cmds hook."""
@@ -807,7 +848,7 @@ class ServerReservations4View(generic.ObjectView):
     template_name = "netbox_kea/server_reservations.html"
 
     def get_extra_context(self, request: HttpRequest, instance: Server) -> dict[str, Any]:
-        """Fetch reservations from Kea and build the table."""
+        """Fetch reservations from Kea, apply search filters, and build the table."""
         server: Server = instance
         client = server.get_client(version=4)
         hook_available = True
@@ -835,6 +876,16 @@ class ServerReservations4View(generic.ObjectView):
             r.setdefault("ip_address", r.get("ip-address", ""))
             r.setdefault("subnet_id", r.get("subnet-id", 0))
 
+        # Apply search filter before enrichment to avoid unnecessary Kea API calls.
+        search_form = forms.ReservationSearchForm(request.GET or None)
+        if search_form.is_valid():
+            reservations = _filter_reservations(
+                reservations,
+                q=search_form.cleaned_data.get("q", ""),
+                subnet_id=search_form.cleaned_data.get("subnet_id"),
+                version=4,
+            )
+
         # Enrich reservations with lease status + NetBox IPAM badges.
         _enrich_reservations_with_badges(reservations, server, 4)
 
@@ -844,6 +895,7 @@ class ServerReservations4View(generic.ObjectView):
             "table": table,
             "dhcp_version": 4,
             "hook_available": hook_available,
+            "search_form": search_form,
             "add_url": reverse("plugins:netbox_kea:server_reservation4_add", args=[server.pk]),
             "bulk_sync_url": reverse("plugins:netbox_kea:server_reservation4_bulk_sync", args=[server.pk]),
         }
@@ -858,7 +910,7 @@ class ServerReservations6View(generic.ObjectView):
     template_name = "netbox_kea/server_reservations.html"
 
     def get_extra_context(self, request: HttpRequest, instance: Server) -> dict[str, Any]:
-        """Fetch DHCPv6 reservations from Kea and build the table."""
+        """Fetch DHCPv6 reservations from Kea, apply search filters, and build the table."""
         server: Server = instance
         client = server.get_client(version=6)
         hook_available = True
@@ -885,6 +937,16 @@ class ServerReservations6View(generic.ObjectView):
             r.setdefault("ip_address", (r.get("ip-addresses") or [""])[0])
             r.setdefault("subnet_id", r.get("subnet-id", 0))
 
+        # Apply search filter before enrichment to avoid unnecessary Kea API calls.
+        search_form = forms.ReservationSearchForm(request.GET or None)
+        if search_form.is_valid():
+            reservations = _filter_reservations(
+                reservations,
+                q=search_form.cleaned_data.get("q", ""),
+                subnet_id=search_form.cleaned_data.get("subnet_id"),
+                version=6,
+            )
+
         # Enrich reservations with lease status + NetBox IPAM badges.
         _enrich_reservations_with_badges(reservations, server, 6)
 
@@ -894,6 +956,7 @@ class ServerReservations6View(generic.ObjectView):
             "table": table,
             "dhcp_version": 6,
             "hook_available": hook_available,
+            "search_form": search_form,
             "add_url": reverse("plugins:netbox_kea:server_reservation6_add", args=[server.pk]),
             "bulk_sync_url": reverse("plugins:netbox_kea:server_reservation6_bulk_sync", args=[server.pk]),
         }

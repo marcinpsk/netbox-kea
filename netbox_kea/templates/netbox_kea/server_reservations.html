@@ -14,6 +14,42 @@
   </div>
 </div>
 
+{% if hook_available %}
+<div class="card mb-3">
+  <div class="card-header">
+    <strong><i class="mdi mdi-magnify"></i> Search Reservations</strong>
+  </div>
+  <div class="card-body">
+    <form method="get" class="row g-2 align-items-end">
+      <div class="col-auto flex-grow-1">
+        <label for="id_q" class="form-label">{{ search_form.q.label }}</label>
+        {{ search_form.q }}
+        {% if search_form.q.errors %}
+        <div class="text-danger small">{{ search_form.q.errors }}</div>
+        {% endif %}
+      </div>
+      <div class="col-auto">
+        <label for="id_subnet_id" class="form-label">{{ search_form.subnet_id.label }}</label>
+        {{ search_form.subnet_id }}
+        {% if search_form.subnet_id.errors %}
+        <div class="text-danger small">{{ search_form.subnet_id.errors }}</div>
+        {% endif %}
+      </div>
+      <div class="col-auto">
+        <button type="submit" class="btn btn-primary btn-sm">
+          <i class="mdi mdi-magnify"></i> Filter
+        </button>
+        {% if request.GET %}
+        <a href="{{ request.path }}" class="btn btn-outline-secondary btn-sm">
+          <i class="mdi mdi-close"></i> Clear
+        </a>
+        {% endif %}
+      </div>
+    </form>
+  </div>
+</div>
+{% endif %}
+
 <div class="row mb-3">
   <div class="col text-end">
     {% if hook_available and bulk_sync_url %}

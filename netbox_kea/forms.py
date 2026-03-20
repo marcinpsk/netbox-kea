@@ -514,3 +514,29 @@ class SubnetAddForm(forms.Form):
         if not value:
             return []
         return [s.strip() for s in value.split(",") if s.strip()]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Reservation search / filter
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class ReservationSearchForm(forms.Form):
+    """Search form for filtering reservations on the per-server reservation tabs.
+
+    All fields are optional — submitting an empty form shows all reservations.
+    Client-side filtering is applied to the already-fetched reservation list.
+    """
+
+    q = forms.CharField(
+        required=False,
+        label="Search",
+        widget=forms.TextInput(attrs={"placeholder": "IP, hostname, or identifier"}),
+        help_text="Case-insensitive search across IP address, hostname, and hardware address / DUID.",
+    )
+    subnet_id = forms.IntegerField(
+        required=False,
+        label="Subnet ID",
+        min_value=1,
+        help_text="Filter to a specific Kea subnet ID.",
+    )

@@ -1274,3 +1274,289 @@ class TestServerSubnet6DeleteView(_ReservationViewBase):
         self.assertRedirects(
             resp, reverse("plugins:netbox_kea:server_subnets6", args=[self.server.pk]), fetch_redirect_response=False
         )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# _filter_reservations unit tests (pure function, no DB)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+from django.test import SimpleTestCase  # noqa: E402
+
+from netbox_kea.views import _filter_reservations  # noqa: E402
+
+
+class TestFilterReservations(SimpleTestCase):
+    """Unit tests for the _filter_reservations() pure-function helper."""
+
+    _R4_A = {
+        "subnet-id": 1,
+        "hw-address": "aa:bb:cc:dd:ee:ff",
+        "ip-address": "192.168.1.100",
+        "ip_address": "192.168.1.100",
+        "hostname": "alpha.example.com",
+    }
+    _R4_B = {
+        "subnet-id": 2,
+        "hw-address": "11:22:33:44:55:66",
+        "ip-address": "10.0.0.50",
+        "ip_address": "10.0.0.50",
+        "hostname": "beta.example.com",
+    }
+    _R6_A = {
+        "subnet-id": 10,
+        "duid": "00:01:02:03:04:05",
+        "ip-addresses": ["2001:db8::1"],
+        "ip_address": "2001:db8::1",
+        "hostname": "gamma.example.com",
+    }
+    _R6_B = {
+        "subnet-id": 11,
+        "duid": "aa:bb:cc:dd:ee:ff:00:01",
+        "ip-addresses": ["2001:db8::2"],
+        "ip_address": "2001:db8::2",
+        "hostname": "delta.example.com",
+    }
+
+    # ── v4 ──────────────────────────────────────────────────────────────────
+
+    def test_no_filter_returns_all_v4(self):
+        result = _filter_reservations([self._R4_A, self._R4_B], q="", subnet_id=None, version=4)
+        self.assertEqual(result, [self._R4_A, self._R4_B])
+
+    def test_subnet_id_filter_v4(self):
+        result = _filter_reservations([self._R4_A, self._R4_B], q="", subnet_id=1, version=4)
+        self.assertEqual(result, [self._R4_A])
+
+    def test_subnet_id_no_match_v4(self):
+        result = _filter_reservations([self._R4_A, self._R4_B], q="", subnet_id=99, version=4)
+        self.assertEqual(result, [])
+
+    def test_q_matches_ip_address_v4(self):
+        result = _filter_reservations([self._R4_A, self._R4_B], q="192.168", subnet_id=None, version=4)
+        self.assertEqual(result, [self._R4_A])
+
+    def test_q_matches_hostname_v4(self):
+        result = _filter_reservations([self._R4_A, self._R4_B], q="beta", subnet_id=None, version=4)
+        self.assertEqual(result, [self._R4_B])
+
+    def test_q_matches_hw_address_v4(self):
+        result = _filter_reservations([self._R4_A, self._R4_B], q="11:22:33", subnet_id=None, version=4)
+        self.assertEqual(result, [self._R4_B])
+
+    def test_q_case_insensitive_v4(self):
+        result = _filter_reservations([self._R4_A, self._R4_B], q="ALPHA", subnet_id=None, version=4)
+        self.assertEqual(result, [self._R4_A])
+
+    def test_q_and_subnet_id_combined_v4(self):
+        result = _filter_reservations([self._R4_A, self._R4_B], q="alpha", subnet_id=1, version=4)
+        self.assertEqual(result, [self._R4_A])
+
+    def test_q_and_subnet_id_no_overlap_v4(self):
+        # q matches _R4_A but subnet_id=2 matches _R4_B — no overlap
+        result = _filter_reservations([self._R4_A, self._R4_B], q="alpha", subnet_id=2, version=4)
+        self.assertEqual(result, [])
+
+    def test_empty_list_v4(self):
+        result = _filter_reservations([], q="anything", subnet_id=5, version=4)
+        self.assertEqual(result, [])
+
+    # ── v6 ──────────────────────────────────────────────────────────────────
+
+    def test_no_filter_returns_all_v6(self):
+        result = _filter_reservations([self._R6_A, self._R6_B], q="", subnet_id=None, version=6)
+        self.assertEqual(result, [self._R6_A, self._R6_B])
+
+    def test_subnet_id_filter_v6(self):
+        result = _filter_reservations([self._R6_A, self._R6_B], q="", subnet_id=10, version=6)
+        self.assertEqual(result, [self._R6_A])
+
+    def test_q_matches_ipv6_address_in_list_v6(self):
+        result = _filter_reservations([self._R6_A, self._R6_B], q="2001:db8::1", subnet_id=None, version=6)
+        self.assertEqual(result, [self._R6_A])
+
+    def test_q_matches_duid_v6(self):
+        result = _filter_reservations([self._R6_A, self._R6_B], q="aa:bb:cc", subnet_id=None, version=6)
+        self.assertEqual(result, [self._R6_B])
+
+    def test_q_matches_hostname_v6(self):
+        result = _filter_reservations([self._R6_A, self._R6_B], q="gamma", subnet_id=None, version=6)
+        self.assertEqual(result, [self._R6_A])
+
+    def test_q_case_insensitive_v6(self):
+        result = _filter_reservations([self._R6_A, self._R6_B], q="DELTA", subnet_id=None, version=6)
+        self.assertEqual(result, [self._R6_B])
+
+    def test_subnet_id_normalised_key_v4(self):
+        """Filter also matches reservations that use normalised 'subnet_id' key."""
+        r = dict(self._R4_A)
+        del r["subnet-id"]
+        r["subnet_id"] = 1
+        result = _filter_reservations([r], q="", subnet_id=1, version=4)
+        self.assertEqual(result, [r])
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Reservation search integration tests (view layer)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_EXTRA_RESERVATION4 = {
+    "subnet-id": 2,
+    "hw-address": "de:ad:be:ef:00:01",
+    "ip-address": "10.0.0.99",
+    "hostname": "other.example.com",
+}
+_EXTRA_RESERVATION6 = {
+    "subnet-id": 20,
+    "duid": "ff:ee:dd:cc:bb:aa",
+    "ip-addresses": ["2001:db8::ff"],
+    "hostname": "other6.example.com",
+}
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestReservationSearch4View(_ReservationViewBase):
+    """Integration tests: search/filter GET params on server_reservations4."""
+
+    def _url(self, **params):
+        base = reverse("plugins:netbox_kea:server_reservations4", args=[self.server.pk])
+        if params:
+            from urllib.parse import urlencode
+
+            return f"{base}?{urlencode(params)}"
+        return base
+
+    def _mock_two_reservations(self, MockKeaClient):
+        mock_client = MockKeaClient.return_value
+        mock_client.get_available_commands.return_value = _RESERVATION_COMMANDS
+        mock_client.reservation_get_page.return_value = (
+            [dict(_SAMPLE_RESERVATION4), dict(_EXTRA_RESERVATION4)],
+            0,
+            0,
+        )
+        mock_client.command.return_value = [{"result": 0, "arguments": {"leases": [], "count": 0}}]
+        return mock_client
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_no_params_shows_all_reservations(self, MockKeaClient):
+        self._mock_two_reservations(MockKeaClient)
+        response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, _SAMPLE_RESERVATION4["ip-address"])
+        self.assertContains(response, _EXTRA_RESERVATION4["ip-address"])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_q_filters_by_hostname(self, MockKeaClient):
+        self._mock_two_reservations(MockKeaClient)
+        response = self.client.get(self._url(q="testhost"))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, _SAMPLE_RESERVATION4["ip-address"])
+        self.assertNotContains(response, _EXTRA_RESERVATION4["ip-address"])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_q_filters_by_ip(self, MockKeaClient):
+        self._mock_two_reservations(MockKeaClient)
+        response = self.client.get(self._url(q="10.0.0.99"))
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, _SAMPLE_RESERVATION4["ip-address"])
+        self.assertContains(response, _EXTRA_RESERVATION4["ip-address"])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_subnet_id_filter(self, MockKeaClient):
+        self._mock_two_reservations(MockKeaClient)
+        response = self.client.get(self._url(subnet_id=1))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, _SAMPLE_RESERVATION4["ip-address"])
+        self.assertNotContains(response, _EXTRA_RESERVATION4["ip-address"])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_search_form_in_context(self, MockKeaClient):
+        self._mock_two_reservations(MockKeaClient)
+        response = self.client.get(self._url(q="testhost"))
+        self.assertIn("search_form", response.context)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_empty_q_shows_all(self, MockKeaClient):
+        self._mock_two_reservations(MockKeaClient)
+        response = self.client.get(self._url(q=""))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, _SAMPLE_RESERVATION4["ip-address"])
+        self.assertContains(response, _EXTRA_RESERVATION4["ip-address"])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_no_match_shows_no_ips(self, MockKeaClient):
+        self._mock_two_reservations(MockKeaClient)
+        response = self.client.get(self._url(q="zzz-no-match-zzz"))
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, _SAMPLE_RESERVATION4["ip-address"])
+        self.assertNotContains(response, _EXTRA_RESERVATION4["ip-address"])
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestReservationSearch6View(_ReservationViewBase):
+    """Integration tests: search/filter GET params on server_reservations6."""
+
+    def _url(self, **params):
+        base = reverse("plugins:netbox_kea:server_reservations6", args=[self.server.pk])
+        if params:
+            from urllib.parse import urlencode
+
+            return f"{base}?{urlencode(params)}"
+        return base
+
+    def _mock_two_reservations(self, MockKeaClient):
+        mock_client = MockKeaClient.return_value
+        mock_client.get_available_commands.return_value = _RESERVATION_COMMANDS
+        mock_client.reservation_get_page.return_value = (
+            [dict(_SAMPLE_RESERVATION6), dict(_EXTRA_RESERVATION6)],
+            0,
+            0,
+        )
+        mock_client.command.return_value = [{"result": 0, "arguments": {"leases": [], "count": 0}}]
+        return mock_client
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_no_params_shows_all_reservations(self, MockKeaClient):
+        self._mock_two_reservations(MockKeaClient)
+        response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, _SAMPLE_RESERVATION6["ip-addresses"][0])
+        self.assertContains(response, _EXTRA_RESERVATION6["ip-addresses"][0])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_q_filters_by_hostname(self, MockKeaClient):
+        self._mock_two_reservations(MockKeaClient)
+        response = self.client.get(self._url(q="testhost6"))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, _SAMPLE_RESERVATION6["ip-addresses"][0])
+        self.assertNotContains(response, _EXTRA_RESERVATION6["ip-addresses"][0])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_q_filters_by_duid(self, MockKeaClient):
+        self._mock_two_reservations(MockKeaClient)
+        response = self.client.get(self._url(q="ff:ee:dd"))
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, _SAMPLE_RESERVATION6["ip-addresses"][0])
+        self.assertContains(response, _EXTRA_RESERVATION6["ip-addresses"][0])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_subnet_id_filter(self, MockKeaClient):
+        self._mock_two_reservations(MockKeaClient)
+        response = self.client.get(self._url(subnet_id=1))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, _SAMPLE_RESERVATION6["ip-addresses"][0])
+        self.assertNotContains(response, _EXTRA_RESERVATION6["ip-addresses"][0])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_search_form_in_context(self, MockKeaClient):
+        self._mock_two_reservations(MockKeaClient)
+        response = self.client.get(self._url(q="testhost6"))
+        self.assertIn("search_form", response.context)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_no_match_shows_no_ips(self, MockKeaClient):
+        self._mock_two_reservations(MockKeaClient)
+        response = self.client.get(self._url(q="zzz-no-match-zzz"))
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, _SAMPLE_RESERVATION6["ip-addresses"][0])
+        self.assertNotContains(response, _EXTRA_RESERVATION6["ip-addresses"][0])
