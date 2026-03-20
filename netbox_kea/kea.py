@@ -279,7 +279,7 @@ class KeaClient:
             subnet_cidr: Subnet in CIDR notation, e.g. ``"10.0.0.0/24"``.
             subnet_id: Optional Kea subnet ID. If ``None``, Kea auto-assigns.
             pools: Optional list of initial pool ranges (e.g. ``["10.0.0.100-10.0.0.200"]``).
-            gateway: Optional default gateway IP (option ``routers`` / ``dns-servers``).
+            gateway: Optional default gateway IP (sets option ``routers``; DHCPv4 only).
             dns_servers: Optional list of DNS server IPs.
             ntp_servers: Optional list of NTP server hostnames/IPs.
 
