@@ -202,7 +202,7 @@ class SubnetTable(GenericTable):
     pools = tables.TemplateColumn(
         verbose_name="Pool(s)",
         orderable=False,
-        template_code="""{% for pool in record.pools %}<span class="badge text-bg-secondary me-1">{{ pool }}{% if record.server_pk and record.id %} {% if record.dhcp_version == 4 %}<a href="{% url "plugins:netbox_kea:server_subnet4_pool_delete" record.server_pk record.id pool %}" class="text-white ms-1" title="Delete pool"><i class="mdi mdi-close-circle-outline" style="font-size:0.85em"></i></a>{% else %}<a href="{% url "plugins:netbox_kea:server_subnet6_pool_delete" record.server_pk record.id pool %}" class="text-white ms-1" title="Delete pool"><i class="mdi mdi-close-circle-outline" style="font-size:0.85em"></i></a>{% endif %}{% endif %}</span> {% empty %}— {% endfor %}{% if record.server_pk and record.id %}{% if record.dhcp_version == 4 %}<a href="{% url "plugins:netbox_kea:server_subnet4_pool_add" record.server_pk record.id %}" class="btn btn-sm btn-outline-secondary ms-1" title="Add pool"><i class="mdi mdi-plus" aria-hidden="true"></i></a>{% else %}<a href="{% url "plugins:netbox_kea:server_subnet6_pool_add" record.server_pk record.id %}" class="btn btn-sm btn-outline-secondary ms-1" title="Add pool"><i class="mdi mdi-plus" aria-hidden="true"></i></a>{% endif %}{% endif %}""",
+        template_code="""{% for pool in record.pools %}<span class="badge text-bg-secondary me-1">{{ pool }}{% if record.server_pk and record.id %} {% if record.dhcp_version == 4 %}<a href="{% url "plugins:netbox_kea:server_subnet4_pool_delete" record.server_pk record.id pool %}" class="text-white ms-1" aria-label="Delete pool {{ pool }}"><i class="mdi mdi-close-circle-outline" style="font-size:0.85em" aria-hidden="true"></i></a>{% else %}<a href="{% url "plugins:netbox_kea:server_subnet6_pool_delete" record.server_pk record.id pool %}" class="text-white ms-1" aria-label="Delete pool {{ pool }}"><i class="mdi mdi-close-circle-outline" style="font-size:0.85em" aria-hidden="true"></i></a>{% endif %}{% endif %}</span> {% empty %}— {% endfor %}{% if record.server_pk and record.id %}{% if record.dhcp_version == 4 %}<a href="{% url "plugins:netbox_kea:server_subnet4_pool_add" record.server_pk record.id %}" class="btn btn-sm btn-outline-secondary ms-1" aria-label="Add pool"><i class="mdi mdi-plus" aria-hidden="true"></i></a>{% else %}<a href="{% url "plugins:netbox_kea:server_subnet6_pool_add" record.server_pk record.id %}" class="btn btn-sm btn-outline-secondary ms-1" aria-label="Add pool"><i class="mdi mdi-plus" aria-hidden="true"></i></a>{% endif %}{% endif %}""",
     )
     utilization = tables.TemplateColumn(
         verbose_name="Utilization",
@@ -343,18 +343,18 @@ class LeaseDeleteTable(GenericTable):
 RESERVATION_ACTIONS_V4 = """
 <span class="btn-group">
   <a href="{% url "plugins:netbox_kea:server_reservation4_edit" record.server_pk record.subnet_id record.ip_address %}"
-     class="btn btn-sm btn-warning" title="Edit"><i class="mdi mdi-pencil"></i></a>
+     class="btn btn-sm btn-warning" aria-label="Edit reservation {{ record.ip_address }}"><i class="mdi mdi-pencil" aria-hidden="true"></i></a>
   <a href="{% url "plugins:netbox_kea:server_reservation4_delete" record.server_pk record.subnet_id record.ip_address %}"
-     class="btn btn-sm btn-danger" title="Delete"><i class="mdi mdi-trash-can-outline"></i></a>
+     class="btn btn-sm btn-danger" aria-label="Delete reservation {{ record.ip_address }}"><i class="mdi mdi-trash-can-outline" aria-hidden="true"></i></a>
 </span>
 """
 
 RESERVATION_ACTIONS_V6 = """
 <span class="btn-group">
   <a href="{% url "plugins:netbox_kea:server_reservation6_edit" record.server_pk record.subnet_id record.ip_address %}"
-     class="btn btn-sm btn-warning" title="Edit"><i class="mdi mdi-pencil"></i></a>
+     class="btn btn-sm btn-warning" aria-label="Edit reservation {{ record.ip_address }}"><i class="mdi mdi-pencil" aria-hidden="true"></i></a>
   <a href="{% url "plugins:netbox_kea:server_reservation6_delete" record.server_pk record.subnet_id record.ip_address %}"
-     class="btn btn-sm btn-danger" title="Delete"><i class="mdi mdi-trash-can-outline"></i></a>
+     class="btn btn-sm btn-danger" aria-label="Delete reservation {{ record.ip_address }}"><i class="mdi mdi-trash-can-outline" aria-hidden="true"></i></a>
 </span>
 """
 
@@ -639,7 +639,7 @@ class GlobalSubnetTable4(GenericTable):
     pools = tables.TemplateColumn(
         verbose_name="Pool(s)",
         orderable=False,
-        template_code="""{% for pool in record.pools %}<span class="badge text-bg-secondary me-1">{{ pool }}{% if record.server_pk and record.id %} {% if record.dhcp_version == 4 %}<a href="{% url "plugins:netbox_kea:server_subnet4_pool_delete" record.server_pk record.id pool %}" class="text-white ms-1" title="Delete pool"><i class="mdi mdi-close-circle-outline" style="font-size:0.85em"></i></a>{% else %}<a href="{% url "plugins:netbox_kea:server_subnet6_pool_delete" record.server_pk record.id pool %}" class="text-white ms-1" title="Delete pool"><i class="mdi mdi-close-circle-outline" style="font-size:0.85em"></i></a>{% endif %}{% endif %}</span> {% empty %}— {% endfor %}{% if record.server_pk and record.id %}{% if record.dhcp_version == 4 %}<a href="{% url "plugins:netbox_kea:server_subnet4_pool_add" record.server_pk record.id %}" class="btn btn-sm btn-outline-secondary ms-1" title="Add pool"><i class="mdi mdi-plus" aria-hidden="true"></i></a>{% else %}<a href="{% url "plugins:netbox_kea:server_subnet6_pool_add" record.server_pk record.id %}" class="btn btn-sm btn-outline-secondary ms-1" title="Add pool"><i class="mdi mdi-plus" aria-hidden="true"></i></a>{% endif %}{% endif %}""",
+        template_code="""{% for pool in record.pools %}<span class="badge text-bg-secondary me-1">{{ pool }}{% if record.server_pk and record.id %} {% if record.dhcp_version == 4 %}<a href="{% url "plugins:netbox_kea:server_subnet4_pool_delete" record.server_pk record.id pool %}" class="text-white ms-1" aria-label="Delete pool {{ pool }}"><i class="mdi mdi-close-circle-outline" style="font-size:0.85em" aria-hidden="true"></i></a>{% else %}<a href="{% url "plugins:netbox_kea:server_subnet6_pool_delete" record.server_pk record.id pool %}" class="text-white ms-1" aria-label="Delete pool {{ pool }}"><i class="mdi mdi-close-circle-outline" style="font-size:0.85em" aria-hidden="true"></i></a>{% endif %}{% endif %}</span> {% empty %}— {% endfor %}{% if record.server_pk and record.id %}{% if record.dhcp_version == 4 %}<a href="{% url "plugins:netbox_kea:server_subnet4_pool_add" record.server_pk record.id %}" class="btn btn-sm btn-outline-secondary ms-1" aria-label="Add pool"><i class="mdi mdi-plus" aria-hidden="true"></i></a>{% else %}<a href="{% url "plugins:netbox_kea:server_subnet6_pool_add" record.server_pk record.id %}" class="btn btn-sm btn-outline-secondary ms-1" aria-label="Add pool"><i class="mdi mdi-plus" aria-hidden="true"></i></a>{% endif %}{% endif %}""",
     )
     options = tables.TemplateColumn(
         verbose_name="Options",
@@ -650,11 +650,24 @@ class GlobalSubnetTable4(GenericTable):
 {% if opts.ntp_servers %} | NTP: {{ opts.ntp_servers }}{% endif %}
 </span>{% endif %}{% endwith %}""",
     )
+    utilization = tables.TemplateColumn(
+        verbose_name="Utilization",
+        orderable=False,
+        template_code=(
+            "{% if record.utilization %}"
+            '<span class="badge '
+            "{% if record.utilization_pct == 100 %}text-bg-danger"
+            "{% elif record.utilization_pct >= 80 %}text-bg-warning"
+            "{% else %}text-bg-success{% endif %}"
+            '">{{ record.utilization }}</span>'
+            "{% endif %}"
+        ),
+    )
 
     class Meta(GenericTable.Meta):
         empty_text = "No subnets found."
-        fields = ("server", "id", "subnet", "pools", "options", "shared_network")
-        default_columns = ("server", "id", "subnet", "pools", "options", "shared_network")
+        fields = ("server", "id", "subnet", "pools", "utilization", "options", "shared_network")
+        default_columns = ("server", "id", "subnet", "pools", "utilization", "options", "shared_network")
 
 
 class GlobalSubnetTable6(GlobalSubnetTable4):

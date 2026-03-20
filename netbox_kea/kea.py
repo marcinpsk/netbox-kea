@@ -206,8 +206,12 @@ class KeaClient:
             KeaException: If Kea returns a non-zero result code.
 
         """
+        if ip_address is not None and identifier_type is not None:
+            raise ValueError("ip_address and identifier_type are mutually exclusive; provide exactly one.")
         if ip_address is None and identifier_type is None:
             raise ValueError("Either ip_address or identifier_type+identifier must be provided.")
+        if (identifier_type is None) != (identifier is None):
+            raise ValueError("identifier_type and identifier must both be provided together.")
         args: dict[str, Any] = {"subnet-id": subnet_id}
         if ip_address is not None:
             args["ip-address"] = ip_address
@@ -240,6 +244,12 @@ class KeaClient:
             KeaException: If Kea returns result code 1 (error).
 
         """
+        if ip_address is not None and identifier_type is not None:
+            raise ValueError("ip_address and identifier_type are mutually exclusive; provide exactly one.")
+        if ip_address is None and identifier_type is None:
+            raise ValueError("Either ip_address or identifier_type+identifier must be provided.")
+        if (identifier_type is None) != (identifier is None):
+            raise ValueError("identifier_type and identifier must both be provided together.")
         args: dict[str, Any] = {"subnet-id": subnet_id}
         if ip_address is not None:
             args["ip-address"] = ip_address

@@ -16,7 +16,14 @@ from netbox.views import generic
 from utilities.exceptions import AbortRequest
 from utilities.htmx import htmx_partial
 from utilities.paginator import EnhancedPaginator, get_paginate_count
-from utilities.views import ConditionalLoginRequiredMixin, GetReturnURLMixin, ViewTab, register_model_view
+from utilities.views import GetReturnURLMixin, ViewTab, register_model_view
+
+try:
+    from utilities.views import ConditionalLoginRequiredMixin
+except ImportError:
+    from django.contrib.auth.mixins import (
+        LoginRequiredMixin as ConditionalLoginRequiredMixin,  # type: ignore[assignment]
+    )
 
 from . import constants, forms, tables
 from .filtersets import ServerFilterSet
@@ -141,11 +148,13 @@ class ServerStatusView(generic.ObjectView):
         """Get the control agent status."""
         status = client.command("status-get")
         args = status[0]["arguments"]
-        assert args is not None
+        if not args:
+            raise RuntimeError("Kea status-get returned empty arguments")
 
         version = client.command("version-get")
         version_args = version[0]["arguments"]
-        assert version_args is not None
+        if not version_args:
+            raise RuntimeError("Kea version-get returned empty arguments")
 
         return {
             "PID": args["pid"],
@@ -434,12 +443,15 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
                     "page_lengths": EnhancedPaginator.default_page_lengths,
                 },
             )
-        except Exception as e:
-            logger.exception("exception on DHCP leases HTMX handler")
+        except Exception:
+            import uuid
+
+            error_id = str(uuid.uuid4())
+            logger.exception("HTMX leases handler error [%s]", error_id)
             return render(
                 request,
                 "netbox_kea/exception_htmx.html",
-                {"type_": type(e).__name__, "exception": str(e)},
+                {"error_id": error_id},
             )
 
 
@@ -1515,7 +1527,12 @@ def _enrich_leases_with_badges(leases: list[dict[str, Any]], server: "Server", v
     host_cmds_available = True
     try:
         reservations, _, _ = client.reservation_get_page(f"dhcp{version}", limit=1000)
-        reservation_by_ip = {r["ip-address"]: r for r in reservations}
+        for r in reservations:
+            if "ip-address" in r:
+                reservation_by_ip[r["ip-address"]] = r
+            elif "ip-addresses" in r:
+                for addr in r["ip-addresses"]:
+                    reservation_by_ip[addr] = r
     except KeaException as exc:
         if exc.response.get("result") == 2:
             host_cmds_available = False

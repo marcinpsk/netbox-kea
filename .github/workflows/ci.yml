@@ -77,14 +77,7 @@ jobs:
 
       - name: Run pytest
         run: |
-          uv run pytest --tracing=retain-on-failure -v --cov=netbox_kea --cov-report=xml
-
-      - name: Upload coverage to Codecov
-        if: ${{ matrix.netbox == 'v4.5' && !cancelled() }}
-        uses: codecov/codecov-action@v5
-        with:
-          files: ./coverage.xml
-          fail_ci_if_error: false
+          uv run pytest tests/ -p no:django --tracing=retain-on-failure -v
 
       - name: Upload Playwright traces
         uses: actions/upload-artifact@v4

@@ -483,11 +483,31 @@ class SubnetAddForm(forms.Form):
                 )
         return pools
 
+    def clean_gateway(self) -> str:  # noqa: D102
+        import ipaddress
+
+        value = self.cleaned_data["gateway"].strip()
+        if not value:
+            return ""
+        try:
+            ipaddress.ip_address(value)
+        except ValueError as exc:
+            raise forms.ValidationError(f"Invalid gateway IP address: {exc}") from exc
+        return value
+
     def clean_dns_servers(self) -> list[str]:  # noqa: D102
+        import ipaddress
+
         value = self.cleaned_data["dns_servers"].strip()
         if not value:
             return []
-        return [s.strip() for s in value.split(",") if s.strip()]
+        entries = [s.strip() for s in value.split(",") if s.strip()]
+        for entry in entries:
+            try:
+                ipaddress.ip_address(entry)
+            except ValueError as exc:  # noqa: PERF203
+                raise forms.ValidationError(f"Invalid DNS server IP address '{entry}': {exc}") from exc
+        return entries
 
     def clean_ntp_servers(self) -> list[str]:  # noqa: D102
         value = self.cleaned_data["ntp_servers"].strip()
