@@ -310,17 +310,40 @@ class KeaClient:
         if gateway and version == 4:
             option_data.append({"name": "routers", "data": gateway})
         if dns_servers:
-            option_data.append({"name": "domain-name-servers", "data": ", ".join(dns_servers)})
+            option_data.append(
+                {
+                    "name": "domain-name-servers" if version == 4 else "dns-servers",
+                    "data": ", ".join(dns_servers),
+                }
+            )
         if ntp_servers:
-            option_data.append({"name": "ntp-servers", "data": ", ".join(ntp_servers)})
+            option_data.append(
+                {
+                    "name": "ntp-servers" if version == 4 else "sntp-servers",
+                    "data": ", ".join(ntp_servers),
+                }
+            )
         if option_data:
             subnet_def["option-data"] = option_data
-        self.command(
-            f"subnet{version}-add",
-            service=[service],
-            arguments={subnet_key: [subnet_def]},
-        )
-        self.command("config-write", service=[service])
+        last_exc: KeaException | None = None
+        for _attempt in range(3):
+            try:
+                self.command(
+                    f"subnet{version}-add",
+                    service=[service],
+                    arguments={subnet_key: [dict(subnet_def)]},
+                )
+                last_exc = None
+                break
+            except KeaException as exc:
+                if "duplicate" in str(exc).lower() and "id" in subnet_def:
+                    subnet_def["id"] += 1
+                    last_exc = exc
+                else:
+                    raise
+        if last_exc is not None:
+            raise last_exc
+        self._persist_config(service)
 
     def subnet_del(self, version: int, subnet_id: int) -> None:
         """Delete an existing subnet from Kea and persist the change.
@@ -339,7 +362,7 @@ class KeaClient:
             service=[service],
             arguments={"id": subnet_id},
         )
-        self.command("config-write", service=[service])
+        self._persist_config(service)
 
     def pool_add(self, version: int, subnet_id: int, pool: str) -> None:
         """Add a pool to an existing subnet and persist the change.
@@ -373,7 +396,7 @@ class KeaClient:
                 service=[service],
                 arguments={subnet_key: [{"id": subnet_id, "subnet": subnet_cidr, "pools": [{"pool": pool}]}]},
             )
-        self.command("config-write", service=[service])
+        self._persist_config(service)
 
     def pool_del(self, version: int, subnet_id: int, pool: str) -> None:
         """Remove a pool from an existing subnet and persist the change.
@@ -407,7 +430,23 @@ class KeaClient:
                 service=[service],
                 arguments={subnet_key: [{"id": subnet_id, "subnet": subnet_cidr, "pools": [{"pool": pool}]}]},
             )
-        self.command("config-write", service=[service])
+        self._persist_config(service)
+
+    def _persist_config(self, service: str) -> None:
+        """Persist the running config to disk via config-write.
+
+        Logs a warning and re-raises if config-write fails. When this happens,
+        the mutation is already live in the running config but will be lost on
+        next Kea restart.
+        """
+        try:
+            self.command("config-write", service=[service])
+        except KeaException:
+            logger.warning(
+                "config-write failed for service %s — change is live but not persisted to disk",
+                service,
+            )
+            raise
 
     def _get_subnet_cidr(self, version: int, subnet_id: int) -> str:
         """Fetch the CIDR string for *subnet_id* from Kea (e.g. ``"10.0.0.0/24"``).

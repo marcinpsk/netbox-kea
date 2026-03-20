@@ -225,6 +225,6 @@ def sync_reservation_to_netbox(reservation: dict) -> tuple[NbIPAddress, bool]:
 
         if primary_obj is None:
             primary_obj = ip_obj
-            any_created = created
+        any_created = any_created or created
 
     return primary_obj, any_created  # type: ignore[return-value]

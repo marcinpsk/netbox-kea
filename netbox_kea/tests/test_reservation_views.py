@@ -269,6 +269,19 @@ class TestServerReservations6View(_ReservationViewBase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(mock_client.reservation_get_page.call_count, 2)
 
+    @patch("netbox_kea.models.KeaClient")
+    def test_action_hrefs_contain_ipv6_address(self, MockKeaClient):
+        """Edit/delete action links must embed the IPv6 address in the URL path (issue #12)."""
+        self._mock_client_with_reservations6(MockKeaClient)
+        url = reverse("plugins:netbox_kea:server_reservations6", args=[self.server.pk])
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        ip = _SAMPLE_RESERVATION6["ip-addresses"][0]
+        subnet_id = _SAMPLE_RESERVATION6["subnet-id"]
+        # The rendered action URLs must include the subnet_id and IP in path position
+        self.assertContains(response, f"/reservations6/{subnet_id}/{ip}/edit/")
+        self.assertContains(response, f"/reservations6/{subnet_id}/{ip}/delete/")
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TestServerReservation4AddView

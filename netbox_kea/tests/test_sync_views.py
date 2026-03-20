@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """View tests for Phase 3: NetBox IPAM sync endpoints.
 
-URL names expected (not yet registered):
+URL names (all registered in netbox_kea/urls.py):
   server_lease4_sync       — POST /servers/<pk>/leases4/sync/
   server_lease6_sync       — POST /servers/<pk>/leases6/sync/
   server_reservation4_sync — POST /servers/<pk>/reservations4/sync/
@@ -24,6 +24,7 @@ from unittest.mock import MagicMock, patch
 from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
 from django.urls import reverse
+from ipam.models import IPAddress as NbIP
 
 from netbox_kea.models import Server
 
@@ -78,13 +79,11 @@ class TestLease4SyncView(_SyncViewBase):
         self.assertEqual(response.status_code, 200)
 
     def test_creates_netbox_ip_on_post(self):
-        from ipam.models import IPAddress as NbIP
 
         self.client.post(self._url(), {"ip_address": "192.168.10.6", "hostname": "host-b"})
         self.assertTrue(NbIP.objects.filter(address__startswith="192.168.10.6/").exists())
 
     def test_created_ip_has_active_status(self):
-        from ipam.models import IPAddress as NbIP
 
         self.client.post(self._url(), {"ip_address": "192.168.10.7", "hostname": "host-c"})
         ip = NbIP.objects.filter(address__startswith="192.168.10.7/").first()
@@ -92,7 +91,6 @@ class TestLease4SyncView(_SyncViewBase):
         self.assertEqual(ip.status, "active")
 
     def test_created_ip_has_correct_dns_name(self):
-        from ipam.models import IPAddress as NbIP
 
         self.client.post(self._url(), {"ip_address": "192.168.10.8", "hostname": "dns-test.local"})
         ip = NbIP.objects.filter(address__startswith="192.168.10.8/").first()
@@ -109,7 +107,6 @@ class TestLease4SyncView(_SyncViewBase):
         self.assertEqual(response.status_code, 400)
 
     def test_idempotent_second_post_does_not_create_duplicate(self):
-        from ipam.models import IPAddress as NbIP
 
         self.client.post(self._url(), {"ip_address": "192.168.10.20", "hostname": "idem-host"})
         self.client.post(self._url(), {"ip_address": "192.168.10.20", "hostname": "idem-host"})
@@ -147,7 +144,6 @@ class TestLease6SyncView(_SyncViewBase):
         self.assertEqual(response.status_code, 200)
 
     def test_creates_netbox_ip_with_slash128_for_ipv6(self):
-        from ipam.models import IPAddress as NbIP
 
         self.client.post(
             self._url(),
@@ -158,7 +154,6 @@ class TestLease6SyncView(_SyncViewBase):
         self.assertTrue(str(ip.address).endswith("/128"))
 
     def test_created_ip_has_active_status(self):
-        from ipam.models import IPAddress as NbIP
 
         self.client.post(
             self._url(),
@@ -185,7 +180,6 @@ class TestReservation4SyncView(_SyncViewBase):
         self.assertEqual(response.status_code, 200)
 
     def test_creates_ip_with_reserved_status(self):
-        from ipam.models import IPAddress as NbIP
 
         self.client.post(self._url(), {"ip_address": "10.0.0.51", "hostname": "res-host2"})
         ip = NbIP.objects.filter(address__startswith="10.0.0.51/").first()
@@ -193,7 +187,6 @@ class TestReservation4SyncView(_SyncViewBase):
         self.assertEqual(ip.status, "reserved")
 
     def test_sets_dns_name(self):
-        from ipam.models import IPAddress as NbIP
 
         self.client.post(self._url(), {"ip_address": "10.0.0.52", "hostname": "dns.local"})
         ip = NbIP.objects.filter(address__startswith="10.0.0.52/").first()
@@ -229,7 +222,6 @@ class TestReservation6SyncView(_SyncViewBase):
         self.assertEqual(response.status_code, 200)
 
     def test_creates_ip_with_reserved_status(self):
-        from ipam.models import IPAddress as NbIP
 
         self.client.post(
             self._url(),
@@ -265,7 +257,6 @@ class TestReservation4BulkSyncView(_SyncViewBase):
         self.assertIn(response.status_code, [302, 303])
 
     def test_creates_netbox_ips_for_all_reservations(self):
-        from ipam.models import IPAddress as NbIP
 
         mock_client = MagicMock()
         mock_client.reservation_get_page.return_value = (
@@ -282,7 +273,6 @@ class TestReservation4BulkSyncView(_SyncViewBase):
         self.assertTrue(NbIP.objects.filter(address__startswith="10.0.11.2/").exists())
 
     def test_created_ips_have_reserved_status(self):
-        from ipam.models import IPAddress as NbIP
 
         mock_client = MagicMock()
         mock_client.reservation_get_page.return_value = (
@@ -346,3 +336,48 @@ class TestSyncViewPermissionChecks(_SyncViewBase):
         url = reverse("plugins:netbox_kea:server_lease4_sync", args=[self.server.pk])
         response = self.client.post(url, {"ip_address": "192.168.99.3"})
         self.assertEqual(response.status_code, 200)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TestReservation6BulkSyncView  (issue #13)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestReservation6BulkSyncView(_SyncViewBase):
+    """POST to server_reservation6_bulk_sync syncs all v6 reservations to NetBox."""
+
+    def _url(self):
+        return reverse("plugins:netbox_kea:server_reservation6_bulk_sync", args=[self.server.pk])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_bulk_syncs_v6_reservations(self, MockKeaClient):
+        """Bulk sync v6 reservation creates an IPAddress with /128 prefix and reserved status."""
+        mock_client = MockKeaClient.return_value
+        mock_client.reservation_get_page.return_value = (
+            [
+                {
+                    "subnet-id": 1,
+                    "duid": "00:01:aa:bb",
+                    "ip-addresses": ["2001:db8::1"],
+                    "hostname": "host-v6",
+                }
+            ],
+            0,
+            0,
+        )
+        self.client.post(self._url())
+        ip = NbIP.objects.filter(address__startswith="2001:db8::1").first()
+        self.assertIsNotNone(ip)
+        self.assertEqual(ip.status, "reserved")
+        self.assertIn("/128", str(ip.address))
+
+    def test_post_unauthenticated_redirects(self):
+        self.client.logout()
+        response = self.client.post(self._url(), content_type="application/json")
+        self.assertEqual(response.status_code, 302)
+
+    def test_post_nonexistent_server_returns_404(self):
+        url = reverse("plugins:netbox_kea:server_reservation6_bulk_sync", args=[99999])
+        response = self.client.post(url, content_type="application/json")
+        self.assertEqual(response.status_code, 404)

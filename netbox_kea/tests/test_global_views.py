@@ -499,7 +499,8 @@ class TestCombinedSubnets4View(_CombinedViewBase):
         MockKeaClient.return_value.command.return_value = _MOCK_CONFIG_V4
         url = reverse("plugins:netbox_kea:combined_subnets4") + f"?server={self.v4_server.pk}"
         self.client.get(url)
-        self.assertEqual(MockKeaClient.return_value.command.call_count, 1)
+        # 1 server filtered × 2 commands (config-get + stat-lease4-get) = 2
+        self.assertEqual(MockKeaClient.return_value.command.call_count, 2)
 
     @patch("netbox_kea.models.KeaClient")
     def test_unreachable_server_returns_200_with_warning(self, MockKeaClient):
@@ -728,4 +729,153 @@ class TestCombinedReservations4Enrichment(_CombinedViewBase):
         response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
         expected = f"/plugins/kea/servers/{self.v4_server.pk}/reservations4/"
+        self.assertContains(response, expected)
+
+
+# ---------------------------------------------------------------------------
+# Badge enrichment parity: DHCPv6 combined views  (issue #10)
+# ---------------------------------------------------------------------------
+
+_MOCK_LEASE_V6_ENRICHMENT = {
+    "ip-address": "2001:db8::5",
+    "duid": "00:01:aa:bb",
+    "subnet-id": 1,
+    "hostname": "enriched-host-v6",
+    "valid-lft": 3600,
+    "cltt": 0,
+    "state": 0,
+    "preferred-lft": 1800,
+}
+
+_MOCK_RESERVATION_V6_ENRICHED = {
+    "subnet-id": 1,
+    "duid": "00:01:aa:bb",
+    "ip-addresses": ["2001:db8::5"],
+    "ip_address": "2001:db8::5",
+    "hostname": "enriched-host-v6",
+}
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestCombinedLeases6Enrichment(_CombinedViewBase):
+    """Combined DHCPv6 lease view must include the same badge enrichment as DHCPv4."""
+
+    def _lease_url(self, q="2001:db8::5", by="ip"):
+        return reverse("plugins:netbox_kea:combined_leases6") + f"?q={q}&by={by}&server={self.v6_server.pk}"
+
+    def _mock_command(self, mock_client, leases, reservations=()):
+        def command_side_effect(cmd, **kwargs):
+            if "lease" in cmd:
+                args = kwargs.get("arguments", {})
+                ip = args.get("ip-address")
+                if ip:
+                    matching = [entry for entry in leases if entry["ip-address"] == ip]
+                    if not matching:
+                        return [{"result": 3, "arguments": None}]
+                    return [{"result": 0, "arguments": matching[0]}]
+                return [{"result": 0, "arguments": {"leases": list(leases), "count": len(leases)}}]
+            return [{"result": 2, "arguments": {}}]
+
+        mock_client.command.side_effect = command_side_effect
+        mock_client.reservation_get_page.return_value = (list(reservations), 0, 0)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_reserved_badge_appears_when_reservation_exists(self, MockKeaClient):
+        """A v6 lease with a matching reservation must show the 'Reserved' badge."""
+        self._mock_command(
+            MockKeaClient.return_value,
+            leases=[dict(_MOCK_LEASE_V6_ENRICHMENT)],
+            reservations=[dict(_MOCK_RESERVATION_V6_ENRICHED)],
+        )
+        response = self.client.get(self._lease_url())
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Reserved")
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_create_reservation_link_when_no_reservation(self, MockKeaClient):
+        """A v6 lease without a matching reservation must show a create-reservation link."""
+        self._mock_command(
+            MockKeaClient.return_value,
+            leases=[dict(_MOCK_LEASE_V6_ENRICHMENT)],
+            reservations=[],
+        )
+        response = self.client.get(self._lease_url())
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "reservations6/add")
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_netbox_ip_synced_link_when_ip_in_netbox(self, MockKeaClient):
+        """When the v6 lease IP exists in NetBox IPAM, a 'Synced' link must appear."""
+        from ipam.models import IPAddress
+
+        IPAddress.objects.create(address="2001:db8::5/128")
+        self._mock_command(
+            MockKeaClient.return_value,
+            leases=[dict(_MOCK_LEASE_V6_ENRICHMENT)],
+            reservations=[],
+        )
+        response = self.client.get(self._lease_url())
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Synced")
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_netbox_ip_sync_button_when_ip_not_in_netbox(self, MockKeaClient):
+        """When the v6 lease IP is not in NetBox IPAM, a 'Sync' button must appear."""
+        self._mock_command(
+            MockKeaClient.return_value,
+            leases=[dict(_MOCK_LEASE_V6_ENRICHMENT)],
+            reservations=[],
+        )
+        response = self.client.get(self._lease_url())
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Sync")
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestCombinedReservations6Enrichment(_CombinedViewBase):
+    """Combined DHCPv6 reservation view must include the same badge enrichment as DHCPv4."""
+
+    def _url(self):
+        return reverse("plugins:netbox_kea:combined_reservations6") + f"?server={self.v6_server.pk}"
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_active_lease_badge_when_lease_exists(self, MockKeaClient):
+        """A v6 reservation with an active lease must show 'Active Lease' badge."""
+        MockKeaClient.return_value.reservation_get_page.return_value = (
+            [dict(_MOCK_RESERVATION_V6_ENRICHED)],
+            0,
+            0,
+        )
+        MockKeaClient.return_value.command.return_value = [
+            {"result": 0, "arguments": {"leases": [{"ip-address": "2001:db8::5"}]}}
+        ]
+        response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Active Lease")
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_no_lease_badge_when_no_active_lease(self, MockKeaClient):
+        """A v6 reservation without active lease must show 'No Lease' badge."""
+        MockKeaClient.return_value.reservation_get_page.return_value = (
+            [dict(_MOCK_RESERVATION_V6_ENRICHED)],
+            0,
+            0,
+        )
+        MockKeaClient.return_value.command.return_value = [{"result": 0, "arguments": {"leases": []}}]
+        response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "No Lease")
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_edit_action_links_use_server_pk(self, MockKeaClient):
+        """Each combined v6 reservation row must have an edit link pointing to the correct server."""
+        MockKeaClient.return_value.reservation_get_page.return_value = (
+            [dict(_MOCK_RESERVATION_V6_ENRICHED)],
+            0,
+            0,
+        )
+        MockKeaClient.return_value.command.return_value = [{"result": 0, "arguments": {"leases": []}}]
+        response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 200)
+        expected = f"/plugins/kea/servers/{self.v6_server.pk}/reservations6/"
         self.assertContains(response, expected)

@@ -1017,6 +1017,70 @@ class TestSubnetAdd(TestCase):
             result = self.client.subnet_add(version=4, subnet_cidr="10.99.0.0/24")
         self.assertIsNone(result)
 
+    def test_subnet_add_without_explicit_id_falls_back_when_list_fails(self):
+        """When subnet{v}-list raises KeaException, subnet_add falls back to no explicit ID."""
+        list_error = [{"result": 2, "text": "unknown command"}]
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(list_error, _SUBNET4_ADD_RESP, _OK),
+        ) as mock_post:
+            self.client.subnet_add(version=4, subnet_cidr="10.99.0.0/24")
+        add_call = next(
+            c.kwargs.get("json") or c[1]["json"]
+            for c in mock_post.call_args_list
+            if (c.kwargs.get("json") or c[1]["json"])["command"] == "subnet4-add"
+        )
+        # No explicit id should be set when the list call fails
+        self.assertNotIn("id", add_call["arguments"]["subnet4"][0])
+
+    def test_subnet_add_retries_on_duplicate_id(self):
+        """subnet_add retries with id+1 when Kea rejects with 'duplicate' in error."""
+        duplicate_resp = [{"result": 1, "text": "duplicate subnet id"}]
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(
+                _SUBNET4_LIST_RESP,  # subnet4-list → ids 1, 2 → assigns id=3
+                duplicate_resp,  # first subnet4-add attempt → duplicate
+                _SUBNET4_ADD_RESP,  # second subnet4-add attempt (id=4) → success
+                _OK,  # config-write
+            ),
+        ) as mock_post:
+            self.client.subnet_add(version=4, subnet_cidr="10.99.0.0/24")
+        add_calls = [
+            c.kwargs.get("json") or c[1]["json"]
+            for c in mock_post.call_args_list
+            if (c.kwargs.get("json") or c[1]["json"])["command"] == "subnet4-add"
+        ]
+        self.assertEqual(len(add_calls), 2)
+        self.assertEqual(add_calls[0]["arguments"]["subnet4"][0]["id"], 3)
+        self.assertEqual(add_calls[1]["arguments"]["subnet4"][0]["id"], 4)
+
+    def test_subnet_add_v6_uses_dns_servers_option_name(self):
+        """For DHCPv6, dns_servers option name must be 'dns-servers' not 'domain-name-servers'."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(_SUBNET6_LIST_RESP, _SUBNET6_ADD_RESP, _OK),
+        ) as mock_post:
+            self.client.subnet_add(
+                version=6,
+                subnet_cidr="2001:db8:99::/48",
+                dns_servers=["2001:4860:4860::8888"],
+                ntp_servers=["ntp.example.com"],
+            )
+        add_call = next(
+            c.kwargs.get("json") or c[1]["json"]
+            for c in mock_post.call_args_list
+            if (c.kwargs.get("json") or c[1]["json"])["command"] == "subnet6-add"
+        )
+        opts = {o["name"]: o["data"] for o in add_call["arguments"]["subnet6"][0]["option-data"]}
+        self.assertIn("dns-servers", opts)
+        self.assertNotIn("domain-name-servers", opts)
+        self.assertIn("sntp-servers", opts)
+        self.assertNotIn("ntp-servers", opts)
+
 
 class TestSubnetDel(TestCase):
     """Tests for KeaClient.subnet_del()."""

@@ -1721,6 +1721,20 @@ def _fetch_subnets_from_server(server: "Server", version: int) -> list[dict[str,
             for s in sn.get(subnet_key, [])
             if "id" in s and "subnet" in s
         )
+    # Enrich with utilisation stats when stat_cmds hook is available.
+    try:
+        stat_resp = client.command(
+            f"stat-lease{version}-get",
+            service=[f"dhcp{version}"],
+        )
+        from .utilities import parse_subnet_stats
+
+        stats = parse_subnet_stats(stat_resp, version)
+        for s in result:
+            if s["id"] in stats:
+                s.update(stats[s["id"]])
+    except Exception:  # noqa: BLE001
+        pass  # stat_cmds not loaded — show subnets without utilisation column
     return result
 
 
@@ -2044,7 +2058,7 @@ class _BaseBulkReservationSyncView(ConditionalLoginRequiredMixin, View):
         )
         created = updated = errors = 0
         for res in reservations:
-            if not res.get("ip-address"):
+            if not res.get("ip-address") and not res.get("ip-addresses"):
                 continue
             try:
                 nb_ip, was_created = sync_reservation_to_netbox(res)
