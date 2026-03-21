@@ -444,6 +444,64 @@ class KeaClient:
         )
         self._persist_config(service)
 
+    def subnet_update_options(self, version: int, subnet_id: int, options: list[dict]) -> None:
+        """Update option-data for a subnet via config-get → config-test → config-write.
+
+        Free Kea has no option-set hook, so the only supported approach is a full
+        read-modify-write cycle: fetch the current config, replace the subnet's
+        ``option-data`` in the Python dict, then validate and write it back using
+        ``config-test`` (with the modified config as ``arguments``) followed by
+        ``config-write`` (also with the modified config).
+
+        Args:
+            version: DHCP version (4 or 6).
+            subnet_id: Kea subnet ID.
+            options: New ``option-data`` list. Pass ``[]`` to remove all options.
+
+        Raises:
+            KeaException: If ``subnet_id`` is not found, or if ``config-test`` fails.
+            PartialPersistError: If ``config-write`` fails after successful ``config-test``.
+
+        """
+        service = f"dhcp{version}"
+        dhcp_key = f"Dhcp{version}"
+        subnet_key = f"subnet{version}"
+
+        resp = self.command("config-get", service=[service])
+        config = resp[0]["arguments"]
+
+        subnet = None
+        for s in config.get(dhcp_key, {}).get(subnet_key, []):
+            if s.get("id") == subnet_id:
+                subnet = s
+                break
+        if subnet is None:
+            for sn in config.get(dhcp_key, {}).get("shared-networks", []):
+                for s in sn.get(subnet_key, []):
+                    if s.get("id") == subnet_id:
+                        subnet = s
+                        break
+                if subnet is not None:
+                    break
+        if subnet is None:
+            raise KeaException({"result": 3, "text": f"Subnet id {subnet_id} not found in config"})
+
+        subnet["option-data"] = options
+
+        try:
+            self.command("config-test", service=[service], arguments=config)
+        except KeaException as exc:
+            if exc.response.get("result") == 2:
+                logger.debug("config-test not supported for service %s — skipping pre-flight check", service)
+            else:
+                logger.warning("config-test failed for service %s — aborting config-write", service)
+                raise PartialPersistError(service, exc) from exc
+        try:
+            self.command("config-write", service=[service], arguments=config)
+        except KeaException as exc:
+            logger.warning("config-write failed for service %s — change not persisted to disk", service)
+            raise PartialPersistError(service, exc) from exc
+
     def lease_wipe(self, version: int, subnet_id: int) -> None:
         """Delete all leases in a subnet using the ``lease{v}-wipe`` command.
 

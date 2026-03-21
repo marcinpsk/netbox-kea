@@ -462,9 +462,7 @@ class TestKeaErrorHint(TestCase):
         from netbox_kea.utilities import kea_error_hint
 
         hint = kea_error_hint(self._make_exc(128))
-        self.assertTrue(
-            "connect" in hint.lower() or "reach" in hint.lower() or "daemon" in hint.lower()
-        )
+        self.assertTrue("connect" in hint.lower() or "reach" in hint.lower() or "daemon" in hint.lower())
 
     def test_result_1_returns_non_empty_string(self):
         """result=1 (generic error) returns a non-empty string."""
@@ -507,7 +505,9 @@ class TestParseReservationCsv(TestCase):
 
     def test_v4_single_row_all_fields(self):
         """Full v4 row maps to correct dict keys."""
-        rows = self._parse("ip-address,hw-address,hostname,subnet-id\n192.168.1.1,aa:bb:cc:dd:ee:ff,host1.example.com,3")
+        rows = self._parse(
+            "ip-address,hw-address,hostname,subnet-id\n192.168.1.1,aa:bb:cc:dd:ee:ff,host1.example.com,3"
+        )
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["ip-address"], "192.168.1.1")
         self.assertEqual(rows[0]["hw-address"], "aa:bb:cc:dd:ee:ff")
@@ -533,23 +533,14 @@ class TestParseReservationCsv(TestCase):
 
     def test_strips_whitespace_and_skips_blank_lines(self):
         """Leading/trailing whitespace trimmed; blank lines skipped."""
-        csv = (
-            "ip-address,hw-address,hostname,subnet-id\n"
-            "\n"
-            "  10.0.0.1 , aa:bb:cc:00:00:01 , host1 , 1 \n"
-            "\n"
-        )
+        csv = "ip-address,hw-address,hostname,subnet-id\n\n  10.0.0.1 , aa:bb:cc:00:00:01 , host1 , 1 \n\n"
         rows = self._parse(csv)
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["ip-address"], "10.0.0.1")
 
     def test_skips_comment_lines(self):
         """Lines starting with # are skipped."""
-        csv = (
-            "ip-address,hw-address,hostname,subnet-id\n"
-            "# this is a comment\n"
-            "10.0.0.1,aa:bb:cc:00:00:01,host1,1\n"
-        )
+        csv = "ip-address,hw-address,hostname,subnet-id\n# this is a comment\n10.0.0.1,aa:bb:cc:00:00:01,host1,1\n"
         rows = self._parse(csv)
         self.assertEqual(len(rows), 1)
 

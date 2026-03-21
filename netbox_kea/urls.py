@@ -177,6 +177,16 @@ urlpatterns = (
         name="server_subnet6_wipe_leases",
     ),
     path(
+        "servers/<int:pk>/subnets4/<int:subnet_id>/options/",
+        views.ServerSubnet4OptionsEditView.as_view(),
+        name="server_subnet4_options_edit",
+    ),
+    path(
+        "servers/<int:pk>/subnets6/<int:subnet_id>/options/",
+        views.ServerSubnet6OptionsEditView.as_view(),
+        name="server_subnet6_options_edit",
+    ),
+    path(
         "servers/<int:pk>/dhcp4/enable/",
         views.ServerDHCP4EnableView.as_view(),
         name="server_dhcp4_enable",

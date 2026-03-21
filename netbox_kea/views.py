@@ -1784,7 +1784,6 @@ class ServerSubnet6EditView(_BaseSubnetEditView):
     dhcp_version = 6
 
 
-
 class _BaseSubnetDeleteView(_KeaChangeMixin, generic.ObjectView):
     """Base view for deleting a subnet from Kea."""
 
@@ -2005,7 +2004,6 @@ class ServerDHCP6DisableView(_BaseServerDHCPDisableView):
     """Disable DHCPv6 processing."""
 
     dhcp_version = 6
-
 
 
 def _get_reservation_identifier(
@@ -2781,9 +2779,7 @@ class _BaseBulkReservationImportView(ConditionalLoginRequiredMixin, View):
         """Render the CSV upload form."""
         instance = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
         form = self.form_class()
-        return_url = reverse(
-            f"plugins:netbox_kea:server_reservations{self.dhcp_version}", args=[pk]
-        )
+        return_url = reverse(f"plugins:netbox_kea:server_reservations{self.dhcp_version}", args=[pk])
         return render(
             request,
             self.template_name,
@@ -2799,9 +2795,7 @@ class _BaseBulkReservationImportView(ConditionalLoginRequiredMixin, View):
     def post(self, request: HttpRequest, pk: int) -> HttpResponse:
         """Parse uploaded CSV and insert reservations into Kea."""
         instance = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
-        return_url = reverse(
-            f"plugins:netbox_kea:server_reservations{self.dhcp_version}", args=[pk]
-        )
+        return_url = reverse(f"plugins:netbox_kea:server_reservations{self.dhcp_version}", args=[pk])
         form = self.form_class(request.POST, request.FILES)
         result = None
 
@@ -2889,6 +2883,137 @@ class ServerReservation6BulkImportView(_BaseBulkReservationImportView):
 
     dhcp_version = 6
     form_class = forms.Reservation6BulkImportForm
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Subnet Option Data Management
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class _BaseSubnetOptionsEditView(ConditionalLoginRequiredMixin, View):
+    """GET/POST view for editing option-data of a single subnet.
+
+    Loads the current options from Kea via ``config-get``, renders a formset,
+    and on POST validates + saves via ``subnet_update_options`` (config-get →
+    config-test → config-write).
+    """
+
+    dhcp_version: int = 4
+
+    def _get_subnet_from_config(self, client, subnet_id: int) -> dict | None:
+        """Fetch config and return the subnet dict, or None if not found."""
+        service = f"dhcp{self.dhcp_version}"
+        dhcp_key = f"Dhcp{self.dhcp_version}"
+        subnet_key = f"subnet{self.dhcp_version}"
+        resp = client.command("config-get", service=[service])
+        config = resp[0]["arguments"]
+        for s in config.get(dhcp_key, {}).get(subnet_key, []):
+            if s.get("id") == subnet_id:
+                return s
+        for sn in config.get(dhcp_key, {}).get("shared-networks", []):
+            for s in sn.get(subnet_key, []):
+                if s.get("id") == subnet_id:
+                    return s
+        return None
+
+    def get(self, request, pk: int, subnet_id: int):
+        server = get_object_or_404(
+            Server.objects.restrict(request.user, "view"),
+            pk=pk,
+        )
+        client = server.get_client(version=self.dhcp_version)
+        subnet = self._get_subnet_from_config(client, subnet_id)
+        initial = []
+        if subnet:
+            initial = [
+                {
+                    "name": opt.get("name", ""),
+                    "data": opt.get("data", ""),
+                    "always_send": opt.get("always-send", False),
+                }
+                for opt in subnet.get("option-data", [])
+            ]
+        formset = forms.SubnetOptionsFormSet(initial=initial)
+        return render(
+            request,
+            "netbox_kea/server_subnet_options_edit.html",
+            {
+                "object": server,
+                "server": server,
+                "subnet_id": subnet_id,
+                "subnet_cidr": subnet.get("subnet", "") if subnet else "",
+                "dhcp_version": self.dhcp_version,
+                "formset": formset,
+                "return_url": reverse(
+                    f"plugins:netbox_kea:server_subnets{self.dhcp_version}",
+                    args=[pk],
+                ),
+            },
+        )
+
+    def post(self, request, pk: int, subnet_id: int):
+        server = get_object_or_404(
+            Server.objects.restrict(request.user, "change"),
+            pk=pk,
+        )
+        return_url = reverse(
+            f"plugins:netbox_kea:server_subnets{self.dhcp_version}",
+            args=[pk],
+        )
+        formset = forms.SubnetOptionsFormSet(request.POST)
+        if not formset.is_valid():
+            subnet_cidr = ""
+            client = server.get_client(version=self.dhcp_version)
+            subnet = self._get_subnet_from_config(client, subnet_id)
+            if subnet:
+                subnet_cidr = subnet.get("subnet", "")
+            return render(
+                request,
+                "netbox_kea/server_subnet_options_edit.html",
+                {
+                    "object": server,
+                    "server": server,
+                    "subnet_id": subnet_id,
+                    "subnet_cidr": subnet_cidr,
+                    "dhcp_version": self.dhcp_version,
+                    "formset": formset,
+                    "return_url": return_url,
+                },
+            )
+
+        options = []
+        for f in formset.forms:
+            if not f.cleaned_data or f.cleaned_data.get("DELETE"):
+                continue
+            opt: dict = {"name": f.cleaned_data["name"], "data": f.cleaned_data["data"]}
+            if f.cleaned_data.get("always_send"):
+                opt["always-send"] = True
+            options.append(opt)
+
+        client = server.get_client(version=self.dhcp_version)
+        try:
+            client.subnet_update_options(
+                version=self.dhcp_version,
+                subnet_id=subnet_id,
+                options=options,
+            )
+            messages.success(request, f"Subnet {subnet_id} options updated.")
+        except KeaException as exc:
+            logger.exception("Failed to update options for subnet %s: %s", subnet_id, exc)
+            messages.error(request, kea_error_hint(exc))
+        return redirect(return_url)
+
+
+class ServerSubnet4OptionsEditView(_BaseSubnetOptionsEditView):
+    """Edit option-data for a DHCPv4 subnet."""
+
+    dhcp_version = 4
+
+
+class ServerSubnet6OptionsEditView(_BaseSubnetOptionsEditView):
+    """Edit option-data for a DHCPv6 subnet."""
+
+    dhcp_version = 6
 
 
 # ─────────────────────────────────────────────────────────────────────────────

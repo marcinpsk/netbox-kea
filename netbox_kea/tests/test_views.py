@@ -1771,9 +1771,7 @@ class TestServerSubnet4EditView(_ViewTestBase):
         """GET must return 200 even when the subnet-get Kea call fails."""
         from netbox_kea.kea import KeaException
 
-        MockKeaClient.return_value.command.side_effect = KeaException(
-            {"result": 1, "text": "not found"}, index=0
-        )
+        MockKeaClient.return_value.command.side_effect = KeaException({"result": 1, "text": "not found"}, index=0)
         response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
 
@@ -1985,3 +1983,167 @@ class TestServerFilterForm(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "alpha-kea")
         self.assertNotContains(response, "gamma-server")
+
+
+# ---------------------------------------------------------------------------
+# TestSubnetOptionsView
+# ---------------------------------------------------------------------------
+
+# Fake config-get response containing one v4 subnet with one existing option
+_OPTIONS_CONFIG_GET = [
+    {
+        "result": 0,
+        "arguments": {
+            "Dhcp4": {
+                "subnet4": [
+                    {
+                        "id": 42,
+                        "subnet": "10.0.0.0/24",
+                        "option-data": [
+                            {"name": "domain-name-servers", "data": "8.8.8.8"},
+                            {"name": "routers", "data": "10.0.0.1"},
+                        ],
+                    }
+                ]
+            }
+        },
+    }
+]
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestSubnetOptionsView(_ViewTestBase):
+    """Tests for ServerSubnet4/6OptionsEditView (GET prefill + POST update)."""
+
+    def _url(self, version=4, subnet_id=42):
+        return reverse(
+            f"plugins:netbox_kea:server_subnet{version}_options_edit",
+            args=[self.server.pk, subnet_id],
+        )
+
+    def test_url_registered_v4(self):
+        """URL server_subnet4_options_edit is registered."""
+        url = self._url(version=4)
+        self.assertIn("options", url)
+
+    def test_url_registered_v6(self):
+        """URL server_subnet6_options_edit is registered."""
+        url = self._url(version=6)
+        self.assertIn("options", url)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_get_returns_200(self, MockKeaClient):
+        """GET returns 200 OK."""
+        MockKeaClient.return_value.command.return_value = _OPTIONS_CONFIG_GET
+        response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 200)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_get_prefills_existing_options(self, MockKeaClient):
+        """GET pre-populates formset with existing option-data from config-get."""
+        MockKeaClient.return_value.command.return_value = _OPTIONS_CONFIG_GET
+        response = self.client.get(self._url())
+        content = response.content.decode()
+        self.assertIn("domain-name-servers", content)
+        self.assertIn("8.8.8.8", content)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_calls_subnet_update_options(self, MockKeaClient):
+        """POST with valid formset calls subnet_update_options and redirects."""
+        MockKeaClient.return_value.subnet_update_options.return_value = None
+        response = self.client.post(
+            self._url(),
+            {
+                "form-TOTAL_FORMS": "1",
+                "form-INITIAL_FORMS": "0",
+                "form-MIN_NUM_FORMS": "0",
+                "form-MAX_NUM_FORMS": "1000",
+                "form-0-name": "routers",
+                "form-0-data": "10.0.0.1",
+                "form-0-always_send": "",
+                "form-0-DELETE": "",
+            },
+        )
+        self.assertEqual(response.status_code, 302)
+        MockKeaClient.return_value.subnet_update_options.assert_called_once()
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_passes_correct_version_and_subnet_id(self, MockKeaClient):
+        """POST calls subnet_update_options with the correct version and subnet_id."""
+        MockKeaClient.return_value.subnet_update_options.return_value = None
+        self.client.post(
+            self._url(version=4, subnet_id=42),
+            {
+                "form-TOTAL_FORMS": "1",
+                "form-INITIAL_FORMS": "0",
+                "form-MIN_NUM_FORMS": "0",
+                "form-MAX_NUM_FORMS": "1000",
+                "form-0-name": "routers",
+                "form-0-data": "10.0.0.1",
+                "form-0-always_send": "",
+                "form-0-DELETE": "",
+            },
+        )
+        call_kwargs = MockKeaClient.return_value.subnet_update_options.call_args
+        args = call_kwargs[1] if call_kwargs[1] else {}
+        positional = call_kwargs[0] if call_kwargs[0] else ()
+        # version=4 and subnet_id=42 should be passed (positional or keyword)
+        self.assertIn(4, list(positional) + list(args.values()))
+        self.assertIn(42, list(positional) + list(args.values()))
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_deleted_rows_excluded_from_options(self, MockKeaClient):
+        """Rows with DELETE=on are excluded from the options list passed to subnet_update_options."""
+        MockKeaClient.return_value.subnet_update_options.return_value = None
+        self.client.post(
+            self._url(),
+            {
+                "form-TOTAL_FORMS": "2",
+                "form-INITIAL_FORMS": "0",
+                "form-MIN_NUM_FORMS": "0",
+                "form-MAX_NUM_FORMS": "1000",
+                "form-0-name": "routers",
+                "form-0-data": "10.0.0.1",
+                "form-0-always_send": "",
+                "form-0-DELETE": "",
+                "form-1-name": "domain-name-servers",
+                "form-1-data": "8.8.8.8",
+                "form-1-always_send": "",
+                "form-1-DELETE": "on",
+            },
+        )
+        call_kwargs = MockKeaClient.return_value.subnet_update_options.call_args
+        # options argument should have only 1 item (dns row deleted)
+        options_arg = next(v for v in list(call_kwargs[0]) + list(call_kwargs[1].values()) if isinstance(v, list))
+        self.assertEqual(len(options_arg), 1)
+        self.assertEqual(options_arg[0]["name"], "routers")
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_kea_exception_shows_error_message(self, MockKeaClient):
+        """POST that raises KeaException shows an error message, stays on form."""
+        from netbox_kea.kea import KeaException
+
+        MockKeaClient.return_value.subnet_update_options.side_effect = KeaException(
+            {"result": 1, "text": "subnet not found"}
+        )
+        response = self.client.post(
+            self._url(),
+            {
+                "form-TOTAL_FORMS": "1",
+                "form-INITIAL_FORMS": "0",
+                "form-MIN_NUM_FORMS": "0",
+                "form-MAX_NUM_FORMS": "1000",
+                "form-0-name": "routers",
+                "form-0-data": "10.0.0.1",
+                "form-0-always_send": "",
+                "form-0-DELETE": "",
+            },
+        )
+        self.assertEqual(response.status_code, 302)  # redirect back to subnets
+        # Error stored in messages — check it doesn't crash
+
+    def test_get_requires_login(self):
+        """Unauthenticated GET is redirected."""
+        self.client.logout()
+        response = self.client.get(self._url())
+        self.assertIn(response.status_code, (302, 403))

@@ -212,10 +212,7 @@ def kea_error_hint(exc: Any) -> str:
     if result == 3:
         return "No matching records found in Kea."
     if result == 128:
-        return (
-            "Cannot reach the Kea daemon. "
-            "Check that the service is running and the server URL is reachable."
-        )
+        return "Cannot reach the Kea daemon. Check that the service is running and the server URL is reachable."
     if result == 0:
         return "Operation reported success."
     if result == 1:

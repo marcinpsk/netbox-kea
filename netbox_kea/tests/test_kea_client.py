@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 
 import requests
 
-from netbox_kea.kea import KeaClient, KeaException, check_response
+from netbox_kea.kea import KeaClient, KeaException, PartialPersistError, check_response
 
 
 def _mock_http_response(json_data, status_code=200):
@@ -1500,9 +1500,7 @@ class TestSubnetUpdate(TestCase):
             "post",
             side_effect=_side_effects(_SUBNET_UPDATE_RESP, _OK, _CONFIG_WRITE_RESP),
         ) as mock_post:
-            self.client.subnet_update(
-                version=4, subnet_id=1, subnet_cidr="10.0.0.0/24", gateway="10.0.0.1"
-            )
+            self.client.subnet_update(version=4, subnet_id=1, subnet_cidr="10.0.0.0/24", gateway="10.0.0.1")
         payload = self._update_payload(mock_post)
         option_data = payload["arguments"]["subnet4"][0].get("option-data", [])
         routers = next((o for o in option_data if o["name"] == "routers"), None)
@@ -1535,9 +1533,7 @@ class TestSubnetUpdate(TestCase):
             "post",
             side_effect=_side_effects(_SUBNET_UPDATE_RESP, _OK, _CONFIG_WRITE_RESP),
         ) as mock_post:
-            self.client.subnet_update(
-                version=4, subnet_id=1, subnet_cidr="10.0.0.0/24", valid_lft=7200
-            )
+            self.client.subnet_update(version=4, subnet_id=1, subnet_cidr="10.0.0.0/24", valid_lft=7200)
         payload = self._update_payload(mock_post)
         subnet_obj = payload["arguments"]["subnet4"][0]
         self.assertEqual(subnet_obj["valid-lft"], 7200)
@@ -1675,3 +1671,180 @@ class TestPersistConfig(TestCase):
         payloads = self._payloads(mock_post)
         config_test_payload = next(p for p in payloads if p["command"] == "config-test")
         self.assertEqual(config_test_payload["service"], ["dhcp6"])
+
+
+# ---------------------------------------------------------------------------
+# TestSubnetOptionUpdate
+# ---------------------------------------------------------------------------
+
+# Minimal config-get response containing one v4 subnet with one existing option
+_CONFIG_GET_WITH_SUBNET = [
+    {
+        "result": 0,
+        "arguments": {
+            "Dhcp4": {
+                "subnet4": [
+                    {
+                        "id": 1,
+                        "subnet": "10.0.0.0/24",
+                        "option-data": [
+                            {"name": "domain-name-servers", "data": "8.8.8.8"},
+                        ],
+                    }
+                ]
+            }
+        },
+    }
+]
+_CONFIG_GET_NO_SUBNET = [
+    {
+        "result": 0,
+        "arguments": {
+            "Dhcp4": {
+                "subnet4": [
+                    {"id": 99, "subnet": "192.168.0.0/24", "option-data": []},
+                ]
+            }
+        },
+    }
+]
+
+
+class TestSubnetOptionUpdate(TestCase):
+    """Tests for KeaClient.subnet_update_options()."""
+
+    def setUp(self):
+        self.client = KeaClient(url="http://kea:8000")
+
+    def _payloads(self, mock_post):
+        return [(c.kwargs.get("json") or c[1]["json"]) for c in mock_post.call_args_list]
+
+    def _cmds(self, mock_post):
+        return [p["command"] for p in self._payloads(mock_post)]
+
+    def test_calls_config_get_then_config_test_then_config_write(self):
+        """subnet_update_options calls config-get, config-test, config-write in order."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(
+                _CONFIG_GET_WITH_SUBNET,
+                _CONFIG_TEST_OK_RESP,
+                _CONFIG_WRITE_RESP,
+            ),
+        ) as mock_post:
+            self.client.subnet_update_options(version=4, subnet_id=1, options=[])
+        cmds = self._cmds(mock_post)
+        self.assertEqual(cmds, ["config-get", "config-test", "config-write"])
+
+    def test_replaces_option_data_in_config_write_payload(self):
+        """config-write is called with updated option-data replacing the old list."""
+        new_opts = [{"name": "routers", "data": "10.0.0.1"}]
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(
+                _CONFIG_GET_WITH_SUBNET,
+                _CONFIG_TEST_OK_RESP,
+                _CONFIG_WRITE_RESP,
+            ),
+        ) as mock_post:
+            self.client.subnet_update_options(version=4, subnet_id=1, options=new_opts)
+        # config-test payload should contain updated config
+        payloads = self._payloads(mock_post)
+        test_payload = next(p for p in payloads if p["command"] == "config-test")
+        subnet = test_payload["arguments"]["Dhcp4"]["subnet4"][0]
+        self.assertEqual(subnet["option-data"], new_opts)
+
+    def test_clears_option_data_when_empty_list_given(self):
+        """Passing options=[] removes all existing options from the subnet."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(
+                _CONFIG_GET_WITH_SUBNET,
+                _CONFIG_TEST_OK_RESP,
+                _CONFIG_WRITE_RESP,
+            ),
+        ) as mock_post:
+            self.client.subnet_update_options(version=4, subnet_id=1, options=[])
+        payloads = self._payloads(mock_post)
+        test_payload = next(p for p in payloads if p["command"] == "config-test")
+        subnet = test_payload["arguments"]["Dhcp4"]["subnet4"][0]
+        self.assertEqual(subnet["option-data"], [])
+
+    def test_raises_kea_exception_when_subnet_id_not_found(self):
+        """KeaException raised if subnet_id does not exist in config."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(_CONFIG_GET_NO_SUBNET),
+        ):
+            with self.assertRaises(KeaException):
+                self.client.subnet_update_options(version=4, subnet_id=1, options=[])
+
+    def test_raises_partial_persist_error_on_config_write_failure(self):
+        """PartialPersistError raised when config-write fails after successful config-test."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(
+                _CONFIG_GET_WITH_SUBNET,
+                _CONFIG_TEST_OK_RESP,
+                [{"result": 1, "text": "write failed"}],
+            ),
+        ):
+            with self.assertRaises(PartialPersistError):
+                self.client.subnet_update_options(version=4, subnet_id=1, options=[])
+
+    def test_skips_config_test_gracefully_when_not_supported(self):
+        """If config-test returns result=2, config-write still proceeds."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(
+                _CONFIG_GET_WITH_SUBNET,
+                _CONFIG_TEST_NOT_SUPPORTED_RESP,
+                _CONFIG_WRITE_RESP,
+            ),
+        ) as mock_post:
+            self.client.subnet_update_options(version=4, subnet_id=1, options=[])
+        # Must not raise; config-write must have been called
+        cmds = self._cmds(mock_post)
+        self.assertIn("config-write", cmds)
+
+    def test_v6_uses_dhcp6_service_and_subnet6_key(self):
+        """For version=6, config-get uses dhcp6 service and Dhcp6.subnet6 key."""
+        config_get_v6 = [
+            {
+                "result": 0,
+                "arguments": {
+                    "Dhcp6": {
+                        "subnet6": [
+                            {"id": 10, "subnet": "2001:db8::/32", "option-data": []},
+                        ]
+                    }
+                },
+            }
+        ]
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(config_get_v6, _CONFIG_TEST_OK_RESP, _CONFIG_WRITE_RESP),
+        ) as mock_post:
+            self.client.subnet_update_options(version=6, subnet_id=10, options=[])
+        payloads = self._payloads(mock_post)
+        get_payload = payloads[0]
+        self.assertEqual(get_payload["service"], ["dhcp6"])
+        test_payload = next(p for p in payloads if p["command"] == "config-test")
+        self.assertIn("Dhcp6", test_payload["arguments"])
+
+    def test_returns_none_on_success(self):
+        """subnet_update_options returns None on success."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(_CONFIG_GET_WITH_SUBNET, _CONFIG_TEST_OK_RESP, _CONFIG_WRITE_RESP),
+        ):
+            result = self.client.subnet_update_options(version=4, subnet_id=1, options=[])
+        self.assertIsNone(result)

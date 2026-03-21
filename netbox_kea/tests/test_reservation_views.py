@@ -1569,10 +1569,7 @@ _BULK_IMPORT_V4_CSV = (
     "10.99.0.2,aa:bb:cc:00:00:02,host2.example.com,1\n"
 )
 
-_BULK_IMPORT_V6_CSV = (
-    "ip-addresses,duid,hostname,subnet-id\n"
-    "2001:db8::1,00:01:02:03:04:05,v6host1.example.com,10\n"
-)
+_BULK_IMPORT_V6_CSV = "ip-addresses,duid,hostname,subnet-id\n2001:db8::1,00:01:02:03:04:05,v6host1.example.com,10\n"
 
 
 def _import_url(server_pk: int, version: int) -> str:

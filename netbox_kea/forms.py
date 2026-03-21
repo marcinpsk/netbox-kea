@@ -607,8 +607,7 @@ class DHCPDisableForm(forms.Form):
         min_value=1,
         label="Max period (seconds)",
         help_text=(
-            "How long DHCP processing should remain disabled. "
-            "Leave blank to keep disabled until manually re-enabled."
+            "How long DHCP processing should remain disabled. Leave blank to keep disabled until manually re-enabled."
         ),
         widget=forms.NumberInput(attrs={"class": "form-control", "placeholder": "e.g. 300"}),
     )
@@ -641,3 +640,23 @@ class Reservation6BulkImportForm(_BaseBulkReservationImportForm):
     Expected columns: ``ip-addresses``, ``duid``, ``hostname`` (optional), ``subnet-id``.
     Separate multiple IPv6 addresses per host with a semicolon inside the ``ip-addresses`` cell.
     """
+
+
+class SubnetOptionsForm(forms.Form):
+    """A single subnet option-data row (name/data/always_send)."""
+
+    name = forms.CharField(
+        max_length=128,
+        help_text="Kea option name (e.g. routers, domain-name-servers).",
+    )
+    data = forms.CharField(
+        max_length=512,
+        help_text="Option value (e.g. 10.0.0.1 or 8.8.8.8, 8.8.4.4).",
+    )
+    always_send = forms.BooleanField(
+        required=False,
+        help_text="Send option even when not requested by the client.",
+    )
+
+
+SubnetOptionsFormSet = forms.formset_factory(SubnetOptionsForm, extra=1, can_delete=True)

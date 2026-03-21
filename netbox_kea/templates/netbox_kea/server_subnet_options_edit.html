@@ -1,0 +1,93 @@
+{% extends "generic/object.html" %}
+
+{% block content %}
+<div class="row">
+  <div class="col-md-10">
+    <div class="card">
+      <h5 class="card-header d-flex justify-content-between align-items-center">
+        Edit DHCPv{{ dhcp_version }} Subnet Options
+        {% if subnet_cidr %}
+          <span class="badge bg-secondary font-monospace">{{ subnet_cidr }}</span>
+        {% endif %}
+      </h5>
+      <div class="card-body">
+        <p class="text-muted small mb-3">
+          <i class="mdi mdi-information-outline" aria-hidden="true"></i>
+          This replaces <strong>all</strong> option-data for subnet {{ subnet_id }} using
+          <code>config-get</code> → <code>config-test</code> → <code>config-write</code>.
+          Any options not listed here will be removed.
+        </p>
+
+        <form method="post" id="options-form">
+          {% csrf_token %}
+          {{ formset.management_form }}
+
+          <table class="table table-sm">
+            <thead>
+              <tr>
+                <th>Option Name</th>
+                <th>Value</th>
+                <th>Always Send</th>
+                <th>Delete</th>
+              </tr>
+            </thead>
+            <tbody id="formset-rows">
+              {% for form in formset %}
+                <tr class="formset-row">
+                  <td>
+                    {{ form.name }}
+                    {% for err in form.name.errors %}<div class="text-danger small">{{ err }}</div>{% endfor %}
+                  </td>
+                  <td>
+                    {{ form.data }}
+                    {% for err in form.data.errors %}<div class="text-danger small">{{ err }}</div>{% endfor %}
+                  </td>
+                  <td class="text-center">{{ form.always_send }}</td>
+                  <td class="text-center">{{ form.DELETE }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+
+          <div class="mt-2 mb-3">
+            <button type="button" class="btn btn-sm btn-outline-secondary" id="add-row">
+              <i class="mdi mdi-plus" aria-hidden="true"></i> Add Option
+            </button>
+          </div>
+
+          <div class="mt-3">
+            <a href="{{ return_url }}" class="btn btn-secondary me-2">Cancel</a>
+            <button type="submit" class="btn btn-primary">
+              <i class="mdi mdi-content-save-outline" aria-hidden="true"></i>
+              Save Options
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  const tbody = document.getElementById('formset-rows');
+  const totalFormsInput = document.querySelector('[name=form-TOTAL_FORMS]');
+  const addBtn = document.getElementById('add-row');
+
+  addBtn.addEventListener('click', function () {
+    const rows = tbody.querySelectorAll('tr.formset-row');
+    const idx = rows.length;
+    const lastRow = rows[rows.length - 1];
+    const newRow = lastRow.cloneNode(true);
+    newRow.querySelectorAll('input, select, textarea').forEach(function (el) {
+      el.name = el.name.replace(/form-\d+-/, 'form-' + idx + '-');
+      el.id = el.id ? el.id.replace(/id_form-\d+-/, 'id_form-' + idx + '-') : '';
+      if (el.type === 'checkbox') { el.checked = false; }
+      else { el.value = ''; }
+    });
+    tbody.appendChild(newRow);
+    totalFormsInput.value = idx + 1;
+  });
+})();
+</script>
+{% endblock %}
