@@ -397,13 +397,20 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
             return format_leases(args["leases"])
         return format_leases([args])
 
-    def get_extra_context(self, request: HttpRequest, _instance: Server) -> dict[str, Any]:
-        """Return an empty table and the search form for the initial (non-HTMX) page load."""
+    def get_extra_context(self, request: HttpRequest, instance: Server) -> dict[str, Any]:
+        """Return an empty table, the search form, and the add-lease URL for the initial (non-HTMX) page load."""
         # For non-htmx requests.
 
         table = self.get_table([], request)
         form = self.form(request.GET) if "q" in request.GET else self.form()
-        return {"form": form, "table": table}
+        return {
+            "form": form,
+            "table": table,
+            "add_url": reverse(
+                f"plugins:netbox_kea:server_lease{self.dhcp_version}_add",
+                args=[instance.pk],
+            ),
+        }
 
     def get_export(self, request: HttpRequest, **kwargs) -> HttpResponse:
         """Stream all matching leases as a CSV download."""
@@ -786,6 +793,90 @@ class ServerLease6EditView(_BaseLeaseEditView):
 
     dhcp_version = 6
     form_class = forms.Lease6EditForm
+
+
+class _BaseLeaseAddView(_KeaChangeMixin, generic.ObjectView):
+    """Base view for creating a new lease via ``lease{v}-add``."""
+
+    queryset = Server.objects.all()
+    template_name = "netbox_kea/server_lease_add.html"
+    dhcp_version: int
+    form_class: type
+
+    def _leases_url(self, server: Server) -> str:
+        return reverse(f"plugins:netbox_kea:server_leases{self.dhcp_version}", args=[server.pk])
+
+    def get(self, request: HttpRequest, pk: int) -> HttpResponse:
+        """Render the empty add form."""
+        server = self.get_object(pk=pk)
+        return render(
+            request,
+            self.template_name,
+            {
+                "object": server,
+                "form": self.form_class(),
+                "dhcp_version": self.dhcp_version,
+                "cancel_url": self._leases_url(server),
+            },
+        )
+
+    def post(self, request: HttpRequest, pk: int) -> HttpResponse:
+        """Validate form and create the lease via Kea."""
+        server = self.get_object(pk=pk)
+        form = self.form_class(request.POST)
+        cancel_url = self._leases_url(server)
+        if form.is_valid():
+            cd = form.cleaned_data
+            lease: dict[str, Any] = {"ip-address": cd["ip_address"]}
+            if cd.get("subnet_id"):
+                lease["subnet-id"] = cd["subnet_id"]
+            if cd.get("valid_lft") is not None:
+                lease["valid-lft"] = cd["valid_lft"]
+            if cd.get("hostname"):
+                lease["hostname"] = cd["hostname"]
+            if self.dhcp_version == 4:
+                if cd.get("hw_address"):
+                    lease["hw-address"] = cd["hw_address"]
+            else:
+                lease["duid"] = cd["duid"]
+                lease["iaid"] = cd["iaid"]
+            client = server.get_client(version=self.dhcp_version)
+            try:
+                client.lease_add(self.dhcp_version, lease)
+                messages.success(request, f"Lease for {cd['ip_address']} created.")
+                return redirect(cancel_url)
+            except KeaException as exc:
+                logger.exception("Failed to create DHCPv%s lease for %s", self.dhcp_version, cd.get("ip_address"))
+                messages.error(request, kea_error_hint(exc))
+            except Exception:
+                logger.exception("Failed to create DHCPv%s lease for %s", self.dhcp_version, cd.get("ip_address"))
+                messages.error(request, "Failed to create lease: see server logs for details.")
+        return render(
+            request,
+            self.template_name,
+            {
+                "object": server,
+                "form": form,
+                "dhcp_version": self.dhcp_version,
+                "cancel_url": cancel_url,
+            },
+        )
+
+
+@register_model_view(Server, "lease4_add", path="leases4/add")
+class ServerLease4AddView(_BaseLeaseAddView):
+    """Create a new DHCPv4 lease."""
+
+    dhcp_version = 4
+    form_class = forms.Lease4AddForm
+
+
+@register_model_view(Server, "lease6_add", path="leases6/add")
+class ServerLease6AddView(_BaseLeaseAddView):
+    """Create a new DHCPv6 lease."""
+
+    dhcp_version = 6
+    form_class = forms.Lease6AddForm
 
 
 class BaseServerDHCPSubnetsView(generic.ObjectChildrenView):

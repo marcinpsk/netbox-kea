@@ -643,6 +643,25 @@ class KeaClient:
             arguments={"subnet-id": subnet_id},
         )
 
+    def lease_add(self, version: int, lease: dict) -> None:
+        """Create a new lease in the Kea lease database using ``lease{v}-add``.
+
+        Args:
+            version: DHCP version (4 or 6).
+            lease: Full lease dict as expected by the Kea API. For v4, ``ip-address``
+                is required. For v6, ``ip-address``, ``duid``, and ``iaid`` are required.
+
+        Raises:
+            KeaException: If Kea returns a non-zero result code (e.g. address already
+                in use, subnet not found).
+
+        """
+        self.command(
+            f"lease{version}-add",
+            service=[f"dhcp{version}"],
+            arguments=lease,
+        )
+
     def lease_update(
         self,
         version: int,

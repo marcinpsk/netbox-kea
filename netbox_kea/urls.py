@@ -42,6 +42,16 @@ urlpatterns = (
         name="server_bulk_import",
     ),
     path(
+        "servers/<int:pk>/leases4/add/",
+        views.ServerLease4AddView.as_view(),
+        name="server_lease4_add",
+    ),
+    path(
+        "servers/<int:pk>/leases6/add/",
+        views.ServerLease6AddView.as_view(),
+        name="server_lease6_add",
+    ),
+    path(
         "servers/<int:pk>/leases6/delete/",
         views.ServerLeases6DeleteView.as_view(),
         name="server_leases6_delete",

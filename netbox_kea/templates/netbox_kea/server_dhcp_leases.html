@@ -20,6 +20,15 @@
 {% endblock %}
 
 {% block content %}{% include "netbox_kea/server_dhcp_leases_htmx.html" with is_embedded=True %}{% endblock %}
+{% block content_bottom %}
+  {% if add_url %}
+  <div class="mt-3">
+    <a href="{{ add_url }}" class="btn btn-sm btn-primary">
+      <i class="mdi mdi-plus-thick" aria-hidden="true"></i> Add Lease
+    </a>
+  </div>
+  {% endif %}
+{% endblock content_bottom %}
 {% block modals %}
   {{ block.super }}
   {% table_config_form table table_name="LeasesTable" %}

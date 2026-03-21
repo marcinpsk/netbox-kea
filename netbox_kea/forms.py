@@ -779,6 +779,95 @@ class Lease6EditForm(forms.Form):
     )
 
 
+class Lease4AddForm(forms.Form):
+    """Form for manually creating a new DHCPv4 lease."""
+
+    ip_address = forms.CharField(
+        label="IP Address",
+        help_text="IPv4 address to assign.",
+    )
+    subnet_id = forms.IntegerField(
+        label="Subnet ID",
+        min_value=1,
+        required=False,
+        help_text="Kea subnet ID (optional; Kea will infer from IP if omitted).",
+    )
+    hw_address = forms.CharField(
+        max_length=17,
+        label="Hardware address",
+        required=False,
+        help_text="Client MAC address in xx:xx:xx:xx:xx:xx format.",
+    )
+    valid_lft = forms.IntegerField(
+        min_value=0,
+        label="Valid lifetime (s)",
+        required=False,
+        help_text="Lease lifetime in seconds.",
+    )
+    hostname = forms.CharField(
+        max_length=255,
+        required=False,
+        help_text="Client hostname (optional).",
+    )
+
+    def clean_ip_address(self) -> str:
+        """Validate that the value is a valid IPv4 address."""
+        val = self.cleaned_data["ip_address"]
+        try:
+            addr = IPAddress(val)
+        except (AddrFormatError, ValueError) as exc:
+            raise ValidationError("Enter a valid IPv4 address.") from exc
+        if addr.version != 4:
+            raise ValidationError("Must be an IPv4 address.")
+        return str(addr)
+
+
+class Lease6AddForm(forms.Form):
+    """Form for manually creating a new DHCPv6 lease."""
+
+    ip_address = forms.CharField(
+        label="IPv6 Address",
+        help_text="IPv6 address to assign.",
+    )
+    duid = forms.CharField(
+        label="DUID",
+        help_text="Client DUID in colon-separated hex (e.g. 00:01:02:03).",
+    )
+    iaid = forms.IntegerField(
+        label="IAID",
+        min_value=0,
+        help_text="Identity Association ID (32-bit unsigned integer).",
+    )
+    subnet_id = forms.IntegerField(
+        label="Subnet ID",
+        min_value=1,
+        required=False,
+        help_text="Kea subnet ID (optional; Kea will infer from IP if omitted).",
+    )
+    valid_lft = forms.IntegerField(
+        min_value=0,
+        label="Valid lifetime (s)",
+        required=False,
+        help_text="Lease lifetime in seconds.",
+    )
+    hostname = forms.CharField(
+        max_length=255,
+        required=False,
+        help_text="Client hostname (optional).",
+    )
+
+    def clean_ip_address(self) -> str:
+        """Validate that the value is a valid IPv6 address."""
+        val = self.cleaned_data["ip_address"]
+        try:
+            addr = IPAddress(val)
+        except (AddrFormatError, ValueError) as exc:
+            raise ValidationError("Enter a valid IPv6 address.") from exc
+        if addr.version != 6:
+            raise ValidationError("Must be an IPv6 address.")
+        return str(addr)
+
+
 class SharedNetworkForm(forms.Form):
     """Form for adding a new Kea shared network."""
 

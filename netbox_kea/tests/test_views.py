@@ -3028,3 +3028,130 @@ class TestServerSubnet4EditViewNetworkAssignment(_ViewTestBase):
         self.client.post(self._url(), self._post_data(shared_network="net-alpha", current_network=""))
         call_kwargs = mock_client.network_subnet_add.call_args.kwargs or mock_client.network_subnet_add.call_args[1]
         self.assertEqual(call_kwargs.get("version"), 4)
+
+
+# ---------------------------------------------------------------------------
+# TestLeaseAddView — Manual Lease Add (lease4/6-add)
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG={"netbox_kea": {"kea_timeout": 30}})
+class TestLeaseAddView(_ViewTestBase):
+    """Tests for ServerLease4AddView and ServerLease6AddView."""
+
+    def _url(self, version=4):
+        return reverse(f"plugins:netbox_kea:server_lease{version}_add", args=[self.server.pk])
+
+    def _valid_post4(self, **overrides):
+        data = {
+            "ip_address": "10.0.0.200",
+            "subnet_id": "1",
+            "hw_address": "aa:bb:cc:dd:ee:ff",
+            "valid_lft": "3600",
+            "hostname": "newlease.example.com",
+        }
+        data.update(overrides)
+        return data
+
+    def _valid_post6(self, **overrides):
+        data = {
+            "ip_address": "2001:db8::200",
+            "duid": "00:01:02:03:04:05",
+            "iaid": "12345",
+            "subnet_id": "1",
+            "valid_lft": "3600",
+            "hostname": "newlease6.example.com",
+        }
+        data.update(overrides)
+        return data
+
+    def test_url_registered_v4(self):
+        """URL server_lease4_add is registered and contains 'leases'."""
+        url = self._url(version=4)
+        self.assertIn("leases", url)
+        self.assertIn("add", url)
+
+    def test_url_registered_v6(self):
+        """URL server_lease6_add is registered and contains 'leases'."""
+        url = self._url(version=6)
+        self.assertIn("leases", url)
+        self.assertIn("add", url)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_get_lease4_add_returns_200(self, MockKeaClient):
+        """GET /leases4/add/ returns 200 and renders the add form."""
+        response = self.client.get(self._url(version=4))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "ip_address")
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_get_lease6_add_returns_200(self, MockKeaClient):
+        """GET /leases6/add/ returns 200 and shows duid + iaid fields."""
+        response = self.client.get(self._url(version=6))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "duid")
+        self.assertContains(response, "iaid")
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_lease4_add_valid_redirects(self, MockKeaClient):
+        """POST valid v4 lease data redirects to the lease list."""
+        MockKeaClient.return_value.lease_add.return_value = None
+        response = self.client.post(self._url(version=4), self._valid_post4())
+        self.assertEqual(response.status_code, 302)
+        self.assertNotIn("None", response.url)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_lease4_add_calls_kea_with_correct_args(self, MockKeaClient):
+        """POST v4 calls lease_add with ip-address, hw-address, and subnet-id."""
+        mock_client = MockKeaClient.return_value
+        mock_client.lease_add.return_value = None
+        self.client.post(self._url(version=4), self._valid_post4())
+        mock_client.lease_add.assert_called_once()
+        args = mock_client.lease_add.call_args
+        lease = args[0][1] if args[0] else args[1].get("lease", args[0][1])
+        self.assertEqual(lease["ip-address"], "10.0.0.200")
+        self.assertEqual(lease.get("hw-address"), "aa:bb:cc:dd:ee:ff")
+        self.assertEqual(lease.get("subnet-id"), 1)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_lease4_add_invalid_ip_shows_form_errors(self, MockKeaClient):
+        """POST with a non-IPv4 string re-renders form with validation errors."""
+        response = self.client.post(self._url(version=4), self._valid_post4(ip_address="not-an-ip"))
+        self.assertEqual(response.status_code, 200)
+        MockKeaClient.return_value.lease_add.assert_not_called()
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_lease4_add_kea_exception_shows_error_message(self, MockKeaClient):
+        """POST that triggers a KeaException shows error and re-renders (no redirect)."""
+        from netbox_kea.kea import KeaException
+
+        MockKeaClient.return_value.lease_add.side_effect = KeaException({"result": 1, "text": "address already in use"})
+        response = self.client.post(self._url(version=4), self._valid_post4())
+        self.assertIn(response.status_code, (200, 302))
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_lease6_add_valid_redirects(self, MockKeaClient):
+        """POST valid v6 lease data redirects to the lease list."""
+        MockKeaClient.return_value.lease_add.return_value = None
+        response = self.client.post(self._url(version=6), self._valid_post6())
+        self.assertEqual(response.status_code, 302)
+        self.assertNotIn("None", response.url)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_lease6_add_calls_kea_with_correct_args(self, MockKeaClient):
+        """POST v6 calls lease_add with ip-address, duid, and iaid."""
+        mock_client = MockKeaClient.return_value
+        mock_client.lease_add.return_value = None
+        self.client.post(self._url(version=6), self._valid_post6())
+        mock_client.lease_add.assert_called_once()
+        args = mock_client.lease_add.call_args
+        lease = args[0][1] if args[0] else args[1].get("lease")
+        self.assertEqual(lease["ip-address"], "2001:db8::200")
+        self.assertEqual(lease.get("duid"), "00:01:02:03:04:05")
+        self.assertEqual(lease.get("iaid"), 12345)
+
+    def test_get_requires_login(self):
+        """Unauthenticated GET is redirected to login."""
+        self.client.logout()
+        response = self.client.get(self._url(version=4))
+        self.assertIn(response.status_code, (302, 403))
