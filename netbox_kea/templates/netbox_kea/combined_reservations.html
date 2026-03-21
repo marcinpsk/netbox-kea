@@ -3,14 +3,44 @@
 
 {% block tab_content %}
 
-<div class="text-end mb-2">
-  <div class="dropdown d-inline-block">
-    <button type="button" class="btn btn-purple dropdown-toggle" data-bs-toggle="dropdown">
-      <i class="mdi mdi-download"></i> Export
-    </button>
-    <ul class="dropdown-menu dropdown-menu-end">
-      <li><a class="dropdown-item" href="?{{ request.GET.urlencode }}&export=table">Current View (CSV)</a></li>
-    </ul>
+<div class="card mb-3">
+  <div class="card-header">
+    <strong><i class="mdi mdi-magnify"></i> Search Reservations</strong>
+  </div>
+  <div class="card-body">
+    <form method="get" class="row g-2 align-items-end">
+      {# Preserve server selection when filtering #}
+      {% for pk in selected_server_pks %}
+      <input type="hidden" name="server" value="{{ pk }}">
+      {% endfor %}
+      <div class="col-auto flex-grow-1">
+        <label for="id_q" class="form-label">{{ search_form.q.label }}</label>
+        {{ search_form.q }}
+      </div>
+      <div class="col-auto">
+        <label for="id_subnet_id" class="form-label">{{ search_form.subnet_id.label }}</label>
+        {{ search_form.subnet_id }}
+      </div>
+      <div class="col-auto">
+        <button type="submit" class="btn btn-primary btn-sm">
+          <i class="mdi mdi-magnify"></i> Filter
+        </button>
+        {% if request.GET.q or request.GET.subnet_id %}
+        <a href="{{ request.path }}{% if server_qs %}?{{ server_qs }}{% endif %}"
+           class="btn btn-outline-secondary btn-sm">
+          <i class="mdi mdi-close"></i> Clear
+        </a>
+        {% endif %}
+        <div class="dropdown d-inline-block ms-1">
+          <button type="button" class="btn btn-purple btn-sm dropdown-toggle" data-bs-toggle="dropdown">
+            <i class="mdi mdi-download"></i> Export
+          </button>
+          <ul class="dropdown-menu dropdown-menu-end">
+            <li><a class="dropdown-item" href="?{{ request.GET.urlencode }}&export=table">Current View (CSV)</a></li>
+          </ul>
+        </div>
+      </div>
+    </form>
   </div>
 </div>
 

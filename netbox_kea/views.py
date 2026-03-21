@@ -2699,11 +2699,18 @@ class _CombinedReservationsView(_CombinedViewMixin):
             if server_records:
                 _enrich_reservations_with_badges(server_records, server, self.dhcp_version)
 
+        search_form = forms.ReservationSearchForm(request.GET or None)
+        if search_form.is_valid():
+            all_records = _filter_reservations(
+                all_records,
+                q=search_form.cleaned_data.get("q", ""),
+                subnet_id=search_form.cleaned_data.get("subnet_id"),
+                version=self.dhcp_version,
+            )
+
         table_cls = tables.GlobalReservationTable4 if self.dhcp_version == 4 else tables.GlobalReservationTable6
-        filter_form_cls = forms.GlobalServer4FilterForm if self.dhcp_version == 4 else forms.GlobalServer6FilterForm
         table = table_cls(all_records, user=request.user)
         table.configure(request)
-        filter_form = filter_form_cls(request.GET or None)
 
         if "export" in request.GET:
             return export_table(table, filename=f"kea-dhcpv{self.dhcp_version}-reservations.csv")
@@ -2711,7 +2718,7 @@ class _CombinedReservationsView(_CombinedViewMixin):
         ctx.update(
             {
                 "table": table,
-                "filter_form": filter_form,
+                "search_form": search_form,
                 "errors": errors,
                 "dhcp_version": self.dhcp_version,
                 "page_title": f"DHCPv{self.dhcp_version} Reservations",

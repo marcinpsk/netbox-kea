@@ -270,6 +270,63 @@ class TestCombinedReservations4View(_CombinedViewBase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("text/csv", response.get("Content-Type", ""))
 
+    @patch("netbox_kea.models.KeaClient")
+    def test_search_form_in_context(self, MockKeaClient):
+        """Response context must contain search_form for the search card to render."""
+        MockKeaClient.return_value.reservation_get_page.return_value = ([], 0, 0)
+        url = reverse("plugins:netbox_kea:combined_reservations4")
+        response = self.client.get(url)
+        self.assertIn("search_form", response.context)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_search_by_hostname_filters_results(self, MockKeaClient):
+        """?q=host-v4 returns only records whose hostname matches."""
+        rec_match = dict(_MOCK_RESERVATION_V4)  # hostname="host-v4"
+        rec_nomatch = dict(_MOCK_RESERVATION_V4)
+        rec_nomatch["hostname"] = "other-host"
+        rec_nomatch["ip-address"] = "10.0.0.200"
+        MockKeaClient.return_value.reservation_get_page.return_value = ([rec_match, rec_nomatch], 0, 0)
+        url = reverse("plugins:netbox_kea:combined_reservations4") + f"?server={self.v4_server.pk}&q=host-v4"
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "10.0.0.100")
+        self.assertNotContains(response, "10.0.0.200")
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_search_by_ip_filters_results(self, MockKeaClient):
+        """?q=10.0.0.100 returns only the matching record."""
+        rec = dict(_MOCK_RESERVATION_V4)
+        rec2 = dict(_MOCK_RESERVATION_V4)
+        rec2["ip-address"] = "10.0.0.200"
+        rec2["hostname"] = "other"
+        MockKeaClient.return_value.reservation_get_page.return_value = ([rec, rec2], 0, 0)
+        url = reverse("plugins:netbox_kea:combined_reservations4") + f"?server={self.v4_server.pk}&q=10.0.0.100"
+        response = self.client.get(url)
+        self.assertContains(response, "10.0.0.100")
+        self.assertNotContains(response, "10.0.0.200")
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_search_by_subnet_id_filters_results(self, MockKeaClient):
+        """?subnet_id=2 returns only records in subnet 2."""
+        rec1 = dict(_MOCK_RESERVATION_V4)  # subnet-id=1
+        rec2 = dict(_MOCK_RESERVATION_V4)
+        rec2["subnet-id"] = 2
+        rec2["ip-address"] = "10.0.0.200"
+        MockKeaClient.return_value.reservation_get_page.return_value = ([rec1, rec2], 0, 0)
+        url = reverse("plugins:netbox_kea:combined_reservations4") + f"?server={self.v4_server.pk}&subnet_id=2"
+        response = self.client.get(url)
+        self.assertNotContains(response, "10.0.0.100")
+        self.assertContains(response, "10.0.0.200")
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_search_no_match_returns_empty_table(self, MockKeaClient):
+        """?q=zzz with no matching records renders an empty table (no 500)."""
+        rec = dict(_MOCK_RESERVATION_V4)
+        MockKeaClient.return_value.reservation_get_page.return_value = ([rec], 0, 0)
+        url = reverse("plugins:netbox_kea:combined_reservations4") + f"?server={self.v4_server.pk}&q=zzz-no-match"
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+
 
 # ---------------------------------------------------------------------------
 # CombinedReservations6View  GET /plugins/kea/combined/reservations6/
@@ -328,6 +385,47 @@ class TestCombinedReservations6View(_CombinedViewBase):
         response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         self.assertIn("text/csv", response.get("Content-Type", ""))
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_search_form_in_context(self, MockKeaClient):
+        """Response context must contain search_form."""
+        MockKeaClient.return_value.reservation_get_page.return_value = ([], 0, 0)
+        url = reverse("plugins:netbox_kea:combined_reservations6")
+        response = self.client.get(url)
+        self.assertIn("search_form", response.context)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_search_by_hostname_filters_results(self, MockKeaClient):
+        """?q=host-v6 returns only records whose hostname matches."""
+        rec_match = dict(_MOCK_RESERVATION_V6)  # hostname="host-v6"
+        rec_nomatch = {
+            "subnet-id": 1,
+            "duid": "00:01:aa:bb",
+            "ip-addresses": ["2001:db8::2"],
+            "hostname": "other-v6",
+        }
+        MockKeaClient.return_value.reservation_get_page.return_value = ([rec_match, rec_nomatch], 0, 0)
+        url = reverse("plugins:netbox_kea:combined_reservations6") + f"?server={self.v6_server.pk}&q=host-v6"
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "host-v6")
+        self.assertNotContains(response, "other-v6")
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_search_by_duid_filters_results(self, MockKeaClient):
+        """?q=00:01:aa:bb returns only the matching DUID record."""
+        rec = dict(_MOCK_RESERVATION_V6)  # duid="00:01:aa:bb"
+        rec2 = {
+            "subnet-id": 1,
+            "duid": "ff:ff:ff:ff",
+            "ip-addresses": ["2001:db8::99"],
+            "hostname": "other",
+        }
+        MockKeaClient.return_value.reservation_get_page.return_value = ([rec, rec2], 0, 0)
+        url = reverse("plugins:netbox_kea:combined_reservations6") + f"?server={self.v6_server.pk}&q=00:01:aa:bb"
+        response = self.client.get(url)
+        self.assertContains(response, "00:01:aa:bb")
+        self.assertNotContains(response, "ff:ff:ff:ff")
 
 
 # ---------------------------------------------------------------------------
