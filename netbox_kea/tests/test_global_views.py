@@ -260,6 +260,16 @@ class TestCombinedReservations4View(_CombinedViewBase):
         response = self.client.get(url)
         self.assertEqual(response.context["active_tab"], "reservations4")
 
+    @patch("netbox_kea.models.KeaClient")
+    def test_export_returns_csv(self, MockKeaClient):
+        """?export=table returns a CSV download of the v4 reservations table."""
+        rec = dict(_MOCK_RESERVATION_V4)
+        MockKeaClient.return_value.reservation_get_page.return_value = ([rec], 0, 0)
+        url = reverse("plugins:netbox_kea:combined_reservations4") + f"?server={self.v4_server.pk}&export=table"
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("text/csv", response.get("Content-Type", ""))
+
 
 # ---------------------------------------------------------------------------
 # CombinedReservations6View  GET /plugins/kea/combined/reservations6/
@@ -308,6 +318,16 @@ class TestCombinedReservations6View(_CombinedViewBase):
         url = reverse("plugins:netbox_kea:combined_reservations6")
         response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_export_returns_csv(self, MockKeaClient):
+        """?export=table returns a CSV download of the v6 reservations table."""
+        rec = dict(_MOCK_RESERVATION_V6)
+        MockKeaClient.return_value.reservation_get_page.return_value = ([rec], 0, 0)
+        url = reverse("plugins:netbox_kea:combined_reservations6") + f"?server={self.v6_server.pk}&export=table"
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("text/csv", response.get("Content-Type", ""))
 
 
 # ---------------------------------------------------------------------------
@@ -513,6 +533,15 @@ class TestCombinedSubnets4View(_CombinedViewBase):
         response = self.client.get(url)
         self.assertEqual(response.context["active_tab"], "subnets4")
 
+    @patch("netbox_kea.models.KeaClient")
+    def test_export_returns_csv(self, MockKeaClient):
+        """?export=table returns a CSV download of the subnet table."""
+        MockKeaClient.return_value.command.return_value = _MOCK_CONFIG_V4
+        url = reverse("plugins:netbox_kea:combined_subnets4") + f"?server={self.v4_server.pk}&export=table"
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("text/csv", response.get("Content-Type", ""))
+
 
 # ---------------------------------------------------------------------------
 # CombinedSubnets6View  GET /plugins/kea/combined/subnets6/
@@ -551,10 +580,14 @@ class TestCombinedSubnets6View(_CombinedViewBase):
         response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
 
-
-# ---------------------------------------------------------------------------
-# Badge enrichment parity: combined views must match per-server views
-# ---------------------------------------------------------------------------
+    @patch("netbox_kea.models.KeaClient")
+    def test_export_returns_csv(self, MockKeaClient):
+        """?export=table returns a CSV download of the v6 subnet table."""
+        MockKeaClient.return_value.command.return_value = _MOCK_CONFIG_V6
+        url = reverse("plugins:netbox_kea:combined_subnets6") + f"?server={self.v6_server.pk}&export=table"
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("text/csv", response.get("Content-Type", ""))
 
 
 _MOCK_LEASE_V4_ENRICHMENT = {

@@ -2609,6 +2609,9 @@ class _CombinedSubnetsView(_CombinedViewMixin):
         table = table_cls(all_subnets, user=request.user)
         table.configure(request)
 
+        if "export" in request.GET:
+            return export_table(table, filename=f"kea-dhcpv{self.dhcp_version}-subnets.csv")
+
         ctx.update(
             {
                 "table": table,
@@ -2701,6 +2704,9 @@ class _CombinedReservationsView(_CombinedViewMixin):
         table = table_cls(all_records, user=request.user)
         table.configure(request)
         filter_form = filter_form_cls(request.GET or None)
+
+        if "export" in request.GET:
+            return export_table(table, filename=f"kea-dhcpv{self.dhcp_version}-reservations.csv")
 
         ctx.update(
             {
