@@ -1,3 +1,4 @@
+import copy
 import logging
 from collections.abc import Sequence
 from typing import Any, TypedDict
@@ -617,6 +618,94 @@ class KeaClient:
             else:
                 logger.warning("config-test failed for service %s — aborting config-write", service)
                 raise PartialPersistError(service, exc) from exc
+        try:
+            self.command("config-write", service=[service], arguments=config)
+        except KeaException as exc:
+            logger.warning("config-write failed for service %s — change not persisted to disk", service)
+            raise PartialPersistError(service, exc) from exc
+
+    def option_def_list(self, version: int) -> list[dict]:
+        """Return the current ``option-def`` list for a DHCP version via ``config-get``.
+
+        Args:
+            version: DHCP version (4 or 6).
+
+        Returns:
+            List of option-def dicts, or ``[]`` if none are defined.
+
+        Raises:
+            KeaException: If ``config-get`` fails.
+
+        """
+        service = f"dhcp{version}"
+        dhcp_key = f"Dhcp{version}"
+        resp = self.command("config-get", service=[service])
+        config = resp[0]["arguments"]
+        return config.get(dhcp_key, {}).get("option-def", [])
+
+    def option_def_add(self, version: int, option_def: dict) -> None:
+        """Append a new option-def entry via config-get → config-test → config-write.
+
+        Args:
+            version: DHCP version (4 or 6).
+            option_def: A dict with keys ``name``, ``code``, ``type``, ``space``,
+                and optionally ``array``, ``encapsulate``, ``record-types``.
+
+        Raises:
+            KeaException: If ``config-test`` fails.
+            PartialPersistError: If ``config-write`` fails after successful ``config-test``.
+
+        """
+        service = f"dhcp{version}"
+        dhcp_key = f"Dhcp{version}"
+        resp = self.command("config-get", service=[service])
+        config = copy.deepcopy(resp[0]["arguments"])
+        defs = config.setdefault(dhcp_key, {}).setdefault("option-def", [])
+        defs.append(option_def)
+        try:
+            self.command("config-test", service=[service], arguments=config)
+        except KeaException as exc:
+            if exc.response.get("result") == 2:
+                logger.debug("config-test not supported for service %s — skipping pre-flight check", service)
+            else:
+                logger.warning("config-test failed for service %s — aborting config-write", service)
+                raise
+        try:
+            self.command("config-write", service=[service], arguments=config)
+        except KeaException as exc:
+            logger.warning("config-write failed for service %s — change not persisted to disk", service)
+            raise PartialPersistError(service, exc) from exc
+
+    def option_def_del(self, version: int, code: int, space: str) -> None:
+        """Remove an option-def entry by code+space via config-get → config-test → config-write.
+
+        Args:
+            version: DHCP version (4 or 6).
+            code: Option code of the entry to remove.
+            space: Option space of the entry to remove.
+
+        Raises:
+            KeaException: If no matching option-def is found, or if ``config-test`` fails.
+            PartialPersistError: If ``config-write`` fails after successful ``config-test``.
+
+        """
+        service = f"dhcp{version}"
+        dhcp_key = f"Dhcp{version}"
+        resp = self.command("config-get", service=[service])
+        config = copy.deepcopy(resp[0]["arguments"])
+        defs = config.get(dhcp_key, {}).get("option-def", [])
+        new_defs = [d for d in defs if not (d.get("code") == code and d.get("space") == space)]
+        if len(new_defs) == len(defs):
+            raise KeaException({"result": 3, "text": f"option-def code={code} space={space} not found"})
+        config.setdefault(dhcp_key, {})["option-def"] = new_defs
+        try:
+            self.command("config-test", service=[service], arguments=config)
+        except KeaException as exc:
+            if exc.response.get("result") == 2:
+                logger.debug("config-test not supported for service %s — skipping pre-flight check", service)
+            else:
+                logger.warning("config-test failed for service %s — aborting config-write", service)
+                raise
         try:
             self.command("config-write", service=[service], arguments=config)
         except KeaException as exc:

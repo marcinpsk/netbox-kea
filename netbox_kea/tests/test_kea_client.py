@@ -2370,3 +2370,257 @@ class TestNetworkSubnetDel(TestCase):
         with patch.object(self.client._session, "post", return_value=_mock_http_response(_NETWORK_SUBNET_DEL_FAIL)):
             with self.assertRaises(KeaException):
                 self.client.network_subnet_del(version=4, name="prod-net", subnet_id=99)
+
+
+# ---------------------------------------------------------------------------
+# Fixtures for option-def tests
+# ---------------------------------------------------------------------------
+
+_OPTION_DEF_CONFIG_V4 = [
+    {
+        "result": 0,
+        "arguments": {
+            "Dhcp4": {
+                "option-def": [
+                    {"name": "my-opt", "code": 200, "type": "string", "space": "dhcp4"},
+                ],
+            }
+        },
+    }
+]
+
+_OPTION_DEF_CONFIG_V6 = [
+    {
+        "result": 0,
+        "arguments": {
+            "Dhcp6": {
+                "option-def": [
+                    {"name": "my-v6-opt", "code": 201, "type": "uint32", "space": "dhcp6"},
+                ],
+            }
+        },
+    }
+]
+
+_OPTION_DEF_CONFIG_EMPTY = [
+    {
+        "result": 0,
+        "arguments": {
+            "Dhcp4": {},
+        },
+    }
+]
+
+
+class TestOptionDefList(TestCase):
+    """Tests for KeaClient.option_def_list()."""
+
+    def setUp(self):
+        self.client = KeaClient(url="http://kea:8000")
+
+    def test_returns_option_def_list_v4(self):
+        """option_def_list(4) returns the Dhcp4.option-def list from config."""
+        with patch.object(self.client._session, "post", return_value=_mock_http_response(_OPTION_DEF_CONFIG_V4)):
+            result = self.client.option_def_list(version=4)
+        self.assertEqual(result, [{"name": "my-opt", "code": 200, "type": "string", "space": "dhcp4"}])
+
+    def test_returns_option_def_list_v6(self):
+        """option_def_list(6) returns the Dhcp6.option-def list."""
+        with patch.object(self.client._session, "post", return_value=_mock_http_response(_OPTION_DEF_CONFIG_V6)):
+            result = self.client.option_def_list(version=6)
+        self.assertEqual(result, [{"name": "my-v6-opt", "code": 201, "type": "uint32", "space": "dhcp6"}])
+
+    def test_returns_empty_list_when_no_option_def_key(self):
+        """Returns [] when Dhcp4 has no 'option-def' key."""
+        with patch.object(self.client._session, "post", return_value=_mock_http_response(_OPTION_DEF_CONFIG_EMPTY)):
+            result = self.client.option_def_list(version=4)
+        self.assertEqual(result, [])
+
+    def test_calls_config_get_on_correct_service(self):
+        """option_def_list(4) sends config-get to the dhcp4 service."""
+
+        def _payloads(mock_post):
+            return [(c.kwargs.get("json") or c[1]["json"]) for c in mock_post.call_args_list]
+
+        with patch.object(
+            self.client._session,
+            "post",
+            return_value=_mock_http_response(_OPTION_DEF_CONFIG_V4),
+        ) as mock_post:
+            self.client.option_def_list(version=4)
+        payload = _payloads(mock_post)[0]
+        self.assertEqual(payload["command"], "config-get")
+        self.assertEqual(payload["service"], ["dhcp4"])
+
+
+class TestOptionDefAdd(TestCase):
+    """Tests for KeaClient.option_def_add()."""
+
+    def setUp(self):
+        self.client = KeaClient(url="http://kea:8000")
+
+    def _payloads(self, mock_post):
+        return [(c.kwargs.get("json") or c[1]["json"]) for c in mock_post.call_args_list]
+
+    def _cmds(self, mock_post):
+        return [p["command"] for p in self._payloads(mock_post)]
+
+    def test_calls_config_get_test_write_in_order(self):
+        """option_def_add calls config-get, config-test, config-write in order."""
+        new_def = {"name": "new-opt", "code": 201, "type": "string", "space": "dhcp4"}
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(_OPTION_DEF_CONFIG_V4, _CONFIG_TEST_OK_RESP, _CONFIG_WRITE_RESP),
+        ) as mock_post:
+            self.client.option_def_add(version=4, option_def=new_def)
+        self.assertEqual(self._cmds(mock_post), ["config-get", "config-test", "config-write"])
+
+    def test_appends_new_def_to_existing_list(self):
+        """New option-def is appended to the existing list in config-test payload."""
+        new_def = {"name": "new-opt", "code": 201, "type": "string", "space": "dhcp4"}
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(_OPTION_DEF_CONFIG_V4, _CONFIG_TEST_OK_RESP, _CONFIG_WRITE_RESP),
+        ) as mock_post:
+            self.client.option_def_add(version=4, option_def=new_def)
+        payloads = self._payloads(mock_post)
+        test_payload = next(p for p in payloads if p["command"] == "config-test")
+        defs = test_payload["arguments"]["Dhcp4"]["option-def"]
+        self.assertEqual(len(defs), 2)
+        self.assertIn(new_def, defs)
+
+    def test_creates_option_def_key_when_absent(self):
+        """When Dhcp4 has no 'option-def' key, option_def_add creates it."""
+        new_def = {"name": "first-opt", "code": 202, "type": "uint8", "space": "dhcp4"}
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(_OPTION_DEF_CONFIG_EMPTY, _CONFIG_TEST_OK_RESP, _CONFIG_WRITE_RESP),
+        ) as mock_post:
+            self.client.option_def_add(version=4, option_def=new_def)
+        payloads = self._payloads(mock_post)
+        test_payload = next(p for p in payloads if p["command"] == "config-test")
+        defs = test_payload["arguments"]["Dhcp4"]["option-def"]
+        self.assertEqual(defs, [new_def])
+
+    def test_raises_partial_persist_error_on_config_write_failure(self):
+        """PartialPersistError raised when config-write fails after successful config-test."""
+        new_def = {"name": "new-opt", "code": 201, "type": "string", "space": "dhcp4"}
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(_OPTION_DEF_CONFIG_V4, _CONFIG_TEST_OK_RESP, [{"result": 1, "text": "fail"}]),
+        ):
+            with self.assertRaises(PartialPersistError):
+                self.client.option_def_add(version=4, option_def=new_def)
+
+    def test_raises_kea_exception_on_config_test_failure(self):
+        """KeaException raised when config-test rejects the new option-def."""
+        new_def = {"name": "bad-opt", "code": 99, "type": "string", "space": "dhcp4"}
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(_OPTION_DEF_CONFIG_V4, [{"result": 1, "text": "bad config"}]),
+        ):
+            with self.assertRaises(KeaException):
+                self.client.option_def_add(version=4, option_def=new_def)
+
+    def test_v6_uses_dhcp6_service_and_dhcp6_key(self):
+        """For version=6, option_def_add targets dhcp6 service and Dhcp6 key."""
+        new_def = {"name": "v6-opt", "code": 250, "type": "ipv6-address", "space": "dhcp6"}
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(_OPTION_DEF_CONFIG_V6, _CONFIG_TEST_OK_RESP, _CONFIG_WRITE_RESP),
+        ) as mock_post:
+            self.client.option_def_add(version=6, option_def=new_def)
+        payloads = self._payloads(mock_post)
+        get_payload = next(p for p in payloads if p["command"] == "config-get")
+        self.assertEqual(get_payload["service"], ["dhcp6"])
+        test_payload = next(p for p in payloads if p["command"] == "config-test")
+        self.assertIn("Dhcp6", test_payload["arguments"])
+
+
+class TestOptionDefDel(TestCase):
+    """Tests for KeaClient.option_def_del()."""
+
+    def setUp(self):
+        self.client = KeaClient(url="http://kea:8000")
+
+    def _payloads(self, mock_post):
+        return [(c.kwargs.get("json") or c[1]["json"]) for c in mock_post.call_args_list]
+
+    def _cmds(self, mock_post):
+        return [p["command"] for p in self._payloads(mock_post)]
+
+    def test_calls_config_get_test_write_in_order(self):
+        """option_def_del calls config-get, config-test, config-write in order."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(_OPTION_DEF_CONFIG_V4, _CONFIG_TEST_OK_RESP, _CONFIG_WRITE_RESP),
+        ) as mock_post:
+            self.client.option_def_del(version=4, code=200, space="dhcp4")
+        self.assertEqual(self._cmds(mock_post), ["config-get", "config-test", "config-write"])
+
+    def test_removes_matching_option_def(self):
+        """option_def_del removes the entry with matching code+space from config."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(_OPTION_DEF_CONFIG_V4, _CONFIG_TEST_OK_RESP, _CONFIG_WRITE_RESP),
+        ) as mock_post:
+            self.client.option_def_del(version=4, code=200, space="dhcp4")
+        payloads = self._payloads(mock_post)
+        test_payload = next(p for p in payloads if p["command"] == "config-test")
+        defs = test_payload["arguments"]["Dhcp4"]["option-def"]
+        self.assertEqual(defs, [])
+
+    def test_raises_kea_exception_when_not_found(self):
+        """KeaException raised when code+space not found in option-def list."""
+        with patch.object(
+            self.client._session,
+            "post",
+            return_value=_mock_http_response(_OPTION_DEF_CONFIG_V4),
+        ):
+            with self.assertRaises(KeaException):
+                self.client.option_def_del(version=4, code=999, space="dhcp4")
+
+    def test_raises_partial_persist_error_on_config_write_failure(self):
+        """PartialPersistError raised when config-write fails."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(_OPTION_DEF_CONFIG_V4, _CONFIG_TEST_OK_RESP, [{"result": 1, "text": "fail"}]),
+        ):
+            with self.assertRaises(PartialPersistError):
+                self.client.option_def_del(version=4, code=200, space="dhcp4")
+
+    def test_does_not_remove_entry_with_different_space(self):
+        """option_def_del only removes entries matching both code AND space."""
+        config_two_spaces = [
+            {
+                "result": 0,
+                "arguments": {
+                    "Dhcp4": {
+                        "option-def": [
+                            {"name": "opt-a", "code": 200, "type": "string", "space": "dhcp4"},
+                            {"name": "opt-b", "code": 200, "type": "string", "space": "myspace"},
+                        ],
+                    }
+                },
+            }
+        ]
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(config_two_spaces, _CONFIG_TEST_OK_RESP, _CONFIG_WRITE_RESP),
+        ) as mock_post:
+            self.client.option_def_del(version=4, code=200, space="dhcp4")
+        payloads = self._payloads(mock_post)
+        test_payload = next(p for p in payloads if p["command"] == "config-test")
+        defs = test_payload["arguments"]["Dhcp4"]["option-def"]
+        self.assertEqual(len(defs), 1)
+        self.assertEqual(defs[0]["space"], "myspace")
