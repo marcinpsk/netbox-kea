@@ -476,3 +476,183 @@ class TestSubnetEditForm(SimpleTestCase):
         form = self._form(ntp_servers="pool.ntp.org, time.google.com")
         self.assertTrue(form.is_valid(), form.errors)
         self.assertEqual(form.cleaned_data["ntp_servers"], ["pool.ntp.org", "time.google.com"])
+
+
+# ---------------------------------------------------------------------------
+# TestLease4AddForm
+# ---------------------------------------------------------------------------
+
+
+class TestLease4AddForm(SimpleTestCase):
+    """Tests for Lease4AddForm validation."""
+
+    def _form(self, data):
+        from netbox_kea.forms import Lease4AddForm
+
+        return Lease4AddForm(data=data)
+
+    def _valid_data(self, **overrides):
+        base = {"ip_address": "10.0.0.100"}
+        base.update(overrides)
+        return base
+
+    def test_valid_with_ip_only(self):
+        """Form is valid with only ip_address provided (all other fields optional)."""
+        form = self._form(self._valid_data())
+        self.assertTrue(form.is_valid(), form.errors)
+
+    def test_valid_with_all_fields(self):
+        """Form is valid when all optional fields are provided."""
+        form = self._form(
+            self._valid_data(
+                hw_address="aa:bb:cc:dd:ee:ff",
+                subnet_id=1,
+                valid_lft=3600,
+                hostname="host.example.com",
+                sync_to_netbox=True,
+            )
+        )
+        self.assertTrue(form.is_valid(), form.errors)
+
+    def test_invalid_ip_address_rejected(self):
+        """Non-IP value in ip_address causes form error."""
+        form = self._form(self._valid_data(ip_address="not-an-ip"))
+        self.assertFalse(form.is_valid())
+        self.assertIn("ip_address", form.errors)
+
+    def test_ipv6_address_rejected(self):
+        """IPv6 address in a v4 form is rejected."""
+        form = self._form(self._valid_data(ip_address="2001:db8::1"))
+        self.assertFalse(form.is_valid())
+        self.assertIn("ip_address", form.errors)
+
+    def test_missing_ip_address_fails(self):
+        """ip_address is required."""
+        form = self._form({})
+        self.assertFalse(form.is_valid())
+        self.assertIn("ip_address", form.errors)
+
+    def test_clean_ip_returns_string(self):
+        """clean_ip_address returns a plain IP string (no prefix length)."""
+        form = self._form(self._valid_data(ip_address="10.0.0.50"))
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.cleaned_data["ip_address"], "10.0.0.50")
+
+    def test_subnet_id_must_be_positive(self):
+        """subnet_id must be >= 1 (min_value=1 on the field)."""
+        form = self._form(self._valid_data(subnet_id=0))
+        self.assertFalse(form.is_valid())
+        self.assertIn("subnet_id", form.errors)
+
+    def test_sync_to_netbox_defaults_to_unchecked(self):
+        """sync_to_netbox is not required and defaults to False when absent."""
+        form = self._form(self._valid_data())
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertFalse(form.cleaned_data.get("sync_to_netbox"))
+
+
+# ---------------------------------------------------------------------------
+# TestLease6AddForm
+# ---------------------------------------------------------------------------
+
+
+class TestLease6AddForm(SimpleTestCase):
+    """Tests for Lease6AddForm validation."""
+
+    def _form(self, data):
+        from netbox_kea.forms import Lease6AddForm
+
+        return Lease6AddForm(data=data)
+
+    def _valid_data(self, **overrides):
+        base = {
+            "ip_address": "2001:db8::1",
+            "duid": "00:01:02:03:04:05",
+            "iaid": 1,
+        }
+        base.update(overrides)
+        return base
+
+    def test_valid_with_required_fields(self):
+        """Form is valid with ip_address, duid, and iaid."""
+        form = self._form(self._valid_data())
+        self.assertTrue(form.is_valid(), form.errors)
+
+    def test_ipv4_address_rejected(self):
+        """IPv4 address in a v6 form is rejected."""
+        form = self._form(self._valid_data(ip_address="10.0.0.1"))
+        self.assertFalse(form.is_valid())
+        self.assertIn("ip_address", form.errors)
+
+    def test_invalid_ip_address_rejected(self):
+        """Non-IP string in ip_address causes form error."""
+        form = self._form(self._valid_data(ip_address="not-an-ip"))
+        self.assertFalse(form.is_valid())
+        self.assertIn("ip_address", form.errors)
+
+    def test_missing_duid_fails(self):
+        """duid is required for a v6 lease."""
+        data = self._valid_data()
+        del data["duid"]
+        form = self._form(data)
+        self.assertFalse(form.is_valid())
+        self.assertIn("duid", form.errors)
+
+    def test_missing_iaid_fails(self):
+        """iaid is required for a v6 lease."""
+        data = self._valid_data()
+        del data["iaid"]
+        form = self._form(data)
+        self.assertFalse(form.is_valid())
+        self.assertIn("iaid", form.errors)
+
+    def test_clean_ip_returns_string(self):
+        """clean_ip_address returns a plain IPv6 string."""
+        form = self._form(self._valid_data())
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.cleaned_data["ip_address"], "2001:db8::1")
+
+    def test_iaid_cannot_be_negative(self):
+        """iaid has min_value=0; negative value is rejected."""
+        form = self._form(self._valid_data(iaid=-1))
+        self.assertFalse(form.is_valid())
+        self.assertIn("iaid", form.errors)
+
+
+# ---------------------------------------------------------------------------
+# TestSharedNetworkForm
+# ---------------------------------------------------------------------------
+
+
+class TestSharedNetworkForm(SimpleTestCase):
+    """Tests for SharedNetworkForm validation."""
+
+    def _form(self, data):
+        from netbox_kea.forms import SharedNetworkForm
+
+        return SharedNetworkForm(data=data)
+
+    def test_valid_with_name(self):
+        """Form is valid when a non-empty name is provided."""
+        form = self._form({"name": "prod-network"})
+        self.assertTrue(form.is_valid(), form.errors)
+
+    def test_missing_name_fails(self):
+        """name is required."""
+        form = self._form({})
+        self.assertFalse(form.is_valid())
+        self.assertIn("name", form.errors)
+
+    def test_empty_name_fails(self):
+        """Empty string for name is rejected."""
+        form = self._form({"name": ""})
+        self.assertFalse(form.is_valid())
+        self.assertIn("name", form.errors)
+
+    def test_name_max_length_128(self):
+        """Names up to 128 chars are accepted; 129 chars are rejected."""
+        form_ok = self._form({"name": "x" * 128})
+        self.assertTrue(form_ok.is_valid(), form_ok.errors)
+        form_too_long = self._form({"name": "x" * 129})
+        self.assertFalse(form_too_long.is_valid())
+        self.assertIn("name", form_too_long.errors)
