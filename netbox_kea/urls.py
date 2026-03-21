@@ -206,6 +206,16 @@ urlpatterns = (
         views.ServerDHCP6DisableView.as_view(),
         name="server_dhcp6_disable",
     ),
+    path(
+        "servers/<int:pk>/dhcp4/options/",
+        views.ServerDHCP4OptionsEditView.as_view(),
+        name="server_dhcp4_options_edit",
+    ),
+    path(
+        "servers/<int:pk>/dhcp6/options/",
+        views.ServerDHCP6OptionsEditView.as_view(),
+        name="server_dhcp6_options_edit",
+    ),
     path("servers/<int:pk>/", include(get_model_urls("netbox_kea", "server"))),
     path(
         "ip-addresses/<int:pk>/kea-reservations/",

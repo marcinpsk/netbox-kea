@@ -502,6 +502,42 @@ class KeaClient:
             logger.warning("config-write failed for service %s — change not persisted to disk", service)
             raise PartialPersistError(service, exc) from exc
 
+    def server_update_options(self, version: int, options: list[dict]) -> None:
+        """Update server-level option-data via config-get → config-test → config-write.
+
+        Replaces the ``option-data`` list at the ``Dhcp{v}`` level (not per-subnet).
+        Uses the same read-modify-write pipeline as :meth:`subnet_update_options`.
+
+        Args:
+            version: DHCP version (4 or 6).
+            options: New ``option-data`` list. Pass ``[]`` to remove all server-level options.
+
+        Raises:
+            KeaException: If ``config-test`` fails.
+            PartialPersistError: If ``config-write`` fails after successful ``config-test``.
+
+        """
+        service = f"dhcp{version}"
+        dhcp_key = f"Dhcp{version}"
+
+        resp = self.command("config-get", service=[service])
+        config = resp[0]["arguments"]
+        config.setdefault(dhcp_key, {})["option-data"] = options
+
+        try:
+            self.command("config-test", service=[service], arguments=config)
+        except KeaException as exc:
+            if exc.response.get("result") == 2:
+                logger.debug("config-test not supported for service %s — skipping pre-flight check", service)
+            else:
+                logger.warning("config-test failed for service %s — aborting config-write", service)
+                raise PartialPersistError(service, exc) from exc
+        try:
+            self.command("config-write", service=[service], arguments=config)
+        except KeaException as exc:
+            logger.warning("config-write failed for service %s — change not persisted to disk", service)
+            raise PartialPersistError(service, exc) from exc
+
     def lease_wipe(self, version: int, subnet_id: int) -> None:
         """Delete all leases in a subnet using the ``lease{v}-wipe`` command.
 

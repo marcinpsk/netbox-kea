@@ -274,11 +274,13 @@ class ServerStatusView(generic.ObjectView):
             service_urls["DHCPv4"] = {
                 "enable_url": reverse("plugins:netbox_kea:server_dhcp4_enable", args=[instance.pk]),
                 "disable_url": reverse("plugins:netbox_kea:server_dhcp4_disable", args=[instance.pk]),
+                "options_url": reverse("plugins:netbox_kea:server_dhcp4_options_edit", args=[instance.pk]),
             }
         if instance.dhcp6:
             service_urls["DHCPv6"] = {
                 "enable_url": reverse("plugins:netbox_kea:server_dhcp6_enable", args=[instance.pk]),
                 "disable_url": reverse("plugins:netbox_kea:server_dhcp6_disable", args=[instance.pk]),
+                "options_url": reverse("plugins:netbox_kea:server_dhcp6_options_edit", args=[instance.pk]),
             }
 
         # Merge status + URL context into a list so the template can iterate without
@@ -3012,6 +3014,108 @@ class ServerSubnet4OptionsEditView(_BaseSubnetOptionsEditView):
 
 class ServerSubnet6OptionsEditView(_BaseSubnetOptionsEditView):
     """Edit option-data for a DHCPv6 subnet."""
+
+    dhcp_version = 6
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Server-Level DHCP Options Management
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class _BaseServerOptionsEditView(ConditionalLoginRequiredMixin, View):
+    """GET/POST view for editing server-level (global) option-data.
+
+    Loads current server options from ``config-get``, renders a formset, and on
+    POST validates + saves via ``server_update_options`` (config-get → config-test
+    → config-write).
+    """
+
+    dhcp_version: int = 4
+
+    def _get_options_from_config(self, client) -> list[dict]:
+        """Fetch config and return the server-level option-data list."""
+        service = f"dhcp{self.dhcp_version}"
+        dhcp_key = f"Dhcp{self.dhcp_version}"
+        resp = client.command("config-get", service=[service])
+        config = resp[0]["arguments"]
+        return config.get(dhcp_key, {}).get("option-data", [])
+
+    def get(self, request, pk: int):
+        server = get_object_or_404(
+            Server.objects.restrict(request.user, "view"),
+            pk=pk,
+        )
+        client = server.get_client(version=self.dhcp_version)
+        existing = self._get_options_from_config(client)
+        initial = [
+            {
+                "name": opt.get("name", ""),
+                "data": opt.get("data", ""),
+                "always_send": opt.get("always-send", False),
+            }
+            for opt in existing
+        ]
+        formset = forms.SubnetOptionsFormSet(initial=initial)
+        return render(
+            request,
+            "netbox_kea/server_dhcp_options_edit.html",
+            {
+                "object": server,
+                "server": server,
+                "dhcp_version": self.dhcp_version,
+                "formset": formset,
+                "return_url": reverse("plugins:netbox_kea:server", args=[pk]),
+            },
+        )
+
+    def post(self, request, pk: int):
+        server = get_object_or_404(
+            Server.objects.restrict(request.user, "change"),
+            pk=pk,
+        )
+        return_url = reverse("plugins:netbox_kea:server", args=[pk])
+        formset = forms.SubnetOptionsFormSet(request.POST)
+        if not formset.is_valid():
+            return render(
+                request,
+                "netbox_kea/server_dhcp_options_edit.html",
+                {
+                    "object": server,
+                    "server": server,
+                    "dhcp_version": self.dhcp_version,
+                    "formset": formset,
+                    "return_url": return_url,
+                },
+            )
+
+        options = []
+        for f in formset.forms:
+            if not f.cleaned_data or f.cleaned_data.get("DELETE"):
+                continue
+            opt: dict = {"name": f.cleaned_data["name"], "data": f.cleaned_data["data"]}
+            if f.cleaned_data.get("always_send"):
+                opt["always-send"] = True
+            options.append(opt)
+
+        client = server.get_client(version=self.dhcp_version)
+        try:
+            client.server_update_options(version=self.dhcp_version, options=options)
+            messages.success(request, f"DHCPv{self.dhcp_version} server options updated.")
+        except KeaException as exc:
+            logger.exception("Failed to update server options for %s: %s", server, exc)
+            messages.error(request, kea_error_hint(exc))
+        return redirect(return_url)
+
+
+class ServerDHCP4OptionsEditView(_BaseServerOptionsEditView):
+    """Edit server-level option-data for DHCPv4."""
+
+    dhcp_version = 4
+
+
+class ServerDHCP6OptionsEditView(_BaseServerOptionsEditView):
+    """Edit server-level option-data for DHCPv6."""
 
     dhcp_version = 6
 

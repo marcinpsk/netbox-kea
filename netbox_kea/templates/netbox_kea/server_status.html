@@ -17,6 +17,13 @@
                title="Temporarily disable {{ svc.name }} processing">
               <i class="mdi mdi-pause-circle-outline" aria-hidden="true"></i> Disable
             </a>
+            {% if svc.options_url %}
+            <a href="{{ svc.options_url }}"
+               class="btn btn-outline-secondary"
+               title="Edit {{ svc.name }} global options">
+              <i class="mdi mdi-tune" aria-hidden="true"></i> Edit Options
+            </a>
+            {% endif %}
           </div>
         {% endif %}
       </h5>

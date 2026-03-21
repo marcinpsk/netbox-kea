@@ -1848,3 +1848,144 @@ class TestSubnetOptionUpdate(TestCase):
         ):
             result = self.client.subnet_update_options(version=4, subnet_id=1, options=[])
         self.assertIsNone(result)
+
+
+# TestServerOptionsUpdate
+# ---------------------------------------------------------------------------
+
+# Minimal config-get response with server-level option-data for v4
+_SERVER_CONFIG_GET_V4 = [
+    {
+        "result": 0,
+        "arguments": {
+            "Dhcp4": {
+                "option-data": [
+                    {"name": "domain-name-servers", "data": "8.8.8.8"},
+                ],
+                "subnet4": [],
+            }
+        },
+    }
+]
+
+
+class TestServerOptionsUpdate(TestCase):
+    """Tests for KeaClient.server_update_options()."""
+
+    def setUp(self):
+        self.client = KeaClient(url="http://kea:8000")
+
+    def _payloads(self, mock_post):
+        return [(c.kwargs.get("json") or c[1]["json"]) for c in mock_post.call_args_list]
+
+    def _cmds(self, mock_post):
+        return [p["command"] for p in self._payloads(mock_post)]
+
+    def test_calls_config_get_then_config_test_then_config_write(self):
+        """server_update_options calls config-get, config-test, config-write in order."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(
+                _SERVER_CONFIG_GET_V4,
+                _CONFIG_TEST_OK_RESP,
+                _CONFIG_WRITE_RESP,
+            ),
+        ) as mock_post:
+            self.client.server_update_options(version=4, options=[])
+        self.assertEqual(self._cmds(mock_post), ["config-get", "config-test", "config-write"])
+
+    def test_replaces_option_data_in_config_test_payload(self):
+        """config-test is called with updated Dhcp4.option-data replacing the old list."""
+        new_opts = [{"name": "routers", "data": "10.0.0.1"}]
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(
+                _SERVER_CONFIG_GET_V4,
+                _CONFIG_TEST_OK_RESP,
+                _CONFIG_WRITE_RESP,
+            ),
+        ) as mock_post:
+            self.client.server_update_options(version=4, options=new_opts)
+        payloads = self._payloads(mock_post)
+        test_payload = next(p for p in payloads if p["command"] == "config-test")
+        self.assertEqual(test_payload["arguments"]["Dhcp4"]["option-data"], new_opts)
+
+    def test_clears_option_data_when_empty_list_given(self):
+        """Passing options=[] removes all existing server-level options."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(
+                _SERVER_CONFIG_GET_V4,
+                _CONFIG_TEST_OK_RESP,
+                _CONFIG_WRITE_RESP,
+            ),
+        ) as mock_post:
+            self.client.server_update_options(version=4, options=[])
+        payloads = self._payloads(mock_post)
+        test_payload = next(p for p in payloads if p["command"] == "config-test")
+        self.assertEqual(test_payload["arguments"]["Dhcp4"]["option-data"], [])
+
+    def test_raises_partial_persist_error_on_config_write_failure(self):
+        """PartialPersistError raised when config-write fails after successful config-test."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(
+                _SERVER_CONFIG_GET_V4,
+                _CONFIG_TEST_OK_RESP,
+                [{"result": 1, "text": "write failed"}],
+            ),
+        ):
+            with self.assertRaises(PartialPersistError):
+                self.client.server_update_options(version=4, options=[])
+
+    def test_skips_config_test_gracefully_when_not_supported(self):
+        """If config-test returns result=2, config-write still proceeds."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(
+                _SERVER_CONFIG_GET_V4,
+                _CONFIG_TEST_NOT_SUPPORTED_RESP,
+                _CONFIG_WRITE_RESP,
+            ),
+        ) as mock_post:
+            self.client.server_update_options(version=4, options=[])
+        self.assertIn("config-write", self._cmds(mock_post))
+
+    def test_v6_uses_dhcp6_service_and_dhcp6_key(self):
+        """For version=6, config-get uses dhcp6 service and Dhcp6 key."""
+        config_get_v6 = [
+            {
+                "result": 0,
+                "arguments": {
+                    "Dhcp6": {
+                        "option-data": [],
+                        "subnet6": [],
+                    }
+                },
+            }
+        ]
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(config_get_v6, _CONFIG_TEST_OK_RESP, _CONFIG_WRITE_RESP),
+        ) as mock_post:
+            self.client.server_update_options(version=6, options=[])
+        payloads = self._payloads(mock_post)
+        self.assertEqual(payloads[0]["service"], ["dhcp6"])
+        test_payload = next(p for p in payloads if p["command"] == "config-test")
+        self.assertIn("Dhcp6", test_payload["arguments"])
+
+    def test_returns_none_on_success(self):
+        """server_update_options returns None on success."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(_SERVER_CONFIG_GET_V4, _CONFIG_TEST_OK_RESP, _CONFIG_WRITE_RESP),
+        ):
+            result = self.client.server_update_options(version=4, options=[])
+        self.assertIsNone(result)

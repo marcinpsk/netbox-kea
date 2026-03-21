@@ -2147,3 +2147,155 @@ class TestSubnetOptionsView(_ViewTestBase):
         self.client.logout()
         response = self.client.get(self._url())
         self.assertIn(response.status_code, (302, 403))
+
+
+# TestServerOptionsView
+# ---------------------------------------------------------------------------
+
+_SERVER_OPTIONS_CONFIG_GET = [
+    {
+        "result": 0,
+        "arguments": {
+            "Dhcp4": {
+                "option-data": [
+                    {"name": "domain-name-servers", "data": "8.8.8.8"},
+                    {"name": "routers", "data": "10.0.0.1"},
+                ],
+                "subnet4": [],
+            }
+        },
+    }
+]
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestServerOptionsView(_ViewTestBase):
+    """Tests for ServerDHCP4/6OptionsEditView (GET prefill + POST update)."""
+
+    def _url(self, version=4):
+        return reverse(
+            f"plugins:netbox_kea:server_dhcp{version}_options_edit",
+            args=[self.server.pk],
+        )
+
+    def test_url_registered_v4(self):
+        """URL server_dhcp4_options_edit is registered."""
+        url = self._url(version=4)
+        self.assertIn("options", url)
+
+    def test_url_registered_v6(self):
+        """URL server_dhcp6_options_edit is registered."""
+        url = self._url(version=6)
+        self.assertIn("options", url)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_get_returns_200(self, MockKeaClient):
+        """GET returns 200 OK."""
+        MockKeaClient.return_value.command.return_value = _SERVER_OPTIONS_CONFIG_GET
+        response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 200)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_get_prefills_existing_options(self, MockKeaClient):
+        """GET pre-populates formset with existing server-level option-data."""
+        MockKeaClient.return_value.command.return_value = _SERVER_OPTIONS_CONFIG_GET
+        response = self.client.get(self._url())
+        content = response.content.decode()
+        self.assertIn("domain-name-servers", content)
+        self.assertIn("8.8.8.8", content)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_calls_server_update_options(self, MockKeaClient):
+        """POST with valid formset calls server_update_options and redirects."""
+        MockKeaClient.return_value.server_update_options.return_value = None
+        response = self.client.post(
+            self._url(),
+            {
+                "form-TOTAL_FORMS": "1",
+                "form-INITIAL_FORMS": "0",
+                "form-MIN_NUM_FORMS": "0",
+                "form-MAX_NUM_FORMS": "1000",
+                "form-0-name": "routers",
+                "form-0-data": "10.0.0.1",
+                "form-0-always_send": "",
+                "form-0-DELETE": "",
+            },
+        )
+        self.assertEqual(response.status_code, 302)
+        MockKeaClient.return_value.server_update_options.assert_called_once()
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_passes_correct_version(self, MockKeaClient):
+        """POST calls server_update_options with the correct version."""
+        MockKeaClient.return_value.server_update_options.return_value = None
+        self.client.post(
+            self._url(version=4),
+            {
+                "form-TOTAL_FORMS": "1",
+                "form-INITIAL_FORMS": "0",
+                "form-MIN_NUM_FORMS": "0",
+                "form-MAX_NUM_FORMS": "1000",
+                "form-0-name": "routers",
+                "form-0-data": "10.0.0.1",
+                "form-0-always_send": "",
+                "form-0-DELETE": "",
+            },
+        )
+        call_kwargs = MockKeaClient.return_value.server_update_options.call_args
+        all_args = list(call_kwargs[0]) + list(call_kwargs[1].values())
+        self.assertIn(4, all_args)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_deleted_rows_excluded(self, MockKeaClient):
+        """Rows with DELETE=on are excluded from the options list."""
+        MockKeaClient.return_value.server_update_options.return_value = None
+        self.client.post(
+            self._url(),
+            {
+                "form-TOTAL_FORMS": "2",
+                "form-INITIAL_FORMS": "0",
+                "form-MIN_NUM_FORMS": "0",
+                "form-MAX_NUM_FORMS": "1000",
+                "form-0-name": "routers",
+                "form-0-data": "10.0.0.1",
+                "form-0-always_send": "",
+                "form-0-DELETE": "",
+                "form-1-name": "domain-name-servers",
+                "form-1-data": "8.8.8.8",
+                "form-1-always_send": "",
+                "form-1-DELETE": "on",
+            },
+        )
+        call_kwargs = MockKeaClient.return_value.server_update_options.call_args
+        options_arg = next(v for v in list(call_kwargs[0]) + list(call_kwargs[1].values()) if isinstance(v, list))
+        self.assertEqual(len(options_arg), 1)
+        self.assertEqual(options_arg[0]["name"], "routers")
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_kea_exception_redirects(self, MockKeaClient):
+        """POST that raises KeaException shows error message and redirects."""
+        from netbox_kea.kea import KeaException
+
+        MockKeaClient.return_value.server_update_options.side_effect = KeaException(
+            {"result": 1, "text": "internal error"}
+        )
+        response = self.client.post(
+            self._url(),
+            {
+                "form-TOTAL_FORMS": "1",
+                "form-INITIAL_FORMS": "0",
+                "form-MIN_NUM_FORMS": "0",
+                "form-MAX_NUM_FORMS": "1000",
+                "form-0-name": "routers",
+                "form-0-data": "10.0.0.1",
+                "form-0-always_send": "",
+                "form-0-DELETE": "",
+            },
+        )
+        self.assertEqual(response.status_code, 302)
+
+    def test_get_requires_login(self):
+        """Unauthenticated GET is redirected."""
+        self.client.logout()
+        response = self.client.get(self._url())
+        self.assertIn(response.status_code, (302, 403))
