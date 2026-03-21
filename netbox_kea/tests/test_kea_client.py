@@ -1394,3 +1394,180 @@ class TestDHCPEnable(TestCase):
         ):
             result = self.client.dhcp_enable("dhcp4")
         self.assertIsNone(result)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# subnet_update
+# ─────────────────────────────────────────────────────────────────────────────
+
+_SUBNET_UPDATE_RESP = [{"result": 0, "text": "IPv4 subnet successfully updated"}]
+_CONFIG_WRITE_RESP = [{"result": 0, "text": "Configuration written."}]
+
+
+class TestSubnetUpdate(TestCase):
+    """Tests for KeaClient.subnet_update()."""
+
+    def setUp(self):
+        self.client = KeaClient(url="http://kea:8000")
+
+    def _payloads(self, mock_post):
+        return [c.kwargs.get("json") or c[1]["json"] for c in mock_post.call_args_list]
+
+    def _update_payload(self, mock_post):
+        return next(p for p in self._payloads(mock_post) if "update" in p["command"])
+
+    def test_sends_subnet4_update_command(self):
+        """subnet4-update command is sent for version=4."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(_SUBNET_UPDATE_RESP, _CONFIG_WRITE_RESP),
+        ) as mock_post:
+            self.client.subnet_update(version=4, subnet_id=1, subnet_cidr="10.0.0.0/24")
+        cmds = [p["command"] for p in self._payloads(mock_post)]
+        self.assertIn("subnet4-update", cmds)
+
+    def test_sends_subnet6_update_command(self):
+        """subnet6-update command is sent for version=6."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(_SUBNET_UPDATE_RESP, _CONFIG_WRITE_RESP),
+        ) as mock_post:
+            self.client.subnet_update(version=6, subnet_id=2, subnet_cidr="2001:db8::/48")
+        cmds = [p["command"] for p in self._payloads(mock_post)]
+        self.assertIn("subnet6-update", cmds)
+
+    def test_includes_subnet_id_and_cidr(self):
+        """The update payload must include both id and subnet fields."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(_SUBNET_UPDATE_RESP, _CONFIG_WRITE_RESP),
+        ) as mock_post:
+            self.client.subnet_update(version=4, subnet_id=42, subnet_cidr="192.168.1.0/24")
+        payload = self._update_payload(mock_post)
+        subnet_obj = payload["arguments"]["subnet4"][0]
+        self.assertEqual(subnet_obj["id"], 42)
+        self.assertEqual(subnet_obj["subnet"], "192.168.1.0/24")
+
+    def test_includes_pools_when_provided(self):
+        """Pools are formatted as [{"pool": "..."}, ...] in the subnet object."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(_SUBNET_UPDATE_RESP, _CONFIG_WRITE_RESP),
+        ) as mock_post:
+            self.client.subnet_update(
+                version=4,
+                subnet_id=1,
+                subnet_cidr="10.0.0.0/24",
+                pools=["10.0.0.100-10.0.0.200"],
+            )
+        payload = self._update_payload(mock_post)
+        subnet_obj = payload["arguments"]["subnet4"][0]
+        self.assertEqual(subnet_obj["pools"], [{"pool": "10.0.0.100-10.0.0.200"}])
+
+    def test_sets_empty_pools_list_when_none(self):
+        """When pools=None, pools key is absent (Kea keeps existing pools)."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(_SUBNET_UPDATE_RESP, _CONFIG_WRITE_RESP),
+        ) as mock_post:
+            self.client.subnet_update(version=4, subnet_id=1, subnet_cidr="10.0.0.0/24", pools=None)
+        payload = self._update_payload(mock_post)
+        subnet_obj = payload["arguments"]["subnet4"][0]
+        self.assertNotIn("pools", subnet_obj)
+
+    def test_sets_explicit_empty_pools_when_empty_list(self):
+        """When pools=[], the update sends pools:[] to remove all pools."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(_SUBNET_UPDATE_RESP, _CONFIG_WRITE_RESP),
+        ) as mock_post:
+            self.client.subnet_update(version=4, subnet_id=1, subnet_cidr="10.0.0.0/24", pools=[])
+        payload = self._update_payload(mock_post)
+        subnet_obj = payload["arguments"]["subnet4"][0]
+        self.assertEqual(subnet_obj["pools"], [])
+
+    def test_includes_gateway_option_for_v4(self):
+        """Gateway sets the 'routers' option-data entry for DHCPv4."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(_SUBNET_UPDATE_RESP, _CONFIG_WRITE_RESP),
+        ) as mock_post:
+            self.client.subnet_update(
+                version=4, subnet_id=1, subnet_cidr="10.0.0.0/24", gateway="10.0.0.1"
+            )
+        payload = self._update_payload(mock_post)
+        option_data = payload["arguments"]["subnet4"][0].get("option-data", [])
+        routers = next((o for o in option_data if o["name"] == "routers"), None)
+        self.assertIsNotNone(routers)
+        self.assertEqual(routers["data"], "10.0.0.1")
+
+    def test_includes_dns_servers_option(self):
+        """DNS servers set the 'domain-name-servers' option for DHCPv4."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(_SUBNET_UPDATE_RESP, _CONFIG_WRITE_RESP),
+        ) as mock_post:
+            self.client.subnet_update(
+                version=4,
+                subnet_id=1,
+                subnet_cidr="10.0.0.0/24",
+                dns_servers=["8.8.8.8", "1.1.1.1"],
+            )
+        payload = self._update_payload(mock_post)
+        option_data = payload["arguments"]["subnet4"][0].get("option-data", [])
+        dns = next((o for o in option_data if o["name"] == "domain-name-servers"), None)
+        self.assertIsNotNone(dns)
+        self.assertIn("8.8.8.8", dns["data"])
+
+    def test_includes_valid_lft_when_provided(self):
+        """valid_lft is included in the subnet object when not None."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(_SUBNET_UPDATE_RESP, _CONFIG_WRITE_RESP),
+        ) as mock_post:
+            self.client.subnet_update(
+                version=4, subnet_id=1, subnet_cidr="10.0.0.0/24", valid_lft=7200
+            )
+        payload = self._update_payload(mock_post)
+        subnet_obj = payload["arguments"]["subnet4"][0]
+        self.assertEqual(subnet_obj["valid-lft"], 7200)
+
+    def test_calls_config_write_after_update(self):
+        """config-write is called after subnet{v}-update to persist the change."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(_SUBNET_UPDATE_RESP, _CONFIG_WRITE_RESP),
+        ) as mock_post:
+            self.client.subnet_update(version=4, subnet_id=1, subnet_cidr="10.0.0.0/24")
+        cmds = [p["command"] for p in self._payloads(mock_post)]
+        self.assertIn("config-write", cmds)
+
+    def test_raises_on_kea_error(self):
+        """KeaException is raised when Kea returns a non-zero result."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects([{"result": 1, "text": "subnet not found"}]),
+        ):
+            with self.assertRaises(KeaException):
+                self.client.subnet_update(version=4, subnet_id=99, subnet_cidr="10.0.0.0/24")
+
+    def test_returns_none_on_success(self):
+        """subnet_update returns None on success."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(_SUBNET_UPDATE_RESP, _CONFIG_WRITE_RESP),
+        ):
+            result = self.client.subnet_update(version=4, subnet_id=1, subnet_cidr="10.0.0.0/24")
+        self.assertIsNone(result)

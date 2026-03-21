@@ -422,22 +422,14 @@ class PoolAddForm(forms.Form):
     )
 
 
-class SubnetAddForm(forms.Form):
-    """Form for adding a new DHCP subnet to Kea."""
+class _SubnetBaseForm(forms.Form):
+    """Shared fields and validators for subnet add and edit forms.
 
-    subnet = forms.CharField(
-        label="Subnet CIDR",
-        max_length=50,
-        help_text="e.g. <code>10.0.0.0/24</code> or <code>2001:db8::/48</code>",
-    )
-    subnet_id = forms.IntegerField(
-        label="Subnet ID",
-        required=False,
-        min_value=1,
-        help_text="Leave blank for Kea to auto-assign.",
-    )
+    Subclasses add identity fields (subnet CIDR / ID for add; hidden CIDR for edit).
+    """
+
     pools = forms.CharField(
-        label="Initial pools",
+        label="Pools",
         required=False,
         widget=forms.Textarea(attrs={"rows": 3}),
         help_text="One pool per line, e.g. <code>10.0.0.100-10.0.0.200</code>",
@@ -460,16 +452,6 @@ class SubnetAddForm(forms.Form):
         max_length=255,
         help_text="Comma-separated IP addresses or hostnames.",
     )
-
-    def clean_subnet(self) -> str:  # noqa: D102
-        import ipaddress
-
-        value = self.cleaned_data["subnet"].strip()
-        try:
-            ipaddress.ip_network(value, strict=True)
-        except ValueError as exc:
-            raise forms.ValidationError(f"Invalid subnet CIDR: {exc}") from exc
-        return value
 
     def clean_pools(self) -> list[str]:  # noqa: D102
         value = self.cleaned_data["pools"].strip()
@@ -514,6 +496,61 @@ class SubnetAddForm(forms.Form):
         if not value:
             return []
         return [s.strip() for s in value.split(",") if s.strip()]
+
+
+class SubnetAddForm(_SubnetBaseForm):
+    """Form for adding a new DHCP subnet to Kea."""
+
+    subnet = forms.CharField(
+        label="Subnet CIDR",
+        max_length=50,
+        help_text="e.g. <code>10.0.0.0/24</code> or <code>2001:db8::/48</code>",
+    )
+    subnet_id = forms.IntegerField(
+        label="Subnet ID",
+        required=False,
+        min_value=1,
+        help_text="Leave blank for Kea to auto-assign.",
+    )
+
+    def clean_subnet(self) -> str:  # noqa: D102
+        import ipaddress
+
+        value = self.cleaned_data["subnet"].strip()
+        try:
+            ipaddress.ip_network(value, strict=True)
+        except ValueError as exc:
+            raise forms.ValidationError(f"Invalid subnet CIDR: {exc}") from exc
+        return value
+
+
+class SubnetEditForm(_SubnetBaseForm):
+    """Form for editing an existing DHCP subnet in Kea.
+
+    The subnet CIDR and ID are immutable — they are passed as a hidden field and
+    used by the view to call ``subnet{v}-update``.  All other fields are optional;
+    leaving a field blank means "clear that option".
+    """
+
+    subnet_cidr = forms.CharField(widget=forms.HiddenInput())
+    valid_lft = forms.IntegerField(
+        label="Valid lifetime (s)",
+        required=False,
+        min_value=1,
+        help_text="Preferred lease lifetime in seconds.",
+    )
+    min_valid_lft = forms.IntegerField(
+        label="Min valid lifetime (s)",
+        required=False,
+        min_value=1,
+        help_text="Minimum lease lifetime in seconds.",
+    )
+    max_valid_lft = forms.IntegerField(
+        label="Max valid lifetime (s)",
+        required=False,
+        min_value=1,
+        help_text="Maximum lease lifetime in seconds.",
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────

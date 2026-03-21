@@ -1700,3 +1700,175 @@ class TestServerDHCP6DisableView(_ViewTestBase):
         response = self.client.post(self._url(), {"confirm": "1"})
         self.assertEqual(response.status_code, 302)
         mock_client.dhcp_disable.assert_called_once_with("dhcp6", max_period=None)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Subnet Edit views
+# ─────────────────────────────────────────────────────────────────────────────
+
+_SUBNET4_GET_FULL = [
+    {
+        "result": 0,
+        "arguments": {
+            "subnet4": [
+                {
+                    "id": 42,
+                    "subnet": "10.0.0.0/24",
+                    "pools": [{"pool": "10.0.0.100-10.0.0.200"}],
+                    "option-data": [
+                        {"name": "routers", "data": "10.0.0.1"},
+                        {"name": "domain-name-servers", "data": "8.8.8.8"},
+                    ],
+                    "valid-lft": 3600,
+                }
+            ]
+        },
+    }
+]
+
+_SUBNET6_GET_FULL = [
+    {
+        "result": 0,
+        "arguments": {
+            "subnet6": [
+                {
+                    "id": 7,
+                    "subnet": "2001:db8::/48",
+                    "pools": [],
+                    "option-data": [],
+                    "valid-lft": 3600,
+                }
+            ]
+        },
+    }
+]
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestServerSubnet4EditView(_ViewTestBase):
+    """Tests for ServerSubnet4EditView (GET prefill + POST update)."""
+
+    def _url(self, subnet_id=42):
+        return reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, subnet_id])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_get_returns_200(self, MockKeaClient):
+        """GET must render the edit form with status 200."""
+        MockKeaClient.return_value.command.return_value = _SUBNET4_GET_FULL
+        response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 200)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_get_prefills_form_with_current_subnet_values(self, MockKeaClient):
+        """GET must pre-populate form with current subnet CIDR and pools."""
+        MockKeaClient.return_value.command.return_value = _SUBNET4_GET_FULL
+        response = self.client.get(self._url())
+        self.assertContains(response, "10.0.0.0/24")
+        self.assertContains(response, "10.0.0.100-10.0.0.200")
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_get_when_subnet_fetch_fails_still_returns_200(self, MockKeaClient):
+        """GET must return 200 even when the subnet-get Kea call fails."""
+        from netbox_kea.kea import KeaException
+
+        MockKeaClient.return_value.command.side_effect = KeaException(
+            {"result": 1, "text": "not found"}, index=0
+        )
+        response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 200)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_valid_form_calls_subnet_update_and_redirects(self, MockKeaClient):
+        """POST with valid form must call subnet_update and redirect to subnet list."""
+        MockKeaClient.return_value.subnet_update.return_value = None
+        response = self.client.post(
+            self._url(subnet_id=42),
+            {
+                "subnet_cidr": "10.0.0.0/24",
+                "pools": "10.0.0.100-10.0.0.200",
+                "gateway": "10.0.0.1",
+                "dns_servers": "",
+                "ntp_servers": "",
+            },
+        )
+        self.assertEqual(response.status_code, 302)
+        self._assert_no_none_pk_redirect(response)
+        MockKeaClient.return_value.subnet_update.assert_called_once()
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_passes_correct_version_and_subnet_id_to_subnet_update(self, MockKeaClient):
+        """POST must call subnet_update with version=4 and the correct subnet_id."""
+        MockKeaClient.return_value.subnet_update.return_value = None
+        self.client.post(
+            self._url(subnet_id=42),
+            {"subnet_cidr": "10.0.0.0/24", "pools": "", "gateway": "", "dns_servers": "", "ntp_servers": ""},
+        )
+        call_kwargs = MockKeaClient.return_value.subnet_update.call_args
+        self.assertEqual(call_kwargs.kwargs.get("version") or call_kwargs[1].get("version"), 4)
+        subnet_id_arg = call_kwargs.kwargs.get("subnet_id") or call_kwargs[1].get("subnet_id")
+        self.assertEqual(subnet_id_arg, 42)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_on_kea_exception_shows_error_and_rerenders(self, MockKeaClient):
+        """POST that raises KeaException must re-render the form (not crash)."""
+        from netbox_kea.kea import KeaException
+
+        MockKeaClient.return_value.subnet_update.side_effect = KeaException(
+            {"result": 1, "text": "subnet cmds not loaded"}, index=0
+        )
+        response = self.client.post(
+            self._url(subnet_id=42),
+            {"subnet_cidr": "10.0.0.0/24", "pools": "", "gateway": "", "dns_servers": "", "ntp_servers": ""},
+        )
+        # Should show error (redirect or re-render, not 500)
+        self.assertIn(response.status_code, (200, 302))
+        self._assert_no_none_pk_redirect(response)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_invalid_form_rerenders_with_200(self, MockKeaClient):
+        """POST with invalid data (bad gateway IP) must re-render the form."""
+        response = self.client.post(
+            self._url(subnet_id=42),
+            {"subnet_cidr": "10.0.0.0/24", "pools": "", "gateway": "not-an-ip", "dns_servers": "", "ntp_servers": ""},
+        )
+        self.assertEqual(response.status_code, 200)
+        MockKeaClient.return_value.subnet_update.assert_not_called()
+
+    def test_get_requires_login(self):
+        """Unauthenticated GET must redirect to login."""
+        self.client.logout()
+        response = self.client.get(self._url())
+        self.assertIn(response.status_code, (302, 403))
+
+    def test_post_requires_login(self):
+        """Unauthenticated POST must redirect to login."""
+        self.client.logout()
+        response = self.client.post(self._url(), {})
+        self.assertIn(response.status_code, (302, 403))
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestServerSubnet6EditView(_ViewTestBase):
+    """Tests for ServerSubnet6EditView — verifies v6 variant uses correct version."""
+
+    def _url(self, subnet_id=7):
+        return reverse("plugins:netbox_kea:server_subnet6_edit", args=[self.server.pk, subnet_id])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_get_returns_200(self, MockKeaClient):
+        """GET must return 200 for IPv6 edit view."""
+        MockKeaClient.return_value.command.return_value = _SUBNET6_GET_FULL
+        response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 200)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_calls_subnet_update_with_version_6(self, MockKeaClient):
+        """POST must call subnet_update with version=6."""
+        MockKeaClient.return_value.subnet_update.return_value = None
+        self.client.post(
+            self._url(subnet_id=7),
+            {"subnet_cidr": "2001:db8::/48", "pools": "", "gateway": "", "dns_servers": "", "ntp_servers": ""},
+        )
+        call_kwargs = MockKeaClient.return_value.subnet_update.call_args
+        version_arg = call_kwargs.kwargs.get("version") or call_kwargs[1].get("version")
+        self.assertEqual(version_arg, 6)

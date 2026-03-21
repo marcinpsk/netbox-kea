@@ -132,6 +132,11 @@ urlpatterns = (
         name="server_subnet4_add",
     ),
     path(
+        "servers/<int:pk>/subnets4/<int:subnet_id>/edit/",
+        views.ServerSubnet4EditView.as_view(),
+        name="server_subnet4_edit",
+    ),
+    path(
         "servers/<int:pk>/subnets4/<int:subnet_id>/delete/",
         views.ServerSubnet4DeleteView.as_view(),
         name="server_subnet4_delete",
@@ -145,6 +150,11 @@ urlpatterns = (
         "servers/<int:pk>/subnets6/add/",
         views.ServerSubnet6AddView.as_view(),
         name="server_subnet6_add",
+    ),
+    path(
+        "servers/<int:pk>/subnets6/<int:subnet_id>/edit/",
+        views.ServerSubnet6EditView.as_view(),
+        name="server_subnet6_edit",
     ),
     path(
         "servers/<int:pk>/subnets6/<int:subnet_id>/delete/",

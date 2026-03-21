@@ -365,6 +365,85 @@ class KeaClient:
         )
         self._persist_config(service)
 
+    def subnet_update(
+        self,
+        version: int,
+        subnet_id: int,
+        subnet_cidr: str,
+        pools: list[str] | None = None,
+        gateway: str | None = None,
+        dns_servers: list[str] | None = None,
+        ntp_servers: list[str] | None = None,
+        valid_lft: int | None = None,
+        min_valid_lft: int | None = None,
+        max_valid_lft: int | None = None,
+    ) -> None:
+        """Update an existing subnet's configuration in Kea and persist the change.
+
+        Sends ``subnet{v}-update`` with a fully rebuilt subnet object.  Only fields
+        that are explicitly provided (not ``None``) are included, so callers can update
+        a subset of fields without losing unchanged values *only when Kea merges them*
+        (which it does not — Kea replaces the full object).  Pass all desired field
+        values on every call.
+
+        Args:
+            version: DHCP version (4 or 6).
+            subnet_id: Kea subnet ID of the subnet to update.
+            subnet_cidr: Subnet in CIDR notation (immutable identifier, still required by Kea).
+            pools: List of pool range strings.  ``None`` = omit (Kea keeps existing);
+                ``[]`` = explicitly clear all pools.
+            gateway: Default gateway IP (option ``routers``, DHCPv4 only).
+            dns_servers: List of DNS server IP strings.
+            ntp_servers: List of NTP server hostnames/IPs.
+            valid_lft: Preferred lease lifetime in seconds.
+            min_valid_lft: Minimum lease lifetime in seconds.
+            max_valid_lft: Maximum lease lifetime in seconds.
+
+        Raises:
+            KeaException: If Kea returns a non-zero result code.
+
+        """
+        service = f"dhcp{version}"
+        subnet_key = f"subnet{version}"
+        subnet_def: dict[str, Any] = {"id": subnet_id, "subnet": subnet_cidr}
+
+        if pools is not None:
+            subnet_def["pools"] = [{"pool": p} for p in pools]
+
+        option_data: list[dict[str, str]] = []
+        if gateway and version == 4:
+            option_data.append({"name": "routers", "data": gateway})
+        if dns_servers:
+            option_data.append(
+                {
+                    "name": "domain-name-servers" if version == 4 else "dns-servers",
+                    "data": ", ".join(dns_servers),
+                }
+            )
+        if ntp_servers:
+            option_data.append(
+                {
+                    "name": "ntp-servers" if version == 4 else "sntp-servers",
+                    "data": ", ".join(ntp_servers),
+                }
+            )
+        if option_data:
+            subnet_def["option-data"] = option_data
+
+        if valid_lft is not None:
+            subnet_def["valid-lft"] = valid_lft
+        if min_valid_lft is not None:
+            subnet_def["min-valid-lft"] = min_valid_lft
+        if max_valid_lft is not None:
+            subnet_def["max-valid-lft"] = max_valid_lft
+
+        self.command(
+            f"subnet{version}-update",
+            service=[service],
+            arguments={subnet_key: [subnet_def]},
+        )
+        self._persist_config(service)
+
     def lease_wipe(self, version: int, subnet_id: int) -> None:
         """Delete all leases in a subnet using the ``lease{v}-wipe`` command.
 

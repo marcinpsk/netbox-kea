@@ -1605,6 +1605,146 @@ class ServerSubnet6AddView(_BaseSubnetAddView):
     dhcp_version = 6
 
 
+class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
+    """Base view for editing an existing subnet's configuration in Kea."""
+
+    queryset = Server.objects.all()
+    template_name = "netbox_kea/server_subnet_edit.html"
+    dhcp_version: int
+
+    def _subnets_url(self, pk: int) -> str:
+        return reverse(f"plugins:netbox_kea:server_subnets{self.dhcp_version}", args=[pk])
+
+    def _fetch_subnet(self, server: Server, subnet_id: int) -> dict[str, Any]:
+        """Fetch current subnet config from Kea.  Returns empty dict on failure."""
+        try:
+            key = f"subnet{self.dhcp_version}"
+            client = server.get_client(version=self.dhcp_version)
+            resp = client.command(
+                f"{key}-get",
+                service=[f"dhcp{self.dhcp_version}"],
+                arguments={"id": subnet_id},
+            )
+            subnets = resp[0].get("arguments", {}).get(key, [])
+            return subnets[0] if subnets else {}
+        except Exception:
+            logger.warning("Failed to fetch subnet %s for editing", subnet_id)
+            return {}
+
+    def _form_initial(self, subnet: dict[str, Any]) -> dict[str, Any]:
+        """Build SubnetEditForm initial values from a Kea subnet dict."""
+        initial: dict[str, Any] = {"subnet_cidr": subnet.get("subnet", "")}
+
+        # Pools
+        pools = subnet.get("pools", [])
+        if pools:
+            initial["pools"] = "\n".join(p.get("pool", "") for p in pools if p.get("pool"))
+
+        # Options
+        for opt in subnet.get("option-data", []):
+            name = opt.get("name", "")
+            data = opt.get("data", "")
+            if name == "routers":
+                initial["gateway"] = data
+            elif name in ("domain-name-servers", "dns-servers"):
+                initial["dns_servers"] = data
+            elif name in ("ntp-servers", "sntp-servers"):
+                initial["ntp_servers"] = data
+
+        # Lease lifetimes
+        if subnet.get("valid-lft"):
+            initial["valid_lft"] = subnet["valid-lft"]
+        if subnet.get("min-valid-lft"):
+            initial["min_valid_lft"] = subnet["min-valid-lft"]
+        if subnet.get("max-valid-lft"):
+            initial["max_valid_lft"] = subnet["max-valid-lft"]
+
+        return initial
+
+    def get(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
+        server = self.get_object(pk=pk)
+        subnet = self._fetch_subnet(server, subnet_id)
+        form = forms.SubnetEditForm(initial=self._form_initial(subnet))
+        return render(
+            request,
+            self.template_name,
+            {
+                "object": server,
+                "form": form,
+                "subnet_id": subnet_id,
+                "subnet_cidr": subnet.get("subnet", ""),
+                "dhcp_version": self.dhcp_version,
+                "return_url": self._subnets_url(pk),
+            },
+        )
+
+    def post(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
+        server = self.get_object(pk=pk)
+        return_url = self._subnets_url(pk)
+        form = forms.SubnetEditForm(request.POST)
+        if not form.is_valid():
+            return render(
+                request,
+                self.template_name,
+                {
+                    "object": server,
+                    "form": form,
+                    "subnet_id": subnet_id,
+                    "subnet_cidr": request.POST.get("subnet_cidr", ""),
+                    "dhcp_version": self.dhcp_version,
+                    "return_url": return_url,
+                },
+            )
+        cd = form.cleaned_data
+        client = server.get_client(version=self.dhcp_version)
+        try:
+            client.subnet_update(
+                version=self.dhcp_version,
+                subnet_id=subnet_id,
+                subnet_cidr=cd["subnet_cidr"],
+                pools=cd["pools"] if cd["pools"] != [] else [],
+                gateway=cd["gateway"] or None,
+                dns_servers=cd["dns_servers"] or None,
+                ntp_servers=cd["ntp_servers"] or None,
+                valid_lft=cd.get("valid_lft"),
+                min_valid_lft=cd.get("min_valid_lft"),
+                max_valid_lft=cd.get("max_valid_lft"),
+            )
+            messages.success(request, f"Subnet {cd['subnet_cidr']} updated.")
+        except PartialPersistError as exc:
+            messages.warning(request, str(exc))
+            return redirect(return_url)
+        except Exception:
+            logger.exception("Failed to update subnet %s on server %s", subnet_id, pk)
+            messages.error(request, "Failed to update subnet: see server logs for details.")
+            return render(
+                request,
+                self.template_name,
+                {
+                    "object": server,
+                    "form": form,
+                    "subnet_id": subnet_id,
+                    "subnet_cidr": cd["subnet_cidr"],
+                    "dhcp_version": self.dhcp_version,
+                    "return_url": return_url,
+                },
+            )
+        return redirect(return_url)
+
+
+class ServerSubnet4EditView(_BaseSubnetEditView):
+    """Edit a DHCPv4 subnet's configuration."""
+
+    dhcp_version = 4
+
+
+class ServerSubnet6EditView(_BaseSubnetEditView):
+    """Edit a DHCPv6 subnet's configuration."""
+
+    dhcp_version = 6
+
+
+
 class _BaseSubnetDeleteView(_KeaChangeMixin, generic.ObjectView):
     """Base view for deleting a subnet from Kea."""
 

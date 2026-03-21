@@ -31,6 +31,13 @@ SUBNET_ACTIONS = """<span class="btn-group dropdown">
     <li><hr class="dropdown-divider"></li>
     {% if record.dhcp_version == 4 %}
     <li>
+      <a href="{% url "plugins:netbox_kea:server_subnet4_edit" record.server_pk record.id %}"
+         class="dropdown-item">
+        <i class="mdi mdi-pencil-outline" aria-hidden="true"></i>
+        Edit subnet
+      </a>
+    </li>
+    <li>
       <a href="{% url "plugins:netbox_kea:server_subnet4_pool_add" record.server_pk record.id %}"
          class="dropdown-item">
         <i class="mdi mdi-plus-circle-outline" aria-hidden="true"></i>
@@ -52,6 +59,13 @@ SUBNET_ACTIONS = """<span class="btn-group dropdown">
       </a>
     </li>
     {% else %}
+    <li>
+      <a href="{% url "plugins:netbox_kea:server_subnet6_edit" record.server_pk record.id %}"
+         class="dropdown-item">
+        <i class="mdi mdi-pencil-outline" aria-hidden="true"></i>
+        Edit subnet
+      </a>
+    </li>
     <li>
       <a href="{% url "plugins:netbox_kea:server_subnet6_pool_add" record.server_pk record.id %}"
          class="dropdown-item">

@@ -407,3 +407,72 @@ class TestReservationForm6(SimpleTestCase):
 
         choices = [c[0] for c in Reservation6Form().fields["identifier_type"].choices]
         self.assertIn("flex-id", choices)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SubnetEditForm
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestSubnetEditForm(SimpleTestCase):
+    """Unit tests for SubnetEditForm — validation of editable subnet fields."""
+
+    def _form(self, **kwargs):
+        from netbox_kea.forms import SubnetEditForm
+
+        data = {"subnet_cidr": "10.0.0.0/24", **kwargs}
+        return SubnetEditForm(data=data)
+
+    def test_valid_minimal_form_no_optional_fields(self):
+        """A form with only subnet_cidr (hidden) and no optional fields is valid."""
+        form = self._form()
+        self.assertTrue(form.is_valid(), form.errors)
+
+    def test_valid_form_with_all_fields(self):
+        """A fully populated form is valid."""
+        form = self._form(
+            pools="10.0.0.100-10.0.0.200",
+            gateway="10.0.0.1",
+            dns_servers="8.8.8.8, 1.1.1.1",
+            ntp_servers="pool.ntp.org",
+            valid_lft="3600",
+            min_valid_lft="1800",
+            max_valid_lft="7200",
+        )
+        self.assertTrue(form.is_valid(), form.errors)
+
+    def test_invalid_gateway_ip_raises_validation_error(self):
+        """A non-IP gateway value must produce a form error."""
+        form = self._form(gateway="not-an-ip")
+        self.assertFalse(form.is_valid())
+        self.assertIn("gateway", form.errors)
+
+    def test_invalid_dns_server_ip_raises_validation_error(self):
+        """A non-IP DNS server value must produce a form error."""
+        form = self._form(dns_servers="8.8.8.8, invalid-ip")
+        self.assertFalse(form.is_valid())
+        self.assertIn("dns_servers", form.errors)
+
+    def test_invalid_pool_format_raises_validation_error(self):
+        """A pool entry without '-' or '/' must produce a form error."""
+        form = self._form(pools="10.0.0.1")
+        self.assertFalse(form.is_valid())
+        self.assertIn("pools", form.errors)
+
+    def test_pools_cleaned_as_list(self):
+        """clean_pools returns a list of strings, one per non-empty line."""
+        form = self._form(pools="10.0.0.100-10.0.0.150\n10.0.0.200-10.0.0.220\n")
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.cleaned_data["pools"], ["10.0.0.100-10.0.0.150", "10.0.0.200-10.0.0.220"])
+
+    def test_dns_servers_cleaned_as_list(self):
+        """clean_dns_servers returns a list of IP strings."""
+        form = self._form(dns_servers="8.8.8.8, 1.1.1.1")
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.cleaned_data["dns_servers"], ["8.8.8.8", "1.1.1.1"])
+
+    def test_ntp_servers_cleaned_as_list(self):
+        """clean_ntp_servers returns a list of hostname/IP strings."""
+        form = self._form(ntp_servers="pool.ntp.org, time.google.com")
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.cleaned_data["ntp_servers"], ["pool.ntp.org", "time.google.com"])
