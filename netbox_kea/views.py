@@ -2526,6 +2526,26 @@ class CombinedDashboardView(_CombinedViewMixin):
         return render(request, self.template_name, ctx)
 
 
+def _filter_subnets(subnets: list[dict[str, Any]], q: str, subnet_id: int | None) -> list[dict[str, Any]]:
+    """Filter a list of subnet dicts by free-text CIDR query and/or exact subnet ID.
+
+    Filtering is done in-memory because subnets are fetched via config-get (no server-side search).
+
+    Args:
+        subnets: List of subnet dicts (keys: id, subnet, server_name, ...).
+        q: Free-text query; matched case-insensitively against the ``subnet`` CIDR string.
+        subnet_id: If non-None, only subnets with this exact ``id`` are returned.
+
+    """
+    result = subnets
+    if subnet_id is not None:
+        result = [s for s in result if s.get("id") == subnet_id]
+    if q:
+        q_lower = q.lower()
+        result = [s for s in result if q_lower in s.get("subnet", "").lower()]
+    return result
+
+
 def _fetch_subnets_from_server(server: "Server", version: int) -> list[dict[str, Any]]:
     """Fetch all subnets from a single server's config-get response and tag with server info."""
     from .utilities import format_option_data
@@ -2606,6 +2626,15 @@ class _CombinedSubnetsView(_CombinedViewMixin):
                     errors.append((server.name, "Failed to query server"))
 
         table_cls = tables.GlobalSubnetTable4 if self.dhcp_version == 4 else tables.GlobalSubnetTable6
+
+        search_form = forms.SubnetSearchForm(request.GET or None)
+        if search_form.is_valid():
+            all_subnets = _filter_subnets(
+                all_subnets,
+                q=search_form.cleaned_data.get("q", ""),
+                subnet_id=search_form.cleaned_data.get("subnet_id"),
+            )
+
         table = table_cls(all_subnets, user=request.user)
         table.configure(request)
 
@@ -2615,6 +2644,7 @@ class _CombinedSubnetsView(_CombinedViewMixin):
         ctx.update(
             {
                 "table": table,
+                "search_form": search_form,
                 "errors": errors,
                 "dhcp_version": self.dhcp_version,
                 "page_title": f"DHCPv{self.dhcp_version} Subnets",

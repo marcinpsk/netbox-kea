@@ -640,6 +640,69 @@ class TestCombinedSubnets4View(_CombinedViewBase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("text/csv", response.get("Content-Type", ""))
 
+    @patch("netbox_kea.models.KeaClient")
+    def test_search_form_in_context(self, MockKeaClient):
+        """Response context must contain search_form."""
+        MockKeaClient.return_value.command.return_value = _MOCK_CONFIG_V4
+        url = reverse("plugins:netbox_kea:combined_subnets4")
+        response = self.client.get(url)
+        self.assertIn("search_form", response.context)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_search_by_cidr_filters_results(self, MockKeaClient):
+        """?q=10.0 returns subnets whose CIDR contains '10.0', excludes others."""
+        config_with_two_subnets = [
+            {
+                "result": 0,
+                "arguments": {
+                    "Dhcp4": {
+                        "subnet4": [
+                            {"id": 1, "subnet": "10.0.1.0/24"},
+                            {"id": 2, "subnet": "192.168.0.0/24"},
+                        ],
+                        "shared-networks": [],
+                    }
+                },
+            }
+        ]
+        MockKeaClient.return_value.command.return_value = config_with_two_subnets
+        url = reverse("plugins:netbox_kea:combined_subnets4") + f"?server={self.v4_server.pk}&q=10.0"
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "10.0.1.0/24")
+        self.assertNotContains(response, "192.168.0.0/24")
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_search_by_subnet_id_filters_results(self, MockKeaClient):
+        """?subnet_id=2 returns only the subnet with id=2."""
+        config_with_two_subnets = [
+            {
+                "result": 0,
+                "arguments": {
+                    "Dhcp4": {
+                        "subnet4": [
+                            {"id": 1, "subnet": "10.0.1.0/24"},
+                            {"id": 2, "subnet": "192.168.0.0/24"},
+                        ],
+                        "shared-networks": [],
+                    }
+                },
+            }
+        ]
+        MockKeaClient.return_value.command.return_value = config_with_two_subnets
+        url = reverse("plugins:netbox_kea:combined_subnets4") + f"?server={self.v4_server.pk}&subnet_id=2"
+        response = self.client.get(url)
+        self.assertNotContains(response, "10.0.1.0/24")
+        self.assertContains(response, "192.168.0.0/24")
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_search_no_match_returns_empty_table(self, MockKeaClient):
+        """?q=zzz with no matching subnets renders 200 with empty table."""
+        MockKeaClient.return_value.command.return_value = _MOCK_CONFIG_V4
+        url = reverse("plugins:netbox_kea:combined_subnets4") + f"?server={self.v4_server.pk}&q=zzz-no-match"
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+
 
 # ---------------------------------------------------------------------------
 # CombinedSubnets6View  GET /plugins/kea/combined/subnets6/
@@ -686,6 +749,38 @@ class TestCombinedSubnets6View(_CombinedViewBase):
         response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         self.assertIn("text/csv", response.get("Content-Type", ""))
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_search_form_in_context(self, MockKeaClient):
+        """Response context must contain search_form."""
+        MockKeaClient.return_value.command.return_value = _MOCK_CONFIG_V6
+        url = reverse("plugins:netbox_kea:combined_subnets6")
+        response = self.client.get(url)
+        self.assertIn("search_form", response.context)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_search_by_cidr_filters_results(self, MockKeaClient):
+        """?q=2001:db8 returns only matching v6 subnets."""
+        config_with_two_subnets = [
+            {
+                "result": 0,
+                "arguments": {
+                    "Dhcp6": {
+                        "subnet6": [
+                            {"id": 1, "subnet": "2001:db8::/32"},
+                            {"id": 2, "subnet": "fd00::/8"},
+                        ],
+                        "shared-networks": [],
+                    }
+                },
+            }
+        ]
+        MockKeaClient.return_value.command.return_value = config_with_two_subnets
+        url = reverse("plugins:netbox_kea:combined_subnets6") + f"?server={self.v6_server.pk}&q=2001:db8"
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "2001:db8::/32")
+        self.assertNotContains(response, "fd00::/8")
 
 
 _MOCK_LEASE_V4_ENRICHMENT = {

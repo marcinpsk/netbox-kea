@@ -604,6 +604,27 @@ class ReservationSearchForm(forms.Form):
     )
 
 
+class SubnetSearchForm(forms.Form):
+    """Search form for filtering the combined subnets view.
+
+    All fields are optional — submitting an empty form shows all subnets.
+    Client-side filtering is applied to the already-fetched subnet list.
+    """
+
+    q = forms.CharField(
+        required=False,
+        label="Search",
+        widget=forms.TextInput(attrs={"placeholder": "CIDR prefix (e.g. 10.0 or 2001:db8)"}),
+        help_text="Case-insensitive substring match on the subnet CIDR.",
+    )
+    subnet_id = forms.IntegerField(
+        required=False,
+        label="Subnet ID",
+        min_value=1,
+        help_text="Filter to a specific Kea subnet ID.",
+    )
+
+
 class DHCPDisableForm(forms.Form):
     """Confirmation form for disabling a Kea DHCP service.
 
