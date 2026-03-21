@@ -24,7 +24,7 @@ connectivity checks.
 
 import re
 import unittest as _unittest  # alias to avoid pytest collection confusion
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
@@ -1289,8 +1289,6 @@ class TestEnrichLeasesErrorPaths(_ViewTestBase):
     @patch("netbox_kea.models.KeaClient")
     def test_synced_badge_set_when_netbox_ip_exists(self, MockKeaClient, mock_bulk_fetch):
         """When the lease IP exists in NetBox IPAM, netbox_ip_url must be set (Synced badge)."""
-        from unittest.mock import MagicMock
-
         mock_client = MockKeaClient.return_value
         mock_client.command.return_value = [{"result": 0, "arguments": {"ip-address": "10.0.0.5", **self._LEASE4}}]
         mock_client.reservation_get.return_value = None
@@ -3155,3 +3153,66 @@ class TestLeaseAddView(_ViewTestBase):
         self.client.logout()
         response = self.client.get(self._url(version=4))
         self.assertIn(response.status_code, (302, 403))
+
+
+# ---------------------------------------------------------------------------
+# TestLeaseAddSyncToNetBox — sync-to-netbox checkbox on lease add form
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG={"netbox_kea": {"kea_timeout": 30}})
+class TestLeaseAddSyncToNetBox(_ViewTestBase):
+    """Tests for the sync_to_netbox checkbox on ServerLease4/6AddView."""
+
+    def _url(self, version=4):
+        return reverse(f"plugins:netbox_kea:server_lease{version}_add", args=[self.server.pk])
+
+    def _post4(self, sync=False):
+        data = {
+            "ip_address": "10.0.0.200",
+            "subnet_id": "1",
+            "hw_address": "aa:bb:cc:dd:ee:ff",
+            "valid_lft": "3600",
+            "hostname": "newlease.example.com",
+        }
+        if sync:
+            data["sync_to_netbox"] = "on"
+        return data
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_lease4_add_form_has_sync_to_netbox_field(self, MockKeaClient):
+        """GET lease4 add page renders a sync_to_netbox checkbox."""
+        response = self.client.get(self._url(version=4))
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("sync_to_netbox", response.content.decode())
+
+    @patch("netbox_kea.views.sync_lease_to_netbox")
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_lease4_add_with_sync_calls_sync_lease(self, MockKeaClient, mock_sync):
+        """POST with sync_to_netbox=on calls sync_lease_to_netbox() with the lease dict."""
+        MockKeaClient.return_value.lease_add.return_value = None
+        mock_sync.return_value = (MagicMock(), True)
+        response = self.client.post(self._url(version=4), self._post4(sync=True))
+        self.assertEqual(response.status_code, 302)
+        mock_sync.assert_called_once()
+        lease = mock_sync.call_args[0][0]
+        self.assertEqual(lease["ip-address"], "10.0.0.200")
+
+    @patch("netbox_kea.views.sync_lease_to_netbox")
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_lease4_add_without_sync_does_not_call_sync(self, MockKeaClient, mock_sync):
+        """POST without sync_to_netbox does NOT call sync_lease_to_netbox()."""
+        MockKeaClient.return_value.lease_add.return_value = None
+        response = self.client.post(self._url(version=4), self._post4(sync=False))
+        self.assertEqual(response.status_code, 302)
+        mock_sync.assert_not_called()
+
+    @patch("netbox_kea.views.sync_lease_to_netbox")
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_lease4_add_sync_failure_does_not_prevent_kea_success(self, MockKeaClient, mock_sync):
+        """Sync failure is a warning; the lease creation still succeeds (302 redirect)."""
+        MockKeaClient.return_value.lease_add.return_value = None
+        mock_sync.side_effect = Exception("NetBox unreachable")
+        response = self.client.post(self._url(version=4), self._post4(sync=True))
+        self.assertEqual(response.status_code, 302)
+        MockKeaClient.return_value.lease_add.assert_called_once()

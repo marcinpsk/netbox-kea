@@ -30,7 +30,7 @@ from . import constants, forms, tables
 from .filtersets import ServerFilterSet
 from .kea import KeaClient, KeaException, PartialPersistError
 from .models import Server
-from .sync import sync_reservation_to_netbox
+from .sync import sync_lease_to_netbox, sync_reservation_to_netbox
 from .utilities import (
     OptionalViewTab,
     check_dhcp_enabled,
@@ -844,6 +844,13 @@ class _BaseLeaseAddView(_KeaChangeMixin, generic.ObjectView):
             try:
                 client.lease_add(self.dhcp_version, lease)
                 messages.success(request, f"Lease for {cd['ip_address']} created.")
+                if cd.get("sync_to_netbox"):
+                    try:
+                        sync_lease_to_netbox(lease)
+                        messages.success(request, f"IPAddress {cd['ip_address']} synced to NetBox.")
+                    except Exception:
+                        logger.exception("Failed to sync lease %s to NetBox", cd.get("ip_address"))
+                        messages.warning(request, "Lease created but NetBox IPAM sync failed; see server logs.")
                 return redirect(cancel_url)
             except KeaException as exc:
                 logger.exception("Failed to create DHCPv%s lease for %s", self.dhcp_version, cd.get("ip_address"))

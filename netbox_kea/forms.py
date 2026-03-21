@@ -809,6 +809,11 @@ class Lease4AddForm(forms.Form):
         required=False,
         help_text="Client hostname (optional).",
     )
+    sync_to_netbox = forms.BooleanField(
+        label="Sync to NetBox IPAM",
+        required=False,
+        help_text="Create/update IPAddress in NetBox with status=active.",
+    )
 
     def clean_ip_address(self) -> str:
         """Validate that the value is a valid IPv4 address."""
@@ -854,6 +859,11 @@ class Lease6AddForm(forms.Form):
         max_length=255,
         required=False,
         help_text="Client hostname (optional).",
+    )
+    sync_to_netbox = forms.BooleanField(
+        label="Sync to NetBox IPAM",
+        required=False,
+        help_text="Create/update IPAddress in NetBox with status=active.",
     )
 
     def clean_ip_address(self) -> str:
