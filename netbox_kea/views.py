@@ -961,6 +961,8 @@ class BaseServerSharedNetworksView(generic.ObjectChildrenView):
                     "description": sn.get("description", ""),
                     "subnet_count": len(subnets),
                     "subnet_links": subnet_links,
+                    "server_pk": parent.pk,
+                    "dhcp_version": self.dhcp_version,
                 }
             )
         return result
@@ -984,6 +986,11 @@ class BaseServerSharedNetworksView(generic.ObjectChildrenView):
                 "table": table,
                 "table_config": f"{table.name}_config",
                 "return_url": request.get_full_path(),
+                "add_url": reverse(
+                    f"plugins:netbox_kea:server_shared_network{self.dhcp_version}_add",
+                    args=[instance.pk],
+                ),
+                "dhcp_version": self.dhcp_version,
             },
         )
 
@@ -1001,6 +1008,130 @@ class ServerSharedNetworks4View(BaseServerSharedNetworksView):
     """DHCPv4 shared networks tab."""
 
     tab = OptionalViewTab(label="DHCPv4 Shared Networks", weight=1035, is_enabled=lambda s: s.dhcp4)
+    dhcp_version = 4
+
+
+class BaseServerSharedNetworkAddView(_KeaChangeMixin, ConditionalLoginRequiredMixin, View):
+    """Add a new shared network to a Kea server.
+
+    Subclasses set ``dhcp_version`` to 4 or 6.
+    """
+
+    dhcp_version: int
+
+    def _success_url(self, server: Server) -> str:
+        return reverse(f"plugins:netbox_kea:server_shared_networks{self.dhcp_version}", args=[server.pk])
+
+    def get(self, request: HttpRequest, pk: int) -> HttpResponse:
+        """Render the add-network form."""
+        server = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
+        form = forms.SharedNetworkForm()
+        return render(
+            request,
+            "netbox_kea/server_shared_network_add.html",
+            {
+                "object": server,
+                "server": server,
+                "form": form,
+                "dhcp_version": self.dhcp_version,
+                "cancel_url": self._success_url(server),
+            },
+        )
+
+    def post(self, request: HttpRequest, pk: int) -> HttpResponse:
+        """Validate and create the shared network."""
+        server = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
+        form = forms.SharedNetworkForm(request.POST)
+        if not form.is_valid():
+            return render(
+                request,
+                "netbox_kea/server_shared_network_add.html",
+                {
+                    "object": server,
+                    "server": server,
+                    "form": form,
+                    "dhcp_version": self.dhcp_version,
+                    "cancel_url": self._success_url(server),
+                },
+            )
+        name = form.cleaned_data["name"]
+        try:
+            client = server.get_client(version=self.dhcp_version)
+            client.network_add(version=self.dhcp_version, name=name)
+            messages.success(request, f"Shared network '{name}' created.")
+        except KeaException as exc:
+            logger.warning("network%d-add failed for %s: %s", self.dhcp_version, server, exc)
+            messages.error(request, f"Kea error: {kea_error_hint(exc)}")
+        except Exception:
+            logger.exception("Unexpected error adding shared network for %s", server)
+            messages.error(request, "An internal error occurred.")
+        return redirect(self._success_url(server))
+
+
+class ServerSharedNetwork6AddView(BaseServerSharedNetworkAddView):
+    """Add a new DHCPv6 shared network."""
+
+    dhcp_version = 6
+
+
+class ServerSharedNetwork4AddView(BaseServerSharedNetworkAddView):
+    """Add a new DHCPv4 shared network."""
+
+    dhcp_version = 4
+
+
+class BaseServerSharedNetworkDeleteView(_KeaChangeMixin, ConditionalLoginRequiredMixin, View):
+    """Delete a shared network from a Kea server.
+
+    The network name is passed as a URL kwarg ``network_name``.  Subnets that
+    belonged to the deleted network fall back to the global address pool.
+    """
+
+    dhcp_version: int
+
+    def _success_url(self, server: Server) -> str:
+        return reverse(f"plugins:netbox_kea:server_shared_networks{self.dhcp_version}", args=[server.pk])
+
+    def get(self, request: HttpRequest, pk: int, network_name: str) -> HttpResponse:
+        """Render the delete-confirmation page."""
+        server = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
+        return render(
+            request,
+            "netbox_kea/server_shared_network_delete.html",
+            {
+                "object": server,
+                "server": server,
+                "network_name": network_name,
+                "dhcp_version": self.dhcp_version,
+                "cancel_url": self._success_url(server),
+            },
+        )
+
+    def post(self, request: HttpRequest, pk: int, network_name: str) -> HttpResponse:
+        """Delete the shared network."""
+        server = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
+        try:
+            client = server.get_client(version=self.dhcp_version)
+            client.network_del(version=self.dhcp_version, name=network_name)
+            messages.success(request, f"Shared network '{network_name}' deleted.")
+        except KeaException as exc:
+            logger.warning("network%d-del failed for %s: %s", self.dhcp_version, server, exc)
+            messages.error(request, f"Kea error: {kea_error_hint(exc)}")
+        except Exception:
+            logger.exception("Unexpected error deleting shared network for %s", server)
+            messages.error(request, "An internal error occurred.")
+        return redirect(self._success_url(server))
+
+
+class ServerSharedNetwork6DeleteView(BaseServerSharedNetworkDeleteView):
+    """Delete a DHCPv6 shared network."""
+
+    dhcp_version = 6
+
+
+class ServerSharedNetwork4DeleteView(BaseServerSharedNetworkDeleteView):
+    """Delete a DHCPv4 shared network."""
+
     dhcp_version = 4
 
 

@@ -365,6 +365,91 @@ class KeaClient:
         )
         self._persist_config(service)
 
+    def network_add(self, version: int, name: str, options: list[dict] | None = None) -> None:
+        """Create a new shared network in Kea and persist the change.
+
+        Args:
+            version: DHCP version (4 or 6).
+            name: Unique name for the shared network.
+            options: Optional list of option-data dicts.
+
+        Raises:
+            KeaException: If Kea returns a non-zero result code.
+
+        """
+        service = f"dhcp{version}"
+        network_def: dict[str, Any] = {"name": name}
+        if options:
+            network_def["option-data"] = options
+        self.command(
+            f"network{version}-add",
+            service=[service],
+            arguments={"shared-networks": [network_def]},
+        )
+        self._persist_config(service)
+
+    def network_del(self, version: int, name: str) -> None:
+        """Delete a shared network from Kea and persist the change.
+
+        Subnets that were members of the deleted network fall back to the global
+        address pool (Kea behaviour).
+
+        Args:
+            version: DHCP version (4 or 6).
+            name: Name of the shared network to delete.
+
+        Raises:
+            KeaException: If Kea returns a non-zero result code.
+
+        """
+        service = f"dhcp{version}"
+        self.command(
+            f"network{version}-del",
+            service=[service],
+            arguments={"name": name},
+        )
+        self._persist_config(service)
+
+    def network_subnet_add(self, version: int, name: str, subnet_id: int) -> None:
+        """Move an existing subnet into a shared network.
+
+        Args:
+            version: DHCP version (4 or 6).
+            name: Shared network name.
+            subnet_id: Kea subnet ID to assign.
+
+        Raises:
+            KeaException: If Kea returns a non-zero result code.
+
+        """
+        service = f"dhcp{version}"
+        self.command(
+            f"network{version}-subnet-add",
+            service=[service],
+            arguments={"name": name, "id": subnet_id},
+        )
+        self._persist_config(service)
+
+    def network_subnet_del(self, version: int, name: str, subnet_id: int) -> None:
+        """Remove a subnet from a shared network (subnet remains, reverts to global pool).
+
+        Args:
+            version: DHCP version (4 or 6).
+            name: Shared network name.
+            subnet_id: Kea subnet ID to remove from the network.
+
+        Raises:
+            KeaException: If Kea returns a non-zero result code.
+
+        """
+        service = f"dhcp{version}"
+        self.command(
+            f"network{version}-subnet-del",
+            service=[service],
+            arguments={"name": name, "id": subnet_id},
+        )
+        self._persist_config(service)
+
     def subnet_update(
         self,
         version: int,

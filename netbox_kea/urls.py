@@ -221,6 +221,26 @@ urlpatterns = (
         views.ServerDHCP6OptionsEditView.as_view(),
         name="server_dhcp6_options_edit",
     ),
+    path(
+        "servers/<int:pk>/shared-networks4/add/",
+        views.ServerSharedNetwork4AddView.as_view(),
+        name="server_shared_network4_add",
+    ),
+    path(
+        "servers/<int:pk>/shared-networks6/add/",
+        views.ServerSharedNetwork6AddView.as_view(),
+        name="server_shared_network6_add",
+    ),
+    path(
+        "servers/<int:pk>/shared-networks4/<str:network_name>/delete/",
+        views.ServerSharedNetwork4DeleteView.as_view(),
+        name="server_shared_network4_delete",
+    ),
+    path(
+        "servers/<int:pk>/shared-networks6/<str:network_name>/delete/",
+        views.ServerSharedNetwork6DeleteView.as_view(),
+        name="server_shared_network6_delete",
+    ),
     path("servers/<int:pk>/", include(get_model_urls("netbox_kea", "server"))),
     path(
         "ip-addresses/<int:pk>/kea-reservations/",

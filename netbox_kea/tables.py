@@ -766,8 +766,23 @@ class SharedNetworkTable(GenericTable):
             "{% empty %}—{% endfor %}"
         ),
     )
+    actions = tables.TemplateColumn(
+        verbose_name="",
+        orderable=False,
+        template_code=(
+            "{% if record.dhcp_version == 4 %}"
+            '<a href="{% url "plugins:netbox_kea:server_shared_network4_delete" record.server_pk record.name %}"'
+            ' class="btn btn-sm btn-danger" aria-label="Delete {{ record.name }}">'
+            '<i class="mdi mdi-delete" aria-hidden="true"></i></a>'
+            "{% else %}"
+            '<a href="{% url "plugins:netbox_kea:server_shared_network6_delete" record.server_pk record.name %}"'
+            ' class="btn btn-sm btn-danger" aria-label="Delete {{ record.name }}">'
+            '<i class="mdi mdi-delete" aria-hidden="true"></i></a>'
+            "{% endif %}"
+        ),
+    )
 
     class Meta(GenericTable.Meta):
         empty_text = "No shared networks configured."
-        fields = ("name", "description", "subnet_count", "subnets")
-        default_columns = ("name", "description", "subnet_count", "subnets")
+        fields = ("name", "description", "subnet_count", "subnets", "actions")
+        default_columns = ("name", "description", "subnet_count", "subnets", "actions")

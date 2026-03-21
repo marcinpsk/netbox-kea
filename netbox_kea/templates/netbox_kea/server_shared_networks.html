@@ -11,3 +11,14 @@
 {% endblock %}
 
 {% block bulk_controls %}{% endblock bulk_controls %}
+
+{% block content_bottom %}
+<div class="row mt-3">
+  <div class="col text-end">
+    <a href="{{ add_url }}" class="btn btn-primary btn-sm">
+      <i class="mdi mdi-plus-thick" aria-hidden="true"></i>
+      Add DHCPv{{ dhcp_version }} Shared Network
+    </a>
+  </div>
+</div>
+{% endblock content_bottom %}

@@ -757,3 +757,24 @@ class Lease6EditForm(forms.Form):
         label="Valid lifetime (s)",
         help_text="Lease lifetime in seconds (leave blank to keep current).",
     )
+
+
+class SharedNetworkForm(forms.Form):
+    """Form for adding a new Kea shared network."""
+
+    name = forms.CharField(
+        max_length=128,
+        label="Network name",
+        help_text="Unique name for the shared network (letters, digits, hyphens and underscores only).",
+    )
+
+    def clean_name(self) -> str:
+        """Validate that the name contains no whitespace or forbidden characters."""
+        name = self.cleaned_data.get("name", "").strip()
+        if not name:
+            raise forms.ValidationError("Name is required.")
+        import re
+
+        if not re.match(r"^[\w-]+$", name):
+            raise forms.ValidationError("Name may only contain letters, digits, hyphens and underscores.")
+        return name
