@@ -2295,6 +2295,61 @@ def _fetch_leases_from_server(server: Server, q: Any, by: str, version: int) -> 
     return leases
 
 
+def _fetch_all_leases_from_server(
+    server: "Server", version: int, max_leases: int = 1000
+) -> tuple[list[dict[str, Any]], bool]:
+    """Enumerate all leases on *server* via ``lease{v}-get-page``.
+
+    Paginates from the start address until all leases are fetched or *max_leases*
+    is reached.  Leases are tagged with ``server_name`` and ``server_pk``.
+
+    Args:
+        server: The Kea server to query.
+        version: DHCP version (4 or 6).
+        max_leases: Cap on leases collected per server; returns ``truncated=True``
+            if more leases exist.
+
+    Returns:
+        Tuple of ``(leases, truncated)`` where ``truncated`` is ``True`` when
+        the cap was hit and some leases were omitted.
+
+    """
+    client = server.get_client(version=version)
+    start_ip = "0.0.0.0" if version == 4 else "::"
+    per_page = 250
+
+    all_leases: list[dict[str, Any]] = []
+    cursor = start_ip
+    truncated = False
+
+    while True:
+        resp = client.command(
+            f"lease{version}-get-page",
+            service=[f"dhcp{version}"],
+            arguments={"from": cursor, "limit": per_page},
+            check=(0, 3),
+        )
+        if resp[0]["result"] == 3:
+            break
+        args = resp[0]["arguments"]
+        if args is None:
+            break
+        raw_leases = args["leases"]
+        all_leases += format_leases(raw_leases)
+        if len(all_leases) >= max_leases:
+            truncated = True
+            all_leases = all_leases[:max_leases]
+            break
+        if args["count"] < per_page:
+            break
+        cursor = raw_leases[-1]["ip-address"]
+
+    for lease in all_leases:
+        lease["server_name"] = server.name
+        lease["server_pk"] = server.pk
+    return all_leases, truncated
+
+
 def _fetch_reservation_by_ip(client: KeaClient, version: int) -> tuple[dict[str, dict], bool]:
     """Drain all reservation pages and return a mapping of IP → reservation dict.
 
@@ -2779,11 +2834,13 @@ class _CombinedLeasesView(_CombinedViewMixin):
 
     def get(self, request: HttpRequest) -> HttpResponse:
         """Render the search form or, when a query is supplied, merge results."""
-        search_form_cls = forms.Leases4SearchForm if self.dhcp_version == 4 else forms.Leases6SearchForm
+        search_form_cls = forms.CombinedLeases4SearchForm if self.dhcp_version == 4 else forms.CombinedLeases6SearchForm
         table_cls = tables.GlobalLeaseTable4 if self.dhcp_version == 4 else tables.GlobalLeaseTable6
 
         ctx = self._combined_context(request)
-        search_form = search_form_cls(request.GET) if "q" in request.GET else search_form_cls()
+        has_query = "q" in request.GET and bool(request.GET.get("q"))
+        has_state = "state" in request.GET and request.GET.get("state", "") != ""
+        search_form = search_form_cls(request.GET) if (has_query or has_state) else search_form_cls()
 
         ctx.update(
             {
@@ -2793,13 +2850,14 @@ class _CombinedLeasesView(_CombinedViewMixin):
             }
         )
 
-        if "q" not in request.GET or not request.GET.get("q"):
+        if not has_query and not has_state:
             t = table_cls([], user=request.user)
             t.configure(request)
             if "export" in request.GET:
                 return export_table(t, filename=f"kea-dhcpv{self.dhcp_version}-leases.csv")
             ctx["table"] = t
             ctx["errors"] = []
+            ctx["truncated_servers"] = []
             return render(request, self.template_name, ctx)
 
         if not search_form.is_valid():
@@ -2807,26 +2865,44 @@ class _CombinedLeasesView(_CombinedViewMixin):
             t.configure(request)
             ctx["table"] = t
             ctx["errors"] = []
+            ctx["truncated_servers"] = []
             return render(request, self.template_name, ctx)
 
-        q = search_form.cleaned_data["q"]
-        by = search_form.cleaned_data["by"]
+        q = search_form.cleaned_data.get("q")
+        by = search_form.cleaned_data.get("by")
         state_filter = search_form.cleaned_data.get("state")
         servers = self._get_servers(request, self.dhcp_version)
 
         all_leases: list[dict[str, Any]] = []
         errors: list[tuple[str, str]] = []
+        truncated_servers: list[str] = []
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-            future_to_server = {
-                executor.submit(_fetch_leases_from_server, s, q, by, self.dhcp_version): s for s in servers
-            }
-            for future, server in future_to_server.items():
-                try:
-                    all_leases.extend(future.result())
-                except Exception:  # noqa: BLE001, PERF203
-                    logger.exception("Failed to query server %s", server.name)
-                    errors.append((server.name, "Failed to query server"))
+        if q and by:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+                future_to_server = {
+                    executor.submit(_fetch_leases_from_server, s, q, by, self.dhcp_version): s for s in servers
+                }
+                for future, server in future_to_server.items():
+                    try:
+                        all_leases.extend(future.result())
+                    except Exception:  # noqa: BLE001, PERF203
+                        logger.exception("Failed to query server %s", server.name)
+                        errors.append((server.name, "Failed to query server"))
+        else:
+            # State-only filter: enumerate all leases via get-page (capped per server).
+            with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+                future_to_server = {
+                    executor.submit(_fetch_all_leases_from_server, s, self.dhcp_version): s for s in servers
+                }
+                for future, server in future_to_server.items():
+                    try:
+                        leases, was_truncated = future.result()
+                        all_leases.extend(leases)
+                        if was_truncated:
+                            truncated_servers.append(server.name)
+                    except Exception:  # noqa: BLE001, PERF203
+                        logger.exception("Failed to query server %s", server.name)
+                        errors.append((server.name, "Failed to query server"))
 
         if state_filter is not None:
             all_leases = [ls for ls in all_leases if ls.get("state") == state_filter]
@@ -2850,6 +2926,7 @@ class _CombinedLeasesView(_CombinedViewMixin):
 
         ctx["table"] = table
         ctx["errors"] = errors
+        ctx["truncated_servers"] = truncated_servers
         return render(request, self.template_name, ctx)
 
 

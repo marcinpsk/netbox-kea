@@ -1176,3 +1176,48 @@ class TestCombinedLeasesStateFilter(_CombinedViewBase):
         url = reverse("plugins:netbox_kea:combined_leases4") + "?export=table"
         response = self.client.get(url)
         self.assertIn(response.status_code, (200, 400))  # must not 500
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_state_only_no_q_returns_200(self, MockKeaClient):
+        """?state=1 without q must return 200 (uses lease4-get-page)."""
+        MockKeaClient.return_value.command.return_value = [{"result": 0, "arguments": {"count": 0, "leases": []}}]
+        url = reverse("plugins:netbox_kea:combined_leases4") + f"?server={self.v4_server.pk}&state=1"
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_state_only_no_q_calls_get_page(self, MockKeaClient):
+        """?state=1 without q must call lease4-get-page (enumerate all)."""
+        MockKeaClient.return_value.command.return_value = [{"result": 0, "arguments": {"count": 0, "leases": []}}]
+        url = reverse("plugins:netbox_kea:combined_leases4") + f"?server={self.v4_server.pk}&state=1"
+        self.client.get(url)
+        call_args_list = MockKeaClient.return_value.command.call_args_list
+        called_commands = [c[0][0] for c in call_args_list]
+        self.assertIn("lease4-get-page", called_commands)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_state_only_no_q_filters_by_state(self, MockKeaClient):
+        """?state=1 without q must show declined leases and exclude active ones."""
+        MockKeaClient.return_value.command.return_value = [
+            {
+                "result": 0,
+                "arguments": {
+                    "count": 2,
+                    "leases": [dict(self._ACTIVE_LEASE), dict(self._DECLINED_LEASE)],
+                },
+            }
+        ]
+        MockKeaClient.return_value.reservation_get.return_value = None
+        url = reverse("plugins:netbox_kea:combined_leases4") + f"?server={self.v4_server.pk}&state=1"
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, "active-host")
+        self.assertContains(response, "declined-host")
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_state_only_no_q_server_error_graceful(self, MockKeaClient):
+        """?state=1 without q handles unreachable server gracefully (no 500)."""
+        MockKeaClient.return_value.command.side_effect = Exception("refused")
+        url = reverse("plugins:netbox_kea:combined_leases4") + f"?server={self.v4_server.pk}&state=1"
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
