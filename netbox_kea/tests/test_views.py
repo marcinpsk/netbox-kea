@@ -2299,3 +2299,105 @@ class TestServerOptionsView(_ViewTestBase):
         self.client.logout()
         response = self.client.get(self._url())
         self.assertIn(response.status_code, (302, 403))
+
+
+# TestLeaseEditView
+# ---------------------------------------------------------------------------
+
+_LEASE4_GET_RESP = [
+    {
+        "result": 0,
+        "arguments": {
+            "ip-address": "10.0.0.100",
+            "hw-address": "aa:bb:cc:dd:ee:ff",
+            "hostname": "host1.example.com",
+            "subnet-id": 1,
+            "cltt": 1700000000,
+            "valid-lft": 3600,
+            "state": 0,
+        },
+    }
+]
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestLeaseEditView(_ViewTestBase):
+    """Tests for ServerLease4/6EditView."""
+
+    def _url(self, version=4, ip="10.0.0.100"):
+        return reverse(
+            f"plugins:netbox_kea:server_lease{version}_edit",
+            args=[self.server.pk, ip],
+        )
+
+    def test_url_registered_v4(self):
+        """URL server_lease4_edit is registered."""
+        url = self._url(version=4)
+        self.assertIn("leases", url)
+        self.assertIn("edit", url)
+
+    def test_url_registered_v6(self):
+        """URL server_lease6_edit is registered."""
+        url = self._url(version=6, ip="2001:db8::100")
+        self.assertIn("leases", url)
+        self.assertIn("edit", url)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_get_returns_200(self, MockKeaClient):
+        """GET returns 200 OK."""
+        MockKeaClient.return_value.command.return_value = _LEASE4_GET_RESP
+        response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 200)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_get_prefills_hostname(self, MockKeaClient):
+        """GET pre-fills hostname from the existing lease."""
+        MockKeaClient.return_value.command.return_value = _LEASE4_GET_RESP
+        response = self.client.get(self._url())
+        content = response.content.decode()
+        self.assertIn("host1.example.com", content)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_get_prefills_hw_address(self, MockKeaClient):
+        """GET pre-fills hw_address from the existing lease (v4 only)."""
+        MockKeaClient.return_value.command.return_value = _LEASE4_GET_RESP
+        response = self.client.get(self._url())
+        content = response.content.decode()
+        self.assertIn("aa:bb:cc:dd:ee:ff", content)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_calls_lease_update_and_redirects(self, MockKeaClient):
+        """POST with valid data calls lease_update and redirects."""
+        MockKeaClient.return_value.lease_update.return_value = None
+        response = self.client.post(
+            self._url(),
+            {
+                "hostname": "newhost.example.com",
+                "hw_address": "11:22:33:44:55:66",
+                "valid_lft": "7200",
+            },
+        )
+        self.assertEqual(response.status_code, 302)
+        MockKeaClient.return_value.lease_update.assert_called_once()
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_kea_exception_redirects_with_error(self, MockKeaClient):
+        """POST that raises KeaException shows error and redirects."""
+        from netbox_kea.kea import KeaException
+
+        MockKeaClient.return_value.lease_update.side_effect = KeaException({"result": 1, "text": "lease not found"})
+        response = self.client.post(
+            self._url(),
+            {
+                "hostname": "newhost.example.com",
+                "hw_address": "11:22:33:44:55:66",
+                "valid_lft": "7200",
+            },
+        )
+        self.assertEqual(response.status_code, 302)
+
+    def test_get_requires_login(self):
+        """Unauthenticated GET is redirected."""
+        self.client.logout()
+        response = self.client.get(self._url())
+        self.assertIn(response.status_code, (302, 403))

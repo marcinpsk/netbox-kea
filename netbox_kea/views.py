@@ -669,6 +669,119 @@ class ServerLeases4DeleteView(BaseServerLeasesDeleteView):
     dhcp_version = 4
 
 
+class _BaseLeaseEditView(ConditionalLoginRequiredMixin, View):
+    """Base view for editing a single lease via ``lease{v}-update``.
+
+    Subclasses must set ``dhcp_version`` and ``form_class``.
+    """
+
+    dhcp_version: int
+    form_class: type
+
+    def _get_server(self, pk: int) -> Server:
+        return get_object_or_404(Server, pk=pk)
+
+    def _leases_url(self, server: Server) -> str:
+        return reverse(
+            f"plugins:netbox_kea:server_leases{self.dhcp_version}",
+            kwargs={"pk": server.pk},
+        )
+
+    def get(self, request: HttpRequest, pk: int, ip_address: str) -> HttpResponse:
+        """Render the edit form pre-filled with the current lease values."""
+        server = self._get_server(pk)
+        client = server.get_client(version=self.dhcp_version)
+        try:
+            resp = client.command(
+                f"lease{self.dhcp_version}-get",
+                service=[f"dhcp{self.dhcp_version}"],
+                arguments={"ip-address": ip_address},
+            )
+        except KeaException:
+            messages.error(request, "Failed to fetch lease: see server logs for details.")
+            return redirect(self._leases_url(server))
+
+        if resp[0]["result"] == 3:
+            messages.warning(request, f"Lease {ip_address} not found.")
+            return redirect(self._leases_url(server))
+
+        lease = resp[0]["arguments"]
+        initial = {
+            "hostname": lease.get("hostname", ""),
+            "valid_lft": lease.get("valid-lft"),
+        }
+        if self.dhcp_version == 4:
+            initial["hw_address"] = lease.get("hw-address", "")
+        else:
+            initial["duid"] = lease.get("duid", "")
+
+        form = self.form_class(initial=initial)
+        return render(
+            request,
+            "netbox_kea/server_lease_edit.html",
+            {
+                "object": server,
+                "server": server,
+                "ip_address": ip_address,
+                "form": form,
+                "dhcp_version": self.dhcp_version,
+                "cancel_url": self._leases_url(server),
+            },
+        )
+
+    def post(self, request: HttpRequest, pk: int, ip_address: str) -> HttpResponse:
+        """Validate form and apply the update via ``lease{v}-update``."""
+        server = self._get_server(pk)
+        form = self.form_class(request.POST)
+        if not form.is_valid():
+            return render(
+                request,
+                "netbox_kea/server_lease_edit.html",
+                {
+                    "object": server,
+                    "server": server,
+                    "ip_address": ip_address,
+                    "form": form,
+                    "dhcp_version": self.dhcp_version,
+                    "cancel_url": self._leases_url(server),
+                },
+            )
+        cd = form.cleaned_data
+        client = server.get_client(version=self.dhcp_version)
+        kwargs: dict[str, object] = {}
+        if cd.get("hostname") is not None:
+            kwargs["hostname"] = cd["hostname"] or None
+        if cd.get("valid_lft") is not None:
+            kwargs["valid_lft"] = cd["valid_lft"]
+        if self.dhcp_version == 4 and cd.get("hw_address"):
+            kwargs["hw_address"] = cd["hw_address"]
+        elif self.dhcp_version == 6 and cd.get("duid"):
+            kwargs["duid"] = cd["duid"]
+        try:
+            client.lease_update(self.dhcp_version, ip_address, **kwargs)
+            messages.success(request, f"Lease {ip_address} updated.")
+        except KeaException as exc:
+            logger.exception("Error updating lease %s", ip_address)
+            messages.error(request, kea_error_hint(exc))
+        return redirect(self._leases_url(server))
+
+
+@register_model_view(Server, "lease4_edit", path="leases4/<path:ip_address>/edit")
+class ServerLease4EditView(_BaseLeaseEditView):
+    """Edit a single DHCPv4 lease."""
+
+    dhcp_version = 4
+    form_class = forms.Lease4EditForm
+
+
+@register_model_view(Server, "lease6_edit", path="leases6/<path:ip_address>/edit")
+class ServerLease6EditView(_BaseLeaseEditView):
+    """Edit a single DHCPv6 lease."""
+
+    dhcp_version = 6
+    form_class = forms.Lease6EditForm
+
+
 class BaseServerDHCPSubnetsView(generic.ObjectChildrenView):
     """Base view for the subnet list tab; fetches subnet data from Kea config."""
 
@@ -2231,6 +2344,7 @@ def _enrich_leases_with_badges(leases: list[dict[str, Any]], server: "Server", v
             lease["create_reservation_url"] = f"{base_add}?{_urlencode(params)}" if params else base_add
 
     sync_url = reverse(f"plugins:netbox_kea:server_lease{version}_sync", args=[server.pk])
+    edit_url_name = f"plugins:netbox_kea:server_lease{version}_edit"
     nb_ips = bulk_fetch_netbox_ips([lease.get("ip_address", "") for lease in leases if lease.get("ip_address")])
     for lease in leases:
         ip = lease.get("ip_address", "")
@@ -2239,6 +2353,8 @@ def _enrich_leases_with_badges(leases: list[dict[str, Any]], server: "Server", v
             lease["netbox_ip_url"] = nb_ip.get_absolute_url()
         else:
             lease["sync_url"] = sync_url
+        if ip:
+            lease["edit_url"] = reverse(edit_url_name, args=[server.pk, ip])
 
 
 def _enrich_reservations_with_badges(reservations: list[dict[str, Any]], server: "Server", version: int) -> None:

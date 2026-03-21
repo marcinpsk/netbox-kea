@@ -112,6 +112,15 @@ LEASE_ACTIONS = """<span class="btn-group dropdown">
     <a class="btn btn-sm btn-secondary dropdown-toggle" href="#" type="button" data-bs-toggle="dropdown">
     <i class="mdi mdi-magnify"></i></a>
     <ul class="dropdown-menu">
+        {% if record.edit_url %}
+        <li>
+            <a href="{{ record.edit_url }}" class="dropdown-item">
+                <i class="mdi mdi-pencil-outline" aria-hidden="true" title="Edit lease"></i>
+                Edit lease
+            </a>
+        </li>
+        <li><hr class="dropdown-divider"></li>
+        {% endif %}
         {% if record.ip_address %}
         <li>
             <a href="{% url "ipam:ipaddress_list" %}?address={{ record.ip_address }}" class="dropdown-item">

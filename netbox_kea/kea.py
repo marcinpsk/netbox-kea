@@ -558,6 +558,58 @@ class KeaClient:
             arguments={"subnet-id": subnet_id},
         )
 
+    def lease_update(
+        self,
+        version: int,
+        ip_address: str,
+        hostname: str | None = None,
+        hw_address: str | None = None,
+        valid_lft: int | None = None,
+        duid: str | None = None,
+    ) -> None:
+        """Modify an existing lease in-place using ``lease{v}-update``.
+
+        Fetches the current lease via ``lease{v}-get``, merges the provided
+        non-None overrides, then posts the updated lease back.  No
+        config-test/write cycle is needed because lease mutations go directly
+        to Kea's live lease database.
+
+        Args:
+            version: DHCP version (4 or 6).
+            ip_address: IP address of the lease to update.
+            hostname: Optional new hostname.
+            hw_address: Optional new hardware address (v4 only, ``xx:xx:...`` format).
+            valid_lft: Optional new valid lifetime in seconds.
+            duid: Optional new DUID (v6 only).
+
+        Raises:
+            KeaException: If the lease does not exist (result=3) or Kea returns
+                an error for the update.
+
+        """
+        service = f"dhcp{version}"
+        resp = self.command(
+            f"lease{version}-get",
+            service=[service],
+            arguments={"ip-address": ip_address},
+        )
+        if resp[0]["result"] == 3:
+            raise KeaException(resp[0])
+        lease = resp[0]["arguments"]
+        if hostname is not None:
+            lease["hostname"] = hostname
+        if hw_address is not None:
+            lease["hw-address"] = hw_address
+        if valid_lft is not None:
+            lease["valid-lft"] = valid_lft
+        if duid is not None:
+            lease["duid"] = duid
+        self.command(
+            f"lease{version}-update",
+            service=[service],
+            arguments=lease,
+        )
+
     def dhcp_disable(self, service: str, max_period: int | None = None) -> None:
         """Temporarily disable DHCP processing on *service*.
 

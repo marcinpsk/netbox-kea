@@ -1989,3 +1989,120 @@ class TestServerOptionsUpdate(TestCase):
         ):
             result = self.client.server_update_options(version=4, options=[])
         self.assertIsNone(result)
+
+
+# TestLeaseUpdate
+# ---------------------------------------------------------------------------
+
+_LEASE4_GET_RESP = [
+    {
+        "result": 0,
+        "arguments": {
+            "ip-address": "10.0.0.100",
+            "hw-address": "aa:bb:cc:dd:ee:ff",
+            "hostname": "host1.example.com",
+            "subnet-id": 1,
+            "cltt": 1700000000,
+            "valid-lft": 3600,
+            "state": 0,
+        },
+    }
+]
+_LEASE4_NOT_FOUND = [{"result": 3, "text": "Lease not found."}]
+_LEASE_UPDATE_OK = [{"result": 0, "text": "Lease updated."}]
+
+
+class TestLeaseUpdate(TestCase):
+    """Tests for KeaClient.lease_update()."""
+
+    def setUp(self):
+        self.client = KeaClient(url="http://kea:8000")
+
+    def _payloads(self, mock_post):
+        return [(c.kwargs.get("json") or c[1]["json"]) for c in mock_post.call_args_list]
+
+    def _cmds(self, mock_post):
+        return [p["command"] for p in self._payloads(mock_post)]
+
+    def test_fetches_then_updates(self):
+        """lease_update calls lease4-get then lease4-update in sequence."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(_LEASE4_GET_RESP, _LEASE_UPDATE_OK),
+        ) as mock_post:
+            self.client.lease_update(version=4, ip_address="10.0.0.100")
+        self.assertEqual(self._cmds(mock_post), ["lease4-get", "lease4-update"])
+
+    def test_merges_hostname(self):
+        """hostname kwarg replaces the existing hostname in the update payload."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(_LEASE4_GET_RESP, _LEASE_UPDATE_OK),
+        ) as mock_post:
+            self.client.lease_update(version=4, ip_address="10.0.0.100", hostname="new.example.com")
+        payloads = self._payloads(mock_post)
+        update_payload = next(p for p in payloads if p["command"] == "lease4-update")
+        self.assertEqual(update_payload["arguments"]["hostname"], "new.example.com")
+
+    def test_merges_hw_address(self):
+        """hw_address kwarg replaces the existing hw-address in the update payload."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(_LEASE4_GET_RESP, _LEASE_UPDATE_OK),
+        ) as mock_post:
+            self.client.lease_update(version=4, ip_address="10.0.0.100", hw_address="11:22:33:44:55:66")
+        payloads = self._payloads(mock_post)
+        update_payload = next(p for p in payloads if p["command"] == "lease4-update")
+        self.assertEqual(update_payload["arguments"]["hw-address"], "11:22:33:44:55:66")
+
+    def test_merges_valid_lft(self):
+        """valid_lft kwarg replaces the existing valid-lft in the update payload."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(_LEASE4_GET_RESP, _LEASE_UPDATE_OK),
+        ) as mock_post:
+            self.client.lease_update(version=4, ip_address="10.0.0.100", valid_lft=7200)
+        payloads = self._payloads(mock_post)
+        update_payload = next(p for p in payloads if p["command"] == "lease4-update")
+        self.assertEqual(update_payload["arguments"]["valid-lft"], 7200)
+
+    def test_raises_kea_exception_when_lease_not_found(self):
+        """KeaException raised when lease4-get returns result=3 (not found)."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(_LEASE4_NOT_FOUND),
+        ):
+            with self.assertRaises(KeaException):
+                self.client.lease_update(version=4, ip_address="10.0.0.100")
+
+    def test_v6_uses_dhcp6_service(self):
+        """For version=6, both commands use service=['dhcp6']."""
+        lease6_get_resp = [
+            {
+                "result": 0,
+                "arguments": {
+                    "ip-address": "2001:db8::100",
+                    "duid": "00:01:00:01:aa:bb:cc:dd:ee:ff",
+                    "hostname": "v6host.example.com",
+                    "subnet-id": 10,
+                    "cltt": 1700000000,
+                    "valid-lft": 3600,
+                    "state": 0,
+                },
+            }
+        ]
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(lease6_get_resp, _LEASE_UPDATE_OK),
+        ) as mock_post:
+            self.client.lease_update(version=6, ip_address="2001:db8::100")
+        payloads = self._payloads(mock_post)
+        for p in payloads:
+            self.assertEqual(p["service"], ["dhcp6"])
+        self.assertEqual(self._cmds(mock_post), ["lease6-get", "lease6-update"])

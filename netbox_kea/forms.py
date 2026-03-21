@@ -660,3 +660,47 @@ class SubnetOptionsForm(forms.Form):
 
 
 SubnetOptionsFormSet = forms.formset_factory(SubnetOptionsForm, extra=1, can_delete=True)
+
+
+class Lease4EditForm(forms.Form):
+    """Form for editing a DHCPv4 lease in-place."""
+
+    hostname = forms.CharField(
+        max_length=255,
+        required=False,
+        help_text="Client hostname (leave blank to keep current).",
+    )
+    hw_address = forms.CharField(
+        max_length=17,
+        required=False,
+        label="Hardware address",
+        help_text="MAC address in xx:xx:xx:xx:xx:xx format (leave blank to keep current).",
+    )
+    valid_lft = forms.IntegerField(
+        min_value=0,
+        required=False,
+        label="Valid lifetime (s)",
+        help_text="Lease lifetime in seconds (leave blank to keep current).",
+    )
+
+
+class Lease6EditForm(forms.Form):
+    """Form for editing a DHCPv6 lease in-place."""
+
+    hostname = forms.CharField(
+        max_length=255,
+        required=False,
+        help_text="Client hostname (leave blank to keep current).",
+    )
+    duid = forms.CharField(
+        max_length=255,
+        required=False,
+        label="DUID",
+        help_text="Client DUID in hex (leave blank to keep current).",
+    )
+    valid_lft = forms.IntegerField(
+        min_value=0,
+        required=False,
+        label="Valid lifetime (s)",
+        help_text="Lease lifetime in seconds (leave blank to keep current).",
+    )
