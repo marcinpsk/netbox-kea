@@ -157,3 +157,96 @@ class ServerViewSet(NetBoxModelViewSet):
             return (resp[0].get("arguments") or {}).get("leases", [])
 
         return []
+
+    # ─────────────────────────────────────────────────────────────────────
+    # Reservation search actions
+    # ─────────────────────────────────────────────────────────────────────
+
+    @action(detail=True, methods=["get"], url_path="reservations4", url_name="reservations4")
+    def reservations4(self, request, pk=None):
+        """Search DHCPv4 host reservations on this server.
+
+        Query parameters — at least one required:
+        - ``ip_address`` + ``subnet_id``: exact lookup by IP
+        - ``hw_address`` + ``subnet_id``: lookup by hardware address
+        - ``subnet_id`` only: all reservations in that subnet (paginated via reservation-get-page)
+        """
+        return self._reservation_search(request, version=4)
+
+    @action(detail=True, methods=["get"], url_path="reservations6", url_name="reservations6")
+    def reservations6(self, request, pk=None):
+        """Search DHCPv6 host reservations on this server.
+
+        Query parameters — at least one required:
+        - ``ip_address`` + ``subnet_id``: exact lookup by IP
+        - ``duid`` + ``subnet_id``: lookup by DUID
+        - ``subnet_id`` only: all reservations in that subnet
+        """
+        return self._reservation_search(request, version=6)
+
+    def _reservation_search(self, request, version: int) -> Response:
+        """Dispatch a reservation search to Kea and return JSON results."""
+        server = self.get_object()
+        params = request.query_params
+
+        ip_address = params.get("ip_address")
+        hw_address = params.get("hw_address")
+        subnet_id = params.get("subnet_id")
+        duid = params.get("duid")  # v6 only
+
+        if not any([ip_address, hw_address, subnet_id, duid]):
+            return Response(
+                {
+                    "detail": (
+                        "At least one filter parameter is required: "
+                        "ip_address, hw_address, subnet_id" + (", duid" if version == 6 else "")
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            client = server.get_client(version=version)
+            reservations = self._fetch_reservations(client, version, ip_address, hw_address, subnet_id, duid)
+        except (requests.ConnectionError, requests.Timeout):
+            logger.exception("Kea connection error on server %s", server.name)
+            return Response({"detail": "Could not connect to Kea server."}, status=status.HTTP_502_BAD_GATEWAY)
+        except KeaException:
+            logger.exception("Kea error on server %s", server.name)
+            return Response({"detail": "An internal error occurred"}, status=status.HTTP_502_BAD_GATEWAY)
+        except Exception:
+            logger.exception("Unexpected error fetching reservations from %s", server.name)
+            return Response({"detail": "An internal error occurred"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        return Response({"count": len(reservations), "results": reservations})
+
+    def _fetch_reservations(
+        self,
+        client: KeaClient,
+        version: int,
+        ip_address: str | None,
+        hw_address: str | None,
+        subnet_id: str | None,
+        duid: str | None,
+    ) -> list[dict]:
+        """Call the appropriate Kea reservation command and return reservation dicts."""
+        service = f"dhcp{version}"
+
+        if ip_address and subnet_id:
+            host = client.reservation_get(service, int(subnet_id), ip_address=ip_address)
+            return [host] if host else []
+
+        if hw_address and subnet_id:
+            host = client.reservation_get(service, int(subnet_id), identifier_type="hw-address", identifier=hw_address)
+            return [host] if host else []
+
+        if duid and subnet_id and version == 6:
+            host = client.reservation_get(service, int(subnet_id), identifier_type="duid", identifier=duid)
+            return [host] if host else []
+
+        if subnet_id:
+            # Page through all reservations and filter by subnet_id client-side
+            hosts, _, _ = client.reservation_get_page(service)
+            return [h for h in hosts if str(h.get("subnet-id", "")) == str(subnet_id)]
+
+        return []
