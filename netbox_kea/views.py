@@ -916,8 +916,92 @@ class ServerDHCP4SubnetsView(BaseServerDHCPSubnetsView):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Phase 2: Reservation Management views
+# Shared Networks views
 # ─────────────────────────────────────────────────────────────────────────────
+
+
+class BaseServerSharedNetworksView(generic.ObjectChildrenView):
+    """Read-only tab listing shared networks from the Kea config."""
+
+    table = tables.SharedNetworkTable
+    queryset = Server.objects.all()
+    template_name = "netbox_kea/server_shared_networks.html"
+    dhcp_version: int
+
+    def get_children(self, request: HttpRequest, parent: Server) -> list[dict[str, Any]]:
+        """Fetch shared-networks from config-get and return one dict per network."""
+        if check_dhcp_enabled(parent, self.dhcp_version) is not None:
+            return []
+        client = parent.get_client(version=self.dhcp_version)
+        config = client.command("config-get", service=[f"dhcp{self.dhcp_version}"])
+        if config[0]["arguments"] is None:
+            return []
+        dhcp_conf = config[0]["arguments"].get(f"Dhcp{self.dhcp_version}", {})
+        result = []
+        for sn in dhcp_conf.get("shared-networks", []):
+            subnets = sn.get(f"subnet{self.dhcp_version}", [])
+            subnet_links = [
+                {
+                    "cidr": s["subnet"],
+                    "url": (
+                        reverse(
+                            f"plugins:netbox_kea:server_leases{self.dhcp_version}",
+                            args=[parent.pk],
+                        )
+                        + "?"
+                        + _urlencode({"by": "subnet", "q": s["subnet"]})
+                    ),
+                }
+                for s in subnets
+                if s.get("subnet")
+            ]
+            result.append(
+                {
+                    "name": sn.get("name", ""),
+                    "description": sn.get("description", ""),
+                    "subnet_count": len(subnets),
+                    "subnet_links": subnet_links,
+                }
+            )
+        return result
+
+    def get(self, request: HttpRequest, **kwargs: Any) -> HttpResponse:
+        """Handle GET: check DHCP enabled, then render shared-network table."""
+        instance = self.get_object(**kwargs)
+        if resp := check_dhcp_enabled(instance, self.dhcp_version):
+            return resp
+
+        child_objects = self.get_children(request, instance)
+        table_data = self.prep_table_data(request, child_objects, instance)
+        table = self.get_table(table_data, request, False)
+
+        return render(
+            request,
+            self.get_template_name(),
+            {
+                "object": instance,
+                "base_template": f"{instance._meta.app_label}/{instance._meta.model_name}.html",
+                "table": table,
+                "table_config": f"{table.name}_config",
+                "return_url": request.get_full_path(),
+            },
+        )
+
+
+@register_model_view(Server, "shared_networks6")
+class ServerSharedNetworks6View(BaseServerSharedNetworksView):
+    """DHCPv6 shared networks tab."""
+
+    tab = OptionalViewTab(label="DHCPv6 Shared Networks", weight=1025, is_enabled=lambda s: s.dhcp6)
+    dhcp_version = 6
+
+
+@register_model_view(Server, "shared_networks4")
+class ServerSharedNetworks4View(BaseServerSharedNetworksView):
+    """DHCPv4 shared networks tab."""
+
+    tab = OptionalViewTab(label="DHCPv4 Shared Networks", weight=1035, is_enabled=lambda s: s.dhcp4)
+    dhcp_version = 4
 
 
 def _enrich_reservations_with_lease_status(client: "KeaClient", reservations: list[dict], version: int) -> None:

@@ -749,3 +749,25 @@ class GlobalSubnetTable6(GlobalSubnetTable4):
 
     class Meta(GlobalSubnetTable4.Meta):
         pass
+
+
+class SharedNetworkTable(GenericTable):
+    """Read-only table listing shared networks with their constituent subnets."""
+
+    name = tables.Column(verbose_name="Name")
+    description = tables.Column(verbose_name="Description", default="—")
+    subnet_count = tables.Column(verbose_name="Subnets", orderable=False)
+    subnets = tables.TemplateColumn(
+        verbose_name="Subnet CIDRs",
+        orderable=False,
+        template_code=(
+            "{% for item in record.subnet_links %}"
+            '<a href="{{ item.url }}" class="badge text-bg-secondary me-1">{{ item.cidr }}</a>'
+            "{% empty %}—{% endfor %}"
+        ),
+    )
+
+    class Meta(GenericTable.Meta):
+        empty_text = "No shared networks configured."
+        fields = ("name", "description", "subnet_count", "subnets")
+        default_columns = ("name", "description", "subnet_count", "subnets")

@@ -1,0 +1,13 @@
+{% extends "generic/object_children.html" %}
+{# SPDX-FileCopyrightText: 2025 Marcin Zieba <marcinpsk@gmail.com> #}
+{# SPDX-License-Identifier: Apache-2.0 #}
+
+{% block head %}
+  {{ block.super }}
+  <style type="text/css">
+    div.quicksearch { display: none }
+    nav.text-end[aria-label="Pagination optoins"] { display: none }
+  </style>
+{% endblock %}
+
+{% block bulk_controls %}{% endblock bulk_controls %}

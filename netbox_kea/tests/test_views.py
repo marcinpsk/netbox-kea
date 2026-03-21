@@ -2564,3 +2564,134 @@ class TestLeaseStateFilter(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         self.assertNotContains(response, "page-active")
         self.assertContains(response, "page-declined")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Shared Networks Views
+# ─────────────────────────────────────────────────────────────────────────────
+
+_SHARED_NETWORKS_CONFIG_V4 = [
+    {
+        "result": 0,
+        "arguments": {
+            "Dhcp4": {
+                "subnet4": [{"id": 1, "subnet": "192.168.0.0/24"}],
+                "shared-networks": [
+                    {
+                        "name": "net-alpha",
+                        "description": "Alpha test network",
+                        "subnet4": [
+                            {"id": 10, "subnet": "10.0.0.0/24"},
+                            {"id": 11, "subnet": "10.0.1.0/24"},
+                        ],
+                    }
+                ],
+            }
+        },
+    }
+]
+
+_SHARED_NETWORKS_CONFIG_V6 = [
+    {
+        "result": 0,
+        "arguments": {
+            "Dhcp6": {
+                "subnet6": [],
+                "shared-networks": [
+                    {
+                        "name": "net-beta",
+                        "description": "",
+                        "subnet6": [
+                            {"id": 20, "subnet": "2001:db8::/48"},
+                        ],
+                    }
+                ],
+            }
+        },
+    }
+]
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestServerSharedNetworks4View(_ViewTestBase):
+    """GET /plugins/kea/servers/<pk>/shared_networks4/"""
+
+    def _url(self):
+        return reverse("plugins:netbox_kea:server_shared_networks4", args=[self.server.pk])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_get_returns_200(self, MockKeaClient):
+        mock_client = MockKeaClient.return_value
+        mock_client.command.return_value = _SHARED_NETWORKS_CONFIG_V4
+        response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 200)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_shows_shared_network_name(self, MockKeaClient):
+        mock_client = MockKeaClient.return_value
+        mock_client.command.return_value = _SHARED_NETWORKS_CONFIG_V4
+        response = self.client.get(self._url())
+        self.assertContains(response, "net-alpha")
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_shows_subnet_count(self, MockKeaClient):
+        mock_client = MockKeaClient.return_value
+        mock_client.command.return_value = _SHARED_NETWORKS_CONFIG_V4
+        response = self.client.get(self._url())
+        # 2 subnets in net-alpha
+        self.assertContains(response, "2")
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_shows_subnet_cidrs(self, MockKeaClient):
+        mock_client = MockKeaClient.return_value
+        mock_client.command.return_value = _SHARED_NETWORKS_CONFIG_V4
+        response = self.client.get(self._url())
+        self.assertContains(response, "10.0.0.0/24")
+        self.assertContains(response, "10.0.1.0/24")
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_empty_table_when_no_shared_networks(self, MockKeaClient):
+        mock_client = MockKeaClient.return_value
+        mock_client.command.return_value = [
+            {"result": 0, "arguments": {"Dhcp4": {"subnet4": [], "shared-networks": []}}}
+        ]
+        response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, "net-alpha")
+
+    def test_get_with_dhcp4_disabled_redirects(self):
+        v6_only = _make_db_server(name="v6-only-sn", dhcp4=False, dhcp6=True)
+        url = reverse("plugins:netbox_kea:server_shared_networks4", args=[v6_only.pk])
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 302)
+        self._assert_no_none_pk_redirect(response)
+        self.assertIn(str(v6_only.pk), response.url)
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestServerSharedNetworks6View(_ViewTestBase):
+    """GET /plugins/kea/servers/<pk>/shared_networks6/"""
+
+    def _url(self):
+        return reverse("plugins:netbox_kea:server_shared_networks6", args=[self.server.pk])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_get_returns_200(self, MockKeaClient):
+        mock_client = MockKeaClient.return_value
+        mock_client.command.return_value = _SHARED_NETWORKS_CONFIG_V6
+        response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 200)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_shows_shared_network_name(self, MockKeaClient):
+        mock_client = MockKeaClient.return_value
+        mock_client.command.return_value = _SHARED_NETWORKS_CONFIG_V6
+        response = self.client.get(self._url())
+        self.assertContains(response, "net-beta")
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_shows_subnet_cidrs(self, MockKeaClient):
+        mock_client = MockKeaClient.return_value
+        mock_client.command.return_value = _SHARED_NETWORKS_CONFIG_V6
+        response = self.client.get(self._url())
+        self.assertContains(response, "2001:db8::/48")
