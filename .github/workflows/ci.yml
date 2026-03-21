@@ -54,7 +54,8 @@ jobs:
 
       - name: Install dependencies
         run: |
-          uv pip install --system pytest pytest-django pytest-cov tblib
+          uv export --frozen --only-group dev --no-emit-project --format requirements-txt | \
+            uv pip install --system -r /dev/stdin
           uv pip install --system -r netbox/requirements.txt
           uv pip install --system -e .
 

@@ -2031,7 +2031,7 @@ def _fetch_subnets_from_server(server: "Server", version: int) -> list[dict[str,
         raise RuntimeError(f"Unexpected None arguments from config-get for dhcp{version}")
     dhcp_key = f"Dhcp{version}"
     subnet_key = f"subnet{version}"
-    args = config[0]["arguments"][dhcp_key]
+    args = config[0]["arguments"].get(dhcp_key, {})
     result = [
         {
             "id": s["id"],

@@ -52,6 +52,7 @@ dev = [
   "reuse",
   "pre-commit",
   "python-semantic-release",
+  "tblib>=3.0.0,<4.0.0",
 ]
 
 [build-system]
