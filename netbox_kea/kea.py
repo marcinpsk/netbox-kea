@@ -461,7 +461,7 @@ class KeaClient:
         """
         try:
             self.command("config-write", service=[service])
-        except Exception as exc:
+        except KeaException as exc:
             logger.warning(
                 "config-write failed for service %s — change is live but not persisted to disk",
                 service,

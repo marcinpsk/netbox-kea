@@ -86,7 +86,7 @@ jobs:
         working-directory: netbox/netbox
         run: |
           pytest ${{ github.workspace }}/netbox_kea/tests/ \
-            --override-ini="DJANGO_SETTINGS_MODULE=netbox.configuration" \
+            --override-ini="DJANGO_SETTINGS_MODULE=netbox.settings" \
             --override-ini="pythonpath=${{ github.workspace }}/netbox/netbox" \
             --cov=netbox_kea \
             --cov-report=xml:${{ github.workspace }}/coverage.xml \

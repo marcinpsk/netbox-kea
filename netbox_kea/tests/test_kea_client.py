@@ -149,6 +149,15 @@ class TestKeaClientCommand(TestCase):
             with self.assertRaises(requests.HTTPError):
                 self.client.command("something")
 
+    def test_command_raises_value_error_on_non_list_json(self):
+        with patch.object(
+            self.client._session,
+            "post",
+            return_value=_mock_http_response({"result": 0, "text": "ok"}),
+        ):
+            with self.assertRaises(ValueError):
+                self.client.command("something")
+
     def test_command_uses_timeout(self):
         resp = [{"result": 0, "text": "ok"}]
         with patch.object(self.client._session, "post", return_value=_mock_http_response(resp)) as mock_post:

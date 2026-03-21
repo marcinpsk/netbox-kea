@@ -76,7 +76,8 @@ def _get_global_options(server: "Server") -> dict[str, dict[str, str]]:
             client = server.get_client(version=version)
             resp = client.command("config-get", service=[svc])
             dhcp_key = f"Dhcp{version}"
-            option_data = resp[0]["arguments"][dhcp_key].get("option-data", [])
+            dhcp_block = resp[0].get("arguments", {}).get(dhcp_key, {})
+            option_data = dhcp_block.get("option-data", [])
             opts = format_option_data(option_data, version=version)
             if opts:
                 # Convert snake_case keys to "Title Case" for display
@@ -817,6 +818,9 @@ def _enrich_reservations_with_lease_status(client: "KeaClient", reservations: li
             return []
         except Exception:  # noqa: BLE001
             return []
+
+    if not unique_subnet_ids:
+        return
 
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(unique_subnet_ids), 10)) as executor:
@@ -2328,7 +2332,7 @@ class _BaseSyncView(ConditionalLoginRequiredMixin, View):
 
         try:
             IPAddress(ip_str)
-        except (ValueError, Exception):
+        except Exception:
             return HttpResponse("Invalid IP address", status=400)
 
         hostname = request.POST.get("hostname", "").strip()

@@ -190,7 +190,9 @@ class GenericTable(BaseTable):
         # We try with the kwarg first; on TypeError (v4.5.5+) we retry without it.
         try:
             super().__init__(*args, **kwargs)
-        except TypeError:
+        except TypeError as exc:
+            if "unexpected keyword argument 'user'" not in str(exc):
+                raise
             kwargs.pop("user", None)
             super().__init__(*args, **kwargs)
 
