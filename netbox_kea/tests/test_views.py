@@ -1872,3 +1872,116 @@ class TestServerSubnet6EditView(_ViewTestBase):
         call_kwargs = MockKeaClient.return_value.subnet_update.call_args
         version_arg = call_kwargs.kwargs.get("version") or call_kwargs[1].get("version")
         self.assertEqual(version_arg, 6)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ServerFilterSet / ServerFilterForm
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestServerFilterSet(_ViewTestBase):
+    """Tests for ServerFilterSet — queryset filtering by name, URL, has_control_agent."""
+
+    def _make_servers(self):
+        """Create three servers with distinct attributes for filtering."""
+        Server.objects.all().delete()
+        s1 = Server.objects.create(
+            name="alpha-kea",
+            server_url="http://alpha.example.com:8000",
+            dhcp4=True,
+            dhcp6=False,
+            has_control_agent=True,
+        )
+        s2 = Server.objects.create(
+            name="beta-kea",
+            server_url="http://beta.example.com:8000",
+            dhcp4=False,
+            dhcp6=True,
+            has_control_agent=False,
+        )
+        s3 = Server.objects.create(
+            name="gamma-server",
+            server_url="http://gamma.example.com:9000",
+            dhcp4=True,
+            dhcp6=True,
+            has_control_agent=True,
+        )
+        return s1, s2, s3
+
+    def test_filter_by_name_contains(self):
+        """ServerFilterSet supports case-insensitive name substring filtering."""
+        from netbox_kea.filtersets import ServerFilterSet
+
+        self._make_servers()
+        qs = ServerFilterSet({"name": "kea"}, queryset=Server.objects.all()).qs
+        names = list(qs.values_list("name", flat=True))
+        self.assertIn("alpha-kea", names)
+        self.assertIn("beta-kea", names)
+        self.assertNotIn("gamma-server", names)
+
+    def test_filter_by_server_url_contains(self):
+        """ServerFilterSet supports case-insensitive server_url substring filtering."""
+        from netbox_kea.filtersets import ServerFilterSet
+
+        self._make_servers()
+        qs = ServerFilterSet({"server_url": "beta"}, queryset=Server.objects.all()).qs
+        names = list(qs.values_list("name", flat=True))
+        self.assertEqual(names, ["beta-kea"])
+
+    def test_filter_by_has_control_agent_true(self):
+        """ServerFilterSet can filter servers where has_control_agent=True."""
+        from netbox_kea.filtersets import ServerFilterSet
+
+        self._make_servers()
+        qs = ServerFilterSet({"has_control_agent": True}, queryset=Server.objects.all()).qs
+        names = list(qs.values_list("name", flat=True).order_by("name"))
+        self.assertIn("alpha-kea", names)
+        self.assertIn("gamma-server", names)
+        self.assertNotIn("beta-kea", names)
+
+    def test_filter_by_has_control_agent_false(self):
+        """ServerFilterSet can filter servers where has_control_agent=False."""
+        from netbox_kea.filtersets import ServerFilterSet
+
+        self._make_servers()
+        qs = ServerFilterSet({"has_control_agent": False}, queryset=Server.objects.all()).qs
+        names = list(qs.values_list("name", flat=True))
+        self.assertEqual(names, ["beta-kea"])
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestServerFilterForm(_ViewTestBase):
+    """Tests for ServerFilterForm — renders new filter fields."""
+
+    def test_filter_form_has_name_field(self):
+        """ServerFilterForm includes a 'name' text field."""
+        from netbox_kea.forms import ServerFilterForm
+
+        form = ServerFilterForm()
+        self.assertIn("name", form.fields)
+
+    def test_filter_form_has_server_url_field(self):
+        """ServerFilterForm includes a 'server_url' text field."""
+        from netbox_kea.forms import ServerFilterForm
+
+        form = ServerFilterForm()
+        self.assertIn("server_url", form.fields)
+
+    def test_filter_form_has_has_control_agent_field(self):
+        """ServerFilterForm includes a 'has_control_agent' nullable boolean field."""
+        from netbox_kea.forms import ServerFilterForm
+
+        form = ServerFilterForm()
+        self.assertIn("has_control_agent", form.fields)
+
+    def test_server_list_filters_by_name_via_get(self):
+        """GET /plugins/kea/servers/?name=<term> returns 200 and filters results."""
+        Server.objects.all().delete()
+        Server.objects.create(name="alpha-kea", server_url="http://a:8000", dhcp4=True, dhcp6=False)
+        Server.objects.create(name="gamma-server", server_url="http://g:8000", dhcp4=True, dhcp6=False)
+        url = reverse("plugins:netbox_kea:server_list")
+        response = self.client.get(url, {"name": "alpha"})
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "alpha-kea")
+        self.assertNotContains(response, "gamma-server")

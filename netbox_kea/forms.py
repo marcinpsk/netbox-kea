@@ -54,6 +54,21 @@ class ServerFilterForm(NetBoxModelFilterSetForm):
 
     model = Server
     tag = TagFilterField(model)
+    name = forms.CharField(
+        label="Name",
+        required=False,
+        help_text="Case-insensitive substring match",
+    )
+    server_url = forms.CharField(
+        label="Server URL",
+        required=False,
+        help_text="Case-insensitive substring match",
+    )
+    has_control_agent = forms.NullBooleanField(
+        label="Has Control Agent",
+        required=False,
+        widget=forms.Select(choices=BOOLEAN_WITH_BLANK_CHOICES),
+    )
     dhcp4 = forms.NullBooleanField(
         label="DHCPv4",
         required=False,

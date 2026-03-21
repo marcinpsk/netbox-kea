@@ -565,11 +565,30 @@ class KeaClient:
         self._persist_config(service)
 
     def _persist_config(self, service: str) -> None:
-        """Persist the running config to disk via config-write.
+        """Validate and persist the running config to disk via config-test + config-write.
 
-        Logs a warning and raises :exc:`PartialPersistError` when config-write fails. When this
-        happens, the mutation is already live in the running config but will be lost on next Kea restart.
+        Calls ``config-test`` first to verify the current in-memory configuration is valid
+        before writing it to disk.  If ``config-test`` is not supported by the server
+        (result code 2), the check is skipped and ``config-write`` proceeds normally.
+        Any other ``config-test`` failure raises :exc:`PartialPersistError` immediately
+        (without calling ``config-write``).
+
+        Logs a warning and raises :exc:`PartialPersistError` when either check fails.
+        When this happens, the mutation is already live in the running config but will be
+        lost on next Kea restart.
         """
+        try:
+            self.command("config-test", service=[service])
+        except KeaException as exc:
+            if exc.response.get("result") == 2:
+                # config-test not supported on this server — skip gracefully
+                logger.debug("config-test not supported for service %s — skipping pre-flight check", service)
+            else:
+                logger.warning(
+                    "config-test failed for service %s — aborting config-write",
+                    service,
+                )
+                raise PartialPersistError(service, exc) from exc
         try:
             self.command("config-write", service=[service])
         except KeaException as exc:

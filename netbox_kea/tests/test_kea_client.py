@@ -635,17 +635,17 @@ class TestPoolAdd(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_LIST_WITH_POOL_CMDS, _OK, _OK),
+            side_effect=_side_effects(_LIST_WITH_POOL_CMDS, _OK, _OK, _OK),
         ) as mock_post:
             self.client.pool_add(version=4, subnet_id=1, pool="10.0.0.50-10.0.0.99")
-        self.assertEqual(self._cmds(mock_post), ["list-commands", "subnet4-pool-add", "config-write"])
+        self.assertEqual(self._cmds(mock_post), ["list-commands", "subnet4-pool-add", "config-test", "config-write"])
 
     def test_pool_add_v4_sends_correct_arguments(self):
         """subnet4-pool-add arguments include correct id and pool."""
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_LIST_WITH_POOL_CMDS, _OK, _OK),
+            side_effect=_side_effects(_LIST_WITH_POOL_CMDS, _OK, _OK, _OK),
         ) as mock_post:
             self.client.pool_add(version=4, subnet_id=3, pool="192.168.1.100-192.168.1.200")
         add_call = next(
@@ -662,7 +662,7 @@ class TestPoolAdd(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_LIST_WITH_POOL_CMDS, _OK, _OK),
+            side_effect=_side_effects(_LIST_WITH_POOL_CMDS, _OK, _OK, _OK),
         ) as mock_post:
             self.client.pool_add(version=6, subnet_id=2, pool="2001:db8::/64")
         cmds = self._cmds(mock_post)
@@ -674,12 +674,12 @@ class TestPoolAdd(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_LIST_WITHOUT_POOL_CMDS, _SUBNET4_GET, _OK, _OK),
+            side_effect=_side_effects(_LIST_WITHOUT_POOL_CMDS, _SUBNET4_GET, _OK, _OK, _OK),
         ) as mock_post:
             self.client.pool_add(version=4, subnet_id=1, pool="10.0.0.50-10.0.0.99")
         self.assertEqual(
             self._cmds(mock_post),
-            ["list-commands", "subnet4-get", "subnet4-delta-add", "config-write"],
+            ["list-commands", "subnet4-get", "subnet4-delta-add", "config-test", "config-write"],
         )
 
     def test_pool_add_delta_add_includes_subnet_cidr(self):
@@ -687,7 +687,7 @@ class TestPoolAdd(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_LIST_WITHOUT_POOL_CMDS, _SUBNET4_GET, _OK, _OK),
+            side_effect=_side_effects(_LIST_WITHOUT_POOL_CMDS, _SUBNET4_GET, _OK, _OK, _OK),
         ) as mock_post:
             self.client.pool_add(version=4, subnet_id=1, pool="10.0.0.50-10.0.0.99")
         delta_call = next(
@@ -705,7 +705,7 @@ class TestPoolAdd(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_LIST_WITH_POOL_CMDS, _OK, _OK),
+            side_effect=_side_effects(_LIST_WITH_POOL_CMDS, _OK, _OK, _OK),
         ) as mock_post:
             self.client.pool_add(version=4, subnet_id=1, pool="10.0.0.50-10.0.0.99")
         cmds = self._cmds(mock_post)
@@ -730,7 +730,7 @@ class TestPoolAdd(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_LIST_WITH_POOL_CMDS, _OK, _OK),
+            side_effect=_side_effects(_LIST_WITH_POOL_CMDS, _OK, _OK, _OK),
         ):
             result = self.client.pool_add(version=4, subnet_id=1, pool="10.0.0.1-10.0.0.10")
         self.assertIsNone(result)
@@ -750,17 +750,17 @@ class TestPoolDel(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_LIST_WITH_POOL_CMDS, _OK, _OK),
+            side_effect=_side_effects(_LIST_WITH_POOL_CMDS, _OK, _OK, _OK),
         ) as mock_post:
             self.client.pool_del(version=4, subnet_id=1, pool="10.0.0.50-10.0.0.99")
-        self.assertEqual(self._cmds(mock_post), ["list-commands", "subnet4-pool-del", "config-write"])
+        self.assertEqual(self._cmds(mock_post), ["list-commands", "subnet4-pool-del", "config-test", "config-write"])
 
     def test_pool_del_v4_sends_correct_arguments(self):
         """subnet4-pool-del arguments include correct id and pool."""
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_LIST_WITH_POOL_CMDS, _OK, _OK),
+            side_effect=_side_effects(_LIST_WITH_POOL_CMDS, _OK, _OK, _OK),
         ) as mock_post:
             self.client.pool_del(version=4, subnet_id=5, pool="10.5.0.1-10.5.0.50")
         del_call = next(
@@ -777,7 +777,7 @@ class TestPoolDel(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_LIST_WITH_POOL_CMDS, _OK, _OK),
+            side_effect=_side_effects(_LIST_WITH_POOL_CMDS, _OK, _OK, _OK),
         ) as mock_post:
             self.client.pool_del(version=6, subnet_id=2, pool="2001:db8::/64")
         cmds = self._cmds(mock_post)
@@ -789,12 +789,12 @@ class TestPoolDel(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_LIST_WITHOUT_POOL_CMDS, _SUBNET4_GET, _OK, _OK),
+            side_effect=_side_effects(_LIST_WITHOUT_POOL_CMDS, _SUBNET4_GET, _OK, _OK, _OK),
         ) as mock_post:
             self.client.pool_del(version=4, subnet_id=1, pool="10.0.0.50-10.0.0.99")
         self.assertEqual(
             self._cmds(mock_post),
-            ["list-commands", "subnet4-get", "subnet4-delta-del", "config-write"],
+            ["list-commands", "subnet4-get", "subnet4-delta-del", "config-test", "config-write"],
         )
 
     def test_pool_del_delta_del_includes_subnet_cidr(self):
@@ -802,7 +802,7 @@ class TestPoolDel(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_LIST_WITHOUT_POOL_CMDS, _SUBNET4_GET, _OK, _OK),
+            side_effect=_side_effects(_LIST_WITHOUT_POOL_CMDS, _SUBNET4_GET, _OK, _OK, _OK),
         ) as mock_post:
             self.client.pool_del(version=4, subnet_id=1, pool="10.0.0.50-10.0.0.99")
         delta_call = next(
@@ -820,7 +820,7 @@ class TestPoolDel(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_LIST_WITH_POOL_CMDS, _OK, _OK),
+            side_effect=_side_effects(_LIST_WITH_POOL_CMDS, _OK, _OK, _OK),
         ) as mock_post:
             self.client.pool_del(version=4, subnet_id=1, pool="10.0.0.50-10.0.0.99")
         cmds = self._cmds(mock_post)
@@ -845,7 +845,7 @@ class TestPoolDel(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_LIST_WITH_POOL_CMDS, _OK, _OK),
+            side_effect=_side_effects(_LIST_WITH_POOL_CMDS, _OK, _OK, _OK),
         ):
             result = self.client.pool_del(version=4, subnet_id=1, pool="10.0.0.1-10.0.0.10")
         self.assertIsNone(result)
@@ -883,7 +883,7 @@ class TestSubnetAdd(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_SUBNET4_LIST_RESP, _SUBNET4_ADD_RESP, _OK),
+            side_effect=_side_effects(_SUBNET4_LIST_RESP, _SUBNET4_ADD_RESP, _OK, _OK),
         ) as mock_post:
             self.client.subnet_add(version=4, subnet_cidr="10.99.0.0/24")
         self.assertIn("subnet4-add", self._cmds(mock_post))
@@ -893,7 +893,7 @@ class TestSubnetAdd(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_SUBNET6_LIST_RESP, _SUBNET6_ADD_RESP, _OK),
+            side_effect=_side_effects(_SUBNET6_LIST_RESP, _SUBNET6_ADD_RESP, _OK, _OK),
         ) as mock_post:
             self.client.subnet_add(version=6, subnet_cidr="2001:db8:99::/48")
         self.assertIn("subnet6-add", self._cmds(mock_post))
@@ -904,7 +904,7 @@ class TestSubnetAdd(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_SUBNET4_LIST_RESP, _SUBNET4_ADD_RESP, _OK),
+            side_effect=_side_effects(_SUBNET4_LIST_RESP, _SUBNET4_ADD_RESP, _OK, _OK),
         ) as mock_post:
             self.client.subnet_add(version=4, subnet_cidr="10.99.0.0/24")
         add_call = next(
@@ -920,7 +920,7 @@ class TestSubnetAdd(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_SUBNET4_ADD_RESP, _OK),
+            side_effect=_side_effects(_SUBNET4_ADD_RESP, _OK, _OK),
         ) as mock_post:
             self.client.subnet_add(version=4, subnet_cidr="10.99.0.0/24", subnet_id=42)
         add_call = next(
@@ -929,15 +929,15 @@ class TestSubnetAdd(TestCase):
             if (c.kwargs.get("json") or c[1]["json"])["command"] == "subnet4-add"
         )
         self.assertEqual(add_call["arguments"]["subnet4"][0]["id"], 42)
-        # Exactly 2 calls: subnet4-add + config-write (no subnet4-list)
-        self.assertEqual(len(mock_post.call_args_list), 2)
+        # Exactly 3 calls: subnet4-add + config-test + config-write (no subnet4-list)
+        self.assertEqual(len(mock_post.call_args_list), 3)
 
     def test_subnet_add_auto_assigns_id_as_max_plus_one(self):
         """When no subnet_id provided, auto-assigns max existing ID + 1."""
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_SUBNET4_LIST_RESP, _SUBNET4_ADD_RESP, _OK),
+            side_effect=_side_effects(_SUBNET4_LIST_RESP, _SUBNET4_ADD_RESP, _OK, _OK),
         ) as mock_post:
             self.client.subnet_add(version=4, subnet_cidr="10.99.0.0/24")
         add_call = next(
@@ -953,7 +953,7 @@ class TestSubnetAdd(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_SUBNET4_LIST_RESP, _SUBNET4_ADD_RESP, _OK),
+            side_effect=_side_effects(_SUBNET4_LIST_RESP, _SUBNET4_ADD_RESP, _OK, _OK),
         ) as mock_post:
             self.client.subnet_add(
                 version=4,
@@ -975,7 +975,7 @@ class TestSubnetAdd(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_SUBNET4_LIST_RESP, _SUBNET4_ADD_RESP, _OK),
+            side_effect=_side_effects(_SUBNET4_LIST_RESP, _SUBNET4_ADD_RESP, _OK, _OK),
         ) as mock_post:
             self.client.subnet_add(
                 version=4,
@@ -999,7 +999,7 @@ class TestSubnetAdd(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_SUBNET4_LIST_RESP, _SUBNET4_ADD_RESP, _OK),
+            side_effect=_side_effects(_SUBNET4_LIST_RESP, _SUBNET4_ADD_RESP, _OK, _OK),
         ) as mock_post:
             self.client.subnet_add(version=4, subnet_cidr="10.99.0.0/24")
         cmds = self._cmds(mock_post)
@@ -1021,7 +1021,7 @@ class TestSubnetAdd(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_SUBNET4_LIST_RESP, _SUBNET4_ADD_RESP, _OK),
+            side_effect=_side_effects(_SUBNET4_LIST_RESP, _SUBNET4_ADD_RESP, _OK, _OK),
         ):
             result = self.client.subnet_add(version=4, subnet_cidr="10.99.0.0/24")
         self.assertIsNone(result)
@@ -1032,7 +1032,7 @@ class TestSubnetAdd(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(list_error, _SUBNET4_ADD_RESP, _OK),
+            side_effect=_side_effects(list_error, _SUBNET4_ADD_RESP, _OK, _OK),
         ) as mock_post:
             self.client.subnet_add(version=4, subnet_cidr="10.99.0.0/24")
         add_call = next(
@@ -1053,6 +1053,7 @@ class TestSubnetAdd(TestCase):
                 _SUBNET4_LIST_RESP,  # subnet4-list → ids 1, 2 → assigns id=3
                 duplicate_resp,  # first subnet4-add attempt → duplicate
                 _SUBNET4_ADD_RESP,  # second subnet4-add attempt (id=4) → success
+                _OK,  # config-test
                 _OK,  # config-write
             ),
         ) as mock_post:
@@ -1071,7 +1072,7 @@ class TestSubnetAdd(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_SUBNET6_LIST_RESP, _SUBNET6_ADD_RESP, _OK),
+            side_effect=_side_effects(_SUBNET6_LIST_RESP, _SUBNET6_ADD_RESP, _OK, _OK),
         ) as mock_post:
             self.client.subnet_add(
                 version=6,
@@ -1105,7 +1106,7 @@ class TestSubnetDel(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_SUBNET_DEL_RESP, _OK),
+            side_effect=_side_effects(_SUBNET_DEL_RESP, _OK, _OK),
         ) as mock_post:
             self.client.subnet_del(version=4, subnet_id=5)
         self.assertIn("subnet4-del", self._cmds(mock_post))
@@ -1115,7 +1116,7 @@ class TestSubnetDel(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_SUBNET_DEL_RESP, _OK),
+            side_effect=_side_effects(_SUBNET_DEL_RESP, _OK, _OK),
         ) as mock_post:
             self.client.subnet_del(version=6, subnet_id=7)
         self.assertIn("subnet6-del", self._cmds(mock_post))
@@ -1126,7 +1127,7 @@ class TestSubnetDel(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_SUBNET_DEL_RESP, _OK),
+            side_effect=_side_effects(_SUBNET_DEL_RESP, _OK, _OK),
         ) as mock_post:
             self.client.subnet_del(version=4, subnet_id=42)
         del_call = next(
@@ -1141,7 +1142,7 @@ class TestSubnetDel(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_SUBNET_DEL_RESP, _OK),
+            side_effect=_side_effects(_SUBNET_DEL_RESP, _OK, _OK),
         ) as mock_post:
             self.client.subnet_del(version=4, subnet_id=1)
         cmds = self._cmds(mock_post)
@@ -1163,7 +1164,7 @@ class TestSubnetDel(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_SUBNET_DEL_RESP, _OK),
+            side_effect=_side_effects(_SUBNET_DEL_RESP, _OK, _OK),
         ):
             result = self.client.subnet_del(version=4, subnet_id=1)
         self.assertIsNone(result)
@@ -1421,7 +1422,7 @@ class TestSubnetUpdate(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_SUBNET_UPDATE_RESP, _CONFIG_WRITE_RESP),
+            side_effect=_side_effects(_SUBNET_UPDATE_RESP, _OK, _CONFIG_WRITE_RESP),
         ) as mock_post:
             self.client.subnet_update(version=4, subnet_id=1, subnet_cidr="10.0.0.0/24")
         cmds = [p["command"] for p in self._payloads(mock_post)]
@@ -1432,7 +1433,7 @@ class TestSubnetUpdate(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_SUBNET_UPDATE_RESP, _CONFIG_WRITE_RESP),
+            side_effect=_side_effects(_SUBNET_UPDATE_RESP, _OK, _CONFIG_WRITE_RESP),
         ) as mock_post:
             self.client.subnet_update(version=6, subnet_id=2, subnet_cidr="2001:db8::/48")
         cmds = [p["command"] for p in self._payloads(mock_post)]
@@ -1443,7 +1444,7 @@ class TestSubnetUpdate(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_SUBNET_UPDATE_RESP, _CONFIG_WRITE_RESP),
+            side_effect=_side_effects(_SUBNET_UPDATE_RESP, _OK, _CONFIG_WRITE_RESP),
         ) as mock_post:
             self.client.subnet_update(version=4, subnet_id=42, subnet_cidr="192.168.1.0/24")
         payload = self._update_payload(mock_post)
@@ -1456,7 +1457,7 @@ class TestSubnetUpdate(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_SUBNET_UPDATE_RESP, _CONFIG_WRITE_RESP),
+            side_effect=_side_effects(_SUBNET_UPDATE_RESP, _OK, _CONFIG_WRITE_RESP),
         ) as mock_post:
             self.client.subnet_update(
                 version=4,
@@ -1473,7 +1474,7 @@ class TestSubnetUpdate(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_SUBNET_UPDATE_RESP, _CONFIG_WRITE_RESP),
+            side_effect=_side_effects(_SUBNET_UPDATE_RESP, _OK, _CONFIG_WRITE_RESP),
         ) as mock_post:
             self.client.subnet_update(version=4, subnet_id=1, subnet_cidr="10.0.0.0/24", pools=None)
         payload = self._update_payload(mock_post)
@@ -1485,7 +1486,7 @@ class TestSubnetUpdate(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_SUBNET_UPDATE_RESP, _CONFIG_WRITE_RESP),
+            side_effect=_side_effects(_SUBNET_UPDATE_RESP, _OK, _CONFIG_WRITE_RESP),
         ) as mock_post:
             self.client.subnet_update(version=4, subnet_id=1, subnet_cidr="10.0.0.0/24", pools=[])
         payload = self._update_payload(mock_post)
@@ -1497,7 +1498,7 @@ class TestSubnetUpdate(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_SUBNET_UPDATE_RESP, _CONFIG_WRITE_RESP),
+            side_effect=_side_effects(_SUBNET_UPDATE_RESP, _OK, _CONFIG_WRITE_RESP),
         ) as mock_post:
             self.client.subnet_update(
                 version=4, subnet_id=1, subnet_cidr="10.0.0.0/24", gateway="10.0.0.1"
@@ -1513,7 +1514,7 @@ class TestSubnetUpdate(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_SUBNET_UPDATE_RESP, _CONFIG_WRITE_RESP),
+            side_effect=_side_effects(_SUBNET_UPDATE_RESP, _OK, _CONFIG_WRITE_RESP),
         ) as mock_post:
             self.client.subnet_update(
                 version=4,
@@ -1532,7 +1533,7 @@ class TestSubnetUpdate(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_SUBNET_UPDATE_RESP, _CONFIG_WRITE_RESP),
+            side_effect=_side_effects(_SUBNET_UPDATE_RESP, _OK, _CONFIG_WRITE_RESP),
         ) as mock_post:
             self.client.subnet_update(
                 version=4, subnet_id=1, subnet_cidr="10.0.0.0/24", valid_lft=7200
@@ -1546,7 +1547,7 @@ class TestSubnetUpdate(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_SUBNET_UPDATE_RESP, _CONFIG_WRITE_RESP),
+            side_effect=_side_effects(_SUBNET_UPDATE_RESP, _OK, _CONFIG_WRITE_RESP),
         ) as mock_post:
             self.client.subnet_update(version=4, subnet_id=1, subnet_cidr="10.0.0.0/24")
         cmds = [p["command"] for p in self._payloads(mock_post)]
@@ -1567,7 +1568,110 @@ class TestSubnetUpdate(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_SUBNET_UPDATE_RESP, _CONFIG_WRITE_RESP),
+            side_effect=_side_effects(_SUBNET_UPDATE_RESP, _OK, _CONFIG_WRITE_RESP),
         ):
             result = self.client.subnet_update(version=4, subnet_id=1, subnet_cidr="10.0.0.0/24")
         self.assertIsNone(result)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# _persist_config — config-test + config-write
+# ─────────────────────────────────────────────────────────────────────────────
+
+_CONFIG_TEST_OK_RESP = [{"result": 0, "text": "Configuration seems OK."}]
+_CONFIG_TEST_NOT_SUPPORTED_RESP = [{"result": 2, "text": "Command not supported."}]
+_CONFIG_TEST_FAIL_RESP = [{"result": 1, "text": "Configuration check failed."}]
+
+
+class TestPersistConfig(TestCase):
+    """Tests for KeaClient._persist_config() — verifies config-test + config-write flow."""
+
+    def setUp(self):
+        self.client = KeaClient(url="http://kea:8000")
+
+    def _payloads(self, mock_post):
+        return [(c.kwargs.get("json") or c[1]["json"]) for c in mock_post.call_args_list]
+
+    def _cmds(self, mock_post):
+        return [p["command"] for p in self._payloads(mock_post)]
+
+    def test_config_test_called_before_config_write(self):
+        """_persist_config calls config-test before config-write."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(_CONFIG_TEST_OK_RESP, _CONFIG_WRITE_RESP),
+        ) as mock_post:
+            self.client._persist_config("dhcp4")
+        cmds = self._cmds(mock_post)
+        self.assertEqual(cmds.index("config-test"), 0)
+        self.assertEqual(cmds.index("config-write"), 1)
+
+    def test_config_write_called_when_config_test_succeeds(self):
+        """config-write is called when config-test passes."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(_CONFIG_TEST_OK_RESP, _CONFIG_WRITE_RESP),
+        ) as mock_post:
+            self.client._persist_config("dhcp4")
+        self.assertIn("config-write", self._cmds(mock_post))
+
+    def test_config_test_not_supported_falls_through_to_config_write(self):
+        """When config-test returns result=2 (not supported), config-write is still called."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(_CONFIG_TEST_NOT_SUPPORTED_RESP, _CONFIG_WRITE_RESP),
+        ) as mock_post:
+            self.client._persist_config("dhcp4")
+        self.assertIn("config-write", self._cmds(mock_post))
+
+    def test_config_test_failure_raises_partial_persist_error(self):
+        """When config-test returns a non-zero, non-2 result, PartialPersistError is raised."""
+        from netbox_kea.kea import PartialPersistError
+
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(_CONFIG_TEST_FAIL_RESP),
+        ):
+            with self.assertRaises(PartialPersistError):
+                self.client._persist_config("dhcp4")
+
+    def test_config_write_not_called_when_config_test_fails(self):
+        """When config-test returns an error, config-write is NOT called."""
+        from netbox_kea.kea import PartialPersistError
+
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(_CONFIG_TEST_FAIL_RESP),
+        ) as mock_post:
+            with self.assertRaises(PartialPersistError):
+                self.client._persist_config("dhcp4")
+        self.assertNotIn("config-write", self._cmds(mock_post))
+
+    def test_config_write_failure_raises_partial_persist_error(self):
+        """When config-write fails, PartialPersistError is raised."""
+        from netbox_kea.kea import PartialPersistError
+
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(_CONFIG_TEST_OK_RESP, [{"result": 1, "text": "write failed"}]),
+        ):
+            with self.assertRaises(PartialPersistError):
+                self.client._persist_config("dhcp4")
+
+    def test_correct_service_used_for_config_test(self):
+        """config-test is sent with the correct service identifier."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(_CONFIG_TEST_OK_RESP, _CONFIG_WRITE_RESP),
+        ) as mock_post:
+            self.client._persist_config("dhcp6")
+        payloads = self._payloads(mock_post)
+        config_test_payload = next(p for p in payloads if p["command"] == "config-test")
+        self.assertEqual(config_test_payload["service"], ["dhcp6"])

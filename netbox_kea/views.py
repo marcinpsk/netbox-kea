@@ -36,6 +36,7 @@ from .utilities import (
     export_table,
     format_duration,
     format_leases,
+    kea_error_hint,
 )
 
 logger = logging.getLogger(__name__)
@@ -1078,6 +1079,9 @@ class ServerReservation4AddView(_KeaChangeMixin, generic.ObjectView):
             except PartialPersistError as exc:
                 messages.warning(request, str(exc))
                 return redirect(return_url)
+            except KeaException as exc:
+                logger.exception("Failed to create DHCPv4 reservation for %s", cd.get("ip_address"))
+                messages.error(request, kea_error_hint(exc))
             except Exception:
                 logger.exception("Failed to create DHCPv4 reservation for %s", cd.get("ip_address"))
                 messages.error(request, "Failed to create reservation: see server logs for details.")
@@ -1142,6 +1146,9 @@ class ServerReservation6AddView(_KeaChangeMixin, generic.ObjectView):
             except PartialPersistError as exc:
                 messages.warning(request, str(exc))
                 return redirect(return_url)
+            except KeaException as exc:
+                logger.exception("Failed to create DHCPv6 reservation for %s", cd.get("ip_addresses"))
+                messages.error(request, kea_error_hint(exc))
             except Exception:
                 logger.exception("Failed to create DHCPv6 reservation for %s", cd.get("ip_addresses"))
                 messages.error(request, "Failed to create reservation: see server logs for details.")
@@ -1174,6 +1181,9 @@ class ServerReservation4EditView(_KeaChangeMixin, generic.ObjectView):
         return_url = reverse("plugins:netbox_kea:server_reservations4", args=[pk])
         try:
             reservation = self._get_reservation(server, subnet_id, ip_address)
+        except KeaException as exc:
+            logger.exception("Failed to fetch DHCPv4 reservation %s in subnet %s", ip_address, subnet_id)
+            messages.error(request, kea_error_hint(exc))
         except Exception:
             logger.exception("Failed to fetch DHCPv4 reservation %s in subnet %s", ip_address, subnet_id)
             messages.error(request, "Failed to retrieve reservation: see server logs for details.")
@@ -1222,6 +1232,9 @@ class ServerReservation4EditView(_KeaChangeMixin, generic.ObjectView):
             except PartialPersistError as exc:
                 messages.warning(request, str(exc))
                 return redirect(return_url)
+            except KeaException as exc:
+                logger.exception("Failed to update DHCPv4 reservation for %s", cd.get("ip_address"))
+                messages.error(request, kea_error_hint(exc))
             except Exception:
                 logger.exception("Failed to update DHCPv4 reservation for %s", cd.get("ip_address"))
                 messages.error(request, "Failed to update reservation: see server logs for details.")
@@ -1254,6 +1267,9 @@ class ServerReservation6EditView(_KeaChangeMixin, generic.ObjectView):
         return_url = reverse("plugins:netbox_kea:server_reservations6", args=[pk])
         try:
             reservation = self._get_reservation(server, subnet_id, ip_address)
+        except KeaException as exc:
+            logger.exception("Failed to fetch DHCPv6 reservation %s in subnet %s", ip_address, subnet_id)
+            messages.error(request, kea_error_hint(exc))
         except Exception:
             logger.exception("Failed to fetch DHCPv6 reservation %s in subnet %s", ip_address, subnet_id)
             messages.error(request, "Failed to retrieve reservation: see server logs for details.")
@@ -1303,6 +1319,9 @@ class ServerReservation6EditView(_KeaChangeMixin, generic.ObjectView):
             except PartialPersistError as exc:
                 messages.warning(request, str(exc))
                 return redirect(return_url)
+            except KeaException as exc:
+                logger.exception("Failed to update DHCPv6 reservation for %s", cd.get("ip_addresses"))
+                messages.error(request, kea_error_hint(exc))
             except Exception:
                 logger.exception("Failed to update DHCPv6 reservation for %s", cd.get("ip_addresses"))
                 messages.error(request, "Failed to update reservation: see server logs for details.")
@@ -1350,6 +1369,9 @@ class ServerReservation4DeleteView(_KeaChangeMixin, generic.ObjectView):
             messages.success(request, f"Reservation for {ip_address} deleted.")
         except PartialPersistError as exc:
             messages.warning(request, str(exc))
+        except KeaException as exc:
+            logger.exception("Failed to delete DHCPv4 reservation for %s", ip_address)
+            messages.error(request, kea_error_hint(exc))
         except Exception:
             logger.exception("Failed to delete DHCPv4 reservation for %s", ip_address)
             messages.error(request, "Failed to delete reservation: see server logs for details.")
@@ -1387,6 +1409,9 @@ class ServerReservation6DeleteView(_KeaChangeMixin, generic.ObjectView):
             messages.success(request, f"DHCPv6 reservation for {ip_address} deleted.")
         except PartialPersistError as exc:
             messages.warning(request, str(exc))
+        except KeaException as exc:
+            logger.exception("Failed to delete DHCPv6 reservation for %s", ip_address)
+            messages.error(request, kea_error_hint(exc))
         except Exception:
             logger.exception("Failed to delete DHCPv6 reservation for %s", ip_address)
             messages.error(request, "Failed to delete reservation: see server logs for details.")
@@ -1445,6 +1470,9 @@ class _BasePoolAddView(_KeaChangeMixin, generic.ObjectView):
             messages.success(request, f"Pool {pool} added to subnet {subnet_id}.")
         except PartialPersistError as exc:
             messages.warning(request, str(exc))
+        except KeaException as exc:
+            logger.exception("Failed to add pool to subnet %s", subnet_id)
+            messages.error(request, kea_error_hint(exc))
         except Exception:
             logger.exception("Failed to add pool to subnet %s", subnet_id)
             messages.error(request, "Failed to add pool: see server logs for details.")
@@ -1500,6 +1528,9 @@ class _BasePoolDeleteView(_KeaChangeMixin, generic.ObjectView):
             messages.success(request, f"Pool {pool} removed from subnet {subnet_id}.")
         except PartialPersistError as exc:
             messages.warning(request, str(exc))
+        except KeaException as exc:
+            logger.exception("Failed to remove pool from subnet %s", subnet_id)
+            messages.error(request, kea_error_hint(exc))
         except Exception:
             logger.exception("Failed to remove pool from subnet %s", subnet_id)
             messages.error(request, "Failed to remove pool: see server logs for details.")
@@ -1577,6 +1608,9 @@ class _BaseSubnetAddView(_KeaChangeMixin, generic.ObjectView):
         except PartialPersistError as exc:
             messages.warning(request, str(exc))
             return redirect(return_url)
+        except KeaException as exc:
+            logger.exception("Failed to add subnet %s", cd.get("subnet"))
+            messages.error(request, kea_error_hint(exc))
         except Exception:
             logger.exception("Failed to add subnet %s", cd.get("subnet"))
             messages.error(request, "Failed to add subnet: see server logs for details.")
@@ -1714,6 +1748,9 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
         except PartialPersistError as exc:
             messages.warning(request, str(exc))
             return redirect(return_url)
+        except KeaException as exc:
+            logger.exception("Failed to update subnet %s on server %s", subnet_id, pk)
+            messages.error(request, kea_error_hint(exc))
         except Exception:
             logger.exception("Failed to update subnet %s on server %s", subnet_id, pk)
             messages.error(request, "Failed to update subnet: see server logs for details.")
@@ -1790,6 +1827,9 @@ class _BaseSubnetDeleteView(_KeaChangeMixin, generic.ObjectView):
             messages.success(request, f"Subnet {subnet_id} deleted.")
         except PartialPersistError as exc:
             messages.warning(request, str(exc))
+        except KeaException as exc:
+            logger.exception("Failed to delete subnet %s", subnet_id)
+            messages.error(request, kea_error_hint(exc))
         except Exception:
             logger.exception("Failed to delete subnet %s", subnet_id)
             messages.error(request, "Failed to delete subnet: see server logs for details.")
@@ -1893,7 +1933,7 @@ class _BaseServerDHCPEnableView(_KeaChangeMixin, generic.ObjectView):
             client.dhcp_enable(service)
             messages.success(request, f"DHCPv{self.dhcp_version} service re-enabled on {instance}.")
         except KeaException as exc:
-            messages.error(request, f"Failed to enable DHCPv{self.dhcp_version}: {exc}")
+            messages.error(request, f"Failed to enable DHCPv{self.dhcp_version}: {kea_error_hint(exc)}")
         except Exception:
             logger.exception("Unexpected error enabling %s on server %s", service, pk)
             messages.error(request, "An internal error occurred.")
@@ -1945,7 +1985,7 @@ class _BaseServerDHCPDisableView(_KeaChangeMixin, generic.ObjectView):
             else:
                 messages.warning(request, f"DHCPv{self.dhcp_version} disabled on {instance}.")
         except KeaException as exc:
-            messages.error(request, f"Failed to disable DHCPv{self.dhcp_version}: {exc}")
+            messages.error(request, f"Failed to disable DHCPv{self.dhcp_version}: {kea_error_hint(exc)}")
         except Exception:
             logger.exception("Unexpected error disabling %s on server %s", service, pk)
             messages.error(request, "An internal error occurred.")

@@ -424,3 +424,67 @@ class TestParseSubnetStats(TestCase):
         stats = parse_subnet_stats(response, version=4)
         self.assertIn(1, stats)
         self.assertEqual(stats[1]["utilization"], "0%")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# kea_error_hint()
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestKeaErrorHint(TestCase):
+    """Tests for kea_error_hint() — maps KeaException result codes to user hints."""
+
+    def _make_exc(self, result_code: int, text: str = "some error"):  # type: ignore[return]
+        from netbox_kea.kea import KeaException
+
+        return KeaException({"result": result_code, "text": text, "arguments": None}, index=0)
+
+    def test_import_available(self):
+        """kea_error_hint can be imported from utilities."""
+        from netbox_kea.utilities import kea_error_hint  # noqa: F401
+
+    def test_result_2_mentions_hook(self):
+        """result=2 (not supported) returns a hint about hook libraries."""
+        from netbox_kea.utilities import kea_error_hint
+
+        hint = kea_error_hint(self._make_exc(2))
+        self.assertIn("hook", hint.lower())
+
+    def test_result_3_mentions_not_found(self):
+        """result=3 (empty result) returns a not-found hint."""
+        from netbox_kea.utilities import kea_error_hint
+
+        hint = kea_error_hint(self._make_exc(3))
+        self.assertIn("found", hint.lower())
+
+    def test_result_128_mentions_connectivity(self):
+        """result=128 returns a connectivity/daemon hint."""
+        from netbox_kea.utilities import kea_error_hint
+
+        hint = kea_error_hint(self._make_exc(128))
+        self.assertTrue(
+            "connect" in hint.lower() or "reach" in hint.lower() or "daemon" in hint.lower()
+        )
+
+    def test_result_1_returns_non_empty_string(self):
+        """result=1 (generic error) returns a non-empty string."""
+        from netbox_kea.utilities import kea_error_hint
+
+        hint = kea_error_hint(self._make_exc(1))
+        self.assertIsInstance(hint, str)
+        self.assertTrue(len(hint) > 0)
+
+    def test_unknown_code_includes_code_in_message(self):
+        """Unknown result codes are included in the returned hint."""
+        from netbox_kea.utilities import kea_error_hint
+
+        hint = kea_error_hint(self._make_exc(42))
+        self.assertIn("42", hint)
+
+    def test_returns_string_type(self):
+        """kea_error_hint always returns str, never None."""
+        from netbox_kea.utilities import kea_error_hint
+
+        for code in (0, 1, 2, 3, 128, 999):
+            result = kea_error_hint(self._make_exc(code))
+            self.assertIsInstance(result, str)

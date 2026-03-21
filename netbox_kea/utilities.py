@@ -188,6 +188,42 @@ def check_dhcp_enabled(instance: Server, version: Literal[6, 4]) -> HttpResponse
     return redirect(instance.get_absolute_url())
 
 
+def kea_error_hint(exc: Any) -> str:
+    """Return a human-readable hint for a :exc:`~netbox_kea.kea.KeaException`.
+
+    Maps Kea result codes to actionable messages so users see something useful
+    instead of a generic "see server logs" error.
+
+    Result codes:
+        0  — success (should not normally be an error)
+        1  — generic error
+        2  — command not supported (hook library not loaded)
+        3  — empty result / not found
+        128 — service not connected / daemon unreachable
+    """
+    result = getattr(exc, "response", {}).get("result", -1) if hasattr(exc, "response") else -1
+    if result == 2:
+        return (
+            "This command is not supported by the Kea server. "
+            "The required hook library may not be loaded (e.g. host_cmds, lease_cmds, subnet_cmds)."
+        )
+    if result == 3:
+        return "No matching records found in Kea."
+    if result == 128:
+        return (
+            "Cannot reach the Kea daemon. "
+            "Check that the service is running and the server URL is reachable."
+        )
+    if result == 0:
+        return "Operation reported success."
+    if result == 1:
+        text = getattr(exc, "response", {}).get("text", "") or ""
+        if text:
+            return f"Kea reported an error: {text}"
+        return "Kea reported an error. Check the server logs for details."
+    return f"Kea returned an unexpected result code ({result}). Check the server logs for details."
+
+
 class OptionalViewTab(ViewTab):
     """A NetBox ViewTab that can be conditionally hidden based on a predicate."""
 
