@@ -19,6 +19,11 @@ urlpatterns = (
         views.CombinedReservations6View.as_view(),
         name="combined_reservations6",
     ),
+    path(
+        "combined/server-status-badge/<int:pk>/",
+        views.CombinedServerStatusBadgeView.as_view(),
+        name="combined_server_status_badge",
+    ),
     path("servers/", views.ServerListView.as_view(), name="server_list"),
     path("servers/add/", views.ServerEditView.as_view(), name="server_add"),
     path(

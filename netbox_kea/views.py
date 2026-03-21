@@ -3513,3 +3513,37 @@ class IPAddressKeaReservationsView(ConditionalLoginRequiredMixin, View):
                 "version": version,
             },
         )
+
+
+class CombinedServerStatusBadgeView(ConditionalLoginRequiredMixin, View):
+    """HTMX endpoint: lightweight status fragment for one server.
+
+    Returns a small HTML snippet containing one badge per enabled DHCP
+    protocol (v4/v6).  Each badge shows "Online" or "Offline" based on
+    whether ``version-get`` can reach the Kea daemon.
+
+    Intended to be called with ``hx-get`` / ``hx-trigger="load"`` from the
+    combined dashboard so the main page stays fast.
+    """
+
+    def get(self, request: HttpRequest, pk: int) -> HttpResponse:
+        """Return status badge fragment for server *pk*."""
+        server = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
+
+        statuses: list[dict] = []
+        for version, enabled in ((4, server.dhcp4), (6, server.dhcp6)):
+            if not enabled:
+                continue
+            try:
+                client = server.get_client(version=version)
+                client.command("version-get", service=[f"dhcp{version}"])
+                online = True
+            except Exception:
+                online = False
+            statuses.append({"version": version, "online": online})
+
+        return render(
+            request,
+            "netbox_kea/server_status_badge.html",
+            {"server": server, "statuses": statuses},
+        )

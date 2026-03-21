@@ -1,0 +1,7 @@
+{% for s in statuses %}
+  <span class="badge {% if s.online %}bg-success{% else %}bg-danger{% endif %} me-1"
+        title="{{ server.name }}">
+    DHCPv{{ s.version }}
+    {% if s.online %}Online{% else %}Offline{% endif %}
+  </span>
+{% endfor %}

@@ -183,6 +183,76 @@ class TestCombinedDashboardView(_CombinedViewBase):
 
 
 # ---------------------------------------------------------------------------
+# CombinedServerStatusBadgeView  GET /plugins/kea/combined/server-status-badge/<pk>/
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestCombinedServerStatusBadge(_CombinedViewBase):
+    """GET /plugins/kea/combined/server-status-badge/<pk>/ — HTMX status fragment."""
+
+    def _url(self, server):
+        return reverse("plugins:netbox_kea:combined_server_status_badge", args=[server.pk])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_online_server_returns_200_with_online_text(self, MockKeaClient):
+        """Reachable server should return 200 and contain 'Online'."""
+        MockKeaClient.return_value.command.return_value = [{"result": 0, "arguments": {"extended": "Kea DHCPv4/2.x"}}]
+        response = self.client.get(self._url(self.v4_server))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Online")
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_offline_server_returns_200_with_offline_text(self, MockKeaClient):
+        """Unreachable server should return 200 and contain 'Offline' (no 500)."""
+        MockKeaClient.return_value.command.side_effect = Exception("connection refused")
+        response = self.client.get(self._url(self.v4_server))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Offline")
+
+    def test_requires_auth(self):
+        """Unauthenticated request must redirect to login."""
+        self.client.logout()
+        response = self.client.get(self._url(self.v4_server))
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("login", response.url)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_v4_only_server_shows_v4_badge(self, MockKeaClient):
+        """DHCPv4-only server should show DHCPv4 status badge only."""
+        MockKeaClient.return_value.command.return_value = [{"result": 0, "arguments": {"extended": "Kea DHCPv4/2.x"}}]
+        response = self.client.get(self._url(self.v4_server))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "DHCPv4")
+        self.assertNotContains(response, "DHCPv6")
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_v6_only_server_shows_v6_badge(self, MockKeaClient):
+        """DHCPv6-only server should show DHCPv6 status badge only."""
+        MockKeaClient.return_value.command.return_value = [{"result": 0, "arguments": {"extended": "Kea DHCPv6/2.x"}}]
+        response = self.client.get(self._url(self.v6_server))
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, "DHCPv4")
+        self.assertContains(response, "DHCPv6")
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_dual_stack_shows_both_badges(self, MockKeaClient):
+        """Dual-stack server should show both DHCPv4 and DHCPv6 status badges."""
+        MockKeaClient.return_value.command.return_value = [{"result": 0, "arguments": {"extended": "Kea/2.x"}}]
+        response = self.client.get(self._url(self.dual_server))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "DHCPv4")
+        self.assertContains(response, "DHCPv6")
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_nonexistent_server_returns_404(self, MockKeaClient):
+        """Request for a server that does not exist must return 404."""
+        url = reverse("plugins:netbox_kea:combined_server_status_badge", args=[99999])
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 404)
+
+
+# ---------------------------------------------------------------------------
 # CombinedReservations4View  GET /plugins/kea/combined/reservations4/
 # ---------------------------------------------------------------------------
 
