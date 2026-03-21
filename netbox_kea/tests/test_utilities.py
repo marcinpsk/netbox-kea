@@ -713,3 +713,123 @@ class TestParseLeaseCsv(TestCase):
         """v6 row missing iaid raises ValueError."""
         with self.assertRaises(ValueError):
             self._parse("ip-address,duid\n2001:db8::1,00:01:02:03", version=6)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# export_table
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestExportTable(TestCase):
+    """Tests for export_table() — returns a CSV HTTP response from a django-tables2 Table."""
+
+    def _call(self, table=None, filename="test.csv", use_selected_columns=False):
+        from netbox_kea.utilities import export_table
+
+        if table is None:
+            table = MagicMock()
+            table.available_columns = []
+        return export_table(table, filename, use_selected_columns=use_selected_columns)
+
+    @patch("netbox_kea.utilities.TableExport")
+    def test_returns_http_response(self, MockExport):
+        """export_table returns the HttpResponse from TableExport.response()."""
+        from django.http import HttpResponse
+
+        mock_exp = MagicMock()
+        MockExport.return_value = mock_exp
+        mock_exp.response.return_value = HttpResponse()
+
+        result = self._call()
+
+        self.assertIsNotNone(result)
+        mock_exp.response.assert_called_once_with(filename="test.csv")
+
+    @patch("netbox_kea.utilities.TableExport")
+    def test_pk_and_actions_always_excluded(self, MockExport):
+        """pk and actions columns are always excluded regardless of use_selected_columns."""
+        mock_exp = MagicMock()
+        MockExport.return_value = mock_exp
+        mock_exp.response.return_value = MagicMock()
+
+        self._call()
+
+        call_kwargs = MockExport.call_args.kwargs
+        exclude_columns = call_kwargs.get("exclude_columns", set())
+        self.assertIn("pk", exclude_columns)
+        self.assertIn("actions", exclude_columns)
+
+    @patch("netbox_kea.utilities.TableExport")
+    def test_use_selected_columns_adds_available_columns(self, MockExport):
+        """When use_selected_columns=True, all available_columns names are also excluded."""
+        mock_exp = MagicMock()
+        MockExport.return_value = mock_exp
+        mock_exp.response.return_value = MagicMock()
+
+        table = MagicMock()
+        table.available_columns = [("ip_address", MagicMock()), ("hostname", MagicMock())]
+
+        self._call(table=table, use_selected_columns=True)
+
+        call_kwargs = MockExport.call_args.kwargs
+        exclude_columns = call_kwargs.get("exclude_columns", set())
+        self.assertIn("ip_address", exclude_columns)
+        self.assertIn("hostname", exclude_columns)
+
+    @patch("netbox_kea.utilities.TableExport")
+    def test_use_selected_columns_false_leaves_available_columns_in(self, MockExport):
+        """When use_selected_columns=False (default), available_columns are NOT excluded."""
+        mock_exp = MagicMock()
+        MockExport.return_value = mock_exp
+        mock_exp.response.return_value = MagicMock()
+
+        table = MagicMock()
+        table.available_columns = [("ip_address", MagicMock())]
+
+        self._call(table=table, use_selected_columns=False)
+
+        call_kwargs = MockExport.call_args.kwargs
+        exclude_columns = call_kwargs.get("exclude_columns", set())
+        self.assertNotIn("ip_address", exclude_columns)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# OptionalViewTab
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestOptionalViewTab(TestCase):
+    """Tests for OptionalViewTab — a ViewTab that can be conditionally hidden."""
+
+    def _make_tab(self, is_enabled):
+        from netbox_kea.utilities import OptionalViewTab
+
+        return OptionalViewTab("Test Label", is_enabled=is_enabled)
+
+    def test_render_returns_none_when_disabled(self):
+        """render() returns None when is_enabled(instance) is False."""
+        tab = self._make_tab(is_enabled=lambda _: False)
+        instance = MagicMock()
+        result = tab.render(instance)
+        self.assertIsNone(result)
+
+    def test_render_returns_dict_when_enabled(self):
+        """render() returns a non-None dict when is_enabled(instance) is True."""
+        tab = self._make_tab(is_enabled=lambda _: True)
+        instance = MagicMock()
+        result = tab.render(instance)
+        self.assertIsNotNone(result)
+
+    def test_is_enabled_receives_instance(self):
+        """is_enabled callable is called with the instance passed to render()."""
+        received = []
+        tab = self._make_tab(is_enabled=lambda inst: received.append(inst) or True)
+        sentinel = MagicMock()
+        tab.render(sentinel)
+        self.assertEqual(received, [sentinel])
+
+    def test_stores_is_enabled_callable(self):
+        """is_enabled callable is stored as tab.is_enabled after __init__."""
+        fn = lambda _: True  # noqa: E731
+        tab = self._make_tab(is_enabled=fn)
+        self.assertIs(tab.is_enabled, fn)
