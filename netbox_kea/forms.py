@@ -715,6 +715,31 @@ class Reservation6BulkImportForm(_BaseBulkReservationImportForm):
     """
 
 
+class _BaseBulkLeaseImportForm(forms.Form):
+    """Base class for bulk lease CSV import forms."""
+
+    csv_file = forms.FileField(
+        label="CSV file",
+        help_text="Upload a UTF-8 CSV file. Lines starting with '#' are skipped.",
+    )
+
+
+class Lease4BulkImportForm(_BaseBulkLeaseImportForm):
+    """Bulk import form for DHCPv4 leases.
+
+    Required column: ``ip-address``.
+    Optional: ``hw-address``, ``subnet-id``, ``valid-lft``, ``hostname``.
+    """
+
+
+class Lease6BulkImportForm(_BaseBulkLeaseImportForm):
+    """Bulk import form for DHCPv6 leases.
+
+    Required columns: ``ip-address``, ``duid``, ``iaid``.
+    Optional: ``subnet-id``, ``valid-lft``, ``hostname``.
+    """
+
+
 class SubnetOptionsForm(forms.Form):
     """A single subnet option-data row (name/data/always_send)."""
 

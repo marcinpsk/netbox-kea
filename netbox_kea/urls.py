@@ -132,6 +132,16 @@ urlpatterns = (
         name="server_reservation6_bulk_import",
     ),
     path(
+        "servers/<int:pk>/leases4/import/",
+        views.ServerLease4BulkImportView.as_view(),
+        name="server_lease4_bulk_import",
+    ),
+    path(
+        "servers/<int:pk>/leases6/import/",
+        views.ServerLease6BulkImportView.as_view(),
+        name="server_lease6_bulk_import",
+    ),
+    path(
         "servers/<int:pk>/subnets4/<int:subnet_id>/pools/add/",
         views.ServerSubnet4PoolAddView.as_view(),
         name="server_subnet4_pool_add",

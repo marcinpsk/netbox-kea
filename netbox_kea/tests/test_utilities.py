@@ -620,3 +620,96 @@ class TestLeaseStateEnrich(TestCase):
         lease = {"ip-address": "10.0.0.2", "cltt": 1700000000, "valid-lft": 3600}
         result = format_leases([lease])[0]
         self.assertEqual(result.get("state_label"), "Unknown")
+
+
+# ---------------------------------------------------------------------------
+# TestParseLeaseCsv
+# ---------------------------------------------------------------------------
+
+
+class TestParseLeaseCsv(TestCase):
+    """parse_lease_csv(version, csv_text) → list[dict] ready for lease_add."""
+
+    def _parse(self, content: str, version: int = 4) -> list:
+        from netbox_kea.utilities import parse_lease_csv
+
+        return parse_lease_csv(version, content)
+
+    # v4 happy path
+
+    def test_v4_single_row_ip_only(self):
+        """Minimal v4 row with only ip-address (all optional fields absent)."""
+        rows = self._parse("ip-address\n10.0.0.5")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["ip-address"], "10.0.0.5")
+        self.assertNotIn("hw-address", rows[0])
+        self.assertNotIn("subnet-id", rows[0])
+
+    def test_v4_all_fields(self):
+        """Full v4 row maps to correct dict keys."""
+        rows = self._parse(
+            "ip-address,hw-address,subnet-id,valid-lft,hostname\n10.0.0.10,aa:bb:cc:dd:ee:ff,1,3600,host1.example.com"
+        )
+        self.assertEqual(rows[0]["ip-address"], "10.0.0.10")
+        self.assertEqual(rows[0]["hw-address"], "aa:bb:cc:dd:ee:ff")
+        self.assertEqual(rows[0]["subnet-id"], 1)
+        self.assertEqual(rows[0]["valid-lft"], 3600)
+        self.assertEqual(rows[0]["hostname"], "host1.example.com")
+
+    def test_v4_optional_fields_empty_absent_from_output(self):
+        """Empty optional fields do not appear in output dict."""
+        rows = self._parse("ip-address,hw-address,subnet-id,valid-lft,hostname\n10.0.0.1,,,,")
+        self.assertNotIn("hw-address", rows[0])
+        self.assertNotIn("subnet-id", rows[0])
+        self.assertNotIn("valid-lft", rows[0])
+        self.assertNotIn("hostname", rows[0])
+
+    def test_v4_missing_ip_address_raises(self):
+        """Row without ip-address raises ValueError."""
+        with self.assertRaises(ValueError):
+            self._parse("hw-address\naa:bb:cc:dd:ee:ff")
+
+    def test_v4_multiple_rows(self):
+        """Multiple data rows produce multiple dicts."""
+        rows = self._parse("ip-address,hw-address\n10.0.0.1,aa:bb:cc:00:00:01\n10.0.0.2,aa:bb:cc:00:00:02\n")
+        self.assertEqual(len(rows), 2)
+
+    def test_v4_strips_whitespace_and_skips_blank_lines(self):
+        """Whitespace trimmed; blank lines skipped."""
+        rows = self._parse("ip-address\n\n  10.0.0.1 \n\n")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["ip-address"], "10.0.0.1")
+
+    def test_v4_skips_comment_lines(self):
+        """Lines starting with # are skipped."""
+        rows = self._parse("ip-address\n# comment\n10.0.0.1\n")
+        self.assertEqual(len(rows), 1)
+
+    def test_v4_strips_bom(self):
+        """UTF-8 BOM is stripped."""
+        rows = self._parse("\ufeffip-address\n10.0.0.1")
+        self.assertEqual(rows[0]["ip-address"], "10.0.0.1")
+
+    # v6 happy path
+
+    def test_v6_all_required_fields(self):
+        """v6 row requires ip-address, duid, iaid."""
+        rows = self._parse(
+            "ip-address,duid,iaid,subnet-id,hostname\n2001:db8::1,00:01:02:03,12345,1,v6host.example.com",
+            version=6,
+        )
+        self.assertEqual(rows[0]["ip-address"], "2001:db8::1")
+        self.assertEqual(rows[0]["duid"], "00:01:02:03")
+        self.assertEqual(rows[0]["iaid"], 12345)
+        self.assertEqual(rows[0]["subnet-id"], 1)
+        self.assertEqual(rows[0]["hostname"], "v6host.example.com")
+
+    def test_v6_missing_duid_raises(self):
+        """v6 row missing duid raises ValueError."""
+        with self.assertRaises(ValueError):
+            self._parse("ip-address,iaid\n2001:db8::1,12345", version=6)
+
+    def test_v6_missing_iaid_raises(self):
+        """v6 row missing iaid raises ValueError."""
+        with self.assertRaises(ValueError):
+            self._parse("ip-address,duid\n2001:db8::1,00:01:02:03", version=6)

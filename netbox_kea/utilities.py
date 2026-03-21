@@ -285,6 +285,67 @@ def parse_reservation_csv(content: str, version: int) -> list[dict[str, Any]]:
     return rows
 
 
+def parse_lease_csv(version: int, content: str) -> list[dict[str, Any]]:
+    """Parse a CSV string into a list of lease dicts ready for ``lease_add``.
+
+    Strips UTF-8 BOM, skips blank lines and lines starting with ``#``.
+    Raises ``ValueError`` on missing required fields.
+
+    **v4 required columns**: ``ip-address``
+    Optional: ``hw-address``, ``subnet-id``, ``valid-lft``, ``hostname``
+
+    **v6 required columns**: ``ip-address``, ``duid``, ``iaid``
+    Optional: ``subnet-id``, ``valid-lft``, ``hostname``
+
+    Args:
+        version: DHCP version — ``4`` or ``6``.
+        content: Raw CSV text (may include BOM).
+
+    Returns:
+        List of dicts suitable for passing to :py:meth:`KeaClient.lease_add`.
+
+    Raises:
+        ValueError: If a required field is missing or empty for any row.
+
+    """
+    if version == 4:
+        required = {"ip-address"}
+    else:
+        required = {"ip-address", "duid", "iaid"}
+
+    content = content.lstrip("\ufeff")
+    reader = csv.DictReader(
+        line.strip() for line in io.StringIO(content) if line.strip() and not line.strip().startswith("#")
+    )
+
+    rows: list[dict[str, Any]] = []
+    for row_num, raw in enumerate(reader, start=2):
+        row = {k.strip(): v.strip() for k, v in raw.items() if k is not None}
+
+        for field in required:
+            if not row.get(field):
+                raise ValueError(f"Row {row_num}: missing required field '{field}'")
+
+        result: dict[str, Any] = {"ip-address": row["ip-address"]}
+
+        if version == 6:
+            result["duid"] = row["duid"]
+            result["iaid"] = int(row["iaid"])
+
+        if row.get("hw-address") and version == 4:
+            result["hw-address"] = row["hw-address"]
+        if row.get("subnet-id"):
+            result["subnet-id"] = int(row["subnet-id"])
+        if row.get("valid-lft"):
+            result["valid-lft"] = int(row["valid-lft"])
+        if row.get("hostname"):
+            result["hostname"] = row["hostname"]
+
+        rows.append(result)
+
+    return rows
+
+
 class OptionalViewTab(ViewTab):
     """A NetBox ViewTab that can be conditionally hidden based on a predicate."""
 

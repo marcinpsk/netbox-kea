@@ -38,6 +38,7 @@ from .utilities import (
     format_duration,
     format_leases,
     kea_error_hint,
+    parse_lease_csv,
     parse_reservation_csv,
 )
 
@@ -408,6 +409,10 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
             "table": table,
             "add_url": reverse(
                 f"plugins:netbox_kea:server_lease{self.dhcp_version}_add",
+                args=[instance.pk],
+            ),
+            "bulk_import_url": reverse(
+                f"plugins:netbox_kea:server_lease{self.dhcp_version}_bulk_import",
                 args=[instance.pk],
             ),
         }
@@ -3541,6 +3546,127 @@ class ServerReservation6BulkImportView(_BaseBulkReservationImportView):
 
     dhcp_version = 6
     form_class = forms.Reservation6BulkImportForm
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Bulk Lease CSV Import
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class _BaseBulkLeaseImportView(ConditionalLoginRequiredMixin, View):
+    """Upload a CSV file and batch-insert leases into Kea via ``lease_add``.
+
+    **GET**: render the upload form.
+    **POST**: parse CSV → loop :meth:`KeaClient.lease_add` → show summary.
+    """
+
+    dhcp_version: int
+    form_class: type
+
+    template_name = "netbox_kea/server_lease_bulk_import.html"
+
+    def get(self, request: HttpRequest, pk: int) -> HttpResponse:
+        """Render the CSV upload form."""
+        instance = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
+        form = self.form_class()
+        return_url = reverse(f"plugins:netbox_kea:server_leases{self.dhcp_version}", args=[pk])
+        return render(
+            request,
+            self.template_name,
+            {
+                "object": instance,
+                "form": form,
+                "dhcp_version": self.dhcp_version,
+                "return_url": return_url,
+                "result": None,
+            },
+        )
+
+    def post(self, request: HttpRequest, pk: int) -> HttpResponse:
+        """Parse uploaded CSV and create leases in Kea."""
+        instance = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
+        return_url = reverse(f"plugins:netbox_kea:server_leases{self.dhcp_version}", args=[pk])
+        form = self.form_class(request.POST, request.FILES)
+
+        if not form.is_valid():
+            return render(
+                request,
+                self.template_name,
+                {
+                    "object": instance,
+                    "form": form,
+                    "dhcp_version": self.dhcp_version,
+                    "return_url": return_url,
+                    "result": None,
+                },
+            )
+
+        csv_file = request.FILES["csv_file"]
+        content = csv_file.read().decode("utf-8-sig")
+
+        try:
+            rows = parse_lease_csv(self.dhcp_version, content)
+        except ValueError as exc:
+            form.add_error("csv_file", str(exc))
+            return render(
+                request,
+                self.template_name,
+                {
+                    "object": instance,
+                    "form": form,
+                    "dhcp_version": self.dhcp_version,
+                    "return_url": return_url,
+                    "result": None,
+                },
+            )
+
+        client = instance.get_client(version=self.dhcp_version)
+        created = 0
+        error_rows: list[dict[str, Any]] = []
+
+        for row in rows:
+            try:
+                client.lease_add(self.dhcp_version, row)
+                created += 1
+            except KeaException as exc:  # noqa: PERF203
+                error_rows.append({"row": row, "error": kea_error_hint(exc)})
+            except Exception:
+                logger.exception("Unexpected error importing lease row %s", row)
+                error_rows.append({"row": row, "error": "An unexpected error occurred."})
+
+        result = {
+            "created": created,
+            "errors": len(error_rows),
+            "error_rows": error_rows,
+            "total": created + len(error_rows),
+        }
+        return render(
+            request,
+            self.template_name,
+            {
+                "object": instance,
+                "form": self.form_class(),
+                "dhcp_version": self.dhcp_version,
+                "return_url": return_url,
+                "result": result,
+            },
+        )
+
+
+@register_model_view(Server, "lease4_bulk_import")
+class ServerLease4BulkImportView(_BaseBulkLeaseImportView):
+    """Bulk import DHCPv4 leases from a CSV file."""
+
+    dhcp_version = 4
+    form_class = forms.Lease4BulkImportForm
+
+
+@register_model_view(Server, "lease6_bulk_import")
+class ServerLease6BulkImportView(_BaseBulkLeaseImportView):
+    """Bulk import DHCPv6 leases from a CSV file."""
+
+    dhcp_version = 6
+    form_class = forms.Lease6BulkImportForm
 
 
 # ─────────────────────────────────────────────────────────────────────────────

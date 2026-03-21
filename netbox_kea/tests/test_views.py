@@ -3216,3 +3216,123 @@ class TestLeaseAddSyncToNetBox(_ViewTestBase):
         response = self.client.post(self._url(version=4), self._post4(sync=True))
         self.assertEqual(response.status_code, 302)
         MockKeaClient.return_value.lease_add.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# TestBulkLeaseImportView — bulk lease CSV import (Gap C)
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG={"netbox_kea": {"kea_timeout": 30}})
+class TestBulkLeaseImportView(_ViewTestBase):
+    """Tests for ServerLease4/6BulkImportView."""
+
+    def _url(self, version=4):
+        return reverse(f"plugins:netbox_kea:server_lease{version}_bulk_import", args=[self.server.pk])
+
+    def _csv4(self, rows=None):
+        header = "ip-address,hw-address,subnet-id,valid-lft,hostname\n"
+        if rows is None:
+            rows = ["10.0.0.10,aa:bb:cc:dd:ee:ff,1,3600,host1.example.com\n"]
+        return (header + "".join(rows)).encode("utf-8")
+
+    def _csv6(self, rows=None):
+        header = "ip-address,duid,iaid,subnet-id,hostname\n"
+        if rows is None:
+            rows = ["2001:db8::1,00:01:02:03,12345,1,host1.example.com\n"]
+        return (header + "".join(rows)).encode("utf-8")
+
+    def _post(self, version=4, csv_bytes=None):
+        import io as _io
+
+        if csv_bytes is None:
+            csv_bytes = self._csv4() if version == 4 else self._csv6()
+        f = _io.BytesIO(csv_bytes)
+        f.name = "leases.csv"
+        return {"csv_file": f}
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_get_v4_returns_200(self, MockKeaClient):
+        """GET lease4 bulk import page returns 200."""
+        response = self.client.get(self._url(version=4))
+        self.assertEqual(response.status_code, 200)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_get_v6_returns_200(self, MockKeaClient):
+        """GET lease6 bulk import page returns 200."""
+        response = self.client.get(self._url(version=6))
+        self.assertEqual(response.status_code, 200)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_v4_valid_csv_calls_lease_add(self, MockKeaClient):
+        """POST with valid v4 CSV calls lease_add once per row."""
+        MockKeaClient.return_value.lease_add.return_value = None
+        response = self.client.post(self._url(version=4), self._post(version=4))
+        self.assertEqual(response.status_code, 200)
+        MockKeaClient.return_value.lease_add.assert_called_once()
+        args = MockKeaClient.return_value.lease_add.call_args[0]
+        self.assertEqual(args[0], 4)
+        self.assertEqual(args[1]["ip-address"], "10.0.0.10")
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_v6_valid_csv_calls_lease_add(self, MockKeaClient):
+        """POST with valid v6 CSV calls lease_add with correct duid and iaid."""
+        MockKeaClient.return_value.lease_add.return_value = None
+        response = self.client.post(self._url(version=6), self._post(version=6))
+        self.assertEqual(response.status_code, 200)
+        MockKeaClient.return_value.lease_add.assert_called_once()
+        args = MockKeaClient.return_value.lease_add.call_args[0]
+        self.assertEqual(args[0], 6)
+        self.assertEqual(args[1]["duid"], "00:01:02:03")
+        self.assertEqual(args[1]["iaid"], 12345)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_multiple_rows_calls_lease_add_per_row(self, MockKeaClient):
+        """Each CSV row triggers one lease_add call."""
+        MockKeaClient.return_value.lease_add.return_value = None
+        csv_bytes = self._csv4(
+            rows=[
+                "10.0.0.10,aa:bb:cc:dd:ee:01,1,3600,h1\n",
+                "10.0.0.11,aa:bb:cc:dd:ee:02,1,3600,h2\n",
+                "10.0.0.12,aa:bb:cc:dd:ee:03,1,3600,h3\n",
+            ]
+        )
+        response = self.client.post(self._url(version=4), self._post(version=4, csv_bytes=csv_bytes))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(MockKeaClient.return_value.lease_add.call_count, 3)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_partial_failure_shows_error_count(self, MockKeaClient):
+        """If some rows fail, result context shows correct created/error counts."""
+        from netbox_kea.kea import KeaException
+
+        mock_client = MockKeaClient.return_value
+        mock_client.lease_add.side_effect = [None, KeaException({"result": 1, "text": "bad"}, index=0)]
+        csv_bytes = self._csv4(
+            rows=[
+                "10.0.0.10,aa:bb:cc:dd:ee:01,1,3600,h1\n",
+                "10.0.0.11,aa:bb:cc:dd:ee:02,1,3600,h2\n",
+            ]
+        )
+        response = self.client.post(self._url(version=4), self._post(version=4, csv_bytes=csv_bytes))
+        self.assertEqual(response.status_code, 200)
+        result = response.context["result"]
+        self.assertEqual(result["created"], 1)
+        self.assertEqual(result["errors"], 1)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_empty_csv_shows_form_error(self, MockKeaClient):
+        """Uploading a CSV with only a header (no data rows) returns 200 with empty result."""
+        MockKeaClient.return_value.lease_add.return_value = None
+        csv_bytes = b"ip-address,hw-address\n"
+        response = self.client.post(self._url(version=4), self._post(version=4, csv_bytes=csv_bytes))
+        self.assertEqual(response.status_code, 200)
+        result = response.context.get("result")
+        if result is not None:
+            self.assertEqual(result["created"], 0)
+
+    def test_get_requires_login(self):
+        """Unauthenticated GET redirects to login."""
+        self.client.logout()
+        response = self.client.get(self._url(version=4))
+        self.assertIn(response.status_code, (302, 403))
