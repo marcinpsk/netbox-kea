@@ -19,6 +19,16 @@
         </button>
         <a href="{{ request.path }}{% if server_qs %}?{{ server_qs }}{% endif %}"
            class="btn btn-outline-secondary">Reset</a>
+        {% if request.GET.q %}
+        <div class="dropdown d-inline-block ms-1">
+          <button type="button" class="btn btn-purple dropdown-toggle" data-bs-toggle="dropdown">
+            <i class="mdi mdi-download"></i> Export
+          </button>
+          <ul class="dropdown-menu dropdown-menu-end">
+            <li><a class="dropdown-item" href="?{{ request.GET.urlencode }}&export=table">Current View (CSV)</a></li>
+          </ul>
+        </div>
+        {% endif %}
       </div>
     </form>
   </div>

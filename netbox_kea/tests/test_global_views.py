@@ -867,3 +867,86 @@ class TestCombinedReservations6Enrichment(_CombinedViewBase):
         self.assertEqual(response.status_code, 200)
         expected = f"/plugins/kea/servers/{self.v6_server.pk}/reservations6/"
         self.assertContains(response, expected)
+
+
+# ---------------------------------------------------------------------------
+# CombinedLeases state filter  (added alongside lease-state sprint)
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestCombinedLeasesStateFilter(_CombinedViewBase):
+    """State filter in combined leases view must narrow results after merging."""
+
+    _ACTIVE_LEASE = {
+        "ip-address": "10.0.0.1",
+        "hostname": "active-host",
+        "subnet-id": 1,
+        "state": 0,
+        "valid-lft": 3600,
+        "cltt": 1_234_567_890,
+        "hw-address": "aa:bb:cc:dd:ee:ff",
+    }
+    _DECLINED_LEASE = {
+        "ip-address": "10.0.0.2",
+        "hostname": "declined-host",
+        "subnet-id": 1,
+        "state": 1,
+        "valid-lft": 3600,
+        "cltt": 1_234_567_890,
+        "hw-address": "aa:bb:cc:dd:ee:00",
+    }
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_state_filter_excludes_other_states(self, MockKeaClient):
+        """state=1 (Declined) must exclude Active leases from merged results."""
+        MockKeaClient.return_value.command.return_value = [
+            {"result": 0, "arguments": {"leases": [dict(self._ACTIVE_LEASE), dict(self._DECLINED_LEASE)]}}
+        ]
+        MockKeaClient.return_value.reservation_get_page.return_value = ([], 0, 0)
+        url = (
+            reverse("plugins:netbox_kea:combined_leases4")
+            + f"?server={self.v4_server.pk}&q=host&by={constants.BY_HOSTNAME}&state=1"
+        )
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, "active-host")
+        self.assertContains(response, "declined-host")
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_state_filter_none_returns_all(self, MockKeaClient):
+        """Empty state (no filter) must return both Active and Declined leases."""
+        MockKeaClient.return_value.command.return_value = [
+            {"result": 0, "arguments": {"leases": [dict(self._ACTIVE_LEASE), dict(self._DECLINED_LEASE)]}}
+        ]
+        MockKeaClient.return_value.reservation_get_page.return_value = ([], 0, 0)
+        url = (
+            reverse("plugins:netbox_kea:combined_leases4")
+            + f"?server={self.v4_server.pk}&q=host&by={constants.BY_HOSTNAME}"
+        )
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "active-host")
+        self.assertContains(response, "declined-host")
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_export_table_returns_csv(self, MockKeaClient):
+        """?export=table returns a CSV download when search results are available."""
+        MockKeaClient.return_value.command.return_value = [
+            {"result": 0, "arguments": {"leases": [dict(self._ACTIVE_LEASE)]}}
+        ]
+        MockKeaClient.return_value.reservation_get_page.return_value = ([], 0, 0)
+        url = (
+            reverse("plugins:netbox_kea:combined_leases4")
+            + f"?server={self.v4_server.pk}&q=host&by={constants.BY_HOSTNAME}&export=table"
+        )
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("text/csv", response.get("Content-Type", ""))
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_export_without_query_returns_empty_csv(self, MockKeaClient):
+        """?export=table without a search query returns an empty CSV (no 500)."""
+        url = reverse("plugins:netbox_kea:combined_leases4") + "?export=table"
+        response = self.client.get(url)
+        self.assertIn(response.status_code, (200, 400))  # must not 500

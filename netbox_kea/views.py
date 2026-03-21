@@ -2753,6 +2753,8 @@ class _CombinedLeasesView(_CombinedViewMixin):
         if "q" not in request.GET or not request.GET.get("q"):
             t = table_cls([], user=request.user)
             t.configure(request)
+            if "export" in request.GET:
+                return export_table(t, filename=f"kea-dhcpv{self.dhcp_version}-leases.csv")
             ctx["table"] = t
             ctx["errors"] = []
             return render(request, self.template_name, ctx)
@@ -2766,6 +2768,7 @@ class _CombinedLeasesView(_CombinedViewMixin):
 
         q = search_form.cleaned_data["q"]
         by = search_form.cleaned_data["by"]
+        state_filter = search_form.cleaned_data.get("state")
         servers = self._get_servers(request, self.dhcp_version)
 
         all_leases: list[dict[str, Any]] = []
@@ -2782,6 +2785,9 @@ class _CombinedLeasesView(_CombinedViewMixin):
                     logger.exception("Failed to query server %s", server.name)
                     errors.append((server.name, "Failed to query server"))
 
+        if state_filter is not None:
+            all_leases = [ls for ls in all_leases if ls.get("state") == state_filter]
+
         # Enrich in the main thread so Django ORM queries see the test transaction.
         server_map = {s.pk: s for s in servers}
         for server_pk, server in server_map.items():
@@ -2791,6 +2797,14 @@ class _CombinedLeasesView(_CombinedViewMixin):
 
         table = table_cls(all_leases, user=request.user)
         table.configure(request)
+
+        if "export" in request.GET:
+            return export_table(
+                table,
+                filename=f"kea-dhcpv{self.dhcp_version}-leases.csv",
+                use_selected_columns=request.GET["export"] == "table",
+            )
+
         ctx["table"] = table
         ctx["errors"] = errors
         return render(request, self.template_name, ctx)
