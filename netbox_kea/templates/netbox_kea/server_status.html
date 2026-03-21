@@ -1,12 +1,28 @@
 {% extends "generic/object.html" %}
 
 {% block content %}
-  {% for name, service_data in statuses.items %}
+  {% for svc in services %}
     <div class="card">
-      <h5 class="card-header">{{ name }}</h5>
+      <h5 class="card-header d-flex justify-content-between align-items-center">
+        {{ svc.name }}
+        {% if svc.enable_url %}
+          <div class="btn-group btn-group-sm" role="group" aria-label="{{ svc.name }} service controls">
+            <a href="{{ svc.enable_url }}"
+               class="btn btn-outline-success"
+               title="Re-enable {{ svc.name }} processing">
+              <i class="mdi mdi-play-circle-outline" aria-hidden="true"></i> Enable
+            </a>
+            <a href="{{ svc.disable_url }}"
+               class="btn btn-outline-danger"
+               title="Temporarily disable {{ svc.name }} processing">
+              <i class="mdi mdi-pause-circle-outline" aria-hidden="true"></i> Disable
+            </a>
+          </div>
+        {% endif %}
+      </h5>
       <div class="card-body">
         <table class="table table-hover attr-table">
-          {% for k,v in service_data.items %}
+          {% for k, v in svc.status_data.items %}
           <tr>
             <th scope="row">{{ k }}</th>
             <td>{% if k == "Version" %}<code>{{ v }}</code>{% else %}{{ v }}{% endif %}</td>
@@ -35,3 +51,5 @@
     {% endfor %}
   {% endif %}
 {% endblock %}
+
+

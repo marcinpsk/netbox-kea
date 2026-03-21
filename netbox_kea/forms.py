@@ -540,3 +540,28 @@ class ReservationSearchForm(forms.Form):
         min_value=1,
         help_text="Filter to a specific Kea subnet ID.",
     )
+
+
+class DHCPDisableForm(forms.Form):
+    """Confirmation form for disabling a Kea DHCP service.
+
+    *max_period* is optional.  When supplied, Kea automatically re-enables the
+    service after that many seconds.  When omitted the service stays disabled
+    until an explicit ``dhcp-enable`` call is made.
+    """
+
+    max_period = forms.IntegerField(
+        required=False,
+        min_value=1,
+        label="Max period (seconds)",
+        help_text=(
+            "How long DHCP processing should remain disabled. "
+            "Leave blank to keep disabled until manually re-enabled."
+        ),
+        widget=forms.NumberInput(attrs={"class": "form-control", "placeholder": "e.g. 300"}),
+    )
+    confirm = forms.BooleanField(
+        required=True,
+        widget=forms.HiddenInput(),
+        initial=True,
+    )

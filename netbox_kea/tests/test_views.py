@@ -31,7 +31,7 @@ from django.test import TestCase, override_settings
 from django.urls import reverse
 
 from netbox_kea.models import Server
-from netbox_kea.views import _extract_identifier
+from netbox_kea.views import _get_reservation_identifier as _extract_identifier
 
 # Minimal PLUGINS_CONFIG so server.get_client() can read kea_timeout.
 _PLUGINS_CONFIG = {"netbox_kea": {"kea_timeout": 30}}
@@ -1530,3 +1530,173 @@ class TestLeaseExportAll(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(len(call_args_list), 1)
         self.assertEqual(call_args_list[0]["from"], "0.0.0.0")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DHCP Enable / Disable views
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestServerDHCP4EnableView(_ViewTestBase):
+    """Tests for ServerDHCP4EnableView (GET confirmation + POST enable)."""
+
+    def _url(self):
+        return reverse("plugins:netbox_kea:server_dhcp4_enable", args=[self.server.pk])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_get_returns_confirmation_page(self, MockKeaClient):
+        """GET must render the enable confirmation page with dhcp_version=4."""
+        response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "4")
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_calls_dhcp_enable_and_redirects(self, MockKeaClient):
+        """POST must call dhcp_enable('dhcp4') and redirect to status tab."""
+        mock_client = MockKeaClient.return_value
+        mock_client.dhcp_enable.return_value = None
+        response = self.client.post(self._url())
+        self.assertEqual(response.status_code, 302)
+        self._assert_no_none_pk_redirect(response)
+        mock_client.dhcp_enable.assert_called_once_with("dhcp4")
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_on_kea_exception_shows_error_and_redirects(self, MockKeaClient):
+        """POST with KeaException must flash an error message and redirect (no 500)."""
+        from netbox_kea.kea import KeaException
+
+        mock_client = MockKeaClient.return_value
+        mock_client.dhcp_enable.side_effect = KeaException({"result": 1, "text": "error"}, index=0)
+        response = self.client.post(self._url())
+        self.assertEqual(response.status_code, 302)
+        self._assert_no_none_pk_redirect(response)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_on_unexpected_exception_shows_error_and_redirects(self, MockKeaClient):
+        """POST with unexpected exception must redirect (no 500)."""
+        mock_client = MockKeaClient.return_value
+        mock_client.dhcp_enable.side_effect = RuntimeError("unexpected")
+        response = self.client.post(self._url())
+        self.assertEqual(response.status_code, 302)
+        self._assert_no_none_pk_redirect(response)
+
+    def test_get_requires_login(self):
+        """Unauthenticated GET must redirect to login."""
+        self.client.logout()
+        response = self.client.get(self._url())
+        self.assertIn(response.status_code, (302, 403))
+
+    def test_post_requires_login(self):
+        """Unauthenticated POST must redirect to login."""
+        self.client.logout()
+        response = self.client.post(self._url())
+        self.assertIn(response.status_code, (302, 403))
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestServerDHCP6EnableView(_ViewTestBase):
+    """Tests for ServerDHCP6EnableView — verifies v6 variant uses dhcp6 service."""
+
+    def _url(self):
+        return reverse("plugins:netbox_kea:server_dhcp6_enable", args=[self.server.pk])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_calls_dhcp_enable_v6(self, MockKeaClient):
+        """POST must call dhcp_enable('dhcp6')."""
+        mock_client = MockKeaClient.return_value
+        mock_client.dhcp_enable.return_value = None
+        response = self.client.post(self._url())
+        self.assertEqual(response.status_code, 302)
+        mock_client.dhcp_enable.assert_called_once_with("dhcp6")
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestServerDHCP4DisableView(_ViewTestBase):
+    """Tests for ServerDHCP4DisableView (GET form + POST disable with optional max_period)."""
+
+    def _url(self):
+        return reverse("plugins:netbox_kea:server_dhcp4_disable", args=[self.server.pk])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_get_returns_form_page(self, MockKeaClient):
+        """GET must render the disable form with max_period field."""
+        response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "max_period")
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_without_max_period_calls_disable_no_period(self, MockKeaClient):
+        """POST without max_period must call dhcp_disable(service) with max_period=None."""
+        mock_client = MockKeaClient.return_value
+        mock_client.dhcp_disable.return_value = None
+        response = self.client.post(self._url(), {"confirm": "1"})
+        self.assertEqual(response.status_code, 302)
+        self._assert_no_none_pk_redirect(response)
+        mock_client.dhcp_disable.assert_called_once_with("dhcp4", max_period=None)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_with_max_period_passes_value(self, MockKeaClient):
+        """POST with max_period=300 must pass max_period=300 to dhcp_disable."""
+        mock_client = MockKeaClient.return_value
+        mock_client.dhcp_disable.return_value = None
+        response = self.client.post(self._url(), {"confirm": "1", "max_period": "300"})
+        self.assertEqual(response.status_code, 302)
+        self._assert_no_none_pk_redirect(response)
+        mock_client.dhcp_disable.assert_called_once_with("dhcp4", max_period=300)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_with_invalid_max_period_rerenders_form(self, MockKeaClient):
+        """POST with non-integer max_period must re-render the form (not redirect)."""
+        response = self.client.post(self._url(), {"confirm": "1", "max_period": "not-a-number"})
+        self.assertEqual(response.status_code, 200)
+        MockKeaClient.return_value.dhcp_disable.assert_not_called()
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_on_kea_exception_shows_error_and_redirects(self, MockKeaClient):
+        """POST with KeaException must flash an error and redirect (no 500)."""
+        from netbox_kea.kea import KeaException
+
+        mock_client = MockKeaClient.return_value
+        mock_client.dhcp_disable.side_effect = KeaException({"result": 1, "text": "error"}, index=0)
+        response = self.client.post(self._url(), {"confirm": "1"})
+        self.assertEqual(response.status_code, 302)
+        self._assert_no_none_pk_redirect(response)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_on_unexpected_exception_shows_error_and_redirects(self, MockKeaClient):
+        """POST with unexpected exception must redirect (no 500)."""
+        mock_client = MockKeaClient.return_value
+        mock_client.dhcp_disable.side_effect = RuntimeError("unexpected")
+        response = self.client.post(self._url(), {"confirm": "1"})
+        self.assertEqual(response.status_code, 302)
+        self._assert_no_none_pk_redirect(response)
+
+    def test_get_requires_login(self):
+        """Unauthenticated GET must redirect to login."""
+        self.client.logout()
+        response = self.client.get(self._url())
+        self.assertIn(response.status_code, (302, 403))
+
+    def test_post_requires_login(self):
+        """Unauthenticated POST must redirect to login."""
+        self.client.logout()
+        response = self.client.post(self._url())
+        self.assertIn(response.status_code, (302, 403))
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestServerDHCP6DisableView(_ViewTestBase):
+    """Tests for ServerDHCP6DisableView — verifies v6 variant uses dhcp6 service."""
+
+    def _url(self):
+        return reverse("plugins:netbox_kea:server_dhcp6_disable", args=[self.server.pk])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_calls_dhcp_disable_v6(self, MockKeaClient):
+        """POST must call dhcp_disable('dhcp6')."""
+        mock_client = MockKeaClient.return_value
+        mock_client.dhcp_disable.return_value = None
+        response = self.client.post(self._url(), {"confirm": "1"})
+        self.assertEqual(response.status_code, 302)
+        mock_client.dhcp_disable.assert_called_once_with("dhcp6", max_period=None)

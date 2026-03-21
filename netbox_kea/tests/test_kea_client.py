@@ -1250,3 +1250,147 @@ class TestLeaseWipe(TestCase):
         ):
             result = self.client.lease_wipe(version=4, subnet_id=1)
         self.assertIsNone(result)
+
+
+_DHCP_DISABLE_RESP = [{"result": 0, "text": "DHCPv4 server disabled."}]
+_DHCP_ENABLE_RESP = [{"result": 0, "text": "DHCPv4 server enabled."}]
+
+
+class TestDHCPDisable(TestCase):
+    """Tests for KeaClient.dhcp_disable()."""
+
+    def setUp(self):
+        self.client = KeaClient(url="http://kea:8000")
+
+    def _payload(self, mock_post):
+        return mock_post.call_args_list[0].kwargs.get("json") or mock_post.call_args_list[0][1]["json"]
+
+    def test_dhcp_disable_sends_correct_command(self):
+        """dhcp-disable command is sent to the correct service."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(_DHCP_DISABLE_RESP),
+        ) as mock_post:
+            self.client.dhcp_disable("dhcp4")
+        payload = self._payload(mock_post)
+        self.assertEqual(payload["command"], "dhcp-disable")
+        self.assertEqual(payload["service"], ["dhcp4"])
+
+    def test_dhcp_disable_without_max_period_omits_arguments(self):
+        """When max_period is not given, the arguments field must be absent."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(_DHCP_DISABLE_RESP),
+        ) as mock_post:
+            self.client.dhcp_disable("dhcp4")
+        payload = self._payload(mock_post)
+        self.assertNotIn("arguments", payload)
+
+    def test_dhcp_disable_with_max_period_includes_arguments(self):
+        """When max_period is given, arguments contains max-period."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(_DHCP_DISABLE_RESP),
+        ) as mock_post:
+            self.client.dhcp_disable("dhcp4", max_period=300)
+        payload = self._payload(mock_post)
+        self.assertIn("arguments", payload)
+        self.assertEqual(payload["arguments"]["max-period"], 300)
+
+    def test_dhcp_disable_raises_on_kea_error(self):
+        """KeaException is raised when Kea returns result != 0."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects([{"result": 1, "text": "server busy"}]),
+        ):
+            with self.assertRaises(KeaException):
+                self.client.dhcp_disable("dhcp4")
+
+    def test_dhcp_disable_works_for_dhcp6(self):
+        """dhcp-disable can target the dhcp6 service."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(_DHCP_DISABLE_RESP),
+        ) as mock_post:
+            self.client.dhcp_disable("dhcp6")
+        payload = self._payload(mock_post)
+        self.assertEqual(payload["service"], ["dhcp6"])
+
+    def test_dhcp_disable_returns_none_on_success(self):
+        """dhcp_disable returns None on success."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(_DHCP_DISABLE_RESP),
+        ):
+            result = self.client.dhcp_disable("dhcp4")
+        self.assertIsNone(result)
+
+
+class TestDHCPEnable(TestCase):
+    """Tests for KeaClient.dhcp_enable()."""
+
+    def setUp(self):
+        self.client = KeaClient(url="http://kea:8000")
+
+    def _payload(self, mock_post):
+        return mock_post.call_args_list[0].kwargs.get("json") or mock_post.call_args_list[0][1]["json"]
+
+    def test_dhcp_enable_sends_correct_command(self):
+        """dhcp-enable command is sent to the correct service."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(_DHCP_ENABLE_RESP),
+        ) as mock_post:
+            self.client.dhcp_enable("dhcp4")
+        payload = self._payload(mock_post)
+        self.assertEqual(payload["command"], "dhcp-enable")
+        self.assertEqual(payload["service"], ["dhcp4"])
+
+    def test_dhcp_enable_has_no_arguments(self):
+        """dhcp-enable payload must not contain arguments."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(_DHCP_ENABLE_RESP),
+        ) as mock_post:
+            self.client.dhcp_enable("dhcp4")
+        payload = self._payload(mock_post)
+        self.assertNotIn("arguments", payload)
+
+    def test_dhcp_enable_raises_on_kea_error(self):
+        """KeaException is raised when Kea returns result != 0."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects([{"result": 1, "text": "already enabled"}]),
+        ):
+            with self.assertRaises(KeaException):
+                self.client.dhcp_enable("dhcp4")
+
+    def test_dhcp_enable_works_for_dhcp6(self):
+        """dhcp-enable can target the dhcp6 service."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(_DHCP_ENABLE_RESP),
+        ) as mock_post:
+            self.client.dhcp_enable("dhcp6")
+        payload = self._payload(mock_post)
+        self.assertEqual(payload["service"], ["dhcp6"])
+
+    def test_dhcp_enable_returns_none_on_success(self):
+        """dhcp_enable returns None on success."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(_DHCP_ENABLE_RESP),
+        ):
+            result = self.client.dhcp_enable("dhcp4")
+        self.assertIsNone(result)

@@ -385,6 +385,38 @@ class KeaClient:
             arguments={"subnet-id": subnet_id},
         )
 
+    def dhcp_disable(self, service: str, max_period: int | None = None) -> None:
+        """Temporarily disable DHCP processing on *service*.
+
+        The daemon continues running but stops responding to DHCP requests.
+        Pass *max_period* (in seconds) to automatically re-enable after that time;
+        omit it to keep the service disabled until :meth:`dhcp_enable` is called.
+
+        Args:
+            service: Kea service name, e.g. ``"dhcp4"`` or ``"dhcp6"``.
+            max_period: Optional number of seconds before the service auto-re-enables.
+
+        Raises:
+            KeaException: If Kea returns a non-zero result code.
+
+        """
+        arguments: dict[str, Any] | None = None
+        if max_period is not None:
+            arguments = {"max-period": max_period}
+        self.command("dhcp-disable", service=[service], arguments=arguments)
+
+    def dhcp_enable(self, service: str) -> None:
+        """Re-enable DHCP processing on *service* after a :meth:`dhcp_disable` call.
+
+        Args:
+            service: Kea service name, e.g. ``"dhcp4"`` or ``"dhcp6"``.
+
+        Raises:
+            KeaException: If Kea returns a non-zero result code.
+
+        """
+        self.command("dhcp-enable", service=[service])
+
     def pool_add(self, version: int, subnet_id: int, pool: str) -> None:
         """Add a pool to an existing subnet and persist the change.
 

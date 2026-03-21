@@ -156,6 +156,26 @@ urlpatterns = (
         views.ServerSubnet6WipeView.as_view(),
         name="server_subnet6_wipe_leases",
     ),
+    path(
+        "servers/<int:pk>/dhcp4/enable/",
+        views.ServerDHCP4EnableView.as_view(),
+        name="server_dhcp4_enable",
+    ),
+    path(
+        "servers/<int:pk>/dhcp4/disable/",
+        views.ServerDHCP4DisableView.as_view(),
+        name="server_dhcp4_disable",
+    ),
+    path(
+        "servers/<int:pk>/dhcp6/enable/",
+        views.ServerDHCP6EnableView.as_view(),
+        name="server_dhcp6_enable",
+    ),
+    path(
+        "servers/<int:pk>/dhcp6/disable/",
+        views.ServerDHCP6DisableView.as_view(),
+        name="server_dhcp6_disable",
+    ),
     path("servers/<int:pk>/", include(get_model_urls("netbox_kea", "server"))),
     path(
         "ip-addresses/<int:pk>/kea-reservations/",
