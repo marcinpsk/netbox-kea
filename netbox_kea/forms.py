@@ -128,6 +128,12 @@ class BaseLeasesSarchForm(forms.Form):
 
     q = forms.CharField(label="Search")
     page = forms.CharField(required=False, widget=VeryHiddenInput)
+    state = forms.ChoiceField(
+        label="State",
+        required=False,
+        choices=constants.LEASE_STATE_CHOICES,
+        help_text="Filter results by lease state.",
+    )
 
     def clean(self) -> dict[str, Any] | None:
         """Validate and normalise search fields according to the selected search type."""
@@ -178,6 +184,10 @@ class BaseLeasesSarchForm(forms.Form):
             if not is_hex_string(q, constants.CLIENT_ID_MIN_OCTETS, constants.DUID_MAX_OCTETS):
                 raise ValidationError({"q": "Invalid client ID."})
             cleaned_data["q"] = q.replace("-", "")
+
+        # Convert state to int or None for the view to use.
+        state_str = cleaned_data.get("state", "")
+        cleaned_data["state"] = int(state_str) if state_str != "" else None
 
         page = cleaned_data["page"]
         if page:

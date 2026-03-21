@@ -14,3 +14,18 @@ DUID_MAX_OCTETS = 128
 DUID_MIN_OCTETS = 1
 CLIENT_ID_MAX_OCTETS = DUID_MAX_OCTETS
 CLIENT_ID_MIN_OCTETS = 2
+
+# Kea lease state codes and human-readable labels.
+# https://kea.readthedocs.io/en/latest/arm/lease-db.html#lease-states
+LEASE_STATE_LABELS: dict[int, str] = {
+    0: "Active",
+    1: "Declined",
+    2: "Expired",
+}
+
+LEASE_STATE_CHOICES = [
+    ("", "Any"),
+    ("0", "Active"),
+    ("1", "Declined"),
+    ("2", "Expired"),
+]

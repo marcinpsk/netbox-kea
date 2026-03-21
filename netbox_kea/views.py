@@ -504,6 +504,7 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
 
             by = form.cleaned_data["by"]
             q = form.cleaned_data["q"]
+            state_filter: int | None = form.cleaned_data.get("state")
             client = instance.get_client(version=self.dhcp_version)
             if by == "subnet":
                 leases, next_page = self.get_leases_page(
@@ -517,6 +518,10 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
                 paginate = False
                 next_page = None
                 leases = self.get_leases(client, q, by)
+
+            # Apply optional state filter (client-side, after fetch).
+            if state_filter is not None:
+                leases = [ls for ls in leases if ls.get("state") == state_filter]
 
             # Enrich leases with reservation badges + NetBox IPAM status.
             # Extracted helper so combined views get the same treatment.

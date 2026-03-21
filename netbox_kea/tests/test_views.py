@@ -2401,3 +2401,166 @@ class TestLeaseEditView(_ViewTestBase):
         self.client.logout()
         response = self.client.get(self._url())
         self.assertIn(response.status_code, (302, 403))
+
+
+# ---------------------------------------------------------------------------
+# TestLeaseStateFilter
+# ---------------------------------------------------------------------------
+
+_STATE_LEASES_RESP = [
+    {
+        "result": 0,
+        "arguments": {
+            "leases": [
+                {
+                    "ip-address": "10.0.0.1",
+                    "hw-address": "aa:bb:cc:dd:ee:01",
+                    "hostname": "active-host",
+                    "subnet-id": 1,
+                    "valid-lft": 3600,
+                    "cltt": 1_700_000_000,
+                    "state": 0,
+                },
+                {
+                    "ip-address": "10.0.0.2",
+                    "hw-address": "aa:bb:cc:dd:ee:02",
+                    "hostname": "declined-host",
+                    "subnet-id": 1,
+                    "valid-lft": 3600,
+                    "cltt": 1_700_000_000,
+                    "state": 1,
+                },
+                {
+                    "ip-address": "10.0.0.3",
+                    "hw-address": "aa:bb:cc:dd:ee:03",
+                    "hostname": "expired-host",
+                    "subnet-id": 1,
+                    "valid-lft": 3600,
+                    "cltt": 1_700_000_000,
+                    "state": 2,
+                },
+            ]
+        },
+    }
+]
+
+_PAGE_LEASES_RESP = [
+    {
+        "result": 0,
+        "arguments": {
+            "count": 2,
+            "leases": [
+                {
+                    "ip-address": "10.0.0.10",
+                    "hw-address": "aa:bb:cc:dd:ee:10",
+                    "hostname": "page-active",
+                    "subnet-id": 1,
+                    "valid-lft": 3600,
+                    "cltt": 1_700_000_000,
+                    "state": 0,
+                },
+                {
+                    "ip-address": "10.0.0.11",
+                    "hw-address": "aa:bb:cc:dd:ee:11",
+                    "hostname": "page-declined",
+                    "subnet-id": 1,
+                    "valid-lft": 3600,
+                    "cltt": 1_700_000_000,
+                    "state": 1,
+                },
+            ],
+        },
+    }
+]
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestLeaseStateFilter(_ViewTestBase):
+    """Tests that the optional state filter correctly limits lease results."""
+
+    def _htmx_get(self, url, data):
+        return self.client.get(url, data=data, HTTP_HX_REQUEST="true")
+
+    def _url4(self):
+        return reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_state_column_rendered_in_table(self, MockKeaClient):
+        """Lease table includes a state_label column header."""
+        mock_client = MockKeaClient.return_value
+        mock_client.command.return_value = _STATE_LEASES_RESP
+        mock_client.reservation_get_page.return_value = ([], 0, 0)
+        response = self._htmx_get(self._url4(), {"by": "hw", "q": "aa:bb:cc:dd:ee:01"})
+        self.assertEqual(response.status_code, 200)
+        # State column header must be present
+        self.assertContains(response, "State")
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_state_label_active_rendered(self, MockKeaClient):
+        """Active lease shows 'Active' state badge."""
+        mock_client = MockKeaClient.return_value
+        mock_client.command.return_value = [
+            {
+                "result": 0,
+                "arguments": {"leases": [_STATE_LEASES_RESP[0]["arguments"]["leases"][0]]},
+            }
+        ]
+        mock_client.reservation_get_page.return_value = ([], 0, 0)
+        response = self._htmx_get(self._url4(), {"by": "hw", "q": "aa:bb:cc:dd:ee:01"})
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Active")
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_state_label_declined_rendered(self, MockKeaClient):
+        """Declined lease shows 'Declined' state badge."""
+        mock_client = MockKeaClient.return_value
+        mock_client.command.return_value = [
+            {
+                "result": 0,
+                "arguments": {"leases": [_STATE_LEASES_RESP[0]["arguments"]["leases"][1]]},
+            }
+        ]
+        mock_client.reservation_get_page.return_value = ([], 0, 0)
+        response = self._htmx_get(self._url4(), {"by": "hw", "q": "aa:bb:cc:dd:ee:02"})
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Declined")
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_state_filter_declined_hides_active(self, MockKeaClient):
+        """State filter=1 (Declined) excludes Active leases from search results."""
+        mock_client = MockKeaClient.return_value
+        mock_client.command.return_value = _STATE_LEASES_RESP
+        mock_client.reservation_get_page.return_value = ([], 0, 0)
+        response = self._htmx_get(self._url4(), {"by": "hostname", "q": "host", "state": "1"})
+        self.assertEqual(response.status_code, 200)
+        # Active and Expired hosts should not appear
+        self.assertNotContains(response, "active-host")
+        self.assertNotContains(response, "expired-host")
+        self.assertContains(response, "declined-host")
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_state_filter_any_returns_all(self, MockKeaClient):
+        """Empty state filter (Any) returns all leases."""
+        mock_client = MockKeaClient.return_value
+        mock_client.command.return_value = _STATE_LEASES_RESP
+        mock_client.reservation_get_page.return_value = ([], 0, 0)
+        response = self._htmx_get(self._url4(), {"by": "hostname", "q": "host", "state": ""})
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "active-host")
+        self.assertContains(response, "declined-host")
+        self.assertContains(response, "expired-host")
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_state_filter_applied_on_paginated_subnet_search(self, MockKeaClient):
+        """State filter also applies to paginated subnet-based search."""
+        mock_client = MockKeaClient.return_value
+        # First call: lease4-get-page; second: reservation_get_page
+        mock_client.command.return_value = _PAGE_LEASES_RESP
+        mock_client.reservation_get_page.return_value = ([], 0, 0)
+        response = self._htmx_get(
+            self._url4(),
+            {"by": "subnet", "q": "10.0.0.0/24", "state": "1"},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, "page-active")
+        self.assertContains(response, "page-declined")

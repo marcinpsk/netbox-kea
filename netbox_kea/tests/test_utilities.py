@@ -52,10 +52,10 @@ class TestEnrichLease(TestCase):
     def _now(self):
         return datetime(2024, 1, 1, 12, 0, 0)
 
-    def test_missing_cltt_and_valid_lft_returns_as_is(self):
+    def test_missing_cltt_and_valid_lft_adds_state_label(self):
         lease = {"ip_address": "10.0.0.1"}
         result = _enrich_lease(self._now(), lease)
-        self.assertEqual(result, {"ip_address": "10.0.0.1"})
+        self.assertEqual(result, {"ip_address": "10.0.0.1", "state_label": "Unknown"})
 
     def test_hyphen_keys_replaced_with_underscore(self):
         lease = {"ip-address": "10.0.0.1", "cltt": 0, "valid_lft": 3600}
@@ -572,3 +572,51 @@ class TestParseReservationCsv(TestCase):
         with self.assertRaises(ValueError) as ctx:
             parse_reservation_csv(csv, version=4)
         self.assertIn("2", str(ctx.exception))  # row 2 (1-indexed, header = row 1)
+
+
+# ---------------------------------------------------------------------------
+# TestLeaseStateEnrich
+# ---------------------------------------------------------------------------
+
+
+class TestLeaseStateEnrich(TestCase):
+    """Tests that _enrich_lease populates state_label correctly."""
+
+    def _enrich(self, state_value):
+        from netbox_kea.utilities import format_leases
+
+        lease = {
+            "ip-address": "10.0.0.1",
+            "cltt": 1700000000,
+            "valid-lft": 3600,
+            "state": state_value,
+        }
+        return format_leases([lease])[0]
+
+    def test_state_0_is_active(self):
+        """State 0 maps to 'Active'."""
+        lease = self._enrich(0)
+        self.assertEqual(lease["state_label"], "Active")
+
+    def test_state_1_is_declined(self):
+        """State 1 maps to 'Declined'."""
+        lease = self._enrich(1)
+        self.assertEqual(lease["state_label"], "Declined")
+
+    def test_state_2_is_expired(self):
+        """State 2 maps to 'Expired'."""
+        lease = self._enrich(2)
+        self.assertEqual(lease["state_label"], "Expired")
+
+    def test_unknown_state_is_unknown(self):
+        """Unmapped state code falls back to 'Unknown'."""
+        lease = self._enrich(99)
+        self.assertEqual(lease["state_label"], "Unknown")
+
+    def test_missing_state_is_unknown(self):
+        """Lease with no state field falls back to 'Unknown'."""
+        from netbox_kea.utilities import format_leases
+
+        lease = {"ip-address": "10.0.0.2", "cltt": 1700000000, "valid-lft": 3600}
+        result = format_leases([lease])[0]
+        self.assertEqual(result.get("state_label"), "Unknown")

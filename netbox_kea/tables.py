@@ -315,6 +315,21 @@ class BaseLeaseTable(GenericTable):
     cltt = columns.DateTimeColumn(verbose_name="Client Last Transaction Time")
     expires_at = columns.DateTimeColumn(verbose_name="Expires At")
     expires_in = DurationColumn(verbose_name="Expires In")
+    state_label = tables.TemplateColumn(
+        verbose_name="State",
+        orderable=False,
+        template_code=(
+            "{% if record.state_label == 'Active' %}"
+            '<span class="badge text-bg-success">Active</span>'
+            "{% elif record.state_label == 'Declined' %}"
+            '<span class="badge text-bg-warning">Declined</span>'
+            "{% elif record.state_label == 'Expired' %}"
+            '<span class="badge text-bg-danger">Expired</span>'
+            "{% else %}"
+            '<span class="badge text-bg-secondary">{{ record.state_label }}</span>'
+            "{% endif %}"
+        ),
+    )
     reserved = tables.TemplateColumn(
         verbose_name="Reserved",
         orderable=False,
@@ -356,6 +371,7 @@ class BaseLeaseTable(GenericTable):
             "hostname",
             "subnet_id",
             "hw_address",
+            "state_label",
             "valid_lft",
             "cltt",
             "expires_at",
@@ -364,7 +380,7 @@ class BaseLeaseTable(GenericTable):
             "netbox_ip",
             "actions",
         )
-        default_columns = ("ip_address", "hostname", "reserved", "netbox_ip")
+        default_columns = ("ip_address", "hostname", "state_label", "reserved", "netbox_ip")
 
 
 class LeaseTable4(BaseLeaseTable):

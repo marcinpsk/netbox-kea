@@ -28,9 +28,13 @@ def format_duration(s: int | None) -> str | None:
 
 
 def _enrich_lease(now: datetime, lease: dict[str, Any]) -> dict[str, Any]:
-    """Add expires at and expires in to a lease."""
+    """Add expires at, expires in, and state_label to a lease."""
     # Need to replace "-" so we can access the values in a template
     lease = {k.replace("-", "_"): v for k, v in lease.items()}
+
+    # Human-readable state label — map Kea state int to text.
+    lease["state_label"] = constants.LEASE_STATE_LABELS.get(lease.get("state"), "Unknown")
+
     if "cltt" not in lease and "valid_lft" not in lease:
         return lease
 
