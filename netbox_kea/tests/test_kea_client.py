@@ -2106,3 +2106,267 @@ class TestLeaseUpdate(TestCase):
         for p in payloads:
             self.assertEqual(p["service"], ["dhcp6"])
         self.assertEqual(self._cmds(mock_post), ["lease6-get", "lease6-update"])
+
+
+# ---------------------------------------------------------------------------
+# TestLeaseAdd
+# ---------------------------------------------------------------------------
+
+_LEASE_ADD_OK = [{"result": 0, "text": "Lease added."}]
+_LEASE_ADD_FAIL = [{"result": 1, "text": "address already in use"}]
+
+
+class TestLeaseAdd(TestCase):
+    """Tests for KeaClient.lease_add(version, lease) -> None."""
+
+    def setUp(self):
+        self.client = KeaClient(url="http://kea:8000")
+
+    def _payloads(self, mock_post):
+        return [(c.kwargs.get("json") or c[1]["json"]) for c in mock_post.call_args_list]
+
+    def _cmds(self, mock_post):
+        return [p["command"] for p in self._payloads(mock_post)]
+
+    def test_v4_sends_correct_command_and_payload(self):
+        """lease4-add command is sent with the provided lease dict as arguments."""
+        lease = {"ip-address": "10.0.0.50", "hw-address": "aa:bb:cc:dd:ee:ff", "subnet-id": 1}
+        with patch.object(self.client._session, "post", return_value=_mock_http_response(_LEASE_ADD_OK)) as mock_post:
+            self.client.lease_add(version=4, lease=lease)
+        payload = self._payloads(mock_post)[0]
+        self.assertEqual(payload["command"], "lease4-add")
+        self.assertEqual(payload["service"], ["dhcp4"])
+        self.assertEqual(payload["arguments"], lease)
+
+    def test_v6_uses_dhcp6_service(self):
+        """For version=6, command is lease6-add and service is dhcp6."""
+        lease = {"ip-address": "2001:db8::1", "duid": "00:01:02:03", "iaid": 12345}
+        with patch.object(self.client._session, "post", return_value=_mock_http_response(_LEASE_ADD_OK)) as mock_post:
+            self.client.lease_add(version=6, lease=lease)
+        payload = self._payloads(mock_post)[0]
+        self.assertEqual(payload["command"], "lease6-add")
+        self.assertEqual(payload["service"], ["dhcp6"])
+
+    def test_returns_none_on_success(self):
+        """lease_add returns None on success."""
+        lease = {"ip-address": "10.0.0.50"}
+        with patch.object(self.client._session, "post", return_value=_mock_http_response(_LEASE_ADD_OK)):
+            result = self.client.lease_add(version=4, lease=lease)
+        self.assertIsNone(result)
+
+    def test_raises_kea_exception_on_error(self):
+        """KeaException raised when Kea returns a non-zero result."""
+        lease = {"ip-address": "10.0.0.50"}
+        with patch.object(self.client._session, "post", return_value=_mock_http_response(_LEASE_ADD_FAIL)):
+            with self.assertRaises(KeaException):
+                self.client.lease_add(version=4, lease=lease)
+
+
+# ---------------------------------------------------------------------------
+# TestNetworkAdd
+# ---------------------------------------------------------------------------
+
+_NETWORK_ADD_OK = [{"result": 0, "text": "shared network added."}]
+_NETWORK_ADD_FAIL = [{"result": 1, "text": "duplicate network name"}]
+
+
+class TestNetworkAdd(TestCase):
+    """Tests for KeaClient.network_add(version, name, options) -> None."""
+
+    def setUp(self):
+        self.client = KeaClient(url="http://kea:8000")
+
+    def _payloads(self, mock_post):
+        return [(c.kwargs.get("json") or c[1]["json"]) for c in mock_post.call_args_list]
+
+    def _cmds(self, mock_post):
+        return [p["command"] for p in self._payloads(mock_post)]
+
+    def test_sends_correct_command_and_service(self):
+        """network4-add is sent with service dhcp4 and the correct network name."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(_NETWORK_ADD_OK, _CONFIG_TEST_OK_RESP, _CONFIG_WRITE_RESP),
+        ) as mock_post:
+            self.client.network_add(version=4, name="prod-net")
+        payload = next(p for p in self._payloads(mock_post) if p["command"] == "network4-add")
+        self.assertEqual(payload["service"], ["dhcp4"])
+        self.assertEqual(payload["arguments"]["shared-networks"][0]["name"], "prod-net")
+
+    def test_options_included_when_provided(self):
+        """When options are provided, option-data is included in the network payload."""
+        opts = [{"name": "domain-name-servers", "data": "8.8.8.8"}]
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(_NETWORK_ADD_OK, _CONFIG_TEST_OK_RESP, _CONFIG_WRITE_RESP),
+        ) as mock_post:
+            self.client.network_add(version=4, name="opt-net", options=opts)
+        payload = next(p for p in self._payloads(mock_post) if p["command"] == "network4-add")
+        self.assertEqual(payload["arguments"]["shared-networks"][0]["option-data"], opts)
+
+    def test_persist_config_called_after_network_add(self):
+        """config-write is called after network4-add succeeds."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(_NETWORK_ADD_OK, _CONFIG_TEST_OK_RESP, _CONFIG_WRITE_RESP),
+        ) as mock_post:
+            self.client.network_add(version=4, name="my-net")
+        self.assertIn("config-write", self._cmds(mock_post))
+
+    def test_raises_kea_exception_on_add_failure(self):
+        """KeaException is raised when network4-add returns a non-zero result."""
+        with patch.object(self.client._session, "post", return_value=_mock_http_response(_NETWORK_ADD_FAIL)):
+            with self.assertRaises(KeaException):
+                self.client.network_add(version=4, name="dup-net")
+
+
+# ---------------------------------------------------------------------------
+# TestNetworkDel
+# ---------------------------------------------------------------------------
+
+_NETWORK_DEL_OK = [{"result": 0, "text": "shared network deleted."}]
+_NETWORK_DEL_FAIL = [{"result": 1, "text": "network not found"}]
+
+
+class TestNetworkDel(TestCase):
+    """Tests for KeaClient.network_del(version, name) -> None."""
+
+    def setUp(self):
+        self.client = KeaClient(url="http://kea:8000")
+
+    def _payloads(self, mock_post):
+        return [(c.kwargs.get("json") or c[1]["json"]) for c in mock_post.call_args_list]
+
+    def _cmds(self, mock_post):
+        return [p["command"] for p in self._payloads(mock_post)]
+
+    def test_sends_correct_command_and_name(self):
+        """network4-del is sent with service dhcp4 and the correct network name."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(_NETWORK_DEL_OK, _CONFIG_TEST_OK_RESP, _CONFIG_WRITE_RESP),
+        ) as mock_post:
+            self.client.network_del(version=4, name="old-net")
+        payload = next(p for p in self._payloads(mock_post) if p["command"] == "network4-del")
+        self.assertEqual(payload["service"], ["dhcp4"])
+        self.assertEqual(payload["arguments"]["name"], "old-net")
+
+    def test_persist_config_called_after_del(self):
+        """config-write is called after network4-del succeeds."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(_NETWORK_DEL_OK, _CONFIG_TEST_OK_RESP, _CONFIG_WRITE_RESP),
+        ) as mock_post:
+            self.client.network_del(version=4, name="old-net")
+        self.assertIn("config-write", self._cmds(mock_post))
+
+    def test_raises_kea_exception_on_failure(self):
+        """KeaException is raised when network4-del returns a non-zero result."""
+        with patch.object(self.client._session, "post", return_value=_mock_http_response(_NETWORK_DEL_FAIL)):
+            with self.assertRaises(KeaException):
+                self.client.network_del(version=4, name="missing-net")
+
+
+# ---------------------------------------------------------------------------
+# TestNetworkSubnetAdd
+# ---------------------------------------------------------------------------
+
+_NETWORK_SUBNET_ADD_OK = [{"result": 0, "text": "Subnet added to shared network."}]
+_NETWORK_SUBNET_ADD_FAIL = [{"result": 1, "text": "subnet not found"}]
+
+
+class TestNetworkSubnetAdd(TestCase):
+    """Tests for KeaClient.network_subnet_add(version, name, subnet_id) -> None."""
+
+    def setUp(self):
+        self.client = KeaClient(url="http://kea:8000")
+
+    def _payloads(self, mock_post):
+        return [(c.kwargs.get("json") or c[1]["json"]) for c in mock_post.call_args_list]
+
+    def _cmds(self, mock_post):
+        return [p["command"] for p in self._payloads(mock_post)]
+
+    def test_sends_correct_command_and_args(self):
+        """network4-subnet-add is sent with name and id in arguments."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(_NETWORK_SUBNET_ADD_OK, _CONFIG_TEST_OK_RESP, _CONFIG_WRITE_RESP),
+        ) as mock_post:
+            self.client.network_subnet_add(version=4, name="prod-net", subnet_id=5)
+        payload = next(p for p in self._payloads(mock_post) if p["command"] == "network4-subnet-add")
+        self.assertEqual(payload["service"], ["dhcp4"])
+        self.assertEqual(payload["arguments"]["name"], "prod-net")
+        self.assertEqual(payload["arguments"]["id"], 5)
+
+    def test_persist_config_called_after_subnet_add(self):
+        """config-write is called after network4-subnet-add succeeds."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(_NETWORK_SUBNET_ADD_OK, _CONFIG_TEST_OK_RESP, _CONFIG_WRITE_RESP),
+        ) as mock_post:
+            self.client.network_subnet_add(version=4, name="prod-net", subnet_id=5)
+        self.assertIn("config-write", self._cmds(mock_post))
+
+    def test_raises_kea_exception_on_failure(self):
+        """KeaException is raised when the command returns a non-zero result."""
+        with patch.object(self.client._session, "post", return_value=_mock_http_response(_NETWORK_SUBNET_ADD_FAIL)):
+            with self.assertRaises(KeaException):
+                self.client.network_subnet_add(version=4, name="prod-net", subnet_id=99)
+
+
+# ---------------------------------------------------------------------------
+# TestNetworkSubnetDel
+# ---------------------------------------------------------------------------
+
+_NETWORK_SUBNET_DEL_OK = [{"result": 0, "text": "Subnet removed from shared network."}]
+_NETWORK_SUBNET_DEL_FAIL = [{"result": 1, "text": "subnet not found in network"}]
+
+
+class TestNetworkSubnetDel(TestCase):
+    """Tests for KeaClient.network_subnet_del(version, name, subnet_id) -> None."""
+
+    def setUp(self):
+        self.client = KeaClient(url="http://kea:8000")
+
+    def _payloads(self, mock_post):
+        return [(c.kwargs.get("json") or c[1]["json"]) for c in mock_post.call_args_list]
+
+    def _cmds(self, mock_post):
+        return [p["command"] for p in self._payloads(mock_post)]
+
+    def test_sends_correct_command_and_args(self):
+        """network4-subnet-del is sent with name and id in arguments."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(_NETWORK_SUBNET_DEL_OK, _CONFIG_TEST_OK_RESP, _CONFIG_WRITE_RESP),
+        ) as mock_post:
+            self.client.network_subnet_del(version=4, name="prod-net", subnet_id=5)
+        payload = next(p for p in self._payloads(mock_post) if p["command"] == "network4-subnet-del")
+        self.assertEqual(payload["service"], ["dhcp4"])
+        self.assertEqual(payload["arguments"]["name"], "prod-net")
+        self.assertEqual(payload["arguments"]["id"], 5)
+
+    def test_persist_config_called_after_subnet_del(self):
+        """config-write is called after network4-subnet-del succeeds."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(_NETWORK_SUBNET_DEL_OK, _CONFIG_TEST_OK_RESP, _CONFIG_WRITE_RESP),
+        ) as mock_post:
+            self.client.network_subnet_del(version=4, name="prod-net", subnet_id=5)
+        self.assertIn("config-write", self._cmds(mock_post))
+
+    def test_raises_kea_exception_on_failure(self):
+        """KeaException is raised when the command returns a non-zero result."""
+        with patch.object(self.client._session, "post", return_value=_mock_http_response(_NETWORK_SUBNET_DEL_FAIL)):
+            with self.assertRaises(KeaException):
+                self.client.network_subnet_del(version=4, name="prod-net", subnet_id=99)
