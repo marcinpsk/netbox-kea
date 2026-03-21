@@ -30,6 +30,7 @@ from . import constants, forms, tables
 from .filtersets import ServerFilterSet
 from .kea import KeaClient, KeaException, PartialPersistError
 from .models import Server
+from .sync import sync_reservation_to_netbox
 from .utilities import (
     OptionalViewTab,
     check_dhcp_enabled,
@@ -1413,6 +1414,14 @@ class ServerReservation4AddView(_KeaChangeMixin, generic.ObjectView):
             try:
                 client.reservation_add("dhcp4", reservation)
                 messages.success(request, f"Reservation for {cd['ip_address']} created.")
+                if cd.get("sync_to_netbox"):
+                    try:
+                        _, created = sync_reservation_to_netbox(reservation)
+                        msg = "created" if created else "updated"
+                        messages.info(request, f"NetBox IPAddress {cd['ip_address']} {msg}.")
+                    except Exception:
+                        logger.exception("Failed to sync DHCPv4 reservation %s to NetBox", cd.get("ip_address"))
+                        messages.warning(request, "Reservation created, but NetBox IPAM sync failed.")
                 return redirect(return_url)
             except PartialPersistError as exc:
                 messages.warning(request, str(exc))
@@ -1480,6 +1489,15 @@ class ServerReservation6AddView(_KeaChangeMixin, generic.ObjectView):
             try:
                 client.reservation_add("dhcp6", reservation)
                 messages.success(request, "DHCPv6 reservation created.")
+                if cd.get("sync_to_netbox"):
+                    try:
+                        _, created = sync_reservation_to_netbox(reservation)
+                        primary_ip = (reservation.get("ip-addresses") or [""])[0]
+                        msg = "created" if created else "updated"
+                        messages.info(request, f"NetBox IPAddress {primary_ip} {msg}.")
+                    except Exception:
+                        logger.exception("Failed to sync DHCPv6 reservation to NetBox")
+                        messages.warning(request, "Reservation created, but NetBox IPAM sync failed.")
                 return redirect(return_url)
             except PartialPersistError as exc:
                 messages.warning(request, str(exc))
@@ -1566,6 +1584,14 @@ class ServerReservation4EditView(_KeaChangeMixin, generic.ObjectView):
             try:
                 client.reservation_update("dhcp4", reservation)
                 messages.success(request, f"Reservation for {cd['ip_address']} updated.")
+                if cd.get("sync_to_netbox"):
+                    try:
+                        _, created = sync_reservation_to_netbox(reservation)
+                        msg = "created" if created else "updated"
+                        messages.info(request, f"NetBox IPAddress {cd['ip_address']} {msg}.")
+                    except Exception:
+                        logger.exception("Failed to sync DHCPv4 reservation %s to NetBox", cd.get("ip_address"))
+                        messages.warning(request, "Reservation updated, but NetBox IPAM sync failed.")
                 return redirect(return_url)
             except PartialPersistError as exc:
                 messages.warning(request, str(exc))
@@ -1653,6 +1679,15 @@ class ServerReservation6EditView(_KeaChangeMixin, generic.ObjectView):
             try:
                 client.reservation_update("dhcp6", reservation)
                 messages.success(request, "DHCPv6 reservation updated.")
+                if cd.get("sync_to_netbox"):
+                    try:
+                        _, created = sync_reservation_to_netbox(reservation)
+                        primary_ip = (reservation.get("ip-addresses") or [""])[0]
+                        msg = "created" if created else "updated"
+                        messages.info(request, f"NetBox IPAddress {primary_ip} {msg}.")
+                    except Exception:
+                        logger.exception("Failed to sync DHCPv6 reservation to NetBox")
+                        messages.warning(request, "Reservation updated, but NetBox IPAM sync failed.")
                 return redirect(return_url)
             except PartialPersistError as exc:
                 messages.warning(request, str(exc))

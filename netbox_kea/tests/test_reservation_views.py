@@ -1719,3 +1719,89 @@ class TestBulkReservationImport(_ReservationViewBase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("created", response.content.decode().lower())
         self.assertIn("skipped", response.content.decode().lower())
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Phase 3b: Reservation auto-sync to NetBox IPAM
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestReservationSyncToNetBox(_ReservationViewBase):
+    """Test the 'Sync to NetBox IPAM' checkbox on reservation add/edit forms."""
+
+    def _add4_url(self):
+        return reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk])
+
+    def _edit4_url(self):
+        return reverse(
+            "plugins:netbox_kea:server_reservation4_edit",
+            args=[self.server.pk, 1, "192.168.1.100"],
+        )
+
+    def _valid_post_data(self, sync=False):
+        data = {
+            "subnet_id": 1,
+            "ip_address": "192.168.1.100",
+            "identifier_type": "hw-address",
+            "identifier": "aa:bb:cc:dd:ee:ff",
+            "hostname": "testhost.example.com",
+        }
+        if sync:
+            data["sync_to_netbox"] = "on"
+        return data
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_add_form_has_sync_to_netbox_field(self, MockKeaClient):
+        """GET reservation add renders a sync_to_netbox checkbox."""
+        MockKeaClient.return_value.get_available_commands.return_value = _RESERVATION_COMMANDS
+        response = self.client.get(self._add4_url())
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("sync_to_netbox", response.content.decode())
+
+    @patch("netbox_kea.views.sync_reservation_to_netbox")
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_add_with_sync_checked_calls_sync(self, MockKeaClient, mock_sync):
+        """POSTing with sync_to_netbox=on calls sync_reservation_to_netbox()."""
+        mock_client = MockKeaClient.return_value
+        mock_client.reservation_add.return_value = None
+        mock_sync.return_value = (MagicMock(), True)
+        response = self.client.post(self._add4_url(), self._valid_post_data(sync=True))
+        self.assertEqual(response.status_code, 302)
+        mock_sync.assert_called_once()
+        called_reservation = mock_sync.call_args[0][0]
+        self.assertEqual(called_reservation["ip-address"], "192.168.1.100")
+
+    @patch("netbox_kea.views.sync_reservation_to_netbox")
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_add_without_sync_does_not_call_sync(self, MockKeaClient, mock_sync):
+        """POSTing without sync_to_netbox does NOT call sync_reservation_to_netbox()."""
+        mock_client = MockKeaClient.return_value
+        mock_client.reservation_add.return_value = None
+        response = self.client.post(self._add4_url(), self._valid_post_data(sync=False))
+        self.assertEqual(response.status_code, 302)
+        mock_sync.assert_not_called()
+
+    @patch("netbox_kea.views.sync_reservation_to_netbox")
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_add_sync_failure_still_redirects(self, MockKeaClient, mock_sync):
+        """Sync failure is a warning; Kea reservation creation still succeeds."""
+        mock_client = MockKeaClient.return_value
+        mock_client.reservation_add.return_value = None
+        mock_sync.side_effect = Exception("NetBox unreachable")
+        response = self.client.post(self._add4_url(), self._valid_post_data(sync=True))
+        self.assertEqual(response.status_code, 302)
+        mock_client.reservation_add.assert_called_once()
+
+    @patch("netbox_kea.views.sync_reservation_to_netbox")
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_edit_with_sync_checked_calls_sync(self, MockKeaClient, mock_sync):
+        """POSTing reservation edit with sync_to_netbox=on calls sync_reservation_to_netbox()."""
+        mock_client = MockKeaClient.return_value
+        mock_client.reservation_update.return_value = None
+        mock_sync.return_value = (MagicMock(), False)
+        response = self.client.post(self._edit4_url(), self._valid_post_data(sync=True))
+        self.assertEqual(response.status_code, 302)
+        mock_sync.assert_called_once()
+        called_reservation = mock_sync.call_args[0][0]
+        self.assertEqual(called_reservation["ip-address"], "192.168.1.100")

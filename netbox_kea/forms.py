@@ -355,6 +355,11 @@ class Reservation4Form(forms.Form):
         required=False,
         help_text="Optional hostname to assign with this reservation.",
     )
+    sync_to_netbox = forms.BooleanField(
+        label="Sync to NetBox IPAM",
+        required=False,
+        help_text="Create or update an IPAddress in NetBox with status=reserved.",
+    )
 
     def clean_ip_address(self) -> str:
         """Validate that the value is a valid IPv4 address."""
@@ -393,6 +398,11 @@ class Reservation6Form(forms.Form):
         label="Hostname",
         required=False,
         help_text="Optional hostname to assign with this reservation.",
+    )
+    sync_to_netbox = forms.BooleanField(
+        label="Sync to NetBox IPAM",
+        required=False,
+        help_text="Create or update an IPAddress in NetBox with status=reserved.",
     )
 
     def clean_ip_addresses(self) -> str:
