@@ -13,6 +13,7 @@ URL names tested (all registered and working):
   server_reservation6_delete   — GET/POST /servers/<pk>/reservations6/<subnet_id>/<ip>/delete/
 """
 
+import io
 from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
@@ -1556,3 +1557,168 @@ class TestReservationSearch6View(_ReservationViewBase):
         self.assertEqual(response.status_code, 200)
         self.assertNotContains(response, _SAMPLE_RESERVATION6["ip-addresses"][0])
         self.assertNotContains(response, _EXTRA_RESERVATION6["ip-addresses"][0])
+
+
+# ---------------------------------------------------------------------------
+# TestBulkReservationImport
+# ---------------------------------------------------------------------------
+
+_BULK_IMPORT_V4_CSV = (
+    "ip-address,hw-address,hostname,subnet-id\n"
+    "10.99.0.1,aa:bb:cc:00:00:01,host1.example.com,1\n"
+    "10.99.0.2,aa:bb:cc:00:00:02,host2.example.com,1\n"
+)
+
+_BULK_IMPORT_V6_CSV = (
+    "ip-addresses,duid,hostname,subnet-id\n"
+    "2001:db8::1,00:01:02:03:04:05,v6host1.example.com,10\n"
+)
+
+
+def _import_url(server_pk: int, version: int) -> str:
+    return reverse(f"plugins:netbox_kea:server_reservation{version}_bulk_import", args=[server_pk])
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestBulkReservationImport(_ReservationViewBase):
+    """GET + POST /plugins/kea/servers/<pk>/reservations4/import/ and v6 variant."""
+
+    def test_url_registered_v4(self):
+        """URL server_reservation4_bulk_import is registered."""
+        url = _import_url(self.server.pk, 4)
+        self.assertIn("import", url)
+
+    def test_url_registered_v6(self):
+        """URL server_reservation6_bulk_import is registered."""
+        url = _import_url(self.server.pk, 6)
+        self.assertIn("import", url)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_get_renders_form(self, MockKeaClient):
+        """GET renders the import form (200 OK)."""
+        MockKeaClient.return_value.get_available_commands.return_value = _RESERVATION_COMMANDS
+        response = self.client.get(_import_url(self.server.pk, 4))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "import", msg_prefix="", html=False)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_valid_v4_csv_creates_reservations(self, MockKeaClient):
+        """POST valid v4 CSV creates two reservations and shows created count."""
+        mock_client = MockKeaClient.return_value
+        mock_client.get_available_commands.return_value = _RESERVATION_COMMANDS
+        mock_client.reservation_add.return_value = None
+        csv_file = io.BytesIO(_BULK_IMPORT_V4_CSV.encode())
+        csv_file.name = "import.csv"
+        response = self.client.post(
+            _import_url(self.server.pk, 4),
+            {"csv_file": csv_file},
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(mock_client.reservation_add.call_count, 2)
+        self.assertContains(response, "2")  # 2 created shown in summary
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_valid_v6_csv_creates_reservation(self, MockKeaClient):
+        """POST valid v6 CSV creates one reservation."""
+        mock_client = MockKeaClient.return_value
+        mock_client.get_available_commands.return_value = _RESERVATION_COMMANDS
+        mock_client.reservation_add.return_value = None
+        csv_file = io.BytesIO(_BULK_IMPORT_V6_CSV.encode())
+        csv_file.name = "import.csv"
+        response = self.client.post(
+            _import_url(self.server.pk, 6),
+            {"csv_file": csv_file},
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(mock_client.reservation_add.call_count, 1)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_skips_duplicate_reservations(self, MockKeaClient):
+        """result=1 with 'already exists' text is counted as skipped, not error."""
+        from netbox_kea.kea import KeaException
+
+        mock_client = MockKeaClient.return_value
+        mock_client.get_available_commands.return_value = _RESERVATION_COMMANDS
+        dup_exc = KeaException({"result": 1, "text": "Host already exists."})
+        mock_client.reservation_add.side_effect = dup_exc
+        csv_file = io.BytesIO(_BULK_IMPORT_V4_CSV.encode())
+        csv_file.name = "import.csv"
+        response = self.client.post(
+            _import_url(self.server.pk, 4),
+            {"csv_file": csv_file},
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, 200)
+        # No hard error — page still 200 with skipped count shown
+        self.assertContains(response, "2")  # 2 skipped
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_shows_errors_on_kea_failure(self, MockKeaClient):
+        """KeaException (non-duplicate) is counted as error and shown on page."""
+        from netbox_kea.kea import KeaException
+
+        mock_client = MockKeaClient.return_value
+        mock_client.get_available_commands.return_value = _RESERVATION_COMMANDS
+        mock_client.reservation_add.side_effect = KeaException({"result": 1, "text": "subnet not found"})
+        csv_file = io.BytesIO(_BULK_IMPORT_V4_CSV.encode())
+        csv_file.name = "import.csv"
+        response = self.client.post(
+            _import_url(self.server.pk, 4),
+            {"csv_file": csv_file},
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "error", msg_prefix="", html=False)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_requires_file(self, MockKeaClient):
+        """POST without csv_file shows form with error."""
+        MockKeaClient.return_value.get_available_commands.return_value = _RESERVATION_COMMANDS
+        response = self.client.post(_import_url(self.server.pk, 4), {})
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "required", msg_prefix="", html=False)
+
+    def test_get_requires_login(self):
+        """Unauthenticated users are redirected."""
+        self.client.logout()
+        response = self.client.get(_import_url(self.server.pk, 4))
+        self.assertIn(response.status_code, (302, 403))
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_invalid_csv_shows_error(self, MockKeaClient):
+        """Uploading a CSV with missing required column shows error without crashing."""
+        MockKeaClient.return_value.get_available_commands.return_value = _RESERVATION_COMMANDS
+        bad_csv = b"some-random-column,another\nvalue1,value2\n"
+        csv_file = io.BytesIO(bad_csv)
+        csv_file.name = "bad.csv"
+        response = self.client.post(
+            _import_url(self.server.pk, 4),
+            {"csv_file": csv_file},
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "error", msg_prefix="", html=False)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_summary_shows_created_skipped_errors_counts(self, MockKeaClient):
+        """Result page shows three distinct count values: created, skipped, errors."""
+        from netbox_kea.kea import KeaException
+
+        mock_client = MockKeaClient.return_value
+        mock_client.get_available_commands.return_value = _RESERVATION_COMMANDS
+
+        # row 1 → success, row 2 → already exists (skip)
+        dup_exc = KeaException({"result": 1, "text": "Host already exists."})
+        mock_client.reservation_add.side_effect = [None, dup_exc]
+        csv_file = io.BytesIO(_BULK_IMPORT_V4_CSV.encode())
+        csv_file.name = "import.csv"
+        response = self.client.post(
+            _import_url(self.server.pk, 4),
+            {"csv_file": csv_file},
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("created", response.content.decode().lower())
+        self.assertIn("skipped", response.content.decode().lower())

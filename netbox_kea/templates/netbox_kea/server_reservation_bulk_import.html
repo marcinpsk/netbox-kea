@@ -1,0 +1,98 @@
+{% extends "generic/object.html" %}
+{% load form_helpers %}
+
+{% block content %}
+<div class="row">
+  <div class="col col-md-8 offset-md-2">
+
+    {# ── Upload form ── #}
+    <div class="card mb-4">
+      <div class="card-header">
+        <strong>Import DHCPv{{ dhcp_version }} Reservations from CSV</strong>
+      </div>
+      <div class="card-body">
+        <p class="text-muted mb-3">
+          Upload a UTF-8 CSV file.
+          Lines starting with <code>#</code> are treated as comments and ignored.
+        </p>
+
+        {% if dhcp_version == 4 %}
+        <div class="alert alert-info" role="alert">
+          <strong>v4 column order:</strong>
+          <code>ip-address, hw-address, hostname (optional), subnet-id</code><br>
+          <small>Example: <code>192.168.1.100,aa:bb:cc:dd:ee:ff,host1.example.com,1</code></small>
+        </div>
+        {% else %}
+        <div class="alert alert-info" role="alert">
+          <strong>v6 column order:</strong>
+          <code>ip-addresses, duid, hostname (optional), subnet-id</code><br>
+          <small>Multiple IPv6 addresses per host: separate with semicolon inside the <code>ip-addresses</code> cell.</small><br>
+          <small>Example: <code>2001:db8::100,00:01:02:03:04:05,v6host.example.com,10</code></small>
+        </div>
+        {% endif %}
+
+        <form method="post" enctype="multipart/form-data">
+          {% csrf_token %}
+          {% render_form form %}
+          <div class="text-end mt-3">
+            <a href="{{ return_url }}" class="btn btn-secondary me-2">Cancel</a>
+            <button type="submit" class="btn btn-primary">
+              <i class="mdi mdi-upload" aria-hidden="true"></i> Import
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    {# ── Results summary ── #}
+    {% if result is not None %}
+    <div class="card">
+      <div class="card-header">
+        <strong>Import Results</strong>
+      </div>
+      <div class="card-body">
+        <div class="row text-center mb-3">
+          <div class="col">
+            <div class="display-6 text-success">{{ result.created }}</div>
+            <div class="text-muted small">Created</div>
+          </div>
+          <div class="col">
+            <div class="display-6 text-warning">{{ result.skipped }}</div>
+            <div class="text-muted small">Skipped (already exist)</div>
+          </div>
+          <div class="col">
+            <div class="display-6 text-danger">{{ result.errors }}</div>
+            <div class="text-muted small">Errors</div>
+          </div>
+          <div class="col">
+            <div class="display-6">{{ result.total }}</div>
+            <div class="text-muted small">Total rows</div>
+          </div>
+        </div>
+
+        {% if result.error_rows %}
+        <h6 class="mt-3">Error Details</h6>
+        <table class="table table-sm table-bordered">
+          <thead>
+            <tr>
+              <th>Row data</th>
+              <th>Error</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for item in result.error_rows %}
+            <tr class="table-danger">
+              <td><code>{{ item.row }}</code></td>
+              <td>{{ item.error }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        {% endif %}
+      </div>
+    </div>
+    {% endif %}
+
+  </div>
+</div>
+{% endblock %}

@@ -37,6 +37,7 @@ from .utilities import (
     format_duration,
     format_leases,
     kea_error_hint,
+    parse_reservation_csv,
 )
 
 logger = logging.getLogger(__name__)
@@ -968,6 +969,7 @@ class ServerReservations4View(generic.ObjectView):
             "search_form": search_form,
             "add_url": reverse("plugins:netbox_kea:server_reservation4_add", args=[server.pk]),
             "bulk_sync_url": reverse("plugins:netbox_kea:server_reservation4_bulk_sync", args=[server.pk]),
+            "import_url": reverse("plugins:netbox_kea:server_reservation4_bulk_import", args=[server.pk]),
         }
 
 
@@ -1029,6 +1031,7 @@ class ServerReservations6View(generic.ObjectView):
             "search_form": search_form,
             "add_url": reverse("plugins:netbox_kea:server_reservation6_add", args=[server.pk]),
             "bulk_sync_url": reverse("plugins:netbox_kea:server_reservation6_bulk_sync", args=[server.pk]),
+            "import_url": reverse("plugins:netbox_kea:server_reservation6_bulk_import", args=[server.pk]),
         }
 
 
@@ -2748,6 +2751,144 @@ class ServerReservation6BulkSyncView(_BaseBulkReservationSyncView):
     """Bulk sync all DHCPv6 reservations to NetBox IPAM."""
 
     dhcp_version = 6
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Bulk Reservation Import (CSV → Kea)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class _BaseBulkReservationImportView(ConditionalLoginRequiredMixin, View):
+    """Upload a CSV file and batch-insert reservations into Kea.
+
+    Subclasses set :attr:`dhcp_version` and :attr:`form_class`.
+
+    **GET**: render the upload form.
+    **POST**: parse CSV → loop :meth:`KeaClient.reservation_add` → show summary.
+
+    Result codes:
+    - ``created``: reservation successfully added.
+    - ``skipped``: Kea returned result=1 with "already exists" text (idempotent).
+    - ``errors``: any other :class:`~netbox_kea.kea.KeaException` or unexpected failure.
+    """
+
+    dhcp_version: int
+    form_class: type
+
+    template_name = "netbox_kea/server_reservation_bulk_import.html"
+
+    def get(self, request: HttpRequest, pk: int) -> HttpResponse:
+        """Render the CSV upload form."""
+        instance = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
+        form = self.form_class()
+        return_url = reverse(
+            f"plugins:netbox_kea:server_reservations{self.dhcp_version}", args=[pk]
+        )
+        return render(
+            request,
+            self.template_name,
+            {
+                "object": instance,
+                "form": form,
+                "dhcp_version": self.dhcp_version,
+                "return_url": return_url,
+                "result": None,
+            },
+        )
+
+    def post(self, request: HttpRequest, pk: int) -> HttpResponse:
+        """Parse uploaded CSV and insert reservations into Kea."""
+        instance = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
+        return_url = reverse(
+            f"plugins:netbox_kea:server_reservations{self.dhcp_version}", args=[pk]
+        )
+        form = self.form_class(request.POST, request.FILES)
+        result = None
+
+        if not form.is_valid():
+            return render(
+                request,
+                self.template_name,
+                {
+                    "object": instance,
+                    "form": form,
+                    "dhcp_version": self.dhcp_version,
+                    "return_url": return_url,
+                    "result": None,
+                },
+            )
+
+        csv_file = request.FILES["csv_file"]
+        content = csv_file.read().decode("utf-8-sig")  # utf-8-sig strips BOM automatically
+
+        try:
+            rows = parse_reservation_csv(content, self.dhcp_version)
+        except ValueError as exc:
+            form.add_error("csv_file", str(exc))
+            return render(
+                request,
+                self.template_name,
+                {
+                    "object": instance,
+                    "form": form,
+                    "dhcp_version": self.dhcp_version,
+                    "return_url": return_url,
+                    "result": None,
+                },
+            )
+
+        client = instance.get_client(version=self.dhcp_version)
+        created = 0
+        skipped = 0
+        error_rows: list[dict[str, Any]] = []
+
+        for row in rows:
+            try:
+                client.reservation_add(self.dhcp_version, row)
+                created += 1
+            except KeaException as exc:  # noqa: PERF203
+                text = getattr(exc, "response", {}).get("text", "") or ""
+                result_code = getattr(exc, "response", {}).get("result", -1)
+                if result_code == 1 and ("already exist" in text.lower() or "duplicate" in text.lower()):
+                    skipped += 1
+                else:
+                    error_rows.append({"row": row, "error": kea_error_hint(exc)})
+            except Exception:
+                logger.exception("Unexpected error importing reservation row %s", row)
+                error_rows.append({"row": row, "error": "An unexpected error occurred."})
+
+        result = {
+            "created": created,
+            "skipped": skipped,
+            "errors": len(error_rows),
+            "error_rows": error_rows,
+            "total": created + skipped + len(error_rows),
+        }
+        return render(
+            request,
+            self.template_name,
+            {
+                "object": instance,
+                "form": self.form_class(),
+                "dhcp_version": self.dhcp_version,
+                "return_url": return_url,
+                "result": result,
+            },
+        )
+
+
+class ServerReservation4BulkImportView(_BaseBulkReservationImportView):
+    """Bulk import DHCPv4 reservations from a CSV file."""
+
+    dhcp_version = 4
+    form_class = forms.Reservation4BulkImportForm
+
+
+class ServerReservation6BulkImportView(_BaseBulkReservationImportView):
+    """Bulk import DHCPv6 reservations from a CSV file."""
+
+    dhcp_version = 6
+    form_class = forms.Reservation6BulkImportForm
 
 
 # ─────────────────────────────────────────────────────────────────────────────

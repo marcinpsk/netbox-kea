@@ -61,6 +61,12 @@
       </button>
     </form>
     {% endif %}
+    {% if hook_available and import_url %}
+    <a href="{{ import_url }}" class="btn btn-outline-secondary btn-sm me-2">
+      <i class="mdi mdi-upload" aria-hidden="true"></i>
+      Import CSV
+    </a>
+    {% endif %}
     {% if hook_available %}
     <a href="{{ add_url }}" class="btn btn-primary btn-sm">
       <i class="mdi mdi-plus-thick" aria-hidden="true"></i>

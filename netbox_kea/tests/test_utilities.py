@@ -488,3 +488,96 @@ class TestKeaErrorHint(TestCase):
         for code in (0, 1, 2, 3, 128, 999):
             result = kea_error_hint(self._make_exc(code))
             self.assertIsInstance(result, str)
+
+
+# ---------------------------------------------------------------------------
+# TestParseReservationCsv
+# ---------------------------------------------------------------------------
+
+
+class TestParseReservationCsv(TestCase):
+    """parse_reservation_csv() turns a CSV string into a list of dicts for reservation_add."""
+
+    def _parse(self, content: str, version: int = 4) -> list:
+        from netbox_kea.utilities import parse_reservation_csv
+
+        return parse_reservation_csv(content, version)
+
+    # v4 happy path
+
+    def test_v4_single_row_all_fields(self):
+        """Full v4 row maps to correct dict keys."""
+        rows = self._parse("ip-address,hw-address,hostname,subnet-id\n192.168.1.1,aa:bb:cc:dd:ee:ff,host1.example.com,3")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["ip-address"], "192.168.1.1")
+        self.assertEqual(rows[0]["hw-address"], "aa:bb:cc:dd:ee:ff")
+        self.assertEqual(rows[0]["hostname"], "host1.example.com")
+        self.assertEqual(rows[0]["subnet-id"], 3)
+
+    def test_v4_optional_hostname_empty(self):
+        """Hostname column may be empty; key should be absent or empty string in output."""
+        rows = self._parse("ip-address,hw-address,hostname,subnet-id\n10.0.0.5,11:22:33:44:55:66,,2")
+        self.assertEqual(rows[0]["ip-address"], "10.0.0.5")
+        # hostname absent or falsy when empty
+        self.assertFalse(rows[0].get("hostname"))
+
+    def test_v4_multiple_rows(self):
+        """Multiple data rows produce multiple dicts."""
+        csv = (
+            "ip-address,hw-address,hostname,subnet-id\n"
+            "10.0.0.1,aa:bb:cc:00:00:01,host1,1\n"
+            "10.0.0.2,aa:bb:cc:00:00:02,host2,1\n"
+        )
+        rows = self._parse(csv)
+        self.assertEqual(len(rows), 2)
+
+    def test_strips_whitespace_and_skips_blank_lines(self):
+        """Leading/trailing whitespace trimmed; blank lines skipped."""
+        csv = (
+            "ip-address,hw-address,hostname,subnet-id\n"
+            "\n"
+            "  10.0.0.1 , aa:bb:cc:00:00:01 , host1 , 1 \n"
+            "\n"
+        )
+        rows = self._parse(csv)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["ip-address"], "10.0.0.1")
+
+    def test_skips_comment_lines(self):
+        """Lines starting with # are skipped."""
+        csv = (
+            "ip-address,hw-address,hostname,subnet-id\n"
+            "# this is a comment\n"
+            "10.0.0.1,aa:bb:cc:00:00:01,host1,1\n"
+        )
+        rows = self._parse(csv)
+        self.assertEqual(len(rows), 1)
+
+    def test_strips_bom(self):
+        """UTF-8 BOM at start of file is ignored."""
+        csv = "\ufeffip-address,hw-address,hostname,subnet-id\n10.0.0.1,aa:bb:cc:00:00:01,host1,1\n"
+        rows = self._parse(csv)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["ip-address"], "10.0.0.1")
+
+    # v6 happy path
+
+    def test_v6_single_row(self):
+        """v6 row uses ip-addresses (list) and duid."""
+        csv = "ip-addresses,duid,hostname,subnet-id\n2001:db8::100,00:01:02:03:04:05,v6host.example.com,10\n"
+        rows = self._parse(csv, version=6)
+        self.assertEqual(len(rows), 1)
+        self.assertIn("2001:db8::100", rows[0]["ip-addresses"])
+        self.assertEqual(rows[0]["duid"], "00:01:02:03:04:05")
+        self.assertEqual(rows[0]["subnet-id"], 10)
+
+    # error cases
+
+    def test_missing_required_field_raises_value_error(self):
+        """Row missing a required field raises ValueError with the row number."""
+        from netbox_kea.utilities import parse_reservation_csv
+
+        csv = "ip-address,hw-address,hostname,subnet-id\n,aa:bb:cc:00:00:01,host1,1\n"
+        with self.assertRaises(ValueError) as ctx:
+            parse_reservation_csv(csv, version=4)
+        self.assertIn("2", str(ctx.exception))  # row 2 (1-indexed, header = row 1)

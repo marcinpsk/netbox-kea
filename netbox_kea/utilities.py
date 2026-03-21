@@ -1,3 +1,5 @@
+import csv
+import io
 import logging
 import re
 from collections.abc import Callable
@@ -222,6 +224,64 @@ def kea_error_hint(exc: Any) -> str:
             return f"Kea reported an error: {text}"
         return "Kea reported an error. Check the server logs for details."
     return f"Kea returned an unexpected result code ({result}). Check the server logs for details."
+
+
+def parse_reservation_csv(content: str, version: int) -> list[dict[str, Any]]:
+    """Parse a CSV string into a list of reservation dicts ready for ``reservation_add``.
+
+    Strips UTF-8 BOM, skips blank lines and lines starting with ``#``.
+    Raises ``ValueError`` on missing required fields (message includes 1-indexed row number).
+
+    **v4 required columns**: ``ip-address``, ``hw-address``, ``subnet-id``
+    (``hostname`` is optional)
+
+    **v6 required columns**: ``ip-addresses``, ``duid``, ``subnet-id``
+    (``hostname`` is optional)
+
+    Args:
+        content: Raw CSV text (may include BOM).
+        version: DHCP version — ``4`` or ``6``.
+
+    Returns:
+        List of dicts suitable for passing to :py:meth:`KeaClient.reservation_add`.
+
+    Raises:
+        ValueError: If a required field is missing or empty for any row.
+
+    """
+    if version == 4:
+        required = {"ip-address", "hw-address", "subnet-id"}
+    else:
+        required = {"ip-addresses", "duid", "subnet-id"}
+
+    content = content.lstrip("\ufeff")  # strip UTF-8 BOM
+    reader = csv.DictReader(
+        line.strip() for line in io.StringIO(content) if line.strip() and not line.strip().startswith("#")
+    )
+
+    rows: list[dict[str, Any]] = []
+    for row_num, raw in enumerate(reader, start=2):  # header is row 1
+        row = {k.strip(): v.strip() for k, v in raw.items() if k is not None}
+
+        for field in required:
+            if not row.get(field):
+                raise ValueError(f"Row {row_num}: missing required field '{field}'")
+
+        result: dict[str, Any] = {"subnet-id": int(row["subnet-id"])}
+
+        if version == 4:
+            result["ip-address"] = row["ip-address"]
+            result["hw-address"] = row["hw-address"]
+        else:
+            result["ip-addresses"] = [addr.strip() for addr in row["ip-addresses"].split(";") if addr.strip()]
+            result["duid"] = row["duid"]
+
+        if row.get("hostname"):
+            result["hostname"] = row["hostname"]
+
+        rows.append(result)
+
+    return rows
 
 
 class OptionalViewTab(ViewTab):

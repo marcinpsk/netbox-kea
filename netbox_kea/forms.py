@@ -617,3 +617,27 @@ class DHCPDisableForm(forms.Form):
         widget=forms.HiddenInput(),
         initial=True,
     )
+
+
+class _BaseBulkReservationImportForm(forms.Form):
+    """Base class for bulk reservation CSV import forms."""
+
+    csv_file = forms.FileField(
+        label="CSV file",
+        help_text="Upload a UTF-8 CSV file. Lines starting with '#' are skipped.",
+    )
+
+
+class Reservation4BulkImportForm(_BaseBulkReservationImportForm):
+    """Bulk import form for DHCPv4 reservations.
+
+    Expected columns: ``ip-address``, ``hw-address``, ``hostname`` (optional), ``subnet-id``.
+    """
+
+
+class Reservation6BulkImportForm(_BaseBulkReservationImportForm):
+    """Bulk import form for DHCPv6 reservations.
+
+    Expected columns: ``ip-addresses``, ``duid``, ``hostname`` (optional), ``subnet-id``.
+    Separate multiple IPv6 addresses per host with a semicolon inside the ``ip-addresses`` cell.
+    """
