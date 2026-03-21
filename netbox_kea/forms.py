@@ -577,6 +577,9 @@ class SubnetEditForm(_SubnetBaseForm):
     The subnet CIDR and ID are immutable — they are passed as a hidden field and
     used by the view to call ``subnet{v}-update``.  All other fields are optional;
     leaving a field blank means "clear that option".
+
+    ``shared_network`` choices are set dynamically by the view at render time.
+    ``current_network`` is a hidden field tracking the network before any change.
     """
 
     subnet_cidr = forms.CharField(widget=forms.HiddenInput())
@@ -598,6 +601,13 @@ class SubnetEditForm(_SubnetBaseForm):
         min_value=1,
         help_text="Maximum lease lifetime in seconds.",
     )
+    shared_network = forms.ChoiceField(
+        label="Shared Network",
+        required=False,
+        choices=[],
+        help_text="Assign this subnet to a shared network, or leave blank to use the global address pool.",
+    )
+    current_network = forms.CharField(widget=forms.HiddenInput(), required=False)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

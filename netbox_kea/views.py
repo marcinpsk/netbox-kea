@@ -2003,6 +2003,32 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
             logger.warning("Failed to fetch subnet %s for editing", subnet_id)
             return {}
 
+    def _get_network_data(self, client: "KeaClient", subnet_id: int) -> tuple[list[tuple[str, str]], str]:
+        """Return ``(choices, current_network_name)`` for the shared-network dropdown.
+
+        ``choices`` is suitable for a ``ChoiceField``: ``[("", "— global pool —"), ("net-a", "net-a"), ...]``.
+        ``current_network_name`` is the name of the network the subnet currently belongs to, or ``""``.
+        """
+        try:
+            resp = client.command("config-get", service=[f"dhcp{self.dhcp_version}"])
+            dhcp_conf = resp[0].get("arguments", {}).get(f"Dhcp{self.dhcp_version}", {})
+            networks = dhcp_conf.get("shared-networks", [])
+        except Exception:
+            logger.warning("Failed to fetch shared networks for subnet edit dropdown")
+            return [("", "— (global pool) —")], ""
+
+        current_network = ""
+        choices: list[tuple[str, str]] = [("", "— (global pool) —")]
+        for sn in networks:
+            name = sn.get("name", "")
+            if not name:
+                continue
+            choices.append((name, name))
+            subnet_ids = {s.get("id") for s in sn.get(f"subnet{self.dhcp_version}", [])}
+            if subnet_id in subnet_ids:
+                current_network = name
+        return choices, current_network
+
     def _form_initial(self, subnet: dict[str, Any]) -> dict[str, Any]:
         """Build SubnetEditForm initial values from a Kea subnet dict."""
         initial: dict[str, Any] = {"subnet_cidr": subnet.get("subnet", "")}
@@ -2036,7 +2062,13 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
     def get(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
         server = self.get_object(pk=pk)
         subnet = self._fetch_subnet(server, subnet_id)
-        form = forms.SubnetEditForm(initial=self._form_initial(subnet))
+        client = server.get_client(version=self.dhcp_version)
+        network_choices, current_network = self._get_network_data(client, subnet_id)
+        initial = self._form_initial(subnet)
+        initial["shared_network"] = current_network
+        initial["current_network"] = current_network
+        form = forms.SubnetEditForm(initial=initial)
+        form.fields["shared_network"].choices = network_choices
         return render(
             request,
             self.template_name,
@@ -2053,7 +2085,10 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
     def post(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
         server = self.get_object(pk=pk)
         return_url = self._subnets_url(pk)
+        client = server.get_client(version=self.dhcp_version)
+        network_choices, _ = self._get_network_data(client, subnet_id)
         form = forms.SubnetEditForm(request.POST)
+        form.fields["shared_network"].choices = network_choices
         if not form.is_valid():
             return render(
                 request,
@@ -2068,7 +2103,25 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
                 },
             )
         cd = form.cleaned_data
-        client = server.get_client(version=self.dhcp_version)
+        old_network = cd.get("current_network", "")
+        new_network = cd.get("shared_network", "")
+
+        # Handle shared-network membership change
+        if old_network != new_network:
+            try:
+                if old_network:
+                    client.network_subnet_del(version=self.dhcp_version, name=old_network, subnet_id=subnet_id)
+                if new_network:
+                    client.network_subnet_add(version=self.dhcp_version, name=new_network, subnet_id=subnet_id)
+            except KeaException as exc:
+                logger.warning("network_subnet change failed for subnet %s on server %s: %s", subnet_id, pk, exc)
+                messages.error(request, f"Network assignment error: {kea_error_hint(exc)}")
+                return redirect(return_url)
+            except Exception:
+                logger.exception("Unexpected error changing network for subnet %s on server %s", subnet_id, pk)
+                messages.error(request, "An internal error occurred during network assignment.")
+                return redirect(return_url)
+
         try:
             client.subnet_update(
                 version=self.dhcp_version,

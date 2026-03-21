@@ -49,6 +49,21 @@
           </div>
 
           <hr>
+          <div class="mb-3">
+            <label for="{{ form.shared_network.id_for_label }}" class="form-label">
+              {{ form.shared_network.label }}
+            </label>
+            {{ form.shared_network }}
+            {% if form.shared_network.help_text %}
+            <div class="form-text text-muted">{{ form.shared_network.help_text }}</div>
+            {% endif %}
+            {% for err in form.shared_network.errors %}
+            <div class="text-danger small">{{ err }}</div>
+            {% endfor %}
+          </div>
+          {{ form.current_network }}
+
+          <hr>
           <p class="text-muted small">Lease lifetime overrides (leave blank to use server defaults)</p>
 
           <div class="row">
