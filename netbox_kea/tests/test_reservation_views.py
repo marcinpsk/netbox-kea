@@ -1805,3 +1805,96 @@ class TestReservationSyncToNetBox(_ReservationViewBase):
         mock_sync.assert_called_once()
         called_reservation = mock_sync.call_args[0][0]
         self.assertEqual(called_reservation["ip-address"], "192.168.1.100")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PartialPersistError regression tests — Issue #18
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestPartialPersistErrorOnReservationAdd(_ReservationViewBase):
+    """PartialPersistError on reservation4 add shows warning and redirects (not 500)."""
+
+    def _url(self):
+        return reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_partial_persist_error_shows_warning_and_redirects(self, MockKeaClient):
+        from netbox_kea.kea import PartialPersistError
+
+        mock_client = MockKeaClient.return_value
+        mock_client.reservation_add.side_effect = PartialPersistError("dhcp4", Exception("config-write failed"))
+        response = self.client.post(
+            self._url(),
+            {
+                "subnet_id": 1,
+                "ip_address": "192.168.1.100",
+                "identifier_type": "hw-address",
+                "identifier": "aa:bb:cc:dd:ee:ff",
+                "hostname": "testhost.example.com",
+            },
+        )
+        # PartialPersistError should redirect (302) with a warning message, not crash (500)
+        self.assertEqual(response.status_code, 302)
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestPartialPersistErrorOnPoolAdd(_ReservationViewBase):
+    """PartialPersistError on pool_add shows warning and redirects (not 500)."""
+
+    _SUBNET_ID = 1
+
+    def _url(self):
+        return reverse("plugins:netbox_kea:server_subnet4_pool_add", args=[self.server.pk, self._SUBNET_ID])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_partial_persist_error_shows_warning_and_redirects(self, MockKeaClient):
+        from netbox_kea.kea import PartialPersistError
+
+        mock_client = MockKeaClient.return_value
+        mock_client.pool_add.side_effect = PartialPersistError("dhcp4", Exception("config-write failed"))
+        response = self.client.post(self._url(), {"pool": "10.0.0.50-10.0.0.99"})
+        self.assertEqual(response.status_code, 302)
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestPartialPersistErrorOnSubnetAdd(_ReservationViewBase):
+    """PartialPersistError on subnet4 add shows warning and redirects (not 500)."""
+
+    def _url(self):
+        return reverse("plugins:netbox_kea:server_subnet4_add", args=[self.server.pk])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_partial_persist_error_shows_warning_and_redirects(self, MockKeaClient):
+        from netbox_kea.kea import PartialPersistError
+
+        mock_client = MockKeaClient.return_value
+        mock_client.subnet_add.side_effect = PartialPersistError("dhcp4", Exception("config-write failed"))
+        response = self.client.post(
+            self._url(),
+            {
+                "subnet": "10.10.0.0/24",
+            },
+        )
+        self.assertEqual(response.status_code, 302)
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestPartialPersistErrorOnSubnetDelete(_ReservationViewBase):
+    """PartialPersistError on subnet4 delete shows warning and redirects (not 500)."""
+
+    _SUBNET_ID = 1
+
+    def _url(self):
+        return reverse("plugins:netbox_kea:server_subnet4_delete", args=[self.server.pk, self._SUBNET_ID])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_partial_persist_error_shows_warning_and_redirects(self, MockKeaClient):
+        from netbox_kea.kea import PartialPersistError
+
+        mock_client = MockKeaClient.return_value
+        mock_client.subnet_del.side_effect = PartialPersistError("dhcp4", Exception("config-write failed"))
+        response = self.client.post(self._url(), {"confirm": True})
+        self.assertEqual(response.status_code, 302)
+
