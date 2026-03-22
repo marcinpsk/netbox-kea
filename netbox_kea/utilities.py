@@ -35,7 +35,7 @@ def _enrich_lease(now: datetime, lease: dict[str, Any]) -> dict[str, Any]:
     # Human-readable state label — map Kea state int to text.
     lease["state_label"] = constants.LEASE_STATE_LABELS.get(lease.get("state"), "Unknown")
 
-    if "cltt" not in lease and "valid_lft" not in lease:
+    if "cltt" not in lease or "valid_lft" not in lease:
         return lease
 
     # https://kea.readthedocs.io/en/kea-2.2.0/arm/hooks.html?highlight=cltt#the-lease4-get-lease6-get-commands
@@ -46,7 +46,7 @@ def _enrich_lease(now: datetime, lease: dict[str, Any]) -> dict[str, Any]:
         return lease
     expires_at = datetime.fromtimestamp(cltt + valid_lft)
     lease["expires_at"] = expires_at
-    lease["expires_in"] = (expires_at - now).seconds
+    lease["expires_in"] = max(0, int((expires_at - now).total_seconds()))
     lease["cltt"] = datetime.fromtimestamp(cltt)
     return lease
 
@@ -262,7 +262,7 @@ def parse_reservation_csv(content: str, version: int) -> list[dict[str, Any]]:
 
     rows: list[dict[str, Any]] = []
     for row_num, raw in enumerate(reader, start=2):  # header is row 1
-        row = {k.strip(): v.strip() for k, v in raw.items() if k is not None}
+        row = {k.strip(): (v or "").strip() for k, v in raw.items() if k is not None}
 
         for field in required:
             if not row.get(field):
@@ -320,7 +320,7 @@ def parse_lease_csv(version: int, content: str) -> list[dict[str, Any]]:
 
     rows: list[dict[str, Any]] = []
     for row_num, raw in enumerate(reader, start=2):
-        row = {k.strip(): v.strip() for k, v in raw.items() if k is not None}
+        row = {k.strip(): (v or "").strip() for k, v in raw.items() if k is not None}
 
         for field in required:
             if not row.get(field):

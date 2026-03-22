@@ -328,6 +328,7 @@ class KeaClient:
         if option_data:
             subnet_def["option-data"] = option_data
         last_exc: KeaException | None = None
+        auto_assigned_id = subnet_id is None and "id" in subnet_def
         for _attempt in range(3):
             try:
                 self.command(
@@ -338,7 +339,7 @@ class KeaClient:
                 last_exc = None
                 break
             except KeaException as exc:
-                if "duplicate" in str(exc).lower() and "id" in subnet_def:
+                if auto_assigned_id and "duplicate" in str(exc).lower() and "id" in subnet_def:
                     subnet_def["id"] += 1
                     last_exc = exc
                 else:

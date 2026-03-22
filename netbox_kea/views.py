@@ -954,8 +954,8 @@ class BaseServerDHCPSubnetsView(generic.ObjectChildrenView):
             for s in subnet_list:
                 if s["id"] in stats:
                     s.update(stats[s["id"]])
-        except Exception:
-            pass  # stat_cmds not loaded — show subnets without utilisation column
+        except Exception:  # noqa: BLE001
+            logger.debug("stat_cmds hook unavailable or failed", exc_info=True)
 
         return subnet_list
 
@@ -2975,7 +2975,7 @@ def _fetch_subnets_from_server(server: "Server", version: int) -> list[dict[str,
             if s["id"] in stats:
                 s.update(stats[s["id"]])
     except Exception:  # noqa: BLE001
-        pass  # stat_cmds not loaded — show subnets without utilisation column
+        logger.debug("stat_cmds hook unavailable or failed", exc_info=True)
     return result
 
 

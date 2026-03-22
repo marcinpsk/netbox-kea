@@ -2,7 +2,7 @@ from typing import Any, Literal
 
 from django import forms
 from django.core.exceptions import ValidationError
-from netaddr import EUI, AddrFormatError, IPAddress, IPNetwork, mac_unix_expanded
+from netaddr import EUI, AddrFormatError, IPAddress, IPNetwork, IPRange, mac_unix_expanded
 from netbox.forms import NetBoxModelBulkEditForm, NetBoxModelFilterSetForm, NetBoxModelForm, NetBoxModelImportForm
 from utilities.forms import BOOLEAN_WITH_BLANK_CHOICES
 from utilities.forms.fields import TagFilterField
@@ -372,6 +372,27 @@ class Reservation4Form(forms.Form):
             raise ValidationError("Must be an IPv4 address.")
         return str(addr)
 
+    def clean(self) -> dict[str, Any] | None:
+        """Cross-validate identifier value against identifier_type."""
+        cleaned = super().clean()
+        if not cleaned:
+            return cleaned
+        id_type = cleaned.get("identifier_type")
+        identifier = cleaned.get("identifier", "").strip()
+        if not identifier:
+            return cleaned
+        if id_type == "hw-address":
+            try:
+                EUI(identifier, version=48)
+            except (AddrFormatError, ValueError):
+                self.add_error("identifier", "Enter a valid hardware address (e.g. aa:bb:cc:dd:ee:ff).")
+        elif id_type == "client-id":
+            if not is_hex_string(identifier, constants.CLIENT_ID_MIN_OCTETS, constants.CLIENT_ID_MAX_OCTETS):
+                self.add_error(
+                    "identifier", "Enter a valid client-id as colon-separated hex octets (e.g. 01:aa:bb:cc:dd:ee:ff)."
+                )
+        return cleaned
+
 
 class Reservation6Form(forms.Form):
     """Form for creating or editing a DHCPv6 host reservation."""
@@ -424,6 +445,30 @@ class Reservation6Form(forms.Form):
             raise ValidationError("Enter at least one valid IPv6 address.")
         return ",".join(cleaned)
 
+    def clean(self) -> dict[str, Any] | None:
+        """Cross-validate identifier value against identifier_type."""
+        cleaned = super().clean()
+        if not cleaned:
+            return cleaned
+        id_type = cleaned.get("identifier_type")
+        identifier = cleaned.get("identifier", "").strip()
+        if not identifier:
+            return cleaned
+        if id_type == "duid":
+            if not is_hex_string(identifier, constants.DUID_MIN_OCTETS, constants.DUID_MAX_OCTETS):
+                self.add_error("identifier", "Enter a valid DUID as colon-separated hex octets.")
+        elif id_type == "hw-address":
+            try:
+                EUI(identifier, version=48)
+            except (AddrFormatError, ValueError):
+                self.add_error("identifier", "Enter a valid hardware address (e.g. aa:bb:cc:dd:ee:ff).")
+        elif id_type == "client-id":
+            if not is_hex_string(identifier, constants.CLIENT_ID_MIN_OCTETS, constants.CLIENT_ID_MAX_OCTETS):
+                self.add_error(
+                    "identifier", "Enter a valid client-id as colon-separated hex octets (e.g. 01:aa:bb:cc:dd:ee:ff)."
+                )
+        return cleaned
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Phase 6: Global multi-server filter forms
@@ -469,6 +514,32 @@ class GlobalServer6FilterForm(forms.Form):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+def _validate_pool_string(pool: str) -> None:
+    """Validate a single pool string (range or CIDR).
+
+    Raises:
+        ValidationError: If the pool string is not a valid IP range or CIDR.
+
+    """
+    if "-" in pool and "/" not in pool:
+        parts = pool.split("-", 1)
+        if len(parts) != 2:
+            raise forms.ValidationError(f"Invalid pool range '{pool}': expected 'start-end' format.")
+        try:
+            IPRange(parts[0].strip(), parts[1].strip())
+        except (AddrFormatError, ValueError) as exc:
+            raise forms.ValidationError(f"Invalid pool range '{pool}': {exc}") from exc
+    elif "/" in pool:
+        try:
+            IPNetwork(pool, implicit_prefix=False)
+        except (AddrFormatError, ValueError) as exc:
+            raise forms.ValidationError(f"Invalid pool CIDR '{pool}': {exc}") from exc
+    else:
+        raise forms.ValidationError(
+            f"Invalid pool format '{pool}': use range (e.g. 10.0.0.1-10.0.0.50) or CIDR (e.g. 10.0.0.0/28)."
+        )
+
+
 class PoolAddForm(forms.Form):
     """Form for adding a DHCP pool to an existing subnet."""
 
@@ -477,6 +548,11 @@ class PoolAddForm(forms.Form):
         help_text=("Pool range (e.g. <code>10.0.0.50-10.0.0.99</code>) or CIDR (e.g. <code>10.0.0.0/28</code>)."),
         max_length=255,
     )
+
+    def clean_pool(self) -> str:  # noqa: D102
+        value = self.cleaned_data["pool"].strip()
+        _validate_pool_string(value)
+        return value
 
 
 class _SubnetBaseForm(forms.Form):
@@ -516,10 +592,7 @@ class _SubnetBaseForm(forms.Form):
             return []
         pools = [p.strip() for p in value.splitlines() if p.strip()]
         for pool in pools:
-            if "-" not in pool and "/" not in pool:
-                raise forms.ValidationError(
-                    f"Invalid pool format '{pool}': use range (e.g. 10.0.0.1-10.0.0.50) or CIDR (e.g. 10.0.0.0/28)."
-                )
+            _validate_pool_string(pool)
         return pools
 
     def clean_gateway(self) -> str:  # noqa: D102
@@ -579,6 +652,49 @@ class SubnetAddForm(_SubnetBaseForm):
         except ValueError as exc:
             raise forms.ValidationError(f"Invalid subnet CIDR: {exc}") from exc
         return value
+
+    def clean(self) -> dict[str, Any] | None:
+        """Validate that gateway and DNS servers belong to the same IP family as the subnet."""
+        cleaned = super().clean()
+        if not cleaned:
+            return cleaned
+        import ipaddress
+
+        subnet_str = cleaned.get("subnet", "")
+        try:
+            subnet_net = ipaddress.ip_network(subnet_str, strict=False)
+        except ValueError:
+            return cleaned
+
+        subnet_version = subnet_net.version
+
+        gateway = cleaned.get("gateway", "")
+        if gateway:
+            try:
+                gw_version = ipaddress.ip_address(gateway).version
+            except ValueError:
+                gw_version = None
+            if gw_version and gw_version != subnet_version:
+                self.add_error(
+                    "gateway",
+                    f"Gateway must be an IPv{subnet_version} address to match the subnet family.",
+                )
+
+        dns_servers = cleaned.get("dns_servers") or []
+        if isinstance(dns_servers, list):
+            for dns in dns_servers:
+                try:
+                    dns_version = ipaddress.ip_address(dns).version
+                except ValueError:
+                    continue
+                if dns_version != subnet_version:
+                    self.add_error(
+                        "dns_servers",
+                        f"DNS server '{dns}' must be an IPv{subnet_version} address to match the subnet family.",
+                    )
+                    break
+
+        return cleaned
 
 
 class SubnetEditForm(_SubnetBaseForm):
