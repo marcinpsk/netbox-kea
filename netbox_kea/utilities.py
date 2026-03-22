@@ -1,5 +1,6 @@
 import csv
 import io
+import ipaddress
 import logging
 import re
 from collections.abc import Callable
@@ -149,7 +150,7 @@ def parse_subnet_stats(stat_response: list[dict[str, Any]], version: int) -> dic
         Returns an empty dict when the response is missing or malformed.
 
     """
-    if not stat_response or not isinstance(stat_response[0], dict):
+    if not isinstance(stat_response, list) or not stat_response or not isinstance(stat_response[0], dict):
         return {}
     if stat_response[0].get("result") != 0:
         return {}
@@ -277,13 +278,30 @@ def parse_reservation_csv(content: str, version: int) -> list[dict[str, Any]]:
         result: dict[str, Any] = {"subnet-id": int(row["subnet-id"])}
 
         if version == 4:
+            try:
+                addr = ipaddress.ip_address(row["ip-address"])
+            except ValueError:
+                raise ValueError(f"Row {row_num}: invalid IPv4 address '{row['ip-address']}'")
+            if addr.version != 4:
+                raise ValueError(f"Row {row_num}: '{row['ip-address']}' is not an IPv4 address")
             result["ip-address"] = row["ip-address"]
+            if not is_hex_string(row["hw-address"], 6, 6):
+                raise ValueError(f"Row {row_num}: invalid MAC address '{row['hw-address']}'")
             result["hw-address"] = row["hw-address"]
         else:
             ip_addresses = [addr.strip() for addr in row["ip-addresses"].split(";") if addr.strip()]
             if not ip_addresses:
                 raise ValueError(f"Row {row_num}: 'ip-addresses' must contain at least one valid address")
+            for raw_addr in ip_addresses:
+                try:
+                    addr = ipaddress.ip_address(raw_addr)
+                except ValueError:
+                    raise ValueError(f"Row {row_num}: invalid IPv6 address '{raw_addr}'")
+                if addr.version != 6:
+                    raise ValueError(f"Row {row_num}: '{raw_addr}' is not an IPv6 address")
             result["ip-addresses"] = ip_addresses
+            if not is_hex_string(row["duid"], constants.DUID_MIN_OCTETS, constants.DUID_MAX_OCTETS):
+                raise ValueError(f"Row {row_num}: invalid DUID '{row['duid']}'")
             result["duid"] = row["duid"]
 
         if row.get("hostname"):
@@ -337,11 +355,22 @@ def parse_lease_csv(version: int, content: str) -> list[dict[str, Any]]:
 
         result: dict[str, Any] = {"ip-address": row["ip-address"]}
 
+        try:
+            addr = ipaddress.ip_address(row["ip-address"])
+        except ValueError:
+            raise ValueError(f"Row {row_num}: invalid IP address '{row['ip-address']}'")
+        if addr.version != version:
+            raise ValueError(f"Row {row_num}: '{row['ip-address']}' is not an IPv{version} address")
+
         if version == 6:
+            if not is_hex_string(row["duid"], constants.DUID_MIN_OCTETS, constants.DUID_MAX_OCTETS):
+                raise ValueError(f"Row {row_num}: invalid DUID '{row['duid']}'")
             result["duid"] = row["duid"]
             result["iaid"] = int(row["iaid"])
 
         if row.get("hw-address") and version == 4:
+            if not is_hex_string(row["hw-address"], 6, 6):
+                raise ValueError(f"Row {row_num}: invalid MAC address '{row['hw-address']}'")
             result["hw-address"] = row["hw-address"]
         if row.get("subnet-id"):
             result["subnet-id"] = int(row["subnet-id"])

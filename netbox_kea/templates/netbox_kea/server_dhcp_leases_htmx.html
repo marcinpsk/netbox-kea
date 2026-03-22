@@ -44,7 +44,7 @@
             if (form) {
               form.addEventListener('submit', function () {
                 var field = document.getElementById('lease-delete-return-url');
-                if (field) { field.value = window.location.href; }
+                if (field) { field.value = window.location.pathname + window.location.search; }
               });
             }
           })();

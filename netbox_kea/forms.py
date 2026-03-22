@@ -490,8 +490,12 @@ class GlobalServer4FilterForm(forms.Form):
 
     def __init__(self, *args, **kwargs):
         """Evaluate queryset at instantiation time, not class definition time."""
+        user = kwargs.pop("user", None)
         super().__init__(*args, **kwargs)
-        self.fields["server"].queryset = Server.objects.filter(dhcp4=True)
+        qs = Server.objects.filter(dhcp4=True)
+        if user is not None:
+            qs = qs.restrict(user, "view")
+        self.fields["server"].queryset = qs
 
 
 class GlobalServer6FilterForm(forms.Form):
@@ -507,8 +511,12 @@ class GlobalServer6FilterForm(forms.Form):
 
     def __init__(self, *args, **kwargs):
         """Evaluate queryset at instantiation time, not class definition time."""
+        user = kwargs.pop("user", None)
         super().__init__(*args, **kwargs)
-        self.fields["server"].queryset = Server.objects.filter(dhcp6=True)
+        qs = Server.objects.filter(dhcp6=True)
+        if user is not None:
+            qs = qs.restrict(user, "view")
+        self.fields["server"].queryset = qs
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -931,7 +939,7 @@ class Lease6EditForm(forms.Form):
         help_text="Client hostname (leave blank to keep current).",
     )
     duid = forms.CharField(
-        max_length=255,
+        max_length=3 * constants.DUID_MAX_OCTETS - 1,
         required=False,
         label="DUID",
         help_text="Client DUID in hex (leave blank to keep current).",
@@ -1018,6 +1026,7 @@ class Lease6AddForm(forms.Form):
         help_text="IPv6 address to assign.",
     )
     duid = forms.CharField(
+        max_length=3 * constants.DUID_MAX_OCTETS - 1,
         label="DUID",
         help_text="Client DUID in colon-separated hex (e.g. 00:01:02:03).",
     )

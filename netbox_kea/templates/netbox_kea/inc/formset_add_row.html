@@ -9,8 +9,9 @@
   if (!tbody || !totalFormsInput || !addBtn) { return; }
 
   const prefix = totalFormsInput.name.replace(/-TOTAL_FORMS$/, '');
-  const fieldRe = new RegExp(prefix + '-(\\d+)-', 'g');
-  const idRe = new RegExp('id_' + prefix + '-(\\d+)-', 'g');
+  const escapedPrefix = prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const fieldRe = new RegExp(escapedPrefix + '-(\\d+)-', 'g');
+  const idRe = new RegExp('id_' + escapedPrefix + '-(\\d+)-', 'g');
 
   addBtn.addEventListener('click', function () {
     const rows = tbody.querySelectorAll('tr.formset-row');
