@@ -152,6 +152,12 @@ class TestReservation4API(_APITestBase):
         response = self.api_client.get(self._url())
         self.assertEqual(response.status_code, 400)
 
+    def test_non_integer_subnet_id_returns_400(self):
+        """?subnet_id=foo returns HTTP 400."""
+        response = self.api_client.get(self._url(), {"subnet_id": "foo"})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("subnet_id", response.json()["detail"])
+
     def test_server_not_found_returns_404(self):
         """Non-existent server PK returns HTTP 404."""
         response = self.api_client.get(self._url(pk=99999), {"subnet_id": "1"})
@@ -203,6 +209,22 @@ class TestReservation4API(_APITestBase):
         self.assertEqual(response.json()["count"], 1)
 
     @patch("netbox_kea.models.KeaClient")
+    def test_get_by_subnet_id_paginates_all_pages(self, MockKeaClient):
+        """?subnet_id=1 fetches ALL pages from reservation_get_page, not just the first."""
+        mock_client = MagicMock()
+        MockKeaClient.return_value = mock_client
+        page1_host = {"ip-address": "10.0.0.51", "hw-address": "aa:bb:cc:dd:ee:01", "subnet-id": 1}
+        page2_host = {"ip-address": "10.0.0.52", "hw-address": "aa:bb:cc:dd:ee:02", "subnet-id": 1}
+        mock_client.reservation_get_page.side_effect = [
+            ([page1_host], 1, 0),  # first page: next_from=1, not exhausted
+            ([page2_host], 0, 0),  # second page: exhausted
+        ]
+        response = self.api_client.get(self._url(), {"subnet_id": "1"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["count"], 2)
+        self.assertEqual(mock_client.reservation_get_page.call_count, 2)
+
+    @patch("netbox_kea.models.KeaClient")
     def test_not_found_returns_empty_results(self, MockKeaClient):
         """When reservation_get returns None, results is empty list with count=0."""
         mock_client = MagicMock()
@@ -233,7 +255,7 @@ class TestReservation4API(_APITestBase):
         mock_client.reservation_get.return_value = _RESERVATION4_RESPONSE[0]["arguments"]
         self.api_client.get(self._url(), {"ip_address": "10.0.0.50", "subnet_id": "1"})
         call_args = mock_client.reservation_get.call_args
-        self.assertIn("dhcp4", str(call_args))
+        self.assertEqual(call_args.args[0], "dhcp4")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -252,6 +274,12 @@ class TestReservation6API(_APITestBase):
         """Requesting reservations6 without any filter param returns HTTP 400."""
         response = self.api_client.get(self._url())
         self.assertEqual(response.status_code, 400)
+
+    def test_non_integer_subnet_id_returns_400(self):
+        """?subnet_id=not-a-number returns HTTP 400."""
+        response = self.api_client.get(self._url(), {"subnet_id": "not-a-number"})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("subnet_id", response.json()["detail"])
 
     @patch("netbox_kea.models.KeaClient")
     def test_get_by_ip_and_subnet_returns_200(self, MockKeaClient):
@@ -279,4 +307,4 @@ class TestReservation6API(_APITestBase):
         mock_client.reservation_get.return_value = _RESERVATION6_SINGLE[0]["arguments"]
         self.api_client.get(self._url(), {"ip_address": "2001:db8::50", "subnet_id": "10"})
         call_args = mock_client.reservation_get.call_args
-        self.assertIn("dhcp6", str(call_args))
+        self.assertEqual(call_args.args[0], "dhcp6")

@@ -71,6 +71,12 @@ class ServerViewSet(NetBoxModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        if subnet_id is not None:
+            try:
+                int(subnet_id)
+            except ValueError:
+                return Response({"detail": "subnet_id must be an integer."}, status=status.HTTP_400_BAD_REQUEST)
+
         try:
             client = server.get_client(version=version)
             leases = self._fetch_leases(client, version, ip_address, hw_address, hostname, subnet_id, duid)
@@ -205,6 +211,12 @@ class ServerViewSet(NetBoxModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        if subnet_id is not None:
+            try:
+                int(subnet_id)
+            except ValueError:
+                return Response({"detail": "subnet_id must be an integer."}, status=status.HTTP_400_BAD_REQUEST)
+
         try:
             client = server.get_client(version=version)
             reservations = self._fetch_reservations(client, version, ip_address, hw_address, subnet_id, duid)
@@ -245,8 +257,17 @@ class ServerViewSet(NetBoxModelViewSet):
             return [host] if host else []
 
         if subnet_id:
-            # Page through all reservations and filter by subnet_id client-side
-            hosts, _, _ = client.reservation_get_page(service)
-            return [h for h in hosts if str(h.get("subnet-id", "")) == str(subnet_id)]
+            # Page through all reservations exhaustively, then filter by subnet_id client-side.
+            all_hosts: list[dict] = []
+            source_index, from_index = 0, 0
+            while True:
+                page, next_from, next_source = client.reservation_get_page(
+                    service, source_index=source_index, from_index=from_index
+                )
+                all_hosts.extend(page)
+                if not page or (next_from == 0 and next_source == 0):
+                    break
+                source_index, from_index = next_source, next_from
+            return [h for h in all_hosts if str(h.get("subnet-id", "")) == str(subnet_id)]
 
         return []

@@ -582,7 +582,7 @@ class KeaClient:
                 logger.debug("config-test not supported for service %s — skipping pre-flight check", service)
             else:
                 logger.warning("config-test failed for service %s — aborting config-write", service)
-                raise PartialPersistError(service, exc) from exc
+                raise KeaConfigTestError(service, exc) from exc
         try:
             self.command("config-write", service=[service], arguments=config)
         except KeaException as exc:
@@ -618,7 +618,7 @@ class KeaClient:
                 logger.debug("config-test not supported for service %s — skipping pre-flight check", service)
             else:
                 logger.warning("config-test failed for service %s — aborting config-write", service)
-                raise PartialPersistError(service, exc) from exc
+                raise KeaConfigTestError(service, exc) from exc
         try:
             self.command("config-write", service=[service], arguments=config)
         except KeaException as exc:
@@ -670,7 +670,7 @@ class KeaClient:
                 logger.debug("config-test not supported for service %s — skipping pre-flight check", service)
             else:
                 logger.warning("config-test failed for service %s — aborting config-write", service)
-                raise
+                raise KeaConfigTestError(service, exc) from exc
         try:
             self.command("config-write", service=[service], arguments=config)
         except KeaException as exc:
@@ -686,7 +686,7 @@ class KeaClient:
             space: Option space of the entry to remove.
 
         Raises:
-            KeaException: If no matching option-def is found, or if ``config-test`` fails.
+            KeaConfigTestError: If ``config-test`` fails before the mutation is applied.
             PartialPersistError: If ``config-write`` fails after successful ``config-test``.
 
         """
@@ -706,7 +706,7 @@ class KeaClient:
                 logger.debug("config-test not supported for service %s — skipping pre-flight check", service)
             else:
                 logger.warning("config-test failed for service %s — aborting config-write", service)
-                raise
+                raise KeaConfigTestError(service, exc) from exc
         try:
             self.command("config-write", service=[service], arguments=config)
         except KeaException as exc:
@@ -928,7 +928,7 @@ class KeaClient:
                     "config-test failed for service %s — aborting config-write",
                     service,
                 )
-                raise PartialPersistError(service, exc) from exc
+                raise KeaConfigTestError(service, exc) from exc
         try:
             self.command("config-write", service=[service])
         except KeaException as exc:
@@ -980,6 +980,23 @@ class KeaException(Exception):
             msg = f"Kea returned result[{index}] {self.response.get('result')}"
         message = f"{msg}: {self.response.get('text')}"
         super().__init__(message)
+
+
+class KeaConfigTestError(KeaException):
+    """Raised when ``config-test`` fails before any mutation has been applied.
+
+    The Kea configuration is unchanged — no data has been written.
+    The original :exc:`KeaException` from config-test is stored in ``__cause__``.
+    """
+
+    def __init__(self, service: str, cause: Exception) -> None:
+        response: KeaResponse = {
+            "result": -1,
+            "text": f"config-test failed for service {service!r} — mutation was not applied",
+            "arguments": [],
+        }
+        super().__init__(response, msg=f"config-test error for {service!r}")
+        self.service = service
 
 
 class PartialPersistError(KeaException):

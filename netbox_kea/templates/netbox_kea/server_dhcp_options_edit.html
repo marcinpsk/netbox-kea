@@ -75,26 +75,5 @@
   </div>
 </div>
 
-<script>
-(function () {
-  const tbody = document.getElementById('formset-rows');
-  const totalFormsInput = document.querySelector('[name=form-TOTAL_FORMS]');
-  const addBtn = document.getElementById('add-row');
-
-  addBtn.addEventListener('click', function () {
-    const rows = tbody.querySelectorAll('tr.formset-row');
-    const idx = rows.length;
-    const lastRow = rows[rows.length - 1];
-    const newRow = lastRow.cloneNode(true);
-    newRow.querySelectorAll('input, select, textarea').forEach(function (el) {
-      el.name = el.name.replace(/form-\d+-/, 'form-' + idx + '-');
-      el.id = el.id ? el.id.replace(/id_form-\d+-/, 'id_form-' + idx + '-') : '';
-      if (el.type === 'checkbox') { el.checked = false; }
-      else { el.value = ''; }
-    });
-    tbody.appendChild(newRow);
-    totalFormsInput.value = idx + 1;
-  });
-})();
-</script>
+{% include "netbox_kea/inc/formset_add_row.html" %}
 {% endblock %}

@@ -146,7 +146,11 @@ class TestLease4API(_APITestBase):
         response = self.api_client.get(self._url())
         self.assertEqual(response.status_code, 400)
 
-    def test_server_not_found_returns_404(self):
+    def test_non_integer_subnet_id_returns_400(self):
+        """?subnet_id=abc returns HTTP 400."""
+        response = self.api_client.get(self._url(), {"subnet_id": "abc"})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("subnet_id", response.json()["detail"])
         """Non-existent server PK returns HTTP 404."""
         url = reverse("plugins-api:netbox_kea-api:server-leases4", args=[99999])
         response = self.api_client.get(url, {"ip_address": "10.0.0.1"})
@@ -241,6 +245,12 @@ class TestLease6API(_APITestBase):
         response = self.api_client.get(self._url())
         self.assertEqual(response.status_code, 400)
 
+    def test_non_integer_subnet_id_returns_400(self):
+        """?subnet_id=not-a-number returns HTTP 400."""
+        response = self.api_client.get(self._url(), {"subnet_id": "not-a-number"})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("subnet_id", response.json()["detail"])
+
     @patch("netbox_kea.models.KeaClient")
     def test_get_by_ip_address_returns_200(self, MockKeaClient):
         """?ip_address=2001:db8::1 returns 200 with v6 lease data."""
@@ -292,11 +302,4 @@ class TestLease6API(_APITestBase):
             }
         ]
         self.api_client.get(self._url(), {"ip_address": "2001:db8::1"})
-        call_kwargs = mock_client.command.call_args
-        service_arg = call_kwargs[1].get("service") or call_kwargs[0][1] if call_kwargs[0] else None
-        if service_arg is None:
-            # Try keyword arg
-            service_arg = call_kwargs.kwargs.get("service") if hasattr(call_kwargs, "kwargs") else None
-        # At minimum verify the command was called with dhcp6 in the service
-        called_cmd = mock_client.command.call_args
-        self.assertIn("dhcp6", str(called_cmd))
+        self.assertEqual(mock_client.command.call_args.kwargs.get("service"), ["dhcp6"])

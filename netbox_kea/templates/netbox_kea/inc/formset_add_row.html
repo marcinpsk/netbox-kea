@@ -1,0 +1,27 @@
+{# SPDX-FileCopyrightText: 2025 Marcin Zieba <marcinpsk@gmail.com> #}
+{# SPDX-License-Identifier: Apache-2.0 #}
+<script>
+(function () {
+  const tbody = document.getElementById('formset-rows');
+  const totalFormsInput = document.querySelector('[name=form-TOTAL_FORMS]');
+  const addBtn = document.getElementById('add-row');
+
+  addBtn.addEventListener('click', function () {
+    const rows = tbody.querySelectorAll('tr.formset-row');
+    const idx = rows.length;
+    const lastRow = rows[rows.length - 1];
+    const newRow = lastRow.cloneNode(true);
+    // Clear stale validation state from the cloned row.
+    newRow.querySelectorAll('.invalid-feedback').forEach(function (el) { el.textContent = ''; });
+    newRow.querySelectorAll('.is-invalid').forEach(function (el) { el.classList.remove('is-invalid'); });
+    newRow.querySelectorAll('input, select, textarea').forEach(function (el) {
+      el.name = el.name.replace(/form-\d+-/, 'form-' + idx + '-');
+      el.id = el.id ? el.id.replace(/id_form-\d+-/, 'id_form-' + idx + '-') : '';
+      if (el.type === 'checkbox') { el.checked = false; }
+      else { el.value = ''; }
+    });
+    tbody.appendChild(newRow);
+    totalFormsInput.value = idx + 1;
+  });
+})();
+</script>

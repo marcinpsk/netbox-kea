@@ -1623,28 +1623,28 @@ class TestPersistConfig(TestCase):
             self.client._persist_config("dhcp4")
         self.assertIn("config-write", self._cmds(mock_post))
 
-    def test_config_test_failure_raises_partial_persist_error(self):
-        """When config-test returns a non-zero, non-2 result, PartialPersistError is raised."""
-        from netbox_kea.kea import PartialPersistError
+    def test_config_test_failure_raises_kea_config_test_error(self):
+        """When config-test returns a non-zero, non-2 result, KeaConfigTestError is raised."""
+        from netbox_kea.kea import KeaConfigTestError
 
         with patch.object(
             self.client._session,
             "post",
             side_effect=_side_effects(_CONFIG_TEST_FAIL_RESP),
         ):
-            with self.assertRaises(PartialPersistError):
+            with self.assertRaises(KeaConfigTestError):
                 self.client._persist_config("dhcp4")
 
     def test_config_write_not_called_when_config_test_fails(self):
         """When config-test returns an error, config-write is NOT called."""
-        from netbox_kea.kea import PartialPersistError
+        from netbox_kea.kea import KeaConfigTestError
 
         with patch.object(
             self.client._session,
             "post",
             side_effect=_side_effects(_CONFIG_TEST_FAIL_RESP),
         ) as mock_post:
-            with self.assertRaises(PartialPersistError):
+            with self.assertRaises(KeaConfigTestError):
                 self.client._persist_config("dhcp4")
         self.assertNotIn("config-write", self._cmds(mock_post))
 

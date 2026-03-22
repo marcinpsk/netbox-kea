@@ -285,16 +285,20 @@ class ServerStatusView(generic.ObjectView):
                 "options_url": reverse("plugins:netbox_kea:server_dhcp6_options_edit", args=[instance.pk]),
             }
 
-        # Merge status + URL context into a list so the template can iterate without
-        # needing dynamic dict key lookups (which Django templates don't support).
+        # Build the services list from the configured service URLs (config-driven),
+        # not from live status data. This ensures enable/disable buttons always render
+        # even when the status fetch fails.
         services = [
             {
                 "name": name,
-                "status_data": status_data,
-                **service_urls.get(name, {}),
+                "status_data": statuses.get(name, {}),
+                **urls,
             }
-            for name, status_data in statuses.items()
+            for name, urls in service_urls.items()
         ]
+        # Prepend Control Agent row if configured (no enable/disable URLs for CA).
+        if instance.has_control_agent:
+            services.insert(0, {"name": "Control Agent", "status_data": statuses.get("Control Agent", {})})
 
         return {
             "services": services,
@@ -3927,10 +3931,10 @@ class IPAddressKeaReservationsView(ConditionalLoginRequiredMixin, View):
         version = 6 if is_v6 else 4
 
         if version == 4:
-            servers = Server.objects.restrict(request.user, "view").filter(dhcp4=True)
+            servers = Server.objects.restrict(request.user, "change").filter(dhcp4=True)
             add_url_name = "plugins:netbox_kea:server_reservation4_add"
         else:
-            servers = Server.objects.restrict(request.user, "view").filter(dhcp6=True)
+            servers = Server.objects.restrict(request.user, "change").filter(dhcp6=True)
             add_url_name = "plugins:netbox_kea:server_reservation6_add"
 
         server_links = []

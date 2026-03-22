@@ -1606,7 +1606,7 @@ class TestBulkReservationImport(_ReservationViewBase):
         )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(mock_client.reservation_add.call_count, 2)
-        self.assertContains(response, "2")  # 2 created shown in summary
+        self.assertContains(response, "Created")  # result summary shown
 
     @patch("netbox_kea.models.KeaClient")
     def test_post_valid_v6_csv_creates_reservation(self, MockKeaClient):
@@ -1640,7 +1640,7 @@ class TestBulkReservationImport(_ReservationViewBase):
         )
         self.assertEqual(response.status_code, 200)
         # No hard error — page still 200 with skipped count shown
-        self.assertContains(response, "2")  # 2 skipped
+        self.assertContains(response, "Skipped (already exist)")  # skipped summary shown
 
     @patch("netbox_kea.models.KeaClient")
     def test_post_shows_errors_on_kea_failure(self, MockKeaClient):
