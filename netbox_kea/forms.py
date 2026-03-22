@@ -126,7 +126,7 @@ class ServerImportForm(NetBoxModelImportForm):
 class BaseLeasesSarchForm(forms.Form):
     """Base search form for DHCP lease queries; subclassed per IP version."""
 
-    q = forms.CharField(label="Search")
+    q = forms.CharField(label="Search", required=False)
     page = forms.CharField(required=False, widget=VeryHiddenInput)
     state = forms.ChoiceField(
         label="State",
@@ -181,7 +181,7 @@ class BaseLeasesSarchForm(forms.Form):
                 raise ValidationError({"q": "Invalid DUID."})
             cleaned_data["q"] = q.replace("-", "")
         elif by == constants.BY_CLIENT_ID:
-            if not is_hex_string(q, constants.CLIENT_ID_MIN_OCTETS, constants.DUID_MAX_OCTETS):
+            if not is_hex_string(q, constants.CLIENT_ID_MIN_OCTETS, constants.CLIENT_ID_MAX_OCTETS):
                 raise ValidationError({"q": "Invalid client ID."})
             cleaned_data["q"] = q.replace("-", "")
 
@@ -982,6 +982,7 @@ class Lease6AddForm(forms.Form):
     iaid = forms.IntegerField(
         label="IAID",
         min_value=0,
+        max_value=4294967295,
         help_text="Identity Association ID (32-bit unsigned integer).",
     )
     subnet_id = forms.IntegerField(
@@ -1076,9 +1077,9 @@ class OptionDefForm(forms.Form):
     )
     code = forms.IntegerField(
         min_value=1,
-        max_value=254,
+        max_value=65535,
         label="Code",
-        help_text="Option code number (1–254).",
+        help_text="Option code number (1–254 for DHCPv4; 1–65535 for DHCPv6).",
     )
     type = forms.ChoiceField(
         choices=_KEA_OPTION_TYPES,

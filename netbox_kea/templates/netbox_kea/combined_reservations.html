@@ -16,10 +16,12 @@
       <div class="col-auto flex-grow-1">
         <label for="id_q" class="form-label">{{ search_form.q.label }}</label>
         {{ search_form.q }}
+        {% if search_form.q.errors %}<div class="invalid-feedback d-block">{{ search_form.q.errors.as_text }}</div>{% endif %}
       </div>
       <div class="col-auto">
         <label for="id_subnet_id" class="form-label">{{ search_form.subnet_id.label }}</label>
         {{ search_form.subnet_id }}
+        {% if search_form.subnet_id.errors %}<div class="invalid-feedback d-block">{{ search_form.subnet_id.errors.as_text }}</div>{% endif %}
       </div>
       <div class="col-auto">
         <button type="submit" class="btn btn-primary btn-sm">

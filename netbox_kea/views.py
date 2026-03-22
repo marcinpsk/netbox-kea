@@ -427,6 +427,10 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
         instance = self.get_object(**kwargs)
 
         by = form.cleaned_data["by"]
+        if not by:
+            messages.warning(request, "A search attribute is required to export.")
+            return redirect(request.path)
+
         q = form.cleaned_data["q"]
         client = instance.get_client(version=self.dhcp_version)
         if by == constants.BY_SUBNET:

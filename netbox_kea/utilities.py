@@ -151,7 +151,7 @@ def parse_subnet_stats(stat_response: list[dict[str, Any]], version: int) -> dic
     """
     if not stat_response or stat_response[0].get("result") != 0:
         return {}
-    result_set = stat_response[0].get("arguments", {}).get("result-set", {})
+    result_set = (stat_response[0].get("arguments") or {}).get("result-set", {})
     columns: list[str] = result_set.get("columns", [])
     rows: list[list] = result_set.get("rows", [])
 

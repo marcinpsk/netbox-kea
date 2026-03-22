@@ -15,13 +15,15 @@ URL names tested (all registered and working):
 
 import io
 from unittest.mock import MagicMock, patch
+from urllib.parse import urlencode
 
 from django.contrib.auth import get_user_model
-from django.test import TestCase, override_settings
+from django.test import SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
 
-from netbox_kea.kea import KeaException
+from netbox_kea.kea import KeaException, PartialPersistError
 from netbox_kea.models import Server
+from netbox_kea.views import _filter_reservations
 
 User = get_user_model()
 
@@ -1278,11 +1280,6 @@ class TestServerSubnet6DeleteView(_ReservationViewBase):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-from django.test import SimpleTestCase  # noqa: E402
-
-from netbox_kea.views import _filter_reservations  # noqa: E402
-
-
 class TestFilterReservations(SimpleTestCase):
     """Unit tests for the _filter_reservations() pure-function helper."""
 
@@ -1418,8 +1415,6 @@ class TestReservationSearch4View(_ReservationViewBase):
     def _url(self, **params):
         base = reverse("plugins:netbox_kea:server_reservations4", args=[self.server.pk])
         if params:
-            from urllib.parse import urlencode
-
             return f"{base}?{urlencode(params)}"
         return base
 
@@ -1496,8 +1491,6 @@ class TestReservationSearch6View(_ReservationViewBase):
     def _url(self, **params):
         base = reverse("plugins:netbox_kea:server_reservations6", args=[self.server.pk])
         if params:
-            from urllib.parse import urlencode
-
             return f"{base}?{urlencode(params)}"
         return base
 
@@ -1634,8 +1627,6 @@ class TestBulkReservationImport(_ReservationViewBase):
     @patch("netbox_kea.models.KeaClient")
     def test_post_skips_duplicate_reservations(self, MockKeaClient):
         """result=1 with 'already exists' text is counted as skipped, not error."""
-        from netbox_kea.kea import KeaException
-
         mock_client = MockKeaClient.return_value
         mock_client.get_available_commands.return_value = _RESERVATION_COMMANDS
         dup_exc = KeaException({"result": 1, "text": "Host already exists."})
@@ -1654,8 +1645,6 @@ class TestBulkReservationImport(_ReservationViewBase):
     @patch("netbox_kea.models.KeaClient")
     def test_post_shows_errors_on_kea_failure(self, MockKeaClient):
         """KeaException (non-duplicate) is counted as error and shown on page."""
-        from netbox_kea.kea import KeaException
-
         mock_client = MockKeaClient.return_value
         mock_client.get_available_commands.return_value = _RESERVATION_COMMANDS
         mock_client.reservation_add.side_effect = KeaException({"result": 1, "text": "subnet not found"})
@@ -1701,8 +1690,6 @@ class TestBulkReservationImport(_ReservationViewBase):
     @patch("netbox_kea.models.KeaClient")
     def test_summary_shows_created_skipped_errors_counts(self, MockKeaClient):
         """Result page shows three distinct count values: created, skipped, errors."""
-        from netbox_kea.kea import KeaException
-
         mock_client = MockKeaClient.return_value
         mock_client.get_available_commands.return_value = _RESERVATION_COMMANDS
 
@@ -1821,8 +1808,6 @@ class TestPartialPersistErrorOnReservationAdd(_ReservationViewBase):
 
     @patch("netbox_kea.models.KeaClient")
     def test_partial_persist_error_shows_warning_and_redirects(self, MockKeaClient):
-        from netbox_kea.kea import PartialPersistError
-
         mock_client = MockKeaClient.return_value
         mock_client.reservation_add.side_effect = PartialPersistError("dhcp4", Exception("config-write failed"))
         response = self.client.post(
@@ -1850,8 +1835,6 @@ class TestPartialPersistErrorOnPoolAdd(_ReservationViewBase):
 
     @patch("netbox_kea.models.KeaClient")
     def test_partial_persist_error_shows_warning_and_redirects(self, MockKeaClient):
-        from netbox_kea.kea import PartialPersistError
-
         mock_client = MockKeaClient.return_value
         mock_client.pool_add.side_effect = PartialPersistError("dhcp4", Exception("config-write failed"))
         response = self.client.post(self._url(), {"pool": "10.0.0.50-10.0.0.99"})
@@ -1867,8 +1850,6 @@ class TestPartialPersistErrorOnSubnetAdd(_ReservationViewBase):
 
     @patch("netbox_kea.models.KeaClient")
     def test_partial_persist_error_shows_warning_and_redirects(self, MockKeaClient):
-        from netbox_kea.kea import PartialPersistError
-
         mock_client = MockKeaClient.return_value
         mock_client.subnet_add.side_effect = PartialPersistError("dhcp4", Exception("config-write failed"))
         response = self.client.post(
@@ -1891,10 +1872,7 @@ class TestPartialPersistErrorOnSubnetDelete(_ReservationViewBase):
 
     @patch("netbox_kea.models.KeaClient")
     def test_partial_persist_error_shows_warning_and_redirects(self, MockKeaClient):
-        from netbox_kea.kea import PartialPersistError
-
         mock_client = MockKeaClient.return_value
         mock_client.subnet_del.side_effect = PartialPersistError("dhcp4", Exception("config-write failed"))
         response = self.client.post(self._url(), {"confirm": True})
         self.assertEqual(response.status_code, 302)
-
