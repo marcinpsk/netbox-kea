@@ -1629,7 +1629,7 @@ class TestBulkReservationImport(_ReservationViewBase):
         """result=1 with 'already exists' text is counted as skipped, not error."""
         mock_client = MockKeaClient.return_value
         mock_client.get_available_commands.return_value = _RESERVATION_COMMANDS
-        dup_exc = KeaException({"result": 1, "text": "Host already exists."})
+        dup_exc = KeaException({"result": 1, "text": "Host already exists."}, index=0)
         mock_client.reservation_add.side_effect = dup_exc
         csv_file = io.BytesIO(_BULK_IMPORT_V4_CSV.encode())
         csv_file.name = "import.csv"
@@ -1694,7 +1694,7 @@ class TestBulkReservationImport(_ReservationViewBase):
         mock_client.get_available_commands.return_value = _RESERVATION_COMMANDS
 
         # row 1 → success, row 2 → already exists (skip)
-        dup_exc = KeaException({"result": 1, "text": "Host already exists."})
+        dup_exc = KeaException({"result": 1, "text": "Host already exists."}, index=0)
         mock_client.reservation_add.side_effect = [None, dup_exc]
         csv_file = io.BytesIO(_BULK_IMPORT_V4_CSV.encode())
         csv_file.name = "import.csv"
@@ -1858,6 +1858,7 @@ class TestPartialPersistErrorOnSubnetAdd(_ReservationViewBase):
                 "subnet": "10.10.0.0/24",
             },
         )
+        mock_client.subnet_add.assert_called_once()
         self.assertEqual(response.status_code, 302)
 
 

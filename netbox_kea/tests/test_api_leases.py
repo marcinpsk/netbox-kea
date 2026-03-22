@@ -151,6 +151,8 @@ class TestLease4API(_APITestBase):
         response = self.api_client.get(self._url(), {"subnet_id": "abc"})
         self.assertEqual(response.status_code, 400)
         self.assertIn("subnet_id", response.json()["detail"])
+
+    def test_nonexistent_server_returns_404(self):
         """Non-existent server PK returns HTTP 404."""
         url = reverse("plugins-api:netbox_kea-api:server-leases4", args=[99999])
         response = self.api_client.get(url, {"ip_address": "10.0.0.1"})
@@ -250,6 +252,12 @@ class TestLease6API(_APITestBase):
         response = self.api_client.get(self._url(), {"subnet_id": "not-a-number"})
         self.assertEqual(response.status_code, 400)
         self.assertIn("subnet_id", response.json()["detail"])
+
+    def test_nonexistent_server_returns_404(self):
+        """Non-existent server PK returns HTTP 404."""
+        url = reverse("plugins-api:netbox_kea-api:server-leases6", args=[99999])
+        response = self.api_client.get(url, {"ip_address": "2001:db8::1"})
+        self.assertEqual(response.status_code, 404)
 
     @patch("netbox_kea.models.KeaClient")
     def test_get_by_ip_address_returns_200(self, MockKeaClient):

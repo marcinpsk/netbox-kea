@@ -220,9 +220,6 @@ def kea_error_hint(exc: Any) -> str:
     if result == 0:
         return "Operation reported success."
     if result == 1:
-        text = getattr(exc, "response", {}).get("text", "") or ""
-        if text:
-            return f"Kea reported an error: {text}"
         return "Kea reported an error. Check the server logs for details."
     return f"Kea returned an unexpected result code ({result}). Check the server logs for details."
 

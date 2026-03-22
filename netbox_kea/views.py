@@ -11,7 +11,7 @@ from django.http.request import HttpRequest
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.views import View
-from netaddr import IPAddress, IPNetwork
+from netaddr import AddrFormatError, IPAddress, IPNetwork
 from netbox.tables import BaseTable
 from netbox.views import generic
 from utilities.exceptions import AbortRequest
@@ -695,7 +695,7 @@ class ServerLeases4DeleteView(BaseServerLeasesDeleteView):
     dhcp_version = 4
 
 
-class _BaseLeaseEditView(ConditionalLoginRequiredMixin, View):
+class _BaseLeaseEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin, View):
     """Base view for editing a single lease via ``lease{v}-update``.
 
     Subclasses must set ``dhcp_version`` and ``form_class``.
@@ -722,6 +722,7 @@ class _BaseLeaseEditView(ConditionalLoginRequiredMixin, View):
                 f"lease{self.dhcp_version}-get",
                 service=[f"dhcp{self.dhcp_version}"],
                 arguments={"ip-address": ip_address},
+                check=(0, 3),
             )
         except KeaException:
             messages.error(request, "Failed to fetch lease: see server logs for details.")
@@ -1534,8 +1535,8 @@ class ServerReservation4AddView(_KeaChangeMixin, generic.ObjectView):
                         logger.exception("Failed to sync DHCPv4 reservation %s to NetBox", cd.get("ip_address"))
                         messages.warning(request, "Reservation created, but NetBox IPAM sync failed.")
                 return redirect(return_url)
-            except PartialPersistError as exc:
-                messages.warning(request, str(exc))
+            except PartialPersistError:
+                messages.warning(request, "Change applied but may not survive a Kea restart (config-write failed).")
                 return redirect(return_url)
             except KeaException as exc:
                 logger.exception("Failed to create DHCPv4 reservation for %s", cd.get("ip_address"))
@@ -1610,8 +1611,8 @@ class ServerReservation6AddView(_KeaChangeMixin, generic.ObjectView):
                         logger.exception("Failed to sync DHCPv6 reservation to NetBox")
                         messages.warning(request, "Reservation created, but NetBox IPAM sync failed.")
                 return redirect(return_url)
-            except PartialPersistError as exc:
-                messages.warning(request, str(exc))
+            except PartialPersistError:
+                messages.warning(request, "Change applied but may not survive a Kea restart (config-write failed).")
                 return redirect(return_url)
             except KeaException as exc:
                 logger.exception("Failed to create DHCPv6 reservation for %s", cd.get("ip_addresses"))
@@ -1651,6 +1652,7 @@ class ServerReservation4EditView(_KeaChangeMixin, generic.ObjectView):
         except KeaException as exc:
             logger.exception("Failed to fetch DHCPv4 reservation %s in subnet %s", ip_address, subnet_id)
             messages.error(request, kea_error_hint(exc))
+            return redirect(return_url)
         except Exception:
             logger.exception("Failed to fetch DHCPv4 reservation %s in subnet %s", ip_address, subnet_id)
             messages.error(request, "Failed to retrieve reservation: see server logs for details.")
@@ -1704,8 +1706,8 @@ class ServerReservation4EditView(_KeaChangeMixin, generic.ObjectView):
                         logger.exception("Failed to sync DHCPv4 reservation %s to NetBox", cd.get("ip_address"))
                         messages.warning(request, "Reservation updated, but NetBox IPAM sync failed.")
                 return redirect(return_url)
-            except PartialPersistError as exc:
-                messages.warning(request, str(exc))
+            except PartialPersistError:
+                messages.warning(request, "Change applied but may not survive a Kea restart (config-write failed).")
                 return redirect(return_url)
             except KeaException as exc:
                 logger.exception("Failed to update DHCPv4 reservation for %s", cd.get("ip_address"))
@@ -1745,6 +1747,7 @@ class ServerReservation6EditView(_KeaChangeMixin, generic.ObjectView):
         except KeaException as exc:
             logger.exception("Failed to fetch DHCPv6 reservation %s in subnet %s", ip_address, subnet_id)
             messages.error(request, kea_error_hint(exc))
+            return redirect(return_url)
         except Exception:
             logger.exception("Failed to fetch DHCPv6 reservation %s in subnet %s", ip_address, subnet_id)
             messages.error(request, "Failed to retrieve reservation: see server logs for details.")
@@ -1800,8 +1803,8 @@ class ServerReservation6EditView(_KeaChangeMixin, generic.ObjectView):
                         logger.exception("Failed to sync DHCPv6 reservation to NetBox")
                         messages.warning(request, "Reservation updated, but NetBox IPAM sync failed.")
                 return redirect(return_url)
-            except PartialPersistError as exc:
-                messages.warning(request, str(exc))
+            except PartialPersistError:
+                messages.warning(request, "Change applied but may not survive a Kea restart (config-write failed).")
                 return redirect(return_url)
             except KeaException as exc:
                 logger.exception("Failed to update DHCPv6 reservation for %s", cd.get("ip_addresses"))
@@ -1851,8 +1854,8 @@ class ServerReservation4DeleteView(_KeaChangeMixin, generic.ObjectView):
         try:
             client.reservation_del("dhcp4", subnet_id=subnet_id, ip_address=ip_address)
             messages.success(request, f"Reservation for {ip_address} deleted.")
-        except PartialPersistError as exc:
-            messages.warning(request, str(exc))
+        except PartialPersistError:
+            messages.warning(request, "Change applied but may not survive a Kea restart (config-write failed).")
         except KeaException as exc:
             logger.exception("Failed to delete DHCPv4 reservation for %s", ip_address)
             messages.error(request, kea_error_hint(exc))
@@ -1891,8 +1894,8 @@ class ServerReservation6DeleteView(_KeaChangeMixin, generic.ObjectView):
         try:
             client.reservation_del("dhcp6", subnet_id=subnet_id, ip_address=ip_address)
             messages.success(request, f"DHCPv6 reservation for {ip_address} deleted.")
-        except PartialPersistError as exc:
-            messages.warning(request, str(exc))
+        except PartialPersistError:
+            messages.warning(request, "Change applied but may not survive a Kea restart (config-write failed).")
         except KeaException as exc:
             logger.exception("Failed to delete DHCPv6 reservation for %s", ip_address)
             messages.error(request, kea_error_hint(exc))
@@ -1952,8 +1955,8 @@ class _BasePoolAddView(_KeaChangeMixin, generic.ObjectView):
         try:
             client.pool_add(version=self.dhcp_version, subnet_id=subnet_id, pool=pool)
             messages.success(request, f"Pool {pool} added to subnet {subnet_id}.")
-        except PartialPersistError as exc:
-            messages.warning(request, str(exc))
+        except PartialPersistError:
+            messages.warning(request, "Change applied but may not survive a Kea restart (config-write failed).")
         except KeaException as exc:
             logger.exception("Failed to add pool to subnet %s", subnet_id)
             messages.error(request, kea_error_hint(exc))
@@ -2010,8 +2013,8 @@ class _BasePoolDeleteView(_KeaChangeMixin, generic.ObjectView):
         try:
             client.pool_del(version=self.dhcp_version, subnet_id=subnet_id, pool=pool)
             messages.success(request, f"Pool {pool} removed from subnet {subnet_id}.")
-        except PartialPersistError as exc:
-            messages.warning(request, str(exc))
+        except PartialPersistError:
+            messages.warning(request, "Change applied but may not survive a Kea restart (config-write failed).")
         except KeaException as exc:
             logger.exception("Failed to remove pool from subnet %s", subnet_id)
             messages.error(request, kea_error_hint(exc))
@@ -2089,8 +2092,8 @@ class _BaseSubnetAddView(_KeaChangeMixin, generic.ObjectView):
                 ntp_servers=cd["ntp_servers"],
             )
             messages.success(request, f"Subnet {cd['subnet']} added.")
-        except PartialPersistError as exc:
-            messages.warning(request, str(exc))
+        except PartialPersistError:
+            messages.warning(request, "Change applied but may not survive a Kea restart (config-write failed).")
             return redirect(return_url)
         except KeaException as exc:
             logger.exception("Failed to add subnet %s", cd.get("subnet"))
@@ -2282,8 +2285,8 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
                 max_valid_lft=cd.get("max_valid_lft"),
             )
             messages.success(request, f"Subnet {cd['subnet_cidr']} updated.")
-        except PartialPersistError as exc:
-            messages.warning(request, str(exc))
+        except PartialPersistError:
+            messages.warning(request, "Change applied but may not survive a Kea restart (config-write failed).")
             return redirect(return_url)
         except KeaException as exc:
             logger.exception("Failed to update subnet %s on server %s", subnet_id, pk)
@@ -2361,8 +2364,8 @@ class _BaseSubnetDeleteView(_KeaChangeMixin, generic.ObjectView):
         try:
             client.subnet_del(version=self.dhcp_version, subnet_id=subnet_id)
             messages.success(request, f"Subnet {subnet_id} deleted.")
-        except PartialPersistError as exc:
-            messages.warning(request, str(exc))
+        except PartialPersistError:
+            messages.warning(request, "Change applied but may not survive a Kea restart (config-write failed).")
         except KeaException as exc:
             logger.exception("Failed to delete subnet %s", subnet_id)
             messages.error(request, kea_error_hint(exc))
@@ -3003,7 +3006,8 @@ class _CombinedSubnetsView(_CombinedViewMixin):
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
             future_to_server = {executor.submit(_fetch_subnets_from_server, s, self.dhcp_version): s for s in servers}
-            for future, server in future_to_server.items():
+            for future in concurrent.futures.as_completed(future_to_server):
+                server = future_to_server[future]
                 try:
                     all_subnets.extend(future.result())
                 except Exception:  # noqa: BLE001, PERF203
@@ -3100,7 +3104,8 @@ class _CombinedReservationsView(_CombinedViewMixin):
             future_to_server = {
                 executor.submit(_fetch_reservations_from_server, s, self.dhcp_version): s for s in servers
             }
-            for future, server in future_to_server.items():
+            for future in concurrent.futures.as_completed(future_to_server):
+                server = future_to_server[future]
                 try:
                     all_records.extend(future.result())
                 except Exception:  # noqa: BLE001, PERF203
@@ -3212,7 +3217,8 @@ class _CombinedLeasesView(_CombinedViewMixin):
                 future_to_server = {
                     executor.submit(_fetch_leases_from_server, s, q, by, self.dhcp_version): s for s in servers
                 }
-                for future, server in future_to_server.items():
+                for future in concurrent.futures.as_completed(future_to_server):
+                    server = future_to_server[future]
                     try:
                         all_leases.extend(future.result())
                     except Exception:  # noqa: BLE001, PERF203
@@ -3224,7 +3230,8 @@ class _CombinedLeasesView(_CombinedViewMixin):
                 future_to_server = {
                     executor.submit(_fetch_all_leases_from_server, s, self.dhcp_version): s for s in servers
                 }
-                for future, server in future_to_server.items():
+                for future in concurrent.futures.as_completed(future_to_server):
+                    server = future_to_server[future]
                     try:
                         leases, was_truncated = future.result()
                         all_leases.extend(leases)
@@ -3301,7 +3308,7 @@ class _BaseSyncView(ConditionalLoginRequiredMixin, View):
 
         try:
             IPAddress(ip_str)
-        except Exception:
+        except (AddrFormatError, ValueError):
             return HttpResponse("Invalid IP address", status=400)
 
         hostname = request.POST.get("hostname", "").strip()
@@ -3427,7 +3434,7 @@ class ServerReservation6BulkSyncView(_BaseBulkReservationSyncView):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-class _BaseBulkReservationImportView(ConditionalLoginRequiredMixin, View):
+class _BaseBulkReservationImportView(_KeaChangeMixin, ConditionalLoginRequiredMixin, View):
     """Upload a CSV file and batch-insert reservations into Kea.
 
     Subclasses set :attr:`dhcp_version` and :attr:`form_class`.
@@ -3509,7 +3516,7 @@ class _BaseBulkReservationImportView(ConditionalLoginRequiredMixin, View):
 
         for row in rows:
             try:
-                client.reservation_add(self.dhcp_version, row)
+                client.reservation_add(f"dhcp{self.dhcp_version}", row)
                 created += 1
             except KeaException as exc:  # noqa: PERF203
                 text = getattr(exc, "response", {}).get("text", "") or ""
@@ -3561,7 +3568,7 @@ class ServerReservation6BulkImportView(_BaseBulkReservationImportView):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-class _BaseBulkLeaseImportView(ConditionalLoginRequiredMixin, View):
+class _BaseBulkLeaseImportView(_KeaChangeMixin, ConditionalLoginRequiredMixin, View):
     """Upload a CSV file and batch-insert leases into Kea via ``lease_add``.
 
     **GET**: render the upload form.

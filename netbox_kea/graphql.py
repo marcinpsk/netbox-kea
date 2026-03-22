@@ -34,9 +34,9 @@ class Query:
     """GraphQL root query type exposing Kea server objects."""
 
     @strawberry.field
-    def server(self, id: int) -> ServerType:
+    def server(self, id: int, info: strawberry.types.Info) -> ServerType:
         """Return a single Server by primary key."""
-        return models.Server.objects.get(pk=id)
+        return models.Server.objects.restrict(info.context.request.user, "view").get(pk=id)
 
     server_list: list[ServerType] = strawberry_django.field()
 

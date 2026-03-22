@@ -37,7 +37,7 @@
     {% with preferences|get_key:"pagination.placement" as paginator_placement %}
       <form method="post" action="{{ delete_action }}">
         {% csrf_token %}
-        <input type="hidden" name="return_url" value="{{ request.path }}?{{ request.GET.urlencode }}" />
+        <input type="hidden" name="return_url" value="{{ request.META.HTTP_HX_CURRENT_URL|default:request.get_full_path }}" />
         <div class="card table-responsive">
           {% if paginator_placement == 'top' or paginator_placement == 'both' %}
             {% include "netbox_kea/inc/server_dhcp_leases_paginator.html" with table=table paginate=paginate placement="top" %}

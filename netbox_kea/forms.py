@@ -202,6 +202,8 @@ class BaseLeasesSarchForm(forms.Form):
             except AddrFormatError as e:
                 raise ValidationError({"page": "Invalid IP."}) from e
 
+        return cleaned_data
+
 
 class Leases4SearchForm(BaseLeasesSarchForm):
     """Search form for DHCPv4 leases."""
