@@ -3990,3 +3990,196 @@ class CombinedServerStatusBadgeView(ConditionalLoginRequiredMixin, View):
             "netbox_kea/server_status_badge.html",
             {"server": server, "statuses": statuses},
         )
+
+
+# ---------------------------------------------------------------------------
+# option-def views
+# ---------------------------------------------------------------------------
+
+
+class BaseServerOptionDefView(_KeaChangeMixin, ConditionalLoginRequiredMixin, View):
+    """List option-def entries for a Kea server.
+
+    Subclasses set ``dhcp_version`` to 4 or 6.
+    """
+
+    dhcp_version: int
+
+    def get(self, request: HttpRequest, pk: int) -> HttpResponse:
+        """Render the option-def list."""
+        server = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
+        if resp := check_dhcp_enabled(server, self.dhcp_version):
+            return resp
+        client = server.get_client(version=self.dhcp_version)
+        option_defs = client.option_def_list(version=self.dhcp_version)
+        # Annotate each entry with a pre-built delete URL so templates don't
+        # need to construct dynamic URL names.
+        enriched_defs = []
+        for opt in option_defs:
+            entry = dict(opt)
+            entry["delete_url"] = reverse(
+                f"plugins:netbox_kea:server_option_def{self.dhcp_version}_delete",
+                args=[server.pk, opt["code"], opt["space"]],
+            )
+            enriched_defs.append(entry)
+        return render(
+            request,
+            "netbox_kea/server_option_def_list.html",
+            {
+                "object": server,
+                "server": server,
+                "option_defs": enriched_defs,
+                "dhcp_version": self.dhcp_version,
+                "add_url": reverse(
+                    f"plugins:netbox_kea:server_option_def{self.dhcp_version}_add",
+                    args=[server.pk],
+                ),
+            },
+        )
+
+
+@register_model_view(Server, "option_def6")
+class ServerOptionDef6View(BaseServerOptionDefView):
+    """DHCPv6 option-def tab."""
+
+    tab = OptionalViewTab(label="DHCPv6 Option Definitions", weight=1030, is_enabled=lambda s: s.dhcp6)
+    dhcp_version = 6
+
+
+@register_model_view(Server, "option_def4")
+class ServerOptionDef4View(BaseServerOptionDefView):
+    """DHCPv4 option-def tab."""
+
+    tab = OptionalViewTab(label="DHCPv4 Option Definitions", weight=1040, is_enabled=lambda s: s.dhcp4)
+    dhcp_version = 4
+
+
+class BaseServerOptionDefAddView(_KeaChangeMixin, ConditionalLoginRequiredMixin, View):
+    """Add a custom option definition to a Kea server.
+
+    Subclasses set ``dhcp_version`` to 4 or 6.
+    """
+
+    dhcp_version: int
+
+    def _success_url(self, server: Server) -> str:
+        return reverse(f"plugins:netbox_kea:server_option_def{self.dhcp_version}", args=[server.pk])
+
+    def get(self, request: HttpRequest, pk: int) -> HttpResponse:
+        """Render the add option-def form."""
+        server = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
+        form = forms.OptionDefForm(initial={"space": f"dhcp{self.dhcp_version}"})
+        return render(
+            request,
+            "netbox_kea/server_option_def_add.html",
+            {
+                "object": server,
+                "server": server,
+                "form": form,
+                "dhcp_version": self.dhcp_version,
+                "cancel_url": self._success_url(server),
+            },
+        )
+
+    def post(self, request: HttpRequest, pk: int) -> HttpResponse:
+        """Validate and create the option definition."""
+        server = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
+        form = forms.OptionDefForm(request.POST)
+        if not form.is_valid():
+            return render(
+                request,
+                "netbox_kea/server_option_def_add.html",
+                {
+                    "object": server,
+                    "server": server,
+                    "form": form,
+                    "dhcp_version": self.dhcp_version,
+                    "cancel_url": self._success_url(server),
+                },
+            )
+        option_def = {
+            "name": form.cleaned_data["name"],
+            "code": form.cleaned_data["code"],
+            "type": form.cleaned_data["type"],
+            "space": form.cleaned_data["space"],
+        }
+        if form.cleaned_data.get("array"):
+            option_def["array"] = True
+        try:
+            client = server.get_client(version=self.dhcp_version)
+            client.option_def_add(version=self.dhcp_version, option_def=option_def)
+            messages.success(request, f"Option definition '{option_def['name']}' (code {option_def['code']}) added.")
+        except KeaException as exc:
+            logger.warning("option-def add failed for %s: %s", server, exc)
+            messages.error(request, f"Kea error: {kea_error_hint(exc)}")
+        except Exception:
+            logger.exception("Unexpected error adding option-def for %s", server)
+            messages.error(request, "An internal error occurred.")
+        return redirect(self._success_url(server))
+
+
+class ServerOptionDef6AddView(BaseServerOptionDefAddView):
+    """Add a DHCPv6 option definition."""
+
+    dhcp_version = 6
+
+
+class ServerOptionDef4AddView(BaseServerOptionDefAddView):
+    """Add a DHCPv4 option definition."""
+
+    dhcp_version = 4
+
+
+class BaseServerOptionDefDeleteView(_KeaChangeMixin, ConditionalLoginRequiredMixin, View):
+    """Delete a custom option definition from a Kea server.
+
+    The option code and space are passed as URL kwargs.
+    """
+
+    dhcp_version: int
+
+    def _success_url(self, server: Server) -> str:
+        return reverse(f"plugins:netbox_kea:server_option_def{self.dhcp_version}", args=[server.pk])
+
+    def get(self, request: HttpRequest, pk: int, code: int, space: str) -> HttpResponse:
+        """Render the delete-confirmation page."""
+        server = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
+        return render(
+            request,
+            "netbox_kea/server_option_def_delete.html",
+            {
+                "object": server,
+                "server": server,
+                "code": code,
+                "space": space,
+                "dhcp_version": self.dhcp_version,
+                "cancel_url": self._success_url(server),
+            },
+        )
+
+    def post(self, request: HttpRequest, pk: int, code: int, space: str) -> HttpResponse:
+        """Delete the option definition."""
+        server = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
+        try:
+            client = server.get_client(version=self.dhcp_version)
+            client.option_def_del(version=self.dhcp_version, code=code, space=space)
+            messages.success(request, f"Option definition code={code} space={space} deleted.")
+        except KeaException as exc:
+            logger.warning("option-def del failed for %s: %s", server, exc)
+            messages.error(request, f"Kea error: {kea_error_hint(exc)}")
+        except Exception:
+            logger.exception("Unexpected error deleting option-def for %s", server)
+            messages.error(request, "An internal error occurred.")
+        return redirect(self._success_url(server))
+
+
+class ServerOptionDef6DeleteView(BaseServerOptionDefDeleteView):
+    """Delete a DHCPv6 option definition."""
+
+    dhcp_version = 6
+
+
+class ServerOptionDef4DeleteView(BaseServerOptionDefDeleteView):
+    """Delete a DHCPv4 option definition."""
+
+    dhcp_version = 4

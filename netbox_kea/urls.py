@@ -261,6 +261,36 @@ urlpatterns = (
         views.ServerSharedNetwork6DeleteView.as_view(),
         name="server_shared_network6_delete",
     ),
+    path(
+        "servers/<int:pk>/dhcp4/option-def/",
+        views.ServerOptionDef4View.as_view(),
+        name="server_option_def4",
+    ),
+    path(
+        "servers/<int:pk>/dhcp6/option-def/",
+        views.ServerOptionDef6View.as_view(),
+        name="server_option_def6",
+    ),
+    path(
+        "servers/<int:pk>/dhcp4/option-def/add/",
+        views.ServerOptionDef4AddView.as_view(),
+        name="server_option_def4_add",
+    ),
+    path(
+        "servers/<int:pk>/dhcp6/option-def/add/",
+        views.ServerOptionDef6AddView.as_view(),
+        name="server_option_def6_add",
+    ),
+    path(
+        "servers/<int:pk>/dhcp4/option-def/<int:code>/<str:space>/delete/",
+        views.ServerOptionDef4DeleteView.as_view(),
+        name="server_option_def4_delete",
+    ),
+    path(
+        "servers/<int:pk>/dhcp6/option-def/<int:code>/<str:space>/delete/",
+        views.ServerOptionDef6DeleteView.as_view(),
+        name="server_option_def6_delete",
+    ),
     path("servers/<int:pk>/", include(get_model_urls("netbox_kea", "server"))),
     path(
         "ip-addresses/<int:pk>/kea-reservations/",

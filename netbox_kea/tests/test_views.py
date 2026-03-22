@@ -3336,3 +3336,284 @@ class TestBulkLeaseImportView(_ViewTestBase):
         self.client.logout()
         response = self.client.get(self._url(version=4))
         self.assertIn(response.status_code, (302, 403))
+
+
+# ---------------------------------------------------------------------------
+# option-def fixtures
+# ---------------------------------------------------------------------------
+
+_OPTION_DEF_LIST_V4 = [
+    {"name": "my-opt", "code": 200, "type": "string", "space": "dhcp4"},
+    {"name": "other-opt", "code": 201, "type": "uint32", "space": "dhcp4"},
+]
+
+_OPTION_DEF_LIST_EMPTY: list = []
+
+
+# ---------------------------------------------------------------------------
+# ServerOptionDef4ListView / ServerOptionDef6ListView
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestServerOptionDef4ListView(_ViewTestBase):
+    """Tests for ServerOptionDef4ListView: GET list of custom option definitions."""
+
+    def _url(self):
+        return reverse("plugins:netbox_kea:server_option_def4", args=[self.server.pk])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_get_returns_200(self, MockKeaClient):
+        """GET returns 200 OK."""
+        MockKeaClient.return_value.option_def_list.return_value = _OPTION_DEF_LIST_V4
+        response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 200)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_shows_option_def_name(self, MockKeaClient):
+        """GET renders option names in the response."""
+        MockKeaClient.return_value.option_def_list.return_value = _OPTION_DEF_LIST_V4
+        response = self.client.get(self._url())
+        self.assertContains(response, "my-opt")
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_shows_option_def_code(self, MockKeaClient):
+        """GET renders option codes in the response."""
+        MockKeaClient.return_value.option_def_list.return_value = _OPTION_DEF_LIST_V4
+        response = self.client.get(self._url())
+        self.assertContains(response, "200")
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_empty_list_shows_200(self, MockKeaClient):
+        """GET with empty option-def list returns 200 without errors."""
+        MockKeaClient.return_value.option_def_list.return_value = _OPTION_DEF_LIST_EMPTY
+        response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 200)
+
+    def test_get_with_dhcp4_disabled_redirects(self):
+        """Server with dhcp4=False redirects away from option_def4 tab."""
+        v6_only = _make_db_server(name="v6only-od", dhcp4=False, dhcp6=True)
+        url = reverse("plugins:netbox_kea:server_option_def4", args=[v6_only.pk])
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 302)
+        self._assert_no_none_pk_redirect(response)
+
+    def test_get_requires_login(self):
+        """Unauthenticated GET redirects to login."""
+        self.client.logout()
+        response = self.client.get(self._url())
+        self.assertIn(response.status_code, (302, 403))
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestServerOptionDef6ListView(_ViewTestBase):
+    """Tests for ServerOptionDef6ListView (v6 variant)."""
+
+    def _url(self):
+        return reverse("plugins:netbox_kea:server_option_def6", args=[self.server.pk])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_get_returns_200(self, MockKeaClient):
+        """GET returns 200 OK."""
+        MockKeaClient.return_value.option_def_list.return_value = []
+        response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 200)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_calls_option_def_list_with_version_6(self, MockKeaClient):
+        """GET calls option_def_list with version=6."""
+        MockKeaClient.return_value.option_def_list.return_value = []
+        self.client.get(self._url())
+        MockKeaClient.return_value.option_def_list.assert_called_once_with(version=6)
+
+
+# ---------------------------------------------------------------------------
+# ServerOptionDef4AddView / ServerOptionDef6AddView
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestServerOptionDef4AddView(_ViewTestBase):
+    """Tests for ServerOptionDef4AddView: GET form + POST create."""
+
+    def _url(self):
+        return reverse("plugins:netbox_kea:server_option_def4_add", args=[self.server.pk])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_get_returns_200_with_form(self, MockKeaClient):
+        """GET renders the add option-def form."""
+        response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 200)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_valid_calls_option_def_add(self, MockKeaClient):
+        """POST with valid data calls option_def_add and redirects."""
+        MockKeaClient.return_value.option_def_add.return_value = None
+        response = self.client.post(
+            self._url(),
+            {"name": "my-opt", "code": 200, "type": "string", "space": "dhcp4", "array": False},
+        )
+        self.assertEqual(response.status_code, 302)
+        self._assert_no_none_pk_redirect(response)
+        MockKeaClient.return_value.option_def_add.assert_called_once()
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_passes_correct_version(self, MockKeaClient):
+        """POST calls option_def_add with version=4."""
+        MockKeaClient.return_value.option_def_add.return_value = None
+        self.client.post(
+            self._url(),
+            {"name": "my-opt", "code": 200, "type": "string", "space": "dhcp4", "array": False},
+        )
+        call_args = MockKeaClient.return_value.option_def_add.call_args
+        kwargs = call_args.kwargs or call_args[1]
+        args = call_args.args or call_args[0]
+        version = kwargs.get("version") or (args[0] if args else None)
+        self.assertEqual(version, 4)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_kea_exception_shows_error(self, MockKeaClient):
+        """POST that raises KeaException returns 200 with error (no 500)."""
+        from netbox_kea.kea import KeaException
+
+        MockKeaClient.return_value.option_def_add.side_effect = KeaException(
+            {"result": 1, "text": "duplicate code"}, index=0
+        )
+        response = self.client.post(
+            self._url(),
+            {"name": "my-opt", "code": 200, "type": "string", "space": "dhcp4", "array": False},
+        )
+        self.assertIn(response.status_code, (200, 302))
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_invalid_form_returns_200(self, MockKeaClient):
+        """POST with missing required fields returns 200 (form re-render)."""
+        response = self.client.post(self._url(), {"name": "", "code": "", "type": "", "space": ""})
+        self.assertEqual(response.status_code, 200)
+
+    def test_get_requires_login(self):
+        """Unauthenticated GET redirects to login."""
+        self.client.logout()
+        response = self.client.get(self._url())
+        self.assertIn(response.status_code, (302, 403))
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestServerOptionDef6AddView(_ViewTestBase):
+    """Tests for ServerOptionDef6AddView — verifies v6 uses version=6."""
+
+    def _url(self):
+        return reverse("plugins:netbox_kea:server_option_def6_add", args=[self.server.pk])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_get_returns_200(self, MockKeaClient):
+        """GET renders the add form for v6."""
+        response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 200)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_calls_option_def_add_with_version_6(self, MockKeaClient):
+        """POST calls option_def_add with version=6."""
+        MockKeaClient.return_value.option_def_add.return_value = None
+        self.client.post(
+            self._url(),
+            {"name": "v6-opt", "code": 250, "type": "ipv6-address", "space": "dhcp6", "array": False},
+        )
+        call_args = MockKeaClient.return_value.option_def_add.call_args
+        kwargs = call_args.kwargs or call_args[1]
+        args = call_args.args or call_args[0]
+        version = kwargs.get("version") or (args[0] if args else None)
+        self.assertEqual(version, 6)
+
+
+# ---------------------------------------------------------------------------
+# ServerOptionDef4DeleteView / ServerOptionDef6DeleteView
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestServerOptionDef4DeleteView(_ViewTestBase):
+    """Tests for ServerOptionDef4DeleteView: GET confirm + POST delete."""
+
+    def _url(self, code=200, space="dhcp4"):
+        return reverse("plugins:netbox_kea:server_option_def4_delete", args=[self.server.pk, code, space])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_get_returns_200_with_confirmation(self, MockKeaClient):
+        """GET renders a confirmation page mentioning code and space."""
+        response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "200")
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_calls_option_def_del_and_redirects(self, MockKeaClient):
+        """POST calls option_def_del and redirects to option_def4 list."""
+        MockKeaClient.return_value.option_def_del.return_value = None
+        response = self.client.post(self._url())
+        self.assertEqual(response.status_code, 302)
+        self._assert_no_none_pk_redirect(response)
+        MockKeaClient.return_value.option_def_del.assert_called_once()
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_passes_correct_version_code_space(self, MockKeaClient):
+        """POST calls option_def_del with version=4, code=200, space='dhcp4'."""
+        MockKeaClient.return_value.option_def_del.return_value = None
+        self.client.post(self._url(code=200, space="dhcp4"))
+        call_args = MockKeaClient.return_value.option_def_del.call_args
+        kwargs = call_args.kwargs or call_args[1]
+        args = call_args.args or call_args[0]
+        version = kwargs.get("version") or (args[0] if args else None)
+        code = kwargs.get("code") or (args[1] if len(args) > 1 else None)
+        space = kwargs.get("space") or (args[2] if len(args) > 2 else None)
+        self.assertEqual(version, 4)
+        self.assertEqual(code, 200)
+        self.assertEqual(space, "dhcp4")
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_kea_exception_redirects_with_error(self, MockKeaClient):
+        """POST that raises KeaException must not 500."""
+        from netbox_kea.kea import KeaException
+
+        MockKeaClient.return_value.option_def_del.side_effect = KeaException(
+            {"result": 3, "text": "not found"}, index=0
+        )
+        response = self.client.post(self._url())
+        self.assertIn(response.status_code, (200, 302))
+        self._assert_no_none_pk_redirect(response)
+
+    def test_get_requires_login(self):
+        """Unauthenticated GET redirects to login."""
+        self.client.logout()
+        response = self.client.get(self._url())
+        self.assertIn(response.status_code, (302, 403))
+
+    def test_post_requires_login(self):
+        """Unauthenticated POST redirects to login."""
+        self.client.logout()
+        response = self.client.post(self._url())
+        self.assertIn(response.status_code, (302, 403))
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestServerOptionDef6DeleteView(_ViewTestBase):
+    """Tests for ServerOptionDef6DeleteView — v6 uses version=6."""
+
+    def _url(self, code=250, space="dhcp6"):
+        return reverse("plugins:netbox_kea:server_option_def6_delete", args=[self.server.pk, code, space])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_get_returns_200(self, MockKeaClient):
+        """GET renders the v6 confirmation page."""
+        response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 200)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_calls_option_def_del_with_version_6(self, MockKeaClient):
+        """POST calls option_def_del with version=6."""
+        MockKeaClient.return_value.option_def_del.return_value = None
+        self.client.post(self._url(code=250, space="dhcp6"))
+        call_args = MockKeaClient.return_value.option_def_del.call_args
+        kwargs = call_args.kwargs or call_args[1]
+        args = call_args.args or call_args[0]
+        version = kwargs.get("version") or (args[0] if args else None)
+        self.assertEqual(version, 6)

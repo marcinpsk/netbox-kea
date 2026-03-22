@@ -922,3 +922,71 @@ class SharedNetworkForm(forms.Form):
         if not re.match(r"^[\w-]+$", name):
             raise forms.ValidationError("Name may only contain letters, digits, hyphens and underscores.")
         return name
+
+
+# ---------------------------------------------------------------------------
+# Option-def form
+# ---------------------------------------------------------------------------
+
+_KEA_OPTION_TYPES = [
+    ("binary", "binary"),
+    ("boolean", "boolean"),
+    ("empty", "empty"),
+    ("fqdn", "fqdn"),
+    ("ipv4-address", "ipv4-address"),
+    ("ipv6-address", "ipv6-address"),
+    ("ipv6-prefix", "ipv6-prefix"),
+    ("psid", "psid"),
+    ("record", "record"),
+    ("string", "string"),
+    ("tuple", "tuple"),
+    ("uint8", "uint8"),
+    ("uint16", "uint16"),
+    ("uint32", "uint32"),
+    ("uint64", "uint64"),
+    ("int8", "int8"),
+    ("int16", "int16"),
+    ("int32", "int32"),
+]
+
+
+class OptionDefForm(forms.Form):
+    """Form for adding a custom DHCP option definition."""
+
+    name = forms.CharField(
+        max_length=128,
+        label="Name",
+        help_text="Option name (letters, digits, hyphens and underscores only).",
+    )
+    code = forms.IntegerField(
+        min_value=1,
+        max_value=254,
+        label="Code",
+        help_text="Option code number (1–254).",
+    )
+    type = forms.ChoiceField(
+        choices=_KEA_OPTION_TYPES,
+        label="Type",
+        help_text="Data type for this option.",
+    )
+    space = forms.CharField(
+        max_length=64,
+        label="Space",
+        help_text="Option space (e.g. 'dhcp4' or 'dhcp6').",
+    )
+    array = forms.BooleanField(
+        required=False,
+        label="Array",
+        help_text="If checked, the option carries multiple values of the given type.",
+    )
+
+    def clean_name(self) -> str:
+        """Validate option name format."""
+        name = self.cleaned_data.get("name", "").strip()
+        if not name:
+            raise forms.ValidationError("Name is required.")
+        import re
+
+        if not re.match(r"^[\w-]+$", name):
+            raise forms.ValidationError("Name may only contain letters, digits, hyphens and underscores.")
+        return name
