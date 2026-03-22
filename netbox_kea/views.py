@@ -3,7 +3,7 @@ import logging
 import re
 from abc import ABCMeta
 from typing import Any, Generic, TypeVar
-from urllib.parse import urlencode as _urlencode
+from urllib.parse import parse_qsl, urlencode as _urlencode, urlparse
 
 from django.contrib import messages
 from django.http import Http404, HttpResponse, HttpResponseForbidden, HttpResponseRedirect
@@ -49,6 +49,20 @@ T = TypeVar("T", bound=BaseTable)
 # Allowed characters in a pool range/CIDR string (digits, dots, colons, letters a-f, slash, hyphen).
 # Protects the <path:pool> URL parameter from injection before it reaches the Kea API.
 _POOL_RE = re.compile(r"^[0-9a-fA-F.:/-]{3,100}$")
+
+
+def _strip_empty_params(path: str) -> str:
+    """Return *path* with blank query-string parameters removed.
+
+    HTMX 2.x omits empty form values from the browser push URL while still
+    sending them in the actual HTTP request.  Using this helper when building
+    ``return_url`` ensures the URL we redirect to after bulk-delete matches
+    the URL Playwright (and real browsers) see in the address bar.
+    """
+    parsed = urlparse(path)
+    params = parse_qsl(parsed.query, keep_blank_values=False)
+    query = _urlencode(params) if params else ""
+    return parsed._replace(query=query).geturl()
 
 
 def _get_global_options(server: "Server") -> dict[str, dict[str, str]]:
@@ -572,7 +586,7 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
                             args=[instance.pk],
                         )
                         + "?"
-                        + _urlencode({"return_url": request.get_full_path()})
+                        + _urlencode({"return_url": _strip_empty_params(request.get_full_path())})
                     ),
                     "form": form,
                     "table": table,
