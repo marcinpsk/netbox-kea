@@ -20,7 +20,6 @@ import subprocess
 import pytest
 from playwright.sync_api import Page, expect
 
-
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
@@ -35,9 +34,7 @@ def _check_no_django_error(page: Page) -> None:
 
 def _assert_no_none_pk(page: Page) -> None:
     """Fail if the URL contains the tell-tale pk=None pattern (regression guard)."""
-    assert not re.search(r"/None(?:[/?#]|$)", page.url), (
-        f"URL contains /None — pk=None bug triggered at {page.url}"
-    )
+    assert not re.search(r"/None(?:[/?#]|$)", page.url), f"URL contains /None — pk=None bug triggered at {page.url}"
 
 
 def _assert_no_http_errors(errors: list, *, allow_404: bool = False) -> None:
@@ -50,10 +47,15 @@ def _assert_no_http_errors(errors: list, *, allow_404: bool = False) -> None:
 def _tail_container_logs(container_filter: str = "devcontainer", lines: int = 30) -> str:
     """Return the last N lines from the matching container's stderr (Django log)."""
     try:
-        name = subprocess.check_output(
-            ["docker", "ps", "--filter", f"name={container_filter}", "--format", "{{.Names}}"],
-            timeout=5,
-        ).decode().strip().split("\n")[0]
+        name = (
+            subprocess.check_output(
+                ["docker", "ps", "--filter", f"name={container_filter}", "--format", "{{.Names}}"],
+                timeout=5,
+            )
+            .decode()
+            .strip()
+            .split("\n")[0]
+        )
         return subprocess.check_output(
             ["docker", "logs", "--tail", str(lines), name],
             stderr=subprocess.STDOUT,
@@ -239,9 +241,7 @@ class TestLiveKeaServer:
         _assert_no_http_errors(track_http_errors)
 
         logs = _tail_container_logs()
-        assert "ERROR" not in logs or "kea" not in logs.lower(), (
-            f"Unexpected server errors after status tab:\n{logs}"
-        )
+        assert "ERROR" not in logs or "kea" not in logs.lower(), f"Unexpected server errors after status tab:\n{logs}"
 
     def test_server_leases4_tab(
         self,
@@ -317,9 +317,7 @@ class TestLiveKeaServer:
 
         _assert_no_none_pk(page)
         _check_no_django_error(page)
-        assert re.search(r"/servers/\d+", page.url), (
-            f"Expected redirect to integer-pk detail URL, got: {page.url}"
-        )
+        assert re.search(r"/servers/\d+", page.url), f"Expected redirect to integer-pk detail URL, got: {page.url}"
         _assert_no_http_errors(track_http_errors)
 
     def test_bulk_edit_selected_server_reaches_edit_page(
@@ -339,9 +337,7 @@ class TestLiveKeaServer:
 
         _assert_no_none_pk(page)
         _check_no_django_error(page)
-        assert "servers/edit" in page.url, (
-            f"Expected /servers/edit/ after bulk edit, got: {page.url}"
-        )
+        assert "servers/edit" in page.url, f"Expected /servers/edit/ after bulk edit, got: {page.url}"
         _assert_no_http_errors(track_http_errors)
 
     def test_delete_server_via_confirmation_form(
@@ -361,21 +357,15 @@ class TestLiveKeaServer:
 
         # Submit via JS with explicit navigation wait — djDebug intercepts pointer events
         with page.expect_navigation():
-            page.evaluate(
-                "document.querySelector('[action*=\"delete\"], form[method=\"post\"]').submit()"
-            )
+            page.evaluate('document.querySelector(\'[action*="delete"], form[method="post"]\').submit()')
         page.wait_for_load_state("networkidle")
 
         _check_no_django_error(page)
         _assert_no_http_errors(track_http_errors)
 
         # Verify the API agrees the server is gone
-        resp = api_session.get(
-            f"{netbox_url}/api/plugins/kea/servers/{server_id}/", timeout=5
-        )
-        assert resp.status_code == 404, (
-            f"Server {server_id} should be deleted but API returned {resp.status_code}"
-        )
+        resp = api_session.get(f"{netbox_url}/api/plugins/kea/servers/{server_id}/", timeout=5)
+        assert resp.status_code == 404, f"Server {server_id} should be deleted but API returned {resp.status_code}"
 
 
 # ---------------------------------------------------------------------------
@@ -646,18 +636,12 @@ class TestBadgeEnrichmentLiveKea:
         page.locator('[name="_create"], [type="submit"]').first.click(force=True)
         page.wait_for_load_state("networkidle")
 
-    def _delete_reservation(
-        self, page: Page, plugin_base: str, server_id: int, subnet_id: int, ip: str
-    ) -> None:
+    def _delete_reservation(self, page: Page, plugin_base: str, server_id: int, subnet_id: int, ip: str) -> None:
         """Delete a DHCPv4 reservation via the delete confirmation form."""
-        page.goto(
-            f"{plugin_base}/servers/{server_id}/reservations4/{subnet_id}/{ip}/delete/"
-        )
+        page.goto(f"{plugin_base}/servers/{server_id}/reservations4/{subnet_id}/{ip}/delete/")
         page.wait_for_load_state("networkidle")
         with page.expect_navigation():
-            page.evaluate(
-                "document.querySelector('form[method=\"post\"]').submit()"
-            )
+            page.evaluate("document.querySelector('form[method=\"post\"]').submit()")
         page.wait_for_load_state("networkidle")
 
     def test_reserved_badge_appears_on_leases4_for_known_reservation(
@@ -690,9 +674,7 @@ class TestBadgeEnrichmentLiveKea:
         if reserved_links.count() > 0:
             # Spot-check first link href points to a reservation URL
             href = reserved_links.first.get_attribute("href")
-            assert href and "reservations4" in href, (
-                f"Reserved badge link href does not point to reservations: {href}"
-            )
+            assert href and "reservations4" in href, f"Reserved badge link href does not point to reservations: {href}"
 
     def test_active_lease_badge_is_link_on_reservations4_page(
         self,
@@ -714,8 +696,7 @@ class TestBadgeEnrichmentLiveKea:
         # 'Active Lease' must be an <a>, never a plain <span>
         active_spans = page.locator('span.badge:has-text("Active Lease")')
         assert active_spans.count() == 0, (
-            f"Found {active_spans.count()} non-link 'Active Lease' badge(s); "
-            "they must all be <a> elements"
+            f"Found {active_spans.count()} non-link 'Active Lease' badge(s); they must all be <a> elements"
         )
 
         # 'No Lease' must be a plain <span>, never a link
@@ -728,9 +709,7 @@ class TestBadgeEnrichmentLiveKea:
         active_links = page.locator('a.badge:has-text("Active Lease")')
         if active_links.count() > 0:
             href = active_links.first.get_attribute("href")
-            assert href and "leases4" in href, (
-                f"Active Lease link href does not point to leases4: {href}"
-            )
+            assert href and "leases4" in href, f"Active Lease link href does not point to leases4: {href}"
             assert "?q=" in href, f"Active Lease link missing ?q= query param: {href}"
 
     def test_active_lease_link_navigates_to_lease_search(
@@ -801,17 +780,12 @@ class TestBadgeEnrichmentLiveKea:
         expect(page.locator("th", has_text="NetBox IP").first).to_be_visible()
 
         # If real lease rows exist, at least one NetBox IP widget must be present
-        real_rows = [
-            r for r in page.locator("tbody tr").all()
-            if "No leases found" not in r.text_content()
-        ]
+        real_rows = [r for r in page.locator("tbody tr").all() if "No leases found" not in r.text_content()]
         if real_rows:
             synced_badges = page.locator('a.badge:has-text("Synced")')
             sync_buttons = page.locator('button.badge:has-text("Sync")')
             total = synced_badges.count() + sync_buttons.count()
-            assert total > 0, (
-                f"Leases4 table has {len(real_rows)} rows but no 'Synced' or 'Sync' widgets"
-            )
+            assert total > 0, f"Leases4 table has {len(real_rows)} rows but no 'Synced' or 'Sync' widgets"
 
 
 # ---------------------------------------------------------------------------
@@ -821,9 +795,7 @@ class TestBadgeEnrichmentLiveKea:
 
 def _dismiss_debug_toolbar(page: Page) -> None:
     """Remove the Django Debug Toolbar overlay so it doesn't intercept clicks."""
-    page.evaluate(
-        "() => { const el = document.getElementById('djDebug'); if (el) el.remove(); }"
-    )
+    page.evaluate("() => { const el = document.getElementById('djDebug'); if (el) el.remove(); }")
 
 
 class TestLeaseSearchLiveKea:
@@ -891,9 +863,7 @@ class TestLeaseSearchLiveKea:
         Note: BY_HW_ADDRESS constant value is "hw" (not "hw_address").
         """
         server_id = live_kea_server["id"]
-        page.goto(
-            f"{plugin_base}/servers/{server_id}/leases4/?q=aa:bb:cc:dd:ee:ff&by=hw"
-        )
+        page.goto(f"{plugin_base}/servers/{server_id}/leases4/?q=aa:bb:cc:dd:ee:ff&by=hw")
         page.wait_for_load_state("networkidle")
         _check_no_django_error(page)
         _assert_no_http_errors(track_http_errors)
@@ -912,18 +882,13 @@ class TestLeaseSearchLiveKea:
         auth is used — regular plugin views don't accept Token auth headers.
         """
         server_id = live_kea_server["id"]
-        url = (
-            f"{plugin_base}/servers/{server_id}/leases4/"
-            "?q=1&by=subnet_id&export=all"
-        )
+        url = f"{plugin_base}/servers/{server_id}/leases4/?q=1&by=subnet_id&export=all"
         # page.context.request shares the browser's cookie jar (including the session
         # cookie set by netbox_login), so it's fully authenticated.
         response = page.context.request.get(url)
         assert response.ok, f"CSV export returned HTTP {response.status}"
         ct = response.headers.get("content-type", "")
-        assert "text/csv" in ct or "text/plain" in ct, (
-            f"Expected CSV content-type, got: {ct}"
-        )
+        assert "text/csv" in ct or "text/plain" in ct, f"Expected CSV content-type, got: {ct}"
 
 
 # ---------------------------------------------------------------------------
@@ -944,14 +909,10 @@ class TestReservationCRUDLiveKea:
     def _reservation_add_url(self, plugin_base: str, server_id: int) -> str:
         return f"{plugin_base}/servers/{server_id}/reservations4/add/"
 
-    def _reservation_edit_url(
-        self, plugin_base: str, server_id: int, subnet_id: int, ip: str
-    ) -> str:
+    def _reservation_edit_url(self, plugin_base: str, server_id: int, subnet_id: int, ip: str) -> str:
         return f"{plugin_base}/servers/{server_id}/reservations4/{subnet_id}/{ip}/edit/"
 
-    def _reservation_delete_url(
-        self, plugin_base: str, server_id: int, subnet_id: int, ip: str
-    ) -> str:
+    def _reservation_delete_url(self, plugin_base: str, server_id: int, subnet_id: int, ip: str) -> str:
         return f"{plugin_base}/servers/{server_id}/reservations4/{subnet_id}/{ip}/delete/"
 
     def _reservation_list_url(self, plugin_base: str, server_id: int) -> str:
@@ -960,9 +921,7 @@ class TestReservationCRUDLiveKea:
     def _submit_form_by_field(self, page: Page, field_id: str) -> None:
         """Submit the form that contains *field_id*, waiting for the resulting navigation."""
         with page.expect_navigation():
-            page.evaluate(
-                f"document.getElementById('{field_id}').closest('form').submit()"
-            )
+            page.evaluate(f"document.getElementById('{field_id}').closest('form').submit()")
         page.wait_for_load_state("networkidle")
 
     def _fill_reservation_form(
@@ -1031,11 +990,7 @@ class TestReservationCRUDLiveKea:
         expect(page.get_by_text(self._TEST_IP)).to_be_visible()
 
         # ---- 3. EDIT ----
-        page.goto(
-            self._reservation_edit_url(
-                plugin_base, server_id, self._SUBNET_ID, self._TEST_IP
-            )
-        )
+        page.goto(self._reservation_edit_url(plugin_base, server_id, self._SUBNET_ID, self._TEST_IP))
         page.wait_for_load_state("networkidle")
         _check_no_django_error(page)
         _dismiss_debug_toolbar(page)
@@ -1051,11 +1006,7 @@ class TestReservationCRUDLiveKea:
         expect(page.get_by_text(self._TEST_IP)).to_be_visible()
 
         # ---- 5. DELETE ----
-        page.goto(
-            self._reservation_delete_url(
-                plugin_base, server_id, self._SUBNET_ID, self._TEST_IP
-            )
-        )
+        page.goto(self._reservation_delete_url(plugin_base, server_id, self._SUBNET_ID, self._TEST_IP))
         page.wait_for_load_state("networkidle")
         _check_no_django_error(page)
         # The delete confirmation form has only one unique element — submit it directly
@@ -1072,9 +1023,7 @@ class TestReservationCRUDLiveKea:
         page.goto(self._reservation_list_url(plugin_base, server_id))
         page.wait_for_load_state("networkidle")
         _check_no_django_error(page)
-        assert self._TEST_IP not in page.content(), (
-            f"Reservation {self._TEST_IP} still visible after delete"
-        )
+        assert self._TEST_IP not in page.content(), f"Reservation {self._TEST_IP} still visible after delete"
 
     def test_add_reservation_form_loads(
         self,
@@ -1215,9 +1164,7 @@ class TestPoolManagementLiveKea:
         _check_no_django_error(page)
         _dismiss_debug_toolbar(page)
 
-        hrefs = page.evaluate(
-            "() => Array.from(document.querySelectorAll('a[href*=\"pools/add\"]')).map(a => a.href)"
-        )
+        hrefs = page.evaluate("() => Array.from(document.querySelectorAll('a[href*=\"pools/add\"]')).map(a => a.href)")
         if not hrefs:
             pytest.skip("No add-pool links found on subnets4 page")
 
@@ -1306,9 +1253,7 @@ class TestPoolManagementLiveKea:
         # ---- VERIFY ADDED ----
         page.goto(self._subnets4_url(plugin_base, server_id))
         page.wait_for_load_state("networkidle")
-        assert test_pool in page.content(), (
-            f"Test pool {test_pool} not visible in subnets table after add"
-        )
+        assert test_pool in page.content(), f"Test pool {test_pool} not visible in subnets table after add"
 
         # ---- DELETE ----
         page.goto(self._pool_delete_url(plugin_base, server_id, subnet_id, test_pool))
@@ -1326,9 +1271,7 @@ class TestPoolManagementLiveKea:
         # ---- VERIFY DELETED ----
         page.goto(self._subnets4_url(plugin_base, server_id))
         page.wait_for_load_state("networkidle")
-        assert test_pool not in page.content(), (
-            f"Test pool {test_pool} still visible after delete"
-        )
+        assert test_pool not in page.content(), f"Test pool {test_pool} still visible after delete"
 
 
 class TestSubnetManagementLiveKea:
@@ -1341,6 +1284,7 @@ class TestSubnetManagementLiveKea:
     def _kea4_call(self, command: str, arguments: dict | None = None) -> dict:
         """Call the live Kea DHCPv4 API directly, returning the first response item."""
         import os
+
         import requests as _requests
 
         kea_url = os.environ.get("KEA_V4_URL", "https://kea-v4-api.cnad.dev")

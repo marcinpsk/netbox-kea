@@ -339,7 +339,7 @@ def get(self, request: HttpRequest, **kwargs) -> HttpResponse:
     if not request.htmx:
         # Full page response
         return super().get(request, **kwargs)
-    
+
     # HTMX partial response
     return render(request, "netbox_kea/server_dhcp_leases_htmx.html", {...})
 ```
@@ -435,20 +435,20 @@ def clean(self) -> dict[str, Any] | None:
     cleaned_data = super().clean()
     q = cleaned_data.get("q")
     by = cleaned_data.get("by")
-    
+
     # Mutual validation
     if q and not by:
         raise ValidationError({"by": "..."})
-    
+
     # Type-specific validation
     if by == constants.BY_SUBNET:
         net = IPNetwork(q, version=self.Meta.ip_version)
         # ... validate CIDR notation
         cleaned_data["q"] = net
-    
+
     elif by == constants.BY_HW_ADDRESS:
         cleaned_data["q"] = str(EUI(q, version=48, dialect=mac_unix_expanded))
-    
+
     return cleaned_data
 ```
 
@@ -458,7 +458,7 @@ class MultipleIPField(forms.MultipleChoiceField):
     def __init__(self, version: Literal[6, 4], *args, **kwargs):
         self._version = version
         super().__init__(*args, widget=forms.MultipleHiddenInput, **kwargs)
-    
+
     def clean(self, value: Any) -> Any:
         if not isinstance(value, list):
             raise forms.ValidationError(...)
@@ -479,7 +479,7 @@ class MultipleIPField(forms.MultipleChoiceField):
 class Migration(migrations.Migration):
     initial = True
     dependencies = [('extras', '0092_delete_jobresult')]
-    
+
     operations = [
         migrations.CreateModel(
             name='Server',
@@ -537,7 +537,7 @@ class Query:
     @strawberry.field
     def server(self, id: int) -> ServerType:
         return models.Server.objects.get(pk=id)
-    
+
     server_list: list[ServerType] = strawberry_django.field()
 ```
 
@@ -824,7 +824,7 @@ from netbox.tables import NetBoxTable, BooleanColumn
 class ServerTable(NetBoxTable):
     name = tables.Column(linkify=True)
     dhcp6 = BooleanColumn()
-    
+
     class Meta(NetBoxTable.Meta):
         model = Server
         fields = ("pk", "name", "server_url", "dhcp6", "dhcp4")
@@ -837,11 +837,11 @@ from netbox.tables import BaseTable
 
 class GenericTable(BaseTable):
     exempt_columns = ("actions", "pk")
-    
+
     class Meta(BaseTable.Meta):
         empty_text = "No rows"
         fields: tuple[str, ...] = ()
-    
+
     @property
     def objects_count(self):
         return len(self.data)
@@ -867,7 +867,7 @@ class ServerSerializer(NetBoxModelSerializer):
     url = serializers.HyperlinkedIdentityField(
         view_name="plugins-api:netbox_kea-api:server-detail"
     )
-    
+
     class Meta:
         model = Server
         fields = ("id", "name", "url", "display", "tags", "last_updated")
@@ -923,7 +923,7 @@ class Query:
     @strawberry.field
     def server(self, id: int) -> ServerType:
         return models.Server.objects.get(pk=id)
-    
+
     server_list: list[ServerType] = strawberry_django.field()
 
 schema = [Query]  # Exported from graphql module
@@ -1162,4 +1162,3 @@ Not easily possible due to Kea dependency. Use provided Docker setup.
 8. **Permissions**: Use `request.user.has_perm()` with permission string like `"netbox_kea.bulk_delete_lease_from_server"`
 9. **Lease Data**: Always call `format_leases()` to normalize timestamps and keys before table rendering
 10. **Non-Model Tables**: Use `GenericTable` and pass dicts, not querysets
-

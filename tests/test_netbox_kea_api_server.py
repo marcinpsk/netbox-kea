@@ -16,9 +16,7 @@ def test_server_api_add_delete(nb_api: pynetbox.api):
 
     # We shouldn't be able to add a server with the same name
     with pytest.raises(RequestError):
-        nb_api.plugins.kea.servers.create(
-            name=name, server_url="http://kea-ctrl-agent:8000"
-        )
+        nb_api.plugins.kea.servers.create(name=name, server_url="http://kea-ctrl-agent:8000")
 
     new_name = "new-name"
     server.update({"name": new_name})
@@ -45,9 +43,7 @@ def test_server_api_bulk_actions(nb_api: pynetbox.api):
 
 
 def test_graphql(nb_api: pynetbox.api, nb_http: requests.Session):
-    server = nb_api.plugins.kea.servers.create(
-        name="gql-test", server_url="http://kea-ctrl-agent:8000"
-    )
+    server = nb_api.plugins.kea.servers.create(name="gql-test", server_url="http://kea-ctrl-agent:8000")
     r = nb_http.post(
         "http://localhost:8000/graphql/",
         json={
@@ -96,10 +92,7 @@ def test_graphql(nb_api: pynetbox.api, nb_http: requests.Session):
     r_json = r.json()
     assert r_json["data"] is None
     assert len(r_json["errors"]) == 1
-    assert (
-        r_json["errors"][0]["message"]
-        == "Cannot query field 'password' on type 'ServerType'."
-    )
+    assert r_json["errors"][0]["message"] == "Cannot query field 'password' on type 'ServerType'."
 
     r = nb_http.post(
         "http://localhost:8000/graphql/",
@@ -239,9 +232,7 @@ def test_server_create_cert_no_key(
         )
 
 
-def test_server_create_https(
-    nb_api: pynetbox.api, kea_https_url: str, kea_ca: str
-) -> None:
+def test_server_create_https(nb_api: pynetbox.api, kea_https_url: str, kea_ca: str) -> None:
     nb_api.plugins.kea.servers.create(
         name="https",
         server_url=kea_https_url,
@@ -249,9 +240,7 @@ def test_server_create_https(
     )
 
 
-def test_server_create_ca_ssl_verify_false(
-    nb_api: pynetbox.api, kea_https_url: str, kea_ca: str
-) -> None:
+def test_server_create_ca_ssl_verify_false(nb_api: pynetbox.api, kea_https_url: str, kea_ca: str) -> None:
     with pytest.raises(RequestError):
         nb_api.plugins.kea.servers.create(
             name="https",
@@ -280,9 +269,7 @@ def test_server_create_no_ssl_verify(
     )
 
 
-def test_server_create_dhcp4_false_dhcp6_false(
-    nb_api: pynetbox.api, kea_url: str
-) -> None:
+def test_server_create_dhcp4_false_dhcp6_false(nb_api: pynetbox.api, kea_url: str) -> None:
     with pytest.raises(RequestError):
         nb_api.plugins.kea.servers.create(
             name="no-services-enabled",

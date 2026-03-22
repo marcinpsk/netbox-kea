@@ -37,9 +37,7 @@ def clear_leases(kea_client: KeaClient) -> None:
 
 
 @pytest.fixture(autouse=True)
-def reset_user_preferences(
-    requests_session: requests.Session, nb_api: pynetbox.api
-) -> None:
+def reset_user_preferences(requests_session: requests.Session, nb_api: pynetbox.api) -> None:
     r = requests_session.get(url=f"{nb_api.base_url}/users/config/")
     r.raise_for_status()
     tables_config = r.json().get("tables", {})
@@ -58,9 +56,7 @@ def reset_user_preferences(
 
 
 @pytest.fixture
-def with_test_server(
-    nb_api: pynetbox.api, kea_url: str, page: Page, netbox_login: None, plugin_base: str
-):
+def with_test_server(nb_api: pynetbox.api, kea_url: str, page: Page, netbox_login: None, plugin_base: str):
     server = nb_api.plugins.kea.servers.create(name="test", server_url=kea_url)
     page.goto(f"{plugin_base}/servers/{server.id}/")
     yield
@@ -68,24 +64,16 @@ def with_test_server(
 
 
 @pytest.fixture
-def with_test_server_only6(
-    nb_api: pynetbox.api, kea_url: str, page: Page, netbox_login: None, plugin_base: str
-):
-    server = nb_api.plugins.kea.servers.create(
-        name="only6", server_url=kea_url, dhcp4=False, dhcp6=True
-    )
+def with_test_server_only6(nb_api: pynetbox.api, kea_url: str, page: Page, netbox_login: None, plugin_base: str):
+    server = nb_api.plugins.kea.servers.create(name="only6", server_url=kea_url, dhcp4=False, dhcp6=True)
     page.goto(f"{plugin_base}/servers/{server.id}/")
     yield
     server.delete()
 
 
 @pytest.fixture
-def with_test_server_only4(
-    nb_api: pynetbox.api, kea_url: str, page: Page, netbox_login: None, plugin_base: str
-):
-    server = nb_api.plugins.kea.servers.create(
-        name="only4", server_url=kea_url, dhcp4=True, dhcp6=False
-    )
+def with_test_server_only4(nb_api: pynetbox.api, kea_url: str, page: Page, netbox_login: None, plugin_base: str):
+    server = nb_api.plugins.kea.servers.create(name="only4", server_url=kea_url, dhcp4=True, dhcp6=False)
     page.goto(f"{plugin_base}/servers/{server.id}/")
     yield
     server.delete()
@@ -122,9 +110,7 @@ def lease6(kea: KeaClient) -> dict[str, Any]:
             "preferred-lft": 7200,
         },
     )
-    lease = kea.command(
-        "lease6-get", arguments={"ip-address": lease_ip}, service=["dhcp6"]
-    )[0]["arguments"]
+    lease = kea.command("lease6-get", arguments={"ip-address": lease_ip}, service=["dhcp6"])[0]["arguments"]
     assert lease is not None
     return lease
 
@@ -236,9 +222,7 @@ def lease4(kea: KeaClient) -> dict[str, Any]:
             "hostname": "test-lease4",
         },
     )
-    lease = kea.command(
-        "lease4-get", arguments={"ip-address": lease_ip}, service=["dhcp4"]
-    )[0]["arguments"]
+    lease = kea.command("lease4-get", arguments={"ip-address": lease_ip}, service=["dhcp4"])[0]["arguments"]
     assert lease is not None
     return lease
 
@@ -391,9 +375,7 @@ def netbox_login(
     if netbox_username != "admin":
         nb_api.users.users.filter(username=netbox_username).delete()
         nb_api.users.permissions.all(0).delete()
-        user = nb_api.users.users.create(
-            username=netbox_username, password=netbox_password
-        )
+        user = nb_api.users.users.create(username=netbox_username, password=netbox_password)
         to_delete.append(user)
         for permission in netbox_user_permissions:
             p = nb_api.users.permissions.create(
@@ -432,9 +414,7 @@ def test_site(nb_api: pynetbox.api):
 
 @pytest.fixture(scope="session")
 def test_device_type(nb_api: pynetbox.api):
-    manufacturer = nb_api.dcim.manufacturers.create(
-        name="Test Manufacturer", slug="test-manufacturer"
-    )
+    manufacturer = nb_api.dcim.manufacturers.create(name="Test Manufacturer", slug="test-manufacturer")
     device_type = nb_api.dcim.device_types.create(
         manufacturer=manufacturer.id,
         model="test model",
@@ -458,9 +438,7 @@ def test_cluster(nb_api: pynetbox.api):
         name="test cluster type",
         slug="test-cluster-type",
     )
-    cluster = nb_api.virtualization.clusters.create(
-        name="Test Cluster", type=cluster_type.id
-    )
+    cluster = nb_api.virtualization.clusters.create(name="Test Cluster", type=cluster_type.id)
     yield cluster.id
     cluster.delete()
     cluster_type.delete()
@@ -470,9 +448,7 @@ def search_lease(page: Page, version: Literal[4, 6], by: str, q: str) -> None:
     page.get_by_role("link", name=f"DHCPv{version} Leases").click()
     page.locator("#id_q").fill(q)
     page.locator("#id_by + div.form-select").click()
-    page.locator("#id_by-ts-dropdown").get_by_role(
-        "option", name=by, exact=True
-    ).click()
+    page.locator("#id_by-ts-dropdown").get_by_role("option", name=by, exact=True).click()
     with page.expect_response(re.compile(f"/leases{version}/")) as r:
         page.get_by_role("button", name="Search").click()
         assert r.value.ok
@@ -489,10 +465,7 @@ def expect_form_error_search(page: Page, b: bool) -> None:
 
 
 def _version_ge_43(page: Page) -> bool:
-    """
-    Return True if the version is >= 4.3.
-    """
-
+    """Return True if the version is >= 4.3."""
     old_version_strings = (
         "(v4.0.11)",
         '<li class="list-inline-item">NetBox Community v4.1.11</li>',
@@ -589,16 +562,12 @@ def test_navigation_add_no_access(page: Page) -> None:
     expect(page.get_by_role("link", name="󱇬", exact=True)).to_have_count(0)
 
 
-def test_server_add_delete(
-    page: Page, plugin_base: str, kea_url: str, nb_api: pynetbox.api
-) -> None:
+def test_server_add_delete(page: Page, plugin_base: str, kea_url: str, nb_api: pynetbox.api) -> None:
     server_name = "test_server"
     page.goto(f"{plugin_base}/servers/add/")
     expect(page).to_have_title(re.compile("^Add a new server.*"))
 
-    expect(page.get_by_label("Password", exact=True)).to_have_attribute(
-        "type", "password"
-    )
+    expect(page.get_by_label("Password", exact=True)).to_have_attribute("type", "password")
 
     page.get_by_label("Name", exact=True).fill(server_name)
     page.get_by_label("Server URL", exact=True).fill(kea_url)
@@ -615,9 +584,7 @@ def test_server_add_delete(
     assert server is None
 
 
-def test_server_bulk_delete(
-    page: Page, plugin_base: str, nb_api: pynetbox.api, kea_url: str
-):
+def test_server_bulk_delete(page: Page, plugin_base: str, nb_api: pynetbox.api, kea_url: str):
     nb_api.plugins.kea.servers.create(
         [
             {"name": "server1", "server_url": kea_url},
@@ -651,12 +618,8 @@ def test_server_status(page: Page, kea: KeaClient) -> None:
     page.get_by_role("link", name="Status").click()
 
     ctrl_version = kea.command("version-get")[0]["arguments"]["extended"]
-    dhcp4_version = kea.command("version-get", service=["dhcp4"])[0]["arguments"][
-        "extended"
-    ]
-    dhcp6_version = kea.command("version-get", service=["dhcp6"])[0]["arguments"][
-        "extended"
-    ]
+    dhcp4_version = kea.command("version-get", service=["dhcp4"])[0]["arguments"]["extended"]
+    dhcp6_version = kea.command("version-get", service=["dhcp6"])[0]["arguments"]["extended"]
 
     locator = page.locator(".tab-content")
     expect(locator).to_contain_text(ctrl_version)
@@ -707,9 +670,7 @@ def test_dhcp_subnets(
             page.get_by_role("link", name=subnet).click()
             assert r.value.ok
         expect(page.locator("#id_q")).to_have_value(subnet)
-        expect(
-            page.locator("#id_by + div.form-select > div.ts-control > div.item")
-        ).to_have_text("Subnet")
+        expect(page.locator("#id_by + div.form-select > div.ts-control > div.item")).to_have_text("Subnet")
 
 
 @pytest.mark.parametrize(
@@ -757,9 +718,7 @@ def test_dhcp_subnets(
         ),
     ),
 )
-def test_dhcp_subnets_export_csv(
-    page: Page, kea: KeaClient, family: int, all_data: bool, expected_data: bool
-) -> None:
+def test_dhcp_subnets_export_csv(page: Page, kea: KeaClient, family: int, all_data: bool, expected_data: bool) -> None:
     page.get_by_role("link", name=f"DHCPv{family} Subnets").click()
 
     if all_data is False:
@@ -767,16 +726,16 @@ def test_dhcp_subnets_export_csv(
 
     page.get_by_role("button", name="Export").click()
     with page.expect_download() as dl:
-        page.get_by_role(
-            "link", name="All Data (CSV)" if all_data is True else "Current View"
-        ).click()
+        page.get_by_role("link", name="All Data (CSV)" if all_data is True else "Current View").click()
     dl = dl.value
     assert dl.suggested_filename.endswith(".csv")
 
     with open(dl.path()) as f:
         r = csv.DictReader(f)
         have_rows = sorted(r, key=lambda x: x["ID"])
-        assert len(have_rows) == len(expected_data), f"CSV row count mismatch: got {len(have_rows)}, expected {len(expected_data)}"
+        assert len(have_rows) == len(expected_data), (
+            f"CSV row count mismatch: got {len(have_rows)}, expected {len(expected_data)}"
+        )
         for actual, expected in zip(have_rows, expected_data):
             for key, val in expected.items():
                 assert actual.get(key) == val, f"CSV row mismatch: {key}: got {actual.get(key)!r}, expected {val!r}"
@@ -787,14 +746,10 @@ def test_dhcp_subnets_configure_table(page: Page, kea: KeaClient, family: int) -
     page.get_by_role("link", name=f"DHCPv{family} Subnets").click()
 
     configure_table(page, "subnet")
-    expect(page.locator(".object-list > thead > tr > th > a")).to_have_text(
-        ["Subnet", ""]
-    )
+    expect(page.locator(".object-list > thead > tr > th > a")).to_have_text(["Subnet", ""])
 
     configure_table(page, "subnet", "shared_network")
-    expect(page.locator(".object-list > thead > tr > th > a")).to_have_text(
-        ["Subnet", "Shared Network", ""]
-    )
+    expect(page.locator(".object-list > thead > tr > th > a")).to_have_text(["Subnet", "Shared Network", ""])
 
 
 @pytest.mark.parametrize(
@@ -837,15 +792,11 @@ def test_dhcp_subnets_configure_table(page: Page, kea: KeaClient, family: int) -
         (4, "Subnet ID", "2001:db8::/64"),
     ),
 )
-def test_dhcp_lease_invalid_search_values(
-    page: Page, kea: KeaClient, version: int, by: str, q: str
-) -> None:
+def test_dhcp_lease_invalid_search_values(page: Page, kea: KeaClient, version: int, by: str, q: str) -> None:
     page.get_by_role("link", name=f"DHCPv{version} Leases").click()
     page.locator("#id_q").fill(q)
     page.locator("#id_by + div.form-select").click()
-    page.locator("#id_by-ts-dropdown").get_by_role(
-        "option", name=by, exact=True
-    ).click()
+    page.locator("#id_by-ts-dropdown").get_by_role("option", name=by, exact=True).click()
     page.get_by_role("button", name="Search").click()
     expect_form_error_search(page, True)
     expect(page.locator("div.table-container")).to_have_count(0)
@@ -1006,14 +957,10 @@ def test_dhcp_export_csv_all(
 ):
     request.getfixturevalue(f"leases{family}_250")
 
-    leases = kea.command(f"lease{family}-get-all", service=[f"dhcp{family}"])[0][
-        "arguments"
-    ]["leases"]
+    leases = kea.command(f"lease{family}-get-all", service=[f"dhcp{family}"])[0]["arguments"]["leases"]
 
     def search() -> None:
-        return search_lease(
-            page, family, "Subnet", "2001:db8:1::/64" if family == 6 else "192.0.2.0/24"
-        )
+        return search_lease(page, family, "Subnet", "2001:db8:1::/64" if family == 6 else "192.0.2.0/24")
 
     search()
     configure_table(page, "ip_address", "hostname", "subnet_id")
@@ -1022,9 +969,7 @@ def test_dhcp_export_csv_all(
 
     page.get_by_role("button", name="Export").click()
     with page.expect_download() as dl:
-        page.get_by_role(
-            "link", name="All Data (CSV)" if all_data is True else "Current View"
-        ).click()
+        page.get_by_role("link", name="All Data (CSV)" if all_data is True else "Current View").click()
     dl = dl.value
     assert dl.suggested_filename.endswith(".csv")
 
@@ -1058,9 +1003,7 @@ def test_lease_delete(
 
     page.get_by_role("button", name="Delete Selected").click()
     page.locator('button[name="_confirm"]').click()
-    expect(page.locator(".toast-body")).to_have_text(
-        re.compile(f"Deleted 1 DHCPv{family} lease\\(s\\)")
-    )
+    expect(page.locator(".toast-body")).to_have_text(re.compile(f"Deleted 1 DHCPv{family} lease\\(s\\)"))
 
     kea.command(
         f"lease{family}-get",
@@ -1109,9 +1052,7 @@ def test_lease_delete_no_permission(
     expect(page.locator(".object-list > tbody > tr")).to_have_count(1)
 
     expect(page.locator('input[name="pk"]')).to_have_count(expected_count)
-    expect(page.get_by_role("button", name="Delete Selected")).to_have_count(
-        expected_count
-    )
+    expect(page.get_by_role("button", name="Delete Selected")).to_have_count(expected_count)
 
 
 @pytest.mark.parametrize(
@@ -1156,9 +1097,7 @@ def test_lease_delete_no_permission_on_confirm(
     assert p.save()
 
     page.locator('button[name="_confirm"]').click()
-    expect(page.locator("body")).to_have_text(
-        "This user does not have permission to delete DHCP leases."
-    )
+    expect(page.locator("body")).to_have_text("This user does not have permission to delete DHCP leases.")
 
 
 @pytest.mark.parametrize("family", (6, 4))
@@ -1176,15 +1115,11 @@ def test_lease_deleted_before_delete(
     page.locator('input[name="pk"]').check()
     page.get_by_role("button", name="Delete Selected").click()
 
-    kea.command(
-        f"lease{family}-del", service=[f"dhcp{family}"], arguments={"ip-address": ip}
-    )
+    kea.command(f"lease{family}-del", service=[f"dhcp{family}"], arguments={"ip-address": ip})
 
     page.locator('button[name="_confirm"]').click()
     # Kea will return status 3
-    expect(page.locator(".toast-body")).to_have_text(
-        re.compile(f"Deleted 1 DHCPv{family} lease\\(s\\)")
-    )
+    expect(page.locator(".toast-body")).to_have_text(re.compile(f"Deleted 1 DHCPv{family} lease\\(s\\)"))
 
 
 @pytest.mark.parametrize("family", (6, 4))
@@ -1251,9 +1186,7 @@ def test_lease_search(
     search_lease(page, family, search_by, str(lease[search_value_attr]))
     expect_form_error_search(page, False)
     expect(page.locator(".object-list > tbody > tr")).to_have_count(1)
-    expect(page.locator(".object-list > tbody > tr > td").nth(1)).to_have_text(
-        lease["ip-address"]
-    )
+    expect(page.locator(".object-list > tbody > tr > td").nth(1)).to_have_text(lease["ip-address"])
 
 
 @pytest.mark.parametrize("sep", ("-", ""))
@@ -1276,9 +1209,7 @@ def test_lease_search_eui_formats(
     lease = request.getfixturevalue(f"lease{family}")
     search_lease(page, family, search_by, lease[search_value_attr].replace(":", sep))
     expect(page.locator(".object-list > tbody > tr")).to_have_count(1)
-    expect(page.locator(".object-list > tbody > tr > td").nth(1)).to_have_text(
-        lease["ip-address"]
-    )
+    expect(page.locator(".object-list > tbody > tr > td").nth(1)).to_have_text(lease["ip-address"])
 
 
 def test_lease_search_cisco_style_mac(page: Page, lease4: dict[str, Any]) -> None:
@@ -1286,9 +1217,7 @@ def test_lease_search_cisco_style_mac(page: Page, lease4: dict[str, Any]) -> Non
     cisco_mac = f"{mac[:4]}.{mac[4:8]}.{mac[8:]}"
     search_lease(page, 4, "Hardware Address", cisco_mac)
     expect(page.locator(".object-list > tbody > tr")).to_have_count(1)
-    expect(page.locator(".object-list > tbody > tr > td").nth(1)).to_have_text(
-        lease4["ip-address"]
-    )
+    expect(page.locator(".object-list > tbody > tr > td").nth(1)).to_have_text(lease4["ip-address"])
 
 
 @pytest.mark.parametrize(
@@ -1316,9 +1245,7 @@ def test_lease_search_by_subnet(
 
     net = IPNetwork(prefix)
     family = net.version
-    dhcp_scope = (
-        IPNetwork("2001:db8:1::/64") if family == 6 else IPNetwork("192.0.2.0/24")
-    )
+    dhcp_scope = IPNetwork("2001:db8:1::/64") if family == 6 else IPNetwork("192.0.2.0/24")
     skip_first = dhcp_scope.network in net
     lease_count = min(net.size - int(skip_first), 250)
     request.getfixturevalue(f"leases{family}_250")
@@ -1336,9 +1263,7 @@ def test_lease_search_by_subnet(
             assert r.value.ok
 
     def check_first_row_ip(ip: IPAddress) -> None:
-        expect(page.locator(".object-list > tbody > tr > td").nth(1)).to_have_text(
-            str(ip)
-        )
+        expect(page.locator(".object-list > tbody > tr > td").nth(1)).to_have_text(str(ip))
 
     check_first_row_ip(first_ip)
     check_count(min(lease_count, per_page))
@@ -1357,9 +1282,7 @@ def test_lease_search_by_subnet(
             check_first_row_ip(first_ip)
             check_count(lease_count % per_page)
         else:
-            expect(page.locator(".object-list > tbody > tr > td")).to_have_text(
-                "— No leases found. —"
-            )
+            expect(page.locator(".object-list > tbody > tr > td")).to_have_text("— No leases found. —")
 
     expect(page.get_by_role("button", name="Next")).to_be_disabled()
 
@@ -1406,9 +1329,7 @@ def test_lease_search_page_param_without_subnet(
     expect(page).to_have_url(re.compile("by="))
     page_param = "2001:db8:1::" if family == 6 else "192.0.2.0"
     page.goto(f"{page.url}&page={quote_plus(page_param)}")
-    expect(page.locator("form.form").get_by_role("alert")).to_contain_text(
-        "page is only supported with subnet."
-    )
+    expect(page.locator("form.form").get_by_role("alert")).to_contain_text("page is only supported with subnet.")
 
 
 def test_filter_servers_by_tag(
@@ -1418,24 +1339,18 @@ def test_filter_servers_by_tag(
     plugin_base: str,
     page: Page,
 ) -> None:
-    nb_api.plugins.kea.servers.create(
-        name="tag-test", server_url=kea_url, tags=[{"name": test_tag}]
-    )
+    nb_api.plugins.kea.servers.create(name="tag-test", server_url=kea_url, tags=[{"name": test_tag}])
 
     page.goto(f"{plugin_base}/servers/")
     page.get_by_role("tab", name="Filters").click()
     page.locator("#id_tag + div.form-select").click()
-    page.locator("#id_tag-ts-dropdown").get_by_role(
-        "option", name=f"{test_tag} (1)"
-    ).click()
+    page.locator("#id_tag-ts-dropdown").get_by_role("option", name=f"{test_tag} (1)").click()
     page.get_by_role("button", name=re.compile("Search")).click()
     expect(page.get_by_text("Showing 1-1 of 1")).to_have_count(1)
 
 
 @pytest.mark.parametrize("version", (6, 4))
-def test_one_service_only(
-    page: Page, version: Literal[6, 4], request: pytest.FixtureRequest
-) -> None:
+def test_one_service_only(page: Page, version: Literal[6, 4], request: pytest.FixtureRequest) -> None:
     request.getfixturevalue(f"with_test_server_only{version}")
 
     server_url = page.url
@@ -1545,9 +1460,7 @@ def test_lease_pagination_location(
         assert count_y_bottom > table_y
     else:
         expect(counts).to_have_count(1)
-        count_y = page.get_by_text(
-            re.compile(r"^Showing \d+ lease\(s\)$")
-        ).bounding_box()["y"]
+        count_y = page.get_by_text(re.compile(r"^Showing \d+ lease\(s\)$")).bounding_box()["y"]
         table_y = page.get_by_role("link", name="IP Address").bounding_box()["y"]
 
         match placement:
@@ -1559,12 +1472,8 @@ def test_lease_pagination_location(
                 assert False
 
 
-def test_dhcpv6_lease_long_duid(
-    page: Page, kea: KeaClient, with_test_server_only6: None
-) -> None:
-    """
-    Regression test for long DUIDs (#154).
-    """
+def test_dhcpv6_lease_long_duid(page: Page, kea: KeaClient, with_test_server_only6: None) -> None:
+    """Regression test for long DUIDs (#154)."""
     lease_ip = "2001:db8:1::dead:beef"
     kea.command(
         "lease6-add",

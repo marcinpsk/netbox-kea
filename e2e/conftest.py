@@ -125,9 +125,7 @@ def track_http_errors(page: Page) -> list[tuple[int, str]]:
 
 
 @pytest.fixture
-def live_kea_server(
-    api_session: requests.Session, netbox_url: str, live_kea_configured: None
-) -> dict:
+def live_kea_server(api_session: requests.Session, netbox_url: str, live_kea_configured: None) -> dict:
     """Create a Server pointing at the live Kea daemons; delete it after the test.
 
     Requires KEA_API_PASSWORD to be set (enforced by live_kea_configured).

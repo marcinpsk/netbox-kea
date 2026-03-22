@@ -3,7 +3,8 @@ import logging
 import re
 from abc import ABCMeta
 from typing import Any, Generic, TypeVar
-from urllib.parse import parse_qsl, urlencode as _urlencode, urlparse
+from urllib.parse import parse_qsl, urlparse
+from urllib.parse import urlencode as _urlencode
 
 from django.contrib import messages
 from django.http import Http404, HttpResponse, HttpResponseForbidden, HttpResponseRedirect
