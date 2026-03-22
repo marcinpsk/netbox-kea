@@ -581,14 +581,11 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
                 {
                     "can_delete": can_delete,
                     "is_embedded": False,
-                    "delete_action": (
-                        reverse(
-                            f"plugins:netbox_kea:server_leases{self.dhcp_version}_delete",
-                            args=[instance.pk],
-                        )
-                        + "?"
-                        + _urlencode({"return_url": _strip_empty_params(request.get_full_path())})
+                    "delete_action": reverse(
+                        f"plugins:netbox_kea:server_leases{self.dhcp_version}_delete",
+                        args=[instance.pk],
                     ),
+                    "return_url": _strip_empty_params(request.get_full_path()),
                     "form": form,
                     "table": table,
                     "next_page": next_page,
