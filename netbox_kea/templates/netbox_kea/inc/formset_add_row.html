@@ -15,7 +15,8 @@
   addBtn.addEventListener('click', function () {
     const rows = tbody.querySelectorAll('tr.formset-row');
     const idx = rows.length;
-    const lastRow = rows[rows.length - 1];
+    if (idx === 0) { return; }
+    const lastRow = rows[idx - 1];
     const newRow = lastRow.cloneNode(true);
     // Clear stale validation state from the cloned row.
     newRow.querySelectorAll('.invalid-feedback').forEach(function (el) { el.textContent = ''; });

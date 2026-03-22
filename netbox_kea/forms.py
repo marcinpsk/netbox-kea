@@ -681,15 +681,18 @@ class SubnetAddForm(_SubnetBaseForm):
 
         gateway = cleaned.get("gateway", "")
         if gateway:
-            try:
-                gw_version = ipaddress.ip_address(gateway).version
-            except ValueError:
-                gw_version = None
-            if gw_version and gw_version != subnet_version:
-                self.add_error(
-                    "gateway",
-                    f"Gateway must be an IPv{subnet_version} address to match the subnet family.",
-                )
+            if subnet_version == 6:
+                self.add_error("gateway", "Gateway is not allowed for IPv6 subnets.")
+            else:
+                try:
+                    gw_version = ipaddress.ip_address(gateway).version
+                except ValueError:
+                    gw_version = None
+                if gw_version and gw_version != subnet_version:
+                    self.add_error(
+                        "gateway",
+                        f"Gateway must be an IPv{subnet_version} address to match the subnet family.",
+                    )
 
         dns_servers = cleaned.get("dns_servers") or []
         if isinstance(dns_servers, list):

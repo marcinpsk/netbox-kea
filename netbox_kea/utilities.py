@@ -149,11 +149,20 @@ def parse_subnet_stats(stat_response: list[dict[str, Any]], version: int) -> dic
         Returns an empty dict when the response is missing or malformed.
 
     """
-    if not stat_response or stat_response[0].get("result") != 0:
+    if not stat_response or not isinstance(stat_response[0], dict):
         return {}
-    result_set = (stat_response[0].get("arguments") or {}).get("result-set", {})
-    columns: list[str] = result_set.get("columns", [])
-    rows: list[list] = result_set.get("rows", [])
+    if stat_response[0].get("result") != 0:
+        return {}
+    arguments = stat_response[0].get("arguments")
+    if not isinstance(arguments, dict):
+        return {}
+    result_set = arguments.get("result-set")
+    if not isinstance(result_set, dict):
+        return {}
+    columns_raw = result_set.get("columns")
+    columns: list[str] = columns_raw if isinstance(columns_raw, list) else []
+    rows_raw = result_set.get("rows")
+    rows: list[list] = rows_raw if isinstance(rows_raw, list) else []
 
     total_col = "total-addresses" if version == 4 else "total-nas"
     assigned_col = "assigned-addresses" if version == 4 else "assigned-nas"
@@ -271,7 +280,10 @@ def parse_reservation_csv(content: str, version: int) -> list[dict[str, Any]]:
             result["ip-address"] = row["ip-address"]
             result["hw-address"] = row["hw-address"]
         else:
-            result["ip-addresses"] = [addr.strip() for addr in row["ip-addresses"].split(";") if addr.strip()]
+            ip_addresses = [addr.strip() for addr in row["ip-addresses"].split(";") if addr.strip()]
+            if not ip_addresses:
+                raise ValueError(f"Row {row_num}: 'ip-addresses' must contain at least one valid address")
+            result["ip-addresses"] = ip_addresses
             result["duid"] = row["duid"]
 
         if row.get("hostname"):

@@ -35,9 +35,20 @@
   {% if not is_embedded and form.is_valid %}
     {% include "inc/table_controls_htmx.html" with table_modal="LeasesTable_config" %}
     {% with preferences|get_key:"pagination.placement" as paginator_placement %}
-      <form method="post" action="{{ delete_action }}">
+      <form method="post" action="{{ delete_action }}" id="lease-delete-form">
         {% csrf_token %}
-        <input type="hidden" name="return_url" value="{{ request.META.HTTP_HX_CURRENT_URL|default:request.get_full_path }}" />
+        <input type="hidden" name="return_url" id="lease-delete-return-url" value="{{ request.get_full_path }}" />
+        <script>
+          (function () {
+            var form = document.getElementById('lease-delete-form');
+            if (form) {
+              form.addEventListener('submit', function () {
+                var field = document.getElementById('lease-delete-return-url');
+                if (field) { field.value = window.location.href; }
+              });
+            }
+          })();
+        </script>
         <div class="card table-responsive">
           {% if paginator_placement == 'top' or paginator_placement == 'both' %}
             {% include "netbox_kea/inc/server_dhcp_leases_paginator.html" with table=table paginate=paginate placement="top" %}
