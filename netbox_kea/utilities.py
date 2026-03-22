@@ -234,6 +234,14 @@ def kea_error_hint(exc: Any) -> str:
     return f"Kea returned an unexpected result code ({result}). Check the server logs for details."
 
 
+def _parse_int_row_field(row: dict, field: str, row_num: int) -> int:
+    """Parse ``row[field]`` as int, raising ``ValueError`` with row context on failure."""
+    try:
+        return int(row[field])
+    except (ValueError, KeyError):
+        raise ValueError(f"Row {row_num}: '{field}' must be an integer, got '{row.get(field, '')}'") from None
+
+
 def parse_reservation_csv(content: str, version: int) -> list[dict[str, Any]]:
     """Parse a CSV string into a list of reservation dicts ready for ``reservation_add``.
 
@@ -275,7 +283,7 @@ def parse_reservation_csv(content: str, version: int) -> list[dict[str, Any]]:
             if not row.get(field):
                 raise ValueError(f"Row {row_num}: missing required field '{field}'")
 
-        result: dict[str, Any] = {"subnet-id": int(row["subnet-id"])}
+        result: dict[str, Any] = {"subnet-id": _parse_int_row_field(row, "subnet-id", row_num)}
 
         if version == 4:
             try:
@@ -366,16 +374,16 @@ def parse_lease_csv(version: int, content: str) -> list[dict[str, Any]]:
             if not is_hex_string(row["duid"], constants.DUID_MIN_OCTETS, constants.DUID_MAX_OCTETS):
                 raise ValueError(f"Row {row_num}: invalid DUID '{row['duid']}'")
             result["duid"] = row["duid"]
-            result["iaid"] = int(row["iaid"])
+            result["iaid"] = _parse_int_row_field(row, "iaid", row_num)
 
         if row.get("hw-address") and version == 4:
             if not is_hex_string(row["hw-address"], 6, 6):
                 raise ValueError(f"Row {row_num}: invalid MAC address '{row['hw-address']}'")
             result["hw-address"] = row["hw-address"]
         if row.get("subnet-id"):
-            result["subnet-id"] = int(row["subnet-id"])
+            result["subnet-id"] = _parse_int_row_field(row, "subnet-id", row_num)
         if row.get("valid-lft"):
-            result["valid-lft"] = int(row["valid-lft"])
+            result["valid-lft"] = _parse_int_row_field(row, "valid-lft", row_num)
         if row.get("hostname"):
             result["hostname"] = row["hostname"]
 
