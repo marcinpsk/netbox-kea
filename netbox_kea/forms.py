@@ -554,6 +554,9 @@ class PoolAddForm(forms.Form):
     def clean_pool(self) -> str:  # noqa: D102
         value = self.cleaned_data["pool"].strip()
         _validate_pool_string(value)
+        if "-" in value and "/" not in value:
+            start, end = value.split("-", 1)
+            return f"{start.strip()}-{end.strip()}"
         return value
 
 
@@ -593,9 +596,15 @@ class _SubnetBaseForm(forms.Form):
         if not value:
             return []
         pools = [p.strip() for p in value.splitlines() if p.strip()]
+        normalized = []
         for pool in pools:
             _validate_pool_string(pool)
-        return pools
+            if "-" in pool and "/" not in pool:
+                start, end = pool.split("-", 1)
+                normalized.append(f"{start.strip()}-{end.strip()}")
+            else:
+                normalized.append(pool)
+        return normalized
 
     def clean_gateway(self) -> str:  # noqa: D102
         import ipaddress
@@ -899,6 +908,16 @@ class Lease4EditForm(forms.Form):
         help_text="Lease lifetime in seconds (leave blank to keep current).",
     )
 
+    def clean_hw_address(self) -> str:  # noqa: D102
+        value = self.cleaned_data.get("hw_address", "").strip()
+        if not value:
+            return value
+        try:
+            EUI(value, version=48)
+        except (AddrFormatError, ValueError) as exc:
+            raise ValidationError("Enter a valid MAC address (e.g. aa:bb:cc:dd:ee:ff).") from exc
+        return value
+
 
 class Lease6EditForm(forms.Form):
     """Form for editing a DHCPv6 lease in-place."""
@@ -920,6 +939,14 @@ class Lease6EditForm(forms.Form):
         label="Valid lifetime (s)",
         help_text="Lease lifetime in seconds (leave blank to keep current).",
     )
+
+    def clean_duid(self) -> str:  # noqa: D102
+        value = self.cleaned_data.get("duid", "").strip()
+        if not value:
+            return value
+        if not is_hex_string(value, constants.DUID_MIN_OCTETS, constants.DUID_MAX_OCTETS):
+            raise ValidationError("Enter a valid DUID as colon-separated hex octets.")
+        return value
 
 
 class Lease4AddForm(forms.Form):
@@ -968,6 +995,16 @@ class Lease4AddForm(forms.Form):
         if addr.version != 4:
             raise ValidationError("Must be an IPv4 address.")
         return str(addr)
+
+    def clean_hw_address(self) -> str:  # noqa: D102
+        value = self.cleaned_data.get("hw_address", "").strip()
+        if not value:
+            return value
+        try:
+            EUI(value, version=48)
+        except (AddrFormatError, ValueError) as exc:
+            raise ValidationError("Enter a valid MAC address (e.g. aa:bb:cc:dd:ee:ff).") from exc
+        return value
 
 
 class Lease6AddForm(forms.Form):
@@ -1020,6 +1057,14 @@ class Lease6AddForm(forms.Form):
         if addr.version != 6:
             raise ValidationError("Must be an IPv6 address.")
         return str(addr)
+
+    def clean_duid(self) -> str:  # noqa: D102
+        value = self.cleaned_data.get("duid", "").strip()
+        if not value:
+            return value
+        if not is_hex_string(value, constants.DUID_MIN_OCTETS, constants.DUID_MAX_OCTETS):
+            raise ValidationError("Enter a valid DUID as colon-separated hex octets.")
+        return value
 
 
 class SharedNetworkForm(forms.Form):

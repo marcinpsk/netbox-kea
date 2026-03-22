@@ -207,7 +207,7 @@ def kea_error_hint(exc: Any) -> str:
         3  — empty result / not found
         128 — service not connected / daemon unreachable
     """
-    result = getattr(exc, "response", {}).get("result", -1) if hasattr(exc, "response") else -1
+    result = getattr(exc, "response", {}).get("result", -1)
     if result == 2:
         return (
             "This command is not supported by the Kea server. "

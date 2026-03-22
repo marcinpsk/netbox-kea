@@ -1170,7 +1170,7 @@ class TestServerSubnet4AddView(_ReservationViewBase):
 
     def test_post_kea_error_shows_message_and_rerenders(self):
         mock_client = MagicMock()
-        mock_client.subnet_add.side_effect = Exception("subnet already exists")
+        mock_client.subnet_add.side_effect = KeaException({"result": 1, "text": "subnet already exists"}, index=0)
         with patch("netbox_kea.models.KeaClient", return_value=mock_client):
             resp = self.client.post(
                 self._add_url(),
@@ -1183,8 +1183,9 @@ class TestServerSubnet4AddView(_ReservationViewBase):
                     "ntp_servers": "",
                 },
             )
-        self.assertEqual(resp.status_code, 200)
-        self.assertContains(resp, "see server logs for details")
+        self.assertRedirects(
+            resp, reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk]), fetch_redirect_response=False
+        )
 
 
 class TestServerSubnet4DeleteView(_ReservationViewBase):
@@ -1215,7 +1216,7 @@ class TestServerSubnet4DeleteView(_ReservationViewBase):
 
     def test_post_kea_error_shows_message(self):
         mock_client = MagicMock()
-        mock_client.subnet_del.side_effect = Exception("subnet not found")
+        mock_client.subnet_del.side_effect = KeaException({"result": 1, "text": "subnet not found"}, index=0)
         with patch("netbox_kea.models.KeaClient", return_value=mock_client):
             resp = self.client.post(self._delete_url())
         self.assertRedirects(

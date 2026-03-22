@@ -102,14 +102,17 @@ class _KeaChangeMixin:
     """
 
     def dispatch(self, request: HttpRequest, *args: Any, **kwargs: Any) -> HttpResponse:
+        if not request.user.is_authenticated:
+            from django.contrib.auth.views import redirect_to_login
+
+            return redirect_to_login(request.get_full_path())
         pk = kwargs.get("pk")
         if pk is not None:
-            if request.user.is_authenticated:
-                if not Server.objects.restrict(request.user, "view").filter(pk=pk).exists():
-                    raise Http404
-                if not Server.objects.restrict(request.user, "change").filter(pk=pk).exists():
-                    return HttpResponseForbidden("You do not have permission to modify Kea server data.")
-        elif request.user.is_authenticated and not request.user.has_perm("netbox_kea.change_server"):
+            if not Server.objects.restrict(request.user, "view").filter(pk=pk).exists():
+                raise Http404
+            if not Server.objects.restrict(request.user, "change").filter(pk=pk).exists():
+                return HttpResponseForbidden("You do not have permission to modify Kea server data.")
+        elif not request.user.has_perm("netbox_kea.change_server"):
             return HttpResponseForbidden("You do not have permission to modify Kea server data.")
         return super().dispatch(request, *args, **kwargs)  # type: ignore[misc]
 
@@ -705,7 +708,7 @@ class _BaseLeaseEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin, View):
     form_class: type
 
     def _get_server(self, pk: int) -> Server:
-        return get_object_or_404(Server, pk=pk)
+        return get_object_or_404(Server.objects.restrict(self.request.user, "view"), pk=pk)
 
     def _leases_url(self, server: Server) -> str:
         return reverse(

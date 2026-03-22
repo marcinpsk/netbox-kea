@@ -310,4 +310,6 @@ class TestLease6API(_APITestBase):
             }
         ]
         self.api_client.get(self._url(), {"ip_address": "2001:db8::1"})
-        self.assertEqual(mock_client.command.call_args.kwargs.get("service"), ["dhcp6"])
+        call_args = mock_client.command.call_args
+        service = call_args.kwargs.get("service") or (call_args.args[1] if len(call_args.args) > 1 else None)
+        self.assertEqual(service, ["dhcp6"])

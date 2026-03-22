@@ -3,8 +3,14 @@
 <script>
 (function () {
   const tbody = document.getElementById('formset-rows');
-  const totalFormsInput = document.querySelector('[name=form-TOTAL_FORMS]');
+  const totalFormsInput = document.querySelector('[name$="TOTAL_FORMS"]');
   const addBtn = document.getElementById('add-row');
+
+  if (!tbody || !totalFormsInput || !addBtn) { return; }
+
+  const prefix = totalFormsInput.name.replace(/-TOTAL_FORMS$/, '');
+  const fieldRe = new RegExp(prefix + '-(\\d+)-', 'g');
+  const idRe = new RegExp('id_' + prefix + '-(\\d+)-', 'g');
 
   addBtn.addEventListener('click', function () {
     const rows = tbody.querySelectorAll('tr.formset-row');
@@ -16,8 +22,8 @@
     newRow.querySelectorAll('.is-invalid').forEach(function (el) { el.classList.remove('is-invalid'); });
     newRow.querySelectorAll('.text-danger').forEach(function (el) { el.textContent = ''; el.classList.remove('text-danger'); });
     newRow.querySelectorAll('input, select, textarea').forEach(function (el) {
-      el.name = el.name.replace(/form-\d+-/, 'form-' + idx + '-');
-      el.id = el.id ? el.id.replace(/id_form-\d+-/, 'id_form-' + idx + '-') : '';
+      el.name = el.name.replace(fieldRe, prefix + '-' + idx + '-');
+      el.id = el.id ? el.id.replace(idRe, 'id_' + prefix + '-' + idx + '-') : '';
       if (el.type === 'checkbox') { el.checked = false; }
       else { el.value = ''; }
     });
