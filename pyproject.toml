@@ -116,6 +116,9 @@ max-complexity = 15
 "__init__.py" = ["F401"]
 "*/migrations/*.py" = ["D"]
 "*/tests/*.py" = ["D"]
+"tests/*.py" = ["D"]
+"e2e/*.py" = ["D"]
+".devcontainer/**/*.py" = ["D", "C4"]
 "netbox_kea/forms.py" = ["C901"]  # upstream complex validation logic
 
 [tool.pytest.ini_options]
