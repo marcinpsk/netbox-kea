@@ -14,6 +14,7 @@ Run live-Kea tests only:
     KEA_API_PASSWORD=<pw> .venv/bin/python3 -m pytest e2e/ -v -k TestLiveKea --override-ini 'addopts='
 """
 
+import ipaddress
 import re
 import subprocess
 from typing import TYPE_CHECKING
@@ -361,7 +362,7 @@ class TestLiveKeaServer:
 
         # Submit via JS with explicit navigation wait — djDebug intercepts pointer events
         with page.expect_navigation():
-            page.evaluate('document.querySelector(\'[action*="delete"], form[method="post"]\').submit()')
+            page.evaluate('var forms = document.querySelectorAll(\'form[method="post"]\'); forms[forms.length - 1].submit()')
         page.wait_for_load_state("networkidle")
 
         _check_no_django_error(page)
@@ -1219,8 +1220,6 @@ class TestPoolManagementLiveKea:
         track_http_errors: list,
     ) -> None:
         """Full cycle: add a pool → verify present → delete it → verify gone."""
-        import ipaddress
-
         server_id = live_kea_server["id"]
         page.goto(self._subnets4_url(plugin_base, server_id))
         page.wait_for_load_state("networkidle")
@@ -1232,11 +1231,13 @@ class TestPoolManagementLiveKea:
             pytest.skip("No subnets with add-pool buttons found on live server")
 
         net = ipaddress.IPv4Network(row_data["subnet"], strict=False)
-        hosts = list(net.hosts())
-        if len(hosts) < 15:
+        host_count = net.num_addresses - 2
+        if host_count < 15:
             pytest.skip(f"Subnet {row_data['subnet']} too small for test pool")
 
-        test_pool = f"{hosts[-10]}-{hosts[-6]}"
+        start_addr = ipaddress.IPv4Address(int(net.broadcast_address) - 10)
+        end_addr = ipaddress.IPv4Address(int(net.broadcast_address) - 6)
+        test_pool = f"{start_addr}-{end_addr}"
 
         # Parse subnet_id from the add_url path
         add_url_path = row_data["add_url"].split("//", 1)[-1].split("/", 1)[-1]

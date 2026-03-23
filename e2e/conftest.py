@@ -155,10 +155,15 @@ def live_kea_server(api_session: requests.Session, netbox_url: str, live_kea_con
     if existing.ok:
         for srv in existing.json().get("results", []):
             if srv["name"] == _SERVER_NAME:
-                api_session.delete(
+                del_resp = api_session.delete(
                     f"{netbox_url}/api/plugins/kea/servers/{srv['id']}/",
                     timeout=10,
                 )
+                if del_resp.status_code not in (200, 204, 404):
+                    pytest.fail(
+                        f"Could not clean up leftover server {srv['id']}: "
+                        f"{del_resp.status_code} {del_resp.text}"
+                    )
 
     resp = api_session.post(
         f"{netbox_url}/api/plugins/kea/servers/",
@@ -169,11 +174,16 @@ def live_kea_server(api_session: requests.Session, netbox_url: str, live_kea_con
         pytest.fail(f"Could not create live Kea server via API: {resp.status_code} {resp.text}")
     server = resp.json()
     yield server
-    # Teardown: ignore 404 (test may have deleted the server itself)
-    api_session.delete(
+    # Teardown: suppress 404 (test may have deleted the server itself); fail on other errors
+    del_resp = api_session.delete(
         f"{netbox_url}/api/plugins/kea/servers/{server['id']}/",
         timeout=10,
     )
+    if del_resp.status_code not in (200, 204, 404):
+        pytest.fail(
+            f"Could not tear down live Kea server {server['id']}: "
+            f"{del_resp.status_code} {del_resp.text}"
+        )
 
 
 # ---------------------------------------------------------------------------

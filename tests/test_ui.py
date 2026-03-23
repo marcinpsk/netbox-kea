@@ -1097,7 +1097,7 @@ def test_lease_delete_no_permission_on_confirm(
     assert p.save()
 
     page.locator('button[name="_confirm"]').click()
-    expect(page.locator("body")).to_have_text("This user does not have permission to delete DHCP leases.")
+    expect(page.locator("body")).to_contain_text("This user does not have permission to delete DHCP leases.")
 
 
 @pytest.mark.parametrize("family", (6, 4))
