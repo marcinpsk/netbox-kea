@@ -58,25 +58,31 @@ def reset_user_preferences(requests_session: requests.Session, nb_api: pynetbox.
 @pytest.fixture
 def with_test_server(nb_api: pynetbox.api, kea_url: str, page: Page, netbox_login: None, plugin_base: str):
     server = nb_api.plugins.kea.servers.create(name="test", server_url=kea_url)
-    page.goto(f"{plugin_base}/servers/{server.id}/")
-    yield
-    server.delete()
+    try:
+        page.goto(f"{plugin_base}/servers/{server.id}/")
+        yield
+    finally:
+        server.delete()
 
 
 @pytest.fixture
 def with_test_server_only6(nb_api: pynetbox.api, kea_url: str, page: Page, netbox_login: None, plugin_base: str):
     server = nb_api.plugins.kea.servers.create(name="only6", server_url=kea_url, dhcp4=False, dhcp6=True)
-    page.goto(f"{plugin_base}/servers/{server.id}/")
-    yield
-    server.delete()
+    try:
+        page.goto(f"{plugin_base}/servers/{server.id}/")
+        yield
+    finally:
+        server.delete()
 
 
 @pytest.fixture
 def with_test_server_only4(nb_api: pynetbox.api, kea_url: str, page: Page, netbox_login: None, plugin_base: str):
     server = nb_api.plugins.kea.servers.create(name="only4", server_url=kea_url, dhcp4=True, dhcp6=False)
-    page.goto(f"{plugin_base}/servers/{server.id}/")
-    yield
-    server.delete()
+    try:
+        page.goto(f"{plugin_base}/servers/{server.id}/")
+        yield
+    finally:
+        server.delete()
 
 
 @pytest.fixture
@@ -1441,7 +1447,6 @@ def test_lease_pagination_location(
     version: Literal[6, 4],
     placement: Literal["top", "bottom", "both"],
 ) -> None:
-    placement = "bottom"
     lease_args = request.getfixturevalue(f"lease{version}")
     ip = lease_args["ip-address"]
 
@@ -1458,7 +1463,7 @@ def test_lease_pagination_location(
     if placement == "both":
         expect(counts).to_have_count(2)
         count_y_top = counts.nth(0).bounding_box()["y"]
-        count_y_bottom = counts.nth(0).bounding_box()["y"]
+        count_y_bottom = counts.nth(1).bounding_box()["y"]
         table_y = page.get_by_role("link", name="IP Address").bounding_box()["y"]
 
         assert count_y_top < table_y

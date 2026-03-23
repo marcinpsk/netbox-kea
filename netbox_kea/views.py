@@ -578,7 +578,7 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
                 table.columns.hide("pk")
 
             stripped_return_url = _strip_empty_params(request.get_full_path())
-            return render(
+            response = render(
                 request,
                 "netbox_kea/server_dhcp_leases_htmx.html",
                 {
@@ -600,6 +600,12 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
                     "page_lengths": EnhancedPaginator.default_page_lengths,
                 },
             )
+            # Tell HTMX which URL to push to the browser history.  The request
+            # URL may include empty params (e.g. state=) that HTMX would otherwise
+            # push verbatim; sending the stripped URL as HX-Push-Url overrides
+            # that so the address bar always shows the clean URL.
+            response["HX-Push-Url"] = stripped_return_url
+            return response
         except Exception:
             import uuid
 
