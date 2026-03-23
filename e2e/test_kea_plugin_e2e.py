@@ -16,9 +16,13 @@ Run live-Kea tests only:
 
 import re
 import subprocess
+from typing import TYPE_CHECKING
 
 import pytest
 from playwright.sync_api import Page, expect
+
+if TYPE_CHECKING:
+    import requests
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -346,7 +350,7 @@ class TestLiveKeaServer:
         netbox_login: None,
         plugin_base: str,
         live_kea_server: dict,
-        api_session: object,
+        api_session: "requests.Session",
         netbox_url: str,
         track_http_errors: list,
     ) -> None:
@@ -1281,34 +1285,12 @@ class TestSubnetManagementLiveKea:
         KEA_API_PASSWORD=<pw> pytest e2e/ -v -k TestSubnetManagement ...
     """
 
-    def _kea4_call(self, command: str, arguments: dict | None = None) -> dict:
-        """Call the live Kea DHCPv4 API directly, returning the first response item."""
-        import os
-
-        import requests as _requests
-
-        kea_url = os.environ.get("KEA_V4_URL", "https://kea-v4-api.cnad.dev")
-        kea_user = os.environ.get("KEA_API_USERNAME", "admin")
-        kea_pass = os.environ.get("KEA_API_PASSWORD", "")
-        payload: dict = {"command": command, "service": ["dhcp4"]}
-        if arguments:
-            payload["arguments"] = arguments
-        resp = _requests.post(
-            kea_url,
-            json=payload,
-            auth=(kea_user, kea_pass),
-            verify=True,
-            timeout=15,
-        )
-        resp.raise_for_status()
-        return resp.json()[0]
-
-    def _kea4_cleanup_subnet(self, cidr: str) -> None:
+    def _kea4_cleanup_subnet(self, kea4_call, cidr: str) -> None:
         """Remove every Kea subnet whose CIDR matches *cidr* (direct API call)."""
-        data = self._kea4_call("subnet4-list")
+        data = kea4_call("subnet4-list")
         for s in data.get("arguments", {}).get("subnets", []):
             if s.get("subnet") == cidr:
-                self._kea4_call("subnet4-del", {"id": s["id"]})
+                kea4_call("subnet4-del", {"id": s["id"]})
 
     def test_subnet_add_form_loads(
         self,
@@ -1333,16 +1315,15 @@ class TestSubnetManagementLiveKea:
         plugin_base: str,
         live_kea_server: dict,
         track_http_errors: list,
+        kea4_call,
     ) -> None:
         """Full add→verify→delete cycle for a DHCPv4 subnet."""
-        import re
-
         server_id = live_kea_server["id"]
         test_subnet = "10.254.253.0/24"
         test_pool = "10.254.253.10-10.254.253.20"
 
         # ---- PRE-CLEANUP: remove any leftover test subnets via direct Kea API ----
-        self._kea4_cleanup_subnet(test_subnet)
+        self._kea4_cleanup_subnet(kea4_call, test_subnet)
 
         new_subnet_id = None
         try:
@@ -1392,7 +1373,7 @@ class TestSubnetManagementLiveKea:
             _assert_no_http_errors(track_http_errors)
 
             # ---- VERIFY DELETED via direct Kea API ----
-            data = self._kea4_call("subnet4-list")
+            data = kea4_call("subnet4-list")
             remaining_ids = {s["id"] for s in data.get("arguments", {}).get("subnets", [])}
             assert new_subnet_id not in remaining_ids, (
                 f"Subnet ID {new_subnet_id} ({test_subnet}) still present in Kea after UI delete"
@@ -1402,4 +1383,4 @@ class TestSubnetManagementLiveKea:
         finally:
             # ---- TEARDOWN: remove test subnet if test failed before the delete step ----
             if new_subnet_id is not None:
-                self._kea4_cleanup_subnet(test_subnet)
+                self._kea4_cleanup_subnet(kea4_call, test_subnet)

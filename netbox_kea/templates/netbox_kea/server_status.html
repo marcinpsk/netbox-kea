@@ -5,7 +5,7 @@
     <div class="card">
       <h5 class="card-header d-flex justify-content-between align-items-center">
         {{ svc.name }}
-        {% if svc.enable_url %}
+        {% if can_change_server and svc.enable_url %}
           <div class="btn-group btn-group-sm" role="group" aria-label="{{ svc.name }} service controls">
             <a href="{{ svc.enable_url }}"
                class="btn btn-outline-success"
@@ -29,12 +29,16 @@
       </h5>
       <div class="card-body">
         <table class="table table-hover attr-table">
-          {% for k, v in svc.status_data.items %}
-          <tr>
-            <th scope="row">{{ k }}</th>
-            <td>{% if k == "Version" %}<code>{{ v }}</code>{% else %}{{ v }}{% endif %}</td>
-          </tr>
-          {% endfor %}
+          {% if svc.status_data %}
+            {% for k, v in svc.status_data.items %}
+            <tr>
+              <th scope="row">{{ k }}</th>
+              <td>{% if k == "Version" %}<code>{{ v }}</code>{% else %}{{ v }}{% endif %}</td>
+            </tr>
+            {% endfor %}
+          {% else %}
+            <tr><td colspan="2" class="text-muted">No status data available.</td></tr>
+          {% endif %}
         </table>
       </div>
     </div>

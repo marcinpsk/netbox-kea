@@ -174,3 +174,32 @@ def live_kea_server(api_session: requests.Session, netbox_url: str, live_kea_con
         f"{netbox_url}/api/plugins/kea/servers/{server['id']}/",
         timeout=10,
     )
+
+
+# ---------------------------------------------------------------------------
+# Kea direct-API helpers
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def kea4_call():
+    """Return a callable that POSTs a command directly to the live Kea DHCPv4 API."""
+    kea_url = KEA_V4_URL
+    kea_user = KEA_API_USERNAME
+    kea_pass = KEA_API_PASSWORD
+
+    def _call(command: str, arguments: dict | None = None) -> dict:
+        payload: dict = {"command": command, "service": ["dhcp4"]}
+        if arguments:
+            payload["arguments"] = arguments
+        resp = requests.post(
+            kea_url,
+            json=payload,
+            auth=(kea_user, kea_pass),
+            verify=True,
+            timeout=15,
+        )
+        resp.raise_for_status()
+        return resp.json()[0]
+
+    return _call

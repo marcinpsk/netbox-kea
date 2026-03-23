@@ -318,9 +318,11 @@ class ServerStatusView(generic.ObjectView):
         if instance.has_control_agent:
             services.insert(0, {"name": "Control Agent", "status_data": statuses.get("Control Agent", {})})
 
+        can_change = Server.objects.restrict(request.user, "change").filter(pk=instance.pk).exists()
         return {
             "services": services,
             "global_options": _get_global_options(instance),
+            "can_change_server": can_change,
         }
 
 
@@ -668,9 +670,10 @@ class BaseServerLeasesDeleteView(GetReturnURLMixin, generic.ObjectView, metaclas
 
         if not form.is_valid():
             messages.warning(request, str(form.errors))
-            return redirect(self.get_return_url(request, obj=instance))
+            return redirect(_strip_empty_params(self.get_return_url(request, obj=instance)))
 
         lease_ips = form.cleaned_data["pk"]
+        return_url = _strip_empty_params(self.get_return_url(request, obj=instance))
         if "_confirm" not in request.POST:
             return render(
                 request,
@@ -682,7 +685,7 @@ class BaseServerLeasesDeleteView(GetReturnURLMixin, generic.ObjectView, metaclas
                         orderable=False,
                     ),
                     "form": form,
-                    "return_url": self.get_return_url(request, obj=instance),
+                    "return_url": return_url,
                 },
             )
 
@@ -694,10 +697,10 @@ class BaseServerLeasesDeleteView(GetReturnURLMixin, generic.ObjectView, metaclas
             except Exception:  # noqa: PERF203
                 logger.exception("Error deleting lease %s", ip)
                 messages.error(request, f"Error deleting lease {ip}: see server logs for details.")
-                return redirect(self.get_return_url(request, obj=instance))
+                return redirect(return_url)
 
         messages.success(request, f"Deleted {len(lease_ips)} DHCPv{self.dhcp_version} lease(s).")
-        return redirect(self.get_return_url(request, obj=instance))
+        return redirect(return_url)
 
 
 class ServerLeases6DeleteView(BaseServerLeasesDeleteView):

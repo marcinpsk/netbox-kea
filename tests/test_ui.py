@@ -718,7 +718,7 @@ def test_dhcp_subnets(
         ),
     ),
 )
-def test_dhcp_subnets_export_csv(page: Page, kea: KeaClient, family: int, all_data: bool, expected_data: bool) -> None:
+def test_dhcp_subnets_export_csv(page: Page, kea: KeaClient, family: int, all_data: bool, expected_data: list[dict]) -> None:
     page.get_by_role("link", name=f"DHCPv{family} Subnets").click()
 
     if all_data is False:
