@@ -1351,7 +1351,7 @@ def test_filter_servers_by_tag(
         expect(page.get_by_text("Showing 1-1 of 1")).to_have_count(1)
     finally:
         if server:
-            nb_api.plugins.kea.servers.delete(server.id)
+            nb_api.plugins.kea.servers.delete([server])
 
 
 @pytest.mark.parametrize("version", (6, 4))
