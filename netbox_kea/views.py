@@ -577,17 +577,22 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
             if not can_delete:
                 table.columns.hide("pk")
 
+            stripped_return_url = _strip_empty_params(request.get_full_path())
             return render(
                 request,
                 "netbox_kea/server_dhcp_leases_htmx.html",
                 {
                     "can_delete": can_delete,
                     "is_embedded": False,
-                    "delete_action": reverse(
-                        f"plugins:netbox_kea:server_leases{self.dhcp_version}_delete",
-                        args=[instance.pk],
+                    "delete_action": (
+                        reverse(
+                            f"plugins:netbox_kea:server_leases{self.dhcp_version}_delete",
+                            args=[instance.pk],
+                        )
+                        + "?"
+                        + _urlencode({"return_url": stripped_return_url})
                     ),
-                    "return_url": _strip_empty_params(request.get_full_path()),
+                    "return_url": stripped_return_url,
                     "form": form,
                     "table": table,
                     "next_page": next_page,
