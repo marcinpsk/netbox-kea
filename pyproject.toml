@@ -126,6 +126,9 @@ pythonpath = ["/opt/netbox/netbox"]
 DJANGO_SETTINGS_MODULE = "netbox.settings"
 testpaths = ["netbox_kea/tests"]
 addopts = "--ignore=tests/docker"
+filterwarnings = [
+    "ignore:Unknown config option: DJANGO_SETTINGS_MODULE:pytest.PytestConfigWarning",
+]
 
 [tool.coverage.run]
 source = ["netbox_kea"]
