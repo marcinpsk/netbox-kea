@@ -718,7 +718,9 @@ def test_dhcp_subnets(
         ),
     ),
 )
-def test_dhcp_subnets_export_csv(page: Page, kea: KeaClient, family: int, all_data: bool, expected_data: list[dict]) -> None:
+def test_dhcp_subnets_export_csv(
+    page: Page, kea: KeaClient, family: int, all_data: bool, expected_data: list[dict]
+) -> None:
     page.get_by_role("link", name=f"DHCPv{family} Subnets").click()
 
     if all_data is False:
@@ -1339,14 +1341,17 @@ def test_filter_servers_by_tag(
     plugin_base: str,
     page: Page,
 ) -> None:
-    nb_api.plugins.kea.servers.create(name="tag-test", server_url=kea_url, tags=[{"name": test_tag}])
-
-    page.goto(f"{plugin_base}/servers/")
-    page.get_by_role("tab", name="Filters").click()
-    page.locator("#id_tag + div.form-select").click()
-    page.locator("#id_tag-ts-dropdown").get_by_role("option", name=f"{test_tag} (1)").click()
-    page.get_by_role("button", name=re.compile("Search")).click()
-    expect(page.get_by_text("Showing 1-1 of 1")).to_have_count(1)
+    server = nb_api.plugins.kea.servers.create(name="tag-test", server_url=kea_url, tags=[{"name": test_tag}])
+    try:
+        page.goto(f"{plugin_base}/servers/")
+        page.get_by_role("tab", name="Filters").click()
+        page.locator("#id_tag + div.form-select").click()
+        page.locator("#id_tag-ts-dropdown").get_by_role("option", name=f"{test_tag} (1)").click()
+        page.get_by_role("button", name=re.compile("Search")).click()
+        expect(page.get_by_text("Showing 1-1 of 1")).to_have_count(1)
+    finally:
+        if server:
+            nb_api.plugins.kea.servers.delete(server.id)
 
 
 @pytest.mark.parametrize("version", (6, 4))

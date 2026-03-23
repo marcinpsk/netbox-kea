@@ -362,7 +362,9 @@ class TestLiveKeaServer:
 
         # Submit via JS with explicit navigation wait — djDebug intercepts pointer events
         with page.expect_navigation():
-            page.evaluate('var forms = document.querySelectorAll(\'form[method="post"]\'); forms[forms.length - 1].submit()')
+            page.evaluate(
+                "var forms = document.querySelectorAll('form[method=\"post\"]'); forms[forms.length - 1].submit()"
+            )
         page.wait_for_load_state("networkidle")
 
         _check_no_django_error(page)
@@ -971,6 +973,17 @@ class TestReservationCRUDLiveKea:
         """Create → verify listed → edit hostname → verify edit → delete → verify gone."""
         server_id = live_kea_server["id"]
 
+        # ---- 0. PRE-CLEAN — remove any leftover from a previous interrupted run ----
+        page.goto(self._reservation_delete_url(plugin_base, server_id, self._SUBNET_ID, self._TEST_IP))
+        page.wait_for_load_state("networkidle")
+        if "/delete/" in page.url:
+            with page.expect_navigation():
+                page.evaluate(
+                    "document.querySelectorAll('form[method=\"post\"]')"
+                    "[ document.querySelectorAll('form[method=\"post\"]').length - 1 ].submit()"
+                )
+            page.wait_for_load_state("networkidle")
+
         # ---- 1. CREATE ----
         page.goto(self._reservation_add_url(plugin_base, server_id))
         page.wait_for_load_state("networkidle")
@@ -1005,10 +1018,11 @@ class TestReservationCRUDLiveKea:
         _check_no_django_error(page)
         _assert_no_http_errors(track_http_errors)
 
-        # ---- 4. VERIFY EDIT ----
+        # ---- 4. VERIFY EDIT — reload list and confirm hostname changed ----
         page.goto(self._reservation_list_url(plugin_base, server_id))
         page.wait_for_load_state("networkidle")
         expect(page.get_by_text(self._TEST_IP)).to_be_visible()
+        expect(page.get_by_text(self._TEST_HOSTNAME_EDITED)).to_be_visible()
 
         # ---- 5. DELETE ----
         page.goto(self._reservation_delete_url(plugin_base, server_id, self._SUBNET_ID, self._TEST_IP))

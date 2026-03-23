@@ -72,6 +72,25 @@ def api_session(netbox_url: str, netbox_token: str) -> requests.Session:
     return s
 
 
+@pytest.fixture(autouse=True)
+def clear_user_config(api_session: requests.Session, netbox_url: str) -> None:
+    """Reset persisted user table preferences before each test.
+
+    Saved column preferences can cause table-column assertions to fail across
+    tests that share the same NetBox user.  Clearing them before each test
+    mirrors the ``reset_user_preferences`` fixture in ``tests/test_ui.py``.
+    """
+    r = api_session.get(f"{netbox_url}/api/users/config/", timeout=10)
+    r.raise_for_status()
+    tables_config = r.json().get("tables", {})
+    if tables_config:
+        api_session.patch(
+            f"{netbox_url}/api/users/config/",
+            json={"tables": {k: {} for k in tables_config}},
+            timeout=10,
+        ).raise_for_status()
+
+
 @pytest.fixture(scope="session")
 def live_kea_configured() -> None:
     """Skip the test (and everything that depends on it) when KEA_API_PASSWORD is absent."""
@@ -161,8 +180,7 @@ def live_kea_server(api_session: requests.Session, netbox_url: str, live_kea_con
                 )
                 if del_resp.status_code not in (200, 204, 404):
                     pytest.fail(
-                        f"Could not clean up leftover server {srv['id']}: "
-                        f"{del_resp.status_code} {del_resp.text}"
+                        f"Could not clean up leftover server {srv['id']}: {del_resp.status_code} {del_resp.text}"
                     )
 
     resp = api_session.post(
@@ -180,10 +198,7 @@ def live_kea_server(api_session: requests.Session, netbox_url: str, live_kea_con
         timeout=10,
     )
     if del_resp.status_code not in (200, 204, 404):
-        pytest.fail(
-            f"Could not tear down live Kea server {server['id']}: "
-            f"{del_resp.status_code} {del_resp.text}"
-        )
+        pytest.fail(f"Could not tear down live Kea server {server['id']}: {del_resp.status_code} {del_resp.text}")
 
 
 # ---------------------------------------------------------------------------
