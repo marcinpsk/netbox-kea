@@ -18,17 +18,25 @@ from . import models
         "ca_file_path",
         "dhcp6",
         "dhcp4",
+        "dhcp4_url",
+        "dhcp6_url",
+        "has_control_agent",
     ),
 )
 class ServerType(NetBoxObjectType):
+    """GraphQL type for the Server model."""
+
     pass
 
 
 @strawberry.type
 class Query:
+    """GraphQL root query type exposing Kea server objects."""
+
     @strawberry.field
-    def server(self, id: int) -> ServerType:
-        return models.Server.objects.get(pk=id)
+    def server(self, id: int, info: strawberry.types.Info) -> ServerType:
+        """Return a single Server by primary key."""
+        return models.Server.objects.restrict(info.context.request.user, "view").get(pk=id)
 
     server_list: list[ServerType] = strawberry_django.field()
 

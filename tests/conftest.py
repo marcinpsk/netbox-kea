@@ -19,8 +19,7 @@ def netbox_token(netbox_url: str) -> str:
     data = resp.json()
     if data.get("version") == 2:
         return f"nbt_{data['key']}.{data['token']}"
-    else:
-        return data["key"]
+    return data["key"]
 
 
 @pytest.fixture(scope="session")

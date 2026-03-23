@@ -1,0 +1,83 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (C) 2025 Marcin Zieba <marcinpsk@gmail.com>
+
+version = 1
+
+[[annotations]]
+# New and modified files by Marcin Zieba
+path = [
+    "REUSE.toml",
+    "LICENSES/**",
+    "codecov.yml",
+    ".editorconfig",
+    ".pre-commit-config.yaml",
+    "CHANGELOG.md",
+    "copilot-instructions.md",
+    ".github/copilot-instructions.md",
+    ".github/workflows/codeql.yml",
+    ".env.example",
+    ".devcontainer/**",
+    "netbox_kea/migrations/0003_server_dual_url.py",
+    "netbox_kea/tests/**",
+    "e2e/**",
+    "netbox_kea/templates/netbox_kea/server_reservations.html",
+    "netbox_kea/templates/netbox_kea/server_reservation_form.html",
+    "netbox_kea/templates/netbox_kea/server_reservation_delete.html",
+    "netbox_kea/templates/netbox_kea/server_reservation_bulk_import.html",
+    "netbox_kea/templates/netbox_kea/server_pool_add.html",
+    "netbox_kea/templates/netbox_kea/server_pool_delete.html",
+    "netbox_kea/templates/netbox_kea/server_subnet_add.html",
+    "netbox_kea/templates/netbox_kea/server_subnet_delete.html",
+    "netbox_kea/templates/netbox_kea/server_subnet_edit.html",
+    "netbox_kea/templates/netbox_kea/server_subnet_options_edit.html",
+    "netbox_kea/templates/netbox_kea/server_shared_networks.html",
+    "netbox_kea/templates/netbox_kea/server_shared_network_add.html",
+    "netbox_kea/templates/netbox_kea/server_shared_network_delete.html",
+    "netbox_kea/templates/netbox_kea/server_lease_add.html",
+    "netbox_kea/templates/netbox_kea/server_lease_edit.html",
+    "netbox_kea/templates/netbox_kea/server_lease_bulk_import.html",
+    "netbox_kea/templates/netbox_kea/server_dhcp_options_edit.html",
+    "netbox_kea/templates/netbox_kea/server_option_def_list.html",
+    "netbox_kea/templates/netbox_kea/server_option_def_add.html",
+    "netbox_kea/templates/netbox_kea/server_option_def_delete.html",
+    "netbox_kea/templates/netbox_kea/server_status_badge.html",
+    "netbox_kea/templates/netbox_kea/dashboard.html",
+    "netbox_kea/templates/netbox_kea/global_leases.html",
+    "netbox_kea/templates/netbox_kea/global_reservations.html",
+    "netbox_kea/templates/netbox_kea/combined_base.html",
+    "netbox_kea/templates/netbox_kea/combined_overview.html",
+    "netbox_kea/templates/netbox_kea/combined_leases.html",
+    "netbox_kea/templates/netbox_kea/combined_reservations.html",
+    "netbox_kea/templates/netbox_kea/combined_subnets.html",
+    "netbox_kea/templates/netbox_kea/ip_kea_reservations.html",
+    "netbox_kea/templates/netbox_kea/inc/ip_kea_panel.html",
+    "netbox_kea/templates/netbox_kea/inc/sync_badge.html",
+    "CLAUDE.md",
+]
+SPDX-FileCopyrightText = "Copyright (C) 2025 Marcin Zieba <marcinpsk@gmail.com>"
+SPDX-License-Identifier = "Apache-2.0"
+
+[[annotations]]
+# All upstream files from Devon Mar (original netbox-kea author)
+path = [
+    "README.md",
+    "LICENSE",
+    "uv.lock",
+    ".gitignore",
+    "images/**",
+    "pyproject.toml",
+    "netbox_kea/**",
+    "tests/**",
+]
+SPDX-FileCopyrightText = "Devon Mar <devon-mar@users.noreply.github.com>"
+SPDX-License-Identifier = "Apache-2.0"
+
+[[annotations]]
+# Original upstream workflow/config files
+path = [
+    ".github/workflows/ci.yml",
+    ".github/workflows/release.yml",
+    ".github/dependabot.yml",
+]
+SPDX-FileCopyrightText = "Devon Mar <devon-mar@users.noreply.github.com>"
+SPDX-License-Identifier = "Apache-2.0"

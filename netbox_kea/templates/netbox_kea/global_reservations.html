@@ -1,0 +1,53 @@
+{% extends 'base/layout.html' %}
+{% load render_table from django_tables2 %}
+
+{% block title %}{{ page_title }}{% endblock %}
+
+{% block content %}
+<div class="row mb-3">
+  <div class="col">
+    <h1 class="page-header">{{ page_title }}</h1>
+  </div>
+</div>
+
+{# Server filter #}
+<div class="card mb-3">
+  <div class="card-header"><strong>Filter Servers</strong></div>
+  <div class="card-body">
+    <form method="get" class="d-flex flex-wrap gap-3 align-items-end">
+      {% for field in filter_form %}
+      <div>
+        <label for="{{ field.id_for_label }}" class="form-label">{{ field.label }}</label>
+        {{ field }}
+      </div>
+      {% endfor %}
+      <div>
+        <button type="submit" class="btn btn-primary">
+          <i class="mdi mdi-magnify"></i> Query
+        </button>
+        <a href="?" class="btn btn-outline-secondary">Reset</a>
+      </div>
+    </form>
+  </div>
+</div>
+
+{# Per-server errors #}
+{% if errors %}
+<div class="alert alert-warning">
+  <strong>Some servers could not be reached:</strong>
+  <ul class="mb-0 mt-1">
+    {% for name, msg in errors %}
+    <li><strong>{{ name }}</strong>: {{ msg }}</li>
+    {% endfor %}
+  </ul>
+</div>
+{% endif %}
+
+{# Results table #}
+{% render_table table %}
+
+<div class="mt-2 text-muted small">
+  Showing reservations from
+  {% if request.GET.server %}selected{% else %}all DHCPv{{ dhcp_version }}-enabled{% endif %} servers.
+</div>
+{% endblock %}

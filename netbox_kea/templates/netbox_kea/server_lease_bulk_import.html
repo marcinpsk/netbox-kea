@@ -1,0 +1,93 @@
+{% extends "generic/object.html" %}
+{% load form_helpers %}
+
+{% block content %}
+<div class="row">
+  <div class="col col-md-8 offset-md-2">
+
+    {# ── Upload form ── #}
+    <div class="card mb-4">
+      <div class="card-header">
+        <strong>Import DHCPv{{ dhcp_version }} Leases from CSV</strong>
+      </div>
+      <div class="card-body">
+        <p class="text-muted mb-3">
+          Upload a UTF-8 CSV file.
+          Lines starting with <code>#</code> are treated as comments and ignored.
+        </p>
+
+        {% if dhcp_version == 4 %}
+        <div class="alert alert-info" role="alert">
+          <strong>v4 required column:</strong> <code>ip-address</code><br>
+          <strong>Optional columns:</strong> <code>hw-address, subnet-id, valid-lft, hostname</code><br>
+          <small>Example: <code>10.0.0.10,aa:bb:cc:dd:ee:ff,1,3600,host1.example.com</code></small>
+        </div>
+        {% else %}
+        <div class="alert alert-info" role="alert">
+          <strong>v6 required columns:</strong> <code>ip-address, duid, iaid</code><br>
+          <strong>Optional columns:</strong> <code>subnet-id, valid-lft, hostname</code><br>
+          <small>Example: <code>2001:db8::1,00:01:02:03,12345,1,3600,v6host.example.com</code></small>
+        </div>
+        {% endif %}
+
+        <form method="post" enctype="multipart/form-data">
+          {% csrf_token %}
+          {% render_form form %}
+          <div class="text-end mt-3">
+            <a href="{{ return_url }}" class="btn btn-secondary me-2">Cancel</a>
+            <button type="submit" class="btn btn-primary">
+              <i class="mdi mdi-upload" aria-hidden="true"></i> Import
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    {# ── Results summary ── #}
+    {% if result is not None %}
+    <div class="card">
+      <div class="card-header">
+        <strong>Import Results</strong>
+      </div>
+      <div class="card-body">
+        <div class="row text-center mb-3">
+          <div class="col">
+            <div class="display-6 text-success">{{ result.created }}</div>
+            <div class="text-muted small">Created</div>
+          </div>
+          <div class="col">
+            <div class="display-6 text-danger">{{ result.errors }}</div>
+            <div class="text-muted small">Errors</div>
+          </div>
+          <div class="col">
+            <div class="display-6">{{ result.total }}</div>
+            <div class="text-muted small">Total rows</div>
+          </div>
+        </div>
+
+        {% if result.error_rows %}
+        <h6 class="mt-3">Error Details</h6>
+        <table class="table table-sm table-bordered">
+          <thead>
+            <tr>
+              <th>Row data</th>
+              <th>Error</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for item in result.error_rows %}
+            <tr class="table-danger">
+              <td><code>{{ item.row }}</code></td>
+              <td>{{ item.error }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        {% endif %}
+      </div>
+    </div>
+    {% endif %}
+
+  </div>
+</div>
+{% endblock %}

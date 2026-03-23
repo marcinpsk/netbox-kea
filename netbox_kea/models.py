@@ -1,4 +1,5 @@
 import os
+from typing import Literal
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
@@ -10,8 +11,14 @@ from .kea import KeaClient
 
 
 class Server(NetBoxModel):
+    """A Kea DHCP server instance managed through the Kea Control API."""
+
     name = models.CharField(unique=True, max_length=255)
-    server_url = models.CharField(verbose_name="Server URL", max_length=255)
+    server_url = models.CharField(
+        verbose_name="Server URL",
+        max_length=255,
+        help_text="Default endpoint URL (Kea Control Agent or single DHCP daemon).",
+    )
     username = models.CharField(null=True, blank=True, max_length=255)
     password = models.CharField(null=True, blank=True, max_length=255)
     ssl_verify = models.BooleanField(
@@ -42,19 +49,57 @@ class Server(NetBoxModel):
     )
     dhcp6 = models.BooleanField(verbose_name="DHCPv6", default=True)
     dhcp4 = models.BooleanField(verbose_name="DHCPv4", default=True)
+    dhcp4_url = models.CharField(
+        verbose_name="DHCPv4 URL",
+        max_length=255,
+        null=True,
+        blank=True,
+        help_text="Direct URL for the DHCPv4 daemon. Overrides Server URL for DHCPv4 connections.",
+    )
+    dhcp6_url = models.CharField(
+        verbose_name="DHCPv6 URL",
+        max_length=255,
+        null=True,
+        blank=True,
+        help_text="Direct URL for the DHCPv6 daemon. Overrides Server URL for DHCPv6 connections.",
+    )
+    has_control_agent = models.BooleanField(
+        verbose_name="Has Control Agent",
+        default=True,
+        help_text=(
+            "Enable if connecting via kea-ctrl-agent. Disable when connecting directly to DHCP daemon endpoints."
+        ),
+    )
 
     class Meta:
         ordering = ("name",)
+        permissions = [
+            ("bulk_delete_lease_from_server", "Can bulk delete DHCP leases from server"),
+        ]
 
     def __str__(self):
         return self.name
 
     def get_absolute_url(self):
+        """Return the detail URL for this server."""
         return reverse("plugins:netbox_kea:server", args=[self.pk])
 
-    def get_client(self) -> KeaClient:
+    def get_client(self, version: Literal[4, 6] | None = None) -> KeaClient:
+        """Return a configured KeaClient, targeting the protocol-specific URL when available.
+
+        Args:
+            version: DHCP protocol version (4 or 6). When provided and a protocol-specific
+                URL is configured, that URL is used instead of ``server_url``.
+
+        """
+        if version == 4 and self.dhcp4_url:
+            url = self.dhcp4_url
+        elif version == 6 and self.dhcp6_url:
+            url = self.dhcp6_url
+        else:
+            url = self.server_url
         return KeaClient(
-            url=self.server_url,
+            url=url,
             username=self.username,
             password=self.password,
             verify=self.ca_file_path or self.ssl_verify,
@@ -64,50 +109,32 @@ class Server(NetBoxModel):
         )
 
     def clean(self) -> None:
+        """Validate configuration and perform a live connectivity check against Kea."""
         super().clean()
 
         if self.dhcp4 is False and self.dhcp6 is False:
-            raise ValidationError(
-                {"dhcp6": "At one of DHCPv4 and DHCPv6 needs to be enabled."}
-            )
+            raise ValidationError({"dhcp6": "At least one of DHCPv4 and DHCPv6 needs to be enabled."})
 
-        if (self.client_cert_path and not self.client_key_path) or (
-            not self.client_cert_path and self.client_key_path
-        ):
+        if (self.client_cert_path and not self.client_key_path) or (not self.client_cert_path and self.client_key_path):
             raise ValidationError(
-                {
-                    "client_cert_path": "Client certificate and client private key must be used together."
-                }
+                {"client_cert_path": "Client certificate and client private key must be used together."}
             )
 
         if self.client_cert_path and not os.path.isfile(self.client_cert_path):
-            raise ValidationError(
-                {"client_cert_path": "Client certificate doesn't exist."}
-            )
+            raise ValidationError({"client_cert_path": "Client certificate doesn't exist."})
         if self.client_key_path and not os.path.isfile(self.client_key_path):
-            raise ValidationError(
-                {"client_key_path": "Client private key doesn't exist."}
-            )
+            raise ValidationError({"client_key_path": "Client private key doesn't exist."})
 
         if self.ca_file_path and not self.ssl_verify:
-            raise ValidationError(
-                {
-                    "ca_file_path": "Cannot specify a CA file when SSL verification is disabled."
-                }
-            )
+            raise ValidationError({"ca_file_path": "Cannot specify a CA file when SSL verification is disabled."})
 
-        client = self.get_client()
         if self.dhcp6:
             try:
-                client.command("version-get", service=["dhcp6"])
+                self.get_client(version=6).command("version-get", service=["dhcp6"])
             except Exception as e:
-                raise ValidationError(
-                    {"dhcp6": f"Unable to get DHCPv6 version: {repr(e)}"}
-                ) from e
+                raise ValidationError({"dhcp6": f"Unable to get DHCPv6 version: {repr(e)}"}) from e
         if self.dhcp4:
             try:
-                client.command("version-get", service=["dhcp4"])
+                self.get_client(version=4).command("version-get", service=["dhcp4"])
             except Exception as e:
-                raise ValidationError(
-                    {"dhcp4": f"Unable to get DHCPv4 version: {repr(e)}"}
-                ) from e
+                raise ValidationError({"dhcp4": f"Unable to get DHCPv4 version: {repr(e)}"}) from e

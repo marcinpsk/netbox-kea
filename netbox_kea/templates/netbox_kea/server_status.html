@@ -1,19 +1,64 @@
 {% extends "generic/object.html" %}
 
 {% block content %}
-  {% for name, service_data in statuses.items %}
+  {% for svc in services %}
     <div class="card">
-      <h5 class="card-header">{{ name }}</h5>
+      <h5 class="card-header d-flex justify-content-between align-items-center">
+        {{ svc.name }}
+        {% if can_change_server and svc.enable_url %}
+          <div class="btn-group btn-group-sm" role="group" aria-label="{{ svc.name }} service controls">
+            <a href="{{ svc.enable_url }}"
+               class="btn btn-outline-success"
+               title="Re-enable {{ svc.name }} processing">
+              <i class="mdi mdi-play-circle-outline" aria-hidden="true"></i> Enable
+            </a>
+            <a href="{{ svc.disable_url }}"
+               class="btn btn-outline-danger"
+               title="Temporarily disable {{ svc.name }} processing">
+              <i class="mdi mdi-pause-circle-outline" aria-hidden="true"></i> Disable
+            </a>
+            {% if svc.options_url %}
+            <a href="{{ svc.options_url }}"
+               class="btn btn-outline-secondary"
+               title="Edit {{ svc.name }} global options">
+              <i class="mdi mdi-tune" aria-hidden="true"></i> Edit Options
+            </a>
+            {% endif %}
+          </div>
+        {% endif %}
+      </h5>
       <div class="card-body">
         <table class="table table-hover attr-table">
-          {% for k,v in service_data.items %}
+          {% if svc.status_data %}
+            {% for k, v in svc.status_data.items %}
+            <tr>
+              <th scope="row">{{ k }}</th>
+              <td>{% if k == "Version" %}<code>{{ v }}</code>{% else %}{{ v }}{% endif %}</td>
+            </tr>
+            {% endfor %}
+          {% else %}
+            <tr><td colspan="2" class="text-muted">No status data available.</td></tr>
+          {% endif %}
+        </table>
+      </div>
+    </div>
+  {% endfor %}
+
+  {% if global_options %}
+    {% for label, opts in global_options.items %}
+    <div class="card mt-3">
+      <h5 class="card-header">{{ label }}: Global Options</h5>
+      <div class="card-body">
+        <table class="table table-hover attr-table">
+          {% for k, v in opts.items %}
           <tr>
             <th scope="row">{{ k }}</th>
-            <td>{% if k == "Version" %}<code>{{ v }}</code>{% else %}{{ v }}{% endif %}</td>
+            <td><code>{{ v }}</code></td>
           </tr>
           {% endfor %}
         </table>
       </div>
     </div>
-  {% endfor %}
+    {% endfor %}
+  {% endif %}
 {% endblock %}

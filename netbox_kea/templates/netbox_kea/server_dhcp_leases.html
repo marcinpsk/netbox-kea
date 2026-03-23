@@ -20,6 +20,22 @@
 {% endblock %}
 
 {% block content %}{% include "netbox_kea/server_dhcp_leases_htmx.html" with is_embedded=True %}{% endblock %}
+{% block content_bottom %}
+  {% if add_url or bulk_import_url %}
+  <div class="mt-3 d-flex gap-2">
+    {% if add_url %}
+    <a href="{{ add_url }}" class="btn btn-sm btn-primary">
+      <i class="mdi mdi-plus-thick" aria-hidden="true"></i> Add Lease
+    </a>
+    {% endif %}
+    {% if bulk_import_url %}
+    <a href="{{ bulk_import_url }}" class="btn btn-sm btn-outline-primary">
+      <i class="mdi mdi-upload" aria-hidden="true"></i> Bulk Import
+    </a>
+    {% endif %}
+  </div>
+  {% endif %}
+{% endblock content_bottom %}
 {% block modals %}
   {{ block.super }}
   {% table_config_form table table_name="LeasesTable" %}

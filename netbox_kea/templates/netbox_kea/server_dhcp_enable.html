@@ -1,0 +1,32 @@
+{% extends "generic/object.html" %}
+
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-md-6">
+    <div class="card border-success">
+      <h5 class="card-header bg-success text-white">
+        <i class="mdi mdi-play-circle-outline" aria-hidden="true"></i>
+        Re-enable DHCPv{{ dhcp_version }}
+      </h5>
+      <div class="card-body">
+        <p>
+          Re-enable DHCPv{{ dhcp_version }} processing on
+          <strong>{{ object }}</strong>?
+        </p>
+        <p class="text-success">
+          <i class="mdi mdi-information-outline" aria-hidden="true"></i>
+          The DHCP daemon will immediately resume responding to client requests.
+        </p>
+        <form method="post">
+          {% csrf_token %}
+          <a href="{{ object.get_absolute_url }}" class="btn btn-secondary me-2">Cancel</a>
+          <button type="submit" class="btn btn-success">
+            <i class="mdi mdi-play-circle-outline" aria-hidden="true"></i>
+            Enable DHCPv{{ dhcp_version }}
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

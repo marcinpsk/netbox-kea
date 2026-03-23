@@ -1,0 +1,42 @@
+{% extends "generic/object.html" %}
+
+{% block content %}
+<div class="row">
+  <div class="col col-md-6 offset-md-3">
+    <div class="card border-warning">
+      <div class="card-header bg-warning text-dark">
+        <strong>Wipe DHCPv{{ dhcp_version }} Subnet Leases</strong>
+      </div>
+      <div class="card-body">
+        <p>
+          Are you sure you want to wipe all leases in
+          {% if subnet_cidr %}
+            subnet <strong>{{ subnet_cidr }}</strong> (ID {{ subnet_id }})
+          {% else %}
+            DHCPv{{ dhcp_version }} subnet <strong>{{ subnet_id }}</strong>
+          {% endif %}
+          from Kea?
+        </p>
+        <p class="text-warning">
+          <i class="mdi mdi-alert-circle-outline" aria-hidden="true"></i>
+          All active and expired leases in this subnet will be permanently deleted.
+          Clients will need to renew their leases after this operation.
+          This action <strong>cannot be undone</strong>.
+        </p>
+        <p class="text-muted small">
+          Requires the <code>lease_cmds</code> hook to be loaded on the Kea server.
+        </p>
+        <form method="post">
+          {% csrf_token %}
+          <div class="text-end mt-3">
+            <a href="{{ return_url }}" class="btn btn-secondary me-2">Cancel</a>
+            <button type="submit" class="btn btn-warning">
+              <i class="mdi mdi-delete-sweep-outline" aria-hidden="true"></i> Wipe Leases
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

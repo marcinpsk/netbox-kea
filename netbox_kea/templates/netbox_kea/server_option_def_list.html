@@ -1,0 +1,57 @@
+{# SPDX-FileCopyrightText: 2025 Marcin Zieba <marcinpsk@gmail.com> #}
+{# SPDX-License-Identifier: Apache-2.0 #}
+{% extends "generic/object.html" %}
+
+{% block content %}
+<div class="row mb-3">
+  <div class="col text-end">
+    <a href="{{ add_url }}" class="btn btn-primary btn-sm">
+      <i class="mdi mdi-plus-thick" aria-hidden="true"></i>
+      Add DHCPv{{ dhcp_version }} Option Definition
+    </a>
+  </div>
+</div>
+
+<div class="card">
+  <h5 class="card-header">
+    <i class="mdi mdi-code-tags" aria-hidden="true"></i>
+    DHCPv{{ dhcp_version }} Option Definitions
+  </h5>
+  <div class="card-body p-0">
+    {% if option_defs %}
+    <table class="table table-hover mb-0">
+      <thead>
+        <tr>
+          <th>Code</th>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Space</th>
+          <th>Array</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for opt in option_defs %}
+        <tr>
+          <td>{{ opt.code }}</td>
+          <td>{{ opt.name }}</td>
+          <td><code>{{ opt.type }}</code></td>
+          <td>{{ opt.space }}</td>
+          <td>{% if opt.array %}<i class="mdi mdi-check text-success"></i>{% else %}—{% endif %}</td>
+          <td>
+            <a href="{{ opt.delete_url }}"
+               class="btn btn-sm btn-danger">
+              <i class="mdi mdi-delete" aria-hidden="true"></i>
+              Delete
+            </a>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div class="p-3 text-muted">No custom option definitions defined.</div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

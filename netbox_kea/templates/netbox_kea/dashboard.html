@@ -1,0 +1,69 @@
+{% extends 'generic/object_list.html' %}
+
+{% block title %}Kea DHCP Overview{% endblock %}
+
+{% block content %}
+<div class="row mb-3">
+  <div class="col">
+    <h1 class="page-header">Kea DHCP Overview</h1>
+  </div>
+</div>
+
+<div class="row row-cols-1 row-cols-md-2 row-cols-xl-3 g-3">
+  {% for server in servers %}
+  <div class="col">
+    <div class="card h-100">
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <strong>
+          <a href="{{ server.get_absolute_url }}">{{ server.name }}</a>
+        </strong>
+        <span>
+          {% if server.dhcp4 %}<span class="badge text-bg-primary ms-1">DHCPv4</span>{% endif %}
+          {% if server.dhcp6 %}<span class="badge text-bg-info ms-1">DHCPv6</span>{% endif %}
+        </span>
+      </div>
+      <div class="card-body">
+        <dl class="row mb-0">
+          <dt class="col-sm-4">URL</dt>
+          <dd class="col-sm-8 text-break"><code>{{ server.server_url }}</code></dd>
+          {% if server.dhcp4_url %}
+          <dt class="col-sm-4">DHCPv4 URL</dt>
+          <dd class="col-sm-8 text-break"><code>{{ server.dhcp4_url }}</code></dd>
+          {% endif %}
+          {% if server.dhcp6_url %}
+          <dt class="col-sm-4">DHCPv6 URL</dt>
+          <dd class="col-sm-8 text-break"><code>{{ server.dhcp6_url }}</code></dd>
+          {% endif %}
+          <dt class="col-sm-4">SSL Verify</dt>
+          <dd class="col-sm-8">{{ server.ssl_verify|yesno:"Yes,No" }}</dd>
+        </dl>
+      </div>
+      <div class="card-footer d-flex gap-2">
+        <a href="{{ server.get_absolute_url }}" class="btn btn-sm btn-outline-secondary">
+          <i class="mdi mdi-eye"></i> Detail
+        </a>
+        {% if server.dhcp4 %}
+        <a href="{% url 'plugins:netbox_kea:global_reservations4' %}?server={{ server.pk }}"
+           class="btn btn-sm btn-outline-primary">
+          <i class="mdi mdi-bookmark-multiple"></i> Reservations v4
+        </a>
+        {% endif %}
+        {% if server.dhcp6 %}
+        <a href="{% url 'plugins:netbox_kea:global_reservations6' %}?server={{ server.pk }}"
+           class="btn btn-sm btn-outline-info">
+          <i class="mdi mdi-bookmark-multiple"></i> Reservations v6
+        </a>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+  {% empty %}
+  <div class="col-12">
+    <div class="alert alert-info">
+      No Kea servers configured yet.
+      <a href="{% url 'plugins:netbox_kea:server_add' %}">Add one now.</a>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% endblock %}

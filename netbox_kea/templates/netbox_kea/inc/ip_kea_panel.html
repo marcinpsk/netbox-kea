@@ -1,0 +1,37 @@
+{# Inline panel rendered on the IPAddress detail page via PluginTemplateExtension #}
+<div class="card mb-3">
+  <h5 class="card-header d-flex align-items-center justify-content-between">
+    <span>
+      <i class="mdi mdi-server-network me-2" aria-hidden="true"></i>
+      Kea DHCP Reservations
+    </span>
+    <a href="{{ kea_page_url }}"
+       class="btn btn-outline-secondary btn-sm"
+       aria-label="Open Kea reservations page"
+       title="Open Kea reservations page">
+      <i class="mdi mdi-open-in-new" aria-hidden="true"></i>
+    </a>
+  </h5>
+  <div class="card-body p-0">
+    {% if server_links %}
+    <div class="list-group list-group-flush">
+      {% for item in server_links %}
+      <a href="{{ item.url }}"
+         class="list-group-item list-group-item-action d-flex justify-content-between align-items-center py-2">
+        <small class="text-body-secondary">
+          <i class="mdi mdi-server me-1" aria-hidden="true"></i>{{ item.server.name }}
+        </small>
+        <span class="badge bg-primary ms-2">
+          <i class="mdi mdi-plus" aria-hidden="true"></i> Reserve
+        </span>
+      </a>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p class="text-center text-body-secondary py-3 mb-0">
+      <i class="mdi mdi-server-off" aria-hidden="true"></i>
+      No DHCPv{{ version }} servers configured
+    </p>
+    {% endif %}
+  </div>
+</div>

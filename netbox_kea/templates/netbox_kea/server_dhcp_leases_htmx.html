@@ -35,9 +35,9 @@
   {% if not is_embedded and form.is_valid %}
     {% include "inc/table_controls_htmx.html" with table_modal="LeasesTable_config" %}
     {% with preferences|get_key:"pagination.placement" as paginator_placement %}
-      <form method="post" action="{{ delete_action }}">
+      <form method="post" action="{{ delete_action }}" id="lease-delete-form">
         {% csrf_token %}
-        <input type="hidden" name="return_url" value="{{ request.path }}?{{ request.GET.urlencode }}" />
+        <input type="hidden" name="return_url" value="{{ return_url }}">{# stripped URL fed into BaseLeaseDeleteForm and flows to confirmation #}
         <div class="card table-responsive">
           {% if paginator_placement == 'top' or paginator_placement == 'both' %}
             {% include "netbox_kea/inc/server_dhcp_leases_paginator.html" with table=table paginate=paginate placement="top" %}
@@ -61,6 +61,8 @@
             <ul class="dropdown-menu dropdown-menu-end">
               <li><a class="dropdown-item" href="{% querystring request export="table" %}">Current View</a></li>
               <li><a class="dropdown-item" href="{% querystring request export="" %}">All Data (CSV)</a></li>
+              <li><hr class="dropdown-divider"></li>
+              <li><a class="dropdown-item" href="?export_all=1">Export All Leases (CSV)</a></li>
             </ul>
           </div>
         </div>

@@ -6,20 +6,31 @@
     div.quicksearch{
       display: none
     }
-    nav.text-end[aria-label="Pagination optoins"]{
+    nav.text-end[aria-label="Pagination options"]{
       display: none
     }
   </style>
 {% endblock %}
 
 {% block bulk_controls %}
-<div class="dropdown d-flex justify-content-end">
-  <button type="button" class="btn btn-purple dropdown-toggle" data-bs-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
-    <i class="mdi mdi-download"></i> Export
-  </button>
-  <ul class="dropdown-menu dropdown-menu-end">
-    <li><a class="dropdown-item" href="?export=table">Current View</a></li>
-    <li><a class="dropdown-item" href="?export">All Data (CSV)</a></li>
-  </ul>
+<div class="d-flex justify-content-end gap-2">
+  {% if object.dhcp4 and '4' in request.resolver_match.url_name %}
+  <a href="{% url 'plugins:netbox_kea:server_subnet4_add' object.pk %}" class="btn btn-success">
+    <i class="mdi mdi-plus-thick" aria-hidden="true"></i> Add Subnet
+  </a>
+  {% elif object.dhcp6 and '6' in request.resolver_match.url_name %}
+  <a href="{% url 'plugins:netbox_kea:server_subnet6_add' object.pk %}" class="btn btn-success">
+    <i class="mdi mdi-plus-thick" aria-hidden="true"></i> Add Subnet
+  </a>
+  {% endif %}
+  <div class="dropdown">
+    <button type="button" class="btn btn-purple dropdown-toggle" data-bs-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
+      <i class="mdi mdi-download"></i> Export
+    </button>
+    <ul class="dropdown-menu dropdown-menu-end">
+      <li><a class="dropdown-item" href="?export=table">Current View</a></li>
+      <li><a class="dropdown-item" href="?export">All Data (CSV)</a></li>
+    </ul>
+  </div>
 </div>
 {% endblock bulk_controls %}

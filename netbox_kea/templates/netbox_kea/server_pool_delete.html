@@ -1,0 +1,33 @@
+{% extends "generic/object.html" %}
+
+{% block content %}
+<div class="row">
+  <div class="col col-md-6 offset-md-3">
+    <div class="card border-danger">
+      <div class="card-header bg-danger text-white">
+        <strong>Delete Pool from DHCPv{{ dhcp_version }} Subnet {{ subnet_id }}</strong>
+      </div>
+      <div class="card-body">
+        <p>
+          Are you sure you want to remove pool <strong>{{ pool }}</strong>
+          from DHCPv{{ dhcp_version }} subnet <strong>{{ subnet_id }}</strong>?
+        </p>
+        <p class="text-danger">
+          <i class="mdi mdi-alert-circle-outline"></i>
+          Clients currently using addresses in this pool will lose their leases
+          on next renewal. This action <strong>cannot be undone</strong>.
+        </p>
+        <form method="post">
+          {% csrf_token %}
+          <div class="text-end mt-3">
+            <a href="{{ return_url }}" class="btn btn-secondary me-2">Cancel</a>
+            <button type="submit" class="btn btn-danger">
+              <i class="mdi mdi-trash-can-outline" aria-hidden="true"></i> Delete Pool
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

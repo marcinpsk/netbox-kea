@@ -1,0 +1,65 @@
+{% extends 'netbox_kea/combined_base.html' %}
+{% load form_helpers %}
+{% load render_table from django_tables2 %}
+
+{% block tab_content %}
+
+{# Search form #}
+<div class="card mt-3 mb-3">
+  <div class="card-body">
+    <form method="get">
+      {# Preserve server selection when searching #}
+      {% for pk in selected_server_pks %}
+      <input type="hidden" name="server" value="{{ pk }}">
+      {% endfor %}
+      {% render_form search_form %}
+      <div class="text-end mt-2">
+        <button type="submit" class="btn btn-primary">
+          <i class="mdi mdi-magnify"></i> Search
+        </button>
+        <a href="{{ request.path }}{% if server_qs %}?{{ server_qs }}{% endif %}"
+           class="btn btn-outline-secondary">Reset</a>
+        {% if request.GET.q or request.GET.state %}
+        <div class="dropdown d-inline-block ms-1">
+          <button type="button" class="btn btn-purple dropdown-toggle" data-bs-toggle="dropdown">
+            <i class="mdi mdi-download"></i> Export
+          </button>
+          <ul class="dropdown-menu dropdown-menu-end">
+            <li><a class="dropdown-item" href="?{% if request.GET.urlencode %}{{ request.GET.urlencode }}&{% endif %}export=table">Current View (CSV)</a></li>
+          </ul>
+        </div>
+        {% endif %}
+      </div>
+    </form>
+  </div>
+</div>
+
+{% if errors %}
+<div class="alert alert-warning">
+  <strong>Some servers could not be reached:</strong>
+  <ul class="mb-0 mt-1">
+    {% for name, msg in errors %}
+    <li><strong>{{ name }}</strong>: {{ msg }}</li>
+    {% endfor %}
+  </ul>
+</div>
+{% endif %}
+
+{% if truncated_servers %}
+<div class="alert alert-info">
+  <i class="mdi mdi-information-outline"></i>
+  Results are limited to 1 000 leases per server. The following servers have more leases than shown:
+  <strong>{{ truncated_servers|join:", " }}</strong>.
+  Use the per-server Export All to get the full list.
+</div>
+{% endif %}
+
+{% if request.GET.q or request.GET.state %}
+  {% render_table table %}
+{% else %}
+  <div class="alert alert-info">
+    Enter a search query or select a state filter above to find leases across all selected servers.
+  </div>
+{% endif %}
+
+{% endblock tab_content %}

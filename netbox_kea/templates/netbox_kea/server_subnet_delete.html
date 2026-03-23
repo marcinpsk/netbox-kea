@@ -1,0 +1,39 @@
+{% extends "generic/object.html" %}
+
+{% block content %}
+<div class="row">
+  <div class="col col-md-6 offset-md-3">
+    <div class="card border-danger">
+      <div class="card-header bg-danger text-white">
+        <strong>Delete DHCPv{{ dhcp_version }} Subnet</strong>
+      </div>
+      <div class="card-body">
+        <p>
+          Are you sure you want to delete
+          {% if subnet_cidr %}
+            subnet <strong>{{ subnet_cidr }}</strong> (ID {{ subnet_id }})
+          {% else %}
+            DHCPv{{ dhcp_version }} subnet <strong>{{ subnet_id }}</strong>
+          {% endif %}
+          from Kea?
+        </p>
+        <p class="text-danger">
+          <i class="mdi mdi-alert-circle-outline"></i>
+          All pools and configuration for this subnet will be removed.
+          Active leases in this subnet will become unmanaged.
+          This action <strong>cannot be undone</strong>.
+        </p>
+        <form method="post">
+          {% csrf_token %}
+          <div class="text-end mt-3">
+            <a href="{{ return_url }}" class="btn btn-secondary me-2">Cancel</a>
+            <button type="submit" class="btn btn-danger">
+              <i class="mdi mdi-trash-can-outline" aria-hidden="true"></i> Delete Subnet
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

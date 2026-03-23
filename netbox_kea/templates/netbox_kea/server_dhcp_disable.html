@@ -1,0 +1,44 @@
+{% extends "generic/object.html" %}
+
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-md-6">
+    <div class="card border-danger">
+      <h5 class="card-header bg-danger text-white">
+        <i class="mdi mdi-pause-circle-outline" aria-hidden="true"></i>
+        Disable DHCPv{{ dhcp_version }}
+      </h5>
+      <div class="card-body">
+        <p>
+          Disable DHCPv{{ dhcp_version }} processing on
+          <strong>{{ object }}</strong>?
+        </p>
+        <p class="text-warning">
+          <i class="mdi mdi-alert-circle-outline" aria-hidden="true"></i>
+          The DHCP daemon will stop responding to client requests. Existing leases are
+          not affected. Use <strong>Enable DHCPv{{ dhcp_version }}</strong> to resume.
+        </p>
+        <form method="post">
+          {% csrf_token %}
+          {{ form.confirm }}
+          <div class="mb-3">
+            <label for="id_max_period" class="form-label">{{ form.max_period.label }}</label>
+            {{ form.max_period }}
+            {% if form.max_period.help_text %}
+              <div class="form-text text-muted">{{ form.max_period.help_text }}</div>
+            {% endif %}
+            {% if form.max_period.errors %}
+              <div class="text-danger small">{{ form.max_period.errors }}</div>
+            {% endif %}
+          </div>
+          <a href="{{ object.get_absolute_url }}" class="btn btn-secondary me-2">Cancel</a>
+          <button type="submit" class="btn btn-danger">
+            <i class="mdi mdi-pause-circle-outline" aria-hidden="true"></i>
+            Disable DHCPv{{ dhcp_version }}
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

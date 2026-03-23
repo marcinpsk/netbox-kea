@@ -10,18 +10,126 @@ name: CI
     - cron: 0 0 * * 0
 
 jobs:
+  unit-test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: netbox
+          POSTGRES_PASSWORD: netbox
+          POSTGRES_DB: netbox
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout NetBox
+        uses: actions/checkout@v4
+        with:
+          repository: netbox-community/netbox
+          ref: v4.5.5
+          path: netbox
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version-file: pyproject.toml
+
+      - name: Install dependencies
+        run: |
+          uv export --frozen --only-group dev --no-emit-project --format requirements-txt | \
+            uv pip install --system -r /dev/stdin
+          uv pip install --system -r netbox/requirements.txt
+          uv pip install --system -e .
+
+      - name: Set up NetBox configuration
+        working-directory: netbox/netbox
+        run: |
+          cat > netbox/configuration.py << 'EOF'
+          ALLOWED_HOSTS = ['*']
+          DATABASE = {
+              'NAME': 'netbox',
+              'USER': 'netbox',
+              'PASSWORD': 'netbox',
+              'HOST': 'localhost',
+              'PORT': '',
+              'CONN_MAX_AGE': 300,
+              'ENGINE': 'django.db.backends.postgresql'
+          }
+          REDIS = {
+              'tasks': {'HOST': 'localhost', 'PORT': 6379, 'DATABASE': 0},
+              'caching': {'HOST': 'localhost', 'PORT': 6379, 'DATABASE': 1}
+          }
+          SECRET_KEY = 'ci-test-secret-key-not-for-production-1234567890123456'
+          API_TOKEN_PEPPERS = {0: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'}
+          PLUGINS = ['netbox_kea']
+          PLUGINS_CONFIG = {'netbox_kea': {'kea_timeout': 30}}
+          EOF
+
+      - name: Run unit tests with coverage
+        working-directory: netbox/netbox
+        run: |
+          pytest ${{ github.workspace }}/netbox_kea/tests/ \
+            --override-ini="DJANGO_SETTINGS_MODULE=netbox.settings" \
+            --override-ini="pythonpath=${{ github.workspace }}/netbox/netbox" \
+            --cov=netbox_kea \
+            --cov-report=xml:${{ github.workspace }}/coverage.xml \
+            --no-header -q
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: ./coverage.xml
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
+
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
 
-      - uses: astral-sh/ruff-action@v3
-
-      - uses: astral-sh/ruff-action@v3
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
         with:
-          args: format --check
+          enable-cache: true
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version-file: pyproject.toml
+
+      - name: Install dev dependencies
+        run: uv sync --group dev
+
+      - name: Ruff lint
+        run: uv run ruff check netbox_kea/
+
+      - name: Ruff format check
+        run: uv run ruff format --check netbox_kea/
+
+      - name: REUSE compliance
+        run: uv run reuse lint
+
   test:
     strategy:
+      fail-fast: false
       matrix:
         include:
           - netbox: v4.0
@@ -33,7 +141,7 @@ jobs:
 
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7
@@ -42,7 +150,7 @@ jobs:
 
       - name: Setup Python 3.12
         id: setup-python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v5
         with:
           python-version-file: pyproject.toml
 
@@ -59,14 +167,15 @@ jobs:
 
       - name: Run pytest
         run: |
-          uv run pytest --tracing=retain-on-failure -v
+          uv run pytest tests/ -p no:django --tracing=retain-on-failure -v
 
       - name: Upload Playwright traces
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         if: ${{ !cancelled() }}
         with:
-          name: playwright-traces
+          name: playwright-traces-${{ matrix.netbox }}
           path: test-results/
+          retention-days: 90
 
       - name: Show Docker logs
         if: ${{ always() }}

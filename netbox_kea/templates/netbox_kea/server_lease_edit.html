@@ -1,0 +1,47 @@
+{% extends "generic/object.html" %}
+
+{% block content %}
+<div class="row">
+  <div class="col-md-8">
+    <div class="card">
+      <h5 class="card-header d-flex justify-content-between align-items-center">
+        Edit DHCPv{{ dhcp_version }} Lease
+        <span class="badge bg-secondary font-monospace">{{ ip_address }}</span>
+      </h5>
+      <div class="card-body">
+        <p class="text-muted small mb-3">
+          <i class="mdi mdi-information-outline" aria-hidden="true"></i>
+          Leave a field blank to keep the current value.
+        </p>
+        <form method="post">
+          {% csrf_token %}
+
+          {% if form.non_field_errors %}
+            <div class="alert alert-danger">
+              {% for error in form.non_field_errors %}
+                <div>{{ error }}</div>
+              {% endfor %}
+            </div>
+          {% endif %}
+
+          {% for field in form %}
+            <div class="mb-3">
+              <label for="{{ field.id_for_label }}" class="form-label">{{ field.label }}</label>
+              {{ field }}
+              {% if field.help_text %}<div class="form-text text-muted">{{ field.help_text }}</div>{% endif %}
+              {% for err in field.errors %}<div class="text-danger small">{{ err }}</div>{% endfor %}
+            </div>
+          {% endfor %}
+
+          <div class="d-flex gap-2">
+            <button type="submit" class="btn btn-primary">
+              <i class="mdi mdi-content-save" aria-hidden="true"></i> Save
+            </button>
+            <a href="{{ cancel_url }}" class="btn btn-outline-secondary">Cancel</a>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock content %}
