@@ -555,6 +555,25 @@ class TestSubnetEnrichment(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "10.0.0.50-10.0.0.99")
 
+    @patch("netbox_kea.models.KeaClient")
+    def test_subnet_table_data_has_subnet_sort_key(self, MockKeaClient):
+        """F1: each subnet dict must have an integer _subnet_sort_key for numeric sort."""
+        import ipaddress
+
+        mock_client = MockKeaClient.return_value
+        mock_client.command.side_effect = self._side_effect_v4
+        url = reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk])
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        table = response.context["table"]
+        for row in table.data:
+            self.assertIn("_subnet_sort_key", row, "Missing _subnet_sort_key in subnet row")
+            self.assertIsInstance(row["_subnet_sort_key"], int)
+        # Verify value: 10.0.0.0/24 → network address int
+        first_row = list(table.data)[0]
+        expected = int(ipaddress.ip_network("10.0.0.0/24").network_address)
+        self.assertEqual(first_row["_subnet_sort_key"], expected)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # ServerBulkImportView

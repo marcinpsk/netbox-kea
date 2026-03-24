@@ -921,3 +921,51 @@ class TestOptionalViewTab(TestCase):
         fn = lambda _: True  # noqa: E731
         tab = self._make_tab(is_enabled=fn)
         self.assertIs(tab.is_enabled, fn)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# F1: _enrich_reservation_sort_key — numeric sort for reservation IP columns
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestEnrichReservationSortKey(TestCase):
+    """Tests for _enrich_reservation_sort_key() — injects _ip_sort_key into reservation dict."""
+
+    def _call(self, reservation):
+        from netbox_kea.utilities import _enrich_reservation_sort_key
+
+        return _enrich_reservation_sort_key(reservation)
+
+    def test_v4_ip_address_sets_sort_key(self):
+        """DHCPv4 reservation with 'ip-address' gets correct integer sort key."""
+        r = {"ip-address": "10.0.0.101"}
+        result = self._call(r)
+        import ipaddress
+
+        self.assertEqual(result["_ip_sort_key"], int(ipaddress.ip_address("10.0.0.101")))
+
+    def test_v4_sort_key_is_integer(self):
+        """Sort key is an int so numeric comparison works."""
+        r = {"ip-address": "192.168.1.1"}
+        result = self._call(r)
+        self.assertIsInstance(result["_ip_sort_key"], int)
+
+    def test_missing_ip_address_no_sort_key(self):
+        """Reservation without 'ip-address' does not get _ip_sort_key (no crash)."""
+        r = {"duid": "00:01:02:03"}
+        result = self._call(r)
+        self.assertNotIn("_ip_sort_key", result)
+
+    def test_v6_ip_address_sets_sort_key(self):
+        """DHCPv6 reservation with 'ip-address' gets correct integer sort key."""
+        r = {"ip-address": "2001:db8::1"}
+        result = self._call(r)
+        import ipaddress
+
+        self.assertEqual(result["_ip_sort_key"], int(ipaddress.ip_address("2001:db8::1")))
+
+    def test_numeric_order_correct(self):
+        """10.0.0.90 sort key < 10.0.0.101 sort key (numeric, not lexicographic)."""
+        r90 = self._call({"ip-address": "10.0.0.90"})
+        r101 = self._call({"ip-address": "10.0.0.101"})
+        self.assertLess(r90["_ip_sort_key"], r101["_ip_sort_key"])

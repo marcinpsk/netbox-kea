@@ -28,6 +28,20 @@ def format_duration(s: int | None) -> str | None:
     return f"{hours:02}:{minutes:02}:{seconds:02}"
 
 
+def _enrich_reservation_sort_key(reservation: dict[str, Any]) -> dict[str, Any]:
+    """Inject a numeric _ip_sort_key into a raw Kea reservation dict (in-place + return).
+
+    The Kea API returns reservation dicts with hyphenated keys (``ip-address``).
+    We inject an integer sort key so django-tables2 sorts IPs numerically.
+    """
+    if ip_str := reservation.get("ip-address"):
+        try:
+            reservation["_ip_sort_key"] = int(ipaddress.ip_address(ip_str))
+        except ValueError:
+            pass
+    return reservation
+
+
 def _enrich_lease(now: datetime, lease: dict[str, Any]) -> dict[str, Any]:
     """Add expires at, expires in, state_label, _ip_sort_key, and expiry_class to a lease."""
     # Need to replace "-" so we can access the values in a template

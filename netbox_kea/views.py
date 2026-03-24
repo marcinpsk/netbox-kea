@@ -1,4 +1,5 @@
 import concurrent.futures
+import ipaddress
 import logging
 import re
 from abc import ABCMeta
@@ -34,6 +35,7 @@ from .models import Server
 from .sync import sync_lease_to_netbox, sync_reservation_to_netbox
 from .utilities import (
     OptionalViewTab,
+    _enrich_reservation_sort_key,
     check_dhcp_enabled,
     export_table,
     format_duration,
@@ -965,6 +967,7 @@ class BaseServerDHCPSubnetsView(generic.ObjectChildrenView):
                 "subnet": s["subnet"],
                 "dhcp_version": self.dhcp_version,
                 "server_pk": server.pk,
+                "_subnet_sort_key": int(ipaddress.ip_network(s["subnet"], strict=False).network_address),
                 "options": format_option_data(s.get("option-data", []), version=self.dhcp_version),
                 "pools": [p.get("pool", "") for p in s.get("pools", []) if p.get("pool")],
             }
@@ -980,6 +983,7 @@ class BaseServerDHCPSubnetsView(generic.ObjectChildrenView):
                     "shared_network": sn["name"],
                     "dhcp_version": self.dhcp_version,
                     "server_pk": server.pk,
+                    "_subnet_sort_key": int(ipaddress.ip_network(s["subnet"], strict=False).network_address),
                     "options": format_option_data(s.get("option-data", []), version=self.dhcp_version),
                     "pools": [p.get("pool", "") for p in s.get("pools", []) if p.get("pool")],
                 }
@@ -1429,6 +1433,7 @@ class ServerReservations4View(generic.ObjectView):
             r["server_pk"] = server.pk
             r.setdefault("ip_address", r.get("ip-address", ""))
             r.setdefault("subnet_id", r.get("subnet-id", 0))
+            _enrich_reservation_sort_key(r)
 
         # Apply search filter before enrichment to avoid unnecessary Kea API calls.
         search_form = forms.ReservationSearchForm(request.GET or None)
@@ -1491,6 +1496,7 @@ class ServerReservations6View(generic.ObjectView):
             r["server_pk"] = server.pk
             r.setdefault("ip_address", (r.get("ip-addresses") or [""])[0])
             r.setdefault("subnet_id", r.get("subnet-id", 0))
+            _enrich_reservation_sort_key(r)
 
         # Apply search filter before enrichment to avoid unnecessary Kea API calls.
         search_form = forms.ReservationSearchForm(request.GET or None)
@@ -3113,6 +3119,7 @@ def _fetch_reservations_from_server(server: "Server", version: int) -> list[dict
             )
             r["server_name"] = server.name
             r["server_pk"] = server.pk
+            _enrich_reservation_sort_key(r)
         reservations.extend(page)
         if next_from == 0 and next_source == 0:
             break

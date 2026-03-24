@@ -1,5 +1,6 @@
 import django_tables2 as tables
 from django.urls import reverse
+from django.utils.html import format_html
 from django.utils.http import urlencode
 from netbox.tables import BaseTable, BooleanColumn, NetBoxTable, ToggleColumn, columns
 
@@ -170,6 +171,18 @@ class DurationColumn(tables.Column):
         return format_duration(value)
 
 
+class ExpiryDurationColumn(DurationColumn):
+    """DurationColumn that applies an expiry CSS class from ``record['expiry_class']``."""
+
+    def render(self, value: int, record: dict):
+        """Wrap the duration text in a <span> with the expiry CSS class when set."""
+        text = super().render(value)
+        cls = record.get("expiry_class", "")
+        if cls:
+            return format_html('<span class="{}">{}</span>', cls, text)
+        return text
+
+
 class ActionsColumn(tables.TemplateColumn):
     """Table column that renders a dropdown actions menu from a Django template string."""
 
@@ -248,6 +261,7 @@ class SubnetTable(GenericTable):
 
     id = tables.Column(verbose_name="ID")
     subnet = tables.Column(
+        order_by="_subnet_sort_key",
         linkify=lambda record, table: (
             (
                 reverse(
@@ -314,7 +328,7 @@ class BaseLeaseTable(GenericTable):
     valid_lft = DurationColumn(verbose_name="Valid Lifetime")
     cltt = columns.DateTimeColumn(verbose_name="Client Last Transaction Time")
     expires_at = columns.DateTimeColumn(verbose_name="Expires At")
-    expires_in = DurationColumn(verbose_name="Expires In")
+    expires_in = ExpiryDurationColumn(verbose_name="Expires In")
     state_label = tables.TemplateColumn(
         verbose_name="State",
         orderable=False,
@@ -466,7 +480,7 @@ class ReservationTable4(GenericTable):
 
     subnet_id = tables.Column(verbose_name="Subnet ID", accessor="subnet-id")
     hw_address = MonospaceColumn(verbose_name="Hardware Address", accessor="hw-address")
-    ip_address = tables.Column(verbose_name="IP Address", accessor="ip-address")
+    ip_address = tables.Column(verbose_name="IP Address", accessor="ip-address", order_by="_ip_sort_key")
     hostname = tables.Column(verbose_name="Hostname")
     lease_status = tables.TemplateColumn(
         verbose_name="Lease",
@@ -559,7 +573,7 @@ class GlobalReservationTable4(GenericTable):
     server = _server_column()
     subnet_id = tables.Column(verbose_name="Subnet ID", accessor="subnet-id")
     hw_address = MonospaceColumn(verbose_name="Hardware Address", accessor="hw-address")
-    ip_address = tables.Column(verbose_name="IP Address", accessor="ip-address")
+    ip_address = tables.Column(verbose_name="IP Address", accessor="ip-address", order_by="_ip_sort_key")
     hostname = tables.Column(verbose_name="Hostname")
     lease_status = tables.TemplateColumn(
         verbose_name="Lease",

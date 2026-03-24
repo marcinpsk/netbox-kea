@@ -206,6 +206,18 @@ class TestServerReservations4View(_ReservationViewBase):
         # The crucial assertion: view made exactly 2 calls (drain loop worked)
         self.assertEqual(mock_client.reservation_get_page.call_count, 2)
 
+    @patch("netbox_kea.models.KeaClient")
+    def test_reservation_table_data_has_ip_sort_key(self, MockKeaClient):
+        """F1: each reservation dict in the table must have an integer _ip_sort_key."""
+        self._mock_client_with_reservations4(MockKeaClient)
+        url = reverse("plugins:netbox_kea:server_reservations4", args=[self.server.pk])
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        table = response.context["table"]
+        for row in table.data:
+            self.assertIn("_ip_sort_key", row, "Missing _ip_sort_key in reservation row")
+            self.assertIsInstance(row["_ip_sort_key"], int)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TestServerReservations6View
