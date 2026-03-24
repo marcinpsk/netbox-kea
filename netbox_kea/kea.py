@@ -994,39 +994,49 @@ class KeaClient:
         self._persist_config(service)
 
     def _persist_config(self, service: str) -> None:
-        """Validate and persist the running config to disk via config-test + config-write.
+        """Validate the current running config and persist it to disk.
 
-        Calls ``config-test`` first to verify the current in-memory configuration is valid
-        before writing it to disk.  If ``config-test`` is not supported by the server
-        (result code 2), the check is skipped and ``config-write`` proceeds normally.
-        Any other ``config-test`` failure raises :exc:`PartialPersistError` immediately
-        (without calling ``config-write``).
-
-        Logs a warning and raises :exc:`PartialPersistError` when either check fails.
-        When this happens, the mutation is already live in the running config but will be
-        lost on next Kea restart.
+        Flow:
+        1. ``config-get`` — fetch the live in-memory config (which already reflects
+           any mutation applied via Kea-native commands like ``subnet4-delta-add``).
+        2. ``config-test`` with that config as ``arguments`` — validate it.  Kea
+           requires the config to be passed as arguments; calling ``config-test``
+           without arguments always returns result 1 "Missing mandatory 'arguments'
+           parameter."  Result 2 (command not supported) is silently skipped.  Any
+           other non-zero result raises :exc:`KeaConfigTestError`.
+        3. ``config-write`` — persist the validated config to disk.  Failure raises
+           :exc:`PartialPersistError` (change is live but will be lost on restart).
         """
+        # Step 1: fetch the current in-memory config so we can validate and write it.
         try:
-            self.command("config-test", service=[service])
-        except KeaException as exc:
-            # Skip ALL config-test errors and proceed to config-write.
-            # Mutations performed via pool_add / pool_del / network_add etc. are
-            # executed through Kea-native API commands that Kea already validates
-            # internally.  If those commands succeed, the running config is valid
-            # regardless of what config-test says.  config-test may return result 2
-            # (unsupported) or result 1 (e.g. command unknown in some setups); in
-            # either case we still want to write the live config to disk.
-            result = exc.response.get("result")
-            if result == 2:
-                logger.debug("config-test not supported for service %s — skipping pre-flight check", service)
+            resp = self.command("config-get", service=[service])
+        except KeaException:
+            logger.warning("config-get failed for service %s — skipping validation, attempting config-write", service)
+            resp = None
+
+        config: dict | None = None
+        if resp is not None:
+            raw = resp[0].get("arguments", {}) if isinstance(resp, list) else resp.get("arguments", {})
+            config = {k: v for k, v in raw.items() if k != "hash"}
+
+        # Step 2: config-test — pass the live config as arguments (required by Kea).
+        if config is not None:
+            try:
+                self.command("config-test", service=[service], arguments=config)
+            except KeaException as exc:
+                result = exc.response.get("result")
+                if result == 2:
+                    logger.debug("config-test not supported for service %s — skipping pre-flight check", service)
+                else:
+                    logger.warning("config-test failed for service %s — aborting config-write", service)
+                    raise KeaConfigTestError(service, exc) from exc
+
+        # Step 3: write to disk.
+        try:
+            if config is not None:
+                self.command("config-write", service=[service], arguments=config)
             else:
-                logger.warning(
-                    "config-test returned result=%s for service %s — skipping pre-flight check, attempting config-write",
-                    result,
-                    service,
-                )
-        try:
-            self.command("config-write", service=[service])
+                self.command("config-write", service=[service])
         except KeaException as exc:
             logger.warning(
                 "config-write failed for service %s — change is live but not persisted to disk",
