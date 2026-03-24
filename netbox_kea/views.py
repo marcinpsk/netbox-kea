@@ -1325,6 +1325,124 @@ class ServerSharedNetwork4DeleteView(BaseServerSharedNetworkDeleteView):
     dhcp_version = 4
 
 
+class BaseServerSharedNetworkEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin, View):
+    """Edit a shared network's description, interface, relay, and option-data.
+
+    Shared network updates require a config-get → modify → config-test → config-write
+    cycle because there is no free ``network{v}-update`` Kea hook command.
+    """
+
+    dhcp_version: int
+
+    def _success_url(self, server: Server) -> str:
+        return reverse(f"plugins:netbox_kea:server_shared_networks{self.dhcp_version}", args=[server.pk])
+
+    def _fetch_network(self, client: "KeaClient", network_name: str) -> dict:
+        """Return the shared-network dict from config-get, or {} if not found."""
+        try:
+            resp = client.command("config-get", service=[f"dhcp{self.dhcp_version}"])
+            config = resp[0]["arguments"]
+            dhcp_key = f"Dhcp{self.dhcp_version}"
+            for sn in config.get(dhcp_key, {}).get("shared-networks", []):
+                if sn.get("name") == network_name:
+                    return sn
+        except Exception:
+            logger.exception("Failed to fetch config-get for shared network edit on server")
+        return {}
+
+    def get(self, request: HttpRequest, pk: int, network_name: str) -> HttpResponse:
+        """Render the edit form pre-populated with current values."""
+        server = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
+        client = server.get_client(version=self.dhcp_version)
+        network = self._fetch_network(client, network_name)
+
+        initial: dict[str, Any] = {"name": network_name}
+        initial["description"] = network.get("description", "")
+        initial["interface"] = network.get("interface", "")
+        relay = network.get("relay", {})
+        initial["relay_addresses"] = ", ".join(relay.get("ip-addresses", []))
+        for opt in network.get("option-data", []):
+            opt_name = opt.get("name", "")
+            if opt_name in ("domain-name-servers", "dns-servers"):
+                initial["dns_servers"] = opt.get("data", "")
+            elif opt_name in ("ntp-servers", "sntp-servers"):
+                initial["ntp_servers"] = opt.get("data", "")
+
+        form = forms.SharedNetworkEditForm(initial=initial)
+        return render(
+            request,
+            "netbox_kea/server_shared_network_edit.html",
+            {
+                "object": server,
+                "form": form,
+                "network_name": network_name,
+                "dhcp_version": self.dhcp_version,
+                "cancel_url": self._success_url(server),
+            },
+        )
+
+    def post(self, request: HttpRequest, pk: int, network_name: str) -> HttpResponse:
+        """Validate form and apply the shared network update."""
+        server = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
+        form = forms.SharedNetworkEditForm(request.POST)
+        if not form.is_valid():
+            return render(
+                request,
+                "netbox_kea/server_shared_network_edit.html",
+                {
+                    "object": server,
+                    "form": form,
+                    "network_name": network_name,
+                    "dhcp_version": self.dhcp_version,
+                    "cancel_url": self._success_url(server),
+                },
+            )
+
+        cd = form.cleaned_data
+        relay_addresses = (
+            [s.strip() for s in cd["relay_addresses"].split(",") if s.strip()] if cd["relay_addresses"] else []
+        )
+
+        options: list[dict] = []
+        if cd.get("dns_servers"):
+            options.append({"name": "domain-name-servers", "data": cd["dns_servers"]})
+        if cd.get("ntp_servers"):
+            options.append({"name": "ntp-servers", "data": cd["ntp_servers"]})
+
+        try:
+            client = server.get_client(version=self.dhcp_version)
+            client.network_update(
+                version=self.dhcp_version,
+                name=network_name,
+                description=cd.get("description") or "",
+                interface=cd.get("interface") or "",
+                relay_addresses=relay_addresses,
+                options=options,
+            )
+            messages.success(request, f"Shared network '{network_name}' updated.")
+        except PartialPersistError:
+            messages.warning(request, "Change applied but may not survive a Kea restart (config-write failed).")
+        except KeaException as exc:
+            logger.warning("network_update failed for %s on server %s: %s", network_name, pk, exc)
+            messages.error(request, f"Kea error: {kea_error_hint(exc)}")
+        except Exception:
+            logger.exception("Unexpected error updating shared network '%s' on server %s", network_name, pk)
+            messages.error(request, "An internal error occurred.")
+        return redirect(self._success_url(server))
+
+
+class ServerSharedNetwork6EditView(BaseServerSharedNetworkEditView):
+    """Edit a DHCPv6 shared network."""
+
+    dhcp_version = 6
+
+
+class ServerSharedNetwork4EditView(BaseServerSharedNetworkEditView):
+    """Edit a DHCPv4 shared network."""
+
+    dhcp_version = 4
+
+
 def _enrich_reservations_with_lease_status(client: "KeaClient", reservations: list[dict], version: int) -> None:
     """Enrich each reservation dict with ``has_active_lease`` (bool | None).
 

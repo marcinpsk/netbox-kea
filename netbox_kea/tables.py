@@ -785,10 +785,16 @@ class SharedNetworkTable(GenericTable):
         orderable=False,
         template_code=(
             "{% if record.dhcp_version == 4 %}"
+            '<a href="{% url "plugins:netbox_kea:server_shared_network4_edit" record.server_pk record.name %}"'
+            ' class="btn btn-sm btn-warning me-1" aria-label="Edit {{ record.name }}">'
+            '<i class="mdi mdi-pencil" aria-hidden="true"></i></a>'
             '<a href="{% url "plugins:netbox_kea:server_shared_network4_delete" record.server_pk record.name %}"'
             ' class="btn btn-sm btn-danger" aria-label="Delete {{ record.name }}">'
             '<i class="mdi mdi-delete" aria-hidden="true"></i></a>'
             "{% else %}"
+            '<a href="{% url "plugins:netbox_kea:server_shared_network6_edit" record.server_pk record.name %}"'
+            ' class="btn btn-sm btn-warning me-1" aria-label="Edit {{ record.name }}">'
+            '<i class="mdi mdi-pencil" aria-hidden="true"></i></a>'
             '<a href="{% url "plugins:netbox_kea:server_shared_network6_delete" record.server_pk record.name %}"'
             ' class="btn btn-sm btn-danger" aria-label="Delete {{ record.name }}">'
             '<i class="mdi mdi-delete" aria-hidden="true"></i></a>'

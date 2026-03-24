@@ -262,6 +262,16 @@ urlpatterns = (
         name="server_shared_network6_delete",
     ),
     path(
+        "servers/<int:pk>/shared-networks4/<str:network_name>/edit/",
+        views.ServerSharedNetwork4EditView.as_view(),
+        name="server_shared_network4_edit",
+    ),
+    path(
+        "servers/<int:pk>/shared-networks6/<str:network_name>/edit/",
+        views.ServerSharedNetwork6EditView.as_view(),
+        name="server_shared_network6_edit",
+    ),
+    path(
         "servers/<int:pk>/dhcp4/option-def/",
         views.ServerOptionDef4View.as_view(),
         name="server_option_def4",

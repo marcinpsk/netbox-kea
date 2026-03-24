@@ -3833,3 +3833,174 @@ class TestServerOptionDef6DeleteView(_ViewTestBase):
         args = call_args.args or call_args[0]
         version = kwargs.get("version") or (args[0] if args else None)
         self.assertEqual(version, 6)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TestServerSharedNetwork4EditView (F2b)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestServerSharedNetwork4EditView(_ViewTestBase):
+    """Tests for ServerSharedNetwork4EditView: GET form + POST update."""
+
+    def _url(self, name="prod-net"):
+        return reverse("plugins:netbox_kea:server_shared_network4_edit", args=[self.server.pk, name])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_get_returns_200(self, MockKeaClient):
+        """GET renders the edit form with status 200."""
+        MockKeaClient.return_value.command.return_value = [
+            {
+                "result": 0,
+                "arguments": {
+                    "Dhcp4": {
+                        "shared-networks": [
+                            {"name": "prod-net", "description": "Old", "option-data": [], "subnet4": []}
+                        ],
+                        "subnet4": [],
+                    }
+                },
+            }
+        ]
+        response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 200)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_valid_calls_network_update_and_redirects(self, MockKeaClient):
+        """POST with valid data calls network_update and redirects."""
+        MockKeaClient.return_value.network_update.return_value = None
+        response = self.client.post(
+            self._url(),
+            {
+                "name": "prod-net",
+                "description": "Updated description",
+                "interface": "",
+                "relay_addresses": "",
+                "dns_servers": "",
+                "ntp_servers": "",
+            },
+        )
+        self.assertEqual(response.status_code, 302)
+        self._assert_no_none_pk_redirect(response)
+        MockKeaClient.return_value.network_update.assert_called_once()
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_passes_version_4_to_network_update(self, MockKeaClient):
+        """POST must call network_update with version=4."""
+        MockKeaClient.return_value.network_update.return_value = None
+        self.client.post(
+            self._url(),
+            {
+                "name": "prod-net",
+                "description": "x",
+                "interface": "",
+                "relay_addresses": "",
+                "dns_servers": "",
+                "ntp_servers": "",
+            },
+        )
+        call_args = MockKeaClient.return_value.network_update.call_args
+        kwargs = call_args.kwargs or call_args[1]
+        args = call_args.args or call_args[0]
+        version = kwargs.get("version") or (args[0] if args else None)
+        self.assertEqual(version, 4)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_kea_exception_shows_error_and_redirects(self, MockKeaClient):
+        """POST that raises KeaException must redirect without 500."""
+        from netbox_kea.kea import KeaException
+
+        MockKeaClient.return_value.network_update.side_effect = KeaException(
+            {"result": 1, "text": "config error"}, index=0
+        )
+        response = self.client.post(
+            self._url(),
+            {
+                "name": "prod-net",
+                "description": "x",
+                "interface": "",
+                "relay_addresses": "",
+                "dns_servers": "",
+                "ntp_servers": "",
+            },
+        )
+        self.assertIn(response.status_code, (200, 302))
+        self._assert_no_none_pk_redirect(response)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_partial_persist_error_shows_warning(self, MockKeaClient):
+        """POST that raises PartialPersistError redirects with a warning (no 500)."""
+        from netbox_kea.kea import PartialPersistError
+
+        MockKeaClient.return_value.network_update.side_effect = PartialPersistError("dhcp4", Exception("write failed"))
+        response = self.client.post(
+            self._url(),
+            {
+                "name": "prod-net",
+                "description": "x",
+                "interface": "",
+                "relay_addresses": "",
+                "dns_servers": "",
+                "ntp_servers": "",
+            },
+        )
+        self.assertIn(response.status_code, (200, 302))
+
+    def test_get_requires_login(self):
+        """Unauthenticated GET must redirect to login."""
+        self.client.logout()
+        response = self.client.get(self._url())
+        self.assertIn(response.status_code, (302, 403))
+
+    def test_post_requires_login(self):
+        """Unauthenticated POST must redirect to login."""
+        self.client.logout()
+        response = self.client.post(self._url(), {"name": "prod-net"})
+        self.assertIn(response.status_code, (302, 403))
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestServerSharedNetwork6EditView(_ViewTestBase):
+    """Tests for ServerSharedNetwork6EditView — verifies version=6."""
+
+    def _url(self, name="prod-net6"):
+        return reverse("plugins:netbox_kea:server_shared_network6_edit", args=[self.server.pk, name])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_get_returns_200(self, MockKeaClient):
+        """GET returns 200 for DHCPv6 edit view."""
+        MockKeaClient.return_value.command.return_value = [
+            {
+                "result": 0,
+                "arguments": {
+                    "Dhcp6": {
+                        "shared-networks": [{"name": "prod-net6", "description": "", "option-data": [], "subnet6": []}],
+                        "subnet6": [],
+                    }
+                },
+            }
+        ]
+        response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 200)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_calls_network_update_with_version_6(self, MockKeaClient):
+        """POST must call network_update with version=6."""
+        MockKeaClient.return_value.network_update.return_value = None
+        self.client.post(
+            self._url(),
+            {
+                "name": "prod-net6",
+                "description": "v6 net",
+                "interface": "",
+                "relay_addresses": "",
+                "dns_servers": "",
+                "ntp_servers": "",
+            },
+        )
+        call_args = MockKeaClient.return_value.network_update.call_args
+        kwargs = call_args.kwargs or call_args[1]
+        args = call_args.args or call_args[0]
+        version = kwargs.get("version") or (args[0] if args else None)
+        self.assertEqual(version, 6)

@@ -2672,3 +2672,138 @@ class TestOptionDefDel(TestCase):
         defs = test_payload["arguments"]["Dhcp4"]["option-def"]
         self.assertEqual(len(defs), 1)
         self.assertEqual(defs[0]["space"], "myspace")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TestNetworkUpdate (F2b)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_CONFIG_GET_WITH_SHARED_NETWORK = [
+    {
+        "result": 0,
+        "arguments": {
+            "Dhcp4": {
+                "shared-networks": [
+                    {
+                        "name": "prod-net",
+                        "description": "Old description",
+                        "option-data": [],
+                        "subnet4": [],
+                    }
+                ],
+                "subnet4": [],
+            }
+        },
+    }
+]
+
+_CONFIG_GET_NO_SHARED_NETWORK = [
+    {
+        "result": 0,
+        "arguments": {
+            "Dhcp4": {
+                "shared-networks": [],
+                "subnet4": [],
+            }
+        },
+    }
+]
+
+
+class TestNetworkUpdate(TestCase):
+    """Tests for KeaClient.network_update() — read-modify-write for shared networks."""
+
+    def setUp(self):
+        self.client = KeaClient(url="http://kea:8000")
+
+    def _payloads(self, mock_post):
+        return [(c.kwargs.get("json") or c[1]["json"]) for c in mock_post.call_args_list]
+
+    def _cmds(self, mock_post):
+        return [p["command"] for p in self._payloads(mock_post)]
+
+    def test_calls_config_get_then_config_test_then_config_write(self):
+        """network_update issues config-get, config-test, config-write in order."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(
+                _CONFIG_GET_WITH_SHARED_NETWORK,
+                _CONFIG_TEST_OK_RESP,
+                _CONFIG_WRITE_RESP,
+            ),
+        ) as mock_post:
+            self.client.network_update(version=4, name="prod-net")
+        self.assertEqual(self._cmds(mock_post), ["config-get", "config-test", "config-write"])
+
+    def test_updates_description_in_config_write_payload(self):
+        """config-test/write payload contains the updated description."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(
+                _CONFIG_GET_WITH_SHARED_NETWORK,
+                _CONFIG_TEST_OK_RESP,
+                _CONFIG_WRITE_RESP,
+            ),
+        ) as mock_post:
+            self.client.network_update(version=4, name="prod-net", description="New description")
+        payloads = self._payloads(mock_post)
+        test_payload = next(p for p in payloads if p["command"] == "config-test")
+        network = test_payload["arguments"]["Dhcp4"]["shared-networks"][0]
+        self.assertEqual(network["description"], "New description")
+
+    def test_updates_relay_addresses(self):
+        """relay_addresses list is stored under network['relay']['ip-addresses']."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(
+                _CONFIG_GET_WITH_SHARED_NETWORK,
+                _CONFIG_TEST_OK_RESP,
+                _CONFIG_WRITE_RESP,
+            ),
+        ) as mock_post:
+            self.client.network_update(version=4, name="prod-net", relay_addresses=["10.0.0.1"])
+        payloads = self._payloads(mock_post)
+        test_payload = next(p for p in payloads if p["command"] == "config-test")
+        network = test_payload["arguments"]["Dhcp4"]["shared-networks"][0]
+        self.assertEqual(network["relay"]["ip-addresses"], ["10.0.0.1"])
+
+    def test_raises_kea_exception_when_network_not_found(self):
+        """KeaException raised if the named shared network is absent from the config."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(_CONFIG_GET_NO_SHARED_NETWORK),
+        ):
+            with self.assertRaises(KeaException):
+                self.client.network_update(version=4, name="prod-net")
+
+    def test_raises_partial_persist_error_on_config_write_failure(self):
+        """PartialPersistError raised when config-write fails after successful config-test."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(
+                _CONFIG_GET_WITH_SHARED_NETWORK,
+                _CONFIG_TEST_OK_RESP,
+                [{"result": 1, "text": "write failed"}],
+            ),
+        ):
+            with self.assertRaises(PartialPersistError):
+                self.client.network_update(version=4, name="prod-net")
+
+    def test_skips_config_test_gracefully_when_not_supported(self):
+        """If config-test returns result=2, config-write still proceeds."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(
+                _CONFIG_GET_WITH_SHARED_NETWORK,
+                _CONFIG_TEST_NOT_SUPPORTED_RESP,
+                _CONFIG_WRITE_RESP,
+            ),
+        ) as mock_post:
+            self.client.network_update(version=4, name="prod-net")
+        self.assertIn("config-write", self._cmds(mock_post))

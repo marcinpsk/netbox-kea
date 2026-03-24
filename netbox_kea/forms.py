@@ -1112,6 +1112,51 @@ class SharedNetworkForm(forms.Form):
         return name
 
 
+class SharedNetworkEditForm(forms.Form):
+    """Form for editing an existing Kea shared network (description, interface, relay, options)."""
+
+    name = forms.CharField(widget=forms.HiddenInput())
+    description = forms.CharField(max_length=255, required=False, label="Description")
+    interface = forms.CharField(
+        max_length=128,
+        required=False,
+        label="Interface",
+        help_text="Bind this network to a specific server NIC (optional, e.g. eth0).",
+    )
+    relay_addresses = forms.CharField(
+        required=False,
+        label="Relay agent addresses",
+        help_text="Comma-separated relay agent IP addresses (leave blank to clear).",
+    )
+    dns_servers = forms.CharField(
+        required=False,
+        label="DNS servers",
+        help_text="Comma-separated DNS server IP addresses (option 6 / domain-name-servers).",
+    )
+    ntp_servers = forms.CharField(
+        required=False,
+        label="NTP servers",
+        help_text="Comma-separated NTP server addresses (option 42 / ntp-servers).",
+    )
+
+    def clean_relay_addresses(self) -> str:
+        """Validate each relay IP."""
+        import ipaddress
+
+        raw = self.cleaned_data.get("relay_addresses", "").strip()
+        if not raw:
+            return raw
+        for part in raw.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            try:
+                ipaddress.ip_address(part)
+            except ValueError:
+                raise forms.ValidationError(f"'{part}' is not a valid IP address.")
+        return raw
+
+
 # ---------------------------------------------------------------------------
 # Option-def form
 # ---------------------------------------------------------------------------

@@ -412,6 +412,62 @@ class KeaClient:
         )
         self._persist_config(service)
 
+    def network_update(
+        self,
+        version: int,
+        name: str,
+        description: str | None = None,
+        interface: str | None = None,
+        relay_addresses: list[str] | None = None,
+        options: list[dict] | None = None,
+    ) -> None:
+        """Update a shared network's properties via config-get → config-test → config-write.
+
+        Only provided (non-None) fields are modified; others are left unchanged.
+        Raises ``KeaException`` if *name* is not found in the config.
+        Raises ``PartialPersistError`` if config-write fails after a successful config-test.
+        """
+        service = f"dhcp{version}"
+        dhcp_key = f"Dhcp{version}"
+
+        resp = self.command("config-get", service=[service])
+        config = resp[0]["arguments"]
+
+        network: dict[str, Any] | None = None
+        for sn in config.get(dhcp_key, {}).get("shared-networks", []):
+            if sn.get("name") == name:
+                network = sn
+                break
+        if network is None:
+            raise KeaException({"result": 3, "text": f"Shared network '{name}' not found in config"})
+
+        if description is not None:
+            network["description"] = description
+        if interface is not None:
+            network["interface"] = interface
+        if relay_addresses is not None:
+            if relay_addresses:
+                network["relay"] = {"ip-addresses": relay_addresses}
+            else:
+                network.pop("relay", None)
+        if options is not None:
+            network["option-data"] = options
+
+        try:
+            self.command("config-test", service=[service], arguments=config)
+        except KeaException as exc:
+            if exc.response.get("result") == 2:
+                logger.debug("config-test not supported for service %s — skipping pre-flight check", service)
+            else:
+                logger.warning("config-test failed for service %s — aborting config-write", service)
+                raise KeaConfigTestError(service, exc) from exc
+
+        try:
+            self.command("config-write", service=[service], arguments=config)
+        except KeaException as exc:
+            logger.warning("config-write failed for service %s — change not persisted to disk", service)
+            raise PartialPersistError(service, exc) from exc
+
     def network_subnet_add(self, version: int, name: str, subnet_id: int) -> None:
         """Move an existing subnet into a shared network.
 
