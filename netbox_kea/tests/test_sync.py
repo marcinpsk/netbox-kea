@@ -195,6 +195,43 @@ class TestSyncLeaseToNetbox(TestCase):
         # dns_name should be preserved since lease has no hostname
         self.assertEqual(ip_obj.dns_name, "manual.example.com")
 
+    # ── F8: MAC address sync ──────────────────────────────────────────────────
+
+    def test_sync_lease_creates_mac_address_entry(self):
+        """F8: sync_lease_to_netbox creates a MACAddress DCIM entry when hw-address is present."""
+        try:
+            from dcim.models import MACAddress
+        except (ImportError, AttributeError):
+            self.skipTest("MACAddress not available in this NetBox version")
+        from netbox_kea.sync import sync_lease_to_netbox
+
+        sync_lease_to_netbox(self._LEASE)
+        self.assertEqual(MACAddress.objects.count(), 1)
+
+    def test_sync_lease_does_not_create_mac_when_no_hw_address(self):
+        """F8: sync_lease_to_netbox skips MACAddress when lease has no hw-address."""
+        try:
+            from dcim.models import MACAddress
+        except (ImportError, AttributeError):
+            self.skipTest("MACAddress not available in this NetBox version")
+        from netbox_kea.sync import sync_lease_to_netbox
+
+        lease = {"ip-address": "192.168.50.101", "hostname": "nomaclease"}
+        sync_lease_to_netbox(lease)
+        self.assertEqual(MACAddress.objects.count(), 0)
+
+    def test_sync_lease_does_not_create_duplicate_mac(self):
+        """F8: Calling sync_lease_to_netbox twice does not create duplicate MACAddress entries."""
+        try:
+            from dcim.models import MACAddress
+        except (ImportError, AttributeError):
+            self.skipTest("MACAddress not available in this NetBox version")
+        from netbox_kea.sync import sync_lease_to_netbox
+
+        sync_lease_to_netbox(self._LEASE)
+        sync_lease_to_netbox(self._LEASE)
+        self.assertEqual(MACAddress.objects.count(), 1)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TestSyncReservationToNetbox
@@ -262,6 +299,31 @@ class TestSyncReservationToNetbox(TestCase):
         ip_obj, created = sync_reservation_to_netbox(self._RESERVATION)
         self.assertFalse(created)
         self.assertEqual(ip_obj.status, "reserved")
+
+    # ── F8: MAC address sync ──────────────────────────────────────────────────
+
+    def test_sync_reservation_creates_mac_address_entry(self):
+        """F8: sync_reservation_to_netbox creates a MACAddress DCIM entry when hw-address is present."""
+        try:
+            from dcim.models import MACAddress
+        except (ImportError, AttributeError):
+            self.skipTest("MACAddress not available in this NetBox version")
+        from netbox_kea.sync import sync_reservation_to_netbox
+
+        sync_reservation_to_netbox(self._RESERVATION)
+        self.assertEqual(MACAddress.objects.count(), 1)
+
+    def test_sync_reservation_skips_mac_when_no_hw_address(self):
+        """F8: sync_reservation_to_netbox skips MACAddress when reservation has no hw-address."""
+        try:
+            from dcim.models import MACAddress
+        except (ImportError, AttributeError):
+            self.skipTest("MACAddress not available in this NetBox version")
+        from netbox_kea.sync import sync_reservation_to_netbox
+
+        reservation = {"ip-address": "192.168.51.201", "duid": "00:01:02:03", "subnet-id": 1}
+        sync_reservation_to_netbox(reservation)
+        self.assertEqual(MACAddress.objects.count(), 0)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

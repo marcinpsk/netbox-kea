@@ -1917,6 +1917,107 @@ class TestServerSubnet4EditView(_ViewTestBase):
         self.assertIsNone(kwargs.get("renew_timer"))
         self.assertIsNone(kwargs.get("rebind_timer"))
 
+    # ── F5: inherited options ─────────────────────────────────────────────────
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_get_passes_inherited_dns_from_global_config(self, MockKeaClient):
+        """F5: When subnet has no DNS set, inherited_options contains global DNS."""
+        mock_client = MockKeaClient.return_value
+        subnet_no_opts = [
+            {
+                "result": 0,
+                "arguments": {"subnet4": [{"id": 42, "subnet": "10.0.0.0/24", "pools": [], "option-data": []}]},
+            }
+        ]
+        config_with_global_dns = [
+            {
+                "result": 0,
+                "arguments": {
+                    "Dhcp4": {
+                        "option-data": [{"name": "domain-name-servers", "data": "8.8.8.8"}],
+                        "shared-networks": [],
+                    }
+                },
+            }
+        ]
+        mock_client.command.side_effect = [subnet_no_opts, config_with_global_dns]
+        response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 200)
+        inherited = response.context.get("inherited_options", {})
+        self.assertIn("dns_servers", inherited)
+        self.assertEqual(inherited["dns_servers"]["value"], "8.8.8.8")
+        self.assertEqual(inherited["dns_servers"]["source"], "global")
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_get_inherited_options_empty_when_kea_config_fails(self, MockKeaClient):
+        """F5: When config-get raises KeaException, inherited_options is an empty dict."""
+        from netbox_kea.kea import KeaException
+
+        MockKeaClient.return_value.command.side_effect = KeaException({"result": 1, "text": "err"}, index=0)
+        response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 200)
+        inherited = response.context.get("inherited_options", {})
+        self.assertEqual(inherited, {})
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_get_inherited_options_excludes_field_already_set_in_subnet(self, MockKeaClient):
+        """F5: Fields already set in the subnet itself are excluded from inherited_options."""
+        mock_client = MockKeaClient.return_value
+        # _SUBNET4_GET_FULL has domain-name-servers: 8.8.8.8 in option-data
+        config_with_global_dns = [
+            {
+                "result": 0,
+                "arguments": {
+                    "Dhcp4": {
+                        "option-data": [{"name": "domain-name-servers", "data": "1.1.1.1"}],
+                        "shared-networks": [],
+                    }
+                },
+            }
+        ]
+        mock_client.command.side_effect = [_SUBNET4_GET_FULL, config_with_global_dns]
+        response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 200)
+        inherited = response.context.get("inherited_options", {})
+        # dns_servers is already set by subnet — should NOT appear as inherited
+        self.assertNotIn("dns_servers", inherited)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_get_inherited_options_prefers_shared_network_over_global(self, MockKeaClient):
+        """F5: Shared-network option-data overrides global in inherited_options."""
+        mock_client = MockKeaClient.return_value
+        subnet_no_opts = [
+            {
+                "result": 0,
+                "arguments": {"subnet4": [{"id": 42, "subnet": "10.0.0.0/24", "pools": [], "option-data": []}]},
+            }
+        ]
+        config_shared_net = [
+            {
+                "result": 0,
+                "arguments": {
+                    "Dhcp4": {
+                        "option-data": [{"name": "domain-name-servers", "data": "8.8.8.8"}],
+                        "shared-networks": [
+                            {
+                                "name": "net-alpha",
+                                "subnet4": [{"id": 42}],
+                                "option-data": [{"name": "domain-name-servers", "data": "192.168.1.1"}],
+                            }
+                        ],
+                    }
+                },
+            }
+        ]
+        mock_client.command.side_effect = [subnet_no_opts, config_shared_net]
+        response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 200)
+        inherited = response.context.get("inherited_options", {})
+        self.assertIn("dns_servers", inherited)
+        # Should use shared-network value, not global
+        self.assertEqual(inherited["dns_servers"]["value"], "192.168.1.1")
+        self.assertIn("net-alpha", inherited["dns_servers"]["source"])
+
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestServerSubnet6EditView(_ViewTestBase):

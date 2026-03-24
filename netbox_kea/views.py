@@ -1602,6 +1602,8 @@ class ServerReservation4AddView(_KeaChangeMixin, generic.ObjectView):
             if cd.get("hostname"):
                 reservation["hostname"] = cd["hostname"]
             client = server.get_client(version=4)
+            # F4: Warn (non-blocking) when the reservation IP is inside an existing pool
+            _warn_reservation_pool_overlap(request, client, 4, cd["subnet_id"], cd["ip_address"])
             try:
                 client.reservation_add("dhcp4", reservation)
                 messages.success(request, f"Reservation for {cd['ip_address']} created.")
@@ -1678,6 +1680,10 @@ class ServerReservation6AddView(_KeaChangeMixin, generic.ObjectView):
             if cd.get("hostname"):
                 reservation["hostname"] = cd["hostname"]
             client = server.get_client(version=6)
+            # F4: Warn (non-blocking) when any reservation IP is inside an existing pool
+            primary_ip_str = (reservation.get("ip-addresses") or [""])[0]
+            if primary_ip_str:
+                _warn_reservation_pool_overlap(request, client, 6, cd["subnet_id"], primary_ip_str)
             try:
                 client.reservation_add("dhcp6", reservation)
                 messages.success(request, "DHCPv6 reservation created.")
@@ -2005,6 +2011,108 @@ class ServerReservation6DeleteView(_KeaChangeMixin, generic.ObjectView):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+def _warn_pool_reservation_overlap(
+    request: HttpRequest,
+    client: "KeaClient",
+    version: int,
+    subnet_id: int,
+    pool_str: str,
+) -> None:
+    """Add a non-blocking warning if any existing reservation IP falls within *pool_str*.
+
+    Uses ``reservation-get-page`` to iterate all reservations for the subnet
+    and checks each one against the pool range (IPRange or CIDR).  Silently
+    skips on any error (host_cmds not loaded, network failure, etc.).
+    """
+    try:
+        from netaddr import IPAddress, IPNetwork, IPRange
+
+        if "-" in pool_str and "/" not in pool_str:
+            start, end = pool_str.split("-", 1)
+            pool_range: IPRange | IPNetwork = IPRange(start.strip(), end.strip())
+        else:
+            pool_range = IPNetwork(pool_str)
+
+        overlapping: list[str] = []
+        source_index, from_index = 0, 0
+        while True:
+            hosts, from_index, source_index = client.reservation_get_page(
+                service=f"dhcp{version}",
+                source_index=source_index,
+                from_index=from_index,
+                limit=200,
+            )
+            if not hosts:
+                break
+            for host in hosts:
+                if host.get("subnet-id") != subnet_id:
+                    continue
+                ip_str = host.get("ip-address") or ((host.get("ip-addresses") or [None])[0])
+                if ip_str:
+                    try:
+                        if IPAddress(ip_str) in pool_range:
+                            overlapping.append(ip_str)
+                    except Exception:  # noqa: BLE001
+                        pass
+            if from_index == 0:
+                break
+
+        if overlapping:
+            sample = ", ".join(overlapping[:5])
+            extra = f" (+{len(overlapping) - 5} more)" if len(overlapping) > 5 else ""
+            messages.warning(
+                request,
+                f"Pool {pool_str} overlaps {len(overlapping)} existing reservation(s): {sample}{extra}. "
+                "Kea allows this — reservations take priority over pool allocation.",
+            )
+    except Exception:  # noqa: BLE001
+        logger.debug("Failed to check pool/reservation overlap for subnet %s", subnet_id)
+
+
+def _warn_reservation_pool_overlap(
+    request: HttpRequest,
+    client: "KeaClient",
+    version: int,
+    subnet_id: int,
+    ip_str: str,
+) -> None:
+    """Add a non-blocking warning if *ip_str* falls within an existing pool in *subnet_id*.
+
+    Fetches the subnet configuration via ``subnet{version}-get`` and checks each
+    pool entry.  Silently skips on any error.
+    """
+    try:
+        from netaddr import IPAddress, IPNetwork, IPRange
+
+        resp = client.command(
+            f"subnet{version}-get",
+            service=[f"dhcp{version}"],
+            arguments={"id": subnet_id},
+        )
+        subnet_list = resp[0].get("arguments", {}).get(f"subnet{version}", []) or []
+        subnet = subnet_list[0] if subnet_list else {}
+        ip = IPAddress(ip_str)
+
+        for pool_entry in subnet.get("pools", []):
+            ps = pool_entry.get("pool", "")
+            if not ps:
+                continue
+            if "-" in ps and "/" not in ps:
+                start, end = ps.split("-", 1)
+                pool_range: IPRange | IPNetwork = IPRange(start.strip(), end.strip())
+            else:
+                pool_range = IPNetwork(ps)
+            if ip in pool_range:
+                messages.warning(
+                    request,
+                    f"IP {ip_str} is within existing pool {ps}. "
+                    "Kea allows this — reservations take priority over pool allocation.",
+                )
+                break
+    except Exception:  # noqa: BLE001
+        logger.debug("Failed to check reservation/pool overlap for %s in subnet %s", ip_str, subnet_id)
+
+
 class _BasePoolAddView(_KeaChangeMixin, generic.ObjectView):
     """Base view for adding a pool to a subnet."""
 
@@ -2047,6 +2155,8 @@ class _BasePoolAddView(_KeaChangeMixin, generic.ObjectView):
             )
         pool = form.cleaned_data["pool"]
         client = server.get_client(version=self.dhcp_version)
+        # F4: Warn (non-blocking) when any reservation IP falls in the new pool range
+        _warn_pool_reservation_overlap(request, client, self.dhcp_version, subnet_id, pool)
         try:
             client.pool_add(version=self.dhcp_version, subnet_id=subnet_id, pool=pool)
             messages.success(request, f"Pool {pool} added to subnet {subnet_id}.")
@@ -2247,11 +2357,12 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
             logger.warning("Failed to fetch subnet %s for editing", subnet_id)
             return {}
 
-    def _get_network_data(self, client: "KeaClient", subnet_id: int) -> tuple[list[tuple[str, str]], str]:
-        """Return ``(choices, current_network_name)`` for the shared-network dropdown.
+    def _get_network_data(self, client: "KeaClient", subnet_id: int) -> tuple[list[tuple[str, str]], str, dict]:
+        """Return ``(choices, current_network_name, dhcp_conf)`` for the shared-network dropdown.
 
         ``choices`` is suitable for a ``ChoiceField``: ``[("", "— global pool —"), ("net-a", "net-a"), ...]``.
         ``current_network_name`` is the name of the network the subnet currently belongs to, or ``""``.
+        ``dhcp_conf`` is the raw Dhcp4/Dhcp6 config dict (for deriving inherited options).
         """
         try:
             resp = client.command("config-get", service=[f"dhcp{self.dhcp_version}"])
@@ -2259,7 +2370,7 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
             networks = dhcp_conf.get("shared-networks", [])
         except Exception:
             logger.warning("Failed to fetch shared networks for subnet edit dropdown")
-            return [("", "— (global pool) —")], ""
+            return [("", "— (global pool) —")], "", {}
 
         current_network = ""
         choices: list[tuple[str, str]] = [("", "— (global pool) —")]
@@ -2271,7 +2382,7 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
             subnet_ids = {s.get("id") for s in sn.get(f"subnet{self.dhcp_version}", [])}
             if subnet_id in subnet_ids:
                 current_network = name
-        return choices, current_network
+        return choices, current_network, dhcp_conf
 
     def _form_initial(self, subnet: dict[str, Any]) -> dict[str, Any]:
         """Build SubnetEditForm initial values from a Kea subnet dict."""
@@ -2303,16 +2414,63 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
 
         return initial
 
+    def _get_inherited_options(
+        self,
+        dhcp_conf: dict[str, Any],
+        current_network: str,
+        form_initial: dict[str, Any],
+    ) -> dict[str, dict[str, str]]:
+        """Return option hints inherited from shared-network or global config.
+
+        Only includes options NOT already set by the subnet itself (i.e., absent
+        from *form_initial*).  Each value is a dict with ``"value"`` and
+        ``"source"`` keys so the template can display e.g.
+        *inherited from global: 8.8.8.8*.
+        """
+
+        def _parse_opts(option_list: list) -> dict[str, str]:
+            result: dict[str, str] = {}
+            for opt in option_list:
+                name = opt.get("name", "")
+                data = opt.get("data", "")
+                if name == "routers":
+                    result["gateway"] = data
+                elif name in ("domain-name-servers", "dns-servers"):
+                    result["dns_servers"] = data
+                elif name in ("ntp-servers", "sntp-servers"):
+                    result["ntp_servers"] = data
+            return result
+
+        global_opts = _parse_opts(dhcp_conf.get("option-data", []))
+
+        network_opts: dict[str, str] = {}
+        if current_network:
+            for sn in dhcp_conf.get("shared-networks", []):
+                if sn.get("name") == current_network:
+                    network_opts = _parse_opts(sn.get("option-data", []))
+                    break
+
+        inherited: dict[str, dict[str, str]] = {}
+        for field in ("gateway", "dns_servers", "ntp_servers"):
+            if form_initial.get(field):
+                continue  # subnet already overrides this option
+            if field in network_opts:
+                inherited[field] = {"value": network_opts[field], "source": f"shared-network: {current_network}"}
+            elif field in global_opts:
+                inherited[field] = {"value": global_opts[field], "source": "global"}
+        return inherited
+
     def get(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
         server = self.get_object(pk=pk)
         subnet = self._fetch_subnet(server, subnet_id)
         client = server.get_client(version=self.dhcp_version)
-        network_choices, current_network = self._get_network_data(client, subnet_id)
+        network_choices, current_network, dhcp_conf = self._get_network_data(client, subnet_id)
         initial = self._form_initial(subnet)
         initial["shared_network"] = current_network
         initial["current_network"] = current_network
         form = forms.SubnetEditForm(initial=initial)
         form.fields["shared_network"].choices = network_choices
+        inherited_options = self._get_inherited_options(dhcp_conf, current_network, initial)
         return render(
             request,
             self.template_name,
@@ -2323,6 +2481,7 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
                 "subnet_cidr": subnet.get("subnet", ""),
                 "dhcp_version": self.dhcp_version,
                 "return_url": self._subnets_url(pk),
+                "inherited_options": inherited_options,
             },
         )
 
@@ -2330,7 +2489,7 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
         server = self.get_object(pk=pk)
         return_url = self._subnets_url(pk)
         client = server.get_client(version=self.dhcp_version)
-        network_choices, _ = self._get_network_data(client, subnet_id)
+        network_choices, _, _ = self._get_network_data(client, subnet_id)
         form = forms.SubnetEditForm(request.POST)
         form.fields["shared_network"].choices = network_choices
         if not form.is_valid():

@@ -112,6 +112,25 @@ def bulk_fetch_netbox_ips(ip_list: list[str]) -> dict[str, NbIPAddress]:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+def _sync_mac_address(hw_address: str) -> None:
+    """Create or retrieve a NetBox ``MACAddress`` entry for *hw_address*.
+
+    Silently skipped on NetBox versions older than 4.1 where the
+    ``dcim.MACAddress`` model does not exist.  All other errors are caught and
+    logged at DEBUG level so MAC sync failures never surface to the user.
+    """
+    try:
+        from dcim.models import MACAddress
+        from netaddr import EUI, mac_unix_expanded
+
+        mac_str = str(EUI(hw_address, dialect=mac_unix_expanded))
+        MACAddress.objects.get_or_create(mac_address=mac_str)
+    except ImportError:
+        pass  # NetBox < 4.1 — MACAddress model not available
+    except Exception:
+        logger.debug("Failed to sync MAC address %s to NetBox DCIM", hw_address)
+
+
 def _apply_ip_fields(
     ip_obj: NbIPAddress,
     status: str,
@@ -148,6 +167,10 @@ def sync_lease_to_netbox(lease: dict) -> tuple[NbIPAddress, bool]:
     hostname.  When a matching NetBox prefix exists the correct prefix length
     is used; otherwise ``/32`` (IPv4) or ``/128`` (IPv6) is used.
 
+    Also creates/updates a ``MACAddress`` entry in DCIM when the lease
+    includes a ``hw-address`` field (NetBox ≥ 4.1 only; silently skipped on
+    older versions).
+
     Returns ``(ip_object, created)`` where *created* is ``True`` on the first
     call for a given IP.
     """
@@ -173,6 +196,10 @@ def sync_lease_to_netbox(lease: dict) -> tuple[NbIPAddress, bool]:
 
     if created or changed:
         ip_obj.save()
+
+    hw_address = lease.get("hw-address")
+    if hw_address:
+        _sync_mac_address(hw_address)
 
     return ip_obj, created
 
@@ -228,5 +255,9 @@ def sync_reservation_to_netbox(reservation: dict) -> tuple[NbIPAddress, bool]:
         if primary_obj is None:
             primary_obj = ip_obj
         any_created = any_created or created
+
+    hw_address = reservation.get("hw-address")
+    if hw_address:
+        _sync_mac_address(hw_address)
 
     return primary_obj, any_created  # type: ignore[return-value]

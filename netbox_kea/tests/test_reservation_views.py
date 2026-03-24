@@ -354,6 +354,50 @@ class TestServerReservation4AddView(_ReservationViewBase):
         # Must not crash with 500; either re-render (200) or redirect with error
         self.assertIn(response.status_code, (200, 302))
 
+    # ── F4: reservation-in-pool overlap warning ───────────────────────────────
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_warns_when_reservation_ip_inside_pool(self, MockKeaClient):
+        """F4: POST adding a reservation whose IP is inside an existing pool shows a non-blocking warning."""
+        from django.contrib.messages import get_messages
+
+        mock_client = MockKeaClient.return_value
+        mock_client.reservation_add.return_value = None
+        # subnet4-get returns subnet with a pool that covers the reservation IP (192.168.1.100)
+        mock_client.command.return_value = [
+            {
+                "result": 0,
+                "arguments": {"subnet4": [{"id": 1, "pools": [{"pool": "192.168.1.50-192.168.1.200"}]}]},
+            }
+        ]
+        response = self.client.post(self._add_url(), self._valid_post_data())
+        # Non-blocking: still redirects
+        self.assertEqual(response.status_code, 302)
+        mock_client.reservation_add.assert_called_once()
+        storage = list(get_messages(response.wsgi_request))
+        warning_texts = [str(m) for m in storage]
+        self.assertTrue(any("pool" in t.lower() or "overlap" in t.lower() for t in warning_texts))
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_no_warning_when_reservation_ip_outside_pool(self, MockKeaClient):
+        """F4: No warning when the reservation IP is not in any existing pool."""
+        from django.contrib.messages import get_messages
+
+        mock_client = MockKeaClient.return_value
+        mock_client.reservation_add.return_value = None
+        # Pool does NOT cover the reservation IP
+        mock_client.command.return_value = [
+            {
+                "result": 0,
+                "arguments": {"subnet4": [{"id": 1, "pools": [{"pool": "192.168.1.10-192.168.1.50"}]}]},
+            }
+        ]
+        response = self.client.post(self._add_url(), self._valid_post_data())
+        self.assertEqual(response.status_code, 302)
+        storage = list(get_messages(response.wsgi_request))
+        warning_texts = [str(m) for m in storage]
+        self.assertFalse(any("pool" in t.lower() for t in warning_texts))
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TestServerReservation6AddView
@@ -1035,6 +1079,49 @@ class TestServerSubnet4PoolAddView(_ReservationViewBase):
         self.client.logout()
         response = self.client.get(self._url())
         self.assertIn(response.status_code, (302, 403))
+
+    # ── F4: pool-reservation overlap warning ─────────────────────────────────
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_warns_when_new_pool_overlaps_existing_reservation(self, MockKeaClient):
+        """F4: POST adding a pool overlapping an existing reservation shows a non-blocking warning."""
+        from django.contrib.messages import get_messages
+
+        mock_client = MockKeaClient.return_value
+        mock_client.pool_add.return_value = None
+        # reservation_get_page returns one reservation whose IP is in the new pool range
+        mock_client.reservation_get_page.return_value = (
+            [{"subnet-id": self._SUBNET_ID, "ip-address": "10.0.0.55"}],
+            0,
+            0,
+        )
+        response = self.client.post(self._url(), {"pool": "10.0.0.50-10.0.0.99"})
+        # Non-blocking: pool is still added and view redirects
+        self.assertEqual(response.status_code, 302)
+        mock_client.pool_add.assert_called_once()
+        storage = list(get_messages(response.wsgi_request))
+        warning_texts = [str(m) for m in storage]
+        self.assertTrue(any("overlap" in t.lower() or "reservation" in t.lower() for t in warning_texts))
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_no_warning_when_no_reservations_in_pool(self, MockKeaClient):
+        """F4: No warning when no reservations fall within the new pool range."""
+        from django.contrib.messages import get_messages
+
+        mock_client = MockKeaClient.return_value
+        mock_client.pool_add.return_value = None
+        # reservation_get_page returns a reservation OUTSIDE the new pool
+        mock_client.reservation_get_page.return_value = (
+            [{"subnet-id": self._SUBNET_ID, "ip-address": "10.0.0.10"}],
+            0,
+            0,
+        )
+        response = self.client.post(self._url(), {"pool": "10.0.0.50-10.0.0.99"})
+        self.assertEqual(response.status_code, 302)
+        storage = list(get_messages(response.wsgi_request))
+        warning_texts = [str(m) for m in storage]
+        # Should have success message but no overlap warning
+        self.assertFalse(any("overlap" in t.lower() for t in warning_texts))
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
