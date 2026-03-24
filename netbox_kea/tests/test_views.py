@@ -1883,6 +1883,40 @@ class TestServerSubnet4EditView(_ViewTestBase):
         response = self.client.post(self._url(), {})
         self.assertIn(response.status_code, (302, 403))
 
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_passes_renew_rebind_timers_to_subnet_update(self, MockKeaClient):
+        """F11: POST with renew_timer and rebind_timer must pass them to subnet_update."""
+        MockKeaClient.return_value.subnet_update.return_value = None
+        self.client.post(
+            self._url(subnet_id=42),
+            {
+                "subnet_cidr": "10.0.0.0/24",
+                "pools": "",
+                "gateway": "",
+                "dns_servers": "",
+                "ntp_servers": "",
+                "renew_timer": "600",
+                "rebind_timer": "900",
+            },
+        )
+        call_kwargs = MockKeaClient.return_value.subnet_update.call_args
+        kwargs = call_kwargs.kwargs if call_kwargs.kwargs else call_kwargs[1]
+        self.assertEqual(kwargs.get("renew_timer"), 600)
+        self.assertEqual(kwargs.get("rebind_timer"), 900)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_omits_timers_when_not_supplied(self, MockKeaClient):
+        """F11: POST without timer fields must pass None/absent to subnet_update."""
+        MockKeaClient.return_value.subnet_update.return_value = None
+        self.client.post(
+            self._url(subnet_id=42),
+            {"subnet_cidr": "10.0.0.0/24", "pools": "", "gateway": "", "dns_servers": "", "ntp_servers": ""},
+        )
+        call_kwargs = MockKeaClient.return_value.subnet_update.call_args
+        kwargs = call_kwargs.kwargs if call_kwargs.kwargs else call_kwargs[1]
+        self.assertIsNone(kwargs.get("renew_timer"))
+        self.assertIsNone(kwargs.get("rebind_timer"))
+
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestServerSubnet6EditView(_ViewTestBase):

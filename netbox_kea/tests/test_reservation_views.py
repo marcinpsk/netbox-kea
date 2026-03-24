@@ -479,6 +479,43 @@ class TestServerReservation4EditView(_ReservationViewBase):
         response = self.client.post(self._edit_url(), self._valid_post_data())
         self.assertIn(response.status_code, (200, 302))
 
+    @patch("netbox_kea.models.KeaClient")
+    def test_get_shows_lease_diff_when_hostname_differs(self, MockKeaClient):
+        """GET must add lease_diff to context when active lease hostname differs."""
+        mock_client = MockKeaClient.return_value
+        mock_client.reservation_get.return_value = _SAMPLE_RESERVATION4  # hostname: "testhost.example.com"
+        mock_client.lease_get_by_ip.return_value = {
+            "ip-address": self._IP,
+            "hostname": "lease-host.example.com",
+        }
+        response = self.client.get(self._edit_url())
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("lease_diff", response.context)
+        self.assertEqual(response.context["lease_diff"]["hostname"], "lease-host.example.com")
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_get_no_lease_diff_when_hostname_matches(self, MockKeaClient):
+        """GET must not include lease_diff when lease hostname matches reservation."""
+        mock_client = MockKeaClient.return_value
+        mock_client.reservation_get.return_value = _SAMPLE_RESERVATION4  # hostname: "testhost.example.com"
+        mock_client.lease_get_by_ip.return_value = {
+            "ip-address": self._IP,
+            "hostname": "testhost.example.com",
+        }
+        response = self.client.get(self._edit_url())
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("lease_diff", response.context)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_get_no_lease_diff_when_lease_fetch_raises(self, MockKeaClient):
+        """GET must not crash or add lease_diff when the lease fetch raises KeaException."""
+        mock_client = MockKeaClient.return_value
+        mock_client.reservation_get.return_value = _SAMPLE_RESERVATION4
+        mock_client.lease_get_by_ip.side_effect = KeaException({"result": 3, "text": "not found"}, index=0)
+        response = self.client.get(self._edit_url())
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("lease_diff", response.context)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TestServerReservation6EditView
@@ -1890,3 +1927,143 @@ class TestPartialPersistErrorOnSubnetDelete(_ReservationViewBase):
         mock_client.subnet_del.side_effect = PartialPersistError("dhcp4", Exception("config-write failed"))
         response = self.client.post(self._url(), {"confirm": True})
         self.assertEqual(response.status_code, 302)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# F3: Reservation edit lease diff — DHCPv6 version
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestServerReservation6EditLeaseDiff(_ReservationViewBase):
+    """F3: GET edit for DHCPv6 shows lease_diff when active lease hostname differs."""
+
+    _SUBNET_ID = 1
+    _IP = "2001:db8::1"
+
+    def _edit_url(self):
+        return reverse(
+            "plugins:netbox_kea:server_reservation6_edit",
+            args=[self.server.pk, self._SUBNET_ID, self._IP],
+        )
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_get_shows_lease_diff_when_hostname_differs(self, MockKeaClient):
+        """GET must add lease_diff to context when DHCPv6 active lease hostname differs."""
+        mock_client = MockKeaClient.return_value
+        mock_client.reservation_get.return_value = _SAMPLE_RESERVATION6  # hostname: "testhost6.example.com"
+        mock_client.lease_get_by_ip.return_value = {
+            "ip-address": self._IP,
+            "hostname": "lease-host6.example.com",
+        }
+        response = self.client.get(self._edit_url())
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("lease_diff", response.context)
+        self.assertEqual(response.context["lease_diff"]["hostname"], "lease-host6.example.com")
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_get_no_lease_diff_when_lease_fetch_raises(self, MockKeaClient):
+        """GET must not crash when DHCPv6 lease fetch raises KeaException."""
+        mock_client = MockKeaClient.return_value
+        mock_client.reservation_get.return_value = _SAMPLE_RESERVATION6
+        mock_client.lease_get_by_ip.side_effect = KeaException({"result": 3, "text": "not found"}, index=0)
+        response = self.client.get(self._edit_url())
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("lease_diff", response.context)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# F7: Reservation journal entries
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestReservationJournalEntries(_ReservationViewBase):
+    """F7: Successful reservation add/edit/delete must create a JournalEntry on the Server."""
+
+    _SUBNET_ID = 1
+    _IP = "192.168.1.100"
+
+    def _add_url(self):
+        return reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk])
+
+    def _edit_url(self):
+        return reverse(
+            "plugins:netbox_kea:server_reservation4_edit",
+            args=[self.server.pk, self._SUBNET_ID, self._IP],
+        )
+
+    def _delete_url(self):
+        return reverse(
+            "plugins:netbox_kea:server_reservation4_delete",
+            args=[self.server.pk, self._SUBNET_ID, self._IP],
+        )
+
+    def _journal_count(self):
+        from extras.models import JournalEntry
+
+        return JournalEntry.objects.filter(assigned_object_id=self.server.pk).count()
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_add_creates_journal_entry(self, MockKeaClient):
+        """Successful reservation-add must create a JournalEntry on the Server."""
+        mock_client = MockKeaClient.return_value
+        mock_client.reservation_add.return_value = None
+        before = self._journal_count()
+        self.client.post(
+            self._add_url(),
+            {
+                "subnet_id": self._SUBNET_ID,
+                "ip_address": self._IP,
+                "identifier_type": "hw-address",
+                "identifier": "aa:bb:cc:dd:ee:ff",
+                "hostname": "testhost.example.com",
+            },
+        )
+        self.assertEqual(self._journal_count(), before + 1)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_edit_creates_journal_entry(self, MockKeaClient):
+        """Successful reservation-update must create a JournalEntry on the Server."""
+        mock_client = MockKeaClient.return_value
+        mock_client.reservation_get.return_value = _SAMPLE_RESERVATION4
+        mock_client.reservation_update.return_value = None
+        before = self._journal_count()
+        self.client.post(
+            self._edit_url(),
+            {
+                "subnet_id": self._SUBNET_ID,
+                "ip_address": self._IP,
+                "identifier_type": "hw-address",
+                "identifier": "aa:bb:cc:dd:ee:ff",
+                "hostname": "updated-host.example.com",
+            },
+        )
+        self.assertEqual(self._journal_count(), before + 1)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_delete_creates_journal_entry(self, MockKeaClient):
+        """Successful reservation-del must create a JournalEntry on the Server."""
+        mock_client = MockKeaClient.return_value
+        mock_client.reservation_del.return_value = None
+        before = self._journal_count()
+        self.client.post(self._delete_url(), {"confirm": "true"})
+        self.assertEqual(self._journal_count(), before + 1)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_add_kea_error_does_not_create_journal_entry(self, MockKeaClient):
+        """Failed reservation-add must NOT create a JournalEntry."""
+        mock_client = MockKeaClient.return_value
+        mock_client.reservation_add.side_effect = KeaException({"result": 1, "text": "error"}, index=0)
+        before = self._journal_count()
+        self.client.post(
+            self._add_url(),
+            {
+                "subnet_id": self._SUBNET_ID,
+                "ip_address": self._IP,
+                "identifier_type": "hw-address",
+                "identifier": "aa:bb:cc:dd:ee:ff",
+                "hostname": "testhost.example.com",
+            },
+        )
+        self.assertEqual(self._journal_count(), before)

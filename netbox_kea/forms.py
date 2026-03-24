@@ -749,6 +749,18 @@ class SubnetEditForm(_SubnetBaseForm):
         min_value=1,
         help_text="Maximum lease lifetime in seconds.",
     )
+    renew_timer = forms.IntegerField(
+        label="Renew timer / T1 (s)",
+        required=False,
+        min_value=1,
+        help_text="Time (seconds) after which client should renew. Kea parameter: renew-timer.",
+    )
+    rebind_timer = forms.IntegerField(
+        label="Rebind timer / T2 (s)",
+        required=False,
+        min_value=1,
+        help_text="Time (seconds) after which client should rebind. Kea parameter: rebind-timer.",
+    )
     shared_network = forms.ChoiceField(
         label="Shared Network",
         required=False,

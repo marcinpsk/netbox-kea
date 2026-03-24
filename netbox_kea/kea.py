@@ -464,6 +464,8 @@ class KeaClient:
         valid_lft: int | None = None,
         min_valid_lft: int | None = None,
         max_valid_lft: int | None = None,
+        renew_timer: int | None = None,
+        rebind_timer: int | None = None,
     ) -> None:
         """Update an existing subnet's configuration in Kea and persist the change.
 
@@ -485,6 +487,8 @@ class KeaClient:
             valid_lft: Preferred lease lifetime in seconds.
             min_valid_lft: Minimum lease lifetime in seconds.
             max_valid_lft: Maximum lease lifetime in seconds.
+            renew_timer: T1 renew timer in seconds (sent as ``renew-timer``).
+            rebind_timer: T2 rebind timer in seconds (sent as ``rebind-timer``).
 
         Raises:
             KeaException: If Kea returns a non-zero result code.
@@ -523,6 +527,10 @@ class KeaClient:
             subnet_def["min-valid-lft"] = min_valid_lft
         if max_valid_lft is not None:
             subnet_def["max-valid-lft"] = max_valid_lft
+        if renew_timer is not None:
+            subnet_def["renew-timer"] = renew_timer
+        if rebind_timer is not None:
+            subnet_def["rebind-timer"] = rebind_timer
 
         self.command(
             f"subnet{version}-update",
@@ -803,6 +811,31 @@ class KeaClient:
             service=[service],
             arguments=lease,
         )
+
+    def lease_get_by_ip(self, version: int, ip_address: str) -> dict | None:
+        """Fetch a single lease by IP address.
+
+        Args:
+            version: DHCP version (4 or 6).
+            ip_address: IP address to look up.
+
+        Returns:
+            Lease dict from ``lease{v}-get`` response arguments, or ``None`` if not found
+            (result=3).
+
+        Raises:
+            KeaException: If Kea returns any error other than "not found" (result != 0/3).
+
+        """
+        service = f"dhcp{version}"
+        resp = self.command(
+            f"lease{version}-get",
+            service=[service],
+            arguments={"ip-address": ip_address},
+        )
+        if resp[0]["result"] == 3:
+            return None
+        return resp[0].get("arguments")
 
     def dhcp_disable(self, service: str, max_period: int | None = None) -> None:
         """Temporarily disable DHCP processing on *service*.

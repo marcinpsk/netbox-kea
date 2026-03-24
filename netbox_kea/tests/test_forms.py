@@ -656,3 +656,54 @@ class TestSharedNetworkForm(SimpleTestCase):
         form_too_long = self._form({"name": "x" * 129})
         self.assertFalse(form_too_long.is_valid())
         self.assertIn("name", form_too_long.errors)
+
+
+# ---------------------------------------------------------------------------
+# F11: SubnetEditForm renew/rebind timer fields
+# ---------------------------------------------------------------------------
+
+
+class TestSubnetEditFormTimers(SimpleTestCase):
+    """F11: SubnetEditForm must expose renew_timer and rebind_timer fields."""
+
+    def _form(self, **kwargs):
+        from netbox_kea.forms import SubnetEditForm
+
+        data = {"subnet_cidr": "10.0.0.0/24", **kwargs}
+        return SubnetEditForm(data=data)
+
+    def test_form_has_renew_timer_field(self):
+        """SubnetEditForm must have a renew_timer field."""
+        from netbox_kea.forms import SubnetEditForm
+
+        self.assertIn("renew_timer", SubnetEditForm().fields)
+
+    def test_form_has_rebind_timer_field(self):
+        """SubnetEditForm must have a rebind_timer field."""
+        from netbox_kea.forms import SubnetEditForm
+
+        self.assertIn("rebind_timer", SubnetEditForm().fields)
+
+    def test_valid_form_with_timer_fields(self):
+        """A form with valid renew_timer and rebind_timer values is valid."""
+        form = self._form(renew_timer="600", rebind_timer="900")
+        self.assertTrue(form.is_valid(), form.errors)
+
+    def test_renew_timer_cleaned_as_int(self):
+        """renew_timer cleaned value must be an integer."""
+        form = self._form(renew_timer="600", rebind_timer="900")
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.cleaned_data["renew_timer"], 600)
+
+    def test_rebind_timer_cleaned_as_int(self):
+        """rebind_timer cleaned value must be an integer."""
+        form = self._form(renew_timer="600", rebind_timer="900")
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.cleaned_data["rebind_timer"], 900)
+
+    def test_timer_fields_are_optional(self):
+        """renew_timer and rebind_timer are optional; form is valid without them."""
+        form = self._form()
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertIsNone(form.cleaned_data.get("renew_timer"))
+        self.assertIsNone(form.cleaned_data.get("rebind_timer"))

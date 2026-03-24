@@ -54,6 +54,44 @@ T = TypeVar("T", bound=BaseTable)
 _POOL_RE = re.compile(r"^[0-9a-fA-F.:/-]{3,100}$")
 
 
+def _add_reservation_journal(server: "Server", user: Any, action: str, reservation: dict) -> None:
+    """Create a JournalEntry on *server* recording a reservation CRUD event.
+
+    Silently skips if JournalEntry is unavailable (older NetBox or import error).
+
+    Args:
+        server: The Server instance the journal entry is attached to.
+        user: The request.user who performed the action.
+        action: Human-readable action name: "created", "updated", or "deleted".
+        reservation: The reservation dict (Kea format, may be hyphenated or underscored keys).
+
+    """
+    try:
+        from extras.models import JournalEntry
+
+        ip = reservation.get("ip-address") or reservation.get("ip_address", "")
+        ips = reservation.get("ip-addresses") or reservation.get("ip_addresses", [])
+        if ips and not ip:
+            ip = ips[0] if isinstance(ips, list) else ips
+        hostname = reservation.get("hostname", "")
+        mac = reservation.get("hw-address") or reservation.get("hw_address", "")
+        duid = reservation.get("duid", "")
+        identifier = mac or duid
+        parts = [f"Reservation {action}: {ip}"]
+        if hostname:
+            parts.append(f"hostname: {hostname}")
+        if identifier:
+            parts.append(f"identifier: {identifier}")
+        JournalEntry.objects.create(
+            assigned_object=server,
+            created_by=user,
+            kind="info",
+            comments="; ".join(parts),
+        )
+    except Exception:
+        logger.debug("Failed to create reservation journal entry", exc_info=True)
+
+
 def _strip_empty_params(path: str) -> str:
     """Return *path* with blank query-string parameters removed.
 
@@ -1567,6 +1605,7 @@ class ServerReservation4AddView(_KeaChangeMixin, generic.ObjectView):
             try:
                 client.reservation_add("dhcp4", reservation)
                 messages.success(request, f"Reservation for {cd['ip_address']} created.")
+                _add_reservation_journal(server, request.user, "created", reservation)
                 if cd.get("sync_to_netbox"):
                     try:
                         _, created = sync_reservation_to_netbox(reservation)
@@ -1642,6 +1681,7 @@ class ServerReservation6AddView(_KeaChangeMixin, generic.ObjectView):
             try:
                 client.reservation_add("dhcp6", reservation)
                 messages.success(request, "DHCPv6 reservation created.")
+                _add_reservation_journal(server, request.user, "created", reservation)
                 if cd.get("sync_to_netbox"):
                     try:
                         _, created = sync_reservation_to_netbox(reservation)
@@ -1708,17 +1748,20 @@ class ServerReservation4EditView(_KeaChangeMixin, generic.ObjectView):
             "identifier": identifier,
             "hostname": reservation.get("hostname", ""),
         }
-        return render(
-            request,
-            self.template_name,
-            {
-                "object": server,
-                "form": forms.Reservation4Form(initial=initial),
-                "dhcp_version": 4,
-                "action": "Edit",
-                "return_url": return_url,
-            },
-        )
+        context: dict[str, Any] = {
+            "object": server,
+            "form": forms.Reservation4Form(initial=initial),
+            "dhcp_version": 4,
+            "action": "Edit",
+            "return_url": return_url,
+        }
+        try:
+            lease = server.get_client(version=4).lease_get_by_ip(4, ip_address)
+            if lease and lease.get("hostname") and lease.get("hostname") != reservation.get("hostname", ""):
+                context["lease_diff"] = {"hostname": lease["hostname"]}
+        except Exception:
+            pass
+        return render(request, self.template_name, context)
 
     def post(self, request: HttpRequest, pk: int, subnet_id: int, ip_address: str) -> HttpResponse:
         """Validate and submit updated reservation to Kea."""
@@ -1738,6 +1781,7 @@ class ServerReservation4EditView(_KeaChangeMixin, generic.ObjectView):
             try:
                 client.reservation_update("dhcp4", reservation)
                 messages.success(request, f"Reservation for {cd['ip_address']} updated.")
+                _add_reservation_journal(server, request.user, "updated", reservation)
                 if cd.get("sync_to_netbox"):
                     try:
                         _, created = sync_reservation_to_netbox(reservation)
@@ -1804,17 +1848,20 @@ class ServerReservation6EditView(_KeaChangeMixin, generic.ObjectView):
             "identifier": identifier,
             "hostname": reservation.get("hostname", ""),
         }
-        return render(
-            request,
-            self.template_name,
-            {
-                "object": server,
-                "form": forms.Reservation6Form(initial=initial),
-                "dhcp_version": 6,
-                "action": "Edit",
-                "return_url": return_url,
-            },
-        )
+        context: dict[str, Any] = {
+            "object": server,
+            "form": forms.Reservation6Form(initial=initial),
+            "dhcp_version": 6,
+            "action": "Edit",
+            "return_url": return_url,
+        }
+        try:
+            lease = server.get_client(version=6).lease_get_by_ip(6, ip_address)
+            if lease and lease.get("hostname") and lease.get("hostname") != reservation.get("hostname", ""):
+                context["lease_diff"] = {"hostname": lease["hostname"]}
+        except Exception:
+            pass
+        return render(request, self.template_name, context)
 
     def post(self, request: HttpRequest, pk: int, subnet_id: int, ip_address: str) -> HttpResponse:
         """Validate and submit updated DHCPv6 reservation to Kea."""
@@ -1834,6 +1881,7 @@ class ServerReservation6EditView(_KeaChangeMixin, generic.ObjectView):
             try:
                 client.reservation_update("dhcp6", reservation)
                 messages.success(request, "DHCPv6 reservation updated.")
+                _add_reservation_journal(server, request.user, "updated", reservation)
                 if cd.get("sync_to_netbox"):
                     try:
                         _, created = sync_reservation_to_netbox(reservation)
@@ -1895,6 +1943,9 @@ class ServerReservation4DeleteView(_KeaChangeMixin, generic.ObjectView):
         try:
             client.reservation_del("dhcp4", subnet_id=subnet_id, ip_address=ip_address)
             messages.success(request, f"Reservation for {ip_address} deleted.")
+            _add_reservation_journal(
+                server, request.user, "deleted", {"ip-address": ip_address, "subnet-id": subnet_id}
+            )
         except PartialPersistError:
             messages.warning(request, "Change applied but may not survive a Kea restart (config-write failed).")
         except KeaException as exc:
@@ -1935,6 +1986,9 @@ class ServerReservation6DeleteView(_KeaChangeMixin, generic.ObjectView):
         try:
             client.reservation_del("dhcp6", subnet_id=subnet_id, ip_address=ip_address)
             messages.success(request, f"DHCPv6 reservation for {ip_address} deleted.")
+            _add_reservation_journal(
+                server, request.user, "deleted", {"ip-address": ip_address, "subnet-id": subnet_id}
+            )
         except PartialPersistError:
             messages.warning(request, "Change applied but may not survive a Kea restart (config-write failed).")
         except KeaException as exc:
@@ -2324,6 +2378,8 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
                 valid_lft=cd.get("valid_lft"),
                 min_valid_lft=cd.get("min_valid_lft"),
                 max_valid_lft=cd.get("max_valid_lft"),
+                renew_timer=cd.get("renew_timer"),
+                rebind_timer=cd.get("rebind_timer"),
             )
             messages.success(request, f"Subnet {cd['subnet_cidr']} updated.")
         except PartialPersistError:

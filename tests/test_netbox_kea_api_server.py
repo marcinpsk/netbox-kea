@@ -279,9 +279,7 @@ def test_server_create_dhcp4_false_dhcp6_false(nb_api: pynetbox.api, kea_url: st
         )
 
 
-def test_server_api_changelog_password_censored(
-    nb_api: pynetbox.api, nb_http: requests.Session
-):
+def test_server_api_changelog_password_censored(nb_api: pynetbox.api, nb_http: requests.Session):
     name = "changelog-test"
     server_url = "http://kea-ctrl-agent:8000"
 
@@ -290,11 +288,7 @@ def test_server_api_changelog_password_censored(
 
     version = nb_api.status()["netbox-version"]
 
-    object_changes = (
-        nb_api.extras.object_changes
-        if version.startswith("4.0")
-        else nb_api.core.object_changes
-    )
+    object_changes = nb_api.extras.object_changes if version.startswith("4.0") else nb_api.core.object_changes
 
     # pynetbox has a special model for core.object_changes but not for extras.object_changes
     # (as of v7.6.1). Cast to dict to make it consistent.

@@ -1569,6 +1569,54 @@ class TestSubnetUpdate(TestCase):
             result = self.client.subnet_update(version=4, subnet_id=1, subnet_cidr="10.0.0.0/24")
         self.assertIsNone(result)
 
+    def test_sends_renew_timer_when_provided(self):
+        """F11: subnet_update must include renew-timer in subnet payload when renew_timer is given."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(_SUBNET_UPDATE_RESP, _OK, _CONFIG_WRITE_RESP),
+        ) as mock_post:
+            self.client.subnet_update(version=4, subnet_id=1, subnet_cidr="10.0.0.0/24", renew_timer=600)
+        payload = self._update_payload(mock_post)
+        subnet_obj = payload["arguments"]["subnet4"][0]
+        self.assertEqual(subnet_obj["renew-timer"], 600)
+
+    def test_sends_rebind_timer_when_provided(self):
+        """F11: subnet_update must include rebind-timer in subnet payload when rebind_timer is given."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(_SUBNET_UPDATE_RESP, _OK, _CONFIG_WRITE_RESP),
+        ) as mock_post:
+            self.client.subnet_update(version=4, subnet_id=1, subnet_cidr="10.0.0.0/24", rebind_timer=900)
+        payload = self._update_payload(mock_post)
+        subnet_obj = payload["arguments"]["subnet4"][0]
+        self.assertEqual(subnet_obj["rebind-timer"], 900)
+
+    def test_omits_renew_timer_when_not_provided(self):
+        """F11: renew-timer must not appear in subnet payload when renew_timer=None."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(_SUBNET_UPDATE_RESP, _OK, _CONFIG_WRITE_RESP),
+        ) as mock_post:
+            self.client.subnet_update(version=4, subnet_id=1, subnet_cidr="10.0.0.0/24")
+        payload = self._update_payload(mock_post)
+        subnet_obj = payload["arguments"]["subnet4"][0]
+        self.assertNotIn("renew-timer", subnet_obj)
+
+    def test_omits_rebind_timer_when_not_provided(self):
+        """F11: rebind-timer must not appear in subnet payload when rebind_timer=None."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(_SUBNET_UPDATE_RESP, _OK, _CONFIG_WRITE_RESP),
+        ) as mock_post:
+            self.client.subnet_update(version=4, subnet_id=1, subnet_cidr="10.0.0.0/24")
+        payload = self._update_payload(mock_post)
+        subnet_obj = payload["arguments"]["subnet4"][0]
+        self.assertNotIn("rebind-timer", subnet_obj)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # _persist_config — config-test + config-write
