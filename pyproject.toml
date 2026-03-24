@@ -1,6 +1,6 @@
 [project]
 name = "netbox-kea-ng"
-version = "1.1.0"
+version = "1.1.1"
 description = "NetBox plugin for the Kea DHCP server (fork of netbox-kea)"
 readme = "README.md"
 requires-python = ">=3.10"
