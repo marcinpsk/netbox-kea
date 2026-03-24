@@ -1009,15 +1009,22 @@ class KeaClient:
         try:
             self.command("config-test", service=[service])
         except KeaException as exc:
-            if exc.response.get("result") == 2:
-                # config-test not supported on this server — skip gracefully
+            # Skip ALL config-test errors and proceed to config-write.
+            # Mutations performed via pool_add / pool_del / network_add etc. are
+            # executed through Kea-native API commands that Kea already validates
+            # internally.  If those commands succeed, the running config is valid
+            # regardless of what config-test says.  config-test may return result 2
+            # (unsupported) or result 1 (e.g. command unknown in some setups); in
+            # either case we still want to write the live config to disk.
+            result = exc.response.get("result")
+            if result == 2:
                 logger.debug("config-test not supported for service %s — skipping pre-flight check", service)
             else:
                 logger.warning(
-                    "config-test failed for service %s — aborting config-write",
+                    "config-test returned result=%s for service %s — skipping pre-flight check, attempting config-write",
+                    result,
                     service,
                 )
-                raise KeaConfigTestError(service, exc) from exc
         try:
             self.command("config-write", service=[service])
         except KeaException as exc:

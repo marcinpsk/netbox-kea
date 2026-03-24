@@ -49,6 +49,13 @@
              aria-labelledby="examplesHeading" data-bs-parent="#optionDefExamples">
           <div class="accordion-body">
 
+            <div class="alert alert-info py-2 small mb-3">
+              <strong>Two-step workflow:</strong> this form only defines the option <em>schema</em> (code, name, data type).
+              The <strong>value</strong> is set separately — after saving the definition go to the
+              <strong>Subnets</strong> tab (or <em>Server</em> → <em>Option Data</em>) and add an
+              <em>option-data</em> entry referencing this option code.
+            </div>
+
             <p class="text-muted small">
               Custom option definitions let you add non-standard DHCP options to Kea.
               Below are the most common ones used for Zero Touch Provisioning (ZTP)
@@ -126,6 +133,11 @@
 # 0118687474703a2f2f31302e302e302e312f706f61702e7079
 #  ^^  ^^ = type 01, length 0x18 = 24, then URL bytes
 </code></pre>
+            <p class="text-muted small">
+              <strong>Where to put this value:</strong> after saving the definition (code 43, type
+              <code>binary</code>), go to the target subnet's <em>Option Data</em> section and add
+              an option-data entry with code <code>43</code> and the hex string above as the value.
+            </p>
             <p class="text-muted small">
               For Aruba networks pointing to Aruba Central, the option 43 value contains
               the Central provisioning URL as sub-option 1.
