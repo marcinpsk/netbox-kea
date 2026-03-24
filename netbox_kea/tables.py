@@ -307,7 +307,7 @@ class BaseLeaseTable(GenericTable):
 
     # This column is for the select checkboxes.
     pk = ToggleColumn(verbose_name="IP Address", accessor="ip_address", visible=True)
-    ip_address = tables.Column(verbose_name="IP Address")
+    ip_address = tables.Column(verbose_name="IP Address", order_by="_ip_sort_key")
     hostname = tables.Column(verbose_name="Hostname")
     subnet_id = tables.Column(verbose_name="Subnet ID")
     hw_address = MonospaceColumn(verbose_name="Hardware Address")

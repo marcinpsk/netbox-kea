@@ -29,12 +29,22 @@ def format_duration(s: int | None) -> str | None:
 
 
 def _enrich_lease(now: datetime, lease: dict[str, Any]) -> dict[str, Any]:
-    """Add expires at, expires in, and state_label to a lease."""
+    """Add expires at, expires in, state_label, _ip_sort_key, and expiry_class to a lease."""
     # Need to replace "-" so we can access the values in a template
     lease = {k.replace("-", "_"): v for k, v in lease.items()}
 
     # Human-readable state label — map Kea state int to text.
     lease["state_label"] = constants.LEASE_STATE_LABELS.get(lease.get("state"), "Unknown")
+
+    # F1: inject numeric sort key so django-tables2 sorts IPs as integers, not strings.
+    if ip_str := lease.get("ip_address"):
+        try:
+            lease["_ip_sort_key"] = int(ipaddress.ip_address(ip_str))
+        except ValueError:
+            pass
+
+    # F10: default expiry CSS class; updated below once we know the expiry time.
+    lease["expiry_class"] = ""
 
     if "cltt" not in lease or "valid_lft" not in lease:
         return lease
@@ -43,12 +53,19 @@ def _enrich_lease(now: datetime, lease: dict[str, Any]) -> dict[str, Any]:
     cltt = lease["cltt"]
     valid_lft = lease["valid_lft"]
     if not isinstance(cltt, int) or not isinstance(valid_lft, int):
-        logger.warning("Unexpected non-integer cltt/valid_lft in lease: %s", lease.get("ip-address", "?"))
+        logger.warning("Unexpected non-integer cltt/valid_lft in lease: %s", lease.get("ip_address", "?"))
         return lease
     expires_at = datetime.fromtimestamp(cltt + valid_lft)
     lease["expires_at"] = expires_at
     lease["expires_in"] = max(0, int((expires_at - now).total_seconds()))
     lease["cltt"] = datetime.fromtimestamp(cltt)
+
+    # F10: set expiry_class based on how close the lease is to expiring.
+    if expires_at < now:
+        lease["expiry_class"] = "text-danger"
+    elif lease["expires_in"] < 300:
+        lease["expiry_class"] = "text-warning"
+
     return lease
 
 

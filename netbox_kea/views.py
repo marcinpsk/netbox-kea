@@ -1041,6 +1041,7 @@ class BaseServerDHCPSubnetsView(generic.ObjectChildrenView):
                 "table": table,
                 "table_config": f"{table.name}_config",
                 "return_url": request.get_full_path(),
+                "tab": self.tab,
             },
         )
 
@@ -1137,6 +1138,7 @@ class BaseServerSharedNetworksView(generic.ObjectChildrenView):
                     args=[instance.pk],
                 ),
                 "dhcp_version": self.dhcp_version,
+                "tab": self.tab,
             },
         )
 
@@ -4082,6 +4084,7 @@ class BaseServerOptionDefView(_KeaChangeMixin, ConditionalLoginRequiredMixin, Vi
                     f"plugins:netbox_kea:server_option_def{self.dhcp_version}_add",
                     args=[server.pk],
                 ),
+                "tab": self.tab,
             },
         )
 

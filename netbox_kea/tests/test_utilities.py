@@ -55,7 +55,10 @@ class TestEnrichLease(TestCase):
     def test_missing_cltt_and_valid_lft_adds_state_label(self):
         lease = {"ip_address": "10.0.0.1"}
         result = _enrich_lease(self._now(), lease)
-        self.assertEqual(result, {"ip_address": "10.0.0.1", "state_label": "Unknown"})
+        self.assertEqual(result["ip_address"], "10.0.0.1")
+        self.assertEqual(result["state_label"], "Unknown")
+        self.assertNotIn("expires_at", result)
+        self.assertNotIn("expires_in", result)
 
     def test_hyphen_keys_replaced_with_underscore(self):
         lease = {"ip-address": "10.0.0.1", "cltt": 0, "valid_lft": 3600}
@@ -99,6 +102,91 @@ class TestFormatLeases(TestCase):
         self.assertEqual(len(result), 2)
         for lease in result:
             self.assertIn("expires_at", lease)
+
+
+class TestEnrichLeaseIPSortKey(TestCase):
+    """F1: _enrich_lease() must inject _ip_sort_key for numeric IP sort in tables."""
+
+    def _now(self):
+        return datetime(2024, 1, 1, 12, 0, 0)
+
+    def test_adds_ip_sort_key_for_ipv4(self):
+        """IPv4 lease gets _ip_sort_key equal to the integer representation of the address."""
+        import ipaddress
+
+        lease = {"ip-address": "10.0.0.101"}
+        result = _enrich_lease(self._now(), lease)
+        self.assertIn("_ip_sort_key", result)
+        self.assertEqual(result["_ip_sort_key"], int(ipaddress.ip_address("10.0.0.101")))
+
+    def test_adds_ip_sort_key_for_ipv6(self):
+        """IPv6 lease gets _ip_sort_key equal to the integer representation of the address."""
+        import ipaddress
+
+        lease = {"ip-address": "2001:db8::1"}
+        result = _enrich_lease(self._now(), lease)
+        self.assertIn("_ip_sort_key", result)
+        self.assertEqual(result["_ip_sort_key"], int(ipaddress.ip_address("2001:db8::1")))
+
+    def test_ip_sort_key_absent_when_no_ip_address(self):
+        """Lease with no ip-address field must not have _ip_sort_key injected."""
+        lease = {"cltt": 0, "valid_lft": 3600}
+        result = _enrich_lease(self._now(), lease)
+        self.assertNotIn("_ip_sort_key", result)
+
+
+class TestFormatLeasesNumericIPSort(TestCase):
+    """F1: output of format_leases() has _ip_sort_key giving correct numeric order."""
+
+    def test_numeric_sort_by_ip(self):
+        """IPs that sort lexicographically wrong must sort correctly by _ip_sort_key."""
+        leases = [
+            {"ip-address": "10.0.0.101"},
+            {"ip-address": "10.0.0.90"},
+            {"ip-address": "10.0.0.9"},
+        ]
+        result = format_leases(leases)
+        sorted_result = sorted(result, key=lambda r: r["_ip_sort_key"])
+        ips = [r["ip_address"] for r in sorted_result]
+        self.assertEqual(ips, ["10.0.0.9", "10.0.0.90", "10.0.0.101"])
+
+
+class TestEnrichLeaseExpiryClass(TestCase):
+    """F10: _enrich_lease() must inject expiry_class for visual lease state indicators."""
+
+    def _now(self):
+        return datetime(2024, 1, 1, 12, 0, 0)
+
+    def test_expired_lease_has_danger_class(self):
+        """Lease whose expiry is in the past gets 'text-danger'."""
+        # cltt=0, valid_lft=1 → expires at epoch+1, long before 2024
+        lease = {"cltt": 0, "valid_lft": 1}
+        result = _enrich_lease(self._now(), lease)
+        self.assertEqual(result["expiry_class"], "text-danger")
+
+    def test_soon_expiring_lease_has_warning_class(self):
+        """Lease expiring in < 300 seconds gets 'text-warning'."""
+        now = self._now()
+        now_ts = int(now.timestamp())
+        # Set up: expires_in will be 250 seconds (< 300 threshold)
+        lease = {"cltt": now_ts - 3600 + 250, "valid_lft": 3600}
+        result = _enrich_lease(now, lease)
+        self.assertEqual(result["expiry_class"], "text-warning")
+
+    def test_active_lease_has_empty_class(self):
+        """Lease with plenty of time remaining gets empty string (no CSS class)."""
+        now = self._now()
+        now_ts = int(now.timestamp())
+        # expires_in will be 1000 seconds (> 300 threshold)
+        lease = {"cltt": now_ts - 3600 + 1000, "valid_lft": 3600}
+        result = _enrich_lease(now, lease)
+        self.assertEqual(result["expiry_class"], "")
+
+    def test_no_expiry_data_has_empty_class(self):
+        """Lease without cltt/valid_lft must still have expiry_class = ''."""
+        lease = {"ip-address": "10.0.0.1"}
+        result = _enrich_lease(self._now(), lease)
+        self.assertEqual(result.get("expiry_class", ""), "")
 
 
 class TestIsHexString(TestCase):
