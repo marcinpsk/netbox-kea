@@ -32,6 +32,7 @@ from . import constants, forms, tables
 from .filtersets import ServerFilterSet
 from .kea import KeaClient, KeaException, PartialPersistError
 from .models import Server
+from .signals import lease_added, leases_deleted, reservation_created, reservation_deleted, reservation_updated
 from .sync import sync_lease_to_netbox, sync_reservation_to_netbox
 from .utilities import (
     OptionalViewTab,
@@ -813,8 +814,6 @@ class BaseServerLeasesDeleteView(GetReturnURLMixin, generic.ObjectView, metaclas
 
         messages.success(request, f"Deleted {len(lease_ips)} DHCPv{self.dhcp_version} lease(s).")
         _add_lease_journal(instance, request.user, "deleted", lease_ips)
-        from .signals import leases_deleted
-
         leases_deleted.send(
             sender=None,
             server=instance,
@@ -1014,8 +1013,6 @@ class _BaseLeaseAddView(_KeaChangeMixin, generic.ObjectView):
                     hw_address=cd.get("hw_address") or cd.get("duid") or "",
                     hostname=cd.get("hostname") or "",
                 )
-                from .signals import lease_added
-
                 lease_added.send(
                     sender=None,
                     server=server,
@@ -1220,6 +1217,7 @@ class BaseServerSharedNetworksView(generic.ObjectChildrenView):
         if config[0]["arguments"] is None:
             return []
         dhcp_conf = config[0]["arguments"].get(f"Dhcp{self.dhcp_version}", {})
+        can_change = Server.objects.restrict(request.user, "change").filter(pk=parent.pk).exists()
         result = []
         for sn in dhcp_conf.get("shared-networks", []):
             subnets = sn.get(f"subnet{self.dhcp_version}", [])
@@ -1246,6 +1244,7 @@ class BaseServerSharedNetworksView(generic.ObjectChildrenView):
                     "subnet_links": subnet_links,
                     "server_pk": parent.pk,
                     "dhcp_version": self.dhcp_version,
+                    "can_change": can_change,
                 }
             )
         return result
@@ -1440,7 +1439,7 @@ class BaseServerSharedNetworkEditView(_KeaChangeMixin, ConditionalLoginRequiredM
             for sn in config.get(dhcp_key, {}).get("shared-networks", []):
                 if sn.get("name") == network_name:
                     return sn
-        except Exception:
+        except KeaException:
             logger.exception("Failed to fetch config-get for shared network edit on server")
         return {}
 
@@ -1676,7 +1675,7 @@ class ServerReservations4View(generic.ObjectView):
             if exc.response.get("result") == 2:
                 hook_available = False
         except Exception:
-            pass  # Network/other error — keep hook_available=True, show empty table
+            logger.debug("Unexpected error fetching DHCPv4 reservations", exc_info=True)
 
         # Inject server_pk so the actions template column can build edit/delete URLs.
         for r in reservations:
@@ -1740,7 +1739,7 @@ class ServerReservations6View(generic.ObjectView):
             if exc.response.get("result") == 2:
                 hook_available = False
         except Exception:
-            pass  # Network/other error — keep hook_available=True, show empty table
+            logger.debug("Unexpected error fetching DHCPv6 reservations", exc_info=True)
 
         for r in reservations:
             r["server_pk"] = server.pk
@@ -1829,7 +1828,6 @@ class ServerReservation4AddView(_KeaChangeMixin, generic.ObjectView):
                 client.reservation_add("dhcp4", reservation)
                 messages.success(request, f"Reservation for {cd['ip_address']} created.")
                 _add_reservation_journal(server, request.user, "created", reservation)
-                from .signals import reservation_created
 
                 reservation_created.send(
                     sender=None,
@@ -1928,7 +1926,6 @@ class ServerReservation6AddView(_KeaChangeMixin, generic.ObjectView):
                 client.reservation_add("dhcp6", reservation)
                 messages.success(request, "DHCPv6 reservation created.")
                 _add_reservation_journal(server, request.user, "created", reservation)
-                from .signals import reservation_created
 
                 reservation_created.send(
                     sender=None,
@@ -2052,7 +2049,6 @@ class ServerReservation4EditView(_KeaChangeMixin, generic.ObjectView):
                 client.reservation_update("dhcp4", reservation)
                 messages.success(request, f"Reservation for {cd['ip_address']} updated.")
                 _add_reservation_journal(server, request.user, "updated", reservation)
-                from .signals import reservation_updated
 
                 reservation_updated.send(
                     sender=None,
@@ -2176,7 +2172,6 @@ class ServerReservation6EditView(_KeaChangeMixin, generic.ObjectView):
                 client.reservation_update("dhcp6", reservation)
                 messages.success(request, "DHCPv6 reservation updated.")
                 _add_reservation_journal(server, request.user, "updated", reservation)
-                from .signals import reservation_updated
 
                 reservation_updated.send(
                     sender=None,
@@ -2250,7 +2245,6 @@ class ServerReservation4DeleteView(_KeaChangeMixin, generic.ObjectView):
             _add_reservation_journal(
                 server, request.user, "deleted", {"ip-address": ip_address, "subnet-id": subnet_id}
             )
-            from .signals import reservation_deleted
 
             reservation_deleted.send(
                 sender=None,
@@ -2302,7 +2296,6 @@ class ServerReservation6DeleteView(_KeaChangeMixin, generic.ObjectView):
             _add_reservation_journal(
                 server, request.user, "deleted", {"ip-address": ip_address, "subnet-id": subnet_id}
             )
-            from .signals import reservation_deleted
 
             reservation_deleted.send(
                 sender=None,
@@ -2615,7 +2608,7 @@ class _BaseSubnetAddView(_KeaChangeMixin, generic.ObjectView):
             client = server.get_client(version=self.dhcp_version)
             network_choices = self._get_network_choices(client)
         except Exception:
-            client = server.get_client(version=self.dhcp_version)
+            client = None
             network_choices = [("", "— (global pool) —")]
         form.fields["shared_network"].choices = network_choices
         if not form.is_valid():
@@ -2629,6 +2622,21 @@ class _BaseSubnetAddView(_KeaChangeMixin, generic.ObjectView):
                     "return_url": return_url,
                 },
             )
+        if client is None:
+            try:
+                client = server.get_client(version=self.dhcp_version)
+            except Exception:
+                messages.error(request, "Unable to connect to the Kea server.")
+                return render(
+                    request,
+                    self.template_name,
+                    {
+                        "object": server,
+                        "form": form,
+                        "dhcp_version": self.dhcp_version,
+                        "return_url": return_url,
+                    },
+                )
         cd = form.cleaned_data
         try:
             assigned_id = client.subnet_add(

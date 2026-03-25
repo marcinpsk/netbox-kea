@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 
 import requests
 
-from netbox_kea.kea import KeaClient, KeaException, PartialPersistError, check_response
+from netbox_kea.kea import KeaClient, KeaConfigTestError, KeaException, PartialPersistError, check_response
 
 
 def _mock_http_response(json_data, status_code=200):
@@ -618,7 +618,9 @@ _SUBNET6_GET = [{"result": 0, "arguments": {"subnet6": [{"id": 2, "subnet": "200
 
 
 def _side_effects(*responses):
-    return [_mock_http_response(r) for r in responses]
+    import copy
+
+    return [_mock_http_response(copy.deepcopy(r)) for r in responses]
 
 
 class TestPoolAdd(TestCase):
@@ -1629,6 +1631,7 @@ class TestSubnetUpdate(TestCase):
 # ─────────────────────────────────────────────────────────────────────────────
 
 _CONFIG_GET_RUNNING_RESP = [{"result": 0, "arguments": {"Dhcp4": {"valid-lifetime": 3600}, "hash": "abc123"}}]
+_CONFIG_GET_RUNNING_RESP_V6 = [{"result": 0, "arguments": {"Dhcp6": {"valid-lifetime": 3600}, "hash": "abc123"}}]
 _CONFIG_TEST_OK_RESP = [{"result": 0, "text": "Configuration seems OK."}]
 _CONFIG_TEST_NOT_SUPPORTED_RESP = [{"result": 2, "text": "Command not supported."}]
 _CONFIG_TEST_FAIL_RESP = [{"result": 1, "text": "Configuration check failed."}]
@@ -1713,10 +1716,8 @@ class TestPersistConfig(TestCase):
             "post",
             side_effect=_side_effects(_CONFIG_GET_RUNNING_RESP, _CONFIG_TEST_FAIL_RESP),
         ) as mock_post:
-            try:
+            with self.assertRaises(KeaConfigTestError):
                 self.client._persist_config("dhcp4")
-            except Exception:
-                pass
         self.assertNotIn("config-write", self._cmds(mock_post))
 
     def test_config_write_failure_raises_partial_persist_error(self):
@@ -1738,7 +1739,7 @@ class TestPersistConfig(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_CONFIG_GET_RUNNING_RESP, _CONFIG_TEST_OK_RESP, _CONFIG_WRITE_RESP),
+            side_effect=_side_effects(_CONFIG_GET_RUNNING_RESP_V6, _CONFIG_TEST_OK_RESP, _CONFIG_WRITE_RESP),
         ) as mock_post:
             self.client._persist_config("dhcp6")
         payloads = self._payloads(mock_post)
@@ -2735,6 +2736,8 @@ class TestOptionDefDel(TestCase):
 # TestNetworkUpdate (F2b)
 # ─────────────────────────────────────────────────────────────────────────────
 
+_CONFIG_SET_OK_RESP = [{"result": 0, "text": "Configuration set."}]
+
 _CONFIG_GET_WITH_SHARED_NETWORK = [
     {
         "result": 0,
@@ -2779,19 +2782,20 @@ class TestNetworkUpdate(TestCase):
     def _cmds(self, mock_post):
         return [p["command"] for p in self._payloads(mock_post)]
 
-    def test_calls_config_get_then_config_test_then_config_write(self):
-        """network_update issues config-get, config-test, config-write in order."""
+    def test_calls_config_get_then_config_test_then_config_set_then_config_write(self):
+        """network_update issues config-get, config-test, config-set, config-write in order."""
         with patch.object(
             self.client._session,
             "post",
             side_effect=_side_effects(
                 _CONFIG_GET_WITH_SHARED_NETWORK,
                 _CONFIG_TEST_OK_RESP,
+                _CONFIG_SET_OK_RESP,
                 _CONFIG_WRITE_RESP,
             ),
         ) as mock_post:
             self.client.network_update(version=4, name="prod-net")
-        self.assertEqual(self._cmds(mock_post), ["config-get", "config-test", "config-write"])
+        self.assertEqual(self._cmds(mock_post), ["config-get", "config-test", "config-set", "config-write"])
 
     def test_updates_description_in_config_write_payload(self):
         """config-test/write payload contains the updated description."""
@@ -2801,6 +2805,7 @@ class TestNetworkUpdate(TestCase):
             side_effect=_side_effects(
                 _CONFIG_GET_WITH_SHARED_NETWORK,
                 _CONFIG_TEST_OK_RESP,
+                _CONFIG_SET_OK_RESP,
                 _CONFIG_WRITE_RESP,
             ),
         ) as mock_post:
@@ -2818,6 +2823,7 @@ class TestNetworkUpdate(TestCase):
             side_effect=_side_effects(
                 _CONFIG_GET_WITH_SHARED_NETWORK,
                 _CONFIG_TEST_OK_RESP,
+                _CONFIG_SET_OK_RESP,
                 _CONFIG_WRITE_RESP,
             ),
         ) as mock_post:
@@ -2838,13 +2844,14 @@ class TestNetworkUpdate(TestCase):
                 self.client.network_update(version=4, name="prod-net")
 
     def test_raises_partial_persist_error_on_config_write_failure(self):
-        """PartialPersistError raised when config-write fails after successful config-test."""
+        """PartialPersistError raised when config-write fails after successful config-set."""
         with patch.object(
             self.client._session,
             "post",
             side_effect=_side_effects(
                 _CONFIG_GET_WITH_SHARED_NETWORK,
                 _CONFIG_TEST_OK_RESP,
+                _CONFIG_SET_OK_RESP,
                 [{"result": 1, "text": "write failed"}],
             ),
         ):
@@ -2852,13 +2859,14 @@ class TestNetworkUpdate(TestCase):
                 self.client.network_update(version=4, name="prod-net")
 
     def test_skips_config_test_gracefully_when_not_supported(self):
-        """If config-test returns result=2, config-write still proceeds."""
+        """If config-test returns result=2, config-set and config-write still proceed."""
         with patch.object(
             self.client._session,
             "post",
             side_effect=_side_effects(
                 _CONFIG_GET_WITH_SHARED_NETWORK,
                 _CONFIG_TEST_NOT_SUPPORTED_RESP,
+                _CONFIG_SET_OK_RESP,
                 _CONFIG_WRITE_RESP,
             ),
         ) as mock_post:

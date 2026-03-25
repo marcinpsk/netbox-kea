@@ -2058,6 +2058,19 @@ class TestServerReservation6EditLeaseDiff(_ReservationViewBase):
         self.assertEqual(response.status_code, 200)
         self.assertNotIn("lease_diff", response.context)
 
+    @patch("netbox_kea.models.KeaClient")
+    def test_get_no_lease_diff_when_hostname_matches(self, MockKeaClient):
+        """GET must not add lease_diff when lease hostname matches the reservation hostname."""
+        mock_client = MockKeaClient.return_value
+        mock_client.reservation_get.return_value = _SAMPLE_RESERVATION6  # hostname: "testhost6.example.com"
+        mock_client.lease_get_by_ip.return_value = {
+            "ip-address": self._IP,
+            "hostname": "testhost6.example.com",  # matches reservation
+        }
+        response = self.client.get(self._edit_url())
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("lease_diff", response.context)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # F7: Reservation journal entries
@@ -2224,7 +2237,8 @@ class TestReservation4OptionData(_ReservationViewBase):
         self.assertEqual(response.status_code, 302)
 
         call_args = mock_client.reservation_add.call_args
-        reservation = call_args[0][1] if call_args[0] else call_args[1].get("reservation", {})
+        args, kwargs = call_args or ((), {})
+        reservation = kwargs.get("reservation") or (args[1] if len(args) > 1 else (args[0] if len(args) > 0 else {}))
         self.assertIn("option-data", reservation)
         self.assertEqual(len(reservation["option-data"]), 1)
         self.assertEqual(reservation["option-data"][0]["name"], "boot-file-name")
@@ -2241,7 +2255,8 @@ class TestReservation4OptionData(_ReservationViewBase):
         self.assertEqual(response.status_code, 302)
 
         call_args = mock_client.reservation_add.call_args
-        reservation = call_args[0][1] if call_args[0] else call_args[1].get("reservation", {})
+        args, kwargs = call_args or ((), {})
+        reservation = kwargs.get("reservation") or (args[1] if len(args) > 1 else (args[0] if len(args) > 0 else {}))
         self.assertNotIn("option-data", reservation)
 
     @patch("netbox_kea.models.KeaClient")
@@ -2276,7 +2291,8 @@ class TestReservation4OptionData(_ReservationViewBase):
         self.assertEqual(response.status_code, 302)
 
         call_args = mock_client.reservation_update.call_args
-        reservation = call_args[0][1] if call_args[0] else call_args[1].get("reservation", {})
+        args, kwargs = call_args or ((), {})
+        reservation = kwargs.get("reservation") or (args[1] if len(args) > 1 else (args[0] if len(args) > 0 else {}))
         self.assertIn("option-data", reservation)
         self.assertEqual(reservation["option-data"][0]["name"], "tftp-server-name")
 

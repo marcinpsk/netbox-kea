@@ -186,7 +186,8 @@ class TestEnrichLeaseExpiryClass(TestCase):
         """Lease without cltt/valid_lft must still have expiry_class = ''."""
         lease = {"ip-address": "10.0.0.1"}
         result = _enrich_lease(self._now(), lease)
-        self.assertEqual(result.get("expiry_class", ""), "")
+        self.assertIn("expiry_class", result)
+        self.assertEqual(result["expiry_class"], "")
 
 
 class TestIsHexString(TestCase):

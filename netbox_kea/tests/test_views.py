@@ -2038,7 +2038,12 @@ class TestServerSubnet4EditView(_ViewTestBase):
         """F5: When config-get raises KeaException, inherited_options is an empty dict."""
         from netbox_kea.kea import KeaException
 
-        MockKeaClient.return_value.command.side_effect = KeaException({"result": 1, "text": "err"}, index=0)
+        mock_client = MockKeaClient.return_value
+        # First command call (subnet lookup) succeeds; second (config-get) fails.
+        mock_client.command.side_effect = [
+            _SUBNET4_GET_FULL,
+            KeaException({"result": 1, "text": "err"}, index=0),
+        ]
         response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
         inherited = response.context.get("inherited_options", {})
@@ -4029,8 +4034,14 @@ class TestServerSharedNetwork4EditView(_ViewTestBase):
                 "dns_servers": "",
                 "ntp_servers": "",
             },
+            follow=True,
         )
-        self.assertIn(response.status_code, (200, 302))
+        self.assertEqual(response.status_code, 200)
+        messages_list = list(response.context["messages"])
+        self.assertTrue(
+            any(m.level == 30 for m in messages_list),  # 30 = WARNING
+            f"Expected a WARNING message; got: {[(m.level, m.message) for m in messages_list]}",
+        )
 
     def test_get_requires_login(self):
         """Unauthenticated GET must redirect to login."""
@@ -4333,6 +4344,8 @@ class TestServerSubnet4AddViewSharedNetwork(_ViewTestBase):
         call_args = mock_client.network_subnet_add.call_args[0]
         name = call_kwargs.get("name") or (call_args[1] if len(call_args) > 1 else None)
         self.assertEqual(name, "net-alpha")
+        subnet_id = call_kwargs.get("subnet_id") or (call_args[2] if len(call_args) > 2 else None)
+        self.assertEqual(subnet_id, 1)
 
     @patch("netbox_kea.models.KeaClient")
     def test_post_without_shared_network_does_not_call_network_subnet_add(self, MockKeaClient):

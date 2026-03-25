@@ -359,11 +359,12 @@ class BaseLeaseTable(GenericTable):
             ' <button type="button"'
             ' class="badge text-bg-danger border-0 ms-1"'
             ' style="cursor:pointer"'
+            ' aria-label="Delete lease {{ record.ip_address|escapejs }} held by {{ record.stale_lease_mac|escapejs }}"'
             ' hx-post="{{ record.delete_lease_url }}"'
             ' hx-confirm="Delete lease {{ record.ip_address|escapejs }} held by {{ record.stale_lease_mac|escapejs }}?'
             ' The old device must re-request this IP via DORA."'
             ' hx-vals=\'{"pk":"{{ record.ip_address|escapejs }}","_confirm":"1"}\'>'
-            '<i class="mdi mdi-delete-outline"></i></button>'
+            '<i class="mdi mdi-delete-outline" aria-hidden="true"></i></button>'
             "{% endif %}"
             "{% elif record.create_reservation_url %}"
             '<a href="{{ record.create_reservation_url }}" class="badge text-bg-warning text-decoration-none">'
@@ -695,6 +696,7 @@ class SharedNetworkTable(GenericTable):
         verbose_name="",
         orderable=False,
         template_code=(
+            "{% if record.can_change %}"
             "{% if record.dhcp_version == 4 %}"
             '<a href="{% url "plugins:netbox_kea:server_shared_network4_edit" record.server_pk record.name %}"'
             ' class="btn btn-sm btn-warning me-1" aria-label="Edit {{ record.name }}">'
@@ -709,6 +711,7 @@ class SharedNetworkTable(GenericTable):
             '<a href="{% url "plugins:netbox_kea:server_shared_network6_delete" record.server_pk record.name %}"'
             ' class="btn btn-sm btn-danger" aria-label="Delete {{ record.name }}">'
             '<i class="mdi mdi-delete" aria-hidden="true"></i></a>'
+            "{% endif %}"
             "{% endif %}"
         ),
     )

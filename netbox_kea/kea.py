@@ -422,11 +422,13 @@ class KeaClient:
         relay_addresses: list[str] | None = None,
         options: list[dict] | None = None,
     ) -> None:
-        """Update a shared network's properties via config-get → config-test → config-write.
+        """Update a shared network's properties via config-get → config-test → config-set → config-write.
 
         Only provided (non-None) fields are modified; others are left unchanged.
         Raises ``KeaException`` if *name* is not found in the config.
-        Raises ``PartialPersistError`` if config-write fails after a successful config-test.
+        Raises ``KeaConfigTestError`` if config-test validation fails.
+        Raises ``PartialPersistError`` if config-write fails after a successful config-set (change
+        is live but will not survive restart).
         """
         service = f"dhcp{version}"
         dhcp_key = f"Dhcp{version}"
@@ -460,13 +462,15 @@ class KeaClient:
             if exc.response.get("result") == 2:
                 logger.debug("config-test not supported for service %s — skipping pre-flight check", service)
             else:
-                logger.warning("config-test failed for service %s — aborting config-write", service)
+                logger.warning("config-test failed for service %s — aborting config-set", service)
                 raise KeaConfigTestError(service, exc) from exc
+
+        self.command("config-set", service=[service], arguments=config)
 
         try:
             self.command("config-write", service=[service], arguments=config)
         except KeaException as exc:
-            logger.warning("config-write failed for service %s — change not persisted to disk", service)
+            logger.warning("config-write failed for service %s — change is live but not persisted to disk", service)
             raise PartialPersistError(service, exc) from exc
 
     def network_subnet_add(self, version: int, name: str, subnet_id: int) -> None:
@@ -889,6 +893,7 @@ class KeaClient:
             f"lease{version}-get",
             service=[service],
             arguments={"ip-address": ip_address},
+            check=(0, 3),
         )
         if resp[0]["result"] == 3:
             return None

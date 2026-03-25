@@ -276,7 +276,7 @@ def _sync_mac_address(hw_address: str, hostname: str = "") -> None:
     except ImportError:
         pass  # NetBox < 4.1 — MACAddress model not available
     except Exception:
-        logger.debug("Failed to sync MAC address %s to NetBox DCIM", hw_address)
+        logger.debug("Failed to sync MAC address %s to NetBox DCIM", hw_address, exc_info=True)
 
 
 def _apply_ip_fields(
