@@ -4089,3 +4089,177 @@ class TestServerSharedNetwork6EditView(_ViewTestBase):
         args = call_args.args or call_args[0]
         version = kwargs.get("version") or (args[0] if args else None)
         self.assertEqual(version, 6)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Gap G: Django signals + lease journal entries
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestLeaseSignals(_ViewTestBase):
+    """Lease add/delete views must fire Django signals from netbox_kea.signals."""
+
+    _LEASE4 = {
+        "ip_address": "10.0.0.5",
+        "hw_address": "aa:bb:cc:dd:ee:01",
+        "hostname": "signal-host",
+        "subnet_id": 1,
+        "valid_lft": 3600,
+    }
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_lease_add_fires_lease_added_signal(self, MockKeaClient):
+        """_BaseLeaseAddView.post must send lease_added signal after successful add."""
+        from netbox_kea import signals
+
+        mock_client = MockKeaClient.return_value
+        mock_client.lease_add.return_value = None
+
+        received = []
+
+        def handler(sender, **kwargs):
+            received.append(kwargs)
+
+        signals.lease_added.connect(handler)
+        try:
+            url = reverse("plugins:netbox_kea:server_lease4_add", args=[self.server.pk])
+            self.client.post(url, self._LEASE4)
+        finally:
+            signals.lease_added.disconnect(handler)
+
+        self.assertEqual(len(received), 1)
+        self.assertEqual(received[0]["ip_address"], "10.0.0.5")
+        self.assertEqual(received[0]["dhcp_version"], 4)
+        self.assertEqual(received[0]["server"].pk, self.server.pk)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_lease_delete_fires_leases_deleted_signal(self, MockKeaClient):
+        """BaseServerLeasesDeleteView.post must send leases_deleted signal after successful delete."""
+        from netbox_kea import signals
+
+        mock_client = MockKeaClient.return_value
+        mock_client.command.return_value = [{"result": 0, "text": "Success"}]
+
+        received = []
+
+        def handler(sender, **kwargs):
+            received.append(kwargs)
+
+        signals.leases_deleted.connect(handler)
+        try:
+            url = reverse("plugins:netbox_kea:server_leases4_delete", args=[self.server.pk])
+            self.client.post(url, {"pk": "10.0.0.5", "_confirm": "1"})
+        finally:
+            signals.leases_deleted.disconnect(handler)
+
+        self.assertEqual(len(received), 1)
+        self.assertIn("10.0.0.5", received[0]["ip_addresses"])
+        self.assertEqual(received[0]["dhcp_version"], 4)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_reservation_add_fires_reservation_created_signal(self, MockKeaClient):
+        """ServerReservation4AddView.post must send reservation_created signal."""
+        from netbox_kea import signals
+
+        mock_client = MockKeaClient.return_value
+        mock_client.reservation_add.return_value = None
+        mock_client.command.return_value = [{"result": 0, "text": "Success"}]  # config-write
+
+        received = []
+
+        def handler(sender, **kwargs):
+            received.append(kwargs)
+
+        signals.reservation_created.connect(handler)
+        try:
+            url = reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk])
+            self.client.post(
+                url,
+                {
+                    "subnet_id": 1,
+                    "ip_address": "10.0.0.10",
+                    "identifier_type": "hw-address",
+                    "identifier": "aa:bb:cc:dd:ee:01",
+                    "hostname": "",
+                },
+            )
+        finally:
+            signals.reservation_created.disconnect(handler)
+
+        self.assertEqual(len(received), 1)
+        self.assertEqual(received[0]["dhcp_version"], 4)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_reservation_delete_fires_reservation_deleted_signal(self, MockKeaClient):
+        """ServerReservation4DeleteView.post must send reservation_deleted signal."""
+        from netbox_kea import signals
+
+        mock_client = MockKeaClient.return_value
+        mock_client.reservation_del.return_value = None
+        mock_client.command.return_value = [{"result": 0, "text": "Success"}]
+
+        received = []
+
+        def handler(sender, **kwargs):
+            received.append(kwargs)
+
+        signals.reservation_deleted.connect(handler)
+        try:
+            url = reverse(
+                "plugins:netbox_kea:server_reservation4_delete",
+                args=[self.server.pk, 1, "10.0.0.10"],
+            )
+            self.client.post(url)
+        finally:
+            signals.reservation_deleted.disconnect(handler)
+
+        self.assertEqual(len(received), 1)
+        self.assertEqual(received[0]["dhcp_version"], 4)
+        self.assertEqual(received[0]["ip_address"], "10.0.0.10")
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestLeaseJournalEntries(_ViewTestBase):
+    """Lease add and delete views must create JournalEntry records on the Server."""
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_lease_add_creates_journal_entry(self, MockKeaClient):
+        """A successful lease add must create a JournalEntry attached to the server."""
+        from extras.models import JournalEntry
+
+        mock_client = MockKeaClient.return_value
+        mock_client.lease_add.return_value = None
+        url = reverse("plugins:netbox_kea:server_lease4_add", args=[self.server.pk])
+        before = JournalEntry.objects.filter(
+            assigned_object_id=self.server.pk,
+        ).count()
+        self.client.post(
+            url,
+            {
+                "ip_address": "10.0.0.5",
+                "hw_address": "aa:bb:cc:dd:ee:01",
+                "hostname": "journal-host",
+                "subnet_id": 1,
+                "valid_lft": 3600,
+            },
+        )
+        after = JournalEntry.objects.filter(assigned_object_id=self.server.pk).count()
+        self.assertEqual(after, before + 1)
+        entry = JournalEntry.objects.filter(assigned_object_id=self.server.pk).latest("created")
+        self.assertIn("10.0.0.5", entry.comments)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_lease_delete_creates_journal_entry(self, MockKeaClient):
+        """A successful lease delete must create a JournalEntry attached to the server."""
+        from extras.models import JournalEntry
+
+        mock_client = MockKeaClient.return_value
+        mock_client.command.return_value = [{"result": 0, "text": "Success"}]
+        url = reverse("plugins:netbox_kea:server_leases4_delete", args=[self.server.pk])
+        before = JournalEntry.objects.filter(assigned_object_id=self.server.pk).count()
+        self.client.post(url, {"pk": "10.0.0.5", "_confirm": "1"})
+        after = JournalEntry.objects.filter(assigned_object_id=self.server.pk).count()
+        self.assertEqual(after, before + 1)
+        entry = JournalEntry.objects.filter(assigned_object_id=self.server.pk).latest("created")
+        self.assertIn("10.0.0.5", entry.comments)

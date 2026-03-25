@@ -92,6 +92,51 @@ def _add_reservation_journal(server: "Server", user: Any, action: str, reservati
         logger.debug("Failed to create reservation journal entry", exc_info=True)
 
 
+def _add_lease_journal(
+    server: "Server",
+    user: Any,
+    action: str,
+    ip_addresses: "list[str] | str",
+    hw_address: str = "",
+    hostname: str = "",
+) -> None:
+    """Create a JournalEntry on *server* recording a lease CRUD event.
+
+    Silently skips if JournalEntry is unavailable (older NetBox or import error).
+
+    Args:
+        server: The Server instance the journal entry is attached to.
+        user: The request.user who performed the action.
+        action: Human-readable action name: "added" or "deleted".
+        ip_addresses: A single IP string or list of IPs affected.
+        hw_address: Optional hardware address (for add events).
+        hostname: Optional hostname (for add events).
+
+    """
+    try:
+        from extras.models import JournalEntry
+
+        if isinstance(ip_addresses, str):
+            ip_addresses = [ip_addresses]
+        ip_list = ", ".join(ip_addresses)
+        if len(ip_addresses) == 1:
+            parts = [f"Lease {action}: {ip_list}"]
+        else:
+            parts = [f"{len(ip_addresses)} lease(s) {action}: {ip_list}"]
+        if hw_address:
+            parts.append(f"hw-address: {hw_address}")
+        if hostname:
+            parts.append(f"hostname: {hostname}")
+        JournalEntry.objects.create(
+            assigned_object=server,
+            created_by=user,
+            kind="info",
+            comments="; ".join(parts),
+        )
+    except Exception:
+        logger.debug("Failed to create lease journal entry", exc_info=True)
+
+
 def _strip_empty_params(path: str) -> str:
     """Return *path* with blank query-string parameters removed.
 
@@ -751,6 +796,16 @@ class BaseServerLeasesDeleteView(GetReturnURLMixin, generic.ObjectView, metaclas
                 return redirect(return_url)
 
         messages.success(request, f"Deleted {len(lease_ips)} DHCPv{self.dhcp_version} lease(s).")
+        _add_lease_journal(instance, request.user, "deleted", lease_ips)
+        from .signals import leases_deleted
+
+        leases_deleted.send(
+            sender=None,
+            server=instance,
+            ip_addresses=lease_ips,
+            dhcp_version=self.dhcp_version,
+            request=request,
+        )
         if request.headers.get("HX-Request"):
             response = HttpResponse()
             response["HX-Refresh"] = "true"
@@ -935,6 +990,22 @@ class _BaseLeaseAddView(_KeaChangeMixin, generic.ObjectView):
             try:
                 client.lease_add(self.dhcp_version, lease)
                 messages.success(request, f"Lease for {cd['ip_address']} created.")
+                _add_lease_journal(
+                    server, request.user, "added", cd["ip_address"],
+                    hw_address=cd.get("hw_address") or cd.get("duid") or "",
+                    hostname=cd.get("hostname") or "",
+                )
+                from .signals import lease_added
+
+                lease_added.send(
+                    sender=None,
+                    server=server,
+                    ip_address=cd["ip_address"],
+                    hw_address=cd.get("hw_address") or "",
+                    hostname=cd.get("hostname") or "",
+                    dhcp_version=self.dhcp_version,
+                    request=request,
+                )
                 if cd.get("sync_to_netbox"):
                     try:
                         sync_lease_to_netbox(lease)
@@ -1730,6 +1801,15 @@ class ServerReservation4AddView(_KeaChangeMixin, generic.ObjectView):
                 client.reservation_add("dhcp4", reservation)
                 messages.success(request, f"Reservation for {cd['ip_address']} created.")
                 _add_reservation_journal(server, request.user, "created", reservation)
+                from .signals import reservation_created
+
+                reservation_created.send(
+                    sender=None,
+                    server=server,
+                    reservation=reservation,
+                    dhcp_version=4,
+                    request=request,
+                )
                 if cd.get("sync_to_netbox"):
                     try:
                         _, created = sync_reservation_to_netbox(reservation)
@@ -1810,6 +1890,15 @@ class ServerReservation6AddView(_KeaChangeMixin, generic.ObjectView):
                 client.reservation_add("dhcp6", reservation)
                 messages.success(request, "DHCPv6 reservation created.")
                 _add_reservation_journal(server, request.user, "created", reservation)
+                from .signals import reservation_created
+
+                reservation_created.send(
+                    sender=None,
+                    server=server,
+                    reservation=reservation,
+                    dhcp_version=6,
+                    request=request,
+                )
                 if cd.get("sync_to_netbox"):
                     try:
                         _, created = sync_reservation_to_netbox(reservation)
@@ -1910,6 +1999,15 @@ class ServerReservation4EditView(_KeaChangeMixin, generic.ObjectView):
                 client.reservation_update("dhcp4", reservation)
                 messages.success(request, f"Reservation for {cd['ip_address']} updated.")
                 _add_reservation_journal(server, request.user, "updated", reservation)
+                from .signals import reservation_updated
+
+                reservation_updated.send(
+                    sender=None,
+                    server=server,
+                    reservation=reservation,
+                    dhcp_version=4,
+                    request=request,
+                )
                 if cd.get("sync_to_netbox"):
                     try:
                         _, created = sync_reservation_to_netbox(reservation)
@@ -2010,6 +2108,15 @@ class ServerReservation6EditView(_KeaChangeMixin, generic.ObjectView):
                 client.reservation_update("dhcp6", reservation)
                 messages.success(request, "DHCPv6 reservation updated.")
                 _add_reservation_journal(server, request.user, "updated", reservation)
+                from .signals import reservation_updated
+
+                reservation_updated.send(
+                    sender=None,
+                    server=server,
+                    reservation=reservation,
+                    dhcp_version=6,
+                    request=request,
+                )
                 if cd.get("sync_to_netbox"):
                     try:
                         _, created = sync_reservation_to_netbox(reservation)
@@ -2074,6 +2181,15 @@ class ServerReservation4DeleteView(_KeaChangeMixin, generic.ObjectView):
             _add_reservation_journal(
                 server, request.user, "deleted", {"ip-address": ip_address, "subnet-id": subnet_id}
             )
+            from .signals import reservation_deleted
+
+            reservation_deleted.send(
+                sender=None,
+                server=server,
+                ip_address=ip_address,
+                dhcp_version=4,
+                request=request,
+            )
         except PartialPersistError:
             messages.warning(request, "Change applied but may not survive a Kea restart (config-write failed).")
         except KeaException as exc:
@@ -2116,6 +2232,15 @@ class ServerReservation6DeleteView(_KeaChangeMixin, generic.ObjectView):
             messages.success(request, f"DHCPv6 reservation for {ip_address} deleted.")
             _add_reservation_journal(
                 server, request.user, "deleted", {"ip-address": ip_address, "subnet-id": subnet_id}
+            )
+            from .signals import reservation_deleted
+
+            reservation_deleted.send(
+                sender=None,
+                server=server,
+                ip_address=ip_address,
+                dhcp_version=6,
+                request=request,
             )
         except PartialPersistError:
             messages.warning(request, "Change applied but may not survive a Kea restart (config-write failed).")
