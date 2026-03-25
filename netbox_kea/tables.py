@@ -352,8 +352,18 @@ class BaseLeaseTable(GenericTable):
             '<a href="{{ record.reservation_url }}" class="badge text-bg-success text-decoration-none">'
             "Reserved</a>"
             "{% if record.stale_mac %}"
-            ' <span class="badge text-bg-warning" title="Lease MAC differs from reservation MAC — lease may be stale">'
+            ' <span class="badge text-bg-warning"'
+            ' title="Lease MAC ({{ record.stale_lease_mac }}) ≠ Reservation MAC ({{ record.reservation_mac }})'
+            " — delete this lease to force the old device off this IP\">"
             "&#9888; MAC?</span>"
+            ' <button type="button"'
+            ' class="badge text-bg-danger border-0 ms-1"'
+            ' style="cursor:pointer"'
+            ' hx-post="{{ record.delete_lease_url }}"'
+            ' hx-confirm="Delete lease {{ record.ip_address|escapejs }} held by {{ record.stale_lease_mac|escapejs }}?'
+            " The old device must re-request this IP via DORA.\""
+            ' hx-vals=\'{"pk":"{{ record.ip_address|escapejs }}","_confirm":"1"}\'>'
+            '<i class="mdi mdi-delete-outline"></i></button>'
             "{% endif %}"
             "{% elif record.create_reservation_url %}"
             '<a href="{{ record.create_reservation_url }}" class="badge text-bg-warning text-decoration-none">'

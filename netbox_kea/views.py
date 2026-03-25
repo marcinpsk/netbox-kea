@@ -751,6 +751,10 @@ class BaseServerLeasesDeleteView(GetReturnURLMixin, generic.ObjectView, metaclas
                 return redirect(return_url)
 
         messages.success(request, f"Deleted {len(lease_ips)} DHCPv{self.dhcp_version} lease(s).")
+        if request.headers.get("HX-Request"):
+            response = HttpResponse()
+            response["HX-Refresh"] = "true"
+            return response
         return redirect(return_url)
 
 
@@ -3170,10 +3174,25 @@ def _enrich_leases_with_badges(leases: list[dict[str, Any]], server: "Server", v
             # Stale MAC detection: lease MAC ≠ reservation MAC → device mismatch.
             lease_hw = (lease.get("hw_address") or "").lower()
             rsv_hw = (rsv.get("hw-address") or "").lower()
-            lease["stale_mac"] = bool(lease_hw and rsv_hw and lease_hw != rsv_hw)
+            if lease_hw and rsv_hw and lease_hw != rsv_hw:
+                lease["stale_mac"] = True
+                lease["stale_lease_mac"] = lease_hw
+                lease["reservation_mac"] = rsv_hw
+                lease["delete_lease_url"] = reverse(
+                    f"plugins:netbox_kea:server_leases{version}_delete",
+                    args=[server.pk],
+                )
+            else:
+                lease["stale_mac"] = False
+                lease["stale_lease_mac"] = ""
+                lease["reservation_mac"] = ""
+                lease["delete_lease_url"] = ""
         elif host_cmds_available:
             lease["reservation_url"] = None
             lease["stale_mac"] = False
+            lease["stale_lease_mac"] = ""
+            lease["reservation_mac"] = ""
+            lease["delete_lease_url"] = ""
             base_add = reverse(add_url_name, args=[server.pk])
             if version == 6:
                 params = {

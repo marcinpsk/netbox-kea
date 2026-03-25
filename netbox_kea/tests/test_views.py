@@ -434,6 +434,20 @@ class TestServerLeases4DeleteView(_ViewTestBase):
         self.assertEqual(response.status_code, 302)
         self._assert_no_none_pk_redirect(response)
 
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_htmx_single_lease_returns_hx_refresh(self, MockKeaClient):
+        """An HTMX POST with a single IP and _confirm returns HX-Refresh: true instead of redirect."""
+        mock_client = MockKeaClient.return_value
+        mock_client.command.return_value = [{"result": 0, "text": "Success"}]
+        url = reverse("plugins:netbox_kea:server_leases4_delete", args=[self.server.pk])
+        response = self.client.post(
+            url,
+            {"pk": "192.0.2.1", "_confirm": "1"},
+            HTTP_HX_REQUEST="true",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers.get("HX-Refresh"), "true")
+
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestServerLeases6DeleteView(_ViewTestBase):
@@ -1340,6 +1354,77 @@ class TestEnrichLeasesErrorPaths(_ViewTestBase):
         response = self._htmx_get(url, {"by": "ip", "q": "10.0.0.5"})
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Synced")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# P3 Refinement: stale MAC badge — specific MAC values + inline delete URL
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestStaleMacBadgeEnrichment(_ViewTestBase):
+    """_enrich_leases_with_badges must store MAC strings and delete URL on stale-MAC leases."""
+
+    _LEASE4 = {
+        "ip-address": "10.0.0.5",
+        "hw-address": "aa:bb:cc:dd:ee:01",
+        "hostname": "stale-host",
+        "subnet-id": 7,
+        "valid-lft": 3600,
+        "cltt": 1_700_000_000,
+    }
+    _RESERVATION = {
+        "ip-address": "10.0.0.5",
+        "hw-address": "aa:bb:cc:dd:ee:99",  # different MAC → stale
+        "subnet-id": 7,
+    }
+
+    def _htmx_get(self, url, data):
+        return self.client.get(url, data=data, HTTP_HX_REQUEST="true")
+
+    @patch("netbox_kea.sync.bulk_fetch_netbox_ips")
+    @patch("netbox_kea.models.KeaClient")
+    def test_stale_mac_badge_shows_specific_macs_in_title(self, MockKeaClient, mock_bulk_fetch):
+        """The ⚠ MAC? badge title must contain both lease MAC and reservation MAC."""
+        mock_client = MockKeaClient.return_value
+        mock_client.command.return_value = [{"result": 0, "arguments": {"ip-address": "10.0.0.5", **self._LEASE4}}]
+        mock_client.reservation_get.return_value = self._RESERVATION
+        mock_bulk_fetch.return_value = {}
+        url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+        response = self._htmx_get(url, {"by": "ip", "q": "10.0.0.5"})
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "aa:bb:cc:dd:ee:01")   # lease MAC in tooltip
+        self.assertContains(response, "aa:bb:cc:dd:ee:99")   # reservation MAC in tooltip
+
+    @patch("netbox_kea.sync.bulk_fetch_netbox_ips")
+    @patch("netbox_kea.models.KeaClient")
+    def test_stale_mac_badge_renders_htmx_delete_button(self, MockKeaClient, mock_bulk_fetch):
+        """The stale-MAC badge must include an HTMX delete button (hx-post) for one-click removal."""
+        mock_client = MockKeaClient.return_value
+        mock_client.command.return_value = [{"result": 0, "arguments": {"ip-address": "10.0.0.5", **self._LEASE4}}]
+        mock_client.reservation_get.return_value = self._RESERVATION
+        mock_bulk_fetch.return_value = {}
+        url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+        response = self._htmx_get(url, {"by": "ip", "q": "10.0.0.5"})
+        self.assertEqual(response.status_code, 200)
+        # hx-post must point to the delete endpoint (distinct from the bulk-delete form action)
+        delete_url = reverse("plugins:netbox_kea:server_leases4_delete", args=[self.server.pk])
+        self.assertContains(response, f'hx-post="{delete_url}"')
+
+    @patch("netbox_kea.sync.bulk_fetch_netbox_ips")
+    @patch("netbox_kea.models.KeaClient")
+    def test_matching_mac_badge_has_no_htmx_delete_button(self, MockKeaClient, mock_bulk_fetch):
+        """When lease MAC matches reservation MAC, no HTMX delete button must appear."""
+        matching_rsv = {**self._RESERVATION, "hw-address": self._LEASE4["hw-address"]}
+        mock_client = MockKeaClient.return_value
+        mock_client.command.return_value = [{"result": 0, "arguments": {"ip-address": "10.0.0.5", **self._LEASE4}}]
+        mock_client.reservation_get.return_value = matching_rsv
+        mock_bulk_fetch.return_value = {}
+        url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+        response = self._htmx_get(url, {"by": "ip", "q": "10.0.0.5"})
+        self.assertEqual(response.status_code, 200)
+        delete_url = reverse("plugins:netbox_kea:server_leases4_delete", args=[self.server.pk])
+        self.assertNotContains(response, f'hx-post="{delete_url}"')
 
 
 # ─────────────────────────────────────────────────────────────────────────────
