@@ -1,0 +1,38 @@
+{% extends 'netbox_kea/combined_base.html' %}
+{% load render_table from django_tables2 %}
+
+{% block tab_content %}
+
+{% if errors %}
+<div class="alert alert-warning mt-3">
+  <strong>Some servers could not be reached:</strong>
+  <ul class="mb-0 mt-1">
+    {% for name, msg in errors %}
+    <li><strong>{{ name }}</strong>: {{ msg }}</li>
+    {% endfor %}
+  </ul>
+</div>
+{% endif %}
+
+<div class="card mb-3">
+  <div class="card-header d-flex justify-content-between align-items-center">
+    <strong><i class="mdi mdi-lan"></i> DHCPv{{ dhcp_version }} Shared Networks</strong>
+    <div class="dropdown d-inline-block">
+      <button type="button" class="btn btn-purple btn-sm dropdown-toggle" data-bs-toggle="dropdown">
+        <i class="mdi mdi-download"></i> Export
+      </button>
+      <ul class="dropdown-menu dropdown-menu-end">
+        <li>
+          <a class="dropdown-item"
+             href="?{% if request.GET.urlencode %}{{ request.GET.urlencode }}&{% endif %}export=table">
+            Current View (CSV)
+          </a>
+        </li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+{% render_table table %}
+
+{% endblock tab_content %}

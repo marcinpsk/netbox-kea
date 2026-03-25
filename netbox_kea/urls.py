@@ -10,6 +10,16 @@ urlpatterns = (
     path("combined/subnets4/", views.CombinedSubnets4View.as_view(), name="combined_subnets4"),
     path("combined/subnets6/", views.CombinedSubnets6View.as_view(), name="combined_subnets6"),
     path(
+        "combined/shared-networks4/",
+        views.CombinedSharedNetworks4View.as_view(),
+        name="combined_shared_networks4",
+    ),
+    path(
+        "combined/shared-networks6/",
+        views.CombinedSharedNetworks6View.as_view(),
+        name="combined_shared_networks6",
+    ),
+    path(
         "combined/reservations4/",
         views.CombinedReservations4View.as_view(),
         name="combined_reservations4",

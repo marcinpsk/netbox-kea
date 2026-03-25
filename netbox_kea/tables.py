@@ -571,102 +571,32 @@ def _server_column() -> tables.TemplateColumn:
     )
 
 
-class GlobalReservationTable4(GenericTable):
-    """DHCPv4 reservation table aggregated across multiple servers."""
+class GlobalReservationTable4(ReservationTable4):
+    """DHCPv4 reservation table aggregated across multiple servers.
+
+    Extends the per-server table with a prepended *Server* column so that rows
+    from different servers can be distinguished in the combined view.
+    """
 
     server = _server_column()
-    subnet_id = tables.Column(verbose_name="Subnet ID", accessor="subnet-id")
-    hw_address = MonospaceColumn(verbose_name="Hardware Address", accessor="hw-address")
-    ip_address = tables.Column(verbose_name="IP Address", accessor="ip-address", order_by="_ip_sort_key")
-    hostname = tables.Column(verbose_name="Hostname")
-    lease_status = tables.TemplateColumn(
-        verbose_name="Lease",
-        orderable=False,
-        template_code=_LEASE_STATUS_LINK_V4,
-    )
-    netbox_ip = tables.TemplateColumn(
-        verbose_name="NetBox IP",
-        orderable=False,
-        template_code=(
-            "{% if record.netbox_ip_url %}"
-            '<a href="{{ record.netbox_ip_url }}" class="badge text-bg-success text-decoration-none">'
-            '<i class="mdi mdi-link-variant"></i> Synced</a>'
-            "{% elif record.sync_url %}"
-            '<button type="button"'
-            ' hx-post="{{ record.sync_url }}"'
-            ' hx-vals=\'{"ip_address":"{{ record.ip_address|escapejs }}","hostname":"{{ record.hostname|default:""|escapejs }}"}\''
-            ' hx-target="closest td"'
-            ' hx-swap="innerHTML"'
-            ' class="badge text-bg-secondary border-0"'
-            ' style="cursor:pointer">'
-            '<i class="mdi mdi-sync"></i> Sync</button>'
-            "{% endif %}"
-        ),
-    )
-    actions = ActionsColumn(RESERVATION_ACTIONS_V4)
 
-    class Meta(GenericTable.Meta):
-        empty_text = "No reservations found."
-        fields = ("server", "subnet_id", "hw_address", "ip_address", "hostname", "lease_status", "netbox_ip", "actions")
-        default_columns = (
-            "server",
-            "subnet_id",
-            "hw_address",
-            "ip_address",
-            "hostname",
-            "lease_status",
-            "netbox_ip",
-            "actions",
-        )
+    class Meta(ReservationTable4.Meta):
+        fields = ("server", *ReservationTable4.Meta.fields)
+        default_columns = ("server", *ReservationTable4.Meta.default_columns)
 
 
-class GlobalReservationTable6(GenericTable):
-    """DHCPv6 reservation table aggregated across multiple servers."""
+class GlobalReservationTable6(ReservationTable6):
+    """DHCPv6 reservation table aggregated across multiple servers.
+
+    Extends the per-server table with a prepended *Server* column so that rows
+    from different servers can be distinguished in the combined view.
+    """
 
     server = _server_column()
-    subnet_id = tables.Column(verbose_name="Subnet ID", accessor="subnet-id")
-    duid = MonospaceColumn(verbose_name="DUID")
-    ip_addresses = tables.Column(verbose_name="IPv6 Addresses", accessor="ip-addresses")
-    hostname = tables.Column(verbose_name="Hostname")
-    lease_status = tables.TemplateColumn(
-        verbose_name="Lease",
-        orderable=False,
-        template_code=_LEASE_STATUS_LINK_V6,
-    )
-    netbox_ip = tables.TemplateColumn(
-        verbose_name="NetBox IP",
-        orderable=False,
-        template_code=(
-            "{% if record.netbox_ip_url %}"
-            '<a href="{{ record.netbox_ip_url }}" class="badge text-bg-success text-decoration-none">'
-            '<i class="mdi mdi-link-variant"></i> Synced</a>'
-            "{% elif record.sync_url %}"
-            '<button type="button"'
-            ' hx-post="{{ record.sync_url }}"'
-            ' hx-vals=\'{"ip_address":"{{ record.ip_address|escapejs }}","hostname":"{{ record.hostname|default:""|escapejs }}"}\''
-            ' hx-target="closest td"'
-            ' hx-swap="innerHTML"'
-            ' class="badge text-bg-secondary border-0"'
-            ' style="cursor:pointer">'
-            '<i class="mdi mdi-sync"></i> Sync</button>'
-            "{% endif %}"
-        ),
-    )
-    actions = ActionsColumn(RESERVATION_ACTIONS_V6)
 
-    class Meta(GenericTable.Meta):
-        empty_text = "No reservations found."
-        fields = ("server", "subnet_id", "duid", "ip_addresses", "hostname", "lease_status", "netbox_ip", "actions")
-        default_columns = (
-            "server",
-            "subnet_id",
-            "duid",
-            "ip_addresses",
-            "hostname",
-            "lease_status",
-            "netbox_ip",
-            "actions",
-        )
+    class Meta(ReservationTable6.Meta):
+        fields = ("server", *ReservationTable6.Meta.fields)
+        default_columns = ("server", *ReservationTable6.Meta.default_columns)
 
 
 class GlobalLeaseTable4(BaseLeaseTable):
@@ -679,17 +609,16 @@ class GlobalLeaseTable4(BaseLeaseTable):
         default_columns = ("server", "ip_address", "hostname", "hw_address", "subnet_id", "reserved", "netbox_ip")
 
 
-class GlobalLeaseTable6(BaseLeaseTable):
-    """DHCPv6 lease table aggregated across multiple servers."""
+class GlobalLeaseTable6(LeaseTable6):
+    """DHCPv6 lease table aggregated across multiple servers.
+
+    Extends the per-server table with a prepended *Server* column.
+    """
 
     server = _server_column()
-    type = tables.Column(verbose_name="Type", accessor="type")
-    preferred_lft = DurationColumn(verbose_name="Preferred Lifetime")
-    duid = MonospaceColumn(verbose_name="DUID", additional_classes=["text-break"])
-    iaid = MonospaceColumn(verbose_name="IAID")
 
-    class Meta(BaseLeaseTable.Meta):
-        fields = ("server", "type", "duid", "iaid", *BaseLeaseTable.Meta.fields)
+    class Meta(LeaseTable6.Meta):
+        fields = ("server", *LeaseTable6.Meta.fields)
         default_columns = ("server", "ip_address", "hostname", "duid", "subnet_id", "reserved", "netbox_ip")
 
 
@@ -810,3 +739,17 @@ class SharedNetworkTable(GenericTable):
         empty_text = "No shared networks configured."
         fields = ("name", "description", "subnet_count", "subnets", "actions")
         default_columns = ("name", "description", "subnet_count", "subnets", "actions")
+
+
+class GlobalSharedNetworkTable(SharedNetworkTable):
+    """Shared network table aggregated across multiple servers.
+
+    Extends the per-server table with a prepended *Server* column so that rows
+    from different servers can be distinguished in the combined view.
+    """
+
+    server = _server_column()
+
+    class Meta(SharedNetworkTable.Meta):
+        fields = ("server", *SharedNetworkTable.Meta.fields)
+        default_columns = ("server", *SharedNetworkTable.Meta.default_columns)

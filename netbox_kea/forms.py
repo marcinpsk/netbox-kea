@@ -246,25 +246,6 @@ class Leases6SearchForm(BaseLeasesSarchForm):
         ip_version = 6
 
 
-class CombinedLeases4SearchForm(Leases4SearchForm):
-    """Lease search form for the combined multi-server view (q and by are optional).
-
-    When only *state* is provided the view falls back to ``lease4-get-page``
-    enumeration instead of a targeted search.
-    """
-
-    q = forms.CharField(label="Search", required=False)
-
-
-class CombinedLeases6SearchForm(Leases6SearchForm):
-    """Lease search form for the combined multi-server view (q and by are optional).
-
-    When only *state* is provided the view falls back to ``lease6-get-page``
-    enumeration instead of a targeted search.
-    """
-
-    q = forms.CharField(label="Search", required=False)
-
 
 class MultipleIPField(forms.MultipleChoiceField):
     """Form field accepting a list of IP addresses validated against a specific IP version."""

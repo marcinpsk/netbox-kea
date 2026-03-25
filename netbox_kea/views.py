@@ -662,7 +662,7 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
 class ServerLeases6View(BaseServerLeasesView[tables.LeaseTable6]):
     """DHCPv6 leases tab for a Kea Server."""
 
-    tab = OptionalViewTab(label="DHCPv6 Leases", weight=1010, is_enabled=lambda s: s.dhcp6)
+    tab = OptionalViewTab(label="DHCPv6 Leases", weight=1015, is_enabled=lambda s: s.dhcp6)
     form = forms.Leases6SearchForm
     table = tables.LeaseTable6
     dhcp_version = 6
@@ -672,7 +672,7 @@ class ServerLeases6View(BaseServerLeasesView[tables.LeaseTable6]):
 class ServerLeases4View(BaseServerLeasesView[tables.LeaseTable4]):
     """DHCPv4 leases tab for a Kea Server."""
 
-    tab = OptionalViewTab(label="DHCPv4 Leases", weight=1020, is_enabled=lambda s: s.dhcp4)
+    tab = OptionalViewTab(label="DHCPv4 Leases", weight=1010, is_enabled=lambda s: s.dhcp4)
     form = forms.Leases4SearchForm
     table = tables.LeaseTable4
     dhcp_version = 4
@@ -1100,7 +1100,7 @@ class ServerDHCP6SubnetsView(BaseServerDHCPSubnetsView):
 class ServerDHCP4SubnetsView(BaseServerDHCPSubnetsView):
     """DHCPv4 subnets tab for a Kea Server."""
 
-    tab = OptionalViewTab(label="DHCPv4 Subnets", weight=1040, is_enabled=lambda s: s.dhcp4)
+    tab = OptionalViewTab(label="DHCPv4 Subnets", weight=1020, is_enabled=lambda s: s.dhcp4)
     dhcp_version = 4
 
 
@@ -1189,7 +1189,7 @@ class BaseServerSharedNetworksView(generic.ObjectChildrenView):
 class ServerSharedNetworks6View(BaseServerSharedNetworksView):
     """DHCPv6 shared networks tab."""
 
-    tab = OptionalViewTab(label="DHCPv6 Shared Networks", weight=1025, is_enabled=lambda s: s.dhcp6)
+    tab = OptionalViewTab(label="DHCPv6 Shared Networks", weight=1035, is_enabled=lambda s: s.dhcp6)
     dhcp_version = 6
 
 
@@ -1197,7 +1197,7 @@ class ServerSharedNetworks6View(BaseServerSharedNetworksView):
 class ServerSharedNetworks4View(BaseServerSharedNetworksView):
     """DHCPv4 shared networks tab."""
 
-    tab = OptionalViewTab(label="DHCPv4 Shared Networks", weight=1035, is_enabled=lambda s: s.dhcp4)
+    tab = OptionalViewTab(label="DHCPv4 Shared Networks", weight=1025, is_enabled=lambda s: s.dhcp4)
     dhcp_version = 4
 
 
@@ -1558,7 +1558,7 @@ class ServerReservations4View(generic.ObjectView):
     """DHCPv4 reservations tab — lists all reservations from host_cmds hook."""
 
     queryset = Server.objects.all()
-    tab = OptionalViewTab(label="DHCPv4 Reservations", weight=1050, is_enabled=lambda s: s.dhcp4)
+    tab = OptionalViewTab(label="DHCPv4 Reservations", weight=1040, is_enabled=lambda s: s.dhcp4)
     template_name = "netbox_kea/server_reservations.html"
 
     def get_extra_context(self, request: HttpRequest, instance: Server) -> dict[str, Any]:
@@ -1622,7 +1622,7 @@ class ServerReservations6View(generic.ObjectView):
     """DHCPv6 reservations tab — lists all reservations from host_cmds hook."""
 
     queryset = Server.objects.all()
-    tab = OptionalViewTab(label="DHCPv6 Reservations", weight=1060, is_enabled=lambda s: s.dhcp6)
+    tab = OptionalViewTab(label="DHCPv6 Reservations", weight=1045, is_enabled=lambda s: s.dhcp6)
     template_name = "netbox_kea/server_reservations.html"
 
     def get_extra_context(self, request: HttpRequest, instance: Server) -> dict[str, Any]:
@@ -3435,6 +3435,102 @@ class CombinedSubnets6View(_CombinedSubnetsView):
     active_tab = "subnets6"
 
 
+def _fetch_shared_networks_from_server(server: "Server", version: int) -> list[dict[str, Any]]:
+    """Fetch all shared networks from a single server's config-get and tag with server info."""
+    client = server.get_client(version=version)
+    config = client.command("config-get", service=[f"dhcp{version}"])
+    if config[0]["arguments"] is None:
+        return []
+    dhcp_conf = config[0]["arguments"].get(f"Dhcp{version}", {})
+    result = []
+    for sn in dhcp_conf.get("shared-networks", []):
+        subnets = sn.get(f"subnet{version}", [])
+        subnet_links = [
+            {
+                "cidr": s["subnet"],
+                "url": (
+                    reverse(
+                        f"plugins:netbox_kea:server_leases{version}",
+                        args=[server.pk],
+                    )
+                    + "?"
+                    + _urlencode({"by": "subnet", "q": s["subnet"]})
+                ),
+            }
+            for s in subnets
+            if s.get("subnet")
+        ]
+        result.append(
+            {
+                "name": sn.get("name", ""),
+                "description": sn.get("description", ""),
+                "subnet_count": len(subnets),
+                "subnet_links": subnet_links,
+                "server_pk": server.pk,
+                "server_name": server.name,
+                "dhcp_version": version,
+            }
+        )
+    return result
+
+
+class _CombinedSharedNetworksView(_CombinedViewMixin):
+    """Base view: fetch shared networks from all selected servers concurrently."""
+
+    template_name = "netbox_kea/combined_shared_networks.html"
+    dhcp_version: int = 4
+
+    def get(self, request: HttpRequest) -> HttpResponse:
+        """Merge shared network lists from all queried servers into one table."""
+        ctx = self._combined_context(request)
+        servers = self._get_servers(request, self.dhcp_version)
+
+        all_networks: list[dict[str, Any]] = []
+        errors: list[tuple[str, str]] = []
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+            future_to_server = {
+                executor.submit(_fetch_shared_networks_from_server, s, self.dhcp_version): s for s in servers
+            }
+            for future in concurrent.futures.as_completed(future_to_server):
+                server = future_to_server[future]
+                try:
+                    all_networks.extend(future.result())
+                except Exception:  # noqa: BLE001, PERF203
+                    logger.exception("Failed to query server %s", server.name)
+                    errors.append((server.name, "Failed to query server"))
+
+        table = tables.GlobalSharedNetworkTable(all_networks, user=request.user)
+        table.configure(request)
+
+        if "export" in request.GET:
+            return export_table(table, filename=f"kea-dhcpv{self.dhcp_version}-shared-networks.csv")
+
+        ctx.update(
+            {
+                "table": table,
+                "errors": errors,
+                "dhcp_version": self.dhcp_version,
+                "page_title": f"DHCPv{self.dhcp_version} Shared Networks",
+            }
+        )
+        return render(request, self.template_name, ctx)
+
+
+class CombinedSharedNetworks4View(_CombinedSharedNetworksView):
+    """Combined DHCPv4 shared networks across all selected servers."""
+
+    dhcp_version = 4
+    active_tab = "shared_networks4"
+
+
+class CombinedSharedNetworks6View(_CombinedSharedNetworksView):
+    """Combined DHCPv6 shared networks across all selected servers."""
+
+    dhcp_version = 6
+    active_tab = "shared_networks6"
+
+
 def _fetch_reservations_from_server(server: "Server", version: int) -> list[dict[str, Any]]:
     """Fetch all reservations from a single server and tag with server info.
 
@@ -3549,7 +3645,7 @@ class _CombinedLeasesView(_CombinedViewMixin):
 
     def get(self, request: HttpRequest) -> HttpResponse:
         """Render the search form or, when a query is supplied, merge results."""
-        search_form_cls = forms.CombinedLeases4SearchForm if self.dhcp_version == 4 else forms.CombinedLeases6SearchForm
+        search_form_cls = forms.Leases4SearchForm if self.dhcp_version == 4 else forms.Leases6SearchForm
         table_cls = tables.GlobalLeaseTable4 if self.dhcp_version == 4 else tables.GlobalLeaseTable6
 
         ctx = self._combined_context(request)
@@ -4438,7 +4534,7 @@ class BaseServerOptionDefView(_KeaChangeMixin, ConditionalLoginRequiredMixin, Vi
 class ServerOptionDef6View(BaseServerOptionDefView):
     """DHCPv6 option-def tab."""
 
-    tab = OptionalViewTab(label="DHCPv6 Option Definitions", weight=1030, is_enabled=lambda s: s.dhcp6)
+    tab = OptionalViewTab(label="DHCPv6 Option Definitions", weight=1055, is_enabled=lambda s: s.dhcp6)
     dhcp_version = 6
 
 
@@ -4446,7 +4542,7 @@ class ServerOptionDef6View(BaseServerOptionDefView):
 class ServerOptionDef4View(BaseServerOptionDefView):
     """DHCPv4 option-def tab."""
 
-    tab = OptionalViewTab(label="DHCPv4 Option Definitions", weight=1040, is_enabled=lambda s: s.dhcp4)
+    tab = OptionalViewTab(label="DHCPv4 Option Definitions", weight=1050, is_enabled=lambda s: s.dhcp4)
     dhcp_version = 4
 
 

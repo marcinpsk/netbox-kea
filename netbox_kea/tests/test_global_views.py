@@ -7,13 +7,15 @@ servers so that operators can see everything in one place.
 
 URL map under test
 ------------------
-GET /plugins/kea/combined/                 → CombinedDashboardView
-GET /plugins/kea/combined/leases4/         → CombinedLeases4View
-GET /plugins/kea/combined/leases6/         → CombinedLeases6View
-GET /plugins/kea/combined/subnets4/        → CombinedSubnets4View
-GET /plugins/kea/combined/subnets6/        → CombinedSubnets6View
-GET /plugins/kea/combined/reservations4/   → CombinedReservations4View
-GET /plugins/kea/combined/reservations6/   → CombinedReservations6View
+GET /plugins/kea/combined/                       → CombinedDashboardView
+GET /plugins/kea/combined/leases4/               → CombinedLeases4View
+GET /plugins/kea/combined/leases6/               → CombinedLeases6View
+GET /plugins/kea/combined/subnets4/              → CombinedSubnets4View
+GET /plugins/kea/combined/subnets6/              → CombinedSubnets6View
+GET /plugins/kea/combined/reservations4/         → CombinedReservations4View
+GET /plugins/kea/combined/reservations6/         → CombinedReservations6View
+GET /plugins/kea/combined/shared-networks4/      → CombinedSharedNetworks4View
+GET /plugins/kea/combined/shared-networks6/      → CombinedSharedNetworks6View
 
 All views:
 - Extend _CombinedViewMixin which injects all_servers, selected_server_pks, server_qs, active_tab
@@ -1291,3 +1293,174 @@ class TestCombinedLeasesStateFilter(_CombinedViewBase):
         url = reverse("plugins:netbox_kea:combined_leases4") + f"?server={self.v4_server.pk}&state=1"
         response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
+
+
+# ---------------------------------------------------------------------------
+# Mock config fixture with shared networks
+# ---------------------------------------------------------------------------
+
+_MOCK_CONFIG_WITH_SHARED_NET_V4 = [
+    {
+        "result": 0,
+        "arguments": {
+            "Dhcp4": {
+                "subnet4": [],
+                "shared-networks": [
+                    {
+                        "name": "test-shared-net-v4",
+                        "description": "v4 shared network",
+                        "subnet4": [{"id": 2, "subnet": "10.1.0.0/24"}],
+                    }
+                ],
+            }
+        },
+    }
+]
+
+_MOCK_CONFIG_WITH_SHARED_NET_V6 = [
+    {
+        "result": 0,
+        "arguments": {
+            "Dhcp6": {
+                "subnet6": [],
+                "shared-networks": [
+                    {
+                        "name": "test-shared-net-v6",
+                        "description": "v6 shared network",
+                        "subnet6": [{"id": 3, "subnet": "2001:db8:1::/48"}],
+                    }
+                ],
+            }
+        },
+    }
+]
+
+
+# ---------------------------------------------------------------------------
+# CombinedSharedNetworks4View  GET /plugins/kea/combined/shared-networks4/
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestCombinedSharedNetworks4View(_CombinedViewBase):
+    """GET /plugins/kea/combined/shared-networks4/ — DHCPv4 shared networks across all servers."""
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_get_returns_200(self, MockKeaClient):
+        MockKeaClient.return_value.command.return_value = _MOCK_CONFIG_WITH_SHARED_NET_V4
+        url = reverse("plugins:netbox_kea:combined_shared_networks4")
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+
+    def test_unauthenticated_redirects_to_login(self):
+        self.client.logout()
+        url = reverse("plugins:netbox_kea:combined_shared_networks4")
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("login", response.url)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_queries_all_v4_servers(self, MockKeaClient):
+        """Without a filter, every dhcp4-enabled server is queried for config-get."""
+        MockKeaClient.return_value.command.return_value = _MOCK_CONFIG_WITH_SHARED_NET_V4
+        url = reverse("plugins:netbox_kea:combined_shared_networks4")
+        self.client.get(url)
+        # v4_server + dual_server → at least 2 calls
+        self.assertGreaterEqual(MockKeaClient.return_value.command.call_count, 2)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_unreachable_server_returns_200_with_warning(self, MockKeaClient):
+        MockKeaClient.return_value.command.side_effect = Exception("refused")
+        url = reverse("plugins:netbox_kea:combined_shared_networks4")
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_results_include_server_name(self, MockKeaClient):
+        """Shared network rows must include the server name they came from."""
+        MockKeaClient.return_value.command.return_value = _MOCK_CONFIG_WITH_SHARED_NET_V4
+        url = reverse("plugins:netbox_kea:combined_shared_networks4") + f"?server={self.v4_server.pk}"
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "v4-server")
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_context_active_tab(self, MockKeaClient):
+        MockKeaClient.return_value.command.return_value = _MOCK_CONFIG_WITH_SHARED_NET_V4
+        url = reverse("plugins:netbox_kea:combined_shared_networks4")
+        response = self.client.get(url)
+        self.assertEqual(response.context["active_tab"], "shared_networks4")
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_shared_network_name_in_response(self, MockKeaClient):
+        """The shared network name must appear in the rendered table."""
+        MockKeaClient.return_value.command.return_value = _MOCK_CONFIG_WITH_SHARED_NET_V4
+        url = reverse("plugins:netbox_kea:combined_shared_networks4") + f"?server={self.v4_server.pk}"
+        response = self.client.get(url)
+        self.assertContains(response, "test-shared-net-v4")
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_export_returns_csv(self, MockKeaClient):
+        """?export=table returns a CSV download of shared network data."""
+        MockKeaClient.return_value.command.return_value = _MOCK_CONFIG_WITH_SHARED_NET_V4
+        url = (
+            reverse("plugins:netbox_kea:combined_shared_networks4")
+            + f"?server={self.v4_server.pk}&export=table"
+        )
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("text/csv", response.get("Content-Type", ""))
+
+
+# ---------------------------------------------------------------------------
+# CombinedSharedNetworks6View  GET /plugins/kea/combined/shared-networks6/
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestCombinedSharedNetworks6View(_CombinedViewBase):
+    """GET /plugins/kea/combined/shared-networks6/ — DHCPv6 shared networks across all servers."""
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_get_returns_200(self, MockKeaClient):
+        MockKeaClient.return_value.command.return_value = _MOCK_CONFIG_WITH_SHARED_NET_V6
+        url = reverse("plugins:netbox_kea:combined_shared_networks6")
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+
+    def test_unauthenticated_redirects_to_login(self):
+        self.client.logout()
+        url = reverse("plugins:netbox_kea:combined_shared_networks6")
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("login", response.url)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_queries_all_v6_servers(self, MockKeaClient):
+        """Without a filter, every dhcp6-enabled server is queried."""
+        MockKeaClient.return_value.command.return_value = _MOCK_CONFIG_WITH_SHARED_NET_V6
+        url = reverse("plugins:netbox_kea:combined_shared_networks6")
+        self.client.get(url)
+        self.assertGreaterEqual(MockKeaClient.return_value.command.call_count, 2)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_unreachable_server_returns_200_with_warning(self, MockKeaClient):
+        MockKeaClient.return_value.command.side_effect = Exception("refused")
+        url = reverse("plugins:netbox_kea:combined_shared_networks6")
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_context_active_tab(self, MockKeaClient):
+        MockKeaClient.return_value.command.return_value = _MOCK_CONFIG_WITH_SHARED_NET_V6
+        url = reverse("plugins:netbox_kea:combined_shared_networks6")
+        response = self.client.get(url)
+        self.assertEqual(response.context["active_tab"], "shared_networks6")
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_shared_network_name_in_response(self, MockKeaClient):
+        """The v6 shared network name must appear in the rendered table."""
+        MockKeaClient.return_value.command.return_value = _MOCK_CONFIG_WITH_SHARED_NET_V6
+        url = reverse("plugins:netbox_kea:combined_shared_networks6") + f"?server={self.v6_server.pk}"
+        response = self.client.get(url)
+        self.assertContains(response, "test-shared-net-v6")
