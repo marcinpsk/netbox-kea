@@ -246,7 +246,6 @@ class Leases6SearchForm(BaseLeasesSarchForm):
         ip_version = 6
 
 
-
 class MultipleIPField(forms.MultipleChoiceField):
     """Form field accepting a list of IP addresses validated against a specific IP version."""
 
@@ -642,6 +641,12 @@ class SubnetAddForm(_SubnetBaseForm):
         min_value=1,
         help_text="Leave blank for Kea to auto-assign.",
     )
+    shared_network = forms.ChoiceField(
+        label="Shared Network",
+        choices=[],
+        required=False,
+        help_text="Assign this subnet to a shared network immediately after creation.",
+    )
 
     def clean_subnet(self) -> str:  # noqa: D102
         import ipaddress
@@ -889,6 +894,7 @@ class SubnetOptionsForm(forms.Form):
 
 
 SubnetOptionsFormSet = forms.formset_factory(SubnetOptionsForm, extra=1, can_delete=True)
+ReservationOptionsFormSet = forms.formset_factory(SubnetOptionsForm, extra=1, can_delete=True)
 
 
 class Lease4EditForm(forms.Form):

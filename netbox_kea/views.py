@@ -54,6 +54,22 @@ T = TypeVar("T", bound=BaseTable)
 _POOL_RE = re.compile(r"^[0-9a-fA-F.:/-]{3,100}$")
 
 
+def _build_reservation_options_formset(post_data: Any) -> tuple[Any, bool]:
+    """Build a ReservationOptionsFormSet from POST data.
+
+    If the management form fields are absent (legacy callers, tests), returns an
+    empty unbound formset treated as valid with no options.
+
+    Returns:
+        (formset, is_valid)
+
+    """
+    if "options-TOTAL_FORMS" in post_data:
+        fs = forms.ReservationOptionsFormSet(data=post_data, prefix="options")
+        return fs, fs.is_valid()
+    return forms.ReservationOptionsFormSet(prefix="options"), True
+
+
 def _add_reservation_journal(server: "Server", user: Any, action: str, reservation: dict) -> None:
     """Create a JournalEntry on *server* recording a reservation CRUD event.
 
@@ -991,7 +1007,10 @@ class _BaseLeaseAddView(_KeaChangeMixin, generic.ObjectView):
                 client.lease_add(self.dhcp_version, lease)
                 messages.success(request, f"Lease for {cd['ip_address']} created.")
                 _add_lease_journal(
-                    server, request.user, "added", cd["ip_address"],
+                    server,
+                    request.user,
+                    "added",
+                    cd["ip_address"],
                     hw_address=cd.get("hw_address") or cd.get("duid") or "",
                     hostname=cd.get("hostname") or "",
                 )
@@ -1774,6 +1793,7 @@ class ServerReservation4AddView(_KeaChangeMixin, generic.ObjectView):
             {
                 "object": server,
                 "form": forms.Reservation4Form(initial=initial),
+                "options_formset": forms.ReservationOptionsFormSet(prefix="options"),
                 "dhcp_version": 4,
                 "action": "Add",
                 "return_url": reverse("plugins:netbox_kea:server_reservations4", args=[pk]),
@@ -1784,8 +1804,9 @@ class ServerReservation4AddView(_KeaChangeMixin, generic.ObjectView):
         """Validate form and create reservation in Kea."""
         server = self.get_object(pk=pk)
         form = forms.Reservation4Form(data=request.POST)
+        options_formset, options_valid = _build_reservation_options_formset(request.POST)
         return_url = reverse("plugins:netbox_kea:server_reservations4", args=[pk])
-        if form.is_valid():
+        if form.is_valid() and options_valid:
             cd = form.cleaned_data
             reservation = {
                 "subnet-id": cd["subnet_id"],
@@ -1794,6 +1815,13 @@ class ServerReservation4AddView(_KeaChangeMixin, generic.ObjectView):
             }
             if cd.get("hostname"):
                 reservation["hostname"] = cd["hostname"]
+            option_data = [
+                {"name": f["name"], "data": f["data"], **({"always-send": True} if f.get("always_send") else {})}
+                for f in (getattr(options_formset, "cleaned_data", []) or [])
+                if f and f.get("name") and not f.get("DELETE")
+            ]
+            if option_data:
+                reservation["option-data"] = option_data
             client = server.get_client(version=4)
             # F4: Warn (non-blocking) when the reservation IP is inside an existing pool
             _warn_reservation_pool_overlap(request, client, 4, cd["subnet_id"], cd["ip_address"])
@@ -1834,6 +1862,7 @@ class ServerReservation4AddView(_KeaChangeMixin, generic.ObjectView):
             {
                 "object": server,
                 "form": form,
+                "options_formset": options_formset,
                 "dhcp_version": 4,
                 "action": "Add",
                 "return_url": return_url,
@@ -1861,6 +1890,7 @@ class ServerReservation6AddView(_KeaChangeMixin, generic.ObjectView):
             {
                 "object": server,
                 "form": forms.Reservation6Form(initial=initial),
+                "options_formset": forms.ReservationOptionsFormSet(prefix="options"),
                 "dhcp_version": 6,
                 "action": "Add",
                 "return_url": reverse("plugins:netbox_kea:server_reservations6", args=[pk]),
@@ -1871,8 +1901,9 @@ class ServerReservation6AddView(_KeaChangeMixin, generic.ObjectView):
         """Validate form and create DHCPv6 reservation in Kea."""
         server = self.get_object(pk=pk)
         form = forms.Reservation6Form(data=request.POST)
+        options_formset, options_valid = _build_reservation_options_formset(request.POST)
         return_url = reverse("plugins:netbox_kea:server_reservations6", args=[pk])
-        if form.is_valid():
+        if form.is_valid() and options_valid:
             cd = form.cleaned_data
             reservation: dict[str, Any] = {
                 "subnet-id": cd["subnet_id"],
@@ -1881,6 +1912,13 @@ class ServerReservation6AddView(_KeaChangeMixin, generic.ObjectView):
             }
             if cd.get("hostname"):
                 reservation["hostname"] = cd["hostname"]
+            option_data = [
+                {"name": f["name"], "data": f["data"], **({"always-send": True} if f.get("always_send") else {})}
+                for f in (getattr(options_formset, "cleaned_data", []) or [])
+                if f and f.get("name") and not f.get("DELETE")
+            ]
+            if option_data:
+                reservation["option-data"] = option_data
             client = server.get_client(version=6)
             # F4: Warn (non-blocking) when any reservation IP is inside an existing pool
             primary_ip_str = (reservation.get("ip-addresses") or [""])[0]
@@ -1924,6 +1962,7 @@ class ServerReservation6AddView(_KeaChangeMixin, generic.ObjectView):
             {
                 "object": server,
                 "form": form,
+                "options_formset": options_formset,
                 "dhcp_version": 6,
                 "action": "Add",
                 "return_url": return_url,
@@ -1965,9 +2004,15 @@ class ServerReservation4EditView(_KeaChangeMixin, generic.ObjectView):
             "identifier": identifier,
             "hostname": reservation.get("hostname", ""),
         }
+        existing_options = reservation.get("option-data", [])
+        options_initial = [
+            {"name": o.get("name", ""), "data": o.get("data", ""), "always_send": o.get("always-send", False)}
+            for o in existing_options
+        ]
         context: dict[str, Any] = {
             "object": server,
             "form": forms.Reservation4Form(initial=initial),
+            "options_formset": forms.ReservationOptionsFormSet(initial=options_initial, prefix="options"),
             "dhcp_version": 4,
             "action": "Edit",
             "return_url": return_url,
@@ -1984,8 +2029,9 @@ class ServerReservation4EditView(_KeaChangeMixin, generic.ObjectView):
         """Validate and submit updated reservation to Kea."""
         server = self.get_object(pk=pk)
         form = forms.Reservation4Form(data=request.POST)
+        options_formset, options_valid = _build_reservation_options_formset(request.POST)
         return_url = reverse("plugins:netbox_kea:server_reservations4", args=[pk])
-        if form.is_valid():
+        if form.is_valid() and options_valid:
             cd = form.cleaned_data
             reservation: dict[str, Any] = {
                 "subnet-id": cd["subnet_id"],
@@ -1994,6 +2040,13 @@ class ServerReservation4EditView(_KeaChangeMixin, generic.ObjectView):
             }
             if cd.get("hostname"):
                 reservation["hostname"] = cd["hostname"]
+            option_data = [
+                {"name": f["name"], "data": f["data"], **({"always-send": True} if f.get("always_send") else {})}
+                for f in (getattr(options_formset, "cleaned_data", []) or [])
+                if f and f.get("name") and not f.get("DELETE")
+            ]
+            if option_data:
+                reservation["option-data"] = option_data
             client = server.get_client(version=4)
             try:
                 client.reservation_update("dhcp4", reservation)
@@ -2032,6 +2085,7 @@ class ServerReservation4EditView(_KeaChangeMixin, generic.ObjectView):
             {
                 "object": server,
                 "form": form,
+                "options_formset": options_formset,
                 "dhcp_version": 4,
                 "action": "Edit",
                 "return_url": return_url,
@@ -2074,9 +2128,15 @@ class ServerReservation6EditView(_KeaChangeMixin, generic.ObjectView):
             "identifier": identifier,
             "hostname": reservation.get("hostname", ""),
         }
+        existing_options = reservation.get("option-data", [])
+        options_initial = [
+            {"name": o.get("name", ""), "data": o.get("data", ""), "always_send": o.get("always-send", False)}
+            for o in existing_options
+        ]
         context: dict[str, Any] = {
             "object": server,
             "form": forms.Reservation6Form(initial=initial),
+            "options_formset": forms.ReservationOptionsFormSet(initial=options_initial, prefix="options"),
             "dhcp_version": 6,
             "action": "Edit",
             "return_url": return_url,
@@ -2093,8 +2153,9 @@ class ServerReservation6EditView(_KeaChangeMixin, generic.ObjectView):
         """Validate and submit updated DHCPv6 reservation to Kea."""
         server = self.get_object(pk=pk)
         form = forms.Reservation6Form(data=request.POST)
+        options_formset, options_valid = _build_reservation_options_formset(request.POST)
         return_url = reverse("plugins:netbox_kea:server_reservations6", args=[pk])
-        if form.is_valid():
+        if form.is_valid() and options_valid:
             cd = form.cleaned_data
             reservation: dict[str, Any] = {
                 "subnet-id": cd["subnet_id"],
@@ -2103,6 +2164,13 @@ class ServerReservation6EditView(_KeaChangeMixin, generic.ObjectView):
             }
             if cd.get("hostname"):
                 reservation["hostname"] = cd["hostname"]
+            option_data = [
+                {"name": f["name"], "data": f["data"], **({"always-send": True} if f.get("always_send") else {})}
+                for f in (getattr(options_formset, "cleaned_data", []) or [])
+                if f and f.get("name") and not f.get("DELETE")
+            ]
+            if option_data:
+                reservation["option-data"] = option_data
             client = server.get_client(version=6)
             try:
                 client.reservation_update("dhcp6", reservation)
@@ -2142,6 +2210,7 @@ class ServerReservation6EditView(_KeaChangeMixin, generic.ObjectView):
             {
                 "object": server,
                 "form": form,
+                "options_formset": options_formset,
                 "dhcp_version": 6,
                 "action": "Edit",
                 "return_url": return_url,
@@ -2503,14 +2572,36 @@ class _BaseSubnetAddView(_KeaChangeMixin, generic.ObjectView):
     def _subnets_url(self, pk: int) -> str:
         return reverse(f"plugins:netbox_kea:server_subnets{self.dhcp_version}", args=[pk])
 
+    def _get_network_choices(self, client: "KeaClient") -> list[tuple[str, str]]:
+        """Return shared-network choices for the subnet-add dropdown."""
+        try:
+            resp = client.command("config-get", service=[f"dhcp{self.dhcp_version}"])
+            dhcp_conf = resp[0].get("arguments", {}).get(f"Dhcp{self.dhcp_version}", {})
+            networks = dhcp_conf.get("shared-networks", [])
+        except Exception:
+            logger.warning("Failed to fetch shared networks for subnet add dropdown")
+            return [("", "— (global pool) —")]
+        choices: list[tuple[str, str]] = [("", "— (global pool) —")]
+        for sn in networks:
+            name = sn.get("name", "")
+            if name:
+                choices.append((name, name))
+        return choices
+
     def get(self, request: HttpRequest, pk: int) -> HttpResponse:
         server = self.get_object(pk=pk)
+        form = forms.SubnetAddForm()
+        try:
+            client = server.get_client(version=self.dhcp_version)
+            form.fields["shared_network"].choices = self._get_network_choices(client)
+        except Exception:
+            form.fields["shared_network"].choices = [("", "— (global pool) —")]
         return render(
             request,
             self.template_name,
             {
                 "object": server,
-                "form": forms.SubnetAddForm(),
+                "form": form,
                 "dhcp_version": self.dhcp_version,
                 "return_url": self._subnets_url(pk),
             },
@@ -2520,6 +2611,13 @@ class _BaseSubnetAddView(_KeaChangeMixin, generic.ObjectView):
         server = self.get_object(pk=pk)
         return_url = self._subnets_url(pk)
         form = forms.SubnetAddForm(request.POST)
+        try:
+            client = server.get_client(version=self.dhcp_version)
+            network_choices = self._get_network_choices(client)
+        except Exception:
+            client = server.get_client(version=self.dhcp_version)
+            network_choices = [("", "— (global pool) —")]
+        form.fields["shared_network"].choices = network_choices
         if not form.is_valid():
             return render(
                 request,
@@ -2532,9 +2630,8 @@ class _BaseSubnetAddView(_KeaChangeMixin, generic.ObjectView):
                 },
             )
         cd = form.cleaned_data
-        client = server.get_client(version=self.dhcp_version)
         try:
-            client.subnet_add(
+            assigned_id = client.subnet_add(
                 version=self.dhcp_version,
                 subnet_cidr=cd["subnet"],
                 subnet_id=cd.get("subnet_id") or None,
@@ -2544,6 +2641,16 @@ class _BaseSubnetAddView(_KeaChangeMixin, generic.ObjectView):
                 ntp_servers=cd["ntp_servers"],
             )
             messages.success(request, f"Subnet {cd['subnet']} added.")
+            shared_network = cd.get("shared_network", "")
+            if shared_network and assigned_id is not None:
+                try:
+                    client.network_subnet_add(version=self.dhcp_version, name=shared_network, subnet_id=assigned_id)
+                    messages.success(request, f"Subnet assigned to shared network '{shared_network}'.")
+                except Exception:
+                    logger.exception(
+                        "Subnet %s created but failed to assign to network %s", cd["subnet"], shared_network
+                    )
+                    messages.warning(request, f"Subnet created but could not be assigned to '{shared_network}'.")
         except PartialPersistError:
             messages.warning(request, "Change applied but may not survive a Kea restart (config-write failed).")
             return redirect(return_url)

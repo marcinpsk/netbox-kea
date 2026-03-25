@@ -1403,10 +1403,7 @@ class TestCombinedSharedNetworks4View(_CombinedViewBase):
     def test_export_returns_csv(self, MockKeaClient):
         """?export=table returns a CSV download of shared network data."""
         MockKeaClient.return_value.command.return_value = _MOCK_CONFIG_WITH_SHARED_NET_V4
-        url = (
-            reverse("plugins:netbox_kea:combined_shared_networks4")
-            + f"?server={self.v4_server.pk}&export=table"
-        )
+        url = reverse("plugins:netbox_kea:combined_shared_networks4") + f"?server={self.v4_server.pk}&export=table"
         response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         self.assertIn("text/csv", response.get("Content-Type", ""))

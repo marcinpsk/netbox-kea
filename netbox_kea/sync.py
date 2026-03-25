@@ -223,13 +223,11 @@ def _cleanup_stale_ips(
 
     from ipam.models import IPAddress as NbIP
 
-    stale_qs = (
-        NbIP.objects.filter(
-            dns_name=hostname,
-            status__in=("dhcp", "active", "reserved"),
-            description__startswith="Synced from Kea DHCP",
-        ).exclude(address__startswith=f"{new_ip_str}/")
-    )
+    stale_qs = NbIP.objects.filter(
+        dns_name=hostname,
+        status__in=("dhcp", "active", "reserved"),
+        description__startswith="Synced from Kea DHCP",
+    ).exclude(address__startswith=f"{new_ip_str}/")
 
     # Also exclude sibling IPs (e.g. other addresses in the same DHCPv6 reservation).
     for exc_ip in exclude_ips or frozenset():

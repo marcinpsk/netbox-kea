@@ -638,7 +638,9 @@ class TestPoolAdd(TestCase):
             side_effect=_side_effects(_LIST_WITH_POOL_CMDS, _OK, _CONFIG_GET_RUNNING_RESP, _OK, _OK),
         ) as mock_post:
             self.client.pool_add(version=4, subnet_id=1, pool="10.0.0.50-10.0.0.99")
-        self.assertEqual(self._cmds(mock_post), ["list-commands", "subnet4-pool-add", "config-get", "config-test", "config-write"])
+        self.assertEqual(
+            self._cmds(mock_post), ["list-commands", "subnet4-pool-add", "config-get", "config-test", "config-write"]
+        )
 
     def test_pool_add_v4_sends_correct_arguments(self):
         """subnet4-pool-add arguments include correct id and pool."""
@@ -753,7 +755,9 @@ class TestPoolDel(TestCase):
             side_effect=_side_effects(_LIST_WITH_POOL_CMDS, _OK, _CONFIG_GET_RUNNING_RESP, _OK, _OK),
         ) as mock_post:
             self.client.pool_del(version=4, subnet_id=1, pool="10.0.0.50-10.0.0.99")
-        self.assertEqual(self._cmds(mock_post), ["list-commands", "subnet4-pool-del", "config-get", "config-test", "config-write"])
+        self.assertEqual(
+            self._cmds(mock_post), ["list-commands", "subnet4-pool-del", "config-get", "config-test", "config-write"]
+        )
 
     def test_pool_del_v4_sends_correct_arguments(self):
         """subnet4-pool-del arguments include correct id and pool."""
@@ -1016,15 +1020,16 @@ class TestSubnetAdd(TestCase):
             with self.assertRaises(KeaException):
                 self.client.subnet_add(version=4, subnet_cidr="10.99.0.0/24")
 
-    def test_subnet_add_returns_none_on_success(self):
-        """subnet_add returns None on success."""
+    def test_subnet_add_returns_assigned_id(self):
+        """subnet_add returns the assigned subnet ID on success."""
         with patch.object(
             self.client._session,
             "post",
             side_effect=_side_effects(_SUBNET4_LIST_RESP, _SUBNET4_ADD_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _OK),
         ):
             result = self.client.subnet_add(version=4, subnet_cidr="10.99.0.0/24")
-        self.assertIsNone(result)
+        # _SUBNET4_LIST_RESP has max id=2, so auto-assigned id should be 3
+        self.assertEqual(result, 3)
 
     def test_subnet_add_without_explicit_id_falls_back_when_list_fails(self):
         """When subnet{v}-list raises KeaException, subnet_add falls back to no explicit ID."""
@@ -1721,7 +1726,9 @@ class TestPersistConfig(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_CONFIG_GET_RUNNING_RESP, _CONFIG_TEST_OK_RESP, [{"result": 1, "text": "write failed"}]),
+            side_effect=_side_effects(
+                _CONFIG_GET_RUNNING_RESP, _CONFIG_TEST_OK_RESP, [{"result": 1, "text": "write failed"}]
+            ),
         ):
             with self.assertRaises(PartialPersistError):
                 self.client._persist_config("dhcp4")
@@ -2267,7 +2274,9 @@ class TestNetworkAdd(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_NETWORK_ADD_OK, _CONFIG_GET_RUNNING_RESP, _CONFIG_TEST_OK_RESP, _CONFIG_WRITE_RESP),
+            side_effect=_side_effects(
+                _NETWORK_ADD_OK, _CONFIG_GET_RUNNING_RESP, _CONFIG_TEST_OK_RESP, _CONFIG_WRITE_RESP
+            ),
         ) as mock_post:
             self.client.network_add(version=4, name="prod-net")
         payload = next(p for p in self._payloads(mock_post) if p["command"] == "network4-add")
@@ -2280,7 +2289,9 @@ class TestNetworkAdd(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_NETWORK_ADD_OK, _CONFIG_GET_RUNNING_RESP, _CONFIG_TEST_OK_RESP, _CONFIG_WRITE_RESP),
+            side_effect=_side_effects(
+                _NETWORK_ADD_OK, _CONFIG_GET_RUNNING_RESP, _CONFIG_TEST_OK_RESP, _CONFIG_WRITE_RESP
+            ),
         ) as mock_post:
             self.client.network_add(version=4, name="opt-net", options=opts)
         payload = next(p for p in self._payloads(mock_post) if p["command"] == "network4-add")
@@ -2291,7 +2302,9 @@ class TestNetworkAdd(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_NETWORK_ADD_OK, _CONFIG_GET_RUNNING_RESP, _CONFIG_TEST_OK_RESP, _CONFIG_WRITE_RESP),
+            side_effect=_side_effects(
+                _NETWORK_ADD_OK, _CONFIG_GET_RUNNING_RESP, _CONFIG_TEST_OK_RESP, _CONFIG_WRITE_RESP
+            ),
         ) as mock_post:
             self.client.network_add(version=4, name="my-net")
         self.assertIn("config-write", self._cmds(mock_post))
@@ -2328,7 +2341,9 @@ class TestNetworkDel(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_NETWORK_DEL_OK, _CONFIG_GET_RUNNING_RESP, _CONFIG_TEST_OK_RESP, _CONFIG_WRITE_RESP),
+            side_effect=_side_effects(
+                _NETWORK_DEL_OK, _CONFIG_GET_RUNNING_RESP, _CONFIG_TEST_OK_RESP, _CONFIG_WRITE_RESP
+            ),
         ) as mock_post:
             self.client.network_del(version=4, name="old-net")
         payload = next(p for p in self._payloads(mock_post) if p["command"] == "network4-del")
@@ -2340,7 +2355,9 @@ class TestNetworkDel(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_NETWORK_DEL_OK, _CONFIG_GET_RUNNING_RESP, _CONFIG_TEST_OK_RESP, _CONFIG_WRITE_RESP),
+            side_effect=_side_effects(
+                _NETWORK_DEL_OK, _CONFIG_GET_RUNNING_RESP, _CONFIG_TEST_OK_RESP, _CONFIG_WRITE_RESP
+            ),
         ) as mock_post:
             self.client.network_del(version=4, name="old-net")
         self.assertIn("config-write", self._cmds(mock_post))
@@ -2377,7 +2394,9 @@ class TestNetworkSubnetAdd(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_NETWORK_SUBNET_ADD_OK, _CONFIG_GET_RUNNING_RESP, _CONFIG_TEST_OK_RESP, _CONFIG_WRITE_RESP),
+            side_effect=_side_effects(
+                _NETWORK_SUBNET_ADD_OK, _CONFIG_GET_RUNNING_RESP, _CONFIG_TEST_OK_RESP, _CONFIG_WRITE_RESP
+            ),
         ) as mock_post:
             self.client.network_subnet_add(version=4, name="prod-net", subnet_id=5)
         payload = next(p for p in self._payloads(mock_post) if p["command"] == "network4-subnet-add")
@@ -2390,7 +2409,9 @@ class TestNetworkSubnetAdd(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_NETWORK_SUBNET_ADD_OK, _CONFIG_GET_RUNNING_RESP, _CONFIG_TEST_OK_RESP, _CONFIG_WRITE_RESP),
+            side_effect=_side_effects(
+                _NETWORK_SUBNET_ADD_OK, _CONFIG_GET_RUNNING_RESP, _CONFIG_TEST_OK_RESP, _CONFIG_WRITE_RESP
+            ),
         ) as mock_post:
             self.client.network_subnet_add(version=4, name="prod-net", subnet_id=5)
         self.assertIn("config-write", self._cmds(mock_post))
@@ -2427,7 +2448,9 @@ class TestNetworkSubnetDel(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_NETWORK_SUBNET_DEL_OK, _CONFIG_GET_RUNNING_RESP, _CONFIG_TEST_OK_RESP, _CONFIG_WRITE_RESP),
+            side_effect=_side_effects(
+                _NETWORK_SUBNET_DEL_OK, _CONFIG_GET_RUNNING_RESP, _CONFIG_TEST_OK_RESP, _CONFIG_WRITE_RESP
+            ),
         ) as mock_post:
             self.client.network_subnet_del(version=4, name="prod-net", subnet_id=5)
         payload = next(p for p in self._payloads(mock_post) if p["command"] == "network4-subnet-del")
@@ -2440,7 +2463,9 @@ class TestNetworkSubnetDel(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_NETWORK_SUBNET_DEL_OK, _CONFIG_GET_RUNNING_RESP, _CONFIG_TEST_OK_RESP, _CONFIG_WRITE_RESP),
+            side_effect=_side_effects(
+                _NETWORK_SUBNET_DEL_OK, _CONFIG_GET_RUNNING_RESP, _CONFIG_TEST_OK_RESP, _CONFIG_WRITE_RESP
+            ),
         ) as mock_post:
             self.client.network_subnet_del(version=4, name="prod-net", subnet_id=5)
         self.assertIn("config-write", self._cmds(mock_post))

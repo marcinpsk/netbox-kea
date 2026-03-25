@@ -273,7 +273,7 @@ class KeaClient:
         gateway: str | None = None,
         dns_servers: list[str] | None = None,
         ntp_servers: list[str] | None = None,
-    ) -> None:
+    ) -> int | None:
         """Add a new subnet to Kea and persist the change.
 
         Args:
@@ -347,6 +347,7 @@ class KeaClient:
         if last_exc is not None:
             raise last_exc
         self._persist_config(service)
+        return subnet_def.get("id")
 
     def subnet_del(self, version: int, subnet_id: int) -> None:
         """Delete an existing subnet from Kea and persist the change.

@@ -354,14 +354,14 @@ class BaseLeaseTable(GenericTable):
             "{% if record.stale_mac %}"
             ' <span class="badge text-bg-warning"'
             ' title="Lease MAC ({{ record.stale_lease_mac }}) ≠ Reservation MAC ({{ record.reservation_mac }})'
-            " — delete this lease to force the old device off this IP\">"
+            ' — delete this lease to force the old device off this IP">'
             "&#9888; MAC?</span>"
             ' <button type="button"'
             ' class="badge text-bg-danger border-0 ms-1"'
             ' style="cursor:pointer"'
             ' hx-post="{{ record.delete_lease_url }}"'
             ' hx-confirm="Delete lease {{ record.ip_address|escapejs }} held by {{ record.stale_lease_mac|escapejs }}?'
-            " The old device must re-request this IP via DORA.\""
+            ' The old device must re-request this IP via DORA."'
             ' hx-vals=\'{"pk":"{{ record.ip_address|escapejs }}","_confirm":"1"}\'>'
             '<i class="mdi mdi-delete-outline"></i></button>'
             "{% endif %}"
@@ -619,7 +619,16 @@ class GlobalLeaseTable4(LeaseTable4):
 
     class Meta(LeaseTable4.Meta):
         fields = ("server", *LeaseTable4.Meta.fields)
-        default_columns = ("server", "ip_address", "hostname", "hw_address", "subnet_id", "state_label", "reserved", "netbox_ip")
+        default_columns = (
+            "server",
+            "ip_address",
+            "hostname",
+            "hw_address",
+            "subnet_id",
+            "state_label",
+            "reserved",
+            "netbox_ip",
+        )
 
 
 class GlobalLeaseTable6(LeaseTable6):
@@ -632,7 +641,16 @@ class GlobalLeaseTable6(LeaseTable6):
 
     class Meta(LeaseTable6.Meta):
         fields = ("server", *LeaseTable6.Meta.fields)
-        default_columns = ("server", "ip_address", "hostname", "duid", "subnet_id", "state_label", "reserved", "netbox_ip")
+        default_columns = (
+            "server",
+            "ip_address",
+            "hostname",
+            "duid",
+            "subnet_id",
+            "state_label",
+            "reserved",
+            "netbox_ip",
+        )
 
 
 class GlobalSubnetTable4(SubnetTable):

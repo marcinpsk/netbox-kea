@@ -1393,8 +1393,8 @@ class TestStaleMacBadgeEnrichment(_ViewTestBase):
         url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
         response = self._htmx_get(url, {"by": "ip", "q": "10.0.0.5"})
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "aa:bb:cc:dd:ee:01")   # lease MAC in tooltip
-        self.assertContains(response, "aa:bb:cc:dd:ee:99")   # reservation MAC in tooltip
+        self.assertContains(response, "aa:bb:cc:dd:ee:01")  # lease MAC in tooltip
+        self.assertContains(response, "aa:bb:cc:dd:ee:99")  # reservation MAC in tooltip
 
     @patch("netbox_kea.sync.bulk_fetch_netbox_ips")
     @patch("netbox_kea.models.KeaClient")
@@ -4263,3 +4263,86 @@ class TestLeaseJournalEntries(_ViewTestBase):
         self.assertEqual(after, before + 1)
         entry = JournalEntry.objects.filter(assigned_object_id=self.server.pk).latest("created")
         self.assertIn("10.0.0.5", entry.comments)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Gap S1: Shared-network assignment on subnet create
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Config-get response listing available networks (no subnets assigned yet)
+_CONFIG4_NETWORKS_FOR_ADD = [
+    {
+        "result": 0,
+        "arguments": {
+            "Dhcp4": {
+                "subnet4": [],
+                "shared-networks": [
+                    {"name": "net-alpha", "subnet4": []},
+                    {"name": "net-beta", "subnet4": []},
+                ],
+            }
+        },
+    }
+]
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestServerSubnet4AddViewSharedNetwork(_ViewTestBase):
+    """GET/POST /plugins/kea/servers/<pk>/subnets4/add/ — shared_network field."""
+
+    def _url(self):
+        return reverse("plugins:netbox_kea:server_subnet4_add", args=[self.server.pk])
+
+    def _valid_post_data(self, shared_network=""):
+        return {
+            "subnet": "10.0.1.0/24",
+            "subnet_id": "",
+            "pools": "",
+            "gateway": "",
+            "dns_servers": "",
+            "ntp_servers": "",
+            "shared_network": shared_network,
+        }
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_get_shows_shared_network_dropdown(self, MockKeaClient):
+        """GET must render a shared_network dropdown populated from Kea config."""
+        mock_client = MockKeaClient.return_value
+        mock_client.command.side_effect = lambda cmd, **kw: (
+            [{"result": 0, "arguments": {"subnets": []}}] if "list" in cmd else _CONFIG4_NETWORKS_FOR_ADD
+        )
+        response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "net-alpha")
+        self.assertContains(response, "net-beta")
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_with_shared_network_calls_network_subnet_add(self, MockKeaClient):
+        """POST with shared_network set must call network_subnet_add after subnet creation."""
+        mock_client = MockKeaClient.return_value
+        mock_client.command.side_effect = lambda cmd, **kw: (
+            [{"result": 0, "arguments": {"subnets": []}}] if "list" in cmd else _CONFIG4_NETWORKS_FOR_ADD
+        )
+        mock_client.subnet_add.return_value = 1
+        mock_client.network_subnet_add.return_value = None
+
+        response = self.client.post(self._url(), self._valid_post_data(shared_network="net-alpha"))
+        self.assertIn(response.status_code, (302, 200))
+        mock_client.network_subnet_add.assert_called_once()
+        call_kwargs = mock_client.network_subnet_add.call_args[1] or {}
+        call_args = mock_client.network_subnet_add.call_args[0]
+        name = call_kwargs.get("name") or (call_args[1] if len(call_args) > 1 else None)
+        self.assertEqual(name, "net-alpha")
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_without_shared_network_does_not_call_network_subnet_add(self, MockKeaClient):
+        """POST without shared_network must NOT call network_subnet_add."""
+        mock_client = MockKeaClient.return_value
+        mock_client.command.side_effect = lambda cmd, **kw: (
+            [{"result": 0, "arguments": {"subnets": []}}] if "list" in cmd else _CONFIG4_NETWORKS_FOR_ADD
+        )
+        mock_client.subnet_add.return_value = None
+
+        response = self.client.post(self._url(), self._valid_post_data(shared_network=""))
+        self.assertIn(response.status_code, (302, 200))
+        mock_client.network_subnet_add.assert_not_called()

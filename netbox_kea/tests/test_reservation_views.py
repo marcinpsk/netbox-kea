@@ -2154,3 +2154,135 @@ class TestReservationJournalEntries(_ReservationViewBase):
             },
         )
         self.assertEqual(self._journal_count(), before)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Gap R1: Reservation option-data support
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _options_formset_data(options=None, prefix="options"):
+    """Build POST data for ReservationOptionsFormSet with given option rows."""
+    opts = options or []
+    data = {
+        f"{prefix}-TOTAL_FORMS": str(len(opts)),
+        f"{prefix}-INITIAL_FORMS": "0",
+        f"{prefix}-MIN_NUM_FORMS": "0",
+        f"{prefix}-MAX_NUM_FORMS": "1000",
+    }
+    for i, opt in enumerate(opts):
+        data[f"{prefix}-{i}-name"] = opt.get("name", "")
+        data[f"{prefix}-{i}-data"] = opt.get("data", "")
+        data[f"{prefix}-{i}-always_send"] = "on" if opt.get("always_send") else ""
+        data[f"{prefix}-{i}-DELETE"] = "on" if opt.get("DELETE") else ""
+    return data
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestReservation4OptionData(_ReservationViewBase):
+    """Reservation add/edit views must support option-data formset (Gap R1)."""
+
+    _SUBNET_ID = 1
+    _IP = "192.168.1.100"
+
+    def _add_url(self):
+        return reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk])
+
+    def _edit_url(self):
+        return reverse(
+            "plugins:netbox_kea:server_reservation4_edit",
+            args=[self.server.pk, self._SUBNET_ID, self._IP],
+        )
+
+    def _base_post(self, extra=None):
+        data = {
+            "subnet_id": self._SUBNET_ID,
+            "ip_address": self._IP,
+            "identifier_type": "hw-address",
+            "identifier": "aa:bb:cc:dd:ee:ff",
+            "hostname": "testhost.example.com",
+        }
+        if extra:
+            data.update(extra)
+        return data
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_add_with_options_includes_option_data(self, MockKeaClient):
+        """POST add with options formset must include option-data in the reservation_add call."""
+        mock_client = MockKeaClient.return_value
+        mock_client.reservation_add.return_value = None
+
+        post_data = self._base_post()
+        post_data.update(
+            _options_formset_data(
+                [
+                    {"name": "boot-file-name", "data": "http://10.0.0.1/ztp.py"},
+                ]
+            )
+        )
+        response = self.client.post(self._add_url(), post_data)
+        self.assertEqual(response.status_code, 302)
+
+        call_args = mock_client.reservation_add.call_args
+        reservation = call_args[0][1] if call_args[0] else call_args[1].get("reservation", {})
+        self.assertIn("option-data", reservation)
+        self.assertEqual(len(reservation["option-data"]), 1)
+        self.assertEqual(reservation["option-data"][0]["name"], "boot-file-name")
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_add_without_options_omits_option_data(self, MockKeaClient):
+        """POST add with empty formset must NOT include option-data in the reservation dict."""
+        mock_client = MockKeaClient.return_value
+        mock_client.reservation_add.return_value = None
+
+        post_data = self._base_post()
+        post_data.update(_options_formset_data([]))
+        response = self.client.post(self._add_url(), post_data)
+        self.assertEqual(response.status_code, 302)
+
+        call_args = mock_client.reservation_add.call_args
+        reservation = call_args[0][1] if call_args[0] else call_args[1].get("reservation", {})
+        self.assertNotIn("option-data", reservation)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_get_edit_prepopulates_options_formset(self, MockKeaClient):
+        """GET edit must pre-populate the options formset from existing reservation option-data."""
+        mock_client = MockKeaClient.return_value
+        mock_client.reservation_get.return_value = {
+            **_SAMPLE_RESERVATION4,
+            "option-data": [{"name": "boot-file-name", "data": "http://10.0.0.1/ztp.py"}],
+        }
+        mock_client.lease_get_by_ip.return_value = None
+        response = self.client.get(self._edit_url())
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "boot-file-name")
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_edit_with_options_includes_option_data(self, MockKeaClient):
+        """POST edit with options formset must include option-data in the reservation_update call."""
+        mock_client = MockKeaClient.return_value
+        mock_client.reservation_get.return_value = _SAMPLE_RESERVATION4
+        mock_client.reservation_update.return_value = None
+
+        post_data = self._base_post()
+        post_data.update(
+            _options_formset_data(
+                [
+                    {"name": "tftp-server-name", "data": "10.0.0.1"},
+                ]
+            )
+        )
+        response = self.client.post(self._edit_url(), post_data)
+        self.assertEqual(response.status_code, 302)
+
+        call_args = mock_client.reservation_update.call_args
+        reservation = call_args[0][1] if call_args[0] else call_args[1].get("reservation", {})
+        self.assertIn("option-data", reservation)
+        self.assertEqual(reservation["option-data"][0]["name"], "tftp-server-name")
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_get_add_shows_ztp_help_text(self, MockKeaClient):
+        """GET add form must contain ZTP reference text in the response."""
+        response = self.client.get(self._add_url())
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "boot-file-name")

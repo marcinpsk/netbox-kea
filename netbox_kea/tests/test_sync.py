@@ -555,8 +555,7 @@ class TestUpdateMacDescription(TestCase):
             self.skipTest("MACAddress not available")
         import types
 
-        mac = types.SimpleNamespace(description=description, assigned_object=object() if has_interface else None)
-        return mac
+        return types.SimpleNamespace(description=description, assigned_object=object() if has_interface else None)
 
     def _call(self, mac_obj, hostname):
         from netbox_kea.sync import _update_mac_description
@@ -764,8 +763,6 @@ class TestCleanupStaleIps(TestCase):
 
     def test_does_not_remove_deprecated_ips(self):
         """Already-deprecated IPs are not touched (not in (dhcp, active, reserved))."""
-        from ipam.models import IPAddress as NbIP
-
         self._create_old_ip(status="deprecated")
         count = self._call(mode="remove")
         self.assertEqual(count, 0)
@@ -786,8 +783,6 @@ class TestCleanupStaleIps(TestCase):
 
     def test_skips_when_no_hostname(self):
         """No hostname → no cleanup (can't match safely)."""
-        from ipam.models import IPAddress as NbIP
-
         from netbox_kea.sync import _cleanup_stale_ips
 
         self._create_old_ip()

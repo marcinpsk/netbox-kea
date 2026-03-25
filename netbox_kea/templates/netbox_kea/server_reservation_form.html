@@ -24,9 +24,66 @@
         <strong>{{ action }} DHCPv{{ dhcp_version }} Reservation</strong>
       </div>
       <div class="card-body">
-        <form method="post">
+        <form method="post" id="reservation-form">
           {% csrf_token %}
           {% render_form form %}
+
+          {# DHCP Options section #}
+          <hr>
+          <div class="d-flex justify-content-between align-items-center mb-2">
+            <strong>DHCP Options <span class="text-muted fw-normal">(optional)</span></strong>
+            <button type="button" class="btn btn-sm btn-outline-secondary"
+                    data-bs-toggle="collapse" data-bs-target="#ztp-examples" aria-expanded="false">
+              <i class="mdi mdi-help-circle-outline" aria-hidden="true"></i> ZTP Examples
+            </button>
+          </div>
+
+          <div class="collapse mb-3" id="ztp-examples">
+            <div class="card card-body small bg-light">
+              <p class="mb-2"><strong>Common ZTP / vendor options</strong></p>
+              <table class="table table-sm table-bordered mb-2">
+                <thead><tr><th>Name</th><th>Example value</th><th>Use case</th></tr></thead>
+                <tbody>
+                  <tr><td><code>boot-file-name</code></td><td><code>http://10.0.0.1/ztp.py</code></td><td>Cisco IOS XE / NX-OS / Junos bootstrap URL (option 67)</td></tr>
+                  <tr><td><code>tftp-server-name</code></td><td><code>10.0.0.1</code></td><td>TFTP server for legacy IOS (option 66)</td></tr>
+                  <tr><td><code>vendor-encapsulated-options</code></td><td><code>0118687474703a2f2f31302e302e302e312f706f61702e7079</code></td><td>Cisco POAP / Aruba Central (option 43, hex TLV)</td></tr>
+                </tbody>
+              </table>
+              <p class="mb-0 text-muted">
+                Option 43 value is a hex string encoding TLV sub-options — see
+                <a href="https://kea.readthedocs.io/en/latest/arm/dhcp4-srv.html#standard-dhcpv4-options" target="_blank">Kea docs</a>
+                for full reference.
+              </p>
+            </div>
+          </div>
+
+          {{ options_formset.management_form }}
+          {% if options_formset.non_form_errors %}
+            <div class="alert alert-danger">
+              {% for error in options_formset.non_form_errors %}<div>{{ error }}</div>{% endfor %}
+            </div>
+          {% endif %}
+          <table class="table table-sm" id="options-table">
+            <thead>
+              <tr><th>Option Name</th><th>Value</th><th>Always Send</th><th>Delete</th></tr>
+            </thead>
+            <tbody id="formset-rows">
+              {% for opt_form in options_formset %}
+                <tr class="formset-row">
+                  <td>{{ opt_form.name }}{% for err in opt_form.name.errors %}<div class="text-danger small">{{ err }}</div>{% endfor %}</td>
+                  <td>{{ opt_form.data }}{% for err in opt_form.data.errors %}<div class="text-danger small">{{ err }}</div>{% endfor %}</td>
+                  <td class="text-center">{{ opt_form.always_send }}</td>
+                  <td class="text-center">{{ opt_form.DELETE }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+          <div class="mb-3">
+            <button type="button" class="btn btn-sm btn-outline-secondary" id="add-row">
+              <i class="mdi mdi-plus" aria-hidden="true"></i> Add Option
+            </button>
+          </div>
+
           <div class="text-end mt-3">
             <a href="{{ return_url }}" class="btn btn-secondary me-2">Cancel</a>
             <button type="submit" class="btn btn-primary">
@@ -38,4 +95,6 @@
     </div>
   </div>
 </div>
+
+{% include "netbox_kea/inc/formset_add_row.html" %}
 {% endblock %}
