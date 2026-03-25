@@ -451,21 +451,25 @@ class LeaseDeleteTable(GenericTable):
 # ─────────────────────────────────────────────────────────────────────────────
 
 RESERVATION_ACTIONS_V4 = """
+{% if record.can_change %}
 <span class="btn-group">
   <a href="{% url "plugins:netbox_kea:server_reservation4_edit" record.server_pk record.subnet_id record.ip_address %}"
      class="btn btn-sm btn-warning" aria-label="Edit reservation {{ record.ip_address }}"><i class="mdi mdi-pencil" aria-hidden="true"></i></a>
   <a href="{% url "plugins:netbox_kea:server_reservation4_delete" record.server_pk record.subnet_id record.ip_address %}"
      class="btn btn-sm btn-danger" aria-label="Delete reservation {{ record.ip_address }}"><i class="mdi mdi-trash-can-outline" aria-hidden="true"></i></a>
 </span>
+{% endif %}
 """
 
 RESERVATION_ACTIONS_V6 = """
+{% if record.can_change %}
 <span class="btn-group">
   <a href="{% url "plugins:netbox_kea:server_reservation6_edit" record.server_pk record.subnet_id record.ip_address %}"
      class="btn btn-sm btn-warning" aria-label="Edit reservation {{ record.ip_address }}"><i class="mdi mdi-pencil" aria-hidden="true"></i></a>
   <a href="{% url "plugins:netbox_kea:server_reservation6_delete" record.server_pk record.subnet_id record.ip_address %}"
      class="btn btn-sm btn-danger" aria-label="Delete reservation {{ record.ip_address }}"><i class="mdi mdi-trash-can-outline" aria-hidden="true"></i></a>
 </span>
+{% endif %}
 """
 
 

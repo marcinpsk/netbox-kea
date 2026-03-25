@@ -4238,13 +4238,16 @@ class TestLeaseJournalEntries(_ViewTestBase):
     @patch("netbox_kea.models.KeaClient")
     def test_lease_add_creates_journal_entry(self, MockKeaClient):
         """A successful lease add must create a JournalEntry attached to the server."""
+        from django.contrib.contenttypes.models import ContentType
         from extras.models import JournalEntry
 
         mock_client = MockKeaClient.return_value
         mock_client.lease_add.return_value = None
         url = reverse("plugins:netbox_kea:server_lease4_add", args=[self.server.pk])
+        server_ct = ContentType.objects.get_for_model(self.server)
         before = JournalEntry.objects.filter(
             assigned_object_id=self.server.pk,
+            assigned_object_type=server_ct,
         ).count()
         self.client.post(
             url,
@@ -4256,24 +4259,30 @@ class TestLeaseJournalEntries(_ViewTestBase):
                 "valid_lft": 3600,
             },
         )
-        after = JournalEntry.objects.filter(assigned_object_id=self.server.pk).count()
+        after = JournalEntry.objects.filter(assigned_object_id=self.server.pk, assigned_object_type=server_ct).count()
         self.assertEqual(after, before + 1)
-        entry = JournalEntry.objects.filter(assigned_object_id=self.server.pk).latest("created")
+        entry = JournalEntry.objects.filter(assigned_object_id=self.server.pk, assigned_object_type=server_ct).latest(
+            "created"
+        )
         self.assertIn("10.0.0.5", entry.comments)
 
     @patch("netbox_kea.models.KeaClient")
     def test_lease_delete_creates_journal_entry(self, MockKeaClient):
         """A successful lease delete must create a JournalEntry attached to the server."""
+        from django.contrib.contenttypes.models import ContentType
         from extras.models import JournalEntry
 
         mock_client = MockKeaClient.return_value
         mock_client.command.return_value = [{"result": 0, "text": "Success"}]
         url = reverse("plugins:netbox_kea:server_leases4_delete", args=[self.server.pk])
-        before = JournalEntry.objects.filter(assigned_object_id=self.server.pk).count()
+        server_ct = ContentType.objects.get_for_model(self.server)
+        before = JournalEntry.objects.filter(assigned_object_id=self.server.pk, assigned_object_type=server_ct).count()
         self.client.post(url, {"pk": "10.0.0.5", "_confirm": "1"})
-        after = JournalEntry.objects.filter(assigned_object_id=self.server.pk).count()
+        after = JournalEntry.objects.filter(assigned_object_id=self.server.pk, assigned_object_type=server_ct).count()
         self.assertEqual(after, before + 1)
-        entry = JournalEntry.objects.filter(assigned_object_id=self.server.pk).latest("created")
+        entry = JournalEntry.objects.filter(assigned_object_id=self.server.pk, assigned_object_type=server_ct).latest(
+            "created"
+        )
         self.assertIn("10.0.0.5", entry.comments)
 
 

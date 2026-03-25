@@ -74,7 +74,9 @@ def _build_reservation_options_formset(post_data: Any) -> tuple[Any, bool]:
         return fs, fs.is_valid()
     # Detect partial submission: some options-* keys exist but management form is missing
     if any(k.startswith("options-") for k in post_data):
-        return forms.ReservationOptionsFormSet(prefix="options"), False
+        fs = forms.ReservationOptionsFormSet(data=post_data, prefix="options")
+        fs.is_valid()  # populate errors so the template can show management-form error
+        return fs, False
     return forms.ReservationOptionsFormSet(prefix="options"), True
 
 
@@ -1714,6 +1716,10 @@ class ServerReservations4View(generic.ObjectView):
         # Enrich reservations with lease status + NetBox IPAM badges.
         _enrich_reservations_with_badges(reservations, server, 4)
 
+        can_change = Server.objects.restrict(request.user, "change").filter(pk=server.pk).exists()
+        for r in reservations:
+            r["can_change"] = can_change
+
         table = tables.ReservationTable4(reservations, user=request.user)
         table.configure(request)
         return {
@@ -1777,6 +1783,10 @@ class ServerReservations6View(generic.ObjectView):
 
         # Enrich reservations with lease status + NetBox IPAM badges.
         _enrich_reservations_with_badges(reservations, server, 6)
+
+        can_change = Server.objects.restrict(request.user, "change").filter(pk=server.pk).exists()
+        for r in reservations:
+            r["can_change"] = can_change
 
         table = tables.ReservationTable6(reservations, user=request.user)
         table.configure(request)
@@ -2796,6 +2806,10 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
             initial["min_valid_lft"] = subnet["min-valid-lft"]
         if subnet.get("max-valid-lft"):
             initial["max_valid_lft"] = subnet["max-valid-lft"]
+        if subnet.get("renew-timer"):
+            initial["renew_timer"] = subnet["renew-timer"]
+        if subnet.get("rebind-timer"):
+            initial["rebind_timer"] = subnet["rebind-timer"]
 
         return initial
 
@@ -3786,6 +3800,15 @@ class _CombinedSharedNetworksView(_CombinedViewMixin):
                     logger.exception("Failed to query server %s", server.name)
                     errors.append((server.name, "Failed to query server"))
 
+        # Annotate can_change per server so SharedNetworkTable.actions renders correctly.
+        writable_pks = set(
+            Server.objects.restrict(request.user, "change")
+            .filter(pk__in=[s.pk for s in servers])
+            .values_list("pk", flat=True)
+        )
+        for network in all_networks:
+            network.setdefault("can_change", network.get("server_pk") in writable_pks)
+
         table = tables.GlobalSharedNetworkTable(all_networks, user=request.user)
         table.configure(request)
 
@@ -3876,10 +3899,18 @@ class _CombinedReservationsView(_CombinedViewMixin):
 
         # Enrich in the main thread so Django ORM queries see the test transaction.
         server_map = {s.pk: s for s in servers}
+        writable_pks = set(
+            Server.objects.restrict(request.user, "change")
+            .filter(pk__in=list(server_map.keys()))
+            .values_list("pk", flat=True)
+        )
         for server_pk, server in server_map.items():
             server_records = [r for r in all_records if r.get("server_pk") == server_pk]
             if server_records:
                 _enrich_reservations_with_badges(server_records, server, self.dhcp_version)
+                can_change = server_pk in writable_pks
+                for r in server_records:
+                    r["can_change"] = can_change
 
         search_form = forms.ReservationSearchForm(request.GET or None)
         if search_form.is_valid():

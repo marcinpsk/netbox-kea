@@ -2879,4 +2879,6 @@ class TestNetworkUpdate(TestCase):
             ),
         ) as mock_post:
             self.client.network_update(version=4, name="prod-net")
-        self.assertIn("config-write", self._cmds(mock_post))
+        cmds = self._cmds(mock_post)
+        self.assertIn("config-set", cmds)
+        self.assertIn("config-write", cmds)

@@ -1018,7 +1018,7 @@ class KeaClient:
         # Step 1: fetch the current in-memory config so we can validate and write it.
         try:
             resp = self.command("config-get", service=[service])
-        except KeaException:
+        except Exception:
             logger.warning("config-get failed for service %s — skipping validation, attempting config-write", service)
             resp = None
 

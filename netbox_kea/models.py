@@ -140,18 +140,18 @@ class Server(NetBoxModel):
             except KeaException as e:
                 logger.exception("DHCPv6 connectivity check failed during Server.clean()")
                 raise ValidationError({"dhcp6": "Unable to reach the Kea DHCPv6 service."}) from e
-            except (requests.exceptions.RequestException, json.JSONDecodeError) as e:
+            except (requests.exceptions.RequestException, json.JSONDecodeError, ValueError) as e:
                 logger.exception("Unexpected error during DHCPv6 connectivity check")
-                raise ValidationError({"dhcp6": "Unable to reach the Kea DHCPv6 service."}) from e
+                raise ValidationError({"dhcp6": "An internal error occurred."}) from e
         if self.dhcp4:
             try:
                 self.get_client(version=4).command("version-get", service=["dhcp4"])
             except KeaException as e:
                 logger.exception("DHCPv4 connectivity check failed during Server.clean()")
                 raise ValidationError({"dhcp4": "Unable to reach the Kea DHCPv4 service."}) from e
-            except (requests.exceptions.RequestException, json.JSONDecodeError) as e:
+            except (requests.exceptions.RequestException, json.JSONDecodeError, ValueError) as e:
                 logger.exception("Unexpected error during DHCPv4 connectivity check")
-                raise ValidationError({"dhcp4": "Unable to reach the Kea DHCPv4 service."}) from e
+                raise ValidationError({"dhcp4": "An internal error occurred."}) from e
 
     def to_objectchange(self, action: str) -> None:
         """Censor password in NetBox change log entries."""
