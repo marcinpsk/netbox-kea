@@ -609,14 +609,17 @@ class GlobalReservationTable6(ReservationTable6):
         default_columns = ("server", *ReservationTable6.Meta.default_columns)
 
 
-class GlobalLeaseTable4(BaseLeaseTable):
-    """DHCPv4 lease table aggregated across multiple servers."""
+class GlobalLeaseTable4(LeaseTable4):
+    """DHCPv4 lease table aggregated across multiple servers.
+
+    Extends the per-server table with a prepended *Server* column.
+    """
 
     server = _server_column()
 
-    class Meta(BaseLeaseTable.Meta):
-        fields = ("server", *BaseLeaseTable.Meta.fields)
-        default_columns = ("server", "ip_address", "hostname", "hw_address", "subnet_id", "reserved", "netbox_ip")
+    class Meta(LeaseTable4.Meta):
+        fields = ("server", *LeaseTable4.Meta.fields)
+        default_columns = ("server", "ip_address", "hostname", "hw_address", "subnet_id", "state_label", "reserved", "netbox_ip")
 
 
 class GlobalLeaseTable6(LeaseTable6):
@@ -629,80 +632,27 @@ class GlobalLeaseTable6(LeaseTable6):
 
     class Meta(LeaseTable6.Meta):
         fields = ("server", *LeaseTable6.Meta.fields)
-        default_columns = ("server", "ip_address", "hostname", "duid", "subnet_id", "reserved", "netbox_ip")
+        default_columns = ("server", "ip_address", "hostname", "duid", "subnet_id", "state_label", "reserved", "netbox_ip")
 
 
-class GlobalSubnetTable4(GenericTable):
-    """DHCPv4 subnet table aggregated across multiple servers."""
+class GlobalSubnetTable4(SubnetTable):
+    """DHCPv4 subnet table aggregated across multiple servers.
+
+    Extends the per-server table with a prepended *Server* column. All column
+    definitions (pools, options, utilization, subnet linkify) are inherited from
+    SubnetTable to avoid drift.
+    """
 
     server = _server_column()
-    id = tables.Column(verbose_name="ID")
-    subnet = tables.Column(
-        linkify=lambda record, table: (
-            (
-                reverse(
-                    "plugins:netbox_kea:server_leases4",
-                    args=[record["server_pk"]],
-                )
-                + "?"
-                + urlencode({"by": "subnet", "q": record["subnet"]})
-            )
-            if record.get("subnet")
-            else None
-        ),
-    )
-    shared_network = tables.Column(verbose_name="Shared Network")
-    pools = tables.TemplateColumn(
-        verbose_name="Pool(s)",
-        orderable=False,
-        template_code="""{% for pool in record.pools %}<span class="badge text-bg-secondary me-1">{{ pool }}{% if record.server_pk and record.id %} {% if record.dhcp_version == 4 %}<a href="{% url "plugins:netbox_kea:server_subnet4_pool_delete" record.server_pk record.id pool %}" class="text-white ms-1" aria-label="Delete pool {{ pool }}"><i class="mdi mdi-close-circle-outline" style="font-size:0.85em" aria-hidden="true"></i></a>{% else %}<a href="{% url "plugins:netbox_kea:server_subnet6_pool_delete" record.server_pk record.id pool %}" class="text-white ms-1" aria-label="Delete pool {{ pool }}"><i class="mdi mdi-close-circle-outline" style="font-size:0.85em" aria-hidden="true"></i></a>{% endif %}{% endif %}</span> {% empty %}— {% endfor %}{% if record.server_pk and record.id %}{% if record.dhcp_version == 4 %}<a href="{% url "plugins:netbox_kea:server_subnet4_pool_add" record.server_pk record.id %}" class="btn btn-sm btn-outline-secondary ms-1" aria-label="Add pool"><i class="mdi mdi-plus" aria-hidden="true"></i></a>{% else %}<a href="{% url "plugins:netbox_kea:server_subnet6_pool_add" record.server_pk record.id %}" class="btn btn-sm btn-outline-secondary ms-1" aria-label="Add pool"><i class="mdi mdi-plus" aria-hidden="true"></i></a>{% endif %}{% endif %}""",
-    )
-    options = tables.TemplateColumn(
-        verbose_name="Options",
-        orderable=False,
-        template_code="""{% with opts=record.options %}{% if opts %}
-<span>{% if opts.gateway %}GW: {{ opts.gateway }}{% endif %}
-{% if opts.dns_servers %} | DNS: {{ opts.dns_servers }}{% endif %}
-{% if opts.ntp_servers %} | NTP: {{ opts.ntp_servers }}{% endif %}
-</span>{% endif %}{% endwith %}""",
-    )
-    utilization = tables.TemplateColumn(
-        verbose_name="Utilization",
-        orderable=False,
-        template_code=(
-            "{% if record.utilization %}"
-            '<span class="badge '
-            "{% if record.utilization_pct == 100 %}text-bg-danger"
-            "{% elif record.utilization_pct >= 80 %}text-bg-warning"
-            "{% else %}text-bg-success{% endif %}"
-            '">{{ record.utilization }}</span>'
-            "{% endif %}"
-        ),
-    )
 
-    class Meta(GenericTable.Meta):
+    class Meta(SubnetTable.Meta):
         empty_text = "No subnets found."
-        fields = ("server", "id", "subnet", "pools", "utilization", "options", "shared_network")
-        default_columns = ("server", "id", "subnet", "pools", "utilization", "options", "shared_network")
+        fields = ("server", *SubnetTable.Meta.fields)
+        default_columns = ("server", *SubnetTable.Meta.default_columns)
 
 
 class GlobalSubnetTable6(GlobalSubnetTable4):
     """DHCPv6 subnet table aggregated across multiple servers."""
-
-    subnet = tables.Column(
-        linkify=lambda record, table: (
-            (
-                reverse(
-                    "plugins:netbox_kea:server_leases6",
-                    args=[record["server_pk"]],
-                )
-                + "?"
-                + urlencode({"by": "subnet", "q": record["subnet"]})
-            )
-            if record.get("subnet")
-            else None
-        ),
-    )
 
     class Meta(GlobalSubnetTable4.Meta):
         pass
