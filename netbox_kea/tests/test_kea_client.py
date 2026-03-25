@@ -1661,7 +1661,7 @@ class TestPersistConfig(TestCase):
         self.assertEqual(cmds, ["config-get", "config-test", "config-write"])
 
     def test_config_test_receives_config_from_config_get(self):
-        """config-test is called with the arguments returned by config-get (hash stripped)."""
+        """config-test is called with the full arguments returned by config-get (hash stripped)."""
         with patch.object(
             self.client._session,
             "post",
@@ -1670,12 +1670,11 @@ class TestPersistConfig(TestCase):
             self.client._persist_config("dhcp4")
         payloads = self._payloads(mock_post)
         test_payload = next(p for p in payloads if p["command"] == "config-test")
-        # arguments should be the Dhcp4 config without the 'hash' key
-        self.assertIn("Dhcp4", test_payload["arguments"])
-        self.assertNotIn("hash", test_payload["arguments"])
+        expected_config = {k: v for k, v in _CONFIG_GET_RUNNING_RESP[0]["arguments"].items() if k != "hash"}
+        self.assertEqual(test_payload["arguments"], expected_config)
 
     def test_config_write_receives_config_from_config_get(self):
-        """config-write is called with the same arguments as config-test."""
+        """config-write is called without arguments (Kea config-write only accepts optional filename)."""
         with patch.object(
             self.client._session,
             "post",
@@ -1684,8 +1683,7 @@ class TestPersistConfig(TestCase):
             self.client._persist_config("dhcp4")
         payloads = self._payloads(mock_post)
         write_payload = next(p for p in payloads if p["command"] == "config-write")
-        self.assertIn("Dhcp4", write_payload["arguments"])
-        self.assertNotIn("hash", write_payload["arguments"])
+        self.assertNotIn("arguments", write_payload)
 
     def test_config_test_not_supported_falls_through_to_config_write(self):
         """When config-test returns result=2 (not supported), config-write is still called."""
@@ -1745,6 +1743,10 @@ class TestPersistConfig(TestCase):
         payloads = self._payloads(mock_post)
         for payload in payloads:
             self.assertEqual(payload["service"], ["dhcp6"])
+        # config-test arguments should reference Dhcp6, not Dhcp4
+        test_payload = next(p for p in payloads if p["command"] == "config-test")
+        self.assertIn("Dhcp6", test_payload["arguments"])
+        self.assertNotIn("Dhcp4", test_payload["arguments"])
 
     def test_config_get_failure_falls_back_to_no_args_config_write(self):
         """When config-get fails, config-test is skipped and config-write is called without arguments."""
@@ -2798,7 +2800,7 @@ class TestNetworkUpdate(TestCase):
         self.assertEqual(self._cmds(mock_post), ["config-get", "config-test", "config-set", "config-write"])
 
     def test_updates_description_in_config_write_payload(self):
-        """config-test/write payload contains the updated description."""
+        """config-test and config-set payloads both contain the updated description."""
         with patch.object(
             self.client._session,
             "post",
@@ -2814,9 +2816,12 @@ class TestNetworkUpdate(TestCase):
         test_payload = next(p for p in payloads if p["command"] == "config-test")
         network = test_payload["arguments"]["Dhcp4"]["shared-networks"][0]
         self.assertEqual(network["description"], "New description")
+        set_payload = next(p for p in payloads if p["command"] == "config-set")
+        set_network = set_payload["arguments"]["Dhcp4"]["shared-networks"][0]
+        self.assertEqual(set_network["description"], "New description")
 
     def test_updates_relay_addresses(self):
-        """relay_addresses list is stored under network['relay']['ip-addresses']."""
+        """relay_addresses list is stored under network['relay']['ip-addresses'] in both config-test and config-set."""
         with patch.object(
             self.client._session,
             "post",
@@ -2832,6 +2837,9 @@ class TestNetworkUpdate(TestCase):
         test_payload = next(p for p in payloads if p["command"] == "config-test")
         network = test_payload["arguments"]["Dhcp4"]["shared-networks"][0]
         self.assertEqual(network["relay"]["ip-addresses"], ["10.0.0.1"])
+        set_payload = next(p for p in payloads if p["command"] == "config-set")
+        set_network = set_payload["arguments"]["Dhcp4"]["shared-networks"][0]
+        self.assertEqual(set_network["relay"]["ip-addresses"], ["10.0.0.1"])
 
     def test_raises_kea_exception_when_network_not_found(self):
         """KeaException raised if the named shared network is absent from the config."""

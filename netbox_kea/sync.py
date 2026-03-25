@@ -267,15 +267,23 @@ def _sync_mac_address(hw_address: str, hostname: str = "") -> None:
     """
     try:
         from dcim.models import MACAddress
+    except ImportError:
+        return  # NetBox < 4.1 — MACAddress model not available
+    try:
         from netaddr import EUI, mac_unix_expanded
+    except ImportError:
+        logger.debug("netaddr not available — skipping MAC sync for %s", hw_address)
+        return
+    try:
+        from django.db.utils import IntegrityError, OperationalError, ProgrammingError
 
         mac_str = str(EUI(hw_address, dialect=mac_unix_expanded))
         mac_obj, _ = MACAddress.objects.get_or_create(mac_address=mac_str)
         if hostname and _update_mac_description(mac_obj, hostname):
             mac_obj.save()
-    except ImportError:
-        pass  # NetBox < 4.1 — MACAddress model not available
-    except Exception:
+    except (ProgrammingError, OperationalError, IntegrityError):
+        logger.debug("DB error while syncing MAC address %s to NetBox DCIM", hw_address, exc_info=True)
+    except Exception:  # noqa: BLE001 — catch all remaining errors (e.g. netaddr parse errors)
         logger.debug("Failed to sync MAC address %s to NetBox DCIM", hw_address, exc_info=True)
 
 

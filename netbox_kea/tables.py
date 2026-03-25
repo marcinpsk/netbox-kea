@@ -356,6 +356,7 @@ class BaseLeaseTable(GenericTable):
             ' title="Lease MAC ({{ record.stale_lease_mac }}) ≠ Reservation MAC ({{ record.reservation_mac }})'
             ' — delete this lease to force the old device off this IP">'
             "&#9888; MAC?</span>"
+            "{% if record.can_delete %}"
             ' <button type="button"'
             ' class="badge text-bg-danger border-0 ms-1"'
             ' style="cursor:pointer"'
@@ -365,6 +366,7 @@ class BaseLeaseTable(GenericTable):
             ' The old device must re-request this IP via DORA."'
             ' hx-vals=\'{"pk":"{{ record.ip_address|escapejs }}","_confirm":"1"}\'>'
             '<i class="mdi mdi-delete-outline" aria-hidden="true"></i></button>'
+            "{% endif %}"
             "{% endif %}"
             "{% elif record.create_reservation_url %}"
             '<a href="{{ record.create_reservation_url }}" class="badge text-bg-warning text-decoration-none">'

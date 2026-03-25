@@ -434,7 +434,9 @@ class KeaClient:
         dhcp_key = f"Dhcp{version}"
 
         resp = self.command("config-get", service=[service])
-        config = resp[0]["arguments"]
+        # Strip the "hash" key that Kea 2.4+ includes — config-test and config-set reject it.
+        raw = resp[0]["arguments"]
+        config = {k: v for k, v in raw.items() if k != "hash"}
 
         network: dict[str, Any] | None = None
         for sn in config.get(dhcp_key, {}).get("shared-networks", []):
@@ -468,7 +470,7 @@ class KeaClient:
         self.command("config-set", service=[service], arguments=config)
 
         try:
-            self.command("config-write", service=[service], arguments=config)
+            self.command("config-write", service=[service])
         except KeaException as exc:
             logger.warning("config-write failed for service %s — change is live but not persisted to disk", service)
             raise PartialPersistError(service, exc) from exc
@@ -1039,10 +1041,7 @@ class KeaClient:
 
         # Step 3: write to disk.
         try:
-            if config is not None:
-                self.command("config-write", service=[service], arguments=config)
-            else:
-                self.command("config-write", service=[service])
+            self.command("config-write", service=[service])
         except KeaException as exc:
             logger.warning(
                 "config-write failed for service %s — change is live but not persisted to disk",

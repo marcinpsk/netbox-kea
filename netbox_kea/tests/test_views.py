@@ -26,6 +26,7 @@ import re
 import unittest as _unittest  # alias to avoid pytest collection confusion
 from unittest.mock import MagicMock, patch
 
+from django.contrib import messages as django_messages
 from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
 from django.urls import reverse
@@ -4039,7 +4040,7 @@ class TestServerSharedNetwork4EditView(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         messages_list = list(response.context["messages"])
         self.assertTrue(
-            any(m.level == 30 for m in messages_list),  # 30 = WARNING
+            any(m.level == django_messages.WARNING for m in messages_list),
             f"Expected a WARNING message; got: {[(m.level, m.message) for m in messages_list]}",
         )
 
@@ -4297,6 +4298,13 @@ _CONFIG4_NETWORKS_FOR_ADD = [
 ]
 
 
+def _mock_kea_command_for_subnet_add(cmd, **kw):
+    """Return a subnet-list response for list commands, else the available networks config."""
+    if "list" in cmd:
+        return [{"result": 0, "arguments": {"subnets": []}}]
+    return _CONFIG4_NETWORKS_FOR_ADD
+
+
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestServerSubnet4AddViewSharedNetwork(_ViewTestBase):
     """GET/POST /plugins/kea/servers/<pk>/subnets4/add/ — shared_network field."""
@@ -4319,9 +4327,7 @@ class TestServerSubnet4AddViewSharedNetwork(_ViewTestBase):
     def test_get_shows_shared_network_dropdown(self, MockKeaClient):
         """GET must render a shared_network dropdown populated from Kea config."""
         mock_client = MockKeaClient.return_value
-        mock_client.command.side_effect = lambda cmd, **kw: (
-            [{"result": 0, "arguments": {"subnets": []}}] if "list" in cmd else _CONFIG4_NETWORKS_FOR_ADD
-        )
+        mock_client.command.side_effect = _mock_kea_command_for_subnet_add
         response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "net-alpha")
@@ -4331,9 +4337,7 @@ class TestServerSubnet4AddViewSharedNetwork(_ViewTestBase):
     def test_post_with_shared_network_calls_network_subnet_add(self, MockKeaClient):
         """POST with shared_network set must call network_subnet_add after subnet creation."""
         mock_client = MockKeaClient.return_value
-        mock_client.command.side_effect = lambda cmd, **kw: (
-            [{"result": 0, "arguments": {"subnets": []}}] if "list" in cmd else _CONFIG4_NETWORKS_FOR_ADD
-        )
+        mock_client.command.side_effect = _mock_kea_command_for_subnet_add
         mock_client.subnet_add.return_value = 1
         mock_client.network_subnet_add.return_value = None
 
@@ -4351,9 +4355,7 @@ class TestServerSubnet4AddViewSharedNetwork(_ViewTestBase):
     def test_post_without_shared_network_does_not_call_network_subnet_add(self, MockKeaClient):
         """POST without shared_network must NOT call network_subnet_add."""
         mock_client = MockKeaClient.return_value
-        mock_client.command.side_effect = lambda cmd, **kw: (
-            [{"result": 0, "arguments": {"subnets": []}}] if "list" in cmd else _CONFIG4_NETWORKS_FOR_ADD
-        )
+        mock_client.command.side_effect = _mock_kea_command_for_subnet_add
         mock_client.subnet_add.return_value = None
 
         response = self.client.post(self._url(), self._valid_post_data(shared_network=""))

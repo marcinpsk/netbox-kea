@@ -7,6 +7,7 @@ All Kea HTTP calls are mocked; these tests require no running services.
 
 from unittest.mock import MagicMock, patch
 
+import requests
 from django.core.exceptions import ValidationError
 from django.test import SimpleTestCase, override_settings
 from netbox.models import NetBoxModel
@@ -209,7 +210,7 @@ class TestServerCleanConnectivity(SimpleTestCase):
     @patch("netbox_kea.models.KeaClient")
     def test_dhcp6_connection_failure_raises(self, mock_kea_cls):
         mock_client = MagicMock(spec=KeaClient)
-        mock_client.command.side_effect = Exception("Connection refused")
+        mock_client.command.side_effect = requests.exceptions.ConnectionError("Connection refused")
         mock_kea_cls.return_value = mock_client
         server = _make_server(dhcp4=False, dhcp6=True)
         with self.assertRaises(ValidationError) as ctx:
@@ -220,7 +221,7 @@ class TestServerCleanConnectivity(SimpleTestCase):
     @patch("netbox_kea.models.KeaClient")
     def test_dhcp4_connection_failure_raises(self, mock_kea_cls):
         mock_client = MagicMock(spec=KeaClient)
-        mock_client.command.side_effect = Exception("Timeout")
+        mock_client.command.side_effect = requests.exceptions.Timeout("Timeout")
         mock_kea_cls.return_value = mock_client
         server = _make_server(dhcp4=True, dhcp6=False)
         with self.assertRaises(ValidationError) as ctx:

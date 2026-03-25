@@ -1,7 +1,9 @@
+import json
 import logging
 import os
 from typing import Literal
 
+import requests
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models
@@ -138,7 +140,7 @@ class Server(NetBoxModel):
             except KeaException as e:
                 logger.exception("DHCPv6 connectivity check failed during Server.clean()")
                 raise ValidationError({"dhcp6": "Unable to reach the Kea DHCPv6 service."}) from e
-            except Exception as e:
+            except (requests.exceptions.RequestException, json.JSONDecodeError) as e:
                 logger.exception("Unexpected error during DHCPv6 connectivity check")
                 raise ValidationError({"dhcp6": "Unable to reach the Kea DHCPv6 service."}) from e
         if self.dhcp4:
@@ -147,7 +149,7 @@ class Server(NetBoxModel):
             except KeaException as e:
                 logger.exception("DHCPv4 connectivity check failed during Server.clean()")
                 raise ValidationError({"dhcp4": "Unable to reach the Kea DHCPv4 service."}) from e
-            except Exception as e:
+            except (requests.exceptions.RequestException, json.JSONDecodeError) as e:
                 logger.exception("Unexpected error during DHCPv4 connectivity check")
                 raise ValidationError({"dhcp4": "Unable to reach the Kea DHCPv4 service."}) from e
 

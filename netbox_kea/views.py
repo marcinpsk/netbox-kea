@@ -8,6 +8,7 @@ from urllib.parse import parse_qsl, urlparse
 from urllib.parse import urlencode as _urlencode
 
 from django.contrib import messages
+from django.db.utils import OperationalError, ProgrammingError
 from django.http import Http404, HttpResponse, HttpResponseForbidden, HttpResponseRedirect
 from django.http.request import HttpRequest
 from django.shortcuts import get_object_or_404, redirect, render
@@ -61,6 +62,9 @@ def _build_reservation_options_formset(post_data: Any) -> tuple[Any, bool]:
     If the management form fields are absent (legacy callers, tests), returns an
     empty unbound formset treated as valid with no options.
 
+    If any ``options-`` keys are present but ``options-TOTAL_FORMS`` is absent
+    (partial/truncated submission), returns an unbound formset with is_valid=False.
+
     Returns:
         (formset, is_valid)
 
@@ -68,6 +72,9 @@ def _build_reservation_options_formset(post_data: Any) -> tuple[Any, bool]:
     if "options-TOTAL_FORMS" in post_data:
         fs = forms.ReservationOptionsFormSet(data=post_data, prefix="options")
         return fs, fs.is_valid()
+    # Detect partial submission: some options-* keys exist but management form is missing
+    if any(k.startswith("options-") for k in post_data):
+        return forms.ReservationOptionsFormSet(prefix="options"), False
     return forms.ReservationOptionsFormSet(prefix="options"), True
 
 
@@ -105,7 +112,9 @@ def _add_reservation_journal(server: "Server", user: Any, action: str, reservati
             kind="info",
             comments="; ".join(parts),
         )
-    except Exception:
+    except ImportError:
+        pass  # JournalEntry unavailable on older NetBox versions
+    except (ProgrammingError, OperationalError):
         logger.debug("Failed to create reservation journal entry", exc_info=True)
 
 
@@ -150,7 +159,9 @@ def _add_lease_journal(
             kind="info",
             comments="; ".join(parts),
         )
-    except Exception:
+    except ImportError:
+        pass  # JournalEntry unavailable on older NetBox versions
+    except (ProgrammingError, OperationalError):
         logger.debug("Failed to create lease journal entry", exc_info=True)
 
 
@@ -666,16 +677,17 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
             if state_filter is not None:
                 leases = [ls for ls in leases if ls.get("state") == state_filter]
 
-            # Enrich leases with reservation badges + NetBox IPAM status.
-            # Extracted helper so combined views get the same treatment.
-            _enrich_leases_with_badges(leases, instance, self.dhcp_version)
-
-            table = self.get_table(leases, request)
-
             can_delete = request.user.has_perm(
                 "netbox_kea.bulk_delete_lease_from_server",
                 obj=instance,
             )
+
+            # Enrich leases with reservation badges + NetBox IPAM status.
+            # Extracted helper so combined views get the same treatment.
+            _enrich_leases_with_badges(leases, instance, self.dhcp_version, can_delete=can_delete)
+
+            table = self.get_table(leases, request)
+
             if not can_delete:
                 table.columns.hide("pk")
 
@@ -814,7 +826,7 @@ class BaseServerLeasesDeleteView(GetReturnURLMixin, generic.ObjectView, metaclas
 
         messages.success(request, f"Deleted {len(lease_ips)} DHCPv{self.dhcp_version} lease(s).")
         _add_lease_journal(instance, request.user, "deleted", lease_ips)
-        leases_deleted.send(
+        leases_deleted.send_robust(
             sender=None,
             server=instance,
             ip_addresses=lease_ips,
@@ -1013,7 +1025,7 @@ class _BaseLeaseAddView(_KeaChangeMixin, generic.ObjectView):
                     hw_address=cd.get("hw_address") or cd.get("duid") or "",
                     hostname=cd.get("hostname") or "",
                 )
-                lease_added.send(
+                lease_added.send_robust(
                     sender=None,
                     server=server,
                     ip_address=cd["ip_address"],
@@ -1449,6 +1461,10 @@ class BaseServerSharedNetworkEditView(_KeaChangeMixin, ConditionalLoginRequiredM
         client = server.get_client(version=self.dhcp_version)
         network = self._fetch_network(client, network_name)
 
+        if not network:
+            messages.error(request, f"Shared network '{network_name}' not found or could not be retrieved.")
+            return redirect(self._success_url(server))
+
         initial: dict[str, Any] = {"name": network_name}
         initial["description"] = network.get("description", "")
         initial["interface"] = network.get("interface", "")
@@ -1676,6 +1692,7 @@ class ServerReservations4View(generic.ObjectView):
                 hook_available = False
         except Exception:
             logger.debug("Unexpected error fetching DHCPv4 reservations", exc_info=True)
+            hook_available = False
 
         # Inject server_pk so the actions template column can build edit/delete URLs.
         for r in reservations:
@@ -1740,6 +1757,7 @@ class ServerReservations6View(generic.ObjectView):
                 hook_available = False
         except Exception:
             logger.debug("Unexpected error fetching DHCPv6 reservations", exc_info=True)
+            hook_available = False
 
         for r in reservations:
             r["server_pk"] = server.pk
@@ -1829,7 +1847,7 @@ class ServerReservation4AddView(_KeaChangeMixin, generic.ObjectView):
                 messages.success(request, f"Reservation for {cd['ip_address']} created.")
                 _add_reservation_journal(server, request.user, "created", reservation)
 
-                reservation_created.send(
+                reservation_created.send_robust(
                     sender=None,
                     server=server,
                     reservation=reservation,
@@ -1927,7 +1945,7 @@ class ServerReservation6AddView(_KeaChangeMixin, generic.ObjectView):
                 messages.success(request, "DHCPv6 reservation created.")
                 _add_reservation_journal(server, request.user, "created", reservation)
 
-                reservation_created.send(
+                reservation_created.send_robust(
                     sender=None,
                     server=server,
                     reservation=reservation,
@@ -2050,7 +2068,7 @@ class ServerReservation4EditView(_KeaChangeMixin, generic.ObjectView):
                 messages.success(request, f"Reservation for {cd['ip_address']} updated.")
                 _add_reservation_journal(server, request.user, "updated", reservation)
 
-                reservation_updated.send(
+                reservation_updated.send_robust(
                     sender=None,
                     server=server,
                     reservation=reservation,
@@ -2173,7 +2191,7 @@ class ServerReservation6EditView(_KeaChangeMixin, generic.ObjectView):
                 messages.success(request, "DHCPv6 reservation updated.")
                 _add_reservation_journal(server, request.user, "updated", reservation)
 
-                reservation_updated.send(
+                reservation_updated.send_robust(
                     sender=None,
                     server=server,
                     reservation=reservation,
@@ -2246,7 +2264,7 @@ class ServerReservation4DeleteView(_KeaChangeMixin, generic.ObjectView):
                 server, request.user, "deleted", {"ip-address": ip_address, "subnet-id": subnet_id}
             )
 
-            reservation_deleted.send(
+            reservation_deleted.send_robust(
                 sender=None,
                 server=server,
                 ip_address=ip_address,
@@ -2297,7 +2315,7 @@ class ServerReservation6DeleteView(_KeaChangeMixin, generic.ObjectView):
                 server, request.user, "deleted", {"ip-address": ip_address, "subnet-id": subnet_id}
             )
 
-            reservation_deleted.send(
+            reservation_deleted.send_robust(
                 sender=None,
                 server=server,
                 ip_address=ip_address,
@@ -2363,7 +2381,7 @@ def _warn_pool_reservation_overlap(
                             overlapping.append(ip_str)
                     except Exception:  # noqa: BLE001
                         pass
-            if from_index == 0:
+            if from_index == 0 and source_index == 0:
                 break
 
         if overlapping:
@@ -2654,13 +2672,18 @@ class _BaseSubnetAddView(_KeaChangeMixin, generic.ObjectView):
                 try:
                     client.network_subnet_add(version=self.dhcp_version, name=shared_network, subnet_id=assigned_id)
                     messages.success(request, f"Subnet assigned to shared network '{shared_network}'.")
+                except PartialPersistError:
+                    messages.warning(
+                        request,
+                        f"Subnet assigned to '{shared_network}' but config-write failed (change may not survive restart).",
+                    )
                 except Exception:
                     logger.exception(
                         "Subnet %s created but failed to assign to network %s", cd["subnet"], shared_network
                     )
                     messages.warning(request, f"Subnet created but could not be assigned to '{shared_network}'.")
         except PartialPersistError:
-            messages.warning(request, "Change applied but may not survive a Kea restart (config-write failed).")
+            messages.warning(request, "Subnet added but config-write failed (change may not survive a Kea restart).")
             return redirect(return_url)
         except KeaException as exc:
             logger.exception("Failed to add subnet %s", cd.get("subnet"))
@@ -3372,7 +3395,9 @@ def _fetch_reservation_by_ip_for_leases(
     return reservation_by_ip, host_cmds_available
 
 
-def _enrich_leases_with_badges(leases: list[dict[str, Any]], server: "Server", version: int) -> None:
+def _enrich_leases_with_badges(
+    leases: list[dict[str, Any]], server: "Server", version: int, can_delete: bool = False
+) -> None:
     """In-place: add reservation and NetBox IPAM badge fields to lease dicts.
 
     Adds:
@@ -3380,6 +3405,7 @@ def _enrich_leases_with_badges(leases: list[dict[str, Any]], server: "Server", v
     - ``create_reservation_url``: pre-filled add link if host_cmds is loaded
     - ``netbox_ip_url``: absolute URL if IP exists in NetBox IPAM
     - ``sync_url``: POST endpoint URL to create a NetBox IP when absent
+    - ``can_delete``: whether the current user may delete this lease
     """
     from .sync import bulk_fetch_netbox_ips
 
@@ -3470,6 +3496,7 @@ def _enrich_leases_with_badges(leases: list[dict[str, Any]], server: "Server", v
             lease["sync_url"] = sync_url
         if ip:
             lease["edit_url"] = reverse(edit_url_name, args=[server.pk, ip])
+        lease["can_delete"] = can_delete
 
 
 def _enrich_reservations_with_badges(reservations: list[dict[str, Any]], server: "Server", version: int) -> None:
@@ -3981,10 +4008,11 @@ class _CombinedLeasesView(_CombinedViewMixin):
 
         # Enrich in the main thread so Django ORM queries see the test transaction.
         server_map = {s.pk: s for s in servers}
+        can_delete = request.user.has_perm("netbox_kea.bulk_delete_lease_from_server")
         for server_pk, server in server_map.items():
             server_leases = [entry for entry in all_leases if entry.get("server_pk") == server_pk]
             if server_leases:
-                _enrich_leases_with_badges(server_leases, server, self.dhcp_version)
+                _enrich_leases_with_badges(server_leases, server, self.dhcp_version, can_delete=can_delete)
 
         table = table_cls(all_leases, user=request.user)
         table.configure(request)
