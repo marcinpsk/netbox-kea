@@ -1087,9 +1087,9 @@ class BaseServerDHCPSubnetsView(generic.ObjectChildrenView):
 
     def get_children(self, request: HttpRequest, parent: Server) -> list[dict[str, Any]]:
         """Return the subnet list for *parent* by delegating to :meth:`get_subnets`."""
-        return self.get_subnets(parent)
+        return self.get_subnets(parent, request)
 
-    def get_subnets(self, server: Server) -> list[dict[str, Any]]:
+    def get_subnets(self, server: Server, request: HttpRequest) -> list[dict[str, Any]]:
         """Fetch all subnets (including shared-network subnets) from the Kea config.
 
         Also fetches per-subnet utilisation statistics from ``stat-lease{v}-get``
@@ -1103,6 +1103,7 @@ class BaseServerDHCPSubnetsView(generic.ObjectChildrenView):
         if config[0]["arguments"] is None:
             raise RuntimeError(f"Unexpected None arguments from config-get for dhcp{self.dhcp_version}")
         dhcp_conf = config[0]["arguments"].get(f"Dhcp{self.dhcp_version}", {})
+        can_change = Server.objects.restrict(request.user, "change").filter(pk=server.pk).exists()
         subnets = dhcp_conf.get(f"subnet{self.dhcp_version}", [])
         subnet_list = [
             {
@@ -1113,6 +1114,7 @@ class BaseServerDHCPSubnetsView(generic.ObjectChildrenView):
                 "_subnet_sort_key": int(ipaddress.ip_network(s["subnet"], strict=False).network_address),
                 "options": format_option_data(s.get("option-data", []), version=self.dhcp_version),
                 "pools": [p.get("pool", "") for p in s.get("pools", []) if p.get("pool")],
+                "can_change": can_change,
             }
             for s in subnets
             if "id" in s and "subnet" in s
@@ -1129,6 +1131,7 @@ class BaseServerDHCPSubnetsView(generic.ObjectChildrenView):
                     "_subnet_sort_key": int(ipaddress.ip_network(s["subnet"], strict=False).network_address),
                     "options": format_option_data(s.get("option-data", []), version=self.dhcp_version),
                     "pools": [p.get("pool", "") for p in s.get("pools", []) if p.get("pool")],
+                    "can_change": can_change,
                 }
                 for s in sn.get(f"subnet{self.dhcp_version}", [])
             )
@@ -1448,9 +1451,12 @@ class BaseServerSharedNetworkEditView(_KeaChangeMixin, ConditionalLoginRequiredM
         """Return the shared-network dict from config-get, or {} if not found."""
         try:
             resp = client.command("config-get", service=[f"dhcp{self.dhcp_version}"])
-            config = resp[0]["arguments"]
+            args = resp[0].get("arguments") if isinstance(resp, list) else resp.get("arguments")
+            if not isinstance(args, dict):
+                logger.warning("config-get returned unexpected arguments for dhcp%s", self.dhcp_version)
+                return {}
             dhcp_key = f"Dhcp{self.dhcp_version}"
-            for sn in config.get(dhcp_key, {}).get("shared-networks", []):
+            for sn in args.get(dhcp_key, {}).get("shared-networks", []):
                 if sn.get("name") == network_name:
                     return sn
         except KeaException:
@@ -1874,6 +1880,22 @@ class ServerReservation4AddView(_KeaChangeMixin, generic.ObjectView):
                         messages.warning(request, "Reservation created, but NetBox IPAM sync failed.")
                 return redirect(return_url)
             except PartialPersistError:
+                _add_reservation_journal(server, request.user, "created", reservation)
+                reservation_created.send_robust(
+                    sender=None,
+                    server=server,
+                    reservation=reservation,
+                    dhcp_version=4,
+                    request=request,
+                )
+                if cd.get("sync_to_netbox"):
+                    try:
+                        _, created = sync_reservation_to_netbox(reservation)
+                        msg = "created" if created else "updated"
+                        messages.info(request, f"NetBox IPAddress {cd['ip_address']} {msg}.")
+                    except Exception:
+                        logger.exception("Failed to sync DHCPv4 reservation %s to NetBox", cd.get("ip_address"))
+                        messages.warning(request, "Reservation created, but NetBox IPAM sync failed.")
                 messages.warning(request, "Change applied but may not survive a Kea restart (config-write failed).")
                 return redirect(return_url)
             except KeaException as exc:
@@ -1947,9 +1969,9 @@ class ServerReservation6AddView(_KeaChangeMixin, generic.ObjectView):
                 reservation["option-data"] = option_data
             client = server.get_client(version=6)
             # F4: Warn (non-blocking) when any reservation IP is inside an existing pool
-            primary_ip_str = (reservation.get("ip-addresses") or [""])[0]
-            if primary_ip_str:
-                _warn_reservation_pool_overlap(request, client, 6, cd["subnet_id"], primary_ip_str)
+            for ip_str in reservation.get("ip-addresses") or []:
+                if ip_str:
+                    _warn_reservation_pool_overlap(request, client, 6, cd["subnet_id"], ip_str)
             try:
                 client.reservation_add("dhcp6", reservation)
                 messages.success(request, "DHCPv6 reservation created.")
@@ -1973,6 +1995,23 @@ class ServerReservation6AddView(_KeaChangeMixin, generic.ObjectView):
                         messages.warning(request, "Reservation created, but NetBox IPAM sync failed.")
                 return redirect(return_url)
             except PartialPersistError:
+                _add_reservation_journal(server, request.user, "created", reservation)
+                reservation_created.send_robust(
+                    sender=None,
+                    server=server,
+                    reservation=reservation,
+                    dhcp_version=6,
+                    request=request,
+                )
+                if cd.get("sync_to_netbox"):
+                    try:
+                        _, created = sync_reservation_to_netbox(reservation)
+                        primary_ip = (reservation.get("ip-addresses") or [""])[0]
+                        msg = "created" if created else "updated"
+                        messages.info(request, f"NetBox IPAddress {primary_ip} {msg}.")
+                    except Exception:
+                        logger.exception("Failed to sync DHCPv6 reservation to NetBox")
+                        messages.warning(request, "Reservation created, but NetBox IPAM sync failed.")
                 messages.warning(request, "Change applied but may not survive a Kea restart (config-write failed).")
                 return redirect(return_url)
             except KeaException as exc:
@@ -2379,17 +2418,15 @@ def _warn_pool_reservation_overlap(
                 from_index=from_index,
                 limit=200,
             )
-            if not hosts:
-                break
             for host in hosts:
                 if host.get("subnet-id") != subnet_id:
                     continue
-                ip_str = host.get("ip-address") or ((host.get("ip-addresses") or [None])[0])
-                if ip_str:
+                candidate_ips = list(filter(None, [host.get("ip-address")] + list(host.get("ip-addresses") or [])))
+                for ip_str in candidate_ips:
                     try:
                         if IPAddress(ip_str) in pool_range:
                             overlapping.append(ip_str)
-                    except Exception:  # noqa: BLE001
+                    except Exception:  # noqa: BLE001, PERF203
                         pass
             if from_index == 0 and source_index == 0:
                 break
@@ -3628,6 +3665,7 @@ def _fetch_subnets_from_server(server: "Server", version: int) -> list[dict[str,
         {
             "id": s["id"],
             "subnet": s["subnet"],
+            "_subnet_sort_key": int(ipaddress.ip_network(s["subnet"], strict=False).network_address),
             "dhcp_version": version,
             "server_pk": server.pk,
             "server_name": server.name,
@@ -3642,6 +3680,7 @@ def _fetch_subnets_from_server(server: "Server", version: int) -> list[dict[str,
             {
                 "id": s["id"],
                 "subnet": s["subnet"],
+                "_subnet_sort_key": int(ipaddress.ip_network(s["subnet"], strict=False).network_address),
                 "shared_network": sn["name"],
                 "dhcp_version": version,
                 "server_pk": server.pk,
@@ -3692,6 +3731,15 @@ class _CombinedSubnetsView(_CombinedViewMixin):
                 except Exception:  # noqa: BLE001, PERF203
                     logger.exception("Failed to query server %s", server.name)
                     errors.append((server.name, "Failed to query server"))
+
+        # Annotate can_change per server so subnet pool/action controls render correctly.
+        writable_pks = set(
+            Server.objects.restrict(request.user, "change")
+            .filter(pk__in=[s.pk for s in servers])
+            .values_list("pk", flat=True)
+        )
+        for subnet in all_subnets:
+            subnet.setdefault("can_change", subnet.get("server_pk") in writable_pks)
 
         table_cls = tables.GlobalSubnetTable4 if self.dhcp_version == 4 else tables.GlobalSubnetTable6
 
@@ -4039,10 +4087,10 @@ class _CombinedLeasesView(_CombinedViewMixin):
 
         # Enrich in the main thread so Django ORM queries see the test transaction.
         server_map = {s.pk: s for s in servers}
-        can_delete = request.user.has_perm("netbox_kea.bulk_delete_lease_from_server")
         for server_pk, server in server_map.items():
             server_leases = [entry for entry in all_leases if entry.get("server_pk") == server_pk]
             if server_leases:
+                can_delete = request.user.has_perm("netbox_kea.bulk_delete_lease_from_server", server)
                 _enrich_leases_with_badges(server_leases, server, self.dhcp_version, can_delete=can_delete)
 
         table = table_cls(all_leases, user=request.user)

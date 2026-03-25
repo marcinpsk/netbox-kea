@@ -28,7 +28,7 @@ SUBNET_ACTIONS = """<span class="btn-group dropdown">
       </a>
     </li>
     {% endif %}
-    {% if record.server_pk and record.id %}
+    {% if record.server_pk and record.id and record.can_change %}
     <li><hr class="dropdown-divider"></li>
     {% if record.dhcp_version == 4 %}
     <li>
@@ -279,7 +279,7 @@ class SubnetTable(GenericTable):
     pools = tables.TemplateColumn(
         verbose_name="Pool(s)",
         orderable=False,
-        template_code="""{% for pool in record.pools %}<span class="badge text-bg-secondary me-1">{{ pool }}{% if record.server_pk and record.id %} {% if record.dhcp_version == 4 %}<a href="{% url "plugins:netbox_kea:server_subnet4_pool_delete" record.server_pk record.id pool %}" class="text-white ms-1" aria-label="Delete pool {{ pool }}"><i class="mdi mdi-close-circle-outline" style="font-size:0.85em" aria-hidden="true"></i></a>{% else %}<a href="{% url "plugins:netbox_kea:server_subnet6_pool_delete" record.server_pk record.id pool %}" class="text-white ms-1" aria-label="Delete pool {{ pool }}"><i class="mdi mdi-close-circle-outline" style="font-size:0.85em" aria-hidden="true"></i></a>{% endif %}{% endif %}</span> {% empty %}— {% endfor %}{% if record.server_pk and record.id %}{% if record.dhcp_version == 4 %}<a href="{% url "plugins:netbox_kea:server_subnet4_pool_add" record.server_pk record.id %}" class="btn btn-sm btn-outline-secondary ms-1" aria-label="Add pool"><i class="mdi mdi-plus" aria-hidden="true"></i></a>{% else %}<a href="{% url "plugins:netbox_kea:server_subnet6_pool_add" record.server_pk record.id %}" class="btn btn-sm btn-outline-secondary ms-1" aria-label="Add pool"><i class="mdi mdi-plus" aria-hidden="true"></i></a>{% endif %}{% endif %}""",
+        template_code="""{% for pool in record.pools %}<span class="badge text-bg-secondary me-1">{{ pool }}{% if record.server_pk and record.id and record.can_change %} {% if record.dhcp_version == 4 %}<a href="{% url "plugins:netbox_kea:server_subnet4_pool_delete" record.server_pk record.id pool %}" class="text-white ms-1" aria-label="Delete pool {{ pool }}"><i class="mdi mdi-close-circle-outline" style="font-size:0.85em" aria-hidden="true"></i></a>{% else %}<a href="{% url "plugins:netbox_kea:server_subnet6_pool_delete" record.server_pk record.id pool %}" class="text-white ms-1" aria-label="Delete pool {{ pool }}"><i class="mdi mdi-close-circle-outline" style="font-size:0.85em" aria-hidden="true"></i></a>{% endif %}{% endif %}</span> {% empty %}— {% endfor %}{% if record.server_pk and record.id and record.can_change %}{% if record.dhcp_version == 4 %}<a href="{% url "plugins:netbox_kea:server_subnet4_pool_add" record.server_pk record.id %}" class="btn btn-sm btn-outline-secondary ms-1" aria-label="Add pool"><i class="mdi mdi-plus" aria-hidden="true"></i></a>{% else %}<a href="{% url "plugins:netbox_kea:server_subnet6_pool_add" record.server_pk record.id %}" class="btn btn-sm btn-outline-secondary ms-1" aria-label="Add pool"><i class="mdi mdi-plus" aria-hidden="true"></i></a>{% endif %}{% endif %}""",
     )
     utilization = tables.TemplateColumn(
         verbose_name="Utilization",

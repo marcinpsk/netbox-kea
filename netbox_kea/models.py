@@ -158,12 +158,13 @@ class Server(NetBoxModel):
         objectchange = super().to_objectchange(action)
 
         prechange_data = objectchange.prechange_data or {}
+        original_pre_password = prechange_data.get("password")
         if prechange_data.get("password"):
             prechange_data["password"] = CENSOR_TOKEN
 
         if (post_data := objectchange.postchange_data) and (post_password := post_data.get("password")):
             post_data["password"] = (
-                CENSOR_TOKEN_CHANGED if post_password != prechange_data.get("password") else CENSOR_TOKEN
+                CENSOR_TOKEN_CHANGED if post_password != original_pre_password else CENSOR_TOKEN
             )
 
         return objectchange
