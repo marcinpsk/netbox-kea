@@ -83,12 +83,12 @@ class TestLease4SyncView(_SyncViewBase):
         self.client.post(self._url(), {"ip_address": "192.168.10.6", "hostname": "host-b"})
         self.assertTrue(NbIP.objects.filter(address__startswith="192.168.10.6/").exists())
 
-    def test_created_ip_has_active_status(self):
+    def test_created_ip_has_dhcp_status(self):
 
         self.client.post(self._url(), {"ip_address": "192.168.10.7", "hostname": "host-c"})
         ip = NbIP.objects.filter(address__startswith="192.168.10.7/").first()
         self.assertIsNotNone(ip)
-        self.assertEqual(ip.status, "active")
+        self.assertEqual(ip.status, "dhcp")
 
     def test_created_ip_has_correct_dns_name(self):
 
@@ -153,14 +153,14 @@ class TestLease6SyncView(_SyncViewBase):
         self.assertIsNotNone(ip)
         self.assertTrue(str(ip.address).endswith("/128"))
 
-    def test_created_ip_has_active_status(self):
+    def test_created_ip_has_dhcp_status(self):
 
         self.client.post(
             self._url(),
             {"ip_address": "2001:db8::3", "hostname": "v6host3"},
         )
         ip = NbIP.objects.filter(address__startswith="2001:db8::3/").first()
-        self.assertEqual(ip.status, "active")
+        self.assertEqual(ip.status, "dhcp")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

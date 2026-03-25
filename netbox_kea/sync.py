@@ -112,8 +112,156 @@ def bulk_fetch_netbox_ips(ip_list: list[str]) -> dict[str, NbIPAddress]:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def _sync_mac_address(hw_address: str) -> None:
-    """Create or retrieve a NetBox ``MACAddress`` entry for *hw_address*.
+def _compute_ip_status(desired_from: str, current_status: str | None) -> str:
+    """Compute the correct NetBox IP status based on sync source and current state.
+
+    Implements a semantic IP lifecycle:
+    - ``dhcp``:     dynamic lease, no reservation  (ephemeral)
+    - ``reserved``: reservation only, no active lease (admin intent)
+    - ``active``:   both reservation AND active lease (planned + in use)
+
+    Args:
+        desired_from: ``"lease"`` or ``"reservation"``
+        current_status: current NetBox IP status, or ``None`` when the IP is new.
+
+    """
+    if desired_from == "lease":
+        # If this IP already has a reservation, the device is now in use → active.
+        # Keep active if it was already active (don't downgrade on re-sync).
+        if current_status in ("reserved", "active"):
+            return "active"
+        return "dhcp"
+    # "reservation"
+    # If this IP already has a lease, the device is active as well → active.
+    if current_status in ("dhcp", "active"):
+        return "active"
+    return "reserved"
+
+
+def _update_mac_description(mac_obj: object, hostname: str) -> bool:
+    """Annotate a MACAddress object's description with a ``dhcp_hostname:`` token.
+
+    Behaviour:
+    - If the MAC has no ``assigned_object`` (no interface): replace the entire
+      description with ``dhcp_hostname: {hostname}``.
+    - If the MAC has an ``assigned_object``: append/replace only the
+      ``dhcp_hostname:`` portion, preserving any manual description text.
+
+    Returns ``True`` when the description was changed.
+    """
+    TOKEN = "dhcp_hostname: "
+    new_value = f"{TOKEN}{hostname}"
+    desc = mac_obj.description or ""
+    has_interface = getattr(mac_obj, "assigned_object", None) is not None
+
+    if not has_interface:
+        new_desc = new_value
+    elif TOKEN in desc:
+        # Replace just the dhcp_hostname: token value, preserve surrounding text.
+        before, rest = desc.split(TOKEN, 1)
+        parts = rest.split(" | ", 1)
+        remainder = f" | {parts[1]}" if len(parts) > 1 else ""
+        before_clean = before.rstrip(" |")
+        sep = " | " if before_clean else ""
+        new_desc = f"{before_clean}{sep}{new_value}{remainder}".strip(" |")
+    elif desc:
+        new_desc = f"{desc} | {new_value}"
+    else:
+        new_desc = new_value
+
+    new_desc = new_desc[:200]
+    if new_desc != mac_obj.description:
+        mac_obj.description = new_desc
+        return True
+    return False
+
+
+def _get_stale_cleanup_mode() -> str:
+    """Return the configured stale IP cleanup mode from PLUGINS_CONFIG.
+
+    Supported values: ``"remove"`` (default), ``"deprecate"``, ``"none"``.
+    """
+    from django.conf import settings
+
+    config = getattr(settings, "PLUGINS_CONFIG", {}).get("netbox_kea", {})
+    return config.get("stale_ip_cleanup", "remove")
+
+
+def _cleanup_stale_ips(
+    new_ip_str: str,
+    hostname: str,
+    *,
+    mode: str = "remove",
+    exclude_ips: frozenset[str] | None = None,
+) -> int:
+    """Remove or deprecate old Kea-synced IPs that have the same hostname but a different address.
+
+    This handles the case where a device moves to a new IP: the old NetBox
+    ``IPAddress`` entry would otherwise become a stale ghost.
+
+    Matching criteria (all must be true):
+    - ``dns_name`` matches *hostname* exactly
+    - ``status`` is one of ``dhcp``, ``active``, or ``reserved``
+    - ``description`` starts with ``"Synced from Kea DHCP"``
+    - Address is NOT *new_ip_str* (the current IP is never touched)
+    - Address is NOT in *exclude_ips* (allows protecting all IPs in a multi-address reservation)
+    - Same IP family (IPv4 cleanup does not remove IPv6 entries)
+
+    Args:
+        new_ip_str:  The IP address currently being synced (excluded from cleanup).
+        hostname:    The hostname/dns_name to match against.
+        mode:        ``"remove"`` deletes matching IPs; ``"deprecate"`` sets their
+                     status to ``deprecated``; ``"none"`` skips cleanup entirely.
+        exclude_ips: Additional IP strings to exclude (e.g. all IPs in a multi-address
+                     DHCPv6 reservation so sibling addresses are not cleaned up).
+
+    Returns the number of IPs cleaned up.
+
+    """
+    if mode == "none" or not hostname:
+        return 0
+
+    from ipam.models import IPAddress as NbIP
+
+    stale_qs = (
+        NbIP.objects.filter(
+            dns_name=hostname,
+            status__in=("dhcp", "active", "reserved"),
+            description__startswith="Synced from Kea DHCP",
+        ).exclude(address__startswith=f"{new_ip_str}/")
+    )
+
+    # Also exclude sibling IPs (e.g. other addresses in the same DHCPv6 reservation).
+    for exc_ip in exclude_ips or frozenset():
+        stale_qs = stale_qs.exclude(address__startswith=f"{exc_ip}/")
+
+    # Restrict to same IP family to avoid cross-family false positives.
+    if ":" in new_ip_str:
+        stale_qs = stale_qs.filter(address__contains=":")
+    else:
+        stale_qs = stale_qs.exclude(address__contains=":")
+
+    count = stale_qs.count()
+    if count == 0:
+        return 0
+
+    if mode == "remove":
+        stale_qs.delete()
+    elif mode == "deprecate":
+        stale_qs.update(status="deprecated")
+    else:
+        logger.warning("Unknown stale_ip_cleanup mode %r — skipping cleanup", mode)
+        return 0
+
+    return count
+
+
+def _sync_mac_address(hw_address: str, hostname: str = "") -> None:
+    """Create or update a NetBox ``MACAddress`` entry for *hw_address*.
+
+    When *hostname* is provided the ``description`` field is annotated with
+    a ``dhcp_hostname: {hostname}`` token (smart append/replace that preserves
+    any existing manual description text when the MAC has an assigned interface).
 
     Silently skipped on NetBox versions older than 4.1 where the
     ``dcim.MACAddress`` model does not exist.  All other errors are caught and
@@ -124,7 +272,9 @@ def _sync_mac_address(hw_address: str) -> None:
         from netaddr import EUI, mac_unix_expanded
 
         mac_str = str(EUI(hw_address, dialect=mac_unix_expanded))
-        MACAddress.objects.get_or_create(mac_address=mac_str)
+        mac_obj, _ = MACAddress.objects.get_or_create(mac_address=mac_str)
+        if hostname and _update_mac_description(mac_obj, hostname):
+            mac_obj.save()
     except ImportError:
         pass  # NetBox < 4.1 — MACAddress model not available
     except Exception:
@@ -184,12 +334,15 @@ def sync_lease_to_netbox(lease: dict) -> tuple[NbIPAddress, bool]:
         prefix_len = find_prefix_length(ip_str)
         ip_obj = NbIP(address=f"{ip_str}/{prefix_len}")
         created = True
+        current_status = None
     else:
         created = False
+        current_status = ip_obj.status
 
+    status = _compute_ip_status("lease", current_status)
     changed = _apply_ip_fields(
         ip_obj,
-        status="active",
+        status=status,
         hostname=hostname,
         description="Synced from Kea DHCP lease",
     )
@@ -197,9 +350,12 @@ def sync_lease_to_netbox(lease: dict) -> tuple[NbIPAddress, bool]:
     if created or changed:
         ip_obj.save()
 
+    if hostname:
+        _cleanup_stale_ips(ip_str, hostname, mode=_get_stale_cleanup_mode())
+
     hw_address = lease.get("hw-address")
     if hw_address:
-        _sync_mac_address(hw_address)
+        _sync_mac_address(hw_address, hostname)
 
     return ip_obj, created
 
@@ -239,12 +395,15 @@ def sync_reservation_to_netbox(reservation: dict) -> tuple[NbIPAddress, bool]:
             prefix_len = find_prefix_length(ip_str)
             ip_obj = NbIP(address=f"{ip_str}/{prefix_len}")
             created = True
+            current_status = None
         else:
             created = False
+            current_status = ip_obj.status
 
+        status = _compute_ip_status("reservation", current_status)
         changed = _apply_ip_fields(
             ip_obj,
-            status="reserved",
+            status=status,
             hostname=hostname,
             description="Synced from Kea DHCP reservation",
         )
@@ -256,8 +415,18 @@ def sync_reservation_to_netbox(reservation: dict) -> tuple[NbIPAddress, bool]:
             primary_obj = ip_obj
         any_created = any_created or created
 
+    # Cleanup stale IPs outside the loop — exclude ALL IPs in this reservation
+    # so sibling addresses (DHCPv6 multi-address) are never treated as stale.
+    if hostname:
+        _cleanup_stale_ips(
+            primary_ip,
+            hostname,
+            mode=_get_stale_cleanup_mode(),
+            exclude_ips=frozenset(all_ips),
+        )
+
     hw_address = reservation.get("hw-address")
     if hw_address:
-        _sync_mac_address(hw_address)
+        _sync_mac_address(hw_address, hostname)
 
     return primary_obj, any_created  # type: ignore[return-value]

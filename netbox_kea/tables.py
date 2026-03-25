@@ -351,6 +351,10 @@ class BaseLeaseTable(GenericTable):
             "{% if record.reservation_url %}"
             '<a href="{{ record.reservation_url }}" class="badge text-bg-success text-decoration-none">'
             "Reserved</a>"
+            "{% if record.stale_mac %}"
+            ' <span class="badge text-bg-warning" title="Lease MAC differs from reservation MAC — lease may be stale">'
+            "&#9888; MAC?</span>"
+            "{% endif %}"
             "{% elif record.create_reservation_url %}"
             '<a href="{{ record.create_reservation_url }}" class="badge text-bg-warning text-decoration-none">'
             "+ Reserve</a>"

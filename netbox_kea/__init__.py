@@ -9,7 +9,7 @@ class NetBoxKeaConfig(PluginConfig):
     description = "Kea integration for NetBox"
     version = "1.0.4"
     base_url = "kea"
-    default_settings = {"kea_timeout": 30}
+    default_settings = {"kea_timeout": 30, "stale_ip_cleanup": "remove"}
 
 
 config = NetBoxKeaConfig

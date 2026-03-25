@@ -3167,8 +3167,13 @@ def _enrich_leases_with_badges(leases: list[dict[str, Any]], server: "Server", v
                 args=[server.pk, rsv_subnet_id, ip],
             )
             lease["create_reservation_url"] = None
+            # Stale MAC detection: lease MAC ≠ reservation MAC → device mismatch.
+            lease_hw = (lease.get("hw_address") or "").lower()
+            rsv_hw = (rsv.get("hw-address") or "").lower()
+            lease["stale_mac"] = bool(lease_hw and rsv_hw and lease_hw != rsv_hw)
         elif host_cmds_available:
             lease["reservation_url"] = None
+            lease["stale_mac"] = False
             base_add = reverse(add_url_name, args=[server.pk])
             if version == 6:
                 params = {
