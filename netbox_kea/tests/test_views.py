@@ -4707,9 +4707,7 @@ _SUBNET4_GET_ZERO_TIMERS = [
     }
 ]
 
-_CONFIG4_NO_NETWORKS_RESP = [
-    {"result": 0, "arguments": {"Dhcp4": {"shared-networks": [], "subnet4": []}}}
-]
+_CONFIG4_NO_NETWORKS_RESP = [{"result": 0, "arguments": {"Dhcp4": {"shared-networks": [], "subnet4": []}}}]
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)

@@ -885,3 +885,99 @@ class TestSyncReservationWithStaleCleanup(TestCase):
         sync_reservation_to_netbox(self._RESERVATION_NEW)
         self.assertFalse(NbIP.objects.filter(address__startswith=f"{self._OLD_IP}/").exists())
         self.assertTrue(NbIP.objects.filter(address__startswith="10.50.0.20/").exists())
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TestNetboxDnsAvailable
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestNetboxDnsAvailable(TestCase):
+    """netbox_dns_available() returns a bool based on importlib.util.find_spec."""
+
+    def test_returns_false_when_spec_is_none(self):
+        """netbox_dns_available returns False when netbox_dns is not installed."""
+        import importlib.util as _ilu
+        from unittest.mock import patch
+
+        with patch.object(_ilu, "find_spec", return_value=None):
+            from netbox_kea.sync import netbox_dns_available
+
+            self.assertFalse(netbox_dns_available())
+
+    def test_returns_true_when_spec_is_present(self):
+        """netbox_dns_available returns True when find_spec returns a non-None object."""
+        import importlib.util as _ilu
+        from unittest.mock import MagicMock, patch
+
+        with patch.object(_ilu, "find_spec", return_value=MagicMock()):
+            from netbox_kea.sync import netbox_dns_available
+
+            self.assertTrue(netbox_dns_available())
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TestCleanupStaleIpsUnknownMode
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestCleanupStaleIpsUnknownMode(TestCase):
+    """_cleanup_stale_ips with an unrecognised mode logs and returns 0."""
+
+    _HOSTNAME = "moving-device.example.com"
+    _OLD_IP = "10.30.0.11"
+    _KEA_DESC = "Synced from Kea DHCP lease"
+
+    def test_unknown_mode_returns_zero_and_does_not_delete(self):
+        from ipam.models import IPAddress as NbIP
+
+        from netbox_kea.sync import _cleanup_stale_ips
+
+        NbIP.objects.create(
+            address=f"{self._OLD_IP}/32",
+            status="dhcp",
+            dns_name=self._HOSTNAME,
+            description=self._KEA_DESC,
+        )
+        count = _cleanup_stale_ips("10.30.0.99", self._HOSTNAME, mode="unknown")
+        self.assertEqual(count, 0)
+        self.assertTrue(NbIP.objects.filter(address__startswith=f"{self._OLD_IP}/").exists())
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TestSyncMacAddressErrors
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestSyncMacAddressErrors(TestCase):
+    """_sync_mac_address handles DB and parse errors gracefully."""
+
+    def test_db_error_is_caught_and_logged(self):
+        """ProgrammingError during get_or_create is caught; no exception propagates."""
+        from unittest.mock import patch
+
+        from django.db.utils import ProgrammingError
+
+        try:
+            from dcim.models import MACAddress
+        except ImportError:
+            self.skipTest("MACAddress not available in this NetBox version")
+
+        from netbox_kea.sync import _sync_mac_address
+
+        with patch.object(MACAddress.objects, "get_or_create", side_effect=ProgrammingError("boom")):
+            _sync_mac_address("aa:bb:cc:dd:ee:ff", hostname="test-host")
+        # If we reach here without exception the error was swallowed correctly.
+
+    def test_parse_error_is_caught_and_logged(self):
+        """Invalid MAC string (caught by netaddr) does not propagate an exception."""
+        from netbox_kea.sync import _sync_mac_address
+
+        try:
+            from dcim.models import MACAddress  # noqa: F401
+        except ImportError:
+            self.skipTest("MACAddress not available in this NetBox version")
+
+        # Passing an obviously invalid MAC address exercises the except Exception path.
+        _sync_mac_address("not-a-mac", hostname="test-host")
+        # No exception should propagate.
