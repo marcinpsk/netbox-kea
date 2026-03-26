@@ -248,3 +248,66 @@ class TestServerHasControlAgentDefault(SimpleTestCase):
     def test_has_control_agent_default_true(self):
         server = Server(name="s", server_url="http://kea:8000", dhcp4=True)
         self.assertTrue(server.has_control_agent)
+
+
+# ---------------------------------------------------------------------------
+# to_objectchange — password censoring
+# ---------------------------------------------------------------------------
+
+
+class TestServerToObjectchangePasswordCensoring(SimpleTestCase):
+    """to_objectchange() must censor passwords correctly in pre/post change data."""
+
+    def _make_objectchange(self, pre_password, post_password):
+        """Build a mock ObjectChange with configurable pre/post password values."""
+        from unittest.mock import MagicMock
+
+        from netbox.constants import CENSOR_TOKEN, CENSOR_TOKEN_CHANGED  # noqa: F401
+
+        prechange_data = {"password": pre_password, "name": "test-server"} if pre_password is not None else {}
+        postchange_data = {"password": post_password, "name": "test-server"} if post_password is not None else None
+
+        objectchange = MagicMock()
+        objectchange.prechange_data = prechange_data
+        objectchange.postchange_data = postchange_data
+        return objectchange
+
+    def _call_to_objectchange(self, pre_password, post_password):
+        from netbox.constants import CENSOR_TOKEN, CENSOR_TOKEN_CHANGED  # noqa: F401
+
+        server = Server(name="test-server", server_url="http://kea:8000", dhcp4=True)
+        objectchange = self._make_objectchange(pre_password, post_password)
+        with patch.object(Server.__bases__[0], "to_objectchange", return_value=objectchange):
+            return server.to_objectchange("update")
+
+    def test_unchanged_password_masked_as_censor_token(self):
+        """When pre and post passwords are the same, post shows CENSOR_TOKEN (not CHANGED)."""
+        from netbox.constants import CENSOR_TOKEN, CENSOR_TOKEN_CHANGED
+
+        result = self._call_to_objectchange(pre_password="secret", post_password="secret")
+        self.assertEqual(result.postchange_data["password"], CENSOR_TOKEN)
+        self.assertNotEqual(result.postchange_data["password"], CENSOR_TOKEN_CHANGED)
+
+    def test_changed_password_masked_as_censor_token_changed(self):
+        """When post password differs from pre password, post shows CENSOR_TOKEN_CHANGED."""
+        from netbox.constants import CENSOR_TOKEN_CHANGED
+
+        result = self._call_to_objectchange(pre_password="old-secret", post_password="new-secret")
+        self.assertEqual(result.postchange_data["password"], CENSOR_TOKEN_CHANGED)
+
+    def test_pre_password_always_masked_as_censor_token(self):
+        """prechange_data password is always replaced with CENSOR_TOKEN."""
+        from netbox.constants import CENSOR_TOKEN
+
+        result = self._call_to_objectchange(pre_password="old-secret", post_password="new-secret")
+        self.assertEqual(result.prechange_data["password"], CENSOR_TOKEN)
+
+    def test_no_prechange_data_does_not_raise(self):
+        """to_objectchange handles None / empty prechange_data without raising."""
+        server = Server(name="test-server", server_url="http://kea:8000", dhcp4=True)
+        objectchange = self._make_objectchange(pre_password=None, post_password="secret")
+        objectchange.prechange_data = {}
+        with patch.object(Server.__bases__[0], "to_objectchange", return_value=objectchange):
+            result = server.to_objectchange("create")
+        # Should not crash; no prechange password to mask
+        self.assertEqual(result.prechange_data, {})

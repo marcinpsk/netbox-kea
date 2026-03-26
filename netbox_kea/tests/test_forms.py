@@ -707,3 +707,118 @@ class TestSubnetEditFormTimers(SimpleTestCase):
         self.assertTrue(form.is_valid(), form.errors)
         self.assertIsNone(form.cleaned_data.get("renew_timer"))
         self.assertIsNone(form.cleaned_data.get("rebind_timer"))
+
+
+# ---------------------------------------------------------------------------
+# SubnetAddForm — shared_network field
+# ---------------------------------------------------------------------------
+
+
+class TestSubnetAddFormSharedNetwork(SimpleTestCase):
+    """SubnetAddForm must expose a shared_network ChoiceField."""
+
+    def test_form_has_shared_network_field(self):
+        """SubnetAddForm exposes a shared_network field."""
+        from netbox_kea.forms import SubnetAddForm
+
+        self.assertIn("shared_network", SubnetAddForm().fields)
+
+    def test_shared_network_field_is_not_required(self):
+        """shared_network is optional."""
+        from netbox_kea.forms import SubnetAddForm
+
+        field = SubnetAddForm().fields["shared_network"]
+        self.assertFalse(field.required)
+
+    def test_form_valid_without_shared_network(self):
+        """Form is valid when shared_network is omitted (empty)."""
+        from netbox_kea.forms import SubnetAddForm
+
+        form = SubnetAddForm(data={"subnet": "10.0.0.0/24", "shared_network": ""})
+        # Should not fail on shared_network validation itself.
+        errors = form.errors
+        self.assertNotIn("shared_network", errors)
+
+
+# ---------------------------------------------------------------------------
+# SharedNetworkEditForm
+# ---------------------------------------------------------------------------
+
+
+class TestSharedNetworkEditForm(SimpleTestCase):
+    """Tests for SharedNetworkEditForm validation, particularly clean_relay_addresses()."""
+
+    def _form(self, **kwargs):
+        from netbox_kea.forms import SharedNetworkEditForm
+
+        data = {"name": "prod-net", **kwargs}
+        return SharedNetworkEditForm(data=data)
+
+    def test_valid_with_name_only(self):
+        """Form is valid when only name is provided (all optional fields empty)."""
+        form = self._form()
+        self.assertTrue(form.is_valid(), form.errors)
+
+    def test_valid_with_single_relay_address(self):
+        """A single valid IPv4 relay address is accepted."""
+        form = self._form(relay_addresses="10.0.0.1")
+        self.assertTrue(form.is_valid(), form.errors)
+
+    def test_valid_with_multiple_relay_addresses(self):
+        """Multiple comma-separated valid IPs are accepted."""
+        form = self._form(relay_addresses="10.0.0.1, 10.0.0.2")
+        self.assertTrue(form.is_valid(), form.errors)
+
+    def test_valid_with_ipv6_relay_address(self):
+        """An IPv6 relay address is accepted."""
+        form = self._form(relay_addresses="2001:db8::1")
+        self.assertTrue(form.is_valid(), form.errors)
+
+    def test_invalid_relay_address_fails_validation(self):
+        """A non-IP value in relay_addresses raises a ValidationError."""
+        form = self._form(relay_addresses="not-an-ip")
+        self.assertFalse(form.is_valid())
+        self.assertIn("relay_addresses", form.errors)
+
+    def test_invalid_second_relay_address_fails_validation(self):
+        """If the second address in a comma-separated list is bad, validation fails."""
+        form = self._form(relay_addresses="10.0.0.1, not-an-ip")
+        self.assertFalse(form.is_valid())
+        self.assertIn("relay_addresses", form.errors)
+
+    def test_empty_relay_addresses_accepted(self):
+        """An empty relay_addresses string is accepted (clears relay)."""
+        form = self._form(relay_addresses="")
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.cleaned_data["relay_addresses"], "")
+
+    def test_form_has_description_field(self):
+        """Form exposes a description field."""
+        from netbox_kea.forms import SharedNetworkEditForm
+
+        self.assertIn("description", SharedNetworkEditForm().fields)
+
+    def test_form_has_interface_field(self):
+        """Form exposes an interface field."""
+        from netbox_kea.forms import SharedNetworkEditForm
+
+        self.assertIn("interface", SharedNetworkEditForm().fields)
+
+    def test_name_field_is_hidden_input(self):
+        """The name field uses HiddenInput widget."""
+        from django.forms import HiddenInput
+
+        from netbox_kea.forms import SharedNetworkEditForm
+
+        self.assertIsInstance(SharedNetworkEditForm().fields["name"].widget, HiddenInput)
+
+    def test_description_accepts_255_chars(self):
+        """description accepts strings up to 255 characters."""
+        form = self._form(description="x" * 255)
+        self.assertTrue(form.is_valid(), form.errors)
+
+    def test_description_rejects_256_chars(self):
+        """description rejects strings longer than 255 characters."""
+        form = self._form(description="x" * 256)
+        self.assertFalse(form.is_valid())
+        self.assertIn("description", form.errors)

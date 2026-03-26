@@ -2882,3 +2882,285 @@ class TestNetworkUpdate(TestCase):
         cmds = self._cmds(mock_post)
         self.assertIn("config-set", cmds)
         self.assertIn("config-write", cmds)
+
+    def test_updates_interface_in_payload(self):
+        """interface field is set on the network in config-test and config-set payloads."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(
+                _CONFIG_GET_WITH_SHARED_NETWORK,
+                _CONFIG_TEST_OK_RESP,
+                _CONFIG_SET_OK_RESP,
+                _CONFIG_WRITE_RESP,
+            ),
+        ) as mock_post:
+            self.client.network_update(version=4, name="prod-net", interface="eth1")
+        payloads = self._payloads(mock_post)
+        set_payload = next(p for p in payloads if p["command"] == "config-set")
+        network = set_payload["arguments"]["Dhcp4"]["shared-networks"][0]
+        self.assertEqual(network["interface"], "eth1")
+
+    def test_clears_relay_addresses_when_empty_list_provided(self):
+        """Passing an empty relay_addresses list removes the 'relay' key from the network."""
+        config_with_relay = [
+            {
+                "result": 0,
+                "arguments": {
+                    "Dhcp4": {
+                        "shared-networks": [
+                            {
+                                "name": "prod-net",
+                                "relay": {"ip-addresses": ["10.0.0.1"]},
+                                "option-data": [],
+                                "subnet4": [],
+                            }
+                        ],
+                        "subnet4": [],
+                    }
+                },
+            }
+        ]
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(
+                config_with_relay,
+                _CONFIG_TEST_OK_RESP,
+                _CONFIG_SET_OK_RESP,
+                _CONFIG_WRITE_RESP,
+            ),
+        ) as mock_post:
+            self.client.network_update(version=4, name="prod-net", relay_addresses=[])
+        payloads = self._payloads(mock_post)
+        set_payload = next(p for p in payloads if p["command"] == "config-set")
+        network = set_payload["arguments"]["Dhcp4"]["shared-networks"][0]
+        self.assertNotIn("relay", network)
+
+    def test_updates_options_in_payload(self):
+        """options list is written to 'option-data' on the network in config-set payload."""
+        new_options = [{"name": "domain-name-servers", "data": "8.8.8.8"}]
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(
+                _CONFIG_GET_WITH_SHARED_NETWORK,
+                _CONFIG_TEST_OK_RESP,
+                _CONFIG_SET_OK_RESP,
+                _CONFIG_WRITE_RESP,
+            ),
+        ) as mock_post:
+            self.client.network_update(version=4, name="prod-net", options=new_options)
+        payloads = self._payloads(mock_post)
+        set_payload = next(p for p in payloads if p["command"] == "config-set")
+        network = set_payload["arguments"]["Dhcp4"]["shared-networks"][0]
+        self.assertEqual(network["option-data"], new_options)
+
+    def test_config_test_failure_raises_kea_config_test_error(self):
+        """Non-2 config-test failure raises KeaConfigTestError (not PartialPersistError)."""
+        from netbox_kea.kea import KeaConfigTestError
+
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(
+                _CONFIG_GET_WITH_SHARED_NETWORK,
+                _CONFIG_TEST_FAIL_RESP,
+            ),
+        ):
+            with self.assertRaises(KeaConfigTestError):
+                self.client.network_update(version=4, name="prod-net")
+
+    def test_hash_key_stripped_from_config_before_config_test(self):
+        """The 'hash' key present in Kea 2.4+ config-get responses is stripped before config-test."""
+        config_with_hash = [
+            {
+                "result": 0,
+                "arguments": {
+                    "hash": "abc123",
+                    "Dhcp4": {
+                        "shared-networks": [
+                            {"name": "prod-net", "option-data": [], "subnet4": []}
+                        ],
+                        "subnet4": [],
+                    },
+                },
+            }
+        ]
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(
+                config_with_hash,
+                _CONFIG_TEST_OK_RESP,
+                _CONFIG_SET_OK_RESP,
+                _CONFIG_WRITE_RESP,
+            ),
+        ) as mock_post:
+            self.client.network_update(version=4, name="prod-net")
+        payloads = self._payloads(mock_post)
+        test_payload = next(p for p in payloads if p["command"] == "config-test")
+        self.assertNotIn("hash", test_payload["arguments"])
+
+
+# ---------------------------------------------------------------------------
+# TestLeaseGetByIp
+# ---------------------------------------------------------------------------
+
+_LEASE4_GET_FOUND_RESP = [
+    {
+        "result": 0,
+        "arguments": {
+            "ip-address": "192.168.1.10",
+            "hw-address": "aa:bb:cc:dd:ee:ff",
+            "hostname": "host1.example.com",
+            "valid-lft": 3600,
+            "state": 0,
+        },
+    }
+]
+
+_LEASE4_GET_NOT_FOUND_RESP = [{"result": 3, "text": "Lease not found."}]
+_LEASE6_GET_FOUND_RESP = [
+    {
+        "result": 0,
+        "arguments": {
+            "ip-address": "2001:db8::1",
+            "duid": "00:01:02:03",
+            "valid-lft": 7200,
+            "state": 0,
+        },
+    }
+]
+
+
+class TestLeaseGetByIp(TestCase):
+    """Tests for KeaClient.lease_get_by_ip()."""
+
+    def setUp(self):
+        self.client = KeaClient(url="http://kea:8000")
+
+    def _payload(self, mock_post):
+        return mock_post.call_args.kwargs.get("json") or mock_post.call_args[1]["json"]
+
+    def test_v4_returns_lease_dict_when_found(self):
+        """Returns the arguments dict when lease is found (result=0)."""
+        with patch.object(
+            self.client._session,
+            "post",
+            return_value=_mock_http_response(_LEASE4_GET_FOUND_RESP),
+        ):
+            result = self.client.lease_get_by_ip(version=4, ip_address="192.168.1.10")
+        self.assertIsNotNone(result)
+        self.assertEqual(result["ip-address"], "192.168.1.10")
+
+    def test_v4_returns_none_when_not_found(self):
+        """Returns None when Kea responds with result=3 (not found)."""
+        with patch.object(
+            self.client._session,
+            "post",
+            return_value=_mock_http_response(_LEASE4_GET_NOT_FOUND_RESP),
+        ):
+            result = self.client.lease_get_by_ip(version=4, ip_address="192.168.1.99")
+        self.assertIsNone(result)
+
+    def test_v6_uses_dhcp6_service(self):
+        """Uses dhcp6 service and lease6-get command for version=6."""
+        with patch.object(
+            self.client._session,
+            "post",
+            return_value=_mock_http_response(_LEASE6_GET_FOUND_RESP),
+        ) as mock_post:
+            self.client.lease_get_by_ip(version=6, ip_address="2001:db8::1")
+        payload = self._payload(mock_post)
+        self.assertEqual(payload["command"], "lease6-get")
+        self.assertEqual(payload["service"], ["dhcp6"])
+
+    def test_v4_uses_dhcp4_service(self):
+        """Uses dhcp4 service and lease4-get command for version=4."""
+        with patch.object(
+            self.client._session,
+            "post",
+            return_value=_mock_http_response(_LEASE4_GET_FOUND_RESP),
+        ) as mock_post:
+            self.client.lease_get_by_ip(version=4, ip_address="192.168.1.10")
+        payload = self._payload(mock_post)
+        self.assertEqual(payload["command"], "lease4-get")
+        self.assertEqual(payload["service"], ["dhcp4"])
+
+    def test_sends_ip_address_in_arguments(self):
+        """Sends the IP address in the arguments dict."""
+        with patch.object(
+            self.client._session,
+            "post",
+            return_value=_mock_http_response(_LEASE4_GET_FOUND_RESP),
+        ) as mock_post:
+            self.client.lease_get_by_ip(version=4, ip_address="10.0.0.5")
+        payload = self._payload(mock_post)
+        self.assertEqual(payload["arguments"]["ip-address"], "10.0.0.5")
+
+    def test_raises_kea_exception_on_error(self):
+        """Raises KeaException when Kea returns a non-0/3 result code."""
+        error_resp = [{"result": 1, "text": "Internal server error"}]
+        with patch.object(
+            self.client._session,
+            "post",
+            return_value=_mock_http_response(error_resp),
+        ):
+            with self.assertRaises(KeaException):
+                self.client.lease_get_by_ip(version=4, ip_address="10.0.0.1")
+
+    def test_v6_returns_none_when_not_found(self):
+        """Returns None for v6 not-found (result=3)."""
+        with patch.object(
+            self.client._session,
+            "post",
+            return_value=_mock_http_response([{"result": 3, "text": "Lease not found."}]),
+        ):
+            result = self.client.lease_get_by_ip(version=6, ip_address="2001:db8::99")
+        self.assertIsNone(result)
+
+
+# ---------------------------------------------------------------------------
+# TestPersistConfig — additional exception-type coverage
+# ---------------------------------------------------------------------------
+
+
+class TestPersistConfigExceptionTypes(TestCase):
+    """Tests that requests.RequestException and ValueError in config-get fall back to config-write."""
+
+    def setUp(self):
+        self.client = KeaClient(url="http://kea:8000")
+
+    def _cmds(self, mock_post):
+        payloads = [(c.kwargs.get("json") or c[1]["json"]) for c in mock_post.call_args_list]
+        return [p["command"] for p in payloads]
+
+    def test_requests_request_exception_falls_back_to_config_write(self):
+        """A requests.RequestException from config-get causes fallback to bare config-write."""
+        import requests as req
+
+        def _side_effect(url, **kwargs):
+            if kwargs.get("json", {}).get("command") == "config-get":
+                raise req.RequestException("network error")
+            return _mock_http_response(_CONFIG_WRITE_RESP)
+
+        with patch.object(self.client._session, "post", side_effect=_side_effect) as mock_post:
+            self.client._persist_config("dhcp4")
+        cmds = self._cmds(mock_post)
+        self.assertIn("config-write", cmds)
+        self.assertNotIn("config-test", cmds)
+
+    def test_value_error_falls_back_to_config_write(self):
+        """A ValueError from config-get causes fallback to bare config-write."""
+
+        def _side_effect(url, **kwargs):
+            if kwargs.get("json", {}).get("command") == "config-get":
+                raise ValueError("unexpected value")
+            return _mock_http_response(_CONFIG_WRITE_RESP)
+
+        with patch.object(self.client._session, "post", side_effect=_side_effect) as mock_post:
+            self.client._persist_config("dhcp4")
+        cmds = self._cmds(mock_post)
+        self.assertIn("config-write", cmds)
+        self.assertNotIn("config-test", cmds)
