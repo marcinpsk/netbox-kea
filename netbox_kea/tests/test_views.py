@@ -1432,9 +1432,18 @@ class TestStaleMacBadgeEnrichment(_ViewTestBase):
     def test_stale_mac_badge_no_delete_when_no_permission(self, MockKeaClient, mock_bulk_fetch):
         """When the user lacks delete permission, the stale-MAC badge must NOT include an HTMX delete button."""
         from django.contrib.auth import get_user_model
+        from django.contrib.contenttypes.models import ContentType
+        from users.models import ObjectPermission
+
+        from netbox_kea.models import Server
 
         User = get_user_model()
         readonly_user = User.objects.create_user(username="readonly_stale", password="pass")
+        # Grant only view permission via NetBox's ObjectPermission (not change/delete)
+        ct = ContentType.objects.get_for_model(Server)
+        view_obj_perm = ObjectPermission.objects.create(name="test-view-server-readonly", actions=["view"])
+        view_obj_perm.object_types.add(ct)
+        view_obj_perm.users.add(readonly_user)
         self.client.force_login(readonly_user)
 
         mock_client = MockKeaClient.return_value
@@ -1443,10 +1452,9 @@ class TestStaleMacBadgeEnrichment(_ViewTestBase):
         mock_bulk_fetch.return_value = {}
         url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
         response = self._htmx_get(url, {"by": "ip", "q": "10.0.0.5"})
-        self.assertIn(response.status_code, (200, 302, 403))
-        if response.status_code == 200:
-            delete_url = reverse("plugins:netbox_kea:server_leases4_delete", args=[self.server.pk])
-            self.assertNotContains(response, f'hx-post="{delete_url}"')
+        self.assertEqual(response.status_code, 200)
+        delete_url = reverse("plugins:netbox_kea:server_leases4_delete", args=[self.server.pk])
+        self.assertNotContains(response, f'hx-post="{delete_url}"')
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1925,6 +1933,7 @@ class TestServerSubnet4EditView(_ViewTestBase):
     def test_post_valid_form_calls_subnet_update_and_redirects(self, MockKeaClient):
         """POST with valid form must call subnet_update and redirect to subnet list."""
         MockKeaClient.return_value.subnet_update.return_value = None
+        MockKeaClient.return_value.command.return_value = _CONFIG4_NO_NETWORKS
         response = self.client.post(
             self._url(subnet_id=42),
             {
@@ -1943,6 +1952,7 @@ class TestServerSubnet4EditView(_ViewTestBase):
     def test_post_passes_correct_version_and_subnet_id_to_subnet_update(self, MockKeaClient):
         """POST must call subnet_update with version=4 and the correct subnet_id."""
         MockKeaClient.return_value.subnet_update.return_value = None
+        MockKeaClient.return_value.command.return_value = _CONFIG4_NO_NETWORKS
         self.client.post(
             self._url(subnet_id=42),
             {"subnet_cidr": "10.0.0.0/24", "pools": "", "gateway": "", "dns_servers": "", "ntp_servers": ""},
@@ -1971,6 +1981,7 @@ class TestServerSubnet4EditView(_ViewTestBase):
     @patch("netbox_kea.models.KeaClient")
     def test_post_invalid_form_rerenders_with_200(self, MockKeaClient):
         """POST with invalid data (bad gateway IP) must re-render the form."""
+        MockKeaClient.return_value.command.return_value = _CONFIG4_NO_NETWORKS
         response = self.client.post(
             self._url(subnet_id=42),
             {"subnet_cidr": "10.0.0.0/24", "pools": "", "gateway": "not-an-ip", "dns_servers": "", "ntp_servers": ""},
@@ -1994,6 +2005,7 @@ class TestServerSubnet4EditView(_ViewTestBase):
     def test_post_passes_renew_rebind_timers_to_subnet_update(self, MockKeaClient):
         """F11: POST with renew_timer and rebind_timer must pass them to subnet_update."""
         MockKeaClient.return_value.subnet_update.return_value = None
+        MockKeaClient.return_value.command.return_value = _CONFIG4_NO_NETWORKS
         self.client.post(
             self._url(subnet_id=42),
             {
@@ -2015,6 +2027,7 @@ class TestServerSubnet4EditView(_ViewTestBase):
     def test_post_omits_timers_when_not_supplied(self, MockKeaClient):
         """F11: POST without timer fields must pass None/absent to subnet_update."""
         MockKeaClient.return_value.subnet_update.return_value = None
+        MockKeaClient.return_value.command.return_value = _CONFIG4_NO_NETWORKS
         self.client.post(
             self._url(subnet_id=42),
             {"subnet_cidr": "10.0.0.0/24", "pools": "", "gateway": "", "dns_servers": "", "ntp_servers": ""},
@@ -2149,6 +2162,7 @@ class TestServerSubnet6EditView(_ViewTestBase):
     def test_post_calls_subnet_update_with_version_6(self, MockKeaClient):
         """POST must call subnet_update with version=6."""
         MockKeaClient.return_value.subnet_update.return_value = None
+        MockKeaClient.return_value.command.return_value = _CONFIG6_NO_NETWORKS
         self.client.post(
             self._url(subnet_id=7),
             {"subnet_cidr": "2001:db8::/48", "pools": "", "gateway": "", "dns_servers": "", "ntp_servers": ""},
@@ -3224,6 +3238,35 @@ _CONFIG4_NO_NETWORKS = [
     }
 ]
 
+# Config-get response with "prod-net" shared-network (for SharedNetworkEditView POST tests)
+_CONFIG4_WITH_PROD_NET = [
+    {
+        "result": 0,
+        "arguments": {"Dhcp4": {"shared-networks": [{"name": "prod-net", "option-data": [], "subnet4": []}]}},
+    }
+]
+
+# Config-get response with "prod-net6" shared-network (for SharedNetworkEditView v6 POST tests)
+_CONFIG6_WITH_PROD_NET = [
+    {
+        "result": 0,
+        "arguments": {"Dhcp6": {"shared-networks": [{"name": "prod-net6", "option-data": [], "subnet6": []}]}},
+    }
+]
+
+# Config-get response for v6 subnet edit (no network assignment)
+_CONFIG6_NO_NETWORKS = [
+    {
+        "result": 0,
+        "arguments": {
+            "Dhcp6": {
+                "subnet6": [{"id": 7, "subnet": "2001:db8::/48"}],
+                "shared-networks": [],
+            }
+        },
+    }
+]
+
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestServerSubnet4EditViewNetworkAssignment(_ViewTestBase):
@@ -3982,6 +4025,7 @@ class TestServerSharedNetwork4EditView(_ViewTestBase):
     def test_post_valid_calls_network_update_and_redirects(self, MockKeaClient):
         """POST with valid data calls network_update and redirects."""
         MockKeaClient.return_value.network_update.return_value = None
+        MockKeaClient.return_value.command.return_value = _CONFIG4_WITH_PROD_NET
         response = self.client.post(
             self._url(),
             {
@@ -4001,6 +4045,7 @@ class TestServerSharedNetwork4EditView(_ViewTestBase):
     def test_post_passes_version_4_to_network_update(self, MockKeaClient):
         """POST must call network_update with version=4."""
         MockKeaClient.return_value.network_update.return_value = None
+        MockKeaClient.return_value.command.return_value = _CONFIG4_WITH_PROD_NET
         self.client.post(
             self._url(),
             {
@@ -4026,6 +4071,7 @@ class TestServerSharedNetwork4EditView(_ViewTestBase):
         MockKeaClient.return_value.network_update.side_effect = KeaException(
             {"result": 1, "text": "config error"}, index=0
         )
+        MockKeaClient.return_value.command.return_value = _CONFIG4_WITH_PROD_NET
         response = self.client.post(
             self._url(),
             {
@@ -4045,7 +4091,10 @@ class TestServerSharedNetwork4EditView(_ViewTestBase):
             any(m.level == django_messages.ERROR for m in messages_list),
             f"Expected an ERROR message; got: {[(m.level, m.message) for m in messages_list]}",
         )
+        # Raw Kea error text must not appear in either rendered response or queued messages
         self.assertNotIn(b"config error", response.content)
+        for m in messages_list:
+            self.assertNotIn("config error", m.message, f"Raw Kea error text leaked into message: {m.message}")
 
     @patch("netbox_kea.models.KeaClient")
     def test_post_partial_persist_error_shows_warning(self, MockKeaClient):
@@ -4053,6 +4102,7 @@ class TestServerSharedNetwork4EditView(_ViewTestBase):
         from netbox_kea.kea import PartialPersistError
 
         MockKeaClient.return_value.network_update.side_effect = PartialPersistError("dhcp4", Exception("write failed"))
+        MockKeaClient.return_value.command.return_value = _CONFIG4_WITH_PROD_NET
         response = self.client.post(
             self._url(),
             {
@@ -4113,6 +4163,7 @@ class TestServerSharedNetwork6EditView(_ViewTestBase):
     def test_post_calls_network_update_with_version_6(self, MockKeaClient):
         """POST must call network_update with version=6."""
         MockKeaClient.return_value.network_update.return_value = None
+        MockKeaClient.return_value.command.return_value = _CONFIG6_WITH_PROD_NET
         self.client.post(
             self._url(),
             {

@@ -204,6 +204,10 @@ class TestSyncLeaseToNetbox(TestCase):
             from dcim.models import MACAddress
         except (ImportError, AttributeError):
             self.skipTest("MACAddress not available in this NetBox version")
+        try:
+            import netaddr  # noqa: F401
+        except ImportError:
+            self.skipTest("netaddr not available")
         from netbox_kea.sync import sync_lease_to_netbox
 
         sync_lease_to_netbox(self._LEASE)
@@ -215,6 +219,10 @@ class TestSyncLeaseToNetbox(TestCase):
             from dcim.models import MACAddress
         except (ImportError, AttributeError):
             self.skipTest("MACAddress not available in this NetBox version")
+        try:
+            import netaddr  # noqa: F401
+        except ImportError:
+            self.skipTest("netaddr not available")
         from netbox_kea.sync import sync_lease_to_netbox
 
         lease = {"ip-address": "192.168.50.101", "hostname": "nomaclease"}
@@ -227,6 +235,10 @@ class TestSyncLeaseToNetbox(TestCase):
             from dcim.models import MACAddress
         except (ImportError, AttributeError):
             self.skipTest("MACAddress not available in this NetBox version")
+        try:
+            import netaddr  # noqa: F401
+        except ImportError:
+            self.skipTest("netaddr not available")
         from netbox_kea.sync import sync_lease_to_netbox
 
         sync_lease_to_netbox(self._LEASE)
@@ -810,7 +822,7 @@ class TestSyncLeaseWithStaleCleanup(TestCase):
             description="Synced from Kea DHCP lease",
         )
 
-    @override_settings(PLUGINS_CONFIG=_STALE_PLUGINS_CONFIG)
+    @override_settings(PLUGINS_CONFIG={"netbox_kea": {"kea_timeout": 30}})
     def test_removes_old_ip_by_default(self):
         from ipam.models import IPAddress as NbIP
 

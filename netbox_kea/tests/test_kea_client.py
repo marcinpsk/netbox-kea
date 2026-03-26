@@ -1700,11 +1700,12 @@ class TestSubnetUpdate(TestCase):
             "post",
             side_effect=_side_effects(_SUBNET_UPDATE_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _CONFIG_WRITE_RESP),
         ) as mock_post:
-            self.client.subnet_update(version=4, subnet_id=1, subnet_cidr="10.0.0.0/24", ntp_servers="10.0.0.1")
+            self.client.subnet_update(version=4, subnet_id=1, subnet_cidr="10.0.0.0/24", ntp_servers=["10.0.0.1"])
         payload = self._update_payload(mock_post)
         subnet_obj = payload["arguments"]["subnet4"][0]
-        option_names = [o["name"] for o in subnet_obj.get("option-data", [])]
-        self.assertIn("ntp-servers", option_names)
+        opt = next((o for o in subnet_obj.get("option-data", []) if o.get("name") == "ntp-servers"), None)
+        self.assertIsNotNone(opt, "ntp-servers option-data entry not found")
+        self.assertEqual(opt["data"], "10.0.0.1")
 
     def test_sends_min_valid_lft_when_provided(self):
         """subnet_update must include min-valid-lft when min_valid_lft is given."""
@@ -2018,7 +2019,7 @@ class TestSubnetOptionUpdate(TestCase):
                 self.client.subnet_update_options(version=4, subnet_id=1, options=[])
 
     def test_skips_config_test_gracefully_when_not_supported(self):
-        """If config-test returns result=2, config-write still proceeds."""
+        """If config-test returns result=2, config-set and config-write still proceed."""
         with patch.object(
             self.client._session,
             "post",
@@ -2030,8 +2031,9 @@ class TestSubnetOptionUpdate(TestCase):
             ),
         ) as mock_post:
             self.client.subnet_update_options(version=4, subnet_id=1, options=[])
-        # Must not raise; config-write must have been called
+        # Must not raise; both config-set and config-write must have been called
         cmds = self._cmds(mock_post)
+        self.assertIn("config-set", cmds)
         self.assertIn("config-write", cmds)
 
     def test_v6_uses_dhcp6_service_and_subnet6_key(self):
@@ -2214,7 +2216,7 @@ class TestServerOptionsUpdate(TestCase):
                 self.client.server_update_options(version=4, options=[])
 
     def test_skips_config_test_gracefully_when_not_supported(self):
-        """If config-test returns result=2, config-write still proceeds."""
+        """If config-test returns result=2, config-set and config-write still proceed."""
         with patch.object(
             self.client._session,
             "post",
@@ -2226,7 +2228,9 @@ class TestServerOptionsUpdate(TestCase):
             ),
         ) as mock_post:
             self.client.server_update_options(version=4, options=[])
-        self.assertIn("config-write", self._cmds(mock_post))
+        cmds = self._cmds(mock_post)
+        self.assertIn("config-set", cmds)
+        self.assertIn("config-write", cmds)
 
     def test_v6_uses_dhcp6_service_and_dhcp6_key(self):
         """For version=6, config-get uses dhcp6 service and Dhcp6 key."""
@@ -2883,7 +2887,7 @@ class TestOptionDefAdd(TestCase):
         self.assertIn("Dhcp6", test_payload["arguments"])
 
     def test_skips_config_test_gracefully_when_not_supported(self):
-        """When config-test returns result=2 (not supported), option_def_add skips pre-flight and still config-writes."""
+        """When config-test returns result=2 (not supported), option_def_add skips pre-flight and still config-sets and config-writes."""
         new_def = {"name": "new-opt", "code": 201, "type": "string", "space": "dhcp4"}
         with patch.object(
             self.client._session,
@@ -2894,6 +2898,7 @@ class TestOptionDefAdd(TestCase):
         ) as mock_post:
             self.client.option_def_add(version=4, option_def=new_def)
         cmds = self._cmds(mock_post)
+        self.assertIn("config-set", cmds)
         self.assertIn("config-write", cmds)
 
 

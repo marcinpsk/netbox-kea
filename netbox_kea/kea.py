@@ -457,7 +457,10 @@ class KeaClient:
         if description is not None:
             network["description"] = description
         if interface is not None:
-            network["interface"] = interface
+            if interface:
+                network["interface"] = interface
+            else:
+                network.pop("interface", None)
         if relay_addresses is not None:
             if relay_addresses:
                 network["relay"] = {"ip-addresses": relay_addresses}

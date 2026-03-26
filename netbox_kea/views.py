@@ -1530,6 +1530,24 @@ class BaseServerSharedNetworkEditView(_KeaChangeMixin, ConditionalLoginRequiredM
         # two via the form and must not silently drop unrelated options on save.
         client = server.get_client(version=self.dhcp_version)
         existing_network = self._fetch_network(client, network_name)
+        if not existing_network:
+            logger.warning(
+                "Failed to reload current shared-network %r on server %s — aborting update to preserve option-data",
+                network_name,
+                server.pk,
+            )
+            messages.error(request, "Could not reload current network state; update aborted to prevent data loss.")
+            return render(
+                request,
+                "netbox_kea/server_shared_network_edit.html",
+                {
+                    "object": server,
+                    "form": form,
+                    "network_name": network_name,
+                    "dhcp_version": self.dhcp_version,
+                    "cancel_url": self._success_url(server),
+                },
+            )
         preserved_options: list[dict] = [
             opt
             for opt in existing_network.get("option-data", [])
@@ -2376,6 +2394,16 @@ class ServerReservation4DeleteView(_KeaChangeMixin, generic.ObjectView):
                 request=request,
             )
         except PartialPersistError:
+            _add_reservation_journal(
+                server, request.user, "deleted", {"ip-address": ip_address, "subnet-id": subnet_id}
+            )
+            reservation_deleted.send_robust(
+                sender=None,
+                server=server,
+                ip_address=ip_address,
+                dhcp_version=4,
+                request=request,
+            )
             messages.warning(request, "Change applied but may not survive a Kea restart (config-write failed).")
         except KeaException as exc:
             logger.exception("Failed to delete DHCPv4 reservation for %s", ip_address)
@@ -2427,6 +2455,16 @@ class ServerReservation6DeleteView(_KeaChangeMixin, generic.ObjectView):
                 request=request,
             )
         except PartialPersistError:
+            _add_reservation_journal(
+                server, request.user, "deleted", {"ip-address": ip_address, "subnet-id": subnet_id}
+            )
+            reservation_deleted.send_robust(
+                sender=None,
+                server=server,
+                ip_address=ip_address,
+                dhcp_version=6,
+                request=request,
+            )
             messages.warning(request, "Change applied but may not survive a Kea restart (config-write failed).")
         except KeaException as exc:
             logger.exception("Failed to delete DHCPv6 reservation for %s", ip_address)
@@ -2860,12 +2898,12 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
             args = resp[0].get("arguments") if resp else None
             if not isinstance(args, dict):
                 logger.warning("config-get returned unexpected arguments for network data: %r", args)
-                return [("", "— (global pool) —")], "", {}
+                return [("", "— (global pool) —")], None, {}
             dhcp_conf = args.get(f"Dhcp{self.dhcp_version}", {})
             networks = dhcp_conf.get("shared-networks", [])
         except KeaException:
             logger.warning("Failed to fetch shared networks for subnet edit dropdown")
-            return [("", "— (global pool) —")], "", {}
+            return [("", "— (global pool) —")], None, {}
 
         current_network = ""
         choices: list[tuple[str, str]] = [("", "— (global pool) —")]
@@ -2964,12 +3002,13 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
         subnet = self._fetch_subnet(server, subnet_id)
         client = server.get_client(version=self.dhcp_version)
         network_choices, current_network, dhcp_conf = self._get_network_data(client, subnet_id)
+        display_network = current_network or ""
         initial = self._form_initial(subnet)
-        initial["shared_network"] = current_network
-        initial["current_network"] = current_network
+        initial["shared_network"] = display_network
+        initial["current_network"] = display_network
         form = forms.SubnetEditForm(initial=initial)
         form.fields["shared_network"].choices = network_choices
-        inherited_options = self._get_inherited_options(dhcp_conf, current_network, initial)
+        inherited_options = self._get_inherited_options(dhcp_conf, display_network, initial)
         return render(
             request,
             self.template_name,
@@ -2989,6 +3028,12 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
         return_url = self._subnets_url(pk)
         client = server.get_client(version=self.dhcp_version)
         network_choices, server_current_network, _ = self._get_network_data(client, subnet_id)
+        if server_current_network is None:
+            logger.warning(
+                "Could not determine current shared-network for subnet %s on server %s — aborting edit", subnet_id, pk
+            )
+            messages.error(request, "Could not determine current network state; edit aborted to prevent data loss.")
+            return redirect(return_url)
         form = forms.SubnetEditForm(request.POST)
         form.fields["shared_network"].choices = network_choices
         if not form.is_valid():
@@ -3070,7 +3115,10 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
                     try:
                         client.network_subnet_del(version=self.dhcp_version, name=old_network, subnet_id=subnet_id)
                     except Exception as del_exc:
-                        # add succeeded but del failed — roll back the add
+                        # add succeeded but del failed — only rollback if mutation is NOT already live
+                        if isinstance(del_exc, PartialPersistError):
+                            # del is live (running config changed); do not rollback
+                            raise del_exc
                         if new_network:
                             try:
                                 client.network_subnet_del(
