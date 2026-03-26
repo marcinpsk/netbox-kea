@@ -1023,15 +1023,16 @@ class TestSubnetAdd(TestCase):
                 self.client.subnet_add(version=4, subnet_cidr="10.99.0.0/24")
 
     def test_subnet_add_returns_assigned_id(self):
-        """subnet_add returns the assigned subnet ID on success."""
+        """subnet_add returns the authoritative ID echoed back by Kea in the add response."""
         with patch.object(
             self.client._session,
             "post",
             side_effect=_side_effects(_SUBNET4_LIST_RESP, _SUBNET4_ADD_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _OK),
         ):
             result = self.client.subnet_add(version=4, subnet_cidr="10.99.0.0/24")
-        # _SUBNET4_LIST_RESP has max id=2, so auto-assigned id should be 3
-        self.assertEqual(result, 3)
+        # _SUBNET4_ADD_RESP echoes back id=10; we prefer the Kea-provided ID over the
+        # locally-computed max_id+1 value so we always have the authoritative ID.
+        self.assertEqual(result, 10)
 
     def test_subnet_add_without_explicit_id_falls_back_when_list_fails(self):
         """When subnet{v}-list raises KeaException, subnet_add falls back to no explicit ID."""
@@ -1049,6 +1050,18 @@ class TestSubnetAdd(TestCase):
         )
         # No explicit id should be set when the list call fails
         self.assertNotIn("id", add_call["arguments"]["subnet4"][0])
+
+    def test_subnet_add_list_fails_returns_kea_assigned_id(self):
+        """When subnet{v}-list fails, subnet_add returns the ID Kea echoes back in the add response."""
+        list_error = [{"result": 2, "text": "unknown command"}]
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(list_error, _SUBNET4_ADD_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _OK),
+        ):
+            result = self.client.subnet_add(version=4, subnet_cidr="10.99.0.0/24")
+        # _SUBNET4_ADD_RESP has id=10; that should be the return value even though list failed.
+        self.assertEqual(result, 10)
 
     def test_subnet_add_retries_on_duplicate_id(self):
         """subnet_add retries with id+1 when Kea rejects with 'duplicate' in error."""
@@ -2979,9 +2992,7 @@ class TestNetworkUpdate(TestCase):
                 "arguments": {
                     "hash": "abc123",
                     "Dhcp4": {
-                        "shared-networks": [
-                            {"name": "prod-net", "option-data": [], "subnet4": []}
-                        ],
+                        "shared-networks": [{"name": "prod-net", "option-data": [], "subnet4": []}],
                         "subnet4": [],
                     },
                 },

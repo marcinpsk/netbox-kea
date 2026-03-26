@@ -328,10 +328,11 @@ class KeaClient:
         if option_data:
             subnet_def["option-data"] = option_data
         last_exc: KeaException | None = None
+        add_resp: list | None = None
         auto_assigned_id = subnet_id is None and "id" in subnet_def
         for _attempt in range(3):
             try:
-                self.command(
+                add_resp = self.command(
                     f"subnet{version}-add",
                     service=[service],
                     arguments={subnet_key: [dict(subnet_def)]},
@@ -346,6 +347,13 @@ class KeaClient:
                     raise
         if last_exc is not None:
             raise last_exc
+        # Prefer the authoritative ID Kea echoes back in the add response — it is
+        # the only source of truth when subnet{v}-list failed and no explicit id was
+        # provided (subnet_def would have no "id" key in that case → returns None).
+        if add_resp:
+            kea_id = add_resp[0].get("arguments", {}).get("subnets", [{}])[0].get("id")
+            if kea_id is not None:
+                subnet_def["id"] = kea_id
         self._persist_config(service)
         return subnet_def.get("id")
 

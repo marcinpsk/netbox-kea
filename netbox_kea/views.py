@@ -683,10 +683,14 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
                 "netbox_kea.bulk_delete_lease_from_server",
                 obj=instance,
             )
+            can_change = request.user.has_perm(
+                "netbox_kea.change_server",
+                obj=instance,
+            )
 
             # Enrich leases with reservation badges + NetBox IPAM status.
             # Extracted helper so combined views get the same treatment.
-            _enrich_leases_with_badges(leases, instance, self.dhcp_version, can_delete=can_delete)
+            _enrich_leases_with_badges(leases, instance, self.dhcp_version, can_delete=can_delete, can_change=can_change)
 
             table = self.get_table(leases, request)
 
@@ -2634,9 +2638,13 @@ class _BaseSubnetAddView(_KeaChangeMixin, generic.ObjectView):
         """Return shared-network choices for the subnet-add dropdown."""
         try:
             resp = client.command("config-get", service=[f"dhcp{self.dhcp_version}"])
-            dhcp_conf = resp[0].get("arguments", {}).get(f"Dhcp{self.dhcp_version}", {})
+            args = resp[0].get("arguments") if resp else None
+            if not isinstance(args, dict):
+                logger.warning("config-get returned unexpected arguments for network choices: %r", args)
+                return [("", "— (global pool) —")]
+            dhcp_conf = args.get(f"Dhcp{self.dhcp_version}", {})
             networks = dhcp_conf.get("shared-networks", [])
-        except Exception:
+        except KeaException:
             logger.warning("Failed to fetch shared networks for subnet add dropdown")
             return [("", "— (global pool) —")]
         choices: list[tuple[str, str]] = [("", "— (global pool) —")]
@@ -2798,9 +2806,13 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
         """
         try:
             resp = client.command("config-get", service=[f"dhcp{self.dhcp_version}"])
-            dhcp_conf = resp[0].get("arguments", {}).get(f"Dhcp{self.dhcp_version}", {})
+            args = resp[0].get("arguments") if resp else None
+            if not isinstance(args, dict):
+                logger.warning("config-get returned unexpected arguments for network data: %r", args)
+                return [("", "— (global pool) —")], "", {}
+            dhcp_conf = args.get(f"Dhcp{self.dhcp_version}", {})
             networks = dhcp_conf.get("shared-networks", [])
-        except Exception:
+        except KeaException:
             logger.warning("Failed to fetch shared networks for subnet edit dropdown")
             return [("", "— (global pool) —")], "", {}
 
@@ -2945,22 +2957,7 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
         old_network = cd.get("current_network", "")
         new_network = cd.get("shared_network", "")
 
-        # Handle shared-network membership change
-        if old_network != new_network:
-            try:
-                if old_network:
-                    client.network_subnet_del(version=self.dhcp_version, name=old_network, subnet_id=subnet_id)
-                if new_network:
-                    client.network_subnet_add(version=self.dhcp_version, name=new_network, subnet_id=subnet_id)
-            except KeaException as exc:
-                logger.warning("network_subnet change failed for subnet %s on server %s: %s", subnet_id, pk, exc)
-                messages.error(request, f"Network assignment error: {kea_error_hint(exc)}")
-                return redirect(return_url)
-            except Exception:
-                logger.exception("Unexpected error changing network for subnet %s on server %s", subnet_id, pk)
-                messages.error(request, "An internal error occurred during network assignment.")
-                return redirect(return_url)
-
+        # Apply subnet config changes first — only move the network if the update succeeds.
         try:
             client.subnet_update(
                 version=self.dhcp_version,
@@ -2983,6 +2980,18 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
         except KeaException as exc:
             logger.exception("Failed to update subnet %s on server %s", subnet_id, pk)
             messages.error(request, kea_error_hint(exc))
+            return render(
+                request,
+                self.template_name,
+                {
+                    "object": server,
+                    "form": form,
+                    "subnet_id": subnet_id,
+                    "subnet_cidr": cd["subnet_cidr"],
+                    "dhcp_version": self.dhcp_version,
+                    "return_url": return_url,
+                },
+            )
         except Exception:
             logger.exception("Failed to update subnet %s on server %s", subnet_id, pk)
             messages.error(request, "Failed to update subnet: see server logs for details.")
@@ -2998,6 +3007,20 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
                     "return_url": return_url,
                 },
             )
+
+        # Handle shared-network membership change only after a successful update.
+        if old_network != new_network:
+            try:
+                if old_network:
+                    client.network_subnet_del(version=self.dhcp_version, name=old_network, subnet_id=subnet_id)
+                if new_network:
+                    client.network_subnet_add(version=self.dhcp_version, name=new_network, subnet_id=subnet_id)
+            except KeaException as exc:
+                logger.warning("network_subnet change failed for subnet %s on server %s: %s", subnet_id, pk, exc)
+                messages.error(request, f"Network assignment error: {kea_error_hint(exc)}")
+            except Exception:
+                logger.exception("Unexpected error changing network for subnet %s on server %s", subnet_id, pk)
+                messages.error(request, "An internal error occurred during network assignment.")
         return redirect(return_url)
 
 
@@ -3447,7 +3470,7 @@ def _fetch_reservation_by_ip_for_leases(
 
 
 def _enrich_leases_with_badges(
-    leases: list[dict[str, Any]], server: "Server", version: int, can_delete: bool = False
+    leases: list[dict[str, Any]], server: "Server", version: int, can_delete: bool = False, can_change: bool = False
 ) -> None:
     """In-place: add reservation and NetBox IPAM badge fields to lease dicts.
 
@@ -3457,6 +3480,7 @@ def _enrich_leases_with_badges(
     - ``netbox_ip_url``: absolute URL if IP exists in NetBox IPAM
     - ``sync_url``: POST endpoint URL to create a NetBox IP when absent
     - ``can_delete``: whether the current user may delete this lease
+    - ``can_change``: whether the current user may edit this lease (gates edit_url)
     """
     from .sync import bulk_fetch_netbox_ips
 
@@ -3545,9 +3569,10 @@ def _enrich_leases_with_badges(
             lease["netbox_ip_url"] = nb_ip.get_absolute_url()
         else:
             lease["sync_url"] = sync_url
-        if ip:
+        if ip and can_change:
             lease["edit_url"] = reverse(edit_url_name, args=[server.pk, ip])
         lease["can_delete"] = can_delete
+        lease["can_change"] = can_change
 
 
 def _enrich_reservations_with_badges(reservations: list[dict[str, Any]], server: "Server", version: int) -> None:
@@ -4091,7 +4116,8 @@ class _CombinedLeasesView(_CombinedViewMixin):
             server_leases = [entry for entry in all_leases if entry.get("server_pk") == server_pk]
             if server_leases:
                 can_delete = request.user.has_perm("netbox_kea.bulk_delete_lease_from_server", server)
-                _enrich_leases_with_badges(server_leases, server, self.dhcp_version, can_delete=can_delete)
+                can_change = request.user.has_perm("netbox_kea.change_server", server)
+                _enrich_leases_with_badges(server_leases, server, self.dhcp_version, can_delete=can_delete, can_change=can_change)
 
         table = table_cls(all_leases, user=request.user)
         table.configure(request)

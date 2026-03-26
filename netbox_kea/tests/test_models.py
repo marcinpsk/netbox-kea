@@ -311,3 +311,75 @@ class TestServerToObjectchangePasswordCensoring(SimpleTestCase):
             result = server.to_objectchange("create")
         # Should not crash; no prechange password to mask
         self.assertEqual(result.prechange_data, {})
+
+
+# ---------------------------------------------------------------------------
+# Server.clean() — exception type routing tests
+# ---------------------------------------------------------------------------
+
+
+class TestServerCleanExceptionRouting(SimpleTestCase):
+    """RequestException/ValueError → 'Unable to reach', JSONDecodeError → 'An internal error occurred'."""
+
+    def setUp(self):
+        patcher = patch.object(NetBoxModel, "clean", return_value=None)
+        self.addCleanup(patcher.stop)
+        patcher.start()
+
+    @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+    @patch("netbox_kea.models.KeaClient")
+    def test_dhcp6_value_error_raises_reachability_message(self, mock_kea_cls):
+        """ValueError during DHCPv6 check must raise 'Unable to reach' message."""
+        mock_client = MagicMock(spec=KeaClient)
+        mock_client.command.side_effect = ValueError("bad response")
+        mock_kea_cls.return_value = mock_client
+        server = _make_server(dhcp4=False, dhcp6=True)
+        with self.assertRaises(ValidationError) as ctx:
+            server.clean()
+        msg = str(ctx.exception.message_dict.get("dhcp6", [""])[0])
+        self.assertIn("Unable to reach", msg)
+        self.assertNotIn("internal error", msg)
+
+    @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+    @patch("netbox_kea.models.KeaClient")
+    def test_dhcp4_value_error_raises_reachability_message(self, mock_kea_cls):
+        """ValueError during DHCPv4 check must raise 'Unable to reach' message."""
+        mock_client = MagicMock(spec=KeaClient)
+        mock_client.command.side_effect = ValueError("bad response")
+        mock_kea_cls.return_value = mock_client
+        server = _make_server(dhcp4=True, dhcp6=False)
+        with self.assertRaises(ValidationError) as ctx:
+            server.clean()
+        msg = str(ctx.exception.message_dict.get("dhcp4", [""])[0])
+        self.assertIn("Unable to reach", msg)
+        self.assertNotIn("internal error", msg)
+
+    @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+    @patch("netbox_kea.models.KeaClient")
+    def test_dhcp6_json_decode_error_raises_internal_error_message(self, mock_kea_cls):
+        """JSONDecodeError during DHCPv6 check must raise 'An internal error occurred' message."""
+        import json
+
+        mock_client = MagicMock(spec=KeaClient)
+        mock_client.command.side_effect = json.JSONDecodeError("Expecting value", "", 0)
+        mock_kea_cls.return_value = mock_client
+        server = _make_server(dhcp4=False, dhcp6=True)
+        with self.assertRaises(ValidationError) as ctx:
+            server.clean()
+        msg = str(ctx.exception.message_dict.get("dhcp6", [""])[0])
+        self.assertIn("internal error", msg)
+
+    @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+    @patch("netbox_kea.models.KeaClient")
+    def test_dhcp4_json_decode_error_raises_internal_error_message(self, mock_kea_cls):
+        """JSONDecodeError during DHCPv4 check must raise 'An internal error occurred' message."""
+        import json
+
+        mock_client = MagicMock(spec=KeaClient)
+        mock_client.command.side_effect = json.JSONDecodeError("Expecting value", "", 0)
+        mock_kea_cls.return_value = mock_client
+        server = _make_server(dhcp4=True, dhcp6=False)
+        with self.assertRaises(ValidationError) as ctx:
+            server.clean()
+        msg = str(ctx.exception.message_dict.get("dhcp4", [""])[0])
+        self.assertIn("internal error", msg)

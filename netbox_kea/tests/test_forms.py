@@ -735,9 +735,8 @@ class TestSubnetAddFormSharedNetwork(SimpleTestCase):
         from netbox_kea.forms import SubnetAddForm
 
         form = SubnetAddForm(data={"subnet": "10.0.0.0/24", "shared_network": ""})
-        # Should not fail on shared_network validation itself.
-        errors = form.errors
-        self.assertNotIn("shared_network", errors)
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertNotIn("shared_network", form.errors)
 
 
 # ---------------------------------------------------------------------------

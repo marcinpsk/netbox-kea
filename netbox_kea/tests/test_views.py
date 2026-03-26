@@ -4370,3 +4370,106 @@ class TestServerSubnet4AddViewSharedNetwork(_ViewTestBase):
         response = self.client.post(self._url(), self._valid_post_data(shared_network=""))
         self.assertIn(response.status_code, (302, 200))
         mock_client.network_subnet_add.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Tests for _get_network_choices — None/missing arguments handling
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestSubnetEditNetworkChoicesNoneArguments(_ViewTestBase):
+    """_get_network_choices must return fallback when config-get returns None arguments."""
+
+    def _url(self, subnet_id=42):
+        return reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, subnet_id])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_get_falls_back_when_config_returns_none_arguments(self, MockKeaClient):
+        """GET must not crash and must show form when config-get returns arguments=None."""
+        _subnet4_get = [{"result": 0, "arguments": {"subnet4": [{"id": 42, "subnet": "10.0.0.0/24"}]}}]
+        _config_none_args = [{"result": 0, "arguments": None, "text": "no config"}]
+        mock_client = MockKeaClient.return_value
+        mock_client.command.side_effect = [_subnet4_get, _config_none_args]
+        response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 200)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_get_falls_back_when_config_raises_kea_exception(self, MockKeaClient):
+        """GET must not crash when config-get raises KeaException."""
+        from netbox_kea.kea import KeaException
+
+        _subnet4_get = [{"result": 0, "arguments": {"subnet4": [{"id": 42, "subnet": "10.0.0.0/24"}]}}]
+        mock_client = MockKeaClient.return_value
+        mock_client.command.side_effect = [
+            _subnet4_get,
+            KeaException({"result": 1, "text": "error"}, index=0),
+        ]
+        response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 200)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_subnet_update_fails_does_not_move_network(self, MockKeaClient):
+        """POST where subnet_update raises KeaException must NOT call network_subnet_add/del."""
+        from netbox_kea.kea import KeaException
+
+        mock_client = MockKeaClient.return_value
+        mock_client.command.return_value = _CONFIG4_NO_NETWORKS
+        mock_client.subnet_update.side_effect = KeaException({"result": 1, "text": "update failed"}, index=0)
+
+        response = self.client.post(
+            self._url(),
+            {
+                "subnet_cidr": "10.0.0.0/24",
+                "pools": "",
+                "gateway": "",
+                "dns_servers": "",
+                "ntp_servers": "",
+                "shared_network": "net-alpha",
+                "current_network": "",
+            },
+        )
+        # View should return to form (200) or redirect, but NOT call network methods.
+        self.assertIn(response.status_code, (200, 302))
+        mock_client.network_subnet_add.assert_not_called()
+        mock_client.network_subnet_del.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Tests for _enrich_leases_with_badges can_change parameter
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestEnrichLeasesWithBadgesCanChange(_ViewTestBase):
+    """Tests for _enrich_leases_with_badges can_change parameter gating edit_url."""
+
+    def test_edit_url_absent_when_can_change_false(self):
+        """edit_url must NOT be set on leases when can_change=False."""
+        from unittest.mock import MagicMock
+
+        from netbox_kea.views import _enrich_leases_with_badges
+
+        server = self.server
+        lease = {"ip_address": "10.0.0.1", "hw_address": "aa:bb:cc:dd:ee:ff"}
+        with patch("netbox_kea.views._fetch_reservation_by_ip_for_leases", return_value=({}, False)), patch(
+            "netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}
+        ), patch.object(server, "get_client", return_value=MagicMock()):
+            _enrich_leases_with_badges([lease], server, 4, can_delete=False, can_change=False)
+        self.assertNotIn("edit_url", lease)
+        self.assertFalse(lease["can_change"])
+
+    def test_edit_url_set_when_can_change_true(self):
+        """edit_url must be set on leases when can_change=True."""
+        from unittest.mock import MagicMock
+
+        from netbox_kea.views import _enrich_leases_with_badges
+
+        server = self.server
+        lease = {"ip_address": "10.0.0.1", "hw_address": "aa:bb:cc:dd:ee:ff"}
+        with patch("netbox_kea.views._fetch_reservation_by_ip_for_leases", return_value=({}, False)), patch(
+            "netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}
+        ), patch.object(server, "get_client", return_value=MagicMock()):
+            _enrich_leases_with_badges([lease], server, 4, can_delete=False, can_change=True)
+        self.assertIn("edit_url", lease)
+        self.assertTrue(lease["can_change"])

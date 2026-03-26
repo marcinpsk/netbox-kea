@@ -140,18 +140,24 @@ class Server(NetBoxModel):
             except KeaException as e:
                 logger.exception("DHCPv6 connectivity check failed during Server.clean()")
                 raise ValidationError({"dhcp6": "Unable to reach the Kea DHCPv6 service."}) from e
-            except (requests.exceptions.RequestException, json.JSONDecodeError, ValueError) as e:
-                logger.exception("Unexpected error during DHCPv6 connectivity check")
+            except json.JSONDecodeError as e:
+                logger.exception("Malformed response during DHCPv6 connectivity check")
                 raise ValidationError({"dhcp6": "An internal error occurred."}) from e
+            except (requests.exceptions.RequestException, ValueError) as e:
+                logger.exception("Unexpected error during DHCPv6 connectivity check")
+                raise ValidationError({"dhcp6": "Unable to reach the Kea DHCPv6 service."}) from e
         if self.dhcp4:
             try:
                 self.get_client(version=4).command("version-get", service=["dhcp4"])
             except KeaException as e:
                 logger.exception("DHCPv4 connectivity check failed during Server.clean()")
                 raise ValidationError({"dhcp4": "Unable to reach the Kea DHCPv4 service."}) from e
-            except (requests.exceptions.RequestException, json.JSONDecodeError, ValueError) as e:
-                logger.exception("Unexpected error during DHCPv4 connectivity check")
+            except json.JSONDecodeError as e:
+                logger.exception("Malformed response during DHCPv4 connectivity check")
                 raise ValidationError({"dhcp4": "An internal error occurred."}) from e
+            except (requests.exceptions.RequestException, ValueError) as e:
+                logger.exception("Unexpected error during DHCPv4 connectivity check")
+                raise ValidationError({"dhcp4": "Unable to reach the Kea DHCPv4 service."}) from e
 
     def to_objectchange(self, action: str) -> None:
         """Censor password in NetBox change log entries."""
@@ -163,8 +169,6 @@ class Server(NetBoxModel):
             prechange_data["password"] = CENSOR_TOKEN
 
         if (post_data := objectchange.postchange_data) and (post_password := post_data.get("password")):
-            post_data["password"] = (
-                CENSOR_TOKEN_CHANGED if post_password != original_pre_password else CENSOR_TOKEN
-            )
+            post_data["password"] = CENSOR_TOKEN_CHANGED if post_password != original_pre_password else CENSOR_TOKEN
 
         return objectchange
