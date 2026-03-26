@@ -690,7 +690,9 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
 
             # Enrich leases with reservation badges + NetBox IPAM status.
             # Extracted helper so combined views get the same treatment.
-            _enrich_leases_with_badges(leases, instance, self.dhcp_version, can_delete=can_delete, can_change=can_change)
+            _enrich_leases_with_badges(
+                leases, instance, self.dhcp_version, can_delete=can_delete, can_change=can_change
+            )
 
             table = self.get_table(leases, request)
 
@@ -1524,14 +1526,23 @@ class BaseServerSharedNetworkEditView(_KeaChangeMixin, ConditionalLoginRequiredM
             [s.strip() for s in cd["relay_addresses"].split(",") if s.strip()] if cd["relay_addresses"] else []
         )
 
-        options: list[dict] = []
+        # Preserve option-data entries that are not DNS/NTP — we only manage those
+        # two via the form and must not silently drop unrelated options on save.
+        client = server.get_client(version=self.dhcp_version)
+        existing_network = self._fetch_network(client, network_name)
+        preserved_options: list[dict] = [
+            opt
+            for opt in existing_network.get("option-data", [])
+            if opt.get("name") not in ("domain-name-servers", "dns-servers", "ntp-servers", "sntp-servers")
+        ]
+
+        options: list[dict] = list(preserved_options)
         if cd.get("dns_servers"):
             options.append({"name": "domain-name-servers", "data": cd["dns_servers"]})
         if cd.get("ntp_servers"):
             options.append({"name": "ntp-servers", "data": cd["ntp_servers"]})
 
         try:
-            client = server.get_client(version=self.dhcp_version)
             client.network_update(
                 version=self.dhcp_version,
                 name=network_name,
@@ -2138,6 +2149,23 @@ class ServerReservation4EditView(_KeaChangeMixin, generic.ObjectView):
                         messages.warning(request, "Reservation updated, but NetBox IPAM sync failed.")
                 return redirect(return_url)
             except PartialPersistError:
+                # Change is live but config-write failed — run all success-path side effects.
+                _add_reservation_journal(server, request.user, "updated", reservation)
+                reservation_updated.send_robust(
+                    sender=None,
+                    server=server,
+                    reservation=reservation,
+                    dhcp_version=4,
+                    request=request,
+                )
+                if cd.get("sync_to_netbox"):
+                    try:
+                        _, created = sync_reservation_to_netbox(reservation)
+                        msg = "created" if created else "updated"
+                        messages.info(request, f"NetBox IPAddress {cd['ip_address']} {msg}.")
+                    except Exception:
+                        logger.exception("Failed to sync DHCPv4 reservation %s to NetBox", cd.get("ip_address"))
+                        messages.warning(request, "Reservation updated, but NetBox IPAM sync failed.")
                 messages.warning(request, "Change applied but may not survive a Kea restart (config-write failed).")
                 return redirect(return_url)
             except KeaException as exc:
@@ -2851,13 +2879,13 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
         # Lease lifetimes
         if subnet.get("valid-lft"):
             initial["valid_lft"] = subnet["valid-lft"]
-        if subnet.get("min-valid-lft"):
+        if subnet.get("min-valid-lft") is not None:
             initial["min_valid_lft"] = subnet["min-valid-lft"]
-        if subnet.get("max-valid-lft"):
+        if subnet.get("max-valid-lft") is not None:
             initial["max_valid_lft"] = subnet["max-valid-lft"]
-        if subnet.get("renew-timer"):
+        if subnet.get("renew-timer") is not None:
             initial["renew_timer"] = subnet["renew-timer"]
-        if subnet.get("rebind-timer"):
+        if subnet.get("rebind-timer") is not None:
             initial["rebind_timer"] = subnet["rebind-timer"]
 
         return initial
@@ -2937,7 +2965,7 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
         server = self.get_object(pk=pk)
         return_url = self._subnets_url(pk)
         client = server.get_client(version=self.dhcp_version)
-        network_choices, _, _ = self._get_network_data(client, subnet_id)
+        network_choices, server_current_network, _ = self._get_network_data(client, subnet_id)
         form = forms.SubnetEditForm(request.POST)
         form.fields["shared_network"].choices = network_choices
         if not form.is_valid():
@@ -2954,7 +2982,9 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
                 },
             )
         cd = form.cleaned_data
-        old_network = cd.get("current_network", "")
+        # Use the authoritative server-side value so a user cannot forge current_network
+        # via POST data to remove a subnet from a network it doesn't actually belong to.
+        old_network = server_current_network
         new_network = cd.get("shared_network", "")
 
         # Apply subnet config changes first — only move the network if the update succeeds.
@@ -3506,11 +3536,15 @@ def _enrich_leases_with_badges(
         ip = lease.get("ip_address", "")
         rsv = reservation_by_ip.get(ip)
         rsv_subnet_id = rsv.get("subnet-id") if isinstance(rsv, dict) else None
+        lease["is_reserved"] = rsv is not None
         if rsv and rsv_subnet_id is not None:
-            lease["reservation_url"] = reverse(
-                reservation_url_name,
-                args=[server.pk, rsv_subnet_id, ip],
-            )
+            if can_change:
+                lease["reservation_url"] = reverse(
+                    reservation_url_name,
+                    args=[server.pk, rsv_subnet_id, ip],
+                )
+            else:
+                lease["reservation_url"] = None
             lease["create_reservation_url"] = None
             # Stale MAC detection: lease MAC ≠ reservation MAC → device mismatch.
             lease_hw = (lease.get("hw_address") or "").lower()
@@ -3534,30 +3568,33 @@ def _enrich_leases_with_badges(
             lease["stale_lease_mac"] = ""
             lease["reservation_mac"] = ""
             lease["delete_lease_url"] = ""
-            base_add = reverse(add_url_name, args=[server.pk])
-            if version == 6:
-                params = {
-                    k: v
-                    for k, v in {
-                        "subnet_id": lease.get("subnet_id", ""),
-                        "ip_addresses": ip,
-                        "hostname": lease.get("hostname", ""),
-                    }.items()
-                    if v
-                }
+            if can_change:
+                base_add = reverse(add_url_name, args=[server.pk])
+                if version == 6:
+                    params = {
+                        k: v
+                        for k, v in {
+                            "subnet_id": lease.get("subnet_id", ""),
+                            "ip_addresses": ip,
+                            "hostname": lease.get("hostname", ""),
+                        }.items()
+                        if v
+                    }
+                else:
+                    params = {
+                        k: v
+                        for k, v in {
+                            "subnet_id": lease.get("subnet_id", ""),
+                            "ip_address": ip,
+                            "identifier_type": "hw-address",
+                            "identifier": lease.get("hw_address", ""),
+                            "hostname": lease.get("hostname", ""),
+                        }.items()
+                        if v
+                    }
+                lease["create_reservation_url"] = f"{base_add}?{_urlencode(params)}" if params else base_add
             else:
-                params = {
-                    k: v
-                    for k, v in {
-                        "subnet_id": lease.get("subnet_id", ""),
-                        "ip_address": ip,
-                        "identifier_type": "hw-address",
-                        "identifier": lease.get("hw_address", ""),
-                        "hostname": lease.get("hostname", ""),
-                    }.items()
-                    if v
-                }
-            lease["create_reservation_url"] = f"{base_add}?{_urlencode(params)}" if params else base_add
+                lease["create_reservation_url"] = None
 
     sync_url = reverse(f"plugins:netbox_kea:server_lease{version}_sync", args=[server.pk])
     edit_url_name = f"plugins:netbox_kea:server_lease{version}_edit"
@@ -4117,7 +4154,9 @@ class _CombinedLeasesView(_CombinedViewMixin):
             if server_leases:
                 can_delete = request.user.has_perm("netbox_kea.bulk_delete_lease_from_server", server)
                 can_change = request.user.has_perm("netbox_kea.change_server", server)
-                _enrich_leases_with_badges(server_leases, server, self.dhcp_version, can_delete=can_delete, can_change=can_change)
+                _enrich_leases_with_badges(
+                    server_leases, server, self.dhcp_version, can_delete=can_delete, can_change=can_change
+                )
 
         table = table_cls(all_leases, user=request.user)
         table.configure(request)

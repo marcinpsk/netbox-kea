@@ -479,7 +479,7 @@ class KeaClient:
 
         try:
             self.command("config-write", service=[service])
-        except KeaException as exc:
+        except (KeaException, requests.RequestException, ValueError) as exc:
             logger.warning("config-write failed for service %s — change is live but not persisted to disk", service)
             raise PartialPersistError(service, exc) from exc
 
@@ -664,7 +664,7 @@ class KeaClient:
                 raise KeaConfigTestError(service, exc) from exc
         try:
             self.command("config-write", service=[service], arguments=config)
-        except KeaException as exc:
+        except (KeaException, requests.RequestException, ValueError) as exc:
             logger.warning("config-write failed for service %s — change not persisted to disk", service)
             raise PartialPersistError(service, exc) from exc
 
@@ -700,7 +700,7 @@ class KeaClient:
                 raise KeaConfigTestError(service, exc) from exc
         try:
             self.command("config-write", service=[service], arguments=config)
-        except KeaException as exc:
+        except (KeaException, requests.RequestException, ValueError) as exc:
             logger.warning("config-write failed for service %s — change not persisted to disk", service)
             raise PartialPersistError(service, exc) from exc
 
@@ -752,7 +752,7 @@ class KeaClient:
                 raise KeaConfigTestError(service, exc) from exc
         try:
             self.command("config-write", service=[service], arguments=config)
-        except KeaException as exc:
+        except (KeaException, requests.RequestException, ValueError) as exc:
             logger.warning("config-write failed for service %s — change not persisted to disk", service)
             raise PartialPersistError(service, exc) from exc
 
@@ -788,7 +788,7 @@ class KeaClient:
                 raise KeaConfigTestError(service, exc) from exc
         try:
             self.command("config-write", service=[service], arguments=config)
-        except KeaException as exc:
+        except (KeaException, requests.RequestException, ValueError) as exc:
             logger.warning("config-write failed for service %s — change not persisted to disk", service)
             raise PartialPersistError(service, exc) from exc
 
@@ -1050,7 +1050,7 @@ class KeaClient:
         # Step 3: write to disk.
         try:
             self.command("config-write", service=[service])
-        except KeaException as exc:
+        except (KeaException, requests.RequestException, ValueError) as exc:
             logger.warning(
                 "config-write failed for service %s — change is live but not persisted to disk",
                 service,

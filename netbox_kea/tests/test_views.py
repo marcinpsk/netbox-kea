@@ -3999,7 +3999,7 @@ class TestServerSharedNetwork4EditView(_ViewTestBase):
 
     @patch("netbox_kea.models.KeaClient")
     def test_post_kea_exception_shows_error_and_redirects(self, MockKeaClient):
-        """POST that raises KeaException must redirect without 500."""
+        """POST that raises KeaException must redirect, show a generic error, and not leak raw Kea text."""
         from netbox_kea.kea import KeaException
 
         MockKeaClient.return_value.network_update.side_effect = KeaException(
@@ -4015,9 +4015,16 @@ class TestServerSharedNetwork4EditView(_ViewTestBase):
                 "dns_servers": "",
                 "ntp_servers": "",
             },
+            follow=True,
         )
-        self.assertIn(response.status_code, (200, 302))
+        self.assertEqual(response.status_code, 200)
         self._assert_no_none_pk_redirect(response)
+        messages_list = list(response.context["messages"])
+        self.assertTrue(
+            any(m.level == django_messages.ERROR for m in messages_list),
+            f"Expected an ERROR message; got: {[(m.level, m.message) for m in messages_list]}",
+        )
+        self.assertNotIn(b"config error", response.content)
 
     @patch("netbox_kea.models.KeaClient")
     def test_post_partial_persist_error_shows_warning(self, MockKeaClient):
@@ -4431,6 +4438,7 @@ class TestSubnetEditNetworkChoicesNoneArguments(_ViewTestBase):
         )
         # View should return to form (200) or redirect, but NOT call network methods.
         self.assertIn(response.status_code, (200, 302))
+        mock_client.subnet_update.assert_called()
         mock_client.network_subnet_add.assert_not_called()
         mock_client.network_subnet_del.assert_not_called()
 
@@ -4452,9 +4460,11 @@ class TestEnrichLeasesWithBadgesCanChange(_ViewTestBase):
 
         server = self.server
         lease = {"ip_address": "10.0.0.1", "hw_address": "aa:bb:cc:dd:ee:ff"}
-        with patch("netbox_kea.views._fetch_reservation_by_ip_for_leases", return_value=({}, False)), patch(
-            "netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}
-        ), patch.object(server, "get_client", return_value=MagicMock()):
+        with (
+            patch("netbox_kea.views._fetch_reservation_by_ip_for_leases", return_value=({}, False)),
+            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
+            patch.object(server, "get_client", return_value=MagicMock()),
+        ):
             _enrich_leases_with_badges([lease], server, 4, can_delete=False, can_change=False)
         self.assertNotIn("edit_url", lease)
         self.assertFalse(lease["can_change"])
@@ -4467,9 +4477,276 @@ class TestEnrichLeasesWithBadgesCanChange(_ViewTestBase):
 
         server = self.server
         lease = {"ip_address": "10.0.0.1", "hw_address": "aa:bb:cc:dd:ee:ff"}
-        with patch("netbox_kea.views._fetch_reservation_by_ip_for_leases", return_value=({}, False)), patch(
-            "netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}
-        ), patch.object(server, "get_client", return_value=MagicMock()):
+        with (
+            patch("netbox_kea.views._fetch_reservation_by_ip_for_leases", return_value=({}, False)),
+            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
+            patch.object(server, "get_client", return_value=MagicMock()),
+        ):
             _enrich_leases_with_badges([lease], server, 4, can_delete=False, can_change=True)
         self.assertIn("edit_url", lease)
         self.assertTrue(lease["can_change"])
+
+
+# ---------------------------------------------------------------------------
+# Tests for _enrich_leases_with_badges: is_reserved flag + reservation URLs
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestEnrichLeasesReservationFlags(_ViewTestBase):
+    """Tests that is_reserved, reservation_url and create_reservation_url are set correctly."""
+
+    def test_is_reserved_true_when_reservation_exists(self):
+        """is_reserved must be True when the IP has a reservation in Kea."""
+        from netbox_kea.views import _enrich_leases_with_badges
+
+        server = self.server
+        lease = {"ip_address": "10.0.0.5", "hw_address": "aa:bb:cc:dd:ee:ff"}
+        rsv = {"subnet-id": 1, "ip-address": "10.0.0.5", "hw-address": "aa:bb:cc:dd:ee:ff"}
+        with (
+            patch("netbox_kea.views._fetch_reservation_by_ip_for_leases", return_value=({"10.0.0.5": rsv}, True)),
+            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
+            patch.object(server, "get_client", return_value=MagicMock()),
+        ):
+            _enrich_leases_with_badges([lease], server, 4, can_delete=False, can_change=False)
+        self.assertTrue(lease["is_reserved"])
+
+    def test_is_reserved_false_when_no_reservation(self):
+        """is_reserved must be False when the IP has no reservation."""
+        from netbox_kea.views import _enrich_leases_with_badges
+
+        server = self.server
+        lease = {"ip_address": "10.0.0.99", "hw_address": "bb:bb:bb:bb:bb:bb"}
+        with (
+            patch("netbox_kea.views._fetch_reservation_by_ip_for_leases", return_value=({}, True)),
+            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
+            patch.object(server, "get_client", return_value=MagicMock()),
+        ):
+            _enrich_leases_with_badges([lease], server, 4, can_delete=False, can_change=False)
+        self.assertFalse(lease["is_reserved"])
+
+    def test_reservation_url_none_for_read_only_when_reservation_exists(self):
+        """reservation_url must be None when can_change=False even if a reservation exists."""
+        from netbox_kea.views import _enrich_leases_with_badges
+
+        server = self.server
+        lease = {"ip_address": "10.0.0.5", "hw_address": "aa:bb:cc:dd:ee:ff"}
+        rsv = {"subnet-id": 1, "ip-address": "10.0.0.5", "hw-address": "aa:bb:cc:dd:ee:ff"}
+        with (
+            patch("netbox_kea.views._fetch_reservation_by_ip_for_leases", return_value=({"10.0.0.5": rsv}, True)),
+            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
+            patch.object(server, "get_client", return_value=MagicMock()),
+        ):
+            _enrich_leases_with_badges([lease], server, 4, can_delete=False, can_change=False)
+        self.assertIsNone(lease["reservation_url"])
+        self.assertTrue(lease["is_reserved"])
+
+    def test_reservation_url_set_when_can_change_true(self):
+        """reservation_url must be a non-empty string when can_change=True and reservation exists."""
+        from netbox_kea.views import _enrich_leases_with_badges
+
+        server = self.server
+        lease = {"ip_address": "10.0.0.5", "hw_address": "aa:bb:cc:dd:ee:ff"}
+        rsv = {"subnet-id": 1, "ip-address": "10.0.0.5", "hw-address": "aa:bb:cc:dd:ee:ff"}
+        with (
+            patch("netbox_kea.views._fetch_reservation_by_ip_for_leases", return_value=({"10.0.0.5": rsv}, True)),
+            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
+            patch.object(server, "get_client", return_value=MagicMock()),
+        ):
+            _enrich_leases_with_badges([lease], server, 4, can_delete=False, can_change=True)
+        self.assertIsNotNone(lease["reservation_url"])
+        self.assertTrue(lease["reservation_url"])
+
+    def test_create_reservation_url_none_when_can_change_false(self):
+        """create_reservation_url must be None when can_change=False and no reservation."""
+        from netbox_kea.views import _enrich_leases_with_badges
+
+        server = self.server
+        lease = {"ip_address": "10.0.0.99", "hw_address": "cc:cc:cc:cc:cc:cc"}
+        with (
+            patch("netbox_kea.views._fetch_reservation_by_ip_for_leases", return_value=({}, True)),
+            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
+            patch.object(server, "get_client", return_value=MagicMock()),
+        ):
+            _enrich_leases_with_badges([lease], server, 4, can_delete=False, can_change=False)
+        self.assertIsNone(lease.get("create_reservation_url"))
+
+    def test_create_reservation_url_set_when_can_change_true(self):
+        """create_reservation_url must be set when can_change=True and no reservation."""
+        from netbox_kea.views import _enrich_leases_with_badges
+
+        server = self.server
+        lease = {"ip_address": "10.0.0.99", "hw_address": "cc:cc:cc:cc:cc:cc"}
+        with (
+            patch("netbox_kea.views._fetch_reservation_by_ip_for_leases", return_value=({}, True)),
+            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
+            patch.object(server, "get_client", return_value=MagicMock()),
+        ):
+            _enrich_leases_with_badges([lease], server, 4, can_delete=False, can_change=True)
+        self.assertIsNotNone(lease.get("create_reservation_url"))
+
+
+# ---------------------------------------------------------------------------
+# Tests for shared network POST — option-data preservation
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestSharedNetworkOptionDataPreservation(_ViewTestBase):
+    """Verify non-DNS/NTP option-data entries are preserved on shared network save."""
+
+    def _url(self, name="prod-net"):
+        return reverse("plugins:netbox_kea:server_shared_network4_edit", args=[self.server.pk, name])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_preserves_non_dns_options(self, MockKeaClient):
+        """network_update receives non-DNS/NTP option-data that was fetched from Kea."""
+        custom_option = {"name": "vendor-specific", "data": "deadbeef"}
+        MockKeaClient.return_value.command.return_value = [
+            {
+                "result": 0,
+                "arguments": {
+                    "Dhcp4": {
+                        "shared-networks": [
+                            {
+                                "name": "prod-net",
+                                "option-data": [
+                                    {"name": "domain-name-servers", "data": "8.8.8.8"},
+                                    custom_option,
+                                ],
+                                "subnet4": [],
+                            }
+                        ],
+                        "subnet4": [],
+                    }
+                },
+            }
+        ]
+        MockKeaClient.return_value.network_update.return_value = None
+        self.client.post(
+            self._url(),
+            {
+                "name": "prod-net",
+                "description": "",
+                "interface": "",
+                "relay_addresses": "",
+                "dns_servers": "1.1.1.1",
+                "ntp_servers": "",
+            },
+        )
+        call_kwargs = MockKeaClient.return_value.network_update.call_args
+        kwargs = call_kwargs.kwargs or call_kwargs[1]
+        options = kwargs.get("options", [])
+        option_names = [o["name"] for o in options]
+        # The custom non-DNS option must be preserved.
+        self.assertIn("vendor-specific", option_names)
+        # The new DNS from the form must also be present.
+        self.assertIn("domain-name-servers", option_names)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_replaces_dns_servers_not_duplicates(self, MockKeaClient):
+        """Old DNS option from Kea is dropped; only the form-supplied DNS value is written."""
+        MockKeaClient.return_value.command.return_value = [
+            {
+                "result": 0,
+                "arguments": {
+                    "Dhcp4": {
+                        "shared-networks": [
+                            {
+                                "name": "prod-net",
+                                "option-data": [{"name": "domain-name-servers", "data": "8.8.8.8"}],
+                                "subnet4": [],
+                            }
+                        ],
+                        "subnet4": [],
+                    }
+                },
+            }
+        ]
+        MockKeaClient.return_value.network_update.return_value = None
+        self.client.post(
+            self._url(),
+            {
+                "name": "prod-net",
+                "description": "",
+                "interface": "",
+                "relay_addresses": "",
+                "dns_servers": "1.1.1.1",
+                "ntp_servers": "",
+            },
+        )
+        call_kwargs = MockKeaClient.return_value.network_update.call_args
+        kwargs = call_kwargs.kwargs or call_kwargs[1]
+        options = kwargs.get("options", [])
+        dns_opts = [o for o in options if o["name"] == "domain-name-servers"]
+        # Only one DNS entry must be present (the new value, not the old one).
+        self.assertEqual(len(dns_opts), 1)
+        self.assertEqual(dns_opts[0]["data"], "1.1.1.1")
+
+
+# ---------------------------------------------------------------------------
+# Tests for renew/rebind timer zero round-trip (subnet edit GET)
+# ---------------------------------------------------------------------------
+
+
+_SUBNET4_GET_ZERO_TIMERS = [
+    {
+        "result": 0,
+        "arguments": {
+            "subnet4": [
+                {
+                    "id": 42,
+                    "subnet": "10.1.0.0/24",
+                    "renew-timer": 0,
+                    "rebind-timer": 0,
+                    "pools": [],
+                    "option-data": [],
+                }
+            ]
+        },
+    }
+]
+
+_CONFIG4_NO_NETWORKS_RESP = [
+    {"result": 0, "arguments": {"Dhcp4": {"shared-networks": [], "subnet4": []}}}
+]
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestSubnetEditZeroTimers(_ViewTestBase):
+    """Renew/rebind timer value of 0 must round-trip through subnet edit GET."""
+
+    def _url(self, subnet_id=42):
+        return reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, subnet_id])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_get_includes_zero_renew_timer_in_initial(self, MockKeaClient):
+        """GET for a subnet with renew-timer=0 must populate the form field with 0."""
+
+        def _cmd_side_effect(command, **_kwargs):
+            if "subnet4-get" in command:
+                return _SUBNET4_GET_ZERO_TIMERS
+            return _CONFIG4_NO_NETWORKS_RESP
+
+        MockKeaClient.return_value.command.side_effect = _cmd_side_effect
+        response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 200)
+        form = response.context.get("form")
+        if form is not None:
+            self.assertEqual(form.initial.get("renew_timer"), 0)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_get_includes_zero_rebind_timer_in_initial(self, MockKeaClient):
+        """GET for a subnet with rebind-timer=0 must populate the form field with 0."""
+
+        def _cmd_side_effect(command, **_kwargs):
+            if "subnet4-get" in command:
+                return _SUBNET4_GET_ZERO_TIMERS
+            return _CONFIG4_NO_NETWORKS_RESP
+
+        MockKeaClient.return_value.command.side_effect = _cmd_side_effect
+        response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 200)
+        form = response.context.get("form")
+        if form is not None:
+            self.assertEqual(form.initial.get("rebind_timer"), 0)

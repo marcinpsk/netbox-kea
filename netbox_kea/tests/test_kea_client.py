@@ -666,7 +666,7 @@ class TestPoolAdd(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_LIST_WITH_POOL_CMDS, _OK, _CONFIG_GET_RUNNING_RESP, _OK, _OK),
+            side_effect=_side_effects(_LIST_WITH_POOL_CMDS, _OK, _CONFIG_GET_RUNNING_RESP_V6, _OK, _OK),
         ) as mock_post:
             self.client.pool_add(version=6, subnet_id=2, pool="2001:db8::/64")
         cmds = self._cmds(mock_post)
@@ -783,7 +783,7 @@ class TestPoolDel(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_LIST_WITH_POOL_CMDS, _OK, _CONFIG_GET_RUNNING_RESP, _OK, _OK),
+            side_effect=_side_effects(_LIST_WITH_POOL_CMDS, _OK, _CONFIG_GET_RUNNING_RESP_V6, _OK, _OK),
         ) as mock_post:
             self.client.pool_del(version=6, subnet_id=2, pool="2001:db8::/64")
         cmds = self._cmds(mock_post)
@@ -899,7 +899,7 @@ class TestSubnetAdd(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_SUBNET6_LIST_RESP, _SUBNET6_ADD_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _OK),
+            side_effect=_side_effects(_SUBNET6_LIST_RESP, _SUBNET6_ADD_RESP, _CONFIG_GET_RUNNING_RESP_V6, _OK, _OK),
         ) as mock_post:
             self.client.subnet_add(version=6, subnet_cidr="2001:db8:99::/48")
         self.assertIn("subnet6-add", self._cmds(mock_post))
@@ -1072,13 +1072,13 @@ class TestSubnetAdd(TestCase):
             side_effect=_side_effects(
                 _SUBNET4_LIST_RESP,  # subnet4-list → ids 1, 2 → assigns id=3
                 duplicate_resp,  # first subnet4-add attempt → duplicate
-                _SUBNET4_ADD_RESP,  # second subnet4-add attempt (id=4) → success
+                _SUBNET4_ADD_RESP,  # second subnet4-add attempt (id=4) → success; Kea echoes id=10
                 _CONFIG_GET_RUNNING_RESP,  # config-get
                 _OK,  # config-test
                 _OK,  # config-write
             ),
         ) as mock_post:
-            self.client.subnet_add(version=4, subnet_cidr="10.99.0.0/24")
+            result = self.client.subnet_add(version=4, subnet_cidr="10.99.0.0/24")
         add_calls = [
             c.kwargs.get("json") or c[1]["json"]
             for c in mock_post.call_args_list
@@ -1087,13 +1087,15 @@ class TestSubnetAdd(TestCase):
         self.assertEqual(len(add_calls), 2)
         self.assertEqual(add_calls[0]["arguments"]["subnet4"][0]["id"], 3)
         self.assertEqual(add_calls[1]["arguments"]["subnet4"][0]["id"], 4)
+        # Kea echoes back id=10 in _SUBNET4_ADD_RESP — that is the authoritative return value.
+        self.assertEqual(result, 10)
 
     def test_subnet_add_v6_uses_dns_servers_option_name(self):
         """For DHCPv6, dns_servers option name must be 'dns-servers' not 'domain-name-servers'."""
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_SUBNET6_LIST_RESP, _SUBNET6_ADD_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _OK),
+            side_effect=_side_effects(_SUBNET6_LIST_RESP, _SUBNET6_ADD_RESP, _CONFIG_GET_RUNNING_RESP_V6, _OK, _OK),
         ) as mock_post:
             self.client.subnet_add(
                 version=6,
@@ -1137,7 +1139,7 @@ class TestSubnetDel(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_SUBNET_DEL_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _OK),
+            side_effect=_side_effects(_SUBNET_DEL_RESP, _CONFIG_GET_RUNNING_RESP_V6, _OK, _OK),
         ) as mock_post:
             self.client.subnet_del(version=6, subnet_id=7)
         self.assertIn("subnet6-del", self._cmds(mock_post))
@@ -1775,10 +1777,39 @@ class TestPersistConfig(TestCase):
         write_payload = next(p for p in self._payloads(mock_post) if p["command"] == "config-write")
         self.assertNotIn("arguments", write_payload)
 
+    def test_config_write_requests_exception_raises_partial_persist_error(self):
+        """requests.RequestException from config-write is wrapped in PartialPersistError."""
+        from netbox_kea.kea import PartialPersistError
 
-# ---------------------------------------------------------------------------
-# TestSubnetOptionUpdate
-# ---------------------------------------------------------------------------
+        import requests as req
+
+        def _side_effect(url, **kwargs):
+            cmd = kwargs.get("json", {}).get("command", "")
+            if cmd == "config-write":
+                raise req.RequestException("connection reset")
+            return _mock_http_response(
+                _CONFIG_GET_RUNNING_RESP if cmd == "config-get" else _CONFIG_TEST_OK_RESP
+            )
+
+        with patch.object(self.client._session, "post", side_effect=_side_effect):
+            with self.assertRaises(PartialPersistError):
+                self.client._persist_config("dhcp4")
+
+    def test_config_write_value_error_raises_partial_persist_error(self):
+        """ValueError from config-write is wrapped in PartialPersistError."""
+        from netbox_kea.kea import PartialPersistError
+
+        def _side_effect(url, **kwargs):
+            cmd = kwargs.get("json", {}).get("command", "")
+            if cmd == "config-write":
+                raise ValueError("bad JSON")
+            return _mock_http_response(
+                _CONFIG_GET_RUNNING_RESP if cmd == "config-get" else _CONFIG_TEST_OK_RESP
+            )
+
+        with patch.object(self.client._session, "post", side_effect=_side_effect):
+            with self.assertRaises(PartialPersistError):
+                self.client._persist_config("dhcp4")
 
 # Minimal config-get response containing one v4 subnet with one existing option
 _CONFIG_GET_WITH_SUBNET = [
@@ -2764,7 +2795,13 @@ _CONFIG_GET_WITH_SHARED_NETWORK = [
                         "description": "Old description",
                         "option-data": [],
                         "subnet4": [],
-                    }
+                    },
+                    {
+                        "name": "other-net",
+                        "description": "Unrelated network",
+                        "option-data": [],
+                        "subnet4": [],
+                    },
                 ],
                 "subnet4": [],
             }
@@ -2826,12 +2863,13 @@ class TestNetworkUpdate(TestCase):
         ) as mock_post:
             self.client.network_update(version=4, name="prod-net", description="New description")
         payloads = self._payloads(mock_post)
-        test_payload = next(p for p in payloads if p["command"] == "config-test")
-        network = test_payload["arguments"]["Dhcp4"]["shared-networks"][0]
-        self.assertEqual(network["description"], "New description")
-        set_payload = next(p for p in payloads if p["command"] == "config-set")
-        set_network = set_payload["arguments"]["Dhcp4"]["shared-networks"][0]
-        self.assertEqual(set_network["description"], "New description")
+        for cmd in ("config-test", "config-set"):
+            payload = next(p for p in payloads if p["command"] == cmd)
+            networks = payload["arguments"]["Dhcp4"]["shared-networks"]
+            target = next(n for n in networks if n["name"] == "prod-net")
+            other = next(n for n in networks if n["name"] == "other-net")
+            self.assertEqual(target["description"], "New description")
+            self.assertNotEqual(other.get("description"), "New description")
 
     def test_updates_relay_addresses(self):
         """relay_addresses list is stored under network['relay']['ip-addresses'] in both config-test and config-set."""
@@ -2847,12 +2885,13 @@ class TestNetworkUpdate(TestCase):
         ) as mock_post:
             self.client.network_update(version=4, name="prod-net", relay_addresses=["10.0.0.1"])
         payloads = self._payloads(mock_post)
-        test_payload = next(p for p in payloads if p["command"] == "config-test")
-        network = test_payload["arguments"]["Dhcp4"]["shared-networks"][0]
-        self.assertEqual(network["relay"]["ip-addresses"], ["10.0.0.1"])
-        set_payload = next(p for p in payloads if p["command"] == "config-set")
-        set_network = set_payload["arguments"]["Dhcp4"]["shared-networks"][0]
-        self.assertEqual(set_network["relay"]["ip-addresses"], ["10.0.0.1"])
+        for cmd in ("config-test", "config-set"):
+            payload = next(p for p in payloads if p["command"] == cmd)
+            networks = payload["arguments"]["Dhcp4"]["shared-networks"]
+            target = next(n for n in networks if n["name"] == "prod-net")
+            other = next(n for n in networks if n["name"] == "other-net")
+            self.assertEqual(target["relay"]["ip-addresses"], ["10.0.0.1"])
+            self.assertIsNone(other.get("relay"))
 
     def test_raises_kea_exception_when_network_not_found(self):
         """KeaException raised if the named shared network is absent from the config."""
@@ -2910,9 +2949,13 @@ class TestNetworkUpdate(TestCase):
         ) as mock_post:
             self.client.network_update(version=4, name="prod-net", interface="eth1")
         payloads = self._payloads(mock_post)
-        set_payload = next(p for p in payloads if p["command"] == "config-set")
-        network = set_payload["arguments"]["Dhcp4"]["shared-networks"][0]
-        self.assertEqual(network["interface"], "eth1")
+        for cmd in ("config-test", "config-set"):
+            payload = next(p for p in payloads if p["command"] == cmd)
+            networks = payload["arguments"]["Dhcp4"]["shared-networks"]
+            target = next(n for n in networks if n["name"] == "prod-net")
+            other = next(n for n in networks if n["name"] == "other-net")
+            self.assertEqual(target["interface"], "eth1")
+            self.assertNotEqual(other.get("interface"), "eth1")
 
     def test_clears_relay_addresses_when_empty_list_provided(self):
         """Passing an empty relay_addresses list removes the 'relay' key from the network."""
@@ -2927,7 +2970,13 @@ class TestNetworkUpdate(TestCase):
                                 "relay": {"ip-addresses": ["10.0.0.1"]},
                                 "option-data": [],
                                 "subnet4": [],
-                            }
+                            },
+                            {
+                                "name": "other-net",
+                                "relay": {"ip-addresses": ["10.0.0.2"]},
+                                "option-data": [],
+                                "subnet4": [],
+                            },
                         ],
                         "subnet4": [],
                     }
@@ -2946,12 +2995,17 @@ class TestNetworkUpdate(TestCase):
         ) as mock_post:
             self.client.network_update(version=4, name="prod-net", relay_addresses=[])
         payloads = self._payloads(mock_post)
-        set_payload = next(p for p in payloads if p["command"] == "config-set")
-        network = set_payload["arguments"]["Dhcp4"]["shared-networks"][0]
-        self.assertNotIn("relay", network)
+        for cmd in ("config-test", "config-set"):
+            payload = next(p for p in payloads if p["command"] == cmd)
+            networks = payload["arguments"]["Dhcp4"]["shared-networks"]
+            target = next(n for n in networks if n["name"] == "prod-net")
+            other = next(n for n in networks if n["name"] == "other-net")
+            self.assertNotIn("relay", target)
+            # The other network's relay must be untouched.
+            self.assertIn("relay", other)
 
     def test_updates_options_in_payload(self):
-        """options list is written to 'option-data' on the network in config-set payload."""
+        """options list is written to 'option-data' on the network in config-test and config-set payloads."""
         new_options = [{"name": "domain-name-servers", "data": "8.8.8.8"}]
         with patch.object(
             self.client._session,
@@ -2965,9 +3019,14 @@ class TestNetworkUpdate(TestCase):
         ) as mock_post:
             self.client.network_update(version=4, name="prod-net", options=new_options)
         payloads = self._payloads(mock_post)
-        set_payload = next(p for p in payloads if p["command"] == "config-set")
-        network = set_payload["arguments"]["Dhcp4"]["shared-networks"][0]
-        self.assertEqual(network["option-data"], new_options)
+        for cmd in ("config-test", "config-set"):
+            payload = next(p for p in payloads if p["command"] == cmd)
+            networks = payload["arguments"]["Dhcp4"]["shared-networks"]
+            target = next(n for n in networks if n["name"] == "prod-net")
+            other = next(n for n in networks if n["name"] == "other-net")
+            self.assertEqual(target["option-data"], new_options)
+            # The other network's option-data must be untouched.
+            self.assertNotEqual(other.get("option-data"), new_options)
 
     def test_config_test_failure_raises_kea_config_test_error(self):
         """Non-2 config-test failure raises KeaConfigTestError (not PartialPersistError)."""
