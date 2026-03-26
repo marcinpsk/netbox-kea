@@ -363,14 +363,20 @@ class TestServerToObjectchangePasswordCensoring(SimpleTestCase):
         self.assertEqual(result.prechange_data["password"], CENSOR_TOKEN)
 
     def test_no_prechange_data_does_not_raise(self):
-        """to_objectchange handles None / empty prechange_data without raising."""
-        server = Server(name="test-server", server_url="http://kea:8000", dhcp4=True)
+        """to_objectchange handles None prechange_data without raising and masks postchange password."""
+        from netbox.constants import CENSOR_TOKEN_CHANGED
+
+        server = Server(name="test-server", server_url="http://kea:8000", dhcp4=True, password="secret")
         objectchange = self._make_objectchange(pre_password=None, post_password="secret")
-        objectchange.prechange_data = {}
+        objectchange.prechange_data = None
         with patch.object(Server.__bases__[0], "to_objectchange", return_value=objectchange):
             result = server.to_objectchange("create")
-        # Should not crash; no prechange password to mask
-        self.assertEqual(result.prechange_data, {})
+        # Should not crash; None prechange is preserved (or converted to empty dict)
+        self.assertIn(result.prechange_data, (None, {}))
+        # postchange_data password must be masked (changed from original "secret")
+        masked = result.postchange_data.get("password")
+        self.assertNotEqual(masked, "secret", "Password must be masked in postchange_data")
+        self.assertEqual(masked, CENSOR_TOKEN_CHANGED)
 
 
 # ---------------------------------------------------------------------------

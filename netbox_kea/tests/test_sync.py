@@ -963,20 +963,31 @@ class TestSyncMacAddressErrors(TestCase):
         except ImportError:
             self.skipTest("MACAddress not available in this NetBox version")
 
+        try:
+            from netaddr import EUI  # noqa: F401
+        except ImportError:
+            self.skipTest("netaddr not available")
+
         from netbox_kea.sync import _sync_mac_address
 
-        with patch.object(MACAddress.objects, "get_or_create", side_effect=ProgrammingError("boom")):
+        with patch.object(MACAddress.objects, "get_or_create", side_effect=ProgrammingError("boom")) as mock_goc:
             _sync_mac_address("aa:bb:cc:dd:ee:ff", hostname="test-host")
-        # If we reach here without exception the error was swallowed correctly.
+        # Verify get_or_create was actually invoked (not bypassed by an earlier error)
+        mock_goc.assert_called()
 
     def test_parse_error_is_caught_and_logged(self):
         """Invalid MAC string (caught by netaddr) does not propagate an exception."""
-        from netbox_kea.sync import _sync_mac_address
-
         try:
             from dcim.models import MACAddress  # noqa: F401
         except ImportError:
             self.skipTest("MACAddress not available in this NetBox version")
+
+        try:
+            from netaddr import EUI  # noqa: F401
+        except ImportError:
+            self.skipTest("netaddr not available")
+
+        from netbox_kea.sync import _sync_mac_address
 
         # Passing an obviously invalid MAC address exercises the except Exception path.
         _sync_mac_address("not-a-mac", hostname="test-host")

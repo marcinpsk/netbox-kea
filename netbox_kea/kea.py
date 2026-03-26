@@ -635,6 +635,7 @@ class KeaClient:
 
         resp = self.command("config-get", service=[service])
         config = resp[0]["arguments"]
+        config.pop("hash", None)
 
         subnet = None
         for s in config.get(dhcp_key, {}).get(subnet_key, []):
@@ -662,8 +663,9 @@ class KeaClient:
             else:
                 logger.warning("config-test failed for service %s — aborting config-write", service)
                 raise KeaConfigTestError(service, exc) from exc
+        self.command("config-set", service=[service], arguments=config)
         try:
-            self.command("config-write", service=[service], arguments=config)
+            self.command("config-write", service=[service])
         except (KeaException, requests.RequestException, ValueError) as exc:
             logger.warning("config-write failed for service %s — change not persisted to disk", service)
             raise PartialPersistError(service, exc) from exc
@@ -688,6 +690,7 @@ class KeaClient:
 
         resp = self.command("config-get", service=[service])
         config = resp[0]["arguments"]
+        config.pop("hash", None)
         config.setdefault(dhcp_key, {})["option-data"] = options
 
         try:
@@ -698,8 +701,9 @@ class KeaClient:
             else:
                 logger.warning("config-test failed for service %s — aborting config-write", service)
                 raise KeaConfigTestError(service, exc) from exc
+        self.command("config-set", service=[service], arguments=config)
         try:
-            self.command("config-write", service=[service], arguments=config)
+            self.command("config-write", service=[service])
         except (KeaException, requests.RequestException, ValueError) as exc:
             logger.warning("config-write failed for service %s — change not persisted to disk", service)
             raise PartialPersistError(service, exc) from exc
@@ -740,6 +744,7 @@ class KeaClient:
         dhcp_key = f"Dhcp{version}"
         resp = self.command("config-get", service=[service])
         config = copy.deepcopy(resp[0]["arguments"])
+        config.pop("hash", None)
         defs = config.setdefault(dhcp_key, {}).setdefault("option-def", [])
         defs.append(option_def)
         try:
@@ -750,8 +755,9 @@ class KeaClient:
             else:
                 logger.warning("config-test failed for service %s — aborting config-write", service)
                 raise KeaConfigTestError(service, exc) from exc
+        self.command("config-set", service=[service], arguments=config)
         try:
-            self.command("config-write", service=[service], arguments=config)
+            self.command("config-write", service=[service])
         except (KeaException, requests.RequestException, ValueError) as exc:
             logger.warning("config-write failed for service %s — change not persisted to disk", service)
             raise PartialPersistError(service, exc) from exc
@@ -773,6 +779,7 @@ class KeaClient:
         dhcp_key = f"Dhcp{version}"
         resp = self.command("config-get", service=[service])
         config = copy.deepcopy(resp[0]["arguments"])
+        config.pop("hash", None)
         defs = config.get(dhcp_key, {}).get("option-def", [])
         new_defs = [d for d in defs if not (d.get("code") == code and d.get("space") == space)]
         if len(new_defs) == len(defs):
@@ -786,8 +793,9 @@ class KeaClient:
             else:
                 logger.warning("config-test failed for service %s — aborting config-write", service)
                 raise KeaConfigTestError(service, exc) from exc
+        self.command("config-set", service=[service], arguments=config)
         try:
-            self.command("config-write", service=[service], arguments=config)
+            self.command("config-write", service=[service])
         except (KeaException, requests.RequestException, ValueError) as exc:
             logger.warning("config-write failed for service %s — change not persisted to disk", service)
             raise PartialPersistError(service, exc) from exc

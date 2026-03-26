@@ -1802,7 +1802,6 @@ class TestPersistConfig(TestCase):
 
     def test_config_test_failure_raises_kea_config_test_error(self):
         """When config-test (called with proper args) returns a non-zero, non-2 result, KeaConfigTestError is raised."""
-        from netbox_kea.kea import KeaConfigTestError
 
         with patch.object(
             self.client._session,
@@ -1825,7 +1824,6 @@ class TestPersistConfig(TestCase):
 
     def test_config_write_failure_raises_partial_persist_error(self):
         """When config-write fails, PartialPersistError is raised."""
-        from netbox_kea.kea import PartialPersistError
 
         with patch.object(
             self.client._session,
@@ -1871,8 +1869,6 @@ class TestPersistConfig(TestCase):
         """requests.RequestException from config-write is wrapped in PartialPersistError."""
         import requests as req
 
-        from netbox_kea.kea import PartialPersistError
-
         def _side_effect(url, **kwargs):
             cmd = kwargs.get("json", {}).get("command", "")
             if cmd == "config-write":
@@ -1885,7 +1881,6 @@ class TestPersistConfig(TestCase):
 
     def test_config_write_value_error_raises_partial_persist_error(self):
         """ValueError from config-write is wrapped in PartialPersistError."""
-        from netbox_kea.kea import PartialPersistError
 
         def _side_effect(url, **kwargs):
             cmd = kwargs.get("json", {}).get("command", "")
@@ -1951,12 +1946,13 @@ class TestSubnetOptionUpdate(TestCase):
             side_effect=_side_effects(
                 _CONFIG_GET_WITH_SUBNET,
                 _CONFIG_TEST_OK_RESP,
+                _CONFIG_SET_OK_RESP,
                 _CONFIG_WRITE_RESP,
             ),
         ) as mock_post:
             self.client.subnet_update_options(version=4, subnet_id=1, options=[])
         cmds = self._cmds(mock_post)
-        self.assertEqual(cmds, ["config-get", "config-test", "config-write"])
+        self.assertEqual(cmds, ["config-get", "config-test", "config-set", "config-write"])
 
     def test_replaces_option_data_in_config_write_payload(self):
         """config-write is called with updated option-data replacing the old list."""
@@ -1967,6 +1963,7 @@ class TestSubnetOptionUpdate(TestCase):
             side_effect=_side_effects(
                 _CONFIG_GET_WITH_SUBNET,
                 _CONFIG_TEST_OK_RESP,
+                _CONFIG_SET_OK_RESP,
                 _CONFIG_WRITE_RESP,
             ),
         ) as mock_post:
@@ -1985,6 +1982,7 @@ class TestSubnetOptionUpdate(TestCase):
             side_effect=_side_effects(
                 _CONFIG_GET_WITH_SUBNET,
                 _CONFIG_TEST_OK_RESP,
+                _CONFIG_SET_OK_RESP,
                 _CONFIG_WRITE_RESP,
             ),
         ) as mock_post:
@@ -2012,6 +2010,7 @@ class TestSubnetOptionUpdate(TestCase):
             side_effect=_side_effects(
                 _CONFIG_GET_WITH_SUBNET,
                 _CONFIG_TEST_OK_RESP,
+                _CONFIG_SET_OK_RESP,
                 [{"result": 1, "text": "write failed"}],
             ),
         ):
@@ -2026,6 +2025,7 @@ class TestSubnetOptionUpdate(TestCase):
             side_effect=_side_effects(
                 _CONFIG_GET_WITH_SUBNET,
                 _CONFIG_TEST_NOT_SUPPORTED_RESP,
+                _CONFIG_SET_OK_RESP,
                 _CONFIG_WRITE_RESP,
             ),
         ) as mock_post:
@@ -2051,7 +2051,7 @@ class TestSubnetOptionUpdate(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(config_get_v6, _CONFIG_TEST_OK_RESP, _CONFIG_WRITE_RESP),
+            side_effect=_side_effects(config_get_v6, _CONFIG_TEST_OK_RESP, _CONFIG_SET_OK_RESP, _CONFIG_WRITE_RESP),
         ) as mock_post:
             self.client.subnet_update_options(version=6, subnet_id=10, options=[])
         payloads = self._payloads(mock_post)
@@ -2065,14 +2065,15 @@ class TestSubnetOptionUpdate(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_CONFIG_GET_WITH_SUBNET, _CONFIG_TEST_OK_RESP, _CONFIG_WRITE_RESP),
+            side_effect=_side_effects(
+                _CONFIG_GET_WITH_SUBNET, _CONFIG_TEST_OK_RESP, _CONFIG_SET_OK_RESP, _CONFIG_WRITE_RESP
+            ),
         ):
             result = self.client.subnet_update_options(version=4, subnet_id=1, options=[])
         self.assertIsNone(result)
 
     def test_raises_kea_config_test_error_on_config_test_failure(self):
         """subnet_update_options raises KeaConfigTestError when config-test returns result=1."""
-        from netbox_kea.kea import KeaConfigTestError
 
         with patch.object(
             self.client._session,
@@ -2104,7 +2105,9 @@ class TestSubnetOptionUpdate(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(config_with_shared_net, _CONFIG_TEST_OK_RESP, _CONFIG_WRITE_RESP),
+            side_effect=_side_effects(
+                config_with_shared_net, _CONFIG_TEST_OK_RESP, _CONFIG_SET_OK_RESP, _CONFIG_WRITE_RESP
+            ),
         ) as mock_post:
             self.client.subnet_update_options(version=4, subnet_id=1, options=new_options)
         payloads = self._payloads(mock_post)
@@ -2153,11 +2156,12 @@ class TestServerOptionsUpdate(TestCase):
             side_effect=_side_effects(
                 _SERVER_CONFIG_GET_V4,
                 _CONFIG_TEST_OK_RESP,
+                _CONFIG_SET_OK_RESP,
                 _CONFIG_WRITE_RESP,
             ),
         ) as mock_post:
             self.client.server_update_options(version=4, options=[])
-        self.assertEqual(self._cmds(mock_post), ["config-get", "config-test", "config-write"])
+        self.assertEqual(self._cmds(mock_post), ["config-get", "config-test", "config-set", "config-write"])
 
     def test_replaces_option_data_in_config_test_payload(self):
         """config-test is called with updated Dhcp4.option-data replacing the old list."""
@@ -2168,6 +2172,7 @@ class TestServerOptionsUpdate(TestCase):
             side_effect=_side_effects(
                 _SERVER_CONFIG_GET_V4,
                 _CONFIG_TEST_OK_RESP,
+                _CONFIG_SET_OK_RESP,
                 _CONFIG_WRITE_RESP,
             ),
         ) as mock_post:
@@ -2184,6 +2189,7 @@ class TestServerOptionsUpdate(TestCase):
             side_effect=_side_effects(
                 _SERVER_CONFIG_GET_V4,
                 _CONFIG_TEST_OK_RESP,
+                _CONFIG_SET_OK_RESP,
                 _CONFIG_WRITE_RESP,
             ),
         ) as mock_post:
@@ -2200,6 +2206,7 @@ class TestServerOptionsUpdate(TestCase):
             side_effect=_side_effects(
                 _SERVER_CONFIG_GET_V4,
                 _CONFIG_TEST_OK_RESP,
+                _CONFIG_SET_OK_RESP,
                 [{"result": 1, "text": "write failed"}],
             ),
         ):
@@ -2214,6 +2221,7 @@ class TestServerOptionsUpdate(TestCase):
             side_effect=_side_effects(
                 _SERVER_CONFIG_GET_V4,
                 _CONFIG_TEST_NOT_SUPPORTED_RESP,
+                _CONFIG_SET_OK_RESP,
                 _CONFIG_WRITE_RESP,
             ),
         ) as mock_post:
@@ -2236,7 +2244,7 @@ class TestServerOptionsUpdate(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(config_get_v6, _CONFIG_TEST_OK_RESP, _CONFIG_WRITE_RESP),
+            side_effect=_side_effects(config_get_v6, _CONFIG_TEST_OK_RESP, _CONFIG_SET_OK_RESP, _CONFIG_WRITE_RESP),
         ) as mock_post:
             self.client.server_update_options(version=6, options=[])
         payloads = self._payloads(mock_post)
@@ -2249,14 +2257,15 @@ class TestServerOptionsUpdate(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_SERVER_CONFIG_GET_V4, _CONFIG_TEST_OK_RESP, _CONFIG_WRITE_RESP),
+            side_effect=_side_effects(
+                _SERVER_CONFIG_GET_V4, _CONFIG_TEST_OK_RESP, _CONFIG_SET_OK_RESP, _CONFIG_WRITE_RESP
+            ),
         ):
             result = self.client.server_update_options(version=4, options=[])
         self.assertIsNone(result)
 
     def test_raises_kea_config_test_error_on_config_test_failure(self):
         """server_update_options raises KeaConfigTestError when config-test returns result=1."""
-        from netbox_kea.kea import KeaConfigTestError
 
         with patch.object(
             self.client._session,
@@ -2792,10 +2801,12 @@ class TestOptionDefAdd(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_OPTION_DEF_CONFIG_V4, _CONFIG_TEST_OK_RESP, _CONFIG_WRITE_RESP),
+            side_effect=_side_effects(
+                _OPTION_DEF_CONFIG_V4, _CONFIG_TEST_OK_RESP, _CONFIG_SET_OK_RESP, _CONFIG_WRITE_RESP
+            ),
         ) as mock_post:
             self.client.option_def_add(version=4, option_def=new_def)
-        self.assertEqual(self._cmds(mock_post), ["config-get", "config-test", "config-write"])
+        self.assertEqual(self._cmds(mock_post), ["config-get", "config-test", "config-set", "config-write"])
 
     def test_appends_new_def_to_existing_list(self):
         """New option-def is appended to the existing list in config-test payload."""
@@ -2803,7 +2814,9 @@ class TestOptionDefAdd(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_OPTION_DEF_CONFIG_V4, _CONFIG_TEST_OK_RESP, _CONFIG_WRITE_RESP),
+            side_effect=_side_effects(
+                _OPTION_DEF_CONFIG_V4, _CONFIG_TEST_OK_RESP, _CONFIG_SET_OK_RESP, _CONFIG_WRITE_RESP
+            ),
         ) as mock_post:
             self.client.option_def_add(version=4, option_def=new_def)
         payloads = self._payloads(mock_post)
@@ -2818,7 +2831,9 @@ class TestOptionDefAdd(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_OPTION_DEF_CONFIG_EMPTY, _CONFIG_TEST_OK_RESP, _CONFIG_WRITE_RESP),
+            side_effect=_side_effects(
+                _OPTION_DEF_CONFIG_EMPTY, _CONFIG_TEST_OK_RESP, _CONFIG_SET_OK_RESP, _CONFIG_WRITE_RESP
+            ),
         ) as mock_post:
             self.client.option_def_add(version=4, option_def=new_def)
         payloads = self._payloads(mock_post)
@@ -2832,7 +2847,9 @@ class TestOptionDefAdd(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_OPTION_DEF_CONFIG_V4, _CONFIG_TEST_OK_RESP, [{"result": 1, "text": "fail"}]),
+            side_effect=_side_effects(
+                _OPTION_DEF_CONFIG_V4, _CONFIG_TEST_OK_RESP, _CONFIG_SET_OK_RESP, [{"result": 1, "text": "fail"}]
+            ),
         ):
             with self.assertRaises(PartialPersistError):
                 self.client.option_def_add(version=4, option_def=new_def)
@@ -2854,7 +2871,9 @@ class TestOptionDefAdd(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_OPTION_DEF_CONFIG_V6, _CONFIG_TEST_OK_RESP, _CONFIG_WRITE_RESP),
+            side_effect=_side_effects(
+                _OPTION_DEF_CONFIG_V6, _CONFIG_TEST_OK_RESP, _CONFIG_SET_OK_RESP, _CONFIG_WRITE_RESP
+            ),
         ) as mock_post:
             self.client.option_def_add(version=6, option_def=new_def)
         payloads = self._payloads(mock_post)
@@ -2869,7 +2888,9 @@ class TestOptionDefAdd(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_OPTION_DEF_CONFIG_V4, _CONFIG_TEST_NOT_SUPPORTED_RESP, _CONFIG_WRITE_RESP),
+            side_effect=_side_effects(
+                _OPTION_DEF_CONFIG_V4, _CONFIG_TEST_NOT_SUPPORTED_RESP, _CONFIG_SET_OK_RESP, _CONFIG_WRITE_RESP
+            ),
         ) as mock_post:
             self.client.option_def_add(version=4, option_def=new_def)
         cmds = self._cmds(mock_post)
@@ -2893,17 +2914,21 @@ class TestOptionDefDel(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_OPTION_DEF_CONFIG_V4, _CONFIG_TEST_OK_RESP, _CONFIG_WRITE_RESP),
+            side_effect=_side_effects(
+                _OPTION_DEF_CONFIG_V4, _CONFIG_TEST_OK_RESP, _CONFIG_SET_OK_RESP, _CONFIG_WRITE_RESP
+            ),
         ) as mock_post:
             self.client.option_def_del(version=4, code=200, space="dhcp4")
-        self.assertEqual(self._cmds(mock_post), ["config-get", "config-test", "config-write"])
+        self.assertEqual(self._cmds(mock_post), ["config-get", "config-test", "config-set", "config-write"])
 
     def test_removes_matching_option_def(self):
         """option_def_del removes the entry with matching code+space from config."""
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_OPTION_DEF_CONFIG_V4, _CONFIG_TEST_OK_RESP, _CONFIG_WRITE_RESP),
+            side_effect=_side_effects(
+                _OPTION_DEF_CONFIG_V4, _CONFIG_TEST_OK_RESP, _CONFIG_SET_OK_RESP, _CONFIG_WRITE_RESP
+            ),
         ) as mock_post:
             self.client.option_def_del(version=4, code=200, space="dhcp4")
         payloads = self._payloads(mock_post)
@@ -2926,7 +2951,9 @@ class TestOptionDefDel(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_OPTION_DEF_CONFIG_V4, _CONFIG_TEST_OK_RESP, [{"result": 1, "text": "fail"}]),
+            side_effect=_side_effects(
+                _OPTION_DEF_CONFIG_V4, _CONFIG_TEST_OK_RESP, _CONFIG_SET_OK_RESP, [{"result": 1, "text": "fail"}]
+            ),
         ):
             with self.assertRaises(PartialPersistError):
                 self.client.option_def_del(version=4, code=200, space="dhcp4")
@@ -2949,7 +2976,7 @@ class TestOptionDefDel(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(config_two_spaces, _CONFIG_TEST_OK_RESP, _CONFIG_WRITE_RESP),
+            side_effect=_side_effects(config_two_spaces, _CONFIG_TEST_OK_RESP, _CONFIG_SET_OK_RESP, _CONFIG_WRITE_RESP),
         ) as mock_post:
             self.client.option_def_del(version=4, code=200, space="dhcp4")
         payloads = self._payloads(mock_post)
@@ -2960,7 +2987,6 @@ class TestOptionDefDel(TestCase):
 
     def test_raises_kea_config_test_error_on_config_test_failure(self):
         """KeaConfigTestError raised when config-test returns result=1 (invalid config after del)."""
-        from netbox_kea.kea import KeaConfigTestError
 
         with patch.object(
             self.client._session,
@@ -3223,7 +3249,6 @@ class TestNetworkUpdate(TestCase):
 
     def test_config_test_failure_raises_kea_config_test_error(self):
         """Non-2 config-test failure raises KeaConfigTestError (not PartialPersistError)."""
-        from netbox_kea.kea import KeaConfigTestError
 
         with patch.object(
             self.client._session,

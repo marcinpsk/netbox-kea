@@ -1427,6 +1427,27 @@ class TestStaleMacBadgeEnrichment(_ViewTestBase):
         delete_url = reverse("plugins:netbox_kea:server_leases4_delete", args=[self.server.pk])
         self.assertNotContains(response, f'hx-post="{delete_url}"')
 
+    @patch("netbox_kea.sync.bulk_fetch_netbox_ips")
+    @patch("netbox_kea.models.KeaClient")
+    def test_stale_mac_badge_no_delete_when_no_permission(self, MockKeaClient, mock_bulk_fetch):
+        """When the user lacks delete permission, the stale-MAC badge must NOT include an HTMX delete button."""
+        from django.contrib.auth import get_user_model
+
+        User = get_user_model()
+        readonly_user = User.objects.create_user(username="readonly_stale", password="pass")
+        self.client.force_login(readonly_user)
+
+        mock_client = MockKeaClient.return_value
+        mock_client.command.return_value = [{"result": 0, "arguments": {"ip-address": "10.0.0.5", **self._LEASE4}}]
+        mock_client.reservation_get.return_value = self._RESERVATION
+        mock_bulk_fetch.return_value = {}
+        url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+        response = self._htmx_get(url, {"by": "ip", "q": "10.0.0.5"})
+        self.assertIn(response.status_code, (200, 302, 403))
+        if response.status_code == 200:
+            delete_url = reverse("plugins:netbox_kea:server_leases4_delete", args=[self.server.pk])
+            self.assertNotContains(response, f'hx-post="{delete_url}"')
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Feature 3.2: Subnet Lease Wipe — _BaseSubnetWipeView
@@ -4366,6 +4387,8 @@ class TestServerSubnet4AddViewSharedNetwork(_ViewTestBase):
         self.assertEqual(name, "net-alpha")
         subnet_id = call_kwargs.get("subnet_id") or (call_args[2] if len(call_args) > 2 else None)
         self.assertEqual(subnet_id, 1)
+        version = call_kwargs.get("version") or (call_args[0] if len(call_args) > 0 else None)
+        self.assertEqual(version, 4)
 
     @patch("netbox_kea.models.KeaClient")
     def test_post_without_shared_network_does_not_call_network_subnet_add(self, MockKeaClient):
@@ -4730,8 +4753,8 @@ class TestSubnetEditZeroTimers(_ViewTestBase):
         response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
         form = response.context.get("form")
-        if form is not None:
-            self.assertEqual(form.initial.get("renew_timer"), 0)
+        self.assertIsNotNone(form, "Expected a form in context but got None")
+        self.assertEqual(form.initial.get("renew_timer"), 0)
 
     @patch("netbox_kea.models.KeaClient")
     def test_get_includes_zero_rebind_timer_in_initial(self, MockKeaClient):
@@ -4746,5 +4769,5 @@ class TestSubnetEditZeroTimers(_ViewTestBase):
         response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
         form = response.context.get("form")
-        if form is not None:
-            self.assertEqual(form.initial.get("rebind_timer"), 0)
+        self.assertIsNotNone(form, "Expected a form in context but got None")
+        self.assertEqual(form.initial.get("rebind_timer"), 0)

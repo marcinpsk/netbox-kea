@@ -1538,9 +1538,17 @@ class BaseServerSharedNetworkEditView(_KeaChangeMixin, ConditionalLoginRequiredM
 
         options: list[dict] = list(preserved_options)
         if cd.get("dns_servers"):
-            options.append({"name": "domain-name-servers", "data": cd["dns_servers"]})
+            dns_name = "domain-name-servers" if self.dhcp_version == 4 else "dns-servers"
+            existing_dns = next((o for o in existing_network.get("option-data", []) if o.get("name") == dns_name), None)
+            new_dns = dict(existing_dns) if existing_dns else {"name": dns_name}
+            new_dns["data"] = cd["dns_servers"]
+            options.append(new_dns)
         if cd.get("ntp_servers"):
-            options.append({"name": "ntp-servers", "data": cd["ntp_servers"]})
+            ntp_name = "ntp-servers" if self.dhcp_version == 4 else "sntp-servers"
+            existing_ntp = next((o for o in existing_network.get("option-data", []) if o.get("name") == ntp_name), None)
+            new_ntp = dict(existing_ntp) if existing_ntp else {"name": ntp_name}
+            new_ntp["data"] = cd["ntp_servers"]
+            options.append(new_ntp)
 
         try:
             client.network_update(
@@ -1715,7 +1723,6 @@ class ServerReservations4View(generic.ObjectView):
                 hook_available = False
         except Exception:
             logger.debug("Unexpected error fetching DHCPv4 reservations", exc_info=True)
-            hook_available = False
 
         # Inject server_pk so the actions template column can build edit/delete URLs.
         for r in reservations:
@@ -1784,7 +1791,6 @@ class ServerReservations6View(generic.ObjectView):
                 hook_available = False
         except Exception:
             logger.debug("Unexpected error fetching DHCPv6 reservations", exc_info=True)
-            hook_available = False
 
         for r in reservations:
             r["server_pk"] = server.pk
@@ -2291,6 +2297,23 @@ class ServerReservation6EditView(_KeaChangeMixin, generic.ObjectView):
                 return redirect(return_url)
             except PartialPersistError:
                 messages.warning(request, "Change applied but may not survive a Kea restart (config-write failed).")
+                _add_reservation_journal(server, request.user, "updated", reservation)
+                reservation_updated.send_robust(
+                    sender=None,
+                    server=server,
+                    reservation=reservation,
+                    dhcp_version=6,
+                    request=request,
+                )
+                if cd.get("sync_to_netbox"):
+                    try:
+                        _, created = sync_reservation_to_netbox(reservation)
+                        primary_ip = (reservation.get("ip-addresses") or [""])[0]
+                        msg = "created" if created else "updated"
+                        messages.info(request, f"NetBox IPAddress {primary_ip} {msg}.")
+                    except Exception:
+                        logger.exception("Failed to sync DHCPv6 reservation to NetBox")
+                        messages.warning(request, "Reservation updated, but NetBox IPAM sync failed.")
                 return redirect(return_url)
             except KeaException as exc:
                 logger.exception("Failed to update DHCPv6 reservation for %s", cd.get("ip_addresses"))
@@ -3041,10 +3064,25 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
         # Handle shared-network membership change only after a successful update.
         if old_network != new_network:
             try:
-                if old_network:
-                    client.network_subnet_del(version=self.dhcp_version, name=old_network, subnet_id=subnet_id)
                 if new_network:
                     client.network_subnet_add(version=self.dhcp_version, name=new_network, subnet_id=subnet_id)
+                if old_network:
+                    try:
+                        client.network_subnet_del(version=self.dhcp_version, name=old_network, subnet_id=subnet_id)
+                    except Exception as del_exc:
+                        # add succeeded but del failed — roll back the add
+                        if new_network:
+                            try:
+                                client.network_subnet_del(
+                                    version=self.dhcp_version, name=new_network, subnet_id=subnet_id
+                                )
+                            except Exception:
+                                logger.exception(
+                                    "Rollback of network_subnet_add failed for subnet %s on server %s",
+                                    subnet_id,
+                                    pk,
+                                )
+                        raise del_exc
             except KeaException as exc:
                 logger.warning("network_subnet change failed for subnet %s on server %s: %s", subnet_id, pk, exc)
                 messages.error(request, f"Network assignment error: {kea_error_hint(exc)}")
