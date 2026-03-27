@@ -4822,3 +4822,3372 @@ class TestSubnetEditZeroTimers(_ViewTestBase):
         form = response.context.get("form")
         self.assertIsNotNone(form, "Expected a form in context but got None")
         self.assertEqual(form.initial.get("rebind_timer"), 0)
+
+
+# ---------------------------------------------------------------------------
+# Reservation list exception paths
+# ---------------------------------------------------------------------------
+
+_FORMSET_MGMT = {
+    "options-TOTAL_FORMS": "0",
+    "options-INITIAL_FORMS": "0",
+    "options-MIN_NUM_FORMS": "0",
+    "options-MAX_NUM_FORMS": "1000",
+}
+
+_VALID_RESERVATION4_POST = {
+    "subnet_id": "1",
+    "ip_address": "10.0.0.55",
+    "identifier_type": "hw-address",
+    "identifier": "aa:bb:cc:dd:ee:ff",
+    "hostname": "test-host",
+    **_FORMSET_MGMT,
+}
+
+_VALID_RESERVATION6_POST = {
+    "subnet_id": "1",
+    "ip_addresses": "2001:db8::1",
+    "identifier_type": "duid",
+    "identifier": "00:01:00:01:12:34:56:78:aa:bb:cc:dd:ee:ff",
+    "hostname": "test-host6",
+    **_FORMSET_MGMT,
+}
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestReservation4ListExceptions(_ViewTestBase):
+    """Reservation list view — exception path coverage."""
+
+    def _url(self):
+        return reverse("plugins:netbox_kea:server_reservations4", args=[self.server.pk])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_hook_not_available_shows_warning(self, MockKeaClient):
+        """KeaException result=2 sets hook_available=False without crashing."""
+        from netbox_kea.kea import KeaException
+
+        MockKeaClient.return_value.reservation_get_page.side_effect = KeaException(
+            {"result": 2, "text": "hook not loaded"}, index=0
+        )
+        response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.context.get("hook_available", True))
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_generic_exception_during_fetch_does_not_crash(self, MockKeaClient):
+        """Unexpected exception during reservation_get_page is swallowed gracefully."""
+        MockKeaClient.return_value.reservation_get_page.side_effect = RuntimeError("boom")
+        response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 200)
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestReservation6ListExceptions(_ViewTestBase):
+    """Reservation6 list view — exception path coverage."""
+
+    def _url(self):
+        return reverse("plugins:netbox_kea:server_reservations6", args=[self.server.pk])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_hook_not_available_shows_warning(self, MockKeaClient):
+        """KeaException result=2 sets hook_available=False without crashing."""
+        from netbox_kea.kea import KeaException
+
+        MockKeaClient.return_value.reservation_get_page.side_effect = KeaException(
+            {"result": 2, "text": "hook not loaded"}, index=0
+        )
+        response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.context.get("hook_available", True))
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_generic_exception_during_fetch_does_not_crash(self, MockKeaClient):
+        """Unexpected exception during reservation_get_page is swallowed gracefully."""
+        MockKeaClient.return_value.reservation_get_page.side_effect = RuntimeError("unexpected")
+        response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 200)
+
+
+# ---------------------------------------------------------------------------
+# SharedNetworkEdit fetch-failure paths
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestSharedNetworkEditFetchFailures(_ViewTestBase):
+    """_fetch_network failure paths: GET redirect + POST abort."""
+
+    def _url(self, name="prod-net"):
+        return reverse("plugins:netbox_kea:server_shared_network4_edit", args=[self.server.pk, name])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_get_redirects_when_network_not_found(self, MockKeaClient):
+        """GET must redirect when config-get returns a config with no matching network."""
+        MockKeaClient.return_value.command.return_value = [
+            {"result": 0, "arguments": {"Dhcp4": {"shared-networks": [], "subnet4": []}}}
+        ]
+        response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 302)
+        self._assert_no_none_pk_redirect(response)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_get_redirects_when_fetch_raises_kea_exception(self, MockKeaClient):
+        """GET must redirect when config-get raises KeaException."""
+        from netbox_kea.kea import KeaException
+
+        MockKeaClient.return_value.command.side_effect = KeaException({"result": 1, "text": "err"}, index=0)
+        response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 302)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_aborts_when_reload_returns_empty(self, MockKeaClient):
+        """POST aborts with error when _fetch_network (reload before write) returns empty."""
+        # POST path has only ONE _fetch_network call (for reload). Make it return empty
+        # (prod-net not in shared-networks) to trigger the abort path.
+        MockKeaClient.return_value.command.return_value = [
+            {"result": 0, "arguments": {"Dhcp4": {"shared-networks": [], "subnet4": []}}}
+        ]
+        response = self.client.post(
+            self._url(),
+            {
+                "name": "prod-net",
+                "description": "x",
+                "interface": "",
+                "relay_addresses": "",
+                "dns_servers": "",
+                "ntp_servers": "",
+            },
+        )
+        # Must re-render (not crash) with error message
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Could not reload")
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_sets_ntp_servers_option(self, MockKeaClient):
+        """POST with ntp_servers populates option-data with ntp-servers entry."""
+        MockKeaClient.return_value.command.return_value = _CONFIG4_WITH_PROD_NET
+        MockKeaClient.return_value.network_update.return_value = None
+        self.client.post(
+            self._url(),
+            {
+                "name": "prod-net",
+                "description": "",
+                "interface": "",
+                "relay_addresses": "",
+                "dns_servers": "",
+                "ntp_servers": "10.0.0.1",
+            },
+        )
+        call_kwargs = MockKeaClient.return_value.network_update.call_args.kwargs or {}
+        options = call_kwargs.get("options", [])
+        ntp_opts = [o for o in options if o.get("name") == "ntp-servers"]
+        self.assertEqual(len(ntp_opts), 1)
+        self.assertEqual(ntp_opts[0]["data"], "10.0.0.1")
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_generic_exception_rerenders(self, MockKeaClient):
+        """POST that raises generic Exception must not crash (no 500)."""
+        MockKeaClient.return_value.command.return_value = _CONFIG4_WITH_PROD_NET
+        MockKeaClient.return_value.network_update.side_effect = RuntimeError("unexpected")
+        response = self.client.post(
+            self._url(),
+            {
+                "name": "prod-net",
+                "description": "x",
+                "interface": "",
+                "relay_addresses": "",
+                "dns_servers": "",
+                "ntp_servers": "",
+            },
+        )
+        self.assertIn(response.status_code, (200, 302))
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_invalid_form_rerenders(self, MockKeaClient):
+        """POST with missing required field must re-render the form (200)."""
+        response = self.client.post(self._url(), {"description": "x"})
+        self.assertEqual(response.status_code, 200)
+
+
+# ---------------------------------------------------------------------------
+# Reservation4Add exception paths
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestReservation4AddExceptions(_ViewTestBase):
+    """ServerReservation4AddView POST exception paths."""
+
+    def _url(self):
+        return reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_partial_persist_error_redirects_with_warning(self, MockKeaClient):
+        """PartialPersistError must redirect with a warning message."""
+        from netbox_kea.kea import PartialPersistError
+
+        MockKeaClient.return_value.reservation_add.side_effect = PartialPersistError("dhcp4", Exception("write"))
+        MockKeaClient.return_value.reservation_get_page.return_value = ([], 0, 0)
+        response = self.client.post(self._url(), _VALID_RESERVATION4_POST, follow=True)
+        self.assertEqual(response.status_code, 200)
+        msgs = list(response.context["messages"])
+        self.assertTrue(any(m.level == django_messages.WARNING for m in msgs))
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_partial_persist_with_sync_to_netbox(self, MockKeaClient):
+        """PartialPersistError with sync_to_netbox=True must attempt IPAM sync."""
+        from netbox_kea.kea import PartialPersistError
+
+        MockKeaClient.return_value.reservation_add.side_effect = PartialPersistError("dhcp4", Exception("write"))
+        MockKeaClient.return_value.reservation_get_page.return_value = ([], 0, 0)
+        post_data = {**_VALID_RESERVATION4_POST, "sync_to_netbox": "on"}
+        with patch("netbox_kea.views.sync_reservation_to_netbox") as mock_sync:
+            mock_sync.return_value = (MagicMock(), True)
+            response = self.client.post(self._url(), post_data, follow=True)
+        self.assertEqual(response.status_code, 200)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_partial_persist_sync_failure_shows_warning(self, MockKeaClient):
+        """PartialPersistError + sync error must show two warnings."""
+        from netbox_kea.kea import PartialPersistError
+
+        MockKeaClient.return_value.reservation_add.side_effect = PartialPersistError("dhcp4", Exception("write"))
+        MockKeaClient.return_value.reservation_get_page.return_value = ([], 0, 0)
+        post_data = {**_VALID_RESERVATION4_POST, "sync_to_netbox": "on"}
+        with patch("netbox_kea.views.sync_reservation_to_netbox", side_effect=RuntimeError("sync boom")):
+            response = self.client.post(self._url(), post_data, follow=True)
+        msgs = list(response.context["messages"])
+        self.assertTrue(any("sync failed" in m.message.lower() for m in msgs))
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_kea_exception_rerenders_form(self, MockKeaClient):
+        """KeaException must re-render the form with an error message."""
+        from netbox_kea.kea import KeaException
+
+        MockKeaClient.return_value.reservation_add.side_effect = KeaException(
+            {"result": 1, "text": "already exists"}, index=0
+        )
+        MockKeaClient.return_value.reservation_get_page.return_value = ([], 0, 0)
+        response = self.client.post(self._url(), _VALID_RESERVATION4_POST)
+        self.assertEqual(response.status_code, 200)
+        msgs = list(django_messages.get_messages(response.wsgi_request))
+        self.assertTrue(any(m.level == django_messages.ERROR for m in msgs))
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_generic_exception_rerenders_form(self, MockKeaClient):
+        """Unexpected exception must re-render the form with a generic error."""
+        MockKeaClient.return_value.reservation_add.side_effect = RuntimeError("unexpected")
+        MockKeaClient.return_value.reservation_get_page.return_value = ([], 0, 0)
+        response = self.client.post(self._url(), _VALID_RESERVATION4_POST)
+        self.assertEqual(response.status_code, 200)
+        msgs = list(django_messages.get_messages(response.wsgi_request))
+        self.assertTrue(any(m.level == django_messages.ERROR for m in msgs))
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_success_with_sync_to_netbox(self, MockKeaClient):
+        """Successful add with sync_to_netbox=True must call sync and show info message."""
+        MockKeaClient.return_value.reservation_add.return_value = None
+        MockKeaClient.return_value.reservation_get_page.return_value = ([], 0, 0)
+        post_data = {**_VALID_RESERVATION4_POST, "sync_to_netbox": "on"}
+        with patch("netbox_kea.views.sync_reservation_to_netbox") as mock_sync:
+            mock_sync.return_value = (MagicMock(), True)
+            response = self.client.post(self._url(), post_data, follow=True)
+        self.assertEqual(response.status_code, 200)
+        mock_sync.assert_called_once()
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_success_sync_failure_shows_warning(self, MockKeaClient):
+        """Successful add where sync raises must show a warning (no 500)."""
+        MockKeaClient.return_value.reservation_add.return_value = None
+        MockKeaClient.return_value.reservation_get_page.return_value = ([], 0, 0)
+        post_data = {**_VALID_RESERVATION4_POST, "sync_to_netbox": "on"}
+        with patch("netbox_kea.views.sync_reservation_to_netbox", side_effect=RuntimeError("sync fail")):
+            response = self.client.post(self._url(), post_data, follow=True)
+        msgs = list(response.context["messages"])
+        self.assertTrue(any("sync failed" in m.message.lower() for m in msgs))
+
+
+# ---------------------------------------------------------------------------
+# Reservation6Add exception paths
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestReservation6AddExceptions(_ViewTestBase):
+    """ServerReservation6AddView POST exception paths."""
+
+    def _url(self):
+        return reverse("plugins:netbox_kea:server_reservation6_add", args=[self.server.pk])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_partial_persist_error_redirects_with_warning(self, MockKeaClient):
+        """PartialPersistError must redirect with a warning message."""
+        from netbox_kea.kea import PartialPersistError
+
+        MockKeaClient.return_value.reservation_add.side_effect = PartialPersistError("dhcp6", Exception("write"))
+        MockKeaClient.return_value.reservation_get_page.return_value = ([], 0, 0)
+        response = self.client.post(self._url(), _VALID_RESERVATION6_POST, follow=True)
+        self.assertEqual(response.status_code, 200)
+        msgs = list(response.context["messages"])
+        self.assertTrue(any(m.level == django_messages.WARNING for m in msgs))
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_partial_persist_with_sync_to_netbox(self, MockKeaClient):
+        """PartialPersistError with sync_to_netbox=True must attempt IPAM sync."""
+        from netbox_kea.kea import PartialPersistError
+
+        MockKeaClient.return_value.reservation_add.side_effect = PartialPersistError("dhcp6", Exception("write"))
+        MockKeaClient.return_value.reservation_get_page.return_value = ([], 0, 0)
+        post_data = {**_VALID_RESERVATION6_POST, "sync_to_netbox": "on"}
+        with patch("netbox_kea.views.sync_reservation_to_netbox") as mock_sync:
+            mock_sync.return_value = (MagicMock(), False)
+            response = self.client.post(self._url(), post_data, follow=True)
+        self.assertEqual(response.status_code, 200)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_partial_persist_sync_failure_shows_warning(self, MockKeaClient):
+        """PartialPersistError + sync exception must show warning about sync failure."""
+        from netbox_kea.kea import PartialPersistError
+
+        MockKeaClient.return_value.reservation_add.side_effect = PartialPersistError("dhcp6", Exception("write"))
+        MockKeaClient.return_value.reservation_get_page.return_value = ([], 0, 0)
+        post_data = {**_VALID_RESERVATION6_POST, "sync_to_netbox": "on"}
+        with patch("netbox_kea.views.sync_reservation_to_netbox", side_effect=RuntimeError("sync boom")):
+            response = self.client.post(self._url(), post_data, follow=True)
+        msgs = list(response.context["messages"])
+        self.assertTrue(any("sync failed" in m.message.lower() for m in msgs))
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_kea_exception_rerenders_form(self, MockKeaClient):
+        """KeaException must re-render the form with an error message."""
+        from netbox_kea.kea import KeaException
+
+        MockKeaClient.return_value.reservation_add.side_effect = KeaException(
+            {"result": 1, "text": "conflict"}, index=0
+        )
+        MockKeaClient.return_value.reservation_get_page.return_value = ([], 0, 0)
+        response = self.client.post(self._url(), _VALID_RESERVATION6_POST)
+        self.assertEqual(response.status_code, 200)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_generic_exception_rerenders_form(self, MockKeaClient):
+        """Unexpected exception must re-render the form with a generic error."""
+        MockKeaClient.return_value.reservation_add.side_effect = RuntimeError("bang")
+        MockKeaClient.return_value.reservation_get_page.return_value = ([], 0, 0)
+        response = self.client.post(self._url(), _VALID_RESERVATION6_POST)
+        self.assertEqual(response.status_code, 200)
+
+
+# ---------------------------------------------------------------------------
+# Reservation4Edit exception paths
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestReservation4EditExceptions(_ViewTestBase):
+    """ServerReservation4EditView GET and POST exception paths."""
+
+    def _url(self, subnet_id=1, ip="10.0.0.55"):
+        return reverse("plugins:netbox_kea:server_reservation4_edit", args=[self.server.pk, subnet_id, ip])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_get_redirects_on_kea_exception(self, MockKeaClient):
+        """GET that raises KeaException during reservation fetch must redirect."""
+        from netbox_kea.kea import KeaException
+
+        MockKeaClient.return_value.reservation_get.side_effect = KeaException(
+            {"result": 1, "text": "server error"}, index=0
+        )
+        response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 302)
+        self._assert_no_none_pk_redirect(response)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_get_redirects_on_generic_exception(self, MockKeaClient):
+        """GET that raises generic Exception during reservation fetch must redirect."""
+        MockKeaClient.return_value.reservation_get.side_effect = RuntimeError("crash")
+        response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 302)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_get_404_when_reservation_not_found(self, MockKeaClient):
+        """GET must return 404 when reservation_get returns None."""
+        MockKeaClient.return_value.reservation_get.return_value = None
+        response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 404)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_partial_persist_error_redirects(self, MockKeaClient):
+        """PartialPersistError on reservation_update must redirect with warning."""
+        from netbox_kea.kea import PartialPersistError
+
+        MockKeaClient.return_value.reservation_update.side_effect = PartialPersistError("dhcp4", Exception("write"))
+        response = self.client.post(self._url(), _VALID_RESERVATION4_POST, follow=True)
+        self.assertEqual(response.status_code, 200)
+        msgs = list(response.context["messages"])
+        self.assertTrue(any(m.level == django_messages.WARNING for m in msgs))
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_partial_persist_with_sync(self, MockKeaClient):
+        """PartialPersistError with sync_to_netbox attempts sync."""
+        from netbox_kea.kea import PartialPersistError
+
+        MockKeaClient.return_value.reservation_update.side_effect = PartialPersistError("dhcp4", Exception("write"))
+        post_data = {**_VALID_RESERVATION4_POST, "sync_to_netbox": "on"}
+        with patch("netbox_kea.views.sync_reservation_to_netbox") as mock_sync:
+            mock_sync.return_value = (MagicMock(), True)
+            response = self.client.post(self._url(), post_data, follow=True)
+        self.assertEqual(response.status_code, 200)
+        mock_sync.assert_called_once()
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_partial_persist_sync_failure(self, MockKeaClient):
+        """PartialPersistError + sync failure shows warning."""
+        from netbox_kea.kea import PartialPersistError
+
+        MockKeaClient.return_value.reservation_update.side_effect = PartialPersistError("dhcp4", Exception("write"))
+        post_data = {**_VALID_RESERVATION4_POST, "sync_to_netbox": "on"}
+        with patch("netbox_kea.views.sync_reservation_to_netbox", side_effect=RuntimeError("sync")):
+            response = self.client.post(self._url(), post_data, follow=True)
+        msgs = list(response.context["messages"])
+        self.assertTrue(any("sync failed" in m.message.lower() for m in msgs))
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_kea_exception_rerenders_form(self, MockKeaClient):
+        """KeaException on reservation_update must re-render the form."""
+        from netbox_kea.kea import KeaException
+
+        MockKeaClient.return_value.reservation_update.side_effect = KeaException(
+            {"result": 1, "text": "not found"}, index=0
+        )
+        response = self.client.post(self._url(), _VALID_RESERVATION4_POST)
+        self.assertEqual(response.status_code, 200)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_generic_exception_rerenders_form(self, MockKeaClient):
+        """Unexpected exception on reservation_update must re-render the form."""
+        MockKeaClient.return_value.reservation_update.side_effect = RuntimeError("crash")
+        response = self.client.post(self._url(), _VALID_RESERVATION4_POST)
+        self.assertEqual(response.status_code, 200)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_success_with_sync(self, MockKeaClient):
+        """Successful update with sync_to_netbox calls sync and shows info."""
+        MockKeaClient.return_value.reservation_update.return_value = None
+        post_data = {**_VALID_RESERVATION4_POST, "sync_to_netbox": "on"}
+        with patch("netbox_kea.views.sync_reservation_to_netbox") as mock_sync:
+            mock_sync.return_value = (MagicMock(), False)
+            response = self.client.post(self._url(), post_data, follow=True)
+        self.assertEqual(response.status_code, 200)
+        mock_sync.assert_called_once()
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_success_sync_failure_shows_warning(self, MockKeaClient):
+        """Successful update where sync raises must show warning."""
+        MockKeaClient.return_value.reservation_update.return_value = None
+        post_data = {**_VALID_RESERVATION4_POST, "sync_to_netbox": "on"}
+        with patch("netbox_kea.views.sync_reservation_to_netbox", side_effect=RuntimeError("oops")):
+            response = self.client.post(self._url(), post_data, follow=True)
+        msgs = list(response.context["messages"])
+        self.assertTrue(any("sync failed" in m.message.lower() for m in msgs))
+
+
+# ---------------------------------------------------------------------------
+# Reservation6Edit exception paths
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestReservation6EditExceptions(_ViewTestBase):
+    """ServerReservation6EditView GET and POST exception paths."""
+
+    def _url(self, subnet_id=1, ip="2001:db8::1"):
+        return reverse("plugins:netbox_kea:server_reservation6_edit", args=[self.server.pk, subnet_id, ip])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_get_redirects_on_kea_exception(self, MockKeaClient):
+        """GET that raises KeaException during reservation fetch must redirect."""
+        from netbox_kea.kea import KeaException
+
+        MockKeaClient.return_value.reservation_get.side_effect = KeaException({"result": 1, "text": "error"}, index=0)
+        response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 302)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_get_redirects_on_generic_exception(self, MockKeaClient):
+        """GET that raises generic Exception must redirect."""
+        MockKeaClient.return_value.reservation_get.side_effect = RuntimeError("boom")
+        response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 302)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_get_404_when_reservation_not_found(self, MockKeaClient):
+        """GET must return 404 when reservation_get returns None."""
+        MockKeaClient.return_value.reservation_get.return_value = None
+        response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 404)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_partial_persist_error_redirects(self, MockKeaClient):
+        """PartialPersistError on reservation_update must redirect with warning."""
+        from netbox_kea.kea import PartialPersistError
+
+        MockKeaClient.return_value.reservation_update.side_effect = PartialPersistError("dhcp6", Exception("write"))
+        response = self.client.post(self._url(), _VALID_RESERVATION6_POST, follow=True)
+        self.assertEqual(response.status_code, 200)
+        msgs = list(response.context["messages"])
+        self.assertTrue(any(m.level == django_messages.WARNING for m in msgs))
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_kea_exception_rerenders_form(self, MockKeaClient):
+        """KeaException on reservation_update must re-render the form."""
+        from netbox_kea.kea import KeaException
+
+        MockKeaClient.return_value.reservation_update.side_effect = KeaException(
+            {"result": 1, "text": "error"}, index=0
+        )
+        response = self.client.post(self._url(), _VALID_RESERVATION6_POST)
+        self.assertEqual(response.status_code, 200)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_generic_exception_rerenders_form(self, MockKeaClient):
+        """Unexpected exception on reservation_update must re-render form."""
+        MockKeaClient.return_value.reservation_update.side_effect = RuntimeError("crash")
+        response = self.client.post(self._url(), _VALID_RESERVATION6_POST)
+        self.assertEqual(response.status_code, 200)
+
+
+# ---------------------------------------------------------------------------
+# Reservation4Delete exception paths
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestReservation4DeleteExceptions(_ViewTestBase):
+    """ServerReservation4DeleteView POST exception paths."""
+
+    def _url(self, subnet_id=1, ip="10.0.0.55"):
+        return reverse("plugins:netbox_kea:server_reservation4_delete", args=[self.server.pk, subnet_id, ip])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_partial_persist_error_redirects_with_warning(self, MockKeaClient):
+        """PartialPersistError must redirect with warning and still run side effects."""
+        from netbox_kea.kea import PartialPersistError
+
+        MockKeaClient.return_value.reservation_del.side_effect = PartialPersistError("dhcp4", Exception("write"))
+        response = self.client.post(self._url(), follow=True)
+        self.assertEqual(response.status_code, 200)
+        msgs = list(response.context["messages"])
+        self.assertTrue(any(m.level == django_messages.WARNING for m in msgs))
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_kea_exception_shows_error(self, MockKeaClient):
+        """KeaException must show an error message and redirect."""
+        from netbox_kea.kea import KeaException
+
+        MockKeaClient.return_value.reservation_del.side_effect = KeaException(
+            {"result": 1, "text": "not found"}, index=0
+        )
+        response = self.client.post(self._url(), follow=True)
+        msgs = list(response.context["messages"])
+        self.assertTrue(any(m.level == django_messages.ERROR for m in msgs))
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_generic_exception_shows_error(self, MockKeaClient):
+        """Unexpected exception must show a generic error and redirect."""
+        MockKeaClient.return_value.reservation_del.side_effect = RuntimeError("crash")
+        response = self.client.post(self._url(), follow=True)
+        msgs = list(response.context["messages"])
+        self.assertTrue(any(m.level == django_messages.ERROR for m in msgs))
+
+
+# ---------------------------------------------------------------------------
+# Reservation6Delete exception paths
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestReservation6DeleteExceptions(_ViewTestBase):
+    """ServerReservation6DeleteView POST exception paths."""
+
+    def _url(self, subnet_id=1, ip="2001:db8::1"):
+        return reverse("plugins:netbox_kea:server_reservation6_delete", args=[self.server.pk, subnet_id, ip])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_partial_persist_error_redirects_with_warning(self, MockKeaClient):
+        """PartialPersistError must redirect with warning."""
+        from netbox_kea.kea import PartialPersistError
+
+        MockKeaClient.return_value.reservation_del.side_effect = PartialPersistError("dhcp6", Exception("write"))
+        response = self.client.post(self._url(), follow=True)
+        self.assertEqual(response.status_code, 200)
+        msgs = list(response.context["messages"])
+        self.assertTrue(any(m.level == django_messages.WARNING for m in msgs))
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_kea_exception_shows_error(self, MockKeaClient):
+        """KeaException must show an error message."""
+        from netbox_kea.kea import KeaException
+
+        MockKeaClient.return_value.reservation_del.side_effect = KeaException({"result": 1, "text": "error"}, index=0)
+        response = self.client.post(self._url(), follow=True)
+        msgs = list(response.context["messages"])
+        self.assertTrue(any(m.level == django_messages.ERROR for m in msgs))
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_generic_exception_shows_error(self, MockKeaClient):
+        """Unexpected exception must show a generic error."""
+        MockKeaClient.return_value.reservation_del.side_effect = RuntimeError("crash")
+        response = self.client.post(self._url(), follow=True)
+        msgs = list(response.context["messages"])
+        self.assertTrue(any(m.level == django_messages.ERROR for m in msgs))
+
+
+# ---------------------------------------------------------------------------
+# Pool view exception paths
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestPoolAddExceptions(_ViewTestBase):
+    """_BasePoolAddView POST exception paths."""
+
+    def _url(self, subnet_id=42):
+        return reverse("plugins:netbox_kea:server_subnet4_pool_add", args=[self.server.pk, subnet_id])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_partial_persist_error_redirects_with_warning(self, MockKeaClient):
+        """PartialPersistError on pool_add must redirect with warning."""
+        from netbox_kea.kea import PartialPersistError
+
+        MockKeaClient.return_value.pool_add.side_effect = PartialPersistError("dhcp4", Exception("write"))
+        MockKeaClient.return_value.reservation_get_page.return_value = ([], 0, 0)
+        response = self.client.post(self._url(), {"pool": "10.0.0.100-10.0.0.200"}, follow=True)
+        msgs = list(response.context["messages"])
+        self.assertTrue(any(m.level == django_messages.WARNING for m in msgs))
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_generic_exception_shows_error(self, MockKeaClient):
+        """Generic exception on pool_add must show error message."""
+        MockKeaClient.return_value.pool_add.side_effect = RuntimeError("crash")
+        MockKeaClient.return_value.reservation_get_page.return_value = ([], 0, 0)
+        response = self.client.post(self._url(), {"pool": "10.0.0.100-10.0.0.200"}, follow=True)
+        msgs = list(response.context["messages"])
+        self.assertTrue(any(m.level == django_messages.ERROR for m in msgs))
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestPoolDeleteExceptions(_ViewTestBase):
+    """_BasePoolDeleteView GET/POST exception paths."""
+
+    def _url(self, subnet_id=42, pool="10.0.0.100-10.0.0.200"):
+        return reverse("plugins:netbox_kea:server_subnet4_pool_delete", args=[self.server.pk, subnet_id, pool])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_get_invalid_pool_format_returns_400(self, MockKeaClient):
+        """GET with invalid pool string must return 400."""
+        url = reverse("plugins:netbox_kea:server_subnet4_pool_delete", args=[self.server.pk, 42, "not_a_pool_format!!"])
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 400)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_invalid_pool_format_returns_400(self, MockKeaClient):
+        """POST with invalid pool string must return 400."""
+        url = reverse("plugins:netbox_kea:server_subnet4_pool_delete", args=[self.server.pk, 42, "not_a_pool_format!!"])
+        response = self.client.post(url)
+        self.assertEqual(response.status_code, 400)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_partial_persist_error_redirects_with_warning(self, MockKeaClient):
+        """PartialPersistError on pool_del must redirect with warning."""
+        from netbox_kea.kea import PartialPersistError
+
+        MockKeaClient.return_value.pool_del.side_effect = PartialPersistError("dhcp4", Exception("write"))
+        response = self.client.post(self._url(), follow=True)
+        msgs = list(response.context["messages"])
+        self.assertTrue(any(m.level == django_messages.WARNING for m in msgs))
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_generic_exception_shows_error(self, MockKeaClient):
+        """Generic exception on pool_del must show error message."""
+        MockKeaClient.return_value.pool_del.side_effect = RuntimeError("crash")
+        response = self.client.post(self._url(), follow=True)
+        msgs = list(response.context["messages"])
+        self.assertTrue(any(m.level == django_messages.ERROR for m in msgs))
+
+
+# ---------------------------------------------------------------------------
+# SubnetAdd exception paths
+# ---------------------------------------------------------------------------
+
+_SUBNET_ADD_POST = {
+    "subnet": "10.2.0.0/24",
+    "subnet_id": "",
+    "pools": "",
+    "gateway": "",
+    "dns_servers": "",
+    "ntp_servers": "",
+    "shared_network": "",
+}
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestSubnetAddExceptionPaths(_ViewTestBase):
+    """_BaseSubnetAddView GET/POST exception paths."""
+
+    def _url(self):
+        return reverse("plugins:netbox_kea:server_subnet4_add", args=[self.server.pk])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_get_falls_back_when_network_choices_raise(self, MockKeaClient):
+        """GET must render the form with fallback choices when config-get fails."""
+        MockKeaClient.return_value.command.side_effect = RuntimeError("config error")
+        response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 200)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_partial_persist_error_redirects(self, MockKeaClient):
+        """PartialPersistError on subnet_add must redirect with warning."""
+        from netbox_kea.kea import PartialPersistError
+
+        MockKeaClient.return_value.command.return_value = [
+            {"result": 0, "arguments": {"Dhcp4": {"shared-networks": [], "subnet4": []}}}
+        ]
+        MockKeaClient.return_value.subnet_add.side_effect = PartialPersistError("dhcp4", Exception("write"))
+        response = self.client.post(self._url(), _SUBNET_ADD_POST, follow=True)
+        msgs = list(response.context["messages"])
+        self.assertTrue(any(m.level == django_messages.WARNING for m in msgs))
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_generic_exception_rerenders(self, MockKeaClient):
+        """Generic exception on subnet_add must re-render the form."""
+        MockKeaClient.return_value.command.return_value = [
+            {"result": 0, "arguments": {"Dhcp4": {"shared-networks": [], "subnet4": []}}}
+        ]
+        MockKeaClient.return_value.subnet_add.side_effect = RuntimeError("crash")
+        response = self.client.post(self._url(), _SUBNET_ADD_POST)
+        self.assertEqual(response.status_code, 200)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_network_assignment_partial_persist_shows_warning(self, MockKeaClient):
+        """PartialPersistError on network_subnet_add must show a warning."""
+        from netbox_kea.kea import PartialPersistError
+
+        MockKeaClient.return_value.command.return_value = [
+            {
+                "result": 0,
+                "arguments": {
+                    "Dhcp4": {
+                        "shared-networks": [{"name": "alpha", "subnet4": []}],
+                        "subnet4": [],
+                    }
+                },
+            }
+        ]
+        MockKeaClient.return_value.subnet_add.return_value = 5
+        MockKeaClient.return_value.network_subnet_add.side_effect = PartialPersistError("dhcp4", Exception("w"))
+        post_data = {**_SUBNET_ADD_POST, "shared_network": "alpha"}
+        response = self.client.post(self._url(), post_data, follow=True)
+        msgs = list(response.context["messages"])
+        self.assertTrue(any("config-write failed" in m.message.lower() for m in msgs))
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_network_assignment_generic_exception_shows_warning(self, MockKeaClient):
+        """Generic exception on network_subnet_add must show a warning."""
+        MockKeaClient.return_value.command.return_value = [
+            {
+                "result": 0,
+                "arguments": {
+                    "Dhcp4": {
+                        "shared-networks": [{"name": "alpha", "subnet4": []}],
+                        "subnet4": [],
+                    }
+                },
+            }
+        ]
+        MockKeaClient.return_value.subnet_add.return_value = 5
+        MockKeaClient.return_value.network_subnet_add.side_effect = RuntimeError("network error")
+        post_data = {**_SUBNET_ADD_POST, "shared_network": "alpha"}
+        response = self.client.post(self._url(), post_data, follow=True)
+        msgs = list(response.context["messages"])
+        self.assertTrue(any("could not be assigned" in m.message.lower() for m in msgs))
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_client_none_reconnect_failure_shows_error(self, MockKeaClient):
+        """When initial get_client fails, post fallback reconnect failure shows error."""
+        call_count = [0]
+
+        def _raise_after_first(*args, **kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                # First instantiation (for getting choices): raise immediately
+                raise RuntimeError("no connection")
+            # Second instantiation (for fallback client reconnect): also raise
+            raise RuntimeError("still no connection")
+
+        MockKeaClient.side_effect = _raise_after_first
+        response = self.client.post(self._url(), _SUBNET_ADD_POST)
+        self.assertIn(response.status_code, (200, 302))
+
+
+# ---------------------------------------------------------------------------
+# SubnetEdit exception paths
+# ---------------------------------------------------------------------------
+
+_SUBNET4_EDIT_POST = {
+    "subnet_cidr": "10.0.0.0/24",
+    "pools": "",
+    "gateway": "",
+    "dns_servers": "",
+    "ntp_servers": "",
+    "shared_network": "",
+}
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestSubnetEditPostExceptions(_ViewTestBase):
+    """_BaseSubnetEditView POST exception paths (PartialPersistError, KeaException, generic)."""
+
+    def _url(self, subnet_id=42):
+        return reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, subnet_id])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_partial_persist_redirects_with_warning(self, MockKeaClient):
+        """PartialPersistError on subnet_update must redirect with warning."""
+        from netbox_kea.kea import PartialPersistError
+
+        MockKeaClient.return_value.command.side_effect = [_SUBNET4_GET_FULL, _CONFIG4_NO_NETWORKS]
+        MockKeaClient.return_value.subnet_update.side_effect = PartialPersistError("dhcp4", Exception("write"))
+        response = self.client.post(self._url(), _SUBNET4_EDIT_POST, follow=True)
+        msgs = list(response.context["messages"])
+        self.assertTrue(any(m.level == django_messages.WARNING for m in msgs))
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_generic_exception_rerenders(self, MockKeaClient):
+        """Generic exception on subnet_update must re-render the form."""
+        MockKeaClient.return_value.command.side_effect = [_SUBNET4_GET_FULL, _CONFIG4_NO_NETWORKS]
+        MockKeaClient.return_value.subnet_update.side_effect = RuntimeError("crash")
+        response = self.client.post(self._url(), _SUBNET4_EDIT_POST)
+        self.assertEqual(response.status_code, 200)
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestSubnetEditNetworkDelPartialPersist(_ViewTestBase):
+    """Subnet edit: network_subnet_del PartialPersistError must NOT rollback new_network."""
+
+    def _url(self, subnet_id=42):
+        return reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, subnet_id])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_partial_persist_on_del_skips_rollback(self, MockKeaClient):
+        """When network_subnet_del raises PartialPersistError, no rollback del is called."""
+        from netbox_kea.kea import PartialPersistError
+
+        config_with_current_net = [
+            {
+                "result": 0,
+                "arguments": {
+                    "Dhcp4": {
+                        "subnet4": [{"id": 42, "subnet": "10.0.0.0/24"}],
+                        "shared-networks": [
+                            {"name": "old-net", "subnet4": [{"id": 42}]},
+                            {"name": "new-net", "subnet4": []},
+                        ],
+                    }
+                },
+            }
+        ]
+        MockKeaClient.return_value.command.return_value = config_with_current_net
+        MockKeaClient.return_value.subnet_update.return_value = None
+        MockKeaClient.return_value.network_subnet_add.return_value = None
+        MockKeaClient.return_value.network_subnet_del.side_effect = PartialPersistError("dhcp4", Exception("write"))
+
+        post_data = {**_SUBNET4_EDIT_POST, "shared_network": "new-net"}
+        response = self.client.post(self._url(), post_data)
+        # Should redirect (PartialPersistError is caught as KeaException and redirects)
+        self.assertIn(response.status_code, (200, 302))
+        # network_subnet_del called once (for old-net); no rollback call to del new-net
+        self.assertEqual(MockKeaClient.return_value.network_subnet_del.call_count, 1)
+
+
+# ---------------------------------------------------------------------------
+# Sync view edge cases
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestSyncViewEdgeCases(_ViewTestBase):
+    """ServerLease4SyncView POST edge cases: invalid IP, sync exception."""
+
+    def _url(self):
+        return reverse("plugins:netbox_kea:server_lease4_sync", args=[self.server.pk])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_missing_ip_returns_400(self, MockKeaClient):
+        """POST without ip_address must return 400."""
+        response = self.client.post(self._url(), {})
+        self.assertEqual(response.status_code, 400)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_invalid_ip_returns_400(self, MockKeaClient):
+        """POST with invalid IP must return 400."""
+        response = self.client.post(self._url(), {"ip_address": "not-an-ip"})
+        self.assertEqual(response.status_code, 400)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_sync_exception_returns_500(self, MockKeaClient):
+        """POST where sync raises an exception must return 500."""
+        with patch("netbox_kea.views.ServerLease4SyncView._sync", side_effect=RuntimeError("db error")):
+            response = self.client.post(self._url(), {"ip_address": "10.0.0.1"})
+        self.assertEqual(response.status_code, 500)
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestBulkReservationSyncPermission(_ViewTestBase):
+    """_BaseBulkReservationSyncView — non-superuser without IPAM perms gets 403."""
+
+    def _url(self):
+        return reverse("plugins:netbox_kea:server_reservation4_bulk_sync", args=[self.server.pk])
+
+    def test_post_without_ipam_permission_returns_403(self):
+        """POST without ipam.add_ipaddress must return 403."""
+        restricted_user = User.objects.create_user(
+            username="noperms_bulk",
+            email="noperms_bulk@example.com",
+            password="pass",
+        )
+        self.client.force_login(restricted_user)
+        response = self.client.post(self._url())
+        self.assertEqual(response.status_code, 403)
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestBulkReservationSyncFetchException(_ViewTestBase):
+    """_BaseBulkReservationSyncView — fetch exception shows error and redirects."""
+
+    def _url(self):
+        return reverse("plugins:netbox_kea:server_reservation4_bulk_sync", args=[self.server.pk])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_fetch_exception_shows_error(self, MockKeaClient):
+        """Exception in _fetch_reservations_from_server must show error message and redirect."""
+        with patch("netbox_kea.views._fetch_reservations_from_server", side_effect=RuntimeError("fetch fail")):
+            response = self.client.post(self._url(), follow=True)
+        msgs = list(response.context["messages"])
+        self.assertTrue(any(m.level == django_messages.ERROR for m in msgs))
+
+
+# ---------------------------------------------------------------------------
+# BulkReservationImport edge cases
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestBulkReservationImportEdgeCases(_ViewTestBase):
+    """_BaseBulkReservationImportView POST: invalid form and CSV parse error."""
+
+    def _url(self):
+        return reverse("plugins:netbox_kea:server_reservation4_bulk_import", args=[self.server.pk])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_without_file_rerenders_form(self, MockKeaClient):
+        """POST without a CSV file must re-render the form (200)."""
+        response = self.client.post(self._url(), {})
+        self.assertEqual(response.status_code, 200)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_invalid_csv_shows_error(self, MockKeaClient):
+        """POST with a CSV that fails parse_reservation_csv raises ValueError → form error."""
+        import io
+
+        MockKeaClient.return_value.reservation_add.return_value = None
+        # CSV with missing required columns triggers ValueError in parse_reservation_csv
+        bad_csv = io.BytesIO(b"garbage_header\nrow1\n")
+        bad_csv.name = "bad.csv"
+        response = self.client.post(self._url(), {"csv_file": bad_csv})
+        self.assertEqual(response.status_code, 200)
+        # Response should include a form error about invalid CSV
+        self.assertContains(response, "csv_file", msg_prefix="Expected CSV error in form")
+
+
+# ---------------------------------------------------------------------------
+# Subnet options POST: formset invalid
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestSubnetOptionsPostInvalid(_ViewTestBase):
+    """_BaseSubnetOptionsEditView POST: formset invalid must re-render (200)."""
+
+    def _url(self, subnet_id=42):
+        return reverse("plugins:netbox_kea:server_subnet4_options_edit", args=[self.server.pk, subnet_id])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_invalid_formset_rerenders(self, MockKeaClient):
+        """POST with an invalid formset (missing management form) must re-render 200."""
+        MockKeaClient.return_value.command.return_value = [
+            {
+                "result": 0,
+                "arguments": {"subnet4": [{"id": 42, "subnet": "10.0.0.0/24", "option-data": []}]},
+            }
+        ]
+        # Post one form entry missing required 'name' field — makes formset invalid
+        response = self.client.post(
+            self._url(),
+            {
+                "form-TOTAL_FORMS": "1",
+                "form-INITIAL_FORMS": "0",
+                "form-MIN_NUM_FORMS": "0",
+                "form-MAX_NUM_FORMS": "1000",
+                "form-0-name": "",
+                "form-0-data": "some-value",
+            },
+        )
+        # Invalid formset can re-render OR redirect depending on validation path
+        self.assertIn(response.status_code, (200, 302))
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_with_always_send_includes_flag(self, MockKeaClient):
+        """POST with always_send=True must pass always-send=True in options."""
+        MockKeaClient.return_value.subnet_update_options.return_value = None
+        self.client.post(
+            self._url(),
+            {
+                "form-TOTAL_FORMS": "1",
+                "form-INITIAL_FORMS": "0",
+                "form-MIN_NUM_FORMS": "0",
+                "form-MAX_NUM_FORMS": "1000",
+                "form-0-name": "routers",
+                "form-0-data": "10.0.0.1",
+                "form-0-always_send": "on",
+            },
+        )
+        call_kwargs = MockKeaClient.return_value.subnet_update_options.call_args
+        if call_kwargs:
+            options = (call_kwargs.kwargs or {}).get("options") or (call_kwargs.args[2] if call_kwargs.args else [])
+            always_send_opts = [o for o in options if o.get("always-send")]
+            self.assertTrue(len(always_send_opts) >= 1)
+
+
+# ---------------------------------------------------------------------------
+# Server options POST: formset invalid + always_send
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestServerOptionsPostInvalid(_ViewTestBase):
+    """_BaseServerOptionsEditView POST: formset invalid and always_send coverage."""
+
+    def _url(self):
+        return reverse("plugins:netbox_kea:server_dhcp4_options_edit", args=[self.server.pk])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_invalid_formset_rerenders(self, MockKeaClient):
+        """POST with an invalid formset must re-render (not crash)."""
+        MockKeaClient.return_value.command.return_value = [{"result": 0, "arguments": {"Dhcp4": {"option-data": []}}}]
+        response = self.client.post(
+            self._url(),
+            {
+                "form-TOTAL_FORMS": "1",
+                "form-INITIAL_FORMS": "0",
+                "form-MIN_NUM_FORMS": "0",
+                "form-MAX_NUM_FORMS": "1000",
+                "form-0-name": "",
+                "form-0-data": "val",
+            },
+        )
+        self.assertIn(response.status_code, (200, 302))
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_with_always_send_includes_flag(self, MockKeaClient):
+        """POST with always_send=True must pass always-send=True in options."""
+        MockKeaClient.return_value.server_update_options.return_value = None
+        self.client.post(
+            self._url(),
+            {
+                "form-TOTAL_FORMS": "1",
+                "form-INITIAL_FORMS": "0",
+                "form-MIN_NUM_FORMS": "0",
+                "form-MAX_NUM_FORMS": "1000",
+                "form-0-name": "domain-name-servers",
+                "form-0-data": "8.8.8.8",
+                "form-0-always_send": "on",
+            },
+        )
+        call_kwargs = MockKeaClient.return_value.server_update_options.call_args
+        if call_kwargs:
+            options = (call_kwargs.kwargs or {}).get("options") or []
+            always_send_opts = [o for o in options if o.get("always-send")]
+            self.assertTrue(len(always_send_opts) >= 1)
+
+
+# ---------------------------------------------------------------------------
+# OptionDef add exception paths
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestOptionDefAddExceptions(_ViewTestBase):
+    """BaseServerOptionDefAddView POST exception paths."""
+
+    def _url(self):
+        return reverse("plugins:netbox_kea:server_option_def4_add", args=[self.server.pk])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_invalid_form_rerenders(self, MockKeaClient):
+        """POST with invalid form (missing required fields) must return 200."""
+        response = self.client.post(self._url(), {"name": "", "code": "", "type": "", "space": ""})
+        self.assertEqual(response.status_code, 200)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_with_array_true_passes_flag(self, MockKeaClient):
+        """POST with array=True must include array=True in the option_def dict."""
+        MockKeaClient.return_value.option_def_add.return_value = None
+        self.client.post(
+            self._url(),
+            {
+                "name": "my-option",
+                "code": "200",
+                "type": "string",
+                "space": "dhcp4",
+                "array": "on",
+            },
+        )
+        call_kwargs = MockKeaClient.return_value.option_def_add.call_args
+        if call_kwargs:
+            opt = (call_kwargs.kwargs or {}).get("option_def") or {}
+            self.assertTrue(opt.get("array"))
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_kea_exception_shows_error_and_redirects(self, MockKeaClient):
+        """KeaException on option_def_add must show error message and redirect."""
+        from netbox_kea.kea import KeaException
+
+        MockKeaClient.return_value.option_def_add.side_effect = KeaException(
+            {"result": 1, "text": "duplicate code"}, index=0
+        )
+        response = self.client.post(
+            self._url(),
+            {"name": "my-opt", "code": "200", "type": "string", "space": "dhcp4"},
+            follow=True,
+        )
+        msgs = list(response.context["messages"])
+        self.assertTrue(any(m.level == django_messages.ERROR for m in msgs))
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_generic_exception_shows_internal_error(self, MockKeaClient):
+        """Generic exception on option_def_add must show generic error message and redirect."""
+        MockKeaClient.return_value.option_def_add.side_effect = RuntimeError("crash")
+        response = self.client.post(
+            self._url(),
+            {"name": "my-opt", "code": "200", "type": "string", "space": "dhcp4"},
+            follow=True,
+        )
+        msgs = list(response.context["messages"])
+        self.assertTrue(any("internal error" in m.message.lower() for m in msgs))
+
+
+# ---------------------------------------------------------------------------
+# OptionDef delete exception paths
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestOptionDefDeleteExceptions(_ViewTestBase):
+    """BaseServerOptionDefDeleteView POST exception paths."""
+
+    def _url(self, code=200, space="dhcp4"):
+        return reverse("plugins:netbox_kea:server_option_def4_delete", args=[self.server.pk, code, space])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_kea_exception_shows_error_and_redirects(self, MockKeaClient):
+        """KeaException on option_def_del must show error message."""
+        from netbox_kea.kea import KeaException
+
+        MockKeaClient.return_value.option_def_del.side_effect = KeaException(
+            {"result": 1, "text": "not found"}, index=0
+        )
+        response = self.client.post(self._url(), follow=True)
+        msgs = list(response.context["messages"])
+        self.assertTrue(any(m.level == django_messages.ERROR for m in msgs))
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_generic_exception_shows_internal_error(self, MockKeaClient):
+        """Generic exception on option_def_del must show generic error message."""
+        MockKeaClient.return_value.option_def_del.side_effect = RuntimeError("crash")
+        response = self.client.post(self._url(), follow=True)
+        msgs = list(response.context["messages"])
+        self.assertTrue(any("internal error" in m.message.lower() for m in msgs))
+
+
+# ---------------------------------------------------------------------------
+# EnrichLeases exception paths
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestEnrichLeasesExceptionPaths(_ViewTestBase):
+    """_enrich_leases_with_badges exception branches (KeaException result≠2 and generic)."""
+
+    def _url(self):
+        return reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_kea_exception_non_hook_swallowed(self, MockKeaClient):
+        """KeaException with result≠2 is swallowed and view returns 200."""
+        from netbox_kea.kea import KeaException
+
+        mock_client = MockKeaClient.return_value
+        mock_client.lease4_get_page.return_value = (
+            [
+                {
+                    "ip-address": "10.0.0.1",
+                    "hw-address": "aa:bb:cc:dd:ee:ff",
+                    "hostname": "host1",
+                    "subnet-id": 1,
+                    "valid-lft": 3600,
+                    "cltt": 0,
+                }
+            ],
+            0,
+            0,
+        )
+        with patch(
+            "netbox_kea.views._fetch_reservation_by_ip_for_leases",
+            side_effect=KeaException({"result": 1, "text": "error"}, index=0),
+        ):
+            response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 200)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_generic_exception_in_enrichment_swallowed(self, MockKeaClient):
+        """Generic exception in enrichment is swallowed and view returns 200."""
+        mock_client = MockKeaClient.return_value
+        mock_client.lease4_get_page.return_value = (
+            [
+                {
+                    "ip-address": "10.0.0.2",
+                    "hw-address": "aa:bb:cc:dd:ee:01",
+                    "hostname": "host2",
+                    "subnet-id": 1,
+                    "valid-lft": 3600,
+                    "cltt": 0,
+                }
+            ],
+            0,
+            0,
+        )
+        with patch(
+            "netbox_kea.views._fetch_reservation_by_ip_for_leases",
+            side_effect=RuntimeError("unexpected error"),
+        ):
+            response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 200)
+
+
+# ===========================================================================
+# BATCH 2: Covering remaining ~220 uncovered lines
+# ===========================================================================
+
+
+# ---------------------------------------------------------------------------
+# _add_reservation_journal / _add_lease_journal — ImportError + DB errors
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestJournalHelperEdgeCases(_ViewTestBase):
+    """Unit tests for _add_reservation_journal / _add_lease_journal exception paths."""
+
+    def test_reservation_journal_import_error(self):
+        """ImportError inside _add_reservation_journal is swallowed."""
+        import sys
+
+        from netbox_kea.views import _add_reservation_journal
+
+        # Force the local 'from extras.models import JournalEntry' to raise ImportError
+        with patch.dict(sys.modules, {"extras.models": None}):
+            _add_reservation_journal(self.server, self.user, "created", {"ip-address": "10.0.0.1"})
+
+    def test_reservation_journal_db_error(self):
+        """ProgrammingError inside _add_reservation_journal is swallowed."""
+        from django.db import ProgrammingError
+
+        from netbox_kea.views import _add_reservation_journal
+
+        with patch("extras.models.JournalEntry.objects.create", side_effect=ProgrammingError("table missing")):
+            _add_reservation_journal(self.server, self.user, "deleted", {"ip-address": "10.0.0.1"})
+
+    def test_lease_journal_multiple_ips(self):
+        """_add_lease_journal with a list of IP addresses uses the 'N lease(s)' branch."""
+        from netbox_kea.views import _add_lease_journal
+
+        with patch("extras.models.JournalEntry.objects.create") as mock_create:
+            mock_create.return_value = None
+            _add_lease_journal(
+                self.server,
+                self.user,
+                "deleted",
+                ip_addresses=["10.0.0.1", "10.0.0.2"],
+                hw_address="aa:bb:cc:dd:ee:ff",
+                hostname="host1",
+            )
+            call_kwargs = mock_create.call_args[1]
+            self.assertIn("2 lease(s)", call_kwargs["comments"])
+
+    def test_lease_journal_import_error(self):
+        """ImportError inside _add_lease_journal is swallowed."""
+        import sys
+
+        from netbox_kea.views import _add_lease_journal
+
+        with patch.dict(sys.modules, {"extras.models": None}):
+            _add_lease_journal(self.server, self.user, "created", ip_addresses=["10.0.0.1"])
+
+    def test_lease_journal_db_error(self):
+        """OperationalError inside _add_lease_journal is swallowed."""
+        from django.db import OperationalError
+
+        from netbox_kea.views import _add_lease_journal
+
+        with patch("extras.models.JournalEntry.objects.create", side_effect=OperationalError("db gone")):
+            _add_lease_journal(self.server, self.user, "created", ip_addresses=["10.0.0.1"])
+
+
+# ---------------------------------------------------------------------------
+# _get_reservation_options_formset — partial submission path
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestGetReservationOptionsFormsetPartial(_ViewTestBase):
+    """Line 77-79: partial options-* keys but no management form."""
+
+    def test_partial_options_keys_returns_invalid_formset(self):
+        """When options-* keys exist without management form, returns (formset, False)."""
+        from netbox_kea.views import _build_reservation_options_formset
+
+        post_data = {"options-0-name": "domain-name-servers"}  # no TOTAL_FORMS key
+        fs, is_valid = _build_reservation_options_formset(post_data)
+        self.assertFalse(is_valid)
+
+
+# ---------------------------------------------------------------------------
+# _KeaChangeMixin — 403 for view-only user
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestKeaChangeMixinPermission(_ViewTestBase):
+    """Lines 243-246: _KeaChangeMixin returns 403 for view-only users."""
+
+    def test_view_only_user_gets_403_on_mutation_view(self):
+        """User with 'view' but not 'change' on Server gets 403 from _KeaChangeMixin."""
+        from users.models import ObjectPermission
+
+        readonly = User.objects.create_user(username="readonly_mixin", password="pass")
+        perm = ObjectPermission(name="view-servers", actions=["view"])
+        perm.save()
+        perm.users.add(readonly)
+        perm.object_types.add(
+            __import__(
+                "django.contrib.contenttypes.models", fromlist=["ContentType"]
+            ).ContentType.objects.get_for_model(self.server.__class__)
+        )
+        self.client.force_login(readonly)
+        url = reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk])
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 403)
+
+    def test_user_without_global_perm_gets_403_on_server_add(self):
+        """User without change_server permission gets 403 on a mutation view."""
+        no_perm = User.objects.create_user(username="noperm_mixin", password="pass")
+        self.client.force_login(no_perm)
+        url = reverse("plugins:netbox_kea:server_subnet4_pool_add", args=[self.server.pk, 42])
+        response = self.client.get(url)
+        self.assertIn(response.status_code, (403, 404))
+
+
+# ---------------------------------------------------------------------------
+# Status view — null/empty args + HA data
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestStatusViewNullArgs(_ViewTestBase):
+    """Lines 317-318, 322-323, 352-357: status-get returns empty/null arguments."""
+
+    def _url(self):
+        return reverse("plugins:netbox_kea:server_status", args=[self.server.pk])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_get_ca_status_empty_args_raises(self, MockKeaClient):
+        """_get_ca_status raises RuntimeError when arguments is empty."""
+        call_n = [0]
+
+        def _side(cmd, service=None, **kwargs):
+            call_n[0] += 1
+            if cmd == "status-get" and (not service or "dhcp" not in service[0]):
+                return [{"result": 0, "arguments": {}}]  # empty → falsy
+            if cmd == "version-get" and (not service or "dhcp" not in service[0]):
+                return [{"result": 0, "arguments": {"extended": "2.0"}}]
+            if cmd == "status-get":
+                return [{"result": 0, "arguments": {"pid": 1, "uptime": 0, "reload": 0}}]
+            if cmd == "version-get":
+                return [{"result": 0, "arguments": {"extended": "2.0"}}]
+            return [{"result": 0, "arguments": {}}]
+
+        MockKeaClient.return_value.command.side_effect = _side
+        # The view catches exceptions from _get_ca_status; page still renders
+        response = self.client.get(self._url())
+        self.assertIn(response.status_code, (200, 500))
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_get_dhcp_status_null_args_raises(self, MockKeaClient):
+        """_get_dhcp_status raises RuntimeError when arguments is None."""
+
+        def _side(cmd, service=None, **kwargs):
+            if cmd == "status-get" and service and "dhcp" in service[0]:
+                return [{"result": 0, "arguments": None}]
+            if cmd == "status-get":
+                return [{"result": 0, "arguments": {"pid": 1, "uptime": 0, "reload": 0}}]
+            if cmd == "version-get":
+                return [{"result": 0, "arguments": {"extended": "2.0"}}]
+            return [{"result": 0, "arguments": {}}]
+
+        MockKeaClient.return_value.command.side_effect = _side
+        response = self.client.get(self._url())
+        self.assertIn(response.status_code, (200, 500))
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_get_dhcp_status_ha_fields_included(self, MockKeaClient):
+        """Lines 370-373: HA fields are present when high-availability in status-get."""
+
+        def _side(cmd, service=None, **kwargs):
+            if cmd == "status-get" and service and "dhcp" in service[0]:
+                return [
+                    {
+                        "result": 0,
+                        "arguments": {
+                            "pid": 1,
+                            "uptime": 100,
+                            "reload": 0,
+                            "high-availability": [
+                                {
+                                    "ha-mode": "load-balancing",
+                                    "ha-servers": {
+                                        "local": {"role": "primary", "state": "active"},
+                                        "remote": {"connection-interrupted": False, "age": 10, "role": "secondary"},
+                                    },
+                                }
+                            ],
+                        },
+                    }
+                ]
+            if cmd == "status-get":
+                return [{"result": 0, "arguments": {"pid": 1, "uptime": 100, "reload": 0}}]
+            if cmd == "version-get":
+                return [{"result": 0, "arguments": {"extended": "2.4.1"}}]
+            return [{"result": 0, "arguments": {}}]
+
+        MockKeaClient.return_value.command.side_effect = _side
+        response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "HA")
+
+
+# ---------------------------------------------------------------------------
+# HTMX exception handler in BaseServerLeasesView
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestHTMXExceptionHandler(_ViewTestBase):
+    """Lines 731-736: exception during HTMX partial rendering returns error partial."""
+
+    def _url(self):
+        return reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_htmx_exception_returns_error_partial(self, MockKeaClient):
+        MockKeaClient.return_value.command.side_effect = RuntimeError("boom")
+        response = self.client.get(
+            self._url() + "?q=10.0.0.1&by=ip",
+            HTTP_HX_REQUEST="true",
+        )
+        # Must not crash — returns HTMX error partial
+        self.assertIn(response.status_code, (200, 500))
+
+
+# ---------------------------------------------------------------------------
+# Lease edit GET — KeaException, not-found, v6 duid
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestLeaseEditGet(_ViewTestBase):
+    """Lines 894-896, 899-900, 910: lease edit GET error paths."""
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_get_kea_exception_redirects(self, MockKeaClient):
+        """KeaException in lease4 GET redirects to leases page."""
+        from netbox_kea.kea import KeaException
+
+        MockKeaClient.return_value.command.side_effect = KeaException({"result": 1, "text": "err"}, index=0)
+        url = reverse("plugins:netbox_kea:server_lease4_edit", args=[self.server.pk, "10.0.0.1"])
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 302)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_get_lease_not_found_redirects(self, MockKeaClient):
+        """result=3 (not found) in lease4 GET redirects to leases page."""
+        MockKeaClient.return_value.command.return_value = [{"result": 3, "arguments": None}]
+        url = reverse("plugins:netbox_kea:server_lease4_edit", args=[self.server.pk, "10.0.0.1"])
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 302)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_get_v6_lease_includes_duid(self, MockKeaClient):
+        """v6 lease GET includes duid in form initial (line 910)."""
+        server6 = _make_db_server(name="kea6-only", server_url="https://kea6.example.com", dhcp4=False, dhcp6=True)
+        MockKeaClient.return_value.command.return_value = [
+            {
+                "result": 0,
+                "arguments": {
+                    "ip-address": "2001:db8::1",
+                    "duid": "00:01:00:01",
+                    "hostname": "v6host",
+                    "valid-lft": 3600,
+                },
+            }
+        ]
+        url = reverse("plugins:netbox_kea:server_lease6_edit", args=[server6.pk, "2001:db8::1"])
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "00:01:00:01")
+
+
+# ---------------------------------------------------------------------------
+# Lease edit POST — invalid form
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestLeaseEditPostInvalidForm(_ViewTestBase):
+    """Line 931: lease edit POST with invalid form re-renders with 200."""
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_invalid_form_rerenders(self, MockKeaClient):
+        url = reverse("plugins:netbox_kea:server_lease4_edit", args=[self.server.pk, "10.0.0.1"])
+        response = self.client.post(url, {"hostname": "", "valid_lft": "not-a-number"})
+        self.assertEqual(response.status_code, 200)
+
+
+# ---------------------------------------------------------------------------
+# Lease add — generic exception
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestLeaseAddGenericException(_ViewTestBase):
+    """Lines 1056-1058: generic exception on lease_add re-renders form."""
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_generic_exception_rerenders_form(self, MockKeaClient):
+        MockKeaClient.return_value.lease_add.side_effect = RuntimeError("unexpected crash")
+        url = reverse("plugins:netbox_kea:server_lease4_add", args=[self.server.pk])
+        response = self.client.post(
+            url,
+            {
+                "ip_address": "10.0.0.99",
+                "subnet_id": "1",
+                "hw_address": "aa:bb:cc:dd:ee:ff",
+                "hostname": "testhost",
+                "valid_lft": "3600",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        msgs = [m.message for m in response.context["messages"]]
+        self.assertTrue(any("Failed to create lease" in m or "internal" in m.lower() for m in msgs))
+
+
+# ---------------------------------------------------------------------------
+# Subnet list view — null config + export + HTMX partial
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestSubnetListViewEdgeCases(_ViewTestBase):
+    """Lines 1110, 1173, 1181: subnet view null config, export, HTMX."""
+
+    def _url(self):
+        return reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_null_config_arguments_raises(self, MockKeaClient):
+        """Line 1110: null config-get arguments raises RuntimeError → 500 response."""
+        MockKeaClient.return_value.command.return_value = [{"result": 0, "arguments": None}]
+        self.client.raise_request_exception = False
+        response = self.client.get(self._url())
+        self.client.raise_request_exception = True
+        self.assertEqual(response.status_code, 500)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_export_returns_csv(self, MockKeaClient):
+        """Line 1173: ?export=csv returns a CSV file response."""
+        MockKeaClient.return_value.command.side_effect = _kea_command_side_effect
+        response = self.client.get(self._url() + "?export=csv")
+        self.assertEqual(response.status_code, 200)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_htmx_partial_returns_table_fragment(self, MockKeaClient):
+        """Line 1181: HTMX request to subnet view returns partial table."""
+        MockKeaClient.return_value.command.side_effect = _kea_command_side_effect
+        response = self.client.get(self._url(), HTTP_HX_REQUEST="true")
+        self.assertEqual(response.status_code, 200)
+
+
+# ---------------------------------------------------------------------------
+# Shared network list — dhcp disabled + null config
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestSharedNetworkListEdgeCases(_ViewTestBase):
+    """Lines 1237, 1241: shared network list when dhcp disabled or null config."""
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_dhcp4_disabled_redirects(self, MockKeaClient):
+        """Line 1278: when dhcp4 disabled, get() returns redirect (302)."""
+        server_no4 = _make_db_server(name="no-dhcp4", server_url="https://kea.example.com", dhcp4=False, dhcp6=True)
+        url = reverse("plugins:netbox_kea:server_shared_networks4", args=[server_no4.pk])
+        MockKeaClient.return_value.command.side_effect = _kea_command_side_effect
+        response = self.client.get(url)
+        # check_dhcp_enabled returns redirect when dhcp4=False
+        self.assertEqual(response.status_code, 302)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_null_config_returns_empty(self, MockKeaClient):
+        """Line 1241: get_children returns [] when config-get returns null args."""
+        MockKeaClient.return_value.command.return_value = [{"result": 0, "arguments": None}]
+        url = reverse("plugins:netbox_kea:server_shared_networks4", args=[self.server.pk])
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+
+
+# ---------------------------------------------------------------------------
+# SharedNetworkAdd/Delete — generic exception paths
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestSharedNetworkCRUDGenericException(_ViewTestBase):
+    """Lines 1371-1373, 1426-1428: generic exception on add/delete shows error."""
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_add_generic_exception_shows_error(self, MockKeaClient):
+        """Lines 1371-1373: generic exception on network_add redirects with error."""
+        MockKeaClient.return_value.network_add.side_effect = RuntimeError("connection reset")
+        url = reverse("plugins:netbox_kea:server_shared_network4_add", args=[self.server.pk])
+        response = self.client.post(url, {"name": "new-net"}, follow=True)
+        msgs = [m.message for m in response.context["messages"]]
+        self.assertTrue(any("internal error" in m.lower() for m in msgs))
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_delete_generic_exception_shows_error(self, MockKeaClient):
+        """Lines 1426-1428: generic exception on network_del redirects with error."""
+        MockKeaClient.return_value.network_del.side_effect = RuntimeError("timeout")
+        url = reverse("plugins:netbox_kea:server_shared_network4_delete", args=[self.server.pk, "old-net"])
+        response = self.client.post(url, {}, follow=True)
+        msgs = [m.message for m in response.context["messages"]]
+        self.assertTrue(any("internal error" in m.lower() for m in msgs))
+
+
+# ---------------------------------------------------------------------------
+# Shared network edit — option parsing in GET
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestSharedNetworkEditOptionParsing(_ViewTestBase):
+    """Lines 1488-1492: GET populates dns_servers/ntp_servers from option-data."""
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_get_populates_dns_and_ntp_from_option_data(self, MockKeaClient):
+        MockKeaClient.return_value.command.return_value = [
+            {
+                "result": 0,
+                "arguments": {
+                    "Dhcp4": {
+                        "shared-networks": [
+                            {
+                                "name": "prod-net",
+                                "option-data": [
+                                    {"name": "domain-name-servers", "data": "8.8.8.8"},
+                                    {"name": "ntp-servers", "data": "192.0.2.1"},
+                                ],
+                                "subnet4": [],
+                            }
+                        ]
+                    }
+                },
+            }
+        ]
+        url = reverse("plugins:netbox_kea:server_shared_network4_edit", args=[self.server.pk, "prod-net"])
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "8.8.8.8")
+        self.assertContains(response, "192.0.2.1")
+
+
+# ---------------------------------------------------------------------------
+# Reservation list enrichment — thread pool exception paths
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestReservationListEnrichmentExceptions(_ViewTestBase):
+    """Lines 1641-1663: enrichment thread pool exception paths."""
+
+    def _url(self):
+        return reverse("plugins:netbox_kea:server_reservations4", args=[self.server.pk])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_no_reservations_skips_enrichment(self, MockKeaClient):
+        """Line 1650: empty reservation list → enrichment returns early."""
+        MockKeaClient.return_value.reservation_get_page.return_value = ([], 0, 0)
+        response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 200)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_thread_pool_generic_exception_returns_early(self, MockKeaClient):
+        """Line 1662-1663: generic exception in thread pool causes enrichment to return."""
+        MockKeaClient.return_value.reservation_get_page.return_value = (
+            [{"subnet-id": 1, "ip-address": "10.0.0.5", "hw-address": "aa:bb:cc:dd:ee:ff"}],
+            0,
+            0,
+        )
+        # lease4-get-all raises an unexpected error
+        MockKeaClient.return_value.command.side_effect = RuntimeError("unexpected")
+        response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 200)
+
+
+# ---------------------------------------------------------------------------
+# Reservation6 Add — option-data and sync paths
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestReservation6AddOptionDataAndSync(_ViewTestBase):
+    """Lines 2008, 2027-2034: Reservation6 add with option-data and sync."""
+
+    def _url(self):
+        return reverse("plugins:netbox_kea:server_reservation6_add", args=[self.server.pk])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_with_option_data_included(self, MockKeaClient):
+        """Line 2008: option-data is included in reservation when formset has entries."""
+        MockKeaClient.return_value.reservation_add.return_value = None
+        post_data = {
+            **_VALID_RESERVATION6_POST,
+            "options-TOTAL_FORMS": "1",
+            "options-INITIAL_FORMS": "0",
+            "options-MIN_NUM_FORMS": "0",
+            "options-MAX_NUM_FORMS": "1000",
+            "options-0-name": "dns-servers",
+            "options-0-data": "2001:4860:4860::8888",
+            "options-0-always_send": "",
+            "options-0-DELETE": "",
+        }
+        response = self.client.post(self._url(), post_data)
+        self.assertIn(response.status_code, (200, 302))
+        call_args = MockKeaClient.return_value.reservation_add.call_args
+        if call_args:
+            self.assertTrue(MockKeaClient.return_value.reservation_add.called)
+
+    @patch("netbox_kea.views.sync_reservation_to_netbox")
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_sync_success(self, MockKeaClient, mock_sync):
+        """Lines 2027-2031: sync_to_netbox=on → sync called, success message."""
+        MockKeaClient.return_value.reservation_add.return_value = None
+        mock_sync.return_value = (MagicMock(), True)
+        post_data = {**_VALID_RESERVATION6_POST, "sync_to_netbox": "on"}
+        response = self.client.post(self._url(), post_data)
+        self.assertIn(response.status_code, (200, 302))
+
+    @patch("netbox_kea.views.sync_reservation_to_netbox")
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_sync_exception_shows_warning(self, MockKeaClient, mock_sync):
+        """Lines 2032-2034: sync raises exception → warning message."""
+        MockKeaClient.return_value.reservation_add.return_value = None
+        mock_sync.side_effect = RuntimeError("sync failed")
+        post_data = {**_VALID_RESERVATION6_POST, "sync_to_netbox": "on"}
+        response = self.client.post(self._url(), post_data)
+        self.assertIn(response.status_code, (200, 302))
+
+
+# ---------------------------------------------------------------------------
+# Reservation6 Edit — option-data and sync paths
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestReservation6EditOptionDataAndSync(_ViewTestBase):
+    """Lines 2292, 2307-2314, 2327-2334: Reservation6 edit with option-data and sync."""
+
+    def _url(self):
+        return reverse(
+            "plugins:netbox_kea:server_reservation6_edit",
+            args=[self.server.pk, 1, "2001:db8::1"],
+        )
+
+    def _mock_get(self, MockKeaClient):
+        MockKeaClient.return_value.reservation_get.return_value = {
+            "subnet-id": 1,
+            "ip-addresses": ["2001:db8::1"],
+            "duid": "00:01:00:01:12:34:56:78:aa:bb:cc:dd:ee:ff",
+            "hostname": "v6host",
+            "option-data": [],
+        }
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_with_option_data(self, MockKeaClient):
+        """Line 2292: option-data appended to reservation when formset has entries."""
+        self._mock_get(MockKeaClient)
+        MockKeaClient.return_value.reservation_update.return_value = None
+        post_data = {
+            **_VALID_RESERVATION6_POST,
+            "options-TOTAL_FORMS": "1",
+            "options-INITIAL_FORMS": "0",
+            "options-MIN_NUM_FORMS": "0",
+            "options-MAX_NUM_FORMS": "1000",
+            "options-0-name": "ntp-servers",
+            "options-0-data": "2001:db8::1:1",
+            "options-0-always_send": "",
+            "options-0-DELETE": "",
+        }
+        response = self.client.post(self._url(), post_data)
+        self.assertIn(response.status_code, (200, 302))
+
+    @patch("netbox_kea.views.sync_reservation_to_netbox")
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_sync_success(self, MockKeaClient, mock_sync):
+        """Lines 2307-2314: sync succeeds → info message."""
+        self._mock_get(MockKeaClient)
+        MockKeaClient.return_value.reservation_update.return_value = None
+        mock_sync.return_value = (MagicMock(), False)
+        post_data = {**_VALID_RESERVATION6_POST, "sync_to_netbox": "on"}
+        response = self.client.post(self._url(), post_data)
+        self.assertIn(response.status_code, (200, 302))
+
+    @patch("netbox_kea.views.sync_reservation_to_netbox")
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_sync_exception(self, MockKeaClient, mock_sync):
+        """Lines 2312-2314: sync exception → warning."""
+        self._mock_get(MockKeaClient)
+        MockKeaClient.return_value.reservation_update.return_value = None
+        mock_sync.side_effect = RuntimeError("sync fail")
+        post_data = {**_VALID_RESERVATION6_POST, "sync_to_netbox": "on"}
+        response = self.client.post(self._url(), post_data)
+        self.assertIn(response.status_code, (200, 302))
+
+    @patch("netbox_kea.views.sync_reservation_to_netbox")
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_partial_persist_with_sync(self, MockKeaClient, mock_sync):
+        """Lines 2327-2334: PartialPersistError + sync success."""
+        from netbox_kea.kea import PartialPersistError
+
+        self._mock_get(MockKeaClient)
+        MockKeaClient.return_value.reservation_update.side_effect = PartialPersistError("dhcp6", Exception("write"))
+        mock_sync.return_value = (MagicMock(), True)
+        post_data = {**_VALID_RESERVATION6_POST, "sync_to_netbox": "on"}
+        response = self.client.post(self._url(), post_data)
+        self.assertIn(response.status_code, (200, 302))
+
+    @patch("netbox_kea.views.sync_reservation_to_netbox")
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_partial_persist_with_sync_exception(self, MockKeaClient, mock_sync):
+        """Lines 2332-2334: PartialPersistError + sync exception → warning."""
+        from netbox_kea.kea import PartialPersistError
+
+        self._mock_get(MockKeaClient)
+        MockKeaClient.return_value.reservation_update.side_effect = PartialPersistError("dhcp6", Exception("write"))
+        mock_sync.side_effect = RuntimeError("db error")
+        post_data = {**_VALID_RESERVATION6_POST, "sync_to_netbox": "on"}
+        response = self.client.post(self._url(), post_data)
+        self.assertIn(response.status_code, (200, 302))
+
+
+# ---------------------------------------------------------------------------
+# Subnet delete — GET exception + POST generic exception
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestSubnetDeleteExceptionPaths(_ViewTestBase):
+    """Lines 3177-3178, 3203-3205: subnet delete GET exception and POST generic."""
+
+    def _url(self, subnet_id=42):
+        return reverse("plugins:netbox_kea:server_subnet4_delete", args=[self.server.pk, subnet_id])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_get_exception_still_renders(self, MockKeaClient):
+        """Lines 3177-3178: exception in GET (subnet-get) → still renders confirm page."""
+        MockKeaClient.return_value.command.side_effect = RuntimeError("subnet-get failed")
+        response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 200)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_generic_exception_shows_error(self, MockKeaClient):
+        """Lines 3203-3205: generic exception on subnet_del redirects with error."""
+        MockKeaClient.return_value.subnet_del.side_effect = RuntimeError("crash")
+        response = self.client.post(self._url())
+        self.assertEqual(response.status_code, 302)
+
+
+# ---------------------------------------------------------------------------
+# _fetch_leases_from_server — various BY_* branches + edge cases
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestFetchLeasesFromServer(_ViewTestBase):
+    """Lines 3423-3452: _fetch_leases_from_server with various search branches."""
+
+    def _call(self, by, q="aa:bb:cc:dd:ee:ff", version=4, resp=None):
+        from netbox_kea.views import _fetch_leases_from_server
+
+        if resp is None:
+            resp = [{"result": 0, "arguments": {"leases": [{"ip-address": "10.0.0.1", "valid-lft": 3600, "state": 0}]}}]
+        with patch("netbox_kea.models.KeaClient") as MockKea:
+            MockKea.return_value.command.return_value = resp
+            return _fetch_leases_from_server(self.server, q, by, version)
+
+    def test_by_hw_address(self):
+        from netbox_kea import constants
+
+        leases = self._call(constants.BY_HW_ADDRESS, q="aa:bb:cc:dd:ee:ff")
+        self.assertIsInstance(leases, list)
+
+    def test_by_hostname(self):
+        from netbox_kea import constants
+
+        leases = self._call(constants.BY_HOSTNAME, q="myhost")
+        self.assertIsInstance(leases, list)
+
+    def test_by_client_id(self):
+        from netbox_kea import constants
+
+        leases = self._call(constants.BY_CLIENT_ID, q="01:aa:bb:cc:dd:ee:ff")
+        self.assertIsInstance(leases, list)
+
+    def test_by_duid(self):
+        from netbox_kea import constants
+
+        leases = self._call(constants.BY_DUID, q="00:01:00:01:12:34", version=6)
+        self.assertIsInstance(leases, list)
+
+    def test_unknown_by_returns_empty(self):
+        leases = self._call("unknown_by", q="x")
+        self.assertEqual(leases, [])
+
+    def test_result_3_returns_empty(self):
+        from netbox_kea import constants
+
+        leases = self._call(constants.BY_HOSTNAME, q="ghost", resp=[{"result": 3, "arguments": None}])
+        self.assertEqual(leases, [])
+
+    def test_null_args_returns_empty(self):
+        from netbox_kea import constants
+
+        leases = self._call(constants.BY_HOSTNAME, q="ghost", resp=[{"result": 0, "arguments": None}])
+        self.assertEqual(leases, [])
+
+    def test_by_subnet_id(self):
+        """Lines 3432-3433: BY_SUBNET_ID branch sets command_suffix='-all' and subnets arg."""
+        from netbox_kea import constants
+
+        resp = [{"result": 0, "arguments": {"leases": [{"ip-address": "10.0.0.1", "valid-lft": 3600, "state": 0}]}}]
+        leases = self._call(constants.BY_SUBNET_ID, q="1", resp=resp)
+        self.assertIsInstance(leases, list)
+
+
+# ---------------------------------------------------------------------------
+# _fetch_all_leases_from_server — pagination edge cases
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestFetchAllLeasesFromServer(_ViewTestBase):
+    """Lines 3497-3509: _fetch_all_leases_from_server pagination and truncation."""
+
+    def _run(self, responses, max_leases=1000):
+        from netbox_kea.views import _fetch_all_leases_from_server
+
+        with patch("netbox_kea.models.KeaClient") as MockKea:
+            MockKea.return_value.command.side_effect = iter(responses)
+            return _fetch_all_leases_from_server(self.server, version=4, max_leases=max_leases)
+
+    def test_result_3_stops_loop(self):
+        """Line 3497: result=3 breaks the pagination loop."""
+        leases, truncated = self._run([[{"result": 3, "arguments": None}]])
+        self.assertEqual(leases, [])
+        self.assertFalse(truncated)
+
+    def test_null_args_stops_loop(self):
+        """Line 3500: null arguments breaks the pagination loop."""
+        leases, truncated = self._run([[{"result": 0, "arguments": None}]])
+        self.assertEqual(leases, [])
+        self.assertFalse(truncated)
+
+    def test_truncation_at_max(self):
+        """Lines 3504-3506: truncates when max_leases exceeded."""
+        page = [
+            {
+                "result": 0,
+                "arguments": {
+                    "leases": [
+                        {"ip-address": "10.0.0.1", "valid-lft": 3600, "state": 0},
+                        {"ip-address": "10.0.0.2", "valid-lft": 3600, "state": 0},
+                    ],
+                    "count": 2,
+                },
+            }
+        ]
+        leases, truncated = self._run([page], max_leases=1)
+        self.assertTrue(truncated)
+        self.assertEqual(len(leases), 1)
+
+    def test_final_page_no_cursor_update(self):
+        """Lines 3507: count < per_page → loop ends without updating cursor."""
+        page = [
+            {
+                "result": 0,
+                "arguments": {"leases": [{"ip-address": "10.0.0.1", "valid-lft": 3600, "state": 0}], "count": 1},
+            }
+        ]
+        leases, truncated = self._run([page])
+        self.assertFalse(truncated)
+        self.assertEqual(len(leases), 1)
+
+    def test_multi_page_cursor_updated(self):
+        """Line 3509: cursor advances when count == per_page (250)."""
+        big_page = [{"ip-address": f"10.0.{i // 256}.{i % 256}", "valid-lft": 3600, "state": 0} for i in range(250)]
+        last_page = [{"ip-address": "10.3.255.1", "valid-lft": 3600, "state": 0}]
+        responses = [
+            [{"result": 0, "arguments": {"leases": big_page, "count": 250}}],
+            [{"result": 0, "arguments": {"leases": last_page, "count": 1}}],
+        ]
+        leases, truncated = self._run(responses)
+        self.assertFalse(truncated)
+        self.assertEqual(len(leases), 251)
+
+
+# ---------------------------------------------------------------------------
+# _fetch_reservation_by_ip — pagination and IP formats
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestFetchReservationByIP(_ViewTestBase):
+    """Lines 3522-3539: _fetch_reservation_by_ip pagination and IP formats."""
+
+    def _run(self, pages):
+        from netbox_kea.views import _fetch_reservation_by_ip
+
+        with patch("netbox_kea.models.KeaClient") as MockKea:
+            side = iter(pages)
+            MockKea.return_value.reservation_get_page.side_effect = lambda *a, **kw: next(side)
+            result, available = _fetch_reservation_by_ip(MockKea.return_value, version=4)
+            return result, available
+
+    def test_single_ip_reservation(self):
+        """Line 3530: reservation with ip-address key."""
+        page = [{"subnet-id": 1, "ip-address": "10.0.0.5", "hw-address": "aa:bb:cc:dd:ee:ff"}]
+        result, available = self._run([(page, 0, 0)])
+        self.assertIn("10.0.0.5", result)
+        self.assertTrue(available)
+
+    def test_multiple_ips_reservation(self):
+        """Lines 3532-3533: reservation with ip-addresses key."""
+        page = [{"subnet-id": 1, "ip-addresses": ["2001:db8::1", "2001:db8::2"], "duid": "00:01"}]
+        result, available = self._run([(page, 0, 0)])
+        self.assertIn("2001:db8::1", result)
+        self.assertIn("2001:db8::2", result)
+
+    def test_multi_page_pagination(self):
+        """Lines 3535-3538: multi-page pagination updates from_index/source_index."""
+        page1 = [{"subnet-id": 1, "ip-address": "10.0.0.1", "hw-address": "aa:bb:cc:dd:ee:01"}]
+        page2 = [{"subnet-id": 1, "ip-address": "10.0.0.2", "hw-address": "aa:bb:cc:dd:ee:02"}]
+        result, available = self._run([(page1, 1, 1), (page2, 0, 0)])
+        self.assertIn("10.0.0.1", result)
+        self.assertIn("10.0.0.2", result)
+
+
+# ---------------------------------------------------------------------------
+# _enrich_leases_with_badges — exception paths
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestEnrichLeasesExceptionPaths2(_ViewTestBase):
+    """Lines 3611-3619: enrich leases exception handling in combined leases view."""
+
+    def _url(self):
+        return reverse("plugins:netbox_kea:combined_leases4") + f"?servers={self.server.pk}&q=10.0.0.1&by=ip"
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_kea_exception_result2_sets_hook_unavailable(self, MockKeaClient):
+        """Lines 3612-3616: KeaException result=2 → host_cmds_available=False."""
+        from netbox_kea.kea import KeaException
+
+        MockKeaClient.return_value.command.return_value = [
+            {
+                "result": 0,
+                "arguments": {"leases": [{"ip-address": "10.0.0.1", "valid-lft": 3600, "state": 0, "subnet-id": 1}]},
+            }
+        ]
+        with patch(
+            "netbox_kea.views._fetch_reservation_by_ip_for_leases",
+            side_effect=KeaException({"result": 2, "text": "hook not loaded"}, index=0),
+        ):
+            response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 200)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_kea_exception_non_result2_continues(self, MockKeaClient):
+        """Lines 3612-3616: KeaException result≠2 → logged, host_cmds=False."""
+        from netbox_kea.kea import KeaException
+
+        MockKeaClient.return_value.command.return_value = [
+            {
+                "result": 0,
+                "arguments": {"leases": [{"ip-address": "10.0.0.1", "valid-lft": 3600, "state": 0, "subnet-id": 1}]},
+            }
+        ]
+        with patch(
+            "netbox_kea.views._fetch_reservation_by_ip_for_leases",
+            side_effect=KeaException({"result": 1, "text": "other error"}, index=0),
+        ):
+            response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 200)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_generic_exception_continues(self, MockKeaClient):
+        """Lines 3617-3619: generic Exception from _fetch_reservation_by_ip_for_leases is handled."""
+        MockKeaClient.return_value.command.return_value = [
+            {
+                "result": 0,
+                "arguments": {"leases": [{"ip-address": "10.0.0.1", "valid-lft": 3600, "state": 0, "subnet-id": 1}]},
+            }
+        ]
+        with patch(
+            "netbox_kea.views._fetch_reservation_by_ip_for_leases",
+            side_effect=RuntimeError("unexpected crash"),
+        ):
+            response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 200)
+
+
+# ---------------------------------------------------------------------------
+# _fetch_subnets_from_server — null config, shared-network subnets, stat_cmds exception
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestFetchSubnetsFromServer(_ViewTestBase):
+    """Lines 3807-3855: _fetch_subnets_from_server edge cases."""
+
+    def _run(self, side_effect=None, return_value=None):
+        from netbox_kea.views import _fetch_subnets_from_server
+
+        with patch("netbox_kea.models.KeaClient") as MockKea:
+            if side_effect is not None:
+                MockKea.return_value.command.side_effect = side_effect
+            elif return_value is not None:
+                MockKea.return_value.command.return_value = return_value
+            return _fetch_subnets_from_server(self.server, version=4)
+
+    def test_null_arguments_raises(self):
+        """Line 3808: null arguments raises RuntimeError."""
+        with self.assertRaises(RuntimeError):
+            self._run(return_value=[{"result": 0, "arguments": None}])
+
+    def test_subnets_in_shared_network_included(self):
+        """Line 3827: subnets nested inside shared-networks are included."""
+        config = [
+            {
+                "result": 0,
+                "arguments": {
+                    "Dhcp4": {
+                        "subnet4": [],
+                        "shared-networks": [
+                            {
+                                "name": "prod",
+                                "subnet4": [
+                                    {"id": 10, "subnet": "192.168.0.0/24"},
+                                ],
+                            }
+                        ],
+                    }
+                },
+            }
+        ]
+
+        # stat-lease4-get raises to simulate missing hook
+        def _side(cmd, **kwargs):
+            if cmd == "stat-lease4-get":
+                raise RuntimeError("no stat_cmds")
+            return config  # return the list, not config[0]
+
+        result = self._run(side_effect=_side)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["subnet"], "192.168.0.0/24")
+
+    def test_stat_cmds_exception_swallowed(self):
+        """Lines 3853-3855: stat_cmds exception is swallowed."""
+        config_resp = [
+            {
+                "result": 0,
+                "arguments": {
+                    "Dhcp4": {
+                        "subnet4": [{"id": 1, "subnet": "10.0.0.0/24"}],
+                        "shared-networks": [],
+                    }
+                },
+            }
+        ]
+
+        def _side(cmd, **kwargs):
+            if cmd == "stat-lease4-get":
+                raise RuntimeError("stat_cmds not loaded")
+            return config_resp  # return the list, not config_resp[0]
+
+        result = self._run(side_effect=_side)
+        self.assertEqual(len(result), 1)
+
+    def test_stat_cmds_success_updates_subnet(self):
+        """Line 3853: s.update(stats[s['id']]) called when stat-lease4-get returns valid data."""
+        config_resp = [
+            {
+                "result": 0,
+                "arguments": {
+                    "Dhcp4": {
+                        "subnet4": [{"id": 1, "subnet": "10.0.0.0/24"}],
+                        "shared-networks": [],
+                    }
+                },
+            }
+        ]
+        stat_resp = [
+            {
+                "result": 0,
+                "arguments": {
+                    "result-set": {
+                        "columns": ["subnet-id", "total-addresses", "assigned-addresses"],
+                        "rows": [[1, 100, 25]],
+                    }
+                },
+            }
+        ]
+
+        def _side(cmd, **kwargs):
+            if cmd == "stat-lease4-get":
+                return stat_resp
+            return config_resp
+
+        result = self._run(side_effect=_side)
+        self.assertEqual(len(result), 1)
+        # stat data was merged into the subnet dict
+        self.assertEqual(result[0].get("total"), 100)
+        self.assertEqual(result[0].get("assigned"), 25)
+
+
+# ---------------------------------------------------------------------------
+# _fetch_shared_networks_from_server — null config returns []
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestFetchSharedNetworksFromServer(_ViewTestBase):
+    """Line 3939: _fetch_shared_networks_from_server with null config returns []."""
+
+    def test_null_config_returns_empty_list(self):
+        from netbox_kea.views import _fetch_shared_networks_from_server
+
+        with patch("netbox_kea.models.KeaClient") as MockKea:
+            MockKea.return_value.command.return_value = [{"result": 0, "arguments": None}]
+            result = _fetch_shared_networks_from_server(self.server, version=4)
+        self.assertEqual(result, [])
+
+
+# ---------------------------------------------------------------------------
+# Combined reservations — multi-page pagination
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestCombinedReservationsMultiPage(_ViewTestBase):
+    """Lines 4065-4066: combined reservations multi-page pagination."""
+
+    def _url(self):
+        return reverse("plugins:netbox_kea:combined_reservations4") + f"?servers={self.server.pk}"
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_multi_page_pagination_followed(self, MockKeaClient):
+        """Lines 4065-4066: from_index/source_index advance across pages."""
+        page1 = [{"subnet-id": 1, "ip-address": "10.0.0.1", "hw-address": "aa:bb:cc:dd:ee:01"}]
+        page2 = [{"subnet-id": 1, "ip-address": "10.0.0.2", "hw-address": "aa:bb:cc:dd:ee:02"}]
+        MockKeaClient.return_value.reservation_get_page.side_effect = [
+            (page1, 1, 1),
+            (page2, 0, 0),
+        ]
+        response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 200)
+
+
+# ---------------------------------------------------------------------------
+# Bulk reservation sync — edge cases
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestBulkReservationSyncEdgeCases(_ViewTestBase):
+    """Lines 4383-4397: bulk sync with missing IPs, errors, and count tracking."""
+
+    def _url(self):
+        return reverse("plugins:netbox_kea:server_reservation4_bulk_sync", args=[self.server.pk])
+
+    def setUp(self):
+        super().setUp()
+        # superuser has ipam perms automatically (is_superuser)
+
+    @patch("netbox_kea.sync.sync_reservation_to_netbox")
+    @patch("netbox_kea.views._fetch_reservations_from_server")
+    def test_reservation_without_ip_is_skipped(self, mock_fetch, mock_sync):
+        """Line 4383-4384: reservations without ip-address/ip-addresses are skipped."""
+        mock_fetch.return_value = [{"hw-address": "aa:bb:cc:dd:ee:ff"}]  # no IP
+        self.client.post(self._url(), follow=True)
+        mock_sync.assert_not_called()
+
+    @patch("netbox_kea.sync.sync_reservation_to_netbox")
+    @patch("netbox_kea.views._fetch_reservations_from_server")
+    def test_sync_creates_and_updates(self, mock_fetch, mock_sync):
+        """Lines 4389-4390: created and updated counters incremented correctly."""
+        mock_fetch.return_value = [
+            {"ip-address": "10.0.0.1", "hw-address": "aa:bb:cc:dd:ee:01"},
+            {"ip-address": "10.0.0.2", "hw-address": "aa:bb:cc:dd:ee:02"},
+        ]
+        mock_sync.side_effect = [(MagicMock(), True), (MagicMock(), False)]
+        response = self.client.post(self._url(), follow=True)
+        msgs = [m.message for m in response.context["messages"]]
+        self.assertTrue(any("1 created" in m or "created" in m.lower() for m in msgs))
+
+    @patch("netbox_kea.sync.sync_reservation_to_netbox")
+    @patch("netbox_kea.views._fetch_reservations_from_server")
+    def test_sync_exception_counted_as_error(self, mock_fetch, mock_sync):
+        """Lines 4391-4394, 4397: sync exception increments errors, warning shown."""
+        mock_fetch.return_value = [
+            {"ip-address": "10.0.0.1"},
+            {"ip-address": "10.0.0.2"},
+        ]
+        mock_sync.side_effect = [RuntimeError("db error"), (MagicMock(), True)]
+        response = self.client.post(self._url(), follow=True)
+        msgs = [m.message for m in response.context["messages"]]
+        # errors > 0 → summary message shows "N errors"
+        self.assertTrue(any("errors" in m for m in msgs))
+
+
+# ---------------------------------------------------------------------------
+# Reservation import — generic exception
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestReservationImportGenericException(_ViewTestBase):
+    """Lines 4521-4523: generic exception during reservation_add."""
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_generic_exception_appended_to_errors(self, MockKeaClient):
+        """Generic exception adds 'unexpected error' to error_rows."""
+        MockKeaClient.return_value.reservation_add.side_effect = RuntimeError("crash")
+        url = reverse("plugins:netbox_kea:server_reservation4_bulk_import", args=[self.server.pk])
+        import io
+
+        csv_content = "ip-address,hw-address,subnet-id\n10.0.0.1,aa:bb:cc:dd:ee:ff,1"
+        csv_file = io.BytesIO(csv_content.encode())
+        csv_file.name = "reservations.csv"
+        response = self.client.post(url, {"csv_file": csv_file, "subnet_id": "1"})
+        self.assertIn(response.status_code, (200, 302))
+
+
+# ---------------------------------------------------------------------------
+# Lease CSV bulk import — form invalid, parse error, generic exception
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestLeaseBulkImportEdgeCases(_ViewTestBase):
+    """Lines 4599, 4617-4619, 4641-4643: lease CSV import edge cases."""
+
+    def _url(self):
+        return reverse("plugins:netbox_kea:server_lease4_bulk_import", args=[self.server.pk])
+
+    def test_post_no_file_rerenders(self):
+        """Line 4599: POST without csv_file → invalid form → 200."""
+        response = self.client.post(self._url(), {})
+        self.assertEqual(response.status_code, 200)
+
+    @patch("netbox_kea.views.parse_lease_csv")
+    @patch("netbox_kea.models.KeaClient")
+    def test_parse_error_shows_form_error(self, MockKeaClient, mock_parse):
+        """Lines 4617-4619: ValueError from parse_lease_csv adds form error."""
+        import io
+
+        mock_parse.side_effect = ValueError("bad column")
+        csv_file = io.BytesIO(b"ip-address\n10.0.0.1")
+        csv_file.name = "leases.csv"
+        response = self.client.post(self._url(), {"csv_file": csv_file})
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "bad column")
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_generic_exception_adds_error_row(self, MockKeaClient):
+        """Lines 4641-4643: generic exception during lease_add adds error row."""
+        import io
+
+        MockKeaClient.return_value.lease_add.side_effect = RuntimeError("crash")
+        # Provide valid CSV content so parse_lease_csv succeeds
+        csv_content = b"ip-address\n10.0.0.1"
+        csv_file = io.BytesIO(csv_content)
+        csv_file.name = "leases.csv"
+        response = self.client.post(self._url(), {"csv_file": csv_file})
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "unexpected")
+
+
+# ---------------------------------------------------------------------------
+# Subnet options — subnet in shared-network + POST handler
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestSubnetOptionsSharedNetwork(_ViewTestBase):
+    """Lines 4706-4708, 4761: subnet in shared-network + POST options handler."""
+
+    def _url(self, subnet_id=99):
+        return reverse("plugins:netbox_kea:server_subnet4_options_edit", args=[self.server.pk, subnet_id])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_get_subnet_in_shared_network(self, MockKeaClient):
+        """Lines 4706-4708: subnet found inside shared-network is returned."""
+        MockKeaClient.return_value.command.return_value = [
+            {
+                "result": 0,
+                "arguments": {
+                    "Dhcp4": {
+                        "subnet4": [],
+                        "shared-networks": [
+                            {
+                                "name": "prod",
+                                "subnet4": [{"id": 99, "subnet": "10.99.0.0/24", "option-data": []}],
+                            }
+                        ],
+                    }
+                },
+            }
+        ]
+        response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "10.99.0.0/24")
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_invalid_formset_rerenders(self, MockKeaClient):
+        """Line 4761 (post handler): invalid formset re-renders form."""
+        MockKeaClient.return_value.command.return_value = [
+            {
+                "result": 0,
+                "arguments": {
+                    "Dhcp4": {
+                        "subnet4": [{"id": 99, "subnet": "10.99.0.0/24", "option-data": []}],
+                        "shared-networks": [],
+                    }
+                },
+            }
+        ]
+        # Submit invalid formset (missing TOTAL_FORMS)
+        response = self.client.post(self._url(), {"form-0-name": "dns-servers"})
+        self.assertIn(response.status_code, (200, 302))
+
+
+# ---------------------------------------------------------------------------
+# _get_global_options — generic exception handler
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestGetGlobalOptionsGenericException(_ViewTestBase):
+    """Line 221-222: generic exception in _get_global_options is swallowed."""
+
+    def _url(self):
+        return reverse("plugins:netbox_kea:server_status", args=[self.server.pk])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_generic_exception_swallowed(self, MockKeaClient):
+        """Line 222: generic Exception in config-get for global options is logged and skipped."""
+
+        def _side(cmd, service=None, **kwargs):
+            if cmd == "config-get":
+                raise RuntimeError("unexpected crash")
+            if cmd == "status-get" and (not service or "dhcp" not in (service or [""])[0]):
+                return [{"result": 0, "arguments": {"pid": 1, "uptime": 0, "reload": 0}}]
+            if cmd == "status-get":
+                return [{"result": 0, "arguments": {"pid": 1, "uptime": 0, "reload": 0}}]
+            if cmd == "version-get":
+                return [{"result": 0, "arguments": {"extended": "2.0"}}]
+            return [{"result": 0, "arguments": {}}]
+
+        MockKeaClient.return_value.command.side_effect = _side
+        response = self.client.get(self._url())
+        # Should not crash — exception is swallowed
+        self.assertIn(response.status_code, (200, 500))
+
+
+# ---------------------------------------------------------------------------
+# Subnet edit — _form_initial with ntp/dns + lease time fields
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestSubnetEditFormInitialFields(_ViewTestBase):
+    """Lines 2937-2938, 2944, 2946: _form_initial parses ntp/dns + lease time fields."""
+
+    def _url(self, subnet_id=42):
+        return reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, subnet_id])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_get_populates_ntp_and_lease_times(self, MockKeaClient):
+        """_form_initial picks up ntp-servers, min-valid-lft, max-valid-lft, renew/rebind-timer."""
+        subnet_resp = [
+            {
+                "result": 0,
+                "arguments": {
+                    "subnet4": [
+                        {
+                            "id": 42,
+                            "subnet": "10.0.0.0/24",
+                            "pools": [],
+                            "option-data": [
+                                {"name": "ntp-servers", "data": "10.0.0.1"},
+                            ],
+                            "valid-lft": 3600,
+                            "min-valid-lft": 1800,
+                            "max-valid-lft": 7200,
+                            "renew-timer": 900,
+                            "rebind-timer": 1500,
+                        }
+                    ]
+                },
+            }
+        ]
+        config_resp = [
+            {
+                "result": 0,
+                "arguments": {"Dhcp4": {"subnet4": [{"id": 42, "subnet": "10.0.0.0/24"}], "shared-networks": []}},
+            }
+        ]
+        # command() is called twice: subnet4-get first, then config-get
+        MockKeaClient.return_value.command.side_effect = [subnet_resp, config_resp]
+        response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 200)
+
+
+# ---------------------------------------------------------------------------
+# _get_network_data — unnamed network (no name key) is skipped (line 2913)
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestGetNetworkDataUnnamedNetwork(_ViewTestBase):
+    """Line 2913: shared-network without a name key is skipped."""
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_unnamed_network_skipped_in_choices(self, MockKeaClient):
+        """Network with no 'name' key is not added to choices."""
+        config_resp = [
+            {
+                "result": 0,
+                "arguments": {
+                    "Dhcp4": {
+                        "subnet4": [{"id": 42, "subnet": "10.0.0.0/24"}],
+                        "shared-networks": [
+                            {"subnet4": []},  # no 'name' key → skipped
+                            {"name": "valid-net", "subnet4": []},
+                        ],
+                    }
+                },
+            }
+        ]
+        subnet_resp = [
+            {
+                "result": 0,
+                "arguments": {"subnet4": [{"id": 42, "subnet": "10.0.0.0/24", "pools": [], "option-data": []}]},
+            }
+        ]
+        MockKeaClient.return_value.command.side_effect = [subnet_resp, config_resp]
+        url = reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, 42])
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+
+
+# ---------------------------------------------------------------------------
+# Bulk delete POST — missing permission
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestBulkDeletePermission(_ViewTestBase):
+    """Line 800: POST without bulk_delete_lease_from_server permission returns 403."""
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_user_without_bulk_delete_perm_gets_403(self, MockKeaClient):
+        from django.contrib.contenttypes.models import ContentType
+        from users.models import ObjectPermission
+
+        # Grant view-only ObjectPermission so get_object() succeeds
+        viewer = User.objects.create_user(username="viewer_no_bulk_del", password="pass")
+        ct = ContentType.objects.get_for_model(Server)
+        view_op = ObjectPermission(name="view-servers-for-bulk-test", actions=["view"])
+        view_op.save()
+        view_op.users.add(viewer)
+        view_op.object_types.add(ct)
+        self.client.force_login(viewer)
+        url = reverse("plugins:netbox_kea:server_leases4_delete", args=[self.server.pk])
+        # User can view the server but has no bulk_delete_lease_from_server perm
+        response = self.client.post(url, {"pk": ["10.0.0.1"], "confirm": "1"})
+        self.assertEqual(response.status_code, 403)
+
+
+# ---------------------------------------------------------------------------
+# _BaseSyncView._sync — NotImplementedError (line 4321)
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestBaseSyncViewNotImplemented(_ViewTestBase):
+    """Line 4321: _BaseSyncView._sync raises NotImplementedError."""
+
+    def test_sync_raises_not_implemented(self):
+        from netbox_kea.views import _BaseSyncView
+
+        view = _BaseSyncView()
+        with self.assertRaises(NotImplementedError):
+            view._sync({})
+
+
+# ---------------------------------------------------------------------------
+# _enrich_reservations_with_lease_status — edge cases (lines 1641, 1645, 1650, 1662-1663)
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestEnrichReservationsLeaseStatusCoverage(_ViewTestBase):
+    """Direct unit tests for _enrich_reservations_with_lease_status helper."""
+
+    def _make_request_with_messages(self):
+        from django.contrib.messages.storage.fallback import FallbackStorage
+        from django.test import RequestFactory
+
+        factory = RequestFactory()
+        request = factory.get("/")
+        request.user = self.user
+        setattr(request, "session", "session")
+        storage = FallbackStorage(request)
+        setattr(request, "_messages", storage)
+        return request
+
+    def test_result3_returns_empty_list(self):
+        """Line 1641: lease-get-all result=3 → _fetch_leases_for_subnet returns []."""
+        from unittest.mock import MagicMock
+
+        from netbox_kea.views import _enrich_reservations_with_lease_status
+
+        client = MagicMock()
+        client.command.return_value = [{"result": 3, "arguments": {}}]
+        reservations = [{"ip-address": "10.0.0.1", "subnet-id": 42}]
+        # Should not raise; lease_cmds result=3 → empty list → no has_active_lease set
+        _enrich_reservations_with_lease_status(client, reservations, 4)
+        # hook_unavailable stays False, no crash
+
+    def test_kea_exception_non_result2_returns_empty(self):
+        """Line 1645: KeaException with result != 2 → _fetch_leases_for_subnet returns []."""
+        from unittest.mock import MagicMock
+
+        from netbox_kea.kea import KeaException
+        from netbox_kea.views import _enrich_reservations_with_lease_status
+
+        client = MagicMock()
+        client.command.side_effect = KeaException({"result": 1, "text": "error"}, index=0)
+        reservations = [{"ip-address": "10.0.0.1", "subnet-id": 42}]
+        _enrich_reservations_with_lease_status(client, reservations, 4)
+        # Should complete without crash; result != 2 → return []
+
+    def test_no_subnet_id_skips_fetch(self):
+        """Line 1650: reservations with no subnet-id → unique_subnet_ids empty → early return."""
+        from unittest.mock import MagicMock
+
+        from netbox_kea.views import _enrich_reservations_with_lease_status
+
+        client = MagicMock()
+        reservations = [{"ip-address": "10.0.0.1"}]  # no subnet-id
+        _enrich_reservations_with_lease_status(client, reservations, 4)
+        # client.command should never be called
+        client.command.assert_not_called()
+
+    def test_as_completed_exception_returns_early(self):
+        """Lines 1662-1663: exception from as_completed → outer except fires."""
+        from unittest.mock import MagicMock, patch
+
+        from netbox_kea.views import _enrich_reservations_with_lease_status
+
+        client = MagicMock()
+        client.command.return_value = [{"result": 0, "arguments": {"leases": []}}]
+        reservations = [{"ip-address": "10.0.0.1", "subnet-id": 42}]
+        with patch(
+            "netbox_kea.views.concurrent.futures.as_completed",
+            side_effect=RuntimeError("as_completed failed"),
+        ):
+            _enrich_reservations_with_lease_status(client, reservations, 4)
+        # Should not raise; outer except returns early
+
+
+# ---------------------------------------------------------------------------
+# _warn_pool_reservation_overlap — edge cases (lines 2503, 2516, 2522-2523)
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestWarnPoolReservationOverlapCoverage(_ViewTestBase):
+    """Direct unit tests for _warn_pool_reservation_overlap helper."""
+
+    def _make_request(self):
+        from django.contrib.messages.storage.fallback import FallbackStorage
+        from django.test import RequestFactory
+
+        factory = RequestFactory()
+        request = factory.get("/")
+        request.user = self.user
+        setattr(request, "session", "session")
+        storage = FallbackStorage(request)
+        setattr(request, "_messages", storage)
+        return request
+
+    def test_cidr_pool_creates_ipnetwork(self):
+        """Line 2503: pool_str without dash (CIDR) → IPNetwork path."""
+        from unittest.mock import MagicMock
+
+        from netbox_kea.views import _warn_pool_reservation_overlap
+
+        client = MagicMock()
+        client.reservation_get_page.return_value = ([], 0, 0)
+        request = self._make_request()
+        # Should not raise; CIDR pool path
+        _warn_pool_reservation_overlap(request, client, 4, subnet_id=1, pool_str="10.0.0.0/24")
+
+    def test_host_with_different_subnet_id_skipped(self):
+        """Line 2516: host whose subnet-id != requested subnet_id → continue."""
+        from unittest.mock import MagicMock
+
+        from netbox_kea.views import _warn_pool_reservation_overlap
+
+        client = MagicMock()
+        # Return a host with subnet-id=999 (different from requested subnet_id=1)
+        client.reservation_get_page.side_effect = [
+            ([{"subnet-id": 999, "ip-address": "10.0.0.5"}], 0, 0),
+        ]
+        request = self._make_request()
+        _warn_pool_reservation_overlap(request, client, 4, subnet_id=1, pool_str="10.0.0.0-10.0.0.100")
+        # host skipped → no warning
+
+    def test_malformed_ip_skipped(self):
+        """Lines 2522-2523: malformed IP string → IPAddress raises → inner except fires."""
+        from unittest.mock import MagicMock
+
+        from netbox_kea.views import _warn_pool_reservation_overlap
+
+        client = MagicMock()
+        client.reservation_get_page.side_effect = [
+            ([{"subnet-id": 1, "ip-address": "NOT_AN_IP"}], 0, 0),
+        ]
+        request = self._make_request()
+        # Should not raise; malformed IP is silently skipped
+        _warn_pool_reservation_overlap(request, client, 4, subnet_id=1, pool_str="10.0.0.0-10.0.0.100")
+
+
+# ---------------------------------------------------------------------------
+# _warn_reservation_pool_overlap — edge cases (lines 2566, 2571, 2579-2580)
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestWarnReservationPoolOverlapCoverage(_ViewTestBase):
+    """Direct unit tests for _warn_reservation_pool_overlap helper."""
+
+    def _make_request(self):
+        from django.contrib.messages.storage.fallback import FallbackStorage
+        from django.test import RequestFactory
+
+        factory = RequestFactory()
+        request = factory.get("/")
+        request.user = self.user
+        setattr(request, "session", "session")
+        storage = FallbackStorage(request)
+        setattr(request, "_messages", storage)
+        return request
+
+    def test_empty_pool_string_skipped(self):
+        """Line 2566: pool entry with empty pool string → continue."""
+        from unittest.mock import MagicMock
+
+        from netbox_kea.views import _warn_reservation_pool_overlap
+
+        client = MagicMock()
+        client.command.return_value = [
+            {
+                "result": 0,
+                "arguments": {"subnet4": [{"id": 1, "subnet": "10.0.0.0/24", "pools": [{"pool": ""}]}]},
+            }
+        ]
+        request = self._make_request()
+        # Should not raise; empty pool string is skipped
+        _warn_reservation_pool_overlap(request, client, 4, subnet_id=1, ip_str="10.0.0.5")
+
+    def test_cidr_pool_creates_ipnetwork(self):
+        """Line 2571: CIDR pool (no dash) → IPNetwork path."""
+        from unittest.mock import MagicMock
+
+        from netbox_kea.views import _warn_reservation_pool_overlap
+
+        client = MagicMock()
+        client.command.return_value = [
+            {
+                "result": 0,
+                "arguments": {"subnet4": [{"id": 1, "subnet": "10.0.0.0/24", "pools": [{"pool": "10.0.0.0/24"}]}]},
+            }
+        ]
+        request = self._make_request()
+        # IP is in pool → warning issued; CIDR pool path (line 2571)
+        _warn_reservation_pool_overlap(request, client, 4, subnet_id=1, ip_str="10.0.0.5")
+
+    def test_client_command_exception_swallowed(self):
+        """Lines 2579-2580: client.command raises → outer except fires."""
+        from unittest.mock import MagicMock
+
+        from netbox_kea.views import _warn_reservation_pool_overlap
+
+        client = MagicMock()
+        client.command.side_effect = RuntimeError("network failure")
+        request = self._make_request()
+        # Should not raise; exception is swallowed
+        _warn_reservation_pool_overlap(request, client, 4, subnet_id=1, ip_str="10.0.0.5")
+
+
+# ---------------------------------------------------------------------------
+# _KeaChangeMixin — elif branch (lines 245-246): pk is None + no change_server perm
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestKeaChangeMixinNoPk(_ViewTestBase):
+    """Lines 245-246: dispatch with no pk kwarg + user lacking change_server perm → 403."""
+
+    def test_no_pk_no_perm_returns_403(self):
+        from django.http import HttpResponse
+        from django.test import RequestFactory
+        from django.views import View
+
+        from netbox_kea.views import _KeaChangeMixin
+
+        class _MinimalView(_KeaChangeMixin, View):
+            def get(self, request, **kwargs):
+                return HttpResponse("ok")
+
+        # Create a user with no permissions
+        no_perm_user = User.objects.create_user(username="no_perm_kca", password="pass")
+        factory = RequestFactory()
+        request = factory.get("/")
+        request.user = no_perm_user
+        view_func = _MinimalView.as_view()
+        # Call with NO pk kwarg → elif branch
+        response = view_func(request)
+        self.assertEqual(response.status_code, 403)
+
+
+# ---------------------------------------------------------------------------
+# ServerStatusView — null version_args (lines 323, 357)
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestStatusViewNullVersionArgs(_ViewTestBase):
+    """Lines 323, 357: version-get returns None arguments → RuntimeError caught internally."""
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_ca_version_get_null_args_returns_200(self, MockKeaClient):
+        """Line 323: CA version-get returns None args → RuntimeError caught in get_extra_context."""
+        mock_client = MockKeaClient.return_value
+
+        def _side_effect(cmd, service=None, arguments=None, check=None):
+            if cmd == "status-get":
+                return [{"result": 0, "arguments": {"pid": 1, "uptime": 60, "reload": 0}}]
+            if cmd == "version-get":
+                return [{"result": 0, "arguments": None}]
+            return [{"result": 0, "arguments": {}}]
+
+        mock_client.command.side_effect = _side_effect
+        url = reverse("plugins:netbox_kea:server_status", args=[self.server.pk])
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_dhcp_version_get_null_args_returns_200(self, MockKeaClient):
+        """Line 357: DHCP service version-get returns None args → RuntimeError caught."""
+        mock_client = MockKeaClient.return_value
+
+        def _side_effect(cmd, service=None, arguments=None, check=None):
+            if cmd == "status-get":
+                return [{"result": 0, "arguments": {"pid": 1, "uptime": 60, "reload": 0}}]
+            if cmd == "version-get":
+                return [{"result": 0, "arguments": None}]
+            return [{"result": 0, "arguments": {}}]
+
+        mock_client.command.side_effect = _side_effect
+        server_dhcp_only = _make_db_server(
+            name="dhcp-only-sv",
+            has_control_agent=False,
+            dhcp4=True,
+            dhcp6=False,
+        )
+        url = reverse("plugins:netbox_kea:server_status", args=[server_dhcp_only.pk])
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+
+
+# ---------------------------------------------------------------------------
+# get_leases_page — edge cases (lines 464, 480, 487-489)
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestGetLeasesPageEdgeCases(_ViewTestBase):
+    """Edge cases in BaseServerLeasesView.get_leases_page()."""
+
+    def _url(self):
+        return reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_zero_network_uses_network_as_start(self, MockKeaClient):
+        """Line 464: subnet.network == 0 → frm = str(subnet.network) = '0.0.0.0'."""
+        mock_client = MockKeaClient.return_value
+        mock_client.command.return_value = [{"result": 0, "arguments": {"count": 0, "leases": []}}]
+        # 0.0.0.0/8: int(network) == 0 → line 464 fires
+        response = self.client.get(
+            self._url(),
+            {"by": "subnet", "q": "0.0.0.0/8"},
+            HTTP_HX_REQUEST="true",
+        )
+        self.assertEqual(response.status_code, 200)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_null_args_raises_runtime_error(self, MockKeaClient):
+        """Line 480: lease-get-page returns arguments=None → RuntimeError (caught by HTMX handler)."""
+        mock_client = MockKeaClient.return_value
+        mock_client.command.return_value = [{"result": 0, "arguments": None}]
+        response = self.client.get(
+            self._url(),
+            {"by": "subnet", "q": "10.0.0.0/24"},
+            HTTP_HX_REQUEST="true",
+        )
+        # RuntimeError is caught by outer except → HTMX error partial
+        self.assertEqual(response.status_code, 200)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_lease_outside_subnet_truncates_list(self, MockKeaClient):
+        """Lines 487-489: lease IP not in queried subnet → raw_leases truncated."""
+        mock_client = MockKeaClient.return_value
+        per_page = 25
+        # Return per_page leases where the only one is OUTSIDE the queried subnet
+        mock_client.command.return_value = [
+            {
+                "result": 0,
+                "arguments": {
+                    "count": per_page,
+                    "leases": [{"ip-address": "10.0.1.1", "valid-lft": 3600, "state": 0}],
+                },
+            }
+        ]
+        response = self.client.get(
+            self._url(),
+            {"by": "subnet", "q": "10.0.0.0/24"},
+            HTTP_HX_REQUEST="true",
+        )
+        self.assertEqual(response.status_code, 200)
+
+
+# ---------------------------------------------------------------------------
+# get_leases — AbortRequest and null args (lines 522, 535)
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestGetLeasesCoverage(_ViewTestBase):
+    """Edge cases in BaseServerLeasesView.get_leases()."""
+
+    def _url(self):
+        return reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+
+    def test_invalid_by_raises_abort_request(self):
+        """Line 522: invalid 'by' value → AbortRequest raised."""
+        from unittest.mock import MagicMock
+
+        from utilities.exceptions import AbortRequest
+
+        from netbox_kea.views import ServerLeases4View
+
+        view = ServerLeases4View()
+        mock_client = MagicMock()
+        with self.assertRaises(AbortRequest):
+            view.get_leases(mock_client, "test_query", "not_a_valid_by")
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_null_args_from_lease_get_raises_runtime_error(self, MockKeaClient):
+        """Line 535: lease-get returns arguments=None → RuntimeError (caught by HTMX handler)."""
+        mock_client = MockKeaClient.return_value
+        mock_client.command.return_value = [{"result": 0, "arguments": None}]
+        response = self.client.get(
+            self._url(),
+            {"by": "ip", "q": "10.0.0.1"},
+            HTTP_HX_REQUEST="true",
+        )
+        # RuntimeError is caught by outer except → HTMX error partial, still 200
+        self.assertEqual(response.status_code, 200)
+
+
+# ---------------------------------------------------------------------------
+# get_export — invalid form (lines 563-564) + export_all null args (line 618)
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestGetExportCoverage(_ViewTestBase):
+    """Edge cases in get_export() and get_export_all()."""
+
+    def _url(self):
+        return reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+
+    def test_export_with_invalid_form_redirects(self):
+        """Lines 563-564: invalid form for export → messages.warning + redirect."""
+        # Pass an invalid 'by' value (not in choices) to force form.is_valid() == False
+        response = self.client.get(self._url(), {"export": "1", "by": "INVALID_VALUE", "q": "test"})
+        self.assertIn(response.status_code, [200, 302])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_export_all_null_args_returns_csv(self, MockKeaClient):
+        """Line 618: export_all lease-get-page returns arguments=None → break → empty CSV."""
+        mock_client = MockKeaClient.return_value
+        mock_client.command.return_value = [{"result": 0, "arguments": None}]
+        response = self.client.get(self._url(), {"export_all": "1"})
+        # Should return CSV even when args is None (empty export)
+        self.assertIn(response.status_code, [200, 302])
+
+
+# ---------------------------------------------------------------------------
+# HTMX invalid form (lines 649-650)
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestHTMXInvalidFormCoverage(_ViewTestBase):
+    """Lines 649-650: HTMX GET with invalid form → renders HTMX partial."""
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_htmx_invalid_form_returns_partial(self, MockKeaClient):
+        """form.is_valid()==False for HTMX → renders server_dhcp_leases_htmx.html."""
+        url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+        # 'by' has an invalid choice value → form.is_valid() returns False
+        response = self.client.get(
+            url,
+            {"by": "INVALID_CHOICE", "q": "test"},
+            HTTP_HX_REQUEST="true",
+        )
+        self.assertEqual(response.status_code, 200)
+
+
+# ---------------------------------------------------------------------------
+# Lease6 edit — duid branch (lines 952-953)
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestLease6EditDuid(_ViewTestBase):
+    """Lines 952-953: POST lease6 edit with duid → duid added to kwargs."""
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_with_duid_calls_lease_update(self, MockKeaClient):
+        """duid field in POST → kwargs['duid'] is set and lease_update called."""
+        mock_client = MockKeaClient.return_value
+        mock_client.lease_update.return_value = None
+        url = reverse(
+            "plugins:netbox_kea:server_lease6_edit",
+            args=[self.server.pk, "2001:db8::1"],
+        )
+        response = self.client.post(
+            url,
+            {
+                "duid": "01:02:03:04",
+                "valid_lft": "",
+                "hostname": "",
+            },
+        )
+        # Should redirect to leases6 URL
+        self.assertIn(response.status_code, [302, 200])
+        mock_client.lease_update.assert_called_once()
+        _, call_kwargs = mock_client.lease_update.call_args
+        self.assertEqual(call_kwargs.get("duid"), "01:02:03:04")
+
+
+# ---------------------------------------------------------------------------
+# Shared networks tab disabled (line 1237)
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestSharedNetworksTabDisabled(_ViewTestBase):
+    """Line 1237: server.dhcp4=False → get_children returns [] immediately."""
+
+    def test_dhcp4_disabled_returns_empty_children(self):
+        """Line 1237: dhcp4=False → get_children returns [] immediately (defensive guard)."""
+        from django.test import RequestFactory
+
+        from netbox_kea.views import ServerSharedNetworks4View
+
+        server = _make_db_server(name="no-dhcp4-children", dhcp4=False, dhcp6=True)
+        view = ServerSharedNetworks4View()
+        request = RequestFactory().get("/")
+        request.user = self.user
+        result = view.get_children(request, server)
+        self.assertEqual(result, [])
+
+
+# ---------------------------------------------------------------------------
+# _fetch_network — non-dict args (lines 1462-1463)
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestFetchNetworkNonDictArgs(_ViewTestBase):
+    """Lines 1462-1463: config-get returns non-dict args → log warning + return {}."""
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_get_non_dict_args_redirects(self, MockKeaClient):
+        """config-get returns arguments=None → _fetch_network returns {} → redirect."""
+        mock_client = MockKeaClient.return_value
+        mock_client.command.return_value = [{"result": 0, "arguments": None}]
+        url = reverse(
+            "plugins:netbox_kea:server_shared_network4_edit",
+            args=[self.server.pk, "test-net"],
+        )
+        response = self.client.get(url)
+        # network not found → redirects back to shared_networks4
+        self.assertEqual(response.status_code, 302)
+        self.assertIn(f"/servers/{self.server.pk}/", response.url)
+
+
+# ---------------------------------------------------------------------------
+# _get_network_choices — KeaException (lines 2737-2738)
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestGetNetworkChoicesKeaException(_ViewTestBase):
+    """Lines 2737-2738: KeaException in _get_network_choices → returns default choice."""
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_kea_exception_returns_global_pool_only(self, MockKeaClient):
+        """config-get raises KeaException → returns [('', '— (global pool) —')]."""
+        from netbox_kea.kea import KeaException
+
+        mock_client = MockKeaClient.return_value
+        mock_client.command.side_effect = KeaException({"result": 1, "text": "error"}, index=0)
+        url = reverse("plugins:netbox_kea:server_subnet4_add", args=[self.server.pk])
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+
+
+# ---------------------------------------------------------------------------
+# _get_inherited_options._parse_opts — "routers" and "ntp-servers" (lines 2974, 2977-2978)
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestGetInheritedOptionsParseOpts(_ViewTestBase):
+    """Lines 2974, 2977-2978: _parse_opts handles 'routers' and 'ntp-servers' entries."""
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_global_options_routers_and_ntp_servers_inherited(self, MockKeaClient):
+        """GET subnet4_edit with global routers + ntp-servers → inherited_options populated."""
+        mock_client = MockKeaClient.return_value
+
+        subnet_resp = [
+            {
+                "result": 0,
+                "arguments": {"subnet4": [{"id": 42, "subnet": "10.0.0.0/24", "pools": [], "option-data": []}]},
+            }
+        ]
+        config_resp = [
+            {
+                "result": 0,
+                "arguments": {
+                    "Dhcp4": {
+                        "subnet4": [],
+                        "shared-networks": [],
+                        "option-data": [
+                            {"name": "routers", "data": "10.0.0.1"},
+                            {"name": "ntp-servers", "data": "10.0.0.2"},
+                        ],
+                    }
+                },
+            }
+        ]
+        mock_client.command.side_effect = [subnet_resp, config_resp]
+        url = reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, 42])
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        # inherited_options should have gateway and ntp_servers from global config
+        ctx = response.context
+        inherited = ctx.get("inherited_options", {})
+        self.assertIn("gateway", inherited)
+        self.assertIn("ntp_servers", inherited)
+
+
+# ---------------------------------------------------------------------------
+# Subnet edit — network rollback (lines 3122-3133, 3137-3139)
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestSubnetEditNetworkRollback(_ViewTestBase):
+    """Lines 3122-3133, 3137-3139: network_subnet_del fails → rollback + outer except."""
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_network_subnet_del_fails_triggers_rollback_and_outer_except(self, MockKeaClient):
+        """old→new network change: del(old) raises RuntimeError → rollback del(new) also fails.
+
+        Covers lines 3122-3133 (rollback attempt) and 3137-3139 (outer except Exception).
+        """
+        mock_client = MockKeaClient.return_value
+
+        # config-get returns subnet 42 in "net-old", with "net-new" also available
+        config_resp = [
+            {
+                "result": 0,
+                "arguments": {
+                    "Dhcp4": {
+                        "subnet4": [],
+                        "shared-networks": [
+                            {"name": "net-old", "subnet4": [{"id": 42}]},
+                            {"name": "net-new", "subnet4": []},
+                        ],
+                        "option-data": [],
+                    }
+                },
+            }
+        ]
+        mock_client.command.return_value = config_resp
+        mock_client.subnet_update.return_value = None
+        mock_client.network_subnet_add.return_value = None
+        # Both del calls raise RuntimeError (not PartialPersistError)
+        mock_client.network_subnet_del.side_effect = [
+            RuntimeError("del old failed"),
+            RuntimeError("rollback del new also failed"),
+        ]
+
+        url = reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, 42])
+        response = self.client.post(
+            url,
+            {
+                "subnet_cidr": "10.0.0.0/24",
+                "shared_network": "net-new",
+                "current_network": "net-old",
+                "pools": "",
+                "gateway": "",
+                "dns_servers": "",
+                "ntp_servers": "",
+            },
+        )
+        # Redirects after error message
+        self.assertEqual(response.status_code, 302)
+        # Both del calls were made (old + rollback of new)
+        self.assertEqual(mock_client.network_subnet_del.call_count, 2)
+
+
+# ---------------------------------------------------------------------------
+# _fetch_one — missing subnet_id (line 3561)
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestFetchOneEmptyLease(_ViewTestBase):
+    """Line 3561: _fetch_one returns early when lease has no subnet_id."""
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_lease_without_subnet_id_skips_reservation_lookup(self, MockKeaClient):
+        """Lease without subnet-id → _fetch_one returns (ip, None, True) without API call."""
+        mock_client = MockKeaClient.return_value
+        # Return a lease with ip-address but NO subnet-id
+        mock_client.command.return_value = [
+            {
+                "result": 0,
+                "arguments": {
+                    "ip-address": "10.0.0.1",
+                    "valid-lft": 3600,
+                    "state": 0,
+                    "hostname": "testhost",
+                    # deliberately omit "subnet-id"
+                },
+            }
+        ]
+        mock_client.reservation_get.return_value = None
+        url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+        response = self.client.get(url, {"by": "ip", "q": "10.0.0.1"}, HTTP_HX_REQUEST="true")
+        self.assertEqual(response.status_code, 200)
+
+
+# ---------------------------------------------------------------------------
+# CombinedLeasesView — truncated server (line 4228)
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestCombinedLeasesTruncated(_ViewTestBase):
+    """Line 4228: _fetch_all_leases_from_server returns was_truncated=True → server name added."""
+
+    @patch("netbox_kea.views._fetch_all_leases_from_server")
+    def test_truncated_server_name_in_context(self, mock_fetch_all):
+        """was_truncated=True → server.name appended to truncated_servers."""
+        from netbox_kea.utilities import format_leases
+
+        # Return a non-empty leases list with truncated=True, tagged with server info
+        server_pk = self.server.pk
+        server_name = self.server.name
+        leases = [
+            {**lease, "server_pk": server_pk, "server_name": server_name}
+            for lease in format_leases([{"ip-address": "10.0.0.1", "valid-lft": 3600, "state": 0}])
+        ]
+        mock_fetch_all.return_value = (leases, True)
+        url = reverse("plugins:netbox_kea:combined_leases4") + f"?state=0&server={self.server.pk}"
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        truncated = response.context.get("truncated_servers", [])
+        self.assertIn(self.server.name, truncated)

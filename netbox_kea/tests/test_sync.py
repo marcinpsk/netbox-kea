@@ -1004,3 +1004,81 @@ class TestSyncMacAddressErrors(TestCase):
         # Passing an obviously invalid MAC address exercises the except Exception path.
         _sync_mac_address("not-a-mac", hostname="test-host")
         # No exception should propagate.
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Additional coverage tests — lines missed in earlier batches
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestFindPrefixLengthPostgresPath(TestCase):
+    """find_prefix_length: PostgreSQL-native lookup success path (lines 56-57)."""
+
+    def test_postgresql_path_returns_prefix_length(self):
+        """When the net_contains filter returns a prefix, return its length."""
+        from unittest.mock import MagicMock, patch
+
+        mock_prefix = MagicMock()
+        mock_prefix.prefix = "10.0.0.0/24"
+        with patch("ipam.models.Prefix.objects") as mock_objects:
+            mock_objects.filter.return_value.order_by.return_value.first.return_value = mock_prefix
+            from netbox_kea.sync import find_prefix_length
+
+            result = find_prefix_length("10.0.0.1")
+        self.assertEqual(result, 24)
+
+
+class TestFindPrefixLengthSQLiteException(TestCase):
+    """find_prefix_length: exception in SQLite fallback loop is skipped (lines 68-69)."""
+
+    def test_exception_in_sqlite_loop_is_ignored(self):
+        """When IPNetwork parsing raises inside the loop, the exception is caught and we continue."""
+        from unittest.mock import MagicMock, patch
+
+        mock_bad_prefix = MagicMock()
+        mock_bad_prefix.prefix = "bad-prefix"
+        with patch("ipam.models.Prefix.objects") as mock_objects:
+            from django.db.utils import ProgrammingError
+
+            # PostgreSQL path raises so we fall through to SQLite
+            mock_objects.filter.return_value.order_by.return_value.first.side_effect = ProgrammingError
+            mock_objects.all.return_value = [mock_bad_prefix]
+            from netbox_kea.sync import find_prefix_length
+
+            # Should not raise — the exception per prefix is caught and skipped
+            result = find_prefix_length("10.0.0.1")
+        # No valid prefix found → falls back to default 32
+        self.assertEqual(result, 32)
+
+
+class TestSyncMacAddressImportErrors(TestCase):
+    """_sync_mac_address: ImportError for dcim.models and netaddr (lines 270-271, 274-276)."""
+
+    def test_dcim_import_error_returns_silently(self):
+        """When dcim.models cannot be imported, _sync_mac_address returns without raising."""
+        import sys
+        from unittest.mock import patch
+
+        # Remove cached module so the import inside _sync_mac_address triggers ImportError
+        with patch.dict(sys.modules, {"dcim.models": None}):
+            # Need to reload sync so the inner import runs fresh
+            import importlib
+
+            import netbox_kea.sync as sync_mod
+
+            importlib.reload(sync_mod)
+            # Should not raise even when dcim is unavailable
+            sync_mod._sync_mac_address("aa:bb:cc:dd:ee:ff", hostname="test")
+
+    def test_netaddr_import_error_returns_silently(self):
+        """When netaddr cannot be imported, _sync_mac_address logs debug and returns."""
+        import sys
+        from unittest.mock import patch
+
+        with patch.dict(sys.modules, {"netaddr": None}):
+            import importlib
+
+            import netbox_kea.sync as sync_mod
+
+            importlib.reload(sync_mod)
+            sync_mod._sync_mac_address("aa:bb:cc:dd:ee:ff", hostname="test")

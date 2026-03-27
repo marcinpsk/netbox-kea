@@ -970,3 +970,216 @@ class TestEnrichReservationSortKey(TestCase):
         r90 = self._call({"ip-address": "10.0.0.90"})
         r101 = self._call({"ip-address": "10.0.0.101"})
         self.assertLess(r90["_ip_sort_key"], r101["_ip_sort_key"])
+
+    def test_invalid_ip_no_sort_key(self):
+        """Invalid IP string in 'ip-address' must not raise and must not add _ip_sort_key."""
+        r = {"ip-address": "not-an-ip"}
+        result = self._call(r)
+        self.assertNotIn("_ip_sort_key", result)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Additional coverage tests — lines missed in earlier batches
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestEnrichLeaseInvalidIp(TestCase):
+    """_enrich_lease: invalid ip_address must not add _ip_sort_key (lines 57-58)."""
+
+    def test_invalid_ip_no_ip_sort_key(self):
+        from datetime import datetime
+
+        from netbox_kea.utilities import _enrich_lease
+
+        lease = {"ip-address": "not-an-ip", "state": 0}
+        result = _enrich_lease(datetime(2024, 1, 1), lease)
+        self.assertNotIn("_ip_sort_key", result)
+
+
+class TestEnrichLeaseNonIntCltt(TestCase):
+    """_enrich_lease: non-integer cltt/valid_lft must warn and return early (lines 70-71)."""
+
+    def test_non_int_cltt_returns_without_expires(self):
+        from datetime import datetime
+
+        from netbox_kea.utilities import _enrich_lease
+
+        lease = {"ip-address": "10.0.0.1", "cltt": "not-an-int", "valid_lft": 3600, "state": 0}
+        result = _enrich_lease(datetime(2024, 1, 1), lease)
+        self.assertNotIn("expires_at", result)
+        self.assertNotIn("expires_in", result)
+
+    def test_non_int_valid_lft_returns_without_expires(self):
+        from datetime import datetime
+
+        from netbox_kea.utilities import _enrich_lease
+
+        lease = {"ip-address": "10.0.0.1", "cltt": 1000, "valid_lft": "bad", "state": 0}
+        result = _enrich_lease(datetime(2024, 1, 1), lease)
+        self.assertNotIn("expires_at", result)
+
+
+class TestParseSubnetStatsMissingCoverage(TestCase):
+    """parse_subnet_stats: error branches not yet covered (lines 187, 190, 206-207, 216-217)."""
+
+    def test_nonzero_result_returns_empty_dict(self):
+        """result != 0 in stat response → returns {} (line 187)."""
+        from netbox_kea.utilities import parse_subnet_stats
+
+        resp = [{"result": 1, "arguments": {"result-set": {"columns": ["subnet-id"], "rows": []}}}]
+        self.assertEqual(parse_subnet_stats(resp, 4), {})
+
+    def test_none_arguments_returns_empty_dict(self):
+        """arguments=None → returns {} (line 190)."""
+        from netbox_kea.utilities import parse_subnet_stats
+
+        resp = [{"result": 0, "arguments": None}]
+        self.assertEqual(parse_subnet_stats(resp, 4), {})
+
+    def test_missing_subnet_id_column_returns_empty_dict(self):
+        """columns without 'subnet-id' → ValueError → returns {} (lines 206-207)."""
+        from netbox_kea.utilities import parse_subnet_stats
+
+        resp = [
+            {
+                "result": 0,
+                "arguments": {
+                    "result-set": {
+                        "columns": ["total-addresses", "assigned-addresses"],
+                        "rows": [[100, 25]],
+                    }
+                },
+            }
+        ]
+        self.assertEqual(parse_subnet_stats(resp, 4), {})
+
+    def test_non_int_subnet_id_row_is_skipped(self):
+        """Row where subnet-id can't be cast to int is skipped (lines 216-217)."""
+        from netbox_kea.utilities import parse_subnet_stats
+
+        resp = [
+            {
+                "result": 0,
+                "arguments": {
+                    "result-set": {
+                        "columns": ["subnet-id", "total-addresses", "assigned-addresses"],
+                        "rows": [["not-an-int", 100, 25]],
+                    }
+                },
+            }
+        ]
+        stats = parse_subnet_stats(resp, 4)
+        self.assertEqual(stats, {})
+
+
+class TestParseIntRowField(TestCase):
+    """_parse_int_row_field: non-integer value raises ValueError (lines 272-273)."""
+
+    def test_non_int_value_raises(self):
+        from netbox_kea.utilities import _parse_int_row_field
+
+        with self.assertRaises(ValueError) as ctx:
+            _parse_int_row_field({"field": "not-a-number"}, "field", 5)
+        self.assertIn("5", str(ctx.exception))
+        self.assertIn("field", str(ctx.exception))
+
+    def test_missing_key_raises(self):
+        from netbox_kea.utilities import _parse_int_row_field
+
+        with self.assertRaises(ValueError):
+            _parse_int_row_field({}, "missing_field", 3)
+
+
+class TestParseReservationCsvValidationPaths(TestCase):
+    """parse_reservation_csv: validation error paths (lines 322-323, 325, 328, 333, 337-338, 340, 343)."""
+
+    def _parse(self, content, version=4):
+        from netbox_kea.utilities import parse_reservation_csv
+
+        return parse_reservation_csv(content, version)
+
+    def test_v4_invalid_ip_raises(self):
+        """Non-parseable IP address raises ValueError (lines 322-323)."""
+        csv = "ip-address,hw-address,subnet-id\n999.999.999.999,aa:bb:cc:dd:ee:ff,1"
+        with self.assertRaises(ValueError) as ctx:
+            self._parse(csv, version=4)
+        self.assertIn("invalid", str(ctx.exception).lower())
+
+    def test_v4_ipv6_as_ipv4_raises(self):
+        """Valid IPv6 address passed as IPv4 raises ValueError (line 325)."""
+        csv = "ip-address,hw-address,subnet-id\n::1,aa:bb:cc:dd:ee:ff,1"
+        with self.assertRaises(ValueError) as ctx:
+            self._parse(csv, version=4)
+        self.assertIn("IPv4", str(ctx.exception))
+
+    def test_v4_invalid_mac_raises(self):
+        """Invalid MAC address format raises ValueError (line 328)."""
+        csv = "ip-address,hw-address,subnet-id\n10.0.0.1,zz:zz:zz:zz:zz:zz,1"
+        with self.assertRaises(ValueError) as ctx:
+            self._parse(csv, version=4)
+        self.assertIn("MAC", str(ctx.exception))
+
+    def test_v6_empty_ip_addresses_raises(self):
+        """ip-addresses with only semicolons/spaces raises ValueError (line 333)."""
+        csv = "ip-addresses,duid,subnet-id\n  ;  ,00:01:02:03:04:05,1"
+        with self.assertRaises(ValueError) as ctx:
+            self._parse(csv, version=6)
+        self.assertIn("ip-addresses", str(ctx.exception))
+
+    def test_v6_invalid_ipv6_raises(self):
+        """Non-parseable string in ip-addresses raises ValueError (lines 337-338)."""
+        csv = "ip-addresses,duid,subnet-id\nnotanip,00:01:02:03:04:05,1"
+        with self.assertRaises(ValueError) as ctx:
+            self._parse(csv, version=6)
+        self.assertIn("invalid", str(ctx.exception).lower())
+
+    def test_v6_ipv4_as_ipv6_raises(self):
+        """IPv4 address in v6 ip-addresses raises ValueError (line 340)."""
+        csv = "ip-addresses,duid,subnet-id\n10.0.0.1,00:01:02:03:04:05,1"
+        with self.assertRaises(ValueError) as ctx:
+            self._parse(csv, version=6)
+        self.assertIn("IPv6", str(ctx.exception))
+
+    def test_v6_invalid_duid_raises(self):
+        """Invalid DUID string raises ValueError (line 343)."""
+        csv = "ip-addresses,duid,subnet-id\n2001:db8::1,not-a-valid-duid!!!,1"
+        with self.assertRaises(ValueError) as ctx:
+            self._parse(csv, version=6)
+        self.assertIn("DUID", str(ctx.exception))
+
+
+class TestParseLeaseCsvValidationPaths(TestCase):
+    """parse_lease_csv: validation error paths (lines 399-400, 402, 406, 412)."""
+
+    def _parse(self, content, version=4):
+        from netbox_kea.utilities import parse_lease_csv
+
+        return parse_lease_csv(version, content)
+
+    def test_v4_invalid_ip_raises(self):
+        """Non-parseable IP address raises ValueError (lines 399-400)."""
+        csv = "ip-address\nnot-an-ip"
+        with self.assertRaises(ValueError) as ctx:
+            self._parse(csv, version=4)
+        self.assertIn("invalid", str(ctx.exception).lower())
+
+    def test_v4_ipv6_as_ipv4_raises(self):
+        """IPv6 address in v4 CSV raises ValueError (line 402)."""
+        csv = "ip-address\n2001:db8::1"
+        with self.assertRaises(ValueError) as ctx:
+            self._parse(csv, version=4)
+        self.assertIn("IPv4", str(ctx.exception))
+
+    def test_v6_invalid_duid_raises(self):
+        """Invalid DUID format in v6 CSV raises ValueError (line 406)."""
+        csv = "ip-address,duid,iaid\n2001:db8::1,notvalid!!!,1"
+        with self.assertRaises(ValueError) as ctx:
+            self._parse(csv, version=6)
+        self.assertIn("DUID", str(ctx.exception))
+
+    def test_v4_invalid_mac_raises(self):
+        """Invalid MAC address in v4 CSV raises ValueError (line 412)."""
+        csv = "ip-address,hw-address\n10.0.0.1,zz:zz:zz:zz:zz:zz"
+        with self.assertRaises(ValueError) as ctx:
+            self._parse(csv, version=4)
+        self.assertIn("MAC", str(ctx.exception))
