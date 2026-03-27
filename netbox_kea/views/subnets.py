@@ -1,0 +1,972 @@
+import ipaddress
+import logging
+import re
+from typing import Any
+
+from django.contrib import messages
+from django.http import HttpResponse
+from django.http.request import HttpRequest
+from django.shortcuts import redirect, render
+from django.urls import reverse
+from netbox.views import generic
+from utilities.htmx import htmx_partial
+from utilities.views import register_model_view
+
+from .. import forms, tables
+from ..kea import KeaClient, KeaException, PartialPersistError
+from ..models import Server
+from ..utilities import (
+    OptionalViewTab,
+    check_dhcp_enabled,
+    export_table,
+    kea_error_hint,
+)
+from ._base import _KeaChangeMixin
+
+logger = logging.getLogger(__name__)
+
+_POOL_RE = re.compile(r"^[0-9a-fA-F.:/-]{3,100}$")
+
+
+class BaseServerDHCPSubnetsView(generic.ObjectChildrenView):
+    """Base view for the subnet list tab; fetches subnet data from Kea config."""
+
+    table = tables.SubnetTable
+    queryset = Server.objects.all()
+    template_name = "netbox_kea/server_dhcp_subnets.html"
+
+    def get_children(self, request: HttpRequest, parent: Server) -> list[dict[str, Any]]:
+        """Return the subnet list for *parent* by delegating to :meth:`get_subnets`."""
+        return self.get_subnets(parent, request)
+
+    def get_subnets(self, server: Server, request: HttpRequest) -> list[dict[str, Any]]:
+        """Fetch all subnets (including shared-network subnets) from the Kea config.
+
+        Also fetches per-subnet utilisation statistics from ``stat-lease{v}-get``
+        when the ``stat_cmds`` hook is loaded.  Degrades gracefully when the hook
+        is absent.
+        """
+        from ..utilities import format_option_data, parse_subnet_stats
+
+        client = server.get_client(version=self.dhcp_version)
+        config = client.command("config-get", service=[f"dhcp{self.dhcp_version}"])
+        if config[0]["arguments"] is None:
+            raise RuntimeError(f"Unexpected None arguments from config-get for dhcp{self.dhcp_version}")
+        dhcp_conf = config[0]["arguments"].get(f"Dhcp{self.dhcp_version}", {})
+        can_change = Server.objects.restrict(request.user, "change").filter(pk=server.pk).exists()
+        subnets = dhcp_conf.get(f"subnet{self.dhcp_version}", [])
+        subnet_list = [
+            {
+                "id": s["id"],
+                "subnet": s["subnet"],
+                "dhcp_version": self.dhcp_version,
+                "server_pk": server.pk,
+                "_subnet_sort_key": int(ipaddress.ip_network(s["subnet"], strict=False).network_address),
+                "options": format_option_data(s.get("option-data", []), version=self.dhcp_version),
+                "pools": [p.get("pool", "") for p in s.get("pools", []) if p.get("pool")],
+                "can_change": can_change,
+            }
+            for s in subnets
+            if "id" in s and "subnet" in s
+        ]
+
+        for sn in dhcp_conf.get("shared-networks", []):
+            subnet_list.extend(
+                {
+                    "id": s["id"],
+                    "subnet": s["subnet"],
+                    "shared_network": sn["name"],
+                    "dhcp_version": self.dhcp_version,
+                    "server_pk": server.pk,
+                    "_subnet_sort_key": int(ipaddress.ip_network(s["subnet"], strict=False).network_address),
+                    "options": format_option_data(s.get("option-data", []), version=self.dhcp_version),
+                    "pools": [p.get("pool", "") for p in s.get("pools", []) if p.get("pool")],
+                    "can_change": can_change,
+                }
+                for s in sn.get(f"subnet{self.dhcp_version}", [])
+            )
+
+        # Enrich with utilisation stats when stat_cmds hook is available.
+        try:
+            stat_resp = client.command(
+                f"stat-lease{self.dhcp_version}-get",
+                service=[f"dhcp{self.dhcp_version}"],
+            )
+            stats = parse_subnet_stats(stat_resp, self.dhcp_version)
+            for s in subnet_list:
+                if s["id"] in stats:
+                    s.update(stats[s["id"]])
+        except Exception:  # noqa: BLE001
+            logger.debug("stat_cmds hook unavailable or failed", exc_info=True)
+
+        return subnet_list
+
+    def get(self, request: HttpRequest, **kwargs: Any) -> HttpResponse:
+        """Handle GET: check DHCP enabled, then render table or export."""
+        instance = self.get_object(**kwargs)
+        if resp := check_dhcp_enabled(instance, self.dhcp_version):
+            return resp
+
+        # We can't use the original get() since it calls get_table_configs which requires a NetBox model.
+        child_objects = self.get_children(request, instance)
+
+        table_data = self.prep_table_data(request, child_objects, instance)
+        table = self.get_table(table_data, request, False)
+
+        if "export" in request.GET:
+            return export_table(
+                table,
+                filename=f"kea-dhcpv{self.dhcp_version}-subnets.csv",
+                use_selected_columns=request.GET["export"] == "table",
+            )
+
+        # If this is an HTMX request, return only the rendered table HTML
+        if htmx_partial(request):
+            return render(
+                request,
+                "htmx/table.html",
+                {
+                    "object": instance,
+                    "table": table,
+                    "model": self.child_model,
+                },
+            )
+
+        return render(
+            request,
+            self.get_template_name(),
+            {
+                "object": instance,
+                "base_template": f"{instance._meta.app_label}/{instance._meta.model_name}.html",
+                "table": table,
+                "table_config": f"{table.name}_config",
+                "return_url": request.get_full_path(),
+                "tab": self.tab,
+            },
+        )
+
+
+@register_model_view(Server, "subnets6")
+class ServerDHCP6SubnetsView(BaseServerDHCPSubnetsView):
+    """DHCPv6 subnets tab for a Kea Server."""
+
+    tab = OptionalViewTab(label="DHCPv6 Subnets", weight=1030, is_enabled=lambda s: s.dhcp6)
+    dhcp_version = 6
+
+
+@register_model_view(Server, "subnets4")
+class ServerDHCP4SubnetsView(BaseServerDHCPSubnetsView):
+    """DHCPv4 subnets tab for a Kea Server."""
+
+    tab = OptionalViewTab(label="DHCPv4 Subnets", weight=1020, is_enabled=lambda s: s.dhcp4)
+    dhcp_version = 4
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Phase 10: Pool management views
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _warn_pool_reservation_overlap(
+    request: HttpRequest,
+    client: "KeaClient",
+    version: int,
+    subnet_id: int,
+    pool_str: str,
+) -> None:
+    """Add a non-blocking warning if any existing reservation IP falls within *pool_str*.
+
+    Uses ``reservation-get-page`` to iterate all reservations for the subnet
+    and checks each one against the pool range (IPRange or CIDR).  Silently
+    skips on any error (host_cmds not loaded, network failure, etc.).
+    """
+    try:
+        from netaddr import IPAddress, IPNetwork, IPRange
+
+        if "-" in pool_str and "/" not in pool_str:
+            start, end = pool_str.split("-", 1)
+            pool_range: IPRange | IPNetwork = IPRange(start.strip(), end.strip())
+        else:
+            pool_range = IPNetwork(pool_str)
+
+        overlapping: list[str] = []
+        source_index, from_index = 0, 0
+        while True:
+            hosts, from_index, source_index = client.reservation_get_page(
+                service=f"dhcp{version}",
+                source_index=source_index,
+                from_index=from_index,
+                limit=200,
+            )
+            for host in hosts:
+                if host.get("subnet-id") != subnet_id:
+                    continue
+                candidate_ips = list(filter(None, [host.get("ip-address")] + list(host.get("ip-addresses") or [])))
+                for ip_str in candidate_ips:
+                    try:
+                        if IPAddress(ip_str) in pool_range:
+                            overlapping.append(ip_str)
+                    except Exception:  # noqa: BLE001, PERF203
+                        pass
+            if from_index == 0 and source_index == 0:
+                break
+
+        if overlapping:
+            sample = ", ".join(overlapping[:5])
+            extra = f" (+{len(overlapping) - 5} more)" if len(overlapping) > 5 else ""
+            messages.warning(
+                request,
+                f"Pool {pool_str} overlaps {len(overlapping)} existing reservation(s): {sample}{extra}. "
+                "Kea allows this — reservations take priority over pool allocation.",
+            )
+    except Exception:  # noqa: BLE001
+        logger.debug("Failed to check pool/reservation overlap for subnet %s", subnet_id)
+
+
+def _warn_reservation_pool_overlap(
+    request: HttpRequest,
+    client: "KeaClient",
+    version: int,
+    subnet_id: int,
+    ip_str: str,
+) -> None:
+    """Add a non-blocking warning if *ip_str* falls within an existing pool in *subnet_id*.
+
+    Fetches the subnet configuration via ``subnet{version}-get`` and checks each
+    pool entry.  Silently skips on any error.
+    """
+    try:
+        from netaddr import IPAddress, IPNetwork, IPRange
+
+        resp = client.command(
+            f"subnet{version}-get",
+            service=[f"dhcp{version}"],
+            arguments={"id": subnet_id},
+        )
+        subnet_list = resp[0].get("arguments", {}).get(f"subnet{version}", []) or []
+        subnet = subnet_list[0] if subnet_list else {}
+        ip = IPAddress(ip_str)
+
+        for pool_entry in subnet.get("pools", []):
+            ps = pool_entry.get("pool", "")
+            if not ps:
+                continue
+            if "-" in ps and "/" not in ps:
+                start, end = ps.split("-", 1)
+                pool_range: IPRange | IPNetwork = IPRange(start.strip(), end.strip())
+            else:
+                pool_range = IPNetwork(ps)
+            if ip in pool_range:
+                messages.warning(
+                    request,
+                    f"IP {ip_str} is within existing pool {ps}. "
+                    "Kea allows this — reservations take priority over pool allocation.",
+                )
+                break
+    except Exception:  # noqa: BLE001
+        logger.debug("Failed to check reservation/pool overlap for %s in subnet %s", ip_str, subnet_id)
+
+
+class _BasePoolAddView(_KeaChangeMixin, generic.ObjectView):
+    """Base view for adding a pool to a subnet."""
+
+    queryset = Server.objects.all()
+    template_name = "netbox_kea/server_pool_add.html"
+    dhcp_version: int  # set on subclasses
+
+    def _subnets_url(self, pk: int) -> str:
+        return reverse(f"plugins:netbox_kea:server_subnets{self.dhcp_version}", args=[pk])
+
+    def get(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
+        server = self.get_object(pk=pk)
+        return render(
+            request,
+            self.template_name,
+            {
+                "object": server,
+                "form": forms.PoolAddForm(),
+                "subnet_id": subnet_id,
+                "dhcp_version": self.dhcp_version,
+                "return_url": self._subnets_url(pk),
+            },
+        )
+
+    def post(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
+        server = self.get_object(pk=pk)
+        return_url = self._subnets_url(pk)
+        form = forms.PoolAddForm(request.POST)
+        if not form.is_valid():
+            return render(
+                request,
+                self.template_name,
+                {
+                    "object": server,
+                    "form": form,
+                    "subnet_id": subnet_id,
+                    "dhcp_version": self.dhcp_version,
+                    "return_url": return_url,
+                },
+            )
+        pool = form.cleaned_data["pool"]
+        client = server.get_client(version=self.dhcp_version)
+        # F4: Warn (non-blocking) when any reservation IP falls in the new pool range
+        _warn_pool_reservation_overlap(request, client, self.dhcp_version, subnet_id, pool)
+        try:
+            client.pool_add(version=self.dhcp_version, subnet_id=subnet_id, pool=pool)
+            messages.success(request, f"Pool {pool} added to subnet {subnet_id}.")
+        except PartialPersistError:
+            messages.warning(request, "Change applied but may not survive a Kea restart (config-write failed).")
+        except KeaException as exc:
+            logger.exception("Failed to add pool to subnet %s", subnet_id)
+            messages.error(request, kea_error_hint(exc))
+        except Exception:
+            logger.exception("Failed to add pool to subnet %s", subnet_id)
+            messages.error(request, "Failed to add pool: see server logs for details.")
+        return redirect(return_url)
+
+
+class ServerSubnet4PoolAddView(_BasePoolAddView):
+    """Add a pool to a DHCPv4 subnet."""
+
+    dhcp_version = 4
+
+
+class ServerSubnet6PoolAddView(_BasePoolAddView):
+    """Add a pool to a DHCPv6 subnet."""
+
+    dhcp_version = 6
+
+
+class _BasePoolDeleteView(_KeaChangeMixin, generic.ObjectView):
+    """Base view for deleting a pool from a subnet."""
+
+    queryset = Server.objects.all()
+    template_name = "netbox_kea/server_pool_delete.html"
+    dhcp_version: int
+
+    def _subnets_url(self, pk: int) -> str:
+        return reverse(f"plugins:netbox_kea:server_subnets{self.dhcp_version}", args=[pk])
+
+    def get(self, request: HttpRequest, pk: int, subnet_id: int, pool: str) -> HttpResponse:
+        if not _POOL_RE.match(pool):
+            return HttpResponse("Invalid pool format.", status=400)
+        server = self.get_object(pk=pk)
+        return render(
+            request,
+            self.template_name,
+            {
+                "object": server,
+                "pool": pool,
+                "subnet_id": subnet_id,
+                "dhcp_version": self.dhcp_version,
+                "return_url": self._subnets_url(pk),
+            },
+        )
+
+    def post(self, request: HttpRequest, pk: int, subnet_id: int, pool: str) -> HttpResponse:
+        if not _POOL_RE.match(pool):
+            return HttpResponse("Invalid pool format.", status=400)
+        server = self.get_object(pk=pk)
+        return_url = self._subnets_url(pk)
+        client = server.get_client(version=self.dhcp_version)
+        try:
+            client.pool_del(version=self.dhcp_version, subnet_id=subnet_id, pool=pool)
+            messages.success(request, f"Pool {pool} removed from subnet {subnet_id}.")
+        except PartialPersistError:
+            messages.warning(request, "Change applied but may not survive a Kea restart (config-write failed).")
+        except KeaException as exc:
+            logger.exception("Failed to remove pool from subnet %s", subnet_id)
+            messages.error(request, kea_error_hint(exc))
+        except Exception:
+            logger.exception("Failed to remove pool from subnet %s", subnet_id)
+            messages.error(request, "Failed to remove pool: see server logs for details.")
+        return redirect(return_url)
+
+
+class ServerSubnet4PoolDeleteView(_BasePoolDeleteView):
+    """Delete a pool from a DHCPv4 subnet."""
+
+    dhcp_version = 4
+
+
+class ServerSubnet6PoolDeleteView(_BasePoolDeleteView):
+    """Delete a pool from a DHCPv6 subnet."""
+
+    dhcp_version = 6
+
+
+# ---------------------------------------------------------------------------
+# Subnet add / delete views
+# ---------------------------------------------------------------------------
+
+
+class _BaseSubnetAddView(_KeaChangeMixin, generic.ObjectView):
+    """Base view for adding a new subnet to Kea."""
+
+    queryset = Server.objects.all()
+    template_name = "netbox_kea/server_subnet_add.html"
+    dhcp_version: int
+
+    def _subnets_url(self, pk: int) -> str:
+        return reverse(f"plugins:netbox_kea:server_subnets{self.dhcp_version}", args=[pk])
+
+    def _get_network_choices(self, client: "KeaClient") -> list[tuple[str, str]]:
+        """Return shared-network choices for the subnet-add dropdown."""
+        try:
+            resp = client.command("config-get", service=[f"dhcp{self.dhcp_version}"])
+            args = resp[0].get("arguments") if resp else None
+            if not isinstance(args, dict):
+                logger.warning("config-get returned unexpected arguments for network choices: %r", args)
+                return [("", "— (global pool) —")]
+            dhcp_conf = args.get(f"Dhcp{self.dhcp_version}", {})
+            networks = dhcp_conf.get("shared-networks", [])
+        except KeaException:
+            logger.warning("Failed to fetch shared networks for subnet add dropdown")
+            return [("", "— (global pool) —")]
+        choices: list[tuple[str, str]] = [("", "— (global pool) —")]
+        for sn in networks:
+            name = sn.get("name", "")
+            if name:
+                choices.append((name, name))
+        return choices
+
+    def get(self, request: HttpRequest, pk: int) -> HttpResponse:
+        server = self.get_object(pk=pk)
+        form = forms.SubnetAddForm()
+        try:
+            client = server.get_client(version=self.dhcp_version)
+            form.fields["shared_network"].choices = self._get_network_choices(client)
+        except Exception:
+            form.fields["shared_network"].choices = [("", "— (global pool) —")]
+        return render(
+            request,
+            self.template_name,
+            {
+                "object": server,
+                "form": form,
+                "dhcp_version": self.dhcp_version,
+                "return_url": self._subnets_url(pk),
+            },
+        )
+
+    def post(self, request: HttpRequest, pk: int) -> HttpResponse:
+        server = self.get_object(pk=pk)
+        return_url = self._subnets_url(pk)
+        form = forms.SubnetAddForm(request.POST)
+        try:
+            client = server.get_client(version=self.dhcp_version)
+            network_choices = self._get_network_choices(client)
+        except Exception:
+            client = None
+            network_choices = [("", "— (global pool) —")]
+        form.fields["shared_network"].choices = network_choices
+        if not form.is_valid():
+            return render(
+                request,
+                self.template_name,
+                {
+                    "object": server,
+                    "form": form,
+                    "dhcp_version": self.dhcp_version,
+                    "return_url": return_url,
+                },
+            )
+        if client is None:
+            try:
+                client = server.get_client(version=self.dhcp_version)
+            except Exception:
+                messages.error(request, "Unable to connect to the Kea server.")
+                return render(
+                    request,
+                    self.template_name,
+                    {
+                        "object": server,
+                        "form": form,
+                        "dhcp_version": self.dhcp_version,
+                        "return_url": return_url,
+                    },
+                )
+        cd = form.cleaned_data
+        try:
+            assigned_id = client.subnet_add(
+                version=self.dhcp_version,
+                subnet_cidr=cd["subnet"],
+                subnet_id=cd.get("subnet_id") or None,
+                pools=cd["pools"],
+                gateway=cd["gateway"] or None,
+                dns_servers=cd["dns_servers"],
+                ntp_servers=cd["ntp_servers"],
+            )
+            messages.success(request, f"Subnet {cd['subnet']} added.")
+            shared_network = cd.get("shared_network", "")
+            if shared_network and assigned_id is not None:
+                try:
+                    client.network_subnet_add(version=self.dhcp_version, name=shared_network, subnet_id=assigned_id)
+                    messages.success(request, f"Subnet assigned to shared network '{shared_network}'.")
+                except PartialPersistError:
+                    messages.warning(
+                        request,
+                        f"Subnet assigned to '{shared_network}' but config-write failed (change may not survive restart).",
+                    )
+                except Exception:
+                    logger.exception(
+                        "Subnet %s created but failed to assign to network %s", cd["subnet"], shared_network
+                    )
+                    messages.warning(request, f"Subnet created but could not be assigned to '{shared_network}'.")
+        except PartialPersistError:
+            messages.warning(request, "Subnet added but config-write failed (change may not survive a Kea restart).")
+            return redirect(return_url)
+        except KeaException as exc:
+            logger.exception("Failed to add subnet %s", cd.get("subnet"))
+            messages.error(request, kea_error_hint(exc))
+        except Exception:
+            logger.exception("Failed to add subnet %s", cd.get("subnet"))
+            messages.error(request, "Failed to add subnet: see server logs for details.")
+            return render(
+                request,
+                self.template_name,
+                {
+                    "object": server,
+                    "form": form,
+                    "dhcp_version": self.dhcp_version,
+                    "return_url": return_url,
+                },
+            )
+        return redirect(return_url)
+
+
+class ServerSubnet4AddView(_BaseSubnetAddView):
+    """Add a DHCPv4 subnet."""
+
+    dhcp_version = 4
+
+
+class ServerSubnet6AddView(_BaseSubnetAddView):
+    """Add a DHCPv6 subnet."""
+
+    dhcp_version = 6
+
+
+class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
+    """Base view for editing an existing subnet's configuration in Kea."""
+
+    queryset = Server.objects.all()
+    template_name = "netbox_kea/server_subnet_edit.html"
+    dhcp_version: int
+
+    def _subnets_url(self, pk: int) -> str:
+        return reverse(f"plugins:netbox_kea:server_subnets{self.dhcp_version}", args=[pk])
+
+    def _fetch_subnet(self, server: Server, subnet_id: int) -> dict[str, Any]:
+        """Fetch current subnet config from Kea.  Returns empty dict on failure."""
+        try:
+            key = f"subnet{self.dhcp_version}"
+            client = server.get_client(version=self.dhcp_version)
+            resp = client.command(
+                f"{key}-get",
+                service=[f"dhcp{self.dhcp_version}"],
+                arguments={"id": subnet_id},
+            )
+            subnets = resp[0].get("arguments", {}).get(key, [])
+            return subnets[0] if subnets else {}
+        except Exception:
+            logger.warning("Failed to fetch subnet %s for editing", subnet_id)
+            return {}
+
+    def _get_network_data(self, client: "KeaClient", subnet_id: int) -> tuple[list[tuple[str, str]], str, dict]:
+        """Return ``(choices, current_network_name, dhcp_conf)`` for the shared-network dropdown.
+
+        ``choices`` is suitable for a ``ChoiceField``: ``[("", "— global pool —"), ("net-a", "net-a"), ...]``.
+        ``current_network_name`` is the name of the network the subnet currently belongs to, or ``""``.
+        ``dhcp_conf`` is the raw Dhcp4/Dhcp6 config dict (for deriving inherited options).
+        """
+        try:
+            resp = client.command("config-get", service=[f"dhcp{self.dhcp_version}"])
+            args = resp[0].get("arguments") if resp else None
+            if not isinstance(args, dict):
+                logger.warning("config-get returned unexpected arguments for network data: %r", args)
+                return [("", "— (global pool) —")], None, {}
+            dhcp_conf = args.get(f"Dhcp{self.dhcp_version}", {})
+            networks = dhcp_conf.get("shared-networks", [])
+        except KeaException:
+            logger.warning("Failed to fetch shared networks for subnet edit dropdown")
+            return [("", "— (global pool) —")], None, {}
+
+        current_network = ""
+        choices: list[tuple[str, str]] = [("", "— (global pool) —")]
+        for sn in networks:
+            name = sn.get("name", "")
+            if not name:
+                continue
+            choices.append((name, name))
+            subnet_ids = {s.get("id") for s in sn.get(f"subnet{self.dhcp_version}", [])}
+            if subnet_id in subnet_ids:
+                current_network = name
+        return choices, current_network, dhcp_conf
+
+    def _form_initial(self, subnet: dict[str, Any]) -> dict[str, Any]:
+        """Build SubnetEditForm initial values from a Kea subnet dict."""
+        initial: dict[str, Any] = {"subnet_cidr": subnet.get("subnet", "")}
+
+        # Pools
+        pools = subnet.get("pools", [])
+        if pools:
+            initial["pools"] = "\n".join(p.get("pool", "") for p in pools if p.get("pool"))
+
+        # Options
+        for opt in subnet.get("option-data", []):
+            name = opt.get("name", "")
+            data = opt.get("data", "")
+            if name == "routers":
+                initial["gateway"] = data
+            elif name in ("domain-name-servers", "dns-servers"):
+                initial["dns_servers"] = data
+            elif name in ("ntp-servers", "sntp-servers"):
+                initial["ntp_servers"] = data
+
+        # Lease lifetimes
+        if subnet.get("valid-lft"):
+            initial["valid_lft"] = subnet["valid-lft"]
+        if subnet.get("min-valid-lft") is not None:
+            initial["min_valid_lft"] = subnet["min-valid-lft"]
+        if subnet.get("max-valid-lft") is not None:
+            initial["max_valid_lft"] = subnet["max-valid-lft"]
+        if subnet.get("renew-timer") is not None:
+            initial["renew_timer"] = subnet["renew-timer"]
+        if subnet.get("rebind-timer") is not None:
+            initial["rebind_timer"] = subnet["rebind-timer"]
+
+        return initial
+
+    def _get_inherited_options(
+        self,
+        dhcp_conf: dict[str, Any],
+        current_network: str,
+        form_initial: dict[str, Any],
+    ) -> dict[str, dict[str, str]]:
+        """Return option hints inherited from shared-network or global config.
+
+        Only includes options NOT already set by the subnet itself (i.e., absent
+        from *form_initial*).  Each value is a dict with ``"value"`` and
+        ``"source"`` keys so the template can display e.g.
+        *inherited from global: 8.8.8.8*.
+        """
+
+        def _parse_opts(option_list: list) -> dict[str, str]:
+            result: dict[str, str] = {}
+            for opt in option_list:
+                name = opt.get("name", "")
+                data = opt.get("data", "")
+                if name == "routers":
+                    result["gateway"] = data
+                elif name in ("domain-name-servers", "dns-servers"):
+                    result["dns_servers"] = data
+                elif name in ("ntp-servers", "sntp-servers"):
+                    result["ntp_servers"] = data
+            return result
+
+        global_opts = _parse_opts(dhcp_conf.get("option-data", []))
+
+        network_opts: dict[str, str] = {}
+        if current_network:
+            for sn in dhcp_conf.get("shared-networks", []):
+                if sn.get("name") == current_network:
+                    network_opts = _parse_opts(sn.get("option-data", []))
+                    break
+
+        inherited: dict[str, dict[str, str]] = {}
+        for field in ("gateway", "dns_servers", "ntp_servers"):
+            if form_initial.get(field):
+                continue  # subnet already overrides this option
+            if field in network_opts:
+                inherited[field] = {"value": network_opts[field], "source": f"shared-network: {current_network}"}
+            elif field in global_opts:
+                inherited[field] = {"value": global_opts[field], "source": "global"}
+        return inherited
+
+    def get(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
+        server = self.get_object(pk=pk)
+        subnet = self._fetch_subnet(server, subnet_id)
+        client = server.get_client(version=self.dhcp_version)
+        network_choices, current_network, dhcp_conf = self._get_network_data(client, subnet_id)
+        display_network = current_network or ""
+        initial = self._form_initial(subnet)
+        initial["shared_network"] = display_network
+        initial["current_network"] = display_network
+        form = forms.SubnetEditForm(initial=initial)
+        form.fields["shared_network"].choices = network_choices
+        inherited_options = self._get_inherited_options(dhcp_conf, display_network, initial)
+        return render(
+            request,
+            self.template_name,
+            {
+                "object": server,
+                "form": form,
+                "subnet_id": subnet_id,
+                "subnet_cidr": subnet.get("subnet", ""),
+                "dhcp_version": self.dhcp_version,
+                "return_url": self._subnets_url(pk),
+                "inherited_options": inherited_options,
+            },
+        )
+
+    def post(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
+        server = self.get_object(pk=pk)
+        return_url = self._subnets_url(pk)
+        client = server.get_client(version=self.dhcp_version)
+        network_choices, server_current_network, _ = self._get_network_data(client, subnet_id)
+        if server_current_network is None:
+            logger.warning(
+                "Could not determine current shared-network for subnet %s on server %s — aborting edit", subnet_id, pk
+            )
+            messages.error(request, "Could not determine current network state; edit aborted to prevent data loss.")
+            return redirect(return_url)
+        form = forms.SubnetEditForm(request.POST)
+        form.fields["shared_network"].choices = network_choices
+        if not form.is_valid():
+            return render(
+                request,
+                self.template_name,
+                {
+                    "object": server,
+                    "form": form,
+                    "subnet_id": subnet_id,
+                    "subnet_cidr": request.POST.get("subnet_cidr", ""),
+                    "dhcp_version": self.dhcp_version,
+                    "return_url": return_url,
+                },
+            )
+        cd = form.cleaned_data
+        # Use the authoritative server-side value so a user cannot forge current_network
+        # via POST data to remove a subnet from a network it doesn't actually belong to.
+        old_network = server_current_network
+        new_network = cd.get("shared_network", "")
+
+        # Apply subnet config changes first — only move the network if the update succeeds.
+        try:
+            client.subnet_update(
+                version=self.dhcp_version,
+                subnet_id=subnet_id,
+                subnet_cidr=cd["subnet_cidr"],
+                pools=cd["pools"] if cd["pools"] != [] else [],
+                gateway=cd["gateway"] or None,
+                dns_servers=cd["dns_servers"] or None,
+                ntp_servers=cd["ntp_servers"] or None,
+                valid_lft=cd.get("valid_lft"),
+                min_valid_lft=cd.get("min_valid_lft"),
+                max_valid_lft=cd.get("max_valid_lft"),
+                renew_timer=cd.get("renew_timer"),
+                rebind_timer=cd.get("rebind_timer"),
+            )
+            messages.success(request, f"Subnet {cd['subnet_cidr']} updated.")
+        except PartialPersistError:
+            messages.warning(request, "Change applied but may not survive a Kea restart (config-write failed).")
+            return redirect(return_url)
+        except KeaException as exc:
+            logger.exception("Failed to update subnet %s on server %s", subnet_id, pk)
+            messages.error(request, kea_error_hint(exc))
+            return render(
+                request,
+                self.template_name,
+                {
+                    "object": server,
+                    "form": form,
+                    "subnet_id": subnet_id,
+                    "subnet_cidr": cd["subnet_cidr"],
+                    "dhcp_version": self.dhcp_version,
+                    "return_url": return_url,
+                },
+            )
+        except Exception:
+            logger.exception("Failed to update subnet %s on server %s", subnet_id, pk)
+            messages.error(request, "Failed to update subnet: see server logs for details.")
+            return render(
+                request,
+                self.template_name,
+                {
+                    "object": server,
+                    "form": form,
+                    "subnet_id": subnet_id,
+                    "subnet_cidr": cd["subnet_cidr"],
+                    "dhcp_version": self.dhcp_version,
+                    "return_url": return_url,
+                },
+            )
+
+        # Handle shared-network membership change only after a successful update.
+        if old_network != new_network:
+            try:
+                if new_network:
+                    client.network_subnet_add(version=self.dhcp_version, name=new_network, subnet_id=subnet_id)
+                if old_network:
+                    try:
+                        client.network_subnet_del(version=self.dhcp_version, name=old_network, subnet_id=subnet_id)
+                    except Exception as del_exc:
+                        # add succeeded but del failed — only rollback if mutation is NOT already live
+                        if isinstance(del_exc, PartialPersistError):
+                            # del is live (running config changed); do not rollback
+                            raise del_exc
+                        if new_network:
+                            try:
+                                client.network_subnet_del(
+                                    version=self.dhcp_version, name=new_network, subnet_id=subnet_id
+                                )
+                            except Exception:
+                                logger.exception(
+                                    "Rollback of network_subnet_add failed for subnet %s on server %s",
+                                    subnet_id,
+                                    pk,
+                                )
+                        raise del_exc
+            except KeaException as exc:
+                logger.warning("network_subnet change failed for subnet %s on server %s: %s", subnet_id, pk, exc)
+                messages.error(request, f"Network assignment error: {kea_error_hint(exc)}")
+            except Exception:
+                logger.exception("Unexpected error changing network for subnet %s on server %s", subnet_id, pk)
+                messages.error(request, "An internal error occurred during network assignment.")
+        return redirect(return_url)
+
+
+class ServerSubnet4EditView(_BaseSubnetEditView):
+    """Edit a DHCPv4 subnet's configuration."""
+
+    dhcp_version = 4
+
+
+class ServerSubnet6EditView(_BaseSubnetEditView):
+    """Edit a DHCPv6 subnet's configuration."""
+
+    dhcp_version = 6
+
+
+class _BaseSubnetDeleteView(_KeaChangeMixin, generic.ObjectView):
+    """Base view for deleting a subnet from Kea."""
+
+    queryset = Server.objects.all()
+    template_name = "netbox_kea/server_subnet_delete.html"
+    dhcp_version: int
+
+    def _subnets_url(self, pk: int) -> str:
+        return reverse(f"plugins:netbox_kea:server_subnets{self.dhcp_version}", args=[pk])
+
+    def get(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
+        server = self.get_object(pk=pk)
+        client = server.get_client(version=self.dhcp_version)
+        subnet_cidr = ""
+        try:
+            resp = client.command(
+                f"subnet{self.dhcp_version}-get",
+                service=[f"dhcp{self.dhcp_version}"],
+                arguments={"id": subnet_id},
+            )
+            key = f"subnet{self.dhcp_version}"
+            subnet_cidr = resp[0].get("arguments", {}).get(key, [{}])[0].get("subnet", "")
+        except Exception:
+            pass
+        return render(
+            request,
+            self.template_name,
+            {
+                "object": server,
+                "subnet_id": subnet_id,
+                "subnet_cidr": subnet_cidr,
+                "dhcp_version": self.dhcp_version,
+                "return_url": self._subnets_url(pk),
+            },
+        )
+
+    def post(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
+        server = self.get_object(pk=pk)
+        return_url = self._subnets_url(pk)
+        client = server.get_client(version=self.dhcp_version)
+        try:
+            client.subnet_del(version=self.dhcp_version, subnet_id=subnet_id)
+            messages.success(request, f"Subnet {subnet_id} deleted.")
+        except PartialPersistError:
+            messages.warning(request, "Change applied but may not survive a Kea restart (config-write failed).")
+        except KeaException as exc:
+            logger.exception("Failed to delete subnet %s", subnet_id)
+            messages.error(request, kea_error_hint(exc))
+        except Exception:
+            logger.exception("Failed to delete subnet %s", subnet_id)
+            messages.error(request, "Failed to delete subnet: see server logs for details.")
+        return redirect(return_url)
+
+
+class ServerSubnet4DeleteView(_BaseSubnetDeleteView):
+    """Delete a DHCPv4 subnet."""
+
+    dhcp_version = 4
+
+
+class ServerSubnet6DeleteView(_BaseSubnetDeleteView):
+    """Delete a DHCPv6 subnet."""
+
+    dhcp_version = 6
+
+
+class _BaseSubnetWipeView(_KeaChangeMixin, generic.ObjectView):
+    """Base view for wiping all leases in a subnet."""
+
+    queryset = Server.objects.all()
+    template_name = "netbox_kea/server_subnet_wipe.html"
+    dhcp_version: int
+
+    def _subnets_url(self, pk: int) -> str:
+        return reverse(f"plugins:netbox_kea:server_subnets{self.dhcp_version}", args=[pk])
+
+    def get(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
+        server = self.get_object(pk=pk)
+        client = server.get_client(version=self.dhcp_version)
+        subnet_cidr = ""
+        try:
+            resp = client.command(
+                f"subnet{self.dhcp_version}-get",
+                service=[f"dhcp{self.dhcp_version}"],
+                arguments={"id": subnet_id},
+            )
+            key = f"subnet{self.dhcp_version}"
+            subnet_cidr = resp[0].get("arguments", {}).get(key, [{}])[0].get("subnet", "")
+        except Exception:
+            pass
+        return render(
+            request,
+            self.template_name,
+            {
+                "object": server,
+                "subnet_id": subnet_id,
+                "subnet_cidr": subnet_cidr,
+                "dhcp_version": self.dhcp_version,
+                "return_url": self._subnets_url(pk),
+            },
+        )
+
+    def post(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
+        server = self.get_object(pk=pk)
+        return_url = self._subnets_url(pk)
+        client = server.get_client(version=self.dhcp_version)
+        try:
+            client.lease_wipe(version=self.dhcp_version, subnet_id=subnet_id)
+            messages.success(request, f"All leases in subnet {subnet_id} wiped.")
+        except KeaException:
+            logger.exception("Failed to wipe leases in subnet %s", subnet_id)
+            messages.error(
+                request,
+                "Failed to wipe leases: see server logs for details. Ensure the lease_cmds hook is loaded.",
+            )
+        except Exception:
+            logger.exception("Failed to wipe leases in subnet %s", subnet_id)
+            messages.error(request, "Failed to wipe leases: see server logs for details.")
+        return redirect(return_url)
+
+
+class ServerSubnet4WipeView(_BaseSubnetWipeView):
+    """Wipe all DHCPv4 leases in a subnet."""
+
+    dhcp_version = 4
+
+
+class ServerSubnet6WipeView(_BaseSubnetWipeView):
+    """Wipe all DHCPv6 leases in a subnet."""
+
+    dhcp_version = 6

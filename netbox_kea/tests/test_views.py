@@ -3537,7 +3537,7 @@ class TestLeaseAddSyncToNetBox(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("sync_to_netbox", response.content.decode())
 
-    @patch("netbox_kea.views.sync_lease_to_netbox")
+    @patch("netbox_kea.views.leases.sync_lease_to_netbox")
     @patch("netbox_kea.models.KeaClient")
     def test_post_lease4_add_with_sync_calls_sync_lease(self, MockKeaClient, mock_sync):
         """POST with sync_to_netbox=on calls sync_lease_to_netbox() with the lease dict."""
@@ -3549,7 +3549,7 @@ class TestLeaseAddSyncToNetBox(_ViewTestBase):
         lease = mock_sync.call_args[0][0]
         self.assertEqual(lease["ip-address"], "10.0.0.200")
 
-    @patch("netbox_kea.views.sync_lease_to_netbox")
+    @patch("netbox_kea.views.leases.sync_lease_to_netbox")
     @patch("netbox_kea.models.KeaClient")
     def test_post_lease4_add_without_sync_does_not_call_sync(self, MockKeaClient, mock_sync):
         """POST without sync_to_netbox does NOT call sync_lease_to_netbox()."""
@@ -3558,7 +3558,7 @@ class TestLeaseAddSyncToNetBox(_ViewTestBase):
         self.assertEqual(response.status_code, 302)
         mock_sync.assert_not_called()
 
-    @patch("netbox_kea.views.sync_lease_to_netbox")
+    @patch("netbox_kea.views.leases.sync_lease_to_netbox")
     @patch("netbox_kea.models.KeaClient")
     def test_post_lease4_add_sync_failure_does_not_prevent_kea_success(self, MockKeaClient, mock_sync):
         """Sync failure is a warning; the lease creation still succeeds (302 redirect)."""
@@ -4535,7 +4535,7 @@ class TestEnrichLeasesWithBadgesCanChange(_ViewTestBase):
         server = self.server
         lease = {"ip_address": "10.0.0.1", "hw_address": "aa:bb:cc:dd:ee:ff"}
         with (
-            patch("netbox_kea.views._fetch_reservation_by_ip_for_leases", return_value=({}, False)),
+            patch("netbox_kea.views.leases._fetch_reservation_by_ip_for_leases", return_value=({}, False)),
             patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
             patch.object(server, "get_client", return_value=MagicMock()),
         ):
@@ -4552,7 +4552,7 @@ class TestEnrichLeasesWithBadgesCanChange(_ViewTestBase):
         server = self.server
         lease = {"ip_address": "10.0.0.1", "hw_address": "aa:bb:cc:dd:ee:ff"}
         with (
-            patch("netbox_kea.views._fetch_reservation_by_ip_for_leases", return_value=({}, False)),
+            patch("netbox_kea.views.leases._fetch_reservation_by_ip_for_leases", return_value=({}, False)),
             patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
             patch.object(server, "get_client", return_value=MagicMock()),
         ):
@@ -4578,7 +4578,9 @@ class TestEnrichLeasesReservationFlags(_ViewTestBase):
         lease = {"ip_address": "10.0.0.5", "hw_address": "aa:bb:cc:dd:ee:ff"}
         rsv = {"subnet-id": 1, "ip-address": "10.0.0.5", "hw-address": "aa:bb:cc:dd:ee:ff"}
         with (
-            patch("netbox_kea.views._fetch_reservation_by_ip_for_leases", return_value=({"10.0.0.5": rsv}, True)),
+            patch(
+                "netbox_kea.views.leases._fetch_reservation_by_ip_for_leases", return_value=({"10.0.0.5": rsv}, True)
+            ),
             patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
             patch.object(server, "get_client", return_value=MagicMock()),
         ):
@@ -4592,7 +4594,7 @@ class TestEnrichLeasesReservationFlags(_ViewTestBase):
         server = self.server
         lease = {"ip_address": "10.0.0.99", "hw_address": "bb:bb:bb:bb:bb:bb"}
         with (
-            patch("netbox_kea.views._fetch_reservation_by_ip_for_leases", return_value=({}, True)),
+            patch("netbox_kea.views.leases._fetch_reservation_by_ip_for_leases", return_value=({}, True)),
             patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
             patch.object(server, "get_client", return_value=MagicMock()),
         ):
@@ -4607,7 +4609,9 @@ class TestEnrichLeasesReservationFlags(_ViewTestBase):
         lease = {"ip_address": "10.0.0.5", "hw_address": "aa:bb:cc:dd:ee:ff"}
         rsv = {"subnet-id": 1, "ip-address": "10.0.0.5", "hw-address": "aa:bb:cc:dd:ee:ff"}
         with (
-            patch("netbox_kea.views._fetch_reservation_by_ip_for_leases", return_value=({"10.0.0.5": rsv}, True)),
+            patch(
+                "netbox_kea.views.leases._fetch_reservation_by_ip_for_leases", return_value=({"10.0.0.5": rsv}, True)
+            ),
             patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
             patch.object(server, "get_client", return_value=MagicMock()),
         ):
@@ -4623,7 +4627,9 @@ class TestEnrichLeasesReservationFlags(_ViewTestBase):
         lease = {"ip_address": "10.0.0.5", "hw_address": "aa:bb:cc:dd:ee:ff"}
         rsv = {"subnet-id": 1, "ip-address": "10.0.0.5", "hw-address": "aa:bb:cc:dd:ee:ff"}
         with (
-            patch("netbox_kea.views._fetch_reservation_by_ip_for_leases", return_value=({"10.0.0.5": rsv}, True)),
+            patch(
+                "netbox_kea.views.leases._fetch_reservation_by_ip_for_leases", return_value=({"10.0.0.5": rsv}, True)
+            ),
             patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
             patch.object(server, "get_client", return_value=MagicMock()),
         ):
@@ -4638,7 +4644,7 @@ class TestEnrichLeasesReservationFlags(_ViewTestBase):
         server = self.server
         lease = {"ip_address": "10.0.0.99", "hw_address": "cc:cc:cc:cc:cc:cc"}
         with (
-            patch("netbox_kea.views._fetch_reservation_by_ip_for_leases", return_value=({}, True)),
+            patch("netbox_kea.views.leases._fetch_reservation_by_ip_for_leases", return_value=({}, True)),
             patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
             patch.object(server, "get_client", return_value=MagicMock()),
         ):
@@ -4652,7 +4658,7 @@ class TestEnrichLeasesReservationFlags(_ViewTestBase):
         server = self.server
         lease = {"ip_address": "10.0.0.99", "hw_address": "cc:cc:cc:cc:cc:cc"}
         with (
-            patch("netbox_kea.views._fetch_reservation_by_ip_for_leases", return_value=({}, True)),
+            patch("netbox_kea.views.leases._fetch_reservation_by_ip_for_leases", return_value=({}, True)),
             patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
             patch.object(server, "get_client", return_value=MagicMock()),
         ):
@@ -5041,7 +5047,7 @@ class TestReservation4AddExceptions(_ViewTestBase):
         MockKeaClient.return_value.reservation_add.side_effect = PartialPersistError("dhcp4", Exception("write"))
         MockKeaClient.return_value.reservation_get_page.return_value = ([], 0, 0)
         post_data = {**_VALID_RESERVATION4_POST, "sync_to_netbox": "on"}
-        with patch("netbox_kea.views.sync_reservation_to_netbox") as mock_sync:
+        with patch("netbox_kea.views.reservations.sync_reservation_to_netbox") as mock_sync:
             mock_sync.return_value = (MagicMock(), True)
             response = self.client.post(self._url(), post_data, follow=True)
         self.assertEqual(response.status_code, 200)
@@ -5054,7 +5060,7 @@ class TestReservation4AddExceptions(_ViewTestBase):
         MockKeaClient.return_value.reservation_add.side_effect = PartialPersistError("dhcp4", Exception("write"))
         MockKeaClient.return_value.reservation_get_page.return_value = ([], 0, 0)
         post_data = {**_VALID_RESERVATION4_POST, "sync_to_netbox": "on"}
-        with patch("netbox_kea.views.sync_reservation_to_netbox", side_effect=RuntimeError("sync boom")):
+        with patch("netbox_kea.views.reservations.sync_reservation_to_netbox", side_effect=RuntimeError("sync boom")):
             response = self.client.post(self._url(), post_data, follow=True)
         msgs = list(response.context["messages"])
         self.assertTrue(any("sync failed" in m.message.lower() for m in msgs))
@@ -5089,7 +5095,7 @@ class TestReservation4AddExceptions(_ViewTestBase):
         MockKeaClient.return_value.reservation_add.return_value = None
         MockKeaClient.return_value.reservation_get_page.return_value = ([], 0, 0)
         post_data = {**_VALID_RESERVATION4_POST, "sync_to_netbox": "on"}
-        with patch("netbox_kea.views.sync_reservation_to_netbox") as mock_sync:
+        with patch("netbox_kea.views.reservations.sync_reservation_to_netbox") as mock_sync:
             mock_sync.return_value = (MagicMock(), True)
             response = self.client.post(self._url(), post_data, follow=True)
         self.assertEqual(response.status_code, 200)
@@ -5101,7 +5107,7 @@ class TestReservation4AddExceptions(_ViewTestBase):
         MockKeaClient.return_value.reservation_add.return_value = None
         MockKeaClient.return_value.reservation_get_page.return_value = ([], 0, 0)
         post_data = {**_VALID_RESERVATION4_POST, "sync_to_netbox": "on"}
-        with patch("netbox_kea.views.sync_reservation_to_netbox", side_effect=RuntimeError("sync fail")):
+        with patch("netbox_kea.views.reservations.sync_reservation_to_netbox", side_effect=RuntimeError("sync fail")):
             response = self.client.post(self._url(), post_data, follow=True)
         msgs = list(response.context["messages"])
         self.assertTrue(any("sync failed" in m.message.lower() for m in msgs))
@@ -5139,7 +5145,7 @@ class TestReservation6AddExceptions(_ViewTestBase):
         MockKeaClient.return_value.reservation_add.side_effect = PartialPersistError("dhcp6", Exception("write"))
         MockKeaClient.return_value.reservation_get_page.return_value = ([], 0, 0)
         post_data = {**_VALID_RESERVATION6_POST, "sync_to_netbox": "on"}
-        with patch("netbox_kea.views.sync_reservation_to_netbox") as mock_sync:
+        with patch("netbox_kea.views.reservations.sync_reservation_to_netbox") as mock_sync:
             mock_sync.return_value = (MagicMock(), False)
             response = self.client.post(self._url(), post_data, follow=True)
         self.assertEqual(response.status_code, 200)
@@ -5152,7 +5158,7 @@ class TestReservation6AddExceptions(_ViewTestBase):
         MockKeaClient.return_value.reservation_add.side_effect = PartialPersistError("dhcp6", Exception("write"))
         MockKeaClient.return_value.reservation_get_page.return_value = ([], 0, 0)
         post_data = {**_VALID_RESERVATION6_POST, "sync_to_netbox": "on"}
-        with patch("netbox_kea.views.sync_reservation_to_netbox", side_effect=RuntimeError("sync boom")):
+        with patch("netbox_kea.views.reservations.sync_reservation_to_netbox", side_effect=RuntimeError("sync boom")):
             response = self.client.post(self._url(), post_data, follow=True)
         msgs = list(response.context["messages"])
         self.assertTrue(any("sync failed" in m.message.lower() for m in msgs))
@@ -5234,7 +5240,7 @@ class TestReservation4EditExceptions(_ViewTestBase):
 
         MockKeaClient.return_value.reservation_update.side_effect = PartialPersistError("dhcp4", Exception("write"))
         post_data = {**_VALID_RESERVATION4_POST, "sync_to_netbox": "on"}
-        with patch("netbox_kea.views.sync_reservation_to_netbox") as mock_sync:
+        with patch("netbox_kea.views.reservations.sync_reservation_to_netbox") as mock_sync:
             mock_sync.return_value = (MagicMock(), True)
             response = self.client.post(self._url(), post_data, follow=True)
         self.assertEqual(response.status_code, 200)
@@ -5247,7 +5253,7 @@ class TestReservation4EditExceptions(_ViewTestBase):
 
         MockKeaClient.return_value.reservation_update.side_effect = PartialPersistError("dhcp4", Exception("write"))
         post_data = {**_VALID_RESERVATION4_POST, "sync_to_netbox": "on"}
-        with patch("netbox_kea.views.sync_reservation_to_netbox", side_effect=RuntimeError("sync")):
+        with patch("netbox_kea.views.reservations.sync_reservation_to_netbox", side_effect=RuntimeError("sync")):
             response = self.client.post(self._url(), post_data, follow=True)
         msgs = list(response.context["messages"])
         self.assertTrue(any("sync failed" in m.message.lower() for m in msgs))
@@ -5275,7 +5281,7 @@ class TestReservation4EditExceptions(_ViewTestBase):
         """Successful update with sync_to_netbox calls sync and shows info."""
         MockKeaClient.return_value.reservation_update.return_value = None
         post_data = {**_VALID_RESERVATION4_POST, "sync_to_netbox": "on"}
-        with patch("netbox_kea.views.sync_reservation_to_netbox") as mock_sync:
+        with patch("netbox_kea.views.reservations.sync_reservation_to_netbox") as mock_sync:
             mock_sync.return_value = (MagicMock(), False)
             response = self.client.post(self._url(), post_data, follow=True)
         self.assertEqual(response.status_code, 200)
@@ -5286,7 +5292,7 @@ class TestReservation4EditExceptions(_ViewTestBase):
         """Successful update where sync raises must show warning."""
         MockKeaClient.return_value.reservation_update.return_value = None
         post_data = {**_VALID_RESERVATION4_POST, "sync_to_netbox": "on"}
-        with patch("netbox_kea.views.sync_reservation_to_netbox", side_effect=RuntimeError("oops")):
+        with patch("netbox_kea.views.reservations.sync_reservation_to_netbox", side_effect=RuntimeError("oops")):
             response = self.client.post(self._url(), post_data, follow=True)
         msgs = list(response.context["messages"])
         self.assertTrue(any("sync failed" in m.message.lower() for m in msgs))
@@ -5771,7 +5777,9 @@ class TestBulkReservationSyncFetchException(_ViewTestBase):
     @patch("netbox_kea.models.KeaClient")
     def test_post_fetch_exception_shows_error(self, MockKeaClient):
         """Exception in _fetch_reservations_from_server must show error message and redirect."""
-        with patch("netbox_kea.views._fetch_reservations_from_server", side_effect=RuntimeError("fetch fail")):
+        with patch(
+            "netbox_kea.views.sync_views._fetch_reservations_from_server", side_effect=RuntimeError("fetch fail")
+        ):
             response = self.client.post(self._url(), follow=True)
         msgs = list(response.context["messages"])
         self.assertTrue(any(m.level == django_messages.ERROR for m in msgs))
@@ -6053,7 +6061,7 @@ class TestEnrichLeasesExceptionPaths(_ViewTestBase):
             0,
         )
         with patch(
-            "netbox_kea.views._fetch_reservation_by_ip_for_leases",
+            "netbox_kea.views.leases._fetch_reservation_by_ip_for_leases",
             side_effect=KeaException({"result": 1, "text": "error"}, index=0),
         ):
             response = self.client.get(self._url())
@@ -6078,7 +6086,7 @@ class TestEnrichLeasesExceptionPaths(_ViewTestBase):
             0,
         )
         with patch(
-            "netbox_kea.views._fetch_reservation_by_ip_for_leases",
+            "netbox_kea.views.leases._fetch_reservation_by_ip_for_leases",
             side_effect=RuntimeError("unexpected error"),
         ):
             response = self.client.get(self._url())
@@ -6606,7 +6614,7 @@ class TestReservation6AddOptionDataAndSync(_ViewTestBase):
         if call_args:
             self.assertTrue(MockKeaClient.return_value.reservation_add.called)
 
-    @patch("netbox_kea.views.sync_reservation_to_netbox")
+    @patch("netbox_kea.views.reservations.sync_reservation_to_netbox")
     @patch("netbox_kea.models.KeaClient")
     def test_post_sync_success(self, MockKeaClient, mock_sync):
         """Lines 2027-2031: sync_to_netbox=on → sync called, success message."""
@@ -6616,7 +6624,7 @@ class TestReservation6AddOptionDataAndSync(_ViewTestBase):
         response = self.client.post(self._url(), post_data)
         self.assertIn(response.status_code, (200, 302))
 
-    @patch("netbox_kea.views.sync_reservation_to_netbox")
+    @patch("netbox_kea.views.reservations.sync_reservation_to_netbox")
     @patch("netbox_kea.models.KeaClient")
     def test_post_sync_exception_shows_warning(self, MockKeaClient, mock_sync):
         """Lines 2032-2034: sync raises exception → warning message."""
@@ -6670,7 +6678,7 @@ class TestReservation6EditOptionDataAndSync(_ViewTestBase):
         response = self.client.post(self._url(), post_data)
         self.assertIn(response.status_code, (200, 302))
 
-    @patch("netbox_kea.views.sync_reservation_to_netbox")
+    @patch("netbox_kea.views.reservations.sync_reservation_to_netbox")
     @patch("netbox_kea.models.KeaClient")
     def test_post_sync_success(self, MockKeaClient, mock_sync):
         """Lines 2307-2314: sync succeeds → info message."""
@@ -6681,7 +6689,7 @@ class TestReservation6EditOptionDataAndSync(_ViewTestBase):
         response = self.client.post(self._url(), post_data)
         self.assertIn(response.status_code, (200, 302))
 
-    @patch("netbox_kea.views.sync_reservation_to_netbox")
+    @patch("netbox_kea.views.reservations.sync_reservation_to_netbox")
     @patch("netbox_kea.models.KeaClient")
     def test_post_sync_exception(self, MockKeaClient, mock_sync):
         """Lines 2312-2314: sync exception → warning."""
@@ -6692,7 +6700,7 @@ class TestReservation6EditOptionDataAndSync(_ViewTestBase):
         response = self.client.post(self._url(), post_data)
         self.assertIn(response.status_code, (200, 302))
 
-    @patch("netbox_kea.views.sync_reservation_to_netbox")
+    @patch("netbox_kea.views.reservations.sync_reservation_to_netbox")
     @patch("netbox_kea.models.KeaClient")
     def test_post_partial_persist_with_sync(self, MockKeaClient, mock_sync):
         """Lines 2327-2334: PartialPersistError + sync success."""
@@ -6705,7 +6713,7 @@ class TestReservation6EditOptionDataAndSync(_ViewTestBase):
         response = self.client.post(self._url(), post_data)
         self.assertIn(response.status_code, (200, 302))
 
-    @patch("netbox_kea.views.sync_reservation_to_netbox")
+    @patch("netbox_kea.views.reservations.sync_reservation_to_netbox")
     @patch("netbox_kea.models.KeaClient")
     def test_post_partial_persist_with_sync_exception(self, MockKeaClient, mock_sync):
         """Lines 2332-2334: PartialPersistError + sync exception → warning."""
@@ -6949,7 +6957,7 @@ class TestEnrichLeasesExceptionPaths2(_ViewTestBase):
             }
         ]
         with patch(
-            "netbox_kea.views._fetch_reservation_by_ip_for_leases",
+            "netbox_kea.views.leases._fetch_reservation_by_ip_for_leases",
             side_effect=KeaException({"result": 2, "text": "hook not loaded"}, index=0),
         ):
             response = self.client.get(self._url())
@@ -6967,7 +6975,7 @@ class TestEnrichLeasesExceptionPaths2(_ViewTestBase):
             }
         ]
         with patch(
-            "netbox_kea.views._fetch_reservation_by_ip_for_leases",
+            "netbox_kea.views.leases._fetch_reservation_by_ip_for_leases",
             side_effect=KeaException({"result": 1, "text": "other error"}, index=0),
         ):
             response = self.client.get(self._url())
@@ -6983,7 +6991,7 @@ class TestEnrichLeasesExceptionPaths2(_ViewTestBase):
             }
         ]
         with patch(
-            "netbox_kea.views._fetch_reservation_by_ip_for_leases",
+            "netbox_kea.views.leases._fetch_reservation_by_ip_for_leases",
             side_effect=RuntimeError("unexpected crash"),
         ):
             response = self.client.get(self._url())
@@ -7164,7 +7172,7 @@ class TestBulkReservationSyncEdgeCases(_ViewTestBase):
         # superuser has ipam perms automatically (is_superuser)
 
     @patch("netbox_kea.sync.sync_reservation_to_netbox")
-    @patch("netbox_kea.views._fetch_reservations_from_server")
+    @patch("netbox_kea.views.sync_views._fetch_reservations_from_server")
     def test_reservation_without_ip_is_skipped(self, mock_fetch, mock_sync):
         """Line 4383-4384: reservations without ip-address/ip-addresses are skipped."""
         mock_fetch.return_value = [{"hw-address": "aa:bb:cc:dd:ee:ff"}]  # no IP
@@ -7172,7 +7180,7 @@ class TestBulkReservationSyncEdgeCases(_ViewTestBase):
         mock_sync.assert_not_called()
 
     @patch("netbox_kea.sync.sync_reservation_to_netbox")
-    @patch("netbox_kea.views._fetch_reservations_from_server")
+    @patch("netbox_kea.views.sync_views._fetch_reservations_from_server")
     def test_sync_creates_and_updates(self, mock_fetch, mock_sync):
         """Lines 4389-4390: created and updated counters incremented correctly."""
         mock_fetch.return_value = [
@@ -7185,7 +7193,7 @@ class TestBulkReservationSyncEdgeCases(_ViewTestBase):
         self.assertTrue(any("1 created" in m or "created" in m.lower() for m in msgs))
 
     @patch("netbox_kea.sync.sync_reservation_to_netbox")
-    @patch("netbox_kea.views._fetch_reservations_from_server")
+    @patch("netbox_kea.views.sync_views._fetch_reservations_from_server")
     def test_sync_exception_counted_as_error(self, mock_fetch, mock_sync):
         """Lines 4391-4394, 4397: sync exception increments errors, warning shown."""
         mock_fetch.return_value = [
@@ -7239,7 +7247,7 @@ class TestLeaseBulkImportEdgeCases(_ViewTestBase):
         response = self.client.post(self._url(), {})
         self.assertEqual(response.status_code, 200)
 
-    @patch("netbox_kea.views.parse_lease_csv")
+    @patch("netbox_kea.views.sync_views.parse_lease_csv")
     @patch("netbox_kea.models.KeaClient")
     def test_parse_error_shows_form_error(self, MockKeaClient, mock_parse):
         """Lines 4617-4619: ValueError from parse_lease_csv adds form error."""
@@ -7555,7 +7563,7 @@ class TestEnrichReservationsLeaseStatusCoverage(_ViewTestBase):
         client.command.return_value = [{"result": 0, "arguments": {"leases": []}}]
         reservations = [{"ip-address": "10.0.0.1", "subnet-id": 42}]
         with patch(
-            "netbox_kea.views.concurrent.futures.as_completed",
+            "netbox_kea.views.reservations.concurrent.futures.as_completed",
             side_effect=RuntimeError("as_completed failed"),
         ):
             _enrich_reservations_with_lease_status(client, reservations, 4)
@@ -8173,7 +8181,7 @@ class TestFetchOneEmptyLease(_ViewTestBase):
 class TestCombinedLeasesTruncated(_ViewTestBase):
     """Line 4228: _fetch_all_leases_from_server returns was_truncated=True → server name added."""
 
-    @patch("netbox_kea.views._fetch_all_leases_from_server")
+    @patch("netbox_kea.views.combined._fetch_all_leases_from_server")
     def test_truncated_server_name_in_context(self, mock_fetch_all):
         """was_truncated=True → server.name appended to truncated_servers."""
         from netbox_kea.utilities import format_leases

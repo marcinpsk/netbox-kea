@@ -1883,7 +1883,7 @@ class TestReservationSyncToNetBox(_ReservationViewBase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("sync_to_netbox", response.content.decode())
 
-    @patch("netbox_kea.views.sync_reservation_to_netbox")
+    @patch("netbox_kea.views.reservations.sync_reservation_to_netbox")
     @patch("netbox_kea.models.KeaClient")
     def test_post_add_with_sync_checked_calls_sync(self, MockKeaClient, mock_sync):
         """POSTing with sync_to_netbox=on calls sync_reservation_to_netbox()."""
@@ -1896,7 +1896,7 @@ class TestReservationSyncToNetBox(_ReservationViewBase):
         called_reservation = mock_sync.call_args[0][0]
         self.assertEqual(called_reservation["ip-address"], "192.168.1.100")
 
-    @patch("netbox_kea.views.sync_reservation_to_netbox")
+    @patch("netbox_kea.views.reservations.sync_reservation_to_netbox")
     @patch("netbox_kea.models.KeaClient")
     def test_post_add_without_sync_does_not_call_sync(self, MockKeaClient, mock_sync):
         """POSTing without sync_to_netbox does NOT call sync_reservation_to_netbox()."""
@@ -1906,7 +1906,7 @@ class TestReservationSyncToNetBox(_ReservationViewBase):
         self.assertEqual(response.status_code, 302)
         mock_sync.assert_not_called()
 
-    @patch("netbox_kea.views.sync_reservation_to_netbox")
+    @patch("netbox_kea.views.reservations.sync_reservation_to_netbox")
     @patch("netbox_kea.models.KeaClient")
     def test_post_add_sync_failure_still_redirects(self, MockKeaClient, mock_sync):
         """Sync failure is a warning; Kea reservation creation still succeeds."""
@@ -1917,7 +1917,7 @@ class TestReservationSyncToNetBox(_ReservationViewBase):
         self.assertEqual(response.status_code, 302)
         mock_client.reservation_add.assert_called_once()
 
-    @patch("netbox_kea.views.sync_reservation_to_netbox")
+    @patch("netbox_kea.views.reservations.sync_reservation_to_netbox")
     @patch("netbox_kea.models.KeaClient")
     def test_post_edit_with_sync_checked_calls_sync(self, MockKeaClient, mock_sync):
         """POSTing reservation edit with sync_to_netbox=on calls sync_reservation_to_netbox()."""
