@@ -369,7 +369,21 @@ class _BaseBulkLeaseImportView(_KeaChangeMixin, ConditionalLoginRequiredMixin, V
             )
 
         csv_file = request.FILES["csv_file"]
-        content = csv_file.read().decode("utf-8-sig")
+        try:
+            content = csv_file.read().decode("utf-8-sig")
+        except UnicodeDecodeError:
+            form.add_error("csv_file", "File must be UTF-8 encoded.")
+            return render(
+                request,
+                self.template_name,
+                {
+                    "object": instance,
+                    "form": form,
+                    "dhcp_version": self.dhcp_version,
+                    "return_url": return_url,
+                    "result": None,
+                },
+            )
 
         try:
             rows = parse_lease_csv(self.dhcp_version, content)

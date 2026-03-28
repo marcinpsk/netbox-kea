@@ -2,6 +2,7 @@ import concurrent.futures
 import logging
 from typing import Any
 
+import requests
 from django.contrib import messages
 from django.db.utils import OperationalError, ProgrammingError
 from django.http import Http404, HttpResponse
@@ -231,9 +232,9 @@ class ServerReservations4View(generic.ObjectView):
             hook_available = False
             if exc.response.get("result") != 2:
                 logger.warning("Failed to fetch DHCPv4 reservations: %s", exc)
-        except Exception:
+        except (requests.RequestException, ValueError):
             hook_available = False
-            logger.debug("Unexpected error fetching DHCPv4 reservations", exc_info=True)
+            logger.exception("Unexpected error fetching DHCPv4 reservations")
 
         # Inject server_pk so the actions template column can build edit/delete URLs.
         for r in reservations:
@@ -301,9 +302,9 @@ class ServerReservations6View(generic.ObjectView):
             hook_available = False
             if exc.response.get("result") != 2:
                 logger.warning("Failed to fetch DHCPv6 reservations: %s", exc)
-        except Exception:
+        except (requests.RequestException, ValueError):
             hook_available = False
-            logger.debug("Unexpected error fetching DHCPv6 reservations", exc_info=True)
+            logger.exception("Unexpected error fetching DHCPv6 reservations")
 
         for r in reservations:
             r["server_pk"] = server.pk

@@ -2045,7 +2045,7 @@ class TestServerReservation6EditLeaseDiff(_ReservationViewBase):
     def test_get_shows_lease_diff_when_hostname_differs(self, MockKeaClient):
         """GET must add lease_diff to context when DHCPv6 active lease hostname differs."""
         mock_client = MockKeaClient.return_value
-        mock_client.reservation_get.return_value = _SAMPLE_RESERVATION6  # hostname: "testhost6.example.com"
+        mock_client.reservation_get.return_value = {**_SAMPLE_RESERVATION6, "ip-addresses": [self._IP]}
         mock_client.lease_get_by_ip.return_value = {
             "ip-address": self._IP,
             "hostname": "lease-host6.example.com",
@@ -2059,7 +2059,7 @@ class TestServerReservation6EditLeaseDiff(_ReservationViewBase):
     def test_get_no_lease_diff_when_lease_fetch_raises(self, MockKeaClient):
         """GET must not crash when DHCPv6 lease fetch raises KeaException."""
         mock_client = MockKeaClient.return_value
-        mock_client.reservation_get.return_value = _SAMPLE_RESERVATION6
+        mock_client.reservation_get.return_value = {**_SAMPLE_RESERVATION6, "ip-addresses": [self._IP]}
         mock_client.lease_get_by_ip.side_effect = KeaException({"result": 3, "text": "not found"}, index=0)
         response = self.client.get(self._edit_url())
         self.assertEqual(response.status_code, 200)
@@ -2069,7 +2069,7 @@ class TestServerReservation6EditLeaseDiff(_ReservationViewBase):
     def test_get_no_lease_diff_when_hostname_matches(self, MockKeaClient):
         """GET must not add lease_diff when lease hostname matches the reservation hostname."""
         mock_client = MockKeaClient.return_value
-        mock_client.reservation_get.return_value = _SAMPLE_RESERVATION6  # hostname: "testhost6.example.com"
+        mock_client.reservation_get.return_value = {**_SAMPLE_RESERVATION6, "ip-addresses": [self._IP]}
         mock_client.lease_get_by_ip.return_value = {
             "ip-address": self._IP,
             "hostname": "testhost6.example.com",  # matches reservation

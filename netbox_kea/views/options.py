@@ -361,9 +361,11 @@ class BaseServerOptionDefView(_KeaChangeMixin, ConditionalLoginRequiredMixin, Vi
         client = server.get_client(version=self.dhcp_version)
         try:
             option_defs = client.option_def_list(version=self.dhcp_version)
+            options_load_error = False
         except KeaException:
             logger.exception("Failed to fetch option-def list for server %s", pk)
             option_defs = []
+            options_load_error = True
         # Annotate each entry with a pre-built delete URL so templates don't
         # need to construct dynamic URL names.
         enriched_defs = []
@@ -381,6 +383,7 @@ class BaseServerOptionDefView(_KeaChangeMixin, ConditionalLoginRequiredMixin, Vi
                 "object": server,
                 "server": server,
                 "option_defs": enriched_defs,
+                "options_load_error": options_load_error,
                 "dhcp_version": self.dhcp_version,
                 "add_url": reverse(
                     f"plugins:netbox_kea:server_option_def{self.dhcp_version}_add",

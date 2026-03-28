@@ -26,6 +26,7 @@ import re
 import unittest as _unittest  # alias to avoid pytest collection confusion
 from unittest.mock import MagicMock, patch
 
+import requests as req
 from django.contrib import messages as django_messages
 from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
@@ -233,9 +234,9 @@ class TestReservation4ListExceptions(_ViewTestBase):
         self.assertFalse(response.context.get("hook_available", True))
 
     @patch("netbox_kea.models.KeaClient")
-    def test_generic_exception_during_fetch_sets_hook_unavailable(self, MockKeaClient):
-        """Unexpected exception during reservation_get_page sets hook_available=False."""
-        MockKeaClient.return_value.reservation_get_page.side_effect = RuntimeError("boom")
+    def test_network_error_during_fetch_sets_hook_unavailable(self, MockKeaClient):
+        """requests.RequestException during reservation_get_page sets hook_available=False."""
+        MockKeaClient.return_value.reservation_get_page.side_effect = req.RequestException("connection refused")
         response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
         self.assertFalse(response.context.get("hook_available", True))
@@ -273,9 +274,9 @@ class TestReservation6ListExceptions(_ViewTestBase):
         self.assertFalse(response.context.get("hook_available", True))
 
     @patch("netbox_kea.models.KeaClient")
-    def test_generic_exception_during_fetch_sets_hook_unavailable(self, MockKeaClient):
-        """Unexpected exception during reservation_get_page sets hook_available=False."""
-        MockKeaClient.return_value.reservation_get_page.side_effect = RuntimeError("unexpected")
+    def test_network_error_during_fetch_sets_hook_unavailable(self, MockKeaClient):
+        """requests.RequestException during reservation_get_page sets hook_available=False."""
+        MockKeaClient.return_value.reservation_get_page.side_effect = req.RequestException("timeout")
         response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
         self.assertFalse(response.context.get("hook_available", True))
@@ -792,8 +793,9 @@ class TestReservation6AddOptionDataAndSync(_ViewTestBase):
 
     @patch("netbox_kea.models.KeaClient")
     def test_post_with_option_data_included(self, MockKeaClient):
-        """Line 2008: option-data is included in reservation when formset has entries."""
+        """option-data is included in reservation payload when formset has entries."""
         MockKeaClient.return_value.reservation_add.return_value = None
+        MockKeaClient.return_value.reservation_get_page.return_value = ([], 0, 0)
         post_data = {
             **_VALID_RESERVATION6_POST,
             "options-TOTAL_FORMS": "1",
@@ -807,29 +809,58 @@ class TestReservation6AddOptionDataAndSync(_ViewTestBase):
         }
         response = self.client.post(self._url(), post_data)
         self.assertIn(response.status_code, (200, 302))
+        self.assertTrue(MockKeaClient.return_value.reservation_add.called)
         call_args = MockKeaClient.return_value.reservation_add.call_args
-        if call_args:
-            self.assertTrue(MockKeaClient.return_value.reservation_add.called)
+        # Extract the reservation dict (second positional arg to reservation_add)
+        reservation_dict = (
+            call_args[0][1]
+            if call_args[0] and len(call_args[0]) > 1
+            else (call_args.kwargs or {}).get("reservation", {})
+        )
+        option_data = reservation_dict.get("option-data", [])
+        dns_entry = next((o for o in option_data if o.get("name") == "dns-servers"), None)
+        self.assertIsNotNone(dns_entry, "dns-servers option not found in reservation option-data")
+        self.assertEqual(dns_entry["data"], "2001:4860:4860::8888")
 
     @patch("netbox_kea.views.reservations.sync_reservation_to_netbox")
     @patch("netbox_kea.models.KeaClient")
     def test_post_sync_success(self, MockKeaClient, mock_sync):
-        """Lines 2027-2031: sync_to_netbox=on → sync called, success message."""
+        """sync_to_netbox=on → sync called once and success message queued."""
         MockKeaClient.return_value.reservation_add.return_value = None
+        MockKeaClient.return_value.reservation_get_page.return_value = ([], 0, 0)
         mock_sync.return_value = (MagicMock(), True)
         post_data = {**_VALID_RESERVATION6_POST, "sync_to_netbox": "on"}
-        response = self.client.post(self._url(), post_data)
-        self.assertIn(response.status_code, (200, 302))
+        response = self.client.post(self._url(), post_data, follow=True)
+        self.assertEqual(response.status_code, 200)
+        mock_sync.assert_called_once()
+        msgs = list(response.context["messages"])
+        self.assertTrue(
+            any(
+                m.level == django_messages.INFO
+                and "synced" in m.message.lower()
+                or "created" in m.message.lower()
+                or "updated" in m.message.lower()
+                for m in msgs
+            ),
+            f"Expected sync success message, got: {[m.message for m in msgs]}",
+        )
 
     @patch("netbox_kea.views.reservations.sync_reservation_to_netbox")
     @patch("netbox_kea.models.KeaClient")
     def test_post_sync_exception_shows_warning(self, MockKeaClient, mock_sync):
-        """Lines 2032-2034: sync raises exception → warning message."""
+        """sync raises exception → warning message queued (reservation still created)."""
         MockKeaClient.return_value.reservation_add.return_value = None
+        MockKeaClient.return_value.reservation_get_page.return_value = ([], 0, 0)
         mock_sync.side_effect = RuntimeError("sync failed")
         post_data = {**_VALID_RESERVATION6_POST, "sync_to_netbox": "on"}
-        response = self.client.post(self._url(), post_data)
-        self.assertIn(response.status_code, (200, 302))
+        response = self.client.post(self._url(), post_data, follow=True)
+        self.assertEqual(response.status_code, 200)
+        mock_sync.assert_called_once()
+        msgs = list(response.context["messages"])
+        self.assertTrue(
+            any(m.level == django_messages.WARNING for m in msgs),
+            f"Expected a WARNING message on sync failure, got: {[(m.level, m.message) for m in msgs]}",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -858,7 +889,7 @@ class TestReservation6EditOptionDataAndSync(_ViewTestBase):
 
     @patch("netbox_kea.models.KeaClient")
     def test_post_with_option_data(self, MockKeaClient):
-        """Line 2292: option-data appended to reservation when formset has entries."""
+        """option-data is included in reservation_update payload when formset has entries."""
         self._mock_get(MockKeaClient)
         MockKeaClient.return_value.reservation_update.return_value = None
         post_data = {
@@ -874,28 +905,51 @@ class TestReservation6EditOptionDataAndSync(_ViewTestBase):
         }
         response = self.client.post(self._url(), post_data)
         self.assertIn(response.status_code, (200, 302))
+        self.assertTrue(MockKeaClient.return_value.reservation_update.called)
+        call_args = MockKeaClient.return_value.reservation_update.call_args
+        reservation_dict = (
+            call_args[0][1]
+            if call_args[0] and len(call_args[0]) > 1
+            else (call_args.kwargs or {}).get("reservation", {})
+        )
+        option_data = reservation_dict.get("option-data", [])
+        ntp_entry = next((o for o in option_data if o.get("name") == "ntp-servers"), None)
+        self.assertIsNotNone(ntp_entry, "ntp-servers option not found in reservation option-data")
+        self.assertEqual(ntp_entry["data"], "2001:db8::1:1")
 
     @patch("netbox_kea.views.reservations.sync_reservation_to_netbox")
     @patch("netbox_kea.models.KeaClient")
     def test_post_sync_success(self, MockKeaClient, mock_sync):
-        """Lines 2307-2314: sync succeeds → info message."""
+        """sync_to_netbox=on → sync called once and info message queued."""
         self._mock_get(MockKeaClient)
         MockKeaClient.return_value.reservation_update.return_value = None
         mock_sync.return_value = (MagicMock(), False)
         post_data = {**_VALID_RESERVATION6_POST, "sync_to_netbox": "on"}
-        response = self.client.post(self._url(), post_data)
-        self.assertIn(response.status_code, (200, 302))
+        response = self.client.post(self._url(), post_data, follow=True)
+        self.assertEqual(response.status_code, 200)
+        mock_sync.assert_called_once()
+        msgs = list(response.context["messages"])
+        self.assertTrue(
+            any(m.level == django_messages.INFO for m in msgs),
+            f"Expected INFO message on sync success, got: {[(m.level, m.message) for m in msgs]}",
+        )
 
     @patch("netbox_kea.views.reservations.sync_reservation_to_netbox")
     @patch("netbox_kea.models.KeaClient")
     def test_post_sync_exception(self, MockKeaClient, mock_sync):
-        """Lines 2312-2314: sync exception → warning."""
+        """sync exception → warning message queued (reservation still updated)."""
         self._mock_get(MockKeaClient)
         MockKeaClient.return_value.reservation_update.return_value = None
         mock_sync.side_effect = RuntimeError("sync fail")
         post_data = {**_VALID_RESERVATION6_POST, "sync_to_netbox": "on"}
-        response = self.client.post(self._url(), post_data)
-        self.assertIn(response.status_code, (200, 302))
+        response = self.client.post(self._url(), post_data, follow=True)
+        self.assertEqual(response.status_code, 200)
+        mock_sync.assert_called_once()
+        msgs = list(response.context["messages"])
+        self.assertTrue(
+            any(m.level == django_messages.WARNING for m in msgs),
+            f"Expected WARNING message on sync failure, got: {[(m.level, m.message) for m in msgs]}",
+        )
 
     @patch("netbox_kea.views.reservations.sync_reservation_to_netbox")
     @patch("netbox_kea.models.KeaClient")

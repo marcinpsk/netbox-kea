@@ -669,7 +669,35 @@ class _BaseLeaseAddView(_KeaChangeMixin, generic.ObjectView):
             client = server.get_client(version=self.dhcp_version)
             try:
                 client.lease_add(self.dhcp_version, lease)
-                messages.success(request, f"Lease for {cd['ip_address']} created.")
+            except KeaException as exc:
+                logger.exception("Failed to create DHCPv%s lease for %s", self.dhcp_version, cd.get("ip_address"))
+                messages.error(request, kea_error_hint(exc))
+                return render(
+                    request,
+                    self.template_name,
+                    {
+                        "object": server,
+                        "form": form,
+                        "dhcp_version": self.dhcp_version,
+                        "cancel_url": cancel_url,
+                    },
+                )
+            except Exception:
+                logger.exception("Failed to create DHCPv%s lease for %s", self.dhcp_version, cd.get("ip_address"))
+                messages.error(request, "Failed to create lease: see server logs for details.")
+                return render(
+                    request,
+                    self.template_name,
+                    {
+                        "object": server,
+                        "form": form,
+                        "dhcp_version": self.dhcp_version,
+                        "cancel_url": cancel_url,
+                    },
+                )
+            # Lease created in Kea — run post-create side effects.
+            messages.success(request, f"Lease for {cd['ip_address']} created.")
+            try:
                 _add_lease_journal(
                     server,
                     request.user,
@@ -678,29 +706,25 @@ class _BaseLeaseAddView(_KeaChangeMixin, generic.ObjectView):
                     hw_address=cd.get("hw_address") or cd.get("duid") or "",
                     hostname=cd.get("hostname") or "",
                 )
-                lease_added.send_robust(
-                    sender=None,
-                    server=server,
-                    ip_address=cd["ip_address"],
-                    hw_address=cd.get("hw_address") or "",
-                    hostname=cd.get("hostname") or "",
-                    dhcp_version=self.dhcp_version,
-                    request=request,
-                )
-                if cd.get("sync_to_netbox"):
-                    try:
-                        sync_lease_to_netbox(lease)
-                        messages.success(request, f"IPAddress {cd['ip_address']} synced to NetBox.")
-                    except Exception:
-                        logger.exception("Failed to sync lease %s to NetBox", cd.get("ip_address"))
-                        messages.warning(request, "Lease created but NetBox IPAM sync failed; see server logs.")
-                return redirect(cancel_url)
-            except KeaException as exc:
-                logger.exception("Failed to create DHCPv%s lease for %s", self.dhcp_version, cd.get("ip_address"))
-                messages.error(request, kea_error_hint(exc))
             except Exception:
-                logger.exception("Failed to create DHCPv%s lease for %s", self.dhcp_version, cd.get("ip_address"))
-                messages.error(request, "Failed to create lease: see server logs for details.")
+                logger.exception("Failed to record journal entry for lease %s", cd.get("ip_address"))
+            lease_added.send_robust(
+                sender=None,
+                server=server,
+                ip_address=cd["ip_address"],
+                hw_address=cd.get("hw_address") or "",
+                hostname=cd.get("hostname") or "",
+                dhcp_version=self.dhcp_version,
+                request=request,
+            )
+            if cd.get("sync_to_netbox"):
+                try:
+                    sync_lease_to_netbox(lease)
+                    messages.success(request, f"IPAddress {cd['ip_address']} synced to NetBox.")
+                except Exception:
+                    logger.exception("Failed to sync lease %s to NetBox", cd.get("ip_address"))
+                    messages.warning(request, "Lease created but NetBox IPAM sync failed; see server logs.")
+            return redirect(cancel_url)
         return render(
             request,
             self.template_name,

@@ -10,7 +10,14 @@ from unittest.mock import MagicMock, patch
 
 import requests
 
-from netbox_kea.kea import KeaClient, KeaConfigTestError, KeaException, PartialPersistError, check_response
+from netbox_kea.kea import (
+    KeaClient,
+    KeaConfigPersistError,
+    KeaConfigTestError,
+    KeaException,
+    PartialPersistError,
+    check_response,
+)
 
 
 def _mock_http_response(json_data, status_code=200):
@@ -1871,15 +1878,20 @@ class TestPersistConfig(TestCase):
             self.client._persist_config("dhcp4")
         self.assertIn("config-write", self._cmds(mock_post))
 
-    def test_config_test_failure_raises_kea_config_test_error(self):
-        """When config-test (called with proper args) returns a non-zero, non-2 result, KeaConfigTestError is raised."""
+    def test_config_test_failure_raises_kea_config_persist_error(self):
+        """When config-test (called with proper args) returns a non-zero, non-2 result, KeaConfigPersistError is raised.
+
+        _persist_config() is called AFTER a native mutation is already live, so the running config
+        has changed.  The appropriate exception is KeaConfigPersistError (change is live but
+        config-write was skipped), not KeaConfigTestError (which means the mutation was not applied).
+        """
 
         with patch.object(
             self.client._session,
             "post",
             side_effect=_side_effects(_CONFIG_GET_RUNNING_RESP, _CONFIG_TEST_FAIL_RESP),
         ):
-            with self.assertRaises(KeaConfigTestError):
+            with self.assertRaises(KeaConfigPersistError):
                 self.client._persist_config("dhcp4")
 
     def test_config_write_not_called_when_config_test_fails(self):
@@ -1889,7 +1901,7 @@ class TestPersistConfig(TestCase):
             "post",
             side_effect=_side_effects(_CONFIG_GET_RUNNING_RESP, _CONFIG_TEST_FAIL_RESP),
         ) as mock_post:
-            with self.assertRaises(KeaConfigTestError):
+            with self.assertRaises(KeaConfigPersistError):
                 self.client._persist_config("dhcp4")
         self.assertNotIn("config-write", self._cmds(mock_post))
 

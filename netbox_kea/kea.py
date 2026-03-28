@@ -280,7 +280,7 @@ class KeaClient:
         # Kea returns the host fields directly inside "arguments" (not nested under "host")
         return resp[0].get("arguments") or None
 
-    def subnet_add(
+    def subnet_add(  # noqa: C901
         self,
         version: int,
         subnet_cidr: str,
@@ -367,9 +367,11 @@ class KeaClient:
         # the only source of truth when subnet{v}-list failed and no explicit id was
         # provided (subnet_def would have no "id" key in that case → returns None).
         if add_resp:
-            kea_id = (add_resp[0].get("arguments") or {}).get("subnets", [{}])[0].get("id")
-            if kea_id is not None:
-                subnet_def["id"] = kea_id
+            subnets = (add_resp[0].get("arguments") or {}).get("subnets")
+            if subnets:
+                kea_id = subnets[0].get("id")
+                if kea_id is not None:
+                    subnet_def["id"] = kea_id
         try:
             self._persist_config(service)
         except PartialPersistError as exc:
@@ -1042,7 +1044,7 @@ class KeaClient:
                     logger.debug("config-test not supported for service %s — skipping pre-flight check", service)
                 else:
                     logger.warning("config-test failed for service %s — aborting config-write", service)
-                    raise KeaConfigTestError(service, exc) from exc
+                    raise KeaConfigPersistError(service, exc) from exc
             except (requests.RequestException, ValueError) as exc:
                 logger.debug("config-test transport error for service %s — skipping pre-flight check: %s", service, exc)
 
@@ -1105,6 +1107,11 @@ class KeaConfigTestError(KeaException):
 
     The Kea configuration is unchanged — no data has been written.
     The original :exc:`KeaException` from config-test is stored in ``__cause__``.
+
+    Used by ``_apply_config`` (read-modify-write methods such as
+    ``subnet_update_options`` and ``server_update_options``) where config-test
+    is run *before* ``config-set``, so a failure means the running config is
+    still intact.
     """
 
     def __init__(self, service: str, cause: Exception) -> None:
@@ -1114,6 +1121,31 @@ class KeaConfigTestError(KeaException):
             "arguments": [],
         }
         super().__init__(response, msg=f"config-test error for {service!r}")
+        self.service = service
+
+
+class KeaConfigPersistError(KeaException):
+    """Raised when ``_persist_config`` rejects the already-live config via ``config-test``.
+
+    The mutation IS already applied to the running daemon (the change is live in
+    memory) but config-test found the resulting config invalid, so config-write
+    was skipped.  The change **will be lost on daemon restart**.
+
+    Distinct from :exc:`PartialPersistError` (which is raised when config-write
+    itself fails after a successful config-test) and from :exc:`KeaConfigTestError`
+    (which is raised before any mutation is applied).
+    """
+
+    def __init__(self, service: str, cause: Exception) -> None:
+        response: KeaResponse = {
+            "result": -1,
+            "text": (
+                f"config-test rejected the running config for service {service!r} "
+                "— mutation is live but config-write was skipped"
+            ),
+            "arguments": [],
+        }
+        super().__init__(response, msg=f"config persist error for {service!r}")
         self.service = service
 
 

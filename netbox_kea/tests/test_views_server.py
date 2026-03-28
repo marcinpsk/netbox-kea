@@ -756,7 +756,7 @@ class TestGetGlobalOptionsGenericException(_ViewTestBase):
 
     @patch("netbox_kea.models.KeaClient")
     def test_generic_exception_swallowed(self, MockKeaClient):
-        """Line 222: generic Exception in config-get for global options is logged and skipped."""
+        """Line 222: generic Exception in config-get for global options is logged and the page renders normally."""
 
         def _side(cmd, service=None, **kwargs):
             if cmd == "config-get":
@@ -771,8 +771,9 @@ class TestGetGlobalOptionsGenericException(_ViewTestBase):
 
         MockKeaClient.return_value.command.side_effect = _side
         response = self.client.get(self._url())
-        # Should not crash — exception is swallowed
-        self.assertIn(response.status_code, (200, 500))
+        # Exception in get_extra_context() is caught by the outer try/except in get_extra_context;
+        # the page must still render as 200 (degraded state, not 500).
+        self.assertEqual(response.status_code, 200)
 
 
 # ---------------------------------------------------------------------------

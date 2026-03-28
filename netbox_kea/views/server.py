@@ -156,48 +156,60 @@ class ServerStatusView(generic.ObjectView):
             services.append("dhcp4")
 
         for svc in services:
-            version = int(svc[-1])
-            svc_client = server.get_client(version=version)
-            status = svc_client.command("status-get", service=[svc])
-            version_resp = svc_client.command("version-get", service=[svc])
+            try:
+                version = int(svc[-1])
+                svc_client = server.get_client(version=version)
+                status = svc_client.command("status-get", service=[svc])
+                version_resp = svc_client.command("version-get", service=[svc])
 
-            args = status[0]["arguments"]
-            if args is None:
-                raise RuntimeError(f"Unexpected None arguments from status-get for service {svc}")
-            version_args = version_resp[0]["arguments"]
-            if version_args is None:
-                raise RuntimeError(f"Unexpected None arguments from version-get for service {svc}")
-
-            entry: dict[str, Any] = {
-                "PID": args["pid"],
-                "Uptime": format_duration(args["uptime"]),
-                "Time since reload": format_duration(int(args["reload"])),
-                "Version": version_args["extended"],
-            }
-
-            if (ha := args.get("high-availability")) and len(ha) > 0:
-                # https://kea.readthedocs.io/en/latest/arm/hooks.html#load-balancing-configuration
-                # Note that while the top-level parameter high-availability is a list,
-                # only a single entry is currently supported.
-                ha_servers = ha[0].get("ha-servers") or {}
-                ha_local = ha_servers.get("local", {})
-                ha_remote = ha_servers.get("remote", {})
-                entry.update(
-                    {
-                        "HA mode": ha[0].get("ha-mode"),
-                        "HA local role": ha_local.get("role"),
-                        "HA local state": ha_local.get("state"),
-                        "HA remote connection interrupted": str(ha_remote.get("connection-interrupted")),
-                        "HA remote age (seconds)": ha_remote.get("age"),
-                        "HA remote role": ha_remote.get("role"),
-                        "HA remote last state": ha_remote.get("last-state"),
-                        "HA remote in touch": ha_remote.get("in-touch"),
-                        "HA remote unacked clients": ha_remote.get("unacked-clients"),
-                        "HA remote unacked clients left": ha_remote.get("unacked-clients-left"),
-                        "HA remote connecting clients": ha_remote.get("connecting-clients"),
-                    }
+                args = status[0].get("arguments") if isinstance(status, list) and status else None
+                if args is None:
+                    raise RuntimeError(f"Unexpected None arguments from status-get for service {svc}")
+                version_args = (
+                    version_resp[0].get("arguments") if isinstance(version_resp, list) and version_resp else None
                 )
-            resp[service_names[svc]] = entry
+                if version_args is None:
+                    raise RuntimeError(f"Unexpected None arguments from version-get for service {svc}")
+
+                entry: dict[str, Any] = {
+                    "PID": args.get("pid"),
+                    "Uptime": format_duration(args["uptime"]) if "uptime" in args else "",
+                    "Time since reload": format_duration(int(args["reload"])) if "reload" in args else "",
+                    "Version": version_args.get("extended"),
+                }
+
+                if (
+                    (ha := args.get("high-availability"))
+                    and isinstance(ha, list)
+                    and len(ha) > 0
+                    and isinstance(ha[0], dict)
+                ):
+                    # https://kea.readthedocs.io/en/latest/arm/hooks.html#load-balancing-configuration
+                    # Note that while the top-level parameter high-availability is a list,
+                    # only a single entry is currently supported.
+                    ha_servers = ha[0].get("ha-servers") or {}
+                    if not isinstance(ha_servers, dict):
+                        ha_servers = {}
+                    ha_local = ha_servers.get("local") or {}
+                    ha_remote = ha_servers.get("remote") or {}
+                    entry.update(
+                        {
+                            "HA mode": ha[0].get("ha-mode"),
+                            "HA local role": ha_local.get("role"),
+                            "HA local state": ha_local.get("state"),
+                            "HA remote connection interrupted": str(ha_remote.get("connection-interrupted")),
+                            "HA remote age (seconds)": ha_remote.get("age"),
+                            "HA remote role": ha_remote.get("role"),
+                            "HA remote last state": ha_remote.get("last-state"),
+                            "HA remote in touch": ha_remote.get("in-touch"),
+                            "HA remote unacked clients": ha_remote.get("unacked-clients"),
+                            "HA remote unacked clients left": ha_remote.get("unacked-clients-left"),
+                            "HA remote connecting clients": ha_remote.get("connecting-clients"),
+                        }
+                    )
+                resp[service_names[svc]] = entry
+            except Exception:  # noqa: PERF203
+                logger.exception("Failed to fetch status for DHCP service %s on server %s", svc, server.pk)
         return resp
 
     def _get_statuses(self, server: Server) -> dict[str, dict[str, Any]]:
