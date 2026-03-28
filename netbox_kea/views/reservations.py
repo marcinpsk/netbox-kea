@@ -227,9 +227,11 @@ class ServerReservations4View(generic.ObjectView):
                 from_index = next_from
                 source_index = next_source
         except KeaException as exc:
-            if exc.response.get("result") == 2:
-                hook_available = False
+            hook_available = False
+            if exc.response.get("result") != 2:
+                logger.warning("Failed to fetch DHCPv4 reservations: %s", exc)
         except Exception:
+            hook_available = False
             logger.debug("Unexpected error fetching DHCPv4 reservations", exc_info=True)
 
         # Inject server_pk so the actions template column can build edit/delete URLs.
@@ -295,9 +297,11 @@ class ServerReservations6View(generic.ObjectView):
                 from_index = next_from
                 source_index = next_source
         except KeaException as exc:
-            if exc.response.get("result") == 2:
-                hook_available = False
+            hook_available = False
+            if exc.response.get("result") != 2:
+                logger.warning("Failed to fetch DHCPv6 reservations: %s", exc)
         except Exception:
+            hook_available = False
             logger.debug("Unexpected error fetching DHCPv6 reservations", exc_info=True)
 
         for r in reservations:

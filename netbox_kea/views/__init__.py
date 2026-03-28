@@ -87,6 +87,7 @@ from .server import (  # noqa: F401
     ServerBulkDeleteView,
     ServerBulkEditView,
     ServerBulkImportView,
+    ServerDeleteView,
     ServerEditView,
     ServerListView,
     ServerStatusView,

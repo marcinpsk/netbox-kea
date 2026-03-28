@@ -42,7 +42,11 @@ class BaseServerSharedNetworksView(generic.ObjectChildrenView):
         if check_dhcp_enabled(parent, self.dhcp_version) is not None:
             return []
         client = parent.get_client(version=self.dhcp_version)
-        config = client.command("config-get", service=[f"dhcp{self.dhcp_version}"])
+        try:
+            config = client.command("config-get", service=[f"dhcp{self.dhcp_version}"])
+        except KeaException:
+            logger.debug("Failed to fetch config-get for shared networks on server %s", parent.pk)
+            return []
         if config[0]["arguments"] is None:
             return []
         dhcp_conf = config[0]["arguments"].get(f"Dhcp{self.dhcp_version}", {})

@@ -229,7 +229,21 @@ class _BaseBulkReservationImportView(_KeaChangeMixin, ConditionalLoginRequiredMi
             )
 
         csv_file = request.FILES["csv_file"]
-        content = csv_file.read().decode("utf-8-sig")  # utf-8-sig strips BOM automatically
+        try:
+            content = csv_file.read().decode("utf-8-sig")  # utf-8-sig strips BOM automatically
+        except UnicodeDecodeError:
+            form.add_error("csv_file", "File must be UTF-8 encoded.")
+            return render(
+                request,
+                self.template_name,
+                {
+                    "object": instance,
+                    "form": form,
+                    "dhcp_version": self.dhcp_version,
+                    "return_url": return_url,
+                    "result": None,
+                },
+            )
 
         try:
             rows = parse_reservation_csv(content, self.dhcp_version)

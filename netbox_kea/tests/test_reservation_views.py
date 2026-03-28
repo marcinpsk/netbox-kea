@@ -145,10 +145,11 @@ class TestServerReservations4View(_ReservationViewBase):
         self.assertFalse(response.context["hook_available"])
 
     @patch("netbox_kea.models.KeaClient")
-    def test_hook_still_available_on_general_kea_error(self, MockKeaClient):
-        """Result code 1 (general Kea error) must NOT hide the reservations UI.
+    def test_general_kea_error_hides_hook_ui(self, MockKeaClient):
+        """Result code 1 (general Kea error) also sets hook_available=False.
 
-        Only result code 2 (unknown command) means the hook is not loaded.
+        Any KeaException means we cannot reliably display reservation data,
+        so we degrade gracefully regardless of result code.
         """
         mock_client = MockKeaClient.return_value
         mock_client.reservation_get_page.side_effect = KeaException(
@@ -158,7 +159,7 @@ class TestServerReservations4View(_ReservationViewBase):
         url = reverse("plugins:netbox_kea:server_reservations4", args=[self.server.pk])
         response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
-        self.assertTrue(response.context["hook_available"])
+        self.assertFalse(response.context["hook_available"])
 
     @patch("netbox_kea.models.KeaClient")
     def test_list_handles_empty_reservations(self, MockKeaClient):

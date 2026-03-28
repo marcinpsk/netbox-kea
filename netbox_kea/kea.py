@@ -351,7 +351,7 @@ class KeaClient:
         # the only source of truth when subnet{v}-list failed and no explicit id was
         # provided (subnet_def would have no "id" key in that case → returns None).
         if add_resp:
-            kea_id = add_resp[0].get("arguments", {}).get("subnets", [{}])[0].get("id")
+            kea_id = (add_resp[0].get("arguments") or {}).get("subnets", [{}])[0].get("id")
             if kea_id is not None:
                 subnet_def["id"] = kea_id
         self._persist_config(service)
@@ -469,22 +469,7 @@ class KeaClient:
         if options is not None:
             network["option-data"] = options
 
-        try:
-            self.command("config-test", service=[service], arguments=config)
-        except KeaException as exc:
-            if exc.response.get("result") == 2:
-                logger.debug("config-test not supported for service %s — skipping pre-flight check", service)
-            else:
-                logger.warning("config-test failed for service %s — aborting config-set", service)
-                raise KeaConfigTestError(service, exc) from exc
-
-        self.command("config-set", service=[service], arguments=config)
-
-        try:
-            self.command("config-write", service=[service])
-        except (KeaException, requests.RequestException, ValueError) as exc:
-            logger.warning("config-write failed for service %s — change is live but not persisted to disk", service)
-            raise PartialPersistError(service, exc) from exc
+        self._apply_config(service, config)
 
     def network_subnet_add(self, version: int, name: str, subnet_id: int) -> None:
         """Move an existing subnet into a shared network.
@@ -657,21 +642,7 @@ class KeaClient:
             raise KeaException({"result": 3, "text": f"Subnet id {subnet_id} not found in config"})
 
         subnet["option-data"] = options
-
-        try:
-            self.command("config-test", service=[service], arguments=config)
-        except KeaException as exc:
-            if exc.response.get("result") == 2:
-                logger.debug("config-test not supported for service %s — skipping pre-flight check", service)
-            else:
-                logger.warning("config-test failed for service %s — aborting config-write", service)
-                raise KeaConfigTestError(service, exc) from exc
-        self.command("config-set", service=[service], arguments=config)
-        try:
-            self.command("config-write", service=[service])
-        except (KeaException, requests.RequestException, ValueError) as exc:
-            logger.warning("config-write failed for service %s — change not persisted to disk", service)
-            raise PartialPersistError(service, exc) from exc
+        self._apply_config(service, config)
 
     def server_update_options(self, version: int, options: list[dict]) -> None:
         """Update server-level option-data via config-get → config-test → config-write.
@@ -695,21 +666,7 @@ class KeaClient:
         config = resp[0]["arguments"]
         config.pop("hash", None)
         config.setdefault(dhcp_key, {})["option-data"] = options
-
-        try:
-            self.command("config-test", service=[service], arguments=config)
-        except KeaException as exc:
-            if exc.response.get("result") == 2:
-                logger.debug("config-test not supported for service %s — skipping pre-flight check", service)
-            else:
-                logger.warning("config-test failed for service %s — aborting config-write", service)
-                raise KeaConfigTestError(service, exc) from exc
-        self.command("config-set", service=[service], arguments=config)
-        try:
-            self.command("config-write", service=[service])
-        except (KeaException, requests.RequestException, ValueError) as exc:
-            logger.warning("config-write failed for service %s — change not persisted to disk", service)
-            raise PartialPersistError(service, exc) from exc
+        self._apply_config(service, config)
 
     def option_def_list(self, version: int) -> list[dict]:
         """Return the current ``option-def`` list for a DHCP version via ``config-get``.
@@ -750,20 +707,7 @@ class KeaClient:
         config.pop("hash", None)
         defs = config.setdefault(dhcp_key, {}).setdefault("option-def", [])
         defs.append(option_def)
-        try:
-            self.command("config-test", service=[service], arguments=config)
-        except KeaException as exc:
-            if exc.response.get("result") == 2:
-                logger.debug("config-test not supported for service %s — skipping pre-flight check", service)
-            else:
-                logger.warning("config-test failed for service %s — aborting config-write", service)
-                raise KeaConfigTestError(service, exc) from exc
-        self.command("config-set", service=[service], arguments=config)
-        try:
-            self.command("config-write", service=[service])
-        except (KeaException, requests.RequestException, ValueError) as exc:
-            logger.warning("config-write failed for service %s — change not persisted to disk", service)
-            raise PartialPersistError(service, exc) from exc
+        self._apply_config(service, config)
 
     def option_def_del(self, version: int, code: int, space: str) -> None:
         """Remove an option-def entry by code+space via config-get → config-test → config-write.
@@ -788,20 +732,7 @@ class KeaClient:
         if len(new_defs) == len(defs):
             raise KeaException({"result": 3, "text": f"option-def code={code} space={space} not found"})
         config.setdefault(dhcp_key, {})["option-def"] = new_defs
-        try:
-            self.command("config-test", service=[service], arguments=config)
-        except KeaException as exc:
-            if exc.response.get("result") == 2:
-                logger.debug("config-test not supported for service %s — skipping pre-flight check", service)
-            else:
-                logger.warning("config-test failed for service %s — aborting config-write", service)
-                raise KeaConfigTestError(service, exc) from exc
-        self.command("config-set", service=[service], arguments=config)
-        try:
-            self.command("config-write", service=[service])
-        except (KeaException, requests.RequestException, ValueError) as exc:
-            logger.warning("config-write failed for service %s — change not persisted to disk", service)
-            raise PartialPersistError(service, exc) from exc
+        self._apply_config(service, config)
 
     def lease_wipe(self, version: int, subnet_id: int) -> None:
         """Delete all leases in a subnet using the ``lease{v}-wipe`` command.
@@ -1020,6 +951,39 @@ class KeaClient:
             )
         self._persist_config(service)
 
+    def _apply_config(self, service: str, config: dict) -> None:
+        """Validate, apply, and persist a modified config dict.
+
+        Used by read-modify-write methods (e.g. ``subnet_update_options``,
+        ``server_update_options``, ``option_def_add/del``) that mutate a config
+        obtained from ``config-get`` and need to push it back.
+
+        Flow: ``config-test`` → ``config-set`` → ``config-write``.
+
+        Args:
+            service: Kea service name (e.g. ``"dhcp4"``).
+            config: The full config dict (already mutated) to apply.
+
+        Raises:
+            KeaConfigTestError: If ``config-test`` fails (result != 2).
+            PartialPersistError: If ``config-write`` fails after ``config-set``.
+
+        """
+        try:
+            self.command("config-test", service=[service], arguments=config)
+        except KeaException as exc:
+            if exc.response.get("result") == 2:
+                logger.debug("config-test not supported for service %s — skipping pre-flight check", service)
+            else:
+                logger.warning("config-test failed for service %s — aborting config-set", service)
+                raise KeaConfigTestError(service, exc) from exc
+        self.command("config-set", service=[service], arguments=config)
+        try:
+            self.command("config-write", service=[service])
+        except (KeaException, requests.RequestException, ValueError) as exc:
+            logger.warning("config-write failed for service %s — change not persisted to disk", service)
+            raise PartialPersistError(service, exc) from exc
+
     def _persist_config(self, service: str) -> None:
         """Validate the current running config and persist it to disk.
 
@@ -1057,6 +1021,8 @@ class KeaClient:
                 else:
                     logger.warning("config-test failed for service %s — aborting config-write", service)
                     raise KeaConfigTestError(service, exc) from exc
+            except (requests.RequestException, ValueError) as exc:
+                logger.debug("config-test transport error for service %s — skipping pre-flight check: %s", service, exc)
 
         # Step 3: write to disk.
         try:

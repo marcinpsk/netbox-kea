@@ -406,6 +406,8 @@ class ServerLeases4View(BaseServerLeasesView[tables.LeaseTable4]):
 class FakeLeaseModelMeta:
     """Minimal ``_meta`` shim so bulk_delete.html can introspect the lease pseudo-model."""
 
+    app_label = "netbox_kea"
+    model_name = "lease"
     verbose_name_plural = "leases"
 
 
@@ -587,7 +589,7 @@ class _BaseLeaseEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin, View):
         client = server.get_client(version=self.dhcp_version)
         kwargs: dict[str, object] = {}
         if cd.get("hostname") is not None:
-            kwargs["hostname"] = cd["hostname"] or None
+            kwargs["hostname"] = cd["hostname"]
         if cd.get("valid_lft") is not None:
             kwargs["valid_lft"] = cd["valid_lft"]
         if self.dhcp_version == 4 and cd.get("hw_address"):

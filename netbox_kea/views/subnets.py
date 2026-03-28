@@ -948,12 +948,15 @@ class _BaseSubnetWipeView(_KeaChangeMixin, generic.ObjectView):
         try:
             client.lease_wipe(version=self.dhcp_version, subnet_id=subnet_id)
             messages.success(request, f"All leases in subnet {subnet_id} wiped.")
-        except KeaException:
+        except KeaException as exc:
             logger.exception("Failed to wipe leases in subnet %s", subnet_id)
-            messages.error(
-                request,
-                "Failed to wipe leases: see server logs for details. Ensure the lease_cmds hook is loaded.",
-            )
+            if exc.response.get("result") == 2:
+                messages.error(
+                    request,
+                    "Failed to wipe leases: ensure the lease_cmds hook is loaded.",
+                )
+            else:
+                messages.error(request, kea_error_hint(exc))
         except Exception:
             logger.exception("Failed to wipe leases in subnet %s", subnet_id)
             messages.error(request, "Failed to wipe leases: see server logs for details.")

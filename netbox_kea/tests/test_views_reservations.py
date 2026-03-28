@@ -233,11 +233,24 @@ class TestReservation4ListExceptions(_ViewTestBase):
         self.assertFalse(response.context.get("hook_available", True))
 
     @patch("netbox_kea.models.KeaClient")
-    def test_generic_exception_during_fetch_does_not_crash(self, MockKeaClient):
-        """Unexpected exception during reservation_get_page is swallowed gracefully."""
+    def test_generic_exception_during_fetch_sets_hook_unavailable(self, MockKeaClient):
+        """Unexpected exception during reservation_get_page sets hook_available=False."""
         MockKeaClient.return_value.reservation_get_page.side_effect = RuntimeError("boom")
         response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.context.get("hook_available", True))
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_kea_exception_non_result2_sets_hook_unavailable(self, MockKeaClient):
+        """KeaException with result≠2 (e.g., general error) also sets hook_available=False."""
+        from netbox_kea.kea import KeaException
+
+        MockKeaClient.return_value.reservation_get_page.side_effect = KeaException(
+            {"result": 1, "text": "general error"}, index=0
+        )
+        response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.context.get("hook_available", True))
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
@@ -260,11 +273,24 @@ class TestReservation6ListExceptions(_ViewTestBase):
         self.assertFalse(response.context.get("hook_available", True))
 
     @patch("netbox_kea.models.KeaClient")
-    def test_generic_exception_during_fetch_does_not_crash(self, MockKeaClient):
-        """Unexpected exception during reservation_get_page is swallowed gracefully."""
+    def test_generic_exception_during_fetch_sets_hook_unavailable(self, MockKeaClient):
+        """Unexpected exception during reservation_get_page sets hook_available=False."""
         MockKeaClient.return_value.reservation_get_page.side_effect = RuntimeError("unexpected")
         response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.context.get("hook_available", True))
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_kea_exception_non_result2_sets_hook_unavailable(self, MockKeaClient):
+        """KeaException with result≠2 also sets hook_available=False."""
+        from netbox_kea.kea import KeaException
+
+        MockKeaClient.return_value.reservation_get_page.side_effect = KeaException(
+            {"result": 1, "text": "general error"}, index=0
+        )
+        response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.context.get("hook_available", True))
 
 
 # ---------------------------------------------------------------------------

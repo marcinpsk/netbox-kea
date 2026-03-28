@@ -12,6 +12,17 @@ from .models import Server
 from .utilities import is_hex_string
 
 
+def _validate_ip(value: str, version: int) -> str:
+    """Validate that *value* is a single IP address matching *version* (4 or 6)."""
+    try:
+        addr = IPAddress(value)
+    except (AddrFormatError, ValueError) as exc:
+        raise ValidationError(f"Enter a valid IPv{version} address.") from exc
+    if addr.version != version:
+        raise ValidationError(f"Must be an IPv{version} address.")
+    return str(addr)
+
+
 class ServerForm(NetBoxModelForm):
     """NetBox model form for creating and editing Kea Server objects."""
 
@@ -345,14 +356,7 @@ class Reservation4Form(forms.Form):
 
     def clean_ip_address(self) -> str:
         """Validate that the value is a valid IPv4 address."""
-        val = self.cleaned_data["ip_address"]
-        try:
-            addr = IPAddress(val)
-        except (AddrFormatError, ValueError) as exc:
-            raise ValidationError("Enter a valid IPv4 address.") from exc
-        if addr.version != 4:
-            raise ValidationError("Must be an IPv4 address.")
-        return str(addr)
+        return _validate_ip(self.cleaned_data["ip_address"], version=4)
 
     def clean(self) -> dict[str, Any] | None:
         """Cross-validate identifier value against identifier_type."""
@@ -997,14 +1001,7 @@ class Lease4AddForm(forms.Form):
 
     def clean_ip_address(self) -> str:
         """Validate that the value is a valid IPv4 address."""
-        val = self.cleaned_data["ip_address"]
-        try:
-            addr = IPAddress(val)
-        except (AddrFormatError, ValueError) as exc:
-            raise ValidationError("Enter a valid IPv4 address.") from exc
-        if addr.version != 4:
-            raise ValidationError("Must be an IPv4 address.")
-        return str(addr)
+        return _validate_ip(self.cleaned_data["ip_address"], version=4)
 
     def clean_hw_address(self) -> str:  # noqa: D102
         value = self.cleaned_data.get("hw_address", "").strip()
@@ -1060,14 +1057,7 @@ class Lease6AddForm(forms.Form):
 
     def clean_ip_address(self) -> str:
         """Validate that the value is a valid IPv6 address."""
-        val = self.cleaned_data["ip_address"]
-        try:
-            addr = IPAddress(val)
-        except (AddrFormatError, ValueError) as exc:
-            raise ValidationError("Enter a valid IPv6 address.") from exc
-        if addr.version != 6:
-            raise ValidationError("Must be an IPv6 address.")
-        return str(addr)
+        return _validate_ip(self.cleaned_data["ip_address"], version=6)
 
     def clean_duid(self) -> str:  # noqa: D102
         value = self.cleaned_data.get("duid", "").strip()

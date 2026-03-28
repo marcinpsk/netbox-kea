@@ -684,9 +684,9 @@ class TestStatusViewNullArgs(_ViewTestBase):
             return [{"result": 0, "arguments": {}}]
 
         MockKeaClient.return_value.command.side_effect = _side
-        # The view catches exceptions from _get_ca_status; page still renders
+        # The view catches exceptions from _get_ca_status; page still renders with empty statuses
         response = self.client.get(self._url())
-        self.assertIn(response.status_code, (200, 500))
+        self.assertEqual(response.status_code, 200)
 
     @patch("netbox_kea.models.KeaClient")
     def test_get_dhcp_status_null_args_raises(self, MockKeaClient):
@@ -703,7 +703,7 @@ class TestStatusViewNullArgs(_ViewTestBase):
 
         MockKeaClient.return_value.command.side_effect = _side
         response = self.client.get(self._url())
-        self.assertIn(response.status_code, (200, 500))
+        self.assertEqual(response.status_code, 200)
 
     @patch("netbox_kea.models.KeaClient")
     def test_get_dhcp_status_ha_fields_included(self, MockKeaClient):

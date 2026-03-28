@@ -175,11 +175,11 @@ class ServerStatusView(generic.ObjectView):
                 "Version": version_args["extended"],
             }
 
-            if (ha := args.get("high-availability")) is not None:
+            if (ha := args.get("high-availability")) and len(ha) > 0:
                 # https://kea.readthedocs.io/en/latest/arm/hooks.html#load-balancing-configuration
                 # Note that while the top-level parameter high-availability is a list,
                 # only a single entry is currently supported.
-                ha_servers = ha[0].get("ha-servers")
+                ha_servers = ha[0].get("ha-servers") or {}
                 ha_local = ha_servers.get("local", {})
                 ha_remote = ha_servers.get("remote", {})
                 entry.update(

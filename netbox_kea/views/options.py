@@ -38,7 +38,7 @@ class _BaseSubnetOptionsEditView(ConditionalLoginRequiredMixin, View):
         dhcp_key = f"Dhcp{self.dhcp_version}"
         subnet_key = f"subnet{self.dhcp_version}"
         resp = client.command("config-get", service=[service])
-        config = resp[0]["arguments"]
+        config = resp[0].get("arguments") or {}
         for s in config.get(dhcp_key, {}).get(subnet_key, []):
             if s.get("id") == subnet_id:
                 return s
@@ -168,7 +168,7 @@ class _BaseServerOptionsEditView(ConditionalLoginRequiredMixin, View):
         service = f"dhcp{self.dhcp_version}"
         dhcp_key = f"Dhcp{self.dhcp_version}"
         resp = client.command("config-get", service=[service])
-        config = resp[0]["arguments"]
+        config = resp[0].get("arguments") or {}
         return config.get(dhcp_key, {}).get("option-data", [])
 
     def get(self, request, pk: int):
@@ -359,7 +359,11 @@ class BaseServerOptionDefView(_KeaChangeMixin, ConditionalLoginRequiredMixin, Vi
         if resp := check_dhcp_enabled(server, self.dhcp_version):
             return resp
         client = server.get_client(version=self.dhcp_version)
-        option_defs = client.option_def_list(version=self.dhcp_version)
+        try:
+            option_defs = client.option_def_list(version=self.dhcp_version)
+        except KeaException:
+            logger.exception("Failed to fetch option-def list for server %s", pk)
+            option_defs = []
         # Annotate each entry with a pre-built delete URL so templates don't
         # need to construct dynamic URL names.
         enriched_defs = []
