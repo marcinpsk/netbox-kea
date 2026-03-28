@@ -33,6 +33,131 @@
         </form>
       </div>
     </div>
+
+    {# ── ZTP / Common option examples ───────────────────────────────────── #}
+    <div class="accordion mt-4" id="optionDefExamples">
+      <div class="accordion-item">
+        <h2 class="accordion-header" id="examplesHeading">
+          <button class="accordion-button collapsed" type="button"
+                  data-bs-toggle="collapse" data-bs-target="#examplesBody"
+                  aria-expanded="false" aria-controls="examplesBody">
+            <i class="mdi mdi-lightbulb-outline me-2" aria-hidden="true"></i>
+            Common option examples (ZTP, vendor-specific)
+          </button>
+        </h2>
+        <div id="examplesBody" class="accordion-collapse collapse"
+             aria-labelledby="examplesHeading" data-bs-parent="#optionDefExamples">
+          <div class="accordion-body">
+
+            <div class="alert alert-info py-2 small mb-3">
+              <strong>Two-step workflow:</strong> this form only defines the option <em>schema</em> (code, name, data type).
+              The <strong>value</strong> is set separately — after saving the definition go to the
+              <strong>Subnets</strong> tab (or <em>Server</em> → <em>Option Data</em>) and add an
+              <em>option-data</em> entry referencing this option code.
+            </div>
+
+            <p class="text-muted small">
+              Custom option definitions let you add non-standard DHCP options to Kea.
+              Below are the most common ones used for Zero Touch Provisioning (ZTP)
+              and vendor-specific use cases.
+              See the <a href="https://kea.readthedocs.io/en/latest/arm/dhcp4-srv.html#custom-dhcpv4-options" target="_blank" rel="noopener">Kea docs</a> for full reference.
+            </p>
+
+            <table class="table table-sm table-bordered">
+              <thead class="table-light">
+                <tr>
+                  <th>Code</th>
+                  <th>Name</th>
+                  <th>Type</th>
+                  <th>Use case</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><code>66</code></td>
+                  <td><code>tftp-server-name</code></td>
+                  <td>string</td>
+                  <td>TFTP server hostname/IP for legacy IOS bootstrap</td>
+                </tr>
+                <tr>
+                  <td><code>67</code></td>
+                  <td><code>bootfile-name</code></td>
+                  <td>string</td>
+                  <td>Bootstrap file/URL — IOS XE ZTP script, NX-OS POAP URL, IOS startup config</td>
+                </tr>
+                <tr>
+                  <td><code>43</code></td>
+                  <td><code>vendor-encapsulated-options</code></td>
+                  <td>binary</td>
+                  <td>Vendor-specific data (Cisco POAP, Aruba Central, etc.) — see sub-option examples below</td>
+                </tr>
+                <tr>
+                  <td><code>125</code></td>
+                  <td><code>vivso-suboptions</code></td>
+                  <td>record (uint32, binary)</td>
+                  <td>Vendor-Identifying Vendor-Specific Options (RFC 3925) — used by some Aruba/HP devices</td>
+                </tr>
+              </tbody>
+            </table>
+
+            <h6 class="mt-3">Cisco ZTP — option 67 (bootfile-name)</h6>
+            <p class="text-muted small">
+              Used to deliver the bootstrap script URL to Cisco IOS XE, NX-OS, and IOS devices.
+              Define the option once, then set its value per subnet or globally.
+            </p>
+            <pre class="bg-light p-2 rounded small"><code>{
+  "code": 67,
+  "name": "bootfile-name",
+  "type": "string",
+  "space": "dhcp4"
+}</code></pre>
+            <p class="text-muted small">
+              Then set the option value on the subnet (or globally):
+            </p>
+            <ul class="small">
+              <li>IOS XE: <code>http://10.0.0.1:8080/ztp/ztp.py</code></li>
+              <li>NX-OS POAP: <code>http://10.0.0.1/poap/poap.py</code></li>
+              <li>Legacy IOS: <code>tftp://10.0.0.1/startup-config.cfg</code></li>
+            </ul>
+
+            <h6 class="mt-3">Cisco option 43 — vendor-specific sub-options</h6>
+            <p class="text-muted small">
+              Option 43 carries vendor-specific data as a binary TLV blob.
+              For Cisco IOS ZTP/POAP the value encodes a sub-option pointing to the
+              configuration server.  Example sub-option layout (hex):
+            </p>
+            <pre class="bg-light p-2 rounded small"><code># Sub-option 1 (type=0x01), value = "http://10.0.0.1/poap.py"
+# TLV: 01 &lt;length&gt; &lt;ASCII bytes of URL&gt;
+#
+# Kea binary value (hex string, no spaces):
+# 0118687474703a2f2f31302e302e302e312f706f61702e7079
+#  ^^  ^^ = type 01, length 0x18 = 24, then URL bytes
+</code></pre>
+            <p class="text-muted small">
+              <strong>Where to put this value:</strong> after saving the definition (code 43, type
+              <code>binary</code>), go to the target subnet's <em>Option Data</em> section and add
+              an option-data entry with code <code>43</code> and the hex string above as the value.
+            </p>
+            <p class="text-muted small">
+              For Aruba networks pointing to Aruba Central, the option 43 value contains
+              the Central provisioning URL as sub-option 1.
+              Refer to your vendor's DHCP provisioning guide for the exact encoding.
+            </p>
+
+            <h6 class="mt-3">Typical ZTP workflow</h6>
+            <ol class="small">
+              <li>Define the option code here (e.g. code 67, type <code>string</code>)</li>
+              <li>Go to the subnet (or server global options) and add an option-data entry for this definition</li>
+              <li>Set the value to the URL of your ZTP/POAP bootstrap script</li>
+              <li>New devices that DHCP on that subnet receive the URL on first boot</li>
+            </ol>
+
+          </div>
+        </div>
+      </div>
+    </div>
+    {# ── /ZTP examples ──────────────────────────────────────────────────── #}
+
   </div>
 </div>
 {% endblock %}

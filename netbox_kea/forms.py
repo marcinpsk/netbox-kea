@@ -12,6 +12,17 @@ from .models import Server
 from .utilities import is_hex_string
 
 
+def _validate_ip(value: str, version: int) -> str:
+    """Validate that *value* is a single IP address matching *version* (4 or 6)."""
+    try:
+        addr = IPAddress(value)
+    except (AddrFormatError, ValueError) as exc:
+        raise ValidationError(f"Enter a valid IPv{version} address.") from exc
+    if addr.version != version:
+        raise ValidationError(f"Must be an IPv{version} address.")
+    return str(addr)
+
+
 class ServerForm(NetBoxModelForm):
     """NetBox model form for creating and editing Kea Server objects."""
 
@@ -246,26 +257,6 @@ class Leases6SearchForm(BaseLeasesSarchForm):
         ip_version = 6
 
 
-class CombinedLeases4SearchForm(Leases4SearchForm):
-    """Lease search form for the combined multi-server view (q and by are optional).
-
-    When only *state* is provided the view falls back to ``lease4-get-page``
-    enumeration instead of a targeted search.
-    """
-
-    q = forms.CharField(label="Search", required=False)
-
-
-class CombinedLeases6SearchForm(Leases6SearchForm):
-    """Lease search form for the combined multi-server view (q and by are optional).
-
-    When only *state* is provided the view falls back to ``lease6-get-page``
-    enumeration instead of a targeted search.
-    """
-
-    q = forms.CharField(label="Search", required=False)
-
-
 class MultipleIPField(forms.MultipleChoiceField):
     """Form field accepting a list of IP addresses validated against a specific IP version."""
 
@@ -365,14 +356,7 @@ class Reservation4Form(forms.Form):
 
     def clean_ip_address(self) -> str:
         """Validate that the value is a valid IPv4 address."""
-        val = self.cleaned_data["ip_address"]
-        try:
-            addr = IPAddress(val)
-        except (AddrFormatError, ValueError) as exc:
-            raise ValidationError("Enter a valid IPv4 address.") from exc
-        if addr.version != 4:
-            raise ValidationError("Must be an IPv4 address.")
-        return str(addr)
+        return _validate_ip(self.cleaned_data["ip_address"], version=4)
 
     def clean(self) -> dict[str, Any] | None:
         """Cross-validate identifier value against identifier_type."""
@@ -661,6 +645,12 @@ class SubnetAddForm(_SubnetBaseForm):
         min_value=1,
         help_text="Leave blank for Kea to auto-assign.",
     )
+    shared_network = forms.ChoiceField(
+        label="Shared Network",
+        choices=[],
+        required=False,
+        help_text="Assign this subnet to a shared network immediately after creation.",
+    )
 
     def clean_subnet(self) -> str:  # noqa: D102
         import ipaddress
@@ -748,6 +738,18 @@ class SubnetEditForm(_SubnetBaseForm):
         required=False,
         min_value=1,
         help_text="Maximum lease lifetime in seconds.",
+    )
+    renew_timer = forms.IntegerField(
+        label="Renew timer / T1 (s)",
+        required=False,
+        min_value=1,
+        help_text="Time (seconds) after which client should renew. Kea parameter: renew-timer.",
+    )
+    rebind_timer = forms.IntegerField(
+        label="Rebind timer / T2 (s)",
+        required=False,
+        min_value=1,
+        help_text="Time (seconds) after which client should rebind. Kea parameter: rebind-timer.",
     )
     shared_network = forms.ChoiceField(
         label="Shared Network",
@@ -896,6 +898,7 @@ class SubnetOptionsForm(forms.Form):
 
 
 SubnetOptionsFormSet = forms.formset_factory(SubnetOptionsForm, extra=1, can_delete=True)
+ReservationOptionsFormSet = forms.formset_factory(SubnetOptionsForm, extra=1, can_delete=True)
 
 
 class Lease4EditForm(forms.Form):
@@ -998,14 +1001,7 @@ class Lease4AddForm(forms.Form):
 
     def clean_ip_address(self) -> str:
         """Validate that the value is a valid IPv4 address."""
-        val = self.cleaned_data["ip_address"]
-        try:
-            addr = IPAddress(val)
-        except (AddrFormatError, ValueError) as exc:
-            raise ValidationError("Enter a valid IPv4 address.") from exc
-        if addr.version != 4:
-            raise ValidationError("Must be an IPv4 address.")
-        return str(addr)
+        return _validate_ip(self.cleaned_data["ip_address"], version=4)
 
     def clean_hw_address(self) -> str:  # noqa: D102
         value = self.cleaned_data.get("hw_address", "").strip()
@@ -1061,14 +1057,7 @@ class Lease6AddForm(forms.Form):
 
     def clean_ip_address(self) -> str:
         """Validate that the value is a valid IPv6 address."""
-        val = self.cleaned_data["ip_address"]
-        try:
-            addr = IPAddress(val)
-        except (AddrFormatError, ValueError) as exc:
-            raise ValidationError("Enter a valid IPv6 address.") from exc
-        if addr.version != 6:
-            raise ValidationError("Must be an IPv6 address.")
-        return str(addr)
+        return _validate_ip(self.cleaned_data["ip_address"], version=6)
 
     def clean_duid(self) -> str:  # noqa: D102
         value = self.cleaned_data.get("duid", "").strip()
@@ -1098,6 +1087,51 @@ class SharedNetworkForm(forms.Form):
         if not re.match(r"^[\w-]+$", name):
             raise forms.ValidationError("Name may only contain letters, digits, hyphens and underscores.")
         return name
+
+
+class SharedNetworkEditForm(forms.Form):
+    """Form for editing an existing Kea shared network (description, interface, relay, options)."""
+
+    name = forms.CharField(widget=forms.HiddenInput())
+    description = forms.CharField(max_length=255, required=False, label="Description")
+    interface = forms.CharField(
+        max_length=128,
+        required=False,
+        label="Interface",
+        help_text="Bind this network to a specific server NIC (optional, e.g. eth0).",
+    )
+    relay_addresses = forms.CharField(
+        required=False,
+        label="Relay agent addresses",
+        help_text="Comma-separated relay agent IP addresses (leave blank to clear).",
+    )
+    dns_servers = forms.CharField(
+        required=False,
+        label="DNS servers",
+        help_text="Comma-separated DNS server IP addresses (option 6 / domain-name-servers).",
+    )
+    ntp_servers = forms.CharField(
+        required=False,
+        label="NTP servers",
+        help_text="Comma-separated NTP server addresses (option 42 / ntp-servers).",
+    )
+
+    def clean_relay_addresses(self) -> str:
+        """Validate each relay IP."""
+        import ipaddress
+
+        raw = self.cleaned_data.get("relay_addresses", "").strip()
+        if not raw:
+            return raw
+        for part in raw.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            try:
+                ipaddress.ip_address(part)
+            except ValueError:
+                raise forms.ValidationError(f"'{part}' is not a valid IP address.")
+        return raw
 
 
 # ---------------------------------------------------------------------------

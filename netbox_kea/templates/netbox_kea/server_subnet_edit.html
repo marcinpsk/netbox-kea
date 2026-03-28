@@ -38,21 +38,42 @@
           <div class="mb-3">
             <label for="{{ form.gateway.id_for_label }}" class="form-label">{{ form.gateway.label }}</label>
             {{ form.gateway }}
-            {% if form.gateway.help_text %}<div class="form-text text-muted">{{ form.gateway.help_text }}</div>{% endif %}
+            {% if inherited_options.gateway %}
+              <div class="form-text text-secondary">
+                <i class="mdi mdi-arrow-up-circle-outline" aria-hidden="true"></i>
+                Inherited from {{ inherited_options.gateway.source }}: <code>{{ inherited_options.gateway.value }}</code>
+              </div>
+            {% elif form.gateway.help_text %}
+              <div class="form-text text-muted">{{ form.gateway.help_text }}</div>
+            {% endif %}
             {% for err in form.gateway.errors %}<div class="text-danger small">{{ err }}</div>{% endfor %}
           </div>
 
           <div class="mb-3">
             <label for="{{ form.dns_servers.id_for_label }}" class="form-label">{{ form.dns_servers.label }}</label>
             {{ form.dns_servers }}
-            {% if form.dns_servers.help_text %}<div class="form-text text-muted">{{ form.dns_servers.help_text }}</div>{% endif %}
+            {% if inherited_options.dns_servers %}
+              <div class="form-text text-secondary">
+                <i class="mdi mdi-arrow-up-circle-outline" aria-hidden="true"></i>
+                Inherited from {{ inherited_options.dns_servers.source }}: <code>{{ inherited_options.dns_servers.value }}</code>
+              </div>
+            {% elif form.dns_servers.help_text %}
+              <div class="form-text text-muted">{{ form.dns_servers.help_text }}</div>
+            {% endif %}
             {% for err in form.dns_servers.errors %}<div class="text-danger small">{{ err }}</div>{% endfor %}
           </div>
 
           <div class="mb-3">
             <label for="{{ form.ntp_servers.id_for_label }}" class="form-label">{{ form.ntp_servers.label }}</label>
             {{ form.ntp_servers }}
-            {% if form.ntp_servers.help_text %}<div class="form-text text-muted">{{ form.ntp_servers.help_text }}</div>{% endif %}
+            {% if inherited_options.ntp_servers %}
+              <div class="form-text text-secondary">
+                <i class="mdi mdi-arrow-up-circle-outline" aria-hidden="true"></i>
+                Inherited from {{ inherited_options.ntp_servers.source }}: <code>{{ inherited_options.ntp_servers.value }}</code>
+              </div>
+            {% elif form.ntp_servers.help_text %}
+              <div class="form-text text-muted">{{ form.ntp_servers.help_text }}</div>
+            {% endif %}
             {% for err in form.ntp_servers.errors %}<div class="text-danger small">{{ err }}</div>{% endfor %}
           </div>
 
@@ -89,6 +110,22 @@
               <label for="{{ form.max_valid_lft.id_for_label }}" class="form-label">{{ form.max_valid_lft.label }}</label>
               {{ form.max_valid_lft }}
               {% for err in form.max_valid_lft.errors %}<div class="text-danger small">{{ err }}</div>{% endfor %}
+            </div>
+          </div>
+
+          <h6 class="mt-2 text-muted">Timers</h6>
+          <div class="row">
+            <div class="col-md-6 mb-3">
+              <label for="{{ form.renew_timer.id_for_label }}" class="form-label">{{ form.renew_timer.label }}</label>
+              {{ form.renew_timer }}
+              {% if form.renew_timer.help_text %}<div class="form-text">{{ form.renew_timer.help_text }}</div>{% endif %}
+              {% for err in form.renew_timer.errors %}<div class="text-danger small">{{ err }}</div>{% endfor %}
+            </div>
+            <div class="col-md-6 mb-3">
+              <label for="{{ form.rebind_timer.id_for_label }}" class="form-label">{{ form.rebind_timer.label }}</label>
+              {{ form.rebind_timer }}
+              {% if form.rebind_timer.help_text %}<div class="form-text">{{ form.rebind_timer.help_text }}</div>{% endif %}
+              {% for err in form.rebind_timer.errors %}<div class="text-danger small">{{ err }}</div>{% endfor %}
             </div>
           </div>
 
