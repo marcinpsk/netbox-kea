@@ -513,8 +513,20 @@ class _BaseSubnetAddView(_KeaChangeMixin, generic.ObjectView):
                         "Subnet %s created but failed to assign to network %s", cd["subnet"], shared_network
                     )
                     messages.warning(request, f"Subnet created but could not be assigned to '{shared_network}'.")
-        except PartialPersistError:
+        except PartialPersistError as exc:
             messages.warning(request, "Subnet added but config-write failed (change may not survive a Kea restart).")
+            # The subnet is live; attempt network assignment if we have the ID.
+            partial_id = getattr(exc, "subnet_id", None)
+            shared_network = cd.get("shared_network", "")
+            if shared_network and partial_id is not None:
+                try:
+                    client.network_subnet_add(version=self.dhcp_version, name=shared_network, subnet_id=partial_id)
+                    messages.success(request, f"Subnet assigned to shared network '{shared_network}'.")
+                except Exception:
+                    logger.exception(
+                        "Partially-persisted subnet %s could not be assigned to network %s", partial_id, shared_network
+                    )
+                    messages.warning(request, f"Could not assign subnet to '{shared_network}'.")
             return redirect(return_url)
         except KeaException as exc:
             logger.exception("Failed to add subnet %s", cd.get("subnet"))

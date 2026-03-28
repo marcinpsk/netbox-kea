@@ -99,6 +99,22 @@ class KeaClient:
             check_response(resp_json, check)
         return resp_json
 
+    def clone(self) -> "KeaClient":
+        """Return a new KeaClient that shares the same connection settings.
+
+        ``requests.Session`` is not thread-safe, so parallel workers must each
+        call ``client.clone()`` rather than sharing a single ``KeaClient``
+        instance across threads.
+        """
+        new = KeaClient.__new__(KeaClient)
+        new.url = self.url
+        new.timeout = self.timeout
+        new._session = requests.Session()
+        new._session.auth = self._session.auth
+        new._session.verify = self._session.verify
+        new._session.cert = self._session.cert
+        return new
+
     def get_available_commands(self, service: str) -> set[str]:
         """Return the set of commands available on *service* (e.g. ``"dhcp4"``).
 
@@ -354,7 +370,13 @@ class KeaClient:
             kea_id = (add_resp[0].get("arguments") or {}).get("subnets", [{}])[0].get("id")
             if kea_id is not None:
                 subnet_def["id"] = kea_id
-        self._persist_config(service)
+        try:
+            self._persist_config(service)
+        except PartialPersistError as exc:
+            # Subnet is live; re-raise with the known ID so callers can still
+            # perform follow-up operations (e.g. assign to a shared network).
+            exc.subnet_id = subnet_def.get("id")
+            raise
         return subnet_def.get("id")
 
     def subnet_del(self, version: int, subnet_id: int) -> None:
@@ -1100,9 +1122,13 @@ class PartialPersistError(KeaException):
 
     The change is applied in memory but will be lost on Kea restart.
     The original :exc:`KeaException` from config-write is stored in ``__cause__``.
+
+    ``subnet_id`` is set when the partial write occurred during ``subnet_add`` —
+    the subnet is live and this ID can still be used for follow-up operations
+    (e.g. assigning to a shared network) even though config-write failed.
     """
 
-    def __init__(self, service: str, cause: Exception) -> None:
+    def __init__(self, service: str, cause: Exception, subnet_id: int | None = None) -> None:
         response: KeaResponse = {
             "result": -1,
             "text": f"config-write failed for service {service!r} — change is live but not persisted to disk",
@@ -1110,6 +1136,7 @@ class PartialPersistError(KeaException):
         }
         super().__init__(response, msg=f"partial persist error for {service!r}")
         self.service = service
+        self.subnet_id: int | None = subnet_id
 
 
 def check_response(resp: list[KeaResponse], ok_codes: Sequence[int]) -> None:

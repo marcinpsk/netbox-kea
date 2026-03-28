@@ -74,8 +74,37 @@ class TestKeaClientInit(TestCase):
         # requests.Session defaults verify to True; we do not override it when verify=None
         self.assertTrue(client._session.verify)
 
+    def test_clone_copies_url_and_timeout(self):
+        """clone() produces a new KeaClient with the same url and timeout."""
+        client = KeaClient(url="http://kea:8000", timeout=15)
+        cloned = client.clone()
+        self.assertEqual(cloned.url, "http://kea:8000")
+        self.assertEqual(cloned.timeout, 15)
 
-class TestKeaClientCommand(TestCase):
+    def test_clone_has_independent_session(self):
+        """clone() creates a new requests.Session, not a reference to the original."""
+        client = KeaClient(url="http://kea:8000")
+        cloned = client.clone()
+        self.assertIsNot(cloned._session, client._session)
+
+    def test_clone_copies_session_auth(self):
+        """clone() copies auth credentials from the original session."""
+        client = KeaClient(url="http://kea:8000", username="admin", password="secret")
+        cloned = client.clone()
+        self.assertEqual(cloned._session.auth, client._session.auth)
+
+    def test_clone_copies_session_verify(self):
+        """clone() copies the SSL verify setting."""
+        client = KeaClient(url="http://kea:8000", verify="/etc/ssl/ca.pem")
+        cloned = client.clone()
+        self.assertEqual(cloned._session.verify, "/etc/ssl/ca.pem")
+
+    def test_clone_copies_session_cert(self):
+        """clone() copies the client cert tuple."""
+        client = KeaClient(url="http://kea:8000", client_cert="/cert.pem", client_key="/key.pem")
+        cloned = client.clone()
+        self.assertEqual(cloned._session.cert, client._session.cert)
+
     """Tests for KeaClient.command()."""
 
     def setUp(self):
@@ -1166,6 +1195,47 @@ class TestSubnetAdd(TestCase):
         ):
             with self.assertRaises(KeaException):
                 self.client.subnet_add(version=4, subnet_cidr="10.99.0.0/24")
+
+    def test_partial_persist_error_carries_subnet_id(self):
+        """PartialPersistError raised by subnet_add includes the assigned subnet_id."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(
+                _SUBNET4_LIST_RESP,  # subnet4-list → ids 1, 2
+                _SUBNET4_ADD_RESP,  # subnet4-add → Kea echoes id=10
+                _CONFIG_GET_RUNNING_RESP,  # config-get (for config-test preflight)
+                _CONFIG_TEST_OK_RESP,  # config-test
+                [{"result": 1, "text": "write failed"}],  # config-write → fail
+            ),
+        ):
+            with self.assertRaises(PartialPersistError) as ctx:
+                self.client.subnet_add(version=4, subnet_cidr="10.99.0.0/24")
+        # The exception must carry the Kea-assigned ID (echoed back in _SUBNET4_ADD_RESP as 10)
+        # so callers can still use it for follow-up operations (e.g. network assignment).
+        self.assertEqual(ctx.exception.subnet_id, 10)
+
+    def test_partial_persist_error_subnet_id_none_when_kea_does_not_echo_back(self):
+        """PartialPersistError.subnet_id is None when list fails AND Kea echoes no id back."""
+        # Must use a failed list call so no locally-computed id ends up in subnet_def
+        list_error = [{"result": 2, "text": "unknown command"}]
+        no_id_add_resp = [
+            {"result": 0, "text": "Subnet added.", "arguments": {"subnets": [{"subnet": "10.99.0.0/24"}]}}
+        ]
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(
+                list_error,  # subnet4-list fails → no locally-assigned id
+                no_id_add_resp,  # subnet4-add → Kea does not echo id
+                _CONFIG_GET_RUNNING_RESP,
+                _CONFIG_TEST_OK_RESP,
+                [{"result": 1, "text": "write failed"}],
+            ),
+        ):
+            with self.assertRaises(PartialPersistError) as ctx:
+                self.client.subnet_add(version=4, subnet_cidr="10.99.0.0/24")
+        self.assertIsNone(ctx.exception.subnet_id)
 
 
 class TestSubnetDel(TestCase):

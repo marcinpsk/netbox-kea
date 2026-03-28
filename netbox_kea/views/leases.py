@@ -774,8 +774,9 @@ def _fetch_reservation_by_ip_for_leases(
         subnet_id = lease.get("subnet_id")
         if not ip or not subnet_id:
             return ip, None, True
+        worker_client = client.clone()  # requests.Session is not thread-safe
         try:
-            r = client.reservation_get(service, subnet_id=int(subnet_id), ip_address=ip)
+            r = worker_client.reservation_get(service, subnet_id=int(subnet_id), ip_address=ip)
             return ip, r, True
         except KeaException as exc:
             if exc.response.get("result") == 2:

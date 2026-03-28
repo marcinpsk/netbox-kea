@@ -1320,8 +1320,53 @@ class TestSubnetAddExceptionPaths(_ViewTestBase):
         self.assertTrue(any(m.level == django_messages.WARNING for m in msgs))
 
     @patch("netbox_kea.models.KeaClient")
-    def test_post_generic_exception_rerenders(self, MockKeaClient):
-        """Generic exception on subnet_add must re-render the form."""
+    def test_post_partial_persist_error_with_subnet_id_attempts_network_assignment(self, MockKeaClient):
+        """When subnet_add raises PartialPersistError carrying subnet_id, the view attempts network assignment."""
+        from netbox_kea.kea import PartialPersistError
+
+        MockKeaClient.return_value.command.return_value = [
+            {
+                "result": 0,
+                "arguments": {
+                    "Dhcp4": {
+                        "shared-networks": [{"name": "alpha", "subnet4": []}],
+                        "subnet4": [],
+                    }
+                },
+            }
+        ]
+        partial_exc = PartialPersistError("dhcp4", Exception("write"), subnet_id=10)
+        MockKeaClient.return_value.subnet_add.side_effect = partial_exc
+        post_data = {**_SUBNET_ADD_POST, "shared_network": "alpha"}
+        response = self.client.post(self._url(), post_data, follow=True)
+        # network_subnet_add must have been called with the partial subnet_id
+        MockKeaClient.return_value.network_subnet_add.assert_called_once_with(version=4, name="alpha", subnet_id=10)
+        msgs = list(response.context["messages"])
+        self.assertTrue(any(m.level == django_messages.WARNING for m in msgs))
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_partial_persist_error_without_subnet_id_skips_network_assignment(self, MockKeaClient):
+        """When PartialPersistError carries no subnet_id, network assignment is skipped."""
+        from netbox_kea.kea import PartialPersistError
+
+        MockKeaClient.return_value.command.return_value = [
+            {
+                "result": 0,
+                "arguments": {
+                    "Dhcp4": {
+                        "shared-networks": [{"name": "alpha", "subnet4": []}],
+                        "subnet4": [],
+                    }
+                },
+            }
+        ]
+        MockKeaClient.return_value.subnet_add.side_effect = PartialPersistError("dhcp4", Exception("write"))
+        post_data = {**_SUBNET_ADD_POST, "shared_network": "alpha"}
+        response = self.client.post(self._url(), post_data, follow=True)
+        MockKeaClient.return_value.network_subnet_add.assert_not_called()
+        msgs = list(response.context["messages"])
+        self.assertTrue(any(m.level == django_messages.WARNING for m in msgs))
+
         MockKeaClient.return_value.command.return_value = [
             {"result": 0, "arguments": {"Dhcp4": {"shared-networks": [], "subnet4": []}}}
         ]

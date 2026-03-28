@@ -118,8 +118,9 @@ def _enrich_reservations_with_lease_status(client: "KeaClient", reservations: li
 
     def _fetch_leases_for_subnet(sid: int) -> list[str] | None:
         """Return list of lease IPs, or None if the lease_cmds hook is not loaded."""
+        worker_client = client.clone()  # requests.Session is not thread-safe
         try:
-            resp = client.command(
+            resp = worker_client.command(
                 lease_cmd,
                 service=[service],
                 arguments={"subnets": [sid]},

@@ -970,6 +970,7 @@ class TestCombinedReservations4Enrichment(_CombinedViewBase):
     @patch("netbox_kea.models.KeaClient")
     def test_active_lease_badge_when_lease_exists(self, MockKeaClient):
         """A reservation with an active lease must show 'Active Lease' badge."""
+        MockKeaClient.return_value.clone.return_value = MockKeaClient.return_value
         MockKeaClient.return_value.reservation_get_page.return_value = ([dict(_MOCK_RESERVATION_ENRICHED)], 0, 0)
         MockKeaClient.return_value.command.return_value = [
             {"result": 0, "arguments": {"leases": [{"ip-address": "10.20.0.5"}]}}
@@ -1127,6 +1128,7 @@ class TestCombinedReservations6Enrichment(_CombinedViewBase):
     @patch("netbox_kea.models.KeaClient")
     def test_active_lease_badge_when_lease_exists(self, MockKeaClient):
         """A v6 reservation with an active lease must show 'Active Lease' badge."""
+        MockKeaClient.return_value.clone.return_value = MockKeaClient.return_value
         MockKeaClient.return_value.reservation_get_page.return_value = (
             [dict(_MOCK_RESERVATION_V6_ENRICHED)],
             0,
