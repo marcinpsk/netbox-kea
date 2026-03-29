@@ -92,6 +92,49 @@ def _add_reservation_journal(server: "Server", user: Any, action: str, reservati
         logger.debug("Failed to create reservation journal entry", exc_info=True)
 
 
+def _run_reservation_success_side_effects(
+    request: "HttpRequest",
+    server: "Server",
+    reservation: dict,
+    dhcp_version: int,
+    action: str,
+    sync_to_netbox: bool,
+    partial_persist: bool = False,
+) -> None:
+    """Run journal, signal, and optional IPAM sync after a successful reservation add/update.
+
+    Args:
+        request: The current HTTP request.
+        server: The Kea Server instance.
+        reservation: The reservation dict in Kea format.
+        dhcp_version: 4 or 6.
+        action: "created" or "updated".
+        sync_to_netbox: Whether to sync the reservation to NetBox IPAM.
+        partial_persist: If True, appends a config-write-failed warning message.
+
+    """
+    signal = reservation_created if action == "created" else reservation_updated
+    _add_reservation_journal(server, request.user, action, reservation)
+    signal.send_robust(
+        sender=None,
+        server=server,
+        reservation=reservation,
+        dhcp_version=dhcp_version,
+        request=request,
+    )
+    if sync_to_netbox:
+        ip = reservation.get("ip-address") or (reservation.get("ip-addresses") or [""])[0]
+        try:
+            _, nb_created = sync_reservation_to_netbox(reservation)
+            nb_msg = "created" if nb_created else "updated"
+            messages.info(request, f"NetBox IPAddress {ip} {nb_msg}.")
+        except Exception:
+            logger.exception("Failed to sync DHCPv%s reservation %s to NetBox", dhcp_version, ip)
+            messages.warning(request, f"Reservation {action}, but NetBox IPAM sync failed.")
+    if partial_persist:
+        messages.warning(request, "Change applied but may not survive a Kea restart (config-write failed).")
+
+
 def _enrich_reservations_with_lease_status(client: "KeaClient", reservations: list[dict], version: int) -> None:  # noqa: C901
     """Enrich each reservation dict with ``has_active_lease`` (bool | None).
 
@@ -412,42 +455,14 @@ class ServerReservation4AddView(_KeaChangeMixin, generic.ObjectView):
             try:
                 client.reservation_add("dhcp4", reservation)
                 messages.success(request, f"Reservation for {cd['ip_address']} created.")
-                _add_reservation_journal(server, request.user, "created", reservation)
-
-                reservation_created.send_robust(
-                    sender=None,
-                    server=server,
-                    reservation=reservation,
-                    dhcp_version=4,
-                    request=request,
+                _run_reservation_success_side_effects(
+                    request, server, reservation, 4, "created", bool(cd.get("sync_to_netbox"))
                 )
-                if cd.get("sync_to_netbox"):
-                    try:
-                        _, created = sync_reservation_to_netbox(reservation)
-                        msg = "created" if created else "updated"
-                        messages.info(request, f"NetBox IPAddress {cd['ip_address']} {msg}.")
-                    except Exception:
-                        logger.exception("Failed to sync DHCPv4 reservation %s to NetBox", cd.get("ip_address"))
-                        messages.warning(request, "Reservation created, but NetBox IPAM sync failed.")
                 return redirect(return_url)
             except PartialPersistError:
-                _add_reservation_journal(server, request.user, "created", reservation)
-                reservation_created.send_robust(
-                    sender=None,
-                    server=server,
-                    reservation=reservation,
-                    dhcp_version=4,
-                    request=request,
+                _run_reservation_success_side_effects(
+                    request, server, reservation, 4, "created", bool(cd.get("sync_to_netbox")), partial_persist=True
                 )
-                if cd.get("sync_to_netbox"):
-                    try:
-                        _, created = sync_reservation_to_netbox(reservation)
-                        msg = "created" if created else "updated"
-                        messages.info(request, f"NetBox IPAddress {cd['ip_address']} {msg}.")
-                    except Exception:
-                        logger.exception("Failed to sync DHCPv4 reservation %s to NetBox", cd.get("ip_address"))
-                        messages.warning(request, "Reservation created, but NetBox IPAM sync failed.")
-                messages.warning(request, "Change applied but may not survive a Kea restart (config-write failed).")
                 return redirect(return_url)
             except KeaException as exc:
                 logger.exception("Failed to create DHCPv4 reservation for %s", cd.get("ip_address"))
@@ -526,44 +541,14 @@ class ServerReservation6AddView(_KeaChangeMixin, generic.ObjectView):
             try:
                 client.reservation_add("dhcp6", reservation)
                 messages.success(request, "DHCPv6 reservation created.")
-                _add_reservation_journal(server, request.user, "created", reservation)
-
-                reservation_created.send_robust(
-                    sender=None,
-                    server=server,
-                    reservation=reservation,
-                    dhcp_version=6,
-                    request=request,
+                _run_reservation_success_side_effects(
+                    request, server, reservation, 6, "created", bool(cd.get("sync_to_netbox"))
                 )
-                if cd.get("sync_to_netbox"):
-                    try:
-                        _, created = sync_reservation_to_netbox(reservation)
-                        primary_ip = (reservation.get("ip-addresses") or [""])[0]
-                        msg = "created" if created else "updated"
-                        messages.info(request, f"NetBox IPAddress {primary_ip} {msg}.")
-                    except Exception:
-                        logger.exception("Failed to sync DHCPv6 reservation to NetBox")
-                        messages.warning(request, "Reservation created, but NetBox IPAM sync failed.")
                 return redirect(return_url)
             except PartialPersistError:
-                _add_reservation_journal(server, request.user, "created", reservation)
-                reservation_created.send_robust(
-                    sender=None,
-                    server=server,
-                    reservation=reservation,
-                    dhcp_version=6,
-                    request=request,
+                _run_reservation_success_side_effects(
+                    request, server, reservation, 6, "created", bool(cd.get("sync_to_netbox")), partial_persist=True
                 )
-                if cd.get("sync_to_netbox"):
-                    try:
-                        _, created = sync_reservation_to_netbox(reservation)
-                        primary_ip = (reservation.get("ip-addresses") or [""])[0]
-                        msg = "created" if created else "updated"
-                        messages.info(request, f"NetBox IPAddress {primary_ip} {msg}.")
-                    except Exception:
-                        logger.exception("Failed to sync DHCPv6 reservation to NetBox")
-                        messages.warning(request, "Reservation created, but NetBox IPAM sync failed.")
-                messages.warning(request, "Change applied but may not survive a Kea restart (config-write failed).")
                 return redirect(return_url)
             except KeaException as exc:
                 logger.exception("Failed to create DHCPv6 reservation for %s", cd.get("ip_addresses"))
@@ -666,43 +651,14 @@ class ServerReservation4EditView(_KeaChangeMixin, generic.ObjectView):
             try:
                 client.reservation_update("dhcp4", reservation)
                 messages.success(request, f"Reservation for {cd['ip_address']} updated.")
-                _add_reservation_journal(server, request.user, "updated", reservation)
-
-                reservation_updated.send_robust(
-                    sender=None,
-                    server=server,
-                    reservation=reservation,
-                    dhcp_version=4,
-                    request=request,
+                _run_reservation_success_side_effects(
+                    request, server, reservation, 4, "updated", bool(cd.get("sync_to_netbox"))
                 )
-                if cd.get("sync_to_netbox"):
-                    try:
-                        _, created = sync_reservation_to_netbox(reservation)
-                        msg = "created" if created else "updated"
-                        messages.info(request, f"NetBox IPAddress {cd['ip_address']} {msg}.")
-                    except Exception:
-                        logger.exception("Failed to sync DHCPv4 reservation %s to NetBox", cd.get("ip_address"))
-                        messages.warning(request, "Reservation updated, but NetBox IPAM sync failed.")
                 return redirect(return_url)
             except PartialPersistError:
-                # Change is live but config-write failed — run all success-path side effects.
-                _add_reservation_journal(server, request.user, "updated", reservation)
-                reservation_updated.send_robust(
-                    sender=None,
-                    server=server,
-                    reservation=reservation,
-                    dhcp_version=4,
-                    request=request,
+                _run_reservation_success_side_effects(
+                    request, server, reservation, 4, "updated", bool(cd.get("sync_to_netbox")), partial_persist=True
                 )
-                if cd.get("sync_to_netbox"):
-                    try:
-                        _, created = sync_reservation_to_netbox(reservation)
-                        msg = "created" if created else "updated"
-                        messages.info(request, f"NetBox IPAddress {cd['ip_address']} {msg}.")
-                    except Exception:
-                        logger.exception("Failed to sync DHCPv4 reservation %s to NetBox", cd.get("ip_address"))
-                        messages.warning(request, "Reservation updated, but NetBox IPAM sync failed.")
-                messages.warning(request, "Change applied but may not survive a Kea restart (config-write failed).")
                 return redirect(return_url)
             except KeaException as exc:
                 logger.exception("Failed to update DHCPv4 reservation for %s", cd.get("ip_address"))
@@ -806,44 +762,14 @@ class ServerReservation6EditView(_KeaChangeMixin, generic.ObjectView):
             try:
                 client.reservation_update("dhcp6", reservation)
                 messages.success(request, "DHCPv6 reservation updated.")
-                _add_reservation_journal(server, request.user, "updated", reservation)
-
-                reservation_updated.send_robust(
-                    sender=None,
-                    server=server,
-                    reservation=reservation,
-                    dhcp_version=6,
-                    request=request,
+                _run_reservation_success_side_effects(
+                    request, server, reservation, 6, "updated", bool(cd.get("sync_to_netbox"))
                 )
-                if cd.get("sync_to_netbox"):
-                    try:
-                        _, created = sync_reservation_to_netbox(reservation)
-                        primary_ip = (reservation.get("ip-addresses") or [""])[0]
-                        msg = "created" if created else "updated"
-                        messages.info(request, f"NetBox IPAddress {primary_ip} {msg}.")
-                    except Exception:
-                        logger.exception("Failed to sync DHCPv6 reservation to NetBox")
-                        messages.warning(request, "Reservation updated, but NetBox IPAM sync failed.")
                 return redirect(return_url)
             except PartialPersistError:
-                messages.warning(request, "Change applied but may not survive a Kea restart (config-write failed).")
-                _add_reservation_journal(server, request.user, "updated", reservation)
-                reservation_updated.send_robust(
-                    sender=None,
-                    server=server,
-                    reservation=reservation,
-                    dhcp_version=6,
-                    request=request,
+                _run_reservation_success_side_effects(
+                    request, server, reservation, 6, "updated", bool(cd.get("sync_to_netbox")), partial_persist=True
                 )
-                if cd.get("sync_to_netbox"):
-                    try:
-                        _, created = sync_reservation_to_netbox(reservation)
-                        primary_ip = (reservation.get("ip-addresses") or [""])[0]
-                        msg = "created" if created else "updated"
-                        messages.info(request, f"NetBox IPAddress {primary_ip} {msg}.")
-                    except Exception:
-                        logger.exception("Failed to sync DHCPv6 reservation to NetBox")
-                        messages.warning(request, "Reservation updated, but NetBox IPAM sync failed.")
                 return redirect(return_url)
             except KeaException as exc:
                 logger.exception("Failed to update DHCPv6 reservation for %s", cd.get("ip_addresses"))

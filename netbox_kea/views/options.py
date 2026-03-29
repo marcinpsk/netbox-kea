@@ -11,7 +11,7 @@ from django.views import View
 from utilities.views import register_model_view
 
 from .. import forms
-from ..kea import KeaException
+from ..kea import KeaException, PartialPersistError
 from ..models import Server
 from ..utilities import (
     OptionalViewTab,
@@ -55,21 +55,23 @@ class _BaseSubnetOptionsEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin,
 
     def get(self, request, pk: int, subnet_id: int):
         server = get_object_or_404(
-            Server.objects.restrict(request.user, "view"),
+            Server.objects.restrict(request.user, "change"),
             pk=pk,
         )
+        return_url = reverse(f"plugins:netbox_kea:server_subnets{self.dhcp_version}", args=[pk])
         client = server.get_client(version=self.dhcp_version)
         subnet = self._get_subnet_from_config(client, subnet_id)
-        initial = []
-        if subnet:
-            initial = [
-                {
-                    "name": opt.get("name", ""),
-                    "data": opt.get("data", ""),
-                    "always_send": opt.get("always-send", False),
-                }
-                for opt in subnet.get("option-data", [])
-            ]
+        if subnet is None:
+            messages.error(request, "Could not load subnet configuration from Kea. The form cannot be displayed.")
+            return redirect(return_url)
+        initial = [
+            {
+                "name": opt.get("name", ""),
+                "data": opt.get("data", ""),
+                "always_send": opt.get("always-send", False),
+            }
+            for opt in subnet.get("option-data", [])
+        ]
         formset = forms.SubnetOptionsFormSet(initial=initial)
         return render(
             request,
@@ -78,13 +80,10 @@ class _BaseSubnetOptionsEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin,
                 "object": server,
                 "server": server,
                 "subnet_id": subnet_id,
-                "subnet_cidr": subnet.get("subnet", "") if subnet else "",
+                "subnet_cidr": subnet.get("subnet", ""),
                 "dhcp_version": self.dhcp_version,
                 "formset": formset,
-                "return_url": reverse(
-                    f"plugins:netbox_kea:server_subnets{self.dhcp_version}",
-                    args=[pk],
-                ),
+                "return_url": return_url,
             },
         )
 
@@ -135,6 +134,9 @@ class _BaseSubnetOptionsEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin,
                 options=options,
             )
             messages.success(request, f"Subnet {subnet_id} options updated.")
+        except PartialPersistError as exc:
+            logger.warning("Options applied but config-write failed for subnet %s: %s", subnet_id, exc)
+            messages.warning(request, kea_error_hint(exc))
         except KeaException as exc:
             logger.exception("Failed to update options for subnet %s: %s", subnet_id, exc)
             messages.error(request, kea_error_hint(exc))
@@ -168,25 +170,28 @@ class _BaseServerOptionsEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin,
 
     dhcp_version: int = 4
 
-    def _get_options_from_config(self, client) -> list[dict]:
-        """Fetch config and return the server-level option-data list, or [] on error."""
+    def _get_options_from_config(self, client) -> list[dict] | None:
+        """Fetch config and return the server-level option-data list, or None on error."""
         service = f"dhcp{self.dhcp_version}"
         dhcp_key = f"Dhcp{self.dhcp_version}"
         try:
             resp = client.command("config-get", service=[service])
         except (KeaException, requests.RequestException):
             logger.exception("Failed to fetch config-get for server options (version %s)", self.dhcp_version)
-            return []
+            return None
         config = resp[0].get("arguments") or {}
         return config.get(dhcp_key, {}).get("option-data", [])
 
     def get(self, request, pk: int):
         server = get_object_or_404(
-            Server.objects.restrict(request.user, "view"),
+            Server.objects.restrict(request.user, "change"),
             pk=pk,
         )
         client = server.get_client(version=self.dhcp_version)
         existing = self._get_options_from_config(client)
+        if existing is None:
+            messages.error(request, "Could not load server options from Kea. The form cannot be displayed.")
+            return redirect(reverse("plugins:netbox_kea:server", args=[pk]))
         initial = [
             {
                 "name": opt.get("name", ""),
@@ -241,6 +246,9 @@ class _BaseServerOptionsEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin,
         try:
             client.server_update_options(version=self.dhcp_version, options=options)
             messages.success(request, f"DHCPv{self.dhcp_version} server options updated.")
+        except PartialPersistError as exc:
+            logger.warning("Server options applied but config-write failed for dhcp%s: %s", self.dhcp_version, exc)
+            messages.warning(request, kea_error_hint(exc))
         except KeaException as exc:
             logger.exception("Failed to update server options for %s: %s", server, exc)
             messages.error(request, kea_error_hint(exc))
@@ -338,7 +346,7 @@ class CombinedServerStatusBadgeView(ConditionalLoginRequiredMixin, View):
                 client = server.get_client(version=version)
                 client.command("version-get", service=[f"dhcp{version}"])
                 online = True
-            except Exception:
+            except (KeaException, requests.RequestException, ValueError):
                 online = False
             statuses.append({"version": version, "online": online})
 
@@ -474,6 +482,9 @@ class BaseServerOptionDefAddView(_KeaChangeMixin, ConditionalLoginRequiredMixin,
             client = server.get_client(version=self.dhcp_version)
             client.option_def_add(version=self.dhcp_version, option_def=option_def)
             messages.success(request, f"Option definition '{option_def['name']}' (code {option_def['code']}) added.")
+        except PartialPersistError as exc:
+            logger.warning("Option def applied but config-write failed for %s: %s", server, exc)
+            messages.warning(request, kea_error_hint(exc))
         except KeaException as exc:
             logger.warning("option-def add failed for %s: %s", server, exc)
             messages.error(request, f"Kea error: {kea_error_hint(exc)}")
@@ -526,6 +537,9 @@ class BaseServerOptionDefDeleteView(_KeaChangeMixin, ConditionalLoginRequiredMix
             client = server.get_client(version=self.dhcp_version)
             client.option_def_del(version=self.dhcp_version, code=code, space=space)
             messages.success(request, f"Option definition code={code} space={space} deleted.")
+        except PartialPersistError as exc:
+            logger.warning("Option def del applied but config-write failed for %s: %s", server, exc)
+            messages.warning(request, kea_error_hint(exc))
         except KeaException as exc:
             logger.warning("option-def del failed for %s: %s", server, exc)
             messages.error(request, f"Kea error: {kea_error_hint(exc)}")

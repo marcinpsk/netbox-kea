@@ -291,8 +291,6 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
 
     def get(self, request: HttpRequest, **kwargs) -> HttpResponse:
         """Dispatch to export, HTMX partial, or full page render as appropriate."""
-        logger = logging.getLogger("netbox_kea.views.BaseServerDHCPLeasesView")
-
         instance: Server = self.get_object(**kwargs)
 
         if resp := check_dhcp_enabled(instance, self.dhcp_version):

@@ -828,8 +828,10 @@ class TestSharedNetworkEditFetchFailures(_ViewTestBase):
     @patch("netbox_kea.models.KeaClient")
     def test_post_generic_exception_rerenders(self, MockKeaClient):
         """POST that raises generic Exception must not crash (no 500)."""
+        import requests as _requests
+
         MockKeaClient.return_value.command.return_value = _CONFIG4_WITH_PROD_NET
-        MockKeaClient.return_value.network_update.side_effect = RuntimeError("unexpected")
+        MockKeaClient.return_value.network_update.side_effect = _requests.RequestException("unexpected")
         response = self.client.post(
             self._url(),
             {
@@ -889,8 +891,10 @@ class TestSharedNetworkCRUDGenericException(_ViewTestBase):
 
     @patch("netbox_kea.models.KeaClient")
     def test_add_generic_exception_shows_error(self, MockKeaClient):
-        """Lines 1371-1373: generic exception on network_add redirects with error."""
-        MockKeaClient.return_value.network_add.side_effect = RuntimeError("connection reset")
+        """Lines 1371-1373: transport exception on network_add redirects with error."""
+        import requests as _requests
+
+        MockKeaClient.return_value.network_add.side_effect = _requests.RequestException("connection reset")
         url = reverse("plugins:netbox_kea:server_shared_network4_add", args=[self.server.pk])
         response = self.client.post(url, {"name": "new-net"}, follow=True)
         msgs = [m.message for m in response.context["messages"]]
@@ -898,8 +902,10 @@ class TestSharedNetworkCRUDGenericException(_ViewTestBase):
 
     @patch("netbox_kea.models.KeaClient")
     def test_delete_generic_exception_shows_error(self, MockKeaClient):
-        """Lines 1426-1428: generic exception on network_del redirects with error."""
-        MockKeaClient.return_value.network_del.side_effect = RuntimeError("timeout")
+        """Lines 1426-1428: transport exception on network_del redirects with error."""
+        import requests as _requests
+
+        MockKeaClient.return_value.network_del.side_effect = _requests.RequestException("timeout")
         url = reverse("plugins:netbox_kea:server_shared_network4_delete", args=[self.server.pk, "old-net"])
         response = self.client.post(url, {}, follow=True)
         msgs = [m.message for m in response.context["messages"]]

@@ -207,7 +207,9 @@ class TestCombinedServerStatusBadge(_CombinedViewBase):
     @patch("netbox_kea.models.KeaClient")
     def test_offline_server_returns_200_with_offline_text(self, MockKeaClient):
         """Unreachable server should return 200 and contain 'Offline' (no 500)."""
-        MockKeaClient.return_value.command.side_effect = Exception("connection refused")
+        import requests as _requests
+
+        MockKeaClient.return_value.command.side_effect = _requests.RequestException("connection refused")
         response = self.client.get(self._url(self.v4_server))
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Offline")

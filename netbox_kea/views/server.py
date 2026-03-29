@@ -1,6 +1,7 @@
 import logging
 from typing import Any
 
+import requests
 from django.http.request import HttpRequest
 from django.urls import reverse
 from netbox.views import generic
@@ -54,7 +55,7 @@ def _get_global_options(server: "Server") -> dict[str, dict[str, str]]:
                 result[label] = {k.replace("_", " ").title(): v for k, v in opts.items()}
         except KeaException:  # noqa: PERF203
             logger.debug("config-get failed for %s (%s) — skipping global options", label, svc)
-        except Exception:
+        except (requests.RequestException, ValueError):
             logger.warning("Unexpected error fetching global options for %s (%s)", label, svc, exc_info=True)
     return result
 

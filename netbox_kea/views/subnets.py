@@ -569,8 +569,8 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
     def _subnets_url(self, pk: int) -> str:
         return reverse(f"plugins:netbox_kea:server_subnets{self.dhcp_version}", args=[pk])
 
-    def _fetch_subnet(self, server: Server, subnet_id: int) -> dict[str, Any]:
-        """Fetch current subnet config from Kea.  Returns empty dict on failure."""
+    def _fetch_subnet(self, server: Server, subnet_id: int) -> dict[str, Any] | None:
+        """Fetch current subnet config from Kea.  Returns None on error, empty dict if subnet not found."""
         try:
             key = f"subnet{self.dhcp_version}"
             client = server.get_client(version=self.dhcp_version)
@@ -583,7 +583,7 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
             return subnets[0] if subnets else {}
         except Exception:
             logger.warning("Failed to fetch subnet %s for editing", subnet_id)
-            return {}
+            return None
 
     def _get_network_data(self, client: "KeaClient", subnet_id: int) -> tuple[list[tuple[str, str]], str, dict]:
         """Return ``(choices, current_network_name, dhcp_conf)`` for the shared-network dropdown.
@@ -699,6 +699,9 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
     def get(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
         server = self.get_object(pk=pk)
         subnet = self._fetch_subnet(server, subnet_id)
+        if subnet is None:
+            messages.error(request, "Could not load subnet configuration from Kea.")
+            return redirect(self._subnets_url(pk))
         client = server.get_client(version=self.dhcp_version)
         network_choices, current_network, dhcp_conf = self._get_network_data(client, subnet_id)
         display_network = current_network or ""
@@ -773,7 +776,6 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
             messages.success(request, f"Subnet {cd['subnet_cidr']} updated.")
         except PartialPersistError:
             messages.warning(request, "Change applied but may not survive a Kea restart (config-write failed).")
-            return redirect(return_url)
         except KeaException as exc:
             logger.exception("Failed to update subnet %s on server %s", subnet_id, pk)
             messages.error(request, kea_error_hint(exc))

@@ -550,13 +550,14 @@ class TestServerSubnet4EditView(_ViewTestBase):
         self.assertContains(response, "10.0.0.100-10.0.0.200")
 
     @patch("netbox_kea.models.KeaClient")
-    def test_get_when_subnet_fetch_fails_still_returns_200(self, MockKeaClient):
-        """GET must return 200 even when the subnet-get Kea call fails."""
+    def test_get_when_subnet_fetch_fails_redirects_with_error(self, MockKeaClient):
+        """GET must redirect to the subnet list when the subnet-get Kea call fails."""
         from netbox_kea.kea import KeaException
 
         MockKeaClient.return_value.command.side_effect = KeaException({"result": 1, "text": "not found"}, index=0)
         response = self.client.get(self._url())
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("subnets", response.url)
 
     @patch("netbox_kea.models.KeaClient")
     def test_post_valid_form_calls_subnet_update_and_redirects(self, MockKeaClient):

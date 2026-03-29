@@ -48,6 +48,9 @@ class BaseServerSharedNetworksView(generic.ObjectChildrenView):
         except KeaException:
             logger.debug("Failed to fetch config-get for shared networks on server %s", parent.pk)
             return []
+        except requests.RequestException:
+            logger.debug("Transport error fetching config-get for shared networks on server %s", parent.pk)
+            return []
         if config[0]["arguments"] is None:
             return []
         dhcp_conf = config[0]["arguments"].get(f"Dhcp{self.dhcp_version}", {})
@@ -179,8 +182,8 @@ class BaseServerSharedNetworkAddView(_KeaChangeMixin, ConditionalLoginRequiredMi
         except KeaException as exc:
             logger.warning("network%d-add failed for %s: %s", self.dhcp_version, server, exc)
             messages.error(request, f"Kea error: {kea_error_hint(exc)}")
-        except Exception:
-            logger.exception("Unexpected error adding shared network for %s", server)
+        except requests.RequestException:
+            logger.exception("Transport error adding shared network for %s", server)
             messages.error(request, "An internal error occurred.")
         return redirect(self._success_url(server))
 
@@ -234,8 +237,8 @@ class BaseServerSharedNetworkDeleteView(_KeaChangeMixin, ConditionalLoginRequire
         except KeaException as exc:
             logger.warning("network%d-del failed for %s: %s", self.dhcp_version, server, exc)
             messages.error(request, f"Kea error: {kea_error_hint(exc)}")
-        except Exception:
-            logger.exception("Unexpected error deleting shared network for %s", server)
+        except requests.RequestException:
+            logger.exception("Transport error deleting shared network for %s", server)
             messages.error(request, "An internal error occurred.")
         return redirect(self._success_url(server))
 
@@ -394,8 +397,8 @@ class BaseServerSharedNetworkEditView(_KeaChangeMixin, ConditionalLoginRequiredM
         except KeaException as exc:
             logger.warning("network_update failed for %s on server %s: %s", network_name, pk, exc)
             messages.error(request, f"Kea error: {kea_error_hint(exc)}")
-        except Exception:
-            logger.exception("Unexpected error updating shared network '%s' on server %s", network_name, pk)
+        except requests.RequestException:
+            logger.exception("Transport error updating shared network '%s' on server %s", network_name, pk)
             messages.error(request, "An internal error occurred.")
         return redirect(self._success_url(server))
 

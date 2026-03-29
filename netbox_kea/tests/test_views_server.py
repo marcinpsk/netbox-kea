@@ -760,7 +760,9 @@ class TestGetGlobalOptionsGenericException(_ViewTestBase):
 
         def _side(cmd, service=None, **kwargs):
             if cmd == "config-get":
-                raise RuntimeError("unexpected crash")
+                import requests as _requests
+
+                raise _requests.RequestException("unexpected crash")
             if cmd == "status-get" and (not service or "dhcp" not in (service or [""])[0]):
                 return [{"result": 0, "arguments": {"pid": 1, "uptime": 0, "reload": 0}}]
             if cmd == "status-get":

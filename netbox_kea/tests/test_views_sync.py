@@ -142,10 +142,13 @@ class TestSyncViewEdgeCases(_ViewTestBase):
 
     @patch("netbox_kea.models.KeaClient")
     def test_post_sync_exception_returns_500(self, MockKeaClient):
-        """POST where sync raises a concrete error must return 500."""
+        """POST where sync raises a concrete error must return 500 with generic message, not raw exception."""
         with patch("netbox_kea.views.ServerLease4SyncView._sync", side_effect=ValueError("ip parse error")):
             response = self.client.post(self._url(), {"ip_address": "10.0.0.1"})
         self.assertEqual(response.status_code, 500)
+        body = response.content.decode()
+        self.assertIn("Sync error", body)
+        self.assertNotIn("ip parse error", body)
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
@@ -176,13 +179,14 @@ class TestBulkReservationSyncFetchException(_ViewTestBase):
 
     @patch("netbox_kea.models.KeaClient")
     def test_post_fetch_exception_shows_error(self, MockKeaClient):
-        """Exception in _fetch_reservations_from_server must show error message and redirect."""
+        """Exception in _fetch_reservations_from_server must show error message, not raw exception text."""
         with patch(
             "netbox_kea.views.sync_views._fetch_reservations_from_server", side_effect=RuntimeError("fetch fail")
         ):
             response = self.client.post(self._url(), follow=True)
         msgs = list(response.context["messages"])
         self.assertTrue(any(m.level == django_messages.ERROR for m in msgs))
+        self.assertNotIn(b"fetch fail", response.content)
 
 
 # ---------------------------------------------------------------------------
