@@ -2,6 +2,7 @@ import logging
 from typing import Any
 from urllib.parse import urlencode as _urlencode
 
+import requests
 from django.contrib import messages
 from django.http import HttpResponse
 from django.http.request import HttpRequest
@@ -275,7 +276,7 @@ class BaseServerSharedNetworkEditView(_KeaChangeMixin, ConditionalLoginRequiredM
             for sn in args.get(dhcp_key, {}).get("shared-networks", []):
                 if sn.get("name") == network_name:
                     return sn
-        except KeaException:
+        except (KeaException, requests.RequestException):
             logger.exception("Failed to fetch config-get for shared network edit on server")
         return {}
 

@@ -1,6 +1,7 @@
 import logging
 from urllib.parse import urlencode as _urlencode
 
+import requests
 from django.contrib import messages
 from django.http import HttpResponse
 from django.http.request import HttpRequest
@@ -22,7 +23,7 @@ from ._base import ConditionalLoginRequiredMixin, _KeaChangeMixin
 logger = logging.getLogger(__name__)
 
 
-class _BaseSubnetOptionsEditView(ConditionalLoginRequiredMixin, View):
+class _BaseSubnetOptionsEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin, View):
     """GET/POST view for editing option-data of a single subnet.
 
     Loads the current options from Kea via ``config-get``, renders a formset,
@@ -33,11 +34,15 @@ class _BaseSubnetOptionsEditView(ConditionalLoginRequiredMixin, View):
     dhcp_version: int = 4
 
     def _get_subnet_from_config(self, client, subnet_id: int) -> dict | None:
-        """Fetch config and return the subnet dict, or None if not found."""
+        """Fetch config and return the subnet dict, or None if not found or on error."""
         service = f"dhcp{self.dhcp_version}"
         dhcp_key = f"Dhcp{self.dhcp_version}"
         subnet_key = f"subnet{self.dhcp_version}"
-        resp = client.command("config-get", service=[service])
+        try:
+            resp = client.command("config-get", service=[service])
+        except (KeaException, requests.RequestException):
+            logger.exception("Failed to fetch config-get for subnet options (subnet %s)", subnet_id)
+            return None
         config = resp[0].get("arguments") or {}
         for s in config.get(dhcp_key, {}).get(subnet_key, []):
             if s.get("id") == subnet_id:
@@ -153,7 +158,7 @@ class ServerSubnet6OptionsEditView(_BaseSubnetOptionsEditView):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-class _BaseServerOptionsEditView(ConditionalLoginRequiredMixin, View):
+class _BaseServerOptionsEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin, View):
     """GET/POST view for editing server-level (global) option-data.
 
     Loads current server options from ``config-get``, renders a formset, and on
@@ -164,10 +169,14 @@ class _BaseServerOptionsEditView(ConditionalLoginRequiredMixin, View):
     dhcp_version: int = 4
 
     def _get_options_from_config(self, client) -> list[dict]:
-        """Fetch config and return the server-level option-data list."""
+        """Fetch config and return the server-level option-data list, or [] on error."""
         service = f"dhcp{self.dhcp_version}"
         dhcp_key = f"Dhcp{self.dhcp_version}"
-        resp = client.command("config-get", service=[service])
+        try:
+            resp = client.command("config-get", service=[service])
+        except (KeaException, requests.RequestException):
+            logger.exception("Failed to fetch config-get for server options (version %s)", self.dhcp_version)
+            return []
         config = resp[0].get("arguments") or {}
         return config.get(dhcp_key, {}).get("option-data", [])
 
@@ -468,9 +477,6 @@ class BaseServerOptionDefAddView(_KeaChangeMixin, ConditionalLoginRequiredMixin,
         except KeaException as exc:
             logger.warning("option-def add failed for %s: %s", server, exc)
             messages.error(request, f"Kea error: {kea_error_hint(exc)}")
-        except Exception:
-            logger.exception("Unexpected error adding option-def for %s", server)
-            messages.error(request, "An internal error occurred.")
         return redirect(self._success_url(server))
 
 
@@ -523,9 +529,6 @@ class BaseServerOptionDefDeleteView(_KeaChangeMixin, ConditionalLoginRequiredMix
         except KeaException as exc:
             logger.warning("option-def del failed for %s: %s", server, exc)
             messages.error(request, f"Kea error: {kea_error_hint(exc)}")
-        except Exception:
-            logger.exception("Unexpected error deleting option-def for %s", server)
-            messages.error(request, "An internal error occurred.")
         return redirect(self._success_url(server))
 
 

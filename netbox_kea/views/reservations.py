@@ -620,8 +620,8 @@ class ServerReservation4EditView(_KeaChangeMixin, generic.ObjectView):
             lease = server.get_client(version=4).lease_get_by_ip(4, ip_address)
             if lease and lease.get("hostname") and lease.get("hostname") != reservation.get("hostname", ""):
                 context["lease_diff"] = {"hostname": lease["hostname"]}
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Could not fetch lease for reservation edit diff (ip=%s): %s", ip_address, e)
         return render(request, self.template_name, context)
 
     def post(self, request: HttpRequest, pk: int, subnet_id: int, ip_address: str) -> HttpResponse:
@@ -760,8 +760,8 @@ class ServerReservation6EditView(_KeaChangeMixin, generic.ObjectView):
             lease = server.get_client(version=6).lease_get_by_ip(6, ip_address)
             if lease and lease.get("hostname") and lease.get("hostname") != reservation.get("hostname", ""):
                 context["lease_diff"] = {"hostname": lease["hostname"]}
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Could not fetch lease for reservation edit diff (ip=%s): %s", ip_address, e)
         return render(request, self.template_name, context)
 
     def post(self, request: HttpRequest, pk: int, subnet_id: int, ip_address: str) -> HttpResponse:

@@ -215,19 +215,28 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
 
         q = form.cleaned_data["q"]
         client = instance.get_client(version=self.dhcp_version)
-        if by == constants.BY_SUBNET:
-            leases = []
-            page: str | None = ""  # start from the beginning
-            while page is not None:
-                page_leases, page = self.get_leases_page(
-                    client,
-                    q,
-                    page,
-                    per_page=get_paginate_count(request),
-                )
-                leases += page_leases
-        else:
-            leases = self.get_leases(client, q, by)
+        try:
+            if by == constants.BY_SUBNET:
+                leases = []
+                page: str | None = ""  # start from the beginning
+                while page is not None:
+                    page_leases, page = self.get_leases_page(
+                        client,
+                        q,
+                        page,
+                        per_page=get_paginate_count(request),
+                    )
+                    leases += page_leases
+            else:
+                leases = self.get_leases(client, q, by)
+        except KeaException as exc:
+            logger.exception("Failed to fetch leases for export on server %s", instance.pk)
+            messages.error(request, kea_error_hint(exc))
+            return redirect(request.path)
+        except Exception:
+            logger.exception("Unexpected error fetching leases for export on server %s", instance.pk)
+            messages.error(request, "Failed to fetch leases for export; see server logs.")
+            return redirect(request.path)
 
         table = self.get_table(leases, request)
         return export_table(table, "leases.csv", use_selected_columns=request.GET["export"] == "table")
@@ -247,23 +256,35 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
 
         all_leases: list[dict[str, Any]] = []
         cursor = start_ip
-        while True:
-            resp = client.command(
-                f"lease{self.dhcp_version}-get-page",
-                service=[f"dhcp{self.dhcp_version}"],
-                arguments={"from": cursor, "limit": per_page},
-                check=(0, 3),
-            )
-            if resp[0]["result"] == 3:
-                break
-            args = resp[0]["arguments"]
-            if args is None:
-                break
-            raw_leases = args["leases"]
-            all_leases += format_leases(raw_leases)
-            if args["count"] < per_page:
-                break
-            cursor = raw_leases[-1]["ip-address"]
+        try:
+            while True:
+                resp = client.command(
+                    f"lease{self.dhcp_version}-get-page",
+                    service=[f"dhcp{self.dhcp_version}"],
+                    arguments={"from": cursor, "limit": per_page},
+                    check=(0, 3),
+                )
+                if resp[0]["result"] == 3:
+                    break
+                args = resp[0].get("arguments")
+                if args is None:
+                    logger.warning("lease-get-page returned None arguments on server %s", instance.pk)
+                    break
+                raw_leases = args.get("leases") or []
+                all_leases += format_leases(raw_leases)
+                if args.get("count", 0) < per_page:
+                    break
+                if not raw_leases:
+                    break
+                cursor = raw_leases[-1]["ip-address"]
+        except KeaException as exc:
+            logger.exception("Failed to fetch all leases for export on server %s", instance.pk)
+            messages.error(request, kea_error_hint(exc))
+            return redirect(request.path)
+        except Exception:
+            logger.exception("Unexpected error fetching all leases for export on server %s", instance.pk)
+            messages.error(request, "Failed to fetch leases for export; see server logs.")
+            return redirect(request.path)
 
         table = self.get_table(all_leases, request)
         return export_table(table, "leases_all.csv", use_selected_columns=False)

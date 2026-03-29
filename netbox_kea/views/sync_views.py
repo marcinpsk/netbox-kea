@@ -38,7 +38,7 @@ class _BaseSyncView(ConditionalLoginRequiredMixin, View):
         if not (request.user.has_perm("ipam.add_ipaddress") and request.user.has_perm("ipam.change_ipaddress")):
             return HttpResponseForbidden("You do not have permission to sync to NetBox IPAM.")
 
-        get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
+        server = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
 
         ip_str = request.POST.get("ip_address", "").strip()
         if not ip_str:
@@ -50,8 +50,10 @@ class _BaseSyncView(ConditionalLoginRequiredMixin, View):
             return HttpResponse("Invalid IP address", status=400)
 
         hostname = request.POST.get("hostname", "").strip()
+        synthetic = {"ip-address": ip_str, "hostname": hostname}
+        data = self._fetch_live_data(server, ip_str, synthetic)
         try:
-            nb_ip, _created = self._sync({"ip-address": ip_str, "hostname": hostname})
+            nb_ip, _created = self._sync(data)
         except Exception:  # noqa: BLE001
             logger.exception("Sync error for ip=%s", ip_str)
             return HttpResponse("Sync error: see server logs for details.", status=500)
@@ -62,12 +64,28 @@ class _BaseSyncView(ConditionalLoginRequiredMixin, View):
             {"nb_ip": nb_ip},
         )
 
+    def _fetch_live_data(self, server: "Server", ip_str: str, fallback: dict) -> dict:  # noqa: ARG002
+        """Fetch live data for *ip_str* from Kea.  Subclasses override for protocol-specific lookup.
+
+        Returns *fallback* when live fetch is not implemented or fails.
+        """
+        return fallback
+
     def _sync(self, data: dict):
         raise NotImplementedError
 
 
 class ServerLease4SyncView(_BaseSyncView):
     """Sync a single DHCPv4 lease to a NetBox IPAddress (status=active)."""
+
+    def _fetch_live_data(self, server: "Server", ip_str: str, fallback: dict) -> dict:
+        try:
+            client = server.get_client(version=4)
+            lease = client.lease_get_by_ip(4, ip_str)
+            return lease if lease else fallback
+        except Exception:
+            logger.debug("Could not fetch live lease4 data for %s, using fallback", ip_str)
+            return fallback
 
     def _sync(self, data: dict):
         from ..sync import sync_lease_to_netbox
@@ -77,6 +95,15 @@ class ServerLease4SyncView(_BaseSyncView):
 
 class ServerLease6SyncView(_BaseSyncView):
     """Sync a single DHCPv6 lease to a NetBox IPAddress (status=active)."""
+
+    def _fetch_live_data(self, server: "Server", ip_str: str, fallback: dict) -> dict:
+        try:
+            client = server.get_client(version=6)
+            lease = client.lease_get_by_ip(6, ip_str)
+            return lease if lease else fallback
+        except Exception:
+            logger.debug("Could not fetch live lease6 data for %s, using fallback", ip_str)
+            return fallback
 
     def _sync(self, data: dict):
         from ..sync import sync_lease_to_netbox

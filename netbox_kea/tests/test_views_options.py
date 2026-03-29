@@ -898,16 +898,14 @@ class TestOptionDefAddExceptions(_ViewTestBase):
         self.assertTrue(any(m.level == django_messages.ERROR for m in msgs))
 
     @patch("netbox_kea.models.KeaClient")
-    def test_post_generic_exception_shows_internal_error(self, MockKeaClient):
-        """Generic exception on option_def_add must show generic error message and redirect."""
+    def test_post_generic_exception_propagates(self, MockKeaClient):
+        """Non-KeaException on option_def_add propagates (not swallowed)."""
         MockKeaClient.return_value.option_def_add.side_effect = RuntimeError("crash")
-        response = self.client.post(
-            self._url(),
-            {"name": "my-opt", "code": "200", "type": "string", "space": "dhcp4"},
-            follow=True,
-        )
-        msgs = list(response.context["messages"])
-        self.assertTrue(any("internal error" in m.message.lower() for m in msgs))
+        with self.assertRaises(RuntimeError):
+            self.client.post(
+                self._url(),
+                {"name": "my-opt", "code": "200", "type": "string", "space": "dhcp4"},
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -935,12 +933,11 @@ class TestOptionDefDeleteExceptions(_ViewTestBase):
         self.assertTrue(any(m.level == django_messages.ERROR for m in msgs))
 
     @patch("netbox_kea.models.KeaClient")
-    def test_post_generic_exception_shows_internal_error(self, MockKeaClient):
-        """Generic exception on option_def_del must show generic error message."""
+    def test_post_generic_exception_propagates(self, MockKeaClient):
+        """Non-KeaException on option_def_del propagates (not swallowed)."""
         MockKeaClient.return_value.option_def_del.side_effect = RuntimeError("crash")
-        response = self.client.post(self._url(), follow=True)
-        msgs = list(response.context["messages"])
-        self.assertTrue(any("internal error" in m.message.lower() for m in msgs))
+        with self.assertRaises(RuntimeError):
+            self.client.post(self._url())
 
 
 # ---------------------------------------------------------------------------
