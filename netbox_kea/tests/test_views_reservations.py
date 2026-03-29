@@ -360,8 +360,12 @@ class TestReservation4AddExceptions(_ViewTestBase):
 
     @patch("netbox_kea.models.KeaClient")
     def test_generic_exception_rerenders_form(self, MockKeaClient):
-        """Unexpected exception must re-render the form with a generic error."""
-        MockKeaClient.return_value.reservation_add.side_effect = RuntimeError("unexpected")
+        """KeaException from reservation_add must re-render the form with an error message."""
+        from netbox_kea.kea import KeaException
+
+        MockKeaClient.return_value.reservation_add.side_effect = KeaException(
+            {"result": 1, "text": "server error"}, index=0
+        )
         MockKeaClient.return_value.reservation_get_page.return_value = ([], 0, 0)
         response = self.client.post(self._url(), _VALID_RESERVATION4_POST)
         self.assertEqual(response.status_code, 200)
@@ -418,7 +422,7 @@ class TestReservation6AddExceptions(_ViewTestBase):
 
     @patch("netbox_kea.models.KeaClient")
     def test_partial_persist_with_sync_to_netbox(self, MockKeaClient):
-        """PartialPersistError with sync_to_netbox=True must attempt IPAM sync."""
+        """PartialPersistError with sync_to_netbox=True must attempt IPAM sync and show recovery message."""
         from netbox_kea.kea import PartialPersistError
 
         MockKeaClient.return_value.reservation_add.side_effect = PartialPersistError("dhcp6", Exception("write"))
@@ -428,6 +432,9 @@ class TestReservation6AddExceptions(_ViewTestBase):
             mock_sync.return_value = (MagicMock(), False)
             response = self.client.post(self._url(), post_data, follow=True)
         self.assertEqual(response.status_code, 200)
+        mock_sync.assert_called_once()
+        msgs = list(response.context["messages"])
+        self.assertTrue(any(m.level == django_messages.WARNING for m in msgs), "Expected warning about partial persist")
 
     @patch("netbox_kea.models.KeaClient")
     def test_partial_persist_sync_failure_shows_warning(self, MockKeaClient):
@@ -837,9 +844,7 @@ class TestReservation6AddOptionDataAndSync(_ViewTestBase):
         self.assertTrue(
             any(
                 m.level == django_messages.INFO
-                and "synced" in m.message.lower()
-                or "created" in m.message.lower()
-                or "updated" in m.message.lower()
+                and ("synced" in m.message.lower() or "created" in m.message.lower() or "updated" in m.message.lower())
                 for m in msgs
             ),
             f"Expected sync success message, got: {[m.message for m in msgs]}",

@@ -216,7 +216,10 @@ class ServerStatusView(generic.ObjectView):
         """Return combined status dicts for CA (when present) and all enabled DHCP services."""
         result: dict[str, dict[str, Any]] = {}
         if server.has_control_agent:
-            result["Control Agent"] = self._get_ca_status(server.get_client())
+            try:
+                result["Control Agent"] = self._get_ca_status(server.get_client())
+            except Exception:
+                logger.exception("Failed to fetch Control Agent status for server %s", server.pk)
         result.update(self._get_dhcp_status(server))
         return result
 

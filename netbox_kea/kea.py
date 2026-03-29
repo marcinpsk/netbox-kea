@@ -1001,7 +1001,13 @@ class KeaClient:
             else:
                 logger.warning("config-test failed for service %s — aborting config-set", service)
                 raise KeaConfigTestError(service, exc) from exc
-        self.command("config-set", service=[service], arguments=config)
+        try:
+            self.command("config-set", service=[service], arguments=config)
+        except (requests.RequestException, ValueError) as exc:
+            logger.warning(
+                "config-set transport/parse error for service %s — change may be live but unpersisted", service
+            )
+            raise PartialPersistError(service, exc) from exc
         try:
             self.command("config-write", service=[service])
         except (KeaException, requests.RequestException, ValueError) as exc:
@@ -1046,7 +1052,8 @@ class KeaClient:
                     logger.warning("config-test failed for service %s — aborting config-write", service)
                     raise KeaConfigPersistError(service, exc) from exc
             except (requests.RequestException, ValueError) as exc:
-                logger.debug("config-test transport error for service %s — skipping pre-flight check: %s", service, exc)
+                logger.warning("config-test transport error for service %s — aborting config-write: %s", service, exc)
+                raise KeaConfigPersistError(service, exc) from exc
 
         # Step 3: write to disk.
         try:

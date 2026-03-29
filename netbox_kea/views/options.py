@@ -371,7 +371,7 @@ class BaseServerOptionDefView(_KeaChangeMixin, ConditionalLoginRequiredMixin, Vi
         try:
             option_defs = client.option_def_list(version=self.dhcp_version)
             options_load_error = False
-        except KeaException:
+        except (KeaException, requests.RequestException, ValueError):
             logger.exception("Failed to fetch option-def list for server %s", pk)
             option_defs = []
             options_load_error = True

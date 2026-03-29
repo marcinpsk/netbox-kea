@@ -826,10 +826,11 @@ def _fetch_reservation_by_ip_for_leases(
         except KeaException as exc:
             if exc.response.get("result") == 2:
                 return ip, None, False  # hook not available
-            return ip, None, True
+            logger.debug("reservation-get KeaException for %s (result != 2): %s", ip, exc)
+            return ip, None, False  # indeterminate — don't show create-reservation link
         except Exception as exc:  # noqa: BLE001
             logger.debug("reservation-get failed for %s: %s", ip, exc)
-            return ip, None, True
+            return ip, None, False  # indeterminate — don't show create-reservation link
 
     if not leases:
         return reservation_by_ip, host_cmds_available

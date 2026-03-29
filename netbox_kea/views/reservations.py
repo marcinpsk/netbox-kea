@@ -92,7 +92,7 @@ def _add_reservation_journal(server: "Server", user: Any, action: str, reservati
         logger.debug("Failed to create reservation journal entry", exc_info=True)
 
 
-def _enrich_reservations_with_lease_status(client: "KeaClient", reservations: list[dict], version: int) -> None:
+def _enrich_reservations_with_lease_status(client: "KeaClient", reservations: list[dict], version: int) -> None:  # noqa: C901
     """Enrich each reservation dict with ``has_active_lease`` (bool | None).
 
     Queries ``lease4-get-all`` / ``lease6-get-all`` per unique subnet to find
@@ -117,8 +117,8 @@ def _enrich_reservations_with_lease_status(client: "KeaClient", reservations: li
     active_lease_ips: set[str] = set()
     hook_unavailable = False
 
-    def _fetch_leases_for_subnet(sid: int) -> list[str] | None:
-        """Return list of lease IPs, or None if the lease_cmds hook is not loaded."""
+    def _fetch_leases_for_subnet(sid: int) -> list[str] | None | bool:
+        """Return list of lease IPs, None if the lease_cmds hook is not loaded, or False on error."""
         worker_client = client.clone()  # requests.Session is not thread-safe
         try:
             resp = worker_client.command(
@@ -134,20 +134,26 @@ def _enrich_reservations_with_lease_status(client: "KeaClient", reservations: li
         except KeaException as exc:
             if exc.response.get("result") == 2:
                 return None  # hook not loaded
-            return []
+            logger.debug("lease fetch failed for subnet %s (KeaException result != 2): %s", sid, exc)
+            return False  # error sentinel — state is indeterminate
         except Exception:  # noqa: BLE001
-            return []
+            logger.debug("lease fetch failed for subnet %s (unexpected error)", sid)
+            return False  # error sentinel
 
     if not unique_subnet_ids:
         return
 
+    indeterminate_subnet_ids: set[int] = set()
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(unique_subnet_ids), 10)) as executor:
             futures = {executor.submit(_fetch_leases_for_subnet, sid): sid for sid in unique_subnet_ids}
             for future in concurrent.futures.as_completed(futures):
+                sid = futures[future]
                 result = future.result()
                 if result is None:
                     hook_unavailable = True
+                elif result is False:
+                    indeterminate_subnet_ids.add(sid)
                 else:
                     for ip in result:
                         active_lease_ips.add(ip)
@@ -158,8 +164,18 @@ def _enrich_reservations_with_lease_status(client: "KeaClient", reservations: li
         return
 
     for r in reservations:
-        ip = r.get("ip-address", r.get("ip_address", ""))
-        r["has_active_lease"] = ip in active_lease_ips
+        subnet_id_r = r.get("subnet-id")
+        if subnet_id_r in indeterminate_subnet_ids:
+            # Cannot determine lease state for this subnet — leave has_active_lease unset
+            continue
+        # Check all address fields: single "ip-address" (v4/v6), normalised "ip_address",
+        # and "ip-addresses" list (DHCPv6 reservations with multiple addresses).
+        addrs: list[str] = []
+        single = r.get("ip-address") or r.get("ip_address")
+        if single:
+            addrs.append(single)
+        addrs.extend(r.get("ip-addresses") or [])
+        r["has_active_lease"] = any(a in active_lease_ips for a in addrs)
 
 
 def _filter_reservations(

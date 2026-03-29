@@ -1975,6 +1975,38 @@ class TestPersistConfig(TestCase):
             with self.assertRaises(PartialPersistError):
                 self.client._persist_config("dhcp4")
 
+    def test_config_test_transport_error_raises_kea_config_persist_error(self):
+        """requests.RequestException from config-test aborts config-write and raises KeaConfigPersistError."""
+        import requests as req
+
+        def _side_effect(url, **kwargs):
+            cmd = kwargs.get("json", {}).get("command", "")
+            if cmd == "config-test":
+                raise req.RequestException("timeout")
+            return _mock_http_response(_CONFIG_GET_RUNNING_RESP)
+
+        with patch.object(self.client._session, "post", side_effect=_side_effect):
+            with self.assertRaises(KeaConfigPersistError):
+                self.client._persist_config("dhcp4")
+
+    def test_config_test_transport_error_does_not_call_config_write(self):
+        """When config-test has a transport error, config-write must NOT be called."""
+        import requests as req
+
+        calls: list[str] = []
+
+        def _side_effect(url, **kwargs):
+            cmd = kwargs.get("json", {}).get("command", "")
+            calls.append(cmd)
+            if cmd == "config-test":
+                raise req.RequestException("timeout")
+            return _mock_http_response(_CONFIG_GET_RUNNING_RESP)
+
+        with patch.object(self.client._session, "post", side_effect=_side_effect):
+            with self.assertRaises(KeaConfigPersistError):
+                self.client._persist_config("dhcp4")
+        self.assertNotIn("config-write", calls)
+
 
 # Minimal config-get response containing one v4 subnet with one existing option
 _CONFIG_GET_WITH_SUBNET = [
@@ -2038,7 +2070,7 @@ class TestSubnetOptionUpdate(TestCase):
         self.assertEqual(cmds, ["config-get", "config-test", "config-set", "config-write"])
 
     def test_replaces_option_data_in_config_write_payload(self):
-        """config-write is called with updated option-data replacing the old list."""
+        """config-set and config-write are called with updated option-data replacing the old list."""
         new_opts = [{"name": "routers", "data": "10.0.0.1"}]
         with patch.object(
             self.client._session,
@@ -2051,14 +2083,15 @@ class TestSubnetOptionUpdate(TestCase):
             ),
         ) as mock_post:
             self.client.subnet_update_options(version=4, subnet_id=1, options=new_opts)
-        # config-test payload should contain updated config
         payloads = self._payloads(mock_post)
-        test_payload = next(p for p in payloads if p["command"] == "config-test")
-        subnet = test_payload["arguments"]["Dhcp4"]["subnet4"][0]
-        self.assertEqual(subnet["option-data"], new_opts)
+        # Both config-test and config-set must carry the same updated option-data
+        for cmd in ("config-test", "config-set"):
+            payload = next(p for p in payloads if p["command"] == cmd)
+            subnet = payload["arguments"]["Dhcp4"]["subnet4"][0]
+            self.assertEqual(subnet["option-data"], new_opts, f"{cmd} payload has wrong option-data")
 
     def test_clears_option_data_when_empty_list_given(self):
-        """Passing options=[] removes all existing options from the subnet."""
+        """Passing options=[] removes all existing options from the subnet in config-test and config-set."""
         with patch.object(
             self.client._session,
             "post",
@@ -2071,9 +2104,10 @@ class TestSubnetOptionUpdate(TestCase):
         ) as mock_post:
             self.client.subnet_update_options(version=4, subnet_id=1, options=[])
         payloads = self._payloads(mock_post)
-        test_payload = next(p for p in payloads if p["command"] == "config-test")
-        subnet = test_payload["arguments"]["Dhcp4"]["subnet4"][0]
-        self.assertEqual(subnet["option-data"], [])
+        for cmd in ("config-test", "config-set"):
+            payload = next(p for p in payloads if p["command"] == cmd)
+            subnet = payload["arguments"]["Dhcp4"]["subnet4"][0]
+            self.assertEqual(subnet["option-data"], [], f"{cmd} payload should have empty option-data")
 
     def test_raises_kea_exception_when_subnet_id_not_found(self):
         """KeaException raised if subnet_id does not exist in config."""
@@ -3376,6 +3410,38 @@ class TestNetworkUpdate(TestCase):
         payloads = self._payloads(mock_post)
         test_payload = next(p for p in payloads if p["command"] == "config-test")
         self.assertNotIn("hash", test_payload["arguments"])
+
+    def test_config_set_transport_error_raises_partial_persist_error(self):
+        """requests.RequestException from config-set is wrapped in PartialPersistError (ambiguous state)."""
+        import requests as req
+
+        def _side_effect(url, **kwargs):
+            cmd = kwargs.get("json", {}).get("command", "")
+            if cmd == "config-set":
+                raise req.RequestException("connection dropped")
+            return _mock_http_response(_CONFIG_GET_WITH_SHARED_NETWORK if cmd == "config-get" else _CONFIG_TEST_OK_RESP)
+
+        with patch.object(self.client._session, "post", side_effect=_side_effect):
+            with self.assertRaises(PartialPersistError):
+                self.client.network_update(version=4, name="prod-net")
+
+    def test_config_set_transport_error_does_not_call_config_write(self):
+        """When config-set has a transport error, config-write must NOT be called."""
+        import requests as req
+
+        calls: list[str] = []
+
+        def _side_effect(url, **kwargs):
+            cmd = kwargs.get("json", {}).get("command", "")
+            calls.append(cmd)
+            if cmd == "config-set":
+                raise req.RequestException("connection dropped")
+            return _mock_http_response(_CONFIG_GET_WITH_SHARED_NETWORK if cmd == "config-get" else _CONFIG_TEST_OK_RESP)
+
+        with patch.object(self.client._session, "post", side_effect=_side_effect):
+            with self.assertRaises(PartialPersistError):
+                self.client.network_update(version=4, name="prod-net")
+        self.assertNotIn("config-write", calls)
 
 
 # ---------------------------------------------------------------------------
