@@ -204,6 +204,7 @@ class TestServerLeases4DeleteView(_ViewTestBase):
         )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.headers.get("HX-Refresh"), "true")
+        mock_client.command.assert_called()
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
@@ -1637,7 +1638,7 @@ class TestEnrichLeasesWithBadgesCanChange(_ViewTestBase):
         server = self.server
         lease = {"ip_address": "10.0.0.1", "hw_address": "aa:bb:cc:dd:ee:ff"}
         with (
-            patch("netbox_kea.views.leases._fetch_reservation_by_ip_for_leases", return_value=({}, False)),
+            patch("netbox_kea.views.leases._fetch_reservation_by_ip_for_leases", return_value=({}, False, set())),
             patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
             patch.object(server, "get_client", return_value=MagicMock()),
         ):
@@ -1654,7 +1655,7 @@ class TestEnrichLeasesWithBadgesCanChange(_ViewTestBase):
         server = self.server
         lease = {"ip_address": "10.0.0.1", "hw_address": "aa:bb:cc:dd:ee:ff"}
         with (
-            patch("netbox_kea.views.leases._fetch_reservation_by_ip_for_leases", return_value=({}, False)),
+            patch("netbox_kea.views.leases._fetch_reservation_by_ip_for_leases", return_value=({}, False, set())),
             patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
             patch.object(server, "get_client", return_value=MagicMock()),
         ):
@@ -1681,7 +1682,8 @@ class TestEnrichLeasesReservationFlags(_ViewTestBase):
         rsv = {"subnet-id": 1, "ip-address": "10.0.0.5", "hw-address": "aa:bb:cc:dd:ee:ff"}
         with (
             patch(
-                "netbox_kea.views.leases._fetch_reservation_by_ip_for_leases", return_value=({"10.0.0.5": rsv}, True)
+                "netbox_kea.views.leases._fetch_reservation_by_ip_for_leases",
+                return_value=({"10.0.0.5": rsv}, True, set()),
             ),
             patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
             patch.object(server, "get_client", return_value=MagicMock()),
@@ -1696,7 +1698,7 @@ class TestEnrichLeasesReservationFlags(_ViewTestBase):
         server = self.server
         lease = {"ip_address": "10.0.0.99", "hw_address": "bb:bb:bb:bb:bb:bb"}
         with (
-            patch("netbox_kea.views.leases._fetch_reservation_by_ip_for_leases", return_value=({}, True)),
+            patch("netbox_kea.views.leases._fetch_reservation_by_ip_for_leases", return_value=({}, True, set())),
             patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
             patch.object(server, "get_client", return_value=MagicMock()),
         ):
@@ -1712,7 +1714,8 @@ class TestEnrichLeasesReservationFlags(_ViewTestBase):
         rsv = {"subnet-id": 1, "ip-address": "10.0.0.5", "hw-address": "aa:bb:cc:dd:ee:ff"}
         with (
             patch(
-                "netbox_kea.views.leases._fetch_reservation_by_ip_for_leases", return_value=({"10.0.0.5": rsv}, True)
+                "netbox_kea.views.leases._fetch_reservation_by_ip_for_leases",
+                return_value=({"10.0.0.5": rsv}, True, set()),
             ),
             patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
             patch.object(server, "get_client", return_value=MagicMock()),
@@ -1730,7 +1733,8 @@ class TestEnrichLeasesReservationFlags(_ViewTestBase):
         rsv = {"subnet-id": 1, "ip-address": "10.0.0.5", "hw-address": "aa:bb:cc:dd:ee:ff"}
         with (
             patch(
-                "netbox_kea.views.leases._fetch_reservation_by_ip_for_leases", return_value=({"10.0.0.5": rsv}, True)
+                "netbox_kea.views.leases._fetch_reservation_by_ip_for_leases",
+                return_value=({"10.0.0.5": rsv}, True, set()),
             ),
             patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
             patch.object(server, "get_client", return_value=MagicMock()),
@@ -1746,7 +1750,7 @@ class TestEnrichLeasesReservationFlags(_ViewTestBase):
         server = self.server
         lease = {"ip_address": "10.0.0.99", "hw_address": "cc:cc:cc:cc:cc:cc"}
         with (
-            patch("netbox_kea.views.leases._fetch_reservation_by_ip_for_leases", return_value=({}, True)),
+            patch("netbox_kea.views.leases._fetch_reservation_by_ip_for_leases", return_value=({}, True, set())),
             patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
             patch.object(server, "get_client", return_value=MagicMock()),
         ):
@@ -1760,7 +1764,7 @@ class TestEnrichLeasesReservationFlags(_ViewTestBase):
         server = self.server
         lease = {"ip_address": "10.0.0.99", "hw_address": "cc:cc:cc:cc:cc:cc"}
         with (
-            patch("netbox_kea.views.leases._fetch_reservation_by_ip_for_leases", return_value=({}, True)),
+            patch("netbox_kea.views.leases._fetch_reservation_by_ip_for_leases", return_value=({}, True, set())),
             patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
             patch.object(server, "get_client", return_value=MagicMock()),
         ):
@@ -2281,7 +2285,7 @@ class TestLeaseBulkImportEdgeCases(_ViewTestBase):
     @patch("netbox_kea.views.sync_views.parse_lease_csv")
     @patch("netbox_kea.models.KeaClient")
     def test_parse_error_shows_form_error(self, MockKeaClient, mock_parse):
-        """Lines 4617-4619: ValueError from parse_lease_csv adds form error."""
+        """Lines 4617-4619: ValueError from parse_lease_csv adds generic form error (no raw exception text)."""
         import io
 
         mock_parse.side_effect = ValueError("bad column")
@@ -2289,7 +2293,8 @@ class TestLeaseBulkImportEdgeCases(_ViewTestBase):
         csv_file.name = "leases.csv"
         response = self.client.post(self._url(), {"csv_file": csv_file})
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "bad column")
+        self.assertContains(response, "parsing failed")
+        self.assertNotContains(response, "bad column")
 
     @patch("netbox_kea.models.KeaClient")
     def test_generic_exception_adds_error_row(self, MockKeaClient):

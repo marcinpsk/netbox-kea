@@ -1001,9 +1001,9 @@ class TestSyncMacAddressErrors(TestCase):
 
         from netbox_kea.sync import _sync_mac_address
 
-        # Passing an obviously invalid MAC address exercises the except Exception path.
+        # Passing an obviously invalid MAC address exercises the AddrFormatError path.
         _sync_mac_address("not-a-mac", hostname="test-host")
-        # No exception should propagate.
+        # No exception should propagate — AddrFormatError is caught and logged.
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -25,6 +25,7 @@ connectivity checks.
 import re
 from unittest.mock import patch
 
+import requests
 from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
 from django.urls import reverse
@@ -157,9 +158,9 @@ class TestServerDHCP4EnableView(_ViewTestBase):
 
     @patch("netbox_kea.models.KeaClient")
     def test_post_on_unexpected_exception_shows_error_and_redirects(self, MockKeaClient):
-        """POST with unexpected exception must redirect (no 500)."""
+        """POST with transport exception must redirect (no 500)."""
         mock_client = MockKeaClient.return_value
-        mock_client.dhcp_enable.side_effect = RuntimeError("unexpected")
+        mock_client.dhcp_enable.side_effect = requests.RequestException("connection failed")
         response = self.client.post(self._url())
         self.assertEqual(response.status_code, 302)
         self._assert_no_none_pk_redirect(response)
@@ -248,9 +249,9 @@ class TestServerDHCP4DisableView(_ViewTestBase):
 
     @patch("netbox_kea.models.KeaClient")
     def test_post_on_unexpected_exception_shows_error_and_redirects(self, MockKeaClient):
-        """POST with unexpected exception must redirect (no 500)."""
+        """POST with transport exception must redirect (no 500)."""
         mock_client = MockKeaClient.return_value
-        mock_client.dhcp_disable.side_effect = RuntimeError("unexpected")
+        mock_client.dhcp_disable.side_effect = requests.RequestException("connection failed")
         response = self.client.post(self._url(), {"confirm": "1"})
         self.assertEqual(response.status_code, 302)
         self._assert_no_none_pk_redirect(response)

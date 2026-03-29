@@ -1,6 +1,7 @@
 import logging
 from typing import Any
 
+import requests
 from django.contrib import messages
 from django.http import HttpResponse
 from django.http.request import HttpRequest
@@ -38,7 +39,7 @@ class _BaseServerDHCPEnableView(_KeaChangeMixin, generic.ObjectView):
             messages.success(request, f"DHCPv{self.dhcp_version} service re-enabled on {instance}.")
         except KeaException as exc:
             messages.error(request, f"Failed to enable DHCPv{self.dhcp_version}: {kea_error_hint(exc)}")
-        except Exception:
+        except (requests.RequestException, ValueError):
             logger.exception("Unexpected error enabling %s on server %s", service, pk)
             messages.error(request, "An internal error occurred.")
         return redirect(reverse("plugins:netbox_kea:server_status", args=[pk]))
@@ -90,7 +91,7 @@ class _BaseServerDHCPDisableView(_KeaChangeMixin, generic.ObjectView):
                 messages.warning(request, f"DHCPv{self.dhcp_version} disabled on {instance}.")
         except KeaException as exc:
             messages.error(request, f"Failed to disable DHCPv{self.dhcp_version}: {kea_error_hint(exc)}")
-        except Exception:
+        except (requests.RequestException, ValueError):
             logger.exception("Unexpected error disabling %s on server %s", service, pk)
             messages.error(request, "An internal error occurred.")
         return redirect(reverse("plugins:netbox_kea:server_status", args=[pk]))

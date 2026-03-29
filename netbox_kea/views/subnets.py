@@ -722,7 +722,7 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
             },
         )
 
-    def post(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
+    def post(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:  # noqa: C901
         server = self.get_object(pk=pk)
         return_url = self._subnets_url(pk)
         client = server.get_client(version=self.dhcp_version)
@@ -830,6 +830,18 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
                                     pk,
                                 )
                         raise del_exc
+            except PartialPersistError as exc:
+                logger.warning(
+                    "network_subnet_add applied but config-write failed for subnet %s on server %s: %s",
+                    subnet_id,
+                    pk,
+                    exc,
+                )
+                messages.warning(
+                    request,
+                    "Network assignment may have applied to the running config but could not be persisted. "
+                    "Check Kea logs and reapply if needed.",
+                )
             except KeaException as exc:
                 logger.warning("network_subnet change failed for subnet %s on server %s: %s", subnet_id, pk, exc)
                 messages.error(request, f"Network assignment error: {kea_error_hint(exc)}")

@@ -275,10 +275,8 @@ class TestServerCleanConnectivity(SimpleTestCase):
     @patch("netbox_kea.models.KeaClient")
     def test_dhcp6_json_decode_error_raises_internal_error(self, mock_kea_cls):
         """JSONDecodeError during DHCPv6 check → 'An internal error occurred' ValidationError."""
-        import json
-
         mock_client = MagicMock(spec=KeaClient)
-        mock_client.command.side_effect = json.JSONDecodeError("bad json", "", 0)
+        mock_client.command.side_effect = requests.exceptions.JSONDecodeError("bad json", "", 0)
         mock_kea_cls.return_value = mock_client
         server = _make_server(dhcp4=False, dhcp6=True)
         with self.assertRaises(ValidationError) as ctx:
@@ -290,10 +288,8 @@ class TestServerCleanConnectivity(SimpleTestCase):
     @patch("netbox_kea.models.KeaClient")
     def test_dhcp4_json_decode_error_raises_internal_error(self, mock_kea_cls):
         """JSONDecodeError during DHCPv4 check → 'An internal error occurred' ValidationError."""
-        import json
-
         mock_client = MagicMock(spec=KeaClient)
-        mock_client.command.side_effect = json.JSONDecodeError("bad json", "", 0)
+        mock_client.command.side_effect = requests.exceptions.JSONDecodeError("bad json", "", 0)
         mock_kea_cls.return_value = mock_client
         server = _make_server(dhcp4=True, dhcp6=False)
         with self.assertRaises(ValidationError) as ctx:
@@ -424,10 +420,8 @@ class TestServerCleanExceptionRouting(SimpleTestCase):
     @patch("netbox_kea.models.KeaClient")
     def test_dhcp6_json_decode_error_raises_internal_error_message(self, mock_kea_cls):
         """JSONDecodeError during DHCPv6 check must raise 'An internal error occurred' message."""
-        import json
-
         mock_client = MagicMock(spec=KeaClient)
-        mock_client.command.side_effect = json.JSONDecodeError("Expecting value", "", 0)
+        mock_client.command.side_effect = requests.exceptions.JSONDecodeError("Expecting value", "", 0)
         mock_kea_cls.return_value = mock_client
         server = _make_server(dhcp4=False, dhcp6=True)
         with self.assertRaises(ValidationError) as ctx:
@@ -439,10 +433,8 @@ class TestServerCleanExceptionRouting(SimpleTestCase):
     @patch("netbox_kea.models.KeaClient")
     def test_dhcp4_json_decode_error_raises_internal_error_message(self, mock_kea_cls):
         """JSONDecodeError during DHCPv4 check must raise 'An internal error occurred' message."""
-        import json
-
         mock_client = MagicMock(spec=KeaClient)
-        mock_client.command.side_effect = json.JSONDecodeError("Expecting value", "", 0)
+        mock_client.command.side_effect = requests.exceptions.JSONDecodeError("Expecting value", "", 0)
         mock_kea_cls.return_value = mock_client
         server = _make_server(dhcp4=True, dhcp6=False)
         with self.assertRaises(ValidationError) as ctx:

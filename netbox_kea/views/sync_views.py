@@ -2,6 +2,8 @@ import logging
 from typing import Any
 
 from django.contrib import messages
+from django.core.exceptions import ValidationError
+from django.db import IntegrityError, OperationalError, ProgrammingError
 from django.http import HttpResponse, HttpResponseForbidden, HttpResponseRedirect
 from django.http.request import HttpRequest
 from django.shortcuts import get_object_or_404, render
@@ -54,7 +56,7 @@ class _BaseSyncView(ConditionalLoginRequiredMixin, View):
         data = self._fetch_live_data(server, ip_str, synthetic)
         try:
             nb_ip, _created = self._sync(data)
-        except Exception:  # noqa: BLE001
+        except (ValueError, IntegrityError, ValidationError, OperationalError, ProgrammingError):
             logger.exception("Sync error for ip=%s", ip_str)
             return HttpResponse("Sync error: see server logs for details.", status=500)
 
@@ -274,8 +276,9 @@ class _BaseBulkReservationImportView(_KeaChangeMixin, ConditionalLoginRequiredMi
 
         try:
             rows = parse_reservation_csv(content, self.dhcp_version)
-        except ValueError as exc:
-            form.add_error("csv_file", str(exc))
+        except ValueError:
+            logger.exception("CSV parse error in reservation bulk import")
+            form.add_error("csv_file", "CSV parsing failed — check the file format and column headers.")
             return render(
                 request,
                 self.template_name,
@@ -414,8 +417,9 @@ class _BaseBulkLeaseImportView(_KeaChangeMixin, ConditionalLoginRequiredMixin, V
 
         try:
             rows = parse_lease_csv(self.dhcp_version, content)
-        except ValueError as exc:
-            form.add_error("csv_file", str(exc))
+        except ValueError:
+            logger.exception("CSV parse error in lease bulk import")
+            form.add_error("csv_file", "CSV parsing failed — check the file format and column headers.")
             return render(
                 request,
                 self.template_name,

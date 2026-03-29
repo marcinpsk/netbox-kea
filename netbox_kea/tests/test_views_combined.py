@@ -156,3 +156,4 @@ class TestCombinedReservationsMultiPage(_ViewTestBase):
         ]
         response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
+        self.assertEqual(MockKeaClient.return_value.reservation_get_page.call_count, 2)

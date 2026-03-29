@@ -60,9 +60,14 @@
               Custom option definitions let you add non-standard DHCP options to Kea.
               Below are the most common ones used for Zero Touch Provisioning (ZTP)
               and vendor-specific use cases.
+              {% if dhcp_version == 4 %}
               See the <a href="https://kea.readthedocs.io/en/latest/arm/dhcp4-srv.html#custom-dhcpv4-options" target="_blank" rel="noopener">Kea docs</a> for full reference.
+              {% else %}
+              See the <a href="https://kea.readthedocs.io/en/latest/arm/dhcp6-srv.html#custom-dhcpv6-options" target="_blank" rel="noopener">Kea docs</a> for full reference.
+              {% endif %}
             </p>
 
+            {% if dhcp_version == 4 %}
             <table class="table table-sm table-bordered">
               <thead class="table-light">
                 <tr>
@@ -130,8 +135,8 @@
 # TLV: 01 &lt;length&gt; &lt;ASCII bytes of URL&gt;
 #
 # Kea binary value (hex string, no spaces):
-# 0118687474703a2f2f31302e302e302e312f706f61702e7079
-#  ^^  ^^ = type 01, length 0x18 = 24, then URL bytes
+# 0117687474703a2f2f31302e302e302e312f706f61702e7079
+#  ^^  ^^ = type 01, length 0x17 = 23, then URL bytes
 </code></pre>
             <p class="text-muted small">
               <strong>Where to put this value:</strong> after saving the definition (code 43, type
@@ -151,6 +156,12 @@
               <li>Set the value to the URL of your ZTP/POAP bootstrap script</li>
               <li>New devices that DHCP on that subnet receive the URL on first boot</li>
             </ol>
+            {% else %}
+            <p class="text-muted small">
+              DHCPv6 ZTP typically uses vendor-specific options or option 59 (OPT_BOOTFILE_URL).
+              Refer to your device vendor's provisioning guide for the exact option codes required.
+            </p>
+            {% endif %}
 
           </div>
         </div>

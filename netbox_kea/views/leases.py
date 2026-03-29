@@ -493,7 +493,7 @@ class BaseServerLeasesDeleteView(GetReturnURLMixin, generic.ObjectView, metaclas
         for ip in lease_ips:
             try:
                 self.delete_lease(client, ip)
-            except Exception:  # noqa: PERF203
+            except KeaException:  # noqa: PERF203
                 logger.exception("Error deleting lease %s", ip)
                 messages.error(request, f"Error deleting lease {ip}: see server logs for details.")
                 return redirect(return_url)
@@ -801,20 +801,22 @@ def _fetch_reservation_by_ip(client: KeaClient, version: int) -> tuple[dict[str,
 
 def _fetch_reservation_by_ip_for_leases(
     client: "KeaClient", version: int, leases: list[dict[str, Any]]
-) -> tuple[dict[str, dict], bool]:
+) -> tuple[dict[str, dict], bool, set[str]]:
     """Fetch reservations only for the IPs present in *leases* (targeted lookup).
 
     Uses individual ``reservation-get`` calls (one per lease) in parallel so
     only the IPs we actually care about are queried — avoiding a full
     reservation-page scan on servers with large reservation databases.
 
-    Returns ``(reservation_by_ip, host_cmds_available)``.
+    Returns ``(reservation_by_ip, host_cmds_available, failed_ips)`` where
+    *failed_ips* is the set of IPs where the lookup failed with a non-result-2
+    error (indeterminate state — neither confirmed absent nor confirmed present).
     """
     service = f"dhcp{version}"
     reservation_by_ip: dict[str, dict] = {}
     host_cmds_available = True
 
-    def _fetch_one(lease: dict) -> tuple[str, dict | None, bool]:
+    def _fetch_one(lease: dict) -> tuple[str, dict | None, bool | None]:
         ip = lease.get("ip_address", "")
         subnet_id = lease.get("subnet_id")
         if not ip or not subnet_id:
@@ -827,24 +829,27 @@ def _fetch_reservation_by_ip_for_leases(
             if exc.response.get("result") == 2:
                 return ip, None, False  # hook not available
             logger.debug("reservation-get KeaException for %s (result != 2): %s", ip, exc)
-            return ip, None, False  # indeterminate — don't show create-reservation link
+            return ip, None, None  # indeterminate — don't show create-reservation link
         except Exception as exc:  # noqa: BLE001
             logger.debug("reservation-get failed for %s: %s", ip, exc)
-            return ip, None, False  # indeterminate — don't show create-reservation link
+            return ip, None, None  # indeterminate — don't show create-reservation link
 
     if not leases:
-        return reservation_by_ip, host_cmds_available
+        return reservation_by_ip, host_cmds_available, set()
 
+    failed_ips: set[str] = set()
     with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(leases), 10)) as executor:
         futures = [executor.submit(_fetch_one, lease) for lease in leases]
         for future in concurrent.futures.as_completed(futures):
             ip, rsv, hook_ok = future.result()
-            if not hook_ok:
+            if hook_ok is False:
                 host_cmds_available = False
+            elif hook_ok is None:
+                failed_ips.add(ip)
             if rsv is not None:
                 reservation_by_ip[ip] = rsv
 
-    return reservation_by_ip, host_cmds_available
+    return reservation_by_ip, host_cmds_available, failed_ips
 
 
 def _enrich_leases_with_badges(
@@ -868,17 +873,20 @@ def _enrich_leases_with_badges(
 
     reservation_by_ip: dict[str, dict] = {}
     host_cmds_available = True
+    failed_ips: set[str] = set()
     try:
-        reservation_by_ip, host_cmds_available = _fetch_reservation_by_ip_for_leases(client, version, leases)
+        reservation_by_ip, host_cmds_available, failed_ips = _fetch_reservation_by_ip_for_leases(
+            client, version, leases
+        )
     except KeaException as exc:
         if exc.response.get("result") == 2:
             host_cmds_available = False
         else:
             logger.warning("reservation lookup failed during lease enrichment: %s", exc)
-            host_cmds_available = False
+            # Don't mark hook as unavailable — it's a transport/API error, not a missing hook
     except Exception as exc:  # noqa: BLE001 — unexpected error (e.g. mock misconfiguration)
         logger.warning("unexpected error during lease enrichment: %s", exc)
-        host_cmds_available = False
+        # Don't mark hook as unavailable
 
     for lease in leases:
         ip = lease.get("ip_address", "")
@@ -910,7 +918,7 @@ def _enrich_leases_with_badges(
                 lease["stale_lease_mac"] = ""
                 lease["reservation_mac"] = ""
                 lease["delete_lease_url"] = ""
-        elif host_cmds_available:
+        elif host_cmds_available and ip not in failed_ips:
             lease["reservation_url"] = None
             lease["stale_mac"] = False
             lease["stale_lease_mac"] = ""

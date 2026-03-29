@@ -142,8 +142,8 @@ class TestSyncViewEdgeCases(_ViewTestBase):
 
     @patch("netbox_kea.models.KeaClient")
     def test_post_sync_exception_returns_500(self, MockKeaClient):
-        """POST where sync raises an exception must return 500."""
-        with patch("netbox_kea.views.ServerLease4SyncView._sync", side_effect=RuntimeError("db error")):
+        """POST where sync raises a concrete error must return 500."""
+        with patch("netbox_kea.views.ServerLease4SyncView._sync", side_effect=ValueError("ip parse error")):
             response = self.client.post(self._url(), {"ip_address": "10.0.0.1"})
         self.assertEqual(response.status_code, 500)
 
@@ -214,8 +214,9 @@ class TestBulkReservationImportEdgeCases(_ViewTestBase):
         bad_csv.name = "bad.csv"
         response = self.client.post(self._url(), {"csv_file": bad_csv})
         self.assertEqual(response.status_code, 200)
-        # Response should include a form error about invalid CSV
+        # Response should include a form error about invalid CSV — message must be generic (no raw exception text)
         self.assertContains(response, "csv_file", msg_prefix="Expected CSV error in form")
+        self.assertContains(response, "parsing failed", msg_prefix="Expected generic error message")
 
 
 # ---------------------------------------------------------------------------

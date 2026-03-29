@@ -270,7 +270,7 @@ def _sync_mac_address(hw_address: str, hostname: str = "") -> None:
     except ImportError:
         return  # NetBox < 4.1 — MACAddress model not available
     try:
-        from netaddr import EUI, mac_unix_expanded
+        from netaddr import EUI, AddrFormatError, mac_unix_expanded
     except ImportError:
         logger.debug("netaddr not available — skipping MAC sync for %s", hw_address)
         return
@@ -283,7 +283,9 @@ def _sync_mac_address(hw_address: str, hostname: str = "") -> None:
             mac_obj.save()
     except (ProgrammingError, OperationalError, IntegrityError):
         logger.debug("DB error while syncing MAC address %s to NetBox DCIM", hw_address, exc_info=True)
-    except Exception:  # noqa: BLE001 — catch all remaining errors (e.g. netaddr parse errors)
+    except AddrFormatError:
+        logger.debug("Invalid MAC address format %r — skipping DCIM MAC sync", hw_address, exc_info=True)
+    except Exception:  # noqa: BLE001 — unexpected errors from MACAddress model
         logger.debug("Failed to sync MAC address %s to NetBox DCIM", hw_address, exc_info=True)
 
 
