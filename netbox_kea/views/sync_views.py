@@ -2,6 +2,7 @@ import csv
 import logging
 from typing import Any
 
+import requests
 from django.contrib import messages
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, OperationalError, ProgrammingError
@@ -86,7 +87,7 @@ class ServerLease4SyncView(_BaseSyncView):
             client = server.get_client(version=4)
             lease = client.lease_get_by_ip(4, ip_str)
             return lease if lease else fallback
-        except Exception:
+        except (KeaException, requests.RequestException, ValueError):
             logger.debug("Could not fetch live lease4 data for %s, using fallback", ip_str)
             return fallback
 
@@ -104,7 +105,7 @@ class ServerLease6SyncView(_BaseSyncView):
             client = server.get_client(version=6)
             lease = client.lease_get_by_ip(6, ip_str)
             return lease if lease else fallback
-        except Exception:
+        except (KeaException, requests.RequestException, ValueError):
             logger.debug("Could not fetch live lease6 data for %s, using fallback", ip_str)
             return fallback
 

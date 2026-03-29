@@ -104,10 +104,13 @@ class _BaseSubnetOptionsEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin,
         formset = forms.SubnetOptionsFormSet(request.POST)
         if not formset.is_valid():
             subnet_cidr = ""
-            client = server.get_client(version=self.dhcp_version)
-            subnet = self._get_subnet_from_config(client, subnet_id)
-            if subnet:
-                subnet_cidr = subnet.get("subnet", "")
+            try:
+                client = server.get_client(version=self.dhcp_version)
+                subnet = self._get_subnet_from_config(client, subnet_id)
+                if subnet:
+                    subnet_cidr = subnet.get("subnet", "")
+            except (KeaException, requests.RequestException, ValueError):
+                logger.exception("Failed to get Kea client for server %s while re-rendering form", pk)
             return render(
                 request,
                 "netbox_kea/server_subnet_options_edit.html",
@@ -131,8 +134,8 @@ class _BaseSubnetOptionsEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin,
                 opt["always-send"] = True
             options.append(opt)
 
-        client = server.get_client(version=self.dhcp_version)
         try:
+            client = server.get_client(version=self.dhcp_version)
             client.subnet_update_options(
                 version=self.dhcp_version,
                 subnet_id=subnet_id,
@@ -145,6 +148,12 @@ class _BaseSubnetOptionsEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin,
         except KeaException as exc:
             logger.exception("Failed to update options for subnet %s: %s", subnet_id, exc)
             messages.error(request, kea_error_hint(exc))
+        except requests.RequestException:
+            logger.exception("Transport error updating options for subnet %s on server %s", subnet_id, pk)
+            messages.error(request, "Transport error communicating with Kea.")
+        except ValueError:
+            logger.exception("Invalid Kea client configuration for server %s", pk)
+            messages.error(request, "Invalid Kea client configuration.")
         return redirect(return_url)
 
 
@@ -253,8 +262,8 @@ class _BaseServerOptionsEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin,
                 opt["always-send"] = True
             options.append(opt)
 
-        client = server.get_client(version=self.dhcp_version)
         try:
+            client = server.get_client(version=self.dhcp_version)
             client.server_update_options(version=self.dhcp_version, options=options)
             messages.success(request, f"DHCPv{self.dhcp_version} server options updated.")
         except PartialPersistError as exc:
@@ -263,6 +272,12 @@ class _BaseServerOptionsEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin,
         except KeaException as exc:
             logger.exception("Failed to update server options for %s: %s", server, exc)
             messages.error(request, kea_error_hint(exc))
+        except requests.RequestException:
+            logger.exception("Transport error updating server options for %s", server)
+            messages.error(request, "Transport error communicating with Kea.")
+        except ValueError:
+            logger.exception("Invalid Kea client configuration for server %s", pk)
+            messages.error(request, "Invalid Kea client configuration.")
         return redirect(return_url)
 
 
@@ -505,6 +520,12 @@ class BaseServerOptionDefAddView(_KeaChangeMixin, ConditionalLoginRequiredMixin,
         except KeaException as exc:
             logger.warning("option-def add failed for %s: %s", server, exc)
             messages.error(request, f"Kea error: {kea_error_hint(exc)}")
+        except requests.RequestException:
+            logger.exception("Transport error adding option-def for server %s", server)
+            messages.error(request, "Transport error communicating with Kea.")
+        except ValueError:
+            logger.exception("Invalid Kea client configuration for server %s", server)
+            messages.error(request, "Invalid Kea client configuration.")
         return redirect(self._success_url(server))
 
 
@@ -560,6 +581,12 @@ class BaseServerOptionDefDeleteView(_KeaChangeMixin, ConditionalLoginRequiredMix
         except KeaException as exc:
             logger.warning("option-def del failed for %s: %s", server, exc)
             messages.error(request, f"Kea error: {kea_error_hint(exc)}")
+        except requests.RequestException:
+            logger.exception("Transport error deleting option-def for server %s", server)
+            messages.error(request, "Transport error communicating with Kea.")
+        except ValueError:
+            logger.exception("Invalid Kea client configuration for server %s", server)
+            messages.error(request, "Invalid Kea client configuration.")
         return redirect(self._success_url(server))
 
 

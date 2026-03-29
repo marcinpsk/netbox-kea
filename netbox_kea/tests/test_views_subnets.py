@@ -25,6 +25,7 @@ connectivity checks.
 import re
 from unittest.mock import patch
 
+import requests
 from django.contrib import messages as django_messages
 from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
@@ -1416,7 +1417,7 @@ class TestSubnetAddExceptionPaths(_ViewTestBase):
             }
         ]
         MockKeaClient.return_value.subnet_add.return_value = 5
-        MockKeaClient.return_value.network_subnet_add.side_effect = RuntimeError("network error")
+        MockKeaClient.return_value.network_subnet_add.side_effect = requests.RequestException("network error")
         post_data = {**_SUBNET_ADD_POST, "shared_network": "alpha"}
         response = self.client.post(self._url(), post_data, follow=True)
         msgs = list(response.context["messages"])

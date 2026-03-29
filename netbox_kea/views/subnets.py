@@ -516,7 +516,7 @@ class _BaseSubnetAddView(_KeaChangeMixin, generic.ObjectView):
                         request,
                         f"Subnet assigned to '{shared_network}' but config-write failed (change may not survive restart).",
                     )
-                except Exception:
+                except (KeaException, requests.RequestException):
                     logger.exception(
                         "Subnet %s created but failed to assign to network %s", cd["subnet"], shared_network
                     )

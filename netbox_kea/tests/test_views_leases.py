@@ -25,6 +25,7 @@ connectivity checks.
 import re
 from unittest.mock import MagicMock, patch
 
+import requests
 from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
 from django.urls import reverse
@@ -2004,7 +2005,7 @@ class TestLeaseAddGenericException(_ViewTestBase):
 
     @patch("netbox_kea.models.KeaClient")
     def test_generic_exception_rerenders_form(self, MockKeaClient):
-        MockKeaClient.return_value.lease_add.side_effect = RuntimeError("unexpected crash")
+        MockKeaClient.return_value.lease_add.side_effect = requests.RequestException("unexpected crash")
         url = reverse("plugins:netbox_kea:server_lease4_add", args=[self.server.pk])
         response = self.client.post(
             url,

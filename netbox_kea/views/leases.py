@@ -4,6 +4,7 @@ from abc import ABCMeta
 from typing import Any, Generic, TypeVar
 from urllib.parse import urlencode as _urlencode
 
+import requests
 from django.contrib import messages
 from django.db.utils import OperationalError, ProgrammingError
 from django.http import HttpResponse, HttpResponseForbidden
@@ -233,7 +234,7 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
             logger.exception("Failed to fetch leases for export on server %s", instance.pk)
             messages.error(request, kea_error_hint(exc))
             return redirect(request.path)
-        except Exception:
+        except RuntimeError:
             logger.exception("Unexpected error fetching leases for export on server %s", instance.pk)
             messages.error(request, "Failed to fetch leases for export; see server logs.")
             return redirect(request.path)
@@ -702,7 +703,7 @@ class _BaseLeaseAddView(_KeaChangeMixin, generic.ObjectView):
                         "cancel_url": cancel_url,
                     },
                 )
-            except Exception:
+            except requests.RequestException:
                 logger.exception("Failed to create DHCPv%s lease for %s", self.dhcp_version, cd.get("ip_address"))
                 messages.error(request, "Failed to create lease: see server logs for details.")
                 return render(

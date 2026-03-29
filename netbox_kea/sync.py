@@ -358,6 +358,8 @@ def sync_lease_to_netbox(lease: dict) -> tuple[NbIPAddress, bool]:
     if created or changed:
         ip_obj.save()
 
+    # No exclude_ips needed: Kea assigns one active lease per hostname, so
+    # there are no sibling IPs to protect (unlike reservations with multi-address).
     if hostname:
         _cleanup_stale_ips(ip_str, hostname, mode=_get_stale_cleanup_mode())
 
