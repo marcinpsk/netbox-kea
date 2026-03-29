@@ -47,7 +47,7 @@ def _get_global_options(server: "Server") -> dict[str, dict[str, str]]:
             client = server.get_client(version=version)
             resp = client.command("config-get", service=[svc])
             dhcp_key = f"Dhcp{version}"
-            dhcp_block = resp[0].get("arguments", {}).get(dhcp_key, {})
+            dhcp_block = (resp[0].get("arguments") or {}).get(dhcp_key, {})
             option_data = dhcp_block.get("option-data", [])
             opts = format_option_data(option_data, version=version)
             if opts:
@@ -209,7 +209,7 @@ class ServerStatusView(generic.ObjectView):
                         }
                     )
                 resp[service_names[svc]] = entry
-            except Exception:  # noqa: PERF203
+            except (KeaException, requests.RequestException, ValueError, RuntimeError):  # noqa: PERF203
                 logger.exception("Failed to fetch status for DHCP service %s on server %s", svc, server.pk)
         return resp
 
@@ -219,7 +219,7 @@ class ServerStatusView(generic.ObjectView):
         if server.has_control_agent:
             try:
                 result["Control Agent"] = self._get_ca_status(server.get_client())
-            except Exception:
+            except (KeaException, requests.RequestException, ValueError, RuntimeError):
                 logger.exception("Failed to fetch Control Agent status for server %s", server.pk)
         result.update(self._get_dhcp_status(server))
         return result
@@ -228,7 +228,7 @@ class ServerStatusView(generic.ObjectView):
         """Fetch live status and global options from Kea and expose them to the template."""
         try:
             statuses = self._get_statuses(instance)
-        except Exception:
+        except (KeaException, requests.RequestException, ValueError, RuntimeError):
             logger.exception("Failed to fetch statuses for server %s", instance.pk)
             statuses = {}
 

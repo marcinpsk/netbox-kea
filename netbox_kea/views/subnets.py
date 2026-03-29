@@ -3,6 +3,7 @@ import logging
 import re
 from typing import Any
 
+import requests
 from django.contrib import messages
 from django.http import HttpResponse
 from django.http.request import HttpRequest
@@ -51,7 +52,8 @@ class BaseServerDHCPSubnetsView(generic.ObjectChildrenView):
         client = server.get_client(version=self.dhcp_version)
         config = client.command("config-get", service=[f"dhcp{self.dhcp_version}"])
         if config[0]["arguments"] is None:
-            raise RuntimeError(f"Unexpected None arguments from config-get for dhcp{self.dhcp_version}")
+            logger.warning("config-get returned None arguments for dhcp%s on server %s", self.dhcp_version, server.pk)
+            return []
         dhcp_conf = config[0]["arguments"].get(f"Dhcp{self.dhcp_version}", {})
         can_change = Server.objects.restrict(request.user, "change").filter(pk=server.pk).exists()
         subnets = dhcp_conf.get(f"subnet{self.dhcp_version}", [])
@@ -96,7 +98,7 @@ class BaseServerDHCPSubnetsView(generic.ObjectChildrenView):
             for s in subnet_list:
                 if s["id"] in stats:
                     s.update(stats[s["id"]])
-        except Exception:  # noqa: BLE001
+        except (KeaException, requests.RequestException):  # noqa: BLE001
             logger.debug("stat_cmds hook unavailable or failed", exc_info=True)
 
         return subnet_list
@@ -319,6 +321,9 @@ class _BasePoolAddView(_KeaChangeMixin, generic.ObjectView):
         except KeaException as exc:
             logger.exception("Failed to add pool to subnet %s", subnet_id)
             messages.error(request, kea_error_hint(exc))
+        except requests.RequestException:
+            logger.exception("Failed to add pool to subnet %s (network error)", subnet_id)
+            messages.error(request, "Network error communicating with Kea: see server logs.")
         except Exception:
             logger.exception("Failed to add pool to subnet %s", subnet_id)
             messages.error(request, "Failed to add pool: see server logs for details.")
@@ -377,6 +382,9 @@ class _BasePoolDeleteView(_KeaChangeMixin, generic.ObjectView):
         except KeaException as exc:
             logger.exception("Failed to remove pool from subnet %s", subnet_id)
             messages.error(request, kea_error_hint(exc))
+        except requests.RequestException:
+            logger.exception("Failed to remove pool from subnet %s (network error)", subnet_id)
+            messages.error(request, "Network error communicating with Kea: see server logs.")
         except Exception:
             logger.exception("Failed to remove pool from subnet %s", subnet_id)
             messages.error(request, "Failed to remove pool: see server logs for details.")
@@ -531,6 +539,19 @@ class _BaseSubnetAddView(_KeaChangeMixin, generic.ObjectView):
         except KeaException as exc:
             logger.exception("Failed to add subnet %s", cd.get("subnet"))
             messages.error(request, kea_error_hint(exc))
+        except requests.RequestException:
+            logger.exception("Failed to add subnet %s (network error)", cd.get("subnet"))
+            messages.error(request, "Network error communicating with Kea: see server logs.")
+            return render(
+                request,
+                self.template_name,
+                {
+                    "object": server,
+                    "form": form,
+                    "dhcp_version": self.dhcp_version,
+                    "return_url": return_url,
+                },
+            )
         except Exception:
             logger.exception("Failed to add subnet %s", cd.get("subnet"))
             messages.error(request, "Failed to add subnet: see server logs for details.")
@@ -763,7 +784,7 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
                 version=self.dhcp_version,
                 subnet_id=subnet_id,
                 subnet_cidr=cd["subnet_cidr"],
-                pools=cd["pools"] if cd["pools"] != [] else [],
+                pools=cd["pools"],
                 gateway=cd["gateway"] or None,
                 dns_servers=cd["dns_servers"] or None,
                 ntp_servers=cd["ntp_servers"] or None,
@@ -779,6 +800,21 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
         except KeaException as exc:
             logger.exception("Failed to update subnet %s on server %s", subnet_id, pk)
             messages.error(request, kea_error_hint(exc))
+            return render(
+                request,
+                self.template_name,
+                {
+                    "object": server,
+                    "form": form,
+                    "subnet_id": subnet_id,
+                    "subnet_cidr": cd["subnet_cidr"],
+                    "dhcp_version": self.dhcp_version,
+                    "return_url": return_url,
+                },
+            )
+        except requests.RequestException:
+            logger.exception("Failed to update subnet %s on server %s (network error)", subnet_id, pk)
+            messages.error(request, "Network error communicating with Kea: see server logs.")
             return render(
                 request,
                 self.template_name,
@@ -809,9 +845,14 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
 
         # Handle shared-network membership change only after a successful update.
         if old_network != new_network:
+            add_partial_error: PartialPersistError | None = None
             try:
                 if new_network:
-                    client.network_subnet_add(version=self.dhcp_version, name=new_network, subnet_id=subnet_id)
+                    try:
+                        client.network_subnet_add(version=self.dhcp_version, name=new_network, subnet_id=subnet_id)
+                    except PartialPersistError as exc:
+                        # add is live but config-write failed; continue to attempt del, then re-raise
+                        add_partial_error = exc
                 if old_network:
                     try:
                         client.network_subnet_del(version=self.dhcp_version, name=old_network, subnet_id=subnet_id)
@@ -832,6 +873,8 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
                                     pk,
                                 )
                         raise del_exc
+                if add_partial_error is not None:
+                    raise add_partial_error
             except PartialPersistError as exc:
                 logger.warning(
                     "network_subnet_add applied but config-write failed for subnet %s on server %s: %s",
@@ -913,6 +956,9 @@ class _BaseSubnetDeleteView(_KeaChangeMixin, generic.ObjectView):
         except KeaException as exc:
             logger.exception("Failed to delete subnet %s", subnet_id)
             messages.error(request, kea_error_hint(exc))
+        except requests.RequestException:
+            logger.exception("Failed to delete subnet %s (network error)", subnet_id)
+            messages.error(request, "Network error communicating with Kea: see server logs.")
         except Exception:
             logger.exception("Failed to delete subnet %s", subnet_id)
             messages.error(request, "Failed to delete subnet: see server logs for details.")
@@ -983,6 +1029,9 @@ class _BaseSubnetWipeView(_KeaChangeMixin, generic.ObjectView):
                 )
             else:
                 messages.error(request, kea_error_hint(exc))
+        except requests.RequestException:
+            logger.exception("Failed to wipe leases in subnet %s (network error)", subnet_id)
+            messages.error(request, "Network error communicating with Kea: see server logs.")
         except Exception:
             logger.exception("Failed to wipe leases in subnet %s", subnet_id)
             messages.error(request, "Failed to wipe leases: see server logs for details.")

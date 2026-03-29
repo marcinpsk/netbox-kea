@@ -1,3 +1,4 @@
+import csv
 import logging
 from typing import Any
 
@@ -282,7 +283,7 @@ class _BaseBulkReservationImportView(_KeaChangeMixin, ConditionalLoginRequiredMi
 
         try:
             rows = parse_reservation_csv(content, self.dhcp_version)
-        except ValueError:
+        except (ValueError, csv.Error):
             logger.exception("CSV parse error in reservation bulk import")
             form.add_error("csv_file", "CSV parsing failed — check the file format and column headers.")
             return render(
@@ -423,7 +424,7 @@ class _BaseBulkLeaseImportView(_KeaChangeMixin, ConditionalLoginRequiredMixin, V
 
         try:
             rows = parse_lease_csv(self.dhcp_version, content)
-        except ValueError:
+        except (ValueError, csv.Error):
             logger.exception("CSV parse error in lease bulk import")
             form.add_error("csv_file", "CSV parsing failed — check the file format and column headers.")
             return render(

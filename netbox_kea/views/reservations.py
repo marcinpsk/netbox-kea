@@ -249,6 +249,9 @@ def _filter_reservations(
                 if q_lower in r.get("ip_address", r.get("ip-address", "")).lower()
                 or q_lower in r.get("hostname", "").lower()
                 or q_lower in r.get("hw-address", "").lower()
+                or q_lower in r.get("client-id", "").lower()
+                or q_lower in r.get("circuit-id", "").lower()
+                or q_lower in r.get("flex-id", "").lower()
             ]
         else:
             result = [
@@ -258,6 +261,9 @@ def _filter_reservations(
                 or any(q_lower in ip.lower() for ip in r.get("ip-addresses", []))
                 or q_lower in r.get("hostname", "").lower()
                 or q_lower in r.get("duid", "").lower()
+                or q_lower in r.get("hw-address", "").lower()
+                or q_lower in r.get("client-id", "").lower()
+                or q_lower in r.get("flex-id", "").lower()
             ]
     return result
 
@@ -326,9 +332,13 @@ class ServerReservations4View(generic.ObjectView):
             "dhcp_version": 4,
             "hook_available": hook_available,
             "search_form": search_form,
-            "add_url": reverse("plugins:netbox_kea:server_reservation4_add", args=[server.pk]),
-            "bulk_sync_url": reverse("plugins:netbox_kea:server_reservation4_bulk_sync", args=[server.pk]),
-            "import_url": reverse("plugins:netbox_kea:server_reservation4_bulk_import", args=[server.pk]),
+            "add_url": reverse("plugins:netbox_kea:server_reservation4_add", args=[server.pk]) if can_change else None,
+            "bulk_sync_url": reverse("plugins:netbox_kea:server_reservation4_bulk_sync", args=[server.pk])
+            if can_change
+            else None,
+            "import_url": reverse("plugins:netbox_kea:server_reservation4_bulk_import", args=[server.pk])
+            if can_change
+            else None,
         }
 
 
@@ -395,9 +405,13 @@ class ServerReservations6View(generic.ObjectView):
             "dhcp_version": 6,
             "hook_available": hook_available,
             "search_form": search_form,
-            "add_url": reverse("plugins:netbox_kea:server_reservation6_add", args=[server.pk]),
-            "bulk_sync_url": reverse("plugins:netbox_kea:server_reservation6_bulk_sync", args=[server.pk]),
-            "import_url": reverse("plugins:netbox_kea:server_reservation6_bulk_import", args=[server.pk]),
+            "add_url": reverse("plugins:netbox_kea:server_reservation6_add", args=[server.pk]) if can_change else None,
+            "bulk_sync_url": reverse("plugins:netbox_kea:server_reservation6_bulk_sync", args=[server.pk])
+            if can_change
+            else None,
+            "import_url": reverse("plugins:netbox_kea:server_reservation6_bulk_import", args=[server.pk])
+            if can_change
+            else None,
         }
 
 
@@ -467,6 +481,9 @@ class ServerReservation4AddView(_KeaChangeMixin, generic.ObjectView):
             except KeaException as exc:
                 logger.exception("Failed to create DHCPv4 reservation for %s", cd.get("ip_address"))
                 messages.error(request, kea_error_hint(exc))
+            except requests.RequestException:
+                logger.exception("Failed to create DHCPv4 reservation for %s (network error)", cd.get("ip_address"))
+                messages.error(request, "Network error communicating with Kea: see server logs.")
             except Exception:
                 logger.exception("Failed to create DHCPv4 reservation for %s", cd.get("ip_address"))
                 messages.error(request, "Failed to create reservation: see server logs for details.")
@@ -553,6 +570,9 @@ class ServerReservation6AddView(_KeaChangeMixin, generic.ObjectView):
             except KeaException as exc:
                 logger.exception("Failed to create DHCPv6 reservation for %s", cd.get("ip_addresses"))
                 messages.error(request, kea_error_hint(exc))
+            except requests.RequestException:
+                logger.exception("Failed to create DHCPv6 reservation for %s (network error)", cd.get("ip_addresses"))
+                messages.error(request, "Network error communicating with Kea: see server logs.")
             except Exception:
                 logger.exception("Failed to create DHCPv6 reservation for %s", cd.get("ip_addresses"))
                 messages.error(request, "Failed to create reservation: see server logs for details.")

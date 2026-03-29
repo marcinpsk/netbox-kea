@@ -1368,6 +1368,9 @@ class TestSubnetAddExceptionPaths(_ViewTestBase):
         msgs = list(response.context["messages"])
         self.assertTrue(any(m.level == django_messages.WARNING for m in msgs))
 
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_subnet_add_runtime_error_rerenders_form(self, MockKeaClient):
+        """RuntimeError from subnet_add must re-render the form (200 response)."""
         MockKeaClient.return_value.command.return_value = [
             {"result": 0, "arguments": {"Dhcp4": {"shared-networks": [], "subnet4": []}}}
         ]
@@ -1463,7 +1466,10 @@ class TestSubnetEditPostExceptions(_ViewTestBase):
         """PartialPersistError on subnet_update must redirect with warning."""
         from netbox_kea.kea import PartialPersistError
 
-        MockKeaClient.return_value.command.side_effect = [_SUBNET4_GET_FULL, _CONFIG4_NO_NETWORKS]
+        # POST consumes: [0] config-get for subnet data, [1] config-get for subnets list (after redirect),
+        # [2] stat-lease4-get (hook-unavailable) so stat_cmds degradation doesn't StopIterate.
+        _stat_unsupported = [{"result": 2, "text": "unsupported"}]
+        MockKeaClient.return_value.command.side_effect = [_SUBNET4_GET_FULL, _CONFIG4_NO_NETWORKS, _stat_unsupported]
         MockKeaClient.return_value.subnet_update.side_effect = PartialPersistError("dhcp4", Exception("write"))
         response = self.client.post(self._url(), _SUBNET4_EDIT_POST, follow=True)
         msgs = list(response.context["messages"])
@@ -1531,12 +1537,10 @@ class TestSubnetListViewEdgeCases(_ViewTestBase):
 
     @patch("netbox_kea.models.KeaClient")
     def test_null_config_arguments_raises(self, MockKeaClient):
-        """Line 1110: null config-get arguments raises RuntimeError → 500 response."""
+        """Null config-get arguments returns an empty table (degraded 200 state)."""
         MockKeaClient.return_value.command.return_value = [{"result": 0, "arguments": None}]
-        self.client.raise_request_exception = False
         response = self.client.get(self._url())
-        self.client.raise_request_exception = True
-        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.status_code, 200)
 
     @patch("netbox_kea.models.KeaClient")
     def test_export_returns_csv(self, MockKeaClient):

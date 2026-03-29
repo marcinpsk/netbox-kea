@@ -23,8 +23,9 @@ All views:
 - Gracefully handle unreachable servers (warning, not 500)
 """
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
+import requests
 from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
 from django.urls import reverse
@@ -972,7 +973,9 @@ class TestCombinedReservations4Enrichment(_CombinedViewBase):
     @patch("netbox_kea.models.KeaClient")
     def test_active_lease_badge_when_lease_exists(self, MockKeaClient):
         """A reservation with an active lease must show 'Active Lease' badge."""
-        MockKeaClient.return_value.clone.return_value = MockKeaClient.return_value
+        clone_mock = MagicMock()
+        clone_mock.command.return_value = [{"result": 0, "arguments": {"leases": [{"ip-address": "10.20.0.5"}]}}]
+        MockKeaClient.return_value.clone.return_value = clone_mock
         MockKeaClient.return_value.reservation_get_page.return_value = ([dict(_MOCK_RESERVATION_ENRICHED)], 0, 0)
         MockKeaClient.return_value.command.return_value = [
             {"result": 0, "arguments": {"leases": [{"ip-address": "10.20.0.5"}]}}
@@ -1130,7 +1133,9 @@ class TestCombinedReservations6Enrichment(_CombinedViewBase):
     @patch("netbox_kea.models.KeaClient")
     def test_active_lease_badge_when_lease_exists(self, MockKeaClient):
         """A v6 reservation with an active lease must show 'Active Lease' badge."""
-        MockKeaClient.return_value.clone.return_value = MockKeaClient.return_value
+        clone_mock = MagicMock()
+        clone_mock.command.return_value = [{"result": 0, "arguments": {"leases": [{"ip-address": "2001:db8::5"}]}}]
+        MockKeaClient.return_value.clone.return_value = clone_mock
         MockKeaClient.return_value.reservation_get_page.return_value = (
             [dict(_MOCK_RESERVATION_V6_ENRICHED)],
             0,
@@ -1374,7 +1379,7 @@ class TestCombinedSharedNetworks4View(_CombinedViewBase):
 
     @patch("netbox_kea.models.KeaClient")
     def test_unreachable_server_returns_200_with_warning(self, MockKeaClient):
-        MockKeaClient.return_value.command.side_effect = Exception("refused")
+        MockKeaClient.return_value.command.side_effect = requests.RequestException("refused")
         url = reverse("plugins:netbox_kea:combined_shared_networks4")
         response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
@@ -1446,7 +1451,7 @@ class TestCombinedSharedNetworks6View(_CombinedViewBase):
 
     @patch("netbox_kea.models.KeaClient")
     def test_unreachable_server_returns_200_with_warning(self, MockKeaClient):
-        MockKeaClient.return_value.command.side_effect = Exception("refused")
+        MockKeaClient.return_value.command.side_effect = requests.RequestException("refused")
         url = reverse("plugins:netbox_kea:combined_shared_networks6")
         response = self.client.get(url)
         self.assertEqual(response.status_code, 200)

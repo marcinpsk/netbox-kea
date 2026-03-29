@@ -59,7 +59,12 @@ class _BaseSubnetOptionsEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin,
             pk=pk,
         )
         return_url = reverse(f"plugins:netbox_kea:server_subnets{self.dhcp_version}", args=[pk])
-        client = server.get_client(version=self.dhcp_version)
+        try:
+            client = server.get_client(version=self.dhcp_version)
+        except (KeaException, requests.RequestException, ValueError):
+            logger.exception("Failed to get Kea client for server %s", pk)
+            messages.error(request, "An internal error occurred.")
+            return redirect(return_url)
         subnet = self._get_subnet_from_config(client, subnet_id)
         if subnet is None:
             messages.error(request, "Could not load subnet configuration from Kea. The form cannot be displayed.")
@@ -187,7 +192,13 @@ class _BaseServerOptionsEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin,
             Server.objects.restrict(request.user, "change"),
             pk=pk,
         )
-        client = server.get_client(version=self.dhcp_version)
+        client: object | None = None
+        try:
+            client = server.get_client(version=self.dhcp_version)
+        except (KeaException, requests.RequestException, ValueError):
+            logger.exception("Failed to get Kea client for server %s", pk)
+            messages.error(request, "An internal error occurred.")
+            return redirect(reverse("plugins:netbox_kea:server", args=[pk]))
         existing = self._get_options_from_config(client)
         if existing is None:
             messages.error(request, "Could not load server options from Kea. The form cannot be displayed.")
@@ -375,7 +386,13 @@ class BaseServerOptionDefView(_KeaChangeMixin, ConditionalLoginRequiredMixin, Vi
         server = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
         if resp := check_dhcp_enabled(server, self.dhcp_version):
             return resp
-        client = server.get_client(version=self.dhcp_version)
+        client: object | None = None
+        try:
+            client = server.get_client(version=self.dhcp_version)
+        except (KeaException, requests.RequestException, ValueError):
+            logger.exception("Failed to get Kea client for server %s", pk)
+            messages.error(request, "An internal error occurred.")
+            return redirect(reverse("plugins:netbox_kea:server", args=[pk]))
         try:
             option_defs = client.option_def_list(version=self.dhcp_version)
             options_load_error = False

@@ -470,7 +470,7 @@ class TestServerStatusGlobalOptions(_ViewTestBase):
         self.assertIn("global_options", response.context)
         opts = response.context["global_options"]
         # Server has dhcp4 enabled — DHCPv4 options must be present.
-        # Keys are humanised ("Dns Servers") — check by looking at all option values.
+        # DHCPv4 code 6 (domain-name-servers) maps to "dns_servers" → "Dns Servers" after title-case.
         self.assertTrue(any("Dns Servers" in v for v in opts.values()))
 
     @patch("netbox_kea.models.KeaClient")

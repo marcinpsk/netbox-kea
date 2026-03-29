@@ -295,7 +295,10 @@ class TestReservationImportGenericException(_ViewTestBase):
         csv_file = io.BytesIO(csv_content.encode())
         csv_file.name = "reservations.csv"
         response = self.client.post(url, {"csv_file": csv_file, "subnet_id": "1"})
-        self.assertIn(response.status_code, (200, 302))
+        self.assertEqual(response.status_code, 200)
+        result = response.context["result"]
+        self.assertEqual(len(result["error_rows"]), 1)
+        self.assertIn("unexpected error", result["error_rows"][0]["error"].lower())
 
 
 # ---------------------------------------------------------------------------

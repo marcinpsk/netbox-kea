@@ -269,7 +269,8 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
                 args = resp[0].get("arguments")
                 if args is None:
                     logger.warning("lease-get-page returned None arguments on server %s", instance.pk)
-                    break
+                    messages.error(request, "Failed to fetch leases for export: unexpected Kea response.")
+                    return redirect(request.path)
                 raw_leases = args.get("leases") or []
                 all_leases += format_leases(raw_leases)
                 if args.get("count", 0) < per_page:
