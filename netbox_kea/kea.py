@@ -1129,6 +1129,72 @@ class KeaClient:
             )
         return subnets[0]["subnet"]
 
+    def subnet_get(self, version: int, subnet_id: int) -> dict:
+        """Fetch the full subnet config dict for *subnet_id* from Kea.
+
+        Unlike :meth:`_get_subnet_cidr`, this method returns the complete
+        subnet object (id, subnet, pools, option-data, relay, allocator, ...)
+        enabling a read-modify-write cycle without losing live-only fields.
+
+        Args:
+            version: DHCP version (4 or 6).
+            subnet_id: Kea subnet ID to look up.
+
+        Returns:
+            A shallow copy of the full subnet dict (nested structures like pools
+            and option-data are not deep-copied — callers must not mutate nested
+            lists/dicts in place) as returned by Kea.
+
+        Raises:
+            KeaException: If the subnet is not found or Kea returns an error.
+
+        """
+        service = f"dhcp{version}"
+        subnet_key = f"subnet{version}"
+        resp = self.command(
+            f"subnet{version}-get",
+            service=[service],
+            arguments={"id": subnet_id},
+        )
+        subnets = resp[0].get("arguments", {}).get(subnet_key, [])
+        if not subnets:
+            raise KeaException(
+                {"result": 3, "text": f"subnet{version}-get returned no subnet for id={subnet_id}", "arguments": None},
+                index=0,
+            )
+        return dict(subnets[0])
+
+    def _find_subnet_id_by_cidr(self, version: int, cidr: str) -> int | None:
+        """Search the running Kea config for a subnet matching *cidr*.
+
+        Returns the Kea subnet ID if found, or ``None`` if the subnet does not
+        exist or if the config-get probe itself fails.  Used as a best-effort
+        disambiguation probe after a transport error on ``subnet{v}-add`` to
+        detect whether the command was actually processed by Kea.
+
+        """
+        service = f"dhcp{version}"
+        dhcp_key = f"Dhcp{version}"
+        subnet_key = f"subnet{version}"
+        try:
+            resp = self.command("config-get", service=[service])
+            conf = (resp[0].get("arguments") or {}).get(dhcp_key, {})
+            for s in conf.get(subnet_key, []):
+                if s.get("subnet") == cidr:
+                    return s.get("id")  # None if id absent — callers treat None as "not found"
+            for sn in conf.get("shared-networks", []):
+                for s in sn.get(subnet_key, []):
+                    if s.get("subnet") == cidr:
+                        return s.get("id")  # None if id absent — callers treat None as "not found"
+        except Exception:  # noqa: BLE001
+            logger.debug(
+                "_find_subnet_id_by_cidr: config-get failed for cidr=%s version=%s",
+                cidr,
+                version,
+                exc_info=True,
+            )
+        return None
+
 
 class KeaException(Exception):
     """Raised when a Kea API response contains an unexpected result code."""

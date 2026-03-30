@@ -3753,3 +3753,187 @@ class TestGetSubnetCidr(TestCase):
         with patch.object(self.client._session, "post", return_value=_mock_http_response(resp)):
             with self.assertRaises(KeaException):
                 self.client._get_subnet_cidr(version=4, subnet_id=42)
+
+
+# ---------------------------------------------------------------------------
+# TestSubnetGet
+# ---------------------------------------------------------------------------
+
+_SUBNET4_GET_FULL_RESP = [
+    {
+        "result": 0,
+        "arguments": {
+            "subnet4": [
+                {
+                    "id": 42,
+                    "subnet": "10.0.0.0/24",
+                    "pools": [{"pool": "10.0.0.100-10.0.0.200"}],
+                    "option-data": [{"name": "routers", "data": "10.0.0.1"}],
+                    "relay": {"ip-addresses": ["10.0.0.254"]},
+                    "valid-lft": 3600,
+                }
+            ]
+        },
+    }
+]
+
+
+class TestSubnetGet(TestCase):
+    """Tests for KeaClient.subnet_get()."""
+
+    def setUp(self):
+        self.client = KeaClient(url="http://kea:8000")
+
+    def test_returns_full_subnet_dict(self):
+        """subnet_get returns the complete subnet dict including relay and option-data."""
+        with patch.object(
+            self.client._session,
+            "post",
+            return_value=_mock_http_response(_SUBNET4_GET_FULL_RESP),
+        ):
+            result = self.client.subnet_get(version=4, subnet_id=42)
+        self.assertEqual(result["id"], 42)
+        self.assertEqual(result["subnet"], "10.0.0.0/24")
+        self.assertEqual(result["relay"], {"ip-addresses": ["10.0.0.254"]})
+        self.assertEqual(result["option-data"], [{"name": "routers", "data": "10.0.0.1"}])
+
+    def test_sends_correct_command_and_id(self):
+        """subnet_get sends subnet4-get with the correct id argument."""
+        with patch.object(
+            self.client._session,
+            "post",
+            return_value=_mock_http_response(_SUBNET4_GET_FULL_RESP),
+        ) as mock_post:
+            self.client.subnet_get(version=4, subnet_id=42)
+        sent = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1]["json"]
+        self.assertEqual(sent["command"], "subnet4-get")
+        self.assertEqual(sent["arguments"]["id"], 42)
+
+    def test_raises_kea_exception_when_not_found(self):
+        """subnet_get raises KeaException when the subnet list is empty."""
+        resp = [{"result": 0, "arguments": {"subnet4": []}}]
+        with patch.object(
+            self.client._session,
+            "post",
+            return_value=_mock_http_response(resp),
+        ):
+            with self.assertRaises(KeaException):
+                self.client.subnet_get(version=4, subnet_id=99)
+
+    def test_v6_sends_subnet6_get(self):
+        """subnet_get sends subnet6-get for version=6."""
+        resp = [{"result": 0, "arguments": {"subnet6": [{"id": 7, "subnet": "2001:db8::/48"}]}}]
+        with patch.object(
+            self.client._session,
+            "post",
+            return_value=_mock_http_response(resp),
+        ) as mock_post:
+            self.client.subnet_get(version=6, subnet_id=7)
+        sent = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1]["json"]
+        self.assertEqual(sent["command"], "subnet6-get")
+
+    def test_returns_independent_top_level_dict(self):
+        """subnet_get returns a fresh top-level dict so callers can add/remove keys without affecting subsequent calls."""
+        with patch.object(
+            self.client._session,
+            "post",
+            return_value=_mock_http_response(_SUBNET4_GET_FULL_RESP),
+        ):
+            r1 = self.client.subnet_get(version=4, subnet_id=42)
+            r2 = self.client.subnet_get(version=4, subnet_id=42)
+        r1["extra"] = "test"
+        self.assertNotIn("extra", r2)
+
+
+# ---------------------------------------------------------------------------
+# TestFindSubnetIdByCidr
+# ---------------------------------------------------------------------------
+
+_CONFIG_GET_WITH_SUBNETS_RESP = [
+    {
+        "result": 0,
+        "arguments": {
+            "Dhcp4": {
+                "subnet4": [
+                    {"id": 5, "subnet": "10.0.0.0/24"},
+                    {"id": 6, "subnet": "192.168.1.0/24"},
+                ],
+                "shared-networks": [
+                    {
+                        "name": "prod",
+                        "subnet4": [{"id": 99, "subnet": "172.16.0.0/16"}],
+                    }
+                ],
+            }
+        },
+    }
+]
+_CONFIG_GET_EMPTY_RESP = [
+    {
+        "result": 0,
+        "arguments": {
+            "Dhcp4": {
+                "subnet4": [],
+                "shared-networks": [],
+            }
+        },
+    }
+]
+
+
+class TestFindSubnetIdByCidr(TestCase):
+    """Tests for KeaClient._find_subnet_id_by_cidr()."""
+
+    def setUp(self):
+        self.client = KeaClient(url="http://kea:8000")
+
+    def test_finds_subnet_at_top_level(self):
+        """_find_subnet_id_by_cidr returns the id for a top-level subnet."""
+        with patch.object(
+            self.client._session,
+            "post",
+            return_value=_mock_http_response(_CONFIG_GET_WITH_SUBNETS_RESP),
+        ):
+            result = self.client._find_subnet_id_by_cidr(version=4, cidr="10.0.0.0/24")
+        self.assertEqual(result, 5)
+
+    def test_finds_subnet_inside_shared_network(self):
+        """_find_subnet_id_by_cidr finds subnets nested inside shared-networks."""
+        with patch.object(
+            self.client._session,
+            "post",
+            return_value=_mock_http_response(_CONFIG_GET_WITH_SUBNETS_RESP),
+        ):
+            result = self.client._find_subnet_id_by_cidr(version=4, cidr="172.16.0.0/16")
+        self.assertEqual(result, 99)
+
+    def test_returns_none_when_not_found(self):
+        """_find_subnet_id_by_cidr returns None when no subnet matches the CIDR."""
+        with patch.object(
+            self.client._session,
+            "post",
+            return_value=_mock_http_response(_CONFIG_GET_EMPTY_RESP),
+        ):
+            result = self.client._find_subnet_id_by_cidr(version=4, cidr="10.99.0.0/24")
+        self.assertIsNone(result)
+
+    def test_returns_none_when_config_get_raises(self):
+        """_find_subnet_id_by_cidr returns None when config-get fails (best-effort probe)."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=requests.ConnectionError("unreachable"),
+        ):
+            result = self.client._find_subnet_id_by_cidr(version=4, cidr="10.0.0.0/24")
+        self.assertIsNone(result)
+
+    def test_returns_none_when_kea_error(self):
+        """_find_subnet_id_by_cidr returns None when Kea returns result!=0."""
+        resp = [{"result": 1, "text": "command not supported"}]
+        with patch.object(
+            self.client._session,
+            "post",
+            return_value=_mock_http_response(resp),
+        ):
+            result = self.client._find_subnet_id_by_cidr(version=4, cidr="10.0.0.0/24")
+        self.assertIsNone(result)
