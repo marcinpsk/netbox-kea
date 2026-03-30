@@ -294,11 +294,10 @@ class ServerReservations4View(generic.ObjectView):
                 from_index = next_from
                 source_index = next_source
         except KeaException as exc:
-            if exc.response.get("result") == 2:
-                hook_available = False
-            else:
-                logger.warning("Failed to fetch DHCPv4 reservations: %s", exc)
+            hook_available = False
+            logger.warning("Failed to fetch DHCPv4 reservations: %s", exc)
         except (requests.RequestException, ValueError):
+            hook_available = False
             logger.exception("Unexpected error fetching DHCPv4 reservations")
 
         # Inject server_pk so the actions template column can build edit/delete URLs.
@@ -368,11 +367,10 @@ class ServerReservations6View(generic.ObjectView):
                 from_index = next_from
                 source_index = next_source
         except KeaException as exc:
-            if exc.response.get("result") == 2:
-                hook_available = False
-            else:
-                logger.warning("Failed to fetch DHCPv6 reservations: %s", exc)
+            hook_available = False
+            logger.warning("Failed to fetch DHCPv6 reservations: %s", exc)
         except (requests.RequestException, ValueError):
+            hook_available = False
             logger.exception("Unexpected error fetching DHCPv6 reservations")
 
         for r in reservations:
@@ -604,7 +602,7 @@ class ServerReservation4EditView(_KeaChangeMixin, generic.ObjectView):
             logger.exception("Failed to fetch DHCPv4 reservation %s in subnet %s", ip_address, subnet_id)
             messages.error(request, kea_error_hint(exc))
             return redirect(return_url)
-        except Exception:
+        except (requests.RequestException, ValueError):
             logger.exception("Failed to fetch DHCPv4 reservation %s in subnet %s", ip_address, subnet_id)
             messages.error(request, "Failed to retrieve reservation: see server logs for details.")
             return redirect(return_url)
@@ -677,6 +675,9 @@ class ServerReservation4EditView(_KeaChangeMixin, generic.ObjectView):
             except KeaException as exc:
                 logger.exception("Failed to update DHCPv4 reservation for %s", cd.get("ip_address"))
                 messages.error(request, kea_error_hint(exc))
+            except (requests.RequestException, ValueError):
+                logger.exception("Failed to update DHCPv4 reservation for %s (network error)", cd.get("ip_address"))
+                messages.error(request, "Network error communicating with Kea: see server logs.")
         return render(
             request,
             self.template_name,
@@ -711,7 +712,7 @@ class ServerReservation6EditView(_KeaChangeMixin, generic.ObjectView):
             logger.exception("Failed to fetch DHCPv6 reservation %s in subnet %s", ip_address, subnet_id)
             messages.error(request, kea_error_hint(exc))
             return redirect(return_url)
-        except Exception:
+        except (requests.RequestException, ValueError):
             logger.exception("Failed to fetch DHCPv6 reservation %s in subnet %s", ip_address, subnet_id)
             messages.error(request, "Failed to retrieve reservation: see server logs for details.")
             return redirect(return_url)
@@ -785,6 +786,9 @@ class ServerReservation6EditView(_KeaChangeMixin, generic.ObjectView):
             except KeaException as exc:
                 logger.exception("Failed to update DHCPv6 reservation for %s", cd.get("ip_addresses"))
                 messages.error(request, kea_error_hint(exc))
+            except (requests.RequestException, ValueError):
+                logger.exception("Failed to update DHCPv6 reservation for %s (network error)", cd.get("ip_addresses"))
+                messages.error(request, "Network error communicating with Kea: see server logs.")
         return render(
             request,
             self.template_name,
@@ -854,6 +858,9 @@ class ServerReservation4DeleteView(_KeaChangeMixin, generic.ObjectView):
         except KeaException as exc:
             logger.exception("Failed to delete DHCPv4 reservation for %s", ip_address)
             messages.error(request, kea_error_hint(exc))
+        except (requests.RequestException, ValueError):
+            logger.exception("Failed to delete DHCPv4 reservation for %s (network error)", ip_address)
+            messages.error(request, "Network error communicating with Kea: see server logs.")
         return redirect(return_url)
 
 
@@ -912,6 +919,9 @@ class ServerReservation6DeleteView(_KeaChangeMixin, generic.ObjectView):
         except KeaException as exc:
             logger.exception("Failed to delete DHCPv6 reservation for %s", ip_address)
             messages.error(request, kea_error_hint(exc))
+        except (requests.RequestException, ValueError):
+            logger.exception("Failed to delete DHCPv6 reservation for %s (network error)", ip_address)
+            messages.error(request, "Network error communicating with Kea: see server logs.")
         return redirect(return_url)
 
 
