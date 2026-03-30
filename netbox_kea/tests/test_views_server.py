@@ -506,6 +506,7 @@ class TestServerStatusGlobalOptions(_ViewTestBase):
         url = reverse("plugins:netbox_kea:server_status", args=[self.server.pk])
         response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["global_options"], {})
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -686,6 +687,9 @@ class TestStatusViewNullArgs(_ViewTestBase):
         # The view catches exceptions from _get_ca_status; page still renders with empty statuses
         response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
+        services_by_name = {s["name"]: s for s in response.context["services"]}
+        if "Control Agent" in services_by_name:
+            self.assertEqual(services_by_name["Control Agent"]["status_data"], {})
 
     @patch("netbox_kea.models.KeaClient")
     def test_get_dhcp_status_null_args_raises(self, MockKeaClient):
@@ -775,6 +779,7 @@ class TestGetGlobalOptionsGenericException(_ViewTestBase):
         # Exception in get_extra_context() is caught by the outer try/except in get_extra_context;
         # the page must still render as 200 (degraded state, not 500).
         self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["global_options"], {})
 
 
 # ---------------------------------------------------------------------------
@@ -861,6 +866,9 @@ class TestStatusViewNullVersionArgs(_ViewTestBase):
         url = reverse("plugins:netbox_kea:server_status", args=[self.server.pk])
         response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
+        services_by_name = {s["name"]: s for s in response.context["services"]}
+        if "Control Agent" in services_by_name:
+            self.assertEqual(services_by_name["Control Agent"]["status_data"], {})
 
     @patch("netbox_kea.models.KeaClient")
     def test_dhcp_version_get_null_args_returns_200(self, MockKeaClient):
