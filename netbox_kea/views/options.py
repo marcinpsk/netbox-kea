@@ -11,7 +11,7 @@ from django.views import View
 from utilities.views import register_model_view
 
 from .. import forms
-from ..kea import KeaException, PartialPersistError
+from ..kea import KeaConfigTestError, KeaException, PartialPersistError
 from ..models import Server
 from ..utilities import (
     OptionalViewTab,
@@ -145,6 +145,9 @@ class _BaseSubnetOptionsEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin,
         except PartialPersistError as exc:
             logger.warning("Options applied but config-write failed for subnet %s: %s", subnet_id, exc)
             messages.warning(request, kea_error_hint(exc))
+        except KeaConfigTestError as exc:
+            logger.warning("Config-test rejected changes for subnet %s: %s", subnet_id, exc)
+            messages.error(request, "Config validation failed — no changes were applied.")
         except KeaException as exc:
             logger.exception("Failed to update options for subnet %s: %s", subnet_id, exc)
             messages.error(request, kea_error_hint(exc))
@@ -269,6 +272,9 @@ class _BaseServerOptionsEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin,
         except PartialPersistError as exc:
             logger.warning("Server options applied but config-write failed for dhcp%s: %s", self.dhcp_version, exc)
             messages.warning(request, kea_error_hint(exc))
+        except KeaConfigTestError as exc:
+            logger.warning("Config-test rejected changes for dhcp%s: %s", self.dhcp_version, exc)
+            messages.error(request, "Config validation failed — no changes were applied.")
         except KeaException as exc:
             logger.exception("Failed to update server options for %s: %s", server, exc)
             messages.error(request, kea_error_hint(exc))
@@ -517,6 +523,9 @@ class BaseServerOptionDefAddView(_KeaChangeMixin, ConditionalLoginRequiredMixin,
         except PartialPersistError as exc:
             logger.warning("Option def applied but config-write failed for %s: %s", server, exc)
             messages.warning(request, kea_error_hint(exc))
+        except KeaConfigTestError as exc:
+            logger.warning("Config-test rejected changes for option-def add on %s: %s", server, exc)
+            messages.error(request, "Config validation failed — no changes were applied.")
         except KeaException as exc:
             logger.warning("option-def add failed for %s: %s", server, exc)
             messages.error(request, f"Kea error: {kea_error_hint(exc)}")
@@ -578,6 +587,9 @@ class BaseServerOptionDefDeleteView(_KeaChangeMixin, ConditionalLoginRequiredMix
         except PartialPersistError as exc:
             logger.warning("Option def del applied but config-write failed for %s: %s", server, exc)
             messages.warning(request, kea_error_hint(exc))
+        except KeaConfigTestError as exc:
+            logger.warning("Config-test rejected changes for option-def del on %s: %s", server, exc)
+            messages.error(request, "Config validation failed — no changes were applied.")
         except KeaException as exc:
             logger.warning("option-def del failed for %s: %s", server, exc)
             messages.error(request, f"Kea error: {kea_error_hint(exc)}")
