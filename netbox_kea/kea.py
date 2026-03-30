@@ -416,6 +416,9 @@ class KeaClient:
                     subnet_def["id"] = kea_id
         try:
             self._persist_config(service)
+        except KeaConfigPersistError as exc:
+            exc.subnet_id = subnet_def.get("id")
+            raise
         except PartialPersistError as exc:
             # Subnet is live; re-raise with the known ID so callers can still
             # perform follow-up operations (e.g. assign to a shared network).
@@ -1098,8 +1101,14 @@ class KeaClient:
 
         config: dict | None = None
         if resp is not None:
-            raw = resp[0].get("arguments", {}) if isinstance(resp, list) else resp.get("arguments", {})
-            config = {k: v for k, v in raw.items() if k != "hash"}
+            if isinstance(resp, list) and resp:
+                raw = resp[0].get("arguments")
+            else:
+                raw = resp.get("arguments") if isinstance(resp, dict) else None
+            if isinstance(raw, dict):
+                config = {k: v for k, v in raw.items() if k != "hash"}
+            else:
+                logger.warning("config-get for service %s returned unexpected arguments shape: %r", service, raw)
 
         # Step 2: config-test — pass the live config as arguments (required by Kea).
         if config is not None:

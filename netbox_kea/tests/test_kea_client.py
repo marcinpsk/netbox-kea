@@ -4318,3 +4318,69 @@ class TestFindSubnetIdNarrowedExcept(TestCase):
         with patch.object(self.client._session, "post", side_effect=AttributeError("bug")):
             with self.assertRaises(AttributeError):
                 self.client._find_subnet_id_by_cidr(4, "10.0.0.0/24")
+
+
+# ---------------------------------------------------------------------------
+# TestSubnetAddKeaConfigPersistError
+# ---------------------------------------------------------------------------
+
+
+class TestSubnetAddKeaConfigPersistError(TestCase):
+    """subnet_add() attaches subnet_id to KeaConfigPersistError from _persist_config."""
+
+    def setUp(self):
+        self.client = KeaClient(url="http://kea:8000")
+
+    def test_kea_config_persist_error_gets_subnet_id(self):
+        """When _persist_config raises KeaConfigPersistError, subnet_id is attached before re-raising."""
+        call_count = [0]
+
+        def _side(url, **kwargs):
+            cmd = kwargs.get("json", {}).get("command", "")
+            call_count[0] += 1
+            if cmd.startswith("subnet4-list"):
+                return _mock_http_response(_SUBNET4_LIST_RESP)
+            if cmd == "subnet4-add":
+                return _mock_http_response(
+                    [{"result": 0, "arguments": {"subnets": [{"id": 99, "subnet": "10.99.0.0/24"}]}}]
+                )
+            if cmd == "config-get":
+                return _mock_http_response([{"result": 0, "arguments": {"Dhcp4": {}, "hash": "abc"}}])
+            if cmd == "config-test":
+                return _mock_http_response([{"result": 1, "text": "config-test rejected"}])
+            if cmd == "config-write":
+                return _mock_http_response(_OK)
+            return _mock_http_response(_OK)
+
+        with patch.object(self.client._session, "post", side_effect=_side):
+            with self.assertRaises(KeaConfigPersistError) as ctx:
+                self.client.subnet_add(version=4, subnet_cidr="10.99.0.0/24")
+        self.assertEqual(ctx.exception.subnet_id, 99)
+
+
+# ---------------------------------------------------------------------------
+# TestPersistConfigMalformedArguments
+# ---------------------------------------------------------------------------
+
+
+class TestPersistConfigMalformedArguments(TestCase):
+    """_persist_config degrades gracefully when config-get arguments is null/malformed."""
+
+    def setUp(self):
+        self.client = KeaClient(url="http://kea:8000")
+
+    def test_null_arguments_does_not_raise_attribute_error(self):
+        """config-get returning null arguments should not crash _persist_config."""
+        call_count = [0]
+
+        def _side(url, **kwargs):
+            cmd = kwargs.get("json", {}).get("command", "")
+            call_count[0] += 1
+            if cmd == "config-get":
+                return _mock_http_response([{"result": 0, "arguments": None}])
+            if cmd == "config-write":
+                return _mock_http_response([{"result": 0, "text": "Config written successfully!"}])
+            return _mock_http_response(_OK)
+
+        with patch.object(self.client._session, "post", side_effect=_side):
+            self.client._persist_config("dhcp4")
