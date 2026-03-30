@@ -1988,3 +1988,113 @@ class TestSubnetAddNetworkChoicesError(_ViewTestBase):
         )
         self.assertEqual(response.status_code, 200)
         MockKeaClient.return_value.subnet_add.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Subnet edit: _get_network_data error handling
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestSubnetEditNetworkDataErrors(_ViewTestBase):
+    """_get_network_data must degrade gracefully on transport and parse errors."""
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_transport_error_returns_200(self, MockKeaClient):
+        """A requests.RequestException on config-get must not cause a 500 in the edit view."""
+
+        def command_side_effect(cmd, service=None, arguments=None, check=None):
+            if cmd == "subnet4-get":
+                return [
+                    {
+                        "result": 0,
+                        "arguments": {"subnet4": [{"id": 1, "subnet": "10.0.0.0/24", "pools": [], "option-data": []}]},
+                    }
+                ]
+            if cmd == "config-get":
+                raise requests.ConnectionError("down")
+            return [{"result": 0, "arguments": {}}]
+
+        MockKeaClient.return_value.command.side_effect = command_side_effect
+        url = reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, 1])
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_value_error_returns_200(self, MockKeaClient):
+        """A ValueError on config-get must not cause a 500 in the edit view."""
+
+        def command_side_effect(cmd, service=None, arguments=None, check=None):
+            if cmd == "subnet4-get":
+                return [
+                    {
+                        "result": 0,
+                        "arguments": {"subnet4": [{"id": 1, "subnet": "10.0.0.0/24", "pools": [], "option-data": []}]},
+                    }
+                ]
+            if cmd == "config-get":
+                raise ValueError("bad response")
+            return [{"result": 0, "arguments": {}}]
+
+        MockKeaClient.return_value.command.side_effect = command_side_effect
+        url = reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, 1])
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+
+
+# ---------------------------------------------------------------------------
+# Subnet add: network_subnet_add PartialPersistError handling
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestSubnetAddPartialPersistNetworkAssign(_ViewTestBase):
+    """network_subnet_add PartialPersistError must show warning not 'could not assign' error."""
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_partial_persist_from_network_assign_shows_warning_not_error(self, MockKeaClient):
+        """When network_subnet_add raises PartialPersistError, show warning (subnet assigned but config-write failed)."""
+        from netbox_kea.kea import PartialPersistError
+
+        mock_client = MockKeaClient.return_value
+
+        # subnet_add raises PartialPersistError (subnet added but config-write failed, id=99)
+        mock_client.subnet_add.side_effect = PartialPersistError(
+            "dhcp4", Exception("config-write failed"), subnet_id=99
+        )
+        # network_subnet_add also raises PartialPersistError (network attached but config-write failed)
+        mock_client.network_subnet_add.side_effect = PartialPersistError(
+            "dhcp4", Exception("config-write failed"), subnet_id=99
+        )
+        # Mock shared network choices via command
+        mock_client.command.return_value = [
+            {
+                "result": 0,
+                "arguments": {
+                    "Dhcp4": {
+                        "shared-networks": [{"name": "my-net"}],
+                        "subnet4": [],
+                    }
+                },
+            }
+        ]
+
+        url = reverse("plugins:netbox_kea:server_subnet4_add", args=[self.server.pk])
+        response = self.client.post(
+            url,
+            {
+                "subnet": "10.99.0.0/24",
+                "shared_network": "my-net",
+                "pools": "",
+                "gateway": "",
+                "dns_servers": "",
+                "ntp_servers": "",
+            },
+            follow=True,
+        )
+        self.assertEqual(response.status_code, 200)
+        msgs = [str(m) for m in response.context["messages"]]
+        # Must NOT see the failure message
+        self.assertFalse(any("could not assign" in m.lower() for m in msgs))
+        # network_subnet_add was called (subnet IS live)
+        mock_client.network_subnet_add.assert_called_once()

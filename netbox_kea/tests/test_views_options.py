@@ -1006,11 +1006,10 @@ class TestKeaConfigTestErrorHandling(_ViewTestBase):
     @patch("netbox_kea.models.KeaClient")
     def test_subnet_options_config_test_error_shows_message(self, MockKeaClient):
         """POST to subnet options edit must show config-test error message on KeaConfigTestError."""
-        from netbox_kea.kea import KeaConfigTestError
+        from netbox_kea.kea import KeaConfigTestError, KeaException
 
-        MockKeaClient.return_value.subnet_update_options.side_effect = KeaConfigTestError(
-            {"result": 1, "text": "config test failed"}, index=0
-        )
+        cause = KeaException({"result": 1, "text": "config test failed"})
+        MockKeaClient.return_value.subnet_update_options.side_effect = KeaConfigTestError("dhcp4", cause)
         url = reverse("plugins:netbox_kea:server_subnet4_options_edit", args=[self.server.pk, 1])
         response = self.client.post(url, {"form-TOTAL_FORMS": "0", "form-INITIAL_FORMS": "0"}, follow=True)
         self.assertEqual(response.status_code, 200)
@@ -1020,11 +1019,10 @@ class TestKeaConfigTestErrorHandling(_ViewTestBase):
     @patch("netbox_kea.models.KeaClient")
     def test_server_options_config_test_error_shows_message(self, MockKeaClient):
         """POST to server options edit must show config-test error message on KeaConfigTestError."""
-        from netbox_kea.kea import KeaConfigTestError
+        from netbox_kea.kea import KeaConfigTestError, KeaException
 
-        MockKeaClient.return_value.server_update_options.side_effect = KeaConfigTestError(
-            {"result": 1, "text": "config test failed"}, index=0
-        )
+        cause = KeaException({"result": 1, "text": "config test failed"})
+        MockKeaClient.return_value.server_update_options.side_effect = KeaConfigTestError("dhcp4", cause)
         url = reverse("plugins:netbox_kea:server_dhcp4_options_edit", args=[self.server.pk])
         response = self.client.post(url, {"form-TOTAL_FORMS": "0", "form-INITIAL_FORMS": "0"}, follow=True)
         self.assertEqual(response.status_code, 200)
@@ -1034,11 +1032,10 @@ class TestKeaConfigTestErrorHandling(_ViewTestBase):
     @patch("netbox_kea.models.KeaClient")
     def test_option_def_add_config_test_error_shows_message(self, MockKeaClient):
         """POST to option-def add must show config-test error message on KeaConfigTestError."""
-        from netbox_kea.kea import KeaConfigTestError
+        from netbox_kea.kea import KeaConfigTestError, KeaException
 
-        MockKeaClient.return_value.option_def_add.side_effect = KeaConfigTestError(
-            {"result": 1, "text": "config test failed"}, index=0
-        )
+        cause = KeaException({"result": 1, "text": "config test failed"})
+        MockKeaClient.return_value.option_def_add.side_effect = KeaConfigTestError("dhcp4", cause)
         url = reverse("plugins:netbox_kea:server_option_def4_add", args=[self.server.pk])
         response = self.client.post(
             url,
@@ -1052,11 +1049,10 @@ class TestKeaConfigTestErrorHandling(_ViewTestBase):
     @patch("netbox_kea.models.KeaClient")
     def test_option_def_del_config_test_error_shows_message(self, MockKeaClient):
         """POST to option-def delete must show config-test error message on KeaConfigTestError."""
-        from netbox_kea.kea import KeaConfigTestError
+        from netbox_kea.kea import KeaConfigTestError, KeaException
 
-        MockKeaClient.return_value.option_def_del.side_effect = KeaConfigTestError(
-            {"result": 1, "text": "config test failed"}, index=0
-        )
+        cause = KeaException({"result": 1, "text": "config test failed"})
+        MockKeaClient.return_value.option_def_del.side_effect = KeaConfigTestError("dhcp4", cause)
         url = reverse("plugins:netbox_kea:server_option_def4_delete", args=[self.server.pk, 200, "dhcp4"])
         response = self.client.post(url, follow=True)
         self.assertEqual(response.status_code, 200)

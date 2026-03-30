@@ -547,7 +547,12 @@ class _BaseSubnetAddView(_KeaChangeMixin, generic.ObjectView):
                 try:
                     client.network_subnet_add(version=self.dhcp_version, name=shared_network, subnet_id=partial_id)
                     messages.success(request, f"Subnet assigned to shared network '{shared_network}'.")
-                except Exception:
+                except PartialPersistError:
+                    messages.warning(
+                        request,
+                        f"Subnet assigned to '{shared_network}' but config-write failed (change may not survive restart).",
+                    )
+                except (KeaException, requests.RequestException):
                     logger.exception(
                         "Partially-persisted subnet %s could not be assigned to network %s", partial_id, shared_network
                     )
@@ -638,7 +643,7 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
                 return [("", "— (global pool) —")], None, {}
             dhcp_conf = args.get(f"Dhcp{self.dhcp_version}", {})
             networks = dhcp_conf.get("shared-networks", [])
-        except KeaException:
+        except (KeaException, requests.RequestException, ValueError):
             logger.warning("Failed to fetch shared networks for subnet edit dropdown")
             return [("", "— (global pool) —")], None, {}
 
