@@ -2676,3 +2676,81 @@ class TestEnrichLeasesFailedIpsSeeding(_ViewTestBase):
         # After fix: failed_ips is seeded with all lease IPs, so create-reservation link not shown
         add_url = reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk])
         self.assertNotContains(response, add_url)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# F3: get_export() state filter
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestLeaseExportStateFilter(_ViewTestBase):
+    """get_export() must honour the 'state' query parameter."""
+
+    def _url(self):
+        return reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_state_filter_applied_to_export(self, MockKeaClient):
+        """Exported CSV must contain only leases matching the requested state."""
+        # Return two leases: one with state=0 (default/active), one with state=1 (declined)
+        leases = [
+            {
+                "ip-address": "10.0.0.1",
+                "hw-address": "aa:bb:cc:00:00:01",
+                "subnet-id": 1,
+                "cltt": 1700000000,
+                "valid-lft": 86400,
+                "hostname": "",
+                "state": 0,
+            },
+            {
+                "ip-address": "10.0.0.2",
+                "hw-address": "aa:bb:cc:00:00:02",
+                "subnet-id": 1,
+                "cltt": 1700000000,
+                "valid-lft": 86400,
+                "hostname": "",
+                "state": 1,
+            },
+        ]
+        MockKeaClient.return_value.command.return_value = [{"result": 0, "arguments": {"leases": leases, "count": 2}}]
+
+        # Request export with state=1 (declined only)
+        response = self.client.get(
+            self._url(),
+            {
+                "export": "1",
+                "by": "subnet",
+                "q": "10.0.0.0/24",
+                "state": "1",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        content = response.content.decode()
+        self.assertIn("10.0.0.2", content)
+        self.assertNotIn("10.0.0.1", content)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# F8: HTMX handler exception narrowing
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestHtmxHandlerExceptNarrowing(_ViewTestBase):
+    """HTMX lease handler must not swallow programming errors via bare except Exception."""
+
+    def _url(self):
+        return reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_attribute_error_not_swallowed_by_htmx_handler(self, MockKeaClient):
+        """An AttributeError inside the HTMX handler must propagate (not be caught silently)."""
+        MockKeaClient.return_value.command.side_effect = AttributeError("mock programming bug")
+        with self.assertRaises(AttributeError):
+            self.client.get(
+                self._url(),
+                HTTP_HX_REQUEST="true",
+                data={"by": "subnet", "q": "10.0.0.0/24"},
+            )

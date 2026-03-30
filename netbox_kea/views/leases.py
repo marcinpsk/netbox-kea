@@ -1,5 +1,6 @@
 import concurrent.futures
 import logging
+import uuid
 from abc import ABCMeta
 from typing import Any, Generic, TypeVar
 from urllib.parse import urlencode as _urlencode
@@ -215,6 +216,7 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
             return redirect(request.path)
 
         q = form.cleaned_data["q"]
+        state_filter: int | None = form.cleaned_data.get("state")
         client = instance.get_client(version=self.dhcp_version)
         try:
             if by == constants.BY_SUBNET:
@@ -238,6 +240,9 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
             logger.exception("Unexpected error fetching leases for export on server %s", instance.pk)
             messages.error(request, "Failed to fetch leases for export; see server logs.")
             return redirect(request.path)
+
+        if state_filter is not None:
+            leases = [ls for ls in leases if ls.get("state") == state_filter]
 
         table = self.get_table(leases, request)
         return export_table(table, "leases.csv", use_selected_columns=request.GET["export"] == "table")
@@ -392,9 +397,7 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
             # that so the address bar always shows the clean URL.
             response["HX-Push-Url"] = stripped_return_url
             return response
-        except Exception:
-            import uuid
-
+        except (KeaException, requests.RequestException):
             error_id = str(uuid.uuid4())
             logger.exception("HTMX leases handler error [%s]", error_id)
             return render(
