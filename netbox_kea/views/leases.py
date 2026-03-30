@@ -397,7 +397,7 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
             # that so the address bar always shows the clean URL.
             response["HX-Push-Url"] = stripped_return_url
             return response
-        except (KeaException, requests.RequestException):
+        except (KeaException, requests.RequestException, RuntimeError):
             error_id = str(uuid.uuid4())
             logger.exception("HTMX leases handler error [%s]", error_id)
             return render(
