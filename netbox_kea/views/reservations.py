@@ -295,8 +295,7 @@ class ServerReservations4View(generic.ObjectView):
                 source_index = next_source
         except KeaException as exc:
             hook_available = False
-            if exc.response.get("result") != 2:
-                logger.warning("Failed to fetch DHCPv4 reservations: %s", exc)
+            logger.warning("Failed to fetch DHCPv4 reservations: %s", exc)
         except (requests.RequestException, ValueError):
             hook_available = False
             logger.exception("Unexpected error fetching DHCPv4 reservations")
@@ -369,8 +368,7 @@ class ServerReservations6View(generic.ObjectView):
                 source_index = next_source
         except KeaException as exc:
             hook_available = False
-            if exc.response.get("result") != 2:
-                logger.warning("Failed to fetch DHCPv6 reservations: %s", exc)
+            logger.warning("Failed to fetch DHCPv6 reservations: %s", exc)
         except (requests.RequestException, ValueError):
             hook_available = False
             logger.exception("Unexpected error fetching DHCPv6 reservations")
