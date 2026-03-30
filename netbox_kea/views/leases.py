@@ -283,8 +283,8 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
             logger.exception("Failed to fetch all leases for export on server %s", instance.pk)
             messages.error(request, kea_error_hint(exc))
             return redirect(request.path)
-        except Exception:
-            logger.exception("Unexpected error fetching all leases for export on server %s", instance.pk)
+        except requests.RequestException:
+            logger.exception("Transport error fetching all leases for export on server %s", instance.pk)
             messages.error(request, "Failed to fetch leases for export; see server logs.")
             return redirect(request.path)
 
@@ -490,23 +490,29 @@ class BaseServerLeasesDeleteView(GetReturnURLMixin, generic.ObjectView, metaclas
 
         client = instance.get_client(version=self.dhcp_version)
 
+        successful_ips: list[str] = []
         for ip in lease_ips:
             try:
                 self.delete_lease(client, ip)
+                successful_ips.append(ip)
             except KeaException:  # noqa: PERF203
-                logger.exception("Error deleting lease %s", ip)
+                logger.exception("Error deleting lease %s on server %s", ip, instance.pk)
                 messages.error(request, f"Error deleting lease {ip}: see server logs for details.")
-                return redirect(return_url)
 
-        messages.success(request, f"Deleted {len(lease_ips)} DHCPv{self.dhcp_version} lease(s).")
-        _add_lease_journal(instance, request.user, "deleted", lease_ips)
-        leases_deleted.send_robust(
-            sender=None,
-            server=instance,
-            ip_addresses=lease_ips,
-            dhcp_version=self.dhcp_version,
-            request=request,
-        )
+        if successful_ips:
+            messages.success(request, f"Deleted {len(successful_ips)} DHCPv{self.dhcp_version} lease(s).")
+            _add_lease_journal(instance, request.user, "deleted", successful_ips)
+            leases_deleted.send_robust(
+                sender=None,
+                server=instance,
+                ip_addresses=successful_ips,
+                dhcp_version=self.dhcp_version,
+                request=request,
+            )
+
+        failed_count = len(lease_ips) - len(successful_ips)
+        if failed_count:
+            messages.warning(request, f"Failed to delete {failed_count} lease(s). See above for details.")
         if request.headers.get("HX-Request"):
             response = HttpResponse()
             response["HX-Refresh"] = "true"
@@ -882,11 +888,11 @@ def _enrich_leases_with_badges(
         if exc.response.get("result") == 2:
             host_cmds_available = False
         else:
+            failed_ips = {lease.get("ip_address", "") for lease in leases}
             logger.warning("reservation lookup failed during lease enrichment: %s", exc)
-            # Don't mark hook as unavailable — it's a transport/API error, not a missing hook
-    except Exception as exc:  # noqa: BLE001 — unexpected error (e.g. mock misconfiguration)
-        logger.warning("unexpected error during lease enrichment: %s", exc)
-        # Don't mark hook as unavailable
+    except Exception as exc:  # noqa: BLE001
+        failed_ips = {lease.get("ip_address", "") for lease in leases}
+        logger.warning("unexpected error during lease enrichment: %s", exc, exc_info=True)
 
     for lease in leases:
         ip = lease.get("ip_address", "")

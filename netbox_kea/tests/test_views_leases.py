@@ -2554,3 +2554,125 @@ class TestCombinedLeasesTruncated(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         truncated = response.context.get("truncated_servers", [])
         self.assertIn(self.server.name, truncated)
+
+
+# ---------------------------------------------------------------------------
+# Fix A: partial delete loop
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestLeasePartialDelete(_ViewTestBase):
+    """Bulk delete continues past individual KeaExceptions."""
+
+    def _url(self):
+        return reverse("plugins:netbox_kea:server_leases4_delete", args=[self.server.pk])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_continues_after_first_delete_error(self, MockKeaClient):
+        """When the first IP fails, the second IP is still deleted."""
+        from netbox_kea.kea import KeaException
+
+        mock_client = MockKeaClient.return_value
+        mock_client.command.side_effect = [
+            KeaException({"result": 1, "text": "not found", "arguments": None}, index=0),
+            None,
+        ]
+        response = self.client.post(
+            self._url(),
+            {"lease_ips": ["10.0.0.1", "10.0.0.2"], "_confirm": "1", "pk": ["10.0.0.1", "10.0.0.2"]},
+            follow=True,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(mock_client.command.call_count, 2)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_success_message_shows_count_of_deleted(self, MockKeaClient):
+        """Success message reflects only the successfully deleted count."""
+        MockKeaClient.return_value.command.return_value = None
+        response = self.client.post(
+            self._url(),
+            {"lease_ips": ["10.0.0.1", "10.0.0.2"], "_confirm": "1", "pk": ["10.0.0.1", "10.0.0.2"]},
+            follow=True,
+        )
+        msgs = [str(m) for m in response.context["messages"]]
+        self.assertTrue(any("2" in m and "deleted" in m.lower() for m in msgs))
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_partial_failure_shows_warning(self, MockKeaClient):
+        """When some IPs fail, a warning message about partial failure is shown."""
+        from netbox_kea.kea import KeaException
+
+        mock_client = MockKeaClient.return_value
+        mock_client.command.side_effect = [
+            KeaException({"result": 1, "text": "not found", "arguments": None}, index=0),
+            None,
+        ]
+        response = self.client.post(
+            self._url(),
+            {"lease_ips": ["10.0.0.1", "10.0.0.2"], "_confirm": "1", "pk": ["10.0.0.1", "10.0.0.2"]},
+            follow=True,
+        )
+        msgs = [str(m) for m in response.context["messages"]]
+        self.assertTrue(any("failed" in m.lower() or "error" in m.lower() for m in msgs))
+
+
+# ---------------------------------------------------------------------------
+# Fix B: get_export_all except narrowing
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestLeaseExportAllExceptNarrowing(_ViewTestBase):
+    """get_export_all() must not swallow local bugs via bare except Exception."""
+
+    def _url(self):
+        return reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_attribute_error_propagates(self, MockKeaClient):
+        """An AttributeError inside get_export_all must not be silently caught."""
+        MockKeaClient.return_value.command.side_effect = AttributeError("bad mock")
+        with self.assertRaises(AttributeError):
+            self.client.get(self._url(), {"export_all": "1"})
+
+
+# ---------------------------------------------------------------------------
+# Fix C: reservation enrichment failed_ips seeding
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestEnrichLeasesFailedIpsSeeding(_ViewTestBase):
+    """On enrichment error, all lease IPs are marked as indeterminate (failed_ips)."""
+
+    @patch("netbox_kea.views.leases._fetch_reservation_by_ip_for_leases")
+    @patch("netbox_kea.models.KeaClient")
+    def test_reservation_enrichment_exception_does_not_show_not_reserved(self, MockKeaClient, mock_fetch_reservations):
+        """When reservation lookup raises an unexpected Exception, leases must not
+        incorrectly appear as 'not reserved' (no create-reservation link shown)."""
+        mock_client = MockKeaClient.return_value
+
+        raw_leases = [
+            {
+                "ip-address": "10.0.0.1",
+                "hw-address": "aa:bb:cc:dd:ee:ff",
+                "subnet-id": 1,
+                "cltt": 1700000000,
+                "valid-lft": 86400,
+                "hostname": "testhost",
+            }
+        ]
+        # subnet_id=1 search: client.command returns leases
+        mock_client.command.return_value = [{"result": 0, "arguments": {"leases": raw_leases}}]
+        # Make reservation lookup raise an unexpected exception
+        mock_fetch_reservations.side_effect = RuntimeError("unexpected enrichment failure")
+
+        url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+        # Use by=subnet_id so q="1" is a valid integer subnet ID (by=subnet requires CIDR)
+        response = self.client.get(url, HTTP_HX_REQUEST="true", data={"by": "subnet_id", "q": "1"})
+
+        self.assertEqual(response.status_code, 200)
+        # After fix: failed_ips is seeded with all lease IPs, so create-reservation link not shown
+        add_url = reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk])
+        self.assertNotContains(response, add_url)
