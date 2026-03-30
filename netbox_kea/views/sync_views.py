@@ -171,7 +171,7 @@ class _BaseBulkReservationSyncView(ConditionalLoginRequiredMixin, View):
             return HttpResponseRedirect(
                 reverse(f"plugins:netbox_kea:server_reservations{self.dhcp_version}", args=[pk])
             )
-        except Exception:
+        except (requests.RequestException, ValueError):
             logger.exception("Failed to fetch reservations from %s (DHCPv%s)", server.name, self.dhcp_version)
             messages.error(request, "Failed to fetch reservations: see server logs for details.")
             return HttpResponseRedirect(
@@ -348,7 +348,7 @@ class _BaseBulkReservationImportView(_KeaChangeMixin, ConditionalLoginRequiredMi
                     skipped += 1
                 else:
                     error_rows.append({"row": row, "error": kea_error_hint(exc)})
-            except requests.RequestException:
+            except (requests.RequestException, ValueError):
                 logger.exception("Transport error importing reservation row %s", row)
                 error_rows.append({"row": row, "error": "Connection error — could not reach Kea server."})
 
@@ -498,7 +498,7 @@ class _BaseBulkLeaseImportView(_KeaChangeMixin, ConditionalLoginRequiredMixin, V
                 created += 1
             except KeaException as exc:  # noqa: PERF203
                 error_rows.append({"row": row, "error": kea_error_hint(exc)})
-            except requests.RequestException:
+            except (requests.RequestException, ValueError):
                 logger.exception("Transport error importing lease row %s", row)
                 error_rows.append({"row": row, "error": "Connection error — could not reach Kea server."})
 

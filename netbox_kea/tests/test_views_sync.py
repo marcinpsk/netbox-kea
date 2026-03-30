@@ -179,9 +179,12 @@ class TestBulkReservationSyncFetchException(_ViewTestBase):
 
     @patch("netbox_kea.models.KeaClient")
     def test_post_fetch_exception_shows_error(self, MockKeaClient):
-        """Exception in _fetch_reservations_from_server must show error message, not raw exception text."""
+        """requests.RequestException from _fetch_reservations_from_server must show error and redirect."""
+        import requests as req_lib
+
         with patch(
-            "netbox_kea.views.sync_views._fetch_reservations_from_server", side_effect=RuntimeError("fetch fail")
+            "netbox_kea.views.sync_views._fetch_reservations_from_server",
+            side_effect=req_lib.ConnectionError("fetch fail"),
         ):
             response = self.client.post(self._url(), follow=True)
         msgs = list(response.context["messages"])
@@ -483,3 +486,78 @@ class TestLeaseImportBareExcept(_ViewTestBase):
         csv_file.name = "leases.csv"
         with self.assertRaises(AttributeError):
             self.client.post(url, {"csv_file": csv_file})
+
+
+# ---------------------------------------------------------------------------
+# TestImportLoopValueError  (F8)
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestImportLoopValueError(_ViewTestBase):
+    """Import loops must handle ValueError from Kea client."""
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_reservation_import_value_error_is_row_error(self, MockKeaClient):
+        """ValueError from reservation_add must be treated as a row error, not abort the import."""
+        mock_client = MockKeaClient.return_value
+        call_count = {"n": 0}
+
+        def side_effect(service, row):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                raise ValueError("bad JSON from Kea")
+
+        mock_client.reservation_add.side_effect = side_effect
+
+        url = reverse("plugins:netbox_kea:server_reservation4_bulk_import", args=[self.server.pk])
+        import io
+
+        csv_content = "ip-address,hw-address,subnet-id\n10.0.0.1,aa:bb:cc:00:00:01,1\n10.0.0.2,aa:bb:cc:00:00:02,1\n"
+        csv_file = io.BytesIO(csv_content.encode())
+        csv_file.name = "reservations.csv"
+        response = self.client.post(url, {"csv_file": csv_file})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(call_count["n"], 2)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_lease_import_value_error_is_row_error(self, MockKeaClient):
+        """ValueError from lease_add must be treated as a row error, not abort the import."""
+        mock_client = MockKeaClient.return_value
+        call_count = {"n": 0}
+
+        def side_effect(version, row):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                raise ValueError("bad JSON from Kea")
+
+        mock_client.lease_add.side_effect = side_effect
+
+        url = reverse("plugins:netbox_kea:server_lease4_bulk_import", args=[self.server.pk])
+        import io
+
+        csv_content = "ip-address\n10.0.0.1\n10.0.0.2\n"
+        csv_file = io.BytesIO(csv_content.encode())
+        csv_file.name = "leases.csv"
+        response = self.client.post(url, {"csv_file": csv_file})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(call_count["n"], 2)
+
+
+# ---------------------------------------------------------------------------
+# TestBulkReservationSyncExceptNarrowing  (F9)
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestBulkReservationSyncExceptNarrowing(_ViewTestBase):
+    """_BaseBulkReservationSyncView must not swallow programming errors."""
+
+    @patch("netbox_kea.views.sync_views._fetch_reservations_from_server")
+    def test_attribute_error_propagates(self, mock_fetch):
+        """An AttributeError from _fetch_reservations_from_server must propagate."""
+        mock_fetch.side_effect = AttributeError("programming bug")
+
+        url = reverse("plugins:netbox_kea:server_reservation4_bulk_sync", args=[self.server.pk])
+        with self.assertRaises(AttributeError):
+            self.client.post(url)
