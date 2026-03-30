@@ -4143,3 +4143,86 @@ class TestSubnetUpdateMerge(TestCase):
         dns = [o for o in sent.get("option-data", []) if o["name"] == "dns-servers"]
         self.assertEqual(len(dns), 1)
         self.assertEqual(dns[0]["data"], "2001:4860:4860::8844")
+
+
+# ---------------------------------------------------------------------------
+# TestSubnetAddAmbiguousCreate
+# ---------------------------------------------------------------------------
+
+_CONFIG_GET_WITH_NEW_SUBNET = [
+    {
+        "result": 0,
+        "arguments": {
+            "Dhcp4": {
+                "subnet4": [{"id": 10, "subnet": "10.99.0.0/24"}],
+                "shared-networks": [],
+            }
+        },
+    }
+]
+_CONFIG_GET_WITHOUT_NEW_SUBNET = [
+    {
+        "result": 0,
+        "arguments": {
+            "Dhcp4": {
+                "subnet4": [{"id": 1, "subnet": "10.0.0.0/24"}],
+                "shared-networks": [],
+            }
+        },
+    }
+]
+
+
+class TestSubnetAddAmbiguousCreate(TestCase):
+    """Tests for subnet_add() transport-error probe logic."""
+
+    def setUp(self):
+        self.client = KeaClient(url="http://kea:8000")
+
+    def test_raises_partial_persist_error_when_subnet_found_after_transport_error(self):
+        """If subnet-add transport fails but config-get confirms the subnet exists,
+        PartialPersistError is raised with the found subnet_id set."""
+
+        def _side(url, **kwargs):
+            cmd = kwargs.get("json", {}).get("command", "")
+            if cmd.startswith("subnet4-list"):
+                return _mock_http_response(_SUBNET4_LIST_RESP)
+            if cmd == "subnet4-add":
+                raise requests.ConnectionError("connection reset")
+            if cmd == "config-get":
+                return _mock_http_response(_CONFIG_GET_WITH_NEW_SUBNET)
+            return _mock_http_response(_OK)
+
+        with patch.object(self.client._session, "post", side_effect=_side):
+            with self.assertRaises(PartialPersistError) as ctx:
+                self.client.subnet_add(version=4, subnet_cidr="10.99.0.0/24")
+        self.assertEqual(ctx.exception.subnet_id, 10)
+
+    def test_reraises_transport_error_when_subnet_not_found_after_probe(self):
+        """If subnet-add transport fails and config-get confirms the subnet does NOT exist,
+        the original requests.ConnectionError is re-raised (not PartialPersistError)."""
+
+        def _side(url, **kwargs):
+            cmd = kwargs.get("json", {}).get("command", "")
+            if cmd.startswith("subnet4-list"):
+                return _mock_http_response(_SUBNET4_LIST_RESP)
+            if cmd == "subnet4-add":
+                raise requests.ConnectionError("connection reset")
+            if cmd == "config-get":
+                return _mock_http_response(_CONFIG_GET_WITHOUT_NEW_SUBNET)
+            return _mock_http_response(_OK)
+
+        with patch.object(self.client._session, "post", side_effect=_side):
+            with self.assertRaises(requests.ConnectionError):
+                self.client.subnet_add(version=4, subnet_cidr="10.99.0.0/24")
+
+    def test_reraises_transport_error_when_probe_also_fails(self):
+        """If both subnet-add and the config-get probe fail with transport errors,
+        the original exception is re-raised."""
+
+        def _side(url, **kwargs):
+            raise requests.ConnectionError("all down")
+
+        with patch.object(self.client._session, "post", side_effect=_side):
+            with self.assertRaises(requests.ConnectionError):
+                self.client.subnet_add(version=4, subnet_cidr="10.99.0.0/24", subnet_id=42)

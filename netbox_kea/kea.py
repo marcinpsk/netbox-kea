@@ -378,26 +378,33 @@ class KeaClient:
             )
         if option_data:
             subnet_def["option-data"] = option_data
-        last_exc: KeaException | None = None
-        add_resp: list | None = None
-        auto_assigned_id = subnet_id is None and "id" in subnet_def
-        for _attempt in range(3):
-            try:
-                add_resp = self.command(
-                    f"subnet{version}-add",
-                    service=[service],
-                    arguments={subnet_key: [dict(subnet_def)]},
-                )
-                last_exc = None
-                break
-            except KeaException as exc:
-                if auto_assigned_id and "duplicate" in str(exc).lower() and "id" in subnet_def:
-                    subnet_def["id"] += 1
-                    last_exc = exc
-                else:
-                    raise
-        if last_exc is not None:
-            raise last_exc
+        try:
+            last_exc: KeaException | None = None
+            add_resp: list | None = None
+            auto_assigned_id = subnet_id is None and "id" in subnet_def
+            for _attempt in range(3):
+                try:
+                    add_resp = self.command(
+                        f"subnet{version}-add",
+                        service=[service],
+                        arguments={subnet_key: [dict(subnet_def)]},
+                    )
+                    last_exc = None
+                    break
+                except KeaException as exc:
+                    if auto_assigned_id and "duplicate" in str(exc).lower() and "id" in subnet_def:
+                        subnet_def["id"] += 1
+                        last_exc = exc
+                    else:
+                        raise
+            if last_exc is not None:
+                raise last_exc
+        except requests.RequestException as transport_exc:
+            found_id = self._find_subnet_id_by_cidr(version, subnet_def["subnet"])
+            if found_id is not None:
+                err = PartialPersistError(service, transport_exc, subnet_id=found_id)
+                raise err from transport_exc
+            raise
         # Prefer the authoritative ID Kea echoes back in the add response — it is
         # the only source of truth when subnet{v}-list failed and no explicit id was
         # provided (subnet_def would have no "id" key in that case → returns None).
