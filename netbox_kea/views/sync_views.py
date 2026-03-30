@@ -53,9 +53,9 @@ class _BaseSyncView(ConditionalLoginRequiredMixin, View):
         except (AddrFormatError, ValueError):
             return HttpResponse("Invalid IP address", status=400)
 
-        hostname = request.POST.get("hostname", "").strip()
-        synthetic = {"ip-address": ip_str, "hostname": hostname}
-        data = self._fetch_live_data(server, ip_str, synthetic)
+        data = self._fetch_live_data(server, ip_str)
+        if data is None:
+            return HttpResponse("Could not fetch live data from Kea.", status=400)
         try:
             nb_ip, _created = self._sync(data)
         except (ValueError, IntegrityError, ValidationError, OperationalError, ProgrammingError):
@@ -68,12 +68,12 @@ class _BaseSyncView(ConditionalLoginRequiredMixin, View):
             {"nb_ip": nb_ip},
         )
 
-    def _fetch_live_data(self, server: "Server", ip_str: str, fallback: dict) -> dict:  # noqa: ARG002
+    def _fetch_live_data(self, server: "Server", ip_str: str) -> "dict | None":  # noqa: ARG002
         """Fetch live data for *ip_str* from Kea.  Subclasses override for protocol-specific lookup.
 
-        Returns *fallback* when live fetch is not implemented or fails.
+        Returns ``None`` when live fetch is not implemented or fails.
         """
-        return fallback
+        return None
 
     def _sync(self, data: dict):
         raise NotImplementedError
@@ -82,14 +82,14 @@ class _BaseSyncView(ConditionalLoginRequiredMixin, View):
 class ServerLease4SyncView(_BaseSyncView):
     """Sync a single DHCPv4 lease to a NetBox IPAddress (status=active)."""
 
-    def _fetch_live_data(self, server: "Server", ip_str: str, fallback: dict) -> dict:
+    def _fetch_live_data(self, server: "Server", ip_str: str) -> "dict | None":
         try:
             client = server.get_client(version=4)
             lease = client.lease_get_by_ip(4, ip_str)
-            return lease if lease else fallback
+            return lease if lease else None
         except (KeaException, requests.RequestException, ValueError):
-            logger.debug("Could not fetch live lease4 data for %s, using fallback", ip_str)
-            return fallback
+            logger.debug("Could not fetch live lease4 data for %s", ip_str)
+            return None
 
     def _sync(self, data: dict):
         from ..sync import sync_lease_to_netbox
@@ -100,14 +100,14 @@ class ServerLease4SyncView(_BaseSyncView):
 class ServerLease6SyncView(_BaseSyncView):
     """Sync a single DHCPv6 lease to a NetBox IPAddress (status=active)."""
 
-    def _fetch_live_data(self, server: "Server", ip_str: str, fallback: dict) -> dict:
+    def _fetch_live_data(self, server: "Server", ip_str: str) -> "dict | None":
         try:
             client = server.get_client(version=6)
             lease = client.lease_get_by_ip(6, ip_str)
-            return lease if lease else fallback
+            return lease if lease else None
         except (KeaException, requests.RequestException, ValueError):
-            logger.debug("Could not fetch live lease6 data for %s, using fallback", ip_str)
-            return fallback
+            logger.debug("Could not fetch live lease6 data for %s", ip_str)
+            return None
 
     def _sync(self, data: dict):
         from ..sync import sync_lease_to_netbox
@@ -118,14 +118,14 @@ class ServerLease6SyncView(_BaseSyncView):
 class ServerReservation4SyncView(_BaseSyncView):
     """Sync a DHCPv4 reservation to a NetBox IPAddress (status=reserved)."""
 
-    def _fetch_live_data(self, server: "Server", ip_str: str, fallback: dict) -> dict:
+    def _fetch_live_data(self, server: "Server", ip_str: str) -> "dict | None":
         try:
             client = server.get_client(version=4)
             reservation = client.reservation_get_by_ip(4, ip_str)
-            return reservation if reservation else fallback
+            return reservation if reservation else None
         except (KeaException, requests.RequestException, ValueError):
-            logger.debug("Could not fetch live reservation4 data for %s, using fallback", ip_str)
-            return fallback
+            logger.debug("Could not fetch live reservation4 data for %s", ip_str)
+            return None
 
     def _sync(self, data: dict):
         from ..sync import sync_reservation_to_netbox
@@ -136,14 +136,14 @@ class ServerReservation4SyncView(_BaseSyncView):
 class ServerReservation6SyncView(_BaseSyncView):
     """Sync a DHCPv6 reservation to a NetBox IPAddress (status=reserved)."""
 
-    def _fetch_live_data(self, server: "Server", ip_str: str, fallback: dict) -> dict:
+    def _fetch_live_data(self, server: "Server", ip_str: str) -> "dict | None":
         try:
             client = server.get_client(version=6)
             reservation = client.reservation_get_by_ip(6, ip_str)
-            return reservation if reservation else fallback
+            return reservation if reservation else None
         except (KeaException, requests.RequestException, ValueError):
-            logger.debug("Could not fetch live reservation6 data for %s, using fallback", ip_str)
-            return fallback
+            logger.debug("Could not fetch live reservation6 data for %s", ip_str)
+            return None
 
     def _sync(self, data: dict):
         from ..sync import sync_reservation_to_netbox
@@ -351,9 +351,6 @@ class _BaseBulkReservationImportView(_KeaChangeMixin, ConditionalLoginRequiredMi
             except requests.RequestException:
                 logger.exception("Transport error importing reservation row %s", row)
                 error_rows.append({"row": row, "error": "Connection error — could not reach Kea server."})
-            except Exception:
-                logger.exception("Unexpected error importing reservation row %s", row)
-                error_rows.append({"row": row, "error": "An unexpected error occurred."})
 
         result = {
             "created": created,
@@ -504,9 +501,6 @@ class _BaseBulkLeaseImportView(_KeaChangeMixin, ConditionalLoginRequiredMixin, V
             except requests.RequestException:
                 logger.exception("Transport error importing lease row %s", row)
                 error_rows.append({"row": row, "error": "Connection error — could not reach Kea server."})
-            except Exception:
-                logger.exception("Unexpected error importing lease row %s", row)
-                error_rows.append({"row": row, "error": "An unexpected error occurred."})
 
         result = {
             "created": created,

@@ -286,7 +286,7 @@ class TestReservationImportGenericException(_ViewTestBase):
 
     @patch("netbox_kea.models.KeaClient")
     def test_generic_exception_appended_to_errors(self, MockKeaClient):
-        """Generic exception adds 'unexpected error' to error_rows."""
+        """RuntimeError from reservation_add propagates (bare except removed)."""
         MockKeaClient.return_value.reservation_add.side_effect = RuntimeError("crash")
         url = reverse("plugins:netbox_kea:server_reservation4_bulk_import", args=[self.server.pk])
         import io
@@ -294,11 +294,8 @@ class TestReservationImportGenericException(_ViewTestBase):
         csv_content = "ip-address,hw-address,subnet-id\n10.0.0.1,aa:bb:cc:dd:ee:ff,1"
         csv_file = io.BytesIO(csv_content.encode())
         csv_file.name = "reservations.csv"
-        response = self.client.post(url, {"csv_file": csv_file, "subnet_id": "1"})
-        self.assertEqual(response.status_code, 200)
-        result = response.context["result"]
-        self.assertEqual(len(result["error_rows"]), 1)
-        self.assertIn("unexpected error", result["error_rows"][0]["error"].lower())
+        with self.assertRaises(RuntimeError):
+            self.client.post(url, {"csv_file": csv_file, "subnet_id": "1"})
 
 
 # ---------------------------------------------------------------------------
@@ -346,30 +343,23 @@ class TestReservation4SyncViewFetchLiveData(_ViewTestBase):
 
     @patch("netbox_kea.models.KeaClient")
     def test_falls_back_to_synthetic_when_reservation_not_found(self, MockKeaClient):
-        """When reservation_get_by_ip returns None, synthetic fallback is used."""
+        """When reservation_get_by_ip returns None, response is 400 (no sync)."""
         MockKeaClient.return_value.reservation_get_by_ip.return_value = None
 
-        with patch("netbox_kea.views.ServerReservation4SyncView._sync") as mock_sync:
-            mock_sync.return_value = (MagicMock(), False)
-            self.client.post(self._url(), {"ip_address": "10.0.0.5", "hostname": "fallback"})
+        response = self.client.post(self._url(), {"ip_address": "10.0.0.5", "hostname": "fallback"})
 
-        data = mock_sync.call_args[0][0]
-        self.assertEqual(data["hostname"], "fallback")
+        self.assertEqual(response.status_code, 400)
 
     @patch("netbox_kea.models.KeaClient")
     def test_falls_back_on_kea_exception(self, MockKeaClient):
-        """When reservation_get_by_ip raises KeaException, synthetic fallback is used."""
+        """When reservation_get_by_ip raises KeaException, response is 400."""
         from netbox_kea.kea import KeaException
 
         MockKeaClient.return_value.reservation_get_by_ip.side_effect = KeaException({"result": 1, "text": "not found"})
 
-        with patch("netbox_kea.views.ServerReservation4SyncView._sync") as mock_sync:
-            mock_sync.return_value = (MagicMock(), False)
-            self.client.post(self._url(), {"ip_address": "10.0.0.5", "hostname": "fallback"})
+        response = self.client.post(self._url(), {"ip_address": "10.0.0.5", "hostname": "fallback"})
 
-        data = mock_sync.call_args[0][0]
-        self.assertEqual(data["ip-address"], "10.0.0.5")
-        self.assertEqual(data["hostname"], "fallback")
+        self.assertEqual(response.status_code, 400)
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
@@ -384,22 +374,112 @@ class TestReservation6SyncViewFetchLiveData(_ViewTestBase):
         """Calls reservation_get_by_ip with version=6 for the v6 view."""
         MockKeaClient.return_value.reservation_get_by_ip.return_value = None
 
-        with patch("netbox_kea.views.ServerReservation6SyncView._sync") as mock_sync:
-            mock_sync.return_value = (MagicMock(), False)
-            self.client.post(self._url(), {"ip_address": "2001:db8::1", "hostname": ""})
+        response = self.client.post(self._url(), {"ip_address": "2001:db8::1", "hostname": ""})
 
         MockKeaClient.return_value.reservation_get_by_ip.assert_called_once_with(6, "2001:db8::1")
+        self.assertEqual(response.status_code, 400)
 
     @patch("netbox_kea.models.KeaClient")
     def test_falls_back_on_request_exception(self, MockKeaClient):
-        """When reservation_get_by_ip raises requests.RequestException, synthetic fallback is used."""
+        """When reservation_get_by_ip raises requests.RequestException, response is 400."""
         import requests as req
 
         MockKeaClient.return_value.reservation_get_by_ip.side_effect = req.RequestException("timeout")
 
-        with patch("netbox_kea.views.ServerReservation6SyncView._sync") as mock_sync:
-            mock_sync.return_value = (MagicMock(), False)
-            self.client.post(self._url(), {"ip_address": "2001:db8::1", "hostname": "fallback6"})
+        response = self.client.post(self._url(), {"ip_address": "2001:db8::1", "hostname": "fallback6"})
 
-        data = mock_sync.call_args[0][0]
-        self.assertEqual(data["hostname"], "fallback6")
+        self.assertEqual(response.status_code, 400)
+
+
+# ---------------------------------------------------------------------------
+# TestFetchLiveDataNoSyntheticFallback  (F11)
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestFetchLiveDataNoSyntheticFallback(_ViewTestBase):
+    """_fetch_live_data must NOT mutate NetBox when Kea returns None or errors."""
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_kea_not_found_returns_400(self, MockKeaClient):
+        """When Kea returns no lease (not found), response is 400 (no sync)."""
+        MockKeaClient.return_value.lease_get_by_ip.return_value = None
+        url = reverse("plugins:netbox_kea:server_lease4_sync", args=[self.server.pk])
+        response = self.client.post(url, {"ip_address": "10.0.0.99"})
+        self.assertEqual(response.status_code, 400)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_kea_exception_returns_400(self, MockKeaClient):
+        """When Kea raises an exception, response is 400 (no sync)."""
+        from netbox_kea.kea import KeaException
+
+        MockKeaClient.return_value.lease_get_by_ip.side_effect = KeaException(
+            {"result": 1, "text": "not found"}, index=0
+        )
+        url = reverse("plugins:netbox_kea:server_lease4_sync", args=[self.server.pk])
+        response = self.client.post(url, {"ip_address": "10.0.0.99"})
+        self.assertEqual(response.status_code, 400)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_kea_found_calls_sync(self, MockKeaClient):
+        """When Kea returns a lease, _sync IS called."""
+        MockKeaClient.return_value.lease_get_by_ip.return_value = {
+            "ip-address": "10.0.0.1",
+            "hw-address": "aa:bb:cc:00:00:01",
+            "hostname": "realhost",
+            "valid-lft": 86400,
+            "cltt": 1700000000,
+            "subnet-id": 1,
+        }
+        with patch("netbox_kea.views.ServerLease4SyncView._sync") as mock_sync:
+            mock_sync.return_value = (MagicMock(), True)
+            url = reverse("plugins:netbox_kea:server_lease4_sync", args=[self.server.pk])
+            response = self.client.post(url, {"ip_address": "10.0.0.1"})
+        self.assertEqual(response.status_code, 200)
+        mock_sync.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# TestReservationImportBareExcept  (F10)
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestReservationImportBareExcept(_ViewTestBase):
+    """Reservation import bare except removed — programming errors propagate."""
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_attribute_error_propagates(self, MockKeaClient):
+        """An AttributeError from reservation_add must propagate."""
+        MockKeaClient.return_value.reservation_add.side_effect = AttributeError("bug")
+        url = reverse("plugins:netbox_kea:server_reservation4_bulk_import", args=[self.server.pk])
+        import io
+
+        csv_content = "ip-address,hw-address,subnet-id\n10.0.0.1,aa:bb:cc:dd:ee:ff,1"
+        csv_file = io.BytesIO(csv_content.encode())
+        csv_file.name = "reservations.csv"
+        with self.assertRaises(AttributeError):
+            self.client.post(url, {"csv_file": csv_file})
+
+
+# ---------------------------------------------------------------------------
+# TestLeaseImportBareExcept  (F12)
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestLeaseImportBareExcept(_ViewTestBase):
+    """Lease import bare except removed — programming errors propagate."""
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_attribute_error_propagates(self, MockKeaClient):
+        """An AttributeError from lease_add must propagate."""
+        MockKeaClient.return_value.lease_add.side_effect = AttributeError("bug")
+        url = reverse("plugins:netbox_kea:server_lease4_bulk_import", args=[self.server.pk])
+        import io
+
+        csv_content = "ip-address,hw-address,hostname,valid-lft,subnet-id\n10.0.0.1,aa:bb:cc:00:00:01,host1,86400,1"
+        csv_file = io.BytesIO(csv_content.encode())
+        csv_file.name = "leases.csv"
+        with self.assertRaises(AttributeError):
+            self.client.post(url, {"csv_file": csv_file})
