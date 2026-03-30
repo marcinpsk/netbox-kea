@@ -2098,3 +2098,58 @@ class TestSubnetAddPartialPersistNetworkAssign(_ViewTestBase):
         self.assertFalse(any("could not assign" in m.lower() for m in msgs))
         # network_subnet_add was called (subnet IS live)
         mock_client.network_subnet_add.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Subnet add: warn when assigned_id is None but shared_network requested
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestSubnetAddNoIdWarning(_ViewTestBase):
+    """When subnet_add returns None and shared_network requested, show a warning."""
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_warning_shown_when_no_id_returned(self, MockKeaClient):
+        """subnet_add returning None with shared_network requested must show warning."""
+        mock_client = MockKeaClient.return_value
+        # subnet_add returns None (no ID)
+        mock_client.subnet_add.return_value = None
+        # Mock shared network choices from config-get
+        mock_client.command.return_value = [
+            {
+                "result": 0,
+                "arguments": {
+                    "Dhcp4": {
+                        "shared-networks": [{"name": "my-net"}],
+                        "subnet4": [],
+                    }
+                },
+            }
+        ]
+
+        url = reverse("plugins:netbox_kea:server_subnet4_add", args=[self.server.pk])
+        response = self.client.post(
+            url,
+            {
+                "subnet": "10.99.0.0/24",
+                "shared_network": "my-net",
+                "pools": "",
+                "gateway": "",
+                "dns_servers": "",
+                "ntp_servers": "",
+            },
+            follow=True,
+        )
+        self.assertEqual(response.status_code, 200)
+        msgs = [str(m) for m in response.context["messages"]]
+        # Must see a warning about missing ID / network assignment skipped
+        self.assertTrue(
+            any(
+                "no id" in m.lower() or "could not assign" in m.lower() or "no id was returned" in m.lower()
+                for m in msgs
+            ),
+            f"Expected warning about missing ID but got: {msgs}",
+        )
+        # network_subnet_add must NOT have been called (we have no ID)
+        mock_client.network_subnet_add.assert_not_called()

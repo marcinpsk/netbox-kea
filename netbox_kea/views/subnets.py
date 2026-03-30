@@ -538,6 +538,14 @@ class _BaseSubnetAddView(_KeaChangeMixin, generic.ObjectView):
                         "Subnet %s created but failed to assign to network %s", cd["subnet"], shared_network
                     )
                     messages.warning(request, f"Subnet created but could not be assigned to '{shared_network}'.")
+            elif shared_network:
+                logger.warning(
+                    "Subnet %s added but no ID returned — cannot assign to network %s", cd.get("subnet"), shared_network
+                )
+                messages.warning(
+                    request,
+                    f"Subnet added but no ID was returned by Kea; could not assign to '{shared_network}'.",
+                )
         except PartialPersistError as exc:
             messages.warning(request, "Subnet added but config-write failed (change may not survive a Kea restart).")
             # The subnet is live; attempt network assignment if we have the ID.
