@@ -462,12 +462,12 @@ class TestReservation6AddExceptions(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
 
     @patch("netbox_kea.models.KeaClient")
-    def test_generic_exception_rerenders_form(self, MockKeaClient):
-        """Unexpected exception must re-render the form with a generic error."""
+    def test_generic_exception_propagates(self, MockKeaClient):
+        """Unexpected exception must propagate (not be silently caught)."""
         MockKeaClient.return_value.reservation_add.side_effect = RuntimeError("bang")
         MockKeaClient.return_value.reservation_get_page.return_value = ([], 0, 0)
-        response = self.client.post(self._url(), _VALID_RESERVATION6_POST)
-        self.assertEqual(response.status_code, 200)
+        with self.assertRaises(RuntimeError):
+            self.client.post(self._url(), _VALID_RESERVATION6_POST)
 
 
 # ---------------------------------------------------------------------------
@@ -495,9 +495,11 @@ class TestReservation4EditExceptions(_ViewTestBase):
         self._assert_no_none_pk_redirect(response)
 
     @patch("netbox_kea.models.KeaClient")
-    def test_get_redirects_on_generic_exception(self, MockKeaClient):
-        """GET that raises generic Exception during reservation fetch must redirect."""
-        MockKeaClient.return_value.reservation_get.side_effect = RuntimeError("crash")
+    def test_get_redirects_on_transport_error(self, MockKeaClient):
+        """GET that raises RequestException during reservation fetch must redirect."""
+        import requests as _req
+
+        MockKeaClient.return_value.reservation_get.side_effect = _req.ConnectionError("down")
         response = self.client.get(self._url())
         self.assertEqual(response.status_code, 302)
 
@@ -556,11 +558,11 @@ class TestReservation4EditExceptions(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
 
     @patch("netbox_kea.models.KeaClient")
-    def test_post_generic_exception_rerenders_form(self, MockKeaClient):
-        """Unexpected exception on reservation_update must re-render the form."""
+    def test_post_generic_exception_propagates(self, MockKeaClient):
+        """Unexpected exception on reservation_update must propagate."""
         MockKeaClient.return_value.reservation_update.side_effect = RuntimeError("crash")
-        response = self.client.post(self._url(), _VALID_RESERVATION4_POST)
-        self.assertEqual(response.status_code, 200)
+        with self.assertRaises(RuntimeError):
+            self.client.post(self._url(), _VALID_RESERVATION4_POST)
 
     @patch("netbox_kea.models.KeaClient")
     def test_post_success_with_sync(self, MockKeaClient):
@@ -606,9 +608,11 @@ class TestReservation6EditExceptions(_ViewTestBase):
         self.assertEqual(response.status_code, 302)
 
     @patch("netbox_kea.models.KeaClient")
-    def test_get_redirects_on_generic_exception(self, MockKeaClient):
-        """GET that raises generic Exception must redirect."""
-        MockKeaClient.return_value.reservation_get.side_effect = RuntimeError("boom")
+    def test_get_redirects_on_transport_error(self, MockKeaClient):
+        """GET that raises RequestException during reservation fetch must redirect."""
+        import requests as _req
+
+        MockKeaClient.return_value.reservation_get.side_effect = _req.ConnectionError("down")
         response = self.client.get(self._url())
         self.assertEqual(response.status_code, 302)
 
@@ -642,11 +646,11 @@ class TestReservation6EditExceptions(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
 
     @patch("netbox_kea.models.KeaClient")
-    def test_post_generic_exception_rerenders_form(self, MockKeaClient):
-        """Unexpected exception on reservation_update must re-render form."""
+    def test_post_generic_exception_propagates(self, MockKeaClient):
+        """Unexpected exception on reservation_update must propagate."""
         MockKeaClient.return_value.reservation_update.side_effect = RuntimeError("crash")
-        response = self.client.post(self._url(), _VALID_RESERVATION6_POST)
-        self.assertEqual(response.status_code, 200)
+        with self.assertRaises(RuntimeError):
+            self.client.post(self._url(), _VALID_RESERVATION6_POST)
 
 
 # ---------------------------------------------------------------------------
@@ -685,12 +689,11 @@ class TestReservation4DeleteExceptions(_ViewTestBase):
         self.assertTrue(any(m.level == django_messages.ERROR for m in msgs))
 
     @patch("netbox_kea.models.KeaClient")
-    def test_generic_exception_shows_error(self, MockKeaClient):
-        """Unexpected exception must show a generic error and redirect."""
+    def test_generic_exception_propagates(self, MockKeaClient):
+        """Unexpected exception must propagate (not show a generic error message)."""
         MockKeaClient.return_value.reservation_del.side_effect = RuntimeError("crash")
-        response = self.client.post(self._url(), follow=True)
-        msgs = list(response.context["messages"])
-        self.assertTrue(any(m.level == django_messages.ERROR for m in msgs))
+        with self.assertRaises(RuntimeError):
+            self.client.post(self._url())
 
 
 # ---------------------------------------------------------------------------
@@ -727,12 +730,11 @@ class TestReservation6DeleteExceptions(_ViewTestBase):
         self.assertTrue(any(m.level == django_messages.ERROR for m in msgs))
 
     @patch("netbox_kea.models.KeaClient")
-    def test_generic_exception_shows_error(self, MockKeaClient):
-        """Unexpected exception must show a generic error."""
+    def test_generic_exception_propagates(self, MockKeaClient):
+        """Unexpected exception must propagate (not show a generic error message)."""
         MockKeaClient.return_value.reservation_del.side_effect = RuntimeError("crash")
-        response = self.client.post(self._url(), follow=True)
-        msgs = list(response.context["messages"])
-        self.assertTrue(any(m.level == django_messages.ERROR for m in msgs))
+        with self.assertRaises(RuntimeError):
+            self.client.post(self._url())
 
 
 # ---------------------------------------------------------------------------
@@ -1188,3 +1190,34 @@ class TestWarnReservationPoolOverlapCoverage(_ViewTestBase):
         request = self._make_request()
         # Should not raise; exception is swallowed
         _warn_reservation_pool_overlap(request, client, 4, subnet_id=1, ip_str="10.0.0.5")
+
+
+# ---------------------------------------------------------------------------
+# Reservation mutation bare except — programming errors must propagate
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestReservationMutationBareExcept(_ViewTestBase):
+    """Reservation mutation handlers must not swallow programming errors via bare except Exception."""
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_attribute_error_from_add_propagates(self, MockKeaClient):
+        """An AttributeError from reservation_add must propagate (not become an error message)."""
+        MockKeaClient.return_value.reservation_add.side_effect = AttributeError("programming bug")
+        url = reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk])
+        with self.assertRaises(AttributeError):
+            self.client.post(
+                url,
+                {
+                    **_VALID_RESERVATION4_POST,
+                },
+            )
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_attribute_error_from_v6_add_propagates(self, MockKeaClient):
+        """An AttributeError from reservation_add (v6) must propagate."""
+        MockKeaClient.return_value.reservation_add.side_effect = AttributeError("programming bug")
+        url = reverse("plugins:netbox_kea:server_reservation6_add", args=[self.server.pk])
+        with self.assertRaises(AttributeError):
+            self.client.post(url, {**_VALID_RESERVATION6_POST})
