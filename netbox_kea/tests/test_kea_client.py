@@ -1575,7 +1575,9 @@ class TestSubnetUpdate(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_SUBNET_UPDATE_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _CONFIG_WRITE_RESP),
+            side_effect=_side_effects(
+                _SUBNET4_GET, _SUBNET_UPDATE_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _CONFIG_WRITE_RESP
+            ),
         ) as mock_post:
             self.client.subnet_update(version=4, subnet_id=1, subnet_cidr="10.0.0.0/24")
         cmds = [p["command"] for p in self._payloads(mock_post)]
@@ -1586,7 +1588,9 @@ class TestSubnetUpdate(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_SUBNET_UPDATE_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _CONFIG_WRITE_RESP),
+            side_effect=_side_effects(
+                _SUBNET6_GET, _SUBNET_UPDATE_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _CONFIG_WRITE_RESP
+            ),
         ) as mock_post:
             self.client.subnet_update(version=6, subnet_id=2, subnet_cidr="2001:db8::/48")
         cmds = [p["command"] for p in self._payloads(mock_post)]
@@ -1597,7 +1601,9 @@ class TestSubnetUpdate(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_SUBNET_UPDATE_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _CONFIG_WRITE_RESP),
+            side_effect=_side_effects(
+                _SUBNET4_GET, _SUBNET_UPDATE_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _CONFIG_WRITE_RESP
+            ),
         ) as mock_post:
             self.client.subnet_update(version=4, subnet_id=42, subnet_cidr="192.168.1.0/24")
         payload = self._update_payload(mock_post)
@@ -1610,7 +1616,9 @@ class TestSubnetUpdate(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_SUBNET_UPDATE_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _CONFIG_WRITE_RESP),
+            side_effect=_side_effects(
+                _SUBNET4_GET, _SUBNET_UPDATE_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _CONFIG_WRITE_RESP
+            ),
         ) as mock_post:
             self.client.subnet_update(
                 version=4,
@@ -1627,7 +1635,9 @@ class TestSubnetUpdate(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_SUBNET_UPDATE_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _CONFIG_WRITE_RESP),
+            side_effect=_side_effects(
+                _SUBNET4_GET, _SUBNET_UPDATE_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _CONFIG_WRITE_RESP
+            ),
         ) as mock_post:
             self.client.subnet_update(version=4, subnet_id=1, subnet_cidr="10.0.0.0/24", pools=None)
         payload = self._update_payload(mock_post)
@@ -1639,7 +1649,9 @@ class TestSubnetUpdate(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_SUBNET_UPDATE_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _CONFIG_WRITE_RESP),
+            side_effect=_side_effects(
+                _SUBNET4_GET, _SUBNET_UPDATE_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _CONFIG_WRITE_RESP
+            ),
         ) as mock_post:
             self.client.subnet_update(version=4, subnet_id=1, subnet_cidr="10.0.0.0/24", pools=[])
         payload = self._update_payload(mock_post)
@@ -1651,7 +1663,9 @@ class TestSubnetUpdate(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_SUBNET_UPDATE_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _CONFIG_WRITE_RESP),
+            side_effect=_side_effects(
+                _SUBNET4_GET, _SUBNET_UPDATE_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _CONFIG_WRITE_RESP
+            ),
         ) as mock_post:
             self.client.subnet_update(version=4, subnet_id=1, subnet_cidr="10.0.0.0/24", gateway="10.0.0.1")
         payload = self._update_payload(mock_post)
@@ -1665,7 +1679,9 @@ class TestSubnetUpdate(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_SUBNET_UPDATE_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _CONFIG_WRITE_RESP),
+            side_effect=_side_effects(
+                _SUBNET4_GET, _SUBNET_UPDATE_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _CONFIG_WRITE_RESP
+            ),
         ) as mock_post:
             self.client.subnet_update(
                 version=4,
@@ -1684,7 +1700,9 @@ class TestSubnetUpdate(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_SUBNET_UPDATE_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _CONFIG_WRITE_RESP),
+            side_effect=_side_effects(
+                _SUBNET4_GET, _SUBNET_UPDATE_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _CONFIG_WRITE_RESP
+            ),
         ) as mock_post:
             self.client.subnet_update(version=4, subnet_id=1, subnet_cidr="10.0.0.0/24", valid_lft=7200)
         payload = self._update_payload(mock_post)
@@ -1696,7 +1714,9 @@ class TestSubnetUpdate(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_SUBNET_UPDATE_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _CONFIG_WRITE_RESP),
+            side_effect=_side_effects(
+                _SUBNET4_GET, _SUBNET_UPDATE_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _CONFIG_WRITE_RESP
+            ),
         ) as mock_post:
             self.client.subnet_update(version=4, subnet_id=1, subnet_cidr="10.0.0.0/24")
         cmds = [p["command"] for p in self._payloads(mock_post)]
@@ -1717,7 +1737,9 @@ class TestSubnetUpdate(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_SUBNET_UPDATE_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _CONFIG_WRITE_RESP),
+            side_effect=_side_effects(
+                _SUBNET4_GET, _SUBNET_UPDATE_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _CONFIG_WRITE_RESP
+            ),
         ):
             result = self.client.subnet_update(version=4, subnet_id=1, subnet_cidr="10.0.0.0/24")
         self.assertIsNone(result)
@@ -1727,7 +1749,9 @@ class TestSubnetUpdate(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_SUBNET_UPDATE_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _CONFIG_WRITE_RESP),
+            side_effect=_side_effects(
+                _SUBNET4_GET, _SUBNET_UPDATE_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _CONFIG_WRITE_RESP
+            ),
         ) as mock_post:
             self.client.subnet_update(version=4, subnet_id=1, subnet_cidr="10.0.0.0/24", renew_timer=600)
         payload = self._update_payload(mock_post)
@@ -1739,7 +1763,9 @@ class TestSubnetUpdate(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_SUBNET_UPDATE_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _CONFIG_WRITE_RESP),
+            side_effect=_side_effects(
+                _SUBNET4_GET, _SUBNET_UPDATE_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _CONFIG_WRITE_RESP
+            ),
         ) as mock_post:
             self.client.subnet_update(version=4, subnet_id=1, subnet_cidr="10.0.0.0/24", rebind_timer=900)
         payload = self._update_payload(mock_post)
@@ -1751,7 +1777,9 @@ class TestSubnetUpdate(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_SUBNET_UPDATE_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _CONFIG_WRITE_RESP),
+            side_effect=_side_effects(
+                _SUBNET4_GET, _SUBNET_UPDATE_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _CONFIG_WRITE_RESP
+            ),
         ) as mock_post:
             self.client.subnet_update(version=4, subnet_id=1, subnet_cidr="10.0.0.0/24")
         payload = self._update_payload(mock_post)
@@ -1763,7 +1791,9 @@ class TestSubnetUpdate(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_SUBNET_UPDATE_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _CONFIG_WRITE_RESP),
+            side_effect=_side_effects(
+                _SUBNET4_GET, _SUBNET_UPDATE_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _CONFIG_WRITE_RESP
+            ),
         ) as mock_post:
             self.client.subnet_update(version=4, subnet_id=1, subnet_cidr="10.0.0.0/24")
         payload = self._update_payload(mock_post)
@@ -1775,7 +1805,9 @@ class TestSubnetUpdate(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_SUBNET_UPDATE_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _CONFIG_WRITE_RESP),
+            side_effect=_side_effects(
+                _SUBNET4_GET, _SUBNET_UPDATE_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _CONFIG_WRITE_RESP
+            ),
         ) as mock_post:
             self.client.subnet_update(version=4, subnet_id=1, subnet_cidr="10.0.0.0/24", ntp_servers=["10.0.0.1"])
         payload = self._update_payload(mock_post)
@@ -1789,7 +1821,9 @@ class TestSubnetUpdate(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_SUBNET_UPDATE_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _CONFIG_WRITE_RESP),
+            side_effect=_side_effects(
+                _SUBNET4_GET, _SUBNET_UPDATE_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _CONFIG_WRITE_RESP
+            ),
         ) as mock_post:
             self.client.subnet_update(version=4, subnet_id=1, subnet_cidr="10.0.0.0/24", min_valid_lft=300)
         payload = self._update_payload(mock_post)
@@ -1801,7 +1835,9 @@ class TestSubnetUpdate(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_SUBNET_UPDATE_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _CONFIG_WRITE_RESP),
+            side_effect=_side_effects(
+                _SUBNET4_GET, _SUBNET_UPDATE_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _CONFIG_WRITE_RESP
+            ),
         ) as mock_post:
             self.client.subnet_update(version=4, subnet_id=1, subnet_cidr="10.0.0.0/24", max_valid_lft=7200)
         payload = self._update_payload(mock_post)
@@ -3937,3 +3973,173 @@ class TestFindSubnetIdByCidr(TestCase):
         ):
             result = self.client._find_subnet_id_by_cidr(version=4, cidr="10.0.0.0/24")
         self.assertIsNone(result)
+
+
+# ---------------------------------------------------------------------------
+# TestSubnetUpdateMerge
+# ---------------------------------------------------------------------------
+
+_LIVE_SUBNET4_WITH_RELAY = {
+    "id": 42,
+    "subnet": "10.0.0.0/24",
+    "relay": {"ip-addresses": ["10.0.0.254"]},
+    "allocator": "random",
+    "client-class": "premium",
+    "pools": [{"pool": "10.0.0.50-10.0.0.99"}],
+    "option-data": [
+        {"name": "routers", "data": "10.0.0.1"},
+        {"name": "domain-name", "data": "old.example.com"},  # NOT managed — must be preserved
+    ],
+    "valid-lft": 7200,
+}
+_SUBNET4_GET_WITH_RELAY_RESP = [{"result": 0, "arguments": {"subnet4": [_LIVE_SUBNET4_WITH_RELAY]}}]
+_SUBNET_UPDATE_OK = [{"result": 0, "arguments": {}, "text": "IPv4 subnet updated"}]
+
+_LIVE_SUBNET6_WITH_DNS = {
+    "id": 100,
+    "subnet": "2001:db8::/48",
+    "option-data": [
+        {"name": "dns-servers", "data": "2001:4860:4860::8888"},
+        {"name": "domain-search", "data": "example.com"},  # NOT managed — must be preserved
+    ],
+    "valid-lft": 3600,
+}
+_SUBNET6_GET_WITH_DNS_RESP = [{"result": 0, "arguments": {"subnet6": [_LIVE_SUBNET6_WITH_DNS]}}]
+_SUBNET_UPDATE_OK_V6 = [{"result": 0, "arguments": {}, "text": "IPv6 subnet updated"}]
+
+
+class TestSubnetUpdateMerge(TestCase):
+    """Tests for KeaClient.subnet_update() — verifies read-modify-write merge behaviour."""
+
+    def setUp(self):
+        self.client = KeaClient(url="http://kea:8000")
+
+    def _run_update(self, **kwargs):
+        """Run subnet_update with sensible defaults, returning the args sent to subnet4-update."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(
+                _SUBNET4_GET_WITH_RELAY_RESP,  # subnet4-get
+                _SUBNET_UPDATE_OK,  # subnet4-update
+                _CONFIG_GET_RUNNING_RESP,  # config-get (in _persist_config)
+                _OK,  # config-test
+                _OK,  # config-write
+            ),
+        ) as mock_post:
+            defaults = {"version": 4, "subnet_id": 42, "subnet_cidr": "10.0.0.0/24"}
+            defaults.update(kwargs)
+            self.client.subnet_update(**defaults)
+        update_call = next(
+            c.kwargs.get("json") or c[1]["json"]
+            for c in mock_post.call_args_list
+            if (c.kwargs.get("json") or c[1]["json"])["command"] == "subnet4-update"
+        )
+        return update_call["arguments"]["subnet4"][0]
+
+    def test_preserves_relay_field(self):
+        """subnet_update must include the live relay config in the sent dict."""
+        sent = self._run_update()
+        self.assertEqual(sent.get("relay"), {"ip-addresses": ["10.0.0.254"]})
+
+    def test_preserves_allocator_field(self):
+        """subnet_update must include the live allocator field."""
+        sent = self._run_update()
+        self.assertEqual(sent.get("allocator"), "random")
+
+    def test_preserves_client_class_field(self):
+        """subnet_update must include the live client-class field."""
+        sent = self._run_update()
+        self.assertEqual(sent.get("client-class"), "premium")
+
+    def test_preserves_unmanaged_option_data(self):
+        """subnet_update must keep option-data entries not managed by the form."""
+        sent = self._run_update(dns_servers=["8.8.8.8"])
+        names = [o["name"] for o in sent.get("option-data", [])]
+        self.assertIn("domain-name", names)  # unmanaged — must survive
+
+    def test_replaces_managed_option_data(self):
+        """subnet_update must replace managed option-data (routers) with the new value."""
+        sent = self._run_update(gateway="10.0.0.2")
+        routers = [o for o in sent.get("option-data", []) if o["name"] == "routers"]
+        self.assertEqual(len(routers), 1)
+        self.assertEqual(routers[0]["data"], "10.0.0.2")
+
+    def test_removes_managed_option_when_cleared(self):
+        """subnet_update must remove routers option-data when gateway=None."""
+        sent = self._run_update(gateway=None)
+        names = [o["name"] for o in sent.get("option-data", [])]
+        self.assertNotIn("routers", names)
+
+    def test_overrides_valid_lft_when_provided(self):
+        """subnet_update must set valid-lft to the new value when provided."""
+        sent = self._run_update(valid_lft=1800)
+        self.assertEqual(sent.get("valid-lft"), 1800)
+
+    def test_keeps_live_valid_lft_when_none(self):
+        """subnet_update must keep the live valid-lft when the caller passes None."""
+        sent = self._run_update(valid_lft=None)
+        self.assertEqual(sent.get("valid-lft"), 7200)  # from live subnet
+
+    def test_pools_replaced_when_provided(self):
+        """subnet_update must replace pools when argument is not None."""
+        sent = self._run_update(pools=["10.0.0.50-10.0.0.99"])
+        self.assertEqual(sent.get("pools"), [{"pool": "10.0.0.50-10.0.0.99"}])
+
+    def test_pools_kept_when_none(self):
+        """subnet_update must keep live pools when pools=None."""
+        sent = self._run_update(pools=None)
+        self.assertEqual(sent.get("pools"), [{"pool": "10.0.0.50-10.0.0.99"}])
+
+    def test_calls_subnet_get_first(self):
+        """subnet_update must call subnet{v}-get before subnet{v}-update."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(
+                _SUBNET4_GET_WITH_RELAY_RESP,
+                _SUBNET_UPDATE_OK,
+                _CONFIG_GET_RUNNING_RESP,
+                _OK,
+                _OK,
+            ),
+        ) as mock_post:
+            self.client.subnet_update(version=4, subnet_id=42, subnet_cidr="10.0.0.0/24")
+        cmds = [(c.kwargs.get("json") or c[1]["json"])["command"] for c in mock_post.call_args_list]
+        self.assertLess(cmds.index("subnet4-get"), cmds.index("subnet4-update"))
+
+    def _run_update_v6(self, **kwargs):
+        """Run subnet_update for version=6, returning the args sent to subnet6-update."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(
+                _SUBNET6_GET_WITH_DNS_RESP,  # subnet6-get
+                _SUBNET_UPDATE_OK_V6,  # subnet6-update
+                _CONFIG_GET_RUNNING_RESP_V6,  # config-get
+                _OK,  # config-test
+                _OK,  # config-write
+            ),
+        ) as mock_post:
+            defaults = {"version": 6, "subnet_id": 100, "subnet_cidr": "2001:db8::/48"}
+            defaults.update(kwargs)
+            self.client.subnet_update(**defaults)
+        update_call = next(
+            c.kwargs.get("json") or c[1]["json"]
+            for c in mock_post.call_args_list
+            if (c.kwargs.get("json") or c[1]["json"])["command"] == "subnet6-update"
+        )
+        return update_call["arguments"]["subnet6"][0]
+
+    def test_preserves_unmanaged_option_data_v6(self):
+        """subnet_update v6 must keep option-data entries not managed by the form."""
+        sent = self._run_update_v6(dns_servers=["2001:4860:4860::8844"])
+        names = [o["name"] for o in sent.get("option-data", [])]
+        self.assertIn("domain-search", names)  # unmanaged — must survive
+
+    def test_replaces_dns_servers_option_v6(self):
+        """subnet_update v6 must replace dns-servers option-data with the new value."""
+        sent = self._run_update_v6(dns_servers=["2001:4860:4860::8844"])
+        dns = [o for o in sent.get("option-data", []) if o["name"] == "dns-servers"]
+        self.assertEqual(len(dns), 1)
+        self.assertEqual(dns[0]["data"], "2001:4860:4860::8844")

@@ -614,41 +614,60 @@ class KeaClient:
         """
         service = f"dhcp{version}"
         subnet_key = f"subnet{version}"
-        subnet_def: dict[str, Any] = {"id": subnet_id, "subnet": subnet_cidr}
+        # Read live subnet so we can merge — Kea's subnet{v}-update replaces the full
+        # object, so we must send ALL fields to avoid silently clearing relay, allocator,
+        # client-class, reservations, and any option-data not managed by this form.
+        subnet_def = self.subnet_get(version, subnet_id)
+        subnet_def.pop("metadata", None)  # Kea adds a read-only metadata key in some responses
 
-        if pools is not None:
-            subnet_def["pools"] = [{"pool": p} for p in pools]
+        # Identity: always authoritative from params
+        subnet_def["id"] = subnet_id
+        subnet_def["subnet"] = subnet_cidr
 
-        option_data: list[dict[str, str]] = []
+        # option-data: preserve entries NOT owned by this form (e.g. domain-name, tftp-server)
+        # while replacing/adding/removing the ones the form manages.
+        _managed_option_names = {
+            "routers",
+            "domain-name-servers",
+            "dns-servers",
+            "ntp-servers",
+            "sntp-servers",
+        }
+        preserved_opts = [o for o in subnet_def.get("option-data", []) if o.get("name") not in _managed_option_names]
+        new_opts: list[dict[str, str]] = []
         if gateway and version == 4:
-            option_data.append({"name": "routers", "data": gateway})
+            new_opts.append({"name": "routers", "data": gateway})
         if dns_servers:
-            option_data.append(
+            new_opts.append(
                 {
                     "name": "domain-name-servers" if version == 4 else "dns-servers",
                     "data": ", ".join(dns_servers),
                 }
             )
         if ntp_servers:
-            option_data.append(
+            new_opts.append(
                 {
                     "name": "ntp-servers" if version == 4 else "sntp-servers",
                     "data": ", ".join(ntp_servers),
                 }
             )
-        if option_data:
-            subnet_def["option-data"] = option_data
+        subnet_def["option-data"] = preserved_opts + new_opts
 
-        if valid_lft is not None:
-            subnet_def["valid-lft"] = valid_lft
-        if min_valid_lft is not None:
-            subnet_def["min-valid-lft"] = min_valid_lft
-        if max_valid_lft is not None:
-            subnet_def["max-valid-lft"] = max_valid_lft
-        if renew_timer is not None:
-            subnet_def["renew-timer"] = renew_timer
-        if rebind_timer is not None:
-            subnet_def["rebind-timer"] = rebind_timer
+        # pools: replace only when the caller explicitly passes a value
+        if pools is not None:
+            subnet_def["pools"] = [{"pool": p} for p in pools]
+
+        # Lifetime / timer fields: override only when explicitly provided, otherwise
+        # the live value (already present in subnet_def from subnet_get) is kept.
+        for value, kea_key in [
+            (valid_lft, "valid-lft"),
+            (min_valid_lft, "min-valid-lft"),
+            (max_valid_lft, "max-valid-lft"),
+            (renew_timer, "renew-timer"),
+            (rebind_timer, "rebind-timer"),
+        ]:
+            if value is not None:
+                subnet_def[kea_key] = value
 
         self.command(
             f"subnet{version}-update",
