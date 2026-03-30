@@ -594,11 +594,11 @@ class KeaClient:
     ) -> None:
         """Update an existing subnet's configuration in Kea and persist the change.
 
-        Sends ``subnet{v}-update`` with a fully rebuilt subnet object.  Only fields
-        that are explicitly provided (not ``None``) are included, so callers can update
-        a subset of fields without losing unchanged values *only when Kea merges them*
-        (which it does not — Kea replaces the full object).  Pass all desired field
-        values on every call.
+        Performs a read-modify-write: fetches the live subnet via ``subnet_get()``, merges
+        only the form-managed fields onto it, then sends the complete merged object to
+        ``subnet{v}-update``.  This preserves Kea-managed fields — relay config, allocator
+        settings, client-class, reservations, and any ``option-data`` entries not owned by
+        this form — that Kea would otherwise clear if we sent a partial object.
 
         Args:
             version: DHCP version (4 or 6).
