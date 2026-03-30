@@ -4226,3 +4226,95 @@ class TestSubnetAddAmbiguousCreate(TestCase):
         with patch.object(self.client._session, "post", side_effect=_side):
             with self.assertRaises(requests.ConnectionError):
                 self.client.subnet_add(version=4, subnet_cidr="10.99.0.0/24", subnet_id=42)
+
+
+# ---------------------------------------------------------------------------
+# TestSubnetAddValueError  (F1)
+# ---------------------------------------------------------------------------
+
+
+class TestSubnetAddValueError(TestCase):
+    """subnet_add() catches ValueError in addition to requests.RequestException."""
+
+    def setUp(self):
+        self.client = KeaClient(url="http://kea:8000")
+
+    def test_raises_partial_persist_when_subnet_found_after_value_error(self):
+        """If subnet-add raises ValueError and config-get confirms subnet exists,
+        PartialPersistError is raised with the found subnet_id."""
+
+        call_count = [0]
+
+        def _side(url, **kwargs):
+            cmd = kwargs.get("json", {}).get("command", "")
+            call_count[0] += 1
+            if cmd.startswith("subnet4-list"):
+                return _mock_http_response(_SUBNET4_LIST_RESP)
+            if cmd == "subnet4-add":
+                raise ValueError("response was not JSON")
+            if cmd == "config-get":
+                return _mock_http_response(_CONFIG_GET_WITH_NEW_SUBNET)
+            return _mock_http_response(_OK)
+
+        with patch.object(self.client._session, "post", side_effect=_side):
+            with self.assertRaises(PartialPersistError) as ctx:
+                self.client.subnet_add(version=4, subnet_cidr="10.99.0.0/24")
+        self.assertEqual(ctx.exception.subnet_id, 10)
+
+    def test_reraises_value_error_when_subnet_not_found(self):
+        """If subnet-add raises ValueError and probe shows subnet not created,
+        the original ValueError is re-raised."""
+
+        def _side(url, **kwargs):
+            cmd = kwargs.get("json", {}).get("command", "")
+            if cmd.startswith("subnet4-list"):
+                return _mock_http_response(_SUBNET4_LIST_RESP)
+            if cmd == "subnet4-add":
+                raise ValueError("bad JSON")
+            if cmd == "config-get":
+                return _mock_http_response(_CONFIG_GET_WITHOUT_NEW_SUBNET)
+            return _mock_http_response(_OK)
+
+        with patch.object(self.client._session, "post", side_effect=_side):
+            with self.assertRaises(ValueError):
+                self.client.subnet_add(version=4, subnet_cidr="10.99.0.0/24")
+
+
+# ---------------------------------------------------------------------------
+# TestFindSubnetIdNarrowedExcept  (F2)
+# ---------------------------------------------------------------------------
+
+
+class TestFindSubnetIdNarrowedExcept(TestCase):
+    """_find_subnet_id_by_cidr narrowed except propagates unexpected exceptions."""
+
+    def setUp(self):
+        self.client = KeaClient(url="http://kea:8000")
+
+    def test_returns_none_on_kea_exception(self):
+        """KeaException from config-get returns None (safe probe failure)."""
+        with patch.object(
+            self.client._session,
+            "post",
+            return_value=_mock_http_response([{"result": 1, "text": "error", "arguments": None}]),
+        ):
+            result = self.client._find_subnet_id_by_cidr(4, "10.0.0.0/24")
+        self.assertIsNone(result)
+
+    def test_returns_none_on_requests_exception(self):
+        """requests.RequestException from config-get returns None."""
+        with patch.object(self.client._session, "post", side_effect=requests.ConnectionError("down")):
+            result = self.client._find_subnet_id_by_cidr(4, "10.0.0.0/24")
+        self.assertIsNone(result)
+
+    def test_returns_none_on_value_error(self):
+        """ValueError from config-get returns None."""
+        with patch.object(self.client._session, "post", side_effect=ValueError("bad JSON")):
+            result = self.client._find_subnet_id_by_cidr(4, "10.0.0.0/24")
+        self.assertIsNone(result)
+
+    def test_propagates_attribute_error(self):
+        """An AttributeError (programming bug) must NOT be swallowed by the probe."""
+        with patch.object(self.client._session, "post", side_effect=AttributeError("bug")):
+            with self.assertRaises(AttributeError):
+                self.client._find_subnet_id_by_cidr(4, "10.0.0.0/24")

@@ -399,7 +399,7 @@ class KeaClient:
                         raise
             if last_exc is not None:
                 raise last_exc
-        except requests.RequestException as transport_exc:
+        except (requests.RequestException, ValueError) as transport_exc:
             found_id = self._find_subnet_id_by_cidr(version, subnet_def["subnet"])
             if found_id is not None:
                 err = PartialPersistError(service, transport_exc, subnet_id=found_id)
@@ -1212,7 +1212,7 @@ class KeaClient:
                 for s in sn.get(subnet_key, []):
                     if s.get("subnet") == cidr:
                         return s.get("id")  # None if id absent — callers treat None as "not found"
-        except Exception:  # noqa: BLE001
+        except (KeaException, requests.RequestException, ValueError):
             logger.debug(
                 "_find_subnet_id_by_cidr: config-get failed for cidr=%s version=%s",
                 cidr,
