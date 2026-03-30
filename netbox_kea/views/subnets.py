@@ -49,12 +49,19 @@ class BaseServerDHCPSubnetsView(generic.ObjectChildrenView):
         """
         from ..utilities import format_option_data, parse_subnet_stats
 
-        client = server.get_client(version=self.dhcp_version)
-        config = client.command("config-get", service=[f"dhcp{self.dhcp_version}"])
-        if config[0]["arguments"] is None:
-            logger.warning("config-get returned None arguments for dhcp%s on server %s", self.dhcp_version, server.pk)
+        try:
+            client = server.get_client(version=self.dhcp_version)
+            config = client.command("config-get", service=[f"dhcp{self.dhcp_version}"])
+            if config[0]["arguments"] is None:
+                logger.warning(
+                    "config-get returned None arguments for dhcp%s on server %s", self.dhcp_version, server.pk
+                )
+                return []
+            dhcp_conf = config[0]["arguments"].get(f"Dhcp{self.dhcp_version}", {})
+        except (KeaException, requests.RequestException, ValueError, IndexError, KeyError):
+            logger.exception("Failed to fetch subnet config for dhcp%s on server %s", self.dhcp_version, server.pk)
+            messages.error(request, "Failed to load subnet configuration from Kea.")
             return []
-        dhcp_conf = config[0]["arguments"].get(f"Dhcp{self.dhcp_version}", {})
         can_change = Server.objects.restrict(request.user, "change").filter(pk=server.pk).exists()
         subnets = dhcp_conf.get(f"subnet{self.dhcp_version}", [])
         subnet_list = [
@@ -591,7 +598,7 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
         return reverse(f"plugins:netbox_kea:server_subnets{self.dhcp_version}", args=[pk])
 
     def _fetch_subnet(self, server: Server, subnet_id: int) -> dict[str, Any] | None:
-        """Fetch current subnet config from Kea.  Returns None on error, empty dict if subnet not found."""
+        """Fetch current subnet config from Kea.  Returns None on error or if the subnet is not found."""
         try:
             key = f"subnet{self.dhcp_version}"
             client = server.get_client(version=self.dhcp_version)
@@ -601,7 +608,7 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
                 arguments={"id": subnet_id},
             )
             subnets = resp[0].get("arguments", {}).get(key, [])
-            return subnets[0] if subnets else {}
+            return subnets[0] if subnets else None
         except Exception:
             logger.warning("Failed to fetch subnet %s for editing", subnet_id)
             return None

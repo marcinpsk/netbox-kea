@@ -188,7 +188,7 @@ class _BaseBulkReservationSyncView(ConditionalLoginRequiredMixin, View):
                     created += 1
                 elif nb_ip:
                     updated += 1
-            except Exception:
+            except (ValueError, IntegrityError, ValidationError, OperationalError, ProgrammingError):
                 ip_log = res.get("ip-address") or ", ".join(res.get("ip-addresses") or []) or "unknown"
                 logger.exception("Failed to sync reservation %s", ip_log)
                 errors += 1
@@ -317,7 +317,22 @@ class _BaseBulkReservationImportView(_KeaChangeMixin, ConditionalLoginRequiredMi
                 },
             )
 
-        client = instance.get_client(version=self.dhcp_version)
+        try:
+            client = instance.get_client(version=self.dhcp_version)
+        except (KeaException, requests.RequestException, ValueError):
+            logger.exception("Failed to get Kea client for server %s", instance.pk)
+            form.add_error(None, "Failed to connect to Kea server.")
+            return render(
+                request,
+                self.template_name,
+                {
+                    "object": instance,
+                    "form": form,
+                    "dhcp_version": self.dhcp_version,
+                    "return_url": return_url,
+                    "result": None,
+                },
+            )
         created = 0
         skipped = 0
         error_rows: list[dict[str, Any]] = []
@@ -333,6 +348,9 @@ class _BaseBulkReservationImportView(_KeaChangeMixin, ConditionalLoginRequiredMi
                     skipped += 1
                 else:
                     error_rows.append({"row": row, "error": kea_error_hint(exc)})
+            except requests.RequestException:
+                logger.exception("Transport error importing reservation row %s", row)
+                error_rows.append({"row": row, "error": "Connection error — could not reach Kea server."})
             except Exception:
                 logger.exception("Unexpected error importing reservation row %s", row)
                 error_rows.append({"row": row, "error": "An unexpected error occurred."})
@@ -458,7 +476,22 @@ class _BaseBulkLeaseImportView(_KeaChangeMixin, ConditionalLoginRequiredMixin, V
                 },
             )
 
-        client = instance.get_client(version=self.dhcp_version)
+        try:
+            client = instance.get_client(version=self.dhcp_version)
+        except (KeaException, requests.RequestException, ValueError):
+            logger.exception("Failed to get Kea client for server %s", instance.pk)
+            form.add_error(None, "Failed to connect to Kea server.")
+            return render(
+                request,
+                self.template_name,
+                {
+                    "object": instance,
+                    "form": form,
+                    "dhcp_version": self.dhcp_version,
+                    "return_url": return_url,
+                    "result": None,
+                },
+            )
         created = 0
         error_rows: list[dict[str, Any]] = []
 
@@ -468,6 +501,9 @@ class _BaseBulkLeaseImportView(_KeaChangeMixin, ConditionalLoginRequiredMixin, V
                 created += 1
             except KeaException as exc:  # noqa: PERF203
                 error_rows.append({"row": row, "error": kea_error_hint(exc)})
+            except requests.RequestException:
+                logger.exception("Transport error importing lease row %s", row)
+                error_rows.append({"row": row, "error": "Connection error — could not reach Kea server."})
             except Exception:
                 logger.exception("Unexpected error importing lease row %s", row)
                 error_rows.append({"row": row, "error": "An unexpected error occurred."})

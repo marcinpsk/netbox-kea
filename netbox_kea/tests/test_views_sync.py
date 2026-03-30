@@ -268,7 +268,7 @@ class TestBulkReservationSyncEdgeCases(_ViewTestBase):
             {"ip-address": "10.0.0.1"},
             {"ip-address": "10.0.0.2"},
         ]
-        mock_sync.side_effect = [RuntimeError("db error"), (MagicMock(), True)]
+        mock_sync.side_effect = [ValueError("db error"), (MagicMock(), True)]
         response = self.client.post(self._url(), follow=True)
         msgs = [m.message for m in response.context["messages"]]
         # errors > 0 → summary message shows "N errors"

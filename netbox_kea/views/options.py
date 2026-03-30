@@ -40,7 +40,7 @@ class _BaseSubnetOptionsEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin,
         subnet_key = f"subnet{self.dhcp_version}"
         try:
             resp = client.command("config-get", service=[service])
-        except (KeaException, requests.RequestException):
+        except (KeaException, requests.RequestException, ValueError):
             logger.exception("Failed to fetch config-get for subnet options (subnet %s)", subnet_id)
             return None
         config = resp[0].get("arguments") or {}
@@ -190,7 +190,7 @@ class _BaseServerOptionsEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin,
         dhcp_key = f"Dhcp{self.dhcp_version}"
         try:
             resp = client.command("config-get", service=[service])
-        except (KeaException, requests.RequestException):
+        except (KeaException, requests.RequestException, ValueError):
             logger.exception("Failed to fetch config-get for server options (version %s)", self.dhcp_version)
             return None
         config = resp[0].get("arguments") or {}
@@ -388,7 +388,7 @@ class CombinedServerStatusBadgeView(ConditionalLoginRequiredMixin, View):
 # ---------------------------------------------------------------------------
 
 
-class BaseServerOptionDefView(_KeaChangeMixin, ConditionalLoginRequiredMixin, View):
+class BaseServerOptionDefView(ConditionalLoginRequiredMixin, View):
     """List option-def entries for a Kea server.
 
     Subclasses set ``dhcp_version`` to 4 or 6.
