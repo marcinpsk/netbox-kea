@@ -1,4 +1,5 @@
 import copy
+import ipaddress
 import logging
 from collections.abc import Sequence
 from typing import Any, TypedDict
@@ -279,6 +280,40 @@ class KeaClient:
             return None
         # Kea returns the host fields directly inside "arguments" (not nested under "host")
         return resp[0].get("arguments") or None
+
+    def reservation_get_by_ip(self, version: int, ip_address: str) -> dict[str, Any] | None:
+        """Fetch a reservation by IP address without requiring the subnet ID.
+
+        Lists all subnets for *version*, filters those whose CIDR contains *ip_address*,
+        then calls ``reservation-get`` for each candidate until a match is found.
+
+        Args:
+            version: DHCP protocol version (``4`` or ``6``).
+            ip_address: IP address to look up.
+
+        Returns:
+            The reservation dict, or ``None`` if not found.
+
+        Raises:
+            KeaException: If the subnet list call itself fails.
+
+        """
+        service = f"dhcp{version}"
+        list_resp = self.command(f"subnet{version}-list", service=[service])
+        subnets: list[dict[str, Any]] = list_resp[0].get("arguments", {}).get("subnets", [])
+
+        target = ipaddress.ip_address(ip_address)
+        for subnet in subnets:
+            try:
+                network = ipaddress.ip_network(subnet["subnet"], strict=False)
+            except (KeyError, ValueError):
+                continue
+            if target not in network:
+                continue
+            reservation = self.reservation_get(service, subnet["id"], ip_address=ip_address)
+            if reservation is not None:
+                return reservation
+        return None
 
     def subnet_add(  # noqa: C901
         self,

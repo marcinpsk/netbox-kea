@@ -118,6 +118,15 @@ class ServerLease6SyncView(_BaseSyncView):
 class ServerReservation4SyncView(_BaseSyncView):
     """Sync a DHCPv4 reservation to a NetBox IPAddress (status=reserved)."""
 
+    def _fetch_live_data(self, server: "Server", ip_str: str, fallback: dict) -> dict:
+        try:
+            client = server.get_client(version=4)
+            reservation = client.reservation_get_by_ip(4, ip_str)
+            return reservation if reservation else fallback
+        except (KeaException, requests.RequestException, ValueError):
+            logger.debug("Could not fetch live reservation4 data for %s, using fallback", ip_str)
+            return fallback
+
     def _sync(self, data: dict):
         from ..sync import sync_reservation_to_netbox
 
@@ -126,6 +135,15 @@ class ServerReservation4SyncView(_BaseSyncView):
 
 class ServerReservation6SyncView(_BaseSyncView):
     """Sync a DHCPv6 reservation to a NetBox IPAddress (status=reserved)."""
+
+    def _fetch_live_data(self, server: "Server", ip_str: str, fallback: dict) -> dict:
+        try:
+            client = server.get_client(version=6)
+            reservation = client.reservation_get_by_ip(6, ip_str)
+            return reservation if reservation else fallback
+        except (KeaException, requests.RequestException, ValueError):
+            logger.debug("Could not fetch live reservation6 data for %s, using fallback", ip_str)
+            return fallback
 
     def _sync(self, data: dict):
         from ..sync import sync_reservation_to_netbox

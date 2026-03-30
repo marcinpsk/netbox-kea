@@ -26,6 +26,7 @@ import re
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
+from django.contrib.contenttypes.models import ContentType
 from django.test import TestCase, override_settings
 from django.urls import reverse
 
@@ -635,23 +636,19 @@ class TestKeaChangeMixinPermission(_ViewTestBase):
         perm = ObjectPermission(name="view-servers", actions=["view"])
         perm.save()
         perm.users.add(readonly)
-        perm.object_types.add(
-            __import__(
-                "django.contrib.contenttypes.models", fromlist=["ContentType"]
-            ).ContentType.objects.get_for_model(self.server.__class__)
-        )
+        perm.object_types.add(ContentType.objects.get_for_model(self.server.__class__))
         self.client.force_login(readonly)
         url = reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk])
         response = self.client.get(url)
         self.assertEqual(response.status_code, 403)
 
-    def test_user_without_global_perm_gets_403_on_server_add(self):
-        """User without change_server permission gets 403 on a mutation view."""
+    def test_user_without_any_perm_gets_404_on_mutation_view(self):
+        """User with no permissions gets 404 on a mutation view (pk lookup fails restrict check)."""
         no_perm = User.objects.create_user(username="noperm_mixin", password="pass")
         self.client.force_login(no_perm)
         url = reverse("plugins:netbox_kea:server_subnet4_pool_add", args=[self.server.pk, 42])
         response = self.client.get(url)
-        self.assertIn(response.status_code, (403, 404))
+        self.assertEqual(response.status_code, 404)
 
 
 # ---------------------------------------------------------------------------

@@ -472,7 +472,7 @@ class BaseServerOptionDefAddView(_KeaChangeMixin, ConditionalLoginRequiredMixin,
 
     def get(self, request: HttpRequest, pk: int) -> HttpResponse:
         """Render the add option-def form."""
-        server = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
+        server = get_object_or_404(Server.objects.restrict(request.user, "change"), pk=pk)
         form = forms.OptionDefForm(initial={"space": f"dhcp{self.dhcp_version}"})
         return render(
             request,
@@ -488,7 +488,7 @@ class BaseServerOptionDefAddView(_KeaChangeMixin, ConditionalLoginRequiredMixin,
 
     def post(self, request: HttpRequest, pk: int) -> HttpResponse:
         """Validate and create the option definition."""
-        server = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
+        server = get_object_or_404(Server.objects.restrict(request.user, "change"), pk=pk)
         form = forms.OptionDefForm(request.POST)
         if not form.is_valid():
             return render(
@@ -554,7 +554,7 @@ class BaseServerOptionDefDeleteView(_KeaChangeMixin, ConditionalLoginRequiredMix
 
     def get(self, request: HttpRequest, pk: int, code: int, space: str) -> HttpResponse:
         """Render the delete-confirmation page."""
-        server = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
+        server = get_object_or_404(Server.objects.restrict(request.user, "change"), pk=pk)
         return render(
             request,
             "netbox_kea/server_option_def_delete.html",
@@ -570,7 +570,7 @@ class BaseServerOptionDefDeleteView(_KeaChangeMixin, ConditionalLoginRequiredMix
 
     def post(self, request: HttpRequest, pk: int, code: int, space: str) -> HttpResponse:
         """Delete the option definition."""
-        server = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
+        server = get_object_or_404(Server.objects.restrict(request.user, "change"), pk=pk)
         try:
             client = server.get_client(version=self.dhcp_version)
             client.option_def_del(version=self.dhcp_version, code=code, space=space)

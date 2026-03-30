@@ -3563,6 +3563,121 @@ class TestLeaseGetByIp(TestCase):
 
 
 # ---------------------------------------------------------------------------
+# TestReservationGetByIp
+# ---------------------------------------------------------------------------
+
+
+class TestReservationGetByIp(TestCase):
+    """Tests for KeaClient.reservation_get_by_ip()."""
+
+    def setUp(self):
+        self.client = KeaClient(url="http://kea:8000")
+
+    def _payload(self, mock_post, call_index):
+        return (
+            mock_post.call_args_list[call_index].kwargs.get("json") or mock_post.call_args_list[call_index][1]["json"]
+        )
+
+    _LIST4_RESP = [{"result": 0, "arguments": {"subnets": [{"id": 1, "subnet": "10.0.0.0/24"}]}}]
+    _LIST6_RESP = [{"result": 0, "arguments": {"subnets": [{"id": 5, "subnet": "2001:db8::/64"}]}}]
+    _RESERVATION_FOUND = [
+        {
+            "result": 0,
+            "arguments": {
+                "ip-address": "10.0.0.5",
+                "hw-address": "aa:bb:cc:00:00:01",
+                "hostname": "myhost",
+                "subnet-id": 1,
+            },
+        }
+    ]
+    _RESERVATION_NOT_FOUND = [{"result": 3, "text": "Host not found."}]
+
+    def test_returns_reservation_when_ip_in_subnet(self):
+        """Returns the reservation dict when the IP is in a matching subnet."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(self._LIST4_RESP, self._RESERVATION_FOUND),
+        ):
+            result = self.client.reservation_get_by_ip(4, "10.0.0.5")
+        self.assertIsNotNone(result)
+        self.assertEqual(result["ip-address"], "10.0.0.5")
+
+    def test_returns_none_when_ip_not_in_any_subnet(self):
+        """Returns None when no subnet CIDR contains the IP — no reservation-get is called."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(self._LIST4_RESP),
+        ) as mock_post:
+            result = self.client.reservation_get_by_ip(4, "192.168.99.1")
+        self.assertIsNone(result)
+        self.assertEqual(len(mock_post.call_args_list), 1)  # only subnet4-list called
+
+    def test_returns_none_when_reservation_not_found_in_subnet(self):
+        """Returns None when subnet matches the IP but reservation-get returns result=3."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(self._LIST4_RESP, self._RESERVATION_NOT_FOUND),
+        ):
+            result = self.client.reservation_get_by_ip(4, "10.0.0.99")
+        self.assertIsNone(result)
+
+    def test_v4_calls_subnet4_list_and_dhcp4_service(self):
+        """Uses subnet4-list and dhcp4 service for version=4."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(self._LIST4_RESP, self._RESERVATION_FOUND),
+        ) as mock_post:
+            self.client.reservation_get_by_ip(4, "10.0.0.5")
+        first = self._payload(mock_post, 0)
+        self.assertEqual(first["command"], "subnet4-list")
+        self.assertEqual(first["service"], ["dhcp4"])
+
+    def test_v6_calls_subnet6_list_and_dhcp6_service(self):
+        """Uses subnet6-list and dhcp6 service for version=6."""
+        res6_found = [{"result": 0, "arguments": {"ip-addresses": ["2001:db8::1"], "subnet-id": 5}}]
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(self._LIST6_RESP, res6_found),
+        ) as mock_post:
+            self.client.reservation_get_by_ip(6, "2001:db8::1")
+        first = self._payload(mock_post, 0)
+        self.assertEqual(first["command"], "subnet6-list")
+        self.assertEqual(first["service"], ["dhcp6"])
+
+    def test_reservation_get_called_with_correct_subnet_id(self):
+        """Calls reservation-get with the subnet-id of the matching subnet."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(self._LIST4_RESP, self._RESERVATION_FOUND),
+        ) as mock_post:
+            self.client.reservation_get_by_ip(4, "10.0.0.5")
+        second = self._payload(mock_post, 1)
+        self.assertEqual(second["command"], "reservation-get")
+        self.assertEqual(second["arguments"]["subnet-id"], 1)
+        self.assertEqual(second["arguments"]["ip-address"], "10.0.0.5")
+
+    def test_propagates_kea_exception_from_subnet_list(self):
+        """Propagates KeaException when subnet4-list itself fails."""
+        error_resp = [{"result": 1, "text": "command not supported"}]
+        with patch.object(
+            self.client._session,
+            "post",
+            return_value=_mock_http_response(error_resp),
+        ):
+            from netbox_kea.kea import KeaException
+
+            with self.assertRaises(KeaException):
+                self.client.reservation_get_by_ip(4, "10.0.0.5")
+
+
+# ---------------------------------------------------------------------------
 # TestPersistConfig — additional exception-type coverage
 # ---------------------------------------------------------------------------
 

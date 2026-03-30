@@ -658,7 +658,7 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
                 initial["ntp_servers"] = data
 
         # Lease lifetimes
-        if subnet.get("valid-lft"):
+        if subnet.get("valid-lft") is not None:
             initial["valid_lft"] = subnet["valid-lft"]
         if subnet.get("min-valid-lft") is not None:
             initial["min_valid_lft"] = subnet["min-valid-lft"]
@@ -890,6 +890,9 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
             except KeaException as exc:
                 logger.warning("network_subnet change failed for subnet %s on server %s: %s", subnet_id, pk, exc)
                 messages.error(request, f"Network assignment error: {kea_error_hint(exc)}")
+            except requests.RequestException:
+                logger.exception("Transport error changing network for subnet %s on server %s", subnet_id, pk)
+                messages.error(request, "Transport error communicating with Kea during network assignment.")
             except Exception:
                 logger.exception("Unexpected error changing network for subnet %s on server %s", subnet_id, pk)
                 messages.error(request, "An internal error occurred during network assignment.")

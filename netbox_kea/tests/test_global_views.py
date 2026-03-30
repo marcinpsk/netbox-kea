@@ -174,7 +174,7 @@ class TestCombinedDashboardView(_CombinedViewBase):
         self.assertEqual(response.context["active_tab"], "overview")
 
     def test_tab_navigation_links_present(self):
-        """The combined base template should render links to all 7 tabs."""
+        """The combined base template should render links to all 8 tabs."""
         url = reverse("plugins:netbox_kea:combined")
         response = self.client.get(url)
         self.assertContains(response, "/combined/leases4/")
@@ -183,6 +183,8 @@ class TestCombinedDashboardView(_CombinedViewBase):
         self.assertContains(response, "/combined/subnets6/")
         self.assertContains(response, "/combined/reservations4/")
         self.assertContains(response, "/combined/reservations6/")
+        self.assertContains(response, "/combined/shared-networks4/")
+        self.assertContains(response, "/combined/shared-networks6/")
 
 
 # ---------------------------------------------------------------------------

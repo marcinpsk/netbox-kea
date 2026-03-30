@@ -316,3 +316,90 @@ class TestBaseSyncViewNotImplemented(_ViewTestBase):
         view = _BaseSyncView()
         with self.assertRaises(NotImplementedError):
             view._sync({})
+
+
+# ---------------------------------------------------------------------------
+# ServerReservation4/6SyncView._fetch_live_data
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestReservation4SyncViewFetchLiveData(_ViewTestBase):
+    """ServerReservation4SyncView._fetch_live_data uses reservation_get_by_ip."""
+
+    def _url(self):
+        return reverse("plugins:netbox_kea:server_reservation4_sync", args=[self.server.pk])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_uses_live_reservation_when_found(self, MockKeaClient):
+        """When reservation_get_by_ip returns a dict, that dict is passed to _sync."""
+        live = {"ip-address": "10.0.0.5", "hw-address": "aa:bb:cc:00:00:01", "hostname": "livehost"}
+        MockKeaClient.return_value.reservation_get_by_ip.return_value = live
+
+        with patch("netbox_kea.views.ServerReservation4SyncView._sync") as mock_sync:
+            mock_sync.return_value = (MagicMock(), True)
+            self.client.post(self._url(), {"ip_address": "10.0.0.5", "hostname": "fallback"})
+
+        mock_sync.assert_called_once()
+        data = mock_sync.call_args[0][0]
+        self.assertEqual(data["hostname"], "livehost")
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_falls_back_to_synthetic_when_reservation_not_found(self, MockKeaClient):
+        """When reservation_get_by_ip returns None, synthetic fallback is used."""
+        MockKeaClient.return_value.reservation_get_by_ip.return_value = None
+
+        with patch("netbox_kea.views.ServerReservation4SyncView._sync") as mock_sync:
+            mock_sync.return_value = (MagicMock(), False)
+            self.client.post(self._url(), {"ip_address": "10.0.0.5", "hostname": "fallback"})
+
+        data = mock_sync.call_args[0][0]
+        self.assertEqual(data["hostname"], "fallback")
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_falls_back_on_kea_exception(self, MockKeaClient):
+        """When reservation_get_by_ip raises KeaException, synthetic fallback is used."""
+        from netbox_kea.kea import KeaException
+
+        MockKeaClient.return_value.reservation_get_by_ip.side_effect = KeaException({"result": 1, "text": "not found"})
+
+        with patch("netbox_kea.views.ServerReservation4SyncView._sync") as mock_sync:
+            mock_sync.return_value = (MagicMock(), False)
+            self.client.post(self._url(), {"ip_address": "10.0.0.5", "hostname": "fallback"})
+
+        data = mock_sync.call_args[0][0]
+        self.assertEqual(data["ip-address"], "10.0.0.5")
+        self.assertEqual(data["hostname"], "fallback")
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestReservation6SyncViewFetchLiveData(_ViewTestBase):
+    """ServerReservation6SyncView._fetch_live_data uses reservation_get_by_ip for v6."""
+
+    def _url(self):
+        return reverse("plugins:netbox_kea:server_reservation6_sync", args=[self.server.pk])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_calls_reservation_get_by_ip_with_version_6(self, MockKeaClient):
+        """Calls reservation_get_by_ip with version=6 for the v6 view."""
+        MockKeaClient.return_value.reservation_get_by_ip.return_value = None
+
+        with patch("netbox_kea.views.ServerReservation6SyncView._sync") as mock_sync:
+            mock_sync.return_value = (MagicMock(), False)
+            self.client.post(self._url(), {"ip_address": "2001:db8::1", "hostname": ""})
+
+        MockKeaClient.return_value.reservation_get_by_ip.assert_called_once_with(6, "2001:db8::1")
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_falls_back_on_request_exception(self, MockKeaClient):
+        """When reservation_get_by_ip raises requests.RequestException, synthetic fallback is used."""
+        import requests as req
+
+        MockKeaClient.return_value.reservation_get_by_ip.side_effect = req.RequestException("timeout")
+
+        with patch("netbox_kea.views.ServerReservation6SyncView._sync") as mock_sync:
+            mock_sync.return_value = (MagicMock(), False)
+            self.client.post(self._url(), {"ip_address": "2001:db8::1", "hostname": "fallback6"})
+
+        data = mock_sync.call_args[0][0]
+        self.assertEqual(data["hostname"], "fallback6")
