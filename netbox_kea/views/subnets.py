@@ -426,18 +426,20 @@ class _BaseSubnetAddView(_KeaChangeMixin, generic.ObjectView):
         return reverse(f"plugins:netbox_kea:server_subnets{self.dhcp_version}", args=[pk])
 
     def _get_network_choices(self, client: "KeaClient") -> list[tuple[str, str]]:
-        """Return shared-network choices for the subnet-add dropdown."""
-        try:
-            resp = client.command("config-get", service=[f"dhcp{self.dhcp_version}"])
-            args = resp[0].get("arguments") if resp else None
-            if not isinstance(args, dict):
-                logger.warning("config-get returned unexpected arguments for network choices: %r", args)
-                return [("", "— (global pool) —")]
-            dhcp_conf = args.get(f"Dhcp{self.dhcp_version}", {})
-            networks = dhcp_conf.get("shared-networks", [])
-        except KeaException:
-            logger.warning("Failed to fetch shared networks for subnet add dropdown")
-            return [("", "— (global pool) —")]
+        """Return shared-network name choices for the subnet-add form dropdown.
+
+        Raises:
+            KeaException: If Kea returns an error or an unexpected response.
+            requests.RequestException: If the Kea server is unreachable.
+            ValueError: If the Kea response is structurally invalid.
+
+        """
+        resp = client.command("config-get", service=[f"dhcp{self.dhcp_version}"])
+        args = resp[0].get("arguments") if resp else None
+        if not isinstance(args, dict):
+            raise ValueError(f"config-get returned unexpected arguments: {type(args)}")
+        dhcp_conf = args.get(f"Dhcp{self.dhcp_version}", {})
+        networks = dhcp_conf.get("shared-networks", [])
         choices: list[tuple[str, str]] = [("", "— (global pool) —")]
         for sn in networks:
             name = sn.get("name", "")
@@ -451,7 +453,9 @@ class _BaseSubnetAddView(_KeaChangeMixin, generic.ObjectView):
         try:
             client = server.get_client(version=self.dhcp_version)
             form.fields["shared_network"].choices = self._get_network_choices(client)
-        except Exception:
+        except (KeaException, requests.RequestException, ValueError):
+            logger.exception("Failed to load shared networks for subnet add form (server %s)", pk)
+            messages.warning(request, "Could not load shared networks from Kea — only global pool available.")
             form.fields["shared_network"].choices = [("", "— (global pool) —")]
         return render(
             request,
@@ -467,13 +471,34 @@ class _BaseSubnetAddView(_KeaChangeMixin, generic.ObjectView):
     def post(self, request: HttpRequest, pk: int) -> HttpResponse:
         server = self.get_object(pk=pk)
         return_url = self._subnets_url(pk)
-        form = forms.SubnetAddForm(request.POST)
+
         try:
             client = server.get_client(version=self.dhcp_version)
+        except (KeaException, requests.RequestException, ValueError):
+            logger.exception("Failed to get Kea client for server %s", pk)
+            messages.error(request, "Unable to connect to the Kea server.")
+            form = forms.SubnetAddForm(request.POST)
+            form.fields["shared_network"].choices = [("", "— (global pool) —")]
+            return render(
+                request,
+                self.template_name,
+                {"object": server, "form": form, "dhcp_version": self.dhcp_version, "return_url": return_url},
+            )
+
+        try:
             network_choices = self._get_network_choices(client)
-        except Exception:
-            client = None
-            network_choices = [("", "— (global pool) —")]
+        except (KeaException, requests.RequestException, ValueError):
+            logger.exception("Failed to load shared networks for server %s", pk)
+            form = forms.SubnetAddForm(request.POST)
+            form.fields["shared_network"].choices = [("", "— (global pool) —")]
+            form.add_error(None, "Could not load shared networks from Kea. Please try again.")
+            return render(
+                request,
+                self.template_name,
+                {"object": server, "form": form, "dhcp_version": self.dhcp_version, "return_url": return_url},
+            )
+
+        form = forms.SubnetAddForm(request.POST)
         form.fields["shared_network"].choices = network_choices
         if not form.is_valid():
             return render(
@@ -486,21 +511,6 @@ class _BaseSubnetAddView(_KeaChangeMixin, generic.ObjectView):
                     "return_url": return_url,
                 },
             )
-        if client is None:
-            try:
-                client = server.get_client(version=self.dhcp_version)
-            except Exception:
-                messages.error(request, "Unable to connect to the Kea server.")
-                return render(
-                    request,
-                    self.template_name,
-                    {
-                        "object": server,
-                        "form": form,
-                        "dhcp_version": self.dhcp_version,
-                        "return_url": return_url,
-                    },
-                )
         cd = form.cleaned_data
         try:
             assigned_id = client.subnet_add(

@@ -1304,7 +1304,11 @@ class TestSubnetAddExceptionPaths(_ViewTestBase):
     @patch("netbox_kea.models.KeaClient")
     def test_get_falls_back_when_network_choices_raise(self, MockKeaClient):
         """GET must render the form with fallback choices when config-get fails."""
-        MockKeaClient.return_value.command.side_effect = RuntimeError("config error")
+        from netbox_kea.kea import KeaException
+
+        MockKeaClient.return_value.command.side_effect = KeaException(
+            {"result": 1, "text": "config error", "arguments": None}, index=0
+        )
         response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
 
@@ -1425,16 +1429,16 @@ class TestSubnetAddExceptionPaths(_ViewTestBase):
 
     @patch("netbox_kea.models.KeaClient")
     def test_post_client_none_reconnect_failure_shows_error(self, MockKeaClient):
-        """When initial get_client fails, post fallback reconnect failure shows error."""
+        """When initial get_client fails, view shows error and returns 200 or 302."""
         call_count = [0]
 
         def _raise_after_first(*args, **kwargs):
             call_count[0] += 1
             if call_count[0] == 1:
                 # First instantiation (for getting choices): raise immediately
-                raise RuntimeError("no connection")
+                raise requests.RequestException("no connection")
             # Second instantiation (for fallback client reconnect): also raise
-            raise RuntimeError("still no connection")
+            raise requests.RequestException("still no connection")
 
         MockKeaClient.side_effect = _raise_after_first
         response = self.client.post(self._url(), _SUBNET_ADD_POST)
@@ -1936,3 +1940,51 @@ class TestSubnetEditNetworkRollback(_ViewTestBase):
         self.assertEqual(response.status_code, 302)
         # Both del calls were made (old + rollback of new)
         self.assertEqual(mock_client.network_subnet_del.call_count, 2)
+
+
+# ---------------------------------------------------------------------------
+# Subnet add — _get_network_choices error handling
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestSubnetAddNetworkChoicesError(_ViewTestBase):
+    """_get_network_choices error handling in the subnet-add view."""
+
+    def _url(self):
+        return reverse("plugins:netbox_kea:server_subnet4_add", args=[self.server.pk])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_get_shows_warning_when_network_choices_fail(self, MockKeaClient):
+        """GET must render 200 with a warning message when config-get fails."""
+        from netbox_kea.kea import KeaException
+
+        MockKeaClient.return_value.command.side_effect = KeaException(
+            {"result": 1, "text": "config-get failed", "arguments": None}, index=0
+        )
+        response = self.client.get(self._url(), follow=True)
+        self.assertEqual(response.status_code, 200)
+        msgs = [str(m) for m in response.context["messages"]]
+        self.assertTrue(any("shared network" in m.lower() for m in msgs))
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_rejects_submission_when_network_choices_fail(self, MockKeaClient):
+        """POST must show a form error and NOT call subnet_add when config-get fails."""
+        from netbox_kea.kea import KeaException
+
+        MockKeaClient.return_value.command.side_effect = KeaException(
+            {"result": 1, "text": "config-get failed", "arguments": None}, index=0
+        )
+        response = self.client.post(
+            self._url(),
+            {
+                "subnet": "10.99.0.0/24",
+                "pools": "",
+                "gateway": "",
+                "dns_servers": "",
+                "ntp_servers": "",
+                "shared_network": "",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        MockKeaClient.return_value.subnet_add.assert_not_called()

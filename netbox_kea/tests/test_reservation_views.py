@@ -1246,6 +1246,7 @@ class TestServerSubnet4AddView(_ReservationViewBase):
     def test_post_valid_calls_subnet_add_and_redirects(self):
         mock_client = MagicMock()
         mock_client.subnet_add.return_value = None
+        mock_client.command.return_value = [{"result": 0, "arguments": {"Dhcp4": {"shared-networks": []}}}]
         with patch("netbox_kea.models.KeaClient", return_value=mock_client):
             resp = self.client.post(
                 self._add_url(),
@@ -1274,6 +1275,7 @@ class TestServerSubnet4AddView(_ReservationViewBase):
     def test_post_with_options_passes_them_to_subnet_add(self):
         mock_client = MagicMock()
         mock_client.subnet_add.return_value = None
+        mock_client.command.return_value = [{"result": 0, "arguments": {"Dhcp4": {"shared-networks": []}}}]
         with patch("netbox_kea.models.KeaClient", return_value=mock_client):
             self.client.post(
                 self._add_url(),
@@ -1314,6 +1316,7 @@ class TestServerSubnet4AddView(_ReservationViewBase):
     def test_post_kea_error_shows_message_and_rerenders(self):
         mock_client = MagicMock()
         mock_client.subnet_add.side_effect = KeaException({"result": 1, "text": "subnet already exists"}, index=0)
+        mock_client.command.return_value = [{"result": 0, "arguments": {"Dhcp4": {"shared-networks": []}}}]
         with patch("netbox_kea.models.KeaClient", return_value=mock_client):
             resp = self.client.post(
                 self._add_url(),
@@ -1376,6 +1379,7 @@ class TestServerSubnet6AddView(_ReservationViewBase):
     def test_post_valid_uses_version_6(self):
         mock_client = MagicMock()
         mock_client.subnet_add.return_value = None
+        mock_client.command.return_value = [{"result": 0, "arguments": {"Dhcp6": {"shared-networks": []}}}]
         with patch("netbox_kea.models.KeaClient", return_value=mock_client):
             resp = self.client.post(
                 self._add_url(),
@@ -1996,6 +2000,7 @@ class TestPartialPersistErrorOnSubnetAdd(_ReservationViewBase):
     def test_partial_persist_error_shows_warning_and_redirects(self, MockKeaClient):
         mock_client = MockKeaClient.return_value
         mock_client.subnet_add.side_effect = PartialPersistError("dhcp4", Exception("config-write failed"))
+        mock_client.command.return_value = [{"result": 0, "arguments": {"Dhcp4": {"shared-networks": []}}}]
         response = self.client.post(
             self._url(),
             {
