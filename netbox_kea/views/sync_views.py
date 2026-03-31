@@ -354,6 +354,9 @@ class _BaseBulkReservationImportView(_KeaChangeMixin, ConditionalLoginRequiredMi
             except ValueError:
                 logger.exception("Data error importing reservation row %s", row)
                 error_rows.append({"row": row, "error": "Invalid response from Kea — could not parse server reply."})
+            except Exception:
+                logger.exception("Unexpected error importing reservation row %s", row)
+                error_rows.append({"row": row, "error": "An unexpected error occurred."})
 
         result = {
             "created": created,

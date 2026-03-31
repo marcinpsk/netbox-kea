@@ -289,7 +289,7 @@ class TestReservationImportGenericException(_ViewTestBase):
 
     @patch("netbox_kea.models.KeaClient")
     def test_generic_exception_appended_to_errors(self, MockKeaClient):
-        """RuntimeError from reservation_add propagates (bare except removed)."""
+        """RuntimeError from reservation_add is caught and surfaced as an error row."""
         MockKeaClient.return_value.reservation_add.side_effect = RuntimeError("crash")
         url = reverse("plugins:netbox_kea:server_reservation4_bulk_import", args=[self.server.pk])
         import io
@@ -297,8 +297,10 @@ class TestReservationImportGenericException(_ViewTestBase):
         csv_content = "ip-address,hw-address,subnet-id\n10.0.0.1,aa:bb:cc:dd:ee:ff,1"
         csv_file = io.BytesIO(csv_content.encode())
         csv_file.name = "reservations.csv"
-        with self.assertRaises(RuntimeError):
-            self.client.post(url, {"csv_file": csv_file, "subnet_id": "1"})
+        response = self.client.post(url, {"csv_file": csv_file, "subnet_id": "1"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["result"]["errors"], 1)
+        self.assertEqual(response.context["result"]["error_rows"][0]["error"], "An unexpected error occurred.")
 
 
 # ---------------------------------------------------------------------------
