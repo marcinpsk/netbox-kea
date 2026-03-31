@@ -7,6 +7,7 @@ from urllib.parse import urlencode as _urlencode
 
 import requests
 from django.contrib import messages
+from django.core.exceptions import ValidationError
 from django.db import DatabaseError
 from django.db.utils import OperationalError, ProgrammingError
 from django.http import HttpResponse, HttpResponseForbidden
@@ -778,7 +779,7 @@ class _BaseLeaseAddView(_KeaChangeMixin, generic.ObjectView):
                 try:
                     sync_lease_to_netbox(lease)
                     messages.success(request, f"IPAddress {cd['ip_address']} synced to NetBox.")
-                except Exception:
+                except (ValueError, DatabaseError, ValidationError, requests.RequestException):
                     logger.exception("Failed to sync lease %s to NetBox", cd.get("ip_address"))
                     messages.warning(request, "Lease created but NetBox IPAM sync failed; see server logs.")
             return redirect(cancel_url)

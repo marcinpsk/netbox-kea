@@ -464,8 +464,9 @@ class _BaseSubnetAddView(_KeaChangeMixin, generic.ObjectView):
             form.fields["shared_network"].choices = self._get_network_choices(client)
         except (KeaException, requests.RequestException, ValueError):
             logger.exception("Failed to load shared networks for subnet add form (server %s)", pk)
-            messages.warning(request, "Could not load shared networks from Kea — only global pool available.")
-            form.fields["shared_network"].choices = [("", "— (global pool) —")]
+            messages.warning(request, "Could not load shared networks from Kea — retry later.")
+            form.fields["shared_network"].choices = [("", "— failed to load networks —")]
+            form.fields["shared_network"].disabled = True
         return render(
             request,
             self.template_name,

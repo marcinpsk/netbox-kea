@@ -1938,7 +1938,7 @@ class TestReservationSyncToNetBox(_ReservationViewBase):
         """Sync failure is a warning; Kea reservation creation still succeeds."""
         mock_client = MockKeaClient.return_value
         mock_client.reservation_add.return_value = None
-        mock_sync.side_effect = ValueError("Reservation has no ip-address field.")
+        mock_sync.side_effect = ValueError("Reservation has no ip-address or ip-addresses field.")
         response = self.client.post(self._add4_url(), self._valid_post_data(sync=True))
         self.assertEqual(response.status_code, 302)
         mock_client.reservation_add.assert_called_once()

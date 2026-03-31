@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 import requests
 
 from netbox_kea.kea import (
+    AmbiguousConfigSetError,
     KeaClient,
     KeaConfigPersistError,
     KeaConfigTestError,
@@ -3447,8 +3448,8 @@ class TestNetworkUpdate(TestCase):
         test_payload = next(p for p in payloads if p["command"] == "config-test")
         self.assertNotIn("hash", test_payload["arguments"])
 
-    def test_config_set_transport_error_raises_partial_persist_error(self):
-        """requests.RequestException from config-set is wrapped in PartialPersistError (ambiguous state)."""
+    def test_config_set_transport_error_raises_ambiguous_config_set_error(self):
+        """requests.RequestException from config-set is wrapped in AmbiguousConfigSetError (ambiguous state)."""
         import requests as req
 
         def _side_effect(url, **kwargs):
@@ -3458,7 +3459,7 @@ class TestNetworkUpdate(TestCase):
             return _mock_http_response(_CONFIG_GET_WITH_SHARED_NETWORK if cmd == "config-get" else _CONFIG_TEST_OK_RESP)
 
         with patch.object(self.client._session, "post", side_effect=_side_effect):
-            with self.assertRaises(PartialPersistError):
+            with self.assertRaises(AmbiguousConfigSetError):
                 self.client.network_update(version=4, name="prod-net")
 
     def test_config_set_transport_error_does_not_call_config_write(self):

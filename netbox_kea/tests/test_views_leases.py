@@ -1316,7 +1316,7 @@ class TestLeaseAddSyncToNetBox(_ViewTestBase):
     def test_post_lease4_add_sync_failure_does_not_prevent_kea_success(self, MockKeaClient, mock_sync):
         """Sync failure is a warning; the lease creation still succeeds (302 redirect)."""
         MockKeaClient.return_value.lease_add.return_value = None
-        mock_sync.side_effect = Exception("NetBox unreachable")
+        mock_sync.side_effect = ValueError("NetBox unreachable")
         response = self.client.post(self._url(version=4), self._post4(sync=True))
         self.assertEqual(response.status_code, 302)
         MockKeaClient.return_value.lease_add.assert_called_once()

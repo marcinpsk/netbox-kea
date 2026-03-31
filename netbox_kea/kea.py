@@ -1097,7 +1097,7 @@ class KeaClient:
             logger.warning(
                 "config-set transport/parse error for service %s — change may be live but unpersisted", service
             )
-            raise PartialPersistError(service, exc) from exc
+            raise AmbiguousConfigSetError(service, exc) from exc
         try:
             self.command("config-write", service=[service])
         except (KeaException, requests.RequestException, ValueError) as exc:
@@ -1340,6 +1340,27 @@ class PartialPersistError(KeaException):
         super().__init__(response, msg=f"partial persist error for {service!r}")
         self.service = service
         self.subnet_id: int | None = subnet_id
+
+
+class AmbiguousConfigSetError(PartialPersistError):
+    """Raised when a config-set reply is lost or malformed.
+
+    The change *may* be live but we cannot confirm — the transport or JSON
+    parsing failed after sending the config-set command.  Distinct from
+    :exc:`PartialPersistError` where we *know* the mutation succeeded but
+    config-write failed.
+
+    Inherits from :exc:`PartialPersistError` so existing ``except
+    PartialPersistError`` handlers still catch it.  Callers that need to
+    distinguish ambiguous-set from definite-write-failure can catch this
+    subclass first.
+    """
+
+    def __init__(self, service: str, cause: Exception) -> None:
+        super().__init__(service, cause)
+        self.response["text"] = (
+            f"config-set reply lost/malformed for service {service!r} — change may or may not be live"
+        )
 
 
 def check_response(resp: list[KeaResponse], ok_codes: Sequence[int]) -> None:
