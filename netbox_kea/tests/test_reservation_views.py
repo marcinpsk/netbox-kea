@@ -145,11 +145,11 @@ class TestServerReservations4View(_ReservationViewBase):
         self.assertFalse(response.context["hook_available"])
 
     @patch("netbox_kea.models.KeaClient")
-    def test_general_kea_error_hides_hook_ui(self, MockKeaClient):
-        """Result code 1 (general Kea error) also sets hook_available=False.
+    def test_general_kea_error_keeps_hook_available(self, MockKeaClient):
+        """Result code 1 (general Kea error) keeps hook_available=True.
 
-        Any KeaException means we cannot reliably display reservation data,
-        so we degrade gracefully regardless of result code.
+        Only result==2 (unknown command = hook not loaded) should set
+        hook_available=False.  Other errors are transient/backend failures.
         """
         mock_client = MockKeaClient.return_value
         mock_client.reservation_get_page.side_effect = KeaException(
@@ -159,7 +159,7 @@ class TestServerReservations4View(_ReservationViewBase):
         url = reverse("plugins:netbox_kea:server_reservations4", args=[self.server.pk])
         response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
-        self.assertFalse(response.context["hook_available"])
+        self.assertTrue(response.context["hook_available"])
 
     @patch("netbox_kea.models.KeaClient")
     def test_list_handles_empty_reservations(self, MockKeaClient):
@@ -1938,7 +1938,7 @@ class TestReservationSyncToNetBox(_ReservationViewBase):
         """Sync failure is a warning; Kea reservation creation still succeeds."""
         mock_client = MockKeaClient.return_value
         mock_client.reservation_add.return_value = None
-        mock_sync.side_effect = Exception("NetBox unreachable")
+        mock_sync.side_effect = ValueError("Reservation has no ip-address field.")
         response = self.client.post(self._add4_url(), self._valid_post_data(sync=True))
         self.assertEqual(response.status_code, 302)
         mock_client.reservation_add.assert_called_once()

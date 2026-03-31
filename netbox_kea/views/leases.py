@@ -402,7 +402,7 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
             # that so the address bar always shows the clean URL.
             response["HX-Push-Url"] = stripped_return_url
             return response
-        except (KeaException, requests.RequestException, RuntimeError):
+        except (KeaException, requests.RequestException, RuntimeError, ValueError):
             error_id = str(uuid.uuid4())
             logger.exception("HTMX leases handler error [%s]", error_id)
             return render(
@@ -857,18 +857,18 @@ def _fetch_reservation_by_ip_for_leases(
         subnet_id = lease.get("subnet_id")
         if not ip or not subnet_id:
             return ip, None, True
-        worker_client = client.clone()  # requests.Session is not thread-safe
-        try:
-            r = worker_client.reservation_get(service, subnet_id=int(subnet_id), ip_address=ip)
-            return ip, r, True
-        except KeaException as exc:
-            if exc.response.get("result") == 2:
-                return ip, None, False  # hook not available
-            logger.debug("reservation-get KeaException for %s (result != 2): %s", ip, exc)
-            return ip, None, None  # indeterminate — don't show create-reservation link
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("reservation-get failed for %s: %s", ip, exc)
-            return ip, None, None  # indeterminate — don't show create-reservation link
+        with client.clone() as worker_client:  # requests.Session is not thread-safe
+            try:
+                r = worker_client.reservation_get(service, subnet_id=int(subnet_id), ip_address=ip)
+                return ip, r, True
+            except KeaException as exc:
+                if exc.response.get("result") == 2:
+                    return ip, None, False  # hook not available
+                logger.debug("reservation-get KeaException for %s (result != 2): %s", ip, exc)
+                return ip, None, None  # indeterminate — don't show create-reservation link
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("reservation-get failed for %s: %s", ip, exc)
+                return ip, None, None  # indeterminate — don't show create-reservation link
 
     if not leases:
         return reservation_by_ip, host_cmds_available, set()

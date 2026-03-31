@@ -1127,7 +1127,7 @@ class KeaClient:
 
         config: dict | None = None
         if resp is not None:
-            if isinstance(resp, list) and resp:
+            if isinstance(resp, list) and resp and isinstance(resp[0], dict):
                 raw = resp[0].get("arguments")
             else:
                 raw = resp.get("arguments") if isinstance(resp, dict) else None

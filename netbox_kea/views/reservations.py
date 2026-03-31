@@ -4,6 +4,8 @@ from typing import Any
 
 import requests
 from django.contrib import messages
+from django.core.exceptions import ValidationError
+from django.db import DatabaseError
 from django.db.utils import OperationalError, ProgrammingError
 from django.http import Http404, HttpResponse
 from django.http.request import HttpRequest
@@ -128,7 +130,7 @@ def _run_reservation_success_side_effects(
             _, nb_created = sync_reservation_to_netbox(reservation)
             nb_msg = "created" if nb_created else "updated"
             messages.info(request, f"NetBox IPAddress {ip} {nb_msg}.")
-        except Exception:
+        except (ValueError, DatabaseError, ValidationError, requests.RequestException):
             logger.exception("Failed to sync DHCPv%s reservation %s to NetBox", dhcp_version, ip)
             messages.warning(request, f"Reservation {action}, but NetBox IPAM sync failed.")
     if partial_persist:
@@ -294,11 +296,13 @@ class ServerReservations4View(generic.ObjectView):
                 from_index = next_from
                 source_index = next_source
         except KeaException as exc:
-            hook_available = False
+            if exc.response.get("result") == 2:
+                hook_available = False
             logger.warning("Failed to fetch DHCPv4 reservations: %s", exc)
+            messages.error(request, "Failed to load reservations from Kea.")
         except (requests.RequestException, ValueError):
-            hook_available = False
             logger.exception("Unexpected error fetching DHCPv4 reservations")
+            messages.error(request, "Failed to load reservations from Kea.")
 
         # Inject server_pk so the actions template column can build edit/delete URLs.
         for r in reservations:
@@ -367,11 +371,13 @@ class ServerReservations6View(generic.ObjectView):
                 from_index = next_from
                 source_index = next_source
         except KeaException as exc:
-            hook_available = False
+            if exc.response.get("result") == 2:
+                hook_available = False
             logger.warning("Failed to fetch DHCPv6 reservations: %s", exc)
+            messages.error(request, "Failed to load reservations from Kea.")
         except (requests.RequestException, ValueError):
-            hook_available = False
             logger.exception("Unexpected error fetching DHCPv6 reservations")
+            messages.error(request, "Failed to load reservations from Kea.")
 
         for r in reservations:
             r["server_pk"] = server.pk

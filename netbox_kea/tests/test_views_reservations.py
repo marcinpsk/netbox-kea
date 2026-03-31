@@ -234,16 +234,22 @@ class TestReservation4ListExceptions(_ViewTestBase):
         self.assertFalse(response.context.get("hook_available", True))
 
     @patch("netbox_kea.models.KeaClient")
-    def test_network_error_during_fetch_sets_hook_unavailable(self, MockKeaClient):
-        """requests.RequestException during reservation_get_page sets hook_available=False."""
+    def test_network_error_during_fetch_keeps_hook_available(self, MockKeaClient):
+        """requests.RequestException during reservation_get_page keeps hook_available=True.
+
+        Transport errors do not indicate the hook is missing — only result==2 does.
+        """
         MockKeaClient.return_value.reservation_get_page.side_effect = req.RequestException("connection refused")
         response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
-        self.assertFalse(response.context.get("hook_available", True))
+        self.assertTrue(response.context.get("hook_available", False))
 
     @patch("netbox_kea.models.KeaClient")
-    def test_kea_exception_non_result2_sets_hook_unavailable(self, MockKeaClient):
-        """KeaException with result≠2 (e.g., general error) also sets hook_available=False."""
+    def test_kea_exception_non_result2_keeps_hook_available(self, MockKeaClient):
+        """KeaException with result!=2 keeps hook_available=True.
+
+        Only result==2 (unknown command = hook not loaded) should hide the hook UI.
+        """
         from netbox_kea.kea import KeaException
 
         MockKeaClient.return_value.reservation_get_page.side_effect = KeaException(
@@ -251,7 +257,7 @@ class TestReservation4ListExceptions(_ViewTestBase):
         )
         response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
-        self.assertFalse(response.context.get("hook_available", True))
+        self.assertTrue(response.context.get("hook_available", False))
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
@@ -274,16 +280,22 @@ class TestReservation6ListExceptions(_ViewTestBase):
         self.assertFalse(response.context.get("hook_available", True))
 
     @patch("netbox_kea.models.KeaClient")
-    def test_network_error_during_fetch_sets_hook_unavailable(self, MockKeaClient):
-        """requests.RequestException during reservation_get_page sets hook_available=False."""
+    def test_network_error_during_fetch_keeps_hook_available(self, MockKeaClient):
+        """requests.RequestException during reservation_get_page keeps hook_available=True.
+
+        Transport errors do not indicate the hook is missing — only result==2 does.
+        """
         MockKeaClient.return_value.reservation_get_page.side_effect = req.RequestException("timeout")
         response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
-        self.assertFalse(response.context.get("hook_available", True))
+        self.assertTrue(response.context.get("hook_available", False))
 
     @patch("netbox_kea.models.KeaClient")
-    def test_kea_exception_non_result2_sets_hook_unavailable(self, MockKeaClient):
-        """KeaException with result≠2 also sets hook_available=False."""
+    def test_kea_exception_non_result2_keeps_hook_available(self, MockKeaClient):
+        """KeaException with result!=2 keeps hook_available=True.
+
+        Only result==2 (unknown command = hook not loaded) should hide the hook UI.
+        """
         from netbox_kea.kea import KeaException
 
         MockKeaClient.return_value.reservation_get_page.side_effect = KeaException(
@@ -291,7 +303,7 @@ class TestReservation6ListExceptions(_ViewTestBase):
         )
         response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
-        self.assertFalse(response.context.get("hook_available", True))
+        self.assertTrue(response.context.get("hook_available", False))
 
 
 # ---------------------------------------------------------------------------
@@ -339,7 +351,7 @@ class TestReservation4AddExceptions(_ViewTestBase):
         MockKeaClient.return_value.reservation_add.side_effect = PartialPersistError("dhcp4", Exception("write"))
         MockKeaClient.return_value.reservation_get_page.return_value = ([], 0, 0)
         post_data = {**_VALID_RESERVATION4_POST, "sync_to_netbox": "on"}
-        with patch("netbox_kea.views.reservations.sync_reservation_to_netbox", side_effect=RuntimeError("sync boom")):
+        with patch("netbox_kea.views.reservations.sync_reservation_to_netbox", side_effect=ValueError("sync boom")):
             response = self.client.post(self._url(), post_data, follow=True)
         msgs = list(response.context["messages"])
         self.assertTrue(any("sync failed" in m.message.lower() for m in msgs))
@@ -390,7 +402,7 @@ class TestReservation4AddExceptions(_ViewTestBase):
         MockKeaClient.return_value.reservation_add.return_value = None
         MockKeaClient.return_value.reservation_get_page.return_value = ([], 0, 0)
         post_data = {**_VALID_RESERVATION4_POST, "sync_to_netbox": "on"}
-        with patch("netbox_kea.views.reservations.sync_reservation_to_netbox", side_effect=RuntimeError("sync fail")):
+        with patch("netbox_kea.views.reservations.sync_reservation_to_netbox", side_effect=ValueError("sync fail")):
             response = self.client.post(self._url(), post_data, follow=True)
         msgs = list(response.context["messages"])
         self.assertTrue(any("sync failed" in m.message.lower() for m in msgs))
@@ -444,7 +456,7 @@ class TestReservation6AddExceptions(_ViewTestBase):
         MockKeaClient.return_value.reservation_add.side_effect = PartialPersistError("dhcp6", Exception("write"))
         MockKeaClient.return_value.reservation_get_page.return_value = ([], 0, 0)
         post_data = {**_VALID_RESERVATION6_POST, "sync_to_netbox": "on"}
-        with patch("netbox_kea.views.reservations.sync_reservation_to_netbox", side_effect=RuntimeError("sync boom")):
+        with patch("netbox_kea.views.reservations.sync_reservation_to_netbox", side_effect=ValueError("sync boom")):
             response = self.client.post(self._url(), post_data, follow=True)
         msgs = list(response.context["messages"])
         self.assertTrue(any("sync failed" in m.message.lower() for m in msgs))
@@ -541,7 +553,7 @@ class TestReservation4EditExceptions(_ViewTestBase):
 
         MockKeaClient.return_value.reservation_update.side_effect = PartialPersistError("dhcp4", Exception("write"))
         post_data = {**_VALID_RESERVATION4_POST, "sync_to_netbox": "on"}
-        with patch("netbox_kea.views.reservations.sync_reservation_to_netbox", side_effect=RuntimeError("sync")):
+        with patch("netbox_kea.views.reservations.sync_reservation_to_netbox", side_effect=ValueError("sync")):
             response = self.client.post(self._url(), post_data, follow=True)
         msgs = list(response.context["messages"])
         self.assertTrue(any("sync failed" in m.message.lower() for m in msgs))
@@ -580,7 +592,7 @@ class TestReservation4EditExceptions(_ViewTestBase):
         """Successful update where sync raises must show warning."""
         MockKeaClient.return_value.reservation_update.return_value = None
         post_data = {**_VALID_RESERVATION4_POST, "sync_to_netbox": "on"}
-        with patch("netbox_kea.views.reservations.sync_reservation_to_netbox", side_effect=RuntimeError("oops")):
+        with patch("netbox_kea.views.reservations.sync_reservation_to_netbox", side_effect=ValueError("oops")):
             response = self.client.post(self._url(), post_data, follow=True)
         msgs = list(response.context["messages"])
         self.assertTrue(any("sync failed" in m.message.lower() for m in msgs))
@@ -861,7 +873,7 @@ class TestReservation6AddOptionDataAndSync(_ViewTestBase):
         """sync raises exception → warning message queued (reservation still created)."""
         MockKeaClient.return_value.reservation_add.return_value = None
         MockKeaClient.return_value.reservation_get_page.return_value = ([], 0, 0)
-        mock_sync.side_effect = RuntimeError("sync failed")
+        mock_sync.side_effect = ValueError("sync failed")
         post_data = {**_VALID_RESERVATION6_POST, "sync_to_netbox": "on"}
         response = self.client.post(self._url(), post_data, follow=True)
         self.assertEqual(response.status_code, 200)
@@ -950,7 +962,7 @@ class TestReservation6EditOptionDataAndSync(_ViewTestBase):
         """sync exception → warning message queued (reservation still updated)."""
         self._mock_get(MockKeaClient)
         MockKeaClient.return_value.reservation_update.return_value = None
-        mock_sync.side_effect = RuntimeError("sync fail")
+        mock_sync.side_effect = ValueError("sync fail")
         post_data = {**_VALID_RESERVATION6_POST, "sync_to_netbox": "on"}
         response = self.client.post(self._url(), post_data, follow=True)
         self.assertEqual(response.status_code, 200)
@@ -982,7 +994,7 @@ class TestReservation6EditOptionDataAndSync(_ViewTestBase):
 
         self._mock_get(MockKeaClient)
         MockKeaClient.return_value.reservation_update.side_effect = PartialPersistError("dhcp6", Exception("write"))
-        mock_sync.side_effect = RuntimeError("db error")
+        mock_sync.side_effect = ValueError("db error")
         post_data = {**_VALID_RESERVATION6_POST, "sync_to_netbox": "on"}
         response = self.client.post(self._url(), post_data)
         self.assertIn(response.status_code, (200, 302))
@@ -1016,7 +1028,11 @@ class TestEnrichReservationsLeaseStatusCoverage(_ViewTestBase):
         from netbox_kea.views import _enrich_reservations_with_lease_status
 
         client = MagicMock()
-        client.command.return_value = [{"result": 3, "arguments": {}}]
+        clone_mock = MagicMock()
+        clone_mock.__enter__ = lambda s: s
+        clone_mock.__exit__ = lambda s, *a: None
+        clone_mock.command.return_value = [{"result": 3, "arguments": {}}]
+        client.clone.return_value = clone_mock
         reservations = [{"ip-address": "10.0.0.1", "subnet-id": 42}]
         # Should not raise; lease_cmds result=3 → empty list → no has_active_lease set
         _enrich_reservations_with_lease_status(client, reservations, 4)
@@ -1030,7 +1046,11 @@ class TestEnrichReservationsLeaseStatusCoverage(_ViewTestBase):
         from netbox_kea.views import _enrich_reservations_with_lease_status
 
         client = MagicMock()
-        client.command.side_effect = KeaException({"result": 1, "text": "error"}, index=0)
+        clone_mock = MagicMock()
+        clone_mock.__enter__ = lambda s: s
+        clone_mock.__exit__ = lambda s, *a: None
+        clone_mock.command.side_effect = KeaException({"result": 1, "text": "error"}, index=0)
+        client.clone.return_value = clone_mock
         reservations = [{"ip-address": "10.0.0.1", "subnet-id": 42}]
         _enrich_reservations_with_lease_status(client, reservations, 4)
         # Should complete without crash; result != 2 → return []

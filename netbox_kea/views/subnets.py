@@ -764,13 +764,22 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
             return redirect(self._subnets_url(pk))
         client = server.get_client(version=self.dhcp_version)
         network_choices, current_network, dhcp_conf = self._get_network_data(client, subnet_id)
+        if current_network is None:
+            logger.warning(
+                "Could not determine current shared-network for subnet %s on server %s — rendering without network data",
+                subnet_id,
+                pk,
+            )
+            messages.warning(request, "Could not load shared-network data; network assignment may be inaccurate.")
         display_network = current_network or ""
         initial = self._form_initial(subnet)
         initial["shared_network"] = display_network
         initial["current_network"] = display_network
         form = forms.SubnetEditForm(initial=initial)
         form.fields["shared_network"].choices = network_choices
-        inherited_options = self._get_inherited_options(dhcp_conf, display_network, initial)
+        inherited_options = (
+            self._get_inherited_options(dhcp_conf, display_network, initial) if current_network is not None else {}
+        )
         return render(
             request,
             self.template_name,

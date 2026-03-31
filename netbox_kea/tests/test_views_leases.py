@@ -668,6 +668,8 @@ class TestStaleMacBadgeEnrichment(_ViewTestBase):
         """The ⚠ MAC? badge title must contain both lease MAC and reservation MAC."""
         mock_client = MockKeaClient.return_value
         mock_client.clone.return_value = mock_client  # worker threads must see configured behaviors
+        mock_client.__enter__ = lambda s: s
+        mock_client.__exit__ = lambda s, *a: None
         mock_client.command.return_value = [{"result": 0, "arguments": {"ip-address": "10.0.0.5", **self._LEASE4}}]
         mock_client.reservation_get.return_value = self._RESERVATION
         mock_bulk_fetch.return_value = {}
@@ -683,6 +685,8 @@ class TestStaleMacBadgeEnrichment(_ViewTestBase):
         """The stale-MAC badge must include an HTMX delete button (hx-post) for one-click removal."""
         mock_client = MockKeaClient.return_value
         mock_client.clone.return_value = mock_client  # worker threads must see configured behaviors
+        mock_client.__enter__ = lambda s: s
+        mock_client.__exit__ = lambda s, *a: None
         mock_client.command.return_value = [{"result": 0, "arguments": {"ip-address": "10.0.0.5", **self._LEASE4}}]
         mock_client.reservation_get.return_value = self._RESERVATION
         mock_bulk_fetch.return_value = {}
