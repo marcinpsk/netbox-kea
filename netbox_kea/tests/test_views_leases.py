@@ -2676,11 +2676,6 @@ class TestEnrichLeasesFailedIpsSeeding(_ViewTestBase):
         self.assertNotContains(response, add_url)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# F3: get_export() state filter
-# ─────────────────────────────────────────────────────────────────────────────
-
-
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestLeaseExportStateFilter(_ViewTestBase):
     """get_export() must honour the 'state' query parameter."""
@@ -2752,3 +2747,81 @@ class TestHtmxHandlerExceptNarrowing(_ViewTestBase):
                 HTTP_HX_REQUEST="true",
                 data={"by": "subnet", "q": "10.0.0.0/24"},
             )
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestLeaseDeleteLoopTransportErrors(_ViewTestBase):
+    """Bulk delete loop must continue when RequestException/ValueError raised for one IP."""
+
+    def _url(self):
+        return reverse("plugins:netbox_kea:server_leases4_delete", args=[self.server.pk])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_request_exception_continues_loop(self, MockKeaClient):
+        import requests as _requests
+
+        mock_client = MockKeaClient.return_value
+        call_count = {"n": 0}
+
+        def side_effect(cmd, **kwargs):
+            ip = kwargs.get("arguments", {}).get("ip-address", "")
+            call_count["n"] += 1
+            if ip == "10.0.0.1":
+                raise _requests.ConnectionError("down")
+
+        mock_client.command.side_effect = side_effect
+        response = self.client.post(
+            self._url(),
+            {"pk": ["10.0.0.1", "10.0.0.2"], "_confirm": "1"},
+            follow=True,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(call_count["n"], 2)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_value_error_continues_loop(self, MockKeaClient):
+        mock_client = MockKeaClient.return_value
+        call_count = {"n": 0}
+
+        def side_effect(cmd, **kwargs):
+            ip = kwargs.get("arguments", {}).get("ip-address", "")
+            call_count["n"] += 1
+            if ip == "10.0.0.1":
+                raise ValueError("bad JSON")
+
+        mock_client.command.side_effect = side_effect
+        response = self.client.post(
+            self._url(),
+            {"pk": ["10.0.0.1", "10.0.0.2"], "_confirm": "1"},
+            follow=True,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(call_count["n"], 2)
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestLeaseExportTransportErrors(_ViewTestBase):
+    """get_export() must handle RequestException and ValueError gracefully."""
+
+    def _url(self):
+        return reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_request_exception_redirects_with_error(self, MockKeaClient):
+        import requests as _requests
+
+        MockKeaClient.return_value.command.side_effect = _requests.ConnectionError("down")
+        response = self.client.get(
+            self._url(),
+            {"export": "1", "by": "subnet", "q": "10.0.0.0/24"},
+        )
+        self.assertIn(response.status_code, [200, 302])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_value_error_redirects_with_error(self, MockKeaClient):
+        MockKeaClient.return_value.command.side_effect = ValueError("bad JSON")
+        response = self.client.get(
+            self._url(),
+            {"export": "1", "by": "subnet", "q": "10.0.0.0/24"},
+        )
+        self.assertIn(response.status_code, [200, 302])

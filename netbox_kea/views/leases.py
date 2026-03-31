@@ -236,6 +236,10 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
             logger.exception("Failed to fetch leases for export on server %s", instance.pk)
             messages.error(request, kea_error_hint(exc))
             return redirect(request.path)
+        except (requests.RequestException, ValueError):
+            logger.exception("Transport/parse error fetching leases for export on server %s", instance.pk)
+            messages.error(request, "Failed to fetch leases for export; see server logs.")
+            return redirect(request.path)
         except RuntimeError:
             logger.exception("Unexpected error fetching leases for export on server %s", instance.pk)
             messages.error(request, "Failed to fetch leases for export; see server logs.")
@@ -288,8 +292,8 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
             logger.exception("Failed to fetch all leases for export on server %s", instance.pk)
             messages.error(request, kea_error_hint(exc))
             return redirect(request.path)
-        except requests.RequestException:
-            logger.exception("Transport error fetching all leases for export on server %s", instance.pk)
+        except (requests.RequestException, ValueError):
+            logger.exception("Transport/parse error fetching all leases for export on server %s", instance.pk)
             messages.error(request, "Failed to fetch leases for export; see server logs.")
             return redirect(request.path)
 
@@ -498,7 +502,7 @@ class BaseServerLeasesDeleteView(GetReturnURLMixin, generic.ObjectView, metaclas
             try:
                 self.delete_lease(client, ip)
                 successful_ips.append(ip)
-            except KeaException:  # noqa: PERF203
+            except (KeaException, requests.RequestException, ValueError):  # noqa: PERF203
                 logger.exception("Error deleting lease %s on server %s", ip, instance.pk)
                 messages.error(request, f"Error deleting lease {ip}: see server logs for details.")
 
