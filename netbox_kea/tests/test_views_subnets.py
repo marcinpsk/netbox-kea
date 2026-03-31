@@ -2153,3 +2153,92 @@ class TestSubnetAddNoIdWarning(_ViewTestBase):
         )
         # network_subnet_add must NOT have been called (we have no ID)
         mock_client.network_subnet_add.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# F5: get_client() failures in delete/wipe/pool-delete POST handlers
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestSubnetDeleteClientError(_ViewTestBase):
+    """Subnet delete handlers must handle get_client() failures gracefully."""
+
+    @patch("netbox_kea.models.Server.get_client")
+    def test_post_with_get_client_failure_redirects(self, mock_get_client):
+        """get_client() raising in delete POST must redirect with error, not 500."""
+        mock_get_client.side_effect = Exception("connection refused")
+        url = reverse("plugins:netbox_kea:server_subnet4_delete", args=[self.server.pk, 1])
+        response = self.client.post(url, {"confirm": "1"})
+        self.assertIn(response.status_code, [200, 302])
+
+    @patch("netbox_kea.models.Server.get_client")
+    def test_get_with_get_client_failure_renders(self, mock_get_client):
+        """get_client() raising in delete GET must render confirm page, not 500."""
+        mock_get_client.side_effect = Exception("connection refused")
+        url = reverse("plugins:netbox_kea:server_subnet4_delete", args=[self.server.pk, 1])
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestSubnetWipeClientError(_ViewTestBase):
+    """Subnet wipe handlers must handle get_client() failures gracefully."""
+
+    @patch("netbox_kea.models.Server.get_client")
+    def test_post_with_get_client_failure_redirects(self, mock_get_client):
+        """get_client() raising in wipe POST must redirect with error, not 500."""
+        mock_get_client.side_effect = Exception("connection refused")
+        url = reverse("plugins:netbox_kea:server_subnet4_wipe_leases", args=[self.server.pk, 1])
+        response = self.client.post(url, {"confirm": "1"})
+        self.assertIn(response.status_code, [200, 302])
+
+    @patch("netbox_kea.models.Server.get_client")
+    def test_get_with_get_client_failure_renders(self, mock_get_client):
+        """get_client() raising in wipe GET must render confirm page, not 500."""
+        mock_get_client.side_effect = Exception("connection refused")
+        url = reverse("plugins:netbox_kea:server_subnet4_wipe_leases", args=[self.server.pk, 1])
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestPoolDeleteClientError(_ViewTestBase):
+    """Pool delete POST handler must handle get_client() failures gracefully."""
+
+    @patch("netbox_kea.models.Server.get_client")
+    def test_post_with_get_client_failure_redirects(self, mock_get_client):
+        """get_client() raising in pool-delete POST must redirect with error, not 500."""
+        mock_get_client.side_effect = Exception("connection refused")
+        url = reverse(
+            "plugins:netbox_kea:server_subnet4_pool_delete",
+            args=[self.server.pk, 1, "10.0.0.1-10.0.0.100"],
+        )
+        response = self.client.post(url, {"confirm": "1"})
+        self.assertIn(response.status_code, [200, 302])
+
+
+# ---------------------------------------------------------------------------
+# F6: get_subnets() non-dict arguments guard
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestGetSubnetsConfigShapeGuard(_ViewTestBase):
+    """get_subnets() returns [] when config-get arguments is non-dict."""
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_non_dict_arguments_returns_empty_list(self, MockKeaClient):
+        """Non-dict arguments in config-get response must return empty subnet list."""
+        MockKeaClient.return_value.command.return_value = [{"result": 0, "arguments": "unexpected string"}]
+        url = reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk])
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_integer_arguments_returns_empty_list(self, MockKeaClient):
+        """Integer arguments in config-get response must return empty subnet list."""
+        MockKeaClient.return_value.command.return_value = [{"result": 0, "arguments": 42}]
+        url = reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk])
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)

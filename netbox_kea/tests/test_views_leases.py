@@ -2825,3 +2825,111 @@ class TestLeaseExportTransportErrors(_ViewTestBase):
             {"export": "1", "by": "subnet", "q": "10.0.0.0/24"},
         )
         self.assertIn(response.status_code, [200, 302])
+
+
+# ---------------------------------------------------------------------------
+# F3: Single-lease GET — transport errors
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestSingleLeaseGetTransportErrors(_ViewTestBase):
+    """Single-lease GET must handle RequestException/ValueError gracefully."""
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_request_exception_redirects(self, MockKeaClient):
+        """requests.RequestException from lease-get must redirect with error message."""
+        MockKeaClient.return_value.command.side_effect = requests.ConnectionError("down")
+        url = reverse("plugins:netbox_kea:server_lease4_edit", args=[self.server.pk, "10.0.0.1"])
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 302)
+        self.assertIn(str(self.server.pk), response.url)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_value_error_redirects(self, MockKeaClient):
+        """ValueError from lease-get must redirect with error message."""
+        MockKeaClient.return_value.command.side_effect = ValueError("bad JSON")
+        url = reverse("plugins:netbox_kea:server_lease4_edit", args=[self.server.pk, "10.0.0.1"])
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 302)
+        self.assertIn(str(self.server.pk), response.url)
+
+
+# ---------------------------------------------------------------------------
+# F3: Lease edit POST — transport errors
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestLeaseEditPostTransportErrors(_ViewTestBase):
+    """Lease edit POST must handle RequestException/ValueError gracefully."""
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_request_exception_redirects(self, MockKeaClient):
+        """requests.RequestException from lease_update must redirect."""
+        MockKeaClient.return_value.lease_update.side_effect = requests.ConnectionError("down")
+        url = reverse("plugins:netbox_kea:server_lease4_edit", args=[self.server.pk, "10.0.0.1"])
+        response = self.client.post(url, {"hostname": "host", "valid_lft": "3600"})
+        self.assertEqual(response.status_code, 302)
+        self.assertIn(str(self.server.pk), response.url)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_value_error_redirects(self, MockKeaClient):
+        """ValueError from lease_update must redirect."""
+        MockKeaClient.return_value.lease_update.side_effect = ValueError("bad value")
+        url = reverse("plugins:netbox_kea:server_lease4_edit", args=[self.server.pk, "10.0.0.1"])
+        response = self.client.post(url, {"hostname": "host", "valid_lft": "3600"})
+        self.assertEqual(response.status_code, 302)
+        self.assertIn(str(self.server.pk), response.url)
+
+
+# ---------------------------------------------------------------------------
+# F3: Lease add POST — ValueError (RequestException already handled)
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestLeaseAddValueError(_ViewTestBase):
+    """Lease add POST must handle ValueError gracefully."""
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_value_error_rerenders_form(self, MockKeaClient):
+        """ValueError from lease_add must not propagate as 500."""
+        MockKeaClient.return_value.lease_add.side_effect = ValueError("bad value")
+        url = reverse("plugins:netbox_kea:server_lease4_add", args=[self.server.pk])
+        response = self.client.post(url, {"ip_address": "10.0.0.99"})
+        self.assertIn(response.status_code, [200, 302])
+
+
+# ---------------------------------------------------------------------------
+# F9: _add_lease_journal bare except narrowing
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestLeaseJournalExceptionNarrowing(_ViewTestBase):
+    """_add_lease_journal except must only catch DB errors, not all exceptions."""
+
+    @patch("netbox_kea.models.KeaClient")
+    @patch("netbox_kea.views.leases._add_lease_journal")
+    def test_database_error_does_not_fail_request(self, mock_journal, MockKeaClient):
+        """DatabaseError from _add_lease_journal must be caught; lease add still redirects."""
+        from django.db import DatabaseError
+
+        mock_journal.side_effect = DatabaseError("DB error")
+        MockKeaClient.return_value.lease_add.return_value = [{"result": 0}]
+        url = reverse("plugins:netbox_kea:server_lease4_add", args=[self.server.pk])
+        response = self.client.post(url, {"ip_address": "10.0.0.55"})
+        self.assertIn(response.status_code, [200, 302])
+
+    @patch("netbox_kea.models.KeaClient")
+    @patch("netbox_kea.views.leases._add_lease_journal")
+    def test_operational_error_does_not_fail_request(self, mock_journal, MockKeaClient):
+        """OperationalError from _add_lease_journal must be caught; lease add still redirects."""
+        from django.db import OperationalError
+
+        mock_journal.side_effect = OperationalError("DB lock")
+        MockKeaClient.return_value.lease_add.return_value = [{"result": 0}]
+        url = reverse("plugins:netbox_kea:server_lease4_add", args=[self.server.pk])
+        response = self.client.post(url, {"ip_address": "10.0.0.56"})
+        self.assertIn(response.status_code, [200, 302])

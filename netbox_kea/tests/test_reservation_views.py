@@ -737,6 +737,8 @@ class TestActiveLeaseStatusOnReservations(_ReservationViewBase):
         """Reservation + matching active lease for 192.168.1.100."""
         mock_client = MockKeaClient.return_value
         mock_client.clone.return_value = mock_client  # worker threads must see configured behaviors
+        mock_client.__enter__ = lambda s: s
+        mock_client.__exit__ = lambda s, *a: None
         mock_client.reservation_get_page.return_value = ([dict(_SAMPLE_RESERVATION4)], 0, 0)
         # lease4-get-all returns a lease matching the reservation IP
         mock_client.command.return_value = [
@@ -750,6 +752,9 @@ class TestActiveLeaseStatusOnReservations(_ReservationViewBase):
     def _mock_with_no_lease(self, MockKeaClient):
         """Reservation present but no active lease."""
         mock_client = MockKeaClient.return_value
+        mock_client.clone.return_value = mock_client
+        mock_client.__enter__ = lambda s: s
+        mock_client.__exit__ = lambda s, *a: None
         mock_client.reservation_get_page.return_value = ([dict(_SAMPLE_RESERVATION4)], 0, 0)
         mock_client.command.return_value = [{"result": 0, "arguments": {"leases": [], "count": 0}}]
         return mock_client
@@ -777,6 +782,8 @@ class TestActiveLeaseStatusOnReservations(_ReservationViewBase):
         """When lease_cmds hook is missing the reservation page must still load."""
         mock_client = MockKeaClient.return_value
         mock_client.clone.return_value = mock_client  # worker threads must see configured behaviors
+        mock_client.__enter__ = lambda s: s
+        mock_client.__exit__ = lambda s, *a: None
         mock_client.reservation_get_page.return_value = ([dict(_SAMPLE_RESERVATION4)], 0, 0)
         # lease4-get-all unknown → KeaException result=2
         mock_client.command.side_effect = KeaException(
@@ -901,6 +908,8 @@ class TestLeaseReserveBadge(_ReservationViewBase):
         """A lease WITH a matching reservation must show 'Reserved' link, not '+ Reserve'."""
         mock = MockKeaClient.return_value
         mock.clone.return_value = mock  # worker threads must see configured behaviors
+        mock.__enter__ = lambda s: s
+        mock.__exit__ = lambda s, *a: None
         reservation = dict(_SAMPLE_RESERVATION4)
         reservation["ip-address"] = "192.168.1.200"
         mock.reservation_get.return_value = reservation
@@ -944,6 +953,8 @@ class TestActiveLeaseBadgeLink(TestCase):
         """When active lease exists the badge must be an <a> linking to lease search by IP."""
         mock_client = MockKeaClient.return_value
         mock_client.clone.return_value = mock_client  # worker threads must see configured behaviors
+        mock_client.__enter__ = lambda s: s
+        mock_client.__exit__ = lambda s, *a: None
         mock_client.reservation_get_page.return_value = ([dict(_SAMPLE_RESERVATION4_WITH_IP)], 0, 0)
         mock_client.command.return_value = [{"result": 0, "arguments": {"leases": [{"ip-address": "10.50.0.9"}]}}]
         response = self.client.get(self._url())
@@ -1001,6 +1012,8 @@ class TestActiveLeaseSyncButton(TestCase):
         """When active lease and no NetBox IP: 'Active Lease' badge AND Sync button rendered."""
         mock_client = MockKeaClient.return_value
         mock_client.clone.return_value = mock_client  # worker threads must see configured behaviors
+        mock_client.__enter__ = lambda s: s
+        mock_client.__exit__ = lambda s, *a: None
         mock_client.reservation_get_page.return_value = (
             [dict(_SAMPLE_RESERVATION4_FOR_SYNC)],
             0,
@@ -1021,6 +1034,8 @@ class TestActiveLeaseSyncButton(TestCase):
         """When active lease AND NetBox IP already synced: no Sync button in lease_status cell."""
         mock_client = MockKeaClient.return_value
         mock_client.clone.return_value = mock_client  # worker threads must see configured behaviors
+        mock_client.__enter__ = lambda s: s
+        mock_client.__exit__ = lambda s, *a: None
         mock_client.reservation_get_page.return_value = (
             [dict(_SAMPLE_RESERVATION4_FOR_SYNC)],
             0,

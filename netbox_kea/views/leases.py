@@ -7,6 +7,7 @@ from urllib.parse import urlencode as _urlencode
 
 import requests
 from django.contrib import messages
+from django.db import DatabaseError
 from django.db.utils import OperationalError, ProgrammingError
 from django.http import HttpResponse, HttpResponseForbidden
 from django.http.request import HttpRequest
@@ -573,6 +574,10 @@ class _BaseLeaseEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin, View):
         except KeaException:
             messages.error(request, "Failed to fetch lease: see server logs for details.")
             return redirect(self._leases_url(server))
+        except (requests.RequestException, ValueError):
+            logger.exception("Failed to fetch lease %s on server %s", ip_address, pk)
+            messages.error(request, "Failed to fetch lease: see server logs for details.")
+            return redirect(self._leases_url(server))
 
         if resp[0]["result"] == 3:
             messages.warning(request, f"Lease {ip_address} not found.")
@@ -636,6 +641,9 @@ class _BaseLeaseEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin, View):
         except KeaException as exc:
             logger.exception("Error updating lease %s", ip_address)
             messages.error(request, kea_error_hint(exc))
+        except (requests.RequestException, ValueError):
+            logger.exception("Error updating lease %s (transport/parse error)", ip_address)
+            messages.error(request, "Failed to update lease: see server logs for details.")
         return redirect(self._leases_url(server))
 
 
@@ -729,6 +737,21 @@ class _BaseLeaseAddView(_KeaChangeMixin, generic.ObjectView):
                         "cancel_url": cancel_url,
                     },
                 )
+            except ValueError:
+                logger.exception(
+                    "Failed to create DHCPv%s lease for %s (parse error)", self.dhcp_version, cd.get("ip_address")
+                )
+                messages.error(request, "Failed to create lease: invalid response from Kea.")
+                return render(
+                    request,
+                    self.template_name,
+                    {
+                        "object": server,
+                        "form": form,
+                        "dhcp_version": self.dhcp_version,
+                        "cancel_url": cancel_url,
+                    },
+                )
             # Lease created in Kea — run post-create side effects.
             messages.success(request, f"Lease for {cd['ip_address']} created.")
             try:
@@ -740,7 +763,7 @@ class _BaseLeaseAddView(_KeaChangeMixin, generic.ObjectView):
                     hw_address=cd.get("hw_address") or cd.get("duid") or "",
                     hostname=cd.get("hostname") or "",
                 )
-            except Exception:
+            except (DatabaseError, OperationalError, ProgrammingError):
                 logger.exception("Failed to record journal entry for lease %s", cd.get("ip_address"))
             lease_added.send_robust(
                 sender=None,

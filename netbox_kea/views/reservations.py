@@ -162,26 +162,26 @@ def _enrich_reservations_with_lease_status(client: "KeaClient", reservations: li
 
     def _fetch_leases_for_subnet(sid: int) -> list[str] | None | bool:
         """Return list of lease IPs, None if the lease_cmds hook is not loaded, or False on error."""
-        worker_client = client.clone()  # requests.Session is not thread-safe
-        try:
-            resp = worker_client.command(
-                lease_cmd,
-                service=[service],
-                arguments={"subnets": [sid]},
-                check=(0, 3),
-            )
-            if resp[0]["result"] != 3:
-                args = resp[0].get("arguments", {})
-                return [lease.get("ip-address", "") for lease in args.get("leases", [])]
-            return []
-        except KeaException as exc:
-            if exc.response.get("result") == 2:
-                return None  # hook not loaded
-            logger.debug("lease fetch failed for subnet %s (KeaException result != 2): %s", sid, exc)
-            return False  # error sentinel — state is indeterminate
-        except Exception:  # noqa: BLE001
-            logger.debug("lease fetch failed for subnet %s (unexpected error)", sid)
-            return False  # error sentinel
+        with client.clone() as worker_client:  # requests.Session is not thread-safe
+            try:
+                resp = worker_client.command(
+                    lease_cmd,
+                    service=[service],
+                    arguments={"subnets": [sid]},
+                    check=(0, 3),
+                )
+                if resp[0]["result"] != 3:
+                    args = resp[0].get("arguments", {})
+                    return [lease.get("ip-address", "") for lease in args.get("leases", [])]
+                return []
+            except KeaException as exc:
+                if exc.response.get("result") == 2:
+                    return None  # hook not loaded
+                logger.debug("lease fetch failed for subnet %s (KeaException result != 2): %s", sid, exc)
+                return False  # error sentinel — state is indeterminate
+            except Exception:  # noqa: BLE001
+                logger.debug("lease fetch failed for subnet %s (unexpected error)", sid)
+                return False  # error sentinel
 
     if not unique_subnet_ids:
         return
@@ -482,6 +482,9 @@ class ServerReservation4AddView(_KeaChangeMixin, generic.ObjectView):
             except requests.RequestException:
                 logger.exception("Failed to create DHCPv4 reservation for %s (network error)", cd.get("ip_address"))
                 messages.error(request, "Network error communicating with Kea: see server logs.")
+            except ValueError:
+                logger.exception("Failed to create DHCPv4 reservation for %s (parse error)", cd.get("ip_address"))
+                messages.error(request, "Failed to create reservation: invalid response from Kea.")
         return render(
             request,
             self.template_name,
@@ -568,6 +571,9 @@ class ServerReservation6AddView(_KeaChangeMixin, generic.ObjectView):
             except requests.RequestException:
                 logger.exception("Failed to create DHCPv6 reservation for %s (network error)", cd.get("ip_addresses"))
                 messages.error(request, "Network error communicating with Kea: see server logs.")
+            except ValueError:
+                logger.exception("Failed to create DHCPv6 reservation for %s (parse error)", cd.get("ip_addresses"))
+                messages.error(request, "Failed to create reservation: invalid response from Kea.")
         return render(
             request,
             self.template_name,

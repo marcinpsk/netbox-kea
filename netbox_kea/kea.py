@@ -116,6 +116,16 @@ class KeaClient:
         new._session.cert = self._session.cert
         return new
 
+    def close(self) -> None:
+        """Close the underlying requests.Session and release connection resources."""
+        self._session.close()
+
+    def __enter__(self) -> "KeaClient":
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        self.close()
+
     def get_available_commands(self, service: str) -> set[str]:
         """Return the set of commands available on *service* (e.g. ``"dhcp4"``).
 
@@ -512,7 +522,9 @@ class KeaClient:
 
         resp = self.command("config-get", service=[service])
         # Strip the "hash" key that Kea 2.4+ includes — config-test and config-set reject it.
-        raw = resp[0]["arguments"]
+        raw = resp[0].get("arguments") if resp and isinstance(resp[0], dict) else None
+        if not isinstance(raw, dict):
+            raise KeaException({"result": -1, "text": f"config-get returned unexpected arguments for {service}"})
         config = {k: v for k, v in raw.items() if k != "hash"}
 
         network: dict[str, Any] | None = None
@@ -710,7 +722,10 @@ class KeaClient:
         subnet_key = f"subnet{version}"
 
         resp = self.command("config-get", service=[service])
-        config = resp[0]["arguments"]
+        raw = resp[0].get("arguments") if resp and isinstance(resp[0], dict) else None
+        if not isinstance(raw, dict):
+            raise KeaException({"result": -1, "text": f"config-get returned unexpected arguments for {service}"})
+        config = raw
         config.pop("hash", None)
 
         subnet = None
@@ -751,7 +766,10 @@ class KeaClient:
         dhcp_key = f"Dhcp{version}"
 
         resp = self.command("config-get", service=[service])
-        config = resp[0]["arguments"]
+        raw = resp[0].get("arguments") if resp and isinstance(resp[0], dict) else None
+        if not isinstance(raw, dict):
+            raise KeaException({"result": -1, "text": f"config-get returned unexpected arguments for {service}"})
+        config = raw
         config.pop("hash", None)
         config.setdefault(dhcp_key, {})["option-data"] = options
         self._apply_config(service, config)
@@ -772,8 +790,10 @@ class KeaClient:
         service = f"dhcp{version}"
         dhcp_key = f"Dhcp{version}"
         resp = self.command("config-get", service=[service])
-        config = resp[0]["arguments"]
-        return config.get(dhcp_key, {}).get("option-def", [])
+        raw = resp[0].get("arguments") if resp and isinstance(resp[0], dict) else None
+        if not isinstance(raw, dict):
+            raise KeaException({"result": -1, "text": f"config-get returned unexpected arguments for {service}"})
+        return raw.get(dhcp_key, {}).get("option-def", [])
 
     def option_def_add(self, version: int, option_def: dict) -> None:
         """Append a new option-def entry via config-get → config-test → config-write.
@@ -791,7 +811,10 @@ class KeaClient:
         service = f"dhcp{version}"
         dhcp_key = f"Dhcp{version}"
         resp = self.command("config-get", service=[service])
-        config = copy.deepcopy(resp[0]["arguments"])
+        raw_args = resp[0].get("arguments") if resp and isinstance(resp[0], dict) else None
+        if not isinstance(raw_args, dict):
+            raise KeaException({"result": -1, "text": f"config-get returned unexpected arguments for {service}"})
+        config = copy.deepcopy(raw_args)
         config.pop("hash", None)
         defs = config.setdefault(dhcp_key, {}).setdefault("option-def", [])
         defs.append(option_def)
@@ -813,7 +836,10 @@ class KeaClient:
         service = f"dhcp{version}"
         dhcp_key = f"Dhcp{version}"
         resp = self.command("config-get", service=[service])
-        config = copy.deepcopy(resp[0]["arguments"])
+        raw_args = resp[0].get("arguments") if resp and isinstance(resp[0], dict) else None
+        if not isinstance(raw_args, dict):
+            raise KeaException({"result": -1, "text": f"config-get returned unexpected arguments for {service}"})
+        config = copy.deepcopy(raw_args)
         config.pop("hash", None)
         defs = config.get(dhcp_key, {}).get("option-def", [])
         new_defs = [d for d in defs if not (d.get("code") == code and d.get("space") == space)]
@@ -1156,7 +1182,7 @@ class KeaClient:
             service=[service],
             arguments={"id": subnet_id},
         )
-        subnets = resp[0].get("arguments", {}).get(subnet_key, [])
+        subnets = (resp[0].get("arguments") or {}).get(subnet_key, [])
         if not subnets:
             raise KeaException(
                 {"result": 3, "text": f"subnet{version}-get returned no subnet for id={subnet_id}", "arguments": None},
@@ -1191,7 +1217,8 @@ class KeaClient:
             service=[service],
             arguments={"id": subnet_id},
         )
-        subnets = resp[0].get("arguments", {}).get(subnet_key, [])
+        args = resp[0].get("arguments") or {}
+        subnets = args.get(subnet_key, []) if isinstance(args, dict) else []
         if not subnets:
             raise KeaException(
                 {"result": 3, "text": f"subnet{version}-get returned no subnet for id={subnet_id}", "arguments": None},
@@ -1213,7 +1240,8 @@ class KeaClient:
         subnet_key = f"subnet{version}"
         try:
             resp = self.command("config-get", service=[service])
-            conf = (resp[0].get("arguments") or {}).get(dhcp_key, {})
+            raw_args = resp[0].get("arguments") if resp and isinstance(resp[0], dict) else None
+            conf = raw_args.get(dhcp_key, {}) if isinstance(raw_args, dict) else {}
             for s in conf.get(subnet_key, []):
                 if s.get("subnet") == cidr:
                     return s.get("id")  # None if id absent — callers treat None as "not found"

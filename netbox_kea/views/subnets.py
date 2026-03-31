@@ -52,12 +52,16 @@ class BaseServerDHCPSubnetsView(generic.ObjectChildrenView):
         try:
             client = server.get_client(version=self.dhcp_version)
             config = client.command("config-get", service=[f"dhcp{self.dhcp_version}"])
-            if config[0]["arguments"] is None:
+            args = config[0]["arguments"] if config and isinstance(config[0], dict) else None
+            if not isinstance(args, dict):
                 logger.warning(
-                    "config-get returned None arguments for dhcp%s on server %s", self.dhcp_version, server.pk
+                    "config-get returned non-dict arguments for dhcp%s on server %s: %r",
+                    self.dhcp_version,
+                    server.pk,
+                    type(args),
                 )
                 return []
-            dhcp_conf = config[0]["arguments"].get(f"Dhcp{self.dhcp_version}", {})
+            dhcp_conf = args.get(f"Dhcp{self.dhcp_version}", {})
         except (KeaException, requests.RequestException, ValueError, IndexError, KeyError):
             logger.exception("Failed to fetch subnet config for dhcp%s on server %s", self.dhcp_version, server.pk)
             messages.error(request, "Failed to load subnet configuration from Kea.")
@@ -380,7 +384,12 @@ class _BasePoolDeleteView(_KeaChangeMixin, generic.ObjectView):
             return HttpResponse("Invalid pool format.", status=400)
         server = self.get_object(pk=pk)
         return_url = self._subnets_url(pk)
-        client = server.get_client(version=self.dhcp_version)
+        try:
+            client = server.get_client(version=self.dhcp_version)
+        except Exception:
+            logger.exception("Failed to connect to Kea for pool delete on server %s", pk)
+            messages.error(request, "Failed to connect to Kea: see server logs.")
+            return redirect(return_url)
         try:
             client.pool_del(version=self.dhcp_version, subnet_id=subnet_id, pool=pool)
             messages.success(request, f"Pool {pool} removed from subnet {subnet_id}.")
@@ -953,9 +962,9 @@ class _BaseSubnetDeleteView(_KeaChangeMixin, generic.ObjectView):
 
     def get(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
         server = self.get_object(pk=pk)
-        client = server.get_client(version=self.dhcp_version)
         subnet_cidr = ""
         try:
+            client = server.get_client(version=self.dhcp_version)
             resp = client.command(
                 f"subnet{self.dhcp_version}-get",
                 service=[f"dhcp{self.dhcp_version}"],
@@ -980,7 +989,12 @@ class _BaseSubnetDeleteView(_KeaChangeMixin, generic.ObjectView):
     def post(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
         server = self.get_object(pk=pk)
         return_url = self._subnets_url(pk)
-        client = server.get_client(version=self.dhcp_version)
+        try:
+            client = server.get_client(version=self.dhcp_version)
+        except Exception:
+            logger.exception("Failed to connect to Kea for subnet delete on server %s", pk)
+            messages.error(request, "Failed to connect to Kea: see server logs.")
+            return redirect(return_url)
         try:
             client.subnet_del(version=self.dhcp_version, subnet_id=subnet_id)
             messages.success(request, f"Subnet {subnet_id} deleted.")
@@ -1022,9 +1036,9 @@ class _BaseSubnetWipeView(_KeaChangeMixin, generic.ObjectView):
 
     def get(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
         server = self.get_object(pk=pk)
-        client = server.get_client(version=self.dhcp_version)
         subnet_cidr = ""
         try:
+            client = server.get_client(version=self.dhcp_version)
             resp = client.command(
                 f"subnet{self.dhcp_version}-get",
                 service=[f"dhcp{self.dhcp_version}"],
@@ -1049,7 +1063,12 @@ class _BaseSubnetWipeView(_KeaChangeMixin, generic.ObjectView):
     def post(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
         server = self.get_object(pk=pk)
         return_url = self._subnets_url(pk)
-        client = server.get_client(version=self.dhcp_version)
+        try:
+            client = server.get_client(version=self.dhcp_version)
+        except Exception:
+            logger.exception("Failed to connect to Kea for lease wipe on server %s", pk)
+            messages.error(request, "Failed to connect to Kea: see server logs.")
+            return redirect(return_url)
         try:
             client.lease_wipe(version=self.dhcp_version, subnet_id=subnet_id)
             messages.success(request, f"All leases in subnet {subnet_id} wiped.")

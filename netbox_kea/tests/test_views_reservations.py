@@ -782,8 +782,11 @@ class TestReservationListEnrichmentExceptions(_ViewTestBase):
             0,
             0,
         )
-        # lease4-get-all raises an unexpected error
-        MockKeaClient.return_value.command.side_effect = RuntimeError("unexpected")
+        # lease4-get-all raises an unexpected error — must set on the cloned client
+        # since _enrich_reservations_with_lease_status calls client.clone()
+        MockKeaClient.return_value.clone.return_value.command.side_effect = RuntimeError("unexpected")
+        MockKeaClient.return_value.clone.return_value.__enter__ = lambda self: self
+        MockKeaClient.return_value.clone.return_value.__exit__ = lambda self, *a: None
         response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
 

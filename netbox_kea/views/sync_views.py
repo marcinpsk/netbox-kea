@@ -348,9 +348,12 @@ class _BaseBulkReservationImportView(_KeaChangeMixin, ConditionalLoginRequiredMi
                     skipped += 1
                 else:
                     error_rows.append({"row": row, "error": kea_error_hint(exc)})
-            except (requests.RequestException, ValueError):
-                logger.exception("Transport error importing reservation row %s", row)
+            except requests.RequestException:
+                logger.exception("Connection error importing reservation row %s", row)
                 error_rows.append({"row": row, "error": "Connection error — could not reach Kea server."})
+            except ValueError:
+                logger.exception("Data error importing reservation row %s", row)
+                error_rows.append({"row": row, "error": "Invalid response from Kea — could not parse server reply."})
 
         result = {
             "created": created,
@@ -498,9 +501,12 @@ class _BaseBulkLeaseImportView(_KeaChangeMixin, ConditionalLoginRequiredMixin, V
                 created += 1
             except KeaException as exc:  # noqa: PERF203
                 error_rows.append({"row": row, "error": kea_error_hint(exc)})
-            except (requests.RequestException, ValueError):
-                logger.exception("Transport error importing lease row %s", row)
+            except requests.RequestException:
+                logger.exception("Connection error importing lease row %s", row)
                 error_rows.append({"row": row, "error": "Connection error — could not reach Kea server."})
+            except ValueError:
+                logger.exception("Data error importing lease row %s", row)
+                error_rows.append({"row": row, "error": "Invalid response from Kea — could not parse server reply."})
 
         result = {
             "created": created,

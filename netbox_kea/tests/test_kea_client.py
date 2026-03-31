@@ -4384,3 +4384,62 @@ class TestPersistConfigMalformedArguments(TestCase):
 
         with patch.object(self.client._session, "post", side_effect=_side):
             self.client._persist_config("dhcp4")
+
+
+class TestKeaClientContextManager(TestCase):
+    """KeaClient supports context manager protocol for resource cleanup."""
+
+    def test_close_closes_session(self):
+        client = KeaClient(url="http://kea:8000")
+        with patch.object(client._session, "close") as mock_close:
+            client.close()
+            mock_close.assert_called_once()
+
+    def test_context_manager_calls_close(self):
+        client = KeaClient(url="http://kea:8000")
+        with patch.object(client, "close") as mock_close:
+            with client:
+                pass
+            mock_close.assert_called_once()
+
+    def test_clone_supports_context_manager(self):
+        client = KeaClient(url="http://kea:8000")
+        with client.clone() as worker:
+            self.assertIsInstance(worker, KeaClient)
+            self.assertEqual(worker.url, client.url)
+
+
+class TestConfigGetShapeGuard(TestCase):
+    """Methods that call config-get raise KeaException on malformed arguments."""
+
+    def setUp(self):
+        self.client = KeaClient(url="http://kea:8000")
+
+    def _null_args_response(self):
+        return _mock_http_response([{"result": 0, "arguments": None}])
+
+    @patch("requests.Session.post")
+    def test_subnet_get_null_arguments_raises_kea_exception(self, mock_post):
+        mock_post.return_value = self._null_args_response()
+        with self.assertRaises(KeaException):
+            self.client.subnet_get(version=4, subnet_id=1)
+
+    @patch("requests.Session.post")
+    def test_server_update_options_null_arguments_raises(self, mock_post):
+        mock_post.return_value = self._null_args_response()
+        with self.assertRaises(KeaException):
+            self.client.server_update_options(version=4, options=[])
+
+    @patch("requests.Session.post")
+    def test_option_def_add_null_arguments_raises(self, mock_post):
+        mock_post.return_value = self._null_args_response()
+        with self.assertRaises(KeaException):
+            self.client.option_def_add(
+                version=4, option_def={"name": "test", "code": 200, "type": "string", "space": "dhcp4"}
+            )
+
+    @patch("requests.Session.post")
+    def test_option_def_del_null_arguments_raises(self, mock_post):
+        mock_post.return_value = self._null_args_response()
+        with self.assertRaises(KeaException):
+            self.client.option_def_del(version=4, code=200, space="dhcp4")

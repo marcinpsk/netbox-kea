@@ -975,6 +975,8 @@ class TestCombinedReservations4Enrichment(_CombinedViewBase):
         """A reservation with an active lease must show 'Active Lease' badge."""
         clone_mock = MagicMock()
         clone_mock.command.return_value = [{"result": 0, "arguments": {"leases": [{"ip-address": "10.20.0.5"}]}}]
+        clone_mock.__enter__ = lambda s: s
+        clone_mock.__exit__ = lambda s, *a: None
         MockKeaClient.return_value.clone.return_value = clone_mock
         MockKeaClient.return_value.reservation_get_page.return_value = ([dict(_MOCK_RESERVATION_ENRICHED)], 0, 0)
         MockKeaClient.return_value.command.return_value = [
@@ -1135,6 +1137,8 @@ class TestCombinedReservations6Enrichment(_CombinedViewBase):
         """A v6 reservation with an active lease must show 'Active Lease' badge."""
         clone_mock = MagicMock()
         clone_mock.command.return_value = [{"result": 0, "arguments": {"leases": [{"ip-address": "2001:db8::5"}]}}]
+        clone_mock.__enter__ = lambda s: s
+        clone_mock.__exit__ = lambda s, *a: None
         MockKeaClient.return_value.clone.return_value = clone_mock
         MockKeaClient.return_value.reservation_get_page.return_value = (
             [dict(_MOCK_RESERVATION_V6_ENRICHED)],
