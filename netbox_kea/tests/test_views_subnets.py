@@ -1577,7 +1577,11 @@ class TestSubnetDeleteExceptionPaths(_ViewTestBase):
     @patch("netbox_kea.models.KeaClient")
     def test_get_exception_still_renders(self, MockKeaClient):
         """Lines 3177-3178: exception in GET (subnet-get) → still renders confirm page."""
-        MockKeaClient.return_value.command.side_effect = RuntimeError("subnet-get failed")
+        from netbox_kea.kea import KeaException
+
+        MockKeaClient.return_value.command.side_effect = KeaException(
+            {"result": 1, "text": "subnet-get failed"}, index=0
+        )
         response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
 
@@ -2175,7 +2179,9 @@ class TestSubnetDeleteClientError(_ViewTestBase):
     @patch("netbox_kea.models.Server.get_client")
     def test_get_with_get_client_failure_renders(self, mock_get_client):
         """get_client() raising in delete GET must render confirm page, not 500."""
-        mock_get_client.side_effect = Exception("connection refused")
+        import requests as req
+
+        mock_get_client.side_effect = req.RequestException("connection refused")
         url = reverse("plugins:netbox_kea:server_subnet4_delete", args=[self.server.pk, 1])
         response = self.client.get(url)
         self.assertEqual(response.status_code, 200)

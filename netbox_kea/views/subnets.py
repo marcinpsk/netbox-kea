@@ -642,7 +642,7 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
             )
             subnets = resp[0].get("arguments", {}).get(key, [])
             return subnets[0] if subnets else None
-        except Exception:
+        except (KeaException, requests.RequestException, ValueError, KeyError, IndexError, TypeError):
             logger.warning("Failed to fetch subnet %s for editing", subnet_id)
             return None
 
@@ -982,8 +982,8 @@ class _BaseSubnetDeleteView(_KeaChangeMixin, generic.ObjectView):
             )
             key = f"subnet{self.dhcp_version}"
             subnet_cidr = resp[0].get("arguments", {}).get(key, [{}])[0].get("subnet", "")
-        except Exception:
-            pass
+        except (KeaException, requests.RequestException, ValueError, KeyError, IndexError):
+            logger.debug("Could not resolve subnet CIDR for subnet %s on server %s", subnet_id, pk)
         return render(
             request,
             self.template_name,

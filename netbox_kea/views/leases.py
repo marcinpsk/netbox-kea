@@ -127,17 +127,17 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
             raise RuntimeError("Unexpected None arguments from lease-get-page")
 
         raw_leases = args["leases"]
-        next = f"{raw_leases[-1]['ip-address']}" if args["count"] == per_page else None
+        next_cursor = f"{raw_leases[-1]['ip-address']}" if args["count"] == per_page else None
         for i, lease in enumerate(raw_leases):
             lease_ip = IPAddress(lease["ip-address"])
             if lease_ip not in subnet:
                 raw_leases = raw_leases[:i]
-                next = None
+                next_cursor = None
                 break
 
         subnet_leases = format_leases(raw_leases)
 
-        return subnet_leases, next
+        return subnet_leases, next_cursor
 
     def get_leases(self, client: KeaClient, q: Any, by: str) -> list[dict[str, Any]]:
         """Query Kea for leases matching *q* by search attribute *by*."""
