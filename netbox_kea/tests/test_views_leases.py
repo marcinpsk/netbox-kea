@@ -205,7 +205,8 @@ class TestServerLeases4DeleteView(_ViewTestBase):
         )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.headers.get("HX-Refresh"), "true")
-        mock_client.command.assert_called()
+        cmd_names = [c.args[0] for c in mock_client.command.call_args_list]
+        self.assertIn("lease4-del", cmd_names)
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
