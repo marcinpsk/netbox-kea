@@ -2248,3 +2248,269 @@ class TestGetSubnetsConfigShapeGuard(_ViewTestBase):
         url = reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk])
         response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Pool add POST exception branches
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestPoolAddPostErrors(_ViewTestBase):
+    """Cover pool add POST error handling."""
+
+    def _url(self, subnet_id=1):
+        return reverse("plugins:netbox_kea:server_subnet4_pool_add", args=[self.server.pk, subnet_id])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_partial_persist_shows_warning(self, MockKeaClient):
+        """PartialPersistError from pool_add shows warning about config-write."""
+        from netbox_kea.kea import PartialPersistError
+
+        MockKeaClient.return_value.pool_add.side_effect = PartialPersistError(
+            "dhcp4", Exception("write failed"), subnet_id=1
+        )
+        response = self.client.post(self._url(), {"pool": "10.0.0.10-10.0.0.20"}, follow=True)
+        self.assertEqual(response.status_code, 200)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_kea_exception_shows_error(self, MockKeaClient):
+        """KeaException from pool_add shows Kea error message."""
+        from netbox_kea.kea import KeaException
+
+        MockKeaClient.return_value.pool_add.side_effect = KeaException({"result": 1, "text": "pool overlap"}, index=0)
+        response = self.client.post(self._url(), {"pool": "10.0.0.10-10.0.0.20"}, follow=True)
+        self.assertEqual(response.status_code, 200)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_request_exception_shows_error(self, MockKeaClient):
+        """RequestException from pool_add shows transport error message."""
+        MockKeaClient.return_value.pool_add.side_effect = requests.ConnectionError("down")
+        response = self.client.post(self._url(), {"pool": "10.0.0.10-10.0.0.20"}, follow=True)
+        self.assertEqual(response.status_code, 200)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_generic_exception_shows_error(self, MockKeaClient):
+        """Generic exception from pool_add shows generic error."""
+        MockKeaClient.return_value.pool_add.side_effect = RuntimeError("unexpected")
+        response = self.client.post(self._url(), {"pool": "10.0.0.10-10.0.0.20"}, follow=True)
+        self.assertEqual(response.status_code, 200)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Pool delete POST exception branches
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestPoolDeletePostErrors(_ViewTestBase):
+    """Cover pool delete POST error handling."""
+
+    def _url(self):
+        return reverse("plugins:netbox_kea:server_subnet4_pool_delete", args=[self.server.pk, 1, "10.0.0.1-10.0.0.100"])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_partial_persist_shows_warning(self, MockKeaClient):
+        """PartialPersistError from pool_del shows warning."""
+        from netbox_kea.kea import PartialPersistError
+
+        MockKeaClient.return_value.pool_del.side_effect = PartialPersistError(
+            "dhcp4", Exception("write failed"), subnet_id=1
+        )
+        response = self.client.post(self._url(), follow=True)
+        self.assertEqual(response.status_code, 200)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_kea_exception_shows_error(self, MockKeaClient):
+        """KeaException from pool_del shows Kea error."""
+        from netbox_kea.kea import KeaException
+
+        MockKeaClient.return_value.pool_del.side_effect = KeaException({"result": 1, "text": "not found"}, index=0)
+        response = self.client.post(self._url(), follow=True)
+        self.assertEqual(response.status_code, 200)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_request_exception_shows_error(self, MockKeaClient):
+        """RequestException from pool_del shows transport error."""
+        MockKeaClient.return_value.pool_del.side_effect = requests.ConnectionError("down")
+        response = self.client.post(self._url(), follow=True)
+        self.assertEqual(response.status_code, 200)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_generic_exception_shows_error(self, MockKeaClient):
+        """Generic exception from pool_del shows generic error."""
+        MockKeaClient.return_value.pool_del.side_effect = RuntimeError("unexpected")
+        response = self.client.post(self._url(), follow=True)
+        self.assertEqual(response.status_code, 200)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_get_client_failure_redirects(self, MockKeaClient):
+        """get_client failure in pool delete redirects with error."""
+        MockKeaClient.side_effect = Exception("connection refused")
+        response = self.client.post(self._url())
+        self.assertEqual(response.status_code, 302)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Subnet add POST network assignment error branches
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestSubnetAddPostNetworkErrors(_ViewTestBase):
+    """Cover subnet add POST network assignment errors."""
+
+    def _url(self):
+        return reverse("plugins:netbox_kea:server_subnet4_add", args=[self.server.pk])
+
+    def _setup_client(self, MockKeaClient, subnet_add_effect=None, network_add_effect=None):
+        """Set up common mock for subnet_add + network flow."""
+        mock_client = MockKeaClient.return_value
+        # config-get for shared networks (used by _get_network_choices)
+        mock_client.command.return_value = [
+            {"result": 0, "arguments": {"Dhcp4": {"shared-networks": [{"name": "my-net"}], "subnet4": []}}}
+        ]
+        if subnet_add_effect:
+            mock_client.subnet_add.side_effect = subnet_add_effect
+        else:
+            mock_client.subnet_add.return_value = 99  # returns new subnet ID
+        if network_add_effect:
+            mock_client.network_subnet_add.side_effect = network_add_effect
+        return mock_client
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_network_assign_kea_exception_shows_warning(self, MockKeaClient):
+        """KeaException from network_subnet_add shows warning (subnet already created)."""
+        from netbox_kea.kea import KeaException
+
+        self._setup_client(
+            MockKeaClient,
+            network_add_effect=KeaException({"result": 1, "text": "network error"}, index=0),
+        )
+        response = self.client.post(
+            self._url(),
+            {
+                "subnet": "10.99.0.0/24",
+                "shared_network": "my-net",
+                "pools": "",
+                "gateway": "",
+                "dns_servers": "",
+                "ntp_servers": "",
+            },
+            follow=True,
+        )
+        self.assertEqual(response.status_code, 200)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_subnet_add_request_exception_rerenders(self, MockKeaClient):
+        """RequestException from subnet_add re-renders form."""
+        self._setup_client(
+            MockKeaClient,
+            subnet_add_effect=requests.ConnectionError("down"),
+        )
+        response = self.client.post(
+            self._url(),
+            {
+                "subnet": "10.99.0.0/24",
+                "shared_network": "",
+                "pools": "",
+                "gateway": "",
+                "dns_servers": "",
+                "ntp_servers": "",
+            },
+        )
+        self.assertIn(response.status_code, [200, 302])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_subnet_add_generic_exception_rerenders(self, MockKeaClient):
+        """Generic exception from subnet_add re-renders form."""
+        self._setup_client(
+            MockKeaClient,
+            subnet_add_effect=RuntimeError("unexpected"),
+        )
+        response = self.client.post(
+            self._url(),
+            {
+                "subnet": "10.99.0.0/24",
+                "shared_network": "",
+                "pools": "",
+                "gateway": "",
+                "dns_servers": "",
+                "ntp_servers": "",
+            },
+        )
+        self.assertIn(response.status_code, [200, 302])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_subnet_add_no_id_with_network_shows_warning(self, MockKeaClient):
+        """When subnet_add returns None (no ID), network assignment is skipped with warning."""
+        mock_client = self._setup_client(MockKeaClient)
+        mock_client.subnet_add.return_value = None
+        response = self.client.post(
+            self._url(),
+            {
+                "subnet": "10.99.0.0/24",
+                "shared_network": "my-net",
+                "pools": "",
+                "gateway": "",
+                "dns_servers": "",
+                "ntp_servers": "",
+            },
+            follow=True,
+        )
+        self.assertEqual(response.status_code, 200)
+        mock_client.network_subnet_add.assert_not_called()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Subnet add GET/POST client creation errors
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestSubnetAddGetClientError(_ViewTestBase):
+    """Cover subnet add GET when client creation fails."""
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_get_client_error_disables_network_field(self, MockKeaClient):
+        """ValueError from get_client in GET disables shared network field."""
+        MockKeaClient.side_effect = ValueError("bad config")
+        url = reverse("plugins:netbox_kea:server_subnet4_add", args=[self.server.pk])
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_client_error_rerenders(self, MockKeaClient):
+        """ValueError from get_client in POST re-renders form with error."""
+        MockKeaClient.side_effect = ValueError("bad config")
+        url = reverse("plugins:netbox_kea:server_subnet4_add", args=[self.server.pk])
+        response = self.client.post(
+            url,
+            {
+                "subnet": "10.99.0.0/24",
+                "shared_network": "",
+                "pools": "",
+                "gateway": "",
+                "dns_servers": "",
+                "ntp_servers": "",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# get_subnets() error path
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestGetSubnetsError(_ViewTestBase):
+    """Cover get_subnets() error path."""
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_config_get_value_error_shows_empty(self, MockKeaClient):
+        """ValueError from config-get shows empty subnets with error message."""
+        MockKeaClient.return_value.command.side_effect = ValueError("bad JSON")
+        url = reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk])
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)

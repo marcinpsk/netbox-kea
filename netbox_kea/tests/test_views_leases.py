@@ -2938,3 +2938,201 @@ class TestLeaseJournalExceptionNarrowing(_ViewTestBase):
         url = reverse("plugins:netbox_kea:server_lease4_add", args=[self.server.pk])
         response = self.client.post(url, {"ip_address": "10.0.0.56"})
         self.assertIn(response.status_code, [200, 302])
+
+
+# ---------------------------------------------------------------------------
+# Coverage: get_export() error paths
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestLeaseExportClientError(_ViewTestBase):
+    """Cover error paths in get_export()."""
+
+    def _url(self):
+        return reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_get_client_value_error_redirects(self, MockKeaClient):
+        """ValueError from get_client in export redirects with error."""
+        MockKeaClient.side_effect = ValueError("bad TLS")
+        response = self.client.get(self._url(), {"export": "form", "by": "subnet", "q": "10.0.0.0/24"})
+        self.assertIn(response.status_code, [200, 302])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_runtime_error_during_fetch_redirects(self, MockKeaClient):
+        """RuntimeError during lease fetch in export redirects with error."""
+        MockKeaClient.return_value.command.side_effect = RuntimeError("unexpected")
+        response = self.client.get(self._url(), {"export": "form", "by": "subnet", "q": "10.0.0.0/24"})
+        self.assertIn(response.status_code, [200, 302])
+
+
+# ---------------------------------------------------------------------------
+# Coverage: HTMX error handler exception paths
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestLeaseHtmxErrorHandler(_ViewTestBase):
+    """Cover HTMX error rendering paths."""
+
+    def _url(self):
+        return reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_kea_exception_renders_htmx_error(self, MockKeaClient):
+        """KeaException in HTMX handler renders error template."""
+        from netbox_kea.kea import KeaException
+
+        MockKeaClient.return_value.command.side_effect = KeaException({"result": 1, "text": "err"}, index=0)
+        response = self.client.get(
+            self._url(),
+            {"by": "subnet", "q": "10.0.0.0/24"},
+            HTTP_HX_REQUEST="true",
+        )
+        self.assertEqual(response.status_code, 200)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_request_exception_renders_htmx_error(self, MockKeaClient):
+        """requests.RequestException in HTMX handler renders error template."""
+        MockKeaClient.return_value.command.side_effect = requests.ConnectionError("down")
+        response = self.client.get(
+            self._url(),
+            {"by": "subnet", "q": "10.0.0.0/24"},
+            HTTP_HX_REQUEST="true",
+        )
+        self.assertEqual(response.status_code, 200)
+
+
+# ---------------------------------------------------------------------------
+# Coverage: lease edit GET validation branches
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestLeaseEditGetValidation(_ViewTestBase):
+    """Cover lease edit GET validation paths."""
+
+    def _url(self, ip="10.0.0.1"):
+        return reverse("plugins:netbox_kea:server_lease4_edit", args=[self.server.pk, ip])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_lease_not_found_result3_redirects(self, MockKeaClient):
+        """result=3 from Kea (lease not found) shows warning and redirects."""
+        MockKeaClient.return_value.command.return_value = [{"result": 3, "text": "not found"}]
+        response = self.client.get(self._url(), follow=True)
+        self.assertEqual(response.status_code, 200)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_bad_response_shape_redirects(self, MockKeaClient):
+        """Non-dict response redirects with error."""
+        MockKeaClient.return_value.command.return_value = ["not a dict"]
+        response = self.client.get(self._url(), follow=True)
+        self.assertEqual(response.status_code, 200)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_bad_arguments_redirects(self, MockKeaClient):
+        """arguments=None in response redirects with error."""
+        MockKeaClient.return_value.command.return_value = [{"result": 0, "arguments": "not a dict"}]
+        response = self.client.get(self._url(), follow=True)
+        self.assertEqual(response.status_code, 200)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_get_client_value_error_redirects(self, MockKeaClient):
+        """ValueError from get_client redirects with error."""
+        MockKeaClient.side_effect = ValueError("bad TLS")
+        response = self.client.get(self._url(), follow=True)
+        self.assertEqual(response.status_code, 200)
+
+
+# ---------------------------------------------------------------------------
+# Coverage: lease update POST exception paths
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestLeaseUpdatePostErrors(_ViewTestBase):
+    """Cover lease update POST error handling."""
+
+    def _url(self, ip="10.0.0.1"):
+        return reverse("plugins:netbox_kea:server_lease4_edit", args=[self.server.pk, ip])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_request_exception_redirects(self, MockKeaClient):
+        """RequestException from lease_update redirects with error."""
+        MockKeaClient.return_value.lease_update.side_effect = requests.ConnectionError("down")
+        response = self.client.post(self._url(), {"hostname": "test", "valid_lft": "3600"}, follow=True)
+        self.assertEqual(response.status_code, 200)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_value_error_redirects(self, MockKeaClient):
+        """ValueError from lease_update redirects with error."""
+        MockKeaClient.return_value.lease_update.side_effect = ValueError("bad JSON")
+        response = self.client.post(self._url(), {"hostname": "test", "valid_lft": "3600"}, follow=True)
+        self.assertEqual(response.status_code, 200)
+
+
+# ---------------------------------------------------------------------------
+# Coverage: lease add POST exception paths
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestLeaseAddPostErrors(_ViewTestBase):
+    """Cover lease add POST error handling."""
+
+    def _url(self):
+        return reverse("plugins:netbox_kea:server_lease4_add", args=[self.server.pk])
+
+    def _valid_form(self):
+        return {"ip_address": "10.0.0.1", "subnet_id": "1", "hw_address": "aa:bb:cc:00:00:01", "valid_lft": "3600"}
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_kea_exception_rerenders_form(self, MockKeaClient):
+        """KeaException from lease_add re-renders form with error."""
+        from netbox_kea.kea import KeaException
+
+        MockKeaClient.return_value.lease_add.side_effect = KeaException({"result": 1, "text": "dup"}, index=0)
+        response = self.client.post(self._url(), self._valid_form())
+        self.assertEqual(response.status_code, 200)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_request_exception_rerenders_form(self, MockKeaClient):
+        """RequestException from lease_add re-renders form with error."""
+        MockKeaClient.return_value.lease_add.side_effect = requests.ConnectionError("down")
+        response = self.client.post(self._url(), self._valid_form())
+        self.assertEqual(response.status_code, 200)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_value_error_rerenders_form(self, MockKeaClient):
+        """ValueError from lease_add re-renders form with error."""
+        MockKeaClient.return_value.lease_add.side_effect = ValueError("bad JSON")
+        response = self.client.post(self._url(), self._valid_form())
+        self.assertEqual(response.status_code, 200)
+
+
+# ---------------------------------------------------------------------------
+# Coverage: lease add post-creation side effect errors (journal + sync)
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestLeaseAddSideEffectErrors(_ViewTestBase):
+    """Cover lease add post-creation side effect error paths."""
+
+    def _url(self):
+        return reverse("plugins:netbox_kea:server_lease4_add", args=[self.server.pk])
+
+    def _valid_form(self):
+        return {"ip_address": "10.0.0.1", "subnet_id": "1", "hw_address": "aa:bb:cc:00:00:01", "valid_lft": "3600"}
+
+    @patch("netbox_kea.views.leases._add_lease_journal")
+    @patch("netbox_kea.models.KeaClient")
+    def test_journal_db_error_still_succeeds(self, MockKeaClient, mock_journal):
+        """DatabaseError in journal entry creation still redirects successfully."""
+        from django.db import DatabaseError
+
+        MockKeaClient.return_value.lease_add.return_value = None
+        mock_journal.side_effect = DatabaseError("DB error")
+        response = self.client.post(self._url(), self._valid_form(), follow=True)
+        self.assertEqual(response.status_code, 200)

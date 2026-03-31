@@ -1058,3 +1058,315 @@ class TestKeaConfigTestErrorHandling(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         msgs = [str(m) for m in response.context["messages"]]
         self.assertTrue(any("config" in m.lower() and "no changes" in m.lower() for m in msgs))
+
+
+# ---------------------------------------------------------------------------
+# Subnet options POST: PartialPersistError, TransportError, ValueError
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestSubnetOptionsPartialPersistError(_ViewTestBase):
+    """POST to subnet options edit raises PartialPersistError → warning message."""
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_partial_persist_error_shows_warning(self, MockKeaClient):
+        """PartialPersistError on subnet_update_options must show a warning about config-write."""
+        from netbox_kea.kea import PartialPersistError
+
+        MockKeaClient.return_value.subnet_update_options.side_effect = PartialPersistError(
+            "dhcp4", Exception("write failed"), subnet_id=1
+        )
+        url = reverse("plugins:netbox_kea:server_subnet4_options_edit", args=[self.server.pk, 1])
+        response = self.client.post(url, {"form-TOTAL_FORMS": "0", "form-INITIAL_FORMS": "0"}, follow=True)
+        self.assertEqual(response.status_code, 200)
+        msgs = list(response.context["messages"])
+        self.assertTrue(any(m.level == django_messages.WARNING for m in msgs))
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestSubnetOptionsTransportError(_ViewTestBase):
+    """POST to subnet options edit raises ConnectionError → transport error message."""
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_connection_error_shows_transport_message(self, MockKeaClient):
+        """requests.ConnectionError on subnet_update_options must show 'Transport error' message."""
+        import requests
+
+        MockKeaClient.return_value.subnet_update_options.side_effect = requests.ConnectionError("down")
+        url = reverse("plugins:netbox_kea:server_subnet4_options_edit", args=[self.server.pk, 1])
+        response = self.client.post(url, {"form-TOTAL_FORMS": "0", "form-INITIAL_FORMS": "0"}, follow=True)
+        self.assertEqual(response.status_code, 200)
+        msgs = [str(m) for m in response.context["messages"]]
+        self.assertTrue(any("transport error" in m.lower() for m in msgs))
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestSubnetOptionsValueError(_ViewTestBase):
+    """POST to subnet options edit raises ValueError → invalid config message."""
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_value_error_shows_invalid_config_message(self, MockKeaClient):
+        """ValueError on subnet_update_options must show 'Invalid Kea client configuration' message."""
+        MockKeaClient.return_value.subnet_update_options.side_effect = ValueError("bad config")
+        url = reverse("plugins:netbox_kea:server_subnet4_options_edit", args=[self.server.pk, 1])
+        response = self.client.post(url, {"form-TOTAL_FORMS": "0", "form-INITIAL_FORMS": "0"}, follow=True)
+        self.assertEqual(response.status_code, 200)
+        msgs = [str(m) for m in response.context["messages"]]
+        self.assertTrue(any("invalid kea client configuration" in m.lower() for m in msgs))
+
+
+# ---------------------------------------------------------------------------
+# Server options POST: PartialPersistError, TransportError, ValueError
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestServerOptionsPartialPersistError(_ViewTestBase):
+    """POST to server options edit raises PartialPersistError → warning message."""
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_partial_persist_error_shows_warning(self, MockKeaClient):
+        """PartialPersistError on server_update_options must show a warning about config-write."""
+        from netbox_kea.kea import PartialPersistError
+
+        MockKeaClient.return_value.server_update_options.side_effect = PartialPersistError(
+            "dhcp4", Exception("write failed"), subnet_id=None
+        )
+        url = reverse("plugins:netbox_kea:server_dhcp4_options_edit", args=[self.server.pk])
+        response = self.client.post(url, {"form-TOTAL_FORMS": "0", "form-INITIAL_FORMS": "0"}, follow=True)
+        self.assertEqual(response.status_code, 200)
+        msgs = list(response.context["messages"])
+        self.assertTrue(any(m.level == django_messages.WARNING for m in msgs))
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestServerOptionsTransportError(_ViewTestBase):
+    """POST to server options edit raises ConnectionError → transport error message."""
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_connection_error_shows_transport_message(self, MockKeaClient):
+        """requests.ConnectionError on server_update_options must show 'Transport error' message."""
+        import requests
+
+        MockKeaClient.return_value.server_update_options.side_effect = requests.ConnectionError("down")
+        url = reverse("plugins:netbox_kea:server_dhcp4_options_edit", args=[self.server.pk])
+        response = self.client.post(url, {"form-TOTAL_FORMS": "0", "form-INITIAL_FORMS": "0"}, follow=True)
+        self.assertEqual(response.status_code, 200)
+        msgs = [str(m) for m in response.context["messages"]]
+        self.assertTrue(any("transport error" in m.lower() for m in msgs))
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestServerOptionsValueError(_ViewTestBase):
+    """POST to server options edit raises ValueError → invalid config message."""
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_value_error_shows_invalid_config_message(self, MockKeaClient):
+        """ValueError on server_update_options must show 'Invalid Kea client configuration' message."""
+        MockKeaClient.return_value.server_update_options.side_effect = ValueError("bad config")
+        url = reverse("plugins:netbox_kea:server_dhcp4_options_edit", args=[self.server.pk])
+        response = self.client.post(url, {"form-TOTAL_FORMS": "0", "form-INITIAL_FORMS": "0"}, follow=True)
+        self.assertEqual(response.status_code, 200)
+        msgs = [str(m) for m in response.context["messages"]]
+        self.assertTrue(any("invalid kea client configuration" in m.lower() for m in msgs))
+
+
+# ---------------------------------------------------------------------------
+# Option-def add POST: PartialPersistError, TransportError, ValueError
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestOptionDefAddPartialPersistError(_ViewTestBase):
+    """POST to option-def add raises PartialPersistError → warning message."""
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_partial_persist_error_shows_warning(self, MockKeaClient):
+        """PartialPersistError on option_def_add must show a warning about config-write."""
+        from netbox_kea.kea import PartialPersistError
+
+        MockKeaClient.return_value.option_def_add.side_effect = PartialPersistError(
+            "dhcp4", Exception("write failed"), subnet_id=None
+        )
+        url = reverse("plugins:netbox_kea:server_option_def4_add", args=[self.server.pk])
+        response = self.client.post(
+            url,
+            {"name": "my-opt", "code": "200", "type": "string", "space": "dhcp4"},
+            follow=True,
+        )
+        self.assertEqual(response.status_code, 200)
+        msgs = list(response.context["messages"])
+        self.assertTrue(any(m.level == django_messages.WARNING for m in msgs))
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestOptionDefAddTransportError(_ViewTestBase):
+    """POST to option-def add raises ConnectionError → transport error message."""
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_connection_error_shows_transport_message(self, MockKeaClient):
+        """requests.ConnectionError on option_def_add must show 'Transport error' message."""
+        import requests
+
+        MockKeaClient.return_value.option_def_add.side_effect = requests.ConnectionError("down")
+        url = reverse("plugins:netbox_kea:server_option_def4_add", args=[self.server.pk])
+        response = self.client.post(
+            url,
+            {"name": "my-opt", "code": "200", "type": "string", "space": "dhcp4"},
+            follow=True,
+        )
+        self.assertEqual(response.status_code, 200)
+        msgs = [str(m) for m in response.context["messages"]]
+        self.assertTrue(any("transport error" in m.lower() for m in msgs))
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestOptionDefAddValueError(_ViewTestBase):
+    """POST to option-def add raises ValueError → invalid config message."""
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_value_error_shows_invalid_config_message(self, MockKeaClient):
+        """ValueError on option_def_add must show 'Invalid Kea client configuration' message."""
+        MockKeaClient.return_value.option_def_add.side_effect = ValueError("bad config")
+        url = reverse("plugins:netbox_kea:server_option_def4_add", args=[self.server.pk])
+        response = self.client.post(
+            url,
+            {"name": "my-opt", "code": "200", "type": "string", "space": "dhcp4"},
+            follow=True,
+        )
+        self.assertEqual(response.status_code, 200)
+        msgs = [str(m) for m in response.context["messages"]]
+        self.assertTrue(any("invalid kea client configuration" in m.lower() for m in msgs))
+
+
+# ---------------------------------------------------------------------------
+# Option-def delete POST: PartialPersistError, TransportError, ValueError
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestOptionDefDeletePartialPersistError(_ViewTestBase):
+    """POST to option-def delete raises PartialPersistError → warning message."""
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_partial_persist_error_shows_warning(self, MockKeaClient):
+        """PartialPersistError on option_def_del must show a warning about config-write."""
+        from netbox_kea.kea import PartialPersistError
+
+        MockKeaClient.return_value.option_def_del.side_effect = PartialPersistError(
+            "dhcp4", Exception("write failed"), subnet_id=None
+        )
+        url = reverse("plugins:netbox_kea:server_option_def4_delete", args=[self.server.pk, 200, "dhcp4"])
+        response = self.client.post(url, follow=True)
+        self.assertEqual(response.status_code, 200)
+        msgs = list(response.context["messages"])
+        self.assertTrue(any(m.level == django_messages.WARNING for m in msgs))
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestOptionDefDeleteTransportError(_ViewTestBase):
+    """POST to option-def delete raises ConnectionError → transport error message."""
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_connection_error_shows_transport_message(self, MockKeaClient):
+        """requests.ConnectionError on option_def_del must show 'Transport error' message."""
+        import requests
+
+        MockKeaClient.return_value.option_def_del.side_effect = requests.ConnectionError("down")
+        url = reverse("plugins:netbox_kea:server_option_def4_delete", args=[self.server.pk, 200, "dhcp4"])
+        response = self.client.post(url, follow=True)
+        self.assertEqual(response.status_code, 200)
+        msgs = [str(m) for m in response.context["messages"]]
+        self.assertTrue(any("transport error" in m.lower() for m in msgs))
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestOptionDefDeleteValueError(_ViewTestBase):
+    """POST to option-def delete raises ValueError → invalid config message."""
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_value_error_shows_invalid_config_message(self, MockKeaClient):
+        """ValueError on option_def_del must show 'Invalid Kea client configuration' message."""
+        MockKeaClient.return_value.option_def_del.side_effect = ValueError("bad config")
+        url = reverse("plugins:netbox_kea:server_option_def4_delete", args=[self.server.pk, 200, "dhcp4"])
+        response = self.client.post(url, follow=True)
+        self.assertEqual(response.status_code, 200)
+        msgs = [str(m) for m in response.context["messages"]]
+        self.assertTrue(any("invalid kea client configuration" in m.lower() for m in msgs))
+
+
+# ---------------------------------------------------------------------------
+# GET client errors: ValueError on get_client
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestSubnetOptionsGetClientError(_ViewTestBase):
+    """GET to subnet options edit when get_client raises ValueError → redirect with error."""
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_get_client_value_error_redirects(self, MockKeaClient):
+        """ValueError from get_client on GET must redirect with error message."""
+        MockKeaClient.side_effect = ValueError("bad TLS config")
+        url = reverse("plugins:netbox_kea:server_subnet4_options_edit", args=[self.server.pk, 1])
+        response = self.client.get(url, follow=True)
+        self.assertEqual(response.status_code, 200)
+        msgs = [str(m) for m in response.context["messages"]]
+        self.assertTrue(any("internal error" in m.lower() for m in msgs))
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestServerOptionsGetClientError(_ViewTestBase):
+    """GET to server options edit when get_client raises ValueError → redirect with error."""
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_get_client_value_error_redirects(self, MockKeaClient):
+        """ValueError from get_client on GET must redirect with error message."""
+        MockKeaClient.side_effect = ValueError("bad TLS config")
+        url = reverse("plugins:netbox_kea:server_dhcp4_options_edit", args=[self.server.pk])
+        response = self.client.get(url, follow=True)
+        self.assertEqual(response.status_code, 200)
+        msgs = [str(m) for m in response.context["messages"]]
+        self.assertTrue(any("internal error" in m.lower() for m in msgs))
+
+
+# ---------------------------------------------------------------------------
+# Option-def list fetch error
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestOptionDefListFetchError(_ViewTestBase):
+    """GET to option-def list when option_def_list raises KeaException → 200 with empty list."""
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_kea_exception_returns_200_with_error_flag(self, MockKeaClient):
+        """KeaException on option_def_list must return 200 with options_load_error=True."""
+        from netbox_kea.kea import KeaException
+
+        MockKeaClient.return_value.option_def_list.side_effect = KeaException({"result": 1, "text": "error"}, index=0)
+        url = reverse("plugins:netbox_kea:server_option_def4", args=[self.server.pk])
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.context.get("options_load_error"))
+
+
+# ---------------------------------------------------------------------------
+# Combined status badge error
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestCombinedStatusBadgeError(_ViewTestBase):
+    """GET to status badge when version-get raises → offline status."""
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_kea_exception_returns_200_with_offline(self, MockKeaClient):
+        """KeaException on version-get must return 200 with offline status badges."""
+        from netbox_kea.kea import KeaException
+
+        MockKeaClient.return_value.command.side_effect = KeaException({"result": 1, "text": "error"}, index=0)
+        url = reverse("plugins:netbox_kea:combined_server_status_badge", args=[self.server.pk])
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
