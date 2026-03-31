@@ -2202,7 +2202,7 @@ class TestSubnetWipeClientError(_ViewTestBase):
     @patch("netbox_kea.models.Server.get_client")
     def test_get_with_get_client_failure_renders(self, mock_get_client):
         """get_client() raising in wipe GET must render confirm page, not 500."""
-        mock_get_client.side_effect = Exception("connection refused")
+        mock_get_client.side_effect = ValueError("connection refused")
         url = reverse("plugins:netbox_kea:server_subnet4_wipe_leases", args=[self.server.pk, 1])
         response = self.client.get(url)
         self.assertEqual(response.status_code, 200)

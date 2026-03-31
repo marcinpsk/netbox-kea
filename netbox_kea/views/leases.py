@@ -266,7 +266,6 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
         Requires the ``lease_cmds`` hook to be loaded on the Kea server.
         """
         instance = self.get_object(**kwargs)
-        client = instance.get_client(version=self.dhcp_version)
 
         start_ip = "0.0.0.0" if self.dhcp_version == 4 else "::"
         per_page = 1000
@@ -274,6 +273,7 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
         all_leases: list[dict[str, Any]] = []
         cursor = start_ip
         try:
+            client = instance.get_client(version=self.dhcp_version)
             while True:
                 resp = client.command(
                     f"lease{self.dhcp_version}-get-page",
@@ -502,7 +502,12 @@ class BaseServerLeasesDeleteView(GetReturnURLMixin, generic.ObjectView, metaclas
                 },
             )
 
-        client = instance.get_client(version=self.dhcp_version)
+        try:
+            client = instance.get_client(version=self.dhcp_version)
+        except (ValueError, requests.RequestException):
+            logger.exception("Failed to create Kea client for server %s", instance.pk)
+            messages.error(request, "Failed to connect to Kea: see server logs for details.")
+            return redirect(return_url)
 
         successful_ips: list[str] = []
         for ip in lease_ips:
@@ -569,16 +574,17 @@ class _BaseLeaseEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin, View):
     def get(self, request: HttpRequest, pk: int, ip_address: str) -> HttpResponse:
         """Render the edit form pre-filled with the current lease values."""
         server = self._get_server(pk)
-        client = server.get_client(version=self.dhcp_version)
         try:
+            client = server.get_client(version=self.dhcp_version)
             resp = client.command(
                 f"lease{self.dhcp_version}-get",
                 service=[f"dhcp{self.dhcp_version}"],
                 arguments={"ip-address": ip_address},
                 check=(0, 3),
             )
-        except KeaException:
-            messages.error(request, "Failed to fetch lease: see server logs for details.")
+        except KeaException as exc:
+            logger.exception("Failed to fetch lease %s on server %s", ip_address, pk)
+            messages.error(request, kea_error_hint(exc))
             return redirect(self._leases_url(server))
         except (requests.RequestException, ValueError):
             logger.exception("Failed to fetch lease %s on server %s", ip_address, pk)
@@ -640,7 +646,6 @@ class _BaseLeaseEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin, View):
                 },
             )
         cd = form.cleaned_data
-        client = server.get_client(version=self.dhcp_version)
         kwargs: dict[str, object] = {}
         if cd.get("hostname") is not None:
             kwargs["hostname"] = cd["hostname"]
@@ -651,6 +656,7 @@ class _BaseLeaseEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin, View):
         elif self.dhcp_version == 6 and cd.get("duid"):
             kwargs["duid"] = cd["duid"]
         try:
+            client = server.get_client(version=self.dhcp_version)
             client.lease_update(self.dhcp_version, ip_address, **kwargs)
             messages.success(request, f"Lease {ip_address} updated.")
         except KeaException as exc:
@@ -723,8 +729,8 @@ class _BaseLeaseAddView(_KeaChangeMixin, generic.ObjectView):
             else:
                 lease["duid"] = cd["duid"]
                 lease["iaid"] = cd["iaid"]
-            client = server.get_client(version=self.dhcp_version)
             try:
+                client = server.get_client(version=self.dhcp_version)
                 client.lease_add(self.dhcp_version, lease)
             except KeaException as exc:
                 logger.exception("Failed to create DHCPv%s lease for %s", self.dhcp_version, cd.get("ip_address"))
@@ -918,7 +924,6 @@ def _enrich_leases_with_badges(
     """
     from ..sync import bulk_fetch_netbox_ips
 
-    client = server.get_client(version=version)
     reservation_url_name = f"plugins:netbox_kea:server_reservation{version}_edit"
     add_url_name = f"plugins:netbox_kea:server_reservation{version}_add"
 
@@ -926,6 +931,7 @@ def _enrich_leases_with_badges(
     host_cmds_available = True
     failed_ips: set[str] = set()
     try:
+        client = server.get_client(version=version)
         reservation_by_ip, host_cmds_available, failed_ips = _fetch_reservation_by_ip_for_leases(
             client, version, leases
         )
@@ -1011,7 +1017,7 @@ def _enrich_leases_with_badges(
         nb_ip = nb_ips.get(ip)
         if nb_ip:
             lease["netbox_ip_url"] = nb_ip.get_absolute_url()
-        else:
+        elif can_change:
             lease["sync_url"] = sync_url
         if ip and can_change:
             lease["edit_url"] = reverse(edit_url_name, args=[server.pk, ip])

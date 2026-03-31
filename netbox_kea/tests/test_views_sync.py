@@ -22,6 +22,7 @@ which does **not** call ``Model.clean()`` and therefore does not trigger live Ke
 connectivity checks.
 """
 
+import io
 import re
 from unittest.mock import MagicMock, patch
 
@@ -213,7 +214,6 @@ class TestBulkReservationImportEdgeCases(_ViewTestBase):
     @patch("netbox_kea.models.KeaClient")
     def test_post_invalid_csv_shows_error(self, MockKeaClient):
         """POST with a CSV that fails parse_reservation_csv raises ValueError → form error."""
-        import io
 
         MockKeaClient.return_value.reservation_add.return_value = None
         # CSV with missing required columns triggers ValueError in parse_reservation_csv
@@ -293,7 +293,6 @@ class TestReservationImportGenericException(_ViewTestBase):
         """RuntimeError from reservation_add is caught and surfaced as an error row."""
         MockKeaClient.return_value.reservation_add.side_effect = RuntimeError("crash")
         url = reverse("plugins:netbox_kea:server_reservation4_bulk_import", args=[self.server.pk])
-        import io
 
         csv_content = "ip-address,hw-address,subnet-id\n10.0.0.1,aa:bb:cc:dd:ee:ff,1"
         csv_file = io.BytesIO(csv_content.encode())
@@ -459,7 +458,6 @@ class TestReservationImportBareExcept(_ViewTestBase):
         """An AttributeError from reservation_add is caught and surfaced as an error row."""
         MockKeaClient.return_value.reservation_add.side_effect = AttributeError("bug")
         url = reverse("plugins:netbox_kea:server_reservation4_bulk_import", args=[self.server.pk])
-        import io
 
         csv_content = "ip-address,hw-address,subnet-id\n10.0.0.1,aa:bb:cc:dd:ee:ff,1"
         csv_file = io.BytesIO(csv_content.encode())
@@ -484,7 +482,6 @@ class TestLeaseImportBareExcept(_ViewTestBase):
         """An AttributeError from lease_add propagates (lease loop only catches specific types)."""
         MockKeaClient.return_value.lease_add.side_effect = AttributeError("bug")
         url = reverse("plugins:netbox_kea:server_lease4_bulk_import", args=[self.server.pk])
-        import io
 
         csv_content = "ip-address,hw-address,hostname,valid-lft,subnet-id\n10.0.0.1,aa:bb:cc:00:00:01,host1,86400,1"
         csv_file = io.BytesIO(csv_content.encode())
@@ -516,7 +513,6 @@ class TestImportLoopValueError(_ViewTestBase):
         mock_client.reservation_add.side_effect = side_effect
 
         url = reverse("plugins:netbox_kea:server_reservation4_bulk_import", args=[self.server.pk])
-        import io
 
         csv_content = "ip-address,hw-address,subnet-id\n10.0.0.1,aa:bb:cc:00:00:01,1\n10.0.0.2,aa:bb:cc:00:00:02,1\n"
         csv_file = io.BytesIO(csv_content.encode())
@@ -539,7 +535,6 @@ class TestImportLoopValueError(_ViewTestBase):
         mock_client.lease_add.side_effect = side_effect
 
         url = reverse("plugins:netbox_kea:server_lease4_bulk_import", args=[self.server.pk])
-        import io
 
         csv_content = "ip-address\n10.0.0.1\n10.0.0.2\n"
         csv_file = io.BytesIO(csv_content.encode())
