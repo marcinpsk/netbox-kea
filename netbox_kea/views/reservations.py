@@ -92,6 +92,8 @@ def _add_reservation_journal(server: "Server", user: Any, action: str, reservati
         pass  # JournalEntry unavailable on older NetBox versions
     except (ProgrammingError, OperationalError):
         logger.debug("Failed to create reservation journal entry", exc_info=True)
+    except DatabaseError:
+        logger.debug("Unexpected DB error creating reservation journal entry", exc_info=True)
 
 
 def _run_reservation_success_side_effects(

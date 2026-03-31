@@ -665,6 +665,9 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
                 logger.warning("config-get returned unexpected arguments for network data: %r", args)
                 return [("", "— (global pool) —")], None, {}
             dhcp_conf = args.get(f"Dhcp{self.dhcp_version}", {})
+            if not isinstance(dhcp_conf, dict):
+                logger.warning("config-get returned non-dict Dhcp%s config: %r", self.dhcp_version, type(dhcp_conf))
+                dhcp_conf = {}
             networks = dhcp_conf.get("shared-networks", [])
         except (KeaException, requests.RequestException, ValueError):
             logger.warning("Failed to fetch shared networks for subnet edit dropdown")

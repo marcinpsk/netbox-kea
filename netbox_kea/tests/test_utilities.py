@@ -173,6 +173,15 @@ class TestEnrichLeaseExpiryClass(TestCase):
         result = _enrich_lease(now, lease)
         self.assertEqual(result["expiry_class"], "text-warning")
 
+    def test_lease_at_300_seconds_has_empty_class(self):
+        """Lease expiring at exactly 300 seconds gets empty class (boundary is strict '<')."""
+        now = self._now()
+        now_ts = int(now.timestamp())
+        # expires_in will be exactly 300 seconds (not < 300, so no warning)
+        lease = {"cltt": now_ts - 3600 + 300, "valid_lft": 3600}
+        result = _enrich_lease(now, lease)
+        self.assertEqual(result["expiry_class"], "")
+
     def test_active_lease_has_empty_class(self):
         """Lease with plenty of time remaining gets empty string (no CSS class)."""
         now = self._now()
