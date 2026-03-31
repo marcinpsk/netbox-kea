@@ -451,11 +451,11 @@ class TestFetchLiveDataNoSyntheticFallback(_ViewTestBase):
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestReservationImportBareExcept(_ViewTestBase):
-    """Reservation import bare except removed — programming errors propagate."""
+    """Reservation import catches all per-row exceptions and surfaces them as error rows."""
 
     @patch("netbox_kea.models.KeaClient")
-    def test_attribute_error_propagates(self, MockKeaClient):
-        """An AttributeError from reservation_add must propagate."""
+    def test_attribute_error_surfaced_as_error_row(self, MockKeaClient):
+        """An AttributeError from reservation_add is caught and surfaced as an error row."""
         MockKeaClient.return_value.reservation_add.side_effect = AttributeError("bug")
         url = reverse("plugins:netbox_kea:server_reservation4_bulk_import", args=[self.server.pk])
         import io
@@ -463,8 +463,10 @@ class TestReservationImportBareExcept(_ViewTestBase):
         csv_content = "ip-address,hw-address,subnet-id\n10.0.0.1,aa:bb:cc:dd:ee:ff,1"
         csv_file = io.BytesIO(csv_content.encode())
         csv_file.name = "reservations.csv"
-        with self.assertRaises(AttributeError):
-            self.client.post(url, {"csv_file": csv_file})
+        response = self.client.post(url, {"csv_file": csv_file, "subnet_id": "1"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["result"]["errors"], 1)
+        self.assertEqual(response.context["result"]["error_rows"][0]["error"], "An unexpected error occurred.")
 
 
 # ---------------------------------------------------------------------------
@@ -474,11 +476,11 @@ class TestReservationImportBareExcept(_ViewTestBase):
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestLeaseImportBareExcept(_ViewTestBase):
-    """Lease import bare except removed — programming errors propagate."""
+    """Lease import catches specific per-row exceptions and surfaces them as error rows."""
 
     @patch("netbox_kea.models.KeaClient")
     def test_attribute_error_propagates(self, MockKeaClient):
-        """An AttributeError from lease_add must propagate."""
+        """An AttributeError from lease_add propagates (lease loop only catches specific types)."""
         MockKeaClient.return_value.lease_add.side_effect = AttributeError("bug")
         url = reverse("plugins:netbox_kea:server_lease4_bulk_import", args=[self.server.pk])
         import io
