@@ -1129,8 +1129,8 @@ class SharedNetworkEditForm(forms.Form):
                 continue
             try:
                 ipaddress.ip_address(part)
-            except ValueError:
-                raise forms.ValidationError(f"'{part}' is not a valid IP address.")
+            except ValueError as exc:
+                raise forms.ValidationError(f"'{part}' is not a valid IP address.") from exc
         return raw
 
 

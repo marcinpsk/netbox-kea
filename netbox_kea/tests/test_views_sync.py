@@ -260,8 +260,9 @@ class TestBulkReservationSyncEdgeCases(_ViewTestBase):
         ]
         mock_sync.side_effect = [(MagicMock(), True), (MagicMock(), False)]
         response = self.client.post(self._url(), follow=True)
-        msgs = [m.message for m in response.context["messages"]]
-        self.assertTrue(any("1 created" in m or "created" in m.lower() for m in msgs))
+        msgs = [str(m) for m in response.context["messages"]]
+        self.assertTrue(any("1 created, 1 updated" in m for m in msgs))
+        self.assertEqual(mock_sync.call_count, 2)
 
     @patch("netbox_kea.sync.sync_reservation_to_netbox")
     @patch("netbox_kea.views.sync_views._fetch_reservations_from_server")
@@ -273,9 +274,9 @@ class TestBulkReservationSyncEdgeCases(_ViewTestBase):
         ]
         mock_sync.side_effect = [ValueError("db error"), (MagicMock(), True)]
         response = self.client.post(self._url(), follow=True)
-        msgs = [m.message for m in response.context["messages"]]
-        # errors > 0 → summary message shows "N errors"
-        self.assertTrue(any("errors" in m for m in msgs))
+        msgs = [str(m) for m in response.context["messages"]]
+        self.assertTrue(any("1 created, 0 updated, 1 errors" in m for m in msgs))
+        self.assertEqual(mock_sync.call_count, 2)
 
 
 # ---------------------------------------------------------------------------

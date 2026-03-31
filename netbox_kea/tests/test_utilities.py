@@ -984,7 +984,7 @@ class TestEnrichReservationSortKey(TestCase):
 
 
 class TestEnrichLeaseInvalidIp(TestCase):
-    """_enrich_lease: invalid ip_address must not add _ip_sort_key (lines 57-58)."""
+    """_enrich_lease: invalid ip_address must not add _ip_sort_key."""
 
     def test_invalid_ip_no_ip_sort_key(self):
         from datetime import datetime
@@ -997,7 +997,7 @@ class TestEnrichLeaseInvalidIp(TestCase):
 
 
 class TestEnrichLeaseNonIntCltt(TestCase):
-    """_enrich_lease: non-integer cltt/valid_lft must warn and return early (lines 70-71)."""
+    """_enrich_lease: non-integer cltt/valid_lft must warn and return early."""
 
     def test_non_int_cltt_returns_without_expires(self):
         from datetime import datetime
@@ -1017,6 +1017,7 @@ class TestEnrichLeaseNonIntCltt(TestCase):
         lease = {"ip-address": "10.0.0.1", "cltt": 1000, "valid_lft": "bad", "state": 0}
         result = _enrich_lease(datetime(2024, 1, 1), lease)
         self.assertNotIn("expires_at", result)
+        self.assertNotIn("expires_in", result)
 
 
 class TestParseSubnetStatsMissingCoverage(TestCase):

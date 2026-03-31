@@ -2298,6 +2298,10 @@ class TestReservation4OptionData(_ReservationViewBase):
         response = self.client.get(self._edit_url())
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "boot-file-name")
+        self.assertContains(response, "http://10.0.0.1/ztp.py")
+        formset = response.context["options_formset"]
+        self.assertEqual(formset.initial[0]["name"], "boot-file-name")
+        self.assertEqual(formset.initial[0]["data"], "http://10.0.0.1/ztp.py")
 
     @patch("netbox_kea.models.KeaClient")
     def test_post_edit_with_options_includes_option_data(self, MockKeaClient):

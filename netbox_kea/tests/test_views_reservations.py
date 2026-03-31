@@ -797,8 +797,10 @@ class TestReservationListEnrichmentExceptions(_ViewTestBase):
         # lease4-get-all raises an unexpected error — must set on the cloned client
         # since _enrich_reservations_with_lease_status calls client.clone()
         MockKeaClient.return_value.clone.return_value.command.side_effect = RuntimeError("unexpected")
-        MockKeaClient.return_value.clone.return_value.__enter__ = lambda self: self
-        MockKeaClient.return_value.clone.return_value.__exit__ = lambda self, *a: None
+        MockKeaClient.return_value.clone.return_value.__enter__ = MagicMock(
+            return_value=MockKeaClient.return_value.clone.return_value
+        )
+        MockKeaClient.return_value.clone.return_value.__exit__ = MagicMock(return_value=None)
         response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
 
@@ -1029,8 +1031,8 @@ class TestEnrichReservationsLeaseStatusCoverage(_ViewTestBase):
 
         client = MagicMock()
         clone_mock = MagicMock()
-        clone_mock.__enter__ = lambda s: s
-        clone_mock.__exit__ = lambda s, *a: None
+        clone_mock.__enter__ = MagicMock(return_value=clone_mock)
+        clone_mock.__exit__ = MagicMock(return_value=None)
         clone_mock.command.return_value = [{"result": 3, "arguments": {}}]
         client.clone.return_value = clone_mock
         reservations = [{"ip-address": "10.0.0.1", "subnet-id": 42}]
@@ -1047,8 +1049,8 @@ class TestEnrichReservationsLeaseStatusCoverage(_ViewTestBase):
 
         client = MagicMock()
         clone_mock = MagicMock()
-        clone_mock.__enter__ = lambda s: s
-        clone_mock.__exit__ = lambda s, *a: None
+        clone_mock.__enter__ = MagicMock(return_value=clone_mock)
+        clone_mock.__exit__ = MagicMock(return_value=None)
         clone_mock.command.side_effect = KeaException({"result": 1, "text": "error"}, index=0)
         client.clone.return_value = clone_mock
         reservations = [{"ip-address": "10.0.0.1", "subnet-id": 42}]

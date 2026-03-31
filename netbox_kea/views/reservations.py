@@ -181,7 +181,7 @@ def _enrich_reservations_with_lease_status(client: "KeaClient", reservations: li
                     return None  # hook not loaded
                 logger.debug("lease fetch failed for subnet %s (KeaException result != 2): %s", sid, exc)
                 return False  # error sentinel — state is indeterminate
-            except Exception:  # noqa: BLE001
+            except (KeaException, requests.RequestException, ValueError):  # noqa: BLE001
                 logger.debug("lease fetch failed for subnet %s (unexpected error)", sid)
                 return False  # error sentinel
 
@@ -203,6 +203,7 @@ def _enrich_reservations_with_lease_status(client: "KeaClient", reservations: li
                     for ip in result:
                         active_lease_ips.add(ip)
     except Exception:  # noqa: BLE001
+        logger.debug("Enrichment task failed", exc_info=True)
         return
 
     if hook_unavailable:
@@ -322,10 +323,9 @@ class ServerReservations4View(generic.ObjectView):
                 version=4,
             )
 
-        # Enrich reservations with lease status + NetBox IPAM badges.
-        _enrich_reservations_with_badges(reservations, server, 4)
-
         can_change = Server.objects.restrict(request.user, "change").filter(pk=server.pk).exists()
+        # Enrich reservations with lease status + NetBox IPAM badges.
+        _enrich_reservations_with_badges(reservations, server, 4, can_change=can_change)
         for r in reservations:
             r["can_change"] = can_change
 
@@ -397,10 +397,9 @@ class ServerReservations6View(generic.ObjectView):
                 version=6,
             )
 
-        # Enrich reservations with lease status + NetBox IPAM badges.
-        _enrich_reservations_with_badges(reservations, server, 6)
-
         can_change = Server.objects.restrict(request.user, "change").filter(pk=server.pk).exists()
+        # Enrich reservations with lease status + NetBox IPAM badges.
+        _enrich_reservations_with_badges(reservations, server, 6, can_change=can_change)
         for r in reservations:
             r["can_change"] = can_change
 
@@ -647,7 +646,7 @@ class ServerReservation4EditView(_KeaChangeMixin, generic.ObjectView):
             lease = server.get_client(version=4).lease_get_by_ip(4, ip_address)
             if lease and lease.get("hostname") and lease.get("hostname") != reservation.get("hostname", ""):
                 context["lease_diff"] = {"hostname": lease["hostname"]}
-        except Exception as e:
+        except (KeaException, requests.RequestException, ValueError) as e:
             logger.debug("Could not fetch lease for reservation edit diff (ip=%s): %s", ip_address, e)
         return render(request, self.template_name, context)
 
@@ -758,7 +757,7 @@ class ServerReservation6EditView(_KeaChangeMixin, generic.ObjectView):
             lease = server.get_client(version=6).lease_get_by_ip(6, ip_address)
             if lease and lease.get("hostname") and lease.get("hostname") != reservation.get("hostname", ""):
                 context["lease_diff"] = {"hostname": lease["hostname"]}
-        except Exception as e:
+        except (KeaException, requests.RequestException, ValueError) as e:
             logger.debug("Could not fetch lease for reservation edit diff (ip=%s): %s", ip_address, e)
         return render(request, self.template_name, context)
 
@@ -962,7 +961,9 @@ def _get_reservation_identifier(
     return "hw-address", ""
 
 
-def _enrich_reservations_with_badges(reservations: list[dict[str, Any]], server: "Server", version: int) -> None:
+def _enrich_reservations_with_badges(
+    reservations: list[dict[str, Any]], server: "Server", version: int, can_change: bool = False
+) -> None:
     """In-place: add active-lease status and NetBox IPAM badge fields to reservation dicts.
 
     Adds:
@@ -981,5 +982,5 @@ def _enrich_reservations_with_badges(reservations: list[dict[str, Any]], server:
         nb_ip = nb_ips.get(r.get("ip_address", ""))
         if nb_ip:
             r["netbox_ip_url"] = nb_ip.get_absolute_url()
-        else:
+        elif can_change:
             r["sync_url"] = sync_url

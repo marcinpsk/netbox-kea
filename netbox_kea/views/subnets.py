@@ -321,7 +321,12 @@ class _BasePoolAddView(_KeaChangeMixin, generic.ObjectView):
                 },
             )
         pool = form.cleaned_data["pool"]
-        client = server.get_client(version=self.dhcp_version)
+        try:
+            client = server.get_client(version=self.dhcp_version)
+        except (ValueError, requests.RequestException):
+            logger.exception("Failed to create Kea client for server %s", pk)
+            messages.error(request, "Failed to connect to Kea: see server logs.")
+            return redirect(return_url)
         # F4: Warn (non-blocking) when any reservation IP falls in the new pool range
         _warn_pool_reservation_overlap(request, client, self.dhcp_version, subnet_id, pool)
         try:

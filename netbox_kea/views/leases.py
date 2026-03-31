@@ -219,7 +219,12 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
 
         q = form.cleaned_data["q"]
         state_filter: int | None = form.cleaned_data.get("state")
-        client = instance.get_client(version=self.dhcp_version)
+        try:
+            client = instance.get_client(version=self.dhcp_version)
+        except (ValueError, requests.RequestException):
+            logger.exception("Failed to create Kea client for server %s", instance.pk)
+            messages.error(request, "Failed to connect to Kea: see server logs.")
+            return redirect(request.path)
         try:
             if by == constants.BY_SUBNET:
                 leases = []
@@ -580,11 +585,20 @@ class _BaseLeaseEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin, View):
             messages.error(request, "Failed to fetch lease: see server logs for details.")
             return redirect(self._leases_url(server))
 
+        if not resp or not isinstance(resp[0], dict):
+            logger.warning("Unexpected response shape fetching lease %s on server %s: %r", ip_address, pk, resp)
+            messages.error(request, "Unexpected response from Kea: see server logs for details.")
+            return redirect(self._leases_url(server))
+
         if resp[0]["result"] == 3:
             messages.warning(request, f"Lease {ip_address} not found.")
             return redirect(self._leases_url(server))
 
-        lease = resp[0]["arguments"]
+        lease = resp[0].get("arguments")
+        if not isinstance(lease, dict):
+            logger.warning("Unexpected arguments in lease response for %s on server %s: %r", ip_address, pk, resp[0])
+            messages.error(request, "Unexpected response from Kea: see server logs for details.")
+            return redirect(self._leases_url(server))
         initial = {
             "hostname": lease.get("hostname", ""),
             "valid_lft": lease.get("valid-lft"),
