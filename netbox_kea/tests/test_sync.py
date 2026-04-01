@@ -1082,3 +1082,188 @@ class TestSyncMacAddressImportErrors(TestCase):
 
             importlib.reload(sync_mod)
             sync_mod._sync_mac_address("aa:bb:cc:dd:ee:ff", hostname="test")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TestCleanupStaleIpsBatch
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestCleanupStaleIpsBatch(TestCase):
+    """cleanup_stale_ips_batch accumulates IPs per hostname and runs cleanup once."""
+
+    _KEA_DESC = "Synced from Kea DHCP lease"
+
+    @override_settings(PLUGINS_CONFIG=_STALE_PLUGINS_CONFIG)
+    def test_batch_protects_sibling_ips_with_same_hostname(self):
+        """Two records with the same hostname: batch cleanup excludes both IPs."""
+        from ipam.models import IPAddress as NbIP
+
+        from netbox_kea.sync import cleanup_stale_ips_batch
+
+        # Simulate a stale IP that should be cleaned
+        NbIP.objects.create(
+            address="10.60.0.99/32",
+            status="dhcp",
+            dns_name="shared-host.example.com",
+            description=self._KEA_DESC,
+        )
+        # The two IPs that were synced in this batch
+        NbIP.objects.create(
+            address="10.60.0.1/32",
+            status="dhcp",
+            dns_name="shared-host.example.com",
+            description=self._KEA_DESC,
+        )
+        NbIP.objects.create(
+            address="10.60.0.2/32",
+            status="dhcp",
+            dns_name="shared-host.example.com",
+            description=self._KEA_DESC,
+        )
+        synced = [
+            {"ip-address": "10.60.0.1", "hostname": "shared-host.example.com"},
+            {"ip-address": "10.60.0.2", "hostname": "shared-host.example.com"},
+        ]
+        cleaned = cleanup_stale_ips_batch(synced)
+        self.assertEqual(cleaned, 1)
+        # Both synced IPs survive
+        self.assertTrue(NbIP.objects.filter(address__startswith="10.60.0.1/").exists())
+        self.assertTrue(NbIP.objects.filter(address__startswith="10.60.0.2/").exists())
+        # Stale IP removed
+        self.assertFalse(NbIP.objects.filter(address__startswith="10.60.0.99/").exists())
+
+    @override_settings(PLUGINS_CONFIG=_STALE_PLUGINS_CONFIG)
+    def test_batch_cleans_per_hostname(self):
+        """Different hostnames each get their own cleanup pass."""
+        from ipam.models import IPAddress as NbIP
+
+        from netbox_kea.sync import cleanup_stale_ips_batch
+
+        NbIP.objects.create(
+            address="10.61.0.99/32", status="dhcp", dns_name="host-a.example.com", description=self._KEA_DESC
+        )
+        NbIP.objects.create(
+            address="10.62.0.99/32", status="dhcp", dns_name="host-b.example.com", description=self._KEA_DESC
+        )
+        synced = [
+            {"ip-address": "10.61.0.1", "hostname": "host-a.example.com"},
+            {"ip-address": "10.62.0.1", "hostname": "host-b.example.com"},
+        ]
+        cleaned = cleanup_stale_ips_batch(synced)
+        self.assertEqual(cleaned, 2)
+
+    @override_settings(PLUGINS_CONFIG=_NONE_PLUGINS_CONFIG)
+    def test_batch_returns_zero_in_none_mode(self):
+        """When stale_ip_cleanup=none, batch cleanup does nothing."""
+        from netbox_kea.sync import cleanup_stale_ips_batch
+
+        synced = [{"ip-address": "10.63.0.1", "hostname": "h.example.com"}]
+        self.assertEqual(cleanup_stale_ips_batch(synced), 0)
+
+    @override_settings(PLUGINS_CONFIG=_STALE_PLUGINS_CONFIG)
+    def test_batch_skips_records_without_hostname(self):
+        """Records with no hostname are silently skipped."""
+        from netbox_kea.sync import cleanup_stale_ips_batch
+
+        synced = [{"ip-address": "10.64.0.1"}]
+        self.assertEqual(cleanup_stale_ips_batch(synced), 0)
+
+    @override_settings(PLUGINS_CONFIG=_STALE_PLUGINS_CONFIG)
+    def test_batch_handles_multi_address_reservations(self):
+        """Reservations with ip-addresses list accumulate all IPs for the hostname."""
+        from ipam.models import IPAddress as NbIP
+
+        from netbox_kea.sync import cleanup_stale_ips_batch
+
+        NbIP.objects.create(
+            address="2001:db8::99/128", status="reserved", dns_name="v6-host.example.com", description=self._KEA_DESC
+        )
+        synced = [
+            {
+                "ip-addresses": ["2001:db8::1", "2001:db8::2"],
+                "hostname": "v6-host.example.com",
+            }
+        ]
+        cleaned = cleanup_stale_ips_batch(synced)
+        self.assertEqual(cleaned, 1)
+
+    @override_settings(PLUGINS_CONFIG=_STALE_PLUGINS_CONFIG)
+    def test_empty_batch_returns_zero(self):
+        """Empty synced_records returns 0."""
+        from netbox_kea.sync import cleanup_stale_ips_batch
+
+        self.assertEqual(cleanup_stale_ips_batch([]), 0)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TestSyncCleanupParameter
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestSyncCleanupParameter(TestCase):
+    """cleanup=False suppresses per-record stale-IP cleanup."""
+
+    _KEA_DESC = "Synced from Kea DHCP lease"
+
+    @override_settings(PLUGINS_CONFIG=_STALE_PLUGINS_CONFIG)
+    def test_lease_sync_cleanup_false_preserves_stale_ip(self):
+        """With cleanup=False, sync_lease_to_netbox does not remove stale IPs."""
+        from ipam.models import IPAddress as NbIP
+
+        from netbox_kea.sync import sync_lease_to_netbox
+
+        NbIP.objects.create(
+            address="10.70.0.10/32",
+            status="dhcp",
+            dns_name="test-host.example.com",
+            description=self._KEA_DESC,
+        )
+        sync_lease_to_netbox(
+            {"ip-address": "10.70.0.20", "hostname": "test-host.example.com", "hw-address": "aa:bb:cc:dd:00:01"},
+            cleanup=False,
+        )
+        # Old IP preserved because cleanup=False
+        self.assertTrue(NbIP.objects.filter(address__startswith="10.70.0.10/").exists())
+        # New IP created
+        self.assertTrue(NbIP.objects.filter(address__startswith="10.70.0.20/").exists())
+
+    @override_settings(PLUGINS_CONFIG=_STALE_PLUGINS_CONFIG)
+    def test_lease_sync_cleanup_true_removes_stale_ip(self):
+        """With cleanup=True (default), stale IPs are still removed."""
+        from ipam.models import IPAddress as NbIP
+
+        from netbox_kea.sync import sync_lease_to_netbox
+
+        NbIP.objects.create(
+            address="10.71.0.10/32",
+            status="dhcp",
+            dns_name="host2.example.com",
+            description=self._KEA_DESC,
+        )
+        sync_lease_to_netbox(
+            {"ip-address": "10.71.0.20", "hostname": "host2.example.com", "hw-address": "aa:bb:cc:dd:00:02"},
+        )
+        self.assertFalse(NbIP.objects.filter(address__startswith="10.71.0.10/").exists())
+
+    @override_settings(PLUGINS_CONFIG=_STALE_PLUGINS_CONFIG)
+    def test_reservation_sync_cleanup_false_preserves_stale_ip(self):
+        """With cleanup=False, sync_reservation_to_netbox does not remove stale IPs."""
+        from ipam.models import IPAddress as NbIP
+
+        from netbox_kea.sync import sync_reservation_to_netbox
+
+        NbIP.objects.create(
+            address="10.72.0.10/32",
+            status="reserved",
+            dns_name="rsv-host.example.com",
+            description="Synced from Kea DHCP reservation",
+        )
+        sync_reservation_to_netbox(
+            {"ip-address": "10.72.0.20", "hostname": "rsv-host.example.com", "hw-address": "bb:cc:dd:ee:00:01"},
+            cleanup=False,
+        )
+        # Old IP preserved
+        self.assertTrue(NbIP.objects.filter(address__startswith="10.72.0.10/").exists())
+        # New IP created
+        self.assertTrue(NbIP.objects.filter(address__startswith="10.72.0.20/").exists())

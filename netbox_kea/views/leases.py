@@ -918,67 +918,80 @@ def _fetch_reservation_by_mac_for_leases(
     leases: list[dict[str, Any]],
     already_matched_ips: set[str],
     failed_ips: set[str],
-) -> dict[str, dict]:
+) -> dict[tuple[str, int], dict]:
     """Fetch reservations by MAC for leases that had no IP-based reservation match.
 
     For each lease whose IP is not in *already_matched_ips* or *failed_ips*,
     queries Kea with ``identifier-type=hw-address`` to detect when a device's
     reservation exists at a **different** IP (pending IP change).
 
-    Returns ``reservation_by_mac`` mapping ``hw_address → reservation dict``
+    Returns ``reservation_by_mac`` mapping ``(hw_address, subnet_id) → reservation dict``
     only for reservations whose IP **differs** from the lease IP (i.e. a pending
     change).  Same-IP matches are already covered by the IP-based lookup and are
     skipped here.
     """
     service = f"dhcp{version}"
-    reservation_by_mac: dict[str, dict] = {}
+    reservation_by_mac: dict[tuple[str, int], dict] = {}
 
     # Collect unique (mac, subnet_id) pairs for leases needing MAC lookup.
     candidates: list[dict] = []
-    seen_macs: set[str] = set()
+    seen_keys: set[tuple[str, int]] = set()
     for lease in leases:
         ip = lease.get("ip_address", "")
         if ip in already_matched_ips or ip in failed_ips:
             continue
         mac = (lease.get("hw_address") or "").lower()
         subnet_id = lease.get("subnet_id")
-        if not mac or not subnet_id or mac in seen_macs:
+        if not mac or not subnet_id:
             continue
-        seen_macs.add(mac)
+        key = (mac, int(subnet_id))
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
         candidates.append(lease)
 
     if not candidates:
         return reservation_by_mac
 
-    def _fetch_one_mac(lease: dict) -> tuple[str, str, dict | None]:
+    _FETCH_ERROR = object()  # sentinel to distinguish lookup errors from not-found
+
+    def _fetch_one_mac(lease: dict) -> tuple[str, int, str, dict | None | object]:
         mac = (lease.get("hw_address") or "").lower()
         ip = lease.get("ip_address", "")
-        subnet_id = lease.get("subnet_id")
+        subnet_id = int(lease.get("subnet_id"))
         with client.clone() as worker_client:
             try:
                 r = worker_client.reservation_get(
                     service,
-                    subnet_id=int(subnet_id),
+                    subnet_id=subnet_id,
                     identifier_type="hw-address",
                     identifier=mac,
                 )
                 if r is None:
-                    return mac, ip, None
+                    return mac, subnet_id, ip, None
                 # Only flag as pending change when the reserved IP differs.
                 rsv_ip = r.get("ip-address", "")
                 if rsv_ip and rsv_ip != ip:
-                    return mac, ip, r
-                return mac, ip, None
+                    return mac, subnet_id, ip, r
+                return mac, subnet_id, ip, None
             except Exception:  # noqa: BLE001
-                logger.debug("reservation-get by MAC failed for %s: %s", mac, lease.get("ip_address"))
-                return mac, ip, None
+                logger.debug("reservation-get by MAC failed for %s: %s", mac, ip)
+                return mac, subnet_id, ip, _FETCH_ERROR
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(candidates), 10)) as executor:
-        futures = [executor.submit(_fetch_one_mac, lease) for lease in candidates]
-        for future in concurrent.futures.as_completed(futures):
-            mac, _ip, rsv = future.result()
-            if rsv is not None:
-                reservation_by_mac[mac] = rsv
+        future_to_lease = {executor.submit(_fetch_one_mac, lease): lease for lease in candidates}
+        for future in concurrent.futures.as_completed(future_to_lease):
+            try:
+                mac, subnet_id, ip, rsv = future.result()
+            except Exception:  # noqa: BLE001
+                lease = future_to_lease[future]
+                failed_ips.add(lease.get("ip_address", ""))
+                continue
+            key = (mac, subnet_id)
+            if rsv is _FETCH_ERROR:
+                failed_ips.add(ip)
+            elif rsv is not None:
+                reservation_by_mac[key] = rsv
 
     return reservation_by_mac
 
@@ -989,7 +1002,7 @@ def _set_lease_reservation_fields(  # noqa: PLR0913
     server_pk: int,
     version: int,
     rsv: dict | None,
-    reservation_by_mac: dict[str, dict],
+    reservation_by_mac: dict[tuple[str, int], dict],
     host_cmds_available: bool,
     failed_ips: set[str],
     can_change: bool,
@@ -1051,7 +1064,7 @@ def _set_unmatched_reservation(
     lease: dict[str, Any],
     server_pk: int,
     version: int,
-    reservation_by_mac: dict[str, dict],
+    reservation_by_mac: dict[tuple[str, int], dict],
     can_change: bool,
     reservation_url_name: str,
     add_url_name: str,
@@ -1059,7 +1072,9 @@ def _set_unmatched_reservation(
     """Populate fields when no reservation matched by IP — check MAC-based pending change."""
     ip = lease.get("ip_address", "")
     lease_hw = (lease.get("hw_address") or "").lower()
-    mac_rsv = reservation_by_mac.get(lease_hw) if lease_hw else None
+    subnet_id = lease.get("subnet_id")
+    key = (lease_hw, int(subnet_id)) if lease_hw and subnet_id else None
+    mac_rsv = reservation_by_mac.get(key) if key else None
 
     if mac_rsv:
         # Pending IP change: device has a reservation at a different IP.
@@ -1145,7 +1160,7 @@ def _enrich_leases_with_badges(
     # Phase 1b: MAC-based lookup for pending IP changes.
     # For leases without an IP-matched reservation, check if their MAC has a
     # reservation at a *different* IP — indicating the device should move.
-    reservation_by_mac: dict[str, dict] = {}
+    reservation_by_mac: dict[tuple[str, int], dict] = {}
     if host_cmds_available and client is not None:
         try:
             reservation_by_mac = _fetch_reservation_by_mac_for_leases(

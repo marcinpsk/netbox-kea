@@ -712,8 +712,8 @@ class ServerReservation4EditView(_KeaChangeMixin, generic.ObjectView):
             ]
             if option_data:
                 reservation["option-data"] = option_data
-            client = server.get_client(version=4)
             try:
+                client = server.get_client(version=4)
                 client.reservation_update("dhcp4", reservation)
                 messages.success(request, f"Reservation for {cd['ip_address']} updated.")
                 _run_reservation_success_side_effects(
@@ -823,8 +823,8 @@ class ServerReservation6EditView(_KeaChangeMixin, generic.ObjectView):
             ]
             if option_data:
                 reservation["option-data"] = option_data
-            client = server.get_client(version=6)
             try:
+                client = server.get_client(version=6)
                 client.reservation_update("dhcp6", reservation)
                 messages.success(request, "DHCPv6 reservation updated.")
                 _run_reservation_success_side_effects(

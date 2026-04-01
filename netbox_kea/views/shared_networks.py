@@ -182,10 +182,17 @@ class BaseServerSharedNetworkAddView(_KeaChangeMixin, ConditionalLoginRequiredMi
             client = server.get_client(version=self.dhcp_version)
             client.network_add(version=self.dhcp_version, name=name)
             messages.success(request, f"Shared network '{name}' created.")
+        except PartialPersistError as exc:
+            logger.warning("network%d-add partial persist for %s: %s", self.dhcp_version, server, exc)
+            messages.warning(
+                request,
+                f"Shared network '{name}' created on the live server but config persistence failed. "
+                "Manual reconciliation may be required.",
+            )
         except KeaException as exc:
             logger.warning("network%d-add failed for %s: %s", self.dhcp_version, server, exc)
             messages.error(request, f"Kea error: {kea_error_hint(exc)}")
-        except requests.RequestException:
+        except (requests.RequestException, ValueError):
             logger.exception("Transport error adding shared network for %s", server)
             messages.error(request, "An internal error occurred.")
         return redirect(self._success_url(server))
@@ -237,10 +244,17 @@ class BaseServerSharedNetworkDeleteView(_KeaChangeMixin, ConditionalLoginRequire
             client = server.get_client(version=self.dhcp_version)
             client.network_del(version=self.dhcp_version, name=network_name)
             messages.success(request, f"Shared network '{network_name}' deleted.")
+        except PartialPersistError as exc:
+            logger.warning("network%d-del partial persist for %s: %s", self.dhcp_version, server, exc)
+            messages.warning(
+                request,
+                f"Shared network '{network_name}' deleted on the live server but config persistence failed. "
+                "Manual reconciliation may be required.",
+            )
         except KeaException as exc:
             logger.warning("network%d-del failed for %s: %s", self.dhcp_version, server, exc)
             messages.error(request, f"Kea error: {kea_error_hint(exc)}")
-        except requests.RequestException:
+        except (requests.RequestException, ValueError):
             logger.exception("Transport error deleting shared network for %s", server)
             messages.error(request, "An internal error occurred.")
         return redirect(self._success_url(server))

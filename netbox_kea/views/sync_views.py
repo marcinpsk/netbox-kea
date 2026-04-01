@@ -161,7 +161,7 @@ class _BaseBulkReservationSyncView(ConditionalLoginRequiredMixin, View):
             return HttpResponseForbidden("You do not have permission to sync to NetBox IPAM.")
 
         server = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
-        from ..sync import sync_reservation_to_netbox
+        from ..sync import cleanup_stale_ips_batch, sync_reservation_to_netbox
 
         try:
             reservations = _fetch_reservations_from_server(server, self.dhcp_version)
@@ -179,11 +179,13 @@ class _BaseBulkReservationSyncView(ConditionalLoginRequiredMixin, View):
             )
 
         created = updated = errors = 0
+        synced_records: list[dict] = []
         for res in reservations:
             if not res.get("ip-address") and not res.get("ip-addresses"):
                 continue
             try:
-                nb_ip, was_created = sync_reservation_to_netbox(res)
+                nb_ip, was_created = sync_reservation_to_netbox(res, cleanup=False)
+                synced_records.append(res)
                 if was_created:
                     created += 1
                 elif nb_ip:
@@ -193,15 +195,20 @@ class _BaseBulkReservationSyncView(ConditionalLoginRequiredMixin, View):
                 logger.exception("Failed to sync reservation %s", ip_log)
                 errors += 1
 
+        # Run stale-IP cleanup once per hostname with the full keep-set
+        # to prevent false positives when multiple records share a hostname.
+        stale_cleaned = cleanup_stale_ips_batch(synced_records)
+
+        stale_msg = f", {stale_cleaned} stale cleaned" if stale_cleaned else ""
         if errors:
             messages.warning(
                 request,
-                f"Bulk sync: {created} created, {updated} updated, {errors} errors.",
+                f"Bulk sync: {created} created, {updated} updated, {errors} errors{stale_msg}.",
             )
         else:
             messages.success(
                 request,
-                f"Bulk sync complete: {created} created, {updated} updated.",
+                f"Bulk sync complete: {created} created, {updated} updated{stale_msg}.",
             )
         redirect_url = reverse(
             f"plugins:netbox_kea:server_reservations{self.dhcp_version}",

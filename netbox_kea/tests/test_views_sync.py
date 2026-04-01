@@ -561,3 +561,61 @@ class TestBulkReservationSyncExceptNarrowing(_ViewTestBase):
         url = reverse("plugins:netbox_kea:server_reservation4_bulk_sync", args=[self.server.pk])
         with self.assertRaises(AttributeError):
             self.client.post(url)
+
+
+# ---------------------------------------------------------------------------
+# TestBulkSyncBatchCleanup  (#30)
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestBulkSyncBatchCleanup(_ViewTestBase):
+    """Bulk sync defers stale-IP cleanup to a single batch pass (#30)."""
+
+    def _url(self):
+        return reverse("plugins:netbox_kea:server_reservation4_bulk_sync", args=[self.server.pk])
+
+    @patch("netbox_kea.sync.cleanup_stale_ips_batch", return_value=0)
+    @patch("netbox_kea.sync.sync_reservation_to_netbox")
+    @patch("netbox_kea.views.sync_views._fetch_reservations_from_server")
+    def test_bulk_sync_calls_sync_with_cleanup_false(self, mock_fetch, mock_sync, mock_batch):
+        """Each record is synced with cleanup=False; batch cleanup runs after."""
+        mock_fetch.return_value = [
+            {"ip-address": "10.0.0.1", "hostname": "h1.example.com"},
+            {"ip-address": "10.0.0.2", "hostname": "h1.example.com"},
+        ]
+        mock_sync.side_effect = [(MagicMock(), True), (MagicMock(), False)]
+        self.client.post(self._url(), follow=True)
+        # Both calls must use cleanup=False
+        for call in mock_sync.call_args_list:
+            self.assertEqual(call.kwargs.get("cleanup"), False)
+        # Batch cleanup called once with both records
+        mock_batch.assert_called_once()
+        synced_records = mock_batch.call_args[0][0]
+        self.assertEqual(len(synced_records), 2)
+
+    @patch("netbox_kea.sync.cleanup_stale_ips_batch", return_value=3)
+    @patch("netbox_kea.sync.sync_reservation_to_netbox")
+    @patch("netbox_kea.views.sync_views._fetch_reservations_from_server")
+    def test_stale_cleaned_count_appears_in_message(self, mock_fetch, mock_sync, mock_batch):
+        """When batch cleanup removes IPs, the count appears in the success message."""
+        mock_fetch.return_value = [{"ip-address": "10.0.0.1", "hostname": "h.example.com"}]
+        mock_sync.return_value = (MagicMock(), True)
+        response = self.client.post(self._url(), follow=True)
+        msgs = [str(m) for m in response.context["messages"]]
+        self.assertTrue(any("3 stale cleaned" in m for m in msgs))
+
+    @patch("netbox_kea.sync.cleanup_stale_ips_batch", return_value=0)
+    @patch("netbox_kea.sync.sync_reservation_to_netbox")
+    @patch("netbox_kea.views.sync_views._fetch_reservations_from_server")
+    def test_failed_records_excluded_from_batch_cleanup(self, mock_fetch, mock_sync, mock_batch):
+        """Records that fail sync are NOT passed to batch cleanup."""
+        mock_fetch.return_value = [
+            {"ip-address": "10.0.0.1", "hostname": "h1"},
+            {"ip-address": "10.0.0.2", "hostname": "h2"},
+        ]
+        mock_sync.side_effect = [ValueError("db error"), (MagicMock(), True)]
+        self.client.post(self._url(), follow=True)
+        synced_records = mock_batch.call_args[0][0]
+        self.assertEqual(len(synced_records), 1)
+        self.assertEqual(synced_records[0]["ip-address"], "10.0.0.2")

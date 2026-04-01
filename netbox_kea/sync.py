@@ -318,7 +318,7 @@ def _apply_ip_fields(
     return changed
 
 
-def sync_lease_to_netbox(lease: dict) -> tuple[NbIPAddress, bool]:
+def sync_lease_to_netbox(lease: dict, *, cleanup: bool = True) -> tuple[NbIPAddress, bool]:
     """Create or update a NetBox IPAddress from a Kea lease dictionary.
 
     The ``status`` is set to ``"active"`` and ``dns_name`` to the lease
@@ -329,8 +329,16 @@ def sync_lease_to_netbox(lease: dict) -> tuple[NbIPAddress, bool]:
     includes a ``hw-address`` field (NetBox ≥ 4.1 only; silently skipped on
     older versions).
 
+    Args:
+        lease:   Raw Kea lease dictionary.
+        cleanup: When ``True`` (default), call :func:`_cleanup_stale_ips` for
+                 the hostname after syncing.  Set to ``False`` in batch
+                 operations where the caller will perform a single cleanup pass
+                 with the full keep-set via :func:`cleanup_stale_ips_batch`.
+
     Returns ``(ip_object, created)`` where *created* is ``True`` on the first
     call for a given IP.
+
     """
     from ipam.models import IPAddress as NbIP
 
@@ -360,7 +368,7 @@ def sync_lease_to_netbox(lease: dict) -> tuple[NbIPAddress, bool]:
 
     # No exclude_ips needed: Kea assigns one active lease per hostname, so
     # there are no sibling IPs to protect (unlike reservations with multi-address).
-    if hostname:
+    if cleanup and hostname:
         _cleanup_stale_ips(ip_str, hostname, mode=_get_stale_cleanup_mode())
 
     hw_address = lease.get("hw-address")
@@ -370,7 +378,7 @@ def sync_lease_to_netbox(lease: dict) -> tuple[NbIPAddress, bool]:
     return ip_obj, created
 
 
-def sync_reservation_to_netbox(reservation: dict) -> tuple[NbIPAddress, bool]:
+def sync_reservation_to_netbox(reservation: dict, *, cleanup: bool = True) -> tuple[NbIPAddress, bool]:
     """Create or update a NetBox IPAddress from a Kea reservation dictionary.
 
     The ``status`` is set to ``"reserved"`` and ``dns_name`` to the
@@ -380,10 +388,18 @@ def sync_reservation_to_netbox(reservation: dict) -> tuple[NbIPAddress, bool]:
     synced.  The first address is returned as the primary ``(ip_object, created)``
     result.
 
+    Args:
+        reservation: Raw Kea reservation dictionary.
+        cleanup:     When ``True`` (default), call :func:`_cleanup_stale_ips`
+                     for the hostname after syncing.  Set to ``False`` in batch
+                     operations where the caller will perform a single cleanup
+                     pass with the full keep-set via :func:`cleanup_stale_ips_batch`.
+
     Raises ``ValueError`` when the reservation contains no IP address.
 
     Returns ``(ip_object, created)`` where *created* is ``True`` if any address
     was created for the first time.
+
     """
     from ipam.models import IPAddress as NbIP
 
@@ -427,7 +443,7 @@ def sync_reservation_to_netbox(reservation: dict) -> tuple[NbIPAddress, bool]:
 
     # Cleanup stale IPs outside the loop — exclude ALL IPs in this reservation
     # so sibling addresses (DHCPv6 multi-address) are never treated as stale.
-    if hostname:
+    if cleanup and hostname:
         _cleanup_stale_ips(
             primary_ip,
             hostname,
@@ -440,3 +456,58 @@ def sync_reservation_to_netbox(reservation: dict) -> tuple[NbIPAddress, bool]:
         _sync_mac_address(hw_address, hostname)
 
     return primary_obj, any_created  # type: ignore[return-value]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Batch stale-IP cleanup
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def cleanup_stale_ips_batch(synced_records: list[dict]) -> int:
+    """Run stale-IP cleanup once per hostname using the full keep-set.
+
+    When multiple records share a hostname (e.g., two leases assigned to the
+    same device), calling :func:`_cleanup_stale_ips` per-record would
+    incorrectly mark sibling IPs as stale.  This function accumulates **all**
+    synced IPs per hostname first, then calls :func:`_cleanup_stale_ips` once
+    with the complete ``exclude_ips`` set so no sibling is removed.
+
+    Args:
+        synced_records: A list of raw Kea dicts (leases or reservations) that
+            were synced in this batch.  Each dict must have an ``"ip-address"``
+            (or ``"ip-addresses"`` for multi-address reservations) and
+            optionally a ``"hostname"`` field.
+
+    Returns the total number of stale IPs cleaned up across all hostnames.
+
+    """
+    mode = _get_stale_cleanup_mode()
+    if mode == "none":
+        return 0
+
+    # Build hostname → {all IPs} mapping.
+    hostname_ips: dict[str, set[str]] = {}
+    for record in synced_records:
+        hostname = record.get("hostname", "")
+        if not hostname:
+            continue
+        ips: set[str] = set()
+        if "ip-address" in record and record["ip-address"]:
+            ips.add(record["ip-address"])
+        for addr in record.get("ip-addresses", []):
+            if addr:
+                ips.add(addr)
+        if ips:
+            hostname_ips.setdefault(hostname, set()).update(ips)
+
+    total_cleaned = 0
+    for hostname, all_ips in hostname_ips.items():
+        primary_ip = next(iter(all_ips))
+        total_cleaned += _cleanup_stale_ips(
+            primary_ip,
+            hostname,
+            mode=mode,
+            exclude_ips=frozenset(all_ips),
+        )
+
+    return total_cleaned
