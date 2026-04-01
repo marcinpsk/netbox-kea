@@ -966,9 +966,11 @@ def _build_mac_lookup_candidates(
             continue
         mac = (lease.get("hw_address") or "").lower()
         subnet_id = lease.get("subnet_id")
-        if not mac or not subnet_id:
+        if not mac or subnet_id is None:
             continue
-        key = (mac, int(subnet_id))
+        if not isinstance(subnet_id, int):
+            continue
+        key = (mac, subnet_id)
         if key in seen_keys:
             continue
         seen_keys.add(key)
@@ -1040,8 +1042,8 @@ def _fetch_reservation_by_mac_for_leases(
                 lease = future_to_lease[future]
                 l_mac = (lease.get("hw_address") or "").lower()
                 l_sid = lease.get("subnet_id")
-                if l_mac and l_sid:
-                    failed_keys.add((l_mac, int(l_sid)))
+                if l_mac and isinstance(l_sid, int):
+                    failed_keys.add((l_mac, l_sid))
                 continue
             key = (mac, subnet_id)
             if rsv is _FETCH_ERROR:
@@ -1247,6 +1249,7 @@ def _enrich_leases_with_badges(
             )
         except Exception:  # noqa: BLE001
             logger.debug("MAC-based reservation lookup failed; skipping pending-change detection", exc_info=True)
+            _, failed_mac_keys = _build_mac_lookup_candidates(leases, set(reservation_by_ip.keys()), failed_ips)
 
     for lease in leases:
         ip = lease.get("ip_address", "")
