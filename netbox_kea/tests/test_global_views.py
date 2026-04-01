@@ -979,9 +979,6 @@ class TestCombinedReservations4Enrichment(_CombinedViewBase):
         clone_mock.__exit__ = lambda s, *a: None
         MockKeaClient.return_value.clone.return_value = clone_mock
         MockKeaClient.return_value.reservation_get_page.return_value = ([dict(_MOCK_RESERVATION_ENRICHED)], 0, 0)
-        MockKeaClient.return_value.command.return_value = [
-            {"result": 0, "arguments": {"leases": [{"ip-address": "10.20.0.5"}]}}
-        ]
         response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Active Lease")
@@ -1145,9 +1142,6 @@ class TestCombinedReservations6Enrichment(_CombinedViewBase):
             0,
             0,
         )
-        MockKeaClient.return_value.command.return_value = [
-            {"result": 0, "arguments": {"leases": [{"ip-address": "2001:db8::5"}]}}
-        ]
         response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Active Lease")

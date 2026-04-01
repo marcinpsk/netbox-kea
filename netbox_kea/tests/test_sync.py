@@ -1075,7 +1075,7 @@ class TestSyncMacAddressImportErrors(TestCase):
         import sys
         from unittest.mock import patch
 
-        with patch.dict(sys.modules, {"netaddr": None}):
+        with patch.dict(sys.modules, {"netaddr": None, "netaddr.core": None}):
             import importlib
 
             import netbox_kea.sync as sync_mod

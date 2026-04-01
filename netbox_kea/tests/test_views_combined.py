@@ -143,7 +143,7 @@ class TestCombinedReservationsMultiPage(_ViewTestBase):
     """Lines 4065-4066: combined reservations multi-page pagination."""
 
     def _url(self):
-        return reverse("plugins:netbox_kea:combined_reservations4") + f"?servers={self.server.pk}"
+        return reverse("plugins:netbox_kea:combined_reservations4") + f"?server={self.server.pk}"
 
     @patch("netbox_kea.models.KeaClient")
     def test_multi_page_pagination_followed(self, MockKeaClient):

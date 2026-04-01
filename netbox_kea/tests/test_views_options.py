@@ -398,7 +398,11 @@ class TestServerOptionsView(_ViewTestBase):
             },
         )
         call_kwargs = MockKeaClient.return_value.server_update_options.call_args
-        options_arg = next(v for v in list(call_kwargs[0]) + list(call_kwargs[1].values()) if isinstance(v, list))
+        # Extract options list: second positional arg or first list-type kwarg
+        if len(call_kwargs[0]) > 1:
+            options_arg = call_kwargs[0][1]
+        else:
+            options_arg = next(v for k, v in call_kwargs[1].items() if isinstance(v, list))
         self.assertEqual(len(options_arg), 1)
         self.assertEqual(options_arg[0]["name"], "routers")
 
@@ -767,7 +771,7 @@ class TestSubnetOptionsPostInvalid(_ViewTestBase):
             },
         )
         # Invalid formset can re-render OR redirect depending on validation path
-        self.assertIn(response.status_code, (200, 302))
+        self.assertEqual(response.status_code, 200)
 
     @patch("netbox_kea.models.KeaClient")
     def test_post_with_always_send_includes_flag(self, MockKeaClient):
@@ -819,7 +823,7 @@ class TestServerOptionsPostInvalid(_ViewTestBase):
                 "form-0-data": "val",
             },
         )
-        self.assertIn(response.status_code, (200, 302))
+        self.assertEqual(response.status_code, 200)
 
     @patch("netbox_kea.models.KeaClient")
     def test_post_with_always_send_includes_flag(self, MockKeaClient):

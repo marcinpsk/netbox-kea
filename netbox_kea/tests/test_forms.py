@@ -821,3 +821,45 @@ class TestSharedNetworkEditForm(SimpleTestCase):
         form = self._form(description="x" * 256)
         self.assertFalse(form.is_valid())
         self.assertIn("description", form.errors)
+
+    def test_valid_single_dns_server(self):
+        """A single valid DNS server IP is accepted and normalized."""
+        form = self._form(dns_servers="  8.8.8.8  ")
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.cleaned_data["dns_servers"], "8.8.8.8")
+
+    def test_valid_multiple_dns_servers(self):
+        """Multiple comma-separated DNS server IPs are accepted and normalized."""
+        form = self._form(dns_servers="8.8.8.8 , 1.1.1.1")
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.cleaned_data["dns_servers"], "8.8.8.8,1.1.1.1")
+
+    def test_invalid_dns_server_fails_validation(self):
+        """A non-IP value in dns_servers raises a ValidationError."""
+        form = self._form(dns_servers="not-an-ip")
+        self.assertFalse(form.is_valid())
+        self.assertIn("dns_servers", form.errors)
+
+    def test_valid_single_ntp_server(self):
+        """A single valid NTP server IP is accepted and normalized."""
+        form = self._form(ntp_servers="  10.0.0.1  ")
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.cleaned_data["ntp_servers"], "10.0.0.1")
+
+    def test_valid_multiple_ntp_servers(self):
+        """Multiple comma-separated NTP server IPs are accepted and normalized."""
+        form = self._form(ntp_servers="10.0.0.1 , 10.0.0.2")
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.cleaned_data["ntp_servers"], "10.0.0.1,10.0.0.2")
+
+    def test_invalid_ntp_server_fails_validation(self):
+        """A non-IP value in ntp_servers raises a ValidationError."""
+        form = self._form(ntp_servers="not-valid")
+        self.assertFalse(form.is_valid())
+        self.assertIn("ntp_servers", form.errors)
+
+    def test_relay_addresses_normalized(self):
+        """Relay addresses with extra whitespace are normalized to comma-separated."""
+        form = self._form(relay_addresses="  10.0.0.1 , 10.0.0.2  ")
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.cleaned_data["relay_addresses"], "10.0.0.1,10.0.0.2")

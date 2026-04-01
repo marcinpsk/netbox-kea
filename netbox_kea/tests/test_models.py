@@ -283,6 +283,7 @@ class TestServerCleanConnectivity(SimpleTestCase):
             server.clean()
         self.assertIn("dhcp6", ctx.exception.message_dict)
         self.assertIn("internal error", ctx.exception.message_dict["dhcp6"][0])
+        self.assertNotIn("bad json", ctx.exception.message_dict["dhcp6"][0])
 
     @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
     @patch("netbox_kea.models.KeaClient")
@@ -296,6 +297,7 @@ class TestServerCleanConnectivity(SimpleTestCase):
             server.clean()
         self.assertIn("dhcp4", ctx.exception.message_dict)
         self.assertIn("internal error", ctx.exception.message_dict["dhcp4"][0])
+        self.assertNotIn("bad json", ctx.exception.message_dict["dhcp4"][0])
 
 
 class TestServerHasControlAgentDefault(SimpleTestCase):

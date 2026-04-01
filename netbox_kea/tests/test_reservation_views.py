@@ -2127,9 +2127,14 @@ class TestReservationJournalEntries(_ReservationViewBase):
         )
 
     def _journal_count(self):
+        from django.contrib.contenttypes.models import ContentType
         from extras.models import JournalEntry
 
-        return JournalEntry.objects.filter(assigned_object_id=self.server.pk).count()
+        ct = ContentType.objects.get_for_model(self.server)
+        return JournalEntry.objects.filter(
+            assigned_object_type=ct,
+            assigned_object_id=self.server.pk,
+        ).count()
 
     @patch("netbox_kea.models.KeaClient")
     def test_add_creates_journal_entry(self, MockKeaClient):
