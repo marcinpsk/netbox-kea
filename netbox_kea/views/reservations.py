@@ -183,7 +183,7 @@ def _enrich_reservations_with_lease_status(client: "KeaClient", reservations: li
                     return None  # hook not loaded
                 logger.debug("lease fetch failed for subnet %s (KeaException result != 2): %s", sid, exc)
                 return False  # error sentinel — state is indeterminate
-            except (KeaException, requests.RequestException, ValueError):  # noqa: BLE001
+            except (requests.RequestException, ValueError):  # noqa: BLE001
                 logger.debug("lease fetch failed for subnet %s (unexpected error)", sid)
                 return False  # error sentinel
 
