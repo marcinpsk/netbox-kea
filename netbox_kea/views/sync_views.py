@@ -197,7 +197,10 @@ class _BaseBulkReservationSyncView(ConditionalLoginRequiredMixin, View):
 
         # Run stale-IP cleanup once per hostname with the full keep-set
         # to prevent false positives when multiple records share a hostname.
-        stale_cleaned = cleanup_stale_ips_batch(synced_records)
+        # Skip cleanup when errors occurred — the keep-set is incomplete.
+        stale_cleaned = 0
+        if not errors:
+            stale_cleaned = cleanup_stale_ips_batch(synced_records)
 
         stale_msg = f", {stale_cleaned} stale cleaned" if stale_cleaned else ""
         if errors:

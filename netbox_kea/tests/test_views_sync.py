@@ -608,14 +608,12 @@ class TestBulkSyncBatchCleanup(_ViewTestBase):
     @patch("netbox_kea.sync.cleanup_stale_ips_batch", return_value=0)
     @patch("netbox_kea.sync.sync_reservation_to_netbox")
     @patch("netbox_kea.views.sync_views._fetch_reservations_from_server")
-    def test_failed_records_excluded_from_batch_cleanup(self, mock_fetch, mock_sync, mock_batch):
-        """Records that fail sync are NOT passed to batch cleanup."""
+    def test_batch_cleanup_skipped_when_errors(self, mock_fetch, mock_sync, mock_batch):
+        """When sync errors occur, batch cleanup is skipped entirely (incomplete keep-set)."""
         mock_fetch.return_value = [
             {"ip-address": "10.0.0.1", "hostname": "h1"},
             {"ip-address": "10.0.0.2", "hostname": "h2"},
         ]
         mock_sync.side_effect = [ValueError("db error"), (MagicMock(), True)]
         self.client.post(self._url(), follow=True)
-        synced_records = mock_batch.call_args[0][0]
-        self.assertEqual(len(synced_records), 1)
-        self.assertEqual(synced_records[0]["ip-address"], "10.0.0.2")
+        mock_batch.assert_not_called()

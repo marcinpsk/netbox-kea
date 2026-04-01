@@ -1195,6 +1195,30 @@ class TestCleanupStaleIpsBatch(TestCase):
 
         self.assertEqual(cleanup_stale_ips_batch([]), 0)
 
+    @override_settings(PLUGINS_CONFIG=_STALE_PLUGINS_CONFIG)
+    def test_batch_groups_by_address_family(self):
+        """Mixed v4/v6 records for same hostname clean both families independently."""
+        from ipam.models import IPAddress as NbIP
+
+        from netbox_kea.sync import cleanup_stale_ips_batch
+
+        # Stale v4 and v6 IPs for the same hostname
+        NbIP.objects.create(
+            address="10.70.0.99/32", status="dhcp", dns_name="dual.example.com", description=self._KEA_DESC
+        )
+        NbIP.objects.create(
+            address="2001:db8:70::99/128", status="dhcp", dns_name="dual.example.com", description=self._KEA_DESC
+        )
+        synced = [
+            {"ip-address": "10.70.0.1", "hostname": "dual.example.com"},
+            {"ip-addresses": ["2001:db8:70::1"], "hostname": "dual.example.com"},
+        ]
+        cleaned = cleanup_stale_ips_batch(synced)
+        self.assertEqual(cleaned, 2)
+        # Both stale IPs cleaned
+        self.assertFalse(NbIP.objects.filter(address__startswith="10.70.0.99/").exists())
+        self.assertFalse(NbIP.objects.filter(address__startswith="2001:db8:70::99/").exists())
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TestSyncCleanupParameter

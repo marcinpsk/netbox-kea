@@ -408,13 +408,19 @@ class BaseServerSharedNetworkEditView(_KeaChangeMixin, ConditionalLoginRequiredM
         options: list[dict] = list(preserved_options)
         if cd.get("dns_servers"):
             dns_name = "domain-name-servers" if self.dhcp_version == 4 else "dns-servers"
-            existing_dns = next((o for o in existing_network.get("option-data", []) if o.get("name") == dns_name), None)
+            dns_aliases = ("domain-name-servers", "dns-servers")
+            existing_dns = next(
+                (o for o in existing_network.get("option-data", []) if o.get("name") in dns_aliases), None
+            )
             new_dns = dict(existing_dns) if existing_dns else {"name": dns_name}
             new_dns["data"] = cd["dns_servers"]
             options.append(new_dns)
         if cd.get("ntp_servers"):
             ntp_name = "ntp-servers" if self.dhcp_version == 4 else "sntp-servers"
-            existing_ntp = next((o for o in existing_network.get("option-data", []) if o.get("name") == ntp_name), None)
+            ntp_aliases = ("ntp-servers", "sntp-servers")
+            existing_ntp = next(
+                (o for o in existing_network.get("option-data", []) if o.get("name") in ntp_aliases), None
+            )
             new_ntp = dict(existing_ntp) if existing_ntp else {"name": ntp_name}
             new_ntp["data"] = cd["ntp_servers"]
             options.append(new_ntp)

@@ -485,8 +485,9 @@ def cleanup_stale_ips_batch(synced_records: list[dict]) -> int:
     if mode == "none":
         return 0
 
-    # Build hostname → {all IPs} mapping.
-    hostname_ips: dict[str, set[str]] = {}
+    # Build (hostname, family) → {IPs} mapping so each address family
+    # is cleaned independently (prevents wrong family filter).
+    hostname_ips: dict[tuple[str, int], set[str]] = {}
     for record in synced_records:
         hostname = record.get("hostname", "")
         if not hostname:
@@ -497,11 +498,12 @@ def cleanup_stale_ips_batch(synced_records: list[dict]) -> int:
         for addr in record.get("ip-addresses", []):
             if addr:
                 ips.add(addr)
-        if ips:
-            hostname_ips.setdefault(hostname, set()).update(ips)
+        for ip in ips:
+            family = 6 if ":" in ip else 4
+            hostname_ips.setdefault((hostname, family), set()).add(ip)
 
     total_cleaned = 0
-    for hostname, all_ips in hostname_ips.items():
+    for (hostname, _family), all_ips in hostname_ips.items():
         primary_ip = next(iter(all_ips))
         total_cleaned += _cleanup_stale_ips(
             primary_ip,

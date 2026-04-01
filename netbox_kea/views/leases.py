@@ -48,6 +48,7 @@ def _add_lease_journal(
     ip_addresses: "list[str] | str",
     hw_address: str = "",
     hostname: str = "",
+    duid: str = "",
 ) -> None:
     """Create a JournalEntry on *server* recording a lease CRUD event.
 
@@ -60,6 +61,7 @@ def _add_lease_journal(
         ip_addresses: A single IP string or list of IPs affected.
         hw_address: Optional hardware address (for add events).
         hostname: Optional hostname (for add events).
+        duid: Optional DUID (for DHCPv6 add events).
 
     """
     try:
@@ -74,6 +76,8 @@ def _add_lease_journal(
             parts = [f"{len(ip_addresses)} lease(s) {action}: {ip_list}"]
         if hw_address:
             parts.append(f"hw-address: {hw_address}")
+        if duid:
+            parts.append(f"duid: {duid}")
         if hostname:
             parts.append(f"hostname: {hostname}")
         JournalEntry.objects.create(
@@ -784,8 +788,9 @@ class _BaseLeaseAddView(_KeaChangeMixin, generic.ObjectView):
                     request.user,
                     "added",
                     cd["ip_address"],
-                    hw_address=cd.get("hw_address") or cd.get("duid") or "",
+                    hw_address=cd.get("hw_address") or "",
                     hostname=cd.get("hostname") or "",
+                    duid=cd.get("duid") or "",
                 )
             except (DatabaseError, OperationalError, ProgrammingError):
                 logger.exception("Failed to record journal entry for lease %s", cd.get("ip_address"))
