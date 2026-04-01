@@ -446,7 +446,7 @@ class BaseServerSharedNetworkEditView(_KeaChangeMixin, ConditionalLoginRequiredM
         except KeaException as exc:
             logger.warning("network_update failed for %s on server %s: %s", network_name, pk, exc)
             messages.error(request, f"Kea error: {kea_error_hint(exc)}")
-        except requests.RequestException:
+        except (requests.RequestException, ValueError):
             logger.exception("Transport error updating shared network '%s' on server %s", network_name, pk)
             messages.error(request, "An internal error occurred.")
         return redirect(self._success_url(server))

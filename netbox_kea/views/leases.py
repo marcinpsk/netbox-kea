@@ -521,7 +521,10 @@ class BaseServerLeasesDeleteView(GetReturnURLMixin, generic.ObjectView, metaclas
             try:
                 self.delete_lease(client, ip)
                 successful_ips.append(ip)
-            except (KeaException, requests.RequestException, ValueError):  # noqa: PERF203
+            except KeaException as exc:  # noqa: PERF203
+                logger.exception("Kea error deleting lease %s on server %s", ip, instance.pk)
+                messages.error(request, f"Error deleting lease {ip}: {kea_error_hint(exc)}")
+            except (requests.RequestException, ValueError):  # noqa: PERF203
                 logger.exception("Error deleting lease %s on server %s", ip, instance.pk)
                 messages.error(request, f"Error deleting lease {ip}: see server logs for details.")
 
