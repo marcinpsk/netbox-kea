@@ -1016,7 +1016,7 @@ def _enrich_reservations_with_badges(
     try:
         client = server.get_client(version=version)
         _enrich_reservations_with_lease_status(client, reservations, version=version)
-    except Exception:  # noqa: BLE001
+    except (KeaException, requests.RequestException, ValueError, TimeoutError):
         logger.debug("Failed to enrich reservations with lease status for server %s", server.pk, exc_info=True)
 
     sync_url = reverse(f"plugins:netbox_kea:server_reservation{version}_sync", args=[server.pk])

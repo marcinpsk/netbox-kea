@@ -51,9 +51,12 @@ class BaseServerSharedNetworksView(generic.ObjectChildrenView):
         except (requests.RequestException, ValueError):
             logger.debug("Transport error fetching config-get for shared networks on server %s", parent.pk)
             return []
-        if config[0]["arguments"] is None:
+        if not config or not isinstance(config[0], dict):
             return []
-        dhcp_conf = config[0]["arguments"].get(f"Dhcp{self.dhcp_version}", {})
+        args = config[0].get("arguments")
+        if not isinstance(args, dict):
+            return []
+        dhcp_conf = args.get(f"Dhcp{self.dhcp_version}", {})
         can_change = Server.objects.restrict(request.user, "change").filter(pk=parent.pk).exists()
         result = []
         for sn in dhcp_conf.get("shared-networks", []):
