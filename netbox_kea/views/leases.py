@@ -123,14 +123,19 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
             check=(0, 3),
         )
 
+        if not resp or not isinstance(resp[0], dict):
+            raise RuntimeError("Unexpected response shape from lease-get-page")
+
         if resp[0]["result"] == 3:
             return [], None
 
-        args = resp[0]["arguments"]
-        if args is None:
+        args = resp[0].get("arguments")
+        if not isinstance(args, dict):
             raise RuntimeError("Unexpected None arguments from lease-get-page")
 
-        raw_leases = args["leases"]
+        raw_leases = args.get("leases")
+        if not isinstance(raw_leases, list):
+            raise RuntimeError("Unexpected leases payload from lease-get-page")
         next_cursor = f"{raw_leases[-1]['ip-address']}" if args["count"] == per_page else None
         for i, lease in enumerate(raw_leases):
             lease_ip = IPAddress(lease["ip-address"])
@@ -178,14 +183,20 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
             check=(0, 3),
         )
 
+        if not resp or not isinstance(resp[0], dict):
+            raise RuntimeError(f"Unexpected response shape from lease{self.dhcp_version}-get{command}")
+
         if resp[0]["result"] == 3:
             return []
 
-        args = resp[0]["arguments"]
-        if args is None:
+        args = resp[0].get("arguments")
+        if not isinstance(args, dict):
             raise RuntimeError(f"Unexpected None arguments from lease{self.dhcp_version}-get{command}")
         if multiple is True:
-            return format_leases(args["leases"])
+            raw_leases = args.get("leases")
+            if not isinstance(raw_leases, list):
+                raise RuntimeError(f"Unexpected leases payload from lease{self.dhcp_version}-get{command}")
+            return format_leases(raw_leases)
         return format_leases([args])
 
     def get_extra_context(self, request: HttpRequest, instance: Server) -> dict[str, Any]:
@@ -306,7 +317,7 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
             logger.exception("Failed to fetch all leases for export on server %s", instance.pk)
             messages.error(request, kea_error_hint(exc))
             return redirect(request.path)
-        except (requests.RequestException, ValueError):
+        except (requests.RequestException, ValueError, RuntimeError):
             logger.exception("Transport/parse error fetching all leases for export on server %s", instance.pk)
             messages.error(request, "Failed to fetch leases for export; see server logs.")
             return redirect(request.path)
@@ -1242,7 +1253,12 @@ def _enrich_leases_with_badges(
         if nb_ip:
             lease["netbox_ip_url"] = nb_ip.get_absolute_url()
         elif can_change and not lease.get("pending_ip_change"):
-            lease["sync_url"] = sync_url
+            # Don't offer Sync for leases with indeterminate reservation state.
+            mac = (lease.get("hw_address") or "").lower()
+            subnet_id = lease.get("subnet_id")
+            mac_key = (mac, int(subnet_id)) if mac and subnet_id else None
+            if ip not in failed_ips and (mac_key is None or mac_key not in failed_mac_keys):
+                lease["sync_url"] = sync_url
         if ip and can_change:
             lease["edit_url"] = reverse(edit_url_name, args=[server.pk, ip])
         lease["can_delete"] = can_delete
