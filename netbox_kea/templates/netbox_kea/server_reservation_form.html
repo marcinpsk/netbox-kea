@@ -30,6 +30,7 @@
 
           {# DHCP Options section #}
           <hr>
+          {% if dhcp_version == 4 %}
           <div class="d-flex justify-content-between align-items-center mb-2">
             <strong>DHCP Options <span class="text-muted fw-normal">(optional)</span></strong>
             <button type="button" class="btn btn-sm btn-outline-secondary"
@@ -46,7 +47,7 @@
                 <tbody>
                   <tr><td><code>boot-file-name</code></td><td><code>http://10.0.0.1/ztp.py</code></td><td>Cisco IOS XE / NX-OS / Junos bootstrap URL (option 67)</td></tr>
                   <tr><td><code>tftp-server-name</code></td><td><code>10.0.0.1</code></td><td>TFTP server for legacy IOS (option 66)</td></tr>
-                  <tr><td><code>vendor-encapsulated-options</code></td><td><code>0118687474703a2f2f31302e302e302e312f706f61702e7079</code></td><td>Cisco POAP / Aruba Central (option 43, hex TLV)</td></tr>
+                  <tr><td><code>vendor-encapsulated-options</code></td><td><code>0117687474703a2f2f31302e302e302e312f706f61702e7079</code></td><td>Cisco POAP / Aruba Central (option 43, hex TLV)</td></tr>
                 </tbody>
               </table>
               <p class="mb-0 text-muted">
@@ -56,6 +57,11 @@
               </p>
             </div>
           </div>
+          {% else %}
+          <div class="mb-2">
+            <strong>DHCP Options <span class="text-muted fw-normal">(optional)</span></strong>
+          </div>
+          {% endif %}
 
           {{ options_formset.management_form }}
           {% if options_formset.non_form_errors %}

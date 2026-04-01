@@ -31,10 +31,16 @@ def format_duration(s: int | None) -> str | None:
 def _enrich_reservation_sort_key(reservation: dict[str, Any]) -> dict[str, Any]:
     """Inject a numeric _ip_sort_key into a raw Kea reservation dict (in-place + return).
 
-    The Kea API returns reservation dicts with hyphenated keys (``ip-address``).
+    The Kea API returns reservation dicts with hyphenated keys (``ip-address``
+    for DHCPv4, ``ip-addresses`` for DHCPv6).
     We inject an integer sort key so django-tables2 sorts IPs numerically.
     """
-    if ip_str := reservation.get("ip-address"):
+    ip_str = reservation.get("ip-address")
+    if not ip_str:
+        ip_list = reservation.get("ip-addresses")
+        if ip_list and isinstance(ip_list, list):
+            ip_str = ip_list[0]
+    if ip_str:
         try:
             reservation["_ip_sort_key"] = int(ipaddress.ip_address(ip_str))
         except ValueError:

@@ -1123,15 +1123,13 @@ class SharedNetworkEditForm(forms.Form):
         raw = self.cleaned_data.get("relay_addresses", "").strip()
         if not raw:
             return raw
-        for part in raw.split(","):
-            part = part.strip()
-            if not part:
-                continue
+        entries = [s.strip() for s in raw.split(",") if s.strip()]
+        for entry in entries:
             try:
-                ipaddress.ip_address(part)
-            except ValueError as exc:
-                raise forms.ValidationError(f"'{part}' is not a valid IP address.") from exc
-        return raw
+                ipaddress.ip_address(entry)
+            except ValueError as exc:  # noqa: PERF203
+                raise forms.ValidationError(f"'{entry}' is not a valid IP address.") from exc
+        return ",".join(entries)
 
     def clean_dns_servers(self) -> str:
         """Validate each DNS server IP address."""

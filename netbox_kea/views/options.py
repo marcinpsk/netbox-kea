@@ -1,4 +1,5 @@
 import logging
+from typing import Any
 from urllib.parse import urlencode as _urlencode
 
 import requests
@@ -423,30 +424,30 @@ class BaseServerOptionDefView(ConditionalLoginRequiredMixin, View):
             options_load_error = True
         # Annotate each entry with a pre-built delete URL so templates don't
         # need to construct dynamic URL names.
+        can_change = request.user.has_perm("netbox_kea.change_server")
         enriched_defs = []
         for opt in option_defs:
             entry = dict(opt)
-            entry["delete_url"] = reverse(
-                f"plugins:netbox_kea:server_option_def{self.dhcp_version}_delete",
-                args=[server.pk, opt["code"], opt["space"]],
-            )
+            if can_change:
+                entry["delete_url"] = reverse(
+                    f"plugins:netbox_kea:server_option_def{self.dhcp_version}_delete",
+                    args=[server.pk, opt["code"], opt["space"]],
+                )
             enriched_defs.append(entry)
-        return render(
-            request,
-            "netbox_kea/server_option_def_list.html",
-            {
-                "object": server,
-                "server": server,
-                "option_defs": enriched_defs,
-                "options_load_error": options_load_error,
-                "dhcp_version": self.dhcp_version,
-                "add_url": reverse(
-                    f"plugins:netbox_kea:server_option_def{self.dhcp_version}_add",
-                    args=[server.pk],
-                ),
-                "tab": self.tab,
-            },
-        )
+        ctx: dict[str, Any] = {
+            "object": server,
+            "server": server,
+            "option_defs": enriched_defs,
+            "options_load_error": options_load_error,
+            "dhcp_version": self.dhcp_version,
+            "tab": self.tab,
+        }
+        if can_change:
+            ctx["add_url"] = reverse(
+                f"plugins:netbox_kea:server_option_def{self.dhcp_version}_add",
+                args=[server.pk],
+            )
+        return render(request, "netbox_kea/server_option_def_list.html", ctx)
 
 
 @register_model_view(Server, "option_def6")

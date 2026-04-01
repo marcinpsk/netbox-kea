@@ -80,7 +80,7 @@ Views are split into focused modules under `netbox_kea/views/`:
 
 ### Exception hierarchy
 
-```
+```text
 Exception
  └── KeaException                  # Base — any non-ok result from Kea
       ├── KeaConfigTestError       # config-test failed

@@ -385,7 +385,10 @@ class ServerReservations6View(generic.ObjectView):
 
         for r in reservations:
             r["server_pk"] = server.pk
-            r.setdefault("ip_address", (r.get("ip-addresses") or [""])[0])
+            ip_addrs = r.get("ip-addresses") or []
+            r.setdefault("ip_address", ip_addrs[0] if ip_addrs else "")
+            if len(ip_addrs) > 1:
+                r["extra_ips"] = ip_addrs[1:]
             r.setdefault("subnet_id", r.get("subnet-id", 0))
             _enrich_reservation_sort_key(r)
 
@@ -728,9 +731,12 @@ class ServerReservation4EditView(_KeaChangeMixin, generic.ObjectView):
             except KeaException as exc:
                 logger.exception("Failed to update DHCPv4 reservation for %s", cd.get("ip_address"))
                 messages.error(request, kea_error_hint(exc))
-            except (requests.RequestException, ValueError):
-                logger.exception("Failed to update DHCPv4 reservation for %s (network error)", cd.get("ip_address"))
+            except requests.RequestException:
+                logger.exception("Network error updating DHCPv4 reservation for %s", cd.get("ip_address"))
                 messages.error(request, "Network error communicating with Kea: see server logs.")
+            except ValueError:
+                logger.exception("Invalid Kea response when updating DHCPv4 reservation for %s", cd.get("ip_address"))
+                messages.error(request, "Invalid response from Kea: see server logs.")
         return render(
             request,
             self.template_name,
@@ -839,9 +845,12 @@ class ServerReservation6EditView(_KeaChangeMixin, generic.ObjectView):
             except KeaException as exc:
                 logger.exception("Failed to update DHCPv6 reservation for %s", cd.get("ip_addresses"))
                 messages.error(request, kea_error_hint(exc))
-            except (requests.RequestException, ValueError):
-                logger.exception("Failed to update DHCPv6 reservation for %s (network error)", cd.get("ip_addresses"))
+            except requests.RequestException:
+                logger.exception("Network error updating DHCPv6 reservation for %s", cd.get("ip_addresses"))
                 messages.error(request, "Network error communicating with Kea: see server logs.")
+            except ValueError:
+                logger.exception("Invalid Kea response when updating DHCPv6 reservation for %s", cd.get("ip_addresses"))
+                messages.error(request, "Invalid response from Kea: see server logs.")
         return render(
             request,
             self.template_name,
@@ -911,9 +920,12 @@ class ServerReservation4DeleteView(_KeaChangeMixin, generic.ObjectView):
         except KeaException as exc:
             logger.exception("Failed to delete DHCPv4 reservation for %s", ip_address)
             messages.error(request, kea_error_hint(exc))
-        except (requests.RequestException, ValueError):
-            logger.exception("Failed to delete DHCPv4 reservation for %s (network error)", ip_address)
+        except requests.RequestException:
+            logger.exception("Network error deleting DHCPv4 reservation for %s", ip_address)
             messages.error(request, "Network error communicating with Kea: see server logs.")
+        except ValueError:
+            logger.exception("Invalid Kea response when deleting DHCPv4 reservation for %s", ip_address)
+            messages.error(request, "Invalid response from Kea: see server logs.")
         return redirect(return_url)
 
 
@@ -972,9 +984,12 @@ class ServerReservation6DeleteView(_KeaChangeMixin, generic.ObjectView):
         except KeaException as exc:
             logger.exception("Failed to delete DHCPv6 reservation for %s", ip_address)
             messages.error(request, kea_error_hint(exc))
-        except (requests.RequestException, ValueError):
-            logger.exception("Failed to delete DHCPv6 reservation for %s (network error)", ip_address)
+        except requests.RequestException:
+            logger.exception("Network error deleting DHCPv6 reservation for %s", ip_address)
             messages.error(request, "Network error communicating with Kea: see server logs.")
+        except ValueError:
+            logger.exception("Invalid Kea response when deleting DHCPv6 reservation for %s", ip_address)
+            messages.error(request, "Invalid response from Kea: see server logs.")
         return redirect(return_url)
 
 

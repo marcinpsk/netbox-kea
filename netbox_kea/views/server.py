@@ -47,7 +47,8 @@ def _get_global_options(server: "Server") -> dict[str, dict[str, str]]:
             client = server.get_client(version=version)
             resp = client.command("config-get", service=[svc])
             dhcp_key = f"Dhcp{version}"
-            dhcp_block = (resp[0].get("arguments") or {}).get(dhcp_key, {})
+            args = resp[0].get("arguments") if isinstance(resp, list) and resp else None
+            dhcp_block = (args or {}).get(dhcp_key, {})
             option_data = dhcp_block.get("option-data", [])
             opts = format_option_data(option_data, version=version)
             if opts:
@@ -126,20 +127,20 @@ class ServerStatusView(generic.ObjectView):
     def _get_ca_status(self, client: KeaClient) -> dict[str, Any]:
         """Get the control agent status."""
         status = client.command("status-get")
-        args = status[0]["arguments"]
+        args = status[0].get("arguments") if isinstance(status, list) and status else None
         if not args:
             raise RuntimeError("Kea status-get returned empty arguments")
 
         version = client.command("version-get")
-        version_args = version[0]["arguments"]
+        version_args = version[0].get("arguments") if isinstance(version, list) and version else None
         if not version_args:
             raise RuntimeError("Kea version-get returned empty arguments")
 
         return {
-            "PID": args["pid"],
-            "Uptime": format_duration(int(args["uptime"])),
-            "Time since reload": format_duration(int(args["reload"])),
-            "Version": version_args["extended"],
+            "PID": args.get("pid"),
+            "Uptime": format_duration(int(args.get("uptime", 0))),
+            "Time since reload": format_duration(int(args.get("reload", 0))),
+            "Version": version_args.get("extended", "unknown"),
         }
 
     def _get_dhcp_status(self, server: Server) -> dict[str, dict[str, Any]]:

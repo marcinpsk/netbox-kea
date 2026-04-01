@@ -1088,7 +1088,7 @@ class _BaseSubnetWipeView(_KeaChangeMixin, generic.ObjectView):
             )
             key = f"subnet{self.dhcp_version}"
             subnet_cidr = resp[0].get("arguments", {}).get(key, [{}])[0].get("subnet", "")
-        except (KeaException, requests.RequestException, ValueError):
+        except (KeaException, requests.RequestException, ValueError, IndexError):
             logger.debug("CIDR lookup failed in wipe GET for subnet %s on server %s", subnet_id, pk)
         return render(
             request,

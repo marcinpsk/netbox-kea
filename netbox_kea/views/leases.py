@@ -1030,7 +1030,7 @@ def _fetch_reservation_by_mac_for_leases(
                     return mac, subnet_id, ip, r
                 return mac, subnet_id, ip, None
             except Exception:  # noqa: BLE001
-                logger.debug("reservation-get by MAC failed for %s: %s", mac, ip)
+                logger.debug("reservation-get by MAC failed for %s: %s", mac, ip, exc_info=True)
                 return mac, subnet_id, ip, _FETCH_ERROR
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(candidates), 10)) as executor:
