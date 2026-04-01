@@ -348,7 +348,7 @@ class BaseLeaseTable(GenericTable):
         verbose_name="Reserved",
         orderable=False,
         template_code=(
-            "{% if record.reservation_url %}"
+            "{% if record.is_reserved and record.reservation_url %}"
             '<a href="{{ record.reservation_url }}" class="badge text-bg-success text-decoration-none">'
             "Reserved</a>"
             "{% if record.stale_mac %}"
@@ -367,6 +367,16 @@ class BaseLeaseTable(GenericTable):
             ' hx-vals=\'{"pk":"{{ record.ip_address|escapejs }}","_confirm":"1"}\'>'
             '<i class="mdi mdi-delete-outline" aria-hidden="true"></i></button>'
             "{% endif %}"
+            "{% endif %}"
+            "{% elif record.pending_ip_change %}"
+            '<span class="badge text-bg-info"'
+            ' title="This device has a reservation at {{ record.pending_reservation_ip }}'
+            ' — lease will move on next renewal">'
+            '<i class="mdi mdi-arrow-right-bold" aria-hidden="true"></i>'
+            " Pending {{ record.pending_reservation_ip }}</span>"
+            "{% if record.reservation_url %}"
+            ' <a href="{{ record.reservation_url }}" class="badge text-bg-success text-decoration-none ms-1">'
+            "View</a>"
             "{% endif %}"
             "{% elif record.create_reservation_url %}"
             '<a href="{{ record.create_reservation_url }}" class="badge text-bg-warning text-decoration-none">'

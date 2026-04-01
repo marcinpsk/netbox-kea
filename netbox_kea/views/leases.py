@@ -912,6 +912,199 @@ def _fetch_reservation_by_ip_for_leases(
     return reservation_by_ip, host_cmds_available, failed_ips
 
 
+def _fetch_reservation_by_mac_for_leases(
+    client: "KeaClient",
+    version: int,
+    leases: list[dict[str, Any]],
+    already_matched_ips: set[str],
+    failed_ips: set[str],
+) -> dict[str, dict]:
+    """Fetch reservations by MAC for leases that had no IP-based reservation match.
+
+    For each lease whose IP is not in *already_matched_ips* or *failed_ips*,
+    queries Kea with ``identifier-type=hw-address`` to detect when a device's
+    reservation exists at a **different** IP (pending IP change).
+
+    Returns ``reservation_by_mac`` mapping ``hw_address → reservation dict``
+    only for reservations whose IP **differs** from the lease IP (i.e. a pending
+    change).  Same-IP matches are already covered by the IP-based lookup and are
+    skipped here.
+    """
+    service = f"dhcp{version}"
+    reservation_by_mac: dict[str, dict] = {}
+
+    # Collect unique (mac, subnet_id) pairs for leases needing MAC lookup.
+    candidates: list[dict] = []
+    seen_macs: set[str] = set()
+    for lease in leases:
+        ip = lease.get("ip_address", "")
+        if ip in already_matched_ips or ip in failed_ips:
+            continue
+        mac = (lease.get("hw_address") or "").lower()
+        subnet_id = lease.get("subnet_id")
+        if not mac or not subnet_id or mac in seen_macs:
+            continue
+        seen_macs.add(mac)
+        candidates.append(lease)
+
+    if not candidates:
+        return reservation_by_mac
+
+    def _fetch_one_mac(lease: dict) -> tuple[str, str, dict | None]:
+        mac = (lease.get("hw_address") or "").lower()
+        ip = lease.get("ip_address", "")
+        subnet_id = lease.get("subnet_id")
+        with client.clone() as worker_client:
+            try:
+                r = worker_client.reservation_get(
+                    service,
+                    subnet_id=int(subnet_id),
+                    identifier_type="hw-address",
+                    identifier=mac,
+                )
+                if r is None:
+                    return mac, ip, None
+                # Only flag as pending change when the reserved IP differs.
+                rsv_ip = r.get("ip-address", "")
+                if rsv_ip and rsv_ip != ip:
+                    return mac, ip, r
+                return mac, ip, None
+            except Exception:  # noqa: BLE001
+                logger.debug("reservation-get by MAC failed for %s: %s", mac, lease.get("ip_address"))
+                return mac, ip, None
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(candidates), 10)) as executor:
+        futures = [executor.submit(_fetch_one_mac, lease) for lease in candidates]
+        for future in concurrent.futures.as_completed(futures):
+            mac, _ip, rsv = future.result()
+            if rsv is not None:
+                reservation_by_mac[mac] = rsv
+
+    return reservation_by_mac
+
+
+def _set_lease_reservation_fields(  # noqa: PLR0913
+    lease: dict[str, Any],
+    *,
+    server_pk: int,
+    version: int,
+    rsv: dict | None,
+    reservation_by_mac: dict[str, dict],
+    host_cmds_available: bool,
+    failed_ips: set[str],
+    can_change: bool,
+    reservation_url_name: str,
+    add_url_name: str,
+) -> None:
+    """Set reservation-related badge fields on a single lease dict (in-place)."""
+    ip = lease.get("ip_address", "")
+    rsv_subnet_id = rsv.get("subnet-id") if isinstance(rsv, dict) else None
+    lease["is_reserved"] = rsv is not None
+
+    # Default pending-change and stale-MAC fields.
+    lease["pending_ip_change"] = False
+    lease["pending_reservation_ip"] = ""
+    lease["stale_mac"] = False
+    lease["stale_lease_mac"] = ""
+    lease["reservation_mac"] = ""
+    lease["delete_lease_url"] = ""
+
+    if rsv and rsv_subnet_id is not None:
+        _set_ip_matched_reservation(lease, rsv, server_pk, version, rsv_subnet_id, can_change, reservation_url_name)
+    elif host_cmds_available and ip not in failed_ips:
+        _set_unmatched_reservation(
+            lease, server_pk, version, reservation_by_mac, can_change, reservation_url_name, add_url_name
+        )
+
+
+def _set_ip_matched_reservation(
+    lease: dict[str, Any],
+    rsv: dict,
+    server_pk: int,
+    version: int,
+    rsv_subnet_id: int,
+    can_change: bool,
+    reservation_url_name: str,
+) -> None:
+    """Populate fields when the lease IP matches a reservation IP."""
+    ip = lease.get("ip_address", "")
+    if can_change:
+        lease["reservation_url"] = reverse(reservation_url_name, args=[server_pk, rsv_subnet_id, ip])
+    else:
+        lease["reservation_url"] = None
+    lease["create_reservation_url"] = None
+
+    # Stale MAC detection: lease MAC ≠ reservation MAC → device mismatch.
+    lease_hw = (lease.get("hw_address") or "").lower()
+    rsv_hw = (rsv.get("hw-address") or "").lower()
+    if lease_hw and rsv_hw and lease_hw != rsv_hw:
+        lease["stale_mac"] = True
+        lease["stale_lease_mac"] = lease_hw
+        lease["reservation_mac"] = rsv_hw
+        lease["delete_lease_url"] = reverse(
+            f"plugins:netbox_kea:server_leases{version}_delete",
+            args=[server_pk],
+        )
+
+
+def _set_unmatched_reservation(
+    lease: dict[str, Any],
+    server_pk: int,
+    version: int,
+    reservation_by_mac: dict[str, dict],
+    can_change: bool,
+    reservation_url_name: str,
+    add_url_name: str,
+) -> None:
+    """Populate fields when no reservation matched by IP — check MAC-based pending change."""
+    ip = lease.get("ip_address", "")
+    lease_hw = (lease.get("hw_address") or "").lower()
+    mac_rsv = reservation_by_mac.get(lease_hw) if lease_hw else None
+
+    if mac_rsv:
+        # Pending IP change: device has a reservation at a different IP.
+        pending_ip = mac_rsv.get("ip-address", "")
+        mac_rsv_subnet_id = mac_rsv.get("subnet-id")
+        lease["pending_ip_change"] = True
+        lease["pending_reservation_ip"] = pending_ip
+        if can_change and mac_rsv_subnet_id is not None:
+            lease["reservation_url"] = reverse(reservation_url_name, args=[server_pk, mac_rsv_subnet_id, pending_ip])
+        else:
+            lease["reservation_url"] = None
+        lease["create_reservation_url"] = None
+        return
+
+    # No reservation at all — offer "+ Reserve" link.
+    lease["reservation_url"] = None
+    if can_change:
+        base_add = reverse(add_url_name, args=[server_pk])
+        if version == 6:
+            params = {
+                k: v
+                for k, v in {
+                    "subnet_id": lease.get("subnet_id", ""),
+                    "ip_addresses": ip,
+                    "hostname": lease.get("hostname", ""),
+                }.items()
+                if v
+            }
+        else:
+            params = {
+                k: v
+                for k, v in {
+                    "subnet_id": lease.get("subnet_id", ""),
+                    "ip_address": ip,
+                    "identifier_type": "hw-address",
+                    "identifier": lease.get("hw_address", ""),
+                    "hostname": lease.get("hostname", ""),
+                }.items()
+                if v
+            }
+        lease["create_reservation_url"] = f"{base_add}?{_urlencode(params)}" if params else base_add
+    else:
+        lease["create_reservation_url"] = None
+
+
 def _enrich_leases_with_badges(
     leases: list[dict[str, Any]], server: "Server", version: int, can_delete: bool = False, can_change: bool = False
 ) -> None:
@@ -933,6 +1126,7 @@ def _enrich_leases_with_badges(
     reservation_by_ip: dict[str, dict] = {}
     host_cmds_available = True
     failed_ips: set[str] = set()
+    client: KeaClient | None = None
     try:
         client = server.get_client(version=version)
         reservation_by_ip, host_cmds_available, failed_ips = _fetch_reservation_by_ip_for_leases(
@@ -948,69 +1142,33 @@ def _enrich_leases_with_badges(
         failed_ips = {lease.get("ip_address", "") for lease in leases}
         logger.warning("unexpected error during lease enrichment: %s", exc, exc_info=True)
 
+    # Phase 1b: MAC-based lookup for pending IP changes.
+    # For leases without an IP-matched reservation, check if their MAC has a
+    # reservation at a *different* IP — indicating the device should move.
+    reservation_by_mac: dict[str, dict] = {}
+    if host_cmds_available and client is not None:
+        try:
+            reservation_by_mac = _fetch_reservation_by_mac_for_leases(
+                client, version, leases, set(reservation_by_ip.keys()), failed_ips
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug("MAC-based reservation lookup failed; skipping pending-change detection", exc_info=True)
+
     for lease in leases:
         ip = lease.get("ip_address", "")
         rsv = reservation_by_ip.get(ip)
-        rsv_subnet_id = rsv.get("subnet-id") if isinstance(rsv, dict) else None
-        lease["is_reserved"] = rsv is not None
-        if rsv and rsv_subnet_id is not None:
-            if can_change:
-                lease["reservation_url"] = reverse(
-                    reservation_url_name,
-                    args=[server.pk, rsv_subnet_id, ip],
-                )
-            else:
-                lease["reservation_url"] = None
-            lease["create_reservation_url"] = None
-            # Stale MAC detection: lease MAC ≠ reservation MAC → device mismatch.
-            lease_hw = (lease.get("hw_address") or "").lower()
-            rsv_hw = (rsv.get("hw-address") or "").lower()
-            if lease_hw and rsv_hw and lease_hw != rsv_hw:
-                lease["stale_mac"] = True
-                lease["stale_lease_mac"] = lease_hw
-                lease["reservation_mac"] = rsv_hw
-                lease["delete_lease_url"] = reverse(
-                    f"plugins:netbox_kea:server_leases{version}_delete",
-                    args=[server.pk],
-                )
-            else:
-                lease["stale_mac"] = False
-                lease["stale_lease_mac"] = ""
-                lease["reservation_mac"] = ""
-                lease["delete_lease_url"] = ""
-        elif host_cmds_available and ip not in failed_ips:
-            lease["reservation_url"] = None
-            lease["stale_mac"] = False
-            lease["stale_lease_mac"] = ""
-            lease["reservation_mac"] = ""
-            lease["delete_lease_url"] = ""
-            if can_change:
-                base_add = reverse(add_url_name, args=[server.pk])
-                if version == 6:
-                    params = {
-                        k: v
-                        for k, v in {
-                            "subnet_id": lease.get("subnet_id", ""),
-                            "ip_addresses": ip,
-                            "hostname": lease.get("hostname", ""),
-                        }.items()
-                        if v
-                    }
-                else:
-                    params = {
-                        k: v
-                        for k, v in {
-                            "subnet_id": lease.get("subnet_id", ""),
-                            "ip_address": ip,
-                            "identifier_type": "hw-address",
-                            "identifier": lease.get("hw_address", ""),
-                            "hostname": lease.get("hostname", ""),
-                        }.items()
-                        if v
-                    }
-                lease["create_reservation_url"] = f"{base_add}?{_urlencode(params)}" if params else base_add
-            else:
-                lease["create_reservation_url"] = None
+        _set_lease_reservation_fields(
+            lease,
+            server_pk=server.pk,
+            version=version,
+            rsv=rsv,
+            reservation_by_mac=reservation_by_mac,
+            host_cmds_available=host_cmds_available,
+            failed_ips=failed_ips,
+            can_change=can_change,
+            reservation_url_name=reservation_url_name,
+            add_url_name=add_url_name,
+        )
 
     sync_url = reverse(f"plugins:netbox_kea:server_lease{version}_sync", args=[server.pk])
     edit_url_name = f"plugins:netbox_kea:server_lease{version}_edit"
@@ -1020,7 +1178,7 @@ def _enrich_leases_with_badges(
         nb_ip = nb_ips.get(ip)
         if nb_ip:
             lease["netbox_ip_url"] = nb_ip.get_absolute_url()
-        elif can_change:
+        elif can_change and not lease.get("pending_ip_change"):
             lease["sync_url"] = sync_url
         if ip and can_change:
             lease["edit_url"] = reverse(edit_url_name, args=[server.pk, ip])

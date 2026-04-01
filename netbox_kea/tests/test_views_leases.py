@@ -3136,3 +3136,339 @@ class TestLeaseAddSideEffectErrors(_ViewTestBase):
         mock_journal.side_effect = DatabaseError("DB error")
         response = self.client.post(self._url(), self._valid_form(), follow=True)
         self.assertEqual(response.status_code, 200)
+
+
+# ---------------------------------------------------------------------------
+# Pending IP change detection (Issue #32 Part B)
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestPendingIpChangeDetection(_ViewTestBase):
+    """Tests for pending IP change detection via MAC-based reservation lookup."""
+
+    def test_pending_ip_change_detected_when_mac_reservation_at_different_ip(self):
+        """When a lease MAC has a reservation at a different IP, pending_ip_change must be True."""
+        from netbox_kea.views import _enrich_leases_with_badges
+
+        server = self.server
+        lease = {"ip_address": "10.0.0.10", "hw_address": "aa:bb:cc:dd:ee:01", "subnet_id": 1}
+        mac_rsv = {"subnet-id": 1, "ip-address": "10.0.0.20", "hw-address": "aa:bb:cc:dd:ee:01"}
+        with (
+            patch("netbox_kea.views.leases._fetch_reservation_by_ip_for_leases", return_value=({}, True, set())),
+            patch(
+                "netbox_kea.views.leases._fetch_reservation_by_mac_for_leases",
+                return_value={"aa:bb:cc:dd:ee:01": mac_rsv},
+            ),
+            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
+            patch.object(server, "get_client", return_value=MagicMock()),
+        ):
+            _enrich_leases_with_badges([lease], server, 4, can_delete=False, can_change=True)
+        self.assertTrue(lease["pending_ip_change"])
+        self.assertEqual(lease["pending_reservation_ip"], "10.0.0.20")
+
+    def test_no_pending_ip_change_when_no_mac_reservation(self):
+        """pending_ip_change must be False when the MAC has no reservation anywhere."""
+        from netbox_kea.views import _enrich_leases_with_badges
+
+        server = self.server
+        lease = {"ip_address": "10.0.0.10", "hw_address": "aa:bb:cc:dd:ee:01", "subnet_id": 1}
+        with (
+            patch("netbox_kea.views.leases._fetch_reservation_by_ip_for_leases", return_value=({}, True, set())),
+            patch("netbox_kea.views.leases._fetch_reservation_by_mac_for_leases", return_value={}),
+            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
+            patch.object(server, "get_client", return_value=MagicMock()),
+        ):
+            _enrich_leases_with_badges([lease], server, 4, can_delete=False, can_change=True)
+        self.assertFalse(lease["pending_ip_change"])
+        self.assertEqual(lease["pending_reservation_ip"], "")
+
+    def test_pending_ip_change_blocks_sync_url(self):
+        """When pending_ip_change is True, sync_url must NOT be set (sync would create wrong IP)."""
+        from netbox_kea.views import _enrich_leases_with_badges
+
+        server = self.server
+        lease = {"ip_address": "10.0.0.10", "hw_address": "aa:bb:cc:dd:ee:01", "subnet_id": 1}
+        mac_rsv = {"subnet-id": 1, "ip-address": "10.0.0.20", "hw-address": "aa:bb:cc:dd:ee:01"}
+        with (
+            patch("netbox_kea.views.leases._fetch_reservation_by_ip_for_leases", return_value=({}, True, set())),
+            patch(
+                "netbox_kea.views.leases._fetch_reservation_by_mac_for_leases",
+                return_value={"aa:bb:cc:dd:ee:01": mac_rsv},
+            ),
+            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
+            patch.object(server, "get_client", return_value=MagicMock()),
+        ):
+            _enrich_leases_with_badges([lease], server, 4, can_delete=False, can_change=True)
+        self.assertIsNone(lease.get("sync_url"))
+
+    def test_pending_ip_change_blocks_create_reservation_url(self):
+        """When pending_ip_change is True, create_reservation_url must be None."""
+        from netbox_kea.views import _enrich_leases_with_badges
+
+        server = self.server
+        lease = {"ip_address": "10.0.0.10", "hw_address": "aa:bb:cc:dd:ee:01", "subnet_id": 1}
+        mac_rsv = {"subnet-id": 1, "ip-address": "10.0.0.20", "hw-address": "aa:bb:cc:dd:ee:01"}
+        with (
+            patch("netbox_kea.views.leases._fetch_reservation_by_ip_for_leases", return_value=({}, True, set())),
+            patch(
+                "netbox_kea.views.leases._fetch_reservation_by_mac_for_leases",
+                return_value={"aa:bb:cc:dd:ee:01": mac_rsv},
+            ),
+            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
+            patch.object(server, "get_client", return_value=MagicMock()),
+        ):
+            _enrich_leases_with_badges([lease], server, 4, can_delete=False, can_change=True)
+        self.assertIsNone(lease.get("create_reservation_url"))
+
+    def test_pending_ip_change_sets_reservation_url_when_can_change(self):
+        """When pending_ip_change is True and can_change, reservation_url points to the reserved IP."""
+        from netbox_kea.views import _enrich_leases_with_badges
+
+        server = self.server
+        lease = {"ip_address": "10.0.0.10", "hw_address": "aa:bb:cc:dd:ee:01", "subnet_id": 1}
+        mac_rsv = {"subnet-id": 1, "ip-address": "10.0.0.20", "hw-address": "aa:bb:cc:dd:ee:01"}
+        with (
+            patch("netbox_kea.views.leases._fetch_reservation_by_ip_for_leases", return_value=({}, True, set())),
+            patch(
+                "netbox_kea.views.leases._fetch_reservation_by_mac_for_leases",
+                return_value={"aa:bb:cc:dd:ee:01": mac_rsv},
+            ),
+            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
+            patch.object(server, "get_client", return_value=MagicMock()),
+        ):
+            _enrich_leases_with_badges([lease], server, 4, can_delete=False, can_change=True)
+        self.assertIsNotNone(lease["reservation_url"])
+        self.assertIn("10.0.0.20", lease["reservation_url"])
+
+    def test_pending_ip_change_reservation_url_none_when_read_only(self):
+        """When pending_ip_change is True but can_change=False, reservation_url must be None."""
+        from netbox_kea.views import _enrich_leases_with_badges
+
+        server = self.server
+        lease = {"ip_address": "10.0.0.10", "hw_address": "aa:bb:cc:dd:ee:01", "subnet_id": 1}
+        mac_rsv = {"subnet-id": 1, "ip-address": "10.0.0.20", "hw-address": "aa:bb:cc:dd:ee:01"}
+        with (
+            patch("netbox_kea.views.leases._fetch_reservation_by_ip_for_leases", return_value=({}, True, set())),
+            patch(
+                "netbox_kea.views.leases._fetch_reservation_by_mac_for_leases",
+                return_value={"aa:bb:cc:dd:ee:01": mac_rsv},
+            ),
+            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
+            patch.object(server, "get_client", return_value=MagicMock()),
+        ):
+            _enrich_leases_with_badges([lease], server, 4, can_delete=False, can_change=False)
+        self.assertTrue(lease["pending_ip_change"])
+        self.assertIsNone(lease["reservation_url"])
+
+    def test_ip_matched_reservation_overrides_mac_lookup(self):
+        """When IP-based reservation matches, pending_ip_change must be False even if MAC differs."""
+        from netbox_kea.views import _enrich_leases_with_badges
+
+        server = self.server
+        lease = {"ip_address": "10.0.0.5", "hw_address": "aa:bb:cc:dd:ee:01", "subnet_id": 1}
+        ip_rsv = {"subnet-id": 1, "ip-address": "10.0.0.5", "hw-address": "aa:bb:cc:dd:ee:01"}
+        with (
+            patch(
+                "netbox_kea.views.leases._fetch_reservation_by_ip_for_leases",
+                return_value=({"10.0.0.5": ip_rsv}, True, set()),
+            ),
+            patch("netbox_kea.views.leases._fetch_reservation_by_mac_for_leases", return_value={}),
+            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
+            patch.object(server, "get_client", return_value=MagicMock()),
+        ):
+            _enrich_leases_with_badges([lease], server, 4, can_delete=False, can_change=True)
+        self.assertFalse(lease["pending_ip_change"])
+        self.assertTrue(lease["is_reserved"])
+
+    def test_mac_lookup_skipped_when_host_cmds_unavailable(self):
+        """When host_cmds is not loaded, MAC lookup must not run and pending_ip_change is False."""
+        from netbox_kea.views import _enrich_leases_with_badges
+
+        server = self.server
+        lease = {"ip_address": "10.0.0.10", "hw_address": "aa:bb:cc:dd:ee:01", "subnet_id": 1}
+        mock_client = MagicMock()
+        with (
+            patch(
+                "netbox_kea.views.leases._fetch_reservation_by_ip_for_leases",
+                return_value=({}, False, set()),
+            ),
+            patch("netbox_kea.views.leases._fetch_reservation_by_mac_for_leases") as mock_mac_fetch,
+            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
+            patch.object(server, "get_client", return_value=mock_client),
+        ):
+            _enrich_leases_with_badges([lease], server, 4, can_delete=False, can_change=True)
+        mock_mac_fetch.assert_not_called()
+
+    def test_mac_lookup_failure_does_not_crash(self):
+        """When MAC-based lookup raises an exception, enrichment continues without pending change."""
+        from netbox_kea.views import _enrich_leases_with_badges
+
+        server = self.server
+        lease = {"ip_address": "10.0.0.10", "hw_address": "aa:bb:cc:dd:ee:01", "subnet_id": 1}
+        with (
+            patch("netbox_kea.views.leases._fetch_reservation_by_ip_for_leases", return_value=({}, True, set())),
+            patch("netbox_kea.views.leases._fetch_reservation_by_mac_for_leases", side_effect=RuntimeError("boom")),
+            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
+            patch.object(server, "get_client", return_value=MagicMock()),
+        ):
+            _enrich_leases_with_badges([lease], server, 4, can_delete=False, can_change=True)
+        self.assertFalse(lease.get("pending_ip_change", False))
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestPendingIpChangeBadgeRendering(_ViewTestBase):
+    """Tests that the pending IP change badge renders correctly in the lease table."""
+
+    _LEASE4 = {
+        "ip-address": "10.0.0.10",
+        "hw-address": "aa:bb:cc:dd:ee:01",
+        "hostname": "pending-host",
+        "subnet-id": 7,
+        "valid-lft": 3600,
+        "cltt": 1_700_000_000,
+    }
+
+    def _htmx_get(self, url, data):
+        return self.client.get(url, data=data, HTTP_HX_REQUEST="true")
+
+    @patch("netbox_kea.sync.bulk_fetch_netbox_ips")
+    @patch("netbox_kea.views.leases._fetch_reservation_by_mac_for_leases")
+    @patch("netbox_kea.models.KeaClient")
+    def test_pending_ip_badge_renders_in_response(self, MockKeaClient, mock_mac_fetch, mock_bulk_fetch):
+        """The lease table must show a 'Pending' badge with the reserved IP when pending change detected."""
+        mock_client = MockKeaClient.return_value
+        mock_client.clone.return_value = mock_client
+        mock_client.__enter__ = lambda s: s
+        mock_client.__exit__ = lambda s, *a: None
+        mock_client.command.return_value = [{"result": 0, "arguments": {"ip-address": "10.0.0.10", **self._LEASE4}}]
+        mock_client.reservation_get.return_value = None  # No IP-based match
+        mac_rsv = {"subnet-id": 7, "ip-address": "10.0.0.20", "hw-address": "aa:bb:cc:dd:ee:01"}
+        mock_mac_fetch.return_value = {"aa:bb:cc:dd:ee:01": mac_rsv}
+        mock_bulk_fetch.return_value = {}
+        url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+        response = self._htmx_get(url, {"by": "ip", "q": "10.0.0.10"})
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Pending")
+        self.assertContains(response, "10.0.0.20")
+
+    @patch("netbox_kea.sync.bulk_fetch_netbox_ips")
+    @patch("netbox_kea.views.leases._fetch_reservation_by_mac_for_leases")
+    @patch("netbox_kea.models.KeaClient")
+    def test_pending_ip_badge_does_not_show_sync_button(self, MockKeaClient, mock_mac_fetch, mock_bulk_fetch):
+        """When pending IP change detected, the Sync button must NOT appear."""
+        mock_client = MockKeaClient.return_value
+        mock_client.clone.return_value = mock_client
+        mock_client.__enter__ = lambda s: s
+        mock_client.__exit__ = lambda s, *a: None
+        mock_client.command.return_value = [{"result": 0, "arguments": {"ip-address": "10.0.0.10", **self._LEASE4}}]
+        mock_client.reservation_get.return_value = None
+        mac_rsv = {"subnet-id": 7, "ip-address": "10.0.0.20", "hw-address": "aa:bb:cc:dd:ee:01"}
+        mock_mac_fetch.return_value = {"aa:bb:cc:dd:ee:01": mac_rsv}
+        mock_bulk_fetch.return_value = {}
+        url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+        response = self._htmx_get(url, {"by": "ip", "q": "10.0.0.10"})
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, "Sync</button>")
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestFetchReservationByMac(_ViewTestBase):
+    """Tests for _fetch_reservation_by_mac_for_leases helper function."""
+
+    def test_returns_reservation_when_ip_differs(self):
+        """MAC reservation at different IP must be included in result."""
+        from netbox_kea.views.leases import _fetch_reservation_by_mac_for_leases
+
+        mock_client = MagicMock()
+        rsv = {"ip-address": "10.0.0.20", "hw-address": "aa:bb:cc:dd:ee:01", "subnet-id": 1}
+        mock_client.clone.return_value = mock_client
+        mock_client.__enter__ = lambda s: s
+        mock_client.__exit__ = lambda s, *a: None
+        mock_client.reservation_get.return_value = rsv
+        leases = [{"ip_address": "10.0.0.10", "hw_address": "aa:bb:cc:dd:ee:01", "subnet_id": 1}]
+        result = _fetch_reservation_by_mac_for_leases(mock_client, 4, leases, set(), set())
+        self.assertIn("aa:bb:cc:dd:ee:01", result)
+        self.assertEqual(result["aa:bb:cc:dd:ee:01"]["ip-address"], "10.0.0.20")
+
+    def test_skips_reservation_when_ip_matches(self):
+        """MAC reservation at same IP as lease must NOT be included (already handled by IP lookup)."""
+        from netbox_kea.views.leases import _fetch_reservation_by_mac_for_leases
+
+        mock_client = MagicMock()
+        rsv = {"ip-address": "10.0.0.10", "hw-address": "aa:bb:cc:dd:ee:01", "subnet-id": 1}
+        mock_client.clone.return_value = mock_client
+        mock_client.__enter__ = lambda s: s
+        mock_client.__exit__ = lambda s, *a: None
+        mock_client.reservation_get.return_value = rsv
+        leases = [{"ip_address": "10.0.0.10", "hw_address": "aa:bb:cc:dd:ee:01", "subnet_id": 1}]
+        result = _fetch_reservation_by_mac_for_leases(mock_client, 4, leases, set(), set())
+        self.assertEqual(result, {})
+
+    def test_skips_already_matched_ips(self):
+        """Leases in already_matched_ips must not trigger a MAC lookup."""
+        from netbox_kea.views.leases import _fetch_reservation_by_mac_for_leases
+
+        mock_client = MagicMock()
+        mock_client.clone.return_value = mock_client
+        mock_client.__enter__ = lambda s: s
+        mock_client.__exit__ = lambda s, *a: None
+        leases = [{"ip_address": "10.0.0.10", "hw_address": "aa:bb:cc:dd:ee:01", "subnet_id": 1}]
+        result = _fetch_reservation_by_mac_for_leases(mock_client, 4, leases, {"10.0.0.10"}, set())
+        self.assertEqual(result, {})
+        mock_client.reservation_get.assert_not_called()
+
+    def test_skips_failed_ips(self):
+        """Leases in failed_ips must not trigger a MAC lookup."""
+        from netbox_kea.views.leases import _fetch_reservation_by_mac_for_leases
+
+        mock_client = MagicMock()
+        mock_client.clone.return_value = mock_client
+        mock_client.__enter__ = lambda s: s
+        mock_client.__exit__ = lambda s, *a: None
+        leases = [{"ip_address": "10.0.0.10", "hw_address": "aa:bb:cc:dd:ee:01", "subnet_id": 1}]
+        result = _fetch_reservation_by_mac_for_leases(mock_client, 4, leases, set(), {"10.0.0.10"})
+        self.assertEqual(result, {})
+        mock_client.reservation_get.assert_not_called()
+
+    def test_returns_empty_for_no_mac_reservation(self):
+        """When reservation_get returns None, result must be empty."""
+        from netbox_kea.views.leases import _fetch_reservation_by_mac_for_leases
+
+        mock_client = MagicMock()
+        mock_client.clone.return_value = mock_client
+        mock_client.__enter__ = lambda s: s
+        mock_client.__exit__ = lambda s, *a: None
+        mock_client.reservation_get.return_value = None
+        leases = [{"ip_address": "10.0.0.10", "hw_address": "aa:bb:cc:dd:ee:01", "subnet_id": 1}]
+        result = _fetch_reservation_by_mac_for_leases(mock_client, 4, leases, set(), set())
+        self.assertEqual(result, {})
+
+    def test_exception_in_worker_is_swallowed(self):
+        """An exception from reservation_get must not crash; MAC is simply omitted."""
+        from netbox_kea.views.leases import _fetch_reservation_by_mac_for_leases
+
+        mock_client = MagicMock()
+        mock_client.clone.return_value = mock_client
+        mock_client.__enter__ = lambda s: s
+        mock_client.__exit__ = lambda s, *a: None
+        mock_client.reservation_get.side_effect = RuntimeError("connection failed")
+        leases = [{"ip_address": "10.0.0.10", "hw_address": "aa:bb:cc:dd:ee:01", "subnet_id": 1}]
+        result = _fetch_reservation_by_mac_for_leases(mock_client, 4, leases, set(), set())
+        self.assertEqual(result, {})
+
+    def test_deduplicates_by_mac(self):
+        """Multiple leases with the same MAC must only trigger one reservation_get call."""
+        from netbox_kea.views.leases import _fetch_reservation_by_mac_for_leases
+
+        mock_client = MagicMock()
+        mock_client.clone.return_value = mock_client
+        mock_client.__enter__ = lambda s: s
+        mock_client.__exit__ = lambda s, *a: None
+        mock_client.reservation_get.return_value = None
+        leases = [
+            {"ip_address": "10.0.0.10", "hw_address": "aa:bb:cc:dd:ee:01", "subnet_id": 1},
+            {"ip_address": "10.0.0.11", "hw_address": "aa:bb:cc:dd:ee:01", "subnet_id": 1},
+        ]
+        _fetch_reservation_by_mac_for_leases(mock_client, 4, leases, set(), set())
+        self.assertEqual(mock_client.reservation_get.call_count, 1)
