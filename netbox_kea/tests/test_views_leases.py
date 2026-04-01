@@ -3158,7 +3158,7 @@ class TestPendingIpChangeDetection(_ViewTestBase):
             patch("netbox_kea.views.leases._fetch_reservation_by_ip_for_leases", return_value=({}, True, set())),
             patch(
                 "netbox_kea.views.leases._fetch_reservation_by_mac_for_leases",
-                return_value={("aa:bb:cc:dd:ee:01", 1): mac_rsv},
+                return_value=({("aa:bb:cc:dd:ee:01", 1): mac_rsv}, set()),
             ),
             patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
             patch.object(server, "get_client", return_value=MagicMock()),
@@ -3175,7 +3175,7 @@ class TestPendingIpChangeDetection(_ViewTestBase):
         lease = {"ip_address": "10.0.0.10", "hw_address": "aa:bb:cc:dd:ee:01", "subnet_id": 1}
         with (
             patch("netbox_kea.views.leases._fetch_reservation_by_ip_for_leases", return_value=({}, True, set())),
-            patch("netbox_kea.views.leases._fetch_reservation_by_mac_for_leases", return_value={}),
+            patch("netbox_kea.views.leases._fetch_reservation_by_mac_for_leases", return_value=({}, set())),
             patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
             patch.object(server, "get_client", return_value=MagicMock()),
         ):
@@ -3194,7 +3194,7 @@ class TestPendingIpChangeDetection(_ViewTestBase):
             patch("netbox_kea.views.leases._fetch_reservation_by_ip_for_leases", return_value=({}, True, set())),
             patch(
                 "netbox_kea.views.leases._fetch_reservation_by_mac_for_leases",
-                return_value={("aa:bb:cc:dd:ee:01", 1): mac_rsv},
+                return_value=({("aa:bb:cc:dd:ee:01", 1): mac_rsv}, set()),
             ),
             patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
             patch.object(server, "get_client", return_value=MagicMock()),
@@ -3213,7 +3213,7 @@ class TestPendingIpChangeDetection(_ViewTestBase):
             patch("netbox_kea.views.leases._fetch_reservation_by_ip_for_leases", return_value=({}, True, set())),
             patch(
                 "netbox_kea.views.leases._fetch_reservation_by_mac_for_leases",
-                return_value={("aa:bb:cc:dd:ee:01", 1): mac_rsv},
+                return_value=({("aa:bb:cc:dd:ee:01", 1): mac_rsv}, set()),
             ),
             patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
             patch.object(server, "get_client", return_value=MagicMock()),
@@ -3232,7 +3232,7 @@ class TestPendingIpChangeDetection(_ViewTestBase):
             patch("netbox_kea.views.leases._fetch_reservation_by_ip_for_leases", return_value=({}, True, set())),
             patch(
                 "netbox_kea.views.leases._fetch_reservation_by_mac_for_leases",
-                return_value={("aa:bb:cc:dd:ee:01", 1): mac_rsv},
+                return_value=({("aa:bb:cc:dd:ee:01", 1): mac_rsv}, set()),
             ),
             patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
             patch.object(server, "get_client", return_value=MagicMock()),
@@ -3252,7 +3252,7 @@ class TestPendingIpChangeDetection(_ViewTestBase):
             patch("netbox_kea.views.leases._fetch_reservation_by_ip_for_leases", return_value=({}, True, set())),
             patch(
                 "netbox_kea.views.leases._fetch_reservation_by_mac_for_leases",
-                return_value={("aa:bb:cc:dd:ee:01", 1): mac_rsv},
+                return_value=({("aa:bb:cc:dd:ee:01", 1): mac_rsv}, set()),
             ),
             patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
             patch.object(server, "get_client", return_value=MagicMock()),
@@ -3273,7 +3273,7 @@ class TestPendingIpChangeDetection(_ViewTestBase):
                 "netbox_kea.views.leases._fetch_reservation_by_ip_for_leases",
                 return_value=({"10.0.0.5": ip_rsv}, True, set()),
             ),
-            patch("netbox_kea.views.leases._fetch_reservation_by_mac_for_leases", return_value={}),
+            patch("netbox_kea.views.leases._fetch_reservation_by_mac_for_leases", return_value=({}, set())),
             patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
             patch.object(server, "get_client", return_value=MagicMock()),
         ):
@@ -3344,7 +3344,7 @@ class TestPendingIpChangeBadgeRendering(_ViewTestBase):
         mock_client.command.return_value = [{"result": 0, "arguments": {"ip-address": "10.0.0.10", **self._LEASE4}}]
         mock_client.reservation_get.return_value = None  # No IP-based match
         mac_rsv = {"subnet-id": 7, "ip-address": "10.0.0.20", "hw-address": "aa:bb:cc:dd:ee:01"}
-        mock_mac_fetch.return_value = {("aa:bb:cc:dd:ee:01", 7): mac_rsv}
+        mock_mac_fetch.return_value = ({("aa:bb:cc:dd:ee:01", 7): mac_rsv}, set())
         mock_bulk_fetch.return_value = {}
         url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
         response = self._htmx_get(url, {"by": "ip", "q": "10.0.0.10"})
@@ -3364,7 +3364,7 @@ class TestPendingIpChangeBadgeRendering(_ViewTestBase):
         mock_client.command.return_value = [{"result": 0, "arguments": {"ip-address": "10.0.0.10", **self._LEASE4}}]
         mock_client.reservation_get.return_value = None
         mac_rsv = {"subnet-id": 7, "ip-address": "10.0.0.20", "hw-address": "aa:bb:cc:dd:ee:01"}
-        mock_mac_fetch.return_value = {("aa:bb:cc:dd:ee:01", 7): mac_rsv}
+        mock_mac_fetch.return_value = ({("aa:bb:cc:dd:ee:01", 7): mac_rsv}, set())
         mock_bulk_fetch.return_value = {}
         url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
         response = self._htmx_get(url, {"by": "ip", "q": "10.0.0.10"})
@@ -3387,9 +3387,10 @@ class TestFetchReservationByMac(_ViewTestBase):
         mock_client.__exit__ = lambda s, *a: None
         mock_client.reservation_get.return_value = rsv
         leases = [{"ip_address": "10.0.0.10", "hw_address": "aa:bb:cc:dd:ee:01", "subnet_id": 1}]
-        result = _fetch_reservation_by_mac_for_leases(mock_client, 4, leases, set(), set())
+        result, failed = _fetch_reservation_by_mac_for_leases(mock_client, 4, leases, set(), set())
         self.assertIn(("aa:bb:cc:dd:ee:01", 1), result)
         self.assertEqual(result[("aa:bb:cc:dd:ee:01", 1)]["ip-address"], "10.0.0.20")
+        self.assertEqual(failed, set())
 
     def test_skips_reservation_when_ip_matches(self):
         """MAC reservation at same IP as lease must NOT be included (already handled by IP lookup)."""
@@ -3402,7 +3403,7 @@ class TestFetchReservationByMac(_ViewTestBase):
         mock_client.__exit__ = lambda s, *a: None
         mock_client.reservation_get.return_value = rsv
         leases = [{"ip_address": "10.0.0.10", "hw_address": "aa:bb:cc:dd:ee:01", "subnet_id": 1}]
-        result = _fetch_reservation_by_mac_for_leases(mock_client, 4, leases, set(), set())
+        result, failed = _fetch_reservation_by_mac_for_leases(mock_client, 4, leases, set(), set())
         self.assertEqual(result, {})
 
     def test_skips_already_matched_ips(self):
@@ -3414,7 +3415,7 @@ class TestFetchReservationByMac(_ViewTestBase):
         mock_client.__enter__ = lambda s: s
         mock_client.__exit__ = lambda s, *a: None
         leases = [{"ip_address": "10.0.0.10", "hw_address": "aa:bb:cc:dd:ee:01", "subnet_id": 1}]
-        result = _fetch_reservation_by_mac_for_leases(mock_client, 4, leases, {"10.0.0.10"}, set())
+        result, failed = _fetch_reservation_by_mac_for_leases(mock_client, 4, leases, {"10.0.0.10"}, set())
         self.assertEqual(result, {})
         mock_client.reservation_get.assert_not_called()
 
@@ -3427,7 +3428,7 @@ class TestFetchReservationByMac(_ViewTestBase):
         mock_client.__enter__ = lambda s: s
         mock_client.__exit__ = lambda s, *a: None
         leases = [{"ip_address": "10.0.0.10", "hw_address": "aa:bb:cc:dd:ee:01", "subnet_id": 1}]
-        result = _fetch_reservation_by_mac_for_leases(mock_client, 4, leases, set(), {"10.0.0.10"})
+        result, failed = _fetch_reservation_by_mac_for_leases(mock_client, 4, leases, set(), {"10.0.0.10"})
         self.assertEqual(result, {})
         mock_client.reservation_get.assert_not_called()
 
@@ -3441,7 +3442,7 @@ class TestFetchReservationByMac(_ViewTestBase):
         mock_client.__exit__ = lambda s, *a: None
         mock_client.reservation_get.return_value = None
         leases = [{"ip_address": "10.0.0.10", "hw_address": "aa:bb:cc:dd:ee:01", "subnet_id": 1}]
-        result = _fetch_reservation_by_mac_for_leases(mock_client, 4, leases, set(), set())
+        result, failed = _fetch_reservation_by_mac_for_leases(mock_client, 4, leases, set(), set())
         self.assertEqual(result, {})
 
     def test_exception_in_worker_is_swallowed(self):
@@ -3454,8 +3455,9 @@ class TestFetchReservationByMac(_ViewTestBase):
         mock_client.__exit__ = lambda s, *a: None
         mock_client.reservation_get.side_effect = RuntimeError("connection failed")
         leases = [{"ip_address": "10.0.0.10", "hw_address": "aa:bb:cc:dd:ee:01", "subnet_id": 1}]
-        result = _fetch_reservation_by_mac_for_leases(mock_client, 4, leases, set(), set())
+        result, failed = _fetch_reservation_by_mac_for_leases(mock_client, 4, leases, set(), set())
         self.assertEqual(result, {})
+        self.assertIn(("aa:bb:cc:dd:ee:01", 1), failed)
 
     def test_deduplicates_by_mac(self):
         """Multiple leases with the same MAC must only trigger one reservation_get call."""

@@ -288,7 +288,13 @@ class BaseServerSharedNetworkEditView(_KeaChangeMixin, ConditionalLoginRequiredM
         """Return the shared-network dict from config-get, or {} if not found."""
         try:
             resp = client.command("config-get", service=[f"dhcp{self.dhcp_version}"])
-            args = resp[0].get("arguments") if isinstance(resp, list) else resp.get("arguments")
+            if isinstance(resp, list) and resp and isinstance(resp[0], dict):
+                args = resp[0].get("arguments")
+            elif isinstance(resp, dict):
+                args = resp.get("arguments")
+            else:
+                logger.warning("config-get returned unexpected response shape for dhcp%s", self.dhcp_version)
+                return {}
             if not isinstance(args, dict):
                 logger.warning("config-get returned unexpected arguments for dhcp%s", self.dhcp_version)
                 return {}

@@ -917,28 +917,12 @@ def _fetch_reservation_by_ip_for_leases(
     return reservation_by_ip, host_cmds_available, failed_ips
 
 
-def _fetch_reservation_by_mac_for_leases(
-    client: "KeaClient",
-    version: int,
+def _build_mac_lookup_candidates(
     leases: list[dict[str, Any]],
     already_matched_ips: set[str],
     failed_ips: set[str],
-) -> dict[tuple[str, int], dict]:
-    """Fetch reservations by MAC for leases that had no IP-based reservation match.
-
-    For each lease whose IP is not in *already_matched_ips* or *failed_ips*,
-    queries Kea with ``identifier-type=hw-address`` to detect when a device's
-    reservation exists at a **different** IP (pending IP change).
-
-    Returns ``reservation_by_mac`` mapping ``(hw_address, subnet_id) → reservation dict``
-    only for reservations whose IP **differs** from the lease IP (i.e. a pending
-    change).  Same-IP matches are already covered by the IP-based lookup and are
-    skipped here.
-    """
-    service = f"dhcp{version}"
-    reservation_by_mac: dict[tuple[str, int], dict] = {}
-
-    # Collect unique (mac, subnet_id) pairs for leases needing MAC lookup.
+) -> tuple[list[dict], set[tuple[str, int]]]:
+    """Collect unique (mac, subnet_id) pairs for leases needing MAC-based lookup."""
     candidates: list[dict] = []
     seen_keys: set[tuple[str, int]] = set()
     for lease in leases:
@@ -954,9 +938,35 @@ def _fetch_reservation_by_mac_for_leases(
             continue
         seen_keys.add(key)
         candidates.append(lease)
+    return candidates, seen_keys
 
+
+def _fetch_reservation_by_mac_for_leases(
+    client: "KeaClient",
+    version: int,
+    leases: list[dict[str, Any]],
+    already_matched_ips: set[str],
+    failed_ips: set[str],
+) -> tuple[dict[tuple[str, int], dict], set[tuple[str, int]]]:
+    """Fetch reservations by MAC for leases that had no IP-based reservation match.
+
+    For each lease whose IP is not in *already_matched_ips* or *failed_ips*,
+    queries Kea with ``identifier-type=hw-address`` to detect when a device's
+    reservation exists at a **different** IP (pending IP change).
+
+    Returns ``(reservation_by_mac, failed_keys)`` where ``reservation_by_mac``
+    maps ``(hw_address, subnet_id) → reservation dict`` only for reservations
+    whose IP **differs** from the lease IP (i.e. a pending change), and
+    ``failed_keys`` is a set of ``(hw_address, subnet_id)`` tuples where the
+    lookup failed.
+    """
+    service = f"dhcp{version}"
+    reservation_by_mac: dict[tuple[str, int], dict] = {}
+    failed_keys: set[tuple[str, int]] = set()
+
+    candidates, _ = _build_mac_lookup_candidates(leases, already_matched_ips, failed_ips)
     if not candidates:
-        return reservation_by_mac
+        return reservation_by_mac, failed_keys
 
     _FETCH_ERROR = object()  # sentinel to distinguish lookup errors from not-found
 
@@ -974,9 +984,12 @@ def _fetch_reservation_by_mac_for_leases(
                 )
                 if r is None:
                     return mac, subnet_id, ip, None
-                # Only flag as pending change when the reserved IP differs.
+                # Check both ip-address (v4) and ip-addresses (v6) fields.
                 rsv_ip = r.get("ip-address", "")
+                rsv_ips = r.get("ip-addresses") or []
                 if rsv_ip and rsv_ip != ip:
+                    return mac, subnet_id, ip, r
+                if not rsv_ip and rsv_ips and ip not in rsv_ips:
                     return mac, subnet_id, ip, r
                 return mac, subnet_id, ip, None
             except Exception:  # noqa: BLE001
@@ -990,15 +1003,18 @@ def _fetch_reservation_by_mac_for_leases(
                 mac, subnet_id, ip, rsv = future.result()
             except Exception:  # noqa: BLE001
                 lease = future_to_lease[future]
-                failed_ips.add(lease.get("ip_address", ""))
+                l_mac = (lease.get("hw_address") or "").lower()
+                l_sid = lease.get("subnet_id")
+                if l_mac and l_sid:
+                    failed_keys.add((l_mac, int(l_sid)))
                 continue
             key = (mac, subnet_id)
             if rsv is _FETCH_ERROR:
-                failed_ips.add(ip)
+                failed_keys.add(key)
             elif rsv is not None:
                 reservation_by_mac[key] = rsv
 
-    return reservation_by_mac
+    return reservation_by_mac, failed_keys
 
 
 def _set_lease_reservation_fields(  # noqa: PLR0913
@@ -1010,6 +1026,7 @@ def _set_lease_reservation_fields(  # noqa: PLR0913
     reservation_by_mac: dict[tuple[str, int], dict],
     host_cmds_available: bool,
     failed_ips: set[str],
+    failed_mac_keys: set[tuple[str, int]],
     can_change: bool,
     reservation_url_name: str,
     add_url_name: str,
@@ -1031,7 +1048,14 @@ def _set_lease_reservation_fields(  # noqa: PLR0913
         _set_ip_matched_reservation(lease, rsv, server_pk, version, rsv_subnet_id, can_change, reservation_url_name)
     elif host_cmds_available and ip not in failed_ips:
         _set_unmatched_reservation(
-            lease, server_pk, version, reservation_by_mac, can_change, reservation_url_name, add_url_name
+            lease,
+            server_pk,
+            version,
+            reservation_by_mac,
+            failed_mac_keys,
+            can_change,
+            reservation_url_name,
+            add_url_name,
         )
 
 
@@ -1070,6 +1094,7 @@ def _set_unmatched_reservation(
     server_pk: int,
     version: int,
     reservation_by_mac: dict[tuple[str, int], dict],
+    failed_mac_keys: set[tuple[str, int]],
     can_change: bool,
     reservation_url_name: str,
     add_url_name: str,
@@ -1079,11 +1104,24 @@ def _set_unmatched_reservation(
     lease_hw = (lease.get("hw_address") or "").lower()
     subnet_id = lease.get("subnet_id")
     key = (lease_hw, int(subnet_id)) if lease_hw and subnet_id else None
+
+    # If the MAC lookup failed for this key, don't offer actions.
+    if key and key in failed_mac_keys:
+        lease["reservation_url"] = None
+        lease["create_reservation_url"] = None
+        lease["pending_ip_change"] = False
+        lease["pending_reservation_ip"] = ""
+        return
+
     mac_rsv = reservation_by_mac.get(key) if key else None
 
     if mac_rsv:
         # Pending IP change: device has a reservation at a different IP.
         pending_ip = mac_rsv.get("ip-address", "")
+        if not pending_ip:
+            # DHCPv6 reservations use ip-addresses (list)
+            rsv_ips = mac_rsv.get("ip-addresses") or []
+            pending_ip = rsv_ips[0] if rsv_ips else ""
         mac_rsv_subnet_id = mac_rsv.get("subnet-id")
         lease["pending_ip_change"] = True
         lease["pending_reservation_ip"] = pending_ip
@@ -1166,9 +1204,10 @@ def _enrich_leases_with_badges(
     # For leases without an IP-matched reservation, check if their MAC has a
     # reservation at a *different* IP — indicating the device should move.
     reservation_by_mac: dict[tuple[str, int], dict] = {}
+    failed_mac_keys: set[tuple[str, int]] = set()
     if host_cmds_available and client is not None:
         try:
-            reservation_by_mac = _fetch_reservation_by_mac_for_leases(
+            reservation_by_mac, failed_mac_keys = _fetch_reservation_by_mac_for_leases(
                 client, version, leases, set(reservation_by_ip.keys()), failed_ips
             )
         except Exception:  # noqa: BLE001
@@ -1185,6 +1224,7 @@ def _enrich_leases_with_badges(
             reservation_by_mac=reservation_by_mac,
             host_cmds_available=host_cmds_available,
             failed_ips=failed_ips,
+            failed_mac_keys=failed_mac_keys,
             can_change=can_change,
             reservation_url_name=reservation_url_name,
             add_url_name=add_url_name,
