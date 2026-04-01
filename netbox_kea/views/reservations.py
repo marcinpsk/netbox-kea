@@ -470,7 +470,23 @@ class ServerReservation4AddView(_KeaChangeMixin, generic.ObjectView):
             ]
             if option_data:
                 reservation["option-data"] = option_data
-            client = server.get_client(version=4)
+            try:
+                client = server.get_client(version=4)
+            except (KeaException, requests.RequestException, ValueError):
+                logger.exception("Failed to create DHCPv4 client for server %s", server.pk)
+                messages.error(request, "Failed to connect to Kea: see server logs.")
+                return render(
+                    request,
+                    self.template_name,
+                    {
+                        "object": server,
+                        "form": form,
+                        "options_formset": options_formset,
+                        "dhcp_version": 4,
+                        "action": "Add",
+                        "return_url": return_url,
+                    },
+                )
             # Advisory warning when the reservation IP is inside an existing pool (non-fatal)
             try:
                 _warn_reservation_pool_overlap(request, client, 4, cd["subnet_id"], cd["ip_address"])
@@ -560,7 +576,23 @@ class ServerReservation6AddView(_KeaChangeMixin, generic.ObjectView):
             ]
             if option_data:
                 reservation["option-data"] = option_data
-            client = server.get_client(version=6)
+            try:
+                client = server.get_client(version=6)
+            except (KeaException, requests.RequestException, ValueError):
+                logger.exception("Failed to create DHCPv6 client for server %s", server.pk)
+                messages.error(request, "Failed to connect to Kea: see server logs.")
+                return render(
+                    request,
+                    self.template_name,
+                    {
+                        "object": server,
+                        "form": form,
+                        "options_formset": options_formset,
+                        "dhcp_version": 6,
+                        "action": "Add",
+                        "return_url": return_url,
+                    },
+                )
             # Advisory warning when any reservation IP is inside an existing pool (non-fatal)
             try:
                 for ip_str in reservation.get("ip-addresses") or []:
@@ -849,8 +881,8 @@ class ServerReservation4DeleteView(_KeaChangeMixin, generic.ObjectView):
         """Issue reservation-del to Kea and redirect."""
         server = self.get_object(pk=pk)
         return_url = reverse("plugins:netbox_kea:server_reservations4", args=[pk])
-        client = server.get_client(version=4)
         try:
+            client = server.get_client(version=4)
             client.reservation_del("dhcp4", subnet_id=subnet_id, ip_address=ip_address)
             messages.success(request, f"Reservation for {ip_address} deleted.")
             _add_reservation_journal(
@@ -910,8 +942,8 @@ class ServerReservation6DeleteView(_KeaChangeMixin, generic.ObjectView):
         """Issue reservation-del to Kea and redirect."""
         server = self.get_object(pk=pk)
         return_url = reverse("plugins:netbox_kea:server_reservations6", args=[pk])
-        client = server.get_client(version=6)
         try:
+            client = server.get_client(version=6)
             client.reservation_del("dhcp6", subnet_id=subnet_id, ip_address=ip_address)
             messages.success(request, f"DHCPv6 reservation for {ip_address} deleted.")
             _add_reservation_journal(
@@ -981,8 +1013,11 @@ def _enrich_reservations_with_badges(
     """
     from ..sync import bulk_fetch_netbox_ips
 
-    client = server.get_client(version=version)
-    _enrich_reservations_with_lease_status(client, reservations, version=version)
+    try:
+        client = server.get_client(version=version)
+        _enrich_reservations_with_lease_status(client, reservations, version=version)
+    except Exception:  # noqa: BLE001
+        logger.debug("Failed to enrich reservations with lease status for server %s", server.pk, exc_info=True)
 
     sync_url = reverse(f"plugins:netbox_kea:server_reservation{version}_sync", args=[server.pk])
     nb_ips = bulk_fetch_netbox_ips([r.get("ip_address", "") for r in reservations if r.get("ip_address")])
