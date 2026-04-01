@@ -1,1164 +1,230 @@
-# NetBox Kea Plugin - Copilot Instructions
+# Copilot Instructions — netbox-kea-ng
 
-## Project Overview
+A NetBox plugin that integrates [Kea DHCP](https://www.isc.org/kea/) server management. Published to PyPI as **`netbox-kea-ng`** — a fork of [netbox-kea](https://github.com/devon-mar/netbox-kea) by Devon Mar. The Django app/module name remains `netbox_kea` (unchanged from upstream). Exposes a `Server` model representing a Kea Control Agent endpoint, with views for live daemon status, lease search/delete, reservation CRUD, subnet/pool/shared-network management, and NetBox IPAM sync.
 
-**NetBox Kea** is a NetBox plugin that integrates Kea DHCP server management into NetBox. It allows viewing Kea daemon status, DHCP leases, and subnets directly from the NetBox UI, with bidirectional linking between NetBox devices/VMs and DHCP leases.
+## Build, Test & Lint
 
-- **Repository**: `netbox-kea` (clone from GitHub)
-- **Language**: Python 3.10+
-- **Framework**: Django (via NetBox plugin framework)
-- **Testing**: pytest with Playwright for UI tests
-- **Package Manager**: uv (with pip fallback)
-
----
-
-## 1. Build/Test/Lint Commands
-
-### Build & Package
 ```bash
-# Build distribution package
+# Install dev dependencies
+uv sync
+
+# Lint
+uv run ruff check netbox_kea/
+uv run ruff format --check netbox_kea/
+
+# REUSE compliance
+uv run reuse lint
+
+# Format
+uv run ruff format netbox_kea/
+
+# Build wheel (required before running integration tests)
 uv build
 
-# Install development dependencies
-uv sync
+# Run unit tests (no Docker required; mocks Kea HTTP calls)
+uv run pytest                                              # all unit tests
+uv run pytest netbox_kea/tests/test_views_leases.py -v     # single file
+uv run pytest netbox_kea/tests/test_views_leases.py::TestClass::test_method -v  # single test
+
+# Run integration tests (requires Docker — spins up NetBox + Kea + nginx + postgres + redis)
+./tests/test_setup.sh   # generates certs, builds Docker images, starts containers
+uv run pytest tests/ --tracing=retain-on-failure -v --cov=netbox_kea --cov-report=xml
+
+# Install pre-commit hooks
+uv run pre-commit install
 ```
 
-### Linting & Formatting
-```bash
-# Check code with ruff (linter)
-uv run ruff check
+Unit tests live in `netbox_kea/tests/`. `pythonpath` is set to `/opt/netbox/netbox` and `DJANGO_SETTINGS_MODULE=netbox.settings`.
 
-# Check formatting with ruff
-uv run ruff format --check
+Integration tests live in `tests/`. E2E tests live in `e2e/`. CI tests against NetBox v4.0–v4.5 using a matrix build. Playwright traces on failure are uploaded as artifacts.
 
-# Auto-fix linting issues
-uv run ruff check --fix
+Ruff is configured in `pyproject.toml` — migrations are excluded from linting. Line length 120, max complexity 15. E501 ignored (handled by formatter). Docstrings required except in tests/migrations/`__init__.py`.
 
-# Auto-format code
-uv run ruff format
+## Architecture
+
+```text
+URL request
+  → urls.py             (routes to view classes)
+  → views/              (view modules call server.get_client() → KeaClient)
+  → kea.py              (HTTP POST to Kea Control Agent /api/v1/)
+  → utilities.py        (format_leases, format_duration enrich raw Kea data)
+  → sync.py             (bridges Kea data to NetBox IPAM)
+  → tables.py           (non-model GenericTable renders enriched dicts)
+  → template            (rendered with django-tables2 + HTMX for pagination)
 ```
 
-### Testing
-
-#### Run All Tests
-```bash
-# Requires Docker and Docker Compose (full integration environment)
-# This runs the test_setup.sh which builds Docker containers
-./tests/test_setup.sh
-uv run pytest --tracing=retain-on-failure -v
-```
-
-#### Run Specific Test File
-```bash
-# API tests only
-uv run pytest tests/test_netbox_kea_api_server.py -v
-
-# UI tests only
-uv run pytest tests/test_ui.py -v
-```
-
-#### Run Single Test Function
-```bash
-# Run a specific test function
-uv run pytest tests/test_netbox_kea_api_server.py::test_server_api_add_delete -v
-
-# Run tests matching a pattern
-uv run pytest -k "test_server" -v
-```
-
-#### CI/CD Workflow
-The GitHub Actions CI pipeline (`.github/workflows/ci.yml`) runs:
-1. **Lint job**: Ruff linting and formatting checks
-2. **Test job**: Runs against multiple NetBox versions (v4.0, v4.1, v4.2, v4.3, v4.4, v4.5)
-   - Spins up Docker containers (NetBox + Kea)
-   - Installs Playwright browsers
-   - Runs pytest with trace retention for debugging
-
-### Test Dependencies (from pyproject.toml)
-- `pytest>=8.0.0,<10.0.0` - Test framework
-- `pytest-playwright>=0.6.0,<0.8.0` - Playwright integration
-- `pynetbox>=7.3.0,<7.7.0` - NetBox API client
-- `ruff>=0.8.0` - Linter/formatter
-- `mypy>=1.14.0,<1.20.0` - Type checker
-- `django-stubs[compatible-mypy]>=5.0.0,<6.0.0` - Django type hints
-
----
-
-## 2. Architecture & Data Flow
-
-### Model Layer
-**Location**: `netbox_kea/models.py`
-
-**Server Model** (only model in this plugin):
-```python
-class Server(NetBoxModel):  # Extends NetBox's NetBoxModel base class
-    name: str (unique)
-    server_url: str
-    username: str | None
-    password: str | None
-    ssl_verify: bool
-    client_cert_path: str | None
-    client_key_path: str | None
-    ca_file_path: str | None
-    dhcp6: bool
-    dhcp4: bool
-    tags: TaggableManager (NetBox standard)
-```
-
-Uses custom validation (`clean()` method):
-- Ensures at least one DHCP version (v4 or v6) is enabled
-- Validates certificate/key pair usage
-- Validates file paths exist on disk
-- Tests connectivity to Kea Control Agent at save time
-
-### Kea Client Integration
-**Location**: `netbox_kea/kea.py`
-
-**KeaClient Class**: Wraps HTTP requests to Kea's Control Agent
-- Manages HTTP sessions with auth (basic, cert-based)
-- Handles SSL verification (bool or CA file path)
-- Sends JSON-RPC commands to Kea (`command()` method)
-- Returns `KeaResponse` (TypedDict with `result`, `arguments`, `text`)
-- Raises `KeaException` for non-zero result codes
-
-**Integration Pattern**: Each Server model has a `get_client()` method
-```python
-def get_client(self) -> KeaClient:
-    return KeaClient(
-        url=self.server_url,
-        username=self.username,
-        password=self.password,
-        verify=self.ca_file_path or self.ssl_verify,
-        client_cert=self.client_cert_path or None,
-        client_key=self.client_key_path or None,
-        timeout=settings.PLUGINS_CONFIG["netbox_kea"]["kea_timeout"],
-    )
-```
-
-### View Architecture
-**Location**: `netbox_kea/views.py`
-
-**View Hierarchy**:
-1. **Server Management Views** (Model CRUD):
-   - `ServerView` extends `generic.ObjectView` - Detail view
-   - `ServerEditView` extends `generic.ObjectEditView` - Form-based edit
-   - `ServerDeleteView` extends `generic.ObjectDeleteView` - Delete
-   - `ServerListView` extends `generic.ObjectListView` - List with filtering/pagination
-   - `ServerBulkDeleteView` extends `generic.BulkDeleteView` - Bulk delete
-
-2. **Server Status View**:
-   - `ServerStatusView` (registered as model view "status" tab)
-   - Queries Kea via `client.command()` for:
-     - Control Agent status (`status-get`)
-     - Kea version (`version-get`)
-     - DHCP daemon status (DHCPv4, DHCPv6)
-     - HA (High Availability) status if enabled
-   - Passes status dict to template `netbox_kea/server_status.html`
-
-3. **DHCP Leases Views** (Non-model children):
-   - `BaseServerLeasesView` - Generic base for lease listing
-   - `ServerLeases4View` & `ServerLeases6View` - DHCPv4/v6 specific
-   - Features:
-     - **Search by**: IP, hostname, MAC (v4)/DUID (v6), subnet, subnet ID
-     - **HTMX-enabled**: Return partial HTML for form submissions
-     - **Pagination**: Only for subnet-based searches (Kea limitation)
-     - **Export**: CSV export via custom `export_table()` utility
-   - Template: `netbox_kea/server_dhcp_leases.html` (full page)
-   - HTMX template: `netbox_kea/server_dhcp_leases_htmx.html` (partial)
-
-4. **DHCP Subnets Views**:
-   - `BaseServerDHCPSubnetsView` extends `generic.ObjectChildrenView`
-   - `ServerDHCP4SubnetsView` & `ServerDHCP6SubnetsView`
-   - Fetches subnets via `config-get` command (expensive, gets full config)
-   - Shows shared networks and subnet linking
-   - Supports table export
-
-5. **Lease Deletion Views**:
-   - `BaseServerLeasesDeleteView` - Abstract base
-   - `ServerLeases4DeleteView` & `ServerLeases6DeleteView`
-   - POST handler bulk deletes leases via `lease4-del` / `lease6-del` commands
-   - Uses fake model (`FakeLeaseModel`) to reuse NetBox's `bulk_delete.html` template
-
-### Form Layer
-**Location**: `netbox_kea/forms.py`
-
-**Form Classes**:
-- `ServerForm` extends `NetBoxModelForm` - Server CRUD form with custom password widget
-- `ServerFilterForm` extends `NetBoxModelFilterSetForm` - Filterset form with DHCP toggles
-- `BaseLeasesSarchForm` - Base for lease search (validates CIDR, hex strings, IPs)
-  - `Leases4SearchForm` - DHCPv4: IP, hostname, MAC, client ID, subnet
-  - `Leases6SearchForm` - DHCPv6: IP, hostname, DUID, subnet
-- `BaseLeaseDeleteForm` - Delete form with fake `pk` field (IPs as strings)
-  - `Lease4DeleteForm` & `Lease6DeleteForm`
-- `MultipleIPField` - Custom field for validating multiple IP addresses
-- `VeryHiddenInput` - Custom widget that renders as empty string (bypass form validation)
-
-### Table Layer
-**Location**: `netbox_kea/tables.py`
-
-**Table Classes**:
-- `ServerTable` extends `NetBoxTable` - Shows servers with linkifiable name
-- `GenericTable` extends `BaseTable` - Non-model base (doesn't require model)
-  - `SubnetTable` - Shows subnets with actions dropdown, linkified to leases search
-  - `BaseLeaseTable` - Non-model lease table with custom columns
-    - `LeaseTable4` - Adds client_id column
-    - `LeaseTable6` - Adds type, duid, iaid, preferred_lft columns
-  - `LeaseDeleteTable` - IP addresses for delete confirmation
-
-**Custom Columns**:
-- `DurationColumn` - Formats seconds as HH:MM:SS
-- `ActionsColumn` - Renders dropdown action menus (HTML templates)
-- `MonospaceColumn` - Monospace font for HW addresses, DUIDs
-
-**Notable Pattern**: Lease tables use `pk` column with `ToggleColumn` (checkboxes) but accessor="ip_address" to show IPs in checkboxes
-
-### Filterset Layer
-**Location**: `netbox_kea/filtersets.py`
-
-**ServerFilterSet** extends `NetBoxModelFilterSet`
-- Filters by: id, name, server_url, dhcp4, dhcp6
-
-### API Layer
-**REST API** (`netbox_kea/api/`):
-- `ServerViewSet` extends `NetBoxModelViewSet` - Auto-generates CRUD endpoints
-  - Registered via `NetBoxRouter` in `urls.py`
-  - Endpoint: `/api/plugins/netbox-kea/servers/`
-- `ServerSerializer` extends `NetBoxModelSerializer`
-  - Brief fields: id, url, name, server_url
-  - Full fields: All server fields + tags, last_updated, display
-  - Password marked as write-only (not shown in responses)
-
-**GraphQL** (`netbox_kea/graphql.py`):
-- `ServerType` strawberry-django type (wraps Server model)
-  - Fields exposed: id, name, server_url, username, ssl_verify, cert paths, dhcp flags
-  - Password intentionally NOT exposed
-- `Query` root with:
-  - `server(id: int)` - Get single server
-  - `server_list` - Get all servers
-
-### Data Flow: From URL to Response
-
-**Example: View Server Status**
-```
-1. URL: /plugins/kea/servers/1/status/ (ServerStatusView)
-2. URL Router (urls.py): Maps to registered model view "status"
-3. View Layer:
-   - ServerStatusView.get_extra_context() called
-   - Creates KeaClient via instance.get_client()
-4. Kea Client:
-   - Sends: {"command": "status-get"}
-   - Sends: {"command": "version-get"}
-   - Sends: {"command": "status-get", "service": ["dhcp4", "dhcp6"]}
-5. Template Rendering:
-   - server_status.html receives statuses dict
-   - Displays Control Agent, DHCP v4/v6, HA status
-```
-
-**Example: Search DHCP Leases**
-```
-1. URL: /plugins/kea/servers/1/leases4/?q=192.168.1.1&by=ip
-2. View: ServerLeases4View.get()
-3. Request handling:
-   - If request.htmx (HTMX request):
-     - Form validation
-     - Call get_leases() or get_leases_page()
-     - Render HTMX partial (server_dhcp_leases_htmx.html)
-   - Otherwise:
-     - Render full page with empty table
-4. Kea Commands:
-   - For "ip" search: {"command": "lease4-get", "arguments": {"ip-address": "192.168.1.1"}}
-   - For "hw" search: {"command": "lease4-get-by-hw-address", ...}
-   - For "subnet" search: {"command": "lease4-get-page", ...} with pagination
-5. Lease Formatting:
-   - utilities.format_leases() enriches raw Kea data:
-     - Converts UNIX timestamps to datetime
-     - Calculates expires_at and expires_in
-     - Replaces "-" with "_" in keys (template compatibility)
-6. Table Rendering:
-   - LeaseTable4 configured with request
-   - Renders HTML with action dropdown menus
-```
-
-### Navigation & URL Structure
-**Location**: `netbox_kea/navigation.py` and `netbox_kea/urls.py`
-
-**Menu Integration**:
-```python
-menu_items = (
-    PluginMenuItem(
-        link="plugins:netbox_kea:server_list",
-        link_text="Servers",
-        permissions=["netbox_kea.view_server"],
-        buttons=(
-            PluginMenuButton(..., link="plugins:netbox_kea:server_add", ...),
-        ),
-    ),
-)
-```
-
-**URL Patterns** (in urls.py):
-```
-/servers/              -> ServerListView
-/servers/add/          -> ServerEditView (create)
-/servers/<id>/         -> ServerView + child views (status, leases4, leases6, subnets4, subnets6)
-/servers/<id>/status/  -> ServerStatusView
-/servers/<id>/leases4/ -> ServerLeases4View
-/servers/<id>/leases6/ -> ServerLeases6View
-```
-
-### Plugin Configuration
-**Location**: `netbox_kea/__init__.py`
-
-```python
-class NetBoxKeaConfig(PluginConfig):
-    name = "netbox_kea"
-    verbose_name = "Kea"
-    description = "Kea integration for NetBox"
-    version = "1.0.4"
-    base_url = "kea"
-    default_settings = {"kea_timeout": 30}  # Configurable via settings
-```
-
----
-
-## 3. Key Conventions
-
-### View Structure & HTMX Integration
-
-**Base Classes Used**:
-- `generic.ObjectView` - Detail view
-- `generic.ObjectEditView` - CRUD form view
-- `generic.ObjectDeleteView` - Delete view
-- `generic.ObjectListView` - List with filtersets
-- `generic.BulkDeleteView` - Bulk operations
-- `generic.ObjectChildrenView` - Display child objects (subnets)
-
-**HTMX Pattern** (seen in BaseServerLeasesView):
-```python
-def get(self, request: HttpRequest, **kwargs) -> HttpResponse:
-    if not request.htmx:
-        # Full page response
-        return super().get(request, **kwargs)
-
-    # HTMX partial response
-    return render(request, "netbox_kea/server_dhcp_leases_htmx.html", {...})
-```
-
-Lease search form is HTMX-enabled:
-- Form submission via HTMX replaces `#leases-table` div
-- Partial template only renders the table and pagination
-- Permission checks use `request.user.has_perm("netbox_kea.bulk_delete_lease_from_server")`
-
-**ViewTab Registration**:
-- Standard tabs: `ViewTab(label="...", weight=...)`
-- Optional tabs: `OptionalViewTab(label="...", is_enabled=lambda instance: instance.dhcp6)`
-
-### API Endpoint Structure
-
-**REST API Pattern** (DRF + NetBox):
-```python
-class ServerViewSet(NetBoxModelViewSet):
-    queryset = models.Server.objects.prefetch_related("tags")
-    filterset_class = filtersets.ServerFilterSet
-    serializer_class = ServerSerializer
-```
-
-Registered via:
-```python
-router = NetBoxRouter()
-router.register("servers", views.ServerViewSet)
-urlpatterns = router.urls
-```
-
-**Endpoints Generated**:
-- `GET /api/plugins/netbox-kea/servers/` - List
-- `POST /api/plugins/netbox-kea/servers/` - Create
-- `GET /api/plugins/netbox-kea/servers/{id}/` - Detail
-- `PATCH /api/plugins/netbox-kea/servers/{id}/` - Partial update
-- `DELETE /api/plugins/netbox-kea/servers/{id}/` - Delete
-
-**Serializer Features**:
-- `HyperlinkedIdentityField` for self-links
-- `write_only=True` for password field (never returned)
-- `display` field (NetBox standard for human-readable representation)
-
-### Custom Table Columns
-
-**Pattern Examples**:
-
-```python
-# Duration formatting
-class DurationColumn(tables.Column):
-    def render(self, value: int):
-        return format_duration(value)  # Returns "HH:MM:SS"
-
-# Template-based actions
-class ActionsColumn(tables.TemplateColumn):
-    def __init__(self, template: str):
-        super().__init__(
-            template,
-            attrs={"td": {"class": "text-end text-nowrap noprint"}},
-            verbose_name="",
-        )
-
-# Monospace styling
-class MonospaceColumn(tables.Column):
-    def __init__(self, *args, additional_classes: list[str] | None = None, **kwargs):
-        cls_str = "font-monospace"
-        if additional_classes:
-            cls_str += " " + " ".join(additional_classes)
-        super().__init__(*args, attrs={"td": {"class": cls_str}}, **kwargs)
-
-# GenericTable (non-model)
-class SubnetTable(GenericTable):
-    id = tables.Column(verbose_name="ID")
-    subnet = tables.Column(linkify=lambda record, table: ...)  # Dynamic URLs
-    shared_network = tables.Column(verbose_name="Shared Network")
-    actions = ActionsColumn(SUBNET_ACTIONS)  # HTML template with dropdown
-```
-
-**Non-Model Table Pattern**:
-- Inherit from `BaseTable` instead of `NetBoxTable`
-- Implement `@property objects_count` (used for pagination display)
-- Manually pass dicts/objects as data (not ORM querysets)
-
-### Form Structure
-
-**NetBox Form Base Classes**:
-- `NetBoxModelForm` - For model CRUD
-- `NetBoxModelFilterSetForm` - For filterset forms
-- Custom `forms.Form` - For searches/actions
-
-**Validation Pattern** (in BaseLeasesSarchForm):
-```python
-def clean(self) -> dict[str, Any] | None:
-    cleaned_data = super().clean()
-    q = cleaned_data.get("q")
-    by = cleaned_data.get("by")
-
-    # Mutual validation
-    if q and not by:
-        raise ValidationError({"by": "..."})
-
-    # Type-specific validation
-    if by == constants.BY_SUBNET:
-        net = IPNetwork(q, version=self.Meta.ip_version)
-        # ... validate CIDR notation
-        cleaned_data["q"] = net
-
-    elif by == constants.BY_HW_ADDRESS:
-        cleaned_data["q"] = str(EUI(q, version=48, dialect=mac_unix_expanded))
-
-    return cleaned_data
-```
-
-**Custom Field Pattern** (MultipleIPField):
-```python
-class MultipleIPField(forms.MultipleChoiceField):
-    def __init__(self, version: Literal[6, 4], *args, **kwargs):
-        self._version = version
-        super().__init__(*args, widget=forms.MultipleHiddenInput, **kwargs)
-
-    def clean(self, value: Any) -> Any:
-        if not isinstance(value, list):
-            raise forms.ValidationError(...)
-        return [str(IPAddress(ip, version=self._version)) for ip in value]
-```
-
-### Migration Structure
-
-**Location**: `netbox_kea/migrations/0001_initial.py`
-
-**Dependencies**:
-- Depends on NetBox's `extras` app migration `0092_delete_jobresult`
-- Uses Django's migration framework
-- Ruff excludes migrations from linting
-
-**Model Creation**:
-```python
-class Migration(migrations.Migration):
-    initial = True
-    dependencies = [('extras', '0092_delete_jobresult')]
-
-    operations = [
-        migrations.CreateModel(
-            name='Server',
-            fields=[
-                ('id', models.BigAutoField(...)),
-                ('created', models.DateTimeField(auto_now_add=True)),
-                ('last_updated', models.DateTimeField(auto_now=True)),
-                ('custom_field_data', models.JSONField(...)),
-                ('name', models.CharField(unique=True, max_length=255)),
-                # ... other fields
-                ('tags', taggit.managers.TaggableManager(...)),
-            ],
-            options={'abstract': False},
-        ),
-    ]
-```
-
-**NetBox Base Model Features** (inherited via `NetBoxModel`):
-- Automatic `id`, `created`, `last_updated` fields
-- `custom_field_data` (JSON) for NetBox's custom fields
-- TaggableManager for tags
-- Permissions automatically created (view_server, add_server, change_server, delete_server, bulk_delete_server)
-
-### Unusual Patterns
-
-1. **Non-Model Tables**: Uses `GenericTable` base class for subnets and leases (not stored in DB)
-2. **Fake Model for Bulk Delete**: `FakeLeaseModel` mimics Django model interface to reuse NetBox templates
-3. **Generic View with TypeVar**: `BaseServerLeasesView(Generic[T])` - parameterized view for table type
-4. **OptionalViewTab**: Custom ViewTab that conditionally renders based on lambda (e.g., only show v6 tab if DHCPv6 enabled)
-5. **Lease Data Enrichment**: Raw Kea responses transformed via `format_leases()` utility:
-   - Key name normalization (`"ip-address"` → `"ip_address"`)
-   - Timestamp conversion (UNIX seconds → datetime)
-   - Derived calculations (`expires_in = expires_at - now`)
-
-### GraphQL Integration
-
-**Type Definition**:
-```python
-@strawberry_django.type(
-    models.Server,
-    fields=(
-        "id", "name", "server_url", "username", "ssl_verify",
-        "client_cert_path", "client_key_path", "ca_file_path",
-        "dhcp6", "dhcp4",
-    ),
-)
-class ServerType(NetBoxObjectType):
-    pass  # Inherits from NetBox's NetBoxObjectType
-```
-
-**Query Root**:
-```python
-@strawberry.type
-class Query:
-    @strawberry.field
-    def server(self, id: int) -> ServerType:
-        return models.Server.objects.get(pk=id)
-
-    server_list: list[ServerType] = strawberry_django.field()
-```
-
-**Schema Registration**:
-```python
-schema = [Query]  # Returned from plugin's graphql module
-```
-
-**Notable**: Password field is explicitly excluded from `fields` tuple (security)
-
----
-
-## 4. Testing Setup
-
-### Test Framework
-- **pytest** >= 8.0.0 - Test runner
-- **pytest-playwright** >= 0.6.0 - Browser automation
-- **pynetbox** >= 7.3.0 - NetBox API client for test setup
-
-### Test Directory Structure
-```
-tests/
-├── __init__.py
-├── conftest.py              # Session-level fixtures
-├── constants.py             # Test constants (same as netbox_kea/constants.py)
-├── kea.py                   # KeaClient copy (symlink to avoid import issues)
-├── test_setup.sh            # Docker environment setup
-├── test_netbox_kea_api_server.py  # API tests (~293 lines)
-├── test_ui.py               # UI tests (~1595 lines, uses Playwright)
-└── docker/
-    ├── Dockerfile           # NetBox container with plugin
-    ├── Dockerfile-kea       # Kea DHCP container
-    ├── docker-compose.yml   # Full test stack
-    ├── docker-compose.override.yml
-    ├── plugins.py           # Plugin config (PLUGINS = ["netbox_kea"])
-    ├── nginx.conf           # Reverse proxy for HTTPS testing
-    ├── htpasswd             # Basic auth credentials
-    ├── kea_configs/         # Kea DHCPv4/v6 configs
-    └── certs/               # Generated SSL certs
+### Views directory structure
+
+Views are split into focused modules under `netbox_kea/views/`:
+
+| Module | Responsibility |
+|--------|---------------|
+| `_base.py` | `ConditionalLoginRequiredMixin`, `_KeaChangeMixin`, shared helpers |
+| `server.py` | Server CRUD (list, detail, edit, delete, bulk operations) |
+| `combined.py` | Combined status badge, server status tab |
+| `leases.py` | Lease search/delete/add/edit, badge enrichment, MAC-based pending-IP detection |
+| `reservations.py` | Reservation CRUD (add/edit/delete), lease-status enrichment |
+| `subnets.py` | Subnet/pool CRUD, subnet wipe |
+| `shared_networks.py` | Shared network CRUD (add/edit/delete) |
+| `options.py` | DHCP option views (subnet/network option editing) |
+| `sync_views.py` | Sync views (lease→NetBox, reservation→NetBox, bulk sync) |
+| `dhcp_control.py` | DHCP service enable/disable control |
+
+### Core components
+
+- **`Server` model** (`models.py`): Only persisted model. Stores connection config including optional `dhcp4_url`/`dhcp6_url` for dual-URL mode. `get_client(version=4|6|None)` returns a protocol-aware `KeaClient`. The `clean()` method performs live connectivity checks before saving.
+- **`KeaClient`** (`kea.py`): Wraps `requests.Session`. All API calls go through `.command(command, service, arguments)` which POSTs JSON to the Kea Control Agent. Responses are `list[KeaResponse]`. `check_response()` raises `KeaException` if any result code is not in `ok_codes`. Supports `.clone()` for thread-safe concurrent lookups.
+- **`sync.py`**: Bridges Kea data to NetBox IPAM — `sync_lease_to_netbox()` (status=dhcp/active), `sync_reservation_to_netbox()` (status=reserved/active). Handles stale IP cleanup with `cleanup_stale_ips_batch()` grouped by `(hostname, address_family)`.
+- **REST API** (`api/`): `NetBoxModelViewSet` + `NetBoxModelSerializer` — only the `Server` model is exposed. Password is write-only in the serializer.
+- **GraphQL** (`graphql.py`): strawberry-django types, auto-discovered by NetBox.
+
+### Exception hierarchy
 
 ```
-
-### Test Fixtures (conftest.py)
-
-**Session-Level Fixtures**:
-- `netbox_url()` - "http://localhost:8000"
-- `netbox_token()` - Admin token (v1 or v2 based on NetBox version)
-- `netbox_username()` - "admin"
-- `netbox_password()` - "admin"
-- `kea_url()` - "http://kea-ctrl-agent:8000"
-- `nb_http()` - requests.Session with auth headers
-- `nb_api()` - pynetbox.api instance (auto-clears servers)
-
-**Kea Connection Fixtures**:
-- `kea_basic_url()` - "http://nginx" (basic auth testing)
-- `kea_basic_username()` / `kea_basic_password()` - "kea"
-- `kea_https_url()` - "https://nginx"
-- `kea_cert_url()` - "https://nginx:444" (client cert testing)
-- `kea_client_cert()` - "/certs/netbox.crt"
-- `kea_client_key()` - "/certs/netbox.key"
-- `kea_ca()` - "/certs/nginx.crt"
-
-### Test Fixtures (test_ui.py)
-
-**Autouse Fixtures** (run for every test):
-- `clear_leases(kea_client)` - Wipes all leases before each test
-- `reset_user_preferences()` - Resets table configs and pagination
-
-**Server Setup Fixtures**:
-- `with_test_server` - Creates test server (both DHCPv4+v6), navigates to detail page
-- `with_test_server_only6` - DHCPv6-only server
-- `with_test_server_only4` - DHCPv4-only server
-
-**Data Fixtures**:
-- `kea_client()` - KeaClient("http://localhost:8001") for direct Kea commands
-- `lease6()` - Creates and returns a DHCPv6 lease object
-- `lease6_netbox_device()` - Creates matching NetBox device for lease6
-- Similar fixtures for v4 leases
-
-**Page/UI Fixtures**:
-- `page` - Playwright Page object (provided by pytest-playwright)
-- `netbox_login` - Auto-logs in to NetBox
-- `plugin_base` - Base URL for plugin pages
-
-**Session Fixtures** (NetBox setup):
-- `test_tag()` - Creates a tag
-- `test_site()` - Creates a site
-- `test_device_type()` - Creates device type
-- `test_device_role()` - Creates device role
-- `test_cluster()` - Creates a cluster
-
-### Running Tests
-
-**Full Integration Test** (requires Docker):
-```bash
-./tests/test_setup.sh  # Generates certs, builds/starts containers
-uv run pytest --tracing=retain-on-failure -v
+Exception
+ └── KeaException                  # Base — any non-ok result from Kea
+      ├── KeaConfigTestError       # config-test failed
+      ├── KeaConfigPersistError    # config-set / config-write failed
+      │    └── PartialPersistError # config-set succeeded but config-write failed
+      │         └── AmbiguousConfigSetError  # config-set status is ambiguous
+      └── (generic Kea errors)
 ```
 
-**API Tests Only**:
-```bash
-uv run pytest tests/test_netbox_kea_api_server.py -v
-```
-
-**Single Test Function**:
-```bash
-uv run pytest tests/test_ui.py::test_server_add_delete -v
-```
-
-**With Specific Marker**:
-```bash
-uv run pytest -m "parametrize" -v
-```
-
-### Test Categories
-
-**API Tests** (test_netbox_kea_api_server.py):
-- CRUD operations (create, update, delete)
-- Bulk operations
-- GraphQL queries
-- Error handling (missing cert, invalid paths, auth failures)
-- SSL/HTTPS variations (basic auth, client certs, CA, insecure)
-- DHCPv4/v6 validation
-- ~50+ parametrized test cases
-
-**UI Tests** (test_ui.py):
-- Navigation (menu visibility, permissions)
-- Server CRUD via web form
-- Server status view
-- DHCP subnet listing and export
-- DHCP lease searching (by IP, hostname, MAC/DUID, subnet)
-- Lease deletion
-- Table column configuration
-- Pagination
-- Permission checks
-- Uses Playwright for browser automation
-- ~1595 lines of tests
-
-### Playwright Configuration
-
-**Test Tracing**:
-```bash
-uv run pytest --tracing=retain-on-failure -v
-```
-- Traces saved to `test-results/` (uploaded as artifact in CI)
-- Useful for debugging UI test failures
-
-**Playwright Installation** (CI):
-```bash
-uv run playwright install --with-deps
-```
-- Installs browser binaries and system dependencies
-
-### Docker Test Environment
-
-**Services** (docker-compose.yml):
-1. **netbox** - NetBox 4.x container with plugin mounted
-2. **postgres** - PostgreSQL database
-3. **redis** - Cache/queue
-4. **nginx** - Reverse proxy (HTTPS, basic auth)
-5. **kea-dhcp4** - Kea DHCPv4 server
-6. **kea-dhcp6** - Kea DHCPv6 server
-7. **kea-ctrl-agent** - Kea Control Agent (JSON-RPC)
-
-**Setup Process** (test_setup.sh):
-```bash
-# 1. Generate SSL certs (client and server)
-openssl req ... -out certs/netbox.crt  # Client cert
-openssl req ... -out certs/nginx.crt   # Server cert
-
-# 2. Copy wheel to docker/
-WHL_FILE=$(ls ./dist/ | grep .whl)
-cp "./dist/$WHL_FILE" ./tests/docker/
-
-# 3. Build and start containers
-docker compose build --build-arg "FROM=netboxcommunity/netbox:$NETBOX_CONTAINER_TAG"
-docker compose up -d
-```
-
----
-
-## 5. NetBox Plugin Conventions
-
-### Plugin Registration
-
-**Base Class**:
-```python
-from netbox.plugins import PluginConfig
-
-class NetBoxKeaConfig(PluginConfig):
-    name = "netbox_kea"
-    verbose_name = "Kea"
-    base_url = "kea"
-    version = "1.0.4"
-    default_settings = {"kea_timeout": 30}
-
-config = NetBoxKeaConfig  # Must be exported as 'config'
-```
-
-**Installation**:
-1. Add to `local_requirements.txt`: `netbox-kea`
-2. Enable in `configuration.py`: `PLUGINS = ["netbox_kea"]`
-3. Run migrations: `./manage.py migrate`
-
-### Model Base Classes
-
-**NetBoxModel** (extends Django Model):
-- Provides: `id`, `created`, `last_updated`, `custom_field_data`
-- Automatically creates permissions: view, add, change, delete, bulk_delete
-- Integrates with NetBox's custom fields and tags
-
-### View Base Classes
-
-**From `netbox.views.generic`**:
-- `ObjectView` - Read-only detail view
-- `ObjectEditView` - Create/update form view
-- `ObjectDeleteView` - Delete view
-- `ObjectListView` - List with filterset
-- `BulkDeleteView` - Bulk operations
-- `ObjectChildrenView` - Display related objects
-
-**Decorators**:
-- `@register_model_view(Model)` - Register detail views
-- `@register_model_view(Model, "action")` - Register custom actions/tabs
-
-### Mixin Classes
-
-**From `utilities.views`**:
-- `GetReturnURLMixin` - Handle return_url parameter
-- `ViewTab` / `OptionalViewTab` - Register tabbed views
-
-**Usage**:
-```python
-@register_model_view(Server, "leases4")
-class ServerLeases4View(BaseServerLeasesView):
-    tab = OptionalViewTab(
-        label="DHCPv4 Leases",
-        weight=1020,
-        is_enabled=lambda s: s.dhcp4
-    )
-```
-
-### Filter Classes
-
-**NetBoxModelFilterSet**:
-```python
-from netbox.filtersets import NetBoxModelFilterSet
-
-class ServerFilterSet(NetBoxModelFilterSet):
-    class Meta:
-        model = Server
-        fields = ("id", "name", "server_url", "dhcp4", "dhcp6")
-```
-
-### Form Classes
-
-**NetBoxModelForm**:
-```python
-from netbox.forms import NetBoxModelForm
-
-class ServerForm(NetBoxModelForm):
-    class Meta:
-        model = Server
-        fields = ("name", "server_url", ...)
-        widgets = {"password": forms.PasswordInput()}
-```
-
-**NetBoxModelFilterSetForm**:
-```python
-from netbox.forms import NetBoxModelFilterSetForm
-
-class ServerFilterForm(NetBoxModelFilterSetForm):
-    model = Server
-    tag = TagFilterField(model)
-    dhcp4 = forms.NullBooleanField(...)
-```
-
-### Table Classes
-
-**NetBoxTable** (for models):
-```python
-from netbox.tables import NetBoxTable, BooleanColumn
-
-class ServerTable(NetBoxTable):
-    name = tables.Column(linkify=True)
-    dhcp6 = BooleanColumn()
-
-    class Meta(NetBoxTable.Meta):
-        model = Server
-        fields = ("pk", "name", "server_url", "dhcp6", "dhcp4")
-        default_columns = ("pk", "name", "server_url", "dhcp6", "dhcp4")
-```
-
-**BaseTable** (for non-model data):
-```python
-from netbox.tables import BaseTable
-
-class GenericTable(BaseTable):
-    exempt_columns = ("actions", "pk")
-
-    class Meta(BaseTable.Meta):
-        empty_text = "No rows"
-        fields: tuple[str, ...] = ()
-
-    @property
-    def objects_count(self):
-        return len(self.data)
-```
-
-### API Classes
-
-**NetBoxModelViewSet**:
-```python
-from netbox.api.viewsets import NetBoxModelViewSet
-
-class ServerViewSet(NetBoxModelViewSet):
-    queryset = models.Server.objects.prefetch_related("tags")
-    filterset_class = filtersets.ServerFilterSet
-    serializer_class = ServerSerializer
-```
-
-**NetBoxModelSerializer**:
-```python
-from netbox.api.serializers import NetBoxModelSerializer
-
-class ServerSerializer(NetBoxModelSerializer):
-    url = serializers.HyperlinkedIdentityField(
-        view_name="plugins-api:netbox_kea-api:server-detail"
-    )
-
-    class Meta:
-        model = Server
-        fields = ("id", "name", "url", "display", "tags", "last_updated")
-        brief_fields = ("id", "url", "name")
-        extra_kwargs = {"password": {"write_only": True}}
-```
-
-**Router**:
-```python
-from netbox.api.routers import NetBoxRouter
-
-router = NetBoxRouter()
-router.register("servers", views.ServerViewSet)
-urlpatterns = router.urls
-```
-
-### Menu Integration
-
-**PluginMenuItem** and **PluginMenuButton**:
-```python
-from netbox.plugins import PluginMenuItem, PluginMenuButton
-
-menu_items = (
-    PluginMenuItem(
-        link="plugins:netbox_kea:server_list",
-        link_text="Servers",
-        permissions=["netbox_kea.view_server"],
-        buttons=(
-            PluginMenuButton(
-                link="plugins:netbox_kea:server_add",
-                title="Add",
-                icon_class="mdi mdi-plus-thick",
-                permissions=["netbox_kea.add_server"],
-            ),
-        ),
-    ),
-)
-```
-
-### GraphQL Integration
-
-**NetBoxObjectType**:
-```python
-from netbox.graphql.types import NetBoxObjectType
-import strawberry_django
-
-@strawberry_django.type(models.Server, fields=(...))
-class ServerType(NetBoxObjectType):
-    pass
-
-@strawberry.type
-class Query:
-    @strawberry.field
-    def server(self, id: int) -> ServerType:
-        return models.Server.objects.get(pk=id)
-
-    server_list: list[ServerType] = strawberry_django.field()
-
-schema = [Query]  # Exported from graphql module
-```
-
----
-
-## 6. CI/CD Pipeline
-
-### GitHub Actions Workflows
-
-**Location**: `.github/workflows/`
-
-#### CI Workflow (`ci.yml`)
-**Triggers**:
-- Push to any branch
-- Pull requests
-- Weekly schedule (Sunday 00:00 UTC)
-
-**Jobs**:
-
-1. **Lint Job**:
-   - Runs on: `ubuntu-latest`
-   - Steps:
-     ```yaml
-     - actions/checkout@v6
-     - astral-sh/ruff-action@v3  # ruff check
-     - astral-sh/ruff-action@v3 --args format --check  # ruff format --check
-     ```
-
-2. **Test Job** (matrix):
-   - Runs against NetBox versions: v4.0, v4.1, v4.2, v4.3, v4.4, v4.5
-   - Steps:
-     ```yaml
-     - actions/checkout@v6
-     - astral-sh/setup-uv@v7 (enable-cache: true)
-     - actions/setup-python@v6 (python-version-file: pyproject.toml)
-     - uv run playwright install --with-deps
-     - uv build
-     - ./tests/test_setup.sh (NETBOX_CONTAINER_TAG: matrix.netbox)
-     - uv run pytest --tracing=retain-on-failure -v
-     - actions/upload-artifact@v7 (playwright-traces)
-     - docker compose logs (on failure)
-     ```
-
-#### Release Workflow (`release.yml`)
-**Trigger**:
-- Release published
-
-**Job**:
-- Build wheel: `uv build`
-- Publish to PyPI: `uv publish` (with trusted publisher auth)
-
-### Linting Configuration (ruff)
-
-**File**: `pyproject.toml`
-
-```toml
-[tool.ruff]
-exclude = ["netbox_kea/migrations"]
-
-[tool.ruff.lint]
-select = [
-    "C4",   # flake8-comprehensions
-    "E",    # pycodestyle error
-    "EXE",  # flake8-executable
-    "F",    # pyflakes
-    "I",    # isort
-    "ISC",  # flake8-implicit-str-concat
-    "PERF", # perflint
-    "PIE",  # flake8-pie
-    "PYI",  # flake8-pyi
-    "UP",   # pyupgrade
-    "W",    # pycodestyle warning
-]
-ignore = [
-    "E501",  # Line too long (handled by formatter)
-    # Conflicts with formatter:
-    "W191", "E111", "E114", "E117",
-    "D206", "D300",
-    "Q000", "Q001", "Q002", "Q003",
-    "COM812", "COM819", "ISC001", "ISC002",
-]
-```
-
-### Build System
-
-**Package**: `hatchling`
-
-**pyproject.toml** (build configuration):
-```toml
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
-
-[tool.hatch.build.targets.sdist]
-include = ["netbox_kea"]
-```
-
-**Version**: Defined in `pyproject.toml` (1.0.4) and `__init__.py`
-
----
-
-## 7. Existing AI Config Files
-
-**None found** in the repository. No existing:
-- CLAUDE.md
-- AGENTS.md
-- .cursorrules
-- .cursor/ directory
-- .windsurfrules
-- CONVENTIONS.md
-- AIDER_CONVENTIONS.md
-- .clinerules
-- .cline_rules
-- .github/copilot-instructions.md
-
-This is a new copilot-instructions.md file.
-
----
-
-## 8. README/CONTRIBUTING Key Content
-
-### From README.md
-
-**Features**:
-- Uses Kea management API (Control Agent + lease_cmds hook)
-- View Kea daemon statuses (control agent, DHCPv4, DHCPv6)
-- View, delete, export, search DHCP leases
-- Search NetBox devices/VMs directly from DHCP leases
-- View DHCP subnets from Kea configuration
-- REST API and GraphQL support
-
-**Requirements**:
-- NetBox 4.0 - 4.5 (tested with v4.0, v4.1, v4.2, v4.3, v4.4, v4.5)
-- Python 3.10+ (per pyproject.toml)
-- Kea Control Agent (REST API)
-- Kea `lease_cmds` hook library
-- Tested with Kea v2.4.1 with memfile lease database
-
-**Installation**:
-1. Add `netbox-kea` to `local_requirements.txt`
-2. Enable in `configuration.py`: `PLUGINS = ["netbox_kea"]`
-3. Run `./manage.py migrate`
-
-**Custom Links** (NetBox Web UI):
-Examples for linking from NetBox to Kea leases:
-- Prefix → DHCP leases by subnet: `/plugins/kea/servers/<ID>/leases{{ object.prefix.version }}/?q={{ object.prefix }}&by=subnet`
-- Interface → DHCP leases by MAC: `/plugins/kea/servers/<ID>/leases4/?q={{ object.mac_address }}&by=hw`
-- Device → DHCP leases by hostname: `/plugins/kea/servers/<ID>/leases4/?q={{ object.name|lower }}&by=hostname`
-
-**Limitations**:
-- Pagination only supported for subnet-based lease searches (Kea API limitation - forward only, no backwards)
-- Subnet listing fetches full Kea config (expensive with `config-get`)
-
-**Compatibility**:
-- Tested with Kea v2.4.1 with memfile lease database
-- Other versions/databases may work
-
----
-
-## Common Development Tasks
-
-### Adding a New Field to Server Model
-
-1. **models.py**: Add field with proper verbose_name, help_text, validators
-2. **migrations/**: Run `python manage.py makemigrations netbox_kea`
-3. **forms.py**: Add to ServerForm.Meta.fields
-4. **tables.py**: Add to ServerTable.Meta.fields
-5. **filtersets.py**: Add to ServerFilterSet.Meta.fields
-6. **api/serializers.py**: Add to ServerSerializer.Meta.fields
-7. **graphql.py**: Add to @strawberry_django.type fields tuple
-8. **Test**: Add test in test_netbox_kea_api_server.py
-
-### Adding a New Search Parameter for Leases
-
-1. **constants.py**: Add new BY_* constant
-2. **forms.py**: Add choice to Leases4SearchForm and Leases6SearchForm
-3. **forms.py**: Add validation logic in BaseLeasesSarchForm.clean()
-4. **views.py**: Add handling in BaseServerLeasesView.get_leases() method
-5. **utilities.py**: Add any custom formatting if needed
-6. **Test**: Add test case in test_ui.py
-
-### Debugging Tests
-
-1. **Run with trace retention**: `pytest --tracing=retain-on-failure`
-2. **Check trace**: Open `test-results/` in Playwright Inspector
-3. **Run single test**: `pytest tests/test_ui.py::test_name -v -s`
-4. **Check Docker logs**: `docker compose -f tests/docker/docker-compose.yml logs -f`
-
-### Running Tests Locally Without Docker
-
-Not easily possible due to Kea dependency. Use provided Docker setup.
-
----
-
-## Key Files Quick Reference
-
-| File | Purpose |
-|------|---------|
-| `netbox_kea/__init__.py` | Plugin config (PluginConfig) |
-| `netbox_kea/models.py` | Server model, validation, Kea client integration |
-| `netbox_kea/views.py` | All views (CRUD, status, leases, subnets) + HTMX handling |
-| `netbox_kea/forms.py` | Forms for Server CRUD, lease search, deletion |
-| `netbox_kea/tables.py` | Tables with custom columns (duration, actions, monospace) |
-| `netbox_kea/filtersets.py` | Filterset for server filtering |
-| `netbox_kea/kea.py` | KeaClient (JSON-RPC over HTTP to Kea) |
-| `netbox_kea/graphql.py` | GraphQL types and schema |
-| `netbox_kea/navigation.py` | Plugin menu registration |
-| `netbox_kea/constants.py` | Constants (search types, regex patterns) |
-| `netbox_kea/utilities.py` | Helpers (duration formatting, lease enrichment, exports) |
-| `netbox_kea/api/views.py` | REST API viewset |
-| `netbox_kea/api/serializers.py` | REST API serializers |
-| `netbox_kea/api/urls.py` | REST API routes |
-| `netbox_kea/urls.py` | Plugin URL routes |
-| `netbox_kea/migrations/0001_initial.py` | Initial schema migration |
-| `pyproject.toml` | Dependencies, build config, ruff config |
-| `.github/workflows/ci.yml` | CI pipeline (lint + test matrix) |
-| `.github/workflows/release.yml` | Release to PyPI |
-| `tests/conftest.py` | Pytest fixtures (NetBox, Kea, auth) |
-| `tests/test_netbox_kea_api_server.py` | API tests |
-| `tests/test_ui.py` | UI/integration tests with Playwright |
-| `tests/test_setup.sh` | Docker environment setup |
-
----
-
-## Developer Notes
-
-1. **Never commit secrets**: Use fixtures for API keys, passwords in tests
-2. **Type hints**: Use full annotations (`from __future__ import annotations` not needed, Python 3.10+)
-3. **Form validation**: Use Django's `ValidationError` with dict keys for field-specific errors
-4. **Kea Error Handling**: Check result codes with `check_response()` or pass `check=()` parameter
-5. **HTMX Checks**: Use `request.htmx` to detect HTMX requests (from netbox utilities)
-6. **Template Names**: Follow NetBox pattern: `netbox_kea/model_action.html`
-7. **URLs**: Use `reverse()` with `args=[...]` for reversing URLs with arguments
-8. **Permissions**: Use `request.user.has_perm()` with permission string like `"netbox_kea.bulk_delete_lease_from_server"`
-9. **Lease Data**: Always call `format_leases()` to normalize timestamps and keys before table rendering
-10. **Non-Model Tables**: Use `GenericTable` and pass dicts, not querysets
+**Catch order matters**: always catch `PartialPersistError` *before* `KeaException`. `AmbiguousConfigSetError` → `PartialPersistError` → `KeaException`.
+
+## Security & Code Quality Rules
+
+- **Never leak exception details to HTTP responses.** Use `logger.exception()` for server-side logging and return a generic message like `"An internal error occurred"` to users. Raw `str(exc)` can expose internal URLs, TLS details, or Kea API config.
+- **Always pass `version=` to `server.get_client()`** when the DHCP version is known (e.g., `server.get_client(version=self.dhcp_version)`). Omitting it may hit the wrong endpoint when dual URLs are configured.
+- **Always call `server.get_client()` inside a try block** — client creation can fail with `ValueError` or `requests.RequestException` due to bad config or connectivity. Never call it at module/class level or before error handling is in scope.
+- **Validate Kea response shape before indexing.** After `client.command()`, check `resp` is a non-empty list and `resp[0]` is a dict before accessing `resp[0]["arguments"]`. Check `arguments` is a dict and nested keys (e.g., `"leases"`, `"subnet4"`) are lists before indexing into them. Malformed payloads should raise `RuntimeError` to hit existing error handlers.
+- **Catch `(KeaException, requests.RequestException, ValueError)` consistently** in mutation handlers (add/edit/delete). Split `KeaException` from the others when you need `kea_error_hint(exc)` for hook-related errors (result=2). Always catch `PartialPersistError` before `KeaException`.
+- **Use `kea_error_hint(exc)` for user-facing Kea error messages.** It maps result codes to actionable hints (result=2 → hook library not loaded, result=128 → daemon unreachable).
+- **Guard action URLs/buttons by permission AND lookup state.** Don't offer Sync/Reserve buttons for leases where the reservation lookup failed (check `failed_ips` and `failed_mac_keys`). Don't offer add/edit URLs to users without `change` permission.
+- **Django form querysets must be evaluated at instantiation, not class definition time.** Use `__init__` to set `self.fields["field"].queryset` dynamically — class-level querysets become stale in long-running processes.
+- **django-tables2 Column instances must not be shared across table classes.** Use a factory function instead of a module-level instance to avoid shared-state bugs.
+- **Catch `DatabaseError` (not just `ProgrammingError`/`OperationalError`)** around `JournalEntry.objects.create` and similar DB writes in non-critical paths. This prevents a successful Kea operation from turning into a 500 due to a DB schema mismatch.
+- **DHCPv6 reservations use `ip-addresses` (list), not `ip-address` (string).** Always check both fields when inspecting reservation data.
+
+## Key Patterns
+
+### Non-model tables
+
+Lease, subnet, reservation, and shared-network tables use `GenericTable(BaseTable)` instead of `NetBoxTable` because they have no Django model backing them. They accept plain `list[dict]`. `GenericTable` defines `objects_count` as a property returning `len(self.data)` to satisfy NetBox's pagination interface.
+
+### HTMX pagination
+
+Lease views serve two response types from the same `get()` method: a full page render and an HTMX partial (just the table fragment). The split is done with `htmx_partial(request, ...)` from `utilities.htmx`. Pagination state is passed via query params; the hidden `page` field uses `VeryHiddenInput` which renders as an empty string to avoid form conflicts.
+
+### View registration
+
+Standard CRUD views use `@register_model_view(Server)` / `@register_model_view(Server, "edit")` etc. Custom tabs (Status, Leases, Subnets, Reservations, Shared Networks) use `OptionalViewTab` from `utilities.py` — a subclass of NetBox's `ViewTab` that accepts `is_enabled: Callable[[Server], bool]` to conditionally hide tabs based on model state (e.g. hide DHCPv6 tab if `server.dhcp6` is False).
+
+### Generic views with TypeVar
+
+`BaseServerLeasesView` is `generic.ObjectView, Generic[T]` where `T = TypeVar("T", bound=BaseTable)`. Concrete subclasses (`ServerLeases6View`, `ServerLeases4View`) only need to declare `table_class`, `form_class`, `dhcp_version`, and `lease_service`. The base class handles pagination, HTMX, search, export, and delete routing.
+
+### Fake model for GetReturnURLMixin
+
+`BaseServerLeasesDeleteView` mixes in `GetReturnURLMixin` which expects `self.model`. Since leases aren't a real model, `FakeLeaseModel` / `FakeLeaseModelMeta` provide a minimal stand-in with just `app_label` and `model_name` so `get_return_url()` resolves correctly.
+
+### Lease badge enrichment pipeline
+
+`_enrich_leases_with_badges()` in `leases.py` orchestrates a two-phase reservation lookup:
+1. **Phase 1a — IP-based**: `_fetch_reservation_by_ip_for_leases()` uses `ThreadPoolExecutor` with `client.clone()` workers to look up reservations by IP in parallel.
+2. **Phase 1b — MAC-based**: `_fetch_reservation_by_mac_for_leases()` looks up reservations by `hw-address` for leases that had no IP match, detecting pending IP changes (device has reservation at a different IP). Returns `(reservation_by_mac, failed_keys)` tuple.
+
+Both phases use composite `(mac, subnet_id)` keys for deduplication and failure tracking. The `_FETCH_ERROR` sentinel distinguishes lookup errors from genuine not-found (`None`). Failed keys are tracked in `failed_mac_keys: set[tuple[str, int]]` and propagated to prevent offering actions on leases with indeterminate state.
+
+### KeaClient.clone() for concurrent lookups
+
+`client.clone()` creates a new `KeaClient` sharing the same config but with a fresh `requests.Session` — necessary because `requests.Session` is not thread-safe. Always use `with client.clone() as worker_client:` inside thread pool workers.
+
+### Sync lifecycle
+
+IP status follows a semantic lifecycle:
+- `dhcp` — dynamic lease, no reservation (ephemeral)
+- `reserved` — reservation only, no active lease (admin intent)
+- `active` — both reservation AND active lease (planned + in use)
+
+`cleanup_stale_ips_batch()` groups by `(hostname, address_family)` to avoid v4 cleanup deleting v6 entries. Batch cleanup is skipped when errors > 0 to avoid data loss. Single-sync paths (`_sync()`) correctly use `cleanup=True` because they operate on one record with a complete keep-set.
+
+### Kea DHCP option aliases
+
+DNS options can be either `domain-name-servers` or `dns-servers`; NTP can be `ntp-servers` or `sntp-servers`. When searching for existing option metadata (e.g., `always-send`), search both alias tuples to avoid losing settings.
+
+### URL structure
+
+`get_model_urls("netbox_kea", "server")` from `utilities.urls` auto-generates standard NetBox object URLs (detail, edit, delete, changelog, journal). Custom routes (leases, subnets, reservations, shared-networks) are declared explicitly before the `include()`.
+
+### Forms
+
+Lease search forms inherit from `BaseLeasesSarchForm` (note the typo — it's intentional/existing). Each subclass defines an inner `Meta` with `ip_version: Literal[4, 6]` which the base class `clean()` uses to validate subnet CIDR, IP addresses, and hardware addresses (via `is_hex_string()` from `utilities.py`).
+
+CSV form fields (like `dns_servers`, `ntp_servers`) must have `clean_<field>` methods that split on commas, strip whitespace, drop empty entries, and rejoin — otherwise stray whitespace passes through and fails Kea validation.
+
+### API URL naming
+
+The serializer's `HyperlinkedIdentityField` uses `view_name="plugins-api:netbox_kea-api:server-detail"` — the `plugins-api:` prefix and `-api:` namespace suffix are NetBox conventions.
+
+## Testing Patterns
+
+### Unit test infrastructure
+
+Unit tests in `netbox_kea/tests/` mock all Kea HTTP calls. Key patterns:
+
+- **Mock path**: When patching `KeaClient`, patch `netbox_kea.models.KeaClient` (not the view module) — `server.get_client()` instantiates from `models.py`.
+- **Auth**: Use `api_client.force_authenticate(user=self.user)` not token credentials — NetBox v4 tokens use `nbt_` format.
+- **User model**: Always use `get_user_model()` instead of `from django.contrib.auth.models import User` — NetBox swaps the User model.
+- **DB-less model tests**: Use `SimpleTestCase` + `patch.object(NetBoxModel, 'clean')` for model validation without DB. Use `@override_settings(PLUGINS_CONFIG=...)` when calling `get_client()`.
+- **BulkImportView POST**: Requires `data=`, `format='csv'`, `csv_delimiter=','`. Missing `csv_delimiter` causes validation error.
+- **Django Debug Toolbar**: Blocks Playwright pointer events. Use `page.goto()` for navigation; for forms use `page.evaluate('form.submit()')` with `page.expect_navigation()`.
+
+### Test file mapping
+
+| Test file | Tests for |
+|-----------|-----------|
+| `test_views_leases.py` | Lease views, badge enrichment, MAC-based detection |
+| `test_views_reservations.py` | Reservation CRUD views |
+| `test_views_subnets.py` | Subnet/pool views |
+| `test_views_shared_networks.py` | Shared network CRUD |
+| `test_views_options.py` | DHCP option editing |
+| `test_views_sync.py` | Sync views (lease/reservation → NetBox) |
+| `test_views_combined.py` | Combined status badge |
+| `test_sync.py` | sync.py logic (stale cleanup, IP lifecycle) |
+| `test_kea_client.py` | KeaClient, response parsing, clone() |
+| `test_models.py` | Server model validation, get_client() |
+| `test_forms.py` | Form validation |
+| `test_api_leases.py` | Lease API endpoints |
+| `test_api_reservations.py` | Reservation API endpoints |
+
+### Integration & E2E tests
+
+Integration tests in `tests/` require Docker. The compose stack includes: NetBox, netbox-worker, postgres, redis, nginx (basic auth + TLS), kea-ctrl-agent, kea-dhcp4, kea-dhcp6.
+
+`conftest.py` fixtures:
+- `nb_api` (session-scoped, autouse) — creates a pynetbox API client and deletes all existing Kea servers before the suite runs
+- `netbox_token` — provisions a token via the API (handles both v1 `key` and v2 `nbt_` format)
+- `nb_http` — a `requests.Session` with auth headers pre-set
+- `kea_basic_url` / `kea_basic_username` / `kea_basic_password` — point to the nginx proxy with HTTP Basic auth
+- `kea_https_url` — nginx with TLS
+
+E2E tests live in `e2e/` and are separate from both unit and integration tests.
+
+## Conventions
+
+- **Commit messages**: Conventional Commits (feat, fix, docs, style, refactor, perf, test, build, ci, chore, revert). Enforced by pre-commit hook.
+- **Ruff config**: Line length 120, max complexity 15. Migrations excluded. E501 ignored (handled by formatter). Docstrings required except in tests/migrations/`__init__.py`.
+- **URL patterns**: `get_model_urls("netbox_kea", "server")` auto-generates standard CRUD routes. Custom routes declared explicitly before the `include()`.
+- **API URL naming**: `view_name="plugins-api:netbox_kea-api:server-detail"` — `plugins-api:` prefix and `-api:` namespace are NetBox conventions.
+
+## Kea API Reference
+
+- **Primary**: `kea.readthedocs.io/en/latest/api.html` — 206 commands with full JSON schemas.
+- **Live discovery**: run `list-commands` against the target server to confirm which hook libraries are loaded.
+- **Key hooks** and the commands they gate:
+  - `host_cmds` — all `reservation-*` commands (open source since Kea 2.7.7 / MPL 2.0)
+  - `lease_cmds` — `lease4/6-get-by-hostname/hw-address/state`, `lease4/6-update/add`
+  - `subnet_cmds` — `subnet4/6-list/get/add/update`
+  - `stat_cmds` — `stat-lease4/6-get` for utilization per subnet
+- **Hook detection pattern**: call `list-commands` with service, cache per request, show warning banner in UI if a required command is absent. Only set `hook_available=False` on result code 2 (command not supported).
