@@ -136,7 +136,12 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
         raw_leases = args.get("leases")
         if not isinstance(raw_leases, list):
             raise RuntimeError("Unexpected leases payload from lease-get-page")
-        next_cursor = f"{raw_leases[-1]['ip-address']}" if args["count"] == per_page else None
+
+        count = args.get("count")
+        if not isinstance(count, int):
+            raise RuntimeError("Missing or non-int count in lease-get-page response")
+
+        next_cursor = f"{raw_leases[-1]['ip-address']}" if raw_leases and count == per_page else None
         for i, lease in enumerate(raw_leases):
             lease_ip = IPAddress(lease["ip-address"])
             if lease_ip not in subnet:
@@ -299,16 +304,32 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
                     arguments={"from": cursor, "limit": per_page},
                     check=(0, 3),
                 )
+                if not resp or not isinstance(resp[0], dict):
+                    raise RuntimeError("Unexpected response shape from lease-get-page (export)")
                 if resp[0]["result"] == 3:
                     break
+
                 args = resp[0].get("arguments")
-                if args is None:
-                    logger.warning("lease-get-page returned None arguments on server %s", instance.pk)
+                if not isinstance(args, dict):
+                    logger.error("lease-get-page returned non-dict arguments on server %s", instance.pk)
                     messages.error(request, "Failed to fetch leases for export: unexpected Kea response.")
                     return redirect(request.path)
-                raw_leases = args.get("leases") or []
+
+                raw_leases = args.get("leases")
+                if not isinstance(raw_leases, list):
+                    logger.error("lease-get-page returned non-list leases on server %s", instance.pk)
+                    messages.error(request, "Failed to fetch leases for export: unexpected Kea response.")
+                    return redirect(request.path)
+
                 all_leases += format_leases(raw_leases)
-                if args.get("count", 0) < per_page:
+
+                count = args.get("count", 0)
+                if not isinstance(count, int):
+                    logger.error("lease-get-page returned non-int count on server %s", instance.pk)
+                    messages.error(request, "Failed to fetch leases for export: unexpected Kea response.")
+                    return redirect(request.path)
+
+                if count < per_page:
                     break
                 if not raw_leases:
                     break
