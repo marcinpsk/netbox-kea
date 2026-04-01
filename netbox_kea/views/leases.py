@@ -1140,7 +1140,7 @@ def _set_unmatched_reservation(
     ip = lease.get("ip_address", "")
     lease_hw = (lease.get("hw_address") or "").lower()
     subnet_id = lease.get("subnet_id")
-    key = (lease_hw, int(subnet_id)) if lease_hw and subnet_id else None
+    key = (lease_hw, subnet_id) if lease_hw and isinstance(subnet_id, int) else None
 
     # If the MAC lookup failed for this key, don't offer actions.
     if key and key in failed_mac_keys:
@@ -1280,7 +1280,7 @@ def _enrich_leases_with_badges(
             # Don't offer Sync for leases with indeterminate reservation state.
             mac = (lease.get("hw_address") or "").lower()
             subnet_id = lease.get("subnet_id")
-            mac_key = (mac, int(subnet_id)) if mac and subnet_id else None
+            mac_key = (mac, subnet_id) if mac and isinstance(subnet_id, int) else None
             if ip not in failed_ips and (mac_key is None or mac_key not in failed_mac_keys):
                 lease["sync_url"] = sync_url
         if ip and can_change:
