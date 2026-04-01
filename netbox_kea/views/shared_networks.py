@@ -42,13 +42,13 @@ class BaseServerSharedNetworksView(generic.ObjectChildrenView):
         """Fetch shared-networks from config-get and return one dict per network."""
         if check_dhcp_enabled(parent, self.dhcp_version) is not None:
             return []
-        client = parent.get_client(version=self.dhcp_version)
         try:
+            client = parent.get_client(version=self.dhcp_version)
             config = client.command("config-get", service=[f"dhcp{self.dhcp_version}"])
         except KeaException:
             logger.debug("Failed to fetch config-get for shared networks on server %s", parent.pk)
             return []
-        except requests.RequestException:
+        except (requests.RequestException, ValueError):
             logger.debug("Transport error fetching config-get for shared networks on server %s", parent.pk)
             return []
         if config[0]["arguments"] is None:
@@ -286,7 +286,12 @@ class BaseServerSharedNetworkEditView(_KeaChangeMixin, ConditionalLoginRequiredM
     def get(self, request: HttpRequest, pk: int, network_name: str) -> HttpResponse:
         """Render the edit form pre-populated with current values."""
         server = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
-        client = server.get_client(version=self.dhcp_version)
+        try:
+            client = server.get_client(version=self.dhcp_version)
+        except (KeaException, requests.RequestException, ValueError):
+            logger.exception("Failed to create Kea client for shared network edit on server %s", server.pk)
+            messages.error(request, "Failed to connect to Kea: see server logs.")
+            return redirect(self._success_url(server))
         network = self._fetch_network(client, network_name)
 
         if not network:
@@ -342,7 +347,22 @@ class BaseServerSharedNetworkEditView(_KeaChangeMixin, ConditionalLoginRequiredM
 
         # Preserve option-data entries that are not DNS/NTP — we only manage those
         # two via the form and must not silently drop unrelated options on save.
-        client = server.get_client(version=self.dhcp_version)
+        try:
+            client = server.get_client(version=self.dhcp_version)
+        except (KeaException, requests.RequestException, ValueError):
+            logger.exception("Failed to create Kea client for shared network update on server %s", server.pk)
+            messages.error(request, "Failed to connect to Kea: see server logs.")
+            return render(
+                request,
+                "netbox_kea/server_shared_network_edit.html",
+                {
+                    "object": server,
+                    "form": form,
+                    "network_name": network_name,
+                    "dhcp_version": self.dhcp_version,
+                    "cancel_url": self._success_url(server),
+                },
+            )
         existing_network = self._fetch_network(client, network_name)
         if not existing_network:
             logger.warning(
