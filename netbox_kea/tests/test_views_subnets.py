@@ -1896,10 +1896,13 @@ class TestSubnetEditNetworkRollback(_ViewTestBase):
 
     @patch("netbox_kea.models.KeaClient")
     def test_network_subnet_del_fails_triggers_rollback_and_outer_except(self, MockKeaClient):
-        """old→new network change: del(old) raises RuntimeError → rollback del(new) also fails.
+        """old→new network change: del(old) raises KeaException → rollback del(new) also fails.
 
-        Covers lines 3122-3133 (rollback attempt) and 3137-3139 (outer except Exception).
+        Covers the rollback path where Kea definitively rejects the del and
+        a rollback of the add is attempted.
         """
+        from netbox_kea.kea import KeaException
+
         mock_client = MockKeaClient.return_value
 
         # config-get returns subnet 42 in "net-old", with "net-new" also available
@@ -1921,10 +1924,10 @@ class TestSubnetEditNetworkRollback(_ViewTestBase):
         mock_client.command.return_value = config_resp
         mock_client.subnet_update.return_value = None
         mock_client.network_subnet_add.return_value = None
-        # Both del calls raise RuntimeError (not PartialPersistError)
+        # del(old) raises KeaException (definitive rejection) → rollback del(new) also fails
         mock_client.network_subnet_del.side_effect = [
-            RuntimeError("del old failed"),
-            RuntimeError("rollback del new also failed"),
+            KeaException({"result": 1, "text": "del old failed"}),
+            KeaException({"result": 1, "text": "rollback del new also failed"}),
         ]
 
         url = reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, 42])
@@ -1944,6 +1947,52 @@ class TestSubnetEditNetworkRollback(_ViewTestBase):
         self.assertEqual(response.status_code, 302)
         # Both del calls were made (old + rollback of new)
         self.assertEqual(mock_client.network_subnet_del.call_count, 2)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_network_subnet_del_transport_error_skips_rollback(self, MockKeaClient):
+        """old→new network change: del(old) raises transport error → NO rollback attempted.
+
+        Transport errors (RequestException) leave state ambiguous, so rollback is skipped.
+        """
+        mock_client = MockKeaClient.return_value
+
+        config_resp = [
+            {
+                "result": 0,
+                "arguments": {
+                    "Dhcp4": {
+                        "subnet4": [],
+                        "shared-networks": [
+                            {"name": "net-old", "subnet4": [{"id": 42}]},
+                            {"name": "net-new", "subnet4": []},
+                        ],
+                        "option-data": [],
+                    }
+                },
+            }
+        ]
+        mock_client.command.return_value = config_resp
+        mock_client.subnet_update.return_value = None
+        mock_client.network_subnet_add.return_value = None
+        # del(old) raises transport error — state is ambiguous
+        mock_client.network_subnet_del.side_effect = ConnectionError("network unreachable")
+
+        url = reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, 42])
+        response = self.client.post(
+            url,
+            {
+                "subnet_cidr": "10.0.0.0/24",
+                "shared_network": "net-new",
+                "current_network": "net-old",
+                "pools": "",
+                "gateway": "",
+                "dns_servers": "",
+                "ntp_servers": "",
+            },
+        )
+        self.assertEqual(response.status_code, 302)
+        # Only 1 del call (old) — no rollback attempted for transport errors
+        self.assertEqual(mock_client.network_subnet_del.call_count, 1)
 
 
 # ---------------------------------------------------------------------------

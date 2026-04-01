@@ -244,8 +244,8 @@ class TestSubnetOptionsView(_ViewTestBase):
             },
         )
         call_kwargs = MockKeaClient.return_value.subnet_update_options.call_args
-        # options argument should have only 1 item (dns row deleted)
-        options_arg = next(v for v in list(call_kwargs[0]) + list(call_kwargs[1].values()) if isinstance(v, list))
+        # options argument — use explicit keyword or positional lookup
+        options_arg = call_kwargs.kwargs.get("options") or (call_kwargs.args[2] if len(call_kwargs.args) > 2 else [])
         self.assertEqual(len(options_arg), 1)
         self.assertEqual(options_arg[0]["name"], "routers")
 
@@ -789,7 +789,7 @@ class TestSubnetOptionsPostInvalid(_ViewTestBase):
         if call_kwargs:
             options = (call_kwargs.kwargs or {}).get("options") or (call_kwargs.args[2] if call_kwargs.args else [])
             always_send_opts = [o for o in options if o.get("always-send")]
-            self.assertTrue(len(always_send_opts) >= 1)
+            self.assertGreaterEqual(len(always_send_opts), 1)
 
 
 # ---------------------------------------------------------------------------
@@ -841,7 +841,7 @@ class TestServerOptionsPostInvalid(_ViewTestBase):
         if call_kwargs:
             options = (call_kwargs.kwargs or {}).get("options") or []
             always_send_opts = [o for o in options if o.get("always-send")]
-            self.assertTrue(len(always_send_opts) >= 1)
+            self.assertGreaterEqual(len(always_send_opts), 1)
 
 
 # ---------------------------------------------------------------------------
@@ -1370,3 +1370,5 @@ class TestCombinedStatusBadgeError(_ViewTestBase):
         url = reverse("plugins:netbox_kea:combined_server_status_badge", args=[self.server.pk])
         response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
+        content = response.content.decode()
+        self.assertIn("offline", content.lower())

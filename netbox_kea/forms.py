@@ -1148,6 +1148,21 @@ class SharedNetworkEditForm(forms.Form):
                 raise forms.ValidationError(f"Invalid DNS server IP address '{entry}': {exc}") from exc
         return ",".join(entries)
 
+    def clean_ntp_servers(self) -> str:
+        """Validate each NTP server IP address."""
+        import ipaddress
+
+        raw = self.cleaned_data.get("ntp_servers", "").strip()
+        if not raw:
+            return raw
+        entries = [s.strip() for s in raw.split(",") if s.strip()]
+        for entry in entries:
+            try:
+                ipaddress.ip_address(entry)
+            except ValueError as exc:  # noqa: PERF203
+                raise forms.ValidationError(f"Invalid NTP server IP address '{entry}': {exc}") from exc
+        return ",".join(entries)
+
 
 # ---------------------------------------------------------------------------
 # Option-def form

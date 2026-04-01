@@ -253,7 +253,7 @@ class TestBulkReservationSyncEdgeCases(_ViewTestBase):
     @patch("netbox_kea.sync.sync_reservation_to_netbox")
     @patch("netbox_kea.views.sync_views._fetch_reservations_from_server")
     def test_sync_creates_and_updates(self, mock_fetch, mock_sync):
-        """Lines 4389-4390: created and updated counters incremented correctly."""
+        """Created and updated counters incremented correctly."""
         mock_fetch.return_value = [
             {"ip-address": "10.0.0.1", "hw-address": "aa:bb:cc:dd:ee:01"},
             {"ip-address": "10.0.0.2", "hw-address": "aa:bb:cc:dd:ee:02"},
@@ -261,13 +261,13 @@ class TestBulkReservationSyncEdgeCases(_ViewTestBase):
         mock_sync.side_effect = [(MagicMock(), True), (MagicMock(), False)]
         response = self.client.post(self._url(), follow=True)
         msgs = [str(m) for m in response.context["messages"]]
-        self.assertTrue(any("1 created, 1 updated" in m for m in msgs))
+        self.assertIn("Bulk sync complete: 1 created, 1 updated.", msgs)
         self.assertEqual(mock_sync.call_count, 2)
 
     @patch("netbox_kea.sync.sync_reservation_to_netbox")
     @patch("netbox_kea.views.sync_views._fetch_reservations_from_server")
     def test_sync_exception_counted_as_error(self, mock_fetch, mock_sync):
-        """Lines 4391-4394, 4397: sync exception increments errors, warning shown."""
+        """Sync exception increments errors, warning shown."""
         mock_fetch.return_value = [
             {"ip-address": "10.0.0.1"},
             {"ip-address": "10.0.0.2"},
@@ -275,7 +275,7 @@ class TestBulkReservationSyncEdgeCases(_ViewTestBase):
         mock_sync.side_effect = [ValueError("db error"), (MagicMock(), True)]
         response = self.client.post(self._url(), follow=True)
         msgs = [str(m) for m in response.context["messages"]]
-        self.assertTrue(any("1 created, 0 updated, 1 errors" in m for m in msgs))
+        self.assertIn("Bulk sync: 1 created, 0 updated, 1 errors.", msgs)
         self.assertEqual(mock_sync.call_count, 2)
 
 

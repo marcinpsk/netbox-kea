@@ -84,7 +84,7 @@ def _add_lease_journal(
         )
     except ImportError:
         pass  # JournalEntry unavailable on older NetBox versions
-    except (ProgrammingError, OperationalError):
+    except (ProgrammingError, OperationalError, DatabaseError):
         logger.debug("Failed to create lease journal entry", exc_info=True)
 
 
@@ -190,18 +190,21 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
 
         table = self.get_table([], request)
         form = self.form(request.GET) if "q" in request.GET else self.form()
-        return {
+        can_change = Server.objects.restrict(request.user, "change").filter(pk=instance.pk).exists()
+        ctx: dict[str, Any] = {
             "form": form,
             "table": table,
-            "add_url": reverse(
+        }
+        if can_change:
+            ctx["add_url"] = reverse(
                 f"plugins:netbox_kea:server_lease{self.dhcp_version}_add",
                 args=[instance.pk],
-            ),
-            "bulk_import_url": reverse(
+            )
+            ctx["bulk_import_url"] = reverse(
                 f"plugins:netbox_kea:server_lease{self.dhcp_version}_bulk_import",
                 args=[instance.pk],
-            ),
-        }
+            )
+        return ctx
 
     def get_export(self, request: HttpRequest, **kwargs) -> HttpResponse:
         """Stream all matching leases as a CSV download."""

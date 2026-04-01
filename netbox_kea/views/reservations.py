@@ -284,10 +284,10 @@ class ServerReservations4View(generic.ObjectView):
     def get_extra_context(self, request: HttpRequest, instance: Server) -> dict[str, Any]:
         """Fetch reservations from Kea, apply search filters, and build the table."""
         server: Server = instance
-        client = server.get_client(version=4)
         hook_available = True
         reservations: list[dict] = []
         try:
+            client = server.get_client(version=4)
             source_index, from_index, limit = 0, 0, 100
             while True:
                 page, next_from, next_source = client.reservation_get_page(
@@ -359,10 +359,10 @@ class ServerReservations6View(generic.ObjectView):
     def get_extra_context(self, request: HttpRequest, instance: Server) -> dict[str, Any]:
         """Fetch DHCPv6 reservations from Kea, apply search filters, and build the table."""
         server: Server = instance
-        client = server.get_client(version=6)
         hook_available = True
         reservations: list[dict] = []
         try:
+            client = server.get_client(version=6)
             source_index, from_index, limit = 0, 0, 100
             while True:
                 page, next_from, next_source = client.reservation_get_page(
@@ -471,8 +471,11 @@ class ServerReservation4AddView(_KeaChangeMixin, generic.ObjectView):
             if option_data:
                 reservation["option-data"] = option_data
             client = server.get_client(version=4)
-            # F4: Warn (non-blocking) when the reservation IP is inside an existing pool
-            _warn_reservation_pool_overlap(request, client, 4, cd["subnet_id"], cd["ip_address"])
+            # Advisory warning when the reservation IP is inside an existing pool (non-fatal)
+            try:
+                _warn_reservation_pool_overlap(request, client, 4, cd["subnet_id"], cd["ip_address"])
+            except Exception:  # noqa: BLE001
+                logger.debug("Pool overlap check failed for %s", cd.get("ip_address"), exc_info=True)
             try:
                 client.reservation_add("dhcp4", reservation)
                 messages.success(request, f"Reservation for {cd['ip_address']} created.")
@@ -558,10 +561,13 @@ class ServerReservation6AddView(_KeaChangeMixin, generic.ObjectView):
             if option_data:
                 reservation["option-data"] = option_data
             client = server.get_client(version=6)
-            # F4: Warn (non-blocking) when any reservation IP is inside an existing pool
-            for ip_str in reservation.get("ip-addresses") or []:
-                if ip_str:
-                    _warn_reservation_pool_overlap(request, client, 6, cd["subnet_id"], ip_str)
+            # Advisory warning when any reservation IP is inside an existing pool (non-fatal)
+            try:
+                for ip_str in reservation.get("ip-addresses") or []:
+                    if ip_str:
+                        _warn_reservation_pool_overlap(request, client, 6, cd["subnet_id"], ip_str)
+            except Exception:  # noqa: BLE001
+                logger.debug("Pool overlap check failed for v6 reservation", exc_info=True)
             try:
                 client.reservation_add("dhcp6", reservation)
                 messages.success(request, "DHCPv6 reservation created.")

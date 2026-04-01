@@ -62,6 +62,8 @@ class BaseServerDHCPSubnetsView(generic.ObjectChildrenView):
                 )
                 return []
             dhcp_conf = args.get(f"Dhcp{self.dhcp_version}", {})
+            if not isinstance(dhcp_conf, dict):
+                dhcp_conf = {}
         except (KeaException, requests.RequestException, ValueError, IndexError, KeyError):
             logger.exception("Failed to fetch subnet config for dhcp%s on server %s", self.dhcp_version, server.pk)
             messages.error(request, "Failed to load subnet configuration from Kea.")
@@ -453,6 +455,8 @@ class _BaseSubnetAddView(_KeaChangeMixin, generic.ObjectView):
         if not isinstance(args, dict):
             raise ValueError(f"config-get returned unexpected arguments: {type(args)}")
         dhcp_conf = args.get(f"Dhcp{self.dhcp_version}", {})
+        if not isinstance(dhcp_conf, dict):
+            dhcp_conf = {}
         networks = dhcp_conf.get("shared-networks", [])
         choices: list[tuple[str, str]] = [("", "— (global pool) —")]
         for sn in networks:
@@ -771,7 +775,12 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
         if subnet is None:
             messages.error(request, "Could not load subnet configuration from Kea.")
             return redirect(self._subnets_url(pk))
-        client = server.get_client(version=self.dhcp_version)
+        try:
+            client = server.get_client(version=self.dhcp_version)
+        except (KeaException, requests.RequestException, ValueError):
+            logger.exception("Failed to get Kea client for server %s (subnet edit GET)", pk)
+            messages.error(request, "Unable to connect to the Kea server.")
+            return redirect(self._subnets_url(pk))
         network_choices, current_network, dhcp_conf = self._get_network_data(client, subnet_id)
         if current_network is None:
             logger.warning(
@@ -806,7 +815,12 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
     def post(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:  # noqa: C901
         server = self.get_object(pk=pk)
         return_url = self._subnets_url(pk)
-        client = server.get_client(version=self.dhcp_version)
+        try:
+            client = server.get_client(version=self.dhcp_version)
+        except (KeaException, requests.RequestException, ValueError):
+            logger.exception("Failed to get Kea client for server %s (subnet edit POST)", pk)
+            messages.error(request, "Unable to connect to the Kea server.")
+            return redirect(return_url)
         network_choices, server_current_network, _ = self._get_network_data(client, subnet_id)
         if server_current_network is None:
             logger.warning(
@@ -918,7 +932,8 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
                         if isinstance(del_exc, PartialPersistError):
                             # del is live (running config changed); do not rollback
                             raise del_exc
-                        if new_network:
+                        if isinstance(del_exc, KeaException) and new_network:
+                            # Kea definitively rejected the del — safe to rollback the add
                             try:
                                 client.network_subnet_del(
                                     version=self.dhcp_version, name=new_network, subnet_id=subnet_id
@@ -929,6 +944,15 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
                                     subnet_id,
                                     pk,
                                 )
+                        elif not isinstance(del_exc, KeaException):
+                            # Transport/parse error — state is ambiguous, do NOT rollback
+                            logger.warning(
+                                "network_subnet_del for subnet %s on server %s failed with ambiguous error; "
+                                "skipping rollback to avoid inconsistent state",
+                                subnet_id,
+                                pk,
+                                exc_info=True,
+                            )
                         raise del_exc
                 if add_partial_error is not None:
                     raise add_partial_error
