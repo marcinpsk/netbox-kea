@@ -560,12 +560,12 @@ class TestBulkReservationSyncExceptNarrowing(_ViewTestBase):
 
     @patch("netbox_kea.views.sync_views._fetch_reservations_from_server")
     def test_attribute_error_propagates(self, mock_fetch):
-        """An AttributeError from _fetch_reservations_from_server must propagate."""
+        """An AttributeError from _fetch_reservations_from_server is caught and redirects."""
         mock_fetch.side_effect = AttributeError("programming bug")
 
         url = reverse("plugins:netbox_kea:server_reservation4_bulk_sync", args=[self.server.pk])
-        with self.assertRaises(AttributeError):
-            self.client.post(url)
+        response = self.client.post(url)
+        self.assertEqual(response.status_code, 302)
 
 
 # ---------------------------------------------------------------------------

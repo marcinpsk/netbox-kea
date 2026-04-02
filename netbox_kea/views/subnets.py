@@ -655,11 +655,12 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
             logger.warning("Failed to fetch subnet %s for editing", subnet_id)
             return None
 
-    def _get_network_data(self, client: "KeaClient", subnet_id: int) -> tuple[list[tuple[str, str]], str, dict]:
+    def _get_network_data(self, client: "KeaClient", subnet_id: int) -> tuple[list[tuple[str, str]], str | None, dict]:
         """Return ``(choices, current_network_name, dhcp_conf)`` for the shared-network dropdown.
 
         ``choices`` is suitable for a ``ChoiceField``: ``[("", "— global pool —"), ("net-a", "net-a"), ...]``.
-        ``current_network_name`` is the name of the network the subnet currently belongs to, or ``""``.
+        ``current_network_name`` is the name of the network the subnet currently belongs to,
+        ``""`` for global pool, or ``None`` when the network state could not be determined.
         ``dhcp_conf`` is the raw Dhcp4/Dhcp6 config dict (for deriving inherited options).
         """
         try:

@@ -1365,9 +1365,9 @@ class AmbiguousConfigSetError(PartialPersistError):
 
     def __init__(self, service: str, cause: Exception) -> None:
         super().__init__(service, cause)
-        self.response["text"] = (
-            f"config-set reply lost/malformed for service {service!r} — change may or may not be live"
-        )
+        ambiguous_text = f"config-set reply lost/malformed for service {service!r} — change may or may not be live"
+        self.response["text"] = ambiguous_text
+        self.args = (f"partial persist error for {service!r}: {ambiguous_text}",)
 
 
 def check_response(resp: list[KeaResponse], ok_codes: Sequence[int]) -> None:
