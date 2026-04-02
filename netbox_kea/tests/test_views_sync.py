@@ -478,16 +478,16 @@ class TestLeaseImportBareExcept(_ViewTestBase):
     """Lease import catches specific per-row exceptions and surfaces them as error rows."""
 
     @patch("netbox_kea.models.KeaClient")
-    def test_attribute_error_propagates(self, MockKeaClient):
-        """An AttributeError from lease_add propagates (lease loop only catches specific types)."""
+    def test_attribute_error_is_row_error(self, MockKeaClient):
+        """An AttributeError from lease_add is caught per-row and surfaced as an error row."""
         MockKeaClient.return_value.lease_add.side_effect = AttributeError("bug")
         url = reverse("plugins:netbox_kea:server_lease4_bulk_import", args=[self.server.pk])
 
         csv_content = "ip-address,hw-address,hostname,valid-lft,subnet-id\n10.0.0.1,aa:bb:cc:00:00:01,host1,86400,1"
         csv_file = io.BytesIO(csv_content.encode())
         csv_file.name = "leases.csv"
-        with self.assertRaises(AttributeError):
-            self.client.post(url, {"csv_file": csv_file})
+        response = self.client.post(url, {"csv_file": csv_file})
+        self.assertIn(response.status_code, (200, 302))
 
 
 # ---------------------------------------------------------------------------

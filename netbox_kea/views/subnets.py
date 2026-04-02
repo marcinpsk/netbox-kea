@@ -69,7 +69,7 @@ class BaseServerDHCPSubnetsView(generic.ObjectChildrenView):
             messages.error(request, "Failed to load subnet configuration from Kea.")
             return []
         can_change = Server.objects.restrict(request.user, "change").filter(pk=server.pk).exists()
-        subnets = dhcp_conf.get(f"subnet{self.dhcp_version}", [])
+        subnets = dhcp_conf.get(f"subnet{self.dhcp_version}") or []
         subnet_list = [
             {
                 "id": s["id"],
@@ -85,7 +85,7 @@ class BaseServerDHCPSubnetsView(generic.ObjectChildrenView):
             if "id" in s and "subnet" in s
         ]
 
-        for sn in dhcp_conf.get("shared-networks", []):
+        for sn in dhcp_conf.get("shared-networks") or []:
             subnet_list.extend(
                 {
                     "id": s["id"],
@@ -98,7 +98,7 @@ class BaseServerDHCPSubnetsView(generic.ObjectChildrenView):
                     "pools": [p.get("pool", "") for p in s.get("pools", []) if p.get("pool")],
                     "can_change": can_change,
                 }
-                for s in sn.get(f"subnet{self.dhcp_version}", [])
+                for s in sn.get(f"subnet{self.dhcp_version}") or []
             )
 
         # Enrich with utilisation stats when stat_cmds hook is available.
@@ -457,7 +457,7 @@ class _BaseSubnetAddView(_KeaChangeMixin, generic.ObjectView):
         dhcp_conf = args.get(f"Dhcp{self.dhcp_version}", {})
         if not isinstance(dhcp_conf, dict):
             dhcp_conf = {}
-        networks = dhcp_conf.get("shared-networks", [])
+        networks = dhcp_conf.get("shared-networks") or []
         choices: list[tuple[str, str]] = [("", "— (global pool) —")]
         for sn in networks:
             name = sn.get("name", "")
@@ -672,7 +672,7 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
             if not isinstance(dhcp_conf, dict):
                 logger.warning("config-get returned non-dict Dhcp%s config: %r", self.dhcp_version, type(dhcp_conf))
                 dhcp_conf = {}
-            networks = dhcp_conf.get("shared-networks", [])
+            networks = dhcp_conf.get("shared-networks") or []
         except (KeaException, requests.RequestException, ValueError):
             logger.warning("Failed to fetch shared networks for subnet edit dropdown")
             return [("", "— (global pool) —")], None, {}
@@ -754,7 +754,7 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
 
         network_opts: dict[str, str] = {}
         if current_network:
-            for sn in dhcp_conf.get("shared-networks", []):
+            for sn in dhcp_conf.get("shared-networks") or []:
                 if sn.get("name") == current_network:
                     network_opts = _parse_opts(sn.get("option-data", []))
                     break

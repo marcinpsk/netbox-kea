@@ -520,6 +520,9 @@ class _BaseBulkLeaseImportView(_KeaChangeMixin, ConditionalLoginRequiredMixin, V
             except ValueError:
                 logger.exception("Data error importing lease row %s", row)
                 error_rows.append({"row": row, "error": "Invalid response from Kea — could not parse server reply."})
+            except Exception:  # noqa: BLE001 — intentionally catch all to surface per-row errors without aborting import
+                logger.exception("Unexpected error importing lease row %s", row)
+                error_rows.append({"row": row, "error": "An unexpected error occurred."})
 
         result = {
             "created": created,

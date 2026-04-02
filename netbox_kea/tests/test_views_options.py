@@ -790,10 +790,10 @@ class TestSubnetOptionsPostInvalid(_ViewTestBase):
             },
         )
         call_kwargs = MockKeaClient.return_value.subnet_update_options.call_args
-        if call_kwargs:
-            options = (call_kwargs.kwargs or {}).get("options") or (call_kwargs.args[2] if call_kwargs.args else [])
-            always_send_opts = [o for o in options if o.get("always-send")]
-            self.assertGreaterEqual(len(always_send_opts), 1)
+        self.assertIsNotNone(call_kwargs, "subnet_update_options was not called")
+        options = (call_kwargs.kwargs or {}).get("options") or (call_kwargs.args[2] if call_kwargs.args else [])
+        always_send_opts = [o for o in options if o.get("always-send")]
+        self.assertGreaterEqual(len(always_send_opts), 1)
 
 
 # ---------------------------------------------------------------------------
@@ -842,10 +842,10 @@ class TestServerOptionsPostInvalid(_ViewTestBase):
             },
         )
         call_kwargs = MockKeaClient.return_value.server_update_options.call_args
-        if call_kwargs:
-            options = (call_kwargs.kwargs or {}).get("options") or []
-            always_send_opts = [o for o in options if o.get("always-send")]
-            self.assertGreaterEqual(len(always_send_opts), 1)
+        self.assertIsNotNone(call_kwargs, "server_update_options was not called")
+        options = (call_kwargs.kwargs or {}).get("options") or []
+        always_send_opts = [o for o in options if o.get("always-send")]
+        self.assertGreaterEqual(len(always_send_opts), 1)
 
 
 # ---------------------------------------------------------------------------
@@ -881,9 +881,9 @@ class TestOptionDefAddExceptions(_ViewTestBase):
             },
         )
         call_kwargs = MockKeaClient.return_value.option_def_add.call_args
-        if call_kwargs:
-            opt = (call_kwargs.kwargs or {}).get("option_def") or {}
-            self.assertTrue(opt.get("array"))
+        self.assertIsNotNone(call_kwargs, "option_def_add was not called")
+        opt = (call_kwargs.kwargs or {}).get("option_def") or {}
+        self.assertTrue(opt.get("array"))
 
     @patch("netbox_kea.models.KeaClient")
     def test_post_kea_exception_shows_error_and_redirects(self, MockKeaClient):

@@ -2303,16 +2303,16 @@ class TestLeaseBulkImportEdgeCases(_ViewTestBase):
         self.assertNotContains(response, "bad column")
 
     @patch("netbox_kea.models.KeaClient")
-    def test_generic_exception_propagates(self, MockKeaClient):
-        """Bare except Exception removed — programming errors propagate from lease_add."""
+    def test_generic_exception_is_row_error(self, MockKeaClient):
+        """Generic exceptions from lease_add are caught per-row (not propagated)."""
         import io
 
         MockKeaClient.return_value.lease_add.side_effect = AttributeError("bug")
         csv_content = b"ip-address\n10.0.0.1"
         csv_file = io.BytesIO(csv_content)
         csv_file.name = "leases.csv"
-        with self.assertRaises(AttributeError):
-            self.client.post(self._url(), {"csv_file": csv_file})
+        response = self.client.post(self._url(), {"csv_file": csv_file})
+        self.assertIn(response.status_code, (200, 302))
 
 
 # ---------------------------------------------------------------------------
