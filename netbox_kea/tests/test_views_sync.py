@@ -210,6 +210,7 @@ class TestBulkReservationImportEdgeCases(_ViewTestBase):
         # Response should include a form error about invalid CSV — message must be generic (no raw exception text)
         self.assertContains(response, "csv_file", msg_prefix="Expected CSV error in form")
         self.assertContains(response, "parsing failed", msg_prefix="Expected generic error message")
+        MockKeaClient.return_value.reservation_add.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -331,6 +332,7 @@ class TestReservation4SyncViewFetchLiveData(_ViewTestBase):
         mock_sync.assert_called_once()
         data = mock_sync.call_args[0][0]
         self.assertEqual(data["hostname"], "livehost")
+        MockKeaClient.return_value.reservation_get_by_ip.assert_called_once_with(4, "10.0.0.5")
 
     @patch("netbox_kea.models.KeaClient")
     def test_falls_back_to_synthetic_when_reservation_not_found(self, MockKeaClient):
@@ -511,6 +513,10 @@ class TestImportLoopValueError(_ViewTestBase):
         response = self.client.post(url, {"csv_file": csv_file})
         self.assertEqual(response.status_code, 200)
         self.assertEqual(call_count["n"], 2)
+        result = response.context["result"]
+        self.assertEqual(result["errors"], 1)
+        self.assertEqual(len(result["error_rows"]), 1)
+        self.assertIn("Invalid response from Kea", result["error_rows"][0]["error"])
 
     @patch("netbox_kea.models.KeaClient")
     def test_lease_import_value_error_is_row_error(self, MockKeaClient):
@@ -533,6 +539,10 @@ class TestImportLoopValueError(_ViewTestBase):
         response = self.client.post(url, {"csv_file": csv_file})
         self.assertEqual(response.status_code, 200)
         self.assertEqual(call_count["n"], 2)
+        result = response.context["result"]
+        self.assertEqual(result["errors"], 1)
+        self.assertEqual(len(result["error_rows"]), 1)
+        self.assertIn("Invalid response from Kea", result["error_rows"][0]["error"])
 
 
 # ---------------------------------------------------------------------------

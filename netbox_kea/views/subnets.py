@@ -458,7 +458,7 @@ class _BaseSubnetAddView(_KeaChangeMixin, generic.ObjectView):
 
         """
         resp = client.command("config-get", service=[f"dhcp{self.dhcp_version}"])
-        args = resp[0].get("arguments") if resp else None
+        args = resp[0].get("arguments") if resp and isinstance(resp[0], dict) else None
         if not isinstance(args, dict):
             raise ValueError(f"config-get returned unexpected arguments: {type(args)}")
         dhcp_conf = args.get(f"Dhcp{self.dhcp_version}", {})
@@ -681,7 +681,7 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
         """
         try:
             resp = client.command("config-get", service=[f"dhcp{self.dhcp_version}"])
-            args = resp[0].get("arguments") if resp else None
+            args = resp[0].get("arguments") if resp and isinstance(resp[0], dict) else None
             if not isinstance(args, dict):
                 logger.warning("config-get returned unexpected arguments for network data: %r", args)
                 return [("", "— (global pool) —")], None, {}
@@ -955,7 +955,7 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
                                 client.network_subnet_del(
                                     version=self.dhcp_version, name=new_network, subnet_id=subnet_id
                                 )
-                            except Exception:
+                            except (KeaException, requests.RequestException, ValueError):
                                 logger.exception(
                                     "Rollback of network_subnet_add failed for subnet %s on server %s",
                                     subnet_id,

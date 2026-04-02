@@ -515,6 +515,9 @@ class BaseServerLeasesDeleteView(GetReturnURLMixin, generic.ObjectView, metaclas
         """Show confirmation page or delete leases if confirmed."""
         instance: Server = self.get_object(**kwargs)
 
+        if resp := check_dhcp_enabled(instance, self.dhcp_version):
+            return resp
+
         if not request.user.has_perm("netbox_kea.bulk_delete_lease_from_server", obj=instance):
             return HttpResponseForbidden("This user does not have permission to delete DHCP leases.")
 
@@ -673,6 +676,10 @@ class _BaseLeaseEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin, View):
     def post(self, request: HttpRequest, pk: int, ip_address: str) -> HttpResponse:
         """Validate form and apply the update via ``lease{v}-update``."""
         server = self._get_server(pk)
+
+        if resp := check_dhcp_enabled(server, self.dhcp_version):
+            return resp
+
         form = self.form_class(request.POST)
         if not form.is_valid():
             return render(
@@ -754,6 +761,10 @@ class _BaseLeaseAddView(_KeaChangeMixin, generic.ObjectView):
     def post(self, request: HttpRequest, pk: int) -> HttpResponse:
         """Validate form and create the lease via Kea."""
         server = self.get_object(pk=pk)
+
+        if resp := check_dhcp_enabled(server, self.dhcp_version):
+            return resp
+
         form = self.form_class(request.POST)
         cancel_url = self._leases_url(server)
         if form.is_valid():
@@ -920,7 +931,7 @@ def _fetch_reservation_by_ip_for_leases(
         ip = lease.get("ip_address", "")
         subnet_id = lease.get("subnet_id")
         if not ip or not subnet_id:
-            return ip, None, True
+            return ip, None, None
         with client.clone() as worker_client:  # requests.Session is not thread-safe
             try:
                 r = worker_client.reservation_get(service, subnet_id=int(subnet_id), ip_address=ip)
