@@ -320,6 +320,8 @@ class KeaClient:
                 continue
             if target not in network:
                 continue
+            if "id" not in subnet:
+                continue
             reservation = self.reservation_get(service, subnet["id"], ip_address=ip_address)
             if reservation is not None:
                 return reservation
@@ -963,7 +965,12 @@ class KeaClient:
         )
         if resp[0]["result"] == 3:
             return None
-        return resp[0].get("arguments")
+        args = resp[0].get("arguments")
+        if not isinstance(args, dict):
+            raise ValueError(
+                f"lease{version}-get returned result=0 but arguments is {type(args).__name__}, expected dict"
+            )
+        return args
 
     def dhcp_disable(self, service: str, max_period: int | None = None) -> None:
         """Temporarily disable DHCP processing on *service*.

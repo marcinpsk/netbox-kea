@@ -77,8 +77,8 @@ class BaseServerDHCPSubnetsView(generic.ObjectChildrenView):
                 "dhcp_version": self.dhcp_version,
                 "server_pk": server.pk,
                 "_subnet_sort_key": int(ipaddress.ip_network(s["subnet"], strict=False).network_address),
-                "options": format_option_data(s.get("option-data", []), version=self.dhcp_version),
-                "pools": [p.get("pool", "") for p in s.get("pools", []) if p.get("pool")],
+                "options": format_option_data(s.get("option-data") or [], version=self.dhcp_version),
+                "pools": [p.get("pool", "") for p in (s.get("pools") or []) if p.get("pool")],
                 "can_change": can_change,
             }
             for s in subnets
@@ -94,8 +94,8 @@ class BaseServerDHCPSubnetsView(generic.ObjectChildrenView):
                     "dhcp_version": self.dhcp_version,
                     "server_pk": server.pk,
                     "_subnet_sort_key": int(ipaddress.ip_network(s["subnet"], strict=False).network_address),
-                    "options": format_option_data(s.get("option-data", []), version=self.dhcp_version),
-                    "pools": [p.get("pool", "") for p in s.get("pools", []) if p.get("pool")],
+                    "options": format_option_data(s.get("option-data") or [], version=self.dhcp_version),
+                    "pools": [p.get("pool", "") for p in (s.get("pools") or []) if p.get("pool")],
                     "can_change": can_change,
                 }
                 for s in sn.get(f"subnet{self.dhcp_version}") or []
@@ -258,11 +258,11 @@ def _warn_reservation_pool_overlap(
             service=[f"dhcp{version}"],
             arguments={"id": subnet_id},
         )
-        subnet_list = resp[0].get("arguments", {}).get(f"subnet{version}", []) or []
+        subnet_list = (resp[0].get("arguments") or {}).get(f"subnet{version}", []) or []
         subnet = subnet_list[0] if subnet_list else {}
         ip = IPAddress(ip_str)
 
-        for pool_entry in subnet.get("pools", []):
+        for pool_entry in subnet.get("pools") or []:
             ps = pool_entry.get("pool", "")
             if not ps:
                 continue
@@ -649,7 +649,7 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
                 service=[f"dhcp{self.dhcp_version}"],
                 arguments={"id": subnet_id},
             )
-            subnets = resp[0].get("arguments", {}).get(key, [])
+            subnets = (resp[0].get("arguments") or {}).get(key, [])
             return subnets[0] if subnets else None
         except (KeaException, requests.RequestException, ValueError, KeyError, IndexError, TypeError):
             logger.warning("Failed to fetch subnet %s for editing", subnet_id)
@@ -694,12 +694,12 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
         initial: dict[str, Any] = {"subnet_cidr": subnet.get("subnet", "")}
 
         # Pools
-        pools = subnet.get("pools", [])
+        pools = subnet.get("pools") or []
         if pools:
             initial["pools"] = "\n".join(p.get("pool", "") for p in pools if p.get("pool"))
 
         # Options
-        for opt in subnet.get("option-data", []):
+        for opt in subnet.get("option-data") or []:
             name = opt.get("name", "")
             data = opt.get("data", "")
             if name == "routers":
@@ -750,13 +750,13 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
                     result["ntp_servers"] = data
             return result
 
-        global_opts = _parse_opts(dhcp_conf.get("option-data", []))
+        global_opts = _parse_opts(dhcp_conf.get("option-data") or [])
 
         network_opts: dict[str, str] = {}
         if current_network:
             for sn in dhcp_conf.get("shared-networks") or []:
                 if sn.get("name") == current_network:
-                    network_opts = _parse_opts(sn.get("option-data", []))
+                    network_opts = _parse_opts(sn.get("option-data") or [])
                     break
 
         inherited: dict[str, dict[str, str]] = {}
@@ -927,7 +927,7 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
                 if old_network:
                     try:
                         client.network_subnet_del(version=self.dhcp_version, name=old_network, subnet_id=subnet_id)
-                    except Exception as del_exc:
+                    except (KeaException, PartialPersistError, requests.RequestException, ValueError) as del_exc:
                         # add succeeded but del failed — only rollback if mutation is NOT already live
                         if isinstance(del_exc, PartialPersistError):
                             # del is live (running config changed); do not rollback
@@ -1013,7 +1013,7 @@ class _BaseSubnetDeleteView(_KeaChangeMixin, generic.ObjectView):
                 arguments={"id": subnet_id},
             )
             key = f"subnet{self.dhcp_version}"
-            subnet_cidr = resp[0].get("arguments", {}).get(key, [{}])[0].get("subnet", "")
+            subnet_cidr = (resp[0].get("arguments") or {}).get(key, [{}])[0].get("subnet", "")
         except (KeaException, requests.RequestException, ValueError, KeyError, IndexError):
             logger.debug("Could not resolve subnet CIDR for subnet %s on server %s", subnet_id, pk)
         return render(
@@ -1087,7 +1087,7 @@ class _BaseSubnetWipeView(_KeaChangeMixin, generic.ObjectView):
                 arguments={"id": subnet_id},
             )
             key = f"subnet{self.dhcp_version}"
-            subnet_cidr = resp[0].get("arguments", {}).get(key, [{}])[0].get("subnet", "")
+            subnet_cidr = (resp[0].get("arguments") or {}).get(key, [{}])[0].get("subnet", "")
         except (KeaException, requests.RequestException, ValueError, IndexError):
             logger.debug("CIDR lookup failed in wipe GET for subnet %s on server %s", subnet_id, pk)
         return render(

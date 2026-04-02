@@ -124,13 +124,13 @@ class ServerReservation4SyncView(_BaseSyncView):
             reservation = client.reservation_get_by_ip(4, ip_str)
             return reservation if reservation else None
         except (KeaException, requests.RequestException, ValueError):
-            logger.debug("Could not fetch live reservation4 data for %s", ip_str)
+            logger.warning("Could not fetch live reservation4 data for %s", ip_str, exc_info=True)
             return None
 
     def _sync(self, data: dict):
         from ..sync import sync_reservation_to_netbox
 
-        return sync_reservation_to_netbox(data)
+        return sync_reservation_to_netbox(data, cleanup=False)
 
 
 class ServerReservation6SyncView(_BaseSyncView):
@@ -142,13 +142,13 @@ class ServerReservation6SyncView(_BaseSyncView):
             reservation = client.reservation_get_by_ip(6, ip_str)
             return reservation if reservation else None
         except (KeaException, requests.RequestException, ValueError):
-            logger.debug("Could not fetch live reservation6 data for %s", ip_str)
+            logger.warning("Could not fetch live reservation6 data for %s", ip_str, exc_info=True)
             return None
 
     def _sync(self, data: dict):
         from ..sync import sync_reservation_to_netbox
 
-        return sync_reservation_to_netbox(data)
+        return sync_reservation_to_netbox(data, cleanup=False)
 
 
 class _BaseBulkReservationSyncView(ConditionalLoginRequiredMixin, View):

@@ -116,13 +116,13 @@ class _ViewTestBase(TestCase):
 
 
 # ---------------------------------------------------------------------------
-# _fetch_shared_networks_from_server — null config returns []
+# _fetch_shared_networks_from_server — null config raises RuntimeError
 # ---------------------------------------------------------------------------
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestFetchSharedNetworksFromServer(_ViewTestBase):
-    """Line 3939: _fetch_shared_networks_from_server with null config returns []."""
+    """Line 3939: _fetch_shared_networks_from_server with null config raises RuntimeError."""
 
     def test_null_config_raises_runtime_error(self):
         from netbox_kea.views import _fetch_shared_networks_from_server

@@ -398,11 +398,8 @@ class TestServerOptionsView(_ViewTestBase):
             },
         )
         call_kwargs = MockKeaClient.return_value.server_update_options.call_args
-        # Extract options list: second positional arg or first list-type kwarg
-        if len(call_kwargs[0]) > 1:
-            options_arg = call_kwargs[0][1]
-        else:
-            options_arg = next(v for k, v in call_kwargs[1].items() if isinstance(v, list))
+        self.assertIsNotNone(call_kwargs, "server_update_options was not called")
+        options_arg = (call_kwargs.kwargs or {}).get("options") or []
         self.assertEqual(len(options_arg), 1)
         self.assertEqual(options_arg[0]["name"], "routers")
 

@@ -4,6 +4,7 @@ import logging
 from typing import Any
 from urllib.parse import urlencode as _urlencode
 
+import requests
 from django.http import HttpResponse
 from django.http.request import HttpRequest
 from django.shortcuts import render
@@ -11,6 +12,7 @@ from django.urls import reverse
 from django.views import View
 
 from .. import constants, forms, tables
+from ..kea import KeaException
 from ..models import Server
 from ..utilities import (
     _enrich_reservation_sort_key,
@@ -261,7 +263,7 @@ def _fetch_subnets_from_server(server: "Server", version: int) -> list[dict[str,
         for s in result:
             if s["id"] in stats:
                 s.update(stats[s["id"]])
-    except Exception:  # noqa: BLE001
+    except (KeaException, requests.RequestException, KeyError, ValueError, TypeError, RuntimeError):
         logger.debug("stat_cmds hook unavailable or failed", exc_info=True)
     return result
 
