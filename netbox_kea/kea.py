@@ -173,7 +173,7 @@ class KeaClient:
         )
         if resp[0]["result"] == 3:
             return [], 0, 0
-        args = resp[0].get("arguments", {})
+        args = resp[0].get("arguments") or {}
         hosts: list[dict[str, Any]] = args.get("hosts", [])
         next_obj = args.get("next") or {}
         return hosts, next_obj.get("from", 0), next_obj.get("source-index", 0)
@@ -310,7 +310,7 @@ class KeaClient:
         """
         service = f"dhcp{version}"
         list_resp = self.command(f"subnet{version}-list", service=[service])
-        subnets: list[dict[str, Any]] = list_resp[0].get("arguments", {}).get("subnets", [])
+        subnets: list[dict[str, Any]] = (list_resp[0].get("arguments") or {}).get("subnets", [])
 
         target = ipaddress.ip_address(ip_address)
         for subnet in subnets:
@@ -362,7 +362,7 @@ class KeaClient:
                     f"subnet{version}-list",
                     service=[service],
                 )
-                existing = list_resp[0].get("arguments", {}).get("subnets", [])
+                existing = (list_resp[0].get("arguments") or {}).get("subnets", [])
                 max_id = max((s.get("id", 0) for s in existing), default=0)
                 subnet_def["id"] = max_id + 1
             except KeaException:
