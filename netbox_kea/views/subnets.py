@@ -688,7 +688,7 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
             dhcp_conf = args.get(f"Dhcp{self.dhcp_version}", {})
             if not isinstance(dhcp_conf, dict):
                 logger.warning("config-get returned non-dict Dhcp%s config: %r", self.dhcp_version, type(dhcp_conf))
-                dhcp_conf = {}
+                return [("", "— (global pool) —")], None, {}
             networks = dhcp_conf.get("shared-networks") or []
         except (KeaException, requests.RequestException, ValueError):
             logger.warning("Failed to fetch shared networks for subnet edit dropdown")

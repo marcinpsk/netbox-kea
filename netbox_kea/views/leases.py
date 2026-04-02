@@ -619,6 +619,10 @@ class _BaseLeaseEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin, View):
     def get(self, request: HttpRequest, pk: int, ip_address: str) -> HttpResponse:
         """Render the edit form pre-filled with the current lease values."""
         server = self._get_server(pk)
+
+        if resp := check_dhcp_enabled(server, self.dhcp_version):
+            return resp
+
         try:
             client = server.get_client(version=self.dhcp_version)
             resp = client.command(
@@ -747,6 +751,10 @@ class _BaseLeaseAddView(_KeaChangeMixin, generic.ObjectView):
     def get(self, request: HttpRequest, pk: int) -> HttpResponse:
         """Render the empty add form."""
         server = self.get_object(pk=pk)
+
+        if resp := check_dhcp_enabled(server, self.dhcp_version):
+            return resp
+
         return render(
             request,
             self.template_name,
