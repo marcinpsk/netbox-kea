@@ -136,6 +136,7 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
         raw_leases = args.get("leases")
         if not isinstance(raw_leases, list):
             raise RuntimeError("Unexpected leases payload from lease-get-page")
+        raw_leases = [entry for entry in raw_leases if isinstance(entry, dict) and "ip-address" in entry]
 
         count = args.get("count")
         if not isinstance(count, int):
@@ -320,6 +321,7 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
                     logger.error("lease-get-page returned non-list leases on server %s", instance.pk)
                     messages.error(request, "Failed to fetch leases for export: unexpected Kea response.")
                     return redirect(request.path)
+                raw_leases = [entry for entry in raw_leases if isinstance(entry, dict) and "ip-address" in entry]
 
                 all_leases += format_leases(raw_leases)
 

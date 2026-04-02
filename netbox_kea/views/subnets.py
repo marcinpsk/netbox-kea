@@ -876,6 +876,15 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
         old_network = server_current_network
         new_network = cd.get("shared_network", "")
 
+        # Pre-compute inherited_options for error branches that re-render the form.
+        display_network = server_current_network or ""
+        initial = {k: v for k, v in form.data.items() if k in form.fields}
+        inherited_options = (
+            self._get_inherited_options(dhcp_conf, display_network, initial)
+            if server_current_network is not None
+            else {}
+        )
+
         # Apply subnet config changes first — only move the network if the update succeeds.
         try:
             client.subnet_update(
@@ -908,6 +917,7 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
                     "subnet_cidr": cd["subnet_cidr"],
                     "dhcp_version": self.dhcp_version,
                     "return_url": return_url,
+                    "inherited_options": inherited_options,
                 },
             )
         except requests.RequestException:
@@ -923,6 +933,7 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
                     "subnet_cidr": cd["subnet_cidr"],
                     "dhcp_version": self.dhcp_version,
                     "return_url": return_url,
+                    "inherited_options": inherited_options,
                 },
             )
         except (KeaException, requests.RequestException, ValueError):
@@ -938,6 +949,7 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
                     "subnet_cidr": cd["subnet_cidr"],
                     "dhcp_version": self.dhcp_version,
                     "return_url": return_url,
+                    "inherited_options": inherited_options,
                 },
             )
 
