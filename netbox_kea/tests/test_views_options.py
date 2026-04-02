@@ -1318,6 +1318,7 @@ class TestSubnetOptionsGetClientError(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         msgs = [str(m) for m in response.context["messages"]]
         self.assertTrue(any("internal error" in m.lower() for m in msgs))
+        self.assertFalse(any("bad tls config" in m.lower() for m in msgs))
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
@@ -1333,6 +1334,7 @@ class TestServerOptionsGetClientError(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         msgs = [str(m) for m in response.context["messages"]]
         self.assertTrue(any("internal error" in m.lower() for m in msgs))
+        self.assertFalse(any("bad tls config" in m.lower() for m in msgs))
 
 
 # ---------------------------------------------------------------------------

@@ -124,13 +124,13 @@ class _ViewTestBase(TestCase):
 class TestFetchSharedNetworksFromServer(_ViewTestBase):
     """Line 3939: _fetch_shared_networks_from_server with null config returns []."""
 
-    def test_null_config_returns_empty_list(self):
+    def test_null_config_raises_runtime_error(self):
         from netbox_kea.views import _fetch_shared_networks_from_server
 
         with patch("netbox_kea.models.KeaClient") as MockKea:
             MockKea.return_value.command.return_value = [{"result": 0, "arguments": None}]
-            result = _fetch_shared_networks_from_server(self.server, version=4)
-        self.assertEqual(result, [])
+            with self.assertRaises(RuntimeError):
+                _fetch_shared_networks_from_server(self.server, version=4)
 
 
 # ---------------------------------------------------------------------------

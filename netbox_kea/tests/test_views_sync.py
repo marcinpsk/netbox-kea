@@ -487,7 +487,12 @@ class TestLeaseImportBareExcept(_ViewTestBase):
         csv_file = io.BytesIO(csv_content.encode())
         csv_file.name = "leases.csv"
         response = self.client.post(url, {"csv_file": csv_file})
-        self.assertIn(response.status_code, (200, 302))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["result"]["errors"], 1)
+        self.assertEqual(
+            response.context["result"]["error_rows"][0]["error"],
+            "An unexpected error occurred.",
+        )
 
 
 # ---------------------------------------------------------------------------

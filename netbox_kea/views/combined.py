@@ -71,7 +71,7 @@ def _fetch_leases_from_server(server: Server, q: Any, by: str, version: int) -> 
 
     args = resp[0]["arguments"]
     if args is None:
-        return []
+        raise RuntimeError(f"Unexpected None arguments from lease{version}-get{command_suffix}")
 
     raw = args["leases"] if multiple else [args]
     leases = format_leases(raw)
@@ -119,7 +119,7 @@ def _fetch_all_leases_from_server(
             break
         args = resp[0]["arguments"]
         if args is None:
-            break
+            raise RuntimeError(f"Unexpected None arguments from lease{version}-get-page")
         raw_leases = args["leases"]
         all_leases += format_leases(raw_leases)
         if len(all_leases) >= max_leases:
@@ -346,7 +346,7 @@ def _fetch_shared_networks_from_server(server: "Server", version: int) -> list[d
     client = server.get_client(version=version)
     config = client.command("config-get", service=[f"dhcp{version}"])
     if config[0]["arguments"] is None:
-        return []
+        raise RuntimeError(f"Unexpected None arguments from config-get for dhcp{version}")
     dhcp_conf = config[0]["arguments"].get(f"Dhcp{version}", {})
     result = []
     for sn in dhcp_conf.get("shared-networks", []):

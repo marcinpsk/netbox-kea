@@ -1276,7 +1276,7 @@ def _enrich_leases_with_badges(
         nb_ip = nb_ips.get(ip)
         if nb_ip:
             lease["netbox_ip_url"] = nb_ip.get_absolute_url()
-        elif can_change and not lease.get("pending_ip_change"):
+        elif can_change and not lease.get("pending_ip_change") and not lease.get("stale_mac"):
             # Don't offer Sync for leases with indeterminate reservation state.
             mac = (lease.get("hw_address") or "").lower()
             subnet_id = lease.get("subnet_id")

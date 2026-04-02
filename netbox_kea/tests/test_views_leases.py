@@ -2079,11 +2079,14 @@ class TestFetchLeasesFromServer(_ViewTestBase):
         leases = self._call(constants.BY_HOSTNAME, q="ghost", resp=[{"result": 3, "arguments": None}])
         self.assertEqual(leases, [])
 
-    def test_null_args_returns_empty(self):
+    def test_null_args_raises_runtime_error(self):
         from netbox_kea import constants
+        from netbox_kea.views import _fetch_leases_from_server
 
-        leases = self._call(constants.BY_HOSTNAME, q="ghost", resp=[{"result": 0, "arguments": None}])
-        self.assertEqual(leases, [])
+        with patch("netbox_kea.models.KeaClient") as MockKea:
+            MockKea.return_value.command.return_value = [{"result": 0, "arguments": None}]
+            with self.assertRaises(RuntimeError):
+                _fetch_leases_from_server(self.server, "ghost", constants.BY_HOSTNAME, 4)
 
     def test_by_subnet_id(self):
         """Lines 3432-3433: BY_SUBNET_ID branch sets command_suffix='-all' and subnets arg."""
@@ -2116,11 +2119,10 @@ class TestFetchAllLeasesFromServer(_ViewTestBase):
         self.assertEqual(leases, [])
         self.assertFalse(truncated)
 
-    def test_null_args_stops_loop(self):
-        """Line 3500: null arguments breaks the pagination loop."""
-        leases, truncated = self._run([[{"result": 0, "arguments": None}]])
-        self.assertEqual(leases, [])
-        self.assertFalse(truncated)
+    def test_null_args_raises_runtime_error(self):
+        """Null arguments from lease-get-page raises RuntimeError."""
+        with self.assertRaises(RuntimeError):
+            self._run([[{"result": 0, "arguments": None}]])
 
     def test_truncation_at_max(self):
         """Lines 3504-3506: truncates when max_leases exceeded."""
@@ -2312,7 +2314,12 @@ class TestLeaseBulkImportEdgeCases(_ViewTestBase):
         csv_file = io.BytesIO(csv_content)
         csv_file.name = "leases.csv"
         response = self.client.post(self._url(), {"csv_file": csv_file})
-        self.assertIn(response.status_code, (200, 302))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["result"]["errors"], 1)
+        self.assertEqual(
+            response.context["result"]["error_rows"][0]["error"],
+            "An unexpected error occurred.",
+        )
 
 
 # ---------------------------------------------------------------------------
