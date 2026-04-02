@@ -532,8 +532,9 @@ class ReservationTable4(GenericTable):
         template_code=(
             "{% if record.netbox_ip_url %}"
             '<a href="{{ record.netbox_ip_url }}" class="badge text-bg-success text-decoration-none">'
-            '<i class="mdi mdi-link-variant"></i> Synced</a>'
-            "{% elif record.sync_url %}"
+            '<i class="mdi mdi-link-variant"></i> Synced</a> '
+            "{% endif %}"
+            "{% if record.sync_url %}"
             '<button type="button"'
             ' hx-post="{{ record.sync_url }}"'
             ' hx-vals=\'{"ip_address":"{{ record.ip_address|escapejs }}","hostname":"{{ record.hostname|default:""|escapejs }}"}\''
@@ -571,8 +572,9 @@ class ReservationTable6(GenericTable):
         template_code=(
             "{% if record.netbox_ip_url %}"
             '<a href="{{ record.netbox_ip_url }}" class="badge text-bg-success text-decoration-none">'
-            '<i class="mdi mdi-link-variant"></i> Synced</a>'
-            "{% elif record.sync_url %}"
+            '<i class="mdi mdi-link-variant"></i> Synced</a> '
+            "{% endif %}"
+            "{% if record.sync_url %}"
             '<button type="button"'
             ' hx-post="{{ record.sync_url }}"'
             ' hx-vals=\'{"ip_address":"{{ record.ip_address|escapejs }}","hostname":"{{ record.hostname|default:""|escapejs }}"}\''

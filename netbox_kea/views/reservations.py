@@ -1035,10 +1035,26 @@ def _enrich_reservations_with_badges(
         logger.debug("Failed to enrich reservations with lease status for server %s", server.pk, exc_info=True)
 
     sync_url = reverse(f"plugins:netbox_kea:server_reservation{version}_sync", args=[server.pk])
-    nb_ips = bulk_fetch_netbox_ips([r.get("ip_address", "") for r in reservations if r.get("ip_address")])
+    # Build lookup list including extra IPs (IPv6 reservations may have multiple addresses).
+    all_lookup_ips: list[str] = []
     for r in reservations:
-        nb_ip = nb_ips.get(r.get("ip_address", ""))
-        if nb_ip:
-            r["netbox_ip_url"] = nb_ip.get_absolute_url()
+        primary = r.get("ip_address", "")
+        if primary:
+            all_lookup_ips.append(primary)
+        all_lookup_ips.extend(ip for ip in (r.get("extra_ips") or []) if ip)
+    nb_ips = bulk_fetch_netbox_ips(all_lookup_ips)
+
+    for r in reservations:
+        candidate_ips = [r.get("ip_address", "")] + list(r.get("extra_ips") or [])
+        candidate_ips = [ip for ip in candidate_ips if ip]
+        matched = [nb_ips[ip] for ip in candidate_ips if ip in nb_ips]
+        if len(matched) == len(candidate_ips) and matched:
+            # All IPs synced — show Synced badge with first match URL.
+            r["netbox_ip_url"] = matched[0].get_absolute_url()
+        elif matched:
+            # Partial sync — some IPs exist, some don't.
+            r["netbox_ip_url"] = matched[0].get_absolute_url()
+            if can_change:
+                r["sync_url"] = sync_url
         elif can_change:
             r["sync_url"] = sync_url

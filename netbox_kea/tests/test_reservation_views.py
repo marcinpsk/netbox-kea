@@ -989,6 +989,13 @@ _SAMPLE_RESERVATION4_FOR_SYNC = {
     "hostname": "sync-host",
 }
 
+_SAMPLE_RESERVATION6_MULTI_IP = {
+    "subnet-id": 3,
+    "duid": "aa:bb:cc:dd:ee:01",
+    "ip-addresses": ["2001:db8::1", "2001:db8::2", "2001:db8::3"],
+    "hostname": "multi-ip6-host",
+}
+
 
 @override_settings(PLUGINS_CONFIG={"netbox_kea": {"kea_timeout": 30}})
 class TestActiveLeaseSyncButton(TestCase):
@@ -1051,6 +1058,81 @@ class TestActiveLeaseSyncButton(TestCase):
         # Synced link shown in netbox_ip column — but NO individual reservation4 sync button
         sync_url = reverse("plugins:netbox_kea:server_reservation4_sync", args=[self.server.pk])
         self.assertNotContains(response, sync_url)
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestMultiIPv6ReservationBadgeEnrichment(TestCase):
+    """Badge enrichment must check ALL IPv6 addresses (primary + extra_ips)."""
+
+    def setUp(self):
+        self.client.force_login(User.objects.create_superuser("multi_ip6_user", password="x"))
+        self.server = Server.objects.create(
+            name="multi-ip6-srv",
+            server_url="http://kea-test:8000",
+            dhcp4=False,
+            dhcp6=True,
+        )
+
+    def _url(self):
+        return reverse("plugins:netbox_kea:server_reservations6", args=[self.server.pk])
+
+    def _mock_client(self, MockKeaClient, reservation):
+        mock_client = MockKeaClient.return_value
+        mock_client.clone.return_value = mock_client
+        mock_client.__enter__ = lambda s: s
+        mock_client.__exit__ = lambda s, *a: None
+        mock_client.reservation_get_page.return_value = ([dict(reservation)], 0, 0)
+        # Lease lookup — KeaException so we skip lease enrichment cleanly.
+        mock_client.command.side_effect = KeaException(
+            {"result": 2, "text": "unknown command 'lease6-get-all'"}, index=0
+        )
+        return mock_client
+
+    @patch("netbox_kea.sync.bulk_fetch_netbox_ips")
+    @patch("netbox_kea.models.KeaClient")
+    def test_multi_ip_all_synced_shows_synced_badge(self, MockKeaClient, mock_bulk_fetch):
+        """v6 reservation with extra_ips — ALL IPs in NetBox → Synced shown, no sync button."""
+        self._mock_client(MockKeaClient, _SAMPLE_RESERVATION6_MULTI_IP)
+        nb1, nb2, nb3 = MagicMock(), MagicMock(), MagicMock()
+        nb1.get_absolute_url.return_value = "/ipam/ip-addresses/101/"
+        nb2.get_absolute_url.return_value = "/ipam/ip-addresses/102/"
+        nb3.get_absolute_url.return_value = "/ipam/ip-addresses/103/"
+        mock_bulk_fetch.return_value = {"2001:db8::1": nb1, "2001:db8::2": nb2, "2001:db8::3": nb3}
+
+        response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Synced</a>")
+        sync_url = reverse("plugins:netbox_kea:server_reservation6_sync", args=[self.server.pk])
+        self.assertNotContains(response, sync_url)
+
+    @patch("netbox_kea.sync.bulk_fetch_netbox_ips")
+    @patch("netbox_kea.models.KeaClient")
+    def test_multi_ip_partial_sync_shows_sync_button(self, MockKeaClient, mock_bulk_fetch):
+        """v6 reservation with extra_ips — only primary in NetBox → shows Synced AND sync button."""
+        self._mock_client(MockKeaClient, _SAMPLE_RESERVATION6_MULTI_IP)
+        nb1 = MagicMock()
+        nb1.get_absolute_url.return_value = "/ipam/ip-addresses/101/"
+        # Only the first IP is in NetBox; 2001:db8::2 and ::3 are missing.
+        mock_bulk_fetch.return_value = {"2001:db8::1": nb1}
+
+        response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Synced</a>")
+        sync_url = reverse("plugins:netbox_kea:server_reservation6_sync", args=[self.server.pk])
+        self.assertContains(response, sync_url)
+
+    @patch("netbox_kea.sync.bulk_fetch_netbox_ips")
+    @patch("netbox_kea.models.KeaClient")
+    def test_multi_ip_none_synced_shows_sync_button(self, MockKeaClient, mock_bulk_fetch):
+        """v6 reservation with extra_ips — no IPs in NetBox → sync button shown."""
+        self._mock_client(MockKeaClient, _SAMPLE_RESERVATION6_MULTI_IP)
+        mock_bulk_fetch.return_value = {}
+
+        response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, "Synced</a>")
+        sync_url = reverse("plugins:netbox_kea:server_reservation6_sync", args=[self.server.pk])
+        self.assertContains(response, sync_url)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
