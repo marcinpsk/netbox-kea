@@ -196,6 +196,7 @@ class TestSubnetOptionsView(_ViewTestBase):
             },
         )
         self.assertEqual(response.status_code, 302)
+        self._assert_redirect_to_integer_pk(response)
         MockKeaClient.return_value.subnet_update_options.assert_called_once()
 
     @patch("netbox_kea.models.KeaClient")
@@ -271,6 +272,7 @@ class TestSubnetOptionsView(_ViewTestBase):
             },
         )
         self.assertEqual(response.status_code, 302)  # redirect back to subnets
+        self._assert_redirect_to_integer_pk(response)
         # Error stored in messages — check it doesn't crash
 
     def test_get_requires_login(self):
@@ -353,6 +355,7 @@ class TestServerOptionsView(_ViewTestBase):
             },
         )
         self.assertEqual(response.status_code, 302)
+        self._assert_redirect_to_integer_pk(response)
         MockKeaClient.return_value.server_update_options.assert_called_once()
 
     @patch("netbox_kea.models.KeaClient")
@@ -840,7 +843,7 @@ class TestServerOptionsPostInvalid(_ViewTestBase):
         )
         call_kwargs = MockKeaClient.return_value.server_update_options.call_args
         self.assertIsNotNone(call_kwargs, "server_update_options was not called")
-        options = (call_kwargs.kwargs or {}).get("options") or []
+        options = (call_kwargs.kwargs or {}).get("options") or (call_kwargs.args[2] if call_kwargs.args else [])
         always_send_opts = [o for o in options if o.get("always-send")]
         self.assertGreaterEqual(len(always_send_opts), 1)
 

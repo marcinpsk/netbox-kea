@@ -393,7 +393,7 @@ class _BasePoolDeleteView(_KeaChangeMixin, generic.ObjectView):
         return_url = self._subnets_url(pk)
         try:
             client = server.get_client(version=self.dhcp_version)
-        except Exception:
+        except (KeaException, requests.RequestException, ValueError):
             logger.exception("Failed to connect to Kea for pool delete on server %s", pk)
             messages.error(request, "Failed to connect to Kea: see server logs.")
             return redirect(return_url)
@@ -1034,7 +1034,7 @@ class _BaseSubnetDeleteView(_KeaChangeMixin, generic.ObjectView):
         return_url = self._subnets_url(pk)
         try:
             client = server.get_client(version=self.dhcp_version)
-        except Exception:
+        except (KeaException, requests.RequestException, ValueError):
             logger.exception("Failed to connect to Kea for subnet delete on server %s", pk)
             messages.error(request, "Failed to connect to Kea: see server logs.")
             return redirect(return_url)
@@ -1108,7 +1108,7 @@ class _BaseSubnetWipeView(_KeaChangeMixin, generic.ObjectView):
         return_url = self._subnets_url(pk)
         try:
             client = server.get_client(version=self.dhcp_version)
-        except Exception:
+        except (KeaException, requests.RequestException, ValueError):
             logger.exception("Failed to connect to Kea for lease wipe on server %s", pk)
             messages.error(request, "Failed to connect to Kea: see server logs.")
             return redirect(return_url)
@@ -1117,7 +1117,7 @@ class _BaseSubnetWipeView(_KeaChangeMixin, generic.ObjectView):
             messages.success(request, f"All leases in subnet {subnet_id} wiped.")
         except KeaException as exc:
             logger.exception("Failed to wipe leases in subnet %s", subnet_id)
-            if exc.response.get("result") == 2:
+            if isinstance(exc.response, dict) and exc.response.get("result") == 2:
                 messages.error(
                     request,
                     "Failed to wipe leases: ensure the lease_cmds hook is loaded.",

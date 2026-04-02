@@ -1098,6 +1098,12 @@ class KeaClient:
             else:
                 logger.warning("config-test failed for service %s — aborting config-set", service)
                 raise KeaConfigTestError(service, exc) from exc
+        except (requests.RequestException, ValueError) as exc:
+            logger.warning(
+                "config-test transport/parse error for service %s — aborting config-set",
+                service,
+            )
+            raise KeaConfigTestError(service, exc) from exc
         try:
             self.command("config-set", service=[service], arguments=config)
         except (requests.RequestException, ValueError) as exc:

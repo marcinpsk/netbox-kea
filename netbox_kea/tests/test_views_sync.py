@@ -566,6 +566,7 @@ class TestBulkReservationSyncExceptNarrowing(_ViewTestBase):
         url = reverse("plugins:netbox_kea:server_reservation4_bulk_sync", args=[self.server.pk])
         response = self.client.post(url)
         self.assertEqual(response.status_code, 302)
+        self._assert_redirect_to_integer_pk(response)
 
 
 # ---------------------------------------------------------------------------

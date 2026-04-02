@@ -2220,7 +2220,7 @@ class TestSubnetDeleteClientError(_ViewTestBase):
     @patch("netbox_kea.models.Server.get_client")
     def test_post_with_get_client_failure_redirects(self, mock_get_client):
         """get_client() raising in delete POST must redirect with error, not 500."""
-        mock_get_client.side_effect = Exception("connection refused")
+        mock_get_client.side_effect = ValueError("connection refused")
         url = reverse("plugins:netbox_kea:server_subnet4_delete", args=[self.server.pk, 1])
         response = self.client.post(url, {"confirm": "1"})
         self.assertIn(response.status_code, [200, 302])
@@ -2243,7 +2243,7 @@ class TestSubnetWipeClientError(_ViewTestBase):
     @patch("netbox_kea.models.Server.get_client")
     def test_post_with_get_client_failure_redirects(self, mock_get_client):
         """get_client() raising in wipe POST must redirect with error, not 500."""
-        mock_get_client.side_effect = Exception("connection refused")
+        mock_get_client.side_effect = ValueError("connection refused")
         url = reverse("plugins:netbox_kea:server_subnet4_wipe_leases", args=[self.server.pk, 1])
         response = self.client.post(url, {"confirm": "1"})
         self.assertIn(response.status_code, [200, 302])
@@ -2264,7 +2264,7 @@ class TestPoolDeleteClientError(_ViewTestBase):
     @patch("netbox_kea.models.Server.get_client")
     def test_post_with_get_client_failure_redirects(self, mock_get_client):
         """get_client() raising in pool-delete POST must redirect with error, not 500."""
-        mock_get_client.side_effect = Exception("connection refused")
+        mock_get_client.side_effect = ValueError("connection refused")
         url = reverse(
             "plugins:netbox_kea:server_subnet4_pool_delete",
             args=[self.server.pk, 1, "10.0.0.1-10.0.0.100"],
@@ -2395,7 +2395,7 @@ class TestPoolDeletePostErrors(_ViewTestBase):
     @patch("netbox_kea.models.KeaClient")
     def test_get_client_failure_redirects(self, MockKeaClient):
         """get_client failure in pool delete redirects with error."""
-        MockKeaClient.side_effect = Exception("connection refused")
+        MockKeaClient.side_effect = ValueError("connection refused")
         response = self.client.post(self._url())
         self.assertEqual(response.status_code, 302)
 
