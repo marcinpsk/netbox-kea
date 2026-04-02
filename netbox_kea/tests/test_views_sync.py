@@ -339,9 +339,10 @@ class TestReservation4SyncViewFetchLiveData(_ViewTestBase):
         """When reservation_get_by_ip returns None, response is 400 (no sync)."""
         MockKeaClient.return_value.reservation_get_by_ip.return_value = None
 
-        response = self.client.post(self._url(), {"ip_address": "10.0.0.5", "hostname": "fallback"})
-
-        self.assertEqual(response.status_code, 400)
+        with patch("netbox_kea.views.ServerReservation4SyncView._sync") as mock_sync:
+            response = self.client.post(self._url(), {"ip_address": "10.0.0.5", "hostname": "fallback"})
+            self.assertEqual(response.status_code, 400)
+            mock_sync.assert_not_called()
 
     @patch("netbox_kea.models.KeaClient")
     def test_falls_back_on_kea_exception(self, MockKeaClient):
@@ -350,9 +351,10 @@ class TestReservation4SyncViewFetchLiveData(_ViewTestBase):
 
         MockKeaClient.return_value.reservation_get_by_ip.side_effect = KeaException({"result": 1, "text": "not found"})
 
-        response = self.client.post(self._url(), {"ip_address": "10.0.0.5", "hostname": "fallback"})
-
-        self.assertEqual(response.status_code, 400)
+        with patch("netbox_kea.views.ServerReservation4SyncView._sync") as mock_sync:
+            response = self.client.post(self._url(), {"ip_address": "10.0.0.5", "hostname": "fallback"})
+            self.assertEqual(response.status_code, 400)
+            mock_sync.assert_not_called()
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
@@ -555,7 +557,7 @@ class TestBulkReservationSyncExceptNarrowing(_ViewTestBase):
     """_BaseBulkReservationSyncView must not swallow programming errors."""
 
     @patch("netbox_kea.views.sync_views._fetch_reservations_from_server")
-    def test_attribute_error_propagates(self, mock_fetch):
+    def test_attribute_error_is_caught_and_redirects(self, mock_fetch):
         """An AttributeError from _fetch_reservations_from_server is caught and redirects."""
         mock_fetch.side_effect = AttributeError("programming bug")
 

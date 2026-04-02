@@ -378,6 +378,7 @@ class _BasePoolDeleteView(_KeaChangeMixin, generic.ObjectView):
         return reverse(f"plugins:netbox_kea:server_subnets{self.dhcp_version}", args=[pk])
 
     def get(self, request: HttpRequest, pk: int, subnet_id: int, pool: str) -> HttpResponse:
+        pool = pool.strip()
         if not _POOL_RE.match(pool):
             return HttpResponse("Invalid pool format.", status=400)
         server = self.get_object(pk=pk)
@@ -394,6 +395,7 @@ class _BasePoolDeleteView(_KeaChangeMixin, generic.ObjectView):
         )
 
     def post(self, request: HttpRequest, pk: int, subnet_id: int, pool: str) -> HttpResponse:
+        pool = pool.strip()
         if not _POOL_RE.match(pool):
             return HttpResponse("Invalid pool format.", status=400)
         server = self.get_object(pk=pk)
@@ -838,7 +840,7 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
             logger.exception("Failed to get Kea client for server %s (subnet edit POST)", pk)
             messages.error(request, "Unable to connect to the Kea server.")
             return redirect(return_url)
-        network_choices, server_current_network, _ = self._get_network_data(client, subnet_id)
+        network_choices, server_current_network, dhcp_conf = self._get_network_data(client, subnet_id)
         if server_current_network is None:
             logger.warning(
                 "Could not determine current shared-network for subnet %s on server %s — aborting edit", subnet_id, pk
@@ -848,6 +850,13 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
         form = forms.SubnetEditForm(request.POST)
         form.fields["shared_network"].choices = network_choices
         if not form.is_valid():
+            display_network = server_current_network or ""
+            initial = {k: v for k, v in form.data.items() if k in form.fields}
+            inherited_options = (
+                self._get_inherited_options(dhcp_conf, display_network, initial)
+                if server_current_network is not None
+                else {}
+            )
             return render(
                 request,
                 self.template_name,
@@ -858,6 +867,7 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
                     "subnet_cidr": request.POST.get("subnet_cidr", ""),
                     "dhcp_version": self.dhcp_version,
                     "return_url": return_url,
+                    "inherited_options": inherited_options,
                 },
             )
         cd = form.cleaned_data
