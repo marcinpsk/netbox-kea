@@ -63,20 +63,6 @@ def _make_db_server(**kwargs) -> Server:
     return Server.objects.create(**defaults)
 
 
-def _kea_command_side_effect(cmd, service=None, arguments=None, check=None):
-    """Return a plausible Kea API response for each command type."""
-    if cmd == "status-get":
-        return [{"result": 0, "arguments": {"pid": 1234, "uptime": 3600, "reload": 0}}]
-    if cmd == "version-get":
-        return [{"result": 0, "arguments": {"extended": "2.4.1-stable"}}]
-    if cmd == "config-get":
-        # Return minimal Dhcp4/Dhcp6 config so subnet views can parse it.
-        if service and service[0] == "dhcp6":
-            return [{"result": 0, "arguments": {"Dhcp6": {"subnet6": [], "shared-networks": []}}}]
-        return [{"result": 0, "arguments": {"Dhcp4": {"subnet4": [], "shared-networks": []}}}]
-    return [{"result": 0, "arguments": {}}]
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Shared base class
 # ─────────────────────────────────────────────────────────────────────────────

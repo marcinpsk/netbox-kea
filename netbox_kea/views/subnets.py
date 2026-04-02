@@ -258,8 +258,15 @@ def _warn_reservation_pool_overlap(
             service=[f"dhcp{version}"],
             arguments={"id": subnet_id},
         )
-        subnet_list = (resp[0].get("arguments") or {}).get(f"subnet{version}", []) or []
-        subnet = subnet_list[0] if subnet_list else {}
+        if not resp or not isinstance(resp[0], dict):
+            return
+        arguments = resp[0].get("arguments")
+        if not isinstance(arguments, dict):
+            return
+        subnet_list = arguments.get(f"subnet{version}", [])
+        if not isinstance(subnet_list, list) or not subnet_list:
+            return
+        subnet = subnet_list[0] if isinstance(subnet_list[0], dict) else {}
         ip = IPAddress(ip_str)
 
         for pool_entry in subnet.get("pools") or []:
@@ -649,9 +656,18 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
                 service=[f"dhcp{self.dhcp_version}"],
                 arguments={"id": subnet_id},
             )
-            subnets = (resp[0].get("arguments") or {}).get(key, [])
-            return subnets[0] if subnets else None
-        except (KeaException, requests.RequestException, ValueError, KeyError, IndexError, TypeError):
+            if not resp or not isinstance(resp[0], dict):
+                return None
+            arguments = resp[0].get("arguments")
+            if not isinstance(arguments, dict):
+                return None
+            subnets = arguments.get(key, [])
+            if not isinstance(subnets, list) or not subnets:
+                return None
+            if not isinstance(subnets[0], dict):
+                return None
+            return subnets[0]
+        except (KeaException, requests.RequestException, ValueError):
             logger.warning("Failed to fetch subnet %s for editing", subnet_id)
             return None
 
@@ -1014,8 +1030,13 @@ class _BaseSubnetDeleteView(_KeaChangeMixin, generic.ObjectView):
                 arguments={"id": subnet_id},
             )
             key = f"subnet{self.dhcp_version}"
-            subnet_cidr = (resp[0].get("arguments") or {}).get(key, [{}])[0].get("subnet", "")
-        except (KeaException, requests.RequestException, ValueError, KeyError, IndexError):
+            if resp and isinstance(resp[0], dict):
+                arguments = resp[0].get("arguments")
+                if isinstance(arguments, dict):
+                    subnets = arguments.get(key, [])
+                    if isinstance(subnets, list) and subnets and isinstance(subnets[0], dict):
+                        subnet_cidr = subnets[0].get("subnet", "")
+        except (KeaException, requests.RequestException, ValueError):
             logger.debug("Could not resolve subnet CIDR for subnet %s on server %s", subnet_id, pk)
         return render(
             request,
@@ -1088,8 +1109,13 @@ class _BaseSubnetWipeView(_KeaChangeMixin, generic.ObjectView):
                 arguments={"id": subnet_id},
             )
             key = f"subnet{self.dhcp_version}"
-            subnet_cidr = (resp[0].get("arguments") or {}).get(key, [{}])[0].get("subnet", "")
-        except (KeaException, requests.RequestException, ValueError, IndexError):
+            if resp and isinstance(resp[0], dict):
+                arguments = resp[0].get("arguments")
+                if isinstance(arguments, dict):
+                    subnets = arguments.get(key, [])
+                    if isinstance(subnets, list) and subnets and isinstance(subnets[0], dict):
+                        subnet_cidr = subnets[0].get("subnet", "")
+        except (KeaException, requests.RequestException, ValueError):
             logger.debug("CIDR lookup failed in wipe GET for subnet %s on server %s", subnet_id, pk)
         return render(
             request,

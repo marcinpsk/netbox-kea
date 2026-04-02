@@ -1711,8 +1711,8 @@ class TestEnrichLeasesReservationFlags(_ViewTestBase):
             _enrich_leases_with_badges([lease], server, 4, can_delete=False, can_change=False)
         self.assertFalse(lease["is_reserved"])
 
-    def test_reservation_url_none_for_read_only_when_reservation_exists(self):
-        """reservation_url must be None when can_change=False even if a reservation exists."""
+    def test_reservation_url_set_for_read_only_when_reservation_exists(self):
+        """reservation_url must be set even when can_change=False; can_change_reservation must be False."""
         from netbox_kea.views import _enrich_leases_with_badges
 
         server = self.server
@@ -1727,7 +1727,9 @@ class TestEnrichLeasesReservationFlags(_ViewTestBase):
             patch.object(server, "get_client", return_value=MagicMock()),
         ):
             _enrich_leases_with_badges([lease], server, 4, can_delete=False, can_change=False)
-        self.assertIsNone(lease["reservation_url"])
+        self.assertIsNotNone(lease["reservation_url"])
+        self.assertTrue(lease["reservation_url"])
+        self.assertFalse(lease["can_change_reservation"])
         self.assertTrue(lease["is_reserved"])
 
     def test_reservation_url_set_when_can_change_true(self):
@@ -3249,8 +3251,8 @@ class TestPendingIpChangeDetection(_ViewTestBase):
         self.assertIsNotNone(lease["reservation_url"])
         self.assertIn("10.0.0.20", lease["reservation_url"])
 
-    def test_pending_ip_change_reservation_url_none_when_read_only(self):
-        """When pending_ip_change is True but can_change=False, reservation_url must be None."""
+    def test_pending_ip_change_reservation_url_set_when_read_only(self):
+        """When pending_ip_change is True but can_change=False, reservation_url must still be set."""
         from netbox_kea.views import _enrich_leases_with_badges
 
         server = self.server
@@ -3267,7 +3269,9 @@ class TestPendingIpChangeDetection(_ViewTestBase):
         ):
             _enrich_leases_with_badges([lease], server, 4, can_delete=False, can_change=False)
         self.assertTrue(lease["pending_ip_change"])
-        self.assertIsNone(lease["reservation_url"])
+        self.assertIsNotNone(lease["reservation_url"])
+        self.assertIn("10.0.0.20", lease["reservation_url"])
+        self.assertFalse(lease["can_change_reservation"])
 
     def test_ip_matched_reservation_overrides_mac_lookup(self):
         """When IP-based reservation matches, pending_ip_change must be False even if MAC differs."""

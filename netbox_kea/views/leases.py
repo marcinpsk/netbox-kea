@@ -1080,6 +1080,7 @@ def _set_lease_reservation_fields(  # noqa: PLR0913
     lease["stale_lease_mac"] = ""
     lease["reservation_mac"] = ""
     lease["delete_lease_url"] = ""
+    lease["can_change_reservation"] = False
 
     if rsv and rsv_subnet_id is not None:
         _set_ip_matched_reservation(lease, rsv, server_pk, version, rsv_subnet_id, can_change, reservation_url_name)
@@ -1107,10 +1108,8 @@ def _set_ip_matched_reservation(
 ) -> None:
     """Populate fields when the lease IP matches a reservation IP."""
     ip = lease.get("ip_address", "")
-    if can_change:
-        lease["reservation_url"] = reverse(reservation_url_name, args=[server_pk, rsv_subnet_id, ip])
-    else:
-        lease["reservation_url"] = None
+    lease["reservation_url"] = reverse(reservation_url_name, args=[server_pk, rsv_subnet_id, ip])
+    lease["can_change_reservation"] = can_change
     lease["create_reservation_url"] = None
 
     # Stale MAC detection: lease MAC ≠ reservation MAC → device mismatch.
@@ -1162,10 +1161,11 @@ def _set_unmatched_reservation(
         mac_rsv_subnet_id = mac_rsv.get("subnet-id")
         lease["pending_ip_change"] = True
         lease["pending_reservation_ip"] = pending_ip
-        if can_change and mac_rsv_subnet_id is not None:
+        if mac_rsv_subnet_id is not None:
             lease["reservation_url"] = reverse(reservation_url_name, args=[server_pk, mac_rsv_subnet_id, pending_ip])
         else:
             lease["reservation_url"] = None
+        lease["can_change_reservation"] = can_change
         lease["create_reservation_url"] = None
         return
 
@@ -1206,7 +1206,8 @@ def _enrich_leases_with_badges(
     """In-place: add reservation and NetBox IPAM badge fields to lease dicts.
 
     Adds:
-    - ``reservation_url``: edit-reservation link if a reservation exists for this IP
+    - ``reservation_url``: reservation link if a reservation exists for this IP
+    - ``can_change_reservation``: whether the user may edit the reservation (gates link vs plain badge)
     - ``create_reservation_url``: pre-filled add link if host_cmds is loaded
     - ``netbox_ip_url``: absolute URL if IP exists in NetBox IPAM
     - ``sync_url``: POST endpoint URL to create a NetBox IP when absent

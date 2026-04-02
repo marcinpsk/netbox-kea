@@ -349,8 +349,12 @@ class BaseLeaseTable(GenericTable):
         orderable=False,
         template_code=(
             "{% if record.is_reserved and record.reservation_url %}"
+            "{% if record.can_change_reservation %}"
             '<a href="{{ record.reservation_url }}" class="badge text-bg-success text-decoration-none">'
             "Reserved</a>"
+            "{% else %}"
+            '<span class="badge text-bg-success">Reserved</span>'
+            "{% endif %}"
             "{% if record.stale_mac %}"
             ' <span class="badge text-bg-warning"'
             ' title="Lease MAC ({{ record.stale_lease_mac }}) ≠ Reservation MAC ({{ record.reservation_mac }})'
@@ -375,8 +379,12 @@ class BaseLeaseTable(GenericTable):
             '<i class="mdi mdi-arrow-right-bold" aria-hidden="true"></i>'
             " Pending {{ record.pending_reservation_ip }}</span>"
             "{% if record.reservation_url %}"
+            "{% if record.can_change_reservation %}"
             ' <a href="{{ record.reservation_url }}" class="badge text-bg-success text-decoration-none ms-1">'
             "View</a>"
+            "{% else %}"
+            ' <span class="badge text-bg-success ms-1">View</span>'
+            "{% endif %}"
             "{% endif %}"
             "{% elif record.create_reservation_url %}"
             '<a href="{{ record.create_reservation_url }}" class="badge text-bg-warning text-decoration-none">'
