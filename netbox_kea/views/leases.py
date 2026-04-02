@@ -1171,7 +1171,7 @@ def _set_unmatched_reservation(
 
     # No reservation at all — offer "+ Reserve" link.
     lease["reservation_url"] = None
-    if can_change:
+    if can_change and isinstance(subnet_id, int):
         base_add = reverse(add_url_name, args=[server_pk])
         if version == 6:
             params = {

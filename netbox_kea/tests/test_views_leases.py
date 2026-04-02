@@ -1768,9 +1768,10 @@ class TestEnrichLeasesReservationFlags(_ViewTestBase):
         from netbox_kea.views import _enrich_leases_with_badges
 
         server = self.server
-        lease = {"ip_address": "10.0.0.99", "hw_address": "cc:cc:cc:cc:cc:cc"}
+        lease = {"ip_address": "10.0.0.99", "hw_address": "cc:cc:cc:cc:cc:cc", "subnet_id": 1}
         with (
             patch("netbox_kea.views.leases._fetch_reservation_by_ip_for_leases", return_value=({}, True, set())),
+            patch("netbox_kea.views.leases._fetch_reservation_by_mac_for_leases", return_value=({}, set())),
             patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
             patch.object(server, "get_client", return_value=MagicMock()),
         ):
