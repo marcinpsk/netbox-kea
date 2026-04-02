@@ -2368,8 +2368,9 @@ class TestReservation4OptionData(_ReservationViewBase):
         response = self.client.post(self._add_url(), post_data)
         self.assertEqual(response.status_code, 302)
 
+        mock_client.reservation_add.assert_called_once()
         call_args = mock_client.reservation_add.call_args
-        args, kwargs = call_args or ((), {})
+        args, kwargs = call_args
         reservation = kwargs.get("reservation") or (args[1] if len(args) > 1 else (args[0] if len(args) > 0 else {}))
         self.assertNotIn("option-data", reservation)
 

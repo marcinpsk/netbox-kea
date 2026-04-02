@@ -142,6 +142,13 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
         if not isinstance(count, int):
             raise RuntimeError("Missing or non-int count in lease-get-page response")
 
+        if count == per_page and not raw_leases:
+            logger.warning(
+                "lease-get-page returned %d items but none had a valid ip-address; aborting pagination",
+                len(args.get("leases", [])),
+            )
+            raise RuntimeError("Unexpected empty leases after filtering on full page")
+
         next_cursor = f"{raw_leases[-1]['ip-address']}" if raw_leases and count == per_page else None
         for i, lease in enumerate(raw_leases):
             lease_ip = IPAddress(lease["ip-address"])
@@ -325,15 +332,20 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
 
                 all_leases += format_leases(raw_leases)
 
-                count = args.get("count", 0)
+                count = args.get("count")
                 if not isinstance(count, int):
-                    logger.error("lease-get-page returned non-int count on server %s", instance.pk)
-                    messages.error(request, "Failed to fetch leases for export: unexpected Kea response.")
-                    return redirect(request.path)
+                    logger.warning("lease-get-page returned non-int count; stopping export for server %s", instance.pk)
+                    break
+
+                if not raw_leases:
+                    if count >= per_page:
+                        logger.warning(
+                            "lease-get-page returned %d items but none had a valid ip-address; stopping export",
+                            len(args.get("leases", [])),
+                        )
+                    break
 
                 if count < per_page:
-                    break
-                if not raw_leases:
                     break
                 cursor = raw_leases[-1]["ip-address"]
         except KeaException as exc:

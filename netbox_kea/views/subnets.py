@@ -70,36 +70,50 @@ class BaseServerDHCPSubnetsView(generic.ObjectChildrenView):
             return []
         can_change = Server.objects.restrict(request.user, "change").filter(pk=server.pk).exists()
         subnets = dhcp_conf.get(f"subnet{self.dhcp_version}") or []
-        subnet_list = [
-            {
-                "id": s["id"],
-                "subnet": s["subnet"],
-                "dhcp_version": self.dhcp_version,
-                "server_pk": server.pk,
-                "_subnet_sort_key": int(ipaddress.ip_network(s["subnet"], strict=False).network_address),
-                "options": format_option_data(s.get("option-data") or [], version=self.dhcp_version),
-                "pools": [p.get("pool", "") for p in (s.get("pools") or []) if p.get("pool")],
-                "can_change": can_change,
-            }
-            for s in subnets
-            if "id" in s and "subnet" in s
-        ]
-
-        for sn in dhcp_conf.get("shared-networks") or []:
-            subnet_list.extend(
+        subnet_list = []
+        for s in subnets:
+            if "id" not in s or "subnet" not in s:
+                continue
+            try:
+                sort_key = int(ipaddress.ip_network(s["subnet"], strict=False).network_address)
+            except (ValueError, TypeError):
+                logger.warning("Skipping subnet with malformed CIDR: %s", s.get("subnet"))
+                continue
+            subnet_list.append(
                 {
                     "id": s["id"],
                     "subnet": s["subnet"],
-                    "shared_network": sn["name"],
                     "dhcp_version": self.dhcp_version,
                     "server_pk": server.pk,
-                    "_subnet_sort_key": int(ipaddress.ip_network(s["subnet"], strict=False).network_address),
+                    "_subnet_sort_key": sort_key,
                     "options": format_option_data(s.get("option-data") or [], version=self.dhcp_version),
                     "pools": [p.get("pool", "") for p in (s.get("pools") or []) if p.get("pool")],
                     "can_change": can_change,
                 }
-                for s in sn.get(f"subnet{self.dhcp_version}") or []
             )
+
+        for sn in dhcp_conf.get("shared-networks") or []:
+            for s in sn.get(f"subnet{self.dhcp_version}") or []:
+                if "id" not in s or "subnet" not in s:
+                    continue
+                try:
+                    sort_key = int(ipaddress.ip_network(s["subnet"], strict=False).network_address)
+                except (ValueError, TypeError):
+                    logger.warning("Skipping subnet with malformed CIDR: %s", s.get("subnet"))
+                    continue
+                subnet_list.append(
+                    {
+                        "id": s["id"],
+                        "subnet": s["subnet"],
+                        "shared_network": sn["name"],
+                        "dhcp_version": self.dhcp_version,
+                        "server_pk": server.pk,
+                        "_subnet_sort_key": sort_key,
+                        "options": format_option_data(s.get("option-data") or [], version=self.dhcp_version),
+                        "pools": [p.get("pool", "") for p in (s.get("pools") or []) if p.get("pool")],
+                        "can_change": can_change,
+                    }
+                )
 
         # Enrich with utilisation stats when stat_cmds hook is available.
         try:
@@ -402,7 +416,7 @@ class _BasePoolDeleteView(_KeaChangeMixin, generic.ObjectView):
         return_url = self._subnets_url(pk)
         try:
             client = server.get_client(version=self.dhcp_version)
-        except (KeaException, requests.RequestException, ValueError):
+        except (requests.RequestException, ValueError):
             logger.exception("Failed to connect to Kea for pool delete on server %s", pk)
             messages.error(request, "Failed to connect to Kea: see server logs.")
             return redirect(return_url)
@@ -469,6 +483,8 @@ class _BaseSubnetAddView(_KeaChangeMixin, generic.ObjectView):
         networks = dhcp_conf.get("shared-networks") or []
         choices: list[tuple[str, str]] = [("", "— (global pool) —")]
         for sn in networks:
+            if not isinstance(sn, dict):
+                continue
             name = sn.get("name", "")
             if name:
                 choices.append((name, name))
@@ -502,7 +518,7 @@ class _BaseSubnetAddView(_KeaChangeMixin, generic.ObjectView):
 
         try:
             client = server.get_client(version=self.dhcp_version)
-        except (KeaException, requests.RequestException, ValueError):
+        except (requests.RequestException, ValueError):
             logger.exception("Failed to get Kea client for server %s", pk)
             messages.error(request, "Unable to connect to the Kea server.")
             form = forms.SubnetAddForm(request.POST)
@@ -561,7 +577,7 @@ class _BaseSubnetAddView(_KeaChangeMixin, generic.ObjectView):
                         request,
                         f"Subnet assigned to '{shared_network}' but config-write failed (change may not survive restart).",
                     )
-                except (KeaException, requests.RequestException):
+                except (KeaException, requests.RequestException, ValueError):
                     logger.exception(
                         "Subnet %s created but failed to assign to network %s", cd["subnet"], shared_network
                     )
@@ -588,7 +604,7 @@ class _BaseSubnetAddView(_KeaChangeMixin, generic.ObjectView):
                         request,
                         f"Subnet assigned to '{shared_network}' but config-write failed (change may not survive restart).",
                     )
-                except (KeaException, requests.RequestException):
+                except (KeaException, requests.RequestException, ValueError):
                     logger.exception(
                         "Partially-persisted subnet %s could not be assigned to network %s", partial_id, shared_network
                     )
@@ -699,11 +715,16 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
         current_network = ""
         choices: list[tuple[str, str]] = [("", "— (global pool) —")]
         for sn in networks:
+            if not isinstance(sn, dict):
+                continue
             name = sn.get("name", "")
             if not name:
                 continue
             choices.append((name, name))
-            subnet_ids = {s.get("id") for s in sn.get(f"subnet{self.dhcp_version}", [])}
+            sn_subnets = sn.get(f"subnet{self.dhcp_version}", [])
+            if not isinstance(sn_subnets, list):
+                continue
+            subnet_ids = {s.get("id") for s in sn_subnets if isinstance(s, dict)}
             if subnet_id in subnet_ids:
                 current_network = name
         return choices, current_network, dhcp_conf
@@ -796,7 +817,7 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
             return redirect(self._subnets_url(pk))
         try:
             client = server.get_client(version=self.dhcp_version)
-        except (KeaException, requests.RequestException, ValueError):
+        except (requests.RequestException, ValueError):
             logger.exception("Failed to get Kea client for server %s (subnet edit GET)", pk)
             messages.error(request, "Unable to connect to the Kea server.")
             return redirect(self._subnets_url(pk))
@@ -836,7 +857,7 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
         return_url = self._subnets_url(pk)
         try:
             client = server.get_client(version=self.dhcp_version)
-        except (KeaException, requests.RequestException, ValueError):
+        except (requests.RequestException, ValueError):
             logger.exception("Failed to get Kea client for server %s (subnet edit POST)", pk)
             messages.error(request, "Unable to connect to the Kea server.")
             return redirect(return_url)
@@ -850,7 +871,7 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
         form = forms.SubnetEditForm(request.POST)
         form.fields["shared_network"].choices = network_choices
         if not form.is_valid():
-            display_network = server_current_network or ""
+            display_network = form.data.get("shared_network") or server_current_network or ""
             initial = {k: v for k, v in form.data.items() if k in form.fields}
             inherited_options = (
                 self._get_inherited_options(dhcp_conf, display_network, initial)
@@ -877,7 +898,7 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
         new_network = cd.get("shared_network", "")
 
         # Pre-compute inherited_options for error branches that re-render the form.
-        display_network = server_current_network or ""
+        display_network = form.data.get("shared_network") or server_current_network or ""
         initial = {k: v for k, v in form.data.items() if k in form.fields}
         inherited_options = (
             self._get_inherited_options(dhcp_conf, display_network, initial)
@@ -1077,7 +1098,7 @@ class _BaseSubnetDeleteView(_KeaChangeMixin, generic.ObjectView):
         return_url = self._subnets_url(pk)
         try:
             client = server.get_client(version=self.dhcp_version)
-        except (KeaException, requests.RequestException, ValueError):
+        except (requests.RequestException, ValueError):
             logger.exception("Failed to connect to Kea for subnet delete on server %s", pk)
             messages.error(request, "Failed to connect to Kea: see server logs.")
             return redirect(return_url)
@@ -1156,7 +1177,7 @@ class _BaseSubnetWipeView(_KeaChangeMixin, generic.ObjectView):
         return_url = self._subnets_url(pk)
         try:
             client = server.get_client(version=self.dhcp_version)
-        except (KeaException, requests.RequestException, ValueError):
+        except (requests.RequestException, ValueError):
             logger.exception("Failed to connect to Kea for lease wipe on server %s", pk)
             messages.error(request, "Failed to connect to Kea: see server logs.")
             return redirect(return_url)

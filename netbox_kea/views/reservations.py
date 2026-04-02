@@ -175,8 +175,9 @@ def _enrich_reservations_with_lease_status(client: "KeaClient", reservations: li
                     check=(0, 3),
                 )
                 if resp[0]["result"] != 3:
-                    args = resp[0].get("arguments", {})
-                    return [lease.get("ip-address", "") for lease in args.get("leases", [])]
+                    args = resp[0].get("arguments") or {}
+                    leases = args.get("leases") or []
+                    return [lease.get("ip-address", "") for lease in leases if isinstance(lease, dict)]
                 return []
             except KeaException as exc:
                 if exc.response.get("result") == 2:
@@ -702,8 +703,8 @@ class ServerReservation4EditView(_KeaChangeMixin, generic.ObjectView):
         if form.is_valid() and options_valid:
             cd = form.cleaned_data
             reservation: dict[str, Any] = {
-                "subnet-id": cd["subnet_id"],
-                "ip-address": cd["ip_address"],
+                "subnet-id": subnet_id,
+                "ip-address": ip_address,
                 cd["identifier_type"]: cd["identifier"],
             }
             if cd.get("hostname"):
@@ -718,7 +719,7 @@ class ServerReservation4EditView(_KeaChangeMixin, generic.ObjectView):
             try:
                 client = server.get_client(version=4)
                 client.reservation_update("dhcp4", reservation)
-                messages.success(request, f"Reservation for {cd['ip_address']} updated.")
+                messages.success(request, f"Reservation for {ip_address} updated.")
                 _run_reservation_success_side_effects(
                     request, server, reservation, 4, "updated", bool(cd.get("sync_to_netbox"))
                 )
@@ -816,8 +817,8 @@ class ServerReservation6EditView(_KeaChangeMixin, generic.ObjectView):
         if form.is_valid() and options_valid:
             cd = form.cleaned_data
             reservation: dict[str, Any] = {
-                "subnet-id": cd["subnet_id"],
-                "ip-addresses": [ip.strip() for ip in cd["ip_addresses"].split(",")],
+                "subnet-id": subnet_id,
+                "ip-addresses": [ip_address],
                 cd["identifier_type"]: cd["identifier"],
             }
             if cd.get("hostname"):
