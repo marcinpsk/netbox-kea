@@ -379,7 +379,7 @@ class _BasePoolDeleteView(_KeaChangeMixin, generic.ObjectView):
 
     def get(self, request: HttpRequest, pk: int, subnet_id: int, pool: str) -> HttpResponse:
         pool = pool.strip()
-        if not _POOL_RE.match(pool):
+        if not _POOL_RE.match(re.sub(r"\s+", "", pool)):
             return HttpResponse("Invalid pool format.", status=400)
         server = self.get_object(pk=pk)
         return render(
@@ -396,7 +396,7 @@ class _BasePoolDeleteView(_KeaChangeMixin, generic.ObjectView):
 
     def post(self, request: HttpRequest, pk: int, subnet_id: int, pool: str) -> HttpResponse:
         pool = pool.strip()
-        if not _POOL_RE.match(pool):
+        if not _POOL_RE.match(re.sub(r"\s+", "", pool)):
             return HttpResponse("Invalid pool format.", status=400)
         server = self.get_object(pk=pk)
         return_url = self._subnets_url(pk)

@@ -1254,11 +1254,34 @@ class TestPoolDeleteExceptions(_ViewTestBase):
         self.assertEqual(response.status_code, 400)
 
     @patch("netbox_kea.models.KeaClient")
+    def test_get_range_pool_with_spaces_returns_200(self, MockKeaClient):
+        """GET with a Kea range pool string like '192.0.2.10 - 192.0.2.20' must not return 400."""
+        url = reverse(
+            "plugins:netbox_kea:server_subnet4_pool_delete",
+            args=[self.server.pk, 42, "192.0.2.10 - 192.0.2.20"],
+        )
+        response = self.client.get(url)
+        self.assertNotEqual(response.status_code, 400)
+
+    @patch("netbox_kea.models.KeaClient")
     def test_post_invalid_pool_format_returns_400(self, MockKeaClient):
         """POST with invalid pool string must return 400."""
         url = reverse("plugins:netbox_kea:server_subnet4_pool_delete", args=[self.server.pk, 42, "not_a_pool_format!!"])
         response = self.client.post(url)
         self.assertEqual(response.status_code, 400)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_range_pool_with_spaces_accepted(self, MockKeaClient):
+        """POST with a Kea range pool string like '192.0.2.10 - 192.0.2.20' must not return 400."""
+        from netbox_kea.kea import PartialPersistError
+
+        MockKeaClient.return_value.pool_del.side_effect = PartialPersistError("dhcp4", Exception("write"))
+        url = reverse(
+            "plugins:netbox_kea:server_subnet4_pool_delete",
+            args=[self.server.pk, 42, "192.0.2.10 - 192.0.2.20"],
+        )
+        response = self.client.post(url, follow=True)
+        self.assertNotEqual(response.status_code, 400)
 
     @patch("netbox_kea.models.KeaClient")
     def test_partial_persist_error_redirects_with_warning(self, MockKeaClient):
