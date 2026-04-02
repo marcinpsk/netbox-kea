@@ -900,6 +900,10 @@ class TestCombinedLeases4Enrichment(_CombinedViewBase):
 
         mock_client.command.side_effect = command_side_effect
         mock_client.reservation_get.return_value = reservations[0] if reservations else None
+        # Wire clone() so ThreadPoolExecutor workers see the same reservation_get mock.
+        mock_client.clone.return_value = mock_client
+        mock_client.__enter__ = lambda self: self
+        mock_client.__exit__ = lambda self, *a: None
 
     @patch("netbox_kea.models.KeaClient")
     def test_reserved_badge_appears_when_reservation_exists(self, MockKeaClient):
@@ -1069,6 +1073,9 @@ class TestCombinedLeases6Enrichment(_CombinedViewBase):
 
         mock_client.command.side_effect = command_side_effect
         mock_client.reservation_get.return_value = reservations[0] if reservations else None
+        mock_client.clone.return_value = mock_client
+        mock_client.__enter__ = lambda self: self
+        mock_client.__exit__ = lambda self, *a: None
 
     @patch("netbox_kea.models.KeaClient")
     def test_reserved_badge_appears_when_reservation_exists(self, MockKeaClient):

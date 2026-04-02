@@ -613,6 +613,9 @@ class TestEnrichLeasesErrorPaths(_ViewTestBase):
         """When the lease IP is absent from NetBox, sync_url must be set on the lease dict."""
         mock_client = MockKeaClient.return_value
         mock_client.command.return_value = [{"result": 0, "arguments": {"ip-address": "10.0.0.5", **self._LEASE4}}]
+        mock_client.clone.return_value = mock_client  # worker threads must see configured behaviors
+        mock_client.__enter__ = lambda s: s
+        mock_client.__exit__ = lambda s, *a: None
         mock_client.reservation_get.return_value = None
         mock_bulk_fetch.return_value = {}
         url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
@@ -627,6 +630,9 @@ class TestEnrichLeasesErrorPaths(_ViewTestBase):
         """When the lease IP exists in NetBox IPAM, netbox_ip_url must be set (Synced badge)."""
         mock_client = MockKeaClient.return_value
         mock_client.command.return_value = [{"result": 0, "arguments": {"ip-address": "10.0.0.5", **self._LEASE4}}]
+        mock_client.clone.return_value = mock_client  # worker threads must see configured behaviors
+        mock_client.__enter__ = lambda s: s
+        mock_client.__exit__ = lambda s, *a: None
         mock_client.reservation_get.return_value = None
         nb_ip = MagicMock()
         nb_ip.get_absolute_url.return_value = "/ipam/ip-addresses/99/"

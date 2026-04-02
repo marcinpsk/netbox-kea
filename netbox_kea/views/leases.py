@@ -1101,7 +1101,14 @@ def _set_lease_reservation_fields(  # noqa: PLR0913
     lease["delete_lease_url"] = ""
     lease["can_change_reservation"] = False
 
-    if rsv and rsv_subnet_id is not None:
+    if rsv is not None:
+        if not isinstance(rsv, dict) or not isinstance(rsv_subnet_id, int):
+            # Malformed reservation — treat as indeterminate, don't offer actions
+            failed_ips.add(ip)
+            lease["reservation_url"] = None
+            lease["create_reservation_url"] = None
+            lease["sync_url"] = None
+            return
         _set_ip_matched_reservation(lease, rsv, server_pk, version, rsv_subnet_id, can_change, reservation_url_name)
     elif host_cmds_available and ip not in failed_ips:
         _set_unmatched_reservation(

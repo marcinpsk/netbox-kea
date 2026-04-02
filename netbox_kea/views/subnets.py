@@ -349,7 +349,7 @@ class _BasePoolAddView(_KeaChangeMixin, generic.ObjectView):
         except requests.RequestException:
             logger.exception("Failed to add pool to subnet %s (network error)", subnet_id)
             messages.error(request, "Network error communicating with Kea: see server logs.")
-        except Exception:
+        except (KeaException, requests.RequestException, ValueError):
             logger.exception("Failed to add pool to subnet %s", subnet_id)
             messages.error(request, "Failed to add pool: see server logs for details.")
         return redirect(return_url)
@@ -417,7 +417,7 @@ class _BasePoolDeleteView(_KeaChangeMixin, generic.ObjectView):
         except requests.RequestException:
             logger.exception("Failed to remove pool from subnet %s (network error)", subnet_id)
             messages.error(request, "Network error communicating with Kea: see server logs.")
-        except Exception:
+        except (KeaException, requests.RequestException, ValueError):
             logger.exception("Failed to remove pool from subnet %s", subnet_id)
             messages.error(request, "Failed to remove pool: see server logs for details.")
         return redirect(return_url)
@@ -610,7 +610,7 @@ class _BaseSubnetAddView(_KeaChangeMixin, generic.ObjectView):
                     "return_url": return_url,
                 },
             )
-        except Exception:
+        except (KeaException, requests.RequestException, ValueError):
             logger.exception("Failed to add subnet %s", cd.get("subnet"))
             messages.error(request, "Failed to add subnet: see server logs for details.")
             return render(
@@ -925,7 +925,7 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
                     "return_url": return_url,
                 },
             )
-        except Exception:
+        except (KeaException, requests.RequestException, ValueError):
             logger.exception("Failed to update subnet %s on server %s", subnet_id, pk)
             messages.error(request, "Failed to update subnet: see server logs for details.")
             return render(
@@ -1001,7 +1001,7 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
             except requests.RequestException:
                 logger.exception("Transport error changing network for subnet %s on server %s", subnet_id, pk)
                 messages.error(request, "Transport error communicating with Kea during network assignment.")
-            except Exception:
+            except (KeaException, requests.RequestException, ValueError):
                 logger.exception("Unexpected error changing network for subnet %s on server %s", subnet_id, pk)
                 messages.error(request, "An internal error occurred during network assignment.")
         return redirect(return_url)
@@ -1080,7 +1080,7 @@ class _BaseSubnetDeleteView(_KeaChangeMixin, generic.ObjectView):
         except requests.RequestException:
             logger.exception("Failed to delete subnet %s (network error)", subnet_id)
             messages.error(request, "Network error communicating with Kea: see server logs.")
-        except Exception:
+        except (KeaException, requests.RequestException, ValueError):
             logger.exception("Failed to delete subnet %s", subnet_id)
             messages.error(request, "Failed to delete subnet: see server logs for details.")
         return redirect(return_url)
@@ -1163,7 +1163,7 @@ class _BaseSubnetWipeView(_KeaChangeMixin, generic.ObjectView):
         except requests.RequestException:
             logger.exception("Failed to wipe leases in subnet %s (network error)", subnet_id)
             messages.error(request, "Network error communicating with Kea: see server logs.")
-        except Exception:
+        except (KeaException, requests.RequestException, ValueError):
             logger.exception("Failed to wipe leases in subnet %s", subnet_id)
             messages.error(request, "Failed to wipe leases: see server logs for details.")
         return redirect(return_url)

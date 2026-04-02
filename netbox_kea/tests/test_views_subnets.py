@@ -441,7 +441,7 @@ class TestServerSubnet4WipeView(_ViewTestBase):
     def test_post_on_unexpected_exception_shows_error_message(self, MockKeaClient):
         """POST that raises an unexpected exception must redirect (no 500)."""
         mock_client = MockKeaClient.return_value
-        mock_client.lease_wipe.side_effect = RuntimeError("unexpected")
+        mock_client.lease_wipe.side_effect = ValueError("unexpected")
         response = self.client.post(self._url())
         self.assertEqual(response.status_code, 302)
         self._assert_no_none_pk_redirect(response)
@@ -1232,7 +1232,7 @@ class TestPoolAddExceptions(_ViewTestBase):
     @patch("netbox_kea.models.KeaClient")
     def test_generic_exception_shows_error(self, MockKeaClient):
         """Generic exception on pool_add must show error message."""
-        MockKeaClient.return_value.pool_add.side_effect = RuntimeError("crash")
+        MockKeaClient.return_value.pool_add.side_effect = ValueError("crash")
         MockKeaClient.return_value.reservation_get_page.return_value = ([], 0, 0)
         response = self.client.post(self._url(), {"pool": "10.0.0.100-10.0.0.200"}, follow=True)
         msgs = list(response.context["messages"])
@@ -1273,7 +1273,7 @@ class TestPoolDeleteExceptions(_ViewTestBase):
     @patch("netbox_kea.models.KeaClient")
     def test_generic_exception_shows_error(self, MockKeaClient):
         """Generic exception on pool_del must show error message."""
-        MockKeaClient.return_value.pool_del.side_effect = RuntimeError("crash")
+        MockKeaClient.return_value.pool_del.side_effect = ValueError("crash")
         response = self.client.post(self._url(), follow=True)
         msgs = list(response.context["messages"])
         self.assertTrue(any(m.level == django_messages.ERROR for m in msgs))
@@ -1375,11 +1375,11 @@ class TestSubnetAddExceptionPaths(_ViewTestBase):
 
     @patch("netbox_kea.models.KeaClient")
     def test_post_subnet_add_runtime_error_rerenders_form(self, MockKeaClient):
-        """RuntimeError from subnet_add must re-render the form (200 response)."""
+        """ValueError from subnet_add must re-render the form (200 response)."""
         MockKeaClient.return_value.command.return_value = [
             {"result": 0, "arguments": {"Dhcp4": {"shared-networks": [], "subnet4": []}}}
         ]
-        MockKeaClient.return_value.subnet_add.side_effect = RuntimeError("crash")
+        MockKeaClient.return_value.subnet_add.side_effect = ValueError("crash")
         response = self.client.post(self._url(), _SUBNET_ADD_POST)
         self.assertEqual(response.status_code, 200)
 
@@ -1484,7 +1484,7 @@ class TestSubnetEditPostExceptions(_ViewTestBase):
     def test_post_generic_exception_rerenders(self, MockKeaClient):
         """Generic exception on subnet_update must re-render the form."""
         MockKeaClient.return_value.command.side_effect = [_SUBNET4_GET_FULL, _CONFIG4_NO_NETWORKS]
-        MockKeaClient.return_value.subnet_update.side_effect = RuntimeError("crash")
+        MockKeaClient.return_value.subnet_update.side_effect = ValueError("crash")
         response = self.client.post(self._url(), _SUBNET4_EDIT_POST)
         self.assertEqual(response.status_code, 200)
 
@@ -1588,7 +1588,7 @@ class TestSubnetDeleteExceptionPaths(_ViewTestBase):
     @patch("netbox_kea.models.KeaClient")
     def test_post_generic_exception_shows_error(self, MockKeaClient):
         """Lines 3203-3205: generic exception on subnet_del redirects with error."""
-        MockKeaClient.return_value.subnet_del.side_effect = RuntimeError("crash")
+        MockKeaClient.return_value.subnet_del.side_effect = ValueError("crash")
         response = self.client.post(self._url())
         self.assertEqual(response.status_code, 302)
 
@@ -1975,7 +1975,7 @@ class TestSubnetEditNetworkRollback(_ViewTestBase):
         mock_client.subnet_update.return_value = None
         mock_client.network_subnet_add.return_value = None
         # del(old) raises transport error — state is ambiguous
-        mock_client.network_subnet_del.side_effect = ConnectionError("network unreachable")
+        mock_client.network_subnet_del.side_effect = requests.ConnectionError("network unreachable")
 
         url = reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, 42])
         response = self.client.post(
@@ -2341,7 +2341,7 @@ class TestPoolAddPostErrors(_ViewTestBase):
     @patch("netbox_kea.models.KeaClient")
     def test_generic_exception_shows_error(self, MockKeaClient):
         """Generic exception from pool_add shows generic error."""
-        MockKeaClient.return_value.pool_add.side_effect = RuntimeError("unexpected")
+        MockKeaClient.return_value.pool_add.side_effect = ValueError("unexpected")
         response = self.client.post(self._url(), {"pool": "10.0.0.10-10.0.0.20"}, follow=True)
         self.assertEqual(response.status_code, 200)
 
@@ -2388,7 +2388,7 @@ class TestPoolDeletePostErrors(_ViewTestBase):
     @patch("netbox_kea.models.KeaClient")
     def test_generic_exception_shows_error(self, MockKeaClient):
         """Generic exception from pool_del shows generic error."""
-        MockKeaClient.return_value.pool_del.side_effect = RuntimeError("unexpected")
+        MockKeaClient.return_value.pool_del.side_effect = ValueError("unexpected")
         response = self.client.post(self._url(), follow=True)
         self.assertEqual(response.status_code, 200)
 
@@ -2475,7 +2475,7 @@ class TestSubnetAddPostNetworkErrors(_ViewTestBase):
         """Generic exception from subnet_add re-renders form."""
         self._setup_client(
             MockKeaClient,
-            subnet_add_effect=RuntimeError("unexpected"),
+            subnet_add_effect=ValueError("unexpected"),
         )
         response = self.client.post(
             self._url(),
