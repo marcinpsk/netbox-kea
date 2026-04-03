@@ -225,6 +225,9 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
             raw_leases = args.get("leases")
             if not isinstance(raw_leases, list):
                 raise RuntimeError(f"Unexpected leases payload from lease{self.dhcp_version}-get{command}")
+            raw_leases = [entry for entry in raw_leases if isinstance(entry, dict)]
+            if not raw_leases:
+                raise RuntimeError(f"No valid lease dicts in lease{self.dhcp_version}-get{command} response")
             return format_leases(raw_leases)
         return format_leases([args])
 

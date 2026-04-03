@@ -159,7 +159,7 @@ def _enrich_reservations_with_lease_status(client: "KeaClient", reservations: li
 
     service = f"dhcp{version}"
     lease_cmd = f"lease{version}-get-all"
-    unique_subnet_ids = {r.get("subnet-id") for r in reservations if r.get("subnet-id")}
+    unique_subnet_ids = {r.get("subnet-id") for r in reservations if isinstance(r.get("subnet-id"), (int, str))}
 
     active_lease_ips: set[str] = set()
     hook_unavailable = False
@@ -572,7 +572,7 @@ class ServerReservation6AddView(_KeaChangeMixin, generic.ObjectView):
             cd = form.cleaned_data
             reservation: dict[str, Any] = {
                 "subnet-id": cd["subnet_id"],
-                "ip-addresses": [ip.strip() for ip in cd["ip_addresses"].split(",")],
+                "ip-addresses": [ip.strip() for ip in cd["ip_addresses"].split(",") if ip.strip()],
                 cd["identifier_type"]: cd["identifier"],
             }
             if cd.get("hostname"):
@@ -678,9 +678,12 @@ class ServerReservation4EditView(_KeaChangeMixin, generic.ObjectView):
             "hostname": reservation.get("hostname", ""),
         }
         existing_options = reservation.get("option-data", [])
+        if not isinstance(existing_options, list):
+            existing_options = []
         options_initial = [
             {"name": o.get("name", ""), "data": o.get("data", ""), "always_send": o.get("always-send", False)}
             for o in existing_options
+            if isinstance(o, dict)
         ]
         context: dict[str, Any] = {
             "object": server,
@@ -792,9 +795,12 @@ class ServerReservation6EditView(_KeaChangeMixin, generic.ObjectView):
             "hostname": reservation.get("hostname", ""),
         }
         existing_options = reservation.get("option-data", [])
+        if not isinstance(existing_options, list):
+            existing_options = []
         options_initial = [
             {"name": o.get("name", ""), "data": o.get("data", ""), "always_send": o.get("always-send", False)}
             for o in existing_options
+            if isinstance(o, dict)
         ]
         context: dict[str, Any] = {
             "object": server,

@@ -803,7 +803,11 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
 
         def _parse_opts(option_list: list) -> dict[str, str]:
             result: dict[str, str] = {}
+            if not isinstance(option_list, list):
+                return result
             for opt in option_list:
+                if not isinstance(opt, dict):
+                    continue
                 name = opt.get("name", "")
                 data = opt.get("data", "")
                 if name == "routers":
