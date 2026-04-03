@@ -252,26 +252,30 @@ def _filter_reservations(
         result = [r for r in result if r.get("subnet-id") == subnet_id or r.get("subnet_id") == subnet_id]
     if q:
         q_lower = q.lower()
+
+        def _s(val: Any) -> str:
+            return str(val).lower() if val else ""
+
         if version == 4:
             result = [
                 r
                 for r in result
-                if q_lower in r.get("ip_address", r.get("ip-address", "")).lower()
-                or q_lower in r.get("hostname", "").lower()
-                or q_lower in r.get("hw-address", "").lower()
-                or q_lower in r.get("client-id", "").lower()
-                or q_lower in r.get("circuit-id", "").lower()
-                or q_lower in r.get("flex-id", "").lower()
+                if q_lower in _s(r.get("ip_address", r.get("ip-address", "")))
+                or q_lower in _s(r.get("hostname", ""))
+                or q_lower in _s(r.get("hw-address", ""))
+                or q_lower in _s(r.get("client-id", ""))
+                or q_lower in _s(r.get("circuit-id", ""))
+                or q_lower in _s(r.get("flex-id", ""))
             ]
         else:
             result = [
                 r
                 for r in result
-                if q_lower in r.get("ip_address", "").lower()
-                or any(q_lower in ip.lower() for ip in r.get("ip-addresses", []))
-                or q_lower in r.get("hostname", "").lower()
-                or q_lower in r.get("duid", "").lower()
-                or q_lower in r.get("hw-address", "").lower()
+                if q_lower in _s(r.get("ip_address", ""))
+                or any(q_lower in _s(ip) for ip in r.get("ip-addresses", []))
+                or q_lower in _s(r.get("hostname", ""))
+                or q_lower in _s(r.get("duid", ""))
+                or q_lower in _s(r.get("hw-address", ""))
                 or q_lower in r.get("client-id", "").lower()
                 or q_lower in r.get("flex-id", "").lower()
             ]

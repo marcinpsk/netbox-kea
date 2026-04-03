@@ -2668,6 +2668,7 @@ class TestReservationSyncExceptionOnSuccess(_ReservationViewBase):
         mock_client.reservation_add.assert_called_once()
         msgs = [str(m) for m in get_messages(response.wsgi_request)]
         self.assertTrue(any("sync failed" in m.lower() for m in msgs))
+        self.assertFalse(any("DB sync failed" in m for m in msgs))
 
     @patch("netbox_kea.views.reservations.sync_reservation_to_netbox")
     @patch("netbox_kea.models.KeaClient")
@@ -2777,6 +2778,30 @@ class TestFilterReservationsNonStringFields(SimpleTestCase):
         ]
         result = _filter_reservations(reservations, q="host6", subnet_id=None, version=6)
         self.assertEqual(len(result), 1)
+
+    def test_v4_int_hw_address_no_hostname_match(self):
+        """When hw-address is int and query does NOT match hostname, row is excluded gracefully."""
+        reservations = [
+            {"ip-address": "10.0.0.1", "hostname": "host1", "hw-address": 12345},
+        ]
+        result = _filter_reservations(reservations, q="nomatch", subnet_id=None, version=4)
+        self.assertEqual(len(result), 0)
+
+    def test_v4_list_hw_address_no_hostname_match(self):
+        """When hw-address is a list and query does NOT match hostname, row is excluded gracefully."""
+        reservations = [
+            {"ip-address": "10.0.0.1", "hostname": "host1", "hw-address": ["aa:bb:cc"]},
+        ]
+        result = _filter_reservations(reservations, q="nomatch", subnet_id=None, version=4)
+        self.assertEqual(len(result), 0)
+
+    def test_v6_int_duid_no_hostname_match(self):
+        """When duid is int and query does NOT match hostname, row is excluded gracefully."""
+        reservations = [
+            {"ip-addresses": ["2001:db8::1"], "hostname": "host6", "duid": 999},
+        ]
+        result = _filter_reservations(reservations, q="nomatch", subnet_id=None, version=6)
+        self.assertEqual(len(result), 0)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2994,6 +3019,7 @@ class TestRunReservationSuccessSideEffectsSyncFail(_ReservationViewBase):
         mock_client.reservation_add.assert_called_once()
         msgs = [str(m) for m in get_messages(response.wsgi_request)]
         self.assertTrue(any("sync failed" in m.lower() for m in msgs))
+        self.assertFalse(any("db constraint violation" in m for m in msgs))
 
     @patch("netbox_kea.views.reservations.sync_reservation_to_netbox")
     @patch("netbox_kea.models.KeaClient")
