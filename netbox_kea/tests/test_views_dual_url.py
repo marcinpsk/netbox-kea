@@ -208,6 +208,7 @@ class TestDualURLReservationViews(TestCase):
     def test_reservations4_uses_dhcp4_url(self, MockKeaClient):
         """GET reservations4 → KeaClient constructed with dhcp4_url."""
         MockKeaClient.return_value.command.side_effect = _kea_command_side_effect
+        MockKeaClient.return_value.reservation_get_page.return_value = ([], 0, 0)
         url = reverse("plugins:netbox_kea:server_reservations4", args=[self.server.pk])
         response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
@@ -217,6 +218,7 @@ class TestDualURLReservationViews(TestCase):
     def test_reservations6_uses_dhcp6_url(self, MockKeaClient):
         """GET reservations6 → KeaClient constructed with dhcp6_url."""
         MockKeaClient.return_value.command.side_effect = _kea_command_side_effect
+        MockKeaClient.return_value.reservation_get_page.return_value = ([], 0, 0)
         url = reverse("plugins:netbox_kea:server_reservations6", args=[self.server.pk])
         response = self.client.get(url)
         self.assertEqual(response.status_code, 200)

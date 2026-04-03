@@ -340,10 +340,13 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
 
                 if not raw_leases:
                     if count >= per_page:
-                        logger.warning(
-                            "lease-get-page returned %d items but none had a valid ip-address; stopping export",
+                        logger.error(
+                            "lease-get-page returned %d items but none had a valid ip-address on server %s; aborting export",
                             len(args.get("leases", [])),
+                            instance.pk,
                         )
+                        messages.error(request, "Failed to fetch leases for export: unexpected Kea response.")
+                        return redirect(request.path)
                     break
 
                 if count < per_page:
@@ -1205,7 +1208,7 @@ def _set_unmatched_reservation(
         mac_rsv_subnet_id = mac_rsv.get("subnet-id")
         lease["pending_ip_change"] = True
         lease["pending_reservation_ip"] = pending_ip
-        if mac_rsv_subnet_id is not None:
+        if isinstance(mac_rsv_subnet_id, int):
             lease["reservation_url"] = reverse(reservation_url_name, args=[server_pk, mac_rsv_subnet_id, pending_ip])
         else:
             lease["reservation_url"] = None

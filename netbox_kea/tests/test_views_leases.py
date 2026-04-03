@@ -3492,3 +3492,134 @@ class TestFetchReservationByMac(_ViewTestBase):
         ]
         _fetch_reservation_by_mac_for_leases(mock_client, 4, leases, set(), set())
         self.assertEqual(mock_client.reservation_get.call_count, 1)
+
+
+# ---------------------------------------------------------------------------
+# Coverage: defensive checks in get_leases_page() and get_export_all()
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestGetLeasesPageDefensiveChecks(_ViewTestBase):
+    """Cover the isinstance guards and RuntimeError paths in get_leases_page()."""
+
+    def _url(self):
+        return reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_non_list_leases_raises_runtime_error(self, MockKeaClient):
+        """When Kea returns leases as non-list, the view catches the RuntimeError."""
+        MockKeaClient.return_value.command.return_value = [
+            {"result": 0, "arguments": {"leases": "not-a-list", "count": 0}}
+        ]
+        response = self.client.get(self._url(), {"by": "subnet", "q": "10.0.0.0/24"}, HTTP_HX_REQUEST="true")
+        self.assertEqual(response.status_code, 200)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_non_int_count_raises_runtime_error(self, MockKeaClient):
+        """When Kea returns count as non-int, the view catches the RuntimeError."""
+        MockKeaClient.return_value.command.return_value = [{"result": 0, "arguments": {"leases": [], "count": "bad"}}]
+        response = self.client.get(self._url(), {"by": "subnet", "q": "10.0.0.0/24"}, HTTP_HX_REQUEST="true")
+        self.assertEqual(response.status_code, 200)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_filtered_out_items_on_partial_page_returns_empty(self, MockKeaClient):
+        """Items without ip-address are filtered; partial page returns empty gracefully."""
+        MockKeaClient.return_value.command.return_value = [
+            {"result": 0, "arguments": {"leases": [{"no-ip": "bad"}], "count": 1}}
+        ]
+        response = self.client.get(self._url(), {"by": "subnet", "q": "10.0.0.0/24"}, HTTP_HX_REQUEST="true")
+        self.assertEqual(response.status_code, 200)
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestExportAllDefensiveChecks(_ViewTestBase):
+    """Cover defensive branches in get_export_all()."""
+
+    def _url(self):
+        return reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_non_list_leases_in_export_redirects(self, MockKeaClient):
+        """When export_all gets non-list leases, it redirects with error."""
+        MockKeaClient.return_value.command.return_value = [
+            {"result": 0, "arguments": {"leases": "not-a-list", "count": 0}}
+        ]
+        response = self.client.get(self._url(), {"export_all": "1"})
+        self.assertEqual(response.status_code, 302)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_non_int_count_in_export_redirects(self, MockKeaClient):
+        """When export_all gets non-int count, it redirects with error."""
+        MockKeaClient.return_value.command.return_value = [{"result": 0, "arguments": {"leases": [], "count": "bad"}}]
+        response = self.client.get(self._url(), {"export_all": "1"})
+        self.assertEqual(response.status_code, 302)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_full_page_all_filtered_aborts_export(self, MockKeaClient):
+        """When a full page has all entries filtered out, export aborts with error."""
+
+        # export_all uses per_page=1000; send 1000 invalid items to match.
+        def _side_effect(cmd, service=None, arguments=None, check=None):
+            if cmd == "lease4-get-page":
+                return [
+                    {
+                        "result": 0,
+                        "arguments": {
+                            "leases": [{"no-ip": f"bad-{i}"} for i in range(1000)],
+                            "count": 1000,
+                        },
+                    }
+                ]
+            return [{"result": 0, "arguments": {}}]
+
+        MockKeaClient.return_value.command.side_effect = _side_effect
+        response = self.client.get(self._url(), {"export_all": "1"})
+        self.assertEqual(response.status_code, 302)
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestMacMatchedSubnetIdValidation(TestCase):
+    """Cover isinstance(mac_rsv_subnet_id, int) guard in _set_unmatched_reservation."""
+
+    def test_non_int_subnet_id_sets_reservation_url_to_none(self):
+        """When mac_rsv has non-int subnet-id, reservation_url must be None."""
+        from netbox_kea.views.leases import _set_unmatched_reservation
+
+        lease: dict = {"ip_address": "10.0.0.10", "hw_address": "aa:bb:cc:dd:ee:01", "subnet_id": 1}
+        reservation_by_mac = {
+            ("aa:bb:cc:dd:ee:01", 1): {"subnet-id": "not-an-int", "ip-address": "10.0.0.5"},
+        }
+        _set_unmatched_reservation(
+            lease=lease,
+            server_pk=1,
+            version=4,
+            reservation_by_mac=reservation_by_mac,
+            failed_mac_keys=set(),
+            can_change=True,
+            reservation_url_name="plugins:netbox_kea:server_reservation4_edit",
+            add_url_name="plugins:netbox_kea:server_reservation4_add",
+        )
+        self.assertIsNone(lease.get("reservation_url"))
+        self.assertTrue(lease.get("pending_ip_change"))
+
+    def test_int_subnet_id_sets_reservation_url(self):
+        """When mac_rsv has valid int subnet-id, reservation_url must be set."""
+        from netbox_kea.views.leases import _set_unmatched_reservation
+
+        lease: dict = {"ip_address": "10.0.0.10", "hw_address": "aa:bb:cc:dd:ee:01", "subnet_id": 1}
+        reservation_by_mac = {
+            ("aa:bb:cc:dd:ee:01", 1): {"subnet-id": 2, "ip-address": "10.0.0.5"},
+        }
+        _set_unmatched_reservation(
+            lease=lease,
+            server_pk=1,
+            version=4,
+            reservation_by_mac=reservation_by_mac,
+            failed_mac_keys=set(),
+            can_change=True,
+            reservation_url_name="plugins:netbox_kea:server_reservation4_edit",
+            add_url_name="plugins:netbox_kea:server_reservation4_add",
+        )
+        self.assertIsNotNone(lease.get("reservation_url"))
+        self.assertIn("/2/", lease["reservation_url"])
