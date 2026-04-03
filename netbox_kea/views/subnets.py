@@ -54,6 +54,9 @@ class BaseServerDHCPSubnetsView(generic.ObjectChildrenView):
             return None
         if "id" not in s or "subnet" not in s:
             return None
+        if not isinstance(s["id"], (int, str)):
+            logger.warning("Skipping subnet with non-scalar ID: %s", s.get("id"))
+            return None
         try:
             sort_key = int(ipaddress.ip_network(s["subnet"], strict=False).network_address)
         except (ValueError, TypeError):
@@ -127,7 +130,7 @@ class BaseServerDHCPSubnetsView(generic.ObjectChildrenView):
             for s in subnet_list:
                 if s["id"] in stats:
                     s.update(stats[s["id"]])
-        except (KeaException, requests.RequestException):  # noqa: BLE001
+        except (KeaException, requests.RequestException, ValueError, TypeError, KeyError):  # noqa: BLE001
             logger.debug("stat_cmds hook unavailable or failed", exc_info=True)
 
         return subnet_list

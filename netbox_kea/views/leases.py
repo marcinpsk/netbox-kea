@@ -149,10 +149,10 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
         if not isinstance(args, dict):
             raise RuntimeError("Unexpected None arguments from lease-get-page")
 
-        raw_leases = args.get("leases")
-        if not isinstance(raw_leases, list):
+        original_leases = args.get("leases")
+        if not isinstance(original_leases, list):
             raise RuntimeError("Unexpected leases payload from lease-get-page")
-        raw_leases = [entry for entry in raw_leases if _is_valid_lease_entry(entry)]
+        raw_leases = [entry for entry in original_leases if _is_valid_lease_entry(entry)]
 
         count = args.get("count")
         if not isinstance(count, int):
@@ -161,11 +161,20 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
         if count == per_page and not raw_leases:
             logger.warning(
                 "lease-get-page returned %d items but none had a valid ip-address; aborting pagination",
-                len(args.get("leases", [])),
+                len(original_leases),
             )
             raise RuntimeError("Unexpected empty leases after filtering on full page")
 
-        next_cursor = f"{raw_leases[-1]['ip-address']}" if raw_leases and count == per_page else None
+        # Derive cursor from original Kea response to avoid rewinding on filtered entries
+        if count == per_page and original_leases:
+            last = original_leases[-1]
+            next_cursor = (
+                str(last["ip-address"])
+                if isinstance(last, dict) and last.get("ip-address")
+                else (f"{raw_leases[-1]['ip-address']}" if raw_leases else None)
+            )
+        else:
+            next_cursor = None
         for i, lease in enumerate(raw_leases):
             lease_ip = IPAddress(lease["ip-address"])
             if lease_ip not in subnet:
@@ -342,12 +351,12 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
                     messages.error(request, "Failed to fetch leases for export: unexpected Kea response.")
                     return redirect(request.path)
 
-                raw_leases = args.get("leases")
-                if not isinstance(raw_leases, list):
+                original_leases = args.get("leases")
+                if not isinstance(original_leases, list):
                     logger.error("lease-get-page returned non-list leases on server %s", instance.pk)
                     messages.error(request, "Failed to fetch leases for export: unexpected Kea response.")
                     return redirect(request.path)
-                raw_leases = [entry for entry in raw_leases if _is_valid_lease_entry(entry)]
+                raw_leases = [entry for entry in original_leases if _is_valid_lease_entry(entry)]
 
                 count = args.get("count")
                 if not isinstance(count, int):
@@ -361,7 +370,7 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
                     if count >= per_page:
                         logger.error(
                             "lease-get-page returned %d items but none had a valid ip-address on server %s; aborting export",
-                            len(args.get("leases", [])),
+                            len(original_leases),
                             instance.pk,
                         )
                         messages.error(request, "Failed to fetch leases for export: unexpected Kea response.")
@@ -370,7 +379,13 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
 
                 if count < per_page:
                     break
-                cursor = raw_leases[-1]["ip-address"]
+                # Derive cursor from original Kea response to avoid rewinding on filtered entries
+                last = original_leases[-1]
+                cursor = (
+                    str(last["ip-address"])
+                    if isinstance(last, dict) and last.get("ip-address")
+                    else raw_leases[-1]["ip-address"]
+                )
         except KeaException as exc:
             logger.exception("Failed to fetch all leases for export on server %s", instance.pk)
             messages.error(request, kea_error_hint(exc))
