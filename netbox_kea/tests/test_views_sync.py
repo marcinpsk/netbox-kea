@@ -31,6 +31,7 @@ from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
 from django.urls import reverse
 
+from netbox_kea.kea import KeaException
 from netbox_kea.models import Server
 
 # Minimal PLUGINS_CONFIG so server.get_client() can read kea_timeout.
@@ -621,3 +622,481 @@ class TestBulkSyncBatchCleanup(_ViewTestBase):
         mock_sync.side_effect = [ValueError("db error"), (MagicMock(), True)]
         self.client.post(self._url(), follow=True)
         mock_batch.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Coverage: _BaseSyncView.post() DB error during sync (~lines 56-63)
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestBaseSyncViewDBError(_ViewTestBase):
+    """_BaseSyncView.post() handles DB errors from _sync gracefully."""
+
+    def _url(self):
+        return reverse("plugins:netbox_kea:server_lease4_sync", args=[self.server.pk])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_integrity_error_returns_500(self, MockKeaClient):
+        """IntegrityError from _sync returns 500 with generic message."""
+        from django.db import IntegrityError
+
+        MockKeaClient.return_value.lease_get_by_ip.return_value = {
+            "ip-address": "10.0.0.1",
+            "hw-address": "aa:bb:cc:00:00:01",
+            "hostname": "host1",
+            "valid-lft": 86400,
+            "cltt": 1700000000,
+            "subnet-id": 1,
+        }
+        with patch("netbox_kea.views.ServerLease4SyncView._sync", side_effect=IntegrityError("duplicate key")):
+            response = self.client.post(self._url(), {"ip_address": "10.0.0.1"})
+        self.assertEqual(response.status_code, 500)
+        body = response.content.decode()
+        self.assertIn("Sync error", body)
+        self.assertNotIn("duplicate key", body)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_operational_error_returns_500(self, MockKeaClient):
+        """OperationalError from _sync returns 500 with generic message."""
+        from django.db.utils import OperationalError
+
+        MockKeaClient.return_value.lease_get_by_ip.return_value = {
+            "ip-address": "10.0.0.2",
+            "hw-address": "aa:bb:cc:00:00:02",
+            "hostname": "host2",
+            "valid-lft": 86400,
+            "cltt": 1700000000,
+            "subnet-id": 1,
+        }
+        with patch("netbox_kea.views.ServerLease4SyncView._sync", side_effect=OperationalError("db conn failed")):
+            response = self.client.post(self._url(), {"ip_address": "10.0.0.2"})
+        self.assertEqual(response.status_code, 500)
+        body = response.content.decode()
+        self.assertIn("Sync error", body)
+        self.assertNotIn("db conn failed", body)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_programming_error_returns_500(self, MockKeaClient):
+        """ProgrammingError from _sync returns 500."""
+        from django.db.utils import ProgrammingError
+
+        MockKeaClient.return_value.lease_get_by_ip.return_value = {
+            "ip-address": "10.0.0.3",
+            "hw-address": "aa:bb:cc:00:00:03",
+            "hostname": "host3",
+            "valid-lft": 86400,
+            "cltt": 1700000000,
+            "subnet-id": 1,
+        }
+        with patch("netbox_kea.views.ServerLease4SyncView._sync", side_effect=ProgrammingError("bad query")):
+            response = self.client.post(self._url(), {"ip_address": "10.0.0.3"})
+        self.assertEqual(response.status_code, 500)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_validation_error_returns_500(self, MockKeaClient):
+        """ValidationError from _sync returns 500."""
+        from django.core.exceptions import ValidationError
+
+        MockKeaClient.return_value.lease_get_by_ip.return_value = {
+            "ip-address": "10.0.0.4",
+            "hw-address": "aa:bb:cc:00:00:04",
+            "hostname": "host4",
+            "valid-lft": 86400,
+            "cltt": 1700000000,
+            "subnet-id": 1,
+        }
+        with patch("netbox_kea.views.ServerLease4SyncView._sync", side_effect=ValidationError("invalid data")):
+            response = self.client.post(self._url(), {"ip_address": "10.0.0.4"})
+        self.assertEqual(response.status_code, 500)
+
+
+# ---------------------------------------------------------------------------
+# Coverage: Bulk reservation sync fetch failure (~lines 161-188)
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestBulkReservationSyncFetchFailure(_ViewTestBase):
+    """Bulk sync shows error when reservation fetch fails."""
+
+    def _url_v4(self):
+        return reverse("plugins:netbox_kea:server_reservation4_bulk_sync", args=[self.server.pk])
+
+    def _url_v6(self):
+        return reverse("plugins:netbox_kea:server_reservation6_bulk_sync", args=[self.server.pk])
+
+    @patch("netbox_kea.views.sync_views._fetch_reservations_from_server")
+    def test_kea_exception_on_fetch_shows_error_and_redirects(self, mock_fetch):
+        """KeaException during fetch shows error with hint and redirects."""
+        from netbox_kea.kea import KeaException
+
+        mock_fetch.side_effect = KeaException(
+            {"result": 1, "text": "hook not loaded"},
+            index=0,
+        )
+        response = self.client.post(self._url_v4(), follow=True)
+        msgs = [str(m) for m in response.context["messages"]]
+        self.assertTrue(any(m for m in msgs if "hook not loaded" in m.lower() or "failed" in m.lower()))
+
+    @patch("netbox_kea.views.sync_views._fetch_reservations_from_server")
+    def test_type_error_on_fetch_shows_generic_error(self, mock_fetch):
+        """TypeError during fetch shows generic error."""
+        mock_fetch.side_effect = TypeError("unexpected type")
+        response = self.client.post(self._url_v4(), follow=True)
+        msgs = [str(m) for m in response.context["messages"]]
+        self.assertTrue(any("Failed to fetch" in m for m in msgs))
+        self.assertFalse(any("unexpected type" in m for m in msgs))
+
+    @patch("netbox_kea.views.sync_views._fetch_reservations_from_server")
+    def test_v6_kea_exception_on_fetch_redirects_to_v6_list(self, mock_fetch):
+        """v6 KeaException redirects to the v6 reservation list."""
+        from netbox_kea.kea import KeaException
+
+        mock_fetch.side_effect = KeaException(
+            {"result": 2, "text": "unknown command"},
+            index=0,
+        )
+        response = self.client.post(self._url_v6())
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("reservations6", response.url)
+
+
+# ---------------------------------------------------------------------------
+# Coverage: Per-row error isolation in bulk import (~lines 354-369)
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestBulkImportPerRowErrorIsolation(_ViewTestBase):
+    """If one reservation in a batch raises KeaException, remaining items still process."""
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_one_row_fails_others_succeed(self, MockKeaClient):
+        """First row raises KeaException, second succeeds, third raises ValueError."""
+        call_count = {"n": 0}
+
+        def side_effect(service, row):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                raise KeaException({"result": 1, "text": "conflict"}, index=0)
+            if call_count["n"] == 3:
+                raise ValueError("bad response")
+
+        MockKeaClient.return_value.reservation_add.side_effect = side_effect
+        url = reverse("plugins:netbox_kea:server_reservation4_bulk_import", args=[self.server.pk])
+
+        csv_content = (
+            "ip-address,hw-address,subnet-id\n"
+            "10.0.0.1,aa:bb:cc:00:00:01,1\n"
+            "10.0.0.2,aa:bb:cc:00:00:02,1\n"
+            "10.0.0.3,aa:bb:cc:00:00:03,1\n"
+        )
+        csv_file = io.BytesIO(csv_content.encode())
+        csv_file.name = "reservations.csv"
+        response = self.client.post(url, {"csv_file": csv_file})
+        self.assertEqual(response.status_code, 200)
+        result = response.context["result"]
+        self.assertEqual(result["created"], 1)
+        self.assertEqual(result["errors"], 2)
+        self.assertEqual(call_count["n"], 3)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_already_exists_counted_as_skipped(self, MockKeaClient):
+        """KeaException with result=1 and 'already exist' text is counted as skipped."""
+        MockKeaClient.return_value.reservation_add.side_effect = KeaException(
+            {"result": 1, "text": "Host already exists in subnet 1."},
+            index=0,
+        )
+        url = reverse("plugins:netbox_kea:server_reservation4_bulk_import", args=[self.server.pk])
+        csv_content = "ip-address,hw-address,subnet-id\n10.0.0.1,aa:bb:cc:00:00:01,1\n"
+        csv_file = io.BytesIO(csv_content.encode())
+        csv_file.name = "reservations.csv"
+        response = self.client.post(url, {"csv_file": csv_file})
+        self.assertEqual(response.status_code, 200)
+        result = response.context["result"]
+        self.assertEqual(result["skipped"], 1)
+        self.assertEqual(result["errors"], 0)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_connection_error_per_row(self, MockKeaClient):
+        """requests.RequestException per-row is caught and recorded."""
+        import requests as req_lib
+
+        MockKeaClient.return_value.reservation_add.side_effect = req_lib.ConnectionError("timeout")
+        url = reverse("plugins:netbox_kea:server_reservation4_bulk_import", args=[self.server.pk])
+        csv_content = "ip-address,hw-address,subnet-id\n10.0.0.1,aa:bb:cc:00:00:01,1\n"
+        csv_file = io.BytesIO(csv_content.encode())
+        csv_file.name = "reservations.csv"
+        response = self.client.post(url, {"csv_file": csv_file})
+        self.assertEqual(response.status_code, 200)
+        result = response.context["result"]
+        self.assertEqual(result["errors"], 1)
+        self.assertIn("Connection error", result["error_rows"][0]["error"])
+
+
+# ---------------------------------------------------------------------------
+# Coverage: Reservation sync view for v6 with IntegrityError
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestReservation6SyncDBError(_ViewTestBase):
+    """ServerReservation6SyncView handles DB errors from sync."""
+
+    def _url(self):
+        return reverse("plugins:netbox_kea:server_reservation6_sync", args=[self.server.pk])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_integrity_error_returns_500(self, MockKeaClient):
+        """IntegrityError from _sync returns 500."""
+        from django.db import IntegrityError
+
+        MockKeaClient.return_value.reservation_get_by_ip.return_value = {
+            "ip-addresses": ["2001:db8::1"],
+            "duid": "00:01:02:03:04:05",
+            "hostname": "host6",
+            "subnet-id": 1,
+        }
+        with patch(
+            "netbox_kea.views.ServerReservation6SyncView._sync",
+            side_effect=IntegrityError("dup"),
+        ):
+            response = self.client.post(self._url(), {"ip_address": "2001:db8::1"})
+        self.assertEqual(response.status_code, 500)
+        self.assertNotIn(b"dup", response.content)
+
+
+# ---------------------------------------------------------------------------
+# Coverage: _BaseSyncView.post() — OperationalError during sync
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestSyncViewOperationalError(_ViewTestBase):
+    """_BaseSyncView.post() handles OperationalError from _sync."""
+
+    def _url(self):
+        return reverse("plugins:netbox_kea:server_lease4_sync", args=[self.server.pk])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_operational_error_from_sync_returns_500(self, MockKeaClient):
+        """OperationalError during sync returns 500 with generic message."""
+        from django.db.utils import OperationalError
+
+        MockKeaClient.return_value.lease_get_by_ip.return_value = {
+            "ip-address": "10.0.0.10",
+            "hw-address": "aa:bb:cc:00:00:10",
+            "hostname": "host10",
+            "valid-lft": 86400,
+            "cltt": 1700000000,
+            "subnet-id": 1,
+        }
+        with patch("netbox_kea.views.ServerLease4SyncView._sync", side_effect=OperationalError("conn lost")):
+            response = self.client.post(self._url(), {"ip_address": "10.0.0.10"})
+        self.assertEqual(response.status_code, 500)
+        body = response.content.decode()
+        self.assertIn("Sync error", body)
+        self.assertNotIn("conn lost", body)
+
+
+# ---------------------------------------------------------------------------
+# Coverage: Lease6 sync view — live fetch failure
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestLease6SyncViewFetchFailure(_ViewTestBase):
+    """ServerLease6SyncView._fetch_live_data returns None on failure → 400."""
+
+    def _url(self):
+        return reverse("plugins:netbox_kea:server_lease6_sync", args=[self.server.pk])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_kea_exception_returns_400(self, MockKeaClient):
+        """KeaException from lease6 fetch returns 400."""
+        MockKeaClient.return_value.lease_get_by_ip.side_effect = KeaException(
+            {"result": 1, "text": "not found"}, index=0
+        )
+        response = self.client.post(self._url(), {"ip_address": "2001:db8::1"})
+        self.assertEqual(response.status_code, 400)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_empty_lease_returns_400(self, MockKeaClient):
+        """When lease6 is None (not found), returns 400."""
+        MockKeaClient.return_value.lease_get_by_ip.return_value = None
+        response = self.client.post(self._url(), {"ip_address": "2001:db8::2"})
+        self.assertEqual(response.status_code, 400)
+
+
+# ---------------------------------------------------------------------------
+# Coverage: Bulk reservation sync — v6 fetch exception path
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestBulkReservation6SyncFetchFail(_ViewTestBase):
+    """v6 bulk sync shows error when reservation fetch fails."""
+
+    def _url(self):
+        return reverse("plugins:netbox_kea:server_reservation6_bulk_sync", args=[self.server.pk])
+
+    @patch("netbox_kea.views.sync_views._fetch_reservations_from_server")
+    def test_v6_kea_exception_shows_error_and_redirects(self, mock_fetch):
+        """KeaException during v6 reservation fetch shows error and redirects to v6 list."""
+        mock_fetch.side_effect = KeaException(
+            {"result": 1, "text": "host_cmds not loaded"},
+            index=0,
+        )
+        response = self.client.post(self._url())
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("reservations6", response.url)
+
+    @patch("netbox_kea.views.sync_views._fetch_reservations_from_server")
+    def test_v6_value_error_shows_generic_error(self, mock_fetch):
+        """ValueError during v6 fetch shows generic error."""
+        mock_fetch.side_effect = ValueError("bad data")
+        response = self.client.post(self._url(), follow=True)
+        msgs = [str(m) for m in response.context["messages"]]
+        self.assertTrue(any("Failed to fetch" in m for m in msgs))
+        self.assertFalse(any("bad data" in m for m in msgs))
+
+
+# ---------------------------------------------------------------------------
+# Coverage: Bulk sync per-row error isolation
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestBulkSyncPerRowErrorIsolation(_ViewTestBase):
+    """One sync failure in a bulk batch must not prevent other rows from processing."""
+
+    def _url(self):
+        return reverse("plugins:netbox_kea:server_reservation4_bulk_sync", args=[self.server.pk])
+
+    @patch("netbox_kea.sync.sync_reservation_to_netbox")
+    @patch("netbox_kea.views.sync_views._fetch_reservations_from_server")
+    def test_middle_row_fails_others_succeed(self, mock_fetch, mock_sync):
+        """Row 1 succeeds, row 2 raises IntegrityError, row 3 succeeds."""
+        from django.db import IntegrityError
+
+        mock_fetch.return_value = [
+            {"ip-address": "10.0.0.1", "hw-address": "aa:bb:cc:00:00:01"},
+            {"ip-address": "10.0.0.2", "hw-address": "aa:bb:cc:00:00:02"},
+            {"ip-address": "10.0.0.3", "hw-address": "aa:bb:cc:00:00:03"},
+        ]
+        mock_sync.side_effect = [
+            (MagicMock(), True),
+            IntegrityError("duplicate key"),
+            (MagicMock(), False),
+        ]
+        response = self.client.post(self._url(), follow=True)
+        msgs = [str(m) for m in response.context["messages"]]
+        # 1 created + 1 error + 1 updated
+        self.assertTrue(any("1 created" in m and "1 updated" in m and "1 errors" in m for m in msgs))
+        self.assertEqual(mock_sync.call_count, 3)
+
+    @patch("netbox_kea.sync.sync_reservation_to_netbox")
+    @patch("netbox_kea.views.sync_views._fetch_reservations_from_server")
+    def test_validation_error_counted_as_error(self, mock_fetch, mock_sync):
+        """ValidationError from sync is counted as error."""
+        from django.core.exceptions import ValidationError
+
+        mock_fetch.return_value = [
+            {"ip-address": "10.0.0.1", "hw-address": "aa:bb:cc:00:00:01"},
+        ]
+        mock_sync.side_effect = ValidationError("invalid prefix")
+        response = self.client.post(self._url(), follow=True)
+        msgs = [str(m) for m in response.context["messages"]]
+        self.assertTrue(any("1 errors" in m for m in msgs))
+        self.assertFalse(any("invalid prefix" in m for m in msgs))
+
+    @patch("netbox_kea.sync.sync_reservation_to_netbox")
+    @patch("netbox_kea.views.sync_views._fetch_reservations_from_server")
+    def test_reservations_with_ip_addresses_field_processed(self, mock_fetch, mock_sync):
+        """v6-style reservations with ip-addresses list (not ip-address) are processed."""
+        mock_fetch.return_value = [
+            {"ip-addresses": ["2001:db8::1"], "duid": "00:01:02:03"},
+        ]
+        mock_sync.return_value = (MagicMock(), True)
+        response = self.client.post(self._url(), follow=True)
+        mock_sync.assert_called_once()
+        msgs = [str(m) for m in response.context["messages"]]
+        self.assertTrue(any("1 created" in m for m in msgs))
+
+
+# ---------------------------------------------------------------------------
+# Coverage: Bulk reservation import — per-row exception types
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestBulkImportPerRowExceptionTypes(_ViewTestBase):
+    """Bulk import handles each per-row exception type independently."""
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_requests_exception_per_row_recorded(self, MockKeaClient):
+        """requests.RequestException per-row surfaced with connection error message."""
+        import requests as req_lib
+
+        MockKeaClient.return_value.reservation_add.side_effect = req_lib.Timeout("read timeout")
+        url = reverse("plugins:netbox_kea:server_reservation4_bulk_import", args=[self.server.pk])
+        csv_content = "ip-address,hw-address,subnet-id\n10.0.0.1,aa:bb:cc:00:00:01,1\n"
+        csv_file = io.BytesIO(csv_content.encode())
+        csv_file.name = "reservations.csv"
+        response = self.client.post(url, {"csv_file": csv_file})
+        self.assertEqual(response.status_code, 200)
+        result = response.context["result"]
+        self.assertEqual(result["errors"], 1)
+        self.assertIn("Connection error", result["error_rows"][0]["error"])
+        self.assertNotIn("read timeout", result["error_rows"][0]["error"])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_duplicate_kea_exception_counted_as_skipped(self, MockKeaClient):
+        """KeaException with 'already exist' text is counted as skipped, not error."""
+        MockKeaClient.return_value.reservation_add.side_effect = KeaException(
+            {"result": 1, "text": "Host already exists in subnet 1. Duplicate entry."},
+            index=0,
+        )
+        url = reverse("plugins:netbox_kea:server_reservation4_bulk_import", args=[self.server.pk])
+        csv_content = "ip-address,hw-address,subnet-id\n10.0.0.1,aa:bb:cc:00:00:01,1\n"
+        csv_file = io.BytesIO(csv_content.encode())
+        csv_file.name = "reservations.csv"
+        response = self.client.post(url, {"csv_file": csv_file})
+        self.assertEqual(response.status_code, 200)
+        result = response.context["result"]
+        self.assertEqual(result["skipped"], 1)
+        self.assertEqual(result["errors"], 0)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_mixed_success_skip_and_error_in_batch(self, MockKeaClient):
+        """Multi-row batch: row 1 succeeds, row 2 duplicate skip, row 3 error."""
+        call_count = {"n": 0}
+
+        def side_effect(service, row):
+            call_count["n"] += 1
+            if call_count["n"] == 2:
+                raise KeaException(
+                    {"result": 1, "text": "Host already exists in subnet 1."},
+                    index=0,
+                )
+            if call_count["n"] == 3:
+                raise RuntimeError("unexpected")
+
+        MockKeaClient.return_value.reservation_add.side_effect = side_effect
+        url = reverse("plugins:netbox_kea:server_reservation4_bulk_import", args=[self.server.pk])
+        csv_content = (
+            "ip-address,hw-address,subnet-id\n"
+            "10.0.0.1,aa:bb:cc:00:00:01,1\n"
+            "10.0.0.2,aa:bb:cc:00:00:02,1\n"
+            "10.0.0.3,aa:bb:cc:00:00:03,1\n"
+        )
+        csv_file = io.BytesIO(csv_content.encode())
+        csv_file.name = "reservations.csv"
+        response = self.client.post(url, {"csv_file": csv_file})
+        self.assertEqual(response.status_code, 200)
+        result = response.context["result"]
+        self.assertEqual(result["created"], 1)
+        self.assertEqual(result["skipped"], 1)
+        self.assertEqual(result["errors"], 1)
+        self.assertEqual(result["total"], 3)

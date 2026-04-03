@@ -2545,3 +2545,533 @@ class TestV6EditPostPreservesFormIPs(_ReservationViewBase):
         args, kwargs = call_args or ((), {})
         reservation = kwargs.get("reservation") or (args[1] if len(args) > 1 else {})
         self.assertEqual(reservation["ip-addresses"], ["2001:db8::100", "2001:db8::200"])
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Coverage: _enrich_reservations_with_lease_status error paths (~lines 180-212)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestEnrichReservationsLeaseStatusErrors(_ReservationViewBase):
+    """Error paths in _enrich_reservations_with_lease_status for malformed responses."""
+
+    def _prepare_mock_client(self, MockKeaClient, reservations=None):
+        mock_client = MockKeaClient.return_value
+        mock_client.clone.return_value = mock_client
+        mock_client.__enter__ = lambda s: s
+        mock_client.__exit__ = lambda s, *a: None
+        mock_client.reservation_get_page.return_value = (
+            reservations if reservations is not None else ([dict(_SAMPLE_RESERVATION4)], 0, 0)
+        )
+        return mock_client
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_malformed_args_not_dict_sets_indeterminate(self, MockKeaClient):
+        """When lease-get-all returns args that is not a dict, has_active_lease stays None."""
+        mock_client = self._prepare_mock_client(MockKeaClient)
+        # Response where arguments is a string instead of dict
+        mock_client.command.return_value = [{"result": 0, "arguments": "not-a-dict"}]
+        url = reverse("plugins:netbox_kea:server_reservations4", args=[self.server.pk])
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        table = response.context["table"]
+        for row in table.data:
+            # Indeterminate: has_active_lease should not be set to True or False
+            self.assertIsNone(row.get("has_active_lease"))
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_malformed_leases_not_list_sets_indeterminate(self, MockKeaClient):
+        """When lease-get-all returns leases as a string instead of list, has_active_lease stays None."""
+        mock_client = self._prepare_mock_client(MockKeaClient)
+        mock_client.command.return_value = [{"result": 0, "arguments": {"leases": "not-a-list"}}]
+        url = reverse("plugins:netbox_kea:server_reservations4", args=[self.server.pk])
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        table = response.context["table"]
+        for row in table.data:
+            self.assertIsNone(row.get("has_active_lease"))
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_non_dict_lease_entries_are_skipped(self, MockKeaClient):
+        """When lease entries contain non-dict items, they are skipped without crashing."""
+        mock_client = self._prepare_mock_client(MockKeaClient)
+        # Mix of valid dict and non-dict entries
+        mock_client.command.return_value = [
+            {
+                "result": 0,
+                "arguments": {
+                    "leases": [
+                        "not-a-dict",
+                        42,
+                        {"ip-address": "192.168.1.100"},
+                    ]
+                },
+            }
+        ]
+        url = reverse("plugins:netbox_kea:server_reservations4", args=[self.server.pk])
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        table = response.context["table"]
+        # The valid lease entry should match, so has_active_lease = True
+        for row in table.data:
+            self.assertTrue(row.get("has_active_lease"))
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_kea_exception_result_not_2_sets_indeterminate(self, MockKeaClient):
+        """KeaException with result!=2 (not hook-unavailable) leaves has_active_lease=None."""
+        mock_client = self._prepare_mock_client(MockKeaClient)
+        mock_client.command.side_effect = KeaException(
+            {"result": 1, "text": "internal error"},
+            index=0,
+        )
+        url = reverse("plugins:netbox_kea:server_reservations4", args=[self.server.pk])
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        table = response.context["table"]
+        for row in table.data:
+            self.assertIsNone(row.get("has_active_lease"))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Coverage: _run_reservation_success_side_effects sync exception (~lines 132-137)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestReservationSyncExceptionOnSuccess(_ReservationViewBase):
+    """When sync_reservation_to_netbox raises, reservation is still saved and warning shown."""
+
+    def _add_url(self):
+        return reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk])
+
+    def _valid_post_data(self):
+        return {
+            "subnet_id": 1,
+            "ip_address": "192.168.1.50",
+            "identifier_type": "hw-address",
+            "identifier": "aa:bb:cc:dd:ee:ff",
+            "hostname": "sync-fail-host",
+            "sync_to_netbox": "on",
+        }
+
+    @patch("netbox_kea.views.reservations.sync_reservation_to_netbox")
+    @patch("netbox_kea.models.KeaClient")
+    def test_sync_failure_shows_warning_but_reservation_saved(self, MockKeaClient, mock_sync):
+        """If sync_reservation_to_netbox raises, reservation add still redirects with warning."""
+        mock_client = MockKeaClient.return_value
+        mock_client.reservation_add.return_value = None
+        mock_sync.side_effect = ValueError("DB sync failed")
+        response = self.client.post(self._add_url(), self._valid_post_data())
+        self.assertEqual(response.status_code, 302)
+        mock_client.reservation_add.assert_called_once()
+        # Follow redirect to check messages
+        response = self.client.get(response.url)
+        msgs = [str(m) for m in response.context.get("messages", [])]
+        self.assertTrue(any("sync failed" in m.lower() for m in msgs))
+
+    @patch("netbox_kea.views.reservations.sync_reservation_to_netbox")
+    @patch("netbox_kea.models.KeaClient")
+    def test_sync_success_shows_info_message(self, MockKeaClient, mock_sync):
+        """If sync succeeds, info message shown with created/updated status."""
+        mock_client = MockKeaClient.return_value
+        mock_client.reservation_add.return_value = None
+        mock_sync.return_value = (MagicMock(), True)
+        response = self.client.post(self._add_url(), self._valid_post_data())
+        self.assertEqual(response.status_code, 302)
+        response = self.client.get(response.url)
+        msgs = [str(m) for m in response.context.get("messages", [])]
+        self.assertTrue(any("created" in m.lower() for m in msgs))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Coverage: Reservation add with invalid option formset (~lines 466-475)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestReservation4AddInvalidOptionsFormset(_ReservationViewBase):
+    """POST with valid main form but invalid option formset re-renders form."""
+
+    def _add_url(self):
+        return reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_invalid_options_formset_rerenders_form(self, MockKeaClient):
+        """When option formset is invalid, form is re-rendered (not submitted to Kea)."""
+        mock_client = MockKeaClient.return_value
+        data = {
+            "subnet_id": 1,
+            "ip_address": "192.168.1.100",
+            "identifier_type": "hw-address",
+            "identifier": "aa:bb:cc:dd:ee:ff",
+            "hostname": "testhost.example.com",
+            # Include management form with correct prefix but invalid option data
+            "options-TOTAL_FORMS": "1",
+            "options-INITIAL_FORMS": "0",
+            "options-MIN_NUM_FORMS": "0",
+            "options-MAX_NUM_FORMS": "1000",
+            # Option row 0: name is required but data is empty
+            "options-0-name": "routers",
+            "options-0-data": "",  # required field — empty triggers validation error
+        }
+        response = self.client.post(self._add_url(), data)
+        self.assertEqual(response.status_code, 200)
+        mock_client.reservation_add.assert_not_called()
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_partial_options_submission_without_management_form(self, MockKeaClient):
+        """Partial options submission (options-* keys but no TOTAL_FORMS) re-renders form."""
+        mock_client = MockKeaClient.return_value
+        data = {
+            "subnet_id": 1,
+            "ip_address": "192.168.1.100",
+            "identifier_type": "hw-address",
+            "identifier": "aa:bb:cc:dd:ee:ff",
+            "hostname": "testhost.example.com",
+            # options keys present but no management form fields
+            "options-0-name": "routers",
+            "options-0-data": "10.0.0.1",
+        }
+        response = self.client.post(self._add_url(), data)
+        self.assertEqual(response.status_code, 200)
+        mock_client.reservation_add.assert_not_called()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Coverage: _filter_reservations with non-string fields (~lines 259-265)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestFilterReservationsNonStringFields(SimpleTestCase):
+    """_filter_reservations must not crash when fields contain non-string values."""
+
+    def test_v4_hw_address_as_int_does_not_crash(self):
+        """If hw-address is an int (malformed), filter should skip it gracefully."""
+        reservations = [
+            {"ip-address": "10.0.0.1", "hostname": "host1", "hw-address": 12345},
+        ]
+        result = _filter_reservations(reservations, q="host1", subnet_id=None, version=4)
+        self.assertEqual(len(result), 1)
+
+    def test_v4_hw_address_as_list_does_not_crash(self):
+        """If hw-address is a list (malformed), filter should skip it gracefully."""
+        reservations = [
+            {"ip-address": "10.0.0.1", "hostname": "host1", "hw-address": ["aa:bb:cc"]},
+        ]
+        result = _filter_reservations(reservations, q="host1", subnet_id=None, version=4)
+        self.assertEqual(len(result), 1)
+
+    def test_v4_int_hw_address_matches_by_hostname(self):
+        """When hw-address is int but hostname matches, the row is still found."""
+        reservations = [
+            {"ip-address": "10.0.0.1", "hostname": "findme", "hw-address": 12345},
+        ]
+        # hostname match is evaluated before hw-address in the or-chain,
+        # so the row is returned without hitting .lower() on the int.
+        result = _filter_reservations(reservations, q="findme", subnet_id=None, version=4)
+        self.assertEqual(len(result), 1)
+
+    def test_v6_duid_as_int_does_not_crash(self):
+        """If duid is an int (malformed), filter should not crash."""
+        reservations = [
+            {"ip-addresses": ["2001:db8::1"], "hostname": "host6", "duid": 999},
+        ]
+        result = _filter_reservations(reservations, q="host6", subnet_id=None, version=6)
+        self.assertEqual(len(result), 1)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Coverage: Reservation edit GET with option-data not a list (~lines 680-684)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestReservation4EditOptionDataNotList(_ReservationViewBase):
+    """Edit GET when reservation has option-data as a non-list value."""
+
+    _SUBNET_ID = 1
+    _IP = "192.168.1.100"
+
+    def _edit_url(self):
+        return reverse(
+            "plugins:netbox_kea:server_reservation4_edit",
+            args=[self.server.pk, self._SUBNET_ID, self._IP],
+        )
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_option_data_as_string_handled_gracefully(self, MockKeaClient):
+        """When option-data is a string instead of list, view must not crash."""
+        reservation = dict(_SAMPLE_RESERVATION4, **{"option-data": "not-a-list"})
+        MockKeaClient.return_value.reservation_get.return_value = reservation
+        response = self.client.get(self._edit_url())
+        self.assertEqual(response.status_code, 200)
+        # options_formset should have no initial data since string was rejected
+        formset = response.context["options_formset"]
+        self.assertEqual(len(formset.initial_forms), 0)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_option_data_as_dict_handled_gracefully(self, MockKeaClient):
+        """When option-data is a dict instead of list, view must not crash."""
+        reservation = dict(_SAMPLE_RESERVATION4, **{"option-data": {"name": "routers", "data": "10.0.0.1"}})
+        MockKeaClient.return_value.reservation_get.return_value = reservation
+        response = self.client.get(self._edit_url())
+        self.assertEqual(response.status_code, 200)
+        formset = response.context["options_formset"]
+        self.assertEqual(len(formset.initial_forms), 0)
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestReservation6EditOptionDataNotList(_ReservationViewBase):
+    """Edit GET when DHCPv6 reservation has option-data as a non-list value."""
+
+    _SUBNET_ID = 1
+    _IP = "2001:db8::100"
+
+    def _edit_url(self):
+        return reverse(
+            "plugins:netbox_kea:server_reservation6_edit",
+            args=[self.server.pk, self._SUBNET_ID, self._IP],
+        )
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_option_data_as_int_handled_gracefully(self, MockKeaClient):
+        """When option-data is an int instead of list, view must not crash."""
+        reservation = dict(_SAMPLE_RESERVATION6, **{"option-data": 42})
+        MockKeaClient.return_value.reservation_get.return_value = reservation
+        response = self.client.get(self._edit_url())
+        self.assertEqual(response.status_code, 200)
+        formset = response.context["options_formset"]
+        self.assertEqual(len(formset.initial_forms), 0)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Coverage: _enrich_reservations_with_lease_status error paths
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestEnrichReservationsWithLeaseStatus(SimpleTestCase):
+    """_enrich_reservations_with_lease_status gracefully handles error paths."""
+
+    def _make_mock_client(self, command_side_effect=None, command_return=None):
+        """Create a mock KeaClient with clone() context-manager wired up."""
+        mock_client = MagicMock()
+        mock_client.clone.return_value = mock_client
+        mock_client.__enter__ = lambda s: s
+        mock_client.__exit__ = lambda s, *a: None
+        if command_side_effect is not None:
+            mock_client.command.side_effect = command_side_effect
+        elif command_return is not None:
+            mock_client.command.return_value = command_return
+        return mock_client
+
+    def test_malformed_arguments_not_dict_sets_indeterminate(self):
+        """When Kea returns arguments as a string (not dict), has_active_lease stays unset."""
+        from netbox_kea.views.reservations import _enrich_reservations_with_lease_status
+
+        mock_client = self._make_mock_client(
+            command_return=[{"result": 0, "arguments": "bad-string"}],
+        )
+        reservations = [{"subnet-id": 1, "ip-address": "10.0.0.1"}]
+        _enrich_reservations_with_lease_status(mock_client, reservations, version=4)
+        # indeterminate — has_active_lease should not be set
+        self.assertNotIn("has_active_lease", reservations[0])
+
+    def test_malformed_leases_not_list_sets_indeterminate(self):
+        """When arguments.leases is not a list, has_active_lease stays unset."""
+        from netbox_kea.views.reservations import _enrich_reservations_with_lease_status
+
+        mock_client = self._make_mock_client(
+            command_return=[{"result": 0, "arguments": {"leases": "not-a-list"}}],
+        )
+        reservations = [{"subnet-id": 1, "ip-address": "10.0.0.1"}]
+        _enrich_reservations_with_lease_status(mock_client, reservations, version=4)
+        self.assertNotIn("has_active_lease", reservations[0])
+
+    def test_kea_exception_non_result_2_sets_indeterminate(self):
+        """KeaException with result!=2 (not hook-missing) marks subnet as indeterminate."""
+        from netbox_kea.views.reservations import _enrich_reservations_with_lease_status
+
+        mock_client = self._make_mock_client(
+            command_side_effect=KeaException({"result": 1, "text": "internal error"}, index=0),
+        )
+        reservations = [{"subnet-id": 1, "ip-address": "10.0.0.1"}]
+        _enrich_reservations_with_lease_status(mock_client, reservations, version=4)
+        self.assertNotIn("has_active_lease", reservations[0])
+
+    def test_requests_exception_sets_indeterminate(self):
+        """requests.RequestException in worker thread marks subnet as indeterminate."""
+        import requests as req_lib
+
+        from netbox_kea.views.reservations import _enrich_reservations_with_lease_status
+
+        mock_client = self._make_mock_client(
+            command_side_effect=req_lib.ConnectionError("timeout"),
+        )
+        reservations = [{"subnet-id": 1, "ip-address": "10.0.0.1"}]
+        _enrich_reservations_with_lease_status(mock_client, reservations, version=4)
+        self.assertNotIn("has_active_lease", reservations[0])
+
+    def test_empty_reservations_returns_early(self):
+        """Empty reservations list returns immediately without any API calls."""
+        from netbox_kea.views.reservations import _enrich_reservations_with_lease_status
+
+        mock_client = self._make_mock_client()
+        _enrich_reservations_with_lease_status(mock_client, [], version=4)
+        mock_client.clone.assert_not_called()
+
+    def test_no_subnet_ids_returns_early(self):
+        """Reservations without valid subnet-id return early without API calls."""
+        from netbox_kea.views.reservations import _enrich_reservations_with_lease_status
+
+        mock_client = self._make_mock_client()
+        reservations = [{"ip-address": "10.0.0.1"}]  # no subnet-id
+        _enrich_reservations_with_lease_status(mock_client, reservations, version=4)
+        mock_client.clone.assert_not_called()
+
+    def test_result_3_empty_subnet_sets_false(self):
+        """When Kea returns result=3 (empty), has_active_lease should be False."""
+        from netbox_kea.views.reservations import _enrich_reservations_with_lease_status
+
+        mock_client = self._make_mock_client(
+            command_return=[{"result": 3, "text": "no leases found", "arguments": {}}],
+        )
+        reservations = [{"subnet-id": 1, "ip-address": "10.0.0.1"}]
+        _enrich_reservations_with_lease_status(mock_client, reservations, version=4)
+        self.assertFalse(reservations[0]["has_active_lease"])
+
+    def test_v6_enrichment_checks_ip_addresses_list(self):
+        """DHCPv6 enrichment checks ip-addresses list for active lease match."""
+        from netbox_kea.views.reservations import _enrich_reservations_with_lease_status
+
+        mock_client = self._make_mock_client(
+            command_return=[
+                {
+                    "result": 0,
+                    "arguments": {
+                        "leases": [{"ip-address": "2001:db8::100"}],
+                    },
+                }
+            ],
+        )
+        reservations = [{"subnet-id": 1, "ip-addresses": ["2001:db8::100"]}]
+        _enrich_reservations_with_lease_status(mock_client, reservations, version=6)
+        self.assertTrue(reservations[0]["has_active_lease"])
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Coverage: _run_reservation_success_side_effects sync exception
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestRunReservationSuccessSideEffectsSyncFail(_ReservationViewBase):
+    """Reservation add succeeds in Kea but sync_reservation_to_netbox raises."""
+
+    def _add_url(self):
+        return reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk])
+
+    def _valid_post_data(self):
+        return {
+            "subnet_id": 1,
+            "ip_address": "192.168.1.100",
+            "identifier_type": "hw-address",
+            "identifier": "aa:bb:cc:dd:ee:ff",
+            "hostname": "testhost.example.com",
+            "sync_to_netbox": "on",
+        }
+
+    @patch("netbox_kea.views.reservations.sync_reservation_to_netbox")
+    @patch("netbox_kea.models.KeaClient")
+    def test_sync_db_error_shows_warning_reservation_still_created(self, MockKeaClient, mock_sync):
+        """Reservation created in Kea; sync raises DatabaseError → warning shown, no 500."""
+        from django.db import DatabaseError
+
+        mock_client = MockKeaClient.return_value
+        mock_client.reservation_add.return_value = None
+        mock_sync.side_effect = DatabaseError("db constraint violation")
+        response = self.client.post(self._add_url(), self._valid_post_data())
+        # Kea reservation created → redirect
+        self.assertEqual(response.status_code, 302)
+        mock_client.reservation_add.assert_called_once()
+        # Follow redirect and check for sync warning
+        response = self.client.get(response.url)
+        msgs = [str(m) for m in response.context.get("messages", [])]
+        self.assertTrue(any("sync failed" in m.lower() for m in msgs))
+
+    @patch("netbox_kea.views.reservations.sync_reservation_to_netbox")
+    @patch("netbox_kea.models.KeaClient")
+    def test_sync_validation_error_shows_warning(self, MockKeaClient, mock_sync):
+        """sync raises ValidationError → warning shown, reservation still created."""
+        from django.core.exceptions import ValidationError
+
+        mock_client = MockKeaClient.return_value
+        mock_client.reservation_add.return_value = None
+        mock_sync.side_effect = ValidationError("bad data")
+        response = self.client.post(self._add_url(), self._valid_post_data())
+        self.assertEqual(response.status_code, 302)
+        mock_client.reservation_add.assert_called_once()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Coverage: _filter_reservations with non-string fields — search by identifier
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestFilterReservationsSearchByIdentifier(SimpleTestCase):
+    """_filter_reservations search via identifier value (hw-address for v4, duid for v6)."""
+
+    def test_v4_search_by_hw_address_value(self):
+        """Searching for hw-address hex string finds the matching reservation."""
+        reservations = [
+            {"ip-address": "10.0.0.1", "hostname": "host1", "hw-address": "aa:bb:cc:dd:ee:ff"},
+            {"ip-address": "10.0.0.2", "hostname": "host2", "hw-address": "11:22:33:44:55:66"},
+        ]
+        result = _filter_reservations(reservations, q="aa:bb", subnet_id=None, version=4)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["ip-address"], "10.0.0.1")
+
+    def test_v6_search_by_duid_value(self):
+        """Searching for duid hex string finds the matching v6 reservation."""
+        reservations = [
+            {"ip-addresses": ["2001:db8::1"], "hostname": "host6a", "duid": "00:01:02:03"},
+            {"ip-addresses": ["2001:db8::2"], "hostname": "host6b", "duid": "ff:ee:dd:cc"},
+        ]
+        result = _filter_reservations(reservations, q="ff:ee", subnet_id=None, version=6)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["hostname"], "host6b")
+
+    def test_v4_search_by_client_id(self):
+        """Searching for client-id finds the reservation."""
+        reservations = [
+            {"ip-address": "10.0.0.1", "hostname": "h1", "hw-address": "", "client-id": "01:aa:bb:cc:dd:ee:ff"},
+        ]
+        result = _filter_reservations(reservations, q="01:aa:bb", subnet_id=None, version=4)
+        self.assertEqual(len(result), 1)
+
+    def test_v6_search_by_ip_addresses_element(self):
+        """Searching matches individual items in the ip-addresses list."""
+        reservations = [
+            {"ip-addresses": ["2001:db8::1", "2001:db8::2"], "hostname": "multi", "duid": "00:01"},
+        ]
+        result = _filter_reservations(reservations, q="db8::2", subnet_id=None, version=6)
+        self.assertEqual(len(result), 1)
+
+    def test_subnet_filter_only(self):
+        """Filtering by subnet_id without q returns only matching subnet."""
+        reservations = [
+            {"subnet-id": 1, "ip-address": "10.0.0.1"},
+            {"subnet-id": 2, "ip-address": "10.0.1.1"},
+        ]
+        result = _filter_reservations(reservations, q="", subnet_id=1, version=4)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["subnet-id"], 1)
+
+    def test_empty_query_and_no_subnet_returns_all(self):
+        """No filter applied returns all reservations."""
+        reservations = [
+            {"subnet-id": 1, "ip-address": "10.0.0.1"},
+            {"subnet-id": 2, "ip-address": "10.0.1.1"},
+        ]
+        result = _filter_reservations(reservations, q="", subnet_id=None, version=4)
+        self.assertEqual(len(result), 2)
