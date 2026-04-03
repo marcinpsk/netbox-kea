@@ -2535,6 +2535,44 @@ class TestV6EditPostPreservesFormIPs(_ReservationViewBase):
         reservation = kwargs.get("reservation") or (args[1] if len(args) > 1 else {})
         self.assertEqual(reservation["ip-addresses"], existing["ip-addresses"])
 
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_aborts_when_reservation_get_fails(self, MockKeaClient):
+        """POST aborts with error redirect when reservation_get raises, preventing silent IP truncation."""
+        from netbox_kea.kea import KeaException
+
+        mock_client = MockKeaClient.return_value
+        mock_client.reservation_get.side_effect = KeaException({"result": 1, "text": "error"}, index=0)
+        response = self.client.post(
+            self._edit_url(),
+            {
+                "subnet_id": self._SUBNET_ID,
+                "ip_addresses": "2001:db8::100",
+                "identifier_type": "duid",
+                "identifier": "00:01:02:03:04:05",
+                "hostname": "testhost6.example.com",
+            },
+        )
+        self.assertEqual(response.status_code, 302)
+        mock_client.reservation_update.assert_not_called()
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_aborts_when_reservation_get_returns_none(self, MockKeaClient):
+        """POST aborts when reservation_get returns None (reservation disappeared)."""
+        mock_client = MockKeaClient.return_value
+        mock_client.reservation_get.return_value = None
+        response = self.client.post(
+            self._edit_url(),
+            {
+                "subnet_id": self._SUBNET_ID,
+                "ip_addresses": "2001:db8::100",
+                "identifier_type": "duid",
+                "identifier": "00:01:02:03:04:05",
+                "hostname": "testhost6.example.com",
+            },
+        )
+        self.assertEqual(response.status_code, 302)
+        mock_client.reservation_update.assert_not_called()
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Coverage: _enrich_reservations_with_lease_status error paths (~lines 180-212)

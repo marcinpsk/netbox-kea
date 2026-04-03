@@ -755,6 +755,9 @@ class ServerReservation4EditView(_KeaChangeMixin, generic.ObjectView):
             except ValueError:
                 logger.exception("Invalid Kea response when updating DHCPv4 reservation for %s", cd.get("ip_address"))
                 messages.error(request, "Invalid response from Kea: see server logs.")
+        # Re-disable key fields to match the GET form so they stay non-editable on error re-render.
+        for field_name in ("subnet_id", "ip_address"):
+            form.fields[field_name].widget.attrs["disabled"] = True
         return render(
             request,
             self.template_name,
@@ -845,10 +848,20 @@ class ServerReservation6EditView(_KeaChangeMixin, generic.ObjectView):
             # Preserve the existing ip-addresses from Kea rather than trusting the disabled form field.
             try:
                 existing = self._get_reservation(server, subnet_id, ip_address)
-                existing_ips = existing.get("ip-addresses", [ip_address]) if existing else [ip_address]
+                existing_ips = existing.get("ip-addresses") if existing else None
+                if not isinstance(existing_ips, list) or not existing_ips:
+                    messages.error(
+                        request,
+                        "Failed to reload the existing DHCPv6 reservation. Edit aborted to prevent IP loss.",
+                    )
+                    return redirect(return_url)
             except (KeaException, requests.RequestException, ValueError):
                 logger.exception("Could not fetch existing DHCPv6 reservation for edit (ip=%s)", ip_address)
-                existing_ips = [ip_address]
+                messages.error(
+                    request,
+                    "Failed to reload the existing DHCPv6 reservation. Edit aborted to prevent IP loss.",
+                )
+                return redirect(return_url)
             reservation: dict[str, Any] = {
                 "subnet-id": subnet_id,
                 "ip-addresses": existing_ips,
@@ -885,6 +898,9 @@ class ServerReservation6EditView(_KeaChangeMixin, generic.ObjectView):
             except ValueError:
                 logger.exception("Invalid Kea response when updating DHCPv6 reservation for %s", cd.get("ip_addresses"))
                 messages.error(request, "Invalid response from Kea: see server logs.")
+        # Re-disable key fields to match the GET form so they stay non-editable on error re-render.
+        for field_name in ("subnet_id", "ip_addresses"):
+            form.fields[field_name].widget.attrs["disabled"] = True
         return render(
             request,
             self.template_name,
