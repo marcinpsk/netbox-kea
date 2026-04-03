@@ -2262,7 +2262,7 @@ class TestReservationJournalEntries(_ReservationViewBase):
         mock_client = MockKeaClient.return_value
         mock_client.reservation_add.side_effect = KeaException({"result": 1, "text": "error"}, index=0)
         before = self._journal_count()
-        self.client.post(
+        response = self.client.post(
             self._add_url(),
             {
                 "subnet_id": self._SUBNET_ID,
@@ -2272,6 +2272,8 @@ class TestReservationJournalEntries(_ReservationViewBase):
                 "hostname": "testhost.example.com",
             },
         )
+        self.assertIn(response.status_code, (200, 302))
+        mock_client.reservation_add.assert_called_once()
         self.assertEqual(self._journal_count(), before)
 
 
@@ -2510,16 +2512,17 @@ class TestV6EditPostPreservesFormIPs(_ReservationViewBase):
         )
 
     @patch("netbox_kea.models.KeaClient")
-    def test_post_preserves_form_ip_addresses(self, MockKeaClient):
-        """POST uses the form's ip_addresses field, preserving multi-address reservations."""
+    def test_post_preserves_existing_ip_addresses(self, MockKeaClient):
+        """POST ignores posted ip_addresses (disabled field) and preserves existing IPs from reservation_get."""
         mock_client = MockKeaClient.return_value
-        mock_client.reservation_get.return_value = _SAMPLE_RESERVATION6
+        existing = {**_SAMPLE_RESERVATION6, "ip-addresses": ["2001:db8::100", "2001:db8::200"]}
+        mock_client.reservation_get.return_value = existing
         mock_client.reservation_update.return_value = None
         response = self.client.post(
             self._edit_url(),
             {
                 "subnet_id": self._SUBNET_ID,
-                "ip_addresses": "2001:db8::100,2001:db8::200",
+                "ip_addresses": "2001:db8::dead,2001:db8::beef",  # different — should be ignored
                 "identifier_type": "duid",
                 "identifier": "00:01:02:03:04:05",
                 "hostname": "testhost6.example.com",
@@ -2530,7 +2533,7 @@ class TestV6EditPostPreservesFormIPs(_ReservationViewBase):
         call_args = mock_client.reservation_update.call_args
         args, kwargs = call_args or ((), {})
         reservation = kwargs.get("reservation") or (args[1] if len(args) > 1 else {})
-        self.assertEqual(reservation["ip-addresses"], ["2001:db8::100", "2001:db8::200"])
+        self.assertEqual(reservation["ip-addresses"], existing["ip-addresses"])
 
 
 # ─────────────────────────────────────────────────────────────────────────────

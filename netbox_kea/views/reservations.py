@@ -712,6 +712,9 @@ class ServerReservation4EditView(_KeaChangeMixin, generic.ObjectView):
         """Validate and submit updated reservation to Kea."""
         server = self.get_object(pk=pk)
         form = forms.Reservation4Form(data=request.POST)
+        # Key fields are disabled in the edit form and not submitted by browsers — make optional.
+        form.fields["subnet_id"].required = False
+        form.fields["ip_address"].required = False
         options_formset, options_valid = _build_reservation_options_formset(request.POST)
         return_url = reverse("plugins:netbox_kea:server_reservations4", args=[pk])
         if form.is_valid() and options_valid:
@@ -832,14 +835,23 @@ class ServerReservation6EditView(_KeaChangeMixin, generic.ObjectView):
         """Validate and submit updated DHCPv6 reservation to Kea."""
         server = self.get_object(pk=pk)
         form = forms.Reservation6Form(data=request.POST)
+        # Key fields are disabled in the edit form and not submitted by browsers — make optional.
+        form.fields["subnet_id"].required = False
+        form.fields["ip_addresses"].required = False
         options_formset, options_valid = _build_reservation_options_formset(request.POST)
         return_url = reverse("plugins:netbox_kea:server_reservations6", args=[pk])
         if form.is_valid() and options_valid:
             cd = form.cleaned_data
-            ip_list = [ip.strip() for ip in cd["ip_addresses"].split(",") if ip.strip()]
+            # Preserve the existing ip-addresses from Kea rather than trusting the disabled form field.
+            try:
+                existing = self._get_reservation(server, subnet_id, ip_address)
+                existing_ips = existing.get("ip-addresses", [ip_address]) if existing else [ip_address]
+            except (KeaException, requests.RequestException, ValueError):
+                logger.exception("Could not fetch existing DHCPv6 reservation for edit (ip=%s)", ip_address)
+                existing_ips = [ip_address]
             reservation: dict[str, Any] = {
                 "subnet-id": subnet_id,
-                "ip-addresses": ip_list if ip_list else [ip_address],
+                "ip-addresses": existing_ips,
                 cd["identifier_type"]: cd["identifier"],
             }
             if cd.get("hostname"):
