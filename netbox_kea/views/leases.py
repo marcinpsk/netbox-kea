@@ -330,12 +330,13 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
                     return redirect(request.path)
                 raw_leases = [entry for entry in raw_leases if isinstance(entry, dict) and "ip-address" in entry]
 
-                all_leases += format_leases(raw_leases)
-
                 count = args.get("count")
                 if not isinstance(count, int):
-                    logger.warning("lease-get-page returned non-int count; stopping export for server %s", instance.pk)
-                    break
+                    logger.error("lease-get-page returned non-int count on server %s; aborting export", instance.pk)
+                    messages.error(request, "Failed to fetch leases for export: unexpected Kea response.")
+                    return redirect(request.path)
+
+                all_leases += format_leases(raw_leases)
 
                 if not raw_leases:
                     if count >= per_page:
@@ -579,7 +580,10 @@ class BaseServerLeasesDeleteView(GetReturnURLMixin, generic.ObjectView, metaclas
 
         if successful_ips:
             messages.success(request, f"Deleted {len(successful_ips)} DHCPv{self.dhcp_version} lease(s).")
-            _add_lease_journal(instance, request.user, "deleted", successful_ips)
+            try:
+                _add_lease_journal(instance, request.user, "deleted", successful_ips)
+            except Exception:
+                logger.exception("Failed to record lease journal for server %s; continuing", instance.pk)
             leases_deleted.send_robust(
                 sender=None,
                 server=instance,

@@ -175,8 +175,12 @@ def _enrich_reservations_with_lease_status(client: "KeaClient", reservations: li
                     check=(0, 3),
                 )
                 if resp[0]["result"] != 3:
-                    args = resp[0].get("arguments") or {}
-                    leases = args.get("leases") or []
+                    args = resp[0].get("arguments")
+                    if not isinstance(args, dict):
+                        return False  # malformed payload — indeterminate state
+                    leases = args.get("leases")
+                    if not isinstance(leases, list):
+                        return False  # malformed payload — indeterminate state
                     return [lease.get("ip-address", "") for lease in leases if isinstance(lease, dict)]
                 return []
             except KeaException as exc:
@@ -816,9 +820,11 @@ class ServerReservation6EditView(_KeaChangeMixin, generic.ObjectView):
         return_url = reverse("plugins:netbox_kea:server_reservations6", args=[pk])
         if form.is_valid() and options_valid:
             cd = form.cleaned_data
+            ip_addresses_raw = cd.get("ip_addresses", ip_address)
+            ip_list = [a.strip() for a in ip_addresses_raw.split(",") if a.strip()] if ip_addresses_raw else []
             reservation: dict[str, Any] = {
                 "subnet-id": subnet_id,
-                "ip-addresses": [ip_address],
+                "ip-addresses": ip_list or [ip_address],
                 cd["identifier_type"]: cd["identifier"],
             }
             if cd.get("hostname"):

@@ -87,12 +87,16 @@ class BaseServerDHCPSubnetsView(generic.ObjectChildrenView):
                     "server_pk": server.pk,
                     "_subnet_sort_key": sort_key,
                     "options": format_option_data(s.get("option-data") or [], version=self.dhcp_version),
-                    "pools": [p.get("pool", "") for p in (s.get("pools") or []) if p.get("pool")],
+                    "pools": [
+                        p.get("pool", "") for p in (s.get("pools") or []) if isinstance(p, dict) and p.get("pool")
+                    ],
                     "can_change": can_change,
                 }
             )
 
         for sn in dhcp_conf.get("shared-networks") or []:
+            if not isinstance(sn, dict):
+                continue
             for s in sn.get(f"subnet{self.dhcp_version}") or []:
                 if "id" not in s or "subnet" not in s:
                     continue
@@ -105,12 +109,14 @@ class BaseServerDHCPSubnetsView(generic.ObjectChildrenView):
                     {
                         "id": s["id"],
                         "subnet": s["subnet"],
-                        "shared_network": sn["name"],
+                        "shared_network": sn.get("name", ""),
                         "dhcp_version": self.dhcp_version,
                         "server_pk": server.pk,
                         "_subnet_sort_key": sort_key,
                         "options": format_option_data(s.get("option-data") or [], version=self.dhcp_version),
-                        "pools": [p.get("pool", "") for p in (s.get("pools") or []) if p.get("pool")],
+                        "pools": [
+                            p.get("pool", "") for p in (s.get("pools") or []) if isinstance(p, dict) and p.get("pool")
+                        ],
                         "can_change": can_change,
                     }
                 )
@@ -479,8 +485,10 @@ class _BaseSubnetAddView(_KeaChangeMixin, generic.ObjectView):
             raise ValueError(f"config-get returned unexpected arguments: {type(args)}")
         dhcp_conf = args.get(f"Dhcp{self.dhcp_version}", {})
         if not isinstance(dhcp_conf, dict):
-            dhcp_conf = {}
+            raise ValueError(f"config-get returned unexpected Dhcp{self.dhcp_version} structure: {type(dhcp_conf)}")
         networks = dhcp_conf.get("shared-networks") or []
+        if networks and not isinstance(networks, list):
+            raise ValueError(f"config-get returned non-list shared-networks: {type(networks)}")
         choices: list[tuple[str, str]] = [("", "— (global pool) —")]
         for sn in networks:
             if not isinstance(sn, dict):
@@ -708,6 +716,9 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
                 logger.warning("config-get returned non-dict Dhcp%s config: %r", self.dhcp_version, type(dhcp_conf))
                 return [("", "— (global pool) —")], None, {}
             networks = dhcp_conf.get("shared-networks") or []
+            if networks and not isinstance(networks, list):
+                logger.warning("config-get returned non-list shared-networks for network data: %r", type(networks))
+                return [("", "— (global pool) —")], None, {}
         except (KeaException, requests.RequestException, ValueError):
             logger.warning("Failed to fetch shared networks for subnet edit dropdown")
             return [("", "— (global pool) —")], None, {}

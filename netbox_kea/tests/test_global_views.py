@@ -990,8 +990,12 @@ class TestCombinedReservations4Enrichment(_CombinedViewBase):
     @patch("netbox_kea.models.KeaClient")
     def test_no_lease_badge_when_no_active_lease(self, MockKeaClient):
         """A reservation without active lease must show 'No Lease' badge."""
+        clone_mock = MagicMock()
+        clone_mock.command.return_value = [{"result": 0, "arguments": {"leases": []}}]
+        clone_mock.__enter__ = lambda s: s
+        clone_mock.__exit__ = lambda s, *a: None
+        MockKeaClient.return_value.clone.return_value = clone_mock
         MockKeaClient.return_value.reservation_get_page.return_value = ([dict(_MOCK_RESERVATION_ENRICHED)], 0, 0)
-        MockKeaClient.return_value.command.return_value = [{"result": 0, "arguments": {"leases": []}}]
         response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "No Lease")
@@ -1156,12 +1160,16 @@ class TestCombinedReservations6Enrichment(_CombinedViewBase):
     @patch("netbox_kea.models.KeaClient")
     def test_no_lease_badge_when_no_active_lease(self, MockKeaClient):
         """A v6 reservation without active lease must show 'No Lease' badge."""
+        clone_mock = MagicMock()
+        clone_mock.command.return_value = [{"result": 0, "arguments": {"leases": []}}]
+        clone_mock.__enter__ = lambda s: s
+        clone_mock.__exit__ = lambda s, *a: None
+        MockKeaClient.return_value.clone.return_value = clone_mock
         MockKeaClient.return_value.reservation_get_page.return_value = (
             [dict(_MOCK_RESERVATION_V6_ENRICHED)],
             0,
             0,
         )
-        MockKeaClient.return_value.command.return_value = [{"result": 0, "arguments": {"leases": []}}]
         response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "No Lease")

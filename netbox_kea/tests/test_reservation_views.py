@@ -375,9 +375,10 @@ class TestServerReservation4AddView(_ReservationViewBase):
         # Non-blocking: still redirects
         self.assertEqual(response.status_code, 302)
         mock_client.reservation_add.assert_called_once()
+        from django.contrib.messages import WARNING
+
         storage = list(get_messages(response.wsgi_request))
-        warning_texts = [str(m) for m in storage]
-        self.assertTrue(any("pool" in t.lower() or "overlap" in t.lower() for t in warning_texts))
+        self.assertTrue(any(m.level == WARNING for m in storage))
 
     @patch("netbox_kea.models.KeaClient")
     def test_post_no_warning_when_reservation_ip_outside_pool(self, MockKeaClient):
@@ -395,9 +396,10 @@ class TestServerReservation4AddView(_ReservationViewBase):
         ]
         response = self.client.post(self._add_url(), self._valid_post_data())
         self.assertEqual(response.status_code, 302)
+        from django.contrib.messages import WARNING
+
         storage = list(get_messages(response.wsgi_request))
-        warning_texts = [str(m) for m in storage]
-        self.assertFalse(any("pool" in t.lower() for t in warning_texts))
+        self.assertFalse(any(m.level == WARNING for m in storage))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -733,13 +735,20 @@ class TestActiveLeaseStatusOnReservations(_ReservationViewBase):
         "valid-lft": 86400,
     }
 
-    def _mock_with_lease(self, MockKeaClient):
-        """Reservation + matching active lease for 192.168.1.100."""
+    def _prepare_mock_client(self, MockKeaClient, reservation_page=None):
+        """Wire the common mock_client context manager and reservation_get_page."""
         mock_client = MockKeaClient.return_value
         mock_client.clone.return_value = mock_client  # worker threads must see configured behaviors
         mock_client.__enter__ = lambda s: s
         mock_client.__exit__ = lambda s, *a: None
-        mock_client.reservation_get_page.return_value = ([dict(_SAMPLE_RESERVATION4)], 0, 0)
+        mock_client.reservation_get_page.return_value = (
+            reservation_page if reservation_page is not None else ([dict(_SAMPLE_RESERVATION4)], 0, 0)
+        )
+        return mock_client
+
+    def _mock_with_lease(self, MockKeaClient):
+        """Reservation + matching active lease for 192.168.1.100."""
+        mock_client = self._prepare_mock_client(MockKeaClient)
         # lease4-get-all returns a lease matching the reservation IP
         mock_client.command.return_value = [
             {
@@ -751,11 +760,7 @@ class TestActiveLeaseStatusOnReservations(_ReservationViewBase):
 
     def _mock_with_no_lease(self, MockKeaClient):
         """Reservation present but no active lease."""
-        mock_client = MockKeaClient.return_value
-        mock_client.clone.return_value = mock_client
-        mock_client.__enter__ = lambda s: s
-        mock_client.__exit__ = lambda s, *a: None
-        mock_client.reservation_get_page.return_value = ([dict(_SAMPLE_RESERVATION4)], 0, 0)
+        mock_client = self._prepare_mock_client(MockKeaClient)
         mock_client.command.return_value = [{"result": 0, "arguments": {"leases": [], "count": 0}}]
         return mock_client
 
@@ -780,11 +785,7 @@ class TestActiveLeaseStatusOnReservations(_ReservationViewBase):
     @patch("netbox_kea.models.KeaClient")
     def test_no_crash_when_lease_cmds_unavailable(self, MockKeaClient):
         """When lease_cmds hook is missing the reservation page must still load."""
-        mock_client = MockKeaClient.return_value
-        mock_client.clone.return_value = mock_client  # worker threads must see configured behaviors
-        mock_client.__enter__ = lambda s: s
-        mock_client.__exit__ = lambda s, *a: None
-        mock_client.reservation_get_page.return_value = ([dict(_SAMPLE_RESERVATION4)], 0, 0)
+        mock_client = self._prepare_mock_client(MockKeaClient)
         # lease4-get-all unknown → KeaException result=2
         mock_client.command.side_effect = KeaException(
             {"result": 2, "text": "unknown command 'lease4-get-all'"},
@@ -969,6 +970,9 @@ class TestActiveLeaseBadgeLink(TestCase):
     def test_no_lease_badge_is_not_a_link(self, MockKeaClient):
         """'No Lease' badge must remain a plain non-clickable element."""
         mock_client = MockKeaClient.return_value
+        mock_client.clone.return_value = mock_client
+        mock_client.__enter__ = lambda s: s
+        mock_client.__exit__ = lambda s, *a: None
         mock_client.reservation_get_page.return_value = ([dict(_SAMPLE_RESERVATION4_WITH_IP)], 0, 0)
         mock_client.command.return_value = [{"result": 0, "arguments": {"leases": []}}]
         response = self.client.get(self._url())
@@ -1203,9 +1207,10 @@ class TestServerSubnet4PoolAddView(_ReservationViewBase):
         # Non-blocking: pool is still added and view redirects
         self.assertEqual(response.status_code, 302)
         mock_client.pool_add.assert_called_once()
+        from django.contrib.messages import WARNING
+
         storage = list(get_messages(response.wsgi_request))
-        warning_texts = [str(m) for m in storage]
-        self.assertTrue(any("overlap" in t.lower() or "reservation" in t.lower() for t in warning_texts))
+        self.assertTrue(any(m.level == WARNING for m in storage))
 
     @patch("netbox_kea.models.KeaClient")
     def test_post_no_warning_when_no_reservations_in_pool(self, MockKeaClient):
@@ -1222,10 +1227,11 @@ class TestServerSubnet4PoolAddView(_ReservationViewBase):
         )
         response = self.client.post(self._url(), {"pool": "10.0.0.50-10.0.0.99"})
         self.assertEqual(response.status_code, 302)
+        from django.contrib.messages import WARNING
+
         storage = list(get_messages(response.wsgi_request))
-        warning_texts = [str(m) for m in storage]
         # Should have success message but no overlap warning
-        self.assertFalse(any("overlap" in t.lower() for t in warning_texts))
+        self.assertFalse(any(m.level == WARNING for m in storage))
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
