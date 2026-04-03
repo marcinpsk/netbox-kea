@@ -2746,3 +2746,381 @@ class TestGetNetworkDataNonDictSubnet(_ViewTestBase):
         response = self.client.get(url)
         # _get_network_data returns None → view aborts edit and redirects
         self.assertIn(response.status_code, (200, 302))
+
+
+# ---------------------------------------------------------------------------
+# Coverage gap tests — _subnet_to_row, config-get edge cases, stats, pool overlap
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestSubnetViewCoverageGaps(_ViewTestBase):
+    """Tests targeting specific uncovered lines in views/subnets.py."""
+
+    def _subnets4_url(self):
+        return reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk])
+
+    # ── 1. config-get returns non-dict arguments (~lines 92-99) ──────────
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_config_get_non_dict_arguments_returns_empty_subnets(self, MockKeaClient):
+        """When config-get returns arguments='not-a-dict', view logs warning and returns 200 with no subnets."""
+        MockKeaClient.return_value.command.return_value = [{"result": 0, "arguments": "not-a-dict"}]
+        response = self.client.get(self._subnets4_url())
+        self.assertEqual(response.status_code, 200)
+        table = response.context["table"]
+        self.assertEqual(len(table.data), 0)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_config_get_list_arguments_returns_empty_subnets(self, MockKeaClient):
+        """When config-get returns arguments=[...], view logs warning and returns 200 with no subnets."""
+        MockKeaClient.return_value.command.return_value = [{"result": 0, "arguments": [1, 2, 3]}]
+        response = self.client.get(self._subnets4_url())
+        self.assertEqual(response.status_code, 200)
+        table = response.context["table"]
+        self.assertEqual(len(table.data), 0)
+
+    # ── 2. Stats enrichment exception paths (~lines 130-134) ─────────────
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_stats_value_error_still_renders_subnets(self, MockKeaClient):
+        """When stat-lease4-get raises ValueError, subnets render without utilisation."""
+
+        def side_effect(cmd, service=None, arguments=None, check=None):
+            if cmd == "config-get":
+                return _config_with_one_subnet(service)
+            if cmd == "stat-lease4-get":
+                raise ValueError("bad stat response")
+            return [{"result": 0, "arguments": {}}]
+
+        MockKeaClient.return_value.command.side_effect = side_effect
+        response = self.client.get(self._subnets4_url())
+        self.assertEqual(response.status_code, 200)
+        table = response.context["table"]
+        self.assertEqual(len(table.data), 1)
+        # No utilisation columns should be present
+        self.assertNotIn("utilization", list(table.data)[0])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_stats_type_error_still_renders_subnets(self, MockKeaClient):
+        """When stat-lease4-get raises TypeError, subnets render without utilisation."""
+
+        def side_effect(cmd, service=None, arguments=None, check=None):
+            if cmd == "config-get":
+                return _config_with_one_subnet(service)
+            if cmd == "stat-lease4-get":
+                raise TypeError("unexpected None in stat parsing")
+            return [{"result": 0, "arguments": {}}]
+
+        MockKeaClient.return_value.command.side_effect = side_effect
+        response = self.client.get(self._subnets4_url())
+        self.assertEqual(response.status_code, 200)
+        table = response.context["table"]
+        self.assertEqual(len(table.data), 1)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_stats_key_error_still_renders_subnets(self, MockKeaClient):
+        """When stat-lease4-get raises KeyError, subnets render without utilisation."""
+
+        def side_effect(cmd, service=None, arguments=None, check=None):
+            if cmd == "config-get":
+                return _config_with_one_subnet(service)
+            if cmd == "stat-lease4-get":
+                raise KeyError("result-set")
+            return [{"result": 0, "arguments": {}}]
+
+        MockKeaClient.return_value.command.side_effect = side_effect
+        response = self.client.get(self._subnets4_url())
+        self.assertEqual(response.status_code, 200)
+        table = response.context["table"]
+        self.assertEqual(len(table.data), 1)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_stats_request_exception_still_renders_subnets(self, MockKeaClient):
+        """When stat-lease4-get raises RequestException, subnets render without utilisation."""
+
+        def side_effect(cmd, service=None, arguments=None, check=None):
+            if cmd == "config-get":
+                return _config_with_one_subnet(service)
+            if cmd == "stat-lease4-get":
+                raise requests.RequestException("timeout")
+            return [{"result": 0, "arguments": {}}]
+
+        MockKeaClient.return_value.command.side_effect = side_effect
+        response = self.client.get(self._subnets4_url())
+        self.assertEqual(response.status_code, 200)
+        table = response.context["table"]
+        self.assertEqual(len(table.data), 1)
+
+    # ── 3. _subnet_to_row with non-scalar ID (~lines 56-58) ─────────────
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_subnet_with_list_id_is_skipped(self, MockKeaClient):
+        """Subnet with id=[1,2,3] must be skipped (non-scalar ID)."""
+
+        def side_effect(cmd, service=None, arguments=None, check=None):
+            if cmd == "config-get":
+                return [
+                    {
+                        "result": 0,
+                        "arguments": {
+                            "Dhcp4": {
+                                "subnet4": [
+                                    {"id": [1, 2, 3], "subnet": "10.0.0.0/24"},
+                                    {"id": 2, "subnet": "10.0.1.0/24"},
+                                ],
+                                "shared-networks": [],
+                            }
+                        },
+                    }
+                ]
+            if cmd == "stat-lease4-get":
+                raise ValueError("no stat_cmds")
+            return [{"result": 0, "arguments": {}}]
+
+        MockKeaClient.return_value.command.side_effect = side_effect
+        response = self.client.get(self._subnets4_url())
+        self.assertEqual(response.status_code, 200)
+        table = response.context["table"]
+        # Only subnet with id=2 should appear; id=[1,2,3] is skipped
+        self.assertEqual(len(table.data), 1)
+        self.assertEqual(list(table.data)[0]["id"], 2)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_subnet_with_dict_id_is_skipped(self, MockKeaClient):
+        """Subnet with id={"nested": "dict"} must be skipped (non-scalar ID)."""
+
+        def side_effect(cmd, service=None, arguments=None, check=None):
+            if cmd == "config-get":
+                return [
+                    {
+                        "result": 0,
+                        "arguments": {
+                            "Dhcp4": {
+                                "subnet4": [
+                                    {"id": {"nested": "dict"}, "subnet": "10.0.0.0/24"},
+                                    {"id": 5, "subnet": "10.0.2.0/24"},
+                                ],
+                                "shared-networks": [],
+                            }
+                        },
+                    }
+                ]
+            if cmd == "stat-lease4-get":
+                raise ValueError("no stat_cmds")
+            return [{"result": 0, "arguments": {}}]
+
+        MockKeaClient.return_value.command.side_effect = side_effect
+        response = self.client.get(self._subnets4_url())
+        self.assertEqual(response.status_code, 200)
+        table = response.context["table"]
+        self.assertEqual(len(table.data), 1)
+        self.assertEqual(list(table.data)[0]["id"], 5)
+
+    # ── 4. _subnet_to_row with malformed CIDR (~lines 60-62) ────────────
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_subnet_with_malformed_cidr_is_skipped(self, MockKeaClient):
+        """Subnet with subnet='not-a-cidr' must be skipped and logged."""
+
+        def side_effect(cmd, service=None, arguments=None, check=None):
+            if cmd == "config-get":
+                return [
+                    {
+                        "result": 0,
+                        "arguments": {
+                            "Dhcp4": {
+                                "subnet4": [
+                                    {"id": 1, "subnet": "not-a-cidr"},
+                                    {"id": 2, "subnet": "192.168.1.0/24"},
+                                ],
+                                "shared-networks": [],
+                            }
+                        },
+                    }
+                ]
+            if cmd == "stat-lease4-get":
+                raise ValueError("no stat_cmds")
+            return [{"result": 0, "arguments": {}}]
+
+        MockKeaClient.return_value.command.side_effect = side_effect
+        response = self.client.get(self._subnets4_url())
+        self.assertEqual(response.status_code, 200)
+        table = response.context["table"]
+        self.assertEqual(len(table.data), 1)
+        self.assertEqual(list(table.data)[0]["subnet"], "192.168.1.0/24")
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_subnet_with_empty_cidr_is_skipped(self, MockKeaClient):
+        """Subnet with subnet='' must be skipped (ValueError from ip_network)."""
+
+        def side_effect(cmd, service=None, arguments=None, check=None):
+            if cmd == "config-get":
+                return [
+                    {
+                        "result": 0,
+                        "arguments": {
+                            "Dhcp4": {
+                                "subnet4": [
+                                    {"id": 1, "subnet": ""},
+                                    {"id": 2, "subnet": "172.16.0.0/16"},
+                                ],
+                                "shared-networks": [],
+                            }
+                        },
+                    }
+                ]
+            if cmd == "stat-lease4-get":
+                raise ValueError("no stat_cmds")
+            return [{"result": 0, "arguments": {}}]
+
+        MockKeaClient.return_value.command.side_effect = side_effect
+        response = self.client.get(self._subnets4_url())
+        self.assertEqual(response.status_code, 200)
+        table = response.context["table"]
+        self.assertEqual(len(table.data), 1)
+        self.assertEqual(list(table.data)[0]["id"], 2)
+
+    # ── 5. Subnet edit POST error paths (~lines 963-1010) ────────────────
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_subnet_edit_post_request_exception_rerenders_form(self, MockKeaClient):
+        """POST that raises RequestException on subnet_update must re-render form (200)."""
+        MockKeaClient.return_value.command.return_value = _CONFIG4_NO_NETWORKS
+        MockKeaClient.return_value.subnet_update.side_effect = requests.RequestException("connection lost")
+        url = reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, 42])
+        response = self.client.post(
+            url,
+            {"subnet_cidr": "10.0.0.0/24", "pools": "", "gateway": "", "dns_servers": "", "ntp_servers": ""},
+        )
+        self.assertEqual(response.status_code, 200)
+        MockKeaClient.return_value.subnet_update.assert_called_once()
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_subnet_edit_post_kea_exception_rerenders_with_error_message(self, MockKeaClient):
+        """POST that raises KeaException must show error message and re-render form."""
+        from netbox_kea.kea import KeaException
+
+        MockKeaClient.return_value.command.return_value = _CONFIG4_NO_NETWORKS
+        MockKeaClient.return_value.subnet_update.side_effect = KeaException(
+            {"result": 1, "text": "subnet not found"}, index=0
+        )
+        url = reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, 42])
+        response = self.client.post(
+            url,
+            {"subnet_cidr": "10.0.0.0/24", "pools": "", "gateway": "", "dns_servers": "", "ntp_servers": ""},
+        )
+        self.assertEqual(response.status_code, 200)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_subnet_edit_post_client_creation_failure_redirects(self, MockKeaClient):
+        """POST where get_client raises ValueError must redirect to subnets."""
+        MockKeaClient.side_effect = ValueError("bad config")
+        url = reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, 42])
+        response = self.client.post(
+            url,
+            {"subnet_cidr": "10.0.0.0/24", "pools": "", "gateway": "", "dns_servers": "", "ntp_servers": ""},
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("subnets", response.url)
+
+    # ── 6. Pool add with reservation overlap warning (~lines 204-257) ────
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_pool_add_reservation_lookup_failure_suppresses_warning(self, MockKeaClient):
+        """When reservation_get_page raises KeaException during pool add, warning is suppressed."""
+        from netbox_kea.kea import KeaException
+
+        MockKeaClient.return_value.reservation_get_page.side_effect = KeaException(
+            {"result": 2, "text": "host_cmds not loaded"}, index=0
+        )
+        MockKeaClient.return_value.pool_add.return_value = None
+        url = reverse("plugins:netbox_kea:server_subnet4_pool_add", args=[self.server.pk, 42])
+        response = self.client.post(url, {"pool": "10.0.0.100-10.0.0.200"}, follow=True)
+        self.assertEqual(response.status_code, 200)
+        msgs = list(response.context["messages"])
+        # Success message should be present, but no overlap warning
+        self.assertTrue(any(m.level == django_messages.SUCCESS for m in msgs))
+        self.assertFalse(any("overlaps" in m.message.lower() for m in msgs))
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_pool_add_reservation_lookup_request_exception_suppresses_warning(self, MockKeaClient):
+        """When reservation_get_page raises RequestException during pool add, warning is suppressed."""
+        MockKeaClient.return_value.reservation_get_page.side_effect = requests.RequestException("timeout")
+        MockKeaClient.return_value.pool_add.return_value = None
+        url = reverse("plugins:netbox_kea:server_subnet4_pool_add", args=[self.server.pk, 42])
+        response = self.client.post(url, {"pool": "10.0.0.100-10.0.0.200"}, follow=True)
+        self.assertEqual(response.status_code, 200)
+        msgs = list(response.context["messages"])
+        self.assertTrue(any(m.level == django_messages.SUCCESS for m in msgs))
+        self.assertFalse(any("overlaps" in m.message.lower() for m in msgs))
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_pool_add_kea_exception_shows_error(self, MockKeaClient):
+        """KeaException on pool_add must show error message."""
+        from netbox_kea.kea import KeaException
+
+        MockKeaClient.return_value.reservation_get_page.return_value = ([], 0, 0)
+        MockKeaClient.return_value.pool_add.side_effect = KeaException(
+            {"result": 1, "text": "pool already exists"}, index=0
+        )
+        url = reverse("plugins:netbox_kea:server_subnet4_pool_add", args=[self.server.pk, 42])
+        response = self.client.post(url, {"pool": "10.0.0.100-10.0.0.200"}, follow=True)
+        msgs = list(response.context["messages"])
+        self.assertTrue(any(m.level == django_messages.ERROR for m in msgs))
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_pool_add_request_exception_shows_network_error(self, MockKeaClient):
+        """RequestException on pool_add must show network error message."""
+        MockKeaClient.return_value.reservation_get_page.return_value = ([], 0, 0)
+        MockKeaClient.return_value.pool_add.side_effect = requests.RequestException("connection refused")
+        url = reverse("plugins:netbox_kea:server_subnet4_pool_add", args=[self.server.pk, 42])
+        response = self.client.post(url, {"pool": "10.0.0.100-10.0.0.200"}, follow=True)
+        msgs = list(response.context["messages"])
+        self.assertTrue(any(m.level == django_messages.ERROR for m in msgs))
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_pool_add_client_creation_failure_redirects(self, MockKeaClient):
+        """When get_client raises ValueError during pool add POST, view redirects with error."""
+        MockKeaClient.side_effect = ValueError("invalid url config")
+        url = reverse("plugins:netbox_kea:server_subnet4_pool_add", args=[self.server.pk, 42])
+        response = self.client.post(url, {"pool": "10.0.0.100-10.0.0.200"}, follow=True)
+        msgs = list(response.context["messages"])
+        self.assertTrue(any(m.level == django_messages.ERROR for m in msgs))
+
+    # ── Pool delete exception paths ──────────────────────────────────────
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_pool_delete_kea_exception_shows_error(self, MockKeaClient):
+        """KeaException on pool_del must show error message."""
+        from netbox_kea.kea import KeaException
+
+        MockKeaClient.return_value.pool_del.side_effect = KeaException({"result": 1, "text": "pool not found"}, index=0)
+        url = reverse(
+            "plugins:netbox_kea:server_subnet4_pool_delete", args=[self.server.pk, 42, "10.0.0.100-10.0.0.200"]
+        )
+        response = self.client.post(url, follow=True)
+        msgs = list(response.context["messages"])
+        self.assertTrue(any(m.level == django_messages.ERROR for m in msgs))
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_pool_delete_request_exception_shows_network_error(self, MockKeaClient):
+        """RequestException on pool_del must show network error message."""
+        MockKeaClient.return_value.pool_del.side_effect = requests.RequestException("timeout")
+        url = reverse(
+            "plugins:netbox_kea:server_subnet4_pool_delete", args=[self.server.pk, 42, "10.0.0.100-10.0.0.200"]
+        )
+        response = self.client.post(url, follow=True)
+        msgs = list(response.context["messages"])
+        self.assertTrue(any(m.level == django_messages.ERROR for m in msgs))
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_pool_delete_client_creation_failure_redirects(self, MockKeaClient):
+        """When get_client raises ValueError during pool delete POST, view redirects with error."""
+        MockKeaClient.side_effect = ValueError("bad config")
+        url = reverse(
+            "plugins:netbox_kea:server_subnet4_pool_delete", args=[self.server.pk, 42, "10.0.0.100-10.0.0.200"]
+        )
+        response = self.client.post(url, follow=True)
+        msgs = list(response.context["messages"])
+        self.assertTrue(any(m.level == django_messages.ERROR for m in msgs))
