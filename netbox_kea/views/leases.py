@@ -238,6 +238,8 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
             if not raw_leases:
                 raise RuntimeError(f"No valid lease dicts in lease{self.dhcp_version}-get{command} response")
             return format_leases(raw_leases)
+        if "ip-address" not in args:
+            raise RuntimeError(f"Single-result lease{self.dhcp_version}-get{command} response missing 'ip-address'")
         return format_leases([args])
 
     def get_extra_context(self, request: HttpRequest, instance: Server) -> dict[str, Any]:
@@ -995,9 +997,13 @@ def _fetch_reservation_by_ip_for_leases(
         subnet_id = lease.get("subnet_id")
         if not ip or not subnet_id:
             return ip, None, None
+        try:
+            subnet_id = int(subnet_id)
+        except (TypeError, ValueError):
+            return ip, None, None
         with client.clone() as worker_client:  # requests.Session is not thread-safe
             try:
-                r = worker_client.reservation_get(service, subnet_id=int(subnet_id), ip_address=ip)
+                r = worker_client.reservation_get(service, subnet_id=subnet_id, ip_address=ip)
                 return ip, r, True
             except KeaException as exc:
                 if exc.response.get("result") == 2:
@@ -1084,7 +1090,10 @@ def _fetch_reservation_by_mac_for_leases(
     def _fetch_one_mac(lease: dict) -> tuple[str, int, str, dict | None | object]:
         mac = (lease.get("hw_address") or "").lower()
         ip = lease.get("ip_address", "")
-        subnet_id = int(lease.get("subnet_id"))
+        try:
+            subnet_id = int(lease.get("subnet_id"))
+        except (TypeError, ValueError):
+            return mac, 0, ip, _FETCH_ERROR
         with client.clone() as worker_client:
             try:
                 r = worker_client.reservation_get(

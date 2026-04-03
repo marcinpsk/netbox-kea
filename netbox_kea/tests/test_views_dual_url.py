@@ -72,8 +72,15 @@ def _assert_keaclient_url(test_case, MockKeaClient, expected_url):
         MockKeaClient.called,
         "KeaClient was never instantiated — the view may not have called get_client().",
     )
-    actual_url = MockKeaClient.call_args.kwargs.get("url") or MockKeaClient.call_args[0][0]
-    test_case.assertEqual(actual_url, expected_url)
+    call_args = MockKeaClient.call_args
+    actual_url = call_args.kwargs.get("url") if call_args.kwargs else None
+    if actual_url is None and call_args.args:
+        actual_url = call_args.args[0]
+    test_case.assertEqual(
+        actual_url,
+        expected_url,
+        f"KeaClient URL mismatch. call_args={call_args}",
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
