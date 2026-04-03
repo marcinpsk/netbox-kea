@@ -520,6 +520,7 @@ class TestImportLoopValueError(_ViewTestBase):
         self.assertEqual(result["errors"], 1)
         self.assertEqual(len(result["error_rows"]), 1)
         self.assertIn("Invalid response from Kea", result["error_rows"][0]["error"])
+        self.assertNotIn("bad JSON from Kea", result["error_rows"][0]["error"])
 
     @patch("netbox_kea.models.KeaClient")
     def test_lease_import_value_error_is_row_error(self, MockKeaClient):
@@ -546,9 +547,9 @@ class TestImportLoopValueError(_ViewTestBase):
         self.assertEqual(result["errors"], 1)
         self.assertEqual(len(result["error_rows"]), 1)
         self.assertIn("Invalid response from Kea", result["error_rows"][0]["error"])
+        self.assertNotIn("bad JSON from Kea", result["error_rows"][0]["error"])
 
 
-# ---------------------------------------------------------------------------
 # TestBulkReservationSyncExceptNarrowing  (F9)
 # ---------------------------------------------------------------------------
 

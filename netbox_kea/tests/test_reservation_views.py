@@ -18,6 +18,7 @@ from unittest.mock import MagicMock, patch
 from urllib.parse import urlencode
 
 from django.contrib.auth import get_user_model
+from django.contrib.messages import get_messages
 from django.test import SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
 
@@ -2665,9 +2666,7 @@ class TestReservationSyncExceptionOnSuccess(_ReservationViewBase):
         response = self.client.post(self._add_url(), self._valid_post_data())
         self.assertEqual(response.status_code, 302)
         mock_client.reservation_add.assert_called_once()
-        # Follow redirect to check messages
-        response = self.client.get(response.url)
-        msgs = [str(m) for m in response.context.get("messages", [])]
+        msgs = [str(m) for m in get_messages(response.wsgi_request)]
         self.assertTrue(any("sync failed" in m.lower() for m in msgs))
 
     @patch("netbox_kea.views.reservations.sync_reservation_to_netbox")
@@ -2679,8 +2678,7 @@ class TestReservationSyncExceptionOnSuccess(_ReservationViewBase):
         mock_sync.return_value = (MagicMock(), True)
         response = self.client.post(self._add_url(), self._valid_post_data())
         self.assertEqual(response.status_code, 302)
-        response = self.client.get(response.url)
-        msgs = [str(m) for m in response.context.get("messages", [])]
+        msgs = [str(m) for m in get_messages(response.wsgi_request)]
         self.assertTrue(any("created" in m.lower() for m in msgs))
 
 
@@ -2994,9 +2992,7 @@ class TestRunReservationSuccessSideEffectsSyncFail(_ReservationViewBase):
         # Kea reservation created → redirect
         self.assertEqual(response.status_code, 302)
         mock_client.reservation_add.assert_called_once()
-        # Follow redirect and check for sync warning
-        response = self.client.get(response.url)
-        msgs = [str(m) for m in response.context.get("messages", [])]
+        msgs = [str(m) for m in get_messages(response.wsgi_request)]
         self.assertTrue(any("sync failed" in m.lower() for m in msgs))
 
     @patch("netbox_kea.views.reservations.sync_reservation_to_netbox")
