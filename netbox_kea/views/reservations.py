@@ -697,6 +697,9 @@ class ServerReservation4EditView(_KeaChangeMixin, generic.ObjectView):
             "action": "Edit",
             "return_url": return_url,
         }
+        # Key fields are URL-derived and ignored on POST — disable to avoid confusion.
+        for field_name in ("subnet_id", "ip_address"):
+            context["form"].fields[field_name].widget.attrs["disabled"] = True
         try:
             lease = server.get_client(version=4).lease_get_by_ip(4, ip_address)
             if lease and lease.get("hostname") and lease.get("hostname") != reservation.get("hostname", ""):
@@ -814,6 +817,9 @@ class ServerReservation6EditView(_KeaChangeMixin, generic.ObjectView):
             "action": "Edit",
             "return_url": return_url,
         }
+        # Key fields are URL-derived and ignored on POST — disable to avoid confusion.
+        for field_name in ("subnet_id", "ip_addresses"):
+            context["form"].fields[field_name].widget.attrs["disabled"] = True
         try:
             lease = server.get_client(version=6).lease_get_by_ip(6, ip_address)
             if lease and lease.get("hostname") and lease.get("hostname") != reservation.get("hostname", ""):
@@ -1072,5 +1078,5 @@ def _enrich_reservations_with_badges(
             r["netbox_ip_url"] = matched[0].get_absolute_url()
             if can_change:
                 r["sync_url"] = sync_url
-        elif can_change:
+        elif can_change and candidate_ips:
             r["sync_url"] = sync_url

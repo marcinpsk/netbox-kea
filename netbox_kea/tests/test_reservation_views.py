@@ -18,7 +18,7 @@ from unittest.mock import MagicMock, patch
 from urllib.parse import urlencode
 
 from django.contrib.auth import get_user_model
-from django.contrib.messages import get_messages
+from django.contrib.messages import WARNING, get_messages
 from django.test import SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
 
@@ -361,8 +361,6 @@ class TestServerReservation4AddView(_ReservationViewBase):
     @patch("netbox_kea.models.KeaClient")
     def test_post_warns_when_reservation_ip_inside_pool(self, MockKeaClient):
         """F4: POST adding a reservation whose IP is inside an existing pool shows a non-blocking warning."""
-        from django.contrib.messages import get_messages
-
         mock_client = MockKeaClient.return_value
         mock_client.reservation_add.return_value = None
         # subnet4-get returns subnet with a pool that covers the reservation IP (192.168.1.100)
@@ -376,16 +374,12 @@ class TestServerReservation4AddView(_ReservationViewBase):
         # Non-blocking: still redirects
         self.assertEqual(response.status_code, 302)
         mock_client.reservation_add.assert_called_once()
-        from django.contrib.messages import WARNING
-
         storage = list(get_messages(response.wsgi_request))
         self.assertTrue(any(m.level == WARNING for m in storage))
 
     @patch("netbox_kea.models.KeaClient")
     def test_post_no_warning_when_reservation_ip_outside_pool(self, MockKeaClient):
         """F4: No warning when the reservation IP is not in any existing pool."""
-        from django.contrib.messages import get_messages
-
         mock_client = MockKeaClient.return_value
         mock_client.reservation_add.return_value = None
         # Pool does NOT cover the reservation IP
@@ -398,8 +392,6 @@ class TestServerReservation4AddView(_ReservationViewBase):
         response = self.client.post(self._add_url(), self._valid_post_data())
         self.assertEqual(response.status_code, 302)
         mock_client.reservation_add.assert_called_once()
-        from django.contrib.messages import WARNING
-
         storage = list(get_messages(response.wsgi_request))
         self.assertFalse(any(m.level == WARNING for m in storage))
 
@@ -1195,8 +1187,6 @@ class TestServerSubnet4PoolAddView(_ReservationViewBase):
     @patch("netbox_kea.models.KeaClient")
     def test_post_warns_when_new_pool_overlaps_existing_reservation(self, MockKeaClient):
         """F4: POST adding a pool overlapping an existing reservation shows a non-blocking warning."""
-        from django.contrib.messages import get_messages
-
         mock_client = MockKeaClient.return_value
         mock_client.pool_add.return_value = None
         # reservation_get_page returns one reservation whose IP is in the new pool range
@@ -1209,16 +1199,12 @@ class TestServerSubnet4PoolAddView(_ReservationViewBase):
         # Non-blocking: pool is still added and view redirects
         self.assertEqual(response.status_code, 302)
         mock_client.pool_add.assert_called_once()
-        from django.contrib.messages import WARNING
-
         storage = list(get_messages(response.wsgi_request))
         self.assertTrue(any(m.level == WARNING for m in storage))
 
     @patch("netbox_kea.models.KeaClient")
     def test_post_no_warning_when_no_reservations_in_pool(self, MockKeaClient):
         """F4: No warning when no reservations fall within the new pool range."""
-        from django.contrib.messages import get_messages
-
         mock_client = MockKeaClient.return_value
         mock_client.pool_add.return_value = None
         # reservation_get_page returns a reservation OUTSIDE the new pool
@@ -1229,8 +1215,6 @@ class TestServerSubnet4PoolAddView(_ReservationViewBase):
         )
         response = self.client.post(self._url(), {"pool": "10.0.0.50-10.0.0.99"})
         self.assertEqual(response.status_code, 302)
-        from django.contrib.messages import WARNING
-
         storage = list(get_messages(response.wsgi_request))
         # Should have success message but no overlap warning
         self.assertFalse(any(m.level == WARNING for m in storage))
