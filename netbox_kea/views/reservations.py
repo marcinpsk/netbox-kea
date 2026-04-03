@@ -820,9 +820,10 @@ class ServerReservation6EditView(_KeaChangeMixin, generic.ObjectView):
         return_url = reverse("plugins:netbox_kea:server_reservations6", args=[pk])
         if form.is_valid() and options_valid:
             cd = form.cleaned_data
+            ip_list = [ip.strip() for ip in cd["ip_addresses"].split(",") if ip.strip()]
             reservation: dict[str, Any] = {
                 "subnet-id": subnet_id,
-                "ip-addresses": [ip_address],
+                "ip-addresses": ip_list if ip_list else [ip_address],
                 cd["identifier_type"]: cd["identifier"],
             }
             if cd.get("hostname"):

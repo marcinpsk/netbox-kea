@@ -739,7 +739,14 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
             if malformed:
                 current_network = None
                 break
-            subnet_ids = {sub.get("id") for sub in sn_subnets}
+            try:
+                subnet_ids = {sub["id"] for sub in sn_subnets if isinstance(sub.get("id"), (int, str))}
+            except (KeyError, TypeError):
+                current_network = None
+                break
+            if len(subnet_ids) != len(sn_subnets):
+                current_network = None
+                break
             if subnet_id in subnet_ids:
                 current_network = name
         return choices, current_network, dhcp_conf
@@ -751,10 +758,12 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
         # Pools
         pools = subnet.get("pools") or []
         if pools:
-            initial["pools"] = "\n".join(p.get("pool", "") for p in pools if p.get("pool"))
+            initial["pools"] = "\n".join(p.get("pool", "") for p in pools if isinstance(p, dict) and p.get("pool"))
 
         # Options
         for opt in subnet.get("option-data") or []:
+            if not isinstance(opt, dict):
+                continue
             name = opt.get("name", "")
             data = opt.get("data", "")
             if name == "routers":

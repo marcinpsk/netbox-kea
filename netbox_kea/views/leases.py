@@ -1,4 +1,5 @@
 import concurrent.futures
+import ipaddress
 import logging
 import uuid
 from abc import ABCMeta
@@ -39,6 +40,21 @@ from ._base import ConditionalLoginRequiredMixin, _KeaChangeMixin, _strip_empty_
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T", bound=BaseTable)
+
+
+def _is_valid_lease_entry(entry: dict) -> bool:
+    """Return True if *entry* is a dict with a valid IP in ``ip-address``."""
+    if not isinstance(entry, dict):
+        return False
+    addr = entry.get("ip-address")
+    if not isinstance(addr, str):
+        return False
+    try:
+        ipaddress.ip_address(addr)
+    except ValueError:
+        logger.warning("Skipping lease entry with invalid ip-address: %r", addr)
+        return False
+    return True
 
 
 def _add_lease_journal(
@@ -136,7 +152,7 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
         raw_leases = args.get("leases")
         if not isinstance(raw_leases, list):
             raise RuntimeError("Unexpected leases payload from lease-get-page")
-        raw_leases = [entry for entry in raw_leases if isinstance(entry, dict) and "ip-address" in entry]
+        raw_leases = [entry for entry in raw_leases if _is_valid_lease_entry(entry)]
 
         count = args.get("count")
         if not isinstance(count, int):
@@ -328,7 +344,7 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
                     logger.error("lease-get-page returned non-list leases on server %s", instance.pk)
                     messages.error(request, "Failed to fetch leases for export: unexpected Kea response.")
                     return redirect(request.path)
-                raw_leases = [entry for entry in raw_leases if isinstance(entry, dict) and "ip-address" in entry]
+                raw_leases = [entry for entry in raw_leases if _is_valid_lease_entry(entry)]
 
                 count = args.get("count")
                 if not isinstance(count, int):
@@ -585,7 +601,7 @@ class BaseServerLeasesDeleteView(GetReturnURLMixin, generic.ObjectView, metaclas
             messages.success(request, f"Deleted {len(successful_ips)} DHCPv{self.dhcp_version} lease(s).")
             try:
                 _add_lease_journal(instance, request.user, "deleted", successful_ips)
-            except Exception:
+            except DatabaseError:
                 logger.exception("Failed to record lease journal for server %s; continuing", instance.pk)
             leases_deleted.send_robust(
                 sender=None,

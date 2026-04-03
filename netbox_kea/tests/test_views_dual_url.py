@@ -81,18 +81,22 @@ def _assert_keaclient_url(test_case, MockKeaClient, expected_url):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
-class TestDualURLSubnetViews(TestCase):
-    """Subnet views must use dhcp4_url for v4 and dhcp6_url for v6."""
+class _DualURLBase(TestCase):
+    """Shared setUp for dual-URL view tests."""
 
     def setUp(self):
         self.user = User.objects.create_superuser(
-            username="dual_url_subnet_user",
+            username="dual_url_user",
             email="test@example.com",
             password="testpass",
         )
         self.client.force_login(self.user)
         self.server = _make_dual_url_server()
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestDualURLSubnetViews(_DualURLBase):
+    """Subnet views must use dhcp4_url for v4 and dhcp6_url for v6."""
 
     @patch("netbox_kea.models.KeaClient")
     def test_subnets4_uses_dhcp4_url(self, MockKeaClient):
@@ -114,22 +118,13 @@ class TestDualURLSubnetViews(TestCase):
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
-class TestDualURLLeaseViews(TestCase):
+class TestDualURLLeaseViews(_DualURLBase):
     """Lease views must use dhcp4_url for v4 and dhcp6_url for v6.
 
     Lease views only instantiate KeaClient when performing a search via
     the ``export`` GET param, so we trigger an export to exercise
     ``get_client(version=...)``.
     """
-
-    def setUp(self):
-        self.user = User.objects.create_superuser(
-            username="dual_url_lease_user",
-            email="test@example.com",
-            password="testpass",
-        )
-        self.client.force_login(self.user)
-        self.server = _make_dual_url_server()
 
     @patch("netbox_kea.models.KeaClient")
     def test_leases4_uses_dhcp4_url(self, MockKeaClient):
@@ -151,17 +146,8 @@ class TestDualURLLeaseViews(TestCase):
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
-class TestDualURLOptionViews(TestCase):
+class TestDualURLOptionViews(_DualURLBase):
     """Option views must use dhcp4_url for v4 and dhcp6_url for v6."""
-
-    def setUp(self):
-        self.user = User.objects.create_superuser(
-            username="dual_url_opt_user",
-            email="test@example.com",
-            password="testpass",
-        )
-        self.client.force_login(self.user)
-        self.server = _make_dual_url_server()
 
     @patch("netbox_kea.models.KeaClient")
     def test_option_defs4_uses_dhcp4_url(self, MockKeaClient):
@@ -192,17 +178,8 @@ class TestDualURLOptionViews(TestCase):
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
-class TestDualURLReservationViews(TestCase):
+class TestDualURLReservationViews(_DualURLBase):
     """Reservation views must use dhcp4_url for v4 and dhcp6_url for v6."""
-
-    def setUp(self):
-        self.user = User.objects.create_superuser(
-            username="dual_url_rsv_user",
-            email="test@example.com",
-            password="testpass",
-        )
-        self.client.force_login(self.user)
-        self.server = _make_dual_url_server()
 
     @patch("netbox_kea.models.KeaClient")
     def test_reservations4_uses_dhcp4_url(self, MockKeaClient):
@@ -226,16 +203,8 @@ class TestDualURLReservationViews(TestCase):
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
-class TestDualURLFallback(TestCase):
+class TestDualURLFallback(_DualURLBase):
     """When protocol-specific URL is not set, fall back to server_url."""
-
-    def setUp(self):
-        self.user = User.objects.create_superuser(
-            username="dual_url_fb_user",
-            email="test@example.com",
-            password="testpass",
-        )
-        self.client.force_login(self.user)
 
     @patch("netbox_kea.models.KeaClient")
     def test_v4_falls_back_to_server_url(self, MockKeaClient):

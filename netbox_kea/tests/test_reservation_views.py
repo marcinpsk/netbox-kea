@@ -2377,7 +2377,7 @@ class TestReservation4OptionData(_ReservationViewBase):
 
         mock_client.reservation_add.assert_called_once()
         call_args = mock_client.reservation_add.call_args
-        args, kwargs = call_args
+        args, kwargs = call_args or ((), {})
         reservation = kwargs.get("reservation") or (args[1] if len(args) > 1 else (args[0] if len(args) > 0 else {}))
         self.assertNotIn("option-data", reservation)
 
@@ -2506,13 +2506,13 @@ class TestKeaExceptionResult1OnFetch(_ReservationViewBase):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# F8 coverage: V6 edit POST uses URL-derived ip_address
+# F9 coverage: V6 edit POST preserves multi-address from form
 # ─────────────────────────────────────────────────────────────────────────────
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
-class TestV6EditPostUsesURLDerivedIP(_ReservationViewBase):
-    """After F8 fix, v6 edit POST uses the URL-derived ip_address, not form data."""
+class TestV6EditPostPreservesFormIPs(_ReservationViewBase):
+    """After F9 fix, v6 edit POST uses the form ip_addresses to preserve multi-address reservations."""
 
     _SUBNET_ID = 1
     _IP = "2001:db8::100"
@@ -2524,8 +2524,8 @@ class TestV6EditPostUsesURLDerivedIP(_ReservationViewBase):
         )
 
     @patch("netbox_kea.models.KeaClient")
-    def test_post_uses_url_ip_not_form_ip(self, MockKeaClient):
-        """Even if form posts a different ip_addresses, the URL ip_address is used."""
+    def test_post_preserves_form_ip_addresses(self, MockKeaClient):
+        """POST uses the form's ip_addresses field, preserving multi-address reservations."""
         mock_client = MockKeaClient.return_value
         mock_client.reservation_get.return_value = _SAMPLE_RESERVATION6
         mock_client.reservation_update.return_value = None
@@ -2533,7 +2533,7 @@ class TestV6EditPostUsesURLDerivedIP(_ReservationViewBase):
             self._edit_url(),
             {
                 "subnet_id": self._SUBNET_ID,
-                "ip_addresses": "2001:db8::999",
+                "ip_addresses": "2001:db8::100,2001:db8::200",
                 "identifier_type": "duid",
                 "identifier": "00:01:02:03:04:05",
                 "hostname": "testhost6.example.com",
@@ -2544,4 +2544,4 @@ class TestV6EditPostUsesURLDerivedIP(_ReservationViewBase):
         call_args = mock_client.reservation_update.call_args
         args, kwargs = call_args or ((), {})
         reservation = kwargs.get("reservation") or (args[1] if len(args) > 1 else {})
-        self.assertEqual(reservation["ip-addresses"], [self._IP])
+        self.assertEqual(reservation["ip-addresses"], ["2001:db8::100", "2001:db8::200"])
