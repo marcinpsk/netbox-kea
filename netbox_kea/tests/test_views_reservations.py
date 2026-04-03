@@ -1060,7 +1060,8 @@ class TestEnrichReservationsLeaseStatusCoverage(_ViewTestBase):
         client.clone.return_value = clone_mock
         reservations = [{"ip-address": "10.0.0.1", "subnet-id": 42}]
         _enrich_reservations_with_lease_status(client, reservations, 4)
-        # Should complete without crash; result != 2 → return []
+        # result != 2 → subnet indeterminate → has_active_lease must remain unset
+        self.assertNotIn("has_active_lease", reservations[0])
 
     def test_no_subnet_id_skips_fetch(self):
         """Line 1650: reservations with no subnet-id → unique_subnet_ids empty → early return."""

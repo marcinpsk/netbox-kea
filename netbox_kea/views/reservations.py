@@ -805,7 +805,13 @@ class ServerReservation6EditView(_KeaChangeMixin, generic.ObjectView):
         if reservation is None:
             raise Http404(f"Reservation {ip_address} not found in subnet {subnet_id}")
         identifier_type, identifier = _get_reservation_identifier(reservation, 6)
-        ip_list = reservation.get("ip-addresses", [ip_address])
+        raw_ip_list = reservation.get("ip-addresses")
+        if isinstance(raw_ip_list, list):
+            ip_list = [ip for ip in raw_ip_list if isinstance(ip, str) and ip]
+        elif isinstance(raw_ip_list, str) and raw_ip_list:
+            ip_list = [raw_ip_list]
+        else:
+            ip_list = [ip_address]
         initial = {
             "subnet_id": reservation.get("subnet-id", subnet_id),
             "ip_addresses": ",".join(ip_list),
