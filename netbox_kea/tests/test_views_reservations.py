@@ -807,10 +807,9 @@ class TestReservationListEnrichmentExceptions(_ViewTestBase):
         MockKeaClient.return_value.clone.return_value.__exit__ = MagicMock(return_value=None)
         response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
+        MockKeaClient.return_value.clone.return_value.command.assert_called()
 
 
-# ---------------------------------------------------------------------------
-# Reservation6 Add — option-data and sync paths
 # ---------------------------------------------------------------------------
 
 
@@ -1072,8 +1071,8 @@ class TestEnrichReservationsLeaseStatusCoverage(_ViewTestBase):
         client = MagicMock()
         reservations = [{"ip-address": "10.0.0.1"}]  # no subnet-id
         _enrich_reservations_with_lease_status(client, reservations, 4)
-        # client.command should never be called
-        client.command.assert_not_called()
+        # client.clone should never be called when there are no valid subnet-ids
+        client.clone.assert_not_called()
 
     def test_as_completed_exception_returns_early(self):
         """Lines 1662-1663: exception from as_completed → outer except fires."""
@@ -1087,9 +1086,12 @@ class TestEnrichReservationsLeaseStatusCoverage(_ViewTestBase):
         with patch(
             "netbox_kea.views.reservations.concurrent.futures.as_completed",
             side_effect=RuntimeError("as_completed failed"),
-        ):
+        ) as mock_as_completed:
             _enrich_reservations_with_lease_status(client, reservations, 4)
-        # Should not raise; outer except returns early
+        # as_completed must have been reached (executor submitted tasks)
+        mock_as_completed.assert_called_once()
+        # outer except returns early — has_active_lease stays unset
+        self.assertNotIn("has_active_lease", reservations[0])
 
 
 # ---------------------------------------------------------------------------

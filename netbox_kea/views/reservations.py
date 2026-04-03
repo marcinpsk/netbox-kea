@@ -74,9 +74,24 @@ def _add_reservation_journal(server: "Server", user: Any, action: str, reservati
         if ips and not ip:
             ip = ips[0] if isinstance(ips, list) else ips
         hostname = reservation.get("hostname", "")
-        mac = reservation.get("hw-address") or reservation.get("hw_address", "")
-        duid = reservation.get("duid", "")
-        identifier = mac or duid
+        identifier = next(
+            (
+                reservation.get(key, "")
+                for key in (
+                    "hw-address",
+                    "hw_address",
+                    "duid",
+                    "client-id",
+                    "client_id",
+                    "circuit-id",
+                    "circuit_id",
+                    "flex-id",
+                    "flex_id",
+                )
+                if reservation.get(key)
+            ),
+            "",
+        )
         parts = [f"Reservation {action}: {ip}"]
         if hostname:
             parts.append(f"hostname: {hostname}")
