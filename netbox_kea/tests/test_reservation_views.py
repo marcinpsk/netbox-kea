@@ -74,6 +74,14 @@ def _make_db_server(**kwargs) -> Server:
     return Server.objects.create(**defaults)
 
 
+def _wire_mock_clone(mock_client):
+    """Wire clone/context-manager on a mock KeaClient so worker threads see the same instance."""
+    mock_client.clone.return_value = mock_client
+    mock_client.__enter__ = lambda s: s
+    mock_client.__exit__ = lambda s, *a: None
+    return mock_client
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Shared base
 # ─────────────────────────────────────────────────────────────────────────────
@@ -732,9 +740,7 @@ class TestActiveLeaseStatusOnReservations(_ReservationViewBase):
     def _prepare_mock_client(self, MockKeaClient, reservation_page=None):
         """Wire the common mock_client context manager and reservation_get_page."""
         mock_client = MockKeaClient.return_value
-        mock_client.clone.return_value = mock_client  # worker threads must see configured behaviors
-        mock_client.__enter__ = lambda s: s
-        mock_client.__exit__ = lambda s, *a: None
+        _wire_mock_clone(mock_client)
         mock_client.reservation_get_page.return_value = (
             reservation_page if reservation_page is not None else ([dict(_SAMPLE_RESERVATION4)], 0, 0)
         )
@@ -902,9 +908,7 @@ class TestLeaseReserveBadge(_ReservationViewBase):
     def test_reserved_badge_shown_when_reservation_exists(self, MockKeaClient):
         """A lease WITH a matching reservation must show 'Reserved' link, not '+ Reserve'."""
         mock = MockKeaClient.return_value
-        mock.clone.return_value = mock  # worker threads must see configured behaviors
-        mock.__enter__ = lambda s: s
-        mock.__exit__ = lambda s, *a: None
+        _wire_mock_clone(mock)
         reservation = dict(_SAMPLE_RESERVATION4)
         reservation["ip-address"] = "192.168.1.200"
         mock.reservation_get.return_value = reservation
@@ -947,9 +951,7 @@ class TestActiveLeaseBadgeLink(TestCase):
     def test_active_lease_badge_is_link_to_lease_search(self, MockKeaClient):
         """When active lease exists the badge must be an <a> linking to lease search by IP."""
         mock_client = MockKeaClient.return_value
-        mock_client.clone.return_value = mock_client  # worker threads must see configured behaviors
-        mock_client.__enter__ = lambda s: s
-        mock_client.__exit__ = lambda s, *a: None
+        _wire_mock_clone(mock_client)
         mock_client.reservation_get_page.return_value = ([dict(_SAMPLE_RESERVATION4_WITH_IP)], 0, 0)
         mock_client.command.return_value = [{"result": 0, "arguments": {"leases": [{"ip-address": "10.50.0.9"}]}}]
         response = self.client.get(self._url())
@@ -964,9 +966,7 @@ class TestActiveLeaseBadgeLink(TestCase):
     def test_no_lease_badge_is_not_a_link(self, MockKeaClient):
         """'No Lease' badge must remain a plain non-clickable element."""
         mock_client = MockKeaClient.return_value
-        mock_client.clone.return_value = mock_client
-        mock_client.__enter__ = lambda s: s
-        mock_client.__exit__ = lambda s, *a: None
+        _wire_mock_clone(mock_client)
         mock_client.reservation_get_page.return_value = ([dict(_SAMPLE_RESERVATION4_WITH_IP)], 0, 0)
         mock_client.command.return_value = [{"result": 0, "arguments": {"leases": []}}]
         response = self.client.get(self._url())
@@ -1016,9 +1016,7 @@ class TestActiveLeaseSyncButton(TestCase):
     def test_sync_button_shown_when_active_lease_and_no_netbox_ip(self, MockKeaClient, mock_bulk_fetch):
         """When active lease and no NetBox IP: 'Active Lease' badge AND Sync button rendered."""
         mock_client = MockKeaClient.return_value
-        mock_client.clone.return_value = mock_client  # worker threads must see configured behaviors
-        mock_client.__enter__ = lambda s: s
-        mock_client.__exit__ = lambda s, *a: None
+        _wire_mock_clone(mock_client)
         mock_client.reservation_get_page.return_value = (
             [dict(_SAMPLE_RESERVATION4_FOR_SYNC)],
             0,
@@ -1038,9 +1036,7 @@ class TestActiveLeaseSyncButton(TestCase):
     def test_sync_button_not_shown_when_active_lease_and_netbox_ip_exists(self, MockKeaClient, mock_bulk_fetch):
         """When active lease AND NetBox IP already synced: no Sync button in lease_status cell."""
         mock_client = MockKeaClient.return_value
-        mock_client.clone.return_value = mock_client  # worker threads must see configured behaviors
-        mock_client.__enter__ = lambda s: s
-        mock_client.__exit__ = lambda s, *a: None
+        _wire_mock_clone(mock_client)
         mock_client.reservation_get_page.return_value = (
             [dict(_SAMPLE_RESERVATION4_FOR_SYNC)],
             0,
@@ -1076,9 +1072,7 @@ class TestMultiIPv6ReservationBadgeEnrichment(TestCase):
 
     def _mock_client(self, MockKeaClient, reservation):
         mock_client = MockKeaClient.return_value
-        mock_client.clone.return_value = mock_client
-        mock_client.__enter__ = lambda s: s
-        mock_client.__exit__ = lambda s, *a: None
+        _wire_mock_clone(mock_client)
         mock_client.reservation_get_page.return_value = ([dict(reservation)], 0, 0)
         # Lease lookup — KeaException so we skip lease enrichment cleanly.
         mock_client.command.side_effect = KeaException(
@@ -2585,9 +2579,7 @@ class TestEnrichReservationsLeaseStatusErrors(_ReservationViewBase):
 
     def _prepare_mock_client(self, MockKeaClient, reservations=None):
         mock_client = MockKeaClient.return_value
-        mock_client.clone.return_value = mock_client
-        mock_client.__enter__ = lambda s: s
-        mock_client.__exit__ = lambda s, *a: None
+        _wire_mock_clone(mock_client)
         mock_client.reservation_get_page.return_value = (
             reservations if reservations is not None else ([dict(_SAMPLE_RESERVATION4)], 0, 0)
         )
@@ -2905,9 +2897,7 @@ class TestEnrichReservationsWithLeaseStatus(SimpleTestCase):
     def _make_mock_client(self, command_side_effect=None, command_return=None):
         """Create a mock KeaClient with clone() context-manager wired up."""
         mock_client = MagicMock()
-        mock_client.clone.return_value = mock_client
-        mock_client.__enter__ = lambda s: s
-        mock_client.__exit__ = lambda s, *a: None
+        _wire_mock_clone(mock_client)
         if command_side_effect is not None:
             mock_client.command.side_effect = command_side_effect
         elif command_return is not None:

@@ -394,10 +394,16 @@ class ServerReservations6View(generic.ObjectView):
 
         for r in reservations:
             r["server_pk"] = server.pk
-            ip_addrs = r.get("ip-addresses") or []
-            r.setdefault("ip_address", ip_addrs[0] if ip_addrs else "")
-            if len(ip_addrs) > 1:
-                r["extra_ips"] = ip_addrs[1:]
+            raw_ip_addrs = r.get("ip-addresses")
+            if isinstance(raw_ip_addrs, list):
+                ip_addrs = [ip for ip in raw_ip_addrs if isinstance(ip, str) and ip]
+            elif isinstance(raw_ip_addrs, str) and raw_ip_addrs:
+                ip_addrs = [raw_ip_addrs]
+            else:
+                ip_addrs = []
+            r["ip-addresses"] = ip_addrs
+            r["ip_address"] = ip_addrs[0] if ip_addrs else ""
+            r["extra_ips"] = ip_addrs[1:]
             r.setdefault("subnet_id", r.get("subnet-id", 0))
             _enrich_reservation_sort_key(r)
 

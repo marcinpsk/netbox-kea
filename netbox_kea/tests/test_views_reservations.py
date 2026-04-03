@@ -640,6 +640,7 @@ class TestReservation6EditExceptions(_ViewTestBase):
         """PartialPersistError on reservation_update must redirect with warning."""
         from netbox_kea.kea import PartialPersistError
 
+        MockKeaClient.return_value.reservation_get.return_value = {"ip-addresses": ["2001:db8::1"]}
         MockKeaClient.return_value.reservation_update.side_effect = PartialPersistError("dhcp6", Exception("write"))
         response = self.client.post(self._url(), _VALID_RESERVATION6_POST, follow=True)
         self.assertEqual(response.status_code, 200)
@@ -651,6 +652,7 @@ class TestReservation6EditExceptions(_ViewTestBase):
         """KeaException on reservation_update must re-render the form."""
         from netbox_kea.kea import KeaException
 
+        MockKeaClient.return_value.reservation_get.return_value = {"ip-addresses": ["2001:db8::1"]}
         MockKeaClient.return_value.reservation_update.side_effect = KeaException(
             {"result": 1, "text": "error"}, index=0
         )
@@ -660,6 +662,7 @@ class TestReservation6EditExceptions(_ViewTestBase):
     @patch("netbox_kea.models.KeaClient")
     def test_post_generic_exception_propagates(self, MockKeaClient):
         """Unexpected exception on reservation_update must propagate."""
+        MockKeaClient.return_value.reservation_get.return_value = {"ip-addresses": ["2001:db8::1"]}
         MockKeaClient.return_value.reservation_update.side_effect = RuntimeError("crash")
         with self.assertRaises(RuntimeError):
             self.client.post(self._url(), _VALID_RESERVATION6_POST)
