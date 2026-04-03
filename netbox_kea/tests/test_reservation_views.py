@@ -2356,6 +2356,7 @@ class TestReservation4OptionData(_ReservationViewBase):
         response = self.client.post(self._add_url(), post_data)
         self.assertEqual(response.status_code, 302)
 
+        mock_client.reservation_add.assert_called_once()
         call_args = mock_client.reservation_add.call_args
         args, kwargs = call_args or ((), {})
         reservation = kwargs.get("reservation") or (args[1] if len(args) > 1 else (args[0] if len(args) > 0 else {}))
@@ -2415,6 +2416,7 @@ class TestReservation4OptionData(_ReservationViewBase):
         response = self.client.post(self._edit_url(), post_data)
         self.assertEqual(response.status_code, 302)
 
+        mock_client.reservation_update.assert_called_once()
         call_args = mock_client.reservation_update.call_args
         args, kwargs = call_args or ((), {})
         reservation = kwargs.get("reservation") or (args[1] if len(args) > 1 else (args[0] if len(args) > 0 else {}))
@@ -2427,3 +2429,119 @@ class TestReservation4OptionData(_ReservationViewBase):
         response = self.client.get(self._add_url())
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "boot-file-name")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# F4 coverage: sync_reservation_to_netbox called with cleanup=False
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestSyncReservationCleanupFalse(_ReservationViewBase):
+    """After F4 fix, sync_reservation_to_netbox must be called with cleanup=False."""
+
+    def _add4_url(self):
+        return reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk])
+
+    @patch("netbox_kea.views.reservations.sync_reservation_to_netbox")
+    @patch("netbox_kea.models.KeaClient")
+    def test_add_post_sync_calls_with_cleanup_false(self, MockKeaClient, mock_sync):
+        """POSTing reservation add with sync_to_netbox=on passes cleanup=False."""
+        mock_client = MockKeaClient.return_value
+        mock_client.reservation_add.return_value = None
+        mock_sync.return_value = (MagicMock(), True)
+        data = {
+            "subnet_id": 1,
+            "ip_address": "192.168.1.100",
+            "identifier_type": "hw-address",
+            "identifier": "aa:bb:cc:dd:ee:ff",
+            "hostname": "testhost.example.com",
+            "sync_to_netbox": "on",
+        }
+        response = self.client.post(self._add4_url(), data)
+        self.assertEqual(response.status_code, 302)
+        mock_sync.assert_called_once()
+        _, kwargs = mock_sync.call_args
+        self.assertFalse(kwargs["cleanup"])
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# F5 coverage: KeaException with result != 2 during reservation fetch
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestKeaExceptionResult1OnFetch(_ReservationViewBase):
+    """KeaException with result=1 returns 200 with error message, not a crash."""
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_v4_fetch_kea_error_result1_returns_200(self, MockKeaClient):
+        """Result=1 shows error message and keeps hook_available=True."""
+        mock_client = MockKeaClient.return_value
+        mock_client.reservation_get_page.side_effect = KeaException(
+            {"result": 1, "text": "error"},
+            index=0,
+        )
+        url = reverse("plugins:netbox_kea:server_reservations4", args=[self.server.pk])
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.context["hook_available"])
+        msgs = [str(m) for m in response.context["messages"]]
+        self.assertTrue(any("Failed to load" in m for m in msgs))
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_v6_fetch_kea_error_result1_returns_200(self, MockKeaClient):
+        """Result=1 shows error message and keeps hook_available=True for DHCPv6."""
+        mock_client = MockKeaClient.return_value
+        mock_client.reservation_get_page.side_effect = KeaException(
+            {"result": 1, "text": "error"},
+            index=0,
+        )
+        url = reverse("plugins:netbox_kea:server_reservations6", args=[self.server.pk])
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.context["hook_available"])
+        msgs = [str(m) for m in response.context["messages"]]
+        self.assertTrue(any("Failed to load" in m for m in msgs))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# F8 coverage: V6 edit POST uses URL-derived ip_address
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestV6EditPostUsesURLDerivedIP(_ReservationViewBase):
+    """After F8 fix, v6 edit POST uses the URL-derived ip_address, not form data."""
+
+    _SUBNET_ID = 1
+    _IP = "2001:db8::100"
+
+    def _edit_url(self):
+        return reverse(
+            "plugins:netbox_kea:server_reservation6_edit",
+            args=[self.server.pk, self._SUBNET_ID, self._IP],
+        )
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_uses_url_ip_not_form_ip(self, MockKeaClient):
+        """Even if form posts a different ip_addresses, the URL ip_address is used."""
+        mock_client = MockKeaClient.return_value
+        mock_client.reservation_get.return_value = _SAMPLE_RESERVATION6
+        mock_client.reservation_update.return_value = None
+        response = self.client.post(
+            self._edit_url(),
+            {
+                "subnet_id": self._SUBNET_ID,
+                "ip_addresses": "2001:db8::999",
+                "identifier_type": "duid",
+                "identifier": "00:01:02:03:04:05",
+                "hostname": "testhost6.example.com",
+            },
+        )
+        self.assertEqual(response.status_code, 302)
+        mock_client.reservation_update.assert_called_once()
+        call_args = mock_client.reservation_update.call_args
+        args, kwargs = call_args or ((), {})
+        reservation = kwargs.get("reservation") or (args[1] if len(args) > 1 else {})
+        self.assertEqual(reservation["ip-addresses"], [self._IP])

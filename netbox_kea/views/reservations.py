@@ -129,7 +129,7 @@ def _run_reservation_success_side_effects(
     if sync_to_netbox:
         ip = reservation.get("ip-address") or (reservation.get("ip-addresses") or [""])[0]
         try:
-            _, nb_created = sync_reservation_to_netbox(reservation)
+            _, nb_created = sync_reservation_to_netbox(reservation, cleanup=False)
             nb_msg = "created" if nb_created else "updated"
             messages.info(request, f"NetBox IPAddress {ip} {nb_msg}.")
         except (ValueError, DatabaseError, ValidationError, requests.RequestException):
@@ -307,7 +307,7 @@ class ServerReservations4View(generic.ObjectView):
             if exc.response.get("result") == 2:
                 hook_available = False
             else:
-                logger.warning("Failed to fetch DHCPv4 reservations: %s", exc)
+                logger.exception("Failed to fetch DHCPv4 reservations")
                 messages.error(request, "Failed to load reservations from Kea.")
         except (requests.RequestException, ValueError):
             logger.exception("Unexpected error fetching DHCPv4 reservations")
@@ -382,7 +382,7 @@ class ServerReservations6View(generic.ObjectView):
             if exc.response.get("result") == 2:
                 hook_available = False
             else:
-                logger.warning("Failed to fetch DHCPv6 reservations: %s", exc)
+                logger.exception("Failed to fetch DHCPv6 reservations")
                 messages.error(request, "Failed to load reservations from Kea.")
         except (requests.RequestException, ValueError):
             logger.exception("Unexpected error fetching DHCPv6 reservations")
@@ -820,11 +820,9 @@ class ServerReservation6EditView(_KeaChangeMixin, generic.ObjectView):
         return_url = reverse("plugins:netbox_kea:server_reservations6", args=[pk])
         if form.is_valid() and options_valid:
             cd = form.cleaned_data
-            ip_addresses_raw = cd.get("ip_addresses", ip_address)
-            ip_list = [a.strip() for a in ip_addresses_raw.split(",") if a.strip()] if ip_addresses_raw else []
             reservation: dict[str, Any] = {
                 "subnet-id": subnet_id,
-                "ip-addresses": ip_list or [ip_address],
+                "ip-addresses": [ip_address],
                 cd["identifier_type"]: cd["identifier"],
             }
             if cd.get("hostname"):
