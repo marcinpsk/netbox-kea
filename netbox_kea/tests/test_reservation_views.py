@@ -397,6 +397,7 @@ class TestServerReservation4AddView(_ReservationViewBase):
         ]
         response = self.client.post(self._add_url(), self._valid_post_data())
         self.assertEqual(response.status_code, 302)
+        mock_client.reservation_add.assert_called_once()
         from django.contrib.messages import WARNING
 
         storage = list(get_messages(response.wsgi_request))
@@ -3033,6 +3034,9 @@ class TestRunReservationSuccessSideEffectsSyncFail(_ReservationViewBase):
         response = self.client.post(self._add_url(), self._valid_post_data())
         self.assertEqual(response.status_code, 302)
         mock_client.reservation_add.assert_called_once()
+        msgs = [str(m) for m in get_messages(response.wsgi_request)]
+        self.assertTrue(any("sync" in m.lower() or "warning" in m.lower() or "failed" in m.lower() for m in msgs))
+        self.assertFalse(any("bad data" in m for m in msgs))
 
 
 # ─────────────────────────────────────────────────────────────────────────────

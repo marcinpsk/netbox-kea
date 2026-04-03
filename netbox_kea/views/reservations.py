@@ -276,8 +276,8 @@ def _filter_reservations(
                 or q_lower in _s(r.get("hostname", ""))
                 or q_lower in _s(r.get("duid", ""))
                 or q_lower in _s(r.get("hw-address", ""))
-                or q_lower in r.get("client-id", "").lower()
-                or q_lower in r.get("flex-id", "").lower()
+                or q_lower in _s(r.get("client-id", ""))
+                or q_lower in _s(r.get("flex-id", ""))
             ]
     return result
 
