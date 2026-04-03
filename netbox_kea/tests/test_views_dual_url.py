@@ -183,6 +183,15 @@ class TestDualURLOptionViews(_DualURLBase):
         self.assertEqual(response.status_code, 200)
         _assert_keaclient_url(self, MockKeaClient, _DHCP4_URL)
 
+    @patch("netbox_kea.models.KeaClient")
+    def test_server_options6_uses_dhcp6_url(self, MockKeaClient):
+        """GET server-options6 → KeaClient constructed with dhcp6_url."""
+        MockKeaClient.return_value.command.side_effect = _kea_command_side_effect
+        url = reverse("plugins:netbox_kea:server_dhcp6_options_edit", args=[self.server.pk])
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        _assert_keaclient_url(self, MockKeaClient, _DHCP6_URL)
+
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestDualURLReservationViews(_DualURLBase):
