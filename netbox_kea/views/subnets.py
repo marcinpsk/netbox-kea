@@ -40,6 +40,39 @@ class BaseServerDHCPSubnetsView(generic.ObjectChildrenView):
         """Return the subnet list for *parent* by delegating to :meth:`get_subnets`."""
         return self.get_subnets(parent, request)
 
+    def _subnet_to_row(
+        self,
+        s: dict,
+        server_pk: int,
+        can_change: bool,
+        shared_network: str = "",
+    ) -> dict[str, Any] | None:
+        """Convert a Kea subnet dict to a table row dict, or ``None`` if invalid."""
+        from ..utilities import format_option_data
+
+        if not isinstance(s, dict):
+            return None
+        if "id" not in s or "subnet" not in s:
+            return None
+        try:
+            sort_key = int(ipaddress.ip_network(s["subnet"], strict=False).network_address)
+        except (ValueError, TypeError):
+            logger.warning("Skipping subnet with malformed CIDR: %s", s.get("subnet"))
+            return None
+        row: dict[str, Any] = {
+            "id": s["id"],
+            "subnet": s["subnet"],
+            "dhcp_version": self.dhcp_version,
+            "server_pk": server_pk,
+            "_subnet_sort_key": sort_key,
+            "options": format_option_data(s.get("option-data") or [], version=self.dhcp_version),
+            "pools": [p.get("pool", "") for p in (s.get("pools") or []) if isinstance(p, dict) and p.get("pool")],
+            "can_change": can_change,
+        }
+        if shared_network:
+            row["shared_network"] = shared_network
+        return row
+
     def get_subnets(self, server: Server, request: HttpRequest) -> list[dict[str, Any]]:
         """Fetch all subnets (including shared-network subnets) from the Kea config.
 
@@ -47,7 +80,7 @@ class BaseServerDHCPSubnetsView(generic.ObjectChildrenView):
         when the ``stat_cmds`` hook is loaded.  Degrades gracefully when the hook
         is absent.
         """
-        from ..utilities import format_option_data, parse_subnet_stats
+        from ..utilities import parse_subnet_stats
 
         try:
             client = server.get_client(version=self.dhcp_version)
@@ -72,54 +105,17 @@ class BaseServerDHCPSubnetsView(generic.ObjectChildrenView):
         subnets = dhcp_conf.get(f"subnet{self.dhcp_version}") or []
         subnet_list = []
         for s in subnets:
-            if "id" not in s or "subnet" not in s:
-                continue
-            try:
-                sort_key = int(ipaddress.ip_network(s["subnet"], strict=False).network_address)
-            except (ValueError, TypeError):
-                logger.warning("Skipping subnet with malformed CIDR: %s", s.get("subnet"))
-                continue
-            subnet_list.append(
-                {
-                    "id": s["id"],
-                    "subnet": s["subnet"],
-                    "dhcp_version": self.dhcp_version,
-                    "server_pk": server.pk,
-                    "_subnet_sort_key": sort_key,
-                    "options": format_option_data(s.get("option-data") or [], version=self.dhcp_version),
-                    "pools": [
-                        p.get("pool", "") for p in (s.get("pools") or []) if isinstance(p, dict) and p.get("pool")
-                    ],
-                    "can_change": can_change,
-                }
-            )
+            row = self._subnet_to_row(s, server.pk, can_change)
+            if row is not None:
+                subnet_list.append(row)
 
         for sn in dhcp_conf.get("shared-networks") or []:
             if not isinstance(sn, dict):
                 continue
             for s in sn.get(f"subnet{self.dhcp_version}") or []:
-                if "id" not in s or "subnet" not in s:
-                    continue
-                try:
-                    sort_key = int(ipaddress.ip_network(s["subnet"], strict=False).network_address)
-                except (ValueError, TypeError):
-                    logger.warning("Skipping subnet with malformed CIDR: %s", s.get("subnet"))
-                    continue
-                subnet_list.append(
-                    {
-                        "id": s["id"],
-                        "subnet": s["subnet"],
-                        "shared_network": sn.get("name", ""),
-                        "dhcp_version": self.dhcp_version,
-                        "server_pk": server.pk,
-                        "_subnet_sort_key": sort_key,
-                        "options": format_option_data(s.get("option-data") or [], version=self.dhcp_version),
-                        "pools": [
-                            p.get("pool", "") for p in (s.get("pools") or []) if isinstance(p, dict) and p.get("pool")
-                        ],
-                        "can_change": can_change,
-                    }
-                )
+                row = self._subnet_to_row(s, server.pk, can_change, shared_network=sn.get("name", ""))
+                if row is not None:
+                    subnet_list.append(row)
 
         # Enrich with utilisation stats when stat_cmds hook is available.
         try:
@@ -735,7 +731,15 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
             sn_subnets = sn.get(f"subnet{self.dhcp_version}", [])
             if not isinstance(sn_subnets, list):
                 continue
-            subnet_ids = {s.get("id") for s in sn_subnets if isinstance(s, dict)}
+            malformed = False
+            for sub in sn_subnets:
+                if not isinstance(sub, dict):
+                    malformed = True
+                    break
+            if malformed:
+                current_network = None
+                break
+            subnet_ids = {sub.get("id") for sub in sn_subnets}
             if subnet_id in subnet_ids:
                 current_network = name
         return choices, current_network, dhcp_conf
@@ -882,7 +886,9 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
         form = forms.SubnetEditForm(request.POST)
         form.fields["shared_network"].choices = network_choices
         if not form.is_valid():
-            display_network = form.data.get("shared_network") or server_current_network or ""
+            display_network = (
+                form.data["shared_network"] if "shared_network" in form.data else (server_current_network or "")
+            )
             initial = {k: v for k, v in form.data.items() if k in form.fields}
             inherited_options = (
                 self._get_inherited_options(dhcp_conf, display_network, initial)
@@ -909,7 +915,9 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
         new_network = cd.get("shared_network", "")
 
         # Pre-compute inherited_options for error branches that re-render the form.
-        display_network = form.data.get("shared_network") or server_current_network or ""
+        display_network = (
+            form.data["shared_network"] if "shared_network" in form.data else (server_current_network or "")
+        )
         initial = {k: v for k, v in form.data.items() if k in form.fields}
         inherited_options = (
             self._get_inherited_options(dhcp_conf, display_network, initial)

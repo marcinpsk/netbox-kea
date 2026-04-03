@@ -2586,3 +2586,163 @@ class TestGetSubnetsError(_ViewTestBase):
         url = reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk])
         response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# F9/F10/F11: Non-dict items & empty shared_network preservation
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestSubnetListNonDictItems(_ViewTestBase):
+    """F9: Non-dict items in top-level subnets list and shared-networks list."""
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_non_dict_items_in_subnet_list_skipped(self, MockKeaClient):
+        """Non-dict entries (string, int) in subnet4 list are skipped; valid subnet shows."""
+
+        def _cmd(command, **_kwargs):
+            if command == "config-get":
+                return [
+                    {
+                        "result": 0,
+                        "arguments": {
+                            "Dhcp4": {
+                                "subnet4": [
+                                    {"id": 1, "subnet": "10.0.0.0/24"},
+                                    "malformed",
+                                    42,
+                                ],
+                                "shared-networks": [],
+                            }
+                        },
+                    }
+                ]
+            return [{"result": 0, "arguments": {}}]
+
+        MockKeaClient.return_value.command.side_effect = _cmd
+        url = reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk])
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "10.0.0.0/24")
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_non_dict_items_in_shared_networks_skipped(self, MockKeaClient):
+        """Non-dict entries in shared-networks list are skipped; valid network shows."""
+
+        def _cmd(command, **_kwargs):
+            if command == "config-get":
+                return [
+                    {
+                        "result": 0,
+                        "arguments": {
+                            "Dhcp4": {
+                                "subnet4": [],
+                                "shared-networks": [
+                                    {
+                                        "name": "net1",
+                                        "subnet4": [{"id": 1, "subnet": "10.0.0.0/24"}],
+                                    },
+                                    "invalid",
+                                ],
+                            }
+                        },
+                    }
+                ]
+            return [{"result": 0, "arguments": {}}]
+
+        MockKeaClient.return_value.command.side_effect = _cmd
+        url = reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk])
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "10.0.0.0/24")
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_non_dict_subnet_inside_shared_network_skipped(self, MockKeaClient):
+        """Non-dict subnet items within a shared-network's subnet list are skipped."""
+
+        def _cmd(command, **_kwargs):
+            if command == "config-get":
+                return [
+                    {
+                        "result": 0,
+                        "arguments": {
+                            "Dhcp4": {
+                                "subnet4": [],
+                                "shared-networks": [
+                                    {
+                                        "name": "net1",
+                                        "subnet4": [
+                                            {"id": 1, "subnet": "10.0.0.0/24"},
+                                            "bad",
+                                        ],
+                                    },
+                                ],
+                            }
+                        },
+                    }
+                ]
+            return [{"result": 0, "arguments": {}}]
+
+        MockKeaClient.return_value.command.side_effect = _cmd
+        url = reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk])
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "10.0.0.0/24")
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestGetNetworkDataNonDictSubnet(_ViewTestBase):
+    """F10: _get_network_data returns None network when shared-network has non-dict subnet."""
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_edit_loads_with_malformed_subnet_in_shared_network(self, MockKeaClient):
+        """Edit page loads when a shared-network contains non-dict subnet items."""
+        subnet_get_resp = [
+            {
+                "result": 0,
+                "arguments": {
+                    "subnet4": [
+                        {
+                            "id": 42,
+                            "subnet": "10.0.0.0/24",
+                            "pools": [],
+                            "option-data": [],
+                            "valid-lft": 3600,
+                        }
+                    ]
+                },
+            }
+        ]
+        config_get_resp = [
+            {
+                "result": 0,
+                "arguments": {
+                    "Dhcp4": {
+                        "subnet4": [{"id": 42, "subnet": "10.0.0.0/24"}],
+                        "shared-networks": [
+                            {
+                                "name": "net1",
+                                "subnet4": [
+                                    {"id": 1, "subnet": "10.0.0.0/24"},
+                                    "bad",
+                                ],
+                            }
+                        ],
+                    }
+                },
+            }
+        ]
+
+        def _cmd(command, **_kwargs):
+            if "subnet4-get" in command:
+                return subnet_get_resp
+            if command == "config-get":
+                return config_get_resp
+            return [{"result": 0, "arguments": {}}]
+
+        MockKeaClient.return_value.command.side_effect = _cmd
+        url = reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, 42])
+        response = self.client.get(url)
+        # _get_network_data returns None → view aborts edit and redirects
+        self.assertIn(response.status_code, (200, 302))
