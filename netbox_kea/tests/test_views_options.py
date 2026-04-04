@@ -556,6 +556,12 @@ class TestServerOptionDef4AddView(_ViewTestBase):
         self.assertEqual(response.status_code, 302)
         self._assert_no_none_pk_redirect(response)
         MockKeaClient.return_value.option_def_add.assert_called_once()
+        call_args = MockKeaClient.return_value.option_def_add.call_args
+        opt = (call_args.kwargs or {}).get("option_def") or (call_args.args[1] if len(call_args.args) > 1 else {})
+        self.assertEqual(opt.get("name"), "my-opt")
+        self.assertEqual(opt.get("code"), 200)
+        self.assertEqual(opt.get("type"), "string")
+        self.assertEqual(opt.get("space"), "dhcp4")
 
     @patch("netbox_kea.models.KeaClient")
     def test_post_passes_correct_version(self, MockKeaClient):
@@ -570,6 +576,11 @@ class TestServerOptionDef4AddView(_ViewTestBase):
         args = call_args.args or call_args[0]
         version = kwargs.get("version") or (args[0] if args else None)
         self.assertEqual(version, 4)
+        opt = kwargs.get("option_def") or (call_args.args[1] if len(call_args.args) > 1 else {})
+        self.assertEqual(opt.get("name"), "my-opt")
+        self.assertEqual(opt.get("code"), 200)
+        self.assertEqual(opt.get("type"), "string")
+        self.assertEqual(opt.get("space"), "dhcp4")
 
     @patch("netbox_kea.models.KeaClient")
     def test_post_kea_exception_shows_error(self, MockKeaClient):
@@ -628,6 +639,11 @@ class TestServerOptionDef6AddView(_ViewTestBase):
         args = call_args.args or call_args[0]
         version = kwargs.get("version") or (args[0] if args else None)
         self.assertEqual(version, 6)
+        opt = kwargs.get("option_def") or (call_args.args[1] if len(call_args.args) > 1 else {})
+        self.assertEqual(opt.get("name"), "v6-opt")
+        self.assertEqual(opt.get("code"), 250)
+        self.assertEqual(opt.get("type"), "ipv6-address")
+        self.assertEqual(opt.get("space"), "dhcp6")
 
 
 # ---------------------------------------------------------------------------
@@ -878,6 +894,10 @@ class TestOptionDefAddExceptions(_ViewTestBase):
         self.assertIsNotNone(call_kwargs, "option_def_add was not called")
         opt = (call_kwargs.kwargs or {}).get("option_def") or (call_kwargs.args[1] if len(call_kwargs.args) > 1 else {})
         self.assertIs(opt.get("array"), True)
+        self.assertEqual(opt.get("name"), "my-option")
+        self.assertEqual(opt.get("code"), 200)
+        self.assertEqual(opt.get("type"), "string")
+        self.assertEqual(opt.get("space"), "dhcp4")
 
     @patch("netbox_kea.models.KeaClient")
     def test_post_kea_exception_shows_error_and_redirects(self, MockKeaClient):
@@ -1095,12 +1115,16 @@ class TestSubnetOptionsTransportError(_ViewTestBase):
         """requests.ConnectionError on subnet_update_options must show 'Transport error' message."""
         import requests
 
-        MockKeaClient.return_value.subnet_update_options.side_effect = requests.ConnectionError("down")
+        sentinel_url = "https://kea-internal.example.invalid:8443"
+        MockKeaClient.return_value.subnet_update_options.side_effect = requests.ConnectionError(
+            f"{sentinel_url} refused connection"
+        )
         url = reverse("plugins:netbox_kea:server_subnet4_options_edit", args=[self.server.pk, 1])
         response = self.client.post(url, {"form-TOTAL_FORMS": "0", "form-INITIAL_FORMS": "0"}, follow=True)
         self.assertEqual(response.status_code, 200)
         msgs = [str(m) for m in response.context["messages"]]
         self.assertTrue(any("transport error" in m.lower() for m in msgs))
+        self.assertFalse(any(sentinel_url.lower() in m.lower() for m in msgs))
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
@@ -1152,12 +1176,16 @@ class TestServerOptionsTransportError(_ViewTestBase):
         """requests.ConnectionError on server_update_options must show 'Transport error' message."""
         import requests
 
-        MockKeaClient.return_value.server_update_options.side_effect = requests.ConnectionError("down")
+        sentinel_url = "https://kea-internal.example.invalid:8443"
+        MockKeaClient.return_value.server_update_options.side_effect = requests.ConnectionError(
+            f"{sentinel_url} refused connection"
+        )
         url = reverse("plugins:netbox_kea:server_dhcp4_options_edit", args=[self.server.pk])
         response = self.client.post(url, {"form-TOTAL_FORMS": "0", "form-INITIAL_FORMS": "0"}, follow=True)
         self.assertEqual(response.status_code, 200)
         msgs = [str(m) for m in response.context["messages"]]
         self.assertTrue(any("transport error" in m.lower() for m in msgs))
+        self.assertFalse(any(sentinel_url.lower() in m.lower() for m in msgs))
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
@@ -1213,7 +1241,10 @@ class TestOptionDefAddTransportError(_ViewTestBase):
         """requests.ConnectionError on option_def_add must show 'Transport error' message."""
         import requests
 
-        MockKeaClient.return_value.option_def_add.side_effect = requests.ConnectionError("down")
+        sentinel_url = "https://kea-internal.example.invalid:8443"
+        MockKeaClient.return_value.option_def_add.side_effect = requests.ConnectionError(
+            f"{sentinel_url} refused connection"
+        )
         url = reverse("plugins:netbox_kea:server_option_def4_add", args=[self.server.pk])
         response = self.client.post(
             url,
@@ -1223,6 +1254,7 @@ class TestOptionDefAddTransportError(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         msgs = [str(m) for m in response.context["messages"]]
         self.assertTrue(any("transport error" in m.lower() for m in msgs))
+        self.assertFalse(any(sentinel_url.lower() in m.lower() for m in msgs))
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
@@ -1278,12 +1310,16 @@ class TestOptionDefDeleteTransportError(_ViewTestBase):
         """requests.ConnectionError on option_def_del must show 'Transport error' message."""
         import requests
 
-        MockKeaClient.return_value.option_def_del.side_effect = requests.ConnectionError("down")
+        sentinel_url = "https://kea-internal.example.invalid:8443"
+        MockKeaClient.return_value.option_def_del.side_effect = requests.ConnectionError(
+            f"{sentinel_url} refused connection"
+        )
         url = reverse("plugins:netbox_kea:server_option_def4_delete", args=[self.server.pk, 200, "dhcp4"])
         response = self.client.post(url, follow=True)
         self.assertEqual(response.status_code, 200)
         msgs = [str(m) for m in response.context["messages"]]
         self.assertTrue(any("transport error" in m.lower() for m in msgs))
+        self.assertFalse(any(sentinel_url.lower() in m.lower() for m in msgs))
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)

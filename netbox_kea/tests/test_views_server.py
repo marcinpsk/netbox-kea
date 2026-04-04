@@ -336,14 +336,14 @@ class TestServerBulkImportView(_ViewTestBase):
         self.assertEqual(Server.objects.filter(name="test-kea").count(), 1)
         # Duplicate name must produce a form error, not a 500
         form = response.context.get("form")
-        if form is not None:
-            self.assertTrue(
-                any(
-                    "name" in str(e).lower() or "already" in str(e).lower()
-                    for e in (form.errors.get("name", []) or form.non_field_errors())
-                ),
-                "Expected duplicate name error in form",
-            )
+        self.assertIsNotNone(form, "Form must be present in response context for error display")
+        self.assertTrue(
+            any(
+                "name" in str(e).lower() or "already" in str(e).lower()
+                for e in (form.errors.get("name", []) or form.non_field_errors())
+            ),
+            "Expected duplicate name error in form",
+        )
 
 
 # ─────────────────────────────────────────────────────────────────────────────

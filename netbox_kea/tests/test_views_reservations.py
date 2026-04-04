@@ -978,8 +978,14 @@ class TestReservation6EditOptionDataAndSync(_ViewTestBase):
         MockKeaClient.return_value.reservation_update.side_effect = PartialPersistError("dhcp6", Exception("write"))
         mock_sync.return_value = (MagicMock(), True)
         post_data = {**_VALID_RESERVATION6_EDIT_POST, "sync_to_netbox": "on"}
-        response = self.client.post(self._url(), post_data)
+        response = self.client.post(self._url(), post_data, follow=True)
         self.assertIn(response.status_code, (200, 302))
+        mock_sync.assert_called_once()
+        msgs = list(response.context["messages"])
+        self.assertTrue(
+            any(m.level == django_messages.WARNING for m in msgs),
+            f"Expected WARNING for config-write failure, got: {[(m.level, m.message) for m in msgs]}",
+        )
 
     @patch("netbox_kea.views.reservations.sync_reservation_to_netbox")
     @patch("netbox_kea.models.KeaClient")
@@ -991,8 +997,14 @@ class TestReservation6EditOptionDataAndSync(_ViewTestBase):
         MockKeaClient.return_value.reservation_update.side_effect = PartialPersistError("dhcp6", Exception("write"))
         mock_sync.side_effect = ValueError("db error")
         post_data = {**_VALID_RESERVATION6_EDIT_POST, "sync_to_netbox": "on"}
-        response = self.client.post(self._url(), post_data)
+        response = self.client.post(self._url(), post_data, follow=True)
         self.assertIn(response.status_code, (200, 302))
+        mock_sync.assert_called_once()
+        msgs = list(response.context["messages"])
+        self.assertTrue(
+            any("sync failed" in str(m).lower() for m in msgs),
+            f"Expected 'sync failed' warning, got: {[str(m) for m in msgs]}",
+        )
 
 
 # ---------------------------------------------------------------------------
