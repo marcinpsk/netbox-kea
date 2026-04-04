@@ -2531,8 +2531,6 @@ class TestV6EditPostPreservesFormIPs(_ReservationViewBase):
     @patch("netbox_kea.models.KeaClient")
     def test_post_aborts_when_reservation_get_fails(self, MockKeaClient):
         """POST aborts with error redirect when reservation_get raises, preventing silent IP truncation."""
-        from netbox_kea.kea import KeaException
-
         mock_client = MockKeaClient.return_value
         mock_client.reservation_get.side_effect = KeaException({"result": 1, "text": "error"}, index=0)
         response = self.client.post(

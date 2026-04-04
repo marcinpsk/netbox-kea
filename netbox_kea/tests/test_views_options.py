@@ -979,14 +979,16 @@ class TestSubnetOptionsSharedNetwork(_ViewTestBase):
 
     @patch("netbox_kea.models.KeaClient")
     def test_post_invalid_formset_rerenders(self, MockKeaClient):
-        """Line 4761 (post handler): invalid formset re-renders form."""
+        """Line 4761 (post handler): invalid formset re-renders form (subnet inside shared-networks)."""
         MockKeaClient.return_value.command.return_value = [
             {
                 "result": 0,
                 "arguments": {
                     "Dhcp4": {
-                        "subnet4": [{"id": 99, "subnet": "10.99.0.0/24", "option-data": []}],
-                        "shared-networks": [],
+                        "subnet4": [],
+                        "shared-networks": [
+                            {"name": "net1", "subnet4": [{"id": 99, "subnet": "10.99.0.0/24", "option-data": []}]}
+                        ],
                     }
                 },
             }

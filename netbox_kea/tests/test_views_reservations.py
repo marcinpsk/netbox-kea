@@ -270,6 +270,7 @@ class TestReservation4AddExceptions(_ViewTestBase):
             mock_sync.return_value = (MagicMock(), True)
             response = self.client.post(self._url(), post_data, follow=True)
         self.assertEqual(response.status_code, 200)
+        mock_sync.assert_called()
 
     @patch("netbox_kea.models.KeaClient")
     def test_partial_persist_sync_failure_shows_warning(self, MockKeaClient):
@@ -442,6 +443,7 @@ class TestReservation4EditExceptions(_ViewTestBase):
         MockKeaClient.return_value.reservation_get.side_effect = _req.ConnectionError("down")
         response = self.client.get(self._url())
         self.assertEqual(response.status_code, 302)
+        self._assert_no_none_pk_redirect(response)
 
     @patch("netbox_kea.models.KeaClient")
     def test_get_404_when_reservation_not_found(self, MockKeaClient):
@@ -574,7 +576,7 @@ class TestReservation6EditExceptions(_ViewTestBase):
 
         MockKeaClient.return_value.reservation_get.return_value = {"ip-addresses": ["2001:db8::1"]}
         MockKeaClient.return_value.reservation_update.side_effect = PartialPersistError("dhcp6", Exception("write"))
-        response = self.client.post(self._url(), _VALID_RESERVATION6_POST, follow=True)
+        response = self.client.post(self._url(), _VALID_RESERVATION6_EDIT_POST, follow=True)
         self.assertEqual(response.status_code, 200)
         msgs = list(response.context["messages"])
         self.assertTrue(any(m.level == django_messages.WARNING for m in msgs))
@@ -588,7 +590,7 @@ class TestReservation6EditExceptions(_ViewTestBase):
         MockKeaClient.return_value.reservation_update.side_effect = KeaException(
             {"result": 1, "text": "error"}, index=0
         )
-        response = self.client.post(self._url(), _VALID_RESERVATION6_POST)
+        response = self.client.post(self._url(), _VALID_RESERVATION6_EDIT_POST)
         self.assertEqual(response.status_code, 200)
 
     @patch("netbox_kea.models.KeaClient")
@@ -597,7 +599,7 @@ class TestReservation6EditExceptions(_ViewTestBase):
         MockKeaClient.return_value.reservation_get.return_value = {"ip-addresses": ["2001:db8::1"]}
         MockKeaClient.return_value.reservation_update.side_effect = RuntimeError("crash")
         with self.assertRaises(RuntimeError):
-            self.client.post(self._url(), _VALID_RESERVATION6_POST)
+            self.client.post(self._url(), _VALID_RESERVATION6_EDIT_POST)
 
 
 # ---------------------------------------------------------------------------
