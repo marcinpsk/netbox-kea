@@ -29,6 +29,41 @@ from .subnets import _warn_reservation_pool_overlap
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Identifier key constants
+# ---------------------------------------------------------------------------
+#: All identifier keys that Kea supports across DHCPv4 and DHCPv6.  Used when
+#: clearing identifier fields before writing an updated reservation.
+_ALL_IDENTIFIER_KEYS: tuple[str, ...] = (
+    "hw-address",
+    "duid",
+    "client-id",
+    "flex-id",
+    "circuit-id",
+    "remote-id",
+)
+
+#: Identifier types supported for DHCPv4 reservations (preference order).
+_V4_IDENTIFIER_TYPES: list[str] = ["hw-address", "client-id", "circuit-id", "flex-id"]
+
+#: Identifier types supported for DHCPv6 reservations (preference order).
+_V6_IDENTIFIER_TYPES: list[str] = ["duid", "hw-address", "client-id", "flex-id"]
+
+#: All known identifier keys (hyphen and underscore variants) for journal
+#: log extraction — includes normalised forms that Kea may return after
+#: ``format_leases()`` processing.
+_JOURNAL_IDENTIFIER_KEYS: tuple[str, ...] = (
+    "hw-address",
+    "hw_address",
+    "duid",
+    "client-id",
+    "client_id",
+    "circuit-id",
+    "circuit_id",
+    "flex-id",
+    "flex_id",
+)
+
 
 def _build_reservation_options_formset(post_data: Any) -> tuple[Any, bool]:
     """Build a ReservationOptionsFormSet from POST data.
@@ -75,21 +110,7 @@ def _add_reservation_journal(server: "Server", user: Any, action: str, reservati
             ip = ips[0] if isinstance(ips, list) else ips
         hostname = reservation.get("hostname", "")
         identifier = next(
-            (
-                reservation.get(key, "")
-                for key in (
-                    "hw-address",
-                    "hw_address",
-                    "duid",
-                    "client-id",
-                    "client_id",
-                    "circuit-id",
-                    "circuit_id",
-                    "flex-id",
-                    "flex_id",
-                )
-                if reservation.get(key)
-            ),
+            (reservation.get(key, "") for key in _JOURNAL_IDENTIFIER_KEYS if reservation.get(key)),
             "",
         )
         parts = [f"Reservation {action}: {ip}"]
@@ -781,7 +802,7 @@ class ServerReservation4EditView(_KeaChangeMixin, generic.ObjectView):
             reservation["subnet-id"] = subnet_id
             reservation["ip-address"] = ip_address
             # Replace identifier — remove all known identifier keys first.
-            for _id_key in ("hw-address", "duid", "client-id", "flex-id", "circuit-id", "remote-id"):
+            for _id_key in _ALL_IDENTIFIER_KEYS:
                 reservation.pop(_id_key, None)
             reservation[cd["identifier_type"]] = cd["identifier"]
             if cd.get("hostname"):
@@ -953,7 +974,7 @@ class ServerReservation6EditView(_KeaChangeMixin, generic.ObjectView):
             reservation["subnet-id"] = subnet_id
             reservation["ip-addresses"] = existing_ips
             # Replace identifier — remove all known identifier keys first.
-            for _id_key in ("hw-address", "duid", "client-id", "flex-id", "circuit-id", "remote-id"):
+            for _id_key in _ALL_IDENTIFIER_KEYS:
                 reservation.pop(_id_key, None)
             reservation[cd["identifier_type"]] = cd["identifier"]
             if cd.get("hostname"):
@@ -1147,9 +1168,7 @@ def _get_reservation_identifier(
         ``(identifier_type, identifier_value)`` tuple.
 
     """
-    v4_types = ["hw-address", "client-id", "circuit-id", "flex-id"]
-    v6_types = ["duid", "hw-address", "client-id", "flex-id"]
-    priority = v6_types if version == 6 else v4_types
+    priority = _V6_IDENTIFIER_TYPES if version == 6 else _V4_IDENTIFIER_TYPES
     for itype in priority:
         if reservation.get(itype):
             return itype, reservation[itype]

@@ -4,8 +4,7 @@
 
 Covers the views in ``netbox_kea/views/options.py`` (e.g.
 ``ServerSubnetOptionsEditView``, ``ServerOptionDefAddView``,
-``ServerOptionDef4DeleteView``, etc.) as well as the helper function
-``_extract_identifier`` which lives in that module.
+``ServerOptionDef4DeleteView``, etc.).
 
 All Kea HTTP calls are mocked so no running Kea instance is required.
 """

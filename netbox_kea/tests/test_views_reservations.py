@@ -268,7 +268,7 @@ class TestReservation4AddExceptions(_ViewTestBase):
             mock_sync.return_value = (MagicMock(), True)
             response = self.client.post(self._url(), post_data, follow=True)
         self.assertEqual(response.status_code, 200)
-        mock_sync.assert_called()
+        mock_sync.assert_called_once()
 
     @patch("netbox_kea.models.KeaClient")
     def test_partial_persist_sync_failure_shows_warning(self, MockKeaClient):
@@ -1029,7 +1029,7 @@ class TestEnrichReservationsLeaseStatusCoverage(_ViewTestBase):
         reservations = [{"ip-address": "10.0.0.1", "subnet-id": 42}]
         # Should not raise; lease_cmds result=3 → empty list → no has_active_lease set
         _enrich_reservations_with_lease_status(client, reservations, 4)
-        # result=3 means empty — reservation has no active lease
+        # result=3 means empty — confirmed no active lease, so has_active_lease is set False
         self.assertFalse(reservations[0].get("has_active_lease", True))
 
     def test_kea_exception_non_result2_returns_empty(self):

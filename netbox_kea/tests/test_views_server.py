@@ -594,8 +594,8 @@ class TestStatusViewNullArgs(_ViewTestBase):
         return reverse("plugins:netbox_kea:server_status", args=[self.server.pk])
 
     @patch("netbox_kea.models.KeaClient")
-    def test_get_ca_status_empty_args_raises(self, MockKeaClient):
-        """_get_ca_status raises RuntimeError when arguments is empty."""
+    def test_get_ca_status_empty_args_degrades_gracefully(self, MockKeaClient):
+        """_get_ca_status degrades gracefully when arguments is empty."""
         call_n = [0]
 
         def _side(cmd, service=None, **kwargs):
@@ -619,8 +619,8 @@ class TestStatusViewNullArgs(_ViewTestBase):
             self.assertEqual(services_by_name["Control Agent"]["status_data"], {})
 
     @patch("netbox_kea.models.KeaClient")
-    def test_get_dhcp_status_null_args_raises(self, MockKeaClient):
-        """_get_dhcp_status raises RuntimeError when arguments is None."""
+    def test_get_dhcp_status_null_args_degrades_gracefully(self, MockKeaClient):
+        """_get_dhcp_status degrades gracefully when arguments is None."""
 
         def _side(cmd, service=None, **kwargs):
             if cmd == "status-get" and service and "dhcp" in service[0]:
