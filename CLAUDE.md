@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-NetBox plugin for Kea DHCP server management. Published to PyPI as **`netbox-kea-ng`** (fork of netbox-kea by Devon Mar). The Django app/module name is `netbox_kea`. Exposes a `Server` model representing a Kea Control Agent endpoint, with views for live daemon status, lease search/delete, reservation CRUD, subnet/pool management, and NetBox IPAM sync.
+NetBox plugin for Kea DHCP server management. Published to PyPI as **`netbox-kea-ng`** (fork of netbox-kea by Devon Mar). The Django app/module name is `netbox_kea`. Exposes a `Server` model representing a Kea Control Agent endpoint, with views for live daemon status, lease search/delete, reservation CRUD, subnet/pool/shared-network management, and NetBox IPAM sync.
 
 ## Build, Test & Lint
 
@@ -24,8 +24,8 @@ Default `testpaths` in pyproject.toml is `netbox_kea/tests`. These tests mock Ke
 
 ```bash
 uv run pytest                                              # run all unit tests
-uv run pytest netbox_kea/tests/test_views.py -v            # single file
-uv run pytest netbox_kea/tests/test_views.py::TestClass::test_method -v  # single test
+uv run pytest netbox_kea/tests/test_views_leases.py -v     # single file
+uv run pytest netbox_kea/tests/test_views_leases.py::TestClass::test_method -v  # single test
 ```
 
 Note: `pythonpath` is set to `/opt/netbox/netbox` and `DJANGO_SETTINGS_MODULE=netbox.settings` — unit tests expect a NetBox installation at that path.
@@ -50,9 +50,10 @@ GitHub Actions matrix tests against NetBox v4.0–v4.5. Playwright traces upload
 ```
 URL request
   → urls.py             (routes to view classes)
-  → views.py            (view calls server.get_client() → KeaClient)
+  → views/              (view modules call server.get_client() → KeaClient)
   → kea.py              (HTTP POST to Kea Control Agent /api/v1/)
   → utilities.py        (format_leases, format_duration enrich raw Kea data)
+  → sync.py             (bridges Kea data to NetBox IPAM)
   → tables.py           (non-model GenericTable renders enriched dicts)
   → template            (rendered with django-tables2 + HTMX for pagination)
 ```
@@ -60,8 +61,8 @@ URL request
 ### Core components
 
 - **`Server` model** (`models.py`): Only persisted model. Stores Kea connection config. `get_client(version=4|6|None)` returns a protocol-aware `KeaClient`. `clean()` performs live connectivity checks before saving.
-- **`KeaClient`** (`kea.py`): Wraps `requests.Session`. All Kea API calls go through `.command(command, service, arguments)` which POSTs JSON to `/api/v1/`. Methods for leases, reservations, subnets, pools, status, config.
-- **`sync.py`**: Bridges Kea data to NetBox IPAM — `sync_lease_to_netbox()` (status=active), `sync_reservation_to_netbox()` (status=reserved).
+- **`KeaClient`** (`kea.py`): Wraps `requests.Session`. All Kea API calls go through `.command(command, service, arguments)` which POSTs JSON to `/api/v1/`. Methods for leases, reservations, subnets, pools, status, config. `.clone()` creates a thread-safe copy for concurrent lookups.
+- **`sync.py`**: Bridges Kea data to NetBox IPAM — `sync_lease_to_netbox()` (status=dhcp/active), `sync_reservation_to_netbox()` (status=reserved/active). Handles stale IP cleanup with `cleanup_stale_ips_batch()`.
 - **REST API** (`api/`): `NetBoxModelViewSet` for `Server` only. Password is write-only.
 - **GraphQL** (`graphql.py`): strawberry-django types, auto-discovered by NetBox.
 
@@ -85,9 +86,14 @@ URL request
 
 - **Never leak exception details to HTTP responses.** Use `logger.exception()` for server-side logging and return a generic message like `"An internal error occurred"` to users. Raw `str(exc)` can expose internal URLs, TLS details, or Kea API config.
 - **Always pass `version=` to `server.get_client()`** when the DHCP version is known (e.g., `server.get_client(version=self.dhcp_version)`). Omitting it may hit the wrong endpoint when dual URLs are configured.
+- **Always call `server.get_client()` inside a try block** — client creation can fail with `ValueError` (e.g., invalid URL or missing protocol config). Never call it before error handling is in scope.
+- **Validate Kea response shape before indexing.** After `client.command()`, check `resp` is a non-empty list and `resp[0]` is a dict before accessing `resp[0]["arguments"]`. Malformed payloads should raise `RuntimeError`.
+- **Catch `(KeaException, requests.RequestException, ValueError)` consistently** in mutation handlers. Split `KeaException` when using `kea_error_hint(exc)`. Always catch `PartialPersistError` before `KeaException`.
+- **Guard action URLs/buttons by permission AND lookup state.** Don't offer Sync/Reserve for leases where reservation lookup failed (check `failed_ips` and `failed_mac_keys`).
 - **Django form querysets must be evaluated at instantiation, not class definition time.** Use `__init__` to set `self.fields["field"].queryset` dynamically — class-level querysets become stale in long-running processes.
 - **django-tables2 Column instances must not be shared across table classes.** Use a factory function instead of a module-level instance to avoid shared-state bugs.
-- **Catch specific exceptions, not bare `except Exception`.** In Kea client code, catch `KeaException`. In DB code, catch `ProgrammingError`/`OperationalError`. Bare catches mask real bugs.
+- **DHCPv6 reservations use `ip-addresses` (list), not `ip-address` (string).** Always check both fields when inspecting reservation data.
+- **Catch `DatabaseError` around non-critical DB writes** (e.g., `JournalEntry.objects.create`) to prevent a successful Kea operation from turning into a 500.
 
 ## Conventions
 

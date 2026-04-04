@@ -10,6 +10,16 @@ urlpatterns = (
     path("combined/subnets4/", views.CombinedSubnets4View.as_view(), name="combined_subnets4"),
     path("combined/subnets6/", views.CombinedSubnets6View.as_view(), name="combined_subnets6"),
     path(
+        "combined/shared-networks4/",
+        views.CombinedSharedNetworks4View.as_view(),
+        name="combined_shared_networks4",
+    ),
+    path(
+        "combined/shared-networks6/",
+        views.CombinedSharedNetworks6View.as_view(),
+        name="combined_shared_networks6",
+    ),
+    path(
         "combined/reservations4/",
         views.CombinedReservations4View.as_view(),
         name="combined_reservations4",
@@ -260,6 +270,16 @@ urlpatterns = (
         "servers/<int:pk>/shared-networks6/<str:network_name>/delete/",
         views.ServerSharedNetwork6DeleteView.as_view(),
         name="server_shared_network6_delete",
+    ),
+    path(
+        "servers/<int:pk>/shared-networks4/<str:network_name>/edit/",
+        views.ServerSharedNetwork4EditView.as_view(),
+        name="server_shared_network4_edit",
+    ),
+    path(
+        "servers/<int:pk>/shared-networks6/<str:network_name>/edit/",
+        views.ServerSharedNetwork6EditView.as_view(),
+        name="server_shared_network6_edit",
     ),
     path(
         "servers/<int:pk>/dhcp4/option-def/",

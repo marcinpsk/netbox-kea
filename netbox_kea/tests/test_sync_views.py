@@ -71,6 +71,23 @@ class _SyncViewBase(TestCase):
 class TestLease4SyncView(_SyncViewBase):
     """POST to server_lease4_sync creates/updates a NetBox IPAddress."""
 
+    def setUp(self):
+        super().setUp()
+        self._kea_patcher = patch("netbox_kea.models.KeaClient")
+        self._mock_kea = self._kea_patcher.start()
+        self._mock_kea.return_value.lease_get_by_ip.side_effect = lambda ver, ip: {
+            "ip-address": ip,
+            "hostname": "mock-host.local",
+            "hw-address": "aa:bb:cc:00:00:01",
+            "valid-lft": 86400,
+            "cltt": 1700000000,
+            "subnet-id": 1,
+        }
+
+    def tearDown(self):
+        self._kea_patcher.stop()
+        super().tearDown()
+
     def _url(self):
         return reverse("plugins:netbox_kea:server_lease4_sync", args=[self.server.pk])
 
@@ -83,18 +100,18 @@ class TestLease4SyncView(_SyncViewBase):
         self.client.post(self._url(), {"ip_address": "192.168.10.6", "hostname": "host-b"})
         self.assertTrue(NbIP.objects.filter(address__startswith="192.168.10.6/").exists())
 
-    def test_created_ip_has_active_status(self):
+    def test_created_ip_has_dhcp_status(self):
 
         self.client.post(self._url(), {"ip_address": "192.168.10.7", "hostname": "host-c"})
         ip = NbIP.objects.filter(address__startswith="192.168.10.7/").first()
         self.assertIsNotNone(ip)
-        self.assertEqual(ip.status, "active")
+        self.assertEqual(ip.status, "dhcp")
 
     def test_created_ip_has_correct_dns_name(self):
-
+        # hostname in POST is ignored; dns_name comes from Kea lease data (mock returns "mock-host.local")
         self.client.post(self._url(), {"ip_address": "192.168.10.8", "hostname": "dns-test.local"})
         ip = NbIP.objects.filter(address__startswith="192.168.10.8/").first()
-        self.assertEqual(ip.dns_name, "dns-test.local")
+        self.assertEqual(ip.dns_name, "mock-host.local")
 
     def test_response_contains_ip_link(self):
         response = self.client.post(self._url(), {"ip_address": "192.168.10.9", "hostname": "link-host"})
@@ -133,6 +150,23 @@ class TestLease4SyncView(_SyncViewBase):
 class TestLease6SyncView(_SyncViewBase):
     """POST to server_lease6_sync creates/updates a NetBox IPAddress for IPv6."""
 
+    def setUp(self):
+        super().setUp()
+        self._kea_patcher = patch("netbox_kea.models.KeaClient")
+        self._mock_kea = self._kea_patcher.start()
+        self._mock_kea.return_value.lease_get_by_ip.side_effect = lambda ver, ip: {
+            "ip-address": ip,
+            "hostname": "mock-v6.local",
+            "duid": "01:02:03:04",
+            "valid-lft": 86400,
+            "cltt": 1700000000,
+            "subnet-id": 1,
+        }
+
+    def tearDown(self):
+        self._kea_patcher.stop()
+        super().tearDown()
+
     def _url(self):
         return reverse("plugins:netbox_kea:server_lease6_sync", args=[self.server.pk])
 
@@ -153,14 +187,14 @@ class TestLease6SyncView(_SyncViewBase):
         self.assertIsNotNone(ip)
         self.assertTrue(str(ip.address).endswith("/128"))
 
-    def test_created_ip_has_active_status(self):
+    def test_created_ip_has_dhcp_status(self):
 
         self.client.post(
             self._url(),
             {"ip_address": "2001:db8::3", "hostname": "v6host3"},
         )
         ip = NbIP.objects.filter(address__startswith="2001:db8::3/").first()
-        self.assertEqual(ip.status, "active")
+        self.assertEqual(ip.status, "dhcp")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -171,6 +205,21 @@ class TestLease6SyncView(_SyncViewBase):
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestReservation4SyncView(_SyncViewBase):
     """POST to server_reservation4_sync creates/updates NetBox IP with status=reserved."""
+
+    def setUp(self):
+        super().setUp()
+        self._kea_patcher = patch("netbox_kea.models.KeaClient")
+        self._mock_kea = self._kea_patcher.start()
+        self._mock_kea.return_value.reservation_get_by_ip.side_effect = lambda ver, ip: {
+            "ip-address": ip,
+            "hostname": "mock-res.local",
+            "hw-address": "aa:bb:cc:00:00:02",
+            "subnet-id": 1,
+        }
+
+    def tearDown(self):
+        self._kea_patcher.stop()
+        super().tearDown()
 
     def _url(self):
         return reverse("plugins:netbox_kea:server_reservation4_sync", args=[self.server.pk])
@@ -187,10 +236,10 @@ class TestReservation4SyncView(_SyncViewBase):
         self.assertEqual(ip.status, "reserved")
 
     def test_sets_dns_name(self):
-
+        # hostname in POST is ignored; dns_name comes from Kea reservation data (mock returns "mock-res.local")
         self.client.post(self._url(), {"ip_address": "10.0.0.52", "hostname": "dns.local"})
         ip = NbIP.objects.filter(address__startswith="10.0.0.52/").first()
-        self.assertEqual(ip.dns_name, "dns.local")
+        self.assertEqual(ip.dns_name, "mock-res.local")
 
     def test_response_contains_ip_link(self):
         response = self.client.post(self._url(), {"ip_address": "10.0.0.53", "hostname": "link-res"})
@@ -210,6 +259,21 @@ class TestReservation4SyncView(_SyncViewBase):
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestReservation6SyncView(_SyncViewBase):
     """POST to server_reservation6_sync creates/updates NetBox IP for IPv6 reservation."""
+
+    def setUp(self):
+        super().setUp()
+        self._kea_patcher = patch("netbox_kea.models.KeaClient")
+        self._mock_kea = self._kea_patcher.start()
+        self._mock_kea.return_value.reservation_get_by_ip.side_effect = lambda ver, ip: {
+            "ip-address": ip,
+            "hostname": "mock-v6res.local",
+            "duid": "01:02:03:04",
+            "subnet-id": 1,
+        }
+
+    def tearDown(self):
+        self._kea_patcher.stop()
+        super().tearDown()
 
     def _url(self):
         return reverse("plugins:netbox_kea:server_reservation6_sync", args=[self.server.pk])
@@ -331,8 +395,17 @@ class TestSyncViewPermissionChecks(_SyncViewBase):
         response = self.client.post(url, {"ip_address": "192.168.99.2"})
         self.assertEqual(response.status_code, 403)
 
-    def test_superuser_can_still_sync(self):
+    @patch("netbox_kea.models.KeaClient")
+    def test_superuser_can_still_sync(self, MockKeaClient):
         # self.user is superuser — should succeed as before
+        MockKeaClient.return_value.lease_get_by_ip.side_effect = lambda ver, ip: {
+            "ip-address": ip,
+            "hostname": "mock-host.local",
+            "hw-address": "aa:bb:cc:00:00:01",
+            "valid-lft": 86400,
+            "cltt": 1700000000,
+            "subnet-id": 1,
+        }
         url = reverse("plugins:netbox_kea:server_lease4_sync", args=[self.server.pk])
         response = self.client.post(url, {"ip_address": "192.168.99.3"})
         self.assertEqual(response.status_code, 200)

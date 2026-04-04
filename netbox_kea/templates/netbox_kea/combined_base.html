@@ -82,6 +82,18 @@
     </a>
   </li>
   <li class="nav-item">
+    <a class="nav-link{% if active_tab == 'shared_networks4' %} active{% endif %}"
+       href="{% url 'plugins:netbox_kea:combined_shared_networks4' %}{% if server_qs %}?{{ server_qs }}{% endif %}">
+      DHCPv4 Shared Networks
+    </a>
+  </li>
+  <li class="nav-item">
+    <a class="nav-link{% if active_tab == 'shared_networks6' %} active{% endif %}"
+       href="{% url 'plugins:netbox_kea:combined_shared_networks6' %}{% if server_qs %}?{{ server_qs }}{% endif %}">
+      DHCPv6 Shared Networks
+    </a>
+  </li>
+  <li class="nav-item">
     <a class="nav-link{% if active_tab == 'reservations4' %} active{% endif %}"
        href="{% url 'plugins:netbox_kea:combined_reservations4' %}{% if server_qs %}?{{ server_qs }}{% endif %}">
       DHCPv4 Reservations

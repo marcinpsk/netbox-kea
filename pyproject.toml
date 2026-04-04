@@ -28,7 +28,7 @@ classifiers = [
   "Topic :: System :: Networking",
 ]
 dependencies = [
-  "requests>=2.0.0,<3.0.0",
+  "requests>=2.27.0,<3.0.0",
   "netaddr>=0.8,<2.0.0",
 ]
 
@@ -40,7 +40,7 @@ Changelog = "https://github.com/marcinpsk/netbox-kea/blob/main/CHANGELOG.md"
 
 [dependency-groups]
 dev = [
-  "types-requests>=2.0.0,<3.0.0",
+  "types-requests>=2.27.0,<3.0.0",
   "mypy>=1.14.0,<1.20.0",
   "pytest>=8.0.0,<10.0.0",
   "pytest-cov>=6.0",

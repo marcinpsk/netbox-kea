@@ -55,7 +55,10 @@ class TestEnrichLease(TestCase):
     def test_missing_cltt_and_valid_lft_adds_state_label(self):
         lease = {"ip_address": "10.0.0.1"}
         result = _enrich_lease(self._now(), lease)
-        self.assertEqual(result, {"ip_address": "10.0.0.1", "state_label": "Unknown"})
+        self.assertEqual(result["ip_address"], "10.0.0.1")
+        self.assertEqual(result["state_label"], "Unknown")
+        self.assertNotIn("expires_at", result)
+        self.assertNotIn("expires_in", result)
 
     def test_hyphen_keys_replaced_with_underscore(self):
         lease = {"ip-address": "10.0.0.1", "cltt": 0, "valid_lft": 3600}
@@ -99,6 +102,101 @@ class TestFormatLeases(TestCase):
         self.assertEqual(len(result), 2)
         for lease in result:
             self.assertIn("expires_at", lease)
+
+
+class TestEnrichLeaseIPSortKey(TestCase):
+    """F1: _enrich_lease() must inject _ip_sort_key for numeric IP sort in tables."""
+
+    def _now(self):
+        return datetime(2024, 1, 1, 12, 0, 0)
+
+    def test_adds_ip_sort_key_for_ipv4(self):
+        """IPv4 lease gets _ip_sort_key equal to the integer representation of the address."""
+        import ipaddress
+
+        lease = {"ip-address": "10.0.0.101"}
+        result = _enrich_lease(self._now(), lease)
+        self.assertIn("_ip_sort_key", result)
+        self.assertEqual(result["_ip_sort_key"], int(ipaddress.ip_address("10.0.0.101")))
+
+    def test_adds_ip_sort_key_for_ipv6(self):
+        """IPv6 lease gets _ip_sort_key equal to the integer representation of the address."""
+        import ipaddress
+
+        lease = {"ip-address": "2001:db8::1"}
+        result = _enrich_lease(self._now(), lease)
+        self.assertIn("_ip_sort_key", result)
+        self.assertEqual(result["_ip_sort_key"], int(ipaddress.ip_address("2001:db8::1")))
+
+    def test_ip_sort_key_absent_when_no_ip_address(self):
+        """Lease with no ip-address field must not have _ip_sort_key injected."""
+        lease = {"cltt": 0, "valid_lft": 3600}
+        result = _enrich_lease(self._now(), lease)
+        self.assertNotIn("_ip_sort_key", result)
+
+
+class TestFormatLeasesNumericIPSort(TestCase):
+    """F1: output of format_leases() has _ip_sort_key giving correct numeric order."""
+
+    def test_numeric_sort_by_ip(self):
+        """IPs that sort lexicographically wrong must sort correctly by _ip_sort_key."""
+        leases = [
+            {"ip-address": "10.0.0.101"},
+            {"ip-address": "10.0.0.90"},
+            {"ip-address": "10.0.0.9"},
+        ]
+        result = format_leases(leases)
+        sorted_result = sorted(result, key=lambda r: r["_ip_sort_key"])
+        ips = [r["ip_address"] for r in sorted_result]
+        self.assertEqual(ips, ["10.0.0.9", "10.0.0.90", "10.0.0.101"])
+
+
+class TestEnrichLeaseExpiryClass(TestCase):
+    """F10: _enrich_lease() must inject expiry_class for visual lease state indicators."""
+
+    def _now(self):
+        return datetime(2024, 1, 1, 12, 0, 0)
+
+    def test_expired_lease_has_danger_class(self):
+        """Lease whose expiry is in the past gets 'text-danger'."""
+        # cltt=0, valid_lft=1 → expires at epoch+1, long before 2024
+        lease = {"cltt": 0, "valid_lft": 1}
+        result = _enrich_lease(self._now(), lease)
+        self.assertEqual(result["expiry_class"], "text-danger")
+
+    def test_soon_expiring_lease_has_warning_class(self):
+        """Lease expiring in < 300 seconds gets 'text-warning'."""
+        now = self._now()
+        now_ts = int(now.timestamp())
+        # Set up: expires_in will be 250 seconds (< 300 threshold)
+        lease = {"cltt": now_ts - 3600 + 250, "valid_lft": 3600}
+        result = _enrich_lease(now, lease)
+        self.assertEqual(result["expiry_class"], "text-warning")
+
+    def test_lease_at_300_seconds_has_empty_class(self):
+        """Lease expiring at exactly 300 seconds gets empty class (boundary is strict '<')."""
+        now = self._now()
+        now_ts = int(now.timestamp())
+        # expires_in will be exactly 300 seconds (not < 300, so no warning)
+        lease = {"cltt": now_ts - 3600 + 300, "valid_lft": 3600}
+        result = _enrich_lease(now, lease)
+        self.assertEqual(result["expiry_class"], "")
+
+    def test_active_lease_has_empty_class(self):
+        """Lease with plenty of time remaining gets empty string (no CSS class)."""
+        now = self._now()
+        now_ts = int(now.timestamp())
+        # expires_in will be 1000 seconds (> 300 threshold)
+        lease = {"cltt": now_ts - 3600 + 1000, "valid_lft": 3600}
+        result = _enrich_lease(now, lease)
+        self.assertEqual(result["expiry_class"], "")
+
+    def test_no_expiry_data_has_empty_class(self):
+        """Lease without cltt/valid_lft must still have expiry_class = ''."""
+        lease = {"ip-address": "10.0.0.1"}
+        result = _enrich_lease(self._now(), lease)
+        self.assertIn("expiry_class", result)
+        self.assertEqual(result["expiry_class"], "")
 
 
 class TestIsHexString(TestCase):
@@ -833,3 +931,265 @@ class TestOptionalViewTab(TestCase):
         fn = lambda _: True  # noqa: E731
         tab = self._make_tab(is_enabled=fn)
         self.assertIs(tab.is_enabled, fn)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# F1: _enrich_reservation_sort_key — numeric sort for reservation IP columns
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestEnrichReservationSortKey(TestCase):
+    """Tests for _enrich_reservation_sort_key() — injects _ip_sort_key into reservation dict."""
+
+    def _call(self, reservation):
+        from netbox_kea.utilities import _enrich_reservation_sort_key
+
+        return _enrich_reservation_sort_key(reservation)
+
+    def test_v4_ip_address_sets_sort_key(self):
+        """DHCPv4 reservation with 'ip-address' gets correct integer sort key."""
+        r = {"ip-address": "10.0.0.101"}
+        result = self._call(r)
+        import ipaddress
+
+        self.assertEqual(result["_ip_sort_key"], int(ipaddress.ip_address("10.0.0.101")))
+
+    def test_v4_sort_key_is_integer(self):
+        """Sort key is an int so numeric comparison works."""
+        r = {"ip-address": "192.168.1.1"}
+        result = self._call(r)
+        self.assertIsInstance(result["_ip_sort_key"], int)
+
+    def test_missing_ip_address_no_sort_key(self):
+        """Reservation without 'ip-address' does not get _ip_sort_key (no crash)."""
+        r = {"duid": "00:01:02:03"}
+        result = self._call(r)
+        self.assertNotIn("_ip_sort_key", result)
+
+    def test_v6_ip_address_sets_sort_key(self):
+        """DHCPv6 reservation with 'ip-address' gets correct integer sort key."""
+        r = {"ip-address": "2001:db8::1"}
+        result = self._call(r)
+        import ipaddress
+
+        self.assertEqual(result["_ip_sort_key"], int(ipaddress.ip_address("2001:db8::1")))
+
+    def test_numeric_order_correct(self):
+        """10.0.0.90 sort key < 10.0.0.101 sort key (numeric, not lexicographic)."""
+        r90 = self._call({"ip-address": "10.0.0.90"})
+        r101 = self._call({"ip-address": "10.0.0.101"})
+        self.assertLess(r90["_ip_sort_key"], r101["_ip_sort_key"])
+
+    def test_invalid_ip_no_sort_key(self):
+        """Invalid IP string in 'ip-address' must not raise and must not add _ip_sort_key."""
+        r = {"ip-address": "not-an-ip"}
+        result = self._call(r)
+        self.assertNotIn("_ip_sort_key", result)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Additional coverage tests — lines missed in earlier batches
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestEnrichLeaseInvalidIp(TestCase):
+    """_enrich_lease: invalid ip_address must not add _ip_sort_key."""
+
+    def test_invalid_ip_no_ip_sort_key(self):
+        from datetime import datetime
+
+        from netbox_kea.utilities import _enrich_lease
+
+        lease = {"ip-address": "not-an-ip", "state": 0}
+        result = _enrich_lease(datetime(2024, 1, 1), lease)
+        self.assertNotIn("_ip_sort_key", result)
+
+
+class TestEnrichLeaseNonIntCltt(TestCase):
+    """_enrich_lease: non-integer cltt/valid_lft must warn and return early."""
+
+    def test_non_int_cltt_returns_without_expires(self):
+        from datetime import datetime
+
+        from netbox_kea.utilities import _enrich_lease
+
+        lease = {"ip-address": "10.0.0.1", "cltt": "not-an-int", "valid_lft": 3600, "state": 0}
+        result = _enrich_lease(datetime(2024, 1, 1), lease)
+        self.assertNotIn("expires_at", result)
+        self.assertNotIn("expires_in", result)
+
+    def test_non_int_valid_lft_returns_without_expires(self):
+        from datetime import datetime
+
+        from netbox_kea.utilities import _enrich_lease
+
+        lease = {"ip-address": "10.0.0.1", "cltt": 1000, "valid_lft": "bad", "state": 0}
+        result = _enrich_lease(datetime(2024, 1, 1), lease)
+        self.assertNotIn("expires_at", result)
+        self.assertNotIn("expires_in", result)
+
+
+class TestParseSubnetStatsMissingCoverage(TestCase):
+    """parse_subnet_stats: error branches for non-zero result, None arguments, bad columns, bad rows."""
+
+    def test_nonzero_result_returns_empty_dict(self):
+        """Non-zero result in stat response returns empty dict."""
+        from netbox_kea.utilities import parse_subnet_stats
+
+        resp = [{"result": 1, "arguments": {"result-set": {"columns": ["subnet-id"], "rows": []}}}]
+        self.assertEqual(parse_subnet_stats(resp, 4), {})
+
+    def test_none_arguments_returns_empty_dict(self):
+        """arguments=None returns empty dict."""
+        from netbox_kea.utilities import parse_subnet_stats
+
+        resp = [{"result": 0, "arguments": None}]
+        self.assertEqual(parse_subnet_stats(resp, 4), {})
+
+    def test_missing_subnet_id_column_returns_empty_dict(self):
+        """Columns without 'subnet-id' trigger ValueError and return empty dict."""
+        from netbox_kea.utilities import parse_subnet_stats
+
+        resp = [
+            {
+                "result": 0,
+                "arguments": {
+                    "result-set": {
+                        "columns": ["total-addresses", "assigned-addresses"],
+                        "rows": [[100, 25]],
+                    }
+                },
+            }
+        ]
+        self.assertEqual(parse_subnet_stats(resp, 4), {})
+
+    def test_non_int_subnet_id_row_is_skipped(self):
+        """Rows with non-integer subnet-id are skipped."""
+        from netbox_kea.utilities import parse_subnet_stats
+
+        resp = [
+            {
+                "result": 0,
+                "arguments": {
+                    "result-set": {
+                        "columns": ["subnet-id", "total-addresses", "assigned-addresses"],
+                        "rows": [["not-an-int", 100, 25]],
+                    }
+                },
+            }
+        ]
+        stats = parse_subnet_stats(resp, 4)
+        self.assertEqual(stats, {})
+
+
+class TestParseIntRowField(TestCase):
+    """_parse_int_row_field raises ValueError on non-integer values."""
+
+    def test_non_int_value_raises(self):
+        from netbox_kea.utilities import _parse_int_row_field
+
+        with self.assertRaises(ValueError) as ctx:
+            _parse_int_row_field({"field": "not-a-number"}, "field", 5)
+        self.assertIn("5", str(ctx.exception))
+        self.assertIn("field", str(ctx.exception))
+
+    def test_missing_key_raises(self):
+        from netbox_kea.utilities import _parse_int_row_field
+
+        with self.assertRaises(ValueError):
+            _parse_int_row_field({}, "missing_field", 3)
+
+
+class TestParseReservationCsvValidationPaths(TestCase):
+    """parse_reservation_csv: validation error paths for invalid IP, MAC, DUID, and version mismatches."""
+
+    def _parse(self, content, version=4):
+        from netbox_kea.utilities import parse_reservation_csv
+
+        return parse_reservation_csv(content, version)
+
+    def test_v4_invalid_ip_raises(self):
+        """Non-parseable IP address raises ValueError."""
+        csv = "ip-address,hw-address,subnet-id\n999.999.999.999,aa:bb:cc:dd:ee:ff,1"
+        with self.assertRaises(ValueError) as ctx:
+            self._parse(csv, version=4)
+        self.assertIn("invalid", str(ctx.exception).lower())
+
+    def test_v4_ipv6_as_ipv4_raises(self):
+        """Valid IPv6 address passed as IPv4 raises ValueError."""
+        csv = "ip-address,hw-address,subnet-id\n::1,aa:bb:cc:dd:ee:ff,1"
+        with self.assertRaises(ValueError) as ctx:
+            self._parse(csv, version=4)
+        self.assertIn("IPv4", str(ctx.exception))
+
+    def test_v4_invalid_mac_raises(self):
+        """Invalid MAC address format raises ValueError."""
+        csv = "ip-address,hw-address,subnet-id\n10.0.0.1,zz:zz:zz:zz:zz:zz,1"
+        with self.assertRaises(ValueError) as ctx:
+            self._parse(csv, version=4)
+        self.assertIn("MAC", str(ctx.exception))
+
+    def test_v6_empty_ip_addresses_raises(self):
+        """ip-addresses with only semicolons/spaces raises ValueError."""
+        csv = "ip-addresses,duid,subnet-id\n  ;  ,00:01:02:03:04:05,1"
+        with self.assertRaises(ValueError) as ctx:
+            self._parse(csv, version=6)
+        self.assertIn("ip-addresses", str(ctx.exception))
+
+    def test_v6_invalid_ipv6_raises(self):
+        """Non-parseable string in ip-addresses raises ValueError."""
+        csv = "ip-addresses,duid,subnet-id\nnotanip,00:01:02:03:04:05,1"
+        with self.assertRaises(ValueError) as ctx:
+            self._parse(csv, version=6)
+        self.assertIn("invalid", str(ctx.exception).lower())
+
+    def test_v6_ipv4_as_ipv6_raises(self):
+        """IPv4 address in v6 ip-addresses raises ValueError."""
+        csv = "ip-addresses,duid,subnet-id\n10.0.0.1,00:01:02:03:04:05,1"
+        with self.assertRaises(ValueError) as ctx:
+            self._parse(csv, version=6)
+        self.assertIn("IPv6", str(ctx.exception))
+
+    def test_v6_invalid_duid_raises(self):
+        """Invalid DUID string raises ValueError."""
+        csv = "ip-addresses,duid,subnet-id\n2001:db8::1,not-a-valid-duid!!!,1"
+        with self.assertRaises(ValueError) as ctx:
+            self._parse(csv, version=6)
+        self.assertIn("DUID", str(ctx.exception))
+
+
+class TestParseLeaseCsvValidationPaths(TestCase):
+    """parse_lease_csv: validation error paths for invalid IP, MAC, DUID, and version mismatches."""
+
+    def _parse(self, content, version=4):
+        from netbox_kea.utilities import parse_lease_csv
+
+        return parse_lease_csv(version, content)
+
+    def test_v4_invalid_ip_raises(self):
+        """Non-parseable IP address raises ValueError."""
+        csv = "ip-address\nnot-an-ip"
+        with self.assertRaises(ValueError) as ctx:
+            self._parse(csv, version=4)
+        self.assertIn("invalid", str(ctx.exception).lower())
+
+    def test_v4_ipv6_as_ipv4_raises(self):
+        """IPv6 address in v4 CSV raises ValueError."""
+        csv = "ip-address\n2001:db8::1"
+        with self.assertRaises(ValueError) as ctx:
+            self._parse(csv, version=4)
+        self.assertIn("IPv4", str(ctx.exception))
+
+    def test_v6_invalid_duid_raises(self):
+        """Invalid DUID format in v6 CSV raises ValueError."""
+        csv = "ip-address,duid,iaid\n2001:db8::1,notvalid!!!,1"
+        with self.assertRaises(ValueError) as ctx:
+            self._parse(csv, version=6)
+        self.assertIn("DUID", str(ctx.exception))
+
+    def test_v4_invalid_mac_raises(self):
+        """Invalid MAC address in v4 CSV raises ValueError."""
+        csv = "ip-address,hw-address\n10.0.0.1,zz:zz:zz:zz:zz:zz"
+        with self.assertRaises(ValueError) as ctx:
+            self._parse(csv, version=4)
+        self.assertIn("MAC", str(ctx.exception))

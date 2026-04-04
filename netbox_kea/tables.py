@@ -1,5 +1,6 @@
 import django_tables2 as tables
 from django.urls import reverse
+from django.utils.html import format_html
 from django.utils.http import urlencode
 from netbox.tables import BaseTable, BooleanColumn, NetBoxTable, ToggleColumn, columns
 
@@ -27,7 +28,7 @@ SUBNET_ACTIONS = """<span class="btn-group dropdown">
       </a>
     </li>
     {% endif %}
-    {% if record.server_pk and record.id %}
+    {% if record.server_pk and record.id and record.can_change %}
     <li><hr class="dropdown-divider"></li>
     {% if record.dhcp_version == 4 %}
     <li>
@@ -170,6 +171,18 @@ class DurationColumn(tables.Column):
         return format_duration(value)
 
 
+class ExpiryDurationColumn(DurationColumn):
+    """DurationColumn that applies an expiry CSS class from ``record['expiry_class']``."""
+
+    def render(self, value: int, record: dict):
+        """Wrap the duration text in a <span> with the expiry CSS class when set."""
+        text = super().render(value)
+        cls = record.get("expiry_class", "")
+        if cls:
+            return format_html('<span class="{}">{}</span>', cls, text)
+        return text
+
+
 class ActionsColumn(tables.TemplateColumn):
     """Table column that renders a dropdown actions menu from a Django template string."""
 
@@ -248,6 +261,7 @@ class SubnetTable(GenericTable):
 
     id = tables.Column(verbose_name="ID")
     subnet = tables.Column(
+        order_by="_subnet_sort_key",
         linkify=lambda record, table: (
             (
                 reverse(
@@ -265,7 +279,7 @@ class SubnetTable(GenericTable):
     pools = tables.TemplateColumn(
         verbose_name="Pool(s)",
         orderable=False,
-        template_code="""{% for pool in record.pools %}<span class="badge text-bg-secondary me-1">{{ pool }}{% if record.server_pk and record.id %} {% if record.dhcp_version == 4 %}<a href="{% url "plugins:netbox_kea:server_subnet4_pool_delete" record.server_pk record.id pool %}" class="text-white ms-1" aria-label="Delete pool {{ pool }}"><i class="mdi mdi-close-circle-outline" style="font-size:0.85em" aria-hidden="true"></i></a>{% else %}<a href="{% url "plugins:netbox_kea:server_subnet6_pool_delete" record.server_pk record.id pool %}" class="text-white ms-1" aria-label="Delete pool {{ pool }}"><i class="mdi mdi-close-circle-outline" style="font-size:0.85em" aria-hidden="true"></i></a>{% endif %}{% endif %}</span> {% empty %}— {% endfor %}{% if record.server_pk and record.id %}{% if record.dhcp_version == 4 %}<a href="{% url "plugins:netbox_kea:server_subnet4_pool_add" record.server_pk record.id %}" class="btn btn-sm btn-outline-secondary ms-1" aria-label="Add pool"><i class="mdi mdi-plus" aria-hidden="true"></i></a>{% else %}<a href="{% url "plugins:netbox_kea:server_subnet6_pool_add" record.server_pk record.id %}" class="btn btn-sm btn-outline-secondary ms-1" aria-label="Add pool"><i class="mdi mdi-plus" aria-hidden="true"></i></a>{% endif %}{% endif %}""",
+        template_code="""{% for pool in record.pools %}<span class="badge text-bg-secondary me-1">{{ pool }}{% if record.server_pk and record.id and record.can_change %} {% if record.dhcp_version == 4 %}<a href="{% url "plugins:netbox_kea:server_subnet4_pool_delete" record.server_pk record.id pool %}" class="text-white ms-1" aria-label="Delete pool {{ pool }}"><i class="mdi mdi-close-circle-outline" style="font-size:0.85em" aria-hidden="true"></i></a>{% else %}<a href="{% url "plugins:netbox_kea:server_subnet6_pool_delete" record.server_pk record.id pool %}" class="text-white ms-1" aria-label="Delete pool {{ pool }}"><i class="mdi mdi-close-circle-outline" style="font-size:0.85em" aria-hidden="true"></i></a>{% endif %}{% endif %}</span> {% empty %}— {% endfor %}{% if record.server_pk and record.id and record.can_change %}{% if record.dhcp_version == 4 %}<a href="{% url "plugins:netbox_kea:server_subnet4_pool_add" record.server_pk record.id %}" class="btn btn-sm btn-outline-secondary ms-1" aria-label="Add pool"><i class="mdi mdi-plus" aria-hidden="true"></i></a>{% else %}<a href="{% url "plugins:netbox_kea:server_subnet6_pool_add" record.server_pk record.id %}" class="btn btn-sm btn-outline-secondary ms-1" aria-label="Add pool"><i class="mdi mdi-plus" aria-hidden="true"></i></a>{% endif %}{% endif %}""",
     )
     utilization = tables.TemplateColumn(
         verbose_name="Utilization",
@@ -307,14 +321,14 @@ class BaseLeaseTable(GenericTable):
 
     # This column is for the select checkboxes.
     pk = ToggleColumn(verbose_name="IP Address", accessor="ip_address", visible=True)
-    ip_address = tables.Column(verbose_name="IP Address")
+    ip_address = tables.Column(verbose_name="IP Address", order_by="_ip_sort_key")
     hostname = tables.Column(verbose_name="Hostname")
     subnet_id = tables.Column(verbose_name="Subnet ID")
     hw_address = MonospaceColumn(verbose_name="Hardware Address")
     valid_lft = DurationColumn(verbose_name="Valid Lifetime")
     cltt = columns.DateTimeColumn(verbose_name="Client Last Transaction Time")
     expires_at = columns.DateTimeColumn(verbose_name="Expires At")
-    expires_in = DurationColumn(verbose_name="Expires In")
+    expires_in = ExpiryDurationColumn(verbose_name="Expires In")
     state_label = tables.TemplateColumn(
         verbose_name="State",
         orderable=False,
@@ -334,9 +348,44 @@ class BaseLeaseTable(GenericTable):
         verbose_name="Reserved",
         orderable=False,
         template_code=(
-            "{% if record.reservation_url %}"
+            "{% if record.is_reserved and record.reservation_url %}"
+            "{% if record.can_change_reservation %}"
             '<a href="{{ record.reservation_url }}" class="badge text-bg-success text-decoration-none">'
             "Reserved</a>"
+            "{% else %}"
+            '<span class="badge text-bg-success">Reserved</span>'
+            "{% endif %}"
+            "{% if record.stale_mac %}"
+            ' <span class="badge text-bg-warning"'
+            ' title="Lease MAC ({{ record.stale_lease_mac }}) ≠ Reservation MAC ({{ record.reservation_mac }})'
+            ' — delete this lease to force the old device off this IP">'
+            "&#9888; MAC?</span>"
+            "{% if record.can_delete %}"
+            ' <button type="button"'
+            ' class="badge text-bg-danger border-0 ms-1"'
+            ' style="cursor:pointer"'
+            ' aria-label="Delete lease {{ record.ip_address|escapejs }} held by {{ record.stale_lease_mac|escapejs }}"'
+            ' hx-post="{{ record.delete_lease_url }}"'
+            ' hx-confirm="Delete lease {{ record.ip_address|escapejs }} held by {{ record.stale_lease_mac|escapejs }}?'
+            ' The old device must re-request this IP via DORA."'
+            ' hx-vals=\'{"pk":"{{ record.ip_address|escapejs }}","_confirm":"1"}\'>'
+            '<i class="mdi mdi-delete-outline" aria-hidden="true"></i></button>'
+            "{% endif %}"
+            "{% endif %}"
+            "{% elif record.pending_ip_change %}"
+            '<span class="badge text-bg-info"'
+            ' title="This device has a reservation at {{ record.pending_reservation_ip }}'
+            ' — lease will move on next renewal">'
+            '<i class="mdi mdi-arrow-right-bold" aria-hidden="true"></i>'
+            " Pending {{ record.pending_reservation_ip }}</span>"
+            "{% if record.reservation_url %}"
+            "{% if record.can_change_reservation %}"
+            ' <a href="{{ record.reservation_url }}" class="badge text-bg-success text-decoration-none ms-1">'
+            "View</a>"
+            "{% else %}"
+            ' <span class="badge text-bg-success ms-1">View</span>'
+            "{% endif %}"
+            "{% endif %}"
             "{% elif record.create_reservation_url %}"
             '<a href="{{ record.create_reservation_url }}" class="badge text-bg-warning text-decoration-none">'
             "+ Reserve</a>"
@@ -420,21 +469,25 @@ class LeaseDeleteTable(GenericTable):
 # ─────────────────────────────────────────────────────────────────────────────
 
 RESERVATION_ACTIONS_V4 = """
+{% if record.can_change %}
 <span class="btn-group">
   <a href="{% url "plugins:netbox_kea:server_reservation4_edit" record.server_pk record.subnet_id record.ip_address %}"
      class="btn btn-sm btn-warning" aria-label="Edit reservation {{ record.ip_address }}"><i class="mdi mdi-pencil" aria-hidden="true"></i></a>
   <a href="{% url "plugins:netbox_kea:server_reservation4_delete" record.server_pk record.subnet_id record.ip_address %}"
      class="btn btn-sm btn-danger" aria-label="Delete reservation {{ record.ip_address }}"><i class="mdi mdi-trash-can-outline" aria-hidden="true"></i></a>
 </span>
+{% endif %}
 """
 
 RESERVATION_ACTIONS_V6 = """
+{% if record.can_change %}
 <span class="btn-group">
   <a href="{% url "plugins:netbox_kea:server_reservation6_edit" record.server_pk record.subnet_id record.ip_address %}"
      class="btn btn-sm btn-warning" aria-label="Edit reservation {{ record.ip_address }}"><i class="mdi mdi-pencil" aria-hidden="true"></i></a>
   <a href="{% url "plugins:netbox_kea:server_reservation6_delete" record.server_pk record.subnet_id record.ip_address %}"
      class="btn btn-sm btn-danger" aria-label="Delete reservation {{ record.ip_address }}"><i class="mdi mdi-trash-can-outline" aria-hidden="true"></i></a>
 </span>
+{% endif %}
 """
 
 
@@ -466,7 +519,7 @@ class ReservationTable4(GenericTable):
 
     subnet_id = tables.Column(verbose_name="Subnet ID", accessor="subnet-id")
     hw_address = MonospaceColumn(verbose_name="Hardware Address", accessor="hw-address")
-    ip_address = tables.Column(verbose_name="IP Address", accessor="ip-address")
+    ip_address = tables.Column(verbose_name="IP Address", accessor="ip-address", order_by="_ip_sort_key")
     hostname = tables.Column(verbose_name="Hostname")
     lease_status = tables.TemplateColumn(
         verbose_name="Lease",
@@ -479,8 +532,9 @@ class ReservationTable4(GenericTable):
         template_code=(
             "{% if record.netbox_ip_url %}"
             '<a href="{{ record.netbox_ip_url }}" class="badge text-bg-success text-decoration-none">'
-            '<i class="mdi mdi-link-variant"></i> Synced</a>'
-            "{% elif record.sync_url %}"
+            '<i class="mdi mdi-link-variant"></i> Synced</a> '
+            "{% endif %}"
+            "{% if record.sync_url %}"
             '<button type="button"'
             ' hx-post="{{ record.sync_url }}"'
             ' hx-vals=\'{"ip_address":"{{ record.ip_address|escapejs }}","hostname":"{{ record.hostname|default:""|escapejs }}"}\''
@@ -518,8 +572,9 @@ class ReservationTable6(GenericTable):
         template_code=(
             "{% if record.netbox_ip_url %}"
             '<a href="{{ record.netbox_ip_url }}" class="badge text-bg-success text-decoration-none">'
-            '<i class="mdi mdi-link-variant"></i> Synced</a>'
-            "{% elif record.sync_url %}"
+            '<i class="mdi mdi-link-variant"></i> Synced</a> '
+            "{% endif %}"
+            "{% if record.sync_url %}"
             '<button type="button"'
             ' hx-post="{{ record.sync_url }}"'
             ' hx-vals=\'{"ip_address":"{{ record.ip_address|escapejs }}","hostname":"{{ record.hostname|default:""|escapejs }}"}\''
@@ -553,199 +608,96 @@ def _server_column() -> tables.TemplateColumn:
     )
 
 
-class GlobalReservationTable4(GenericTable):
-    """DHCPv4 reservation table aggregated across multiple servers."""
+class GlobalReservationTable4(ReservationTable4):
+    """DHCPv4 reservation table aggregated across multiple servers.
+
+    Extends the per-server table with a prepended *Server* column so that rows
+    from different servers can be distinguished in the combined view.
+    """
 
     server = _server_column()
-    subnet_id = tables.Column(verbose_name="Subnet ID", accessor="subnet-id")
-    hw_address = MonospaceColumn(verbose_name="Hardware Address", accessor="hw-address")
-    ip_address = tables.Column(verbose_name="IP Address", accessor="ip-address")
-    hostname = tables.Column(verbose_name="Hostname")
-    lease_status = tables.TemplateColumn(
-        verbose_name="Lease",
-        orderable=False,
-        template_code=_LEASE_STATUS_LINK_V4,
-    )
-    netbox_ip = tables.TemplateColumn(
-        verbose_name="NetBox IP",
-        orderable=False,
-        template_code=(
-            "{% if record.netbox_ip_url %}"
-            '<a href="{{ record.netbox_ip_url }}" class="badge text-bg-success text-decoration-none">'
-            '<i class="mdi mdi-link-variant"></i> Synced</a>'
-            "{% elif record.sync_url %}"
-            '<button type="button"'
-            ' hx-post="{{ record.sync_url }}"'
-            ' hx-vals=\'{"ip_address":"{{ record.ip_address|escapejs }}","hostname":"{{ record.hostname|default:""|escapejs }}"}\''
-            ' hx-target="closest td"'
-            ' hx-swap="innerHTML"'
-            ' class="badge text-bg-secondary border-0"'
-            ' style="cursor:pointer">'
-            '<i class="mdi mdi-sync"></i> Sync</button>'
-            "{% endif %}"
-        ),
-    )
-    actions = ActionsColumn(RESERVATION_ACTIONS_V4)
 
-    class Meta(GenericTable.Meta):
-        empty_text = "No reservations found."
-        fields = ("server", "subnet_id", "hw_address", "ip_address", "hostname", "lease_status", "netbox_ip", "actions")
+    class Meta(ReservationTable4.Meta):
+        fields = ("server", *ReservationTable4.Meta.fields)
+        default_columns = ("server", *ReservationTable4.Meta.default_columns)
+
+
+class GlobalReservationTable6(ReservationTable6):
+    """DHCPv6 reservation table aggregated across multiple servers.
+
+    Extends the per-server table with a prepended *Server* column so that rows
+    from different servers can be distinguished in the combined view.
+    """
+
+    server = _server_column()
+
+    class Meta(ReservationTable6.Meta):
+        fields = ("server", *ReservationTable6.Meta.fields)
+        default_columns = ("server", *ReservationTable6.Meta.default_columns)
+
+
+class GlobalLeaseTable4(LeaseTable4):
+    """DHCPv4 lease table aggregated across multiple servers.
+
+    Extends the per-server table with a prepended *Server* column.
+    """
+
+    server = _server_column()
+
+    class Meta(LeaseTable4.Meta):
+        fields = ("server", *LeaseTable4.Meta.fields)
         default_columns = (
             "server",
-            "subnet_id",
-            "hw_address",
             "ip_address",
             "hostname",
-            "lease_status",
+            "hw_address",
+            "subnet_id",
+            "state_label",
+            "reserved",
             "netbox_ip",
-            "actions",
         )
 
 
-class GlobalReservationTable6(GenericTable):
-    """DHCPv6 reservation table aggregated across multiple servers."""
+class GlobalLeaseTable6(LeaseTable6):
+    """DHCPv6 lease table aggregated across multiple servers.
+
+    Extends the per-server table with a prepended *Server* column.
+    """
 
     server = _server_column()
-    subnet_id = tables.Column(verbose_name="Subnet ID", accessor="subnet-id")
-    duid = MonospaceColumn(verbose_name="DUID")
-    ip_addresses = tables.Column(verbose_name="IPv6 Addresses", accessor="ip-addresses")
-    hostname = tables.Column(verbose_name="Hostname")
-    lease_status = tables.TemplateColumn(
-        verbose_name="Lease",
-        orderable=False,
-        template_code=_LEASE_STATUS_LINK_V6,
-    )
-    netbox_ip = tables.TemplateColumn(
-        verbose_name="NetBox IP",
-        orderable=False,
-        template_code=(
-            "{% if record.netbox_ip_url %}"
-            '<a href="{{ record.netbox_ip_url }}" class="badge text-bg-success text-decoration-none">'
-            '<i class="mdi mdi-link-variant"></i> Synced</a>'
-            "{% elif record.sync_url %}"
-            '<button type="button"'
-            ' hx-post="{{ record.sync_url }}"'
-            ' hx-vals=\'{"ip_address":"{{ record.ip_address|escapejs }}","hostname":"{{ record.hostname|default:""|escapejs }}"}\''
-            ' hx-target="closest td"'
-            ' hx-swap="innerHTML"'
-            ' class="badge text-bg-secondary border-0"'
-            ' style="cursor:pointer">'
-            '<i class="mdi mdi-sync"></i> Sync</button>'
-            "{% endif %}"
-        ),
-    )
-    actions = ActionsColumn(RESERVATION_ACTIONS_V6)
 
-    class Meta(GenericTable.Meta):
-        empty_text = "No reservations found."
-        fields = ("server", "subnet_id", "duid", "ip_addresses", "hostname", "lease_status", "netbox_ip", "actions")
+    class Meta(LeaseTable6.Meta):
+        fields = ("server", *LeaseTable6.Meta.fields)
         default_columns = (
             "server",
-            "subnet_id",
-            "duid",
-            "ip_addresses",
+            "ip_address",
             "hostname",
-            "lease_status",
+            "duid",
+            "subnet_id",
+            "state_label",
+            "reserved",
             "netbox_ip",
-            "actions",
         )
 
 
-class GlobalLeaseTable4(BaseLeaseTable):
-    """DHCPv4 lease table aggregated across multiple servers."""
+class GlobalSubnetTable4(SubnetTable):
+    """DHCPv4 subnet table aggregated across multiple servers.
+
+    Extends the per-server table with a prepended *Server* column. All column
+    definitions (pools, options, utilization, subnet linkify) are inherited from
+    SubnetTable to avoid drift.
+    """
 
     server = _server_column()
 
-    class Meta(BaseLeaseTable.Meta):
-        fields = ("server", *BaseLeaseTable.Meta.fields)
-        default_columns = ("server", "ip_address", "hostname", "hw_address", "subnet_id", "reserved", "netbox_ip")
-
-
-class GlobalLeaseTable6(BaseLeaseTable):
-    """DHCPv6 lease table aggregated across multiple servers."""
-
-    server = _server_column()
-    type = tables.Column(verbose_name="Type", accessor="type")
-    preferred_lft = DurationColumn(verbose_name="Preferred Lifetime")
-    duid = MonospaceColumn(verbose_name="DUID", additional_classes=["text-break"])
-    iaid = MonospaceColumn(verbose_name="IAID")
-
-    class Meta(BaseLeaseTable.Meta):
-        fields = ("server", "type", "duid", "iaid", *BaseLeaseTable.Meta.fields)
-        default_columns = ("server", "ip_address", "hostname", "duid", "subnet_id", "reserved", "netbox_ip")
-
-
-class GlobalSubnetTable4(GenericTable):
-    """DHCPv4 subnet table aggregated across multiple servers."""
-
-    server = _server_column()
-    id = tables.Column(verbose_name="ID")
-    subnet = tables.Column(
-        linkify=lambda record, table: (
-            (
-                reverse(
-                    "plugins:netbox_kea:server_leases4",
-                    args=[record["server_pk"]],
-                )
-                + "?"
-                + urlencode({"by": "subnet", "q": record["subnet"]})
-            )
-            if record.get("subnet")
-            else None
-        ),
-    )
-    shared_network = tables.Column(verbose_name="Shared Network")
-    pools = tables.TemplateColumn(
-        verbose_name="Pool(s)",
-        orderable=False,
-        template_code="""{% for pool in record.pools %}<span class="badge text-bg-secondary me-1">{{ pool }}{% if record.server_pk and record.id %} {% if record.dhcp_version == 4 %}<a href="{% url "plugins:netbox_kea:server_subnet4_pool_delete" record.server_pk record.id pool %}" class="text-white ms-1" aria-label="Delete pool {{ pool }}"><i class="mdi mdi-close-circle-outline" style="font-size:0.85em" aria-hidden="true"></i></a>{% else %}<a href="{% url "plugins:netbox_kea:server_subnet6_pool_delete" record.server_pk record.id pool %}" class="text-white ms-1" aria-label="Delete pool {{ pool }}"><i class="mdi mdi-close-circle-outline" style="font-size:0.85em" aria-hidden="true"></i></a>{% endif %}{% endif %}</span> {% empty %}— {% endfor %}{% if record.server_pk and record.id %}{% if record.dhcp_version == 4 %}<a href="{% url "plugins:netbox_kea:server_subnet4_pool_add" record.server_pk record.id %}" class="btn btn-sm btn-outline-secondary ms-1" aria-label="Add pool"><i class="mdi mdi-plus" aria-hidden="true"></i></a>{% else %}<a href="{% url "plugins:netbox_kea:server_subnet6_pool_add" record.server_pk record.id %}" class="btn btn-sm btn-outline-secondary ms-1" aria-label="Add pool"><i class="mdi mdi-plus" aria-hidden="true"></i></a>{% endif %}{% endif %}""",
-    )
-    options = tables.TemplateColumn(
-        verbose_name="Options",
-        orderable=False,
-        template_code="""{% with opts=record.options %}{% if opts %}
-<span>{% if opts.gateway %}GW: {{ opts.gateway }}{% endif %}
-{% if opts.dns_servers %} | DNS: {{ opts.dns_servers }}{% endif %}
-{% if opts.ntp_servers %} | NTP: {{ opts.ntp_servers }}{% endif %}
-</span>{% endif %}{% endwith %}""",
-    )
-    utilization = tables.TemplateColumn(
-        verbose_name="Utilization",
-        orderable=False,
-        template_code=(
-            "{% if record.utilization %}"
-            '<span class="badge '
-            "{% if record.utilization_pct == 100 %}text-bg-danger"
-            "{% elif record.utilization_pct >= 80 %}text-bg-warning"
-            "{% else %}text-bg-success{% endif %}"
-            '">{{ record.utilization }}</span>'
-            "{% endif %}"
-        ),
-    )
-
-    class Meta(GenericTable.Meta):
+    class Meta(SubnetTable.Meta):
         empty_text = "No subnets found."
-        fields = ("server", "id", "subnet", "pools", "utilization", "options", "shared_network")
-        default_columns = ("server", "id", "subnet", "pools", "utilization", "options", "shared_network")
+        fields = ("server", *SubnetTable.Meta.fields)
+        default_columns = ("server", *SubnetTable.Meta.default_columns)
 
 
 class GlobalSubnetTable6(GlobalSubnetTable4):
     """DHCPv6 subnet table aggregated across multiple servers."""
-
-    subnet = tables.Column(
-        linkify=lambda record, table: (
-            (
-                reverse(
-                    "plugins:netbox_kea:server_leases6",
-                    args=[record["server_pk"]],
-                )
-                + "?"
-                + urlencode({"by": "subnet", "q": record["subnet"]})
-            )
-            if record.get("subnet")
-            else None
-        ),
-    )
 
     class Meta(GlobalSubnetTable4.Meta):
         pass
@@ -770,14 +722,22 @@ class SharedNetworkTable(GenericTable):
         verbose_name="",
         orderable=False,
         template_code=(
+            "{% if record.can_change %}"
             "{% if record.dhcp_version == 4 %}"
+            '<a href="{% url "plugins:netbox_kea:server_shared_network4_edit" record.server_pk record.name %}"'
+            ' class="btn btn-sm btn-warning me-1" aria-label="Edit {{ record.name }}">'
+            '<i class="mdi mdi-pencil" aria-hidden="true"></i></a>'
             '<a href="{% url "plugins:netbox_kea:server_shared_network4_delete" record.server_pk record.name %}"'
             ' class="btn btn-sm btn-danger" aria-label="Delete {{ record.name }}">'
             '<i class="mdi mdi-delete" aria-hidden="true"></i></a>'
             "{% else %}"
+            '<a href="{% url "plugins:netbox_kea:server_shared_network6_edit" record.server_pk record.name %}"'
+            ' class="btn btn-sm btn-warning me-1" aria-label="Edit {{ record.name }}">'
+            '<i class="mdi mdi-pencil" aria-hidden="true"></i></a>'
             '<a href="{% url "plugins:netbox_kea:server_shared_network6_delete" record.server_pk record.name %}"'
             ' class="btn btn-sm btn-danger" aria-label="Delete {{ record.name }}">'
             '<i class="mdi mdi-delete" aria-hidden="true"></i></a>'
+            "{% endif %}"
             "{% endif %}"
         ),
     )
@@ -786,3 +746,17 @@ class SharedNetworkTable(GenericTable):
         empty_text = "No shared networks configured."
         fields = ("name", "description", "subnet_count", "subnets", "actions")
         default_columns = ("name", "description", "subnet_count", "subnets", "actions")
+
+
+class GlobalSharedNetworkTable(SharedNetworkTable):
+    """Shared network table aggregated across multiple servers.
+
+    Extends the per-server table with a prepended *Server* column so that rows
+    from different servers can be distinguished in the combined view.
+    """
+
+    server = _server_column()
+
+    class Meta(SharedNetworkTable.Meta):
+        fields = ("server", *SharedNetworkTable.Meta.fields)
+        default_columns = ("server", *SharedNetworkTable.Meta.default_columns)

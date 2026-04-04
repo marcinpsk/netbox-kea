@@ -1,6 +1,9 @@
+import json
+import logging
 import os
 from typing import Literal
 
+import requests
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models
@@ -8,7 +11,9 @@ from django.urls import reverse
 from netbox.constants import CENSOR_TOKEN, CENSOR_TOKEN_CHANGED
 from netbox.models import NetBoxModel
 
-from .kea import KeaClient
+from .kea import KeaClient, KeaException
+
+logger = logging.getLogger(__name__)
 
 
 class Server(NetBoxModel):
@@ -132,29 +137,38 @@ class Server(NetBoxModel):
         if self.dhcp6:
             try:
                 self.get_client(version=6).command("version-get", service=["dhcp6"])
-            except Exception as e:
-                raise ValidationError({"dhcp6": f"Unable to get DHCPv6 version: {repr(e)}"}) from e
+            except KeaException as e:
+                logger.exception("DHCPv6 connectivity check failed during Server.clean()")
+                raise ValidationError({"dhcp6": "Unable to reach the Kea DHCPv6 service."}) from e
+            except json.JSONDecodeError as e:
+                logger.exception("Malformed response during DHCPv6 connectivity check")
+                raise ValidationError({"dhcp6": "An internal error occurred."}) from e
+            except (requests.exceptions.RequestException, ValueError) as e:
+                logger.exception("Unexpected error during DHCPv6 connectivity check")
+                raise ValidationError({"dhcp6": "Unable to reach the Kea DHCPv6 service."}) from e
         if self.dhcp4:
             try:
                 self.get_client(version=4).command("version-get", service=["dhcp4"])
-            except Exception as e:
-                raise ValidationError({"dhcp4": f"Unable to get DHCPv4 version: {repr(e)}"}) from e
+            except KeaException as e:
+                logger.exception("DHCPv4 connectivity check failed during Server.clean()")
+                raise ValidationError({"dhcp4": "Unable to reach the Kea DHCPv4 service."}) from e
+            except json.JSONDecodeError as e:
+                logger.exception("Malformed response during DHCPv4 connectivity check")
+                raise ValidationError({"dhcp4": "An internal error occurred."}) from e
+            except (requests.exceptions.RequestException, ValueError) as e:
+                logger.exception("Unexpected error during DHCPv4 connectivity check")
+                raise ValidationError({"dhcp4": "Unable to reach the Kea DHCPv4 service."}) from e
 
     def to_objectchange(self, action: str) -> None:
         """Censor password in NetBox change log entries."""
         objectchange = super().to_objectchange(action)
 
         prechange_data = objectchange.prechange_data or {}
+        original_pre_password = prechange_data.get("password")
         if prechange_data.get("password"):
             prechange_data["password"] = CENSOR_TOKEN
 
-        if (post_data := objectchange.postchange_data) and (
-            post_password := post_data.get("password")
-        ):
-            post_data["password"] = (
-                CENSOR_TOKEN_CHANGED
-                if post_password != prechange_data.get("password")
-                else CENSOR_TOKEN
-            )
+        if (post_data := objectchange.postchange_data) and (post_password := post_data.get("password")):
+            post_data["password"] = CENSOR_TOKEN_CHANGED if post_password != original_pre_password else CENSOR_TOKEN
 
         return objectchange

@@ -6,7 +6,7 @@ runs in a transaction that is rolled back afterwards.
 
 from __future__ import annotations
 
-from django.test import TestCase
+from django.test import TestCase, override_settings
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TestFindPrefixLength
@@ -108,11 +108,12 @@ class TestSyncLeaseToNetbox(TestCase):
         self.assertTrue(created)
         self.assertIsNotNone(ip_obj.pk)
 
-    def test_sets_status_active(self):
+    def test_sets_status_dhcp_for_dynamic_lease(self):
+        """A new lease without a pre-existing reservation uses 'dhcp' status."""
         from netbox_kea.sync import sync_lease_to_netbox
 
         ip_obj, _ = sync_lease_to_netbox(self._LEASE)
-        self.assertEqual(ip_obj.status, "active")
+        self.assertEqual(ip_obj.status, "dhcp")
 
     def test_sets_dns_name_from_hostname(self):
         from netbox_kea.sync import sync_lease_to_netbox
@@ -176,7 +177,7 @@ class TestSyncLeaseToNetbox(TestCase):
         lease = {k: v for k, v in self._LEASE.items() if k != "hostname"}
         ip_obj, created = sync_lease_to_netbox(lease)
         self.assertTrue(created)
-        self.assertEqual(ip_obj.status, "active")
+        self.assertEqual(ip_obj.status, "dhcp")
 
     def test_second_sync_does_not_overwrite_manual_dns_name(self):
         """If user has manually set a dns_name and lease has no hostname, keep it."""
@@ -194,6 +195,55 @@ class TestSyncLeaseToNetbox(TestCase):
         ip_obj, _ = sync_lease_to_netbox(lease_no_hostname)
         # dns_name should be preserved since lease has no hostname
         self.assertEqual(ip_obj.dns_name, "manual.example.com")
+
+    # ── F8: MAC address sync ──────────────────────────────────────────────────
+
+    def test_sync_lease_creates_mac_address_entry(self):
+        """F8: sync_lease_to_netbox creates a MACAddress DCIM entry when hw-address is present."""
+        try:
+            from dcim.models import MACAddress
+        except (ImportError, AttributeError):
+            self.skipTest("MACAddress not available in this NetBox version")
+        try:
+            import netaddr  # noqa: F401
+        except ImportError:
+            self.skipTest("netaddr not available")
+        from netbox_kea.sync import sync_lease_to_netbox
+
+        sync_lease_to_netbox(self._LEASE)
+        self.assertEqual(MACAddress.objects.count(), 1)
+
+    def test_sync_lease_does_not_create_mac_when_no_hw_address(self):
+        """F8: sync_lease_to_netbox skips MACAddress when lease has no hw-address."""
+        try:
+            from dcim.models import MACAddress
+        except (ImportError, AttributeError):
+            self.skipTest("MACAddress not available in this NetBox version")
+        try:
+            import netaddr  # noqa: F401
+        except ImportError:
+            self.skipTest("netaddr not available")
+        from netbox_kea.sync import sync_lease_to_netbox
+
+        lease = {"ip-address": "192.168.50.101", "hostname": "nomaclease"}
+        sync_lease_to_netbox(lease)
+        self.assertEqual(MACAddress.objects.count(), 0)
+
+    def test_sync_lease_does_not_create_duplicate_mac(self):
+        """F8: Calling sync_lease_to_netbox twice does not create duplicate MACAddress entries."""
+        try:
+            from dcim.models import MACAddress
+        except (ImportError, AttributeError):
+            self.skipTest("MACAddress not available in this NetBox version")
+        try:
+            import netaddr  # noqa: F401
+        except ImportError:
+            self.skipTest("netaddr not available")
+        from netbox_kea.sync import sync_lease_to_netbox
+
+        sync_lease_to_netbox(self._LEASE)
+        sync_lease_to_netbox(self._LEASE)
+        self.assertEqual(MACAddress.objects.count(), 1)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -252,8 +302,8 @@ class TestSyncReservationToNetbox(TestCase):
         ip_obj, _ = sync_reservation_to_netbox(self._RESERVATION)
         self.assertIn("Kea", ip_obj.description)
 
-    def test_updates_existing_ip_status_to_reserved(self):
-        """An existing 'active' IP gets promoted to 'reserved' by a reservation sync."""
+    def test_updates_existing_active_ip_downgrades_to_reserved_with_reservation_sync(self):
+        """An existing 'active' IP + reservation sync alone → 'reserved' (no lease context)."""
         from ipam.models import IPAddress as NbIP
 
         from netbox_kea.sync import sync_reservation_to_netbox
@@ -262,6 +312,35 @@ class TestSyncReservationToNetbox(TestCase):
         ip_obj, created = sync_reservation_to_netbox(self._RESERVATION)
         self.assertFalse(created)
         self.assertEqual(ip_obj.status, "reserved")
+
+    # ── F8: MAC address sync ──────────────────────────────────────────────────
+
+    def test_sync_reservation_creates_mac_address_entry(self):
+        """F8: sync_reservation_to_netbox creates a MACAddress DCIM entry when hw-address is present."""
+        try:
+            from dcim.models import MACAddress
+        except (ImportError, AttributeError):
+            self.skipTest("MACAddress not available in this NetBox version")
+        try:
+            from netaddr import EUI  # noqa: F401
+        except (ImportError, AttributeError):
+            self.skipTest("netaddr not available")
+        from netbox_kea.sync import sync_reservation_to_netbox
+
+        sync_reservation_to_netbox(self._RESERVATION)
+        self.assertEqual(MACAddress.objects.count(), 1)
+
+    def test_sync_reservation_skips_mac_when_no_hw_address(self):
+        """F8: sync_reservation_to_netbox skips MACAddress when reservation has no hw-address."""
+        try:
+            from dcim.models import MACAddress
+        except (ImportError, AttributeError):
+            self.skipTest("MACAddress not available in this NetBox version")
+        from netbox_kea.sync import sync_reservation_to_netbox
+
+        reservation = {"ip-address": "192.168.51.201", "duid": "00:01:02:03", "subnet-id": 1}
+        sync_reservation_to_netbox(reservation)
+        self.assertEqual(MACAddress.objects.count(), 0)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -353,3 +432,896 @@ class TestSyncReservationMultiAddressV6(TestCase):
         ip_obj, created = sync_reservation_to_netbox(reservation)
         self.assertTrue(created)
         self.assertTrue(str(ip_obj.address).startswith("10.0.0.55/"))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# P1 — IP Status Semantics (dhcp / reserved / active)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestComputeIpStatus(TestCase):
+    """_compute_ip_status returns the correct NetBox IP status based on source and current state."""
+
+    def _call(self, desired_from, current_status):
+        from netbox_kea.sync import _compute_ip_status
+
+        return _compute_ip_status(desired_from, current_status)
+
+    # ── lease sync ─────────────────────────────────────────────────────────────
+    def test_new_ip_lease_sync_returns_dhcp(self):
+        self.assertEqual(self._call("lease", None), "dhcp")
+
+    def test_existing_deprecated_ip_lease_sync_returns_dhcp(self):
+        self.assertEqual(self._call("lease", "deprecated"), "dhcp")
+
+    def test_existing_reserved_ip_lease_sync_returns_active(self):
+        """Reserved IP + lease → both reservation and lease → active."""
+        self.assertEqual(self._call("lease", "reserved"), "active")
+
+    def test_existing_active_ip_lease_sync_downgrades_to_dhcp(self):
+        """Already-active IP + lease sync alone → 'dhcp' (no reservation context)."""
+        self.assertEqual(self._call("lease", "active"), "dhcp")
+
+    def test_existing_dhcp_ip_lease_sync_stays_dhcp(self):
+        self.assertEqual(self._call("lease", "dhcp"), "dhcp")
+
+    # ── reservation sync ───────────────────────────────────────────────────────
+    def test_new_ip_reservation_sync_returns_reserved(self):
+        self.assertEqual(self._call("reservation", None), "reserved")
+
+    def test_existing_dhcp_ip_reservation_sync_returns_active(self):
+        """dhcp IP + reservation → now has both → active."""
+        self.assertEqual(self._call("reservation", "dhcp"), "active")
+
+    def test_existing_active_ip_reservation_sync_downgrades_to_reserved(self):
+        """Already-active IP + reservation sync alone → 'reserved' (no lease context)."""
+        self.assertEqual(self._call("reservation", "active"), "reserved")
+
+    def test_existing_deprecated_ip_reservation_sync_returns_reserved(self):
+        self.assertEqual(self._call("reservation", "deprecated"), "reserved")
+
+    def test_existing_reserved_ip_reservation_sync_stays_reserved(self):
+        """Re-syncing a reservation keeps the IP reserved (no lease exists)."""
+        self.assertEqual(self._call("reservation", "reserved"), "reserved")
+
+
+class TestSyncLeaseStatusSemantics(TestCase):
+    """Integration: sync_lease_to_netbox uses dhcp/active semantics correctly."""
+
+    _LEASE = {
+        "ip-address": "10.10.0.50",
+        "hw-address": "ca:fe:00:00:00:01",
+        "hostname": "device-a.example.com",
+    }
+
+    def test_new_lease_gets_dhcp_status(self):
+        from netbox_kea.sync import sync_lease_to_netbox
+
+        ip_obj, _ = sync_lease_to_netbox(self._LEASE)
+        self.assertEqual(ip_obj.status, "dhcp")
+
+    def test_lease_upgrades_reserved_to_active(self):
+        """IP was reserved (from a previous reservation sync), now also has a lease → active."""
+        from ipam.models import IPAddress as NbIP
+
+        from netbox_kea.sync import sync_lease_to_netbox
+
+        NbIP.objects.create(address="10.10.0.50/32", status="reserved", description="Synced from Kea DHCP reservation")
+        ip_obj, _ = sync_lease_to_netbox(self._LEASE)
+        self.assertEqual(ip_obj.status, "active")
+
+    def test_lease_downgrades_active_to_dhcp_without_reservation(self):
+        """Re-syncing a lease when IP is 'active' downgrades to 'dhcp'; no reservation → not active."""
+        from ipam.models import IPAddress as NbIP
+
+        from netbox_kea.sync import sync_lease_to_netbox
+
+        NbIP.objects.create(address="10.10.0.50/32", status="active", description="Synced from Kea DHCP lease")
+        ip_obj, _ = sync_lease_to_netbox(self._LEASE)
+        self.assertEqual(ip_obj.status, "dhcp")
+
+
+class TestSyncReservationStatusSemantics(TestCase):
+    """Integration: sync_reservation_to_netbox uses reserved/active semantics correctly."""
+
+    _RESERVATION = {
+        "ip-address": "10.10.0.60",
+        "hw-address": "ca:fe:00:00:00:02",
+        "hostname": "device-b.example.com",
+    }
+
+    def test_new_reservation_gets_reserved_status(self):
+        from netbox_kea.sync import sync_reservation_to_netbox
+
+        ip_obj, created = sync_reservation_to_netbox(self._RESERVATION)
+        self.assertTrue(created)
+        self.assertEqual(ip_obj.status, "reserved")
+
+    def test_reservation_upgrades_dhcp_to_active(self):
+        """IP was dhcp (from a lease sync), now also has a reservation → active."""
+        from ipam.models import IPAddress as NbIP
+
+        from netbox_kea.sync import sync_reservation_to_netbox
+
+        NbIP.objects.create(address="10.10.0.60/32", status="dhcp", description="Synced from Kea DHCP lease")
+        ip_obj, _ = sync_reservation_to_netbox(self._RESERVATION)
+        self.assertEqual(ip_obj.status, "active")
+
+    def test_reservation_downgrades_active_to_reserved_without_lease(self):
+        """Re-syncing a reservation when IP is 'active' downgrades to 'reserved'; no lease → not active."""
+        from ipam.models import IPAddress as NbIP
+
+        from netbox_kea.sync import sync_reservation_to_netbox
+
+        NbIP.objects.create(address="10.10.0.60/32", status="active", description="Synced from Kea DHCP lease")
+        ip_obj, _ = sync_reservation_to_netbox(self._RESERVATION)
+        self.assertEqual(ip_obj.status, "reserved")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# P2 — MAC Address Description Annotation
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestUpdateMacDescription(TestCase):
+    """_update_mac_description annotates a MACAddress.description with dhcp_hostname: token."""
+
+    def _make_mac(self, description="", has_interface=False):
+        """Create a minimal MAC-like object for testing _update_mac_description."""
+        try:
+            from dcim.models import MACAddress  # noqa: F401 — just to skip if unavailable
+        except ImportError:
+            self.skipTest("MACAddress not available")
+        import types
+
+        return types.SimpleNamespace(description=description, assigned_object=object() if has_interface else None)
+
+    def _call(self, mac_obj, hostname):
+        from netbox_kea.sync import _update_mac_description
+
+        return _update_mac_description(mac_obj, hostname)
+
+    def test_sets_description_on_empty_no_interface(self):
+        mac = self._make_mac(description="")
+        changed = self._call(mac, "myhost.example.com")
+        self.assertTrue(changed)
+        self.assertEqual(mac.description, "dhcp_hostname: myhost.example.com")
+
+    def test_replaces_description_fully_when_no_interface(self):
+        """No interface: replace the entire description with dhcp_hostname: value."""
+        mac = self._make_mac(description="old manual description", has_interface=False)
+        changed = self._call(mac, "newhost.example.com")
+        self.assertTrue(changed)
+        self.assertEqual(mac.description, "dhcp_hostname: newhost.example.com")
+
+    def test_replaces_existing_token_when_no_interface(self):
+        mac = self._make_mac(description="dhcp_hostname: oldhost.example.com", has_interface=False)
+        changed = self._call(mac, "newhost.example.com")
+        self.assertTrue(changed)
+        self.assertEqual(mac.description, "dhcp_hostname: newhost.example.com")
+
+    def test_no_change_when_same_hostname(self):
+        mac = self._make_mac(description="dhcp_hostname: same.example.com", has_interface=False)
+        changed = self._call(mac, "same.example.com")
+        self.assertFalse(changed)
+
+    def test_appends_token_when_has_interface_and_other_text(self):
+        """Has interface: append dhcp_hostname: to existing description."""
+        mac = self._make_mac(description="eth0 primary", has_interface=True)
+        changed = self._call(mac, "server.example.com")
+        self.assertTrue(changed)
+        self.assertIn("dhcp_hostname: server.example.com", mac.description)
+        self.assertIn("eth0 primary", mac.description)
+
+    def test_replaces_existing_token_when_has_interface(self):
+        """Has interface: replace only the dhcp_hostname: portion, keep manual text."""
+        mac = self._make_mac(description="eth0 primary | dhcp_hostname: old.example.com", has_interface=True)
+        changed = self._call(mac, "new.example.com")
+        self.assertTrue(changed)
+        self.assertIn("dhcp_hostname: new.example.com", mac.description)
+        self.assertIn("eth0 primary", mac.description)
+        self.assertNotIn("old.example.com", mac.description)
+
+    def test_sets_description_on_empty_with_interface(self):
+        """Even with an interface, an empty description gets set."""
+        mac = self._make_mac(description="", has_interface=True)
+        changed = self._call(mac, "host.example.com")
+        self.assertTrue(changed)
+        self.assertEqual(mac.description, "dhcp_hostname: host.example.com")
+
+    def test_caps_description_at_200_chars(self):
+        long_host = "h" * 250
+        mac = self._make_mac(description="", has_interface=False)
+        self._call(mac, long_host)
+        self.assertLessEqual(len(mac.description), 200)
+
+
+class TestSyncMacAddressWithHostname(TestCase):
+    """sync_lease_to_netbox sets dhcp_hostname: on the MAC description."""
+
+    _LEASE = {
+        "ip-address": "10.20.0.1",
+        "hw-address": "de:ad:be:ef:00:01",
+        "hostname": "host-a.example.com",
+    }
+
+    def test_sync_lease_sets_mac_description(self):
+        try:
+            from dcim.models import MACAddress
+        except ImportError:
+            self.skipTest("MACAddress not available")
+        from netbox_kea.sync import sync_lease_to_netbox
+
+        sync_lease_to_netbox(self._LEASE)
+        mac = MACAddress.objects.first()
+        self.assertIsNotNone(mac)
+        self.assertIn("dhcp_hostname: host-a.example.com", mac.description)
+
+    def test_sync_lease_updates_mac_description_on_resync(self):
+        try:
+            from dcim.models import MACAddress
+        except ImportError:
+            self.skipTest("MACAddress not available")
+        from netbox_kea.sync import sync_lease_to_netbox
+
+        sync_lease_to_netbox(self._LEASE)
+        updated = {**self._LEASE, "hostname": "renamed-host.example.com"}
+        sync_lease_to_netbox(updated)
+        mac = MACAddress.objects.first()
+        self.assertIn("dhcp_hostname: renamed-host.example.com", mac.description)
+        self.assertNotIn("host-a.example.com", mac.description)
+
+    def test_sync_lease_skips_mac_description_when_no_hostname(self):
+        try:
+            from dcim.models import MACAddress
+        except ImportError:
+            self.skipTest("MACAddress not available")
+        from netbox_kea.sync import sync_lease_to_netbox
+
+        sync_lease_to_netbox({"ip-address": "10.20.0.2", "hw-address": "de:ad:be:ef:00:02"})
+        mac = MACAddress.objects.first()
+        self.assertIsNotNone(mac)
+        self.assertEqual(mac.description, "")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# P4 — Stale IP Cleanup
+# ─────────────────────────────────────────────────────────────────────────────
+
+_STALE_PLUGINS_CONFIG = {"netbox_kea": {"kea_timeout": 30, "stale_ip_cleanup": "remove"}}
+_DEPRECATE_PLUGINS_CONFIG = {"netbox_kea": {"kea_timeout": 30, "stale_ip_cleanup": "deprecate"}}
+_NONE_PLUGINS_CONFIG = {"netbox_kea": {"kea_timeout": 30, "stale_ip_cleanup": "none"}}
+
+
+class TestCleanupStaleIps(TestCase):
+    """_cleanup_stale_ips removes or deprecates old Kea-synced IPs for the same hostname."""
+
+    _HOSTNAME = "moving-device.example.com"
+    _OLD_IP = "10.30.0.10"
+    _NEW_IP = "10.30.0.20"
+    _KEA_DESC = "Synced from Kea DHCP lease"
+
+    def _create_old_ip(self, status="dhcp", description=None):
+        from ipam.models import IPAddress as NbIP
+
+        return NbIP.objects.create(
+            address=f"{self._OLD_IP}/32",
+            status=status,
+            dns_name=self._HOSTNAME,
+            description=description or self._KEA_DESC,
+        )
+
+    def _call(self, mode="remove"):
+        from netbox_kea.sync import _cleanup_stale_ips
+
+        return _cleanup_stale_ips(self._NEW_IP, self._HOSTNAME, mode=mode)
+
+    def test_removes_stale_ip_in_remove_mode(self):
+        from ipam.models import IPAddress as NbIP
+
+        self._create_old_ip()
+        count = self._call(mode="remove")
+        self.assertEqual(count, 1)
+        self.assertFalse(NbIP.objects.filter(address__startswith=f"{self._OLD_IP}/").exists())
+
+    def test_deprecates_stale_ip_in_deprecate_mode(self):
+        from ipam.models import IPAddress as NbIP
+
+        self._create_old_ip()
+        count = self._call(mode="deprecate")
+        self.assertEqual(count, 1)
+        ip = NbIP.objects.get(address__startswith=f"{self._OLD_IP}/")
+        self.assertEqual(ip.status, "deprecated")
+
+    def test_does_nothing_in_none_mode(self):
+        from ipam.models import IPAddress as NbIP
+
+        self._create_old_ip()
+        count = self._call(mode="none")
+        self.assertEqual(count, 0)
+        self.assertTrue(NbIP.objects.filter(address__startswith=f"{self._OLD_IP}/").exists())
+
+    def test_skips_ips_without_kea_description(self):
+        from ipam.models import IPAddress as NbIP
+
+        self._create_old_ip(description="Manually assigned by ops team")
+        count = self._call(mode="remove")
+        self.assertEqual(count, 0)
+        self.assertTrue(NbIP.objects.filter(address__startswith=f"{self._OLD_IP}/").exists())
+
+    def test_skips_ips_with_different_hostname(self):
+        from ipam.models import IPAddress as NbIP
+
+        from netbox_kea.sync import _cleanup_stale_ips
+
+        NbIP.objects.create(
+            address=f"{self._OLD_IP}/32",
+            status="dhcp",
+            dns_name="other-device.example.com",
+            description=self._KEA_DESC,
+        )
+        count = _cleanup_stale_ips(self._NEW_IP, self._HOSTNAME, mode="remove")
+        self.assertEqual(count, 0)
+        self.assertTrue(NbIP.objects.filter(address__startswith=f"{self._OLD_IP}/").exists())
+
+    def test_does_not_remove_current_ip(self):
+        """The IP being synced is never touched by stale cleanup."""
+        from ipam.models import IPAddress as NbIP
+
+        from netbox_kea.sync import _cleanup_stale_ips
+
+        NbIP.objects.create(
+            address=f"{self._NEW_IP}/32",
+            status="dhcp",
+            dns_name=self._HOSTNAME,
+            description=self._KEA_DESC,
+        )
+        count = _cleanup_stale_ips(self._NEW_IP, self._HOSTNAME, mode="remove")
+        self.assertEqual(count, 0)
+        self.assertTrue(NbIP.objects.filter(address__startswith=f"{self._NEW_IP}/").exists())
+
+    def test_does_not_remove_deprecated_ips(self):
+        """Already-deprecated IPs are not touched (not in (dhcp, active, reserved))."""
+        self._create_old_ip(status="deprecated")
+        count = self._call(mode="remove")
+        self.assertEqual(count, 0)
+
+    def test_does_not_cross_family_cleanup_ipv4_for_ipv6(self):
+        """Syncing an IPv4 address must not remove an IPv6 IP with same hostname."""
+        from ipam.models import IPAddress as NbIP
+
+        NbIP.objects.create(
+            address="2001:db8::1/128",
+            status="dhcp",
+            dns_name=self._HOSTNAME,
+            description=self._KEA_DESC,
+        )
+        count = self._call(mode="remove")
+        self.assertEqual(count, 0)
+        self.assertTrue(NbIP.objects.filter(address__startswith="2001:db8::1/").exists())
+
+    def test_skips_when_no_hostname(self):
+        """No hostname → no cleanup (can't match safely)."""
+        from netbox_kea.sync import _cleanup_stale_ips
+
+        self._create_old_ip()
+        count = _cleanup_stale_ips(self._NEW_IP, "", mode="remove")
+        self.assertEqual(count, 0)
+
+
+class TestSyncLeaseWithStaleCleanup(TestCase):
+    """Integration: sync_lease_to_netbox removes stale IPs via PLUGINS_CONFIG."""
+
+    _LEASE_NEW = {
+        "ip-address": "10.40.0.20",
+        "hw-address": "aa:bb:cc:dd:00:01",
+        "hostname": "migrated-host.example.com",
+    }
+    _OLD_IP = "10.40.0.10"
+
+    def _create_old_kea_ip(self, status="dhcp"):
+        from ipam.models import IPAddress as NbIP
+
+        return NbIP.objects.create(
+            address=f"{self._OLD_IP}/32",
+            status=status,
+            dns_name="migrated-host.example.com",
+            description="Synced from Kea DHCP lease",
+        )
+
+    @override_settings(PLUGINS_CONFIG={"netbox_kea": {"kea_timeout": 30}})
+    def test_removes_old_ip_by_default(self):
+        from ipam.models import IPAddress as NbIP
+
+        from netbox_kea.sync import sync_lease_to_netbox
+
+        self._create_old_kea_ip()
+        sync_lease_to_netbox(self._LEASE_NEW)
+        self.assertFalse(NbIP.objects.filter(address__startswith=f"{self._OLD_IP}/").exists())
+        self.assertTrue(NbIP.objects.filter(address__startswith="10.40.0.20/").exists())
+
+    @override_settings(PLUGINS_CONFIG=_DEPRECATE_PLUGINS_CONFIG)
+    def test_deprecates_old_ip_in_deprecate_mode(self):
+        from ipam.models import IPAddress as NbIP
+
+        from netbox_kea.sync import sync_lease_to_netbox
+
+        self._create_old_kea_ip()
+        sync_lease_to_netbox(self._LEASE_NEW)
+        old = NbIP.objects.filter(address__startswith=f"{self._OLD_IP}/").first()
+        self.assertIsNotNone(old)
+        self.assertEqual(old.status, "deprecated")
+
+    @override_settings(PLUGINS_CONFIG=_NONE_PLUGINS_CONFIG)
+    def test_leaves_old_ip_when_mode_is_none(self):
+        from ipam.models import IPAddress as NbIP
+
+        from netbox_kea.sync import sync_lease_to_netbox
+
+        self._create_old_kea_ip()
+        sync_lease_to_netbox(self._LEASE_NEW)
+        self.assertTrue(NbIP.objects.filter(address__startswith=f"{self._OLD_IP}/").exists())
+
+    @override_settings(PLUGINS_CONFIG=_STALE_PLUGINS_CONFIG)
+    def test_does_not_remove_old_ip_when_no_hostname(self):
+        """Lease without hostname: no stale cleanup (unsafe to match)."""
+        from ipam.models import IPAddress as NbIP
+
+        from netbox_kea.sync import sync_lease_to_netbox
+
+        self._create_old_kea_ip()
+        sync_lease_to_netbox({"ip-address": "10.40.0.20", "hw-address": "aa:bb:cc:dd:00:01"})
+        self.assertTrue(NbIP.objects.filter(address__startswith=f"{self._OLD_IP}/").exists())
+
+
+class TestSyncReservationWithStaleCleanup(TestCase):
+    """Integration: sync_reservation_to_netbox removes stale IPs when hostname matches."""
+
+    _RESERVATION_NEW = {
+        "ip-address": "10.50.0.20",
+        "hw-address": "bb:cc:dd:ee:00:01",
+        "hostname": "moved-device.example.com",
+    }
+    _OLD_IP = "10.50.0.10"
+
+    def _create_old_kea_ip(self):
+        from ipam.models import IPAddress as NbIP
+
+        return NbIP.objects.create(
+            address=f"{self._OLD_IP}/32",
+            status="reserved",
+            dns_name="moved-device.example.com",
+            description="Synced from Kea DHCP reservation",
+        )
+
+    @override_settings(PLUGINS_CONFIG=_STALE_PLUGINS_CONFIG)
+    def test_removes_old_reserved_ip_for_same_hostname(self):
+        from ipam.models import IPAddress as NbIP
+
+        from netbox_kea.sync import sync_reservation_to_netbox
+
+        self._create_old_kea_ip()
+        sync_reservation_to_netbox(self._RESERVATION_NEW)
+        self.assertFalse(NbIP.objects.filter(address__startswith=f"{self._OLD_IP}/").exists())
+        self.assertTrue(NbIP.objects.filter(address__startswith="10.50.0.20/").exists())
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TestNetboxDnsAvailable
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestNetboxDnsAvailable(TestCase):
+    """netbox_dns_available() returns a bool based on importlib.util.find_spec."""
+
+    def test_returns_false_when_spec_is_none(self):
+        """netbox_dns_available returns False when netbox_dns is not installed."""
+        import importlib.util as _ilu
+        from unittest.mock import patch
+
+        with patch.object(_ilu, "find_spec", return_value=None):
+            from netbox_kea.sync import netbox_dns_available
+
+            self.assertFalse(netbox_dns_available())
+
+    def test_returns_true_when_spec_is_present(self):
+        """netbox_dns_available returns True when find_spec returns a non-None object."""
+        import importlib.util as _ilu
+        from unittest.mock import MagicMock, patch
+
+        with patch.object(_ilu, "find_spec", return_value=MagicMock()):
+            from netbox_kea.sync import netbox_dns_available
+
+            self.assertTrue(netbox_dns_available())
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TestCleanupStaleIpsUnknownMode
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestCleanupStaleIpsUnknownMode(TestCase):
+    """_cleanup_stale_ips with an unrecognised mode logs and returns 0."""
+
+    _HOSTNAME = "moving-device.example.com"
+    _OLD_IP = "10.30.0.11"
+    _KEA_DESC = "Synced from Kea DHCP lease"
+
+    def test_unknown_mode_returns_zero_and_does_not_delete(self):
+        from ipam.models import IPAddress as NbIP
+
+        from netbox_kea.sync import _cleanup_stale_ips
+
+        NbIP.objects.create(
+            address=f"{self._OLD_IP}/32",
+            status="dhcp",
+            dns_name=self._HOSTNAME,
+            description=self._KEA_DESC,
+        )
+        count = _cleanup_stale_ips("10.30.0.99", self._HOSTNAME, mode="unknown")
+        self.assertEqual(count, 0)
+        self.assertTrue(NbIP.objects.filter(address__startswith=f"{self._OLD_IP}/").exists())
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TestSyncMacAddressErrors
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestSyncMacAddressErrors(TestCase):
+    """_sync_mac_address handles DB and parse errors gracefully."""
+
+    def test_db_error_is_caught_and_logged(self):
+        """ProgrammingError during get_or_create is caught; no exception propagates."""
+        from unittest.mock import patch
+
+        from django.db.utils import ProgrammingError
+
+        try:
+            from dcim.models import MACAddress
+        except ImportError:
+            self.skipTest("MACAddress not available in this NetBox version")
+
+        try:
+            from netaddr import EUI  # noqa: F401
+        except ImportError:
+            self.skipTest("netaddr not available")
+
+        from netbox_kea.sync import _sync_mac_address
+
+        with patch.object(MACAddress.objects, "get_or_create", side_effect=ProgrammingError("boom")) as mock_goc:
+            _sync_mac_address("aa:bb:cc:dd:ee:ff", hostname="test-host")
+        # Verify get_or_create was actually invoked (not bypassed by an earlier error)
+        mock_goc.assert_called()
+
+    def test_parse_error_is_caught_and_logged(self):
+        """Invalid MAC string (caught by netaddr) does not propagate an exception."""
+        try:
+            from dcim.models import MACAddress  # noqa: F401
+        except ImportError:
+            self.skipTest("MACAddress not available in this NetBox version")
+
+        try:
+            from netaddr import EUI  # noqa: F401
+        except ImportError:
+            self.skipTest("netaddr not available")
+
+        from netbox_kea.sync import _sync_mac_address
+
+        # Passing an obviously invalid MAC address exercises the AddrFormatError path.
+        _sync_mac_address("not-a-mac", hostname="test-host")
+        # No exception should propagate — AddrFormatError is caught and logged.
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Additional coverage tests — lines missed in earlier batches
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestFindPrefixLengthPostgresPath(TestCase):
+    """find_prefix_length: PostgreSQL-native lookup success path (lines 56-57)."""
+
+    def test_postgresql_path_returns_prefix_length(self):
+        """When the net_contains filter returns a prefix, return its length."""
+        from unittest.mock import MagicMock, patch
+
+        mock_prefix = MagicMock()
+        mock_prefix.prefix = "10.0.0.0/24"
+        with patch("ipam.models.Prefix.objects") as mock_objects:
+            mock_objects.filter.return_value.order_by.return_value.first.return_value = mock_prefix
+            from netbox_kea.sync import find_prefix_length
+
+            result = find_prefix_length("10.0.0.1")
+        self.assertEqual(result, 24)
+
+
+class TestFindPrefixLengthSQLiteException(TestCase):
+    """find_prefix_length: exception in SQLite fallback loop is skipped (lines 68-69)."""
+
+    def test_exception_in_sqlite_loop_is_ignored(self):
+        """When IPNetwork parsing raises inside the loop, the exception is caught and we continue."""
+        from unittest.mock import MagicMock, patch
+
+        mock_bad_prefix = MagicMock()
+        mock_bad_prefix.prefix = "bad-prefix"
+        with patch("ipam.models.Prefix.objects") as mock_objects:
+            from django.db.utils import ProgrammingError
+
+            # PostgreSQL path raises so we fall through to SQLite
+            mock_objects.filter.return_value.order_by.return_value.first.side_effect = ProgrammingError
+            mock_objects.all.return_value = [mock_bad_prefix]
+            from netbox_kea.sync import find_prefix_length
+
+            # Should not raise — the exception per prefix is caught and skipped
+            result = find_prefix_length("10.0.0.1")
+        # No valid prefix found → falls back to default 32
+        self.assertEqual(result, 32)
+
+
+class TestSyncMacAddressImportErrors(TestCase):
+    """_sync_mac_address: ImportError for dcim.models and netaddr (lines 270-271, 274-276)."""
+
+    def test_dcim_import_error_returns_silently(self):
+        """When dcim.models cannot be imported, _sync_mac_address returns without raising."""
+        import sys
+        from unittest.mock import patch
+
+        # Remove cached module so the import inside _sync_mac_address triggers ImportError
+        with patch.dict(sys.modules, {"dcim.models": None}):
+            # Need to reload sync so the inner import runs fresh
+            import importlib
+
+            import netbox_kea.sync as sync_mod
+
+            importlib.reload(sync_mod)
+            # Should not raise even when dcim is unavailable
+            sync_mod._sync_mac_address("aa:bb:cc:dd:ee:ff", hostname="test")
+
+    def test_netaddr_import_error_returns_silently(self):
+        """When netaddr cannot be imported, _sync_mac_address logs debug and returns."""
+        import sys
+        import types
+        from unittest.mock import patch
+
+        # Inject a fake dcim.models so that import inside sync succeeds for the
+        # dcim path but netaddr import fails, exercising the netaddr fallback.
+        fake_dcim = types.ModuleType("dcim.models")
+        fake_dcim.MACAddress = type("MACAddress", (), {})
+        with patch.dict(sys.modules, {"netaddr": None, "netaddr.core": None, "dcim.models": fake_dcim}):
+            import importlib
+
+            import netbox_kea.sync as sync_mod
+
+            importlib.reload(sync_mod)
+            # Should not raise even when netaddr is unavailable
+            sync_mod._sync_mac_address("aa:bb:cc:dd:ee:ff", hostname="test")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TestCleanupStaleIpsBatch
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestCleanupStaleIpsBatch(TestCase):
+    """cleanup_stale_ips_batch accumulates IPs per hostname and runs cleanup once."""
+
+    _KEA_DESC = "Synced from Kea DHCP lease"
+
+    @override_settings(PLUGINS_CONFIG=_STALE_PLUGINS_CONFIG)
+    def test_batch_protects_sibling_ips_with_same_hostname(self):
+        """Two records with the same hostname: batch cleanup excludes both IPs."""
+        from ipam.models import IPAddress as NbIP
+
+        from netbox_kea.sync import cleanup_stale_ips_batch
+
+        # Simulate a stale IP that should be cleaned
+        NbIP.objects.create(
+            address="10.60.0.99/32",
+            status="dhcp",
+            dns_name="shared-host.example.com",
+            description=self._KEA_DESC,
+        )
+        # The two IPs that were synced in this batch
+        NbIP.objects.create(
+            address="10.60.0.1/32",
+            status="dhcp",
+            dns_name="shared-host.example.com",
+            description=self._KEA_DESC,
+        )
+        NbIP.objects.create(
+            address="10.60.0.2/32",
+            status="dhcp",
+            dns_name="shared-host.example.com",
+            description=self._KEA_DESC,
+        )
+        synced = [
+            {"ip-address": "10.60.0.1", "hostname": "shared-host.example.com"},
+            {"ip-address": "10.60.0.2", "hostname": "shared-host.example.com"},
+        ]
+        cleaned = cleanup_stale_ips_batch(synced)
+        self.assertEqual(cleaned, 1)
+        # Both synced IPs survive
+        self.assertTrue(NbIP.objects.filter(address__startswith="10.60.0.1/").exists())
+        self.assertTrue(NbIP.objects.filter(address__startswith="10.60.0.2/").exists())
+        # Stale IP removed
+        self.assertFalse(NbIP.objects.filter(address__startswith="10.60.0.99/").exists())
+
+    @override_settings(PLUGINS_CONFIG=_STALE_PLUGINS_CONFIG)
+    def test_batch_cleans_per_hostname(self):
+        """Different hostnames each get their own cleanup pass."""
+        from ipam.models import IPAddress as NbIP
+
+        from netbox_kea.sync import cleanup_stale_ips_batch
+
+        NbIP.objects.create(
+            address="10.61.0.99/32", status="dhcp", dns_name="host-a.example.com", description=self._KEA_DESC
+        )
+        NbIP.objects.create(
+            address="10.62.0.99/32", status="dhcp", dns_name="host-b.example.com", description=self._KEA_DESC
+        )
+        synced = [
+            {"ip-address": "10.61.0.1", "hostname": "host-a.example.com"},
+            {"ip-address": "10.62.0.1", "hostname": "host-b.example.com"},
+        ]
+        cleaned = cleanup_stale_ips_batch(synced)
+        self.assertEqual(cleaned, 2)
+
+    @override_settings(PLUGINS_CONFIG=_NONE_PLUGINS_CONFIG)
+    def test_batch_returns_zero_in_none_mode(self):
+        """When stale_ip_cleanup=none, batch cleanup does nothing."""
+        from netbox_kea.sync import cleanup_stale_ips_batch
+
+        synced = [{"ip-address": "10.63.0.1", "hostname": "h.example.com"}]
+        self.assertEqual(cleanup_stale_ips_batch(synced), 0)
+
+    @override_settings(PLUGINS_CONFIG=_STALE_PLUGINS_CONFIG)
+    def test_batch_skips_records_without_hostname(self):
+        """Records with no hostname are silently skipped."""
+        from netbox_kea.sync import cleanup_stale_ips_batch
+
+        synced = [{"ip-address": "10.64.0.1"}]
+        self.assertEqual(cleanup_stale_ips_batch(synced), 0)
+
+    @override_settings(PLUGINS_CONFIG=_STALE_PLUGINS_CONFIG)
+    def test_batch_handles_multi_address_reservations(self):
+        """Reservations with ip-addresses list accumulate all IPs for the hostname."""
+        from ipam.models import IPAddress as NbIP
+
+        from netbox_kea.sync import cleanup_stale_ips_batch
+
+        NbIP.objects.create(
+            address="2001:db8::99/128", status="reserved", dns_name="v6-host.example.com", description=self._KEA_DESC
+        )
+        synced = [
+            {
+                "ip-addresses": ["2001:db8::1", "2001:db8::2"],
+                "hostname": "v6-host.example.com",
+            }
+        ]
+        cleaned = cleanup_stale_ips_batch(synced)
+        self.assertEqual(cleaned, 1)
+
+    @override_settings(PLUGINS_CONFIG=_STALE_PLUGINS_CONFIG)
+    def test_batch_keeps_current_multi_address_v6_ip(self):
+        """IPv6 addresses still present in ip-addresses list are kept, not cleaned."""
+        from ipam.models import IPAddress as NbIP
+
+        from netbox_kea.sync import cleanup_stale_ips_batch
+
+        # This address IS in the current synced set — must not be cleaned.
+        NbIP.objects.create(
+            address="2001:db8::1/128", status="reserved", dns_name="v6-host.example.com", description=self._KEA_DESC
+        )
+        synced = [
+            {
+                "ip-addresses": ["2001:db8::1", "2001:db8::2"],
+                "hostname": "v6-host.example.com",
+            }
+        ]
+        cleaned = cleanup_stale_ips_batch(synced)
+        self.assertEqual(cleaned, 0)
+        self.assertTrue(NbIP.objects.filter(address__startswith="2001:db8::1/").exists())
+
+    @override_settings(PLUGINS_CONFIG=_STALE_PLUGINS_CONFIG)
+    def test_empty_batch_returns_zero(self):
+        """Empty synced_records returns 0."""
+        from netbox_kea.sync import cleanup_stale_ips_batch
+
+        self.assertEqual(cleanup_stale_ips_batch([]), 0)
+
+    @override_settings(PLUGINS_CONFIG=_STALE_PLUGINS_CONFIG)
+    def test_batch_groups_by_address_family(self):
+        """Mixed v4/v6 records for same hostname clean both families independently."""
+        from ipam.models import IPAddress as NbIP
+
+        from netbox_kea.sync import cleanup_stale_ips_batch
+
+        # Stale v4 and v6 IPs for the same hostname
+        NbIP.objects.create(
+            address="10.70.0.99/32", status="dhcp", dns_name="dual.example.com", description=self._KEA_DESC
+        )
+        NbIP.objects.create(
+            address="2001:db8:70::99/128", status="dhcp", dns_name="dual.example.com", description=self._KEA_DESC
+        )
+        synced = [
+            {"ip-address": "10.70.0.1", "hostname": "dual.example.com"},
+            {"ip-addresses": ["2001:db8:70::1"], "hostname": "dual.example.com"},
+        ]
+        cleaned = cleanup_stale_ips_batch(synced)
+        self.assertEqual(cleaned, 2)
+        # Both stale IPs cleaned
+        self.assertFalse(NbIP.objects.filter(address__startswith="10.70.0.99/").exists())
+        self.assertFalse(NbIP.objects.filter(address__startswith="2001:db8:70::99/").exists())
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TestSyncCleanupParameter
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestSyncCleanupParameter(TestCase):
+    """cleanup=False suppresses per-record stale-IP cleanup."""
+
+    _KEA_DESC = "Synced from Kea DHCP lease"
+
+    @override_settings(PLUGINS_CONFIG=_STALE_PLUGINS_CONFIG)
+    def test_lease_sync_cleanup_false_preserves_stale_ip(self):
+        """With cleanup=False, sync_lease_to_netbox does not remove stale IPs."""
+        from ipam.models import IPAddress as NbIP
+
+        from netbox_kea.sync import sync_lease_to_netbox
+
+        NbIP.objects.create(
+            address="10.70.0.10/32",
+            status="dhcp",
+            dns_name="test-host.example.com",
+            description=self._KEA_DESC,
+        )
+        sync_lease_to_netbox(
+            {"ip-address": "10.70.0.20", "hostname": "test-host.example.com", "hw-address": "aa:bb:cc:dd:00:01"},
+            cleanup=False,
+        )
+        # Old IP preserved because cleanup=False
+        self.assertTrue(NbIP.objects.filter(address__startswith="10.70.0.10/").exists())
+        # New IP created
+        self.assertTrue(NbIP.objects.filter(address__startswith="10.70.0.20/").exists())
+
+    @override_settings(PLUGINS_CONFIG=_STALE_PLUGINS_CONFIG)
+    def test_lease_sync_cleanup_true_removes_stale_ip(self):
+        """With cleanup=True (default), stale IPs are still removed."""
+        from ipam.models import IPAddress as NbIP
+
+        from netbox_kea.sync import sync_lease_to_netbox
+
+        NbIP.objects.create(
+            address="10.71.0.10/32",
+            status="dhcp",
+            dns_name="host2.example.com",
+            description=self._KEA_DESC,
+        )
+        sync_lease_to_netbox(
+            {"ip-address": "10.71.0.20", "hostname": "host2.example.com", "hw-address": "aa:bb:cc:dd:00:02"},
+        )
+        self.assertFalse(NbIP.objects.filter(address__startswith="10.71.0.10/").exists())
+
+    @override_settings(PLUGINS_CONFIG=_STALE_PLUGINS_CONFIG)
+    def test_reservation_sync_cleanup_false_preserves_stale_ip(self):
+        """With cleanup=False, sync_reservation_to_netbox does not remove stale IPs."""
+        from ipam.models import IPAddress as NbIP
+
+        from netbox_kea.sync import sync_reservation_to_netbox
+
+        NbIP.objects.create(
+            address="10.72.0.10/32",
+            status="reserved",
+            dns_name="rsv-host.example.com",
+            description="Synced from Kea DHCP reservation",
+        )
+        sync_reservation_to_netbox(
+            {"ip-address": "10.72.0.20", "hostname": "rsv-host.example.com", "hw-address": "bb:cc:dd:ee:00:01"},
+            cleanup=False,
+        )
+        # Old IP preserved
+        self.assertTrue(NbIP.objects.filter(address__startswith="10.72.0.10/").exists())
+        # New IP created
+        self.assertTrue(NbIP.objects.filter(address__startswith="10.72.0.20/").exists())
