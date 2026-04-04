@@ -335,9 +335,11 @@ class ServerReservations4View(generic.ObjectView):
             else:
                 logger.exception("Failed to fetch DHCPv4 reservations")
                 messages.error(request, "Failed to load reservations from Kea.")
+                reservations = []
         except (requests.RequestException, ValueError):
             logger.exception("Unexpected error fetching DHCPv4 reservations")
             messages.error(request, "Failed to load reservations from Kea.")
+            reservations = []
 
         # Inject server_pk so the actions template column can build edit/delete URLs.
         for r in reservations:
@@ -410,9 +412,11 @@ class ServerReservations6View(generic.ObjectView):
             else:
                 logger.exception("Failed to fetch DHCPv6 reservations")
                 messages.error(request, "Failed to load reservations from Kea.")
+                reservations = []
         except (requests.RequestException, ValueError):
             logger.exception("Unexpected error fetching DHCPv6 reservations")
             messages.error(request, "Failed to load reservations from Kea.")
+            reservations = []
 
         for r in reservations:
             r["server_pk"] = server.pk
