@@ -1210,7 +1210,7 @@ class TestWarnReservationPoolOverlapCoverage(_ViewTestBase):
         from netbox_kea.views import _warn_reservation_pool_overlap
 
         client = MagicMock()
-        client.command.side_effect = RuntimeError("network failure")
+        client.command.side_effect = req.RequestException("network failure")
         request = self._make_request()
         # Should not raise; exception is swallowed
         _warn_reservation_pool_overlap(request, client, 4, subnet_id=1, ip_str="10.0.0.5")

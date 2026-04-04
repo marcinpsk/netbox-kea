@@ -44,7 +44,9 @@ class _BaseSubnetOptionsEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin,
         except (KeaException, requests.RequestException, ValueError):
             logger.exception("Failed to fetch config-get for subnet options (subnet %s)", subnet_id)
             return None
-        config = resp[0].get("arguments") or {}
+        config = (
+            resp[0].get("arguments") if isinstance(resp, list) and resp and isinstance(resp[0], dict) else None
+        ) or {}
         for s in config.get(dhcp_key, {}).get(subnet_key, []):
             if s.get("id") == subnet_id:
                 return s
@@ -197,7 +199,9 @@ class _BaseServerOptionsEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin,
         except (KeaException, requests.RequestException, ValueError):
             logger.exception("Failed to fetch config-get for server options (version %s)", self.dhcp_version)
             return None
-        config = resp[0].get("arguments") or {}
+        config = (
+            resp[0].get("arguments") if isinstance(resp, list) and resp and isinstance(resp[0], dict) else None
+        ) or {}
         return config.get(dhcp_key, {}).get("option-data", [])
 
     def get(self, request, pk: int):

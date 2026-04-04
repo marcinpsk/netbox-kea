@@ -334,7 +334,7 @@ class TestServerSharedNetwork4AddView(_ViewTestBase):
             {"result": 1, "text": "subnet_cmds not loaded"}, index=0
         )
         response = self.client.post(self._url(), {"name": "net-prod"})
-        self.assertIn(response.status_code, (200, 302))
+        self.assertEqual(response.status_code, 302)
         self._assert_no_none_pk_redirect(response)
 
     def test_get_requires_login(self):
@@ -418,7 +418,7 @@ class TestServerSharedNetwork4DeleteView(_ViewTestBase):
             {"result": 1, "text": "network not found"}, index=0
         )
         response = self.client.post(self._url())
-        self.assertIn(response.status_code, (200, 302))
+        self.assertEqual(response.status_code, 302)
         self._assert_no_none_pk_redirect(response)
 
     def test_get_requires_login(self):

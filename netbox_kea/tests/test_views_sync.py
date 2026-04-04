@@ -556,7 +556,7 @@ class TestImportLoopValueError(_ViewTestBase):
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestBulkReservationSyncExceptNarrowing(_ViewTestBase):
-    """_BaseBulkReservationSyncView must not swallow programming errors."""
+    """_BaseBulkReservationSyncView catches AttributeError from _fetch_reservations_from_server and redirects."""
 
     @patch("netbox_kea.views.sync_views._fetch_reservations_from_server")
     def test_attribute_error_is_caught_and_redirects(self, mock_fetch):

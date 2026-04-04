@@ -310,7 +310,11 @@ class KeaClient:
         """
         service = f"dhcp{version}"
         list_resp = self.command(f"subnet{version}-list", service=[service])
-        subnets: list[dict[str, Any]] = (list_resp[0].get("arguments") or {}).get("subnets", [])
+        subnets: list[dict[str, Any]] = (
+            (list_resp[0].get("arguments") or {}).get("subnets", [])
+            if isinstance(list_resp, list) and list_resp and isinstance(list_resp[0], dict)
+            else []
+        )
 
         target = ipaddress.ip_address(ip_address)
         for subnet in subnets:
@@ -364,7 +368,11 @@ class KeaClient:
                     f"subnet{version}-list",
                     service=[service],
                 )
-                existing = (list_resp[0].get("arguments") or {}).get("subnets", [])
+                existing = (
+                    (list_resp[0].get("arguments") or {}).get("subnets", [])
+                    if isinstance(list_resp, list) and list_resp and isinstance(list_resp[0], dict)
+                    else []
+                )
                 max_id = max((s.get("id", 0) for s in existing), default=0)
                 subnet_def["id"] = max_id + 1
             except KeaException:
@@ -1147,7 +1155,9 @@ class KeaClient:
             if isinstance(raw, dict):
                 config = {k: v for k, v in raw.items() if k != "hash"}
             else:
-                logger.warning("config-get for service %s returned unexpected arguments shape: %r", service, raw)
+                logger.warning(
+                    "config-get for service %s returned unexpected arguments shape: %s", service, type(raw).__name__
+                )
 
         # Step 2: config-test — pass the live config as arguments (required by Kea).
         if config is not None:
@@ -1161,7 +1171,9 @@ class KeaClient:
                     logger.warning("config-test failed for service %s — aborting config-write", service)
                     raise KeaConfigPersistError(service, exc) from exc
             except (requests.RequestException, ValueError) as exc:
-                logger.warning("config-test transport error for service %s — aborting config-write: %s", service, exc)
+                logger.warning(
+                    "config-test transport error for service %s — aborting config-write", service, exc_info=True
+                )
                 raise KeaConfigPersistError(service, exc) from exc
 
         # Step 3: write to disk.

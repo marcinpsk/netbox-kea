@@ -127,13 +127,12 @@ def _compute_ip_status(desired_from: str, current_status: str | None) -> str:
     """
     if desired_from == "lease":
         # If this IP already has a reservation, the device is now in use → active.
-        # Keep active if it was already active (don't downgrade on re-sync).
-        if current_status in ("reserved", "active"):
+        if current_status == "reserved":
             return "active"
         return "dhcp"
     # "reservation"
     # If this IP already has a lease, the device is active as well → active.
-    if current_status in ("dhcp", "active"):
+    if current_status == "dhcp":
         return "active"
     return "reserved"
 

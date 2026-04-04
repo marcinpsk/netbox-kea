@@ -273,7 +273,8 @@ class TestSubnetOptionsView(_ViewTestBase):
         )
         self.assertEqual(response.status_code, 302)  # redirect back to subnets
         self._assert_redirect_to_integer_pk(response)
-        # Error stored in messages — check it doesn't crash
+        msgs = list(django_messages.get_messages(response.wsgi_request))
+        self.assertTrue(any(m.level == django_messages.ERROR for m in msgs))
 
     def test_get_requires_login(self):
         """Unauthenticated GET is redirected."""
@@ -428,6 +429,8 @@ class TestServerOptionsView(_ViewTestBase):
             },
         )
         self.assertEqual(response.status_code, 302)
+        msgs = list(django_messages.get_messages(response.wsgi_request))
+        self.assertTrue(any(m.level == django_messages.ERROR for m in msgs))
 
     def test_get_requires_login(self):
         """Unauthenticated GET is redirected."""
@@ -755,7 +758,7 @@ class TestSubnetOptionsPostInvalid(_ViewTestBase):
         MockKeaClient.return_value.command.return_value = [
             {
                 "result": 0,
-                "arguments": {"subnet4": [{"id": 42, "subnet": "10.0.0.0/24", "option-data": []}]},
+                "arguments": {"Dhcp4": {"subnet4": [{"id": 42, "subnet": "10.0.0.0/24", "option-data": []}]}},
             }
         ]
         # Post one form entry missing required 'name' field — makes formset invalid
@@ -995,7 +998,8 @@ class TestSubnetOptionsSharedNetwork(_ViewTestBase):
         ]
         # Submit invalid formset (missing TOTAL_FORMS)
         response = self.client.post(self._url(), {"form-0-name": "dns-servers"})
-        self.assertIn(response.status_code, (200, 302))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "10.99.0.0/24")
 
 
 # ---------------------------------------------------------------------------

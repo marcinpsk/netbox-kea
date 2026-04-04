@@ -168,11 +168,7 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
         # Derive cursor from original Kea response to avoid rewinding on filtered entries
         if count == per_page and original_leases:
             last = original_leases[-1]
-            next_cursor = (
-                str(last["ip-address"])
-                if isinstance(last, dict) and last.get("ip-address")
-                else (f"{raw_leases[-1]['ip-address']}" if raw_leases else None)
-            )
+            next_cursor = str(last["ip-address"]) if _is_valid_lease_entry(last) else None
         else:
             next_cursor = None
         for i, lease in enumerate(raw_leases):
@@ -383,11 +379,7 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
                     break
                 # Derive cursor from original Kea response to avoid rewinding on filtered entries
                 last = original_leases[-1]
-                cursor = (
-                    str(last["ip-address"])
-                    if isinstance(last, dict) and last.get("ip-address")
-                    else raw_leases[-1]["ip-address"]
-                )
+                cursor = str(last["ip-address"]) if _is_valid_lease_entry(last) else None
         except KeaException as exc:
             logger.exception("Failed to fetch all leases for export on server %s", instance.pk)
             messages.error(request, kea_error_hint(exc))

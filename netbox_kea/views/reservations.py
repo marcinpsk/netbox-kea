@@ -196,10 +196,8 @@ def _enrich_reservations_with_lease_status(client: "KeaClient", reservations: li
                 if not resp or not isinstance(resp[0], dict):
                     return False  # malformed envelope — indeterminate state
                 if resp[0].get("result") != 3:
-                    args = resp[0].get("arguments")
-                    if not isinstance(args, dict):
-                        return False  # malformed payload — indeterminate state
-                    leases = args.get("leases")
+                    args = resp[0].get("arguments") or {}
+                    leases = args.get("leases") or []
                     if not isinstance(leases, list):
                         return False  # malformed payload — indeterminate state
                     return [lease.get("ip-address", "") for lease in leases if isinstance(lease, dict)]

@@ -55,7 +55,7 @@
         {% endfor %}
       </tbody>
     </table>
-    {% else %}
+    {% elif not options_load_error %}
     <div class="p-3 text-muted">No custom option definitions defined.</div>
     {% endif %}
   </div>

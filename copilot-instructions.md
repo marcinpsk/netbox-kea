@@ -147,7 +147,7 @@ IP status follows a semantic lifecycle:
 - `reserved` — reservation only, no active lease (admin intent)
 - `active` — both reservation AND active lease (planned + in use)
 
-`cleanup_stale_ips_batch()` groups by `(hostname, address_family)` to avoid v4 cleanup deleting v6 entries. Batch cleanup is skipped when errors > 0 to avoid data loss. Single-sync paths (`_sync()`) correctly use `cleanup=True` because they operate on one record with a complete keep-set.
+`cleanup_stale_ips_batch()` groups by `(hostname, address_family)` to avoid v4 cleanup deleting v6 entries. Batch cleanup is skipped when errors > 0 to avoid data loss. Single-sync paths (`_sync()`) intentionally use `cleanup=False`; a one-record sync never has a complete keep-set so cleanup must be deferred to the batch path.
 
 ### Kea DHCP option aliases
 

@@ -302,8 +302,8 @@ class TestSyncReservationToNetbox(TestCase):
         ip_obj, _ = sync_reservation_to_netbox(self._RESERVATION)
         self.assertIn("Kea", ip_obj.description)
 
-    def test_updates_existing_active_ip_stays_active_with_reservation_sync(self):
-        """An existing 'active' IP (has a lease) stays 'active' when a reservation is synced."""
+    def test_updates_existing_active_ip_downgrades_to_reserved_with_reservation_sync(self):
+        """An existing 'active' IP + reservation sync alone → 'reserved' (no lease context)."""
         from ipam.models import IPAddress as NbIP
 
         from netbox_kea.sync import sync_reservation_to_netbox
@@ -311,7 +311,7 @@ class TestSyncReservationToNetbox(TestCase):
         NbIP.objects.create(address="192.168.51.200/32", status="active")
         ip_obj, created = sync_reservation_to_netbox(self._RESERVATION)
         self.assertFalse(created)
-        self.assertEqual(ip_obj.status, "active")
+        self.assertEqual(ip_obj.status, "reserved")
 
     # ── F8: MAC address sync ──────────────────────────────────────────────────
 
@@ -454,9 +454,9 @@ class TestComputeIpStatus(TestCase):
         """Reserved IP + lease → both reservation and lease → active."""
         self.assertEqual(self._call("lease", "reserved"), "active")
 
-    def test_existing_active_ip_lease_sync_stays_active(self):
-        """Already-active IP + another lease sync → stays active (don't downgrade)."""
-        self.assertEqual(self._call("lease", "active"), "active")
+    def test_existing_active_ip_lease_sync_downgrades_to_dhcp(self):
+        """Already-active IP + lease sync alone → 'dhcp' (no reservation context)."""
+        self.assertEqual(self._call("lease", "active"), "dhcp")
 
     def test_existing_dhcp_ip_lease_sync_stays_dhcp(self):
         self.assertEqual(self._call("lease", "dhcp"), "dhcp")
@@ -469,8 +469,9 @@ class TestComputeIpStatus(TestCase):
         """dhcp IP + reservation → now has both → active."""
         self.assertEqual(self._call("reservation", "dhcp"), "active")
 
-    def test_existing_active_ip_reservation_sync_stays_active(self):
-        self.assertEqual(self._call("reservation", "active"), "active")
+    def test_existing_active_ip_reservation_sync_downgrades_to_reserved(self):
+        """Already-active IP + reservation sync alone → 'reserved' (no lease context)."""
+        self.assertEqual(self._call("reservation", "active"), "reserved")
 
     def test_existing_deprecated_ip_reservation_sync_returns_reserved(self):
         self.assertEqual(self._call("reservation", "deprecated"), "reserved")
@@ -505,14 +506,15 @@ class TestSyncLeaseStatusSemantics(TestCase):
         ip_obj, _ = sync_lease_to_netbox(self._LEASE)
         self.assertEqual(ip_obj.status, "active")
 
-    def test_lease_keeps_active_when_already_active(self):
+    def test_lease_downgrades_active_to_dhcp_without_reservation(self):
+        """Re-syncing a lease when IP is 'active' downgrades to 'dhcp'; no reservation → not active."""
         from ipam.models import IPAddress as NbIP
 
         from netbox_kea.sync import sync_lease_to_netbox
 
         NbIP.objects.create(address="10.10.0.50/32", status="active", description="Synced from Kea DHCP lease")
         ip_obj, _ = sync_lease_to_netbox(self._LEASE)
-        self.assertEqual(ip_obj.status, "active")
+        self.assertEqual(ip_obj.status, "dhcp")
 
 
 class TestSyncReservationStatusSemantics(TestCase):
@@ -541,14 +543,15 @@ class TestSyncReservationStatusSemantics(TestCase):
         ip_obj, _ = sync_reservation_to_netbox(self._RESERVATION)
         self.assertEqual(ip_obj.status, "active")
 
-    def test_reservation_sync_keeps_active_when_already_active(self):
+    def test_reservation_downgrades_active_to_reserved_without_lease(self):
+        """Re-syncing a reservation when IP is 'active' downgrades to 'reserved'; no lease → not active."""
         from ipam.models import IPAddress as NbIP
 
         from netbox_kea.sync import sync_reservation_to_netbox
 
         NbIP.objects.create(address="10.10.0.60/32", status="active", description="Synced from Kea DHCP lease")
         ip_obj, _ = sync_reservation_to_netbox(self._RESERVATION)
-        self.assertEqual(ip_obj.status, "active")
+        self.assertEqual(ip_obj.status, "reserved")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1187,6 +1190,27 @@ class TestCleanupStaleIpsBatch(TestCase):
         ]
         cleaned = cleanup_stale_ips_batch(synced)
         self.assertEqual(cleaned, 1)
+
+    @override_settings(PLUGINS_CONFIG=_STALE_PLUGINS_CONFIG)
+    def test_batch_keeps_current_multi_address_v6_ip(self):
+        """IPv6 addresses still present in ip-addresses list are kept, not cleaned."""
+        from ipam.models import IPAddress as NbIP
+
+        from netbox_kea.sync import cleanup_stale_ips_batch
+
+        # This address IS in the current synced set — must not be cleaned.
+        NbIP.objects.create(
+            address="2001:db8::1/128", status="reserved", dns_name="v6-host.example.com", description=self._KEA_DESC
+        )
+        synced = [
+            {
+                "ip-addresses": ["2001:db8::1", "2001:db8::2"],
+                "hostname": "v6-host.example.com",
+            }
+        ]
+        cleaned = cleanup_stale_ips_batch(synced)
+        self.assertEqual(cleaned, 0)
+        self.assertTrue(NbIP.objects.filter(address__startswith="2001:db8::1/").exists())
 
     @override_settings(PLUGINS_CONFIG=_STALE_PLUGINS_CONFIG)
     def test_empty_batch_returns_zero(self):

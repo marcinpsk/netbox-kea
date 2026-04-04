@@ -621,7 +621,7 @@ class _SubnetBaseForm(forms.Form):
             try:
                 ipaddress.ip_address(entry)
             except ValueError as exc:  # noqa: PERF203
-                raise forms.ValidationError(f"Invalid DNS server IP address '{entry}': {exc}") from exc
+                raise forms.ValidationError(f"Invalid DNS server IP address: '{entry}'") from exc
         return entries
 
     def clean_ntp_servers(self) -> list[str]:  # noqa: D102
@@ -1143,7 +1143,7 @@ class SharedNetworkEditForm(forms.Form):
             try:
                 ipaddress.ip_address(entry)
             except ValueError as exc:  # noqa: PERF203
-                raise forms.ValidationError(f"Invalid DNS server IP address '{entry}': {exc}") from exc
+                raise forms.ValidationError(f"Invalid DNS server IP address: '{entry}'") from exc
         return ",".join(entries)
 
     def clean_ntp_servers(self) -> str:
@@ -1158,7 +1158,7 @@ class SharedNetworkEditForm(forms.Form):
             try:
                 ipaddress.ip_address(entry)
             except ValueError as exc:  # noqa: PERF203
-                raise forms.ValidationError(f"Invalid NTP server IP address '{entry}': {exc}") from exc
+                raise forms.ValidationError(f"Invalid NTP server IP address: '{entry}'") from exc
         return ",".join(entries)
 
 
