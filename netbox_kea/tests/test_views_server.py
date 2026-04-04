@@ -596,10 +596,8 @@ class TestStatusViewNullArgs(_ViewTestBase):
     @patch("netbox_kea.models.KeaClient")
     def test_get_ca_status_empty_args_degrades_gracefully(self, MockKeaClient):
         """_get_ca_status degrades gracefully when arguments is empty."""
-        call_n = [0]
 
         def _side(cmd, service=None, **kwargs):
-            call_n[0] += 1
             if cmd == "status-get" and (not service or "dhcp" not in service[0]):
                 return [{"result": 0, "arguments": {}}]  # empty → falsy
             if cmd == "version-get" and (not service or "dhcp" not in service[0]):
