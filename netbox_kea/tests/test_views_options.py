@@ -593,6 +593,7 @@ class TestServerOptionDef4AddView(_ViewTestBase):
         """POST with missing required fields returns 200 (form re-render)."""
         response = self.client.post(self._url(), {"name": "", "code": "", "type": "", "space": ""})
         self.assertEqual(response.status_code, 200)
+        MockKeaClient.return_value.option_def_add.assert_not_called()
 
     def test_get_requires_login(self):
         """Unauthenticated GET redirects to login."""
@@ -760,6 +761,7 @@ class TestSubnetOptionsPostInvalid(_ViewTestBase):
         )
         # Invalid formset can re-render OR redirect depending on validation path
         self.assertEqual(response.status_code, 200)
+        MockKeaClient.return_value.subnet_update_options.assert_not_called()
 
     @patch("netbox_kea.models.KeaClient")
     def test_post_with_always_send_includes_flag(self, MockKeaClient):
@@ -814,11 +816,10 @@ class TestServerOptionsPostInvalid(_ViewTestBase):
             },
         )
         self.assertEqual(response.status_code, 200)
+        MockKeaClient.return_value.server_update_options.assert_not_called()
 
     @patch("netbox_kea.models.KeaClient")
     def test_post_with_always_send_includes_flag(self, MockKeaClient):
-        """POST with always_send=True must pass always-send=True in options."""
-        MockKeaClient.return_value.server_update_options.return_value = None
         self.client.post(
             self._url(),
             {
@@ -857,6 +858,7 @@ class TestOptionDefAddExceptions(_ViewTestBase):
         """POST with invalid form (missing required fields) must return 200."""
         response = self.client.post(self._url(), {"name": "", "code": "", "type": "", "space": ""})
         self.assertEqual(response.status_code, 200)
+        MockKeaClient.return_value.option_def_add.assert_not_called()
 
     @patch("netbox_kea.models.KeaClient")
     def test_post_with_array_true_passes_flag(self, MockKeaClient):
@@ -991,6 +993,7 @@ class TestSubnetOptionsSharedNetwork(_ViewTestBase):
         response = self.client.post(self._url(), {"form-0-name": "dns-servers"})
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "10.99.0.0/24")
+        MockKeaClient.return_value.subnet_update_options.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

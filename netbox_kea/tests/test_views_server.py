@@ -24,6 +24,7 @@ connectivity checks.
 
 from unittest.mock import patch
 
+import requests
 from django.contrib.contenttypes.models import ContentType
 from django.test import override_settings
 from django.urls import reverse
@@ -565,7 +566,7 @@ class TestKeaChangeMixinPermission(_ViewTestBase):
         perm = ObjectPermission(name="view-servers", actions=["view"])
         perm.save()
         perm.users.add(readonly)
-        perm.object_types.add(ContentType.objects.get_for_model(self.server.__class__))
+        perm.object_types.add(ContentType.objects.get_for_model(Server))
         self.client.force_login(readonly)
         url = reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk])
         response = self.client.get(url)
@@ -698,9 +699,7 @@ class TestGetGlobalOptionsGenericException(_ViewTestBase):
 
         def _side(cmd, service=None, **kwargs):
             if cmd == "config-get":
-                import requests as _requests
-
-                raise _requests.RequestException("unexpected crash")
+                raise requests.RequestException("unexpected crash")
             if cmd == "status-get" and (not service or "dhcp" not in (service or [""])[0]):
                 return [{"result": 0, "arguments": {"pid": 1, "uptime": 0, "reload": 0}}]
             if cmd == "status-get":
