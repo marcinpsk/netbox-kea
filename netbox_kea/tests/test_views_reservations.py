@@ -115,10 +115,9 @@ _VALID_RESERVATION4_POST = {
     **_FORMSET_MGMT,
 }
 
-# Edit-shaped payload — omits disabled fields (subnet_id, ip_address) as a real browser would.
+# Edit-shaped payload — omits disabled fields (subnet_id, ip_address, identifier_type,
+# identifier) as a real browser would; the view reads identifiers from reservation_get.
 _VALID_RESERVATION4_EDIT_POST = {
-    "identifier_type": "hw-address",
-    "identifier": "aa:bb:cc:dd:ee:ff",
     "hostname": "test-host",
     **_FORMSET_MGMT,
 }
@@ -132,11 +131,10 @@ _VALID_RESERVATION6_POST = {
     **_FORMSET_MGMT,
 }
 
-# Edit form payload — subnet_id and ip_addresses are disabled on the edit form so
-# browsers never submit them.  The view reads ip-addresses from reservation_get instead.
+# Edit form payload — subnet_id, ip_addresses, identifier_type, identifier are all
+# disabled on the edit form so browsers never submit them.  The view reads ip-addresses
+# and identifier data from reservation_get instead.
 _VALID_RESERVATION6_EDIT_POST = {
-    "identifier_type": "duid",
-    "identifier": "00:01:00:01:12:34:56:78:aa:bb:cc:dd:ee:ff",
     "hostname": "test-host6",
     **_FORMSET_MGMT,
 }
@@ -392,15 +390,17 @@ class TestReservation6AddExceptions(_ViewTestBase):
 
     @patch("netbox_kea.models.KeaClient")
     def test_kea_exception_rerenders_form(self, MockKeaClient):
-        """KeaException must re-render the form with an error message."""
+        """KeaException must re-render the form with an error message, not leak raw Kea text."""
         from netbox_kea.kea import KeaException
 
-        MockKeaClient.return_value.reservation_add.side_effect = KeaException(
-            {"result": 1, "text": "conflict"}, index=0
-        )
+        sentinel = "kea-detail-should-not-leak"
+        MockKeaClient.return_value.reservation_add.side_effect = KeaException({"result": 1, "text": sentinel}, index=0)
         MockKeaClient.return_value.reservation_get_page.return_value = ([], 0, 0)
         response = self.client.post(self._url(), _VALID_RESERVATION6_POST)
         self.assertEqual(response.status_code, 200)
+        msgs = list(django_messages.get_messages(response.wsgi_request))
+        self.assertTrue(any(m.level == django_messages.ERROR for m in msgs))
+        self.assertFalse(any(sentinel in str(m) for m in msgs))
 
     @patch("netbox_kea.models.KeaClient")
     def test_generic_exception_propagates(self, MockKeaClient):
@@ -746,6 +746,8 @@ class TestGetReservationOptionsFormsetPartial(_ViewTestBase):
         post_data = {"options-0-name": "domain-name-servers"}  # no TOTAL_FORMS key
         fs, is_valid = _build_reservation_options_formset(post_data)
         self.assertFalse(is_valid)
+        self.assertTrue(fs.is_bound)
+        self.assertTrue(fs.non_form_errors())
 
 
 # ---------------------------------------------------------------------------

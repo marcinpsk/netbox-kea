@@ -584,6 +584,8 @@ class TestServerOptionDef4AddView(_ViewTestBase):
             {"name": "my-opt", "code": 200, "type": "string", "space": "dhcp4", "array": False},
         )
         self.assertIn(response.status_code, (200, 302))
+        msgs = list(django_messages.get_messages(response.wsgi_request))
+        self.assertTrue(any(m.level == django_messages.ERROR for m in msgs))
         MockKeaClient.return_value.option_def_add.assert_called_once()
 
     @patch("netbox_kea.models.KeaClient")
@@ -681,6 +683,8 @@ class TestServerOptionDef4DeleteView(_ViewTestBase):
         response = self.client.post(self._url())
         self.assertIn(response.status_code, (200, 302))
         self._assert_no_none_pk_redirect(response)
+        msgs = list(django_messages.get_messages(response.wsgi_request))
+        self.assertTrue(any(m.level == django_messages.ERROR for m in msgs))
         MockKeaClient.return_value.option_def_del.assert_called_once()
 
     def test_get_requires_login(self):
@@ -870,8 +874,8 @@ class TestOptionDefAddExceptions(_ViewTestBase):
         )
         call_kwargs = MockKeaClient.return_value.option_def_add.call_args
         self.assertIsNotNone(call_kwargs, "option_def_add was not called")
-        opt = (call_kwargs.kwargs or {}).get("option_def") or {}
-        self.assertTrue(opt.get("array"))
+        opt = (call_kwargs.kwargs or {}).get("option_def") or (call_kwargs.args[1] if len(call_kwargs.args) > 1 else {})
+        self.assertIs(opt.get("array"), True)
 
     @patch("netbox_kea.models.KeaClient")
     def test_post_kea_exception_shows_error_and_redirects(self, MockKeaClient):
