@@ -2908,6 +2908,7 @@ class TestEnrichReservationsWithLeaseStatus(SimpleTestCase):
         _enrich_reservations_with_lease_status(mock_client, reservations, version=4)
         # indeterminate — has_active_lease should not be set
         self.assertNotIn("has_active_lease", reservations[0])
+        mock_client.clone.assert_called()
 
     def test_malformed_leases_not_list_sets_indeterminate(self):
         """When arguments.leases is not a list, has_active_lease stays unset."""
@@ -2919,6 +2920,7 @@ class TestEnrichReservationsWithLeaseStatus(SimpleTestCase):
         reservations = [{"subnet-id": 1, "ip-address": "10.0.0.1"}]
         _enrich_reservations_with_lease_status(mock_client, reservations, version=4)
         self.assertNotIn("has_active_lease", reservations[0])
+        mock_client.clone.assert_called()
 
     def test_kea_exception_non_result_2_sets_indeterminate(self):
         """KeaException with result!=2 (not hook-missing) marks subnet as indeterminate."""
@@ -2930,6 +2932,7 @@ class TestEnrichReservationsWithLeaseStatus(SimpleTestCase):
         reservations = [{"subnet-id": 1, "ip-address": "10.0.0.1"}]
         _enrich_reservations_with_lease_status(mock_client, reservations, version=4)
         self.assertNotIn("has_active_lease", reservations[0])
+        mock_client.clone.assert_called()
 
     def test_requests_exception_sets_indeterminate(self):
         """requests.RequestException in worker thread marks subnet as indeterminate."""
@@ -2943,6 +2946,7 @@ class TestEnrichReservationsWithLeaseStatus(SimpleTestCase):
         reservations = [{"subnet-id": 1, "ip-address": "10.0.0.1"}]
         _enrich_reservations_with_lease_status(mock_client, reservations, version=4)
         self.assertNotIn("has_active_lease", reservations[0])
+        mock_client.clone.assert_called()
 
     def test_empty_reservations_returns_early(self):
         """Empty reservations list returns immediately without any API calls."""
@@ -2971,6 +2975,18 @@ class TestEnrichReservationsWithLeaseStatus(SimpleTestCase):
         reservations = [{"subnet-id": 1, "ip-address": "10.0.0.1"}]
         _enrich_reservations_with_lease_status(mock_client, reservations, version=4)
         self.assertFalse(reservations[0]["has_active_lease"])
+        mock_client.clone.assert_called()
+
+    def test_arguments_none_sets_no_active_lease(self):
+        """When Kea returns arguments=null, has_active_lease should be False (empty lease list)."""
+        from netbox_kea.views.reservations import _enrich_reservations_with_lease_status
+
+        mock_client = self._make_mock_client(
+            command_return=[{"result": 0, "arguments": None}],
+        )
+        reservations = [{"subnet-id": 1, "ip-address": "10.0.0.1"}]
+        _enrich_reservations_with_lease_status(mock_client, reservations, version=4)
+        self.assertFalse(reservations[0]["has_active_lease"])
 
     def test_v6_enrichment_checks_ip_addresses_list(self):
         """DHCPv6 enrichment checks ip-addresses list for active lease match."""
@@ -2989,6 +3005,7 @@ class TestEnrichReservationsWithLeaseStatus(SimpleTestCase):
         reservations = [{"subnet-id": 1, "ip-addresses": ["2001:db8::100"]}]
         _enrich_reservations_with_lease_status(mock_client, reservations, version=6)
         self.assertTrue(reservations[0]["has_active_lease"])
+        mock_client.clone.assert_called()
 
 
 # ─────────────────────────────────────────────────────────────────────────────

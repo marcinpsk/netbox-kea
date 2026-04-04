@@ -355,7 +355,9 @@ class TestServerOptionsView(_ViewTestBase):
         )
         call_kwargs = MockKeaClient.return_value.server_update_options.call_args
         self.assertIsNotNone(call_kwargs, "server_update_options was not called")
-        options_arg = (call_kwargs.kwargs or {}).get("options") or []
+        options_arg = (call_kwargs.kwargs or {}).get("options") or (
+            call_kwargs.args[1] if len(call_kwargs.args) > 1 else []
+        )
         self.assertEqual(len(options_arg), 1)
         self.assertEqual(options_arg[0]["name"], "routers")
 
@@ -783,7 +785,9 @@ class TestSubnetOptionsPostInvalid(_ViewTestBase):
         )
         call_kwargs = MockKeaClient.return_value.subnet_update_options.call_args
         self.assertIsNotNone(call_kwargs, "subnet_update_options was not called")
-        options = (call_kwargs.kwargs or {}).get("options") or (call_kwargs.args[2] if call_kwargs.args else [])
+        options = (call_kwargs.kwargs or {}).get("options") or (
+            call_kwargs.args[2] if len(call_kwargs.args) > 2 else []
+        )
         always_send_opts = [o for o in options if o.get("always-send")]
         self.assertGreaterEqual(len(always_send_opts), 1)
 
@@ -835,7 +839,9 @@ class TestServerOptionsPostInvalid(_ViewTestBase):
         )
         call_kwargs = MockKeaClient.return_value.server_update_options.call_args
         self.assertIsNotNone(call_kwargs, "server_update_options was not called")
-        options = (call_kwargs.kwargs or {}).get("options") or (call_kwargs.args[2] if call_kwargs.args else [])
+        options = (call_kwargs.kwargs or {}).get("options") or (
+            call_kwargs.args[1] if len(call_kwargs.args) > 1 else []
+        )
         always_send_opts = [o for o in options if o.get("always-send")]
         self.assertGreaterEqual(len(always_send_opts), 1)
 

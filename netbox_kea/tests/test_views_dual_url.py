@@ -45,19 +45,21 @@ def _make_dual_url_server(**kwargs) -> Server:
 
 
 def _assert_keaclient_url(test_case, MockKeaClient, expected_url):
-    """Assert KeaClient was instantiated with the expected URL."""
+    """Assert KeaClient was instantiated with the expected URL at least once."""
     test_case.assertTrue(
         MockKeaClient.called,
         "KeaClient was never instantiated — the view may not have called get_client().",
     )
-    call_args = MockKeaClient.call_args
-    actual_url = call_args.kwargs.get("url") if call_args.kwargs else None
-    if actual_url is None and call_args.args:
-        actual_url = call_args.args[0]
-    test_case.assertEqual(
-        actual_url,
+    actual_urls = []
+    for call in MockKeaClient.call_args_list:
+        url = call.kwargs.get("url") if call.kwargs else None
+        if url is None and call.args:
+            url = call.args[0]
+        actual_urls.append(url)
+    test_case.assertIn(
         expected_url,
-        f"KeaClient URL mismatch. call_args={call_args}",
+        actual_urls,
+        f"KeaClient was never instantiated with {expected_url!r}. All calls: {MockKeaClient.call_args_list}",
     )
 
 

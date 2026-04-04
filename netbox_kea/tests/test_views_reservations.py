@@ -1015,8 +1015,6 @@ class TestWarnPoolReservationOverlapCoverage(_ViewTestBase):
 
     def test_cidr_pool_creates_ipnetwork(self):
         """Line 2503: pool_str without dash (CIDR) → IPNetwork path."""
-        from unittest.mock import MagicMock
-
         from netbox_kea.views import _warn_pool_reservation_overlap
 
         client = MagicMock()
