@@ -587,6 +587,7 @@ class TestReservation6EditExceptions(_ViewTestBase):
         MockKeaClient.return_value.reservation_get.side_effect = KeaException({"result": 1, "text": "error"}, index=0)
         response = self.client.get(self._url())
         self.assertEqual(response.status_code, 302)
+        self._assert_no_none_pk_redirect(response)
 
     @patch("netbox_kea.models.KeaClient")
     def test_get_redirects_on_transport_error(self, MockKeaClient):
@@ -596,6 +597,7 @@ class TestReservation6EditExceptions(_ViewTestBase):
         MockKeaClient.return_value.reservation_get.side_effect = _req.ConnectionError("down")
         response = self.client.get(self._url())
         self.assertEqual(response.status_code, 302)
+        self._assert_no_none_pk_redirect(response)
 
     @patch("netbox_kea.models.KeaClient")
     def test_get_404_when_reservation_not_found(self, MockKeaClient):
@@ -737,7 +739,7 @@ class TestReservation6DeleteExceptions(_ViewTestBase):
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestGetReservationOptionsFormsetPartial(_ViewTestBase):
-    """Line 77-79: partial options-* keys but no management form."""
+    """_build_reservation_options_formset: partial options-* keys but no management form."""
 
     def test_partial_options_keys_returns_invalid_formset(self):
         """When options-* keys exist without management form, returns (formset, False)."""
@@ -757,7 +759,7 @@ class TestGetReservationOptionsFormsetPartial(_ViewTestBase):
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestReservationListEnrichmentExceptions(_ViewTestBase):
-    """Lines 1641-1663: enrichment thread pool exception paths."""
+    """_enrich_reservations_with_lease_status: thread pool exception paths."""
 
     def _url(self):
         return reverse("plugins:netbox_kea:server_reservations4", args=[self.server.pk])
@@ -1014,10 +1016,10 @@ class TestReservation6EditOptionDataAndSync(_ViewTestBase):
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestEnrichReservationsLeaseStatusCoverage(_ViewTestBase):
-    """Direct unit tests for _enrich_reservations_with_lease_status helper."""
+    """_enrich_reservations_with_lease_status: direct unit tests for edge cases."""
 
     def test_result3_returns_empty_list(self):
-        """Line 1641: lease-get-all result=3 → _fetch_leases_for_subnet returns []."""
+        """lease-get-all result=3 → _fetch_leases_for_subnet returns [] → active lease not found."""
         from netbox_kea.views import _enrich_reservations_with_lease_status
 
         client = MagicMock()
@@ -1033,7 +1035,7 @@ class TestEnrichReservationsLeaseStatusCoverage(_ViewTestBase):
         self.assertFalse(reservations[0].get("has_active_lease", True))
 
     def test_kea_exception_non_result2_returns_empty(self):
-        """Line 1645: KeaException with result != 2 → _fetch_leases_for_subnet returns []."""
+        """KeaException with result != 2 → subnet treated as indeterminate → has_active_lease unset."""
         from netbox_kea.kea import KeaException
         from netbox_kea.views import _enrich_reservations_with_lease_status
 
@@ -1049,7 +1051,7 @@ class TestEnrichReservationsLeaseStatusCoverage(_ViewTestBase):
         self.assertNotIn("has_active_lease", reservations[0])
 
     def test_no_subnet_id_skips_fetch(self):
-        """Line 1650: reservations with no subnet-id → unique_subnet_ids empty → early return."""
+        """Reservations without subnet-id → unique_subnet_ids empty → enrichment returns early."""
         from netbox_kea.views import _enrich_reservations_with_lease_status
 
         client = MagicMock()
@@ -1059,7 +1061,7 @@ class TestEnrichReservationsLeaseStatusCoverage(_ViewTestBase):
         client.clone.assert_not_called()
 
     def test_as_completed_exception_returns_early(self):
-        """Lines 1662-1663: exception from as_completed → outer except fires."""
+        """Exception from as_completed → outer except swallows it and enrichment returns early."""
         from netbox_kea.views import _enrich_reservations_with_lease_status
 
         client = MagicMock()
@@ -1077,7 +1079,7 @@ class TestEnrichReservationsLeaseStatusCoverage(_ViewTestBase):
 
 
 # ---------------------------------------------------------------------------
-# _warn_pool_reservation_overlap — edge cases (lines 2503, 2516, 2522-2523)
+# _warn_pool_reservation_overlap — edge cases
 # ---------------------------------------------------------------------------
 
 
@@ -1086,7 +1088,7 @@ class TestWarnPoolReservationOverlapCoverage(_ViewTestBase):
     """Direct unit tests for _warn_pool_reservation_overlap helper."""
 
     def test_cidr_pool_creates_ipnetwork(self):
-        """Line 2503: pool_str without dash (CIDR) → IPNetwork path."""
+        """Pool string without dash (CIDR notation) → IPNetwork path is taken."""
         from netbox_kea.views import _warn_pool_reservation_overlap
 
         client = MagicMock()
@@ -1098,7 +1100,7 @@ class TestWarnPoolReservationOverlapCoverage(_ViewTestBase):
         self.assertEqual(len(msgs), 0)
 
     def test_host_with_different_subnet_id_skipped(self):
-        """Line 2516: host whose subnet-id != requested subnet_id → continue."""
+        """Host whose subnet-id doesn't match the requested subnet_id is skipped."""
         from netbox_kea.views import _warn_pool_reservation_overlap
 
         client = MagicMock()
@@ -1113,7 +1115,7 @@ class TestWarnPoolReservationOverlapCoverage(_ViewTestBase):
         self.assertEqual(len(msgs), 0)
 
     def test_malformed_ip_skipped(self):
-        """Lines 2522-2523: malformed IP string → IPAddress raises → inner except fires."""
+        """Malformed IP address string is silently skipped (inner except path)."""
         from netbox_kea.views import _warn_pool_reservation_overlap
 
         client = MagicMock()
@@ -1128,7 +1130,7 @@ class TestWarnPoolReservationOverlapCoverage(_ViewTestBase):
 
 
 # ---------------------------------------------------------------------------
-# _warn_reservation_pool_overlap — edge cases (lines 2566, 2571, 2579-2580)
+# _warn_reservation_pool_overlap — edge cases
 # ---------------------------------------------------------------------------
 
 
@@ -1137,7 +1139,7 @@ class TestWarnReservationPoolOverlapCoverage(_ViewTestBase):
     """Direct unit tests for _warn_reservation_pool_overlap helper."""
 
     def test_empty_pool_string_skipped(self):
-        """Line 2566: pool entry with empty pool string → continue."""
+        """Pool entry with empty pool string is silently skipped."""
         from netbox_kea.views import _warn_reservation_pool_overlap
 
         client = MagicMock()
@@ -1154,7 +1156,7 @@ class TestWarnReservationPoolOverlapCoverage(_ViewTestBase):
         self.assertEqual(len(msgs), 0)
 
     def test_cidr_pool_creates_ipnetwork(self):
-        """Line 2571: CIDR pool (no dash) → IPNetwork path."""
+        """Pool string without dash (CIDR notation) → IPNetwork path is taken."""
         from netbox_kea.views import _warn_reservation_pool_overlap
 
         client = MagicMock()
@@ -1172,7 +1174,7 @@ class TestWarnReservationPoolOverlapCoverage(_ViewTestBase):
         self.assertEqual(msgs[0].level, django_messages.WARNING)
 
     def test_client_command_exception_swallowed(self):
-        """Lines 2579-2580: client.command raises → outer except fires."""
+        """Exception from client.command is swallowed and no warning is issued."""
         from netbox_kea.views import _warn_reservation_pool_overlap
 
         client = MagicMock()

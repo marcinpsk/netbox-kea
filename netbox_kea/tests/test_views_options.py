@@ -139,6 +139,7 @@ class TestSubnetOptionsView(_ViewTestBase):
             },
         )
         call_kwargs = MockKeaClient.return_value.subnet_update_options.call_args
+        self.assertIsNotNone(call_kwargs, "subnet_update_options was not called")
         # options argument — use explicit keyword or positional lookup
         options_arg = call_kwargs.kwargs.get("options") or (call_kwargs.args[2] if len(call_kwargs.args) > 2 else [])
         self.assertEqual(len(options_arg), 1)
@@ -571,6 +572,7 @@ class TestServerOptionDef4AddView(_ViewTestBase):
             {"name": "my-opt", "code": 200, "type": "string", "space": "dhcp4", "array": False},
         )
         call_args = MockKeaClient.return_value.option_def_add.call_args
+        self.assertIsNotNone(call_args, "option_def_add was not called")
         kwargs = call_args.kwargs or call_args[1]
         args = call_args.args or call_args[0]
         version = kwargs.get("version") or (args[0] if args else None)

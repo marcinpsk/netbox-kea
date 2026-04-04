@@ -695,13 +695,11 @@ class TestGetGlobalOptionsGenericException(_ViewTestBase):
 
     @patch("netbox_kea.models.KeaClient")
     def test_generic_exception_swallowed(self, MockKeaClient):
-        """Line 222: generic Exception in config-get for global options is logged and the page renders normally."""
+        """Generic exception in config-get for global options is swallowed and the page renders normally."""
 
         def _side(cmd, service=None, **kwargs):
             if cmd == "config-get":
                 raise requests.RequestException("unexpected crash")
-            if cmd == "status-get" and (not service or "dhcp" not in (service or [""])[0]):
-                return [{"result": 0, "arguments": {"pid": 1, "uptime": 0, "reload": 0}}]
             if cmd == "status-get":
                 return [{"result": 0, "arguments": {"pid": 1, "uptime": 0, "reload": 0}}]
             if cmd == "version-get":

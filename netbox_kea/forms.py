@@ -312,6 +312,7 @@ _IDENTIFIER_TYPE_CHOICES_V4 = [
     ("client-id", "Client ID"),
     ("circuit-id", "Circuit ID"),
     ("flex-id", "Flex ID"),
+    ("remote-id", "Remote ID"),
 ]
 
 _IDENTIFIER_TYPE_CHOICES_V6 = [
@@ -319,6 +320,7 @@ _IDENTIFIER_TYPE_CHOICES_V6 = [
     ("hw-address", "Hardware Address"),
     ("client-id", "Client ID"),
     ("flex-id", "Flex ID"),
+    ("remote-id", "Remote ID"),
 ]
 
 

@@ -44,10 +44,10 @@ _ALL_IDENTIFIER_KEYS: tuple[str, ...] = (
 )
 
 #: Identifier types supported for DHCPv4 reservations (preference order).
-_V4_IDENTIFIER_TYPES: list[str] = ["hw-address", "client-id", "circuit-id", "flex-id"]
+_V4_IDENTIFIER_TYPES: list[str] = ["hw-address", "client-id", "circuit-id", "flex-id", "remote-id"]
 
 #: Identifier types supported for DHCPv6 reservations (preference order).
-_V6_IDENTIFIER_TYPES: list[str] = ["duid", "hw-address", "client-id", "flex-id"]
+_V6_IDENTIFIER_TYPES: list[str] = ["duid", "hw-address", "client-id", "flex-id", "remote-id"]
 
 #: All known identifier keys (hyphen and underscore variants) for journal
 #: log extraction — includes normalised forms that Kea may return after
@@ -62,6 +62,8 @@ _JOURNAL_IDENTIFIER_KEYS: tuple[str, ...] = (
     "circuit_id",
     "flex-id",
     "flex_id",
+    "remote-id",
+    "remote_id",
 )
 
 
