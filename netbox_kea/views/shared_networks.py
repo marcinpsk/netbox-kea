@@ -60,7 +60,12 @@ class BaseServerSharedNetworksView(generic.ObjectChildrenView):
         can_change = Server.objects.restrict(request.user, "change").filter(pk=parent.pk).exists()
         result = []
         for sn in dhcp_conf.get("shared-networks", []):
+            if not isinstance(sn, dict):
+                logger.warning("Skipping non-dict shared-network entry on server %s", parent.pk)
+                continue
             subnets = sn.get(f"subnet{self.dhcp_version}", [])
+            if not isinstance(subnets, list):
+                subnets = []
             subnet_links = [
                 {
                     "cidr": s["subnet"],
@@ -74,7 +79,7 @@ class BaseServerSharedNetworksView(generic.ObjectChildrenView):
                     ),
                 }
                 for s in subnets
-                if s.get("subnet")
+                if isinstance(s, dict) and s.get("subnet")
             ]
             result.append(
                 {

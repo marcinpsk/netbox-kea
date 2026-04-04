@@ -1215,6 +1215,7 @@ class TestServerSubnet4PoolAddView(_ReservationViewBase):
         )
         response = self.client.post(self._url(), {"pool": "10.0.0.50-10.0.0.99"})
         self.assertEqual(response.status_code, 302)
+        mock_client.pool_add.assert_called_once()
         storage = list(get_messages(response.wsgi_request))
         # Should have success message but no overlap warning
         self.assertFalse(any(m.level == WARNING for m in storage))

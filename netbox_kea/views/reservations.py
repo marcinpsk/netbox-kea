@@ -512,7 +512,7 @@ class ServerReservation4AddView(_KeaChangeMixin, generic.ObjectView):
                 reservation["option-data"] = option_data
             try:
                 client = server.get_client(version=4)
-            except (KeaException, requests.RequestException, ValueError):
+            except ValueError:
                 logger.exception("Failed to create DHCPv4 client for server %s", server.pk)
                 messages.error(request, "Failed to connect to Kea: see server logs.")
                 return render(
@@ -618,7 +618,7 @@ class ServerReservation6AddView(_KeaChangeMixin, generic.ObjectView):
                 reservation["option-data"] = option_data
             try:
                 client = server.get_client(version=6)
-            except (KeaException, requests.RequestException, ValueError):
+            except ValueError:
                 logger.exception("Failed to create DHCPv6 client for server %s", server.pk)
                 messages.error(request, "Failed to connect to Kea: see server logs.")
                 return render(
