@@ -69,6 +69,7 @@ class TestServerDHCP4EnableView(_ViewTestBase):
         response = self.client.post(self._url(), follow=True)
         self.assertEqual(response.status_code, 200)
         self.assertNotIn("kea_secret_internal_url", response.content.decode())
+        self.assertIn("Failed to enable DHCPv4:", response.content.decode())
 
     @patch("netbox_kea.models.KeaClient")
     def test_post_on_unexpected_exception_shows_error_and_redirects(self, MockKeaClient):
@@ -81,6 +82,7 @@ class TestServerDHCP4EnableView(_ViewTestBase):
         response = self.client.post(self._url(), follow=True)
         self.assertEqual(response.status_code, 200)
         self.assertNotIn("kea_secret_transport_marker", response.content.decode())
+        self.assertIn("An internal error occurred.", response.content.decode())
 
     def test_get_requires_login(self):
         """Unauthenticated GET must redirect to login."""
@@ -167,6 +169,7 @@ class TestServerDHCP4DisableView(_ViewTestBase):
         response = self.client.post(self._url(), {"confirm": "1"}, follow=True)
         self.assertEqual(response.status_code, 200)
         self.assertNotIn("kea_secret_internal_url", response.content.decode())
+        self.assertIn("Failed to disable DHCPv4:", response.content.decode())
 
     @patch("netbox_kea.models.KeaClient")
     def test_post_on_unexpected_exception_shows_error_and_redirects(self, MockKeaClient):
@@ -179,6 +182,7 @@ class TestServerDHCP4DisableView(_ViewTestBase):
         response = self.client.post(self._url(), {"confirm": "1"}, follow=True)
         self.assertEqual(response.status_code, 200)
         self.assertNotIn("kea_secret_transport_marker", response.content.decode())
+        self.assertIn("An internal error occurred.", response.content.decode())
 
     def test_get_requires_login(self):
         """Unauthenticated GET must redirect to login."""

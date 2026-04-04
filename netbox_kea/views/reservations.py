@@ -197,7 +197,10 @@ def _enrich_reservations_with_lease_status(client: "KeaClient", reservations: li
                 if not resp or not isinstance(resp[0], dict):
                     return False  # malformed envelope — indeterminate state
                 if resp[0].get("result") != 3:
-                    args = resp[0].get("arguments") or {}
+                    raw_args = resp[0].get("arguments")
+                    if not isinstance(raw_args, dict):
+                        return False  # malformed payload — indeterminate state
+                    args = raw_args
                     leases = args.get("leases") or []
                     if not isinstance(leases, list):
                         return False  # malformed payload — indeterminate state
@@ -730,14 +733,14 @@ class ServerReservation4EditView(_KeaChangeMixin, generic.ObjectView):
             "return_url": return_url,
         }
         # Key fields are URL-derived — disable so browsers render them read-only.
-        for field_name in ("subnet_id", "ip_address"):
+        for field_name in ("subnet_id", "ip_address", "identifier_type", "identifier"):
             context["form"].fields[field_name].disabled = True
         try:
             lease = server.get_client(version=4).lease_get_by_ip(4, ip_address)
             if lease and lease.get("hostname") and lease.get("hostname") != reservation.get("hostname", ""):
                 context["lease_diff"] = {"hostname": lease["hostname"]}
-        except (KeaException, requests.RequestException, ValueError) as e:
-            logger.debug("Could not fetch lease for reservation edit diff (ip=%s): %s", ip_address, e)
+        except (KeaException, requests.RequestException, ValueError):
+            logger.debug("Could not fetch lease for reservation edit diff (ip=%s)", ip_address, exc_info=True)
         return render(request, self.template_name, context)
 
     def post(self, request: HttpRequest, pk: int, subnet_id: int, ip_address: str) -> HttpResponse:
@@ -876,14 +879,14 @@ class ServerReservation6EditView(_KeaChangeMixin, generic.ObjectView):
             "return_url": return_url,
         }
         # Key fields are URL-derived — disable so browsers render them read-only.
-        for field_name in ("subnet_id", "ip_addresses"):
+        for field_name in ("subnet_id", "ip_addresses", "identifier_type", "identifier"):
             context["form"].fields[field_name].disabled = True
         try:
             lease = server.get_client(version=6).lease_get_by_ip(6, ip_address)
             if lease and lease.get("hostname") and lease.get("hostname") != reservation.get("hostname", ""):
                 context["lease_diff"] = {"hostname": lease["hostname"]}
-        except (KeaException, requests.RequestException, ValueError) as e:
-            logger.debug("Could not fetch lease for reservation edit diff (ip=%s): %s", ip_address, e)
+        except (KeaException, requests.RequestException, ValueError):
+            logger.debug("Could not fetch lease for reservation edit diff (ip=%s)", ip_address, exc_info=True)
         return render(request, self.template_name, context)
 
     def post(self, request: HttpRequest, pk: int, subnet_id: int, ip_address: str) -> HttpResponse:

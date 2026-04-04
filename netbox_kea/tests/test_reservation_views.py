@@ -2009,6 +2009,12 @@ class TestReservationSyncToNetBox(_ReservationViewBase):
         mock_client = MockKeaClient.return_value
         mock_client.reservation_update.return_value = None
         mock_sync.return_value = (MagicMock(), False)
+        mock_client.reservation_get.return_value = {
+            "ip-address": "192.168.1.100",
+            "hw-address": "aa:bb:cc:dd:ee:ff",
+            "subnet-id": 1,
+            "hostname": "testhost.example.com",
+        }
         response = self.client.post(self._edit4_url(), self._valid_post_data(sync=True))
         self.assertEqual(response.status_code, 302)
         mock_sync.assert_called_once()
@@ -2978,7 +2984,7 @@ class TestEnrichReservationsWithLeaseStatus(SimpleTestCase):
         mock_client.clone.assert_called()
 
     def test_arguments_none_sets_no_active_lease(self):
-        """When Kea returns arguments=null, has_active_lease should be False (empty lease list)."""
+        """When Kea returns arguments=null, has_active_lease should be left unset (indeterminate state)."""
         from netbox_kea.views.reservations import _enrich_reservations_with_lease_status
 
         mock_client = self._make_mock_client(
@@ -2986,7 +2992,7 @@ class TestEnrichReservationsWithLeaseStatus(SimpleTestCase):
         )
         reservations = [{"subnet-id": 1, "ip-address": "10.0.0.1"}]
         _enrich_reservations_with_lease_status(mock_client, reservations, version=4)
-        self.assertFalse(reservations[0]["has_active_lease"])
+        self.assertNotIn("has_active_lease", reservations[0])
 
     def test_v6_enrichment_checks_ip_addresses_list(self):
         """DHCPv6 enrichment checks ip-addresses list for active lease match."""

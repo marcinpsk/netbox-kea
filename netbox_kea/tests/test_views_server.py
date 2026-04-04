@@ -325,6 +325,7 @@ class TestServerBulkImportView(_ViewTestBase):
         url = reverse("plugins:netbox_kea:server_bulk_import")
         # setUp() already created a server named 'test-kea'
         csv_data = "name,server_url,dhcp4,dhcp6\r\ntest-kea,https://dup.example.com,true,false\r\n"
+        MockKeaClient.return_value.command.side_effect = _kea_command_side_effect
         response = self.client.post(
             url,
             {"data": csv_data, "format": "csv", "csv_delimiter": ","},
@@ -332,6 +333,16 @@ class TestServerBulkImportView(_ViewTestBase):
         self.assertIn(response.status_code, [200, 400])
         # Only one server with this name must exist
         self.assertEqual(Server.objects.filter(name="test-kea").count(), 1)
+        # Duplicate name must produce a form error, not a 500
+        form = response.context.get("form")
+        if form is not None:
+            self.assertTrue(
+                any(
+                    "name" in str(e).lower() or "already" in str(e).lower()
+                    for e in (form.errors.get("name", []) or form.non_field_errors())
+                ),
+                "Expected duplicate name error in form",
+            )
 
 
 # ─────────────────────────────────────────────────────────────────────────────

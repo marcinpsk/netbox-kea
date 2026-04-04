@@ -115,6 +115,14 @@ _VALID_RESERVATION4_POST = {
     **_FORMSET_MGMT,
 }
 
+# Edit-shaped payload — omits disabled fields (subnet_id, ip_address) as a real browser would.
+_VALID_RESERVATION4_EDIT_POST = {
+    "identifier_type": "hw-address",
+    "identifier": "aa:bb:cc:dd:ee:ff",
+    "hostname": "test-host",
+    **_FORMSET_MGMT,
+}
+
 _VALID_RESERVATION6_POST = {
     "subnet_id": "1",
     "ip_addresses": "2001:db8::1",
@@ -448,7 +456,7 @@ class TestReservation4EditExceptions(_ViewTestBase):
         from netbox_kea.kea import PartialPersistError
 
         MockKeaClient.return_value.reservation_update.side_effect = PartialPersistError("dhcp4", Exception("write"))
-        response = self.client.post(self._url(), _VALID_RESERVATION4_POST, follow=True)
+        response = self.client.post(self._url(), _VALID_RESERVATION4_EDIT_POST, follow=True)
         self.assertEqual(response.status_code, 200)
         msgs = list(response.context["messages"])
         self.assertTrue(any(m.level == django_messages.WARNING for m in msgs))
@@ -459,7 +467,7 @@ class TestReservation4EditExceptions(_ViewTestBase):
         from netbox_kea.kea import PartialPersistError
 
         MockKeaClient.return_value.reservation_update.side_effect = PartialPersistError("dhcp4", Exception("write"))
-        post_data = {**_VALID_RESERVATION4_POST, "sync_to_netbox": "on"}
+        post_data = {**_VALID_RESERVATION4_EDIT_POST, "sync_to_netbox": "on"}
         with patch("netbox_kea.views.reservations.sync_reservation_to_netbox") as mock_sync:
             mock_sync.return_value = (MagicMock(), True)
             response = self.client.post(self._url(), post_data, follow=True)
@@ -472,7 +480,7 @@ class TestReservation4EditExceptions(_ViewTestBase):
         from netbox_kea.kea import PartialPersistError
 
         MockKeaClient.return_value.reservation_update.side_effect = PartialPersistError("dhcp4", Exception("write"))
-        post_data = {**_VALID_RESERVATION4_POST, "sync_to_netbox": "on"}
+        post_data = {**_VALID_RESERVATION4_EDIT_POST, "sync_to_netbox": "on"}
         with patch("netbox_kea.views.reservations.sync_reservation_to_netbox", side_effect=ValueError("sync")):
             response = self.client.post(self._url(), post_data, follow=True)
         msgs = list(response.context["messages"])
@@ -480,27 +488,31 @@ class TestReservation4EditExceptions(_ViewTestBase):
 
     @patch("netbox_kea.models.KeaClient")
     def test_post_kea_exception_rerenders_form(self, MockKeaClient):
-        """KeaException on reservation_update must re-render the form."""
+        """KeaException on reservation_update must re-render the form with error message."""
         from netbox_kea.kea import KeaException
 
         MockKeaClient.return_value.reservation_update.side_effect = KeaException(
             {"result": 1, "text": "not found"}, index=0
         )
-        response = self.client.post(self._url(), _VALID_RESERVATION4_POST)
+        response = self.client.post(self._url(), _VALID_RESERVATION4_EDIT_POST)
         self.assertEqual(response.status_code, 200)
+        msgs = list(response.context["messages"])
+        self.assertTrue(
+            any("Kea reported an error" in str(m) for m in msgs), "Expected KeaException hint in flash message"
+        )
 
     @patch("netbox_kea.models.KeaClient")
     def test_post_generic_exception_propagates(self, MockKeaClient):
         """Unexpected exception on reservation_update must propagate."""
         MockKeaClient.return_value.reservation_update.side_effect = RuntimeError("crash")
         with self.assertRaises(RuntimeError):
-            self.client.post(self._url(), _VALID_RESERVATION4_POST)
+            self.client.post(self._url(), _VALID_RESERVATION4_EDIT_POST)
 
     @patch("netbox_kea.models.KeaClient")
     def test_post_success_with_sync(self, MockKeaClient):
         """Successful update with sync_to_netbox calls sync and shows info."""
         MockKeaClient.return_value.reservation_update.return_value = None
-        post_data = {**_VALID_RESERVATION4_POST, "sync_to_netbox": "on"}
+        post_data = {**_VALID_RESERVATION4_EDIT_POST, "sync_to_netbox": "on"}
         with patch("netbox_kea.views.reservations.sync_reservation_to_netbox") as mock_sync:
             mock_sync.return_value = (MagicMock(), False)
             response = self.client.post(self._url(), post_data, follow=True)
@@ -511,7 +523,7 @@ class TestReservation4EditExceptions(_ViewTestBase):
     def test_post_success_sync_failure_shows_warning(self, MockKeaClient):
         """Successful update where sync raises must show warning."""
         MockKeaClient.return_value.reservation_update.return_value = None
-        post_data = {**_VALID_RESERVATION4_POST, "sync_to_netbox": "on"}
+        post_data = {**_VALID_RESERVATION4_EDIT_POST, "sync_to_netbox": "on"}
         with patch("netbox_kea.views.reservations.sync_reservation_to_netbox", side_effect=ValueError("oops")):
             response = self.client.post(self._url(), post_data, follow=True)
         msgs = list(response.context["messages"])
@@ -1027,8 +1039,6 @@ class TestWarnPoolReservationOverlapCoverage(_ViewTestBase):
 
     def test_host_with_different_subnet_id_skipped(self):
         """Line 2516: host whose subnet-id != requested subnet_id → continue."""
-        from unittest.mock import MagicMock
-
         from netbox_kea.views import _warn_pool_reservation_overlap
 
         client = MagicMock()
@@ -1044,8 +1054,6 @@ class TestWarnPoolReservationOverlapCoverage(_ViewTestBase):
 
     def test_malformed_ip_skipped(self):
         """Lines 2522-2523: malformed IP string → IPAddress raises → inner except fires."""
-        from unittest.mock import MagicMock
-
         from netbox_kea.views import _warn_pool_reservation_overlap
 
         client = MagicMock()
@@ -1070,8 +1078,6 @@ class TestWarnReservationPoolOverlapCoverage(_ViewTestBase):
 
     def test_empty_pool_string_skipped(self):
         """Line 2566: pool entry with empty pool string → continue."""
-        from unittest.mock import MagicMock
-
         from netbox_kea.views import _warn_reservation_pool_overlap
 
         client = MagicMock()
@@ -1089,8 +1095,6 @@ class TestWarnReservationPoolOverlapCoverage(_ViewTestBase):
 
     def test_cidr_pool_creates_ipnetwork(self):
         """Line 2571: CIDR pool (no dash) → IPNetwork path."""
-        from unittest.mock import MagicMock
-
         from netbox_kea.views import _warn_reservation_pool_overlap
 
         client = MagicMock()
@@ -1109,8 +1113,6 @@ class TestWarnReservationPoolOverlapCoverage(_ViewTestBase):
 
     def test_client_command_exception_swallowed(self):
         """Lines 2579-2580: client.command raises → outer except fires."""
-        from unittest.mock import MagicMock
-
         from netbox_kea.views import _warn_reservation_pool_overlap
 
         client = MagicMock()
