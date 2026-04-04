@@ -1014,22 +1014,8 @@ class TestReservation6EditOptionDataAndSync(_ViewTestBase):
 class TestEnrichReservationsLeaseStatusCoverage(_ViewTestBase):
     """Direct unit tests for _enrich_reservations_with_lease_status helper."""
 
-    def _make_request_with_messages(self):
-        from django.contrib.messages.storage.fallback import FallbackStorage
-        from django.test import RequestFactory
-
-        factory = RequestFactory()
-        request = factory.get("/")
-        request.user = self.user
-        setattr(request, "session", "session")
-        storage = FallbackStorage(request)
-        setattr(request, "_messages", storage)
-        return request
-
     def test_result3_returns_empty_list(self):
         """Line 1641: lease-get-all result=3 → _fetch_leases_for_subnet returns []."""
-        from unittest.mock import MagicMock
-
         from netbox_kea.views import _enrich_reservations_with_lease_status
 
         client = MagicMock()
@@ -1046,8 +1032,6 @@ class TestEnrichReservationsLeaseStatusCoverage(_ViewTestBase):
 
     def test_kea_exception_non_result2_returns_empty(self):
         """Line 1645: KeaException with result != 2 → _fetch_leases_for_subnet returns []."""
-        from unittest.mock import MagicMock
-
         from netbox_kea.kea import KeaException
         from netbox_kea.views import _enrich_reservations_with_lease_status
 
@@ -1064,8 +1048,6 @@ class TestEnrichReservationsLeaseStatusCoverage(_ViewTestBase):
 
     def test_no_subnet_id_skips_fetch(self):
         """Line 1650: reservations with no subnet-id → unique_subnet_ids empty → early return."""
-        from unittest.mock import MagicMock
-
         from netbox_kea.views import _enrich_reservations_with_lease_status
 
         client = MagicMock()
@@ -1076,8 +1058,6 @@ class TestEnrichReservationsLeaseStatusCoverage(_ViewTestBase):
 
     def test_as_completed_exception_returns_early(self):
         """Lines 1662-1663: exception from as_completed → outer except fires."""
-        from unittest.mock import MagicMock, patch
-
         from netbox_kea.views import _enrich_reservations_with_lease_status
 
         client = MagicMock()

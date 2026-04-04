@@ -875,8 +875,14 @@ class ServerReservation6EditView(_KeaChangeMixin, generic.ObjectView):
             # Preserve the existing ip-addresses from Kea rather than trusting the disabled form field.
             try:
                 existing = self._get_reservation(server, subnet_id, ip_address)
-                existing_ips = existing.get("ip-addresses") if existing else None
-                if not isinstance(existing_ips, list) or not existing_ips:
+                raw_existing_ips = existing.get("ip-addresses") if existing else None
+                if isinstance(raw_existing_ips, list):
+                    existing_ips = [ip for ip in raw_existing_ips if isinstance(ip, str) and ip]
+                elif isinstance(raw_existing_ips, str) and raw_existing_ips:
+                    existing_ips = [raw_existing_ips]
+                else:
+                    existing_ips = []
+                if not existing_ips:
                     messages.error(
                         request,
                         "Failed to reload the existing DHCPv6 reservation. Edit aborted to prevent IP loss.",
