@@ -728,7 +728,6 @@ class TestBulkDeletePermission(_ViewTestBase):
 
     @patch("netbox_kea.models.KeaClient")
     def test_user_without_bulk_delete_perm_gets_403(self, MockKeaClient):
-        from django.contrib.contenttypes.models import ContentType
         from users.models import ObjectPermission
 
         # Grant view-only ObjectPermission so get_object() succeeds

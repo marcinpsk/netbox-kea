@@ -1,25 +1,13 @@
 # SPDX-FileCopyrightText: 2025 Marcin Zieba <marcinpsk@gmail.com>
 # SPDX-License-Identifier: Apache-2.0
-"""View tests for netbox_kea plugin.
+"""Options-view tests for the netbox_kea plugin.
 
-Also contains pure-Python unit tests for helper functions defined in views.py
-(e.g. ``_extract_identifier``), which do not require a database but live here
-because they are tightly coupled to view logic.
+Covers the views in ``netbox_kea/views/options.py`` (e.g.
+``ServerSubnetOptionsEditView``, ``ServerOptionDefAddView``,
+``ServerOptionDef4DeleteView``, etc.) as well as the helper function
+``_extract_identifier`` which lives in that module.
 
-These tests verify correct HTTP responses and redirect behaviour for every view.
 All Kea HTTP calls are mocked so no running Kea instance is required.
-
-Test organisation strategy
---------------------------
-Each view class gets its own ``TestCase`` subclass so failures are isolated and
-clearly named.  Every test that triggers a redirect asserts that the redirect URL
-contains an *integer* pk (never the string "None"), which is the pattern that
-revealed the original ``POST /plugins/kea/servers/None`` 404 bug.
-
-View tests use ``django.test.TestCase`` because they write to the test database
-(user + server fixtures).  Server objects are created via ``Server.objects.create()``
-which does **not** call ``Model.clean()`` and therefore does not trigger live Kea
-connectivity checks.
 """
 
 from unittest.mock import patch
@@ -596,6 +584,7 @@ class TestServerOptionDef4AddView(_ViewTestBase):
             {"name": "my-opt", "code": 200, "type": "string", "space": "dhcp4", "array": False},
         )
         self.assertIn(response.status_code, (200, 302))
+        MockKeaClient.return_value.option_def_add.assert_called_once()
 
     @patch("netbox_kea.models.KeaClient")
     def test_post_invalid_form_returns_200(self, MockKeaClient):
@@ -692,6 +681,7 @@ class TestServerOptionDef4DeleteView(_ViewTestBase):
         response = self.client.post(self._url())
         self.assertIn(response.status_code, (200, 302))
         self._assert_no_none_pk_redirect(response)
+        MockKeaClient.return_value.option_def_del.assert_called_once()
 
     def test_get_requires_login(self):
         """Unauthenticated GET redirects to login."""
@@ -1119,6 +1109,7 @@ class TestSubnetOptionsValueError(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         msgs = [str(m) for m in response.context["messages"]]
         self.assertTrue(any("invalid kea client configuration" in m.lower() for m in msgs))
+        self.assertFalse(any("bad config" in m.lower() for m in msgs))
 
 
 # ---------------------------------------------------------------------------
@@ -1175,6 +1166,7 @@ class TestServerOptionsValueError(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         msgs = [str(m) for m in response.context["messages"]]
         self.assertTrue(any("invalid kea client configuration" in m.lower() for m in msgs))
+        self.assertFalse(any("bad config" in m.lower() for m in msgs))
 
 
 # ---------------------------------------------------------------------------
@@ -1243,6 +1235,7 @@ class TestOptionDefAddValueError(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         msgs = [str(m) for m in response.context["messages"]]
         self.assertTrue(any("invalid kea client configuration" in m.lower() for m in msgs))
+        self.assertFalse(any("bad config" in m.lower() for m in msgs))
 
 
 # ---------------------------------------------------------------------------
@@ -1299,6 +1292,7 @@ class TestOptionDefDeleteValueError(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         msgs = [str(m) for m in response.context["messages"]]
         self.assertTrue(any("invalid kea client configuration" in m.lower() for m in msgs))
+        self.assertFalse(any("bad config" in m.lower() for m in msgs))
 
 
 # ---------------------------------------------------------------------------

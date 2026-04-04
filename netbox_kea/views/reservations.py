@@ -746,24 +746,36 @@ class ServerReservation4EditView(_KeaChangeMixin, generic.ObjectView):
     def post(self, request: HttpRequest, pk: int, subnet_id: int, ip_address: str) -> HttpResponse:
         """Validate and submit updated reservation to Kea."""
         server = self.get_object(pk=pk)
-        form = forms.Reservation4Form(data=request.POST, initial={"subnet_id": subnet_id, "ip_address": ip_address})
+        return_url = reverse("plugins:netbox_kea:server_reservations4", args=[pk])
+        # Fetch existing before form construction so identifier fields can be seeded and disabled,
+        # preventing browser-omitted disabled fields from failing form validation.
+        try:
+            existing = self._get_reservation(server, subnet_id, ip_address)
+        except (KeaException, requests.RequestException, ValueError):
+            logger.exception("Could not fetch existing DHCPv4 reservation for edit (ip=%s)", ip_address)
+            messages.error(request, "Failed to reload the existing reservation. Edit aborted.")
+            return redirect(return_url)
+        if existing is None:
+            messages.error(request, f"Reservation {ip_address} no longer exists in subnet {subnet_id}.")
+            return redirect(return_url)
+        existing_id_type, existing_id_value = _get_reservation_identifier(existing, 4)
+        form = forms.Reservation4Form(
+            data=request.POST,
+            initial={
+                "subnet_id": subnet_id,
+                "ip_address": ip_address,
+                "identifier_type": existing_id_type,
+                "identifier": existing_id_value,
+            },
+        )
         # Mark key fields as disabled — Django uses initial values for validation and rendering.
         form.fields["subnet_id"].disabled = True
         form.fields["ip_address"].disabled = True
+        form.fields["identifier_type"].disabled = True
+        form.fields["identifier"].disabled = True
         options_formset, options_valid = _build_reservation_options_formset(request.POST)
-        return_url = reverse("plugins:netbox_kea:server_reservations4", args=[pk])
         if form.is_valid() and options_valid:
             cd = form.cleaned_data
-            # Fetch existing reservation to preserve attributes not managed by the edit form (#52).
-            try:
-                existing = self._get_reservation(server, subnet_id, ip_address)
-            except (KeaException, requests.RequestException, ValueError):
-                logger.exception("Could not fetch existing DHCPv4 reservation for edit (ip=%s)", ip_address)
-                messages.error(request, "Failed to reload the existing reservation. Edit aborted.")
-                return redirect(return_url)
-            if existing is None:
-                messages.error(request, f"Reservation {ip_address} no longer exists in subnet {subnet_id}.")
-                return redirect(return_url)
             # Start from existing data and overwrite user-editable fields (merge not replace).
             reservation: dict[str, Any] = dict(existing)
             reservation["subnet-id"] = subnet_id
@@ -918,13 +930,21 @@ class ServerReservation6EditView(_KeaChangeMixin, generic.ObjectView):
                 request, "Failed to reload the existing DHCPv6 reservation. Edit aborted to prevent IP loss."
             )
             return redirect(return_url)
+        existing_id_type, existing_id_value = _get_reservation_identifier(existing, 6)
         form = forms.Reservation6Form(
             data=request.POST,
-            initial={"subnet_id": subnet_id, "ip_addresses": ",".join(existing_ips)},
+            initial={
+                "subnet_id": subnet_id,
+                "ip_addresses": ",".join(existing_ips),
+                "identifier_type": existing_id_type,
+                "identifier": existing_id_value,
+            },
         )
         # Mark key fields as disabled — Django uses initial values for validation and rendering.
         form.fields["subnet_id"].disabled = True
         form.fields["ip_addresses"].disabled = True
+        form.fields["identifier_type"].disabled = True
+        form.fields["identifier"].disabled = True
         options_formset, options_valid = _build_reservation_options_formset(request.POST)
         if form.is_valid() and options_valid:
             cd = form.cleaned_data

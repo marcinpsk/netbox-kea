@@ -495,10 +495,20 @@ class TestServerReservation4EditView(_ReservationViewBase):
     def test_post_invalid_rerenders_form(self, MockKeaClient):
         mock_client = MockKeaClient.return_value
         mock_client.reservation_get.return_value = _SAMPLE_RESERVATION4
-        # POST with blank identifier — disabled fields (subnet_id, ip_address) use initial values now,
-        # so we use a different required field to trigger form invalidity.
+        # All form fields (subnet_id, ip_address, identifier_type, identifier) are disabled in the
+        # edit POST handler and take their values from existing.  Trigger invalidity via the options
+        # formset: submit a row with data but no name (name is required).
         data = self._valid_post_data()
-        data["identifier"] = ""
+        data.update(
+            {
+                "options-TOTAL_FORMS": "1",
+                "options-INITIAL_FORMS": "0",
+                "options-MIN_NUM_FORMS": "0",
+                "options-MAX_NUM_FORMS": "1000",
+                "options-0-name": "",
+                "options-0-data": "192.168.1.1",
+            }
+        )
         response = self.client.post(self._edit_url(), data)
         self.assertEqual(response.status_code, 200)
 
