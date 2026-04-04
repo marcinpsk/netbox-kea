@@ -511,9 +511,10 @@ class TestServerReservation4EditView(_ReservationViewBase):
     def test_post_invalid_rerenders_form(self, MockKeaClient):
         mock_client = MockKeaClient.return_value
         mock_client.reservation_get.return_value = _SAMPLE_RESERVATION4
-        # POST with bad ip_address
+        # POST with blank identifier — disabled fields (subnet_id, ip_address) use initial values now,
+        # so we use a different required field to trigger form invalidity.
         data = self._valid_post_data()
-        data["ip_address"] = "not-an-ip"
+        data["identifier"] = ""
         response = self.client.post(self._edit_url(), data)
         self.assertEqual(response.status_code, 200)
 
@@ -1096,6 +1097,11 @@ class TestMultiIPv6ReservationBadgeEnrichment(TestCase):
         self.assertContains(response, "Synced</a>")
         sync_url = reverse("plugins:netbox_kea:server_reservation6_sync", args=[self.server.pk])
         self.assertNotContains(response, sync_url)
+        # Verify that ALL reservation IPs were passed to bulk_fetch_netbox_ips
+        called_ips = mock_bulk_fetch.call_args[0][0]
+        self.assertIn("2001:db8::1", called_ips)
+        self.assertIn("2001:db8::2", called_ips)
+        self.assertIn("2001:db8::3", called_ips)
 
     @patch("netbox_kea.sync.bulk_fetch_netbox_ips")
     @patch("netbox_kea.models.KeaClient")
@@ -2345,6 +2351,7 @@ class TestReservation4OptionData(_ReservationViewBase):
         self.assertIn("option-data", reservation)
         self.assertEqual(len(reservation["option-data"]), 1)
         self.assertEqual(reservation["option-data"][0]["name"], "boot-file-name")
+        self.assertEqual(reservation["option-data"][0]["data"], "http://10.0.0.1/ztp.py")
 
     @patch("netbox_kea.models.KeaClient")
     def test_post_add_without_options_omits_option_data(self, MockKeaClient):
@@ -2404,6 +2411,7 @@ class TestReservation4OptionData(_ReservationViewBase):
         reservation = kwargs.get("reservation") or (args[1] if len(args) > 1 else (args[0] if len(args) > 0 else {}))
         self.assertIn("option-data", reservation)
         self.assertEqual(reservation["option-data"][0]["name"], "tftp-server-name")
+        self.assertEqual(reservation["option-data"][0]["data"], "10.0.0.1")
 
     @patch("netbox_kea.models.KeaClient")
     def test_get_add_shows_ztp_help_text(self, MockKeaClient):

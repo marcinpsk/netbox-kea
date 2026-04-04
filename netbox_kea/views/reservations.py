@@ -142,17 +142,18 @@ def _run_reservation_success_side_effects(
         request=request,
     )
     if sync_to_netbox:
-        ip = reservation.get("ip-address") or ""
-        if not ip:
-            _ips = reservation.get("ip-addresses")
-            if isinstance(_ips, list) and _ips:
-                ip = _ips[0]
+        _v4_ip = reservation.get("ip-address") or ""
+        _v6_ips = reservation.get("ip-addresses")
+        if isinstance(_v6_ips, list) and len(_v6_ips) > 1:
+            ip_label = f"{len(_v6_ips)} addresses"
+        else:
+            ip_label = _v4_ip or (_v6_ips[0] if isinstance(_v6_ips, list) and _v6_ips else "")
         try:
             _, nb_created = sync_reservation_to_netbox(reservation, cleanup=False)
             nb_msg = "created" if nb_created else "updated"
-            messages.info(request, f"NetBox IPAddress {ip} {nb_msg}.")
+            messages.info(request, f"NetBox IPAddress {ip_label} {nb_msg}.")
         except (ValueError, DatabaseError, ValidationError, requests.RequestException):
-            logger.exception("Failed to sync DHCPv%s reservation %s to NetBox", dhcp_version, ip)
+            logger.exception("Failed to sync DHCPv%s reservation %s to NetBox", dhcp_version, ip_label)
             messages.warning(request, f"Reservation {action}, but NetBox IPAM sync failed.")
     if partial_persist:
         messages.warning(request, "Change applied but may not survive a Kea restart (config-write failed).")
@@ -724,9 +725,9 @@ class ServerReservation4EditView(_KeaChangeMixin, generic.ObjectView):
             "action": "Edit",
             "return_url": return_url,
         }
-        # Key fields are URL-derived and ignored on POST — disable to avoid confusion.
+        # Key fields are URL-derived — disable so browsers render them read-only.
         for field_name in ("subnet_id", "ip_address"):
-            context["form"].fields[field_name].widget.attrs["disabled"] = True
+            context["form"].fields[field_name].disabled = True
         try:
             lease = server.get_client(version=4).lease_get_by_ip(4, ip_address)
             if lease and lease.get("hostname") and lease.get("hostname") != reservation.get("hostname", ""):
@@ -738,10 +739,10 @@ class ServerReservation4EditView(_KeaChangeMixin, generic.ObjectView):
     def post(self, request: HttpRequest, pk: int, subnet_id: int, ip_address: str) -> HttpResponse:
         """Validate and submit updated reservation to Kea."""
         server = self.get_object(pk=pk)
-        form = forms.Reservation4Form(data=request.POST)
-        # Key fields are disabled in the edit form and not submitted by browsers — make optional.
-        form.fields["subnet_id"].required = False
-        form.fields["ip_address"].required = False
+        form = forms.Reservation4Form(data=request.POST, initial={"subnet_id": subnet_id, "ip_address": ip_address})
+        # Mark key fields as disabled — Django uses initial values for validation and rendering.
+        form.fields["subnet_id"].disabled = True
+        form.fields["ip_address"].disabled = True
         options_formset, options_valid = _build_reservation_options_formset(request.POST)
         return_url = reverse("plugins:netbox_kea:server_reservations4", args=[pk])
         if form.is_valid() and options_valid:
@@ -774,17 +775,14 @@ class ServerReservation4EditView(_KeaChangeMixin, generic.ObjectView):
                 )
                 return redirect(return_url)
             except KeaException as exc:
-                logger.exception("Failed to update DHCPv4 reservation for %s", cd.get("ip_address"))
+                logger.exception("Failed to update DHCPv4 reservation for %s", ip_address)
                 messages.error(request, kea_error_hint(exc))
             except requests.RequestException:
-                logger.exception("Network error updating DHCPv4 reservation for %s", cd.get("ip_address"))
+                logger.exception("Network error updating DHCPv4 reservation for %s", ip_address)
                 messages.error(request, "Network error communicating with Kea: see server logs.")
             except ValueError:
-                logger.exception("Invalid Kea response when updating DHCPv4 reservation for %s", cd.get("ip_address"))
+                logger.exception("Invalid Kea response when updating DHCPv4 reservation for %s", ip_address)
                 messages.error(request, "Invalid response from Kea: see server logs.")
-        # Re-disable key fields to match the GET form so they stay non-editable on error re-render.
-        for field_name in ("subnet_id", "ip_address"):
-            form.fields[field_name].widget.attrs["disabled"] = True
         return render(
             request,
             self.template_name,
@@ -856,9 +854,9 @@ class ServerReservation6EditView(_KeaChangeMixin, generic.ObjectView):
             "action": "Edit",
             "return_url": return_url,
         }
-        # Key fields are URL-derived and ignored on POST — disable to avoid confusion.
+        # Key fields are URL-derived — disable so browsers render them read-only.
         for field_name in ("subnet_id", "ip_addresses"):
-            context["form"].fields[field_name].widget.attrs["disabled"] = True
+            context["form"].fields[field_name].disabled = True
         try:
             lease = server.get_client(version=6).lease_get_by_ip(6, ip_address)
             if lease and lease.get("hostname") and lease.get("hostname") != reservation.get("hostname", ""):
@@ -870,10 +868,10 @@ class ServerReservation6EditView(_KeaChangeMixin, generic.ObjectView):
     def post(self, request: HttpRequest, pk: int, subnet_id: int, ip_address: str) -> HttpResponse:
         """Validate and submit updated DHCPv6 reservation to Kea."""
         server = self.get_object(pk=pk)
-        form = forms.Reservation6Form(data=request.POST)
-        # Key fields are disabled in the edit form and not submitted by browsers — make optional.
-        form.fields["subnet_id"].required = False
-        form.fields["ip_addresses"].required = False
+        form = forms.Reservation6Form(data=request.POST, initial={"subnet_id": subnet_id, "ip_addresses": ip_address})
+        # Mark key fields as disabled — Django uses initial values for validation and rendering.
+        form.fields["subnet_id"].disabled = True
+        form.fields["ip_addresses"].disabled = True
         options_formset, options_valid = _build_reservation_options_formset(request.POST)
         return_url = reverse("plugins:netbox_kea:server_reservations6", args=[pk])
         if form.is_valid() and options_valid:
@@ -929,17 +927,14 @@ class ServerReservation6EditView(_KeaChangeMixin, generic.ObjectView):
                 )
                 return redirect(return_url)
             except KeaException as exc:
-                logger.exception("Failed to update DHCPv6 reservation for %s", cd.get("ip_addresses"))
+                logger.exception("Failed to update DHCPv6 reservation for %s", ip_address)
                 messages.error(request, kea_error_hint(exc))
             except requests.RequestException:
-                logger.exception("Network error updating DHCPv6 reservation for %s", cd.get("ip_addresses"))
+                logger.exception("Network error updating DHCPv6 reservation for %s", ip_address)
                 messages.error(request, "Network error communicating with Kea: see server logs.")
             except ValueError:
-                logger.exception("Invalid Kea response when updating DHCPv6 reservation for %s", cd.get("ip_addresses"))
+                logger.exception("Invalid Kea response when updating DHCPv6 reservation for %s", ip_address)
                 messages.error(request, "Invalid response from Kea: see server logs.")
-        # Re-disable key fields to match the GET form so they stay non-editable on error re-render.
-        for field_name in ("subnet_id", "ip_addresses"):
-            form.fields[field_name].widget.attrs["disabled"] = True
         return render(
             request,
             self.template_name,

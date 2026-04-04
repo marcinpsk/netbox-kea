@@ -311,7 +311,7 @@ class BaseServerSharedNetworkEditView(_KeaChangeMixin, ConditionalLoginRequiredM
         server = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
         try:
             client = server.get_client(version=self.dhcp_version)
-        except (KeaException, requests.RequestException, ValueError):
+        except ValueError:
             logger.exception("Failed to create Kea client for shared network edit on server %s", server.pk)
             messages.error(request, "Failed to connect to Kea: see server logs.")
             return redirect(self._success_url(server))
@@ -372,7 +372,7 @@ class BaseServerSharedNetworkEditView(_KeaChangeMixin, ConditionalLoginRequiredM
         # two via the form and must not silently drop unrelated options on save.
         try:
             client = server.get_client(version=self.dhcp_version)
-        except (KeaException, requests.RequestException, ValueError):
+        except ValueError:
             logger.exception("Failed to create Kea client for shared network update on server %s", server.pk)
             messages.error(request, "Failed to connect to Kea: see server logs.")
             return render(

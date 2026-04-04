@@ -371,7 +371,7 @@ class TestReservation4AddExceptions(_ViewTestBase):
         self.assertTrue(any(m.level == django_messages.ERROR for m in msgs))
 
     @patch("netbox_kea.models.KeaClient")
-    def test_generic_exception_rerenders_form(self, MockKeaClient):
+    def test_kea_exception_result1_rerenders_form(self, MockKeaClient):
         """KeaException from reservation_add must re-render the form with an error message."""
         from netbox_kea.kea import KeaException
 

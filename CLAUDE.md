@@ -86,7 +86,7 @@ URL request
 
 - **Never leak exception details to HTTP responses.** Use `logger.exception()` for server-side logging and return a generic message like `"An internal error occurred"` to users. Raw `str(exc)` can expose internal URLs, TLS details, or Kea API config.
 - **Always pass `version=` to `server.get_client()`** when the DHCP version is known (e.g., `server.get_client(version=self.dhcp_version)`). Omitting it may hit the wrong endpoint when dual URLs are configured.
-- **Always call `server.get_client()` inside a try block** — client creation can fail with `ValueError` or `requests.RequestException`. Never call it before error handling is in scope.
+- **Always call `server.get_client()` inside a try block** — client creation can fail with `ValueError` (e.g., invalid URL or missing protocol config). Never call it before error handling is in scope.
 - **Validate Kea response shape before indexing.** After `client.command()`, check `resp` is a non-empty list and `resp[0]` is a dict before accessing `resp[0]["arguments"]`. Malformed payloads should raise `RuntimeError`.
 - **Catch `(KeaException, requests.RequestException, ValueError)` consistently** in mutation handlers. Split `KeaException` when using `kea_error_hint(exc)`. Always catch `PartialPersistError` before `KeaException`.
 - **Guard action URLs/buttons by permission AND lookup state.** Don't offer Sync/Reserve for leases where reservation lookup failed (check `failed_ips` and `failed_mac_keys`).
