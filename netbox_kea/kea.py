@@ -980,6 +980,67 @@ class KeaClient:
             )
         return args
 
+    def lease_get_all(
+        self, version: int, *, per_page: int = 250, max_leases: int | None = None
+    ) -> tuple[list[dict], bool]:
+        """Paginate through **all** leases on the daemon and return them as a flat list.
+
+        Uses ``lease{v}-get-page`` under the hood so it works with very large
+        lease tables without loading everything into RAM at once.
+
+        Args:
+            version: DHCP version (4 or 6).
+            per_page: Number of leases to fetch per API call (default 250).
+            max_leases: Optional cap on the total number of leases returned.
+                When the cap is hit the second element of the return tuple is
+                ``True`` (truncated).  ``None`` means no cap.
+
+        Returns:
+            ``(leases, truncated)`` where *leases* is a list of raw Kea lease
+            dicts and *truncated* is ``True`` when *max_leases* was hit before
+            all leases were fetched.
+
+        Raises:
+            KeaException: On a non-0/3 result code.
+            RuntimeError: On a malformed response envelope.
+
+        """
+        service = f"dhcp{version}"
+        cursor = "0.0.0.0" if version == 4 else "::"
+        all_leases: list[dict] = []
+        truncated = False
+
+        while True:
+            resp = self.command(
+                f"lease{version}-get-page",
+                service=[service],
+                arguments={"from": cursor, "limit": per_page},
+                check=(0, 3),
+            )
+            if resp[0]["result"] == 3:
+                break  # no more leases
+            args = resp[0].get("arguments")
+            if not isinstance(args, dict):
+                raise RuntimeError(
+                    f"lease{version}-get-page returned result=0 but arguments is {type(args).__name__!r}, expected dict"
+                )
+            page = args.get("leases")
+            if not isinstance(page, list):
+                raise RuntimeError(
+                    f"lease{version}-get-page arguments.leases is {type(page).__name__!r}, expected list"
+                )
+            all_leases.extend(page)
+            if max_leases is not None and len(all_leases) >= max_leases:
+                all_leases = all_leases[:max_leases]
+                truncated = True
+                break
+            count = args.get("count")
+            if not isinstance(count, int) or count < per_page:
+                break  # last page
+            cursor = page[-1]["ip-address"]
+
+        return all_leases, truncated
+
     def dhcp_disable(self, service: str, max_period: int | None = None) -> None:
         """Temporarily disable DHCP processing on *service*.
 

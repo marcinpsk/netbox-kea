@@ -13,7 +13,39 @@ class NetBoxKeaConfig(PluginConfig):
         "kea_timeout": 30,
         # stale_ip_cleanup: "remove" (delete stale IPs), "deprecate" (set status=deprecated), "none" (skip cleanup)
         "stale_ip_cleanup": "remove",
+        # Background IPAM sync settings (Kea → NetBox via django-rq)
+        "sync_interval_minutes": 5,
+        "sync_leases_enabled": True,
+        "sync_reservations_enabled": True,
+        "sync_max_leases_per_server": 50000,
     }
+
+    def ready(self) -> None:
+        """Apply runtime configuration overrides after Django is fully initialised."""
+        super().ready()
+        self._configure_sync_job_interval()
+
+    def _configure_sync_job_interval(self) -> None:
+        """Override the KeaIpamSyncJob interval from PLUGINS_CONFIG at startup.
+
+        The ``@system_job`` decorator registers a static default interval.  We
+        patch the registry here so the configured interval is used by the
+        worker when it starts.
+        """
+        try:
+            from django.conf import settings
+            from netbox.registry import registry
+
+            from .jobs import KeaIpamSyncJob
+
+            config = getattr(settings, "PLUGINS_CONFIG", {}).get("netbox_kea", {})
+            interval = int(config.get("sync_interval_minutes", 5))
+            if interval < 1:
+                interval = 1
+            if KeaIpamSyncJob in registry["system_jobs"]:
+                registry["system_jobs"][KeaIpamSyncJob]["interval"] = interval
+        except Exception:  # noqa: BLE001
+            pass  # non-fatal — worker will use the decorator default
 
 
 config = NetBoxKeaConfig
