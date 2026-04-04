@@ -17,7 +17,6 @@ import io
 from unittest.mock import MagicMock, patch
 from urllib.parse import urlencode
 
-from django.contrib.auth import get_user_model
 from django.contrib.messages import WARNING, get_messages
 from django.test import SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
@@ -26,9 +25,7 @@ from netbox_kea.kea import KeaException, PartialPersistError
 from netbox_kea.models import Server
 from netbox_kea.views import _filter_reservations
 
-User = get_user_model()
-
-_PLUGINS_CONFIG = {"netbox_kea": {"kea_timeout": 30}}
+from .utils import _PLUGINS_CONFIG, User, _make_db_server
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Sample reservation fixtures
@@ -59,19 +56,6 @@ _RESERVATION_COMMANDS = {
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
-
-
-def _make_db_server(**kwargs) -> Server:
-    """Create a Server without triggering live Kea connectivity checks."""
-    defaults = {
-        "name": "test-kea-reservations",
-        "server_url": "https://kea.example.com",
-        "dhcp4": True,
-        "dhcp6": True,
-        "has_control_agent": True,
-    }
-    defaults.update(kwargs)
-    return Server.objects.create(**defaults)
 
 
 def _wire_mock_clone(mock_client):

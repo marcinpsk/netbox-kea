@@ -321,6 +321,10 @@ class TestSyncReservationToNetbox(TestCase):
             from dcim.models import MACAddress
         except (ImportError, AttributeError):
             self.skipTest("MACAddress not available in this NetBox version")
+        try:
+            from netaddr import EUI  # noqa: F401
+        except (ImportError, AttributeError):
+            self.skipTest("netaddr not available")
         from netbox_kea.sync import sync_reservation_to_netbox
 
         sync_reservation_to_netbox(self._RESERVATION)
@@ -1076,14 +1080,20 @@ class TestSyncMacAddressImportErrors(TestCase):
     def test_netaddr_import_error_returns_silently(self):
         """When netaddr cannot be imported, _sync_mac_address logs debug and returns."""
         import sys
+        import types
         from unittest.mock import patch
 
-        with patch.dict(sys.modules, {"netaddr": None, "netaddr.core": None}):
+        # Inject a fake dcim.models so that import inside sync succeeds for the
+        # dcim path but netaddr import fails, exercising the netaddr fallback.
+        fake_dcim = types.ModuleType("dcim.models")
+        fake_dcim.MACAddress = type("MACAddress", (), {})
+        with patch.dict(sys.modules, {"netaddr": None, "netaddr.core": None, "dcim.models": fake_dcim}):
             import importlib
 
             import netbox_kea.sync as sync_mod
 
             importlib.reload(sync_mod)
+            # Should not raise even when netaddr is unavailable
             sync_mod._sync_mac_address("aa:bb:cc:dd:ee:ff", hostname="test")
 
 

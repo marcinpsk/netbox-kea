@@ -11,6 +11,21 @@
         Add DHCPv{{ dhcp_version }} Option Definition
       </h5>
       <div class="card-body">
+        {% if dhcp_version == 4 %}
+        <div class="alert alert-warning small py-2 mb-3">
+          <i class="mdi mdi-alert-outline me-1" aria-hidden="true"></i>
+          Options <strong>66</strong> (<code>tftp-server-name</code>), <strong>67</strong> (<code>bootfile-name</code>),
+          <strong>43</strong> (<code>vendor-encapsulated-options</code>), and <strong>125</strong> (<code>vivso-suboptions</code>)
+          are already predefined in the Kea <code>dhcp4</code> option space.
+          Only add a custom definition here if you need to <em>override</em> the standard data type.
+        </div>
+        {% elif dhcp_version == 6 %}
+        <div class="alert alert-warning small py-2 mb-3">
+          <i class="mdi mdi-alert-outline me-1" aria-hidden="true"></i>
+          Option <strong>59</strong> (<code>OPT_BOOTFILE_URL</code>) is predefined in the Kea <code>dhcp6</code> option space.
+          Only add a custom definition here if you need to <em>override</em> the standard data type.
+        </div>
+        {% endif %}
         <form method="post">
           {% csrf_token %}
           {% for field in form %}

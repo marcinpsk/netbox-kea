@@ -16,15 +16,12 @@ Closes: https://github.com/marcinpsk/netbox-kea/issues/40
 
 from unittest.mock import patch
 
-from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
 from django.urls import reverse
 
 from netbox_kea.models import Server
 
-_PLUGINS_CONFIG = {"netbox_kea": {"kea_timeout": 30}}
-
-User = get_user_model()
+from .utils import _PLUGINS_CONFIG, User, _kea_command_side_effect
 
 # Distinct URLs so we can tell which one was selected.
 _SERVER_URL = "https://kea-default.example.com"
@@ -45,25 +42,6 @@ def _make_dual_url_server(**kwargs) -> Server:
     }
     defaults.update(kwargs)
     return Server.objects.create(**defaults)
-
-
-def _kea_command_side_effect(cmd, service=None, arguments=None, check=None):
-    """Return plausible Kea API responses for each command type."""
-    if cmd == "status-get":
-        return [{"result": 0, "arguments": {"pid": 1234, "uptime": 3600, "reload": 0}}]
-    if cmd == "version-get":
-        return [{"result": 0, "arguments": {"extended": "2.4.1-stable"}}]
-    if cmd == "config-get":
-        if service and service[0] == "dhcp6":
-            return [{"result": 0, "arguments": {"Dhcp6": {"subnet6": [], "shared-networks": []}}}]
-        return [{"result": 0, "arguments": {"Dhcp4": {"subnet4": [], "shared-networks": []}}}]
-    if cmd == "list-commands":
-        return [{"result": 0, "arguments": []}]
-    if cmd in ("lease4-get-page", "lease6-get-page"):
-        return [{"result": 0, "arguments": {"leases": [], "count": 0}}]
-    if cmd in ("reservation-get-page",):
-        return [{"result": 3, "text": "0 IPv4 host(s) found.", "arguments": {"hosts": [], "count": 0}}]
-    return [{"result": 0, "arguments": {}}]
 
 
 def _assert_keaclient_url(test_case, MockKeaClient, expected_url):

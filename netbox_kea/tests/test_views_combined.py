@@ -22,102 +22,12 @@ which does **not** call ``Model.clean()`` and therefore does not trigger live Ke
 connectivity checks.
 """
 
-import re
 from unittest.mock import patch
 
-from django.contrib.auth import get_user_model
-from django.test import TestCase, override_settings
+from django.test import override_settings
 from django.urls import reverse
 
-from netbox_kea.models import Server
-
-# Minimal PLUGINS_CONFIG so server.get_client() can read kea_timeout.
-_PLUGINS_CONFIG = {"netbox_kea": {"kea_timeout": 30}}
-
-User = get_user_model()
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Helpers
-# ─────────────────────────────────────────────────────────────────────────────
-
-_INT_PK_RE = re.compile(r"/servers/(\d+)/")
-
-
-def _make_db_server(**kwargs) -> Server:
-    """Create and persist a Server without live connectivity checks.
-
-    ``Server.objects.create()`` skips ``Model.clean()``, so no Kea connectivity
-    check is triggered.  The ``PLUGINS_CONFIG`` override is applied by the calling
-    test class.
-    """
-    defaults = {
-        "name": "test-kea",
-        "server_url": "https://kea.example.com",
-        "dhcp4": True,
-        "dhcp6": True,
-        "has_control_agent": True,
-    }
-    defaults.update(kwargs)
-    return Server.objects.create(**defaults)
-
-
-def _kea_command_side_effect(cmd, service=None, arguments=None, check=None):
-    """Return a plausible Kea API response for each command type."""
-    if cmd == "status-get":
-        return [{"result": 0, "arguments": {"pid": 1234, "uptime": 3600, "reload": 0}}]
-    if cmd == "version-get":
-        return [{"result": 0, "arguments": {"extended": "2.4.1-stable"}}]
-    if cmd == "config-get":
-        # Return minimal Dhcp4/Dhcp6 config so subnet views can parse it.
-        if service and service[0] == "dhcp6":
-            return [{"result": 0, "arguments": {"Dhcp6": {"subnet6": [], "shared-networks": []}}}]
-        return [{"result": 0, "arguments": {"Dhcp4": {"subnet4": [], "shared-networks": []}}}]
-    return [{"result": 0, "arguments": {}}]
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Shared base class
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
-class _ViewTestBase(TestCase):
-    """Creates a superuser and a single Server for use in all view tests."""
-
-    def setUp(self):
-        self.user = User.objects.create_superuser(
-            username="kea_testuser",
-            email="kea_test@example.com",
-            password="kea_testpass",
-        )
-        self.client.force_login(self.user)
-        self.server = _make_db_server()
-
-    def _assert_no_none_pk_redirect(self, response):
-        """Assert that a redirect URL never contains the string ``None`` as a pk.
-
-        This is the specific pattern that caused the ``POST /plugins/kea/servers/None``
-        404 bug: ``get_absolute_url()`` with ``pk=None`` produces that URL.
-        """
-        if hasattr(response, "url"):
-            self.assertNotIn(
-                "servers/None",
-                response.url,
-                f"Redirect went to bad URL: {response.url}",
-            )
-
-    def _assert_redirect_to_integer_pk(self, response):
-        """Assert that a redirect URL contains an integer server pk."""
-        self._assert_no_none_pk_redirect(response)
-        self.assertIsNotNone(
-            _INT_PK_RE.search(response.url),
-            f"Expected /servers/<int>/ in redirect URL, got: {response.url}",
-        )
-
-
-# ---------------------------------------------------------------------------
-# _fetch_shared_networks_from_server — null config raises RuntimeError
-# ---------------------------------------------------------------------------
+from .utils import _PLUGINS_CONFIG, _ViewTestBase
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)

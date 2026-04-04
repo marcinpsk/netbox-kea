@@ -23,90 +23,15 @@ connectivity checks.
 """
 
 import io
-import re
 from unittest.mock import MagicMock, patch
 
 from django.contrib import messages as django_messages
-from django.contrib.auth import get_user_model
-from django.test import TestCase, override_settings
+from django.test import override_settings
 from django.urls import reverse
 
 from netbox_kea.kea import KeaException
-from netbox_kea.models import Server
 
-# Minimal PLUGINS_CONFIG so server.get_client() can read kea_timeout.
-_PLUGINS_CONFIG = {"netbox_kea": {"kea_timeout": 30}}
-
-User = get_user_model()
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Helpers
-# ─────────────────────────────────────────────────────────────────────────────
-
-_INT_PK_RE = re.compile(r"/servers/(\d+)/")
-
-
-def _make_db_server(**kwargs) -> Server:
-    """Create and persist a Server without live connectivity checks.
-
-    ``Server.objects.create()`` skips ``Model.clean()``, so no Kea connectivity
-    check is triggered.  The ``PLUGINS_CONFIG`` override is applied by the calling
-    test class.
-    """
-    defaults = {
-        "name": "test-kea",
-        "server_url": "https://kea.example.com",
-        "dhcp4": True,
-        "dhcp6": True,
-        "has_control_agent": True,
-    }
-    defaults.update(kwargs)
-    return Server.objects.create(**defaults)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Shared base class
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
-class _ViewTestBase(TestCase):
-    """Creates a superuser and a single Server for use in all view tests."""
-
-    def setUp(self):
-        self.user = User.objects.create_superuser(
-            username="kea_testuser",
-            email="kea_test@example.com",
-            password="kea_testpass",
-        )
-        self.client.force_login(self.user)
-        self.server = _make_db_server()
-
-    def _assert_no_none_pk_redirect(self, response):
-        """Assert that a redirect URL never contains the string ``None`` as a pk.
-
-        This is the specific pattern that caused the ``POST /plugins/kea/servers/None``
-        404 bug: ``get_absolute_url()`` with ``pk=None`` produces that URL.
-        """
-        if hasattr(response, "url"):
-            self.assertNotIn(
-                "servers/None",
-                response.url,
-                f"Redirect went to bad URL: {response.url}",
-            )
-
-    def _assert_redirect_to_integer_pk(self, response):
-        """Assert that a redirect URL contains an integer server pk."""
-        self._assert_no_none_pk_redirect(response)
-        self.assertIsNotNone(
-            _INT_PK_RE.search(response.url),
-            f"Expected /servers/<int>/ in redirect URL, got: {response.url}",
-        )
-
-
-# ---------------------------------------------------------------------------
-# Sync view edge cases
-# ---------------------------------------------------------------------------
+from .utils import _PLUGINS_CONFIG, User, _ViewTestBase
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
