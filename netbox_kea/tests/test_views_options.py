@@ -216,12 +216,10 @@ class TestSubnetOptionsView(_ViewTestBase):
                 "form-0-DELETE": "",
             },
         )
-        call_kwargs = MockKeaClient.return_value.subnet_update_options.call_args
-        args = call_kwargs[1] if call_kwargs[1] else {}
-        positional = call_kwargs[0] if call_kwargs[0] else ()
-        # version=4 and subnet_id=42 should be passed (positional or keyword)
-        self.assertIn(4, list(positional) + list(args.values()))
-        self.assertIn(42, list(positional) + list(args.values()))
+        call_args = MockKeaClient.return_value.subnet_update_options.call_args
+        self.assertIsNotNone(call_args)
+        self.assertEqual(call_args.kwargs["version"], 4)  # version
+        self.assertEqual(call_args.kwargs["subnet_id"], 42)  # subnet_id
 
     @patch("netbox_kea.models.KeaClient")
     def test_post_deleted_rows_excluded_from_options(self, MockKeaClient):
@@ -376,9 +374,9 @@ class TestServerOptionsView(_ViewTestBase):
                 "form-0-DELETE": "",
             },
         )
-        call_kwargs = MockKeaClient.return_value.server_update_options.call_args
-        all_args = list(call_kwargs[0]) + list(call_kwargs[1].values())
-        self.assertIn(4, all_args)
+        call_args = MockKeaClient.return_value.server_update_options.call_args
+        self.assertIsNotNone(call_args)
+        self.assertEqual(call_args.kwargs["version"], 4)  # version
 
     @patch("netbox_kea.models.KeaClient")
     def test_post_deleted_rows_excluded(self, MockKeaClient):

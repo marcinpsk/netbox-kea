@@ -1095,7 +1095,7 @@ def _get_reservation_identifier(
     v6_types = ["duid", "hw-address", "client-id", "flex-id"]
     priority = v6_types if version == 6 else v4_types
     for itype in priority:
-        if itype in reservation:
+        if reservation.get(itype):
             return itype, reservation[itype]
     return "hw-address", ""
 

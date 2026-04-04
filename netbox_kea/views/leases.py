@@ -231,6 +231,7 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
             if not isinstance(raw_leases, list):
                 raise RuntimeError(f"Unexpected leases payload from lease{self.dhcp_version}-get{command}")
             raw_leases = [entry for entry in raw_leases if isinstance(entry, dict)]
+            raw_leases = [entry for entry in raw_leases if _is_valid_lease_entry(entry)]
             if not raw_leases:
                 raise RuntimeError(f"No valid lease dicts in lease{self.dhcp_version}-get{command} response")
             return format_leases(raw_leases)
@@ -379,7 +380,11 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
                     break
                 # Derive cursor from original Kea response to avoid rewinding on filtered entries
                 last = original_leases[-1]
-                cursor = str(last["ip-address"]) if _is_valid_lease_entry(last) else None
+                if not _is_valid_lease_entry(last):
+                    raise RuntimeError(
+                        f"Export aborted: last lease entry on full page is malformed for server {instance.pk}"
+                    )
+                cursor = str(last["ip-address"])
         except KeaException as exc:
             logger.exception("Failed to fetch all leases for export on server %s", instance.pk)
             messages.error(request, kea_error_hint(exc))

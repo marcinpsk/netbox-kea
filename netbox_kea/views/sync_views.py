@@ -171,7 +171,7 @@ class _BaseBulkReservationSyncView(ConditionalLoginRequiredMixin, View):
             return HttpResponseRedirect(
                 reverse(f"plugins:netbox_kea:server_reservations{self.dhcp_version}", args=[pk])
             )
-        except (requests.RequestException, ValueError, AttributeError, TypeError):
+        except (requests.RequestException, ValueError, TypeError):
             logger.exception("Failed to fetch reservations from %s (DHCPv%s)", server.name, self.dhcp_version)
             messages.error(request, "Failed to fetch reservations: see server logs for details.")
             return HttpResponseRedirect(

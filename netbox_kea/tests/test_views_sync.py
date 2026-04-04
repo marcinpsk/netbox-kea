@@ -556,17 +556,16 @@ class TestImportLoopValueError(_ViewTestBase):
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestBulkReservationSyncExceptNarrowing(_ViewTestBase):
-    """_BaseBulkReservationSyncView catches AttributeError from _fetch_reservations_from_server and redirects."""
+    """AttributeError from _fetch_reservations_from_server propagates (programming bug, not swallowed)."""
 
     @patch("netbox_kea.views.sync_views._fetch_reservations_from_server")
-    def test_attribute_error_is_caught_and_redirects(self, mock_fetch):
-        """An AttributeError from _fetch_reservations_from_server is caught and redirects."""
+    def test_attribute_error_propagates(self, mock_fetch):
+        """AttributeError from _fetch_reservations_from_server propagates (programming bug, not swallowed)."""
         mock_fetch.side_effect = AttributeError("programming bug")
 
         url = reverse("plugins:netbox_kea:server_reservation4_bulk_sync", args=[self.server.pk])
-        response = self.client.post(url)
-        self.assertEqual(response.status_code, 302)
-        self._assert_redirect_to_integer_pk(response)
+        with self.assertRaises(AttributeError):
+            self.client.post(url)
 
 
 # ---------------------------------------------------------------------------
@@ -730,15 +729,18 @@ class TestBulkReservationSyncFetchFailure(_ViewTestBase):
     @patch("netbox_kea.views.sync_views._fetch_reservations_from_server")
     def test_kea_exception_on_fetch_shows_error_and_redirects(self, mock_fetch):
         """KeaException during fetch shows error with hint and redirects."""
-        from netbox_kea.kea import KeaException
+        from django.contrib.messages import get_messages
 
         mock_fetch.side_effect = KeaException(
             {"result": 1, "text": "hook not loaded"},
             index=0,
         )
-        response = self.client.post(self._url_v4(), follow=True)
-        msgs = [str(m) for m in response.context["messages"]]
-        self.assertTrue(any(m for m in msgs if "hook not loaded" in m.lower() or "failed" in m.lower()))
+        response = self.client.post(self._url_v4())
+        self.assertEqual(response.status_code, 302)
+        msgs = [str(m) for m in get_messages(response.wsgi_request)]
+        # kea_error_hint maps result=1 to a generic message — raw Kea text must not leak
+        self.assertTrue(any("Kea reported an error" in m for m in msgs))
+        self.assertFalse(any("hook not loaded" in m.lower() for m in msgs))
 
     @patch("netbox_kea.views.sync_views._fetch_reservations_from_server")
     def test_type_error_on_fetch_shows_generic_error(self, mock_fetch):

@@ -114,7 +114,7 @@ Lease, subnet, reservation, and shared-network tables use `GenericTable(BaseTabl
 
 ### HTMX pagination
 
-Lease views serve two response types from the same `get()` method: a full page render and an HTMX partial (just the table fragment). The split is done with `htmx_partial(request, ...)` from `utilities.htmx`. Pagination state is passed via query params; the hidden `page` field uses `VeryHiddenInput` which renders as an empty string to avoid form conflicts.
+Lease views serve two response types from the same `get()` method: a full-page render and an HTMX partial (just the table fragment). The split is done with `htmx_partial(request, ...)` from `utilities.htmx`. Pagination state is passed via query params; the hidden `page` field uses `VeryHiddenInput` which renders as an empty string to avoid form conflicts.
 
 ### View registration
 
