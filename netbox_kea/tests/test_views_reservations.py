@@ -118,6 +118,19 @@ class _ViewTestBase(TestCase):
             f"Expected /servers/<int>/ in redirect URL, got: {response.url}",
         )
 
+    def _make_request(self):
+        """Return a RequestFactory request pre-loaded with a FallbackStorage message backend."""
+        from django.contrib.messages.storage.fallback import FallbackStorage
+        from django.test import RequestFactory
+
+        factory = RequestFactory()
+        request = factory.get("/")
+        request.user = self.user
+        setattr(request, "session", "session")
+        storage = FallbackStorage(request)
+        setattr(request, "_messages", storage)
+        return request
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # _extract_identifier — pure unit tests (no DB needed)
@@ -1083,18 +1096,6 @@ class TestEnrichReservationsLeaseStatusCoverage(_ViewTestBase):
 class TestWarnPoolReservationOverlapCoverage(_ViewTestBase):
     """Direct unit tests for _warn_pool_reservation_overlap helper."""
 
-    def _make_request(self):
-        from django.contrib.messages.storage.fallback import FallbackStorage
-        from django.test import RequestFactory
-
-        factory = RequestFactory()
-        request = factory.get("/")
-        request.user = self.user
-        setattr(request, "session", "session")
-        storage = FallbackStorage(request)
-        setattr(request, "_messages", storage)
-        return request
-
     def test_cidr_pool_creates_ipnetwork(self):
         """Line 2503: pool_str without dash (CIDR) → IPNetwork path."""
         from unittest.mock import MagicMock
@@ -1151,18 +1152,6 @@ class TestWarnPoolReservationOverlapCoverage(_ViewTestBase):
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestWarnReservationPoolOverlapCoverage(_ViewTestBase):
     """Direct unit tests for _warn_reservation_pool_overlap helper."""
-
-    def _make_request(self):
-        from django.contrib.messages.storage.fallback import FallbackStorage
-        from django.test import RequestFactory
-
-        factory = RequestFactory()
-        request = factory.get("/")
-        request.user = self.user
-        setattr(request, "session", "session")
-        storage = FallbackStorage(request)
-        setattr(request, "_messages", storage)
-        return request
 
     def test_empty_pool_string_skipped(self):
         """Line 2566: pool entry with empty pool string → continue."""

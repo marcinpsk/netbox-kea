@@ -751,13 +751,28 @@ class ServerReservation4EditView(_KeaChangeMixin, generic.ObjectView):
         return_url = reverse("plugins:netbox_kea:server_reservations4", args=[pk])
         if form.is_valid() and options_valid:
             cd = form.cleaned_data
-            reservation: dict[str, Any] = {
-                "subnet-id": subnet_id,
-                "ip-address": ip_address,
-                cd["identifier_type"]: cd["identifier"],
-            }
+            # Fetch existing reservation to preserve attributes not managed by the edit form (#52).
+            try:
+                existing = self._get_reservation(server, subnet_id, ip_address)
+            except (KeaException, requests.RequestException, ValueError):
+                logger.exception("Could not fetch existing DHCPv4 reservation for edit (ip=%s)", ip_address)
+                messages.error(request, "Failed to reload the existing reservation. Edit aborted.")
+                return redirect(return_url)
+            if existing is None:
+                messages.error(request, f"Reservation {ip_address} no longer exists in subnet {subnet_id}.")
+                return redirect(return_url)
+            # Start from existing data and overwrite user-editable fields (merge not replace).
+            reservation: dict[str, Any] = dict(existing)
+            reservation["subnet-id"] = subnet_id
+            reservation["ip-address"] = ip_address
+            # Replace identifier — remove all known identifier keys first.
+            for _id_key in ("hw-address", "duid", "client-id", "flex-id", "circuit-id", "remote-id"):
+                reservation.pop(_id_key, None)
+            reservation[cd["identifier_type"]] = cd["identifier"]
             if cd.get("hostname"):
                 reservation["hostname"] = cd["hostname"]
+            else:
+                reservation.pop("hostname", None)
             option_data = [
                 {"name": f["name"], "data": f["data"], **({"always-send": True} if f.get("always_send") else {})}
                 for f in (getattr(options_formset, "cleaned_data", []) or [])
@@ -765,6 +780,8 @@ class ServerReservation4EditView(_KeaChangeMixin, generic.ObjectView):
             ]
             if option_data:
                 reservation["option-data"] = option_data
+            else:
+                reservation.pop("option-data", None)
             try:
                 client = server.get_client(version=4)
                 client.reservation_update("dhcp4", reservation)
@@ -872,44 +889,54 @@ class ServerReservation6EditView(_KeaChangeMixin, generic.ObjectView):
     def post(self, request: HttpRequest, pk: int, subnet_id: int, ip_address: str) -> HttpResponse:
         """Validate and submit updated DHCPv6 reservation to Kea."""
         server = self.get_object(pk=pk)
-        form = forms.Reservation6Form(data=request.POST, initial={"subnet_id": subnet_id, "ip_addresses": ip_address})
+        return_url = reverse("plugins:netbox_kea:server_reservations6", args=[pk])
+        # Fetch existing reservation before form construction (#51) so ip_addresses initial is
+        # accurate on re-render, and to enable merge-not-replace for all reservation keys (#52).
+        try:
+            existing = self._get_reservation(server, subnet_id, ip_address)
+        except (KeaException, requests.RequestException, ValueError):
+            logger.exception("Could not fetch existing DHCPv6 reservation for edit (ip=%s)", ip_address)
+            messages.error(
+                request, "Failed to reload the existing DHCPv6 reservation. Edit aborted to prevent IP loss."
+            )
+            return redirect(return_url)
+        if existing is None:
+            messages.error(request, f"Reservation {ip_address} no longer exists in subnet {subnet_id}.")
+            return redirect(return_url)
+        raw_existing_ips = existing.get("ip-addresses")
+        if isinstance(raw_existing_ips, list):
+            existing_ips = [ip for ip in raw_existing_ips if isinstance(ip, str) and ip]
+        elif isinstance(raw_existing_ips, str) and raw_existing_ips:
+            existing_ips = [raw_existing_ips]
+        else:
+            existing_ips = []
+        if not existing_ips:
+            messages.error(
+                request, "Failed to reload the existing DHCPv6 reservation. Edit aborted to prevent IP loss."
+            )
+            return redirect(return_url)
+        form = forms.Reservation6Form(
+            data=request.POST,
+            initial={"subnet_id": subnet_id, "ip_addresses": ",".join(existing_ips)},
+        )
         # Mark key fields as disabled — Django uses initial values for validation and rendering.
         form.fields["subnet_id"].disabled = True
         form.fields["ip_addresses"].disabled = True
         options_formset, options_valid = _build_reservation_options_formset(request.POST)
-        return_url = reverse("plugins:netbox_kea:server_reservations6", args=[pk])
         if form.is_valid() and options_valid:
             cd = form.cleaned_data
-            # Preserve the existing ip-addresses from Kea rather than trusting the disabled form field.
-            try:
-                existing = self._get_reservation(server, subnet_id, ip_address)
-                raw_existing_ips = existing.get("ip-addresses") if existing else None
-                if isinstance(raw_existing_ips, list):
-                    existing_ips = [ip for ip in raw_existing_ips if isinstance(ip, str) and ip]
-                elif isinstance(raw_existing_ips, str) and raw_existing_ips:
-                    existing_ips = [raw_existing_ips]
-                else:
-                    existing_ips = []
-                if not existing_ips:
-                    messages.error(
-                        request,
-                        "Failed to reload the existing DHCPv6 reservation. Edit aborted to prevent IP loss.",
-                    )
-                    return redirect(return_url)
-            except (KeaException, requests.RequestException, ValueError):
-                logger.exception("Could not fetch existing DHCPv6 reservation for edit (ip=%s)", ip_address)
-                messages.error(
-                    request,
-                    "Failed to reload the existing DHCPv6 reservation. Edit aborted to prevent IP loss.",
-                )
-                return redirect(return_url)
-            reservation: dict[str, Any] = {
-                "subnet-id": subnet_id,
-                "ip-addresses": existing_ips,
-                cd["identifier_type"]: cd["identifier"],
-            }
+            # Start from existing data and overwrite user-editable fields (merge not replace #52).
+            reservation: dict[str, Any] = dict(existing)
+            reservation["subnet-id"] = subnet_id
+            reservation["ip-addresses"] = existing_ips
+            # Replace identifier — remove all known identifier keys first.
+            for _id_key in ("hw-address", "duid", "client-id", "flex-id", "circuit-id", "remote-id"):
+                reservation.pop(_id_key, None)
+            reservation[cd["identifier_type"]] = cd["identifier"]
             if cd.get("hostname"):
                 reservation["hostname"] = cd["hostname"]
+            else:
+                reservation.pop("hostname", None)
             option_data = [
                 {"name": f["name"], "data": f["data"], **({"always-send": True} if f.get("always_send") else {})}
                 for f in (getattr(options_formset, "cleaned_data", []) or [])
@@ -917,6 +944,8 @@ class ServerReservation6EditView(_KeaChangeMixin, generic.ObjectView):
             ]
             if option_data:
                 reservation["option-data"] = option_data
+            else:
+                reservation.pop("option-data", None)
             try:
                 client = server.get_client(version=6)
                 client.reservation_update("dhcp6", reservation)

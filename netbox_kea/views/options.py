@@ -1,4 +1,5 @@
 import logging
+from contextlib import contextmanager
 from typing import Any
 from urllib.parse import urlencode as _urlencode
 
@@ -22,6 +23,42 @@ from ..utilities import (
 from ._base import ConditionalLoginRequiredMixin, _KeaChangeMixin
 
 logger = logging.getLogger(__name__)
+
+
+@contextmanager
+def _kea_options_mutation(request: HttpRequest, subject: str):
+    """Context manager that catches and surfaces standard Kea mutation exceptions.
+
+    Usage::
+
+        with _kea_options_mutation(request, f"subnet {subnet_id}"):
+            client = server.get_client(version=v)
+            client.some_operation(...)
+            messages.success(request, "Done.")
+        return redirect(return_url)
+
+    The success message is only set when no exception is raised; on error the
+    context manager sets an appropriate ``messages.warning`` / ``messages.error``
+    and execution continues after the ``with`` block (so ``return redirect(...)``
+    is always reached).
+    """
+    try:
+        yield
+    except PartialPersistError as exc:
+        logger.warning("Options mutation applied but config-write failed for %s: %s", subject, exc)
+        messages.warning(request, kea_error_hint(exc))
+    except KeaConfigTestError:
+        logger.warning("Config-test rejected options changes for %s", subject)
+        messages.error(request, "Config validation failed — no changes were applied.")
+    except KeaException as exc:
+        logger.exception("Kea error during options mutation for %s", subject)
+        messages.error(request, kea_error_hint(exc))
+    except requests.RequestException:
+        logger.exception("Transport error during options mutation for %s", subject)
+        messages.error(request, "Transport error communicating with Kea.")
+    except ValueError:
+        logger.exception("Invalid Kea client configuration for %s", subject)
+        messages.error(request, "Invalid Kea client configuration.")
 
 
 class _BaseSubnetOptionsEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin, View):
@@ -137,7 +174,7 @@ class _BaseSubnetOptionsEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin,
                 opt["always-send"] = True
             options.append(opt)
 
-        try:
+        with _kea_options_mutation(request, f"subnet {subnet_id} on server {pk}"):
             client = server.get_client(version=self.dhcp_version)
             client.subnet_update_options(
                 version=self.dhcp_version,
@@ -145,21 +182,6 @@ class _BaseSubnetOptionsEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin,
                 options=options,
             )
             messages.success(request, f"Subnet {subnet_id} options updated.")
-        except PartialPersistError as exc:
-            logger.warning("Options applied but config-write failed for subnet %s: %s", subnet_id, exc)
-            messages.warning(request, kea_error_hint(exc))
-        except KeaConfigTestError as exc:
-            logger.warning("Config-test rejected changes for subnet %s: %s", subnet_id, exc)
-            messages.error(request, "Config validation failed — no changes were applied.")
-        except KeaException as exc:
-            logger.exception("Failed to update options for subnet %s: %s", subnet_id, exc)
-            messages.error(request, kea_error_hint(exc))
-        except requests.RequestException:
-            logger.exception("Transport error updating options for subnet %s on server %s", subnet_id, pk)
-            messages.error(request, "Transport error communicating with Kea.")
-        except ValueError:
-            logger.exception("Invalid Kea client configuration for server %s", pk)
-            messages.error(request, "Invalid Kea client configuration.")
         return redirect(return_url)
 
 
@@ -270,25 +292,10 @@ class _BaseServerOptionsEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin,
                 opt["always-send"] = True
             options.append(opt)
 
-        try:
+        with _kea_options_mutation(request, f"dhcp{self.dhcp_version} server options on server {pk}"):
             client = server.get_client(version=self.dhcp_version)
             client.server_update_options(version=self.dhcp_version, options=options)
             messages.success(request, f"DHCPv{self.dhcp_version} server options updated.")
-        except PartialPersistError as exc:
-            logger.warning("Server options applied but config-write failed for dhcp%s: %s", self.dhcp_version, exc)
-            messages.warning(request, kea_error_hint(exc))
-        except KeaConfigTestError as exc:
-            logger.warning("Config-test rejected changes for dhcp%s: %s", self.dhcp_version, exc)
-            messages.error(request, "Config validation failed — no changes were applied.")
-        except KeaException as exc:
-            logger.exception("Failed to update server options for %s: %s", server, exc)
-            messages.error(request, kea_error_hint(exc))
-        except requests.RequestException:
-            logger.exception("Transport error updating server options for %s", server)
-            messages.error(request, "Transport error communicating with Kea.")
-        except ValueError:
-            logger.exception("Invalid Kea client configuration for server %s", pk)
-            messages.error(request, "Invalid Kea client configuration.")
         return redirect(return_url)
 
 
@@ -521,25 +528,10 @@ class BaseServerOptionDefAddView(_KeaChangeMixin, ConditionalLoginRequiredMixin,
         }
         if form.cleaned_data.get("array"):
             option_def["array"] = True
-        try:
+        with _kea_options_mutation(request, f"option-def add on server {server}"):
             client = server.get_client(version=self.dhcp_version)
             client.option_def_add(version=self.dhcp_version, option_def=option_def)
             messages.success(request, f"Option definition '{option_def['name']}' (code {option_def['code']}) added.")
-        except PartialPersistError as exc:
-            logger.warning("Option def applied but config-write failed for %s: %s", server, exc)
-            messages.warning(request, kea_error_hint(exc))
-        except KeaConfigTestError as exc:
-            logger.warning("Config-test rejected changes for option-def add on %s: %s", server, exc)
-            messages.error(request, "Config validation failed — no changes were applied.")
-        except KeaException as exc:
-            logger.warning("option-def add failed for %s: %s", server, exc)
-            messages.error(request, f"Kea error: {kea_error_hint(exc)}")
-        except requests.RequestException:
-            logger.exception("Transport error adding option-def for server %s", server)
-            messages.error(request, "Transport error communicating with Kea.")
-        except ValueError:
-            logger.exception("Invalid Kea client configuration for server %s", server)
-            messages.error(request, "Invalid Kea client configuration.")
         return redirect(self._success_url(server))
 
 
@@ -585,25 +577,10 @@ class BaseServerOptionDefDeleteView(_KeaChangeMixin, ConditionalLoginRequiredMix
     def post(self, request: HttpRequest, pk: int, code: int, space: str) -> HttpResponse:
         """Delete the option definition."""
         server = get_object_or_404(Server.objects.restrict(request.user, "change"), pk=pk)
-        try:
+        with _kea_options_mutation(request, f"option-def del code={code} space={space} on server {server}"):
             client = server.get_client(version=self.dhcp_version)
             client.option_def_del(version=self.dhcp_version, code=code, space=space)
             messages.success(request, f"Option definition code={code} space={space} deleted.")
-        except PartialPersistError as exc:
-            logger.warning("Option def del applied but config-write failed for %s: %s", server, exc)
-            messages.warning(request, kea_error_hint(exc))
-        except KeaConfigTestError as exc:
-            logger.warning("Config-test rejected changes for option-def del on %s: %s", server, exc)
-            messages.error(request, "Config validation failed — no changes were applied.")
-        except KeaException as exc:
-            logger.warning("option-def del failed for %s: %s", server, exc)
-            messages.error(request, f"Kea error: {kea_error_hint(exc)}")
-        except requests.RequestException:
-            logger.exception("Transport error deleting option-def for server %s", server)
-            messages.error(request, "Transport error communicating with Kea.")
-        except ValueError:
-            logger.exception("Invalid Kea client configuration for server %s", server)
-            messages.error(request, "Invalid Kea client configuration.")
         return redirect(self._success_url(server))
 
 
