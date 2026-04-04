@@ -168,7 +168,9 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
         # Derive cursor from original Kea response to avoid rewinding on filtered entries
         if count == per_page and original_leases:
             last = original_leases[-1]
-            next_cursor = str(last["ip-address"]) if _is_valid_lease_entry(last) else None
+            if not _is_valid_lease_entry(last):
+                raise RuntimeError("Pagination aborted: last lease entry on full page is malformed")
+            next_cursor = str(last["ip-address"])
         else:
             next_cursor = None
         for i, lease in enumerate(raw_leases):
@@ -230,11 +232,13 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
             raw_leases = args.get("leases")
             if not isinstance(raw_leases, list):
                 raise RuntimeError(f"Unexpected leases payload from lease{self.dhcp_version}-get{command}")
-            raw_leases = [entry for entry in raw_leases if isinstance(entry, dict)]
-            raw_leases = [entry for entry in raw_leases if _is_valid_lease_entry(entry)]
             if not raw_leases:
+                return []
+            filtered_leases = [entry for entry in raw_leases if isinstance(entry, dict)]
+            filtered_leases = [entry for entry in filtered_leases if _is_valid_lease_entry(entry)]
+            if not filtered_leases:
                 raise RuntimeError(f"No valid lease dicts in lease{self.dhcp_version}-get{command} response")
-            return format_leases(raw_leases)
+            return format_leases(filtered_leases)
         if "ip-address" not in args:
             raise RuntimeError(f"Single-result lease{self.dhcp_version}-get{command} response missing 'ip-address'")
         return format_leases([args])
