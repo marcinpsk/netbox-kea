@@ -124,6 +124,15 @@ _VALID_RESERVATION6_POST = {
     **_FORMSET_MGMT,
 }
 
+# Edit form payload — subnet_id and ip_addresses are disabled on the edit form so
+# browsers never submit them.  The view reads ip-addresses from reservation_get instead.
+_VALID_RESERVATION6_EDIT_POST = {
+    "identifier_type": "duid",
+    "identifier": "00:01:00:01:12:34:56:78:aa:bb:cc:dd:ee:ff",
+    "hostname": "test-host6",
+    **_FORMSET_MGMT,
+}
+
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestReservation4ListExceptions(_ViewTestBase):
@@ -819,7 +828,7 @@ class TestReservation6EditOptionDataAndSync(_ViewTestBase):
     def _mock_get(self, MockKeaClient):
         MockKeaClient.return_value.reservation_get.return_value = {
             "subnet-id": 1,
-            "ip-addresses": ["2001:db8::1"],
+            "ip-addresses": ["2001:db8::1", "2001:db8::2"],
             "duid": "00:01:00:01:12:34:56:78:aa:bb:cc:dd:ee:ff",
             "hostname": "v6host",
             "option-data": [],
@@ -827,11 +836,15 @@ class TestReservation6EditOptionDataAndSync(_ViewTestBase):
 
     @patch("netbox_kea.models.KeaClient")
     def test_post_with_option_data(self, MockKeaClient):
-        """option-data is included in reservation_update payload when formset has entries."""
+        """option-data is included in reservation_update payload when formset has entries.
+
+        Uses edit-shaped payload (no subnet_id/ip_addresses) and a two-address mock_get
+        to verify the multi-IP preserve path runs and both IPs are preserved.
+        """
         self._mock_get(MockKeaClient)
         MockKeaClient.return_value.reservation_update.return_value = None
         post_data = {
-            **_VALID_RESERVATION6_POST,
+            **_VALID_RESERVATION6_EDIT_POST,
             "options-TOTAL_FORMS": "1",
             "options-INITIAL_FORMS": "0",
             "options-MIN_NUM_FORMS": "0",
@@ -850,6 +863,12 @@ class TestReservation6EditOptionDataAndSync(_ViewTestBase):
             if call_args[0] and len(call_args[0]) > 1
             else (call_args.kwargs or {}).get("reservation", {})
         )
+        # Both original IPs must be preserved (not collapsed to one).
+        self.assertEqual(
+            reservation_dict.get("ip-addresses"),
+            ["2001:db8::1", "2001:db8::2"],
+            "Edit must preserve all existing ip-addresses from reservation_get",
+        )
         option_data = reservation_dict.get("option-data", [])
         ntp_entry = next((o for o in option_data if o.get("name") == "ntp-servers"), None)
         self.assertIsNotNone(ntp_entry, "ntp-servers option not found in reservation option-data")
@@ -862,7 +881,7 @@ class TestReservation6EditOptionDataAndSync(_ViewTestBase):
         self._mock_get(MockKeaClient)
         MockKeaClient.return_value.reservation_update.return_value = None
         mock_sync.return_value = (MagicMock(), False)
-        post_data = {**_VALID_RESERVATION6_POST, "sync_to_netbox": "on"}
+        post_data = {**_VALID_RESERVATION6_EDIT_POST, "sync_to_netbox": "on"}
         response = self.client.post(self._url(), post_data, follow=True)
         self.assertEqual(response.status_code, 200)
         mock_sync.assert_called_once()
@@ -879,7 +898,7 @@ class TestReservation6EditOptionDataAndSync(_ViewTestBase):
         self._mock_get(MockKeaClient)
         MockKeaClient.return_value.reservation_update.return_value = None
         mock_sync.side_effect = ValueError("sync fail")
-        post_data = {**_VALID_RESERVATION6_POST, "sync_to_netbox": "on"}
+        post_data = {**_VALID_RESERVATION6_EDIT_POST, "sync_to_netbox": "on"}
         response = self.client.post(self._url(), post_data, follow=True)
         self.assertEqual(response.status_code, 200)
         mock_sync.assert_called_once()
@@ -898,7 +917,7 @@ class TestReservation6EditOptionDataAndSync(_ViewTestBase):
         self._mock_get(MockKeaClient)
         MockKeaClient.return_value.reservation_update.side_effect = PartialPersistError("dhcp6", Exception("write"))
         mock_sync.return_value = (MagicMock(), True)
-        post_data = {**_VALID_RESERVATION6_POST, "sync_to_netbox": "on"}
+        post_data = {**_VALID_RESERVATION6_EDIT_POST, "sync_to_netbox": "on"}
         response = self.client.post(self._url(), post_data)
         self.assertIn(response.status_code, (200, 302))
 
@@ -911,7 +930,7 @@ class TestReservation6EditOptionDataAndSync(_ViewTestBase):
         self._mock_get(MockKeaClient)
         MockKeaClient.return_value.reservation_update.side_effect = PartialPersistError("dhcp6", Exception("write"))
         mock_sync.side_effect = ValueError("db error")
-        post_data = {**_VALID_RESERVATION6_POST, "sync_to_netbox": "on"}
+        post_data = {**_VALID_RESERVATION6_EDIT_POST, "sync_to_netbox": "on"}
         response = self.client.post(self._url(), post_data)
         self.assertIn(response.status_code, (200, 302))
 
