@@ -1106,6 +1106,8 @@ class TestWarnPoolReservationOverlapCoverage(_ViewTestBase):
         request = self._make_request()
         # Should not raise; CIDR pool path
         _warn_pool_reservation_overlap(request, client, 4, subnet_id=1, pool_str="10.0.0.0/24")
+        msgs = list(django_messages.get_messages(request))
+        self.assertEqual(len(msgs), 0)
 
     def test_host_with_different_subnet_id_skipped(self):
         """Line 2516: host whose subnet-id != requested subnet_id → continue."""
@@ -1121,6 +1123,8 @@ class TestWarnPoolReservationOverlapCoverage(_ViewTestBase):
         request = self._make_request()
         _warn_pool_reservation_overlap(request, client, 4, subnet_id=1, pool_str="10.0.0.0-10.0.0.100")
         # host skipped → no warning
+        msgs = list(django_messages.get_messages(request))
+        self.assertEqual(len(msgs), 0)
 
     def test_malformed_ip_skipped(self):
         """Lines 2522-2523: malformed IP string → IPAddress raises → inner except fires."""
@@ -1135,6 +1139,8 @@ class TestWarnPoolReservationOverlapCoverage(_ViewTestBase):
         request = self._make_request()
         # Should not raise; malformed IP is silently skipped
         _warn_pool_reservation_overlap(request, client, 4, subnet_id=1, pool_str="10.0.0.0-10.0.0.100")
+        msgs = list(django_messages.get_messages(request))
+        self.assertEqual(len(msgs), 0)
 
 
 # ---------------------------------------------------------------------------
@@ -1174,6 +1180,8 @@ class TestWarnReservationPoolOverlapCoverage(_ViewTestBase):
         request = self._make_request()
         # Should not raise; empty pool string is skipped
         _warn_reservation_pool_overlap(request, client, 4, subnet_id=1, ip_str="10.0.0.5")
+        msgs = list(django_messages.get_messages(request))
+        self.assertEqual(len(msgs), 0)
 
     def test_cidr_pool_creates_ipnetwork(self):
         """Line 2571: CIDR pool (no dash) → IPNetwork path."""
@@ -1191,6 +1199,9 @@ class TestWarnReservationPoolOverlapCoverage(_ViewTestBase):
         request = self._make_request()
         # IP is in pool → warning issued; CIDR pool path (line 2571)
         _warn_reservation_pool_overlap(request, client, 4, subnet_id=1, ip_str="10.0.0.5")
+        msgs = list(django_messages.get_messages(request))
+        self.assertEqual(len(msgs), 1)
+        self.assertEqual(msgs[0].level, django_messages.WARNING)
 
     def test_client_command_exception_swallowed(self):
         """Lines 2579-2580: client.command raises → outer except fires."""
@@ -1203,6 +1214,8 @@ class TestWarnReservationPoolOverlapCoverage(_ViewTestBase):
         request = self._make_request()
         # Should not raise; exception is swallowed
         _warn_reservation_pool_overlap(request, client, 4, subnet_id=1, ip_str="10.0.0.5")
+        msgs = list(django_messages.get_messages(request))
+        self.assertEqual(len(msgs), 0)
 
 
 # ---------------------------------------------------------------------------

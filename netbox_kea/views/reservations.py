@@ -142,7 +142,11 @@ def _run_reservation_success_side_effects(
         request=request,
     )
     if sync_to_netbox:
-        ip = reservation.get("ip-address") or (reservation.get("ip-addresses") or [""])[0]
+        ip = reservation.get("ip-address") or ""
+        if not ip:
+            _ips = reservation.get("ip-addresses")
+            if isinstance(_ips, list) and _ips:
+                ip = _ips[0]
         try:
             _, nb_created = sync_reservation_to_netbox(reservation, cleanup=False)
             nb_msg = "created" if nb_created else "updated"
@@ -189,7 +193,9 @@ def _enrich_reservations_with_lease_status(client: "KeaClient", reservations: li
                     arguments={"subnets": [sid]},
                     check=(0, 3),
                 )
-                if resp[0]["result"] != 3:
+                if not resp or not isinstance(resp[0], dict):
+                    return False  # malformed envelope — indeterminate state
+                if resp[0].get("result") != 3:
                     args = resp[0].get("arguments")
                     if not isinstance(args, dict):
                         return False  # malformed payload — indeterminate state
@@ -242,7 +248,9 @@ def _enrich_reservations_with_lease_status(client: "KeaClient", reservations: li
         single = r.get("ip-address") or r.get("ip_address")
         if single:
             addrs.append(single)
-        addrs.extend(r.get("ip-addresses") or [])
+        raw_ips = r.get("ip-addresses")
+        if isinstance(raw_ips, list):
+            addrs.extend(raw_ips)
         r["has_active_lease"] = any(a in active_lease_ips for a in addrs)
 
 
