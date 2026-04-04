@@ -55,10 +55,10 @@ def _sync_server_leases(
     *,
     max_leases: int,
     stats: dict[str, int],
+    all_synced: list[dict],
 ) -> None:
     """Fetch all leases from *server* for *version* and upsert into NetBox IPAM."""
     from .sync import sync_lease_to_netbox
-    from .utilities import format_leases
 
     client = server.get_client(version=version)
     try:
@@ -76,22 +76,21 @@ def _sync_server_leases(
             max_leases,
         )
 
-    leases = format_leases(raw_leases)
-    logger.info("Server %s (v%s): fetched %d leases", server.name, version, len(leases))
+    logger.info("Server %s (v%s): fetched %d leases", server.name, version, len(raw_leases))
 
-    for lease in leases:
+    for lease in raw_leases:
         try:
-            _ip, created = sync_lease_to_netbox(lease)
+            _ip, created = sync_lease_to_netbox(lease, cleanup=False)
+            all_synced.append(lease)
             if created:
                 stats["created"] += 1
             else:
                 stats["updated"] += 1
-        except Exception as exc:  # noqa: BLE001, PERF203
+        except Exception:  # noqa: BLE001, PERF203
             logger.debug(
-                "Failed to sync lease %s from server %s: %s",
-                lease.get("ip_address", "?"),
+                "Failed to sync lease %s from server %s",
+                lease.get("ip-address", "?"),
                 server.name,
-                exc,
                 exc_info=True,
             )
             stats["errors"] += 1
@@ -102,6 +101,7 @@ def _sync_server_reservations(
     version: int,
     *,
     stats: dict[str, int],
+    all_synced: list[dict],
 ) -> None:
     """Fetch all reservations from *server* for *version* and upsert into NetBox IPAM."""
     from .kea import KeaException
@@ -146,18 +146,18 @@ def _sync_server_reservations(
 
     for reservation in reservations:
         try:
-            _ip, created = sync_reservation_to_netbox(reservation)
+            _ip, created = sync_reservation_to_netbox(reservation, cleanup=False)
+            all_synced.append(reservation)
             if created:
                 stats["created"] += 1
             else:
                 stats["updated"] += 1
-        except Exception as exc:  # noqa: BLE001, PERF203
+        except Exception:  # noqa: BLE001, PERF203
             ip = reservation.get("ip-address") or reservation.get("ip_address", "?")
             logger.debug(
-                "Failed to sync reservation %s from server %s: %s",
+                "Failed to sync reservation %s from server %s",
                 ip,
                 server.name,
-                exc,
                 exc_info=True,
             )
             stats["errors"] += 1
@@ -236,10 +236,16 @@ class KeaIpamSyncJob(JobRunner):
         stats: dict[str, int],
     ) -> None:
         """Sync a single server's leases and reservations."""
+        from .sync import cleanup_stale_ips_batch
+
+        all_synced: list[dict] = []
         for version, enabled in ((4, server.dhcp4), (6, server.dhcp6)):
             if not enabled:
                 continue
             if sync_leases:
-                _sync_server_leases(server, version, max_leases=max_leases, stats=stats)
+                _sync_server_leases(server, version, max_leases=max_leases, stats=stats, all_synced=all_synced)
             if sync_reservations:
-                _sync_server_reservations(server, version, stats=stats)
+                _sync_server_reservations(server, version, stats=stats, all_synced=all_synced)
+
+        if all_synced:
+            cleanup_stale_ips_batch(all_synced)

@@ -13,220 +13,245 @@
 > **Fork notice:** This is `netbox-kea-ng`, an independently maintained fork of
 > [netbox-kea](https://github.com/devon-mar/netbox-kea) by
 > [Devon Mar](https://github.com/devon-mar).
-> Published to PyPI as **`netbox-kea-ng`** and maintained at this repository.
-> Upstream changes are merged where applicable.
+> It is published to PyPI as **`netbox-kea-ng`** and tracked in this repository.
+> Upstream changes are periodically merged where applicable.
 
-A full-featured NetBox plugin for [Kea DHCP](https://www.isc.org/kea/) server management.
-Exposes Kea daemon status, live lease search/delete, reservation CRUD, subnet and pool management,
-NetBox IPAM synchronisation, and periodic background sync — all directly inside the NetBox UI.
-
----
+NetBox plugin for the [Kea DHCP](https://www.isc.org/kea/) server. Manage your DHCP infrastructure directly from NetBox — view daemon status, search and manage leases, manage host reservations, configure subnets/pools/options, and keep your NetBox IPAM synchronized with live Kea data via a background job.
 
 ## Features
 
-### Core (inherited from upstream)
+### Core (from upstream)
+- View Kea daemon status (Control Agent + DHCPv4/DHCPv6 daemons)
+- Full DHCPv4 and DHCPv6 support
+- Search, view, delete and export DHCP leases
+- Search for NetBox devices/VMs directly from DHCP leases
+- View DHCP subnets from Kea configuration
+- REST API and GraphQL support for Server objects
 
-- Connect to one or more Kea Control Agent endpoints — with optional separate DHCPv4 / DHCPv6 URLs per server
-- View Kea daemon status (Control Agent + DHCPv4 + DHCPv6)
-- Search, view, export, and delete DHCPv4 and DHCPv6 leases
-- View DHCP subnets, shared networks, and pools from Kea's running configuration
-- Navigate from a lease directly to the matching NetBox device/VM
-- REST API and GraphQL support for managing `Server` objects
+### Additions in this fork
 
-### New in this fork
+**Host Reservations**
+- Full CRUD for DHCPv4 and DHCPv6 reservations via [`host_cmds`](https://kea.readthedocs.io/en/latest/arm/hooks.html#host-cmds) hook
+- Identifier types: hw-address (v4), DUID (v6), client-id, flex-id, circuit-id, remote-id
+- Per-reservation DHCP options
+- Journal entries on add/edit/delete
 
-#### Host Reservations (`host_cmds` hook)
+**Subnet Management**
+- Add, edit and delete subnets (requires [`subnet_cmds`](https://kea.readthedocs.io/en/latest/arm/hooks.html#subnet-cmds) or `config-set`)
+- Pool management (add/delete pools per subnet)
+- Shared network management (add/edit/delete)
+- Per-subnet and global DHCP option editing
 
-- Full CRUD for DHCPv4 and DHCPv6 reservations via Kea's `host_cmds` hook
-- Create reservations with fixed IP, hardware address, DUID, client-id, circuit-id, flex-id, or remote-id
-- Edit and delete existing reservations; option-data per reservation
-- Active lease status badge per reservation (requires `lease_cmds` hook)
-- Gracefully degrades when `host_cmds` is not loaded
+**IPAM Sync**
+- Sync active leases → NetBox `IPAddress` (status `active`)
+- Sync reservations → NetBox `IPAddress` (status `reserved`)
+- Sync button on individual leases and reservations
+- Bulk sync for entire lease tables
+- Pending-change detection: badge on leases where a reservation exists at a different IP
+- MAC address sync → NetBox `MACAddress` (NetBox ≥ 4.1)
+- Sets `dns_name` on IPAddress for automatic DNS sync via [netbox-dns](https://github.com/peteeckel/netbox-plugin-dns) IPAMDNSsync
 
-#### DHCP Options Management
+**Periodic Background Sync** *(requires `rqworker`)*
+- Automatic Kea→NetBox IPAM sync on a configurable interval (default 5 minutes)
+- Syncs all leases and reservations from all configured servers
+- Visible in NetBox **System → Background Jobs**
 
-- Edit per-subnet option-data (`subnet4/6-update`) and global server options
-- Add, edit, and delete custom option definitions (`option_def_add/update/del`)
-- Supports `always-send`, custom codes, types, and spaces
+**DHCP Control**
+- Enable/disable DHCPv4 and DHCPv6 daemons from the NetBox UI
 
-#### Pool & Shared Network Management
+**Dual-URL Server**
+- Optional separate URLs for DHCPv4 and DHCPv6 Control Agents
+- Supports environments where v4 and v6 are served by separate Kea processes
 
-- List and inspect pools within subnets
-- View shared networks with their member subnets
-- Warning when a new reservation overlaps an existing pool range
+**Global / Cross-Server Views**
+- Combined dashboard, lease, reservation, subnet and shared-network views across all servers
 
-#### NetBox IPAM Synchronisation
-
-- **Manual sync** from lease or reservation tables: create/update a NetBox `IPAddress` with a single click
-- Status mapping: `active` for leases, `reserved` for reservations
-- Sets `dns_name` from Kea hostname → works automatically with [netbox-dns](https://github.com/peteeckel/netbox-plugin-dns) IPAMDNSsync
-- Stale IP cleanup: configurable `remove` / `deprecate` / `none` for IPs no longer present in Kea
-
-#### Periodic Background Sync (Background Worker)
-
-- Automatic periodic sync of all Kea leases and reservations to NetBox IPAM
-- Runs via NetBox's built-in `rqworker` infrastructure — no external scheduler required
-- Configurable interval (default 5 minutes)
-- Per-server error isolation: one failing server does not block others
-- Summary logging per sync run
-
-#### Combined Multi-Server Views
-
-- Single view across all servers for leases and reservations
-- Concurrent fetching (thread pool) from all servers
+**Lease Add / Edit / Bulk Import**
+- Add and edit individual leases
+- Bulk import leases from CSV
 
 ---
 
 ## Requirements
 
-| Requirement | Notes |
-|---|---|
-| NetBox | 4.0, 4.1, 4.2, 4.3, 4.4 or 4.5 |
-| Kea Control Agent | Required for all features |
-| `lease_cmds` hook | Required for lease search and active lease badges |
-| `host_cmds` hook | Required for reservation CRUD (open source since Kea 2.7.7) |
+- NetBox 4.0, 4.1, 4.2, 4.3, 4.4 or 4.5
+- [Kea Control Agent](https://kea.readthedocs.io/en/latest/arm/agent.html)
+- [`lease_cmds`](https://kea.readthedocs.io/en/latest/arm/hooks.html#lease-cmds-lease-commands-for-easier-lease-management) hook library (for lease search and management)
+- [`host_cmds`](https://kea.readthedocs.io/en/latest/arm/hooks.html#host-cmds) hook library (optional, for reservation management)
+- [`subnet_cmds`](https://kea.readthedocs.io/en/latest/arm/hooks.html#subnet-cmds) hook library (optional, for subnet add/edit/delete)
 
-> **Kea version:** Tested with Kea v2.4+ using `memfile` or `mysql`/`pgsql` lease backends.
+The plugin degrades gracefully when optional hooks are absent — tabs for unavailable features are hidden automatically.
+
+---
+
+## Compatibility
+
+| netbox-kea-ng | NetBox | Kea |
+|---|---|---|
+| 1.x | 4.0 – 4.5 | 2.4+ |
+
+Tested with Kea v2.4.1 using the `memfile` lease database. Other versions and databases should also work.
 
 ---
 
 ## Installation
 
-1. Add `netbox-kea-ng` to `local_requirements.txt`:
+### 1. Install the package
 
-    ```
-    netbox-kea-ng
-    ```
+Add `netbox-kea-ng` to your `local_requirements.txt` (or install with pip):
 
-2. Enable the plugin in `configuration.py`:
+```bash
+pip install netbox-kea-ng
+```
 
-    ```python
-    PLUGINS = ["netbox_kea"]
-    ```
+### 2. Enable the plugin
 
-3. Run database migrations:
+In `configuration.py`:
 
-    ```bash
-    ./manage.py migrate
-    ```
+```python
+PLUGINS = ["netbox_kea"]
+```
 
-4. Restart the NetBox service.
+Optionally configure plugin settings (see [Configuration](#configuration)):
 
-### Background Sync (optional)
+```python
+PLUGINS_CONFIG = {
+    "netbox_kea": {
+        "kea_timeout": 30,
+        "sync_interval_minutes": 5,
+        "sync_leases_enabled": True,
+        "sync_reservations_enabled": True,
+        "sync_max_leases_per_server": 50000,
+        "stale_ip_cleanup": "remove",
+    }
+}
+```
 
-To enable periodic Kea→IPAM sync, ensure the NetBox background worker is running:
+### 3. Run migrations
+
+```bash
+./manage.py migrate
+```
+
+### 4. Start the background worker (required for periodic sync)
+
+The periodic IPAM sync job runs via NetBox's built-in `rqworker`. If you're not already running it:
 
 ```bash
 ./manage.py rqworker
 ```
 
-The sync job registers automatically when the worker starts. Configure the interval and behaviour in `configuration.py`:
-
-```python
-PLUGINS_CONFIG = {
-    "netbox_kea": {
-        # Sync interval in minutes (default: 5)
-        "sync_interval_minutes": 5,
-        # Sync active leases to NetBox (status=active)
-        "sync_leases_enabled": True,
-        # Sync reservations to NetBox (status=reserved)
-        "sync_reservations_enabled": True,
-        # Max leases fetched per server per run (0 = unlimited)
-        "sync_max_leases_per_server": 50000,
-    }
-}
-```
-
-The background sync job appears in **System → Background Jobs** in the NetBox UI.
+The `Kea IPAM Sync` job will appear under **System → Background Jobs** and runs on the configured interval.
 
 ---
 
-## Configuration Reference
+## Configuration
 
-All settings go under `PLUGINS_CONFIG["netbox_kea"]`:
+All settings are under `PLUGINS_CONFIG["netbox_kea"]`:
 
 | Setting | Default | Description |
 |---|---|---|
-| `kea_timeout` | `30` | HTTP timeout (seconds) for Kea API calls |
-| `stale_ip_cleanup` | `"remove"` | What to do with IPs no longer in Kea: `"remove"`, `"deprecate"`, or `"none"` |
-| `sync_interval_minutes` | `5` | Background sync interval (minutes) |
-| `sync_leases_enabled` | `True` | Include active leases in background sync |
-| `sync_reservations_enabled` | `True` | Include reservations in background sync |
-| `sync_max_leases_per_server` | `50000` | Cap on leases fetched per server per sync run |
+| `kea_timeout` | `30` | HTTP request timeout in seconds for Kea API calls |
+| `stale_ip_cleanup` | `"remove"` | What to do with stale IPs after sync: `"remove"` (delete), `"deprecate"` (set status=deprecated), `"none"` (skip) |
+| `sync_interval_minutes` | `5` | How often the background sync job runs (minutes). Also editable via NetBox admin → Jobs |
+| `sync_leases_enabled` | `True` | Sync active DHCP leases to NetBox IPAM |
+| `sync_reservations_enabled` | `True` | Sync Kea reservations to NetBox IPAM |
+| `sync_max_leases_per_server` | `50000` | Hard cap on leases fetched per server per sync run. Set to `0` for no limit |
 
 ---
 
-## Dual-URL Server Support
+## Server Configuration
 
-A single `Server` object can point to separate DHCPv4 and DHCPv6 Kea processes:
+### Single-URL (standard)
 
-```
-Server
-  ├── dhcp4_url = https://kea-v4.example.com:8000
-  └── dhcp6_url = https://kea-v6.example.com:8000
-```
+Configure one `Server` URL that points to the Kea Control Agent:
 
-All views automatically route to the correct endpoint based on the IP version being queried.
+| Field | Description |
+|---|---|
+| `Server URL` | URL of the Kea Control Agent (e.g. `https://kea.example.com:8000`) |
+| `DHCPv4` | Enable DHCPv4 lease/reservation/subnet management |
+| `DHCPv6` | Enable DHCPv6 lease/reservation/subnet management |
+| `Username` / `Password` | HTTP Basic Auth credentials (if required) |
+| `CA Certificate` | Custom CA certificate for TLS verification |
+| `Skip TLS Verification` | Disable TLS certificate verification |
+
+### Dual-URL (separate v4/v6 processes)
+
+When DHCPv4 and DHCPv6 are served by separate Kea processes (each with its own Control Agent):
+
+| Field | Description |
+|---|---|
+| `DHCPv4 URL` | URL of the Control Agent for the DHCPv4 daemon |
+| `DHCPv6 URL` | URL of the Control Agent for the DHCPv6 daemon |
+
+Leave the main `Server URL` blank when using dual URLs. Both fields use the same credentials.
 
 ---
 
-## Custom Links
+## Background IPAM Sync
 
-Add custom links to NetBox models to jump straight from a device or prefix to its DHCP leases.
+The `Kea IPAM Sync` job runs automatically when `rqworker` is active:
 
-Replace `<Kea Server ID>` with your server's object ID (visible top-right on the server detail page as `netbox_kea.server:<ID>`).
+1. Iterates all configured `Server` objects
+2. For each server: fetches all active leases (v4 + v6) and all reservations
+3. Creates or updates NetBox `IPAddress` objects:
+   - Leases → `status=active`, `dns_name` set from Kea hostname
+   - Reservations → `status=reserved`, `dns_name` set from Kea hostname
+4. Cleans up stale IPs (configurable via `stale_ip_cleanup`)
+5. One server failing does not block others
+6. Summary logged per server and in total
 
-### DHCP leases for a prefix
+View job history, next scheduled time and logs under **System → Background Jobs → Kea IPAM Sync**.
 
-**Content types:** `IPAM > Prefix`
-
-```
-https://netbox.example.com/plugins/kea/servers/<Kea Server ID>/leases{{ object.prefix.version }}/?q={{ object.prefix }}&by=subnet
-```
-
-### DHCP leases for a device/VM interface (by MAC)
-
-**Content types:** `DCIM > Interface`, `Virtualization > Interface`
-
-DHCPv4:
-```
-https://netbox.example.com/plugins/kea/servers/<Kea Server ID>/leases4/?q={{ object.mac_address }}&by=hw
-```
-
-DHCPv6:
-```
-https://netbox.example.com/plugins/kea/servers/<Kea Server ID>/leases6/?q={{ object.mac_address }}&by=hw
-```
-
-### DHCP leases for a device/VM (by hostname)
-
-**Content types:** `DCIM > Device`, `Virtualization > Virtual Machine`
-
-```
-https://netbox.example.com/plugins/kea/servers/<Kea Server ID>/leases4/?q={{ object.name|lower }}&by=hostname
-```
-
-You can also use a custom field: replace `{{ object.name|lower }}` with `{{ object.cf.<your_field>|lower }}`.
+The sync interval can be changed live via the NetBox admin without restarting the worker — edit the `interval` field on the job object.
 
 ---
 
 ## DNS Integration
 
-When `dns_name` is set on a NetBox `IPAddress` (which this plugin does automatically from Kea hostnames), [netbox-plugin-dns](https://github.com/peteeckel/netbox-plugin-dns) with IPAMDNSsync enabled will automatically create A/AAAA/PTR records — provided matching DNS views and zones exist.
+When [netbox-dns](https://github.com/peteeckel/netbox-plugin-dns) with IPAMDNSsync is installed:
 
-No additional configuration is required in this plugin.
+1. The IPAM sync sets `dns_name` on `IPAddress` objects from the Kea hostname
+2. IPAMDNSsync picks up `dns_name` changes via Django signals
+3. A/AAAA/PTR records are created automatically (provided matching DNS views + zones exist)
+
+No additional configuration is required — the integration is automatic when both plugins are present.
 
 ---
 
-## Screenshots
+## Custom Links
 
-![Screenshot of DHCP leases](images/leases.png)
+Add custom links to NetBox models to navigate directly to Kea lease searches.
+
+Replace `<Kea Server ID>` with your server's object ID (visible in the top-right corner of the server detail page as `netbox_kea.server:<ID>`).
+
+### Show DHCP leases for a prefix
+
+**Content type**: `IPAM > Prefix`
+
+**URL**: `https://netbox.example.com/plugins/kea/servers/<Kea Server ID>/leases{{ object.prefix.version }}/?q={{ object.prefix }}&by=subnet`
+
+### Show DHCP leases for a device/VM interface (by MAC)
+
+**Content types**: `DCIM > Interface`, `Virtualization > Interface`
+
+**DHCPv4 URL**: `https://netbox.example.com/plugins/kea/servers/<Kea Server ID>/leases4/?q={{ object.mac_address }}&by=hw`
+
+**DHCPv6 URL**: `https://netbox.example.com/plugins/kea/servers/<Kea Server ID>/leases6/?q={{ object.mac_address }}&by=hw`
+
+### Show DHCP leases for a device/VM (by hostname)
+
+**Content types**: `DCIM > Device`, `Virtualization > Virtual Machine`
+
+**DHCPv4 URL**: `https://netbox.example.com/plugins/kea/servers/<Kea Server ID>/leases4/?q={{ object.name|lower }}&by=hostname`
+
+**DHCPv6 URL**: `https://netbox.example.com/plugins/kea/servers/<Kea Server ID>/leases6/?q={{ object.name|lower }}&by=hostname`
+
+You can substitute `{{ object.name|lower }}` with a custom field: `{{ object.cf.<your_field>|lower }}`.
 
 ---
 
 ## Development
-
-See [CHANGELOG](CHANGELOG.md) for release history.
 
 ```bash
 # Install dev dependencies
@@ -236,25 +261,27 @@ uv sync
 uv run ruff check netbox_kea/
 uv run ruff format --check netbox_kea/
 
-# Auto-format
-uv run ruff format netbox_kea/
-
 # REUSE compliance check
 uv run reuse lint
+
+# Format
+uv run ruff format netbox_kea/
+
+# Install pre-commit hooks
+uv run pre-commit install
 
 # Build wheel (required before integration tests)
 uv build
 
-# Run unit tests (no Docker)
-uv run pytest
+# Run unit tests (no Docker required)
+uv run pytest netbox_kea/tests/ --reuse-db -q
 
-# Run integration tests (requires Docker)
+# Run integration tests (requires Docker — see tests/test_setup.sh)
 ./tests/test_setup.sh
-uv run pytest tests/ --tracing=retain-on-failure -v
-
-# Install pre-commit hooks
-uv run pre-commit install
+uv run pytest tests/ --tracing=retain-on-failure -v --cov=netbox_kea --cov-report=xml
 ```
+
+See [CHANGELOG](CHANGELOG.md) for version history.
 
 ---
 
