@@ -4444,3 +4444,82 @@ class TestConfigGetShapeGuard(TestCase):
         mock_post.return_value = self._null_args_response()
         with self.assertRaises(KeaException):
             self.client.option_def_del(version=4, code=200, space="dhcp4")
+
+
+class TestLeaseGetAllPagination(TestCase):
+    """Tests for KeaClient.lease_get_all() pagination and edge-case handling."""
+
+    def setUp(self):
+        self.client = KeaClient(url="http://kea:8000")
+
+    def _page_response(self, leases, count=None, result=0):
+        args = {"leases": leases}
+        if count is not None:
+            args["count"] = count
+        return _mock_http_response([{"result": result, "arguments": args}])
+
+    def _no_leases_response(self):
+        """Kea returns result=3 (no more leases)."""
+        return _mock_http_response([{"result": 3}])
+
+    @patch("requests.Session.post")
+    def test_empty_page_breaks_loop(self, mock_post):
+        """An empty page list causes the loop to break instead of advancing cursor."""
+        # First call: empty page with count=250 (would normally continue)
+        mock_post.side_effect = [
+            self._page_response(leases=[], count=250),
+        ]
+        leases, truncated = self.client.lease_get_all(version=4)
+        self.assertEqual(leases, [])
+        self.assertFalse(truncated)
+        # Only one HTTP call made (broke on empty page)
+        self.assertEqual(mock_post.call_count, 1)
+
+    @patch("requests.Session.post")
+    def test_empty_page_result3_breaks_loop(self, mock_post):
+        """result=3 (no more leases) breaks immediately."""
+        mock_post.return_value = self._no_leases_response()
+        leases, truncated = self.client.lease_get_all(version=4)
+        self.assertEqual(leases, [])
+        self.assertFalse(truncated)
+
+    @patch("requests.Session.post")
+    def test_malformed_cursor_non_dict_last_item_raises(self, mock_post):
+        """Last item in page is not a dict → RuntimeError with 'ip-address' cursor message."""
+        # One full page (count==per_page=1) so cursor advancement is attempted
+        mock_post.return_value = self._page_response(leases=["not-a-dict"], count=1)
+        with self.assertRaises(RuntimeError) as cm:
+            self.client.lease_get_all(version=4, per_page=1)
+        self.assertIn("ip-address", str(cm.exception))
+
+    @patch("requests.Session.post")
+    def test_malformed_cursor_missing_ip_address_raises(self, mock_post):
+        """Last item has no 'ip-address' key → RuntimeError."""
+        # Page with 1 item missing 'ip-address', count==per_page so loop continues
+        mock_post.return_value = self._page_response(leases=[{"hw-address": "aa:bb:cc:dd:ee:ff"}], count=1)
+        with self.assertRaises(RuntimeError) as cm:
+            self.client.lease_get_all(version=4, per_page=1)
+        self.assertIn("ip-address", str(cm.exception))
+
+    @patch("requests.Session.post")
+    def test_max_leases_truncates_and_returns_flag(self, mock_post):
+        """Exceeding max_leases truncates result and sets truncated=True."""
+        leases = [{"ip-address": f"10.0.0.{i}"} for i in range(5)]
+        # count < per_page so it's the last page — no cursor advancement needed
+        mock_post.return_value = self._page_response(leases=leases, count=5)
+        result, truncated = self.client.lease_get_all(version=4, per_page=10, max_leases=3)
+        self.assertEqual(len(result), 3)
+        self.assertTrue(truncated)
+
+    @patch("requests.Session.post")
+    def test_multi_page_aggregates_leases(self, mock_post):
+        """Two pages of leases are combined into a single list."""
+        page1 = [{"ip-address": "10.0.0.1"}, {"ip-address": "10.0.0.2"}]
+        page2 = [{"ip-address": "10.0.0.3"}]
+        mock_post.side_effect = [
+            self._page_response(leases=page1, count=2),  # full page → advance cursor
+            self._page_response(leases=page2, count=1),  # partial page → stop
+        ]
+        leases, truncated = self.client.lease_get_all(version=4, per_page=2)
+        self.assertEqual(len(leases), 3)
+        self.assertFalse(truncated)

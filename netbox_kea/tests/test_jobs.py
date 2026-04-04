@@ -303,3 +303,105 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
 
         versions_called = {c.kwargs["version"] for c in server.get_client.call_args_list}
         self.assertEqual(versions_called, {4, 6})
+
+    # ------------------------------------------------------------------ #
+    # max_leases normalization                                             #
+    # ------------------------------------------------------------------ #
+
+    @override_settings(
+        PLUGINS_CONFIG={
+            **_PLUGINS_CONFIG,
+            "netbox_kea": {**_PLUGINS_CONFIG["netbox_kea"], "sync_max_leases_per_server": "not-a-number"},
+        }
+    )
+    @patch("netbox_kea.sync.cleanup_stale_ips_batch", return_value=0)
+    @patch("netbox_kea.sync.sync_lease_to_netbox", return_value=(MagicMock(), True))
+    @patch("netbox_kea.models.Server")
+    def test_invalid_max_leases_string_falls_back_to_default(self, MockServer, mock_sync_lease, mock_cleanup):
+        """sync_max_leases_per_server='not-a-number' → warning logged, fallback to 50000."""
+        server = _make_server()
+        client = _make_client(leases4=[_LEASE4])
+        server.get_client.return_value = client
+        MockServer.objects.all.return_value = [server]
+
+        with self.assertLogs("netbox.jobs", level="WARNING") as cm:
+            KeaIpamSyncJob(_make_job()).run()
+
+        self.assertTrue(any("Invalid sync_max_leases_per_server" in msg for msg in cm.output))
+        # Sync still ran with fallback value
+        mock_sync_lease.assert_called_once_with(_LEASE4, cleanup=False)
+
+    @override_settings(
+        PLUGINS_CONFIG={
+            **_PLUGINS_CONFIG,
+            "netbox_kea": {**_PLUGINS_CONFIG["netbox_kea"], "sync_max_leases_per_server": -1},
+        }
+    )
+    @patch("netbox_kea.sync.cleanup_stale_ips_batch", return_value=0)
+    @patch("netbox_kea.sync.sync_lease_to_netbox", return_value=(MagicMock(), True))
+    @patch("netbox_kea.models.Server")
+    def test_negative_max_leases_resets_to_zero(self, MockServer, mock_sync_lease, mock_cleanup):
+        """sync_max_leases_per_server=-1 → warning logged, value reset to 0 (no cap)."""
+        server = _make_server()
+        client = _make_client(leases4=[_LEASE4])
+        server.get_client.return_value = client
+        MockServer.objects.all.return_value = [server]
+
+        with self.assertLogs("netbox.jobs", level="WARNING") as cm:
+            KeaIpamSyncJob(_make_job()).run()
+
+        self.assertTrue(any("Negative sync_max_leases_per_server" in msg for msg in cm.output))
+        mock_sync_lease.assert_called_once()
+
+    # ------------------------------------------------------------------ #
+    # Skip cleanup on sync errors                                          #
+    # ------------------------------------------------------------------ #
+
+    @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+    @patch("netbox_kea.sync.cleanup_stale_ips_batch", return_value=0)
+    @patch("netbox_kea.sync.sync_reservation_to_netbox", return_value=(MagicMock(), False))
+    @patch("netbox_kea.models.Server")
+    def test_cleanup_skipped_when_errors_occurred(self, MockServer, mock_sync_resv, mock_cleanup):
+        """When lease sync errors occur, cleanup_stale_ips_batch must NOT run to avoid partial-set deletions.
+
+        One lease succeeds (populates all_synced) and one fails (stats['errors']=1).
+        The non-empty all_synced + errors>0 should trigger the warning and skip cleanup.
+        """
+        server = _make_server()
+        good_lease = _LEASE4
+        bad_lease = {**_LEASE4, "ip-address": "10.0.0.2"}
+
+        def _side_effect(lease, **kwargs):
+            if lease["ip-address"] == "10.0.0.2":
+                raise ValueError("bad address")
+            return (MagicMock(), True)
+
+        with patch("netbox_kea.sync.sync_lease_to_netbox", side_effect=_side_effect):
+            client = _make_client(leases4=[good_lease, bad_lease])
+            server.get_client.return_value = client
+            MockServer.objects.all.return_value = [server]
+
+            with self.assertLogs("netbox.jobs", level="WARNING") as cm:
+                KeaIpamSyncJob(_make_job()).run()
+
+        mock_cleanup.assert_not_called()
+        self.assertTrue(any("skipping stale-IP cleanup" in msg for msg in cm.output))
+
+
+class TestConfigureSyncJobInterval(SimpleTestCase):
+    """Tests for NetBoxKeaConfig._configure_sync_job_interval()."""
+
+    def test_interval_override_logs_warning_on_failure(self):
+        """When any exception occurs inside _configure_sync_job_interval, a WARNING is logged."""
+
+        from django.apps import apps
+
+        cfg = apps.get_app_config("netbox_kea")
+
+        # Removing netbox_kea.jobs from sys.modules causes 'from .jobs import KeaIpamSyncJob'
+        # to raise ImportError, which triggers the except block and the logger.warning call.
+        with patch.dict("sys.modules", {"netbox_kea.jobs": None}):
+            with self.assertLogs("netbox_kea", level="WARNING") as cm:
+                cfg._configure_sync_job_interval()
+
+        self.assertTrue(any("Failed to apply netbox_kea sync interval override" in msg for msg in cm.output))

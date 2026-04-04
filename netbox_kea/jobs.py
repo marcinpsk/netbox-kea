@@ -185,7 +185,21 @@ class KeaIpamSyncJob(JobRunner):
         config = _get_plugin_config()
         sync_leases = config.get("sync_leases_enabled", True)
         sync_reservations = config.get("sync_reservations_enabled", True)
-        max_leases: int = config.get("sync_max_leases_per_server", 50000)
+        raw_max_leases = config.get("sync_max_leases_per_server", 50000)
+        try:
+            max_leases = int(raw_max_leases)
+        except (TypeError, ValueError):
+            self.logger.warning(
+                "Invalid sync_max_leases_per_server=%r; falling back to 50000",
+                raw_max_leases,
+            )
+            max_leases = 50000
+        if max_leases < 0:
+            self.logger.warning(
+                "Negative sync_max_leases_per_server=%d is not allowed; using 0 (no cap)",
+                max_leases,
+            )
+            max_leases = 0
 
         if not sync_leases and not sync_reservations:
             self.logger.info("Both sync_leases_enabled and sync_reservations_enabled are False — nothing to do.")
@@ -247,5 +261,11 @@ class KeaIpamSyncJob(JobRunner):
             if sync_reservations:
                 _sync_server_reservations(server, version, stats=stats, all_synced=all_synced)
 
-        if all_synced:
+        if all_synced and stats["errors"] == 0:
             cleanup_stale_ips_batch(all_synced)
+        elif all_synced:
+            self.logger.warning(
+                "Server %s: skipping stale-IP cleanup due to sync errors (errors=%d)",
+                server.name,
+                stats["errors"],
+            )

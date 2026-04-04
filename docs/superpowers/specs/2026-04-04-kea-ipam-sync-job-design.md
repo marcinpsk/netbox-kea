@@ -19,7 +19,7 @@ The current approach for syncing Kea DHCP leases/reservations to NetBox IPAM rel
 
 ## Architecture
 
-```
+```text
 rqworker startup
   → registry['system_jobs'] has KeaIpamSyncJob
   → enqueue_once(interval=sync_interval_minutes) schedules first run

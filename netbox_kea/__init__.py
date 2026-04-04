@@ -1,4 +1,8 @@
+import logging
+
 from netbox.plugins import PluginConfig
+
+logger = logging.getLogger(__name__)
 
 
 class NetBoxKeaConfig(PluginConfig):
@@ -45,7 +49,10 @@ class NetBoxKeaConfig(PluginConfig):
             if KeaIpamSyncJob in registry["system_jobs"]:
                 registry["system_jobs"][KeaIpamSyncJob]["interval"] = interval
         except Exception:  # noqa: BLE001
-            pass  # non-fatal — worker will use the decorator default
+            logger.warning(
+                "Failed to apply netbox_kea sync interval override; using decorator default.",
+                exc_info=True,
+            )
 
 
 config = NetBoxKeaConfig

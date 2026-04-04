@@ -1030,6 +1030,8 @@ class KeaClient:
                     f"lease{version}-get-page arguments.leases is {type(page).__name__!r}, expected list"
                 )
             all_leases.extend(page)
+            if not page:
+                break
             if max_leases is not None and len(all_leases) >= max_leases:
                 all_leases = all_leases[:max_leases]
                 truncated = True
@@ -1037,7 +1039,10 @@ class KeaClient:
             count = args.get("count")
             if not isinstance(count, int) or count < per_page:
                 break  # last page
-            cursor = page[-1]["ip-address"]
+            last = page[-1]
+            cursor = last.get("ip-address") if isinstance(last, dict) else None
+            if not isinstance(cursor, str) or not cursor:
+                raise RuntimeError(f"lease{version}-get-page returned a page item without a valid 'ip-address' cursor")
 
         return all_leases, truncated
 

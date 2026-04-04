@@ -21,6 +21,7 @@ NetBox plugin for the [Kea DHCP](https://www.isc.org/kea/) server. Manage your D
 ## Features
 
 ### Core (from upstream)
+
 - View Kea daemon status (Control Agent + DHCPv4/DHCPv6 daemons)
 - Full DHCPv4 and DHCPv6 support
 - Search, view, delete and export DHCP leases
