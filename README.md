@@ -169,10 +169,10 @@ Configure one `Server` URL that points to the Kea Control Agent:
 
 | Field | Description |
 |---|---|
-| `Server URL` | URL of the Kea Control Agent (e.g. `https://kea.example.com:8000`) |
+| `CA / Server URL` (`ca_url`) | URL of the Kea Control Agent (e.g. `https://kea.example.com:8000`) |
 | `DHCPv4` | Enable DHCPv4 lease/reservation/subnet management |
 | `DHCPv6` | Enable DHCPv6 lease/reservation/subnet management |
-| `Username` / `Password` | HTTP Basic Auth credentials (if required) |
+| `CA Username` (`ca_username`) / `CA Password` (`ca_password`) | HTTP Basic Auth credentials (if required) |
 | `CA File Path` | Path to a custom CA certificate file for TLS verification |
 | `SSL Verification` | Enable/disable TLS certificate verification (enabled by default) |
 
@@ -185,7 +185,24 @@ When DHCPv4 and DHCPv6 are served by separate Kea processes (each with its own C
 | `DHCPv4 URL` | URL of the Control Agent for the DHCPv4 daemon |
 | `DHCPv6 URL` | URL of the Control Agent for the DHCPv6 daemon |
 
-The main `Server URL` is required and acts as a fallback for any protocol without a dedicated URL. Both `DHCPv4 URL` and `DHCPv6 URL` use the same credentials as the main server.
+The main `CA URL` (`ca_url`) is required and acts as a fallback for any protocol without a dedicated URL. Both `DHCPv4 URL` and `DHCPv6 URL` use the same credentials as the main server.
+
+---
+
+### Per-protocol credentials
+
+When connecting directly to DHCP daemons (bypassing the Control Agent), you can configure
+separate credentials per protocol:
+
+| Field | Description |
+|-------|-------------|
+| `dhcp4_username` | Username for the DHCPv4 daemon (overrides `ca_username` for DHCPv4) |
+| `dhcp4_password` | Password for the DHCPv4 daemon (overrides `ca_password` for DHCPv4) |
+| `dhcp6_username` | Username for the DHCPv6 daemon (overrides `ca_username` for DHCPv6) |
+| `dhcp6_password` | Password for the DHCPv6 daemon (overrides `ca_password` for DHCPv6) |
+
+If per-protocol credentials are not set, the CA-level credentials (`ca_username`/`ca_password`)
+are used as the default for all connections.
 
 ---
 
