@@ -14,6 +14,7 @@ from netbox.models import NetBoxModel
 
 from netbox_kea.kea import KeaClient
 from netbox_kea.models import Server, SyncConfig
+from netbox_kea.tests.utils import _make_db_server
 
 # Default PLUGINS_CONFIG used across model tests so we don't need full NetBox config.
 _PLUGINS_CONFIG = {"netbox_kea": {"kea_timeout": 30}}
@@ -464,3 +465,16 @@ class TestSyncConfig(TestCase):
         cfg2 = SyncConfig.get()
         self.assertEqual(cfg1.pk, cfg2.pk)
         self.assertEqual(SyncConfig.objects.count(), 1)
+
+
+class TestServerSyncEnabled(TestCase):
+    def test_sync_enabled_defaults_to_true(self):
+        server = _make_db_server()
+        self.assertTrue(server.sync_enabled)
+
+    def test_sync_enabled_can_be_set_false(self):
+        server = _make_db_server()
+        server.sync_enabled = False
+        server.save(update_fields=["sync_enabled"])
+        server.refresh_from_db()
+        self.assertFalse(server.sync_enabled)

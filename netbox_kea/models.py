@@ -77,6 +77,11 @@ class Server(NetBoxModel):
             "Enable if connecting via kea-ctrl-agent. Disable when connecting directly to DHCP daemon endpoints."
         ),
     )
+    sync_enabled = models.BooleanField(
+        verbose_name="IPAM Sync Enabled",
+        default=True,
+        help_text="Include this server in the periodic Kea→NetBox IPAM sync job.",
+    )
 
     class Meta:
         ordering = ("name",)

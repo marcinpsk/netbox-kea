@@ -42,6 +42,7 @@ class ServerForm(NetBoxModelForm):
             "dhcp4_url",
             "dhcp6_url",
             "has_control_agent",
+            "sync_enabled",
             "tags",
         )
         widgets = {
