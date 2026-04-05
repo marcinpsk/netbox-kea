@@ -184,6 +184,39 @@ def _sync_server_reservations(
     return True
 
 
+def _sync_one_server(
+    server: Server,
+    sync_leases: bool,
+    sync_reservations: bool,
+    max_leases: int,
+    stats: dict[str, int],
+) -> None:
+    """Sync a single server's leases and reservations."""
+    from .sync import cleanup_stale_ips_batch
+
+    all_synced: list[dict] = []
+    cleanup_safe = True
+    for version, enabled in ((4, server.dhcp4), (6, server.dhcp6)):
+        if not enabled:
+            continue
+        if sync_leases:
+            cleanup_safe &= _sync_server_leases(
+                server, version, max_leases=max_leases, stats=stats, all_synced=all_synced
+            )
+        if sync_reservations:
+            cleanup_safe &= _sync_server_reservations(server, version, stats=stats, all_synced=all_synced)
+
+    if all_synced and stats["errors"] == 0 and cleanup_safe:
+        cleanup_stale_ips_batch(all_synced)
+    elif all_synced:
+        logger.warning(
+            "Server %s: skipping stale-IP cleanup (errors=%d, cleanup_safe=%s)",
+            server.name,
+            stats["errors"],
+            cleanup_safe,
+        )
+
+
 @system_job(interval=_DEFAULT_INTERVAL)
 class KeaIpamSyncJob(JobRunner):
     """Periodic Kea→NetBox IPAM sync job.
@@ -201,7 +234,12 @@ class KeaIpamSyncJob(JobRunner):
 
     def run(self, *args: Any, **kwargs: Any) -> None:
         """Execute the sync across all servers."""
-        from .models import Server
+        from .models import Server, SyncConfig
+
+        sync_cfg = SyncConfig.get()
+        if not sync_cfg.sync_enabled:
+            self.logger.info("Global sync kill-switch is active (SyncConfig.sync_enabled=False) — skipping.")
+            return
 
         config = _get_plugin_config()
         sync_leases = config.get("sync_leases_enabled", True)
@@ -226,20 +264,30 @@ class KeaIpamSyncJob(JobRunner):
             self.logger.info("Both sync_leases_enabled and sync_reservations_enabled are False — nothing to do.")
             return
 
-        servers = list(Server.objects.all())
+        server_pk = kwargs.get("server_pk")
+        if server_pk is not None:
+            servers = list(Server.objects.filter(pk=server_pk))
+        else:
+            servers = list(Server.objects.all())
+
         if not servers:
             self.logger.info("No Kea servers configured — nothing to sync.")
             return
 
         self.logger.info("Starting Kea IPAM sync for %d server(s).", len(servers))
         total: dict[str, int] = {"created": 0, "updated": 0, "errors": 0}
+        summary: list[dict] = []
 
         for server in servers:
+            if not server.sync_enabled:
+                self.logger.info("Server %s: sync_enabled=False — skipping.", server.name)
+                continue
+
             self.logger.debug("Syncing server: %s (pk=%s)", server.name, server.pk)
             server_stats: dict[str, int] = {"created": 0, "updated": 0, "errors": 0}
 
             try:
-                self._sync_one_server(server, sync_leases, sync_reservations, max_leases, server_stats)
+                _sync_one_server(server, sync_leases, sync_reservations, max_leases, server_stats)
             except Exception as exc:  # noqa: BLE001, PERF203
                 self.logger.error("Unhandled error syncing server %s: %s", server.name, exc, exc_info=True)
                 server_stats["errors"] += 1
@@ -254,6 +302,16 @@ class KeaIpamSyncJob(JobRunner):
             for key in total:
                 total[key] += server_stats[key]
 
+            summary.append(
+                {
+                    "name": server.name,
+                    "pk": server.pk,
+                    "created": server_stats["created"],
+                    "updated": server_stats["updated"],
+                    "errors": server_stats["errors"],
+                }
+            )
+
         self.logger.info(
             "Kea IPAM sync complete — servers=%d created=%d updated=%d errors=%d",
             len(servers),
@@ -262,35 +320,5 @@ class KeaIpamSyncJob(JobRunner):
             total["errors"],
         )
 
-    def _sync_one_server(
-        self,
-        server: Server,
-        sync_leases: bool,
-        sync_reservations: bool,
-        max_leases: int,
-        stats: dict[str, int],
-    ) -> None:
-        """Sync a single server's leases and reservations."""
-        from .sync import cleanup_stale_ips_batch
-
-        all_synced: list[dict] = []
-        cleanup_safe = True
-        for version, enabled in ((4, server.dhcp4), (6, server.dhcp6)):
-            if not enabled:
-                continue
-            if sync_leases:
-                cleanup_safe &= _sync_server_leases(
-                    server, version, max_leases=max_leases, stats=stats, all_synced=all_synced
-                )
-            if sync_reservations:
-                cleanup_safe &= _sync_server_reservations(server, version, stats=stats, all_synced=all_synced)
-
-        if all_synced and stats["errors"] == 0 and cleanup_safe:
-            cleanup_stale_ips_batch(all_synced)
-        elif all_synced:
-            self.logger.warning(
-                "Server %s: skipping stale-IP cleanup (errors=%d, cleanup_safe=%s)",
-                server.name,
-                stats["errors"],
-                cleanup_safe,
-            )
+        self.job.data["summary"] = summary
+        self.job.save(update_fields=["data"])
