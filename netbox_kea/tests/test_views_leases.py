@@ -319,7 +319,7 @@ class TestLeaseSearchPaths(_ViewTestBase):
     @patch("netbox_kea.models.KeaClient")
     def test_search_by_duid_v6_sends_correct_command(self, MockKeaClient):
         """BY_DUID on the v6 endpoint must call lease6-get-by-duid."""
-        server6 = _make_db_server(name="kea-v6-search", server_url="https://kea6.example.com", dhcp4=False, dhcp6=True)
+        server6 = _make_db_server(name="kea-v6-search", ca_url="https://kea6.example.com", dhcp4=False, dhcp6=True)
         mock_client = MockKeaClient.return_value
         mock_client.command.return_value = [{"result": 0, "arguments": {"leases": [], "count": 0}}]
         mock_client.reservation_get_page.return_value = ([], 0, 0)
@@ -1883,7 +1883,7 @@ class TestLeaseEditGet(_ViewTestBase):
     @patch("netbox_kea.models.KeaClient")
     def test_get_v6_lease_includes_duid(self, MockKeaClient):
         """v6 lease GET includes duid in form initial (line 910)."""
-        server6 = _make_db_server(name="kea6-only", server_url="https://kea6.example.com", dhcp4=False, dhcp6=True)
+        server6 = _make_db_server(name="kea6-only", ca_url="https://kea6.example.com", dhcp4=False, dhcp6=True)
         MockKeaClient.return_value.command.return_value = [
             {
                 "result": 0,

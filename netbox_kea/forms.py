@@ -6,6 +6,7 @@ from netaddr import EUI, AddrFormatError, IPAddress, IPNetwork, IPRange, mac_uni
 from netbox.forms import NetBoxModelBulkEditForm, NetBoxModelFilterSetForm, NetBoxModelForm, NetBoxModelImportForm
 from utilities.forms import BOOLEAN_WITH_BLANK_CHOICES
 from utilities.forms.fields import TagFilterField
+from utilities.forms.rendering import FieldSet
 
 from . import constants
 from .models import Server
@@ -26,13 +27,47 @@ def _validate_ip(value: str, version: int) -> str:
 class ServerForm(NetBoxModelForm):
     """NetBox model form for creating and editing Kea Server objects."""
 
+    fieldsets = (
+        FieldSet("name", "tags", name="General"),
+        FieldSet(
+            "ca_url",
+            "ca_username",
+            "ca_password",
+            "has_control_agent",
+            "ssl_verify",
+            "client_cert_path",
+            "client_key_path",
+            "ca_file_path",
+            name="Control Agent / Default Connection",
+        ),
+        FieldSet(
+            "dhcp4",
+            "dhcp4_url",
+            "dhcp4_username",
+            "dhcp4_password",
+            name="DHCPv4",
+        ),
+        FieldSet(
+            "dhcp6",
+            "dhcp6_url",
+            "dhcp6_username",
+            "dhcp6_password",
+            name="DHCPv6",
+        ),
+        FieldSet("sync_enabled", name="IPAM Sync"),
+    )
+
     class Meta:
         model = Server
         fields = (
             "name",
-            "server_url",
-            "username",
-            "password",
+            "ca_url",
+            "ca_username",
+            "ca_password",
+            "dhcp4_username",
+            "dhcp4_password",
+            "dhcp6_username",
+            "dhcp6_password",
             "ssl_verify",
             "client_cert_path",
             "client_key_path",
@@ -46,7 +81,9 @@ class ServerForm(NetBoxModelForm):
             "tags",
         )
         widgets = {
-            "password": forms.PasswordInput(),
+            "ca_password": forms.PasswordInput(render_value=True),
+            "dhcp4_password": forms.PasswordInput(render_value=True),
+            "dhcp6_password": forms.PasswordInput(render_value=True),
         }
 
 
@@ -71,8 +108,8 @@ class ServerFilterForm(NetBoxModelFilterSetForm):
         required=False,
         help_text="Case-insensitive substring match",
     )
-    server_url = forms.CharField(
-        label="Server URL",
+    ca_url = forms.CharField(
+        label="CA / Server URL",
         required=False,
         help_text="Case-insensitive substring match",
     )
@@ -123,9 +160,13 @@ class ServerImportForm(NetBoxModelImportForm):
         model = Server
         fields = (
             "name",
-            "server_url",
-            "username",
-            "password",
+            "ca_url",
+            "ca_username",
+            "ca_password",
+            "dhcp4_username",
+            "dhcp4_password",
+            "dhcp6_username",
+            "dhcp6_password",
             "ssl_verify",
             "dhcp4",
             "dhcp6",

@@ -23,7 +23,7 @@ _PLUGINS_CONFIG = {"netbox_kea": {"kea_timeout": 30}}
 def _make_server(name, dhcp4=True, dhcp6=False):
     return Server.objects.create(
         name=name,
-        server_url="http://kea.example.com",
+        ca_url="http://kea.example.com",
         dhcp4=dhcp4,
         dhcp6=dhcp6,
     )

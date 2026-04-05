@@ -14,9 +14,13 @@ class ServerSerializer(NetBoxModelSerializer):
         fields = (
             "id",
             "name",
-            "server_url",
-            "username",
-            "password",
+            "ca_url",
+            "ca_username",
+            "ca_password",
+            "dhcp4_username",
+            "dhcp4_password",
+            "dhcp6_username",
+            "dhcp6_password",
             "ssl_verify",
             "client_cert_path",
             "client_key_path",
@@ -31,5 +35,9 @@ class ServerSerializer(NetBoxModelSerializer):
             "tags",
             "last_updated",
         )
-        brief_fields = ("id", "url", "name", "server_url")
-        extra_kwargs = {"password": {"write_only": True}}
+        brief_fields = ("id", "url", "name", "ca_url")
+        extra_kwargs = {
+            "ca_password": {"write_only": True},
+            "dhcp4_password": {"write_only": True},
+            "dhcp6_password": {"write_only": True},
+        }

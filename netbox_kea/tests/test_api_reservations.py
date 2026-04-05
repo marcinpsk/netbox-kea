@@ -87,7 +87,7 @@ _RESERVATION6_SINGLE = [
 def _make_server(**kwargs):
     defaults = {
         "name": "test-kea-res-api",
-        "server_url": "https://kea.example.com",
+        "ca_url": "https://kea.example.com",
         "dhcp4": True,
         "dhcp6": True,
         "has_control_agent": True,

@@ -768,7 +768,7 @@ class TestSharedNetworkListEdgeCases(_ViewTestBase):
     @patch("netbox_kea.models.KeaClient")
     def test_dhcp4_disabled_redirects(self, MockKeaClient):
         """Line 1278: when dhcp4 disabled, get() returns redirect (302)."""
-        server_no4 = _make_db_server(name="no-dhcp4", server_url="https://kea.example.com", dhcp4=False, dhcp6=True)
+        server_no4 = _make_db_server(name="no-dhcp4", ca_url="https://kea.example.com", dhcp4=False, dhcp6=True)
         url = reverse("plugins:netbox_kea:server_shared_networks4", args=[server_no4.pk])
         MockKeaClient.return_value.command.side_effect = _kea_command_side_effect
         response = self.client.get(url)

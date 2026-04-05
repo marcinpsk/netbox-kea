@@ -44,14 +44,14 @@ class TestServerGetClient(SimpleTestCase):
     """Tests for Server.get_client() — URL selection logic."""
 
     @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
-    def test_no_version_uses_server_url(self):
+    def test_no_version_uses_ca_url(self):
         server = _make_server()
         client = server.get_client()
         self.assertIsInstance(client, KeaClient)
         self.assertEqual(client.url, "http://kea:8000")
 
     @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
-    def test_version4_falls_back_to_server_url(self):
+    def test_version4_falls_back_to_ca_url(self):
         server = _make_server(dhcp4_url=None)
         client = server.get_client(version=4)
         self.assertEqual(client.url, "http://kea:8000")
@@ -63,7 +63,7 @@ class TestServerGetClient(SimpleTestCase):
         self.assertEqual(client.url, "http://kea-v4:8001")
 
     @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
-    def test_version6_falls_back_to_server_url(self):
+    def test_version6_falls_back_to_ca_url(self):
         server = _make_server(dhcp6_url=None)
         client = server.get_client(version=6)
         self.assertEqual(client.url, "http://kea:8000")

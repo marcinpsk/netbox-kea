@@ -188,14 +188,31 @@ class TestServerFormFields(TestCase):
 
     def test_server_form_has_core_fields(self):
         form = ServerForm()
-        for field in ("name", "server_url", "username", "password", "ssl_verify", "dhcp4", "dhcp6"):
+        for field in ("name", "ca_url", "ca_username", "ca_password", "ssl_verify", "dhcp4", "dhcp6"):
             self.assertIn(field, form.fields, f"Missing field: {field}")
 
     def test_server_form_password_is_password_input(self):
         from django import forms
 
         form = ServerForm()
-        self.assertIsInstance(form.fields["password"].widget, forms.PasswordInput)
+        self.assertIsInstance(form.fields["ca_password"].widget, forms.PasswordInput)
+
+    def test_server_form_dhcp4_password_is_password_input(self):
+        from django import forms
+
+        form = ServerForm()
+        self.assertIsInstance(form.fields["dhcp4_password"].widget, forms.PasswordInput)
+
+    def test_server_form_dhcp6_password_is_password_input(self):
+        from django import forms
+
+        form = ServerForm()
+        self.assertIsInstance(form.fields["dhcp6_password"].widget, forms.PasswordInput)
+
+    def test_server_form_has_per_protocol_credential_fields(self):
+        form = ServerForm()
+        for field in ("dhcp4_username", "dhcp4_password", "dhcp6_username", "dhcp6_password"):
+            self.assertIn(field, form.fields, f"Missing field: {field}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
