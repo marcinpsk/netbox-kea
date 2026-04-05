@@ -174,7 +174,7 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
     @patch("netbox_kea.sync.sync_lease_to_netbox", return_value=(MagicMock(), True))
     @patch("netbox_kea.models.Server")
     def test_run_logs_truncation_warning(self, MockServer, mock_sync_lease, mock_sync_resv, mock_cleanup):
-        """lease_get_all returns truncated=True → warning logged, sync still proceeds."""
+        """lease_get_all returns truncated=True → warning logged, sync still proceeds, cleanup skipped."""
         server = _make_server()
         client = _make_client(leases4=[_LEASE4], truncated=True)
         server.get_client.return_value = client
@@ -185,6 +185,8 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
 
         self.assertTrue(any("truncated" in msg for msg in cm.output))
         mock_sync_lease.assert_called_once()
+        # Truncated fetch means cleanup_safe=False — cleanup must not run
+        mock_cleanup.assert_not_called()
 
     @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
     @patch("netbox_kea.sync.cleanup_stale_ips_batch", return_value=0)
@@ -201,6 +203,24 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
 
         # Should not raise
         KeaIpamSyncJob(_make_job()).run()
+
+    @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+    @patch("netbox_kea.sync.cleanup_stale_ips_batch", return_value=0)
+    @patch("netbox_kea.sync.sync_lease_to_netbox", return_value=(MagicMock(), True))
+    @patch("netbox_kea.models.Server")
+    def test_cleanup_skipped_when_host_cmds_absent(self, MockServer, mock_sync_lease, mock_cleanup):
+        """When host_cmds not loaded (result=2), reservation sync is skipped → cleanup_safe=False → no cleanup."""
+        server = _make_server()
+        client = MagicMock()
+        client.lease_get_all.return_value = ([_LEASE4], False)
+        client.reservation_get_page.side_effect = KeaException({"result": 2, "text": "unknown command"})
+        server.get_client.return_value = client
+        MockServer.objects.all.return_value = [server]
+
+        KeaIpamSyncJob(_make_job()).run()
+
+        # cleanup_safe=False from reservation skip — cleanup must not run
+        mock_cleanup.assert_not_called()
 
     @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
     @patch("netbox_kea.sync.cleanup_stale_ips_batch", return_value=0)

@@ -56,8 +56,13 @@ def _sync_server_leases(
     max_leases: int,
     stats: dict[str, int],
     all_synced: list[dict],
-) -> None:
-    """Fetch all leases from *server* for *version* and upsert into NetBox IPAM."""
+) -> bool:
+    """Fetch all leases from *server* for *version* and upsert into NetBox IPAM.
+
+    Returns ``True`` when the full lease set was fetched and synced without
+    truncation, ``False`` otherwise.  A ``False`` return means *all_synced* may
+    be incomplete and cleanup must be skipped.
+    """
     from .sync import sync_lease_to_netbox
 
     try:
@@ -66,7 +71,7 @@ def _sync_server_leases(
     except Exception as exc:  # noqa: BLE001
         logger.warning("Failed to fetch leases from server %s (v%s): %s", server.name, version, exc)
         stats["errors"] += 1
-        return
+        return False
 
     if truncated:
         logger.warning(
@@ -95,6 +100,8 @@ def _sync_server_leases(
             )
             stats["errors"] += 1
 
+    return not truncated
+
 
 def _sync_server_reservations(
     server: Server,
@@ -102,8 +109,14 @@ def _sync_server_reservations(
     *,
     stats: dict[str, int],
     all_synced: list[dict],
-) -> None:
-    """Fetch all reservations from *server* for *version* and upsert into NetBox IPAM."""
+) -> bool:
+    """Fetch all reservations from *server* for *version* and upsert into NetBox IPAM.
+
+    Returns ``True`` when all reservation pages were fetched successfully,
+    ``False`` when the sync was skipped (e.g. host_cmds not loaded) or failed.
+    A ``False`` return means *all_synced* may be incomplete and cleanup must be
+    skipped.
+    """
     from .kea import KeaException
     from .sync import sync_reservation_to_netbox
 
@@ -150,16 +163,17 @@ def _sync_server_reservations(
                 server.name,
                 version,
             )
-            return
+            return False
         logger.warning("Failed to fetch reservations from server %s (v%s): %s", server.name, version, exc)
         stats["errors"] += 1
-        return
+        return False
     except Exception as exc:  # noqa: BLE001
         logger.warning("Unexpected error fetching reservations from server %s (v%s): %s", server.name, version, exc)
         stats["errors"] += 1
-        return
+        return False
 
     logger.info("Server %s (v%s): synced %d reservations", server.name, version, processed)
+    return True
 
 
 @system_job(interval=_DEFAULT_INTERVAL)
@@ -252,19 +266,23 @@ class KeaIpamSyncJob(JobRunner):
         from .sync import cleanup_stale_ips_batch
 
         all_synced: list[dict] = []
+        cleanup_safe = True
         for version, enabled in ((4, server.dhcp4), (6, server.dhcp6)):
             if not enabled:
                 continue
             if sync_leases:
-                _sync_server_leases(server, version, max_leases=max_leases, stats=stats, all_synced=all_synced)
+                cleanup_safe &= _sync_server_leases(
+                    server, version, max_leases=max_leases, stats=stats, all_synced=all_synced
+                )
             if sync_reservations:
-                _sync_server_reservations(server, version, stats=stats, all_synced=all_synced)
+                cleanup_safe &= _sync_server_reservations(server, version, stats=stats, all_synced=all_synced)
 
-        if all_synced and stats["errors"] == 0:
+        if all_synced and stats["errors"] == 0 and cleanup_safe:
             cleanup_stale_ips_batch(all_synced)
         elif all_synced:
             self.logger.warning(
-                "Server %s: skipping stale-IP cleanup due to sync errors (errors=%d)",
+                "Server %s: skipping stale-IP cleanup (errors=%d, cleanup_safe=%s)",
                 server.name,
                 stats["errors"],
+                cleanup_safe,
             )
