@@ -53,6 +53,7 @@ path = [
     "netbox_kea/templates/netbox_kea/inc/ip_kea_panel.html",
     "netbox_kea/templates/netbox_kea/inc/sync_badge.html",
     "CLAUDE.md",
+    ".superpowers/**",
 ]
 SPDX-FileCopyrightText = "Copyright (C) 2025 Marcin Zieba <marcinpsk@gmail.com>"
 SPDX-License-Identifier = "Apache-2.0"
