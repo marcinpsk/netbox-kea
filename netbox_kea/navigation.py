@@ -19,4 +19,9 @@ menu_items = (
             ),
         ),
     ),
+    PluginMenuItem(
+        link="plugins:netbox_kea:sync_jobs",
+        link_text="Sync Jobs",
+        permissions=["netbox_kea.view_server"],
+    ),
 )

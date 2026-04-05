@@ -54,6 +54,10 @@ path = [
     "netbox_kea/templates/netbox_kea/ip_kea_reservations.html",
     "netbox_kea/templates/netbox_kea/inc/ip_kea_panel.html",
     "netbox_kea/templates/netbox_kea/inc/sync_badge.html",
+    "netbox_kea/views/sync_jobs.py",
+    "netbox_kea/tests/test_views_sync_jobs.py",
+    "netbox_kea/templates/netbox_kea/sync_jobs.html",
+    "netbox_kea/templates/netbox_kea/server_sync_status.html",
     "CLAUDE.md",
     ".superpowers/**",
 ]
