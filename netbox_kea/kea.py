@@ -1003,11 +1003,13 @@ class KeaClient:
         Raises:
             KeaException: On a non-0/3 result code.
             RuntimeError: On a malformed response envelope.
-            ValueError: If *per_page* is less than 1.
+            ValueError: If *per_page* is less than 1 or *max_leases* is less than 1.
 
         """
         if per_page < 1:
             raise ValueError(f"per_page must be >= 1, got {per_page!r}")
+        if max_leases is not None and max_leases < 1:
+            raise ValueError(f"max_leases must be >= 1 (or None for no cap), got {max_leases!r}")
         service = f"dhcp{version}"
         cursor = "0.0.0.0" if version == 4 else "::"
         all_leases: list[dict] = []

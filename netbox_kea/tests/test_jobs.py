@@ -67,7 +67,14 @@ def _make_client(
 ) -> MagicMock:
     """Return a mock KeaClient pre-configured with standard responses."""
     client = MagicMock()
-    client.lease_get_all.return_value = (leases4 or [], truncated)
+
+    def _lease_get_all(*args, **kwargs):
+        version = kwargs.get("version") or (args[0] if args else 4)
+        if version == 6:
+            return (leases6 or [], truncated)
+        return (leases4 or [], truncated)
+
+    client.lease_get_all.side_effect = _lease_get_all
     client.reservation_get_page.return_value = (reservations or [], 0, 0)
     return client
 
@@ -222,7 +229,6 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
         """dhcp4=False, dhcp6=True → get_client called only with version=6."""
         server = _make_server(dhcp4=False, dhcp6=True)
         client = _make_client(leases6=[_LEASE6])
-        client.lease_get_all.return_value = ([_LEASE6], False)
         server.get_client.return_value = client
         MockServer.objects.all.return_value = [server]
 

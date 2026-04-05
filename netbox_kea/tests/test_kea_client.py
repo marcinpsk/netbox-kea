@@ -4535,3 +4535,15 @@ class TestLeaseGetAllPagination(TestCase):
         with self.assertRaises(ValueError) as cm:
             self.client.lease_get_all(version=4, per_page=-1)
         self.assertIn("per_page", str(cm.exception))
+
+    def test_max_leases_zero_raises_value_error(self):
+        """max_leases=0 → ValueError before any HTTP call is made."""
+        with self.assertRaises(ValueError) as cm:
+            self.client.lease_get_all(version=4, max_leases=0)
+        self.assertIn("max_leases", str(cm.exception))
+
+    def test_max_leases_negative_raises_value_error(self):
+        """max_leases < 0 → ValueError before any HTTP call is made."""
+        with self.assertRaises(ValueError) as cm:
+            self.client.lease_get_all(version=4, max_leases=-1)
+        self.assertIn("max_leases", str(cm.exception))
