@@ -748,6 +748,36 @@ class TestKeaIpamSyncJobKillSwitches(SimpleTestCase):
     @patch("netbox_kea.models.SyncConfig")
     @patch("netbox_kea.jobs._sync_one_server")
     @patch("netbox_kea.models.Server")
+    def test_server_pk_bypasses_per_server_sync_enabled(self, MockServer, mock_sync_one, MockSyncConfig):
+        """Run Now (server_pk set) must sync even if server.sync_enabled is False."""
+        MockSyncConfig.get.return_value = MagicMock(sync_enabled=True, interval_minutes=5)
+        server = MagicMock(pk=42, dhcp4=True, dhcp6=False, sync_enabled=False)
+        server.name = "disabled-server"
+        MockServer.objects.filter.return_value = [server]
+
+        job = KeaIpamSyncJob(self._make_job())
+        job.run(server_pk=42)
+
+        mock_sync_one.assert_called_once()
+
+    @patch("netbox_kea.models.SyncConfig")
+    @patch("netbox_kea.jobs._sync_one_server")
+    @patch("netbox_kea.models.Server")
+    def test_summary_written_on_global_kill_switch(self, MockServer, mock_sync_one, MockSyncConfig):
+        """job.data['summary'] must be an empty list even when kill-switch aborts the run."""
+        MockSyncConfig.get.return_value = MagicMock(sync_enabled=False, interval_minutes=5)
+        MockServer.objects.all.return_value = []
+
+        mock_job = self._make_job()
+        job = KeaIpamSyncJob(mock_job)
+        job.run()
+
+        self.assertIn("summary", mock_job.data)
+        self.assertEqual(mock_job.data["summary"], [])
+
+    @patch("netbox_kea.models.SyncConfig")
+    @patch("netbox_kea.jobs._sync_one_server")
+    @patch("netbox_kea.models.Server")
     def test_job_data_summary_written_after_run(self, MockServer, mock_sync_one, MockSyncConfig):
         MockSyncConfig.get.return_value = MagicMock(sync_enabled=True, interval_minutes=5)
         server = MagicMock(pk=1, dhcp4=True, dhcp6=False, sync_enabled=True)

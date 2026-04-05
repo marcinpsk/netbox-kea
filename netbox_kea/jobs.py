@@ -236,89 +236,92 @@ class KeaIpamSyncJob(JobRunner):
         """Execute the sync across all servers."""
         from .models import Server, SyncConfig
 
-        sync_cfg = SyncConfig.get()
-        if not sync_cfg.sync_enabled:
-            self.logger.info("Global sync kill-switch is active (SyncConfig.sync_enabled=False) — skipping.")
-            return
-
-        config = _get_plugin_config()
-        sync_leases = config.get("sync_leases_enabled", True)
-        sync_reservations = config.get("sync_reservations_enabled", True)
-        raw_max_leases = config.get("sync_max_leases_per_server", 50000)
-        try:
-            max_leases = int(raw_max_leases)
-        except (TypeError, ValueError):
-            self.logger.warning(
-                "Invalid sync_max_leases_per_server=%r; falling back to 50000",
-                raw_max_leases,
-            )
-            max_leases = 50000
-        if max_leases < 0:
-            self.logger.warning(
-                "Negative sync_max_leases_per_server=%d is not allowed; using 0 (no cap)",
-                max_leases,
-            )
-            max_leases = 0
-
-        if not sync_leases and not sync_reservations:
-            self.logger.info("Both sync_leases_enabled and sync_reservations_enabled are False — nothing to do.")
-            return
-
-        server_pk = kwargs.get("server_pk")
-        if server_pk is not None:
-            servers = list(Server.objects.filter(pk=server_pk))
-        else:
-            servers = list(Server.objects.all())
-
-        if not servers:
-            self.logger.info("No Kea servers configured — nothing to sync.")
-            return
-
-        self.logger.info("Starting Kea IPAM sync for %d server(s).", len(servers))
-        total: dict[str, int] = {"created": 0, "updated": 0, "errors": 0}
         summary: list[dict] = []
+        try:
+            sync_cfg = SyncConfig.get()
+            if not sync_cfg.sync_enabled:
+                self.logger.info("Global sync kill-switch is active (SyncConfig.sync_enabled=False) — skipping.")
+                return
 
-        for server in servers:
-            if not server.sync_enabled:
-                self.logger.info("Server %s: sync_enabled=False — skipping.", server.name)
-                continue
-
-            self.logger.debug("Syncing server: %s (pk=%s)", server.name, server.pk)
-            server_stats: dict[str, int] = {"created": 0, "updated": 0, "errors": 0}
-
+            config = _get_plugin_config()
+            sync_leases = config.get("sync_leases_enabled", True)
+            sync_reservations = config.get("sync_reservations_enabled", True)
+            raw_max_leases = config.get("sync_max_leases_per_server", 50000)
             try:
-                _sync_one_server(server, sync_leases, sync_reservations, max_leases, server_stats)
-            except Exception as exc:  # noqa: BLE001, PERF203
-                self.logger.error("Unhandled error syncing server %s: %s", server.name, exc, exc_info=True)
-                server_stats["errors"] += 1
+                max_leases = int(raw_max_leases)
+            except (TypeError, ValueError):
+                self.logger.warning(
+                    "Invalid sync_max_leases_per_server=%r; falling back to 50000",
+                    raw_max_leases,
+                )
+                max_leases = 50000
+            if max_leases < 0:
+                self.logger.warning(
+                    "Negative sync_max_leases_per_server=%d is not allowed; using 0 (no cap)",
+                    max_leases,
+                )
+                max_leases = 0
+
+            if not sync_leases and not sync_reservations:
+                self.logger.info("Both sync_leases_enabled and sync_reservations_enabled are False — nothing to do.")
+                return
+
+            server_pk = kwargs.get("server_pk")
+            if server_pk is not None:
+                servers = list(Server.objects.filter(pk=server_pk))
+            else:
+                servers = list(Server.objects.all())
+
+            if not servers:
+                self.logger.info("No Kea servers configured — nothing to sync.")
+                return
+
+            self.logger.info("Starting Kea IPAM sync for %d server(s).", len(servers))
+            total: dict[str, int] = {"created": 0, "updated": 0, "errors": 0}
+
+            for server in servers:
+                # In Run Now mode (server_pk provided), honour the explicit selection
+                # and skip the per-server enabled check.
+                if server_pk is None and not server.sync_enabled:
+                    self.logger.info("Server %s: sync_enabled=False — skipping.", server.name)
+                    continue
+
+                self.logger.debug("Syncing server: %s (pk=%s)", server.name, server.pk)
+                server_stats: dict[str, int] = {"created": 0, "updated": 0, "errors": 0}
+
+                try:
+                    _sync_one_server(server, sync_leases, sync_reservations, max_leases, server_stats)
+                except Exception as exc:  # noqa: BLE001, PERF203
+                    self.logger.error("Unhandled error syncing server %s: %s", server.name, exc, exc_info=True)
+                    server_stats["errors"] += 1
+
+                self.logger.info(
+                    "Server %s: created=%d updated=%d errors=%d",
+                    server.name,
+                    server_stats["created"],
+                    server_stats["updated"],
+                    server_stats["errors"],
+                )
+                for key in total:
+                    total[key] += server_stats[key]
+
+                summary.append(
+                    {
+                        "name": server.name,
+                        "pk": server.pk,
+                        "created": server_stats["created"],
+                        "updated": server_stats["updated"],
+                        "errors": server_stats["errors"],
+                    }
+                )
 
             self.logger.info(
-                "Server %s: created=%d updated=%d errors=%d",
-                server.name,
-                server_stats["created"],
-                server_stats["updated"],
-                server_stats["errors"],
+                "Kea IPAM sync complete — servers=%d created=%d updated=%d errors=%d",
+                len(summary),
+                total["created"],
+                total["updated"],
+                total["errors"],
             )
-            for key in total:
-                total[key] += server_stats[key]
-
-            summary.append(
-                {
-                    "name": server.name,
-                    "pk": server.pk,
-                    "created": server_stats["created"],
-                    "updated": server_stats["updated"],
-                    "errors": server_stats["errors"],
-                }
-            )
-
-        self.logger.info(
-            "Kea IPAM sync complete — servers=%d created=%d updated=%d errors=%d",
-            len(servers),
-            total["created"],
-            total["updated"],
-            total["errors"],
-        )
-
-        self.job.data["summary"] = summary
-        self.job.save(update_fields=["data"])
+        finally:
+            self.job.data["summary"] = summary
+            self.job.save(update_fields=["data"])
