@@ -204,7 +204,7 @@ class SyncConfig(models.Model):
         verbose_name = "Sync Configuration"
         constraints = [
             models.CheckConstraint(
-                condition=models.Q(interval_minutes__gte=1) & models.Q(interval_minutes__lte=1440),
+                check=models.Q(interval_minutes__gte=1) & models.Q(interval_minutes__lte=1440),
                 name="syncconfig_interval_minutes_range",
             )
         ]

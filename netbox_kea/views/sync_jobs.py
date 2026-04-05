@@ -204,7 +204,12 @@ class ServerSyncToggleView(LoginRequiredMixin, View):
             return HttpResponseForbidden()
         server = get_object_or_404(Server.objects.restrict(request.user, "change"), pk=pk)
         server.sync_enabled = not server.sync_enabled
-        server.save(update_fields=["sync_enabled"])
+        try:
+            server.save(update_fields=["sync_enabled"])
+        except Exception:
+            logger.exception("Failed to toggle sync for server %s", server.name)
+            messages.error(request, "An internal error occurred when toggling sync.")
+            return HttpResponseRedirect(reverse("plugins:netbox_kea:server_sync_status", args=[pk]))
         state = "enabled" if server.sync_enabled else "disabled"
         messages.success(request, f"IPAM sync {state} for {server.name}.")
         return HttpResponseRedirect(reverse("plugins:netbox_kea:server_sync_status", args=[pk]))

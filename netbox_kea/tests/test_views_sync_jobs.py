@@ -204,3 +204,66 @@ class TestSyncJobsViewAllowedServerPks(TestCase):
             )
         # Successful POST redirects; we just verify it doesn't 500
         self.assertIn(response.status_code, [200, 302])
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestServerSyncToggleViewErrorHandling(TestCase):
+    """ServerSyncToggleView.post wraps save() in try/except."""
+
+    def setUp(self):
+        self.user = User.objects.create_superuser("synctest5", "s5@s.com", "pass")
+        self.client.force_login(self.user)
+        self.server = _make_db_server()
+
+    def test_post_db_error_shows_error_message_and_redirects(self):
+        from unittest.mock import patch
+
+        from django.db import DatabaseError
+
+        url = reverse("plugins:netbox_kea:server_sync_toggle", args=[self.server.pk])
+        with patch.object(self.server.__class__, "save", side_effect=DatabaseError("disk full")):
+            with patch("netbox_kea.views.sync_jobs.get_object_or_404", return_value=self.server):
+                response = self.client.post(url, follow=True)
+        self.assertContains(response, "internal error")
+        self.assertRedirects(
+            response,
+            reverse("plugins:netbox_kea:server_sync_status", args=[self.server.pk]),
+            fetch_redirect_response=False,
+            target_status_code=200,
+        )
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestMigrationsApplied(TestCase):
+    """Regression tests: DB columns/tables from new migrations must exist.
+
+    These catch the scenario where the plugin is updated but ``manage.py migrate``
+    has not been run (observed as ProgrammingError on combined/sync-jobs pages).
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_superuser("migtest", "m@m.com", "pass")
+        self.client.force_login(self.user)
+        _make_db_server(name="mig-server")
+
+    def test_server_sync_enabled_column_accessible(self):
+        """Regression: migration 0006 must have added sync_enabled to Server."""
+        from netbox_kea.models import Server
+
+        count = Server.objects.filter(sync_enabled=True).count()
+        self.assertIsInstance(count, int)
+
+    def test_syncconfig_table_accessible(self):
+        """Regression: migration 0005 must have created netbox_kea_syncconfig table."""
+        count = SyncConfig.objects.count()
+        self.assertIsInstance(count, int)
+
+    def test_combined_view_does_not_500(self):
+        """Regression: /plugins/kea/combined/ must not raise ProgrammingError."""
+        response = self.client.get(reverse("plugins:netbox_kea:combined"))
+        self.assertNotEqual(response.status_code, 500)
+
+    def test_sync_jobs_view_does_not_500(self):
+        """Regression: /plugins/kea/sync-jobs/ must not raise ProgrammingError."""
+        response = self.client.get(reverse("plugins:netbox_kea:sync_jobs"))
+        self.assertNotEqual(response.status_code, 500)
