@@ -173,8 +173,8 @@ Configure one `Server` URL that points to the Kea Control Agent:
 | `DHCPv4` | Enable DHCPv4 lease/reservation/subnet management |
 | `DHCPv6` | Enable DHCPv6 lease/reservation/subnet management |
 | `Username` / `Password` | HTTP Basic Auth credentials (if required) |
-| `CA Certificate` | Custom CA certificate for TLS verification |
-| `Skip TLS Verification` | Disable TLS certificate verification |
+| `CA File Path` | Path to a custom CA certificate file for TLS verification |
+| `SSL Verification` | Enable/disable TLS certificate verification (enabled by default) |
 
 ### Dual-URL (separate v4/v6 processes)
 
@@ -185,7 +185,7 @@ When DHCPv4 and DHCPv6 are served by separate Kea processes (each with its own C
 | `DHCPv4 URL` | URL of the Control Agent for the DHCPv4 daemon |
 | `DHCPv6 URL` | URL of the Control Agent for the DHCPv6 daemon |
 
-Leave the main `Server URL` blank when using dual URLs. Both fields use the same credentials.
+The main `Server URL` is required and acts as a fallback for any protocol without a dedicated URL. Both `DHCPv4 URL` and `DHCPv6 URL` use the same credentials as the main server.
 
 ---
 
