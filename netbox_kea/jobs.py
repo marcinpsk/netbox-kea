@@ -108,9 +108,9 @@ def _sync_server_reservations(
     from .sync import sync_reservation_to_netbox
 
     service = f"dhcp{version}"
-    reservations: list[dict] = []
     from_index = 0
     source_index = 0
+    processed = 0
 
     try:
         client = server.get_client(version=version)
@@ -121,7 +121,24 @@ def _sync_server_reservations(
                 from_index=from_index,
                 limit=100,
             )
-            reservations.extend(page)
+            for reservation in page:
+                try:
+                    _ip, created = sync_reservation_to_netbox(reservation, cleanup=False)
+                    all_synced.append(reservation)
+                    processed += 1
+                    if created:
+                        stats["created"] += 1
+                    else:
+                        stats["updated"] += 1
+                except Exception:  # noqa: BLE001, PERF203
+                    ip = reservation.get("ip-address") or reservation.get("ip_address", "?")
+                    logger.debug(
+                        "Failed to sync reservation %s from server %s",
+                        ip,
+                        server.name,
+                        exc_info=True,
+                    )
+                    stats["errors"] += 1
             if next_from == 0 and next_source == 0:
                 break
             from_index = next_from
@@ -142,25 +159,7 @@ def _sync_server_reservations(
         stats["errors"] += 1
         return
 
-    logger.info("Server %s (v%s): fetched %d reservations", server.name, version, len(reservations))
-
-    for reservation in reservations:
-        try:
-            _ip, created = sync_reservation_to_netbox(reservation, cleanup=False)
-            all_synced.append(reservation)
-            if created:
-                stats["created"] += 1
-            else:
-                stats["updated"] += 1
-        except Exception:  # noqa: BLE001, PERF203
-            ip = reservation.get("ip-address") or reservation.get("ip_address", "?")
-            logger.debug(
-                "Failed to sync reservation %s from server %s",
-                ip,
-                server.name,
-                exc_info=True,
-            )
-            stats["errors"] += 1
+    logger.info("Server %s (v%s): synced %d reservations", server.name, version, processed)
 
 
 @system_job(interval=_DEFAULT_INTERVAL)
