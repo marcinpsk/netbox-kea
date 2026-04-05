@@ -9,11 +9,11 @@ from unittest.mock import MagicMock, patch
 
 import requests
 from django.core.exceptions import ValidationError
-from django.test import SimpleTestCase, override_settings
+from django.test import SimpleTestCase, TestCase, override_settings
 from netbox.models import NetBoxModel
 
 from netbox_kea.kea import KeaClient
-from netbox_kea.models import Server
+from netbox_kea.models import Server, SyncConfig
 
 # Default PLUGINS_CONFIG used across model tests so we don't need full NetBox config.
 _PLUGINS_CONFIG = {"netbox_kea": {"kea_timeout": 30}}
@@ -443,3 +443,27 @@ class TestServerCleanExceptionRouting(SimpleTestCase):
             server.clean()
         msg = str(ctx.exception.message_dict.get("dhcp4", [""])[0])
         self.assertIn("internal error", msg)
+
+
+class TestSyncConfig(TestCase):
+    """Tests for the SyncConfig singleton model."""
+
+    def test_get_creates_with_defaults_when_missing(self):
+        SyncConfig.objects.all().delete()
+        cfg = SyncConfig.get()
+        self.assertEqual(cfg.interval_minutes, 5)
+        self.assertTrue(cfg.sync_enabled)
+
+    def test_get_returns_existing_record(self):
+        SyncConfig.objects.all().delete()
+        SyncConfig.objects.create(pk=1, interval_minutes=10, sync_enabled=False)
+        cfg = SyncConfig.get()
+        self.assertEqual(cfg.interval_minutes, 10)
+        self.assertFalse(cfg.sync_enabled)
+
+    def test_get_is_idempotent(self):
+        SyncConfig.objects.all().delete()
+        cfg1 = SyncConfig.get()
+        cfg2 = SyncConfig.get()
+        self.assertEqual(cfg1.pk, cfg2.pk)
+        self.assertEqual(SyncConfig.objects.count(), 1)

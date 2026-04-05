@@ -172,3 +172,31 @@ class Server(NetBoxModel):
             post_data["password"] = CENSOR_TOKEN_CHANGED if post_password != original_pre_password else CENSOR_TOKEN
 
         return objectchange
+
+
+class SyncConfig(models.Model):
+    """Singleton configuration for the Kea→NetBox IPAM sync job.
+
+    Stores the sync interval and global kill-switch in the database so
+    operators can change them from the UI without restarting Django.
+    At most one row exists (pk=1 always).
+    """
+
+    interval_minutes = models.PositiveIntegerField(
+        default=5,
+        help_text="How often the background sync job runs (minutes). Minimum 1.",
+    )
+    sync_enabled = models.BooleanField(
+        default=True,
+        help_text="Global kill-switch. When False, no servers are synced regardless of per-server settings.",
+    )
+
+    class Meta:
+        app_label = "netbox_kea"
+        verbose_name = "Sync Configuration"
+
+    @classmethod
+    def get(cls) -> "SyncConfig":
+        """Return the singleton config row, creating it with defaults if absent."""
+        obj, _ = cls.objects.get_or_create(pk=1, defaults={"interval_minutes": 5, "sync_enabled": True})
+        return obj
