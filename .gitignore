@@ -166,3 +166,5 @@ tests/docker/certs/
 .claude/
 core
 core.*
+docs/superpowers/
+.superpowers/
