@@ -60,8 +60,8 @@ def _sync_server_leases(
     """Fetch all leases from *server* for *version* and upsert into NetBox IPAM."""
     from .sync import sync_lease_to_netbox
 
-    client = server.get_client(version=version)
     try:
+        client = server.get_client(version=version)
         raw_leases, truncated = client.lease_get_all(version=version, max_leases=max_leases or None)
     except Exception as exc:  # noqa: BLE001
         logger.warning("Failed to fetch leases from server %s (v%s): %s", server.name, version, exc)
@@ -108,12 +108,12 @@ def _sync_server_reservations(
     from .sync import sync_reservation_to_netbox
 
     service = f"dhcp{version}"
-    client = server.get_client(version=version)
     reservations: list[dict] = []
     from_index = 0
     source_index = 0
 
     try:
+        client = server.get_client(version=version)
         while True:
             page, next_from, next_source = client.reservation_get_page(
                 service,

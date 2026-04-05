@@ -4523,3 +4523,15 @@ class TestLeaseGetAllPagination(TestCase):
         leases, truncated = self.client.lease_get_all(version=4, per_page=2)
         self.assertEqual(len(leases), 3)
         self.assertFalse(truncated)
+
+    def test_per_page_zero_raises_value_error(self):
+        """per_page < 1 → ValueError before any HTTP call is made."""
+        with self.assertRaises(ValueError) as cm:
+            self.client.lease_get_all(version=4, per_page=0)
+        self.assertIn("per_page", str(cm.exception))
+
+    def test_per_page_negative_raises_value_error(self):
+        """per_page < 1 → ValueError before any HTTP call is made."""
+        with self.assertRaises(ValueError) as cm:
+            self.client.lease_get_all(version=4, per_page=-1)
+        self.assertIn("per_page", str(cm.exception))

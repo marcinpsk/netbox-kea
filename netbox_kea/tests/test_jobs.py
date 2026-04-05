@@ -209,6 +209,7 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
 
         KeaIpamSyncJob(_make_job()).run()
 
+        self.assertTrue(server.get_client.called, "get_client() was never called")
         for c in server.get_client.call_args_list:
             self.assertEqual(c, call(version=4))
 
@@ -227,6 +228,7 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
 
         KeaIpamSyncJob(_make_job()).run()
 
+        self.assertTrue(server.get_client.called, "get_client() was never called")
         for c in server.get_client.call_args_list:
             self.assertEqual(c, call(version=6))
 
@@ -387,8 +389,262 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
         mock_cleanup.assert_not_called()
         self.assertTrue(any("skipping stale-IP cleanup" in msg for msg in cm.output))
 
+    # ------------------------------------------------------------------ #
+    # lease sync updated (not created)                                     #
+    # ------------------------------------------------------------------ #
 
-class TestConfigureSyncJobInterval(SimpleTestCase):
+    @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+    @patch("netbox_kea.sync.cleanup_stale_ips_batch", return_value=0)
+    @patch("netbox_kea.sync.sync_reservation_to_netbox", return_value=(MagicMock(), False))
+    @patch("netbox_kea.sync.sync_lease_to_netbox", return_value=(MagicMock(), False))  # False = updated
+    @patch("netbox_kea.models.Server")
+    def test_lease_updated_increments_updated_counter(self, MockServer, mock_sync_lease, mock_sync_resv, mock_cleanup):
+        """sync_lease_to_netbox returning (ip, False) increments stats['updated'], not 'created'."""
+        server = _make_server()
+        client = _make_client(leases4=[_LEASE4], reservations=[])
+        server.get_client.return_value = client
+        MockServer.objects.all.return_value = [server]
+
+        KeaIpamSyncJob(_make_job()).run()
+
+        mock_sync_lease.assert_called_once_with(_LEASE4, cleanup=False)
+
+    # ------------------------------------------------------------------ #
+    # both sync flags disabled                                             #
+    # ------------------------------------------------------------------ #
+
+    @override_settings(
+        PLUGINS_CONFIG={
+            **_PLUGINS_CONFIG,
+            "netbox_kea": {
+                **_PLUGINS_CONFIG["netbox_kea"],
+                "sync_leases_enabled": False,
+                "sync_reservations_enabled": False,
+            },
+        }
+    )
+    @patch("netbox_kea.sync.cleanup_stale_ips_batch", return_value=0)
+    @patch("netbox_kea.sync.sync_reservation_to_netbox", return_value=(MagicMock(), False))
+    @patch("netbox_kea.sync.sync_lease_to_netbox", return_value=(MagicMock(), True))
+    @patch("netbox_kea.models.Server")
+    def test_both_sync_disabled_returns_early(self, MockServer, mock_sync_lease, mock_sync_resv, mock_cleanup):
+        """When both sync_leases_enabled and sync_reservations_enabled are False, job returns immediately."""
+        MockServer.objects.all.return_value = [_make_server()]
+
+        KeaIpamSyncJob(_make_job()).run()
+
+        MockServer.objects.all.assert_not_called()
+        mock_sync_lease.assert_not_called()
+        mock_sync_resv.assert_not_called()
+        mock_cleanup.assert_not_called()
+
+    # ------------------------------------------------------------------ #
+    # reservation multi-page pagination                                    #
+    # ------------------------------------------------------------------ #
+
+    @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+    @patch("netbox_kea.sync.cleanup_stale_ips_batch", return_value=0)
+    @patch("netbox_kea.sync.sync_reservation_to_netbox", return_value=(MagicMock(), True))
+    @patch("netbox_kea.sync.sync_lease_to_netbox", return_value=(MagicMock(), True))
+    @patch("netbox_kea.models.Server")
+    def test_reservation_pagination_fetches_all_pages(self, MockServer, mock_sync_lease, mock_sync_resv, mock_cleanup):
+        """When reservation_get_page returns non-zero next_from/next_source, loop continues."""
+        server = _make_server()
+        client = MagicMock()
+        client.lease_get_all.return_value = ([], False)
+        # First call returns page with next_from=1, next_source=0 → continue
+        resv1 = {**_RESV4, "ip-address": "10.0.0.100"}
+        resv2 = {**_RESV4, "ip-address": "10.0.0.101"}
+        client.reservation_get_page.side_effect = [
+            ([resv1], 1, 0),  # first page, pagination continues
+            ([resv2], 0, 0),  # second page, done
+        ]
+        server.get_client.return_value = client
+        MockServer.objects.all.return_value = [server]
+
+        KeaIpamSyncJob(_make_job()).run()
+
+        self.assertEqual(mock_sync_resv.call_count, 2)
+        mock_sync_resv.assert_any_call(resv1, cleanup=False)
+        mock_sync_resv.assert_any_call(resv2, cleanup=False)
+
+    # ------------------------------------------------------------------ #
+    # reservation KeaException non-result-2                               #
+    # ------------------------------------------------------------------ #
+
+    @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+    @patch("netbox_kea.sync.cleanup_stale_ips_batch", return_value=0)
+    @patch("netbox_kea.sync.sync_lease_to_netbox", return_value=(MagicMock(), True))
+    @patch("netbox_kea.models.Server")
+    def test_reservation_kea_exception_non_result2_increments_errors(self, MockServer, mock_sync_lease, mock_cleanup):
+        """KeaException with result != 2 on reservation fetch → warning logged, errors incremented."""
+        server = _make_server()
+        client = MagicMock()
+        client.lease_get_all.return_value = ([_LEASE4], False)
+        exc = KeaException({"result": 1, "text": "internal error"})
+        client.reservation_get_page.side_effect = exc
+        server.get_client.return_value = client
+        MockServer.objects.all.return_value = [server]
+
+        with self.assertLogs("netbox_kea.jobs", level="WARNING") as cm:
+            KeaIpamSyncJob(_make_job()).run()
+
+        self.assertTrue(any("Failed to fetch reservations" in msg for msg in cm.output))
+
+    # ------------------------------------------------------------------ #
+    # reservation KeaException result==2 (hook not loaded)                #
+    # ------------------------------------------------------------------ #
+
+    @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+    @patch("netbox_kea.sync.cleanup_stale_ips_batch", return_value=0)
+    @patch("netbox_kea.sync.sync_lease_to_netbox", return_value=(MagicMock(), True))
+    @patch("netbox_kea.models.Server")
+    def test_reservation_kea_exception_result2_skips_gracefully(self, MockServer, mock_sync_lease, mock_cleanup):
+        """KeaException with result==2 → debug log, no error counter increment."""
+        server = _make_server()
+        client = MagicMock()
+        client.lease_get_all.return_value = ([], False)
+        exc = KeaException({"result": 2, "text": "unsupported"})
+        client.reservation_get_page.side_effect = exc
+        server.get_client.return_value = client
+        MockServer.objects.all.return_value = [server]
+
+        # No WARNING should be emitted — only DEBUG
+        KeaIpamSyncJob(_make_job()).run()
+
+        mock_cleanup.assert_not_called()
+
+    # ------------------------------------------------------------------ #
+    # reservation generic exception                                        #
+    # ------------------------------------------------------------------ #
+
+    @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+    @patch("netbox_kea.sync.cleanup_stale_ips_batch", return_value=0)
+    @patch("netbox_kea.sync.sync_lease_to_netbox", return_value=(MagicMock(), True))
+    @patch("netbox_kea.models.Server")
+    def test_reservation_generic_exception_increments_errors(self, MockServer, mock_sync_lease, mock_cleanup):
+        """Unexpected exception during reservation fetch → warning logged, errors incremented."""
+        server = _make_server()
+        client = MagicMock()
+        client.lease_get_all.return_value = ([_LEASE4], False)
+        client.reservation_get_page.side_effect = RuntimeError("unexpected")
+        server.get_client.return_value = client
+        MockServer.objects.all.return_value = [server]
+
+        with self.assertLogs("netbox_kea.jobs", level="WARNING") as cm:
+            KeaIpamSyncJob(_make_job()).run()
+
+        self.assertTrue(any("Unexpected error fetching reservations" in msg for msg in cm.output))
+
+    # ------------------------------------------------------------------ #
+    # per-reservation sync exception                                       #
+    # ------------------------------------------------------------------ #
+
+    @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+    @patch("netbox_kea.sync.cleanup_stale_ips_batch", return_value=0)
+    @patch("netbox_kea.sync.sync_lease_to_netbox", return_value=(MagicMock(), True))
+    @patch("netbox_kea.models.Server")
+    def test_per_reservation_sync_exception_increments_errors(self, MockServer, mock_sync_lease, mock_cleanup):
+        """Individual reservation sync failure → debug logged, doesn't abort batch."""
+        server = _make_server()
+        client = _make_client(leases4=[], reservations=[_RESV4])
+        server.get_client.return_value = client
+        MockServer.objects.all.return_value = [server]
+
+        with patch("netbox_kea.sync.sync_reservation_to_netbox", side_effect=ValueError("oops")):
+            KeaIpamSyncJob(_make_job()).run()
+
+        mock_cleanup.assert_not_called()
+
+    # ------------------------------------------------------------------ #
+    # unhandled exception in _sync_one_server                             #
+    # ------------------------------------------------------------------ #
+
+    @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+    @patch("netbox_kea.sync.cleanup_stale_ips_batch", side_effect=RuntimeError("db gone"))
+    @patch("netbox_kea.sync.sync_reservation_to_netbox", return_value=(MagicMock(), False))
+    @patch("netbox_kea.sync.sync_lease_to_netbox", return_value=(MagicMock(), True))
+    @patch("netbox_kea.models.Server")
+    def test_unhandled_exception_in_sync_one_server_is_caught(
+        self, MockServer, mock_sync_lease, mock_sync_resv, mock_cleanup
+    ):
+        """Unhandled exception from _sync_one_server is caught by run()'s outer loop."""
+        server = _make_server()
+        client = _make_client(leases4=[_LEASE4], reservations=[_RESV4])
+        server.get_client.return_value = client
+        MockServer.objects.all.return_value = [server]
+
+        with self.assertLogs("netbox.jobs", level="ERROR") as cm:
+            KeaIpamSyncJob(_make_job()).run()
+
+        self.assertTrue(any("Unhandled error syncing server" in msg for msg in cm.output))
+
+    # ------------------------------------------------------------------ #
+    # get_client failure in _sync_server_leases                           #
+    # ------------------------------------------------------------------ #
+
+    @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+    @patch("netbox_kea.sync.cleanup_stale_ips_batch", return_value=0)
+    @patch("netbox_kea.sync.sync_reservation_to_netbox", return_value=(MagicMock(), False))
+    @patch("netbox_kea.sync.sync_lease_to_netbox", return_value=(MagicMock(), True))
+    @patch("netbox_kea.models.Server")
+    def test_get_client_failure_in_lease_sync_increments_errors(
+        self, MockServer, mock_sync_lease, mock_sync_resv, mock_cleanup
+    ):
+        """get_client() failure during lease sync increments errors but doesn't abort reservation sync."""
+        server = _make_server()
+        client = _make_client(reservations=[_RESV4])
+
+        call_count = [0]
+
+        def _get_client_side_effect(version):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                raise ValueError("connection refused")
+            return client
+
+        server.get_client.side_effect = _get_client_side_effect
+        MockServer.objects.all.return_value = [server]
+
+        with self.assertLogs("netbox_kea.jobs", level="WARNING") as cm:
+            KeaIpamSyncJob(_make_job()).run()
+
+        self.assertTrue(any("Failed to fetch leases" in msg for msg in cm.output))
+        mock_sync_resv.assert_called_once_with(_RESV4, cleanup=False)
+
+    # ------------------------------------------------------------------ #
+    # get_client failure in _sync_server_reservations                     #
+    # ------------------------------------------------------------------ #
+
+    @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+    @patch("netbox_kea.sync.cleanup_stale_ips_batch", return_value=0)
+    @patch("netbox_kea.sync.sync_reservation_to_netbox", return_value=(MagicMock(), False))
+    @patch("netbox_kea.sync.sync_lease_to_netbox", return_value=(MagicMock(), True))
+    @patch("netbox_kea.models.Server")
+    def test_get_client_failure_in_reservation_sync_increments_errors(
+        self, MockServer, mock_sync_lease, mock_sync_resv, mock_cleanup
+    ):
+        """get_client() failure during reservation sync increments errors but lease sync still ran."""
+        server = _make_server()
+        client = _make_client(leases4=[_LEASE4])
+
+        call_count = [0]
+
+        def _get_client_side_effect(version):
+            call_count[0] += 1
+            if call_count[0] == 2:  # first call (lease) succeeds, second (resv) fails
+                raise ValueError("connection refused")
+            return client
+
+        server.get_client.side_effect = _get_client_side_effect
+        MockServer.objects.all.return_value = [server]
+
+        with self.assertLogs("netbox_kea.jobs", level="WARNING") as cm:
+            KeaIpamSyncJob(_make_job()).run()
+
+        self.assertTrue(any("Unexpected error fetching reservations" in msg for msg in cm.output))
+        mock_sync_lease.assert_called_once_with(_LEASE4, cleanup=False)
+
     """Tests for NetBoxKeaConfig._configure_sync_job_interval()."""
 
     def test_interval_override_logs_warning_on_failure(self):
