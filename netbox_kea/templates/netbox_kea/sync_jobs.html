@@ -1,0 +1,6 @@
+{% extends "base/layout.html" %}
+{% block title %}Kea Sync Jobs{% endblock %}
+{% block content %}
+<form method="post">{% csrf_token %}{{ form.interval_minutes }}{{ form.sync_enabled }}<button type="submit">Save</button></form>
+{% for server in servers %}<span>{{ server.name }}</span>{% endfor %}
+{% endblock %}

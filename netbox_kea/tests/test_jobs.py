@@ -774,6 +774,7 @@ class TestKeaIpamSyncJobKillSwitches(SimpleTestCase):
 
         self.assertIn("summary", mock_job.data)
         self.assertEqual(mock_job.data["summary"], [])
+        mock_job.save.assert_called_once_with(update_fields=["data"])
 
     @patch("netbox_kea.models.SyncConfig")
     @patch("netbox_kea.jobs._sync_one_server")
@@ -800,6 +801,25 @@ class TestKeaIpamSyncJobKillSwitches(SimpleTestCase):
         self.assertEqual(entry["created"], 3)
         self.assertEqual(entry["updated"], 7)
         self.assertEqual(entry["errors"], 0)
+        mock_job.save.assert_called_once_with(update_fields=["data"])
+
+    @patch("netbox_kea.models.SyncConfig")
+    @patch("netbox_kea.jobs._sync_one_server")
+    @patch("netbox_kea.models.Server")
+    def test_job_data_summary_written_when_data_is_none(self, MockServer, mock_sync_one, MockSyncConfig):
+        """job.data['summary'] must be written even when job.data starts as None."""
+        MockSyncConfig.get.return_value = MagicMock(sync_enabled=True, interval_minutes=5)
+        server = MagicMock(pk=1, name="kea", dhcp4=True, dhcp6=False, sync_enabled=True)
+        MockServer.objects.all.return_value = [server]
+
+        mock_job = MagicMock()
+        mock_job.data = None  # production-realistic starting value
+        job = KeaIpamSyncJob(mock_job)
+        job.run()
+
+        self.assertIsInstance(mock_job.data, dict)
+        self.assertIn("summary", mock_job.data)
+        mock_job.save.assert_called_once_with(update_fields=["data"])
 
 
 class TestConfigureSyncJobInterval(SimpleTestCase):

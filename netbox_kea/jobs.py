@@ -323,5 +323,7 @@ class KeaIpamSyncJob(JobRunner):
                 total["errors"],
             )
         finally:
+            if not isinstance(self.job.data, dict):
+                self.job.data = {}
             self.job.data["summary"] = summary
             self.job.save(update_fields=["data"])
