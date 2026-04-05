@@ -59,6 +59,16 @@ class TestSyncJobsView(TestCase):
         # form re-rendered with errors
         self.assertFalse(response.context["form"].is_valid())
 
+    def test_post_db_error_shows_error_message(self):
+        """SyncConfig DB failure returns generic error without leaking exception details."""
+        from django.db import DatabaseError
+
+        url = reverse("plugins:netbox_kea:sync_jobs")
+        with patch("netbox_kea.views.sync_jobs.SyncConfig") as MockConfig:
+            MockConfig.get.side_effect = DatabaseError("db is broken")
+            response = self.client.post(url, {"interval_minutes": 10, "sync_enabled": True}, follow=True)
+        self.assertContains(response, "internal error")
+
     def test_get_without_login_redirects(self):
         self.client.logout()
         response = self.client.get(reverse("plugins:netbox_kea:sync_jobs"))
@@ -89,6 +99,12 @@ class TestServerSyncStatusView(TestCase):
         url = reverse("plugins:netbox_kea:server_sync_status", args=[self.server.pk])
         response = self.client.get(url)
         self.assertContains(response, f"object_id={self.server.pk}")
+
+    def test_can_change_server_true_for_superuser(self):
+        """can_change_server is True for superuser via object-level restrict check."""
+        url = reverse("plugins:netbox_kea:server_sync_status", args=[self.server.pk])
+        response = self.client.get(url)
+        self.assertTrue(response.context["can_change_server"])
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
@@ -267,3 +283,11 @@ class TestMigrationsApplied(TestCase):
         """Regression: /plugins/kea/sync-jobs/ must not raise ProgrammingError."""
         response = self.client.get(reverse("plugins:netbox_kea:sync_jobs"))
         self.assertNotEqual(response.status_code, 500)
+
+    def test_server_supports_job_assignment(self):
+        """Regression: migration 0008 must enable Job assignment to Server (JobsMixin)."""
+        from netbox.models.features import has_feature
+
+        from netbox_kea.models import Server
+
+        self.assertTrue(has_feature(Server, "jobs"), "Server must have the 'jobs' feature (JobsMixin)")

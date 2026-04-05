@@ -11,13 +11,14 @@ from django.db import models
 from django.urls import reverse
 from netbox.constants import CENSOR_TOKEN, CENSOR_TOKEN_CHANGED
 from netbox.models import NetBoxModel
+from netbox.models.features import JobsMixin
 
 from .kea import KeaClient, KeaException
 
 logger = logging.getLogger(__name__)
 
 
-class Server(NetBoxModel):
+class Server(JobsMixin, NetBoxModel):
     """A Kea DHCP server instance managed through the Kea Control API."""
 
     name = models.CharField(unique=True, max_length=255)

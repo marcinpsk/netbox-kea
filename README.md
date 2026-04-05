@@ -8,7 +8,7 @@
 [![REUSE](https://api.reuse.software/badge/github.com/marcinpsk/netbox-kea)](https://api.reuse.software/info/github.com/marcinpsk/netbox-kea)
 [![License](https://img.shields.io/github/license/marcinpsk/netbox-kea)](LICENSE)
 [![Python](https://img.shields.io/pypi/pyversions/netbox-kea-ng)](https://pypi.org/project/netbox-kea-ng/)
-[![NetBox](https://img.shields.io/badge/NetBox-%E2%89%A54.0.0-blue)](https://github.com/netbox-community/netbox)
+[![NetBox](https://img.shields.io/badge/NetBox-%E2%89%A54.2.0-blue)](https://github.com/netbox-community/netbox)
 
 > **Fork notice:** This is `netbox-kea-ng`, an independently maintained fork of
 > [netbox-kea](https://github.com/devon-mar/netbox-kea) by
@@ -49,7 +49,7 @@ NetBox plugin for the [Kea DHCP](https://www.isc.org/kea/) server. Manage your D
 - Sync button on individual leases and reservations
 - Bulk sync for entire lease tables
 - Pending-change detection: badge on leases where a reservation exists at a different IP
-- MAC address sync → NetBox `MACAddress` (NetBox ≥ 4.1)
+- MAC address sync → NetBox `MACAddress`
 - Sets `dns_name` on IPAddress for automatic DNS sync via [netbox-dns](https://github.com/peteeckel/netbox-plugin-dns) IPAMDNSsync
 
 **Periodic Background Sync** *(requires `rqworker`)*
@@ -75,7 +75,7 @@ NetBox plugin for the [Kea DHCP](https://www.isc.org/kea/) server. Manage your D
 
 ## Requirements
 
-- NetBox 4.0, 4.1, 4.2, 4.3, 4.4 or 4.5
+- NetBox 4.2, 4.3, 4.4 or 4.5
 - [Kea Control Agent](https://kea.readthedocs.io/en/latest/arm/agent.html)
 - [`lease_cmds`](https://kea.readthedocs.io/en/latest/arm/hooks.html#lease-cmds-lease-commands-for-easier-lease-management) hook library (for lease search and management)
 - [`host_cmds`](https://kea.readthedocs.io/en/latest/arm/hooks.html#host-cmds) hook library (optional, for reservation management)
@@ -89,7 +89,7 @@ The plugin degrades gracefully when optional hooks are absent — tabs for unava
 
 | netbox-kea-ng | NetBox | Kea |
 |---|---|---|
-| 1.x | 4.0 – 4.5 | 2.4+ |
+| 1.x | 4.2 – 4.5 | 2.4+ |
 
 Tested with Kea v2.4.1 using the `memfile` lease database. Other versions and databases should also work.
 

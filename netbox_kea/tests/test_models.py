@@ -336,7 +336,7 @@ class TestServerToObjectchangePasswordCensoring(SimpleTestCase):
 
         server = Server(name="test-server", server_url="http://kea:8000", dhcp4=True)
         objectchange = self._make_objectchange(pre_password, post_password)
-        with patch.object(Server.__bases__[0], "to_objectchange", return_value=objectchange):
+        with patch.object(NetBoxModel, "to_objectchange", return_value=objectchange):
             return server.to_objectchange("update")
 
     def test_unchanged_password_masked_as_censor_token(self):
@@ -368,7 +368,7 @@ class TestServerToObjectchangePasswordCensoring(SimpleTestCase):
         server = Server(name="test-server", server_url="http://kea:8000", dhcp4=True, password="secret")
         objectchange = self._make_objectchange(pre_password=None, post_password="secret")
         objectchange.prechange_data = None
-        with patch.object(Server.__bases__[0], "to_objectchange", return_value=objectchange):
+        with patch.object(NetBoxModel, "to_objectchange", return_value=objectchange):
             result = server.to_objectchange("create")
         # Should not crash; None prechange is preserved (or converted to empty dict)
         self.assertIn(result.prechange_data, (None, {}))
