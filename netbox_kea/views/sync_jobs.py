@@ -79,7 +79,7 @@ class SyncJobsView(LoginRequiredMixin, View):
             try:
                 KeaIpamSyncJob.enqueue_once(interval=sync_cfg.interval_minutes)
             except Exception:
-                logger.warning("Could not re-schedule KeaIpamSyncJob after interval change", exc_info=True)
+                logger.exception("Could not re-schedule KeaIpamSyncJob after interval change")
             messages.success(request, "Sync configuration saved.")
             return HttpResponseRedirect(reverse("plugins:netbox_kea:sync_jobs"))
 
@@ -127,9 +127,9 @@ class ServerSyncNowView(LoginRequiredMixin, View):
 
     def post(self, request, pk):
         """Enqueue a one-off sync job for the given server."""
-        server = get_object_or_404(Server, pk=pk)
         if not request.user.has_perm("netbox_kea.change_server"):
             return HttpResponseForbidden()
+        server = get_object_or_404(Server, pk=pk)
         try:
             KeaIpamSyncJob.enqueue(instance=server, server_pk=server.pk)
             messages.success(request, f"Sync job enqueued for {server.name}.")
@@ -144,9 +144,9 @@ class ServerSyncToggleView(LoginRequiredMixin, View):
 
     def post(self, request, pk):
         """Toggle the sync_enabled flag for the given server."""
-        server = get_object_or_404(Server, pk=pk)
         if not request.user.has_perm("netbox_kea.change_server"):
             return HttpResponseForbidden()
+        server = get_object_or_404(Server, pk=pk)
         server.sync_enabled = not server.sync_enabled
         server.save(update_fields=["sync_enabled"])
         state = "enabled" if server.sync_enabled else "disabled"
