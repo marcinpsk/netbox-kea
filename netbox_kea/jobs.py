@@ -195,7 +195,9 @@ def _sync_one_server(
     from .sync import cleanup_stale_ips_batch
 
     all_synced: list[dict] = []
-    cleanup_safe = True
+    # Cleanup is only safe when both sources contributed, otherwise we risk
+    # removing IPs that exist in the source we didn't sync.
+    cleanup_safe = sync_leases and sync_reservations
     for version, enabled in ((4, server.dhcp4), (6, server.dhcp6)):
         if not enabled:
             continue

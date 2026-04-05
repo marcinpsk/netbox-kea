@@ -30,11 +30,14 @@ class NetBoxKeaConfig(PluginConfig):
         self._configure_sync_job_interval()
 
     def _configure_sync_job_interval(self) -> None:
-        """Override the KeaIpamSyncJob interval from PLUGINS_CONFIG at startup.
+        """Override the KeaIpamSyncJob interval from persisted SyncConfig (falling back to PLUGINS_CONFIG).
 
         The ``@system_job`` decorator registers a static default interval.  We
         patch the registry here so the configured interval is used by the
-        worker when it starts.
+        worker when it starts.  The persisted ``SyncConfig.interval_minutes``
+        value is the single source of truth; ``sync_interval_minutes`` in
+        PLUGINS_CONFIG is only the seed value used before the user has saved
+        any configuration via the UI.
         """
         try:
             from django.conf import settings
@@ -42,8 +45,15 @@ class NetBoxKeaConfig(PluginConfig):
 
             from .jobs import KeaIpamSyncJob
 
-            config = getattr(settings, "PLUGINS_CONFIG", {}).get("netbox_kea", {})
-            interval = int(config.get("sync_interval_minutes", 5))
+            # Prefer the DB-persisted value; fall back to PLUGINS_CONFIG.
+            try:
+                from .models import SyncConfig
+
+                interval = SyncConfig.get().interval_minutes
+            except Exception:
+                config = getattr(settings, "PLUGINS_CONFIG", {}).get("netbox_kea", {})
+                interval = int(config.get("sync_interval_minutes", 5))
+
             if interval < 1:
                 interval = 1
             if KeaIpamSyncJob in registry["system_jobs"]:

@@ -470,8 +470,6 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
     @patch("netbox_kea.models.Server")
     def test_both_sync_disabled_returns_early(self, MockServer, mock_sync_lease, mock_sync_resv, mock_cleanup):
         """When both sync_leases_enabled and sync_reservations_enabled are False, job returns immediately."""
-        MockServer.objects.all.return_value = [_make_server()]
-
         KeaIpamSyncJob(_make_job()).run()
 
         MockServer.objects.all.assert_not_called()

@@ -15,6 +15,7 @@
         Global Sync Configuration
       </h5>
       <div class="card-body">
+        {% if perms.netbox_kea.change_syncconfig %}
         <form method="post">
           {% csrf_token %}
           <div class="row g-3 align-items-end">
@@ -36,6 +37,9 @@
             </div>
           </div>
         </form>
+        {% else %}
+        <p class="text-muted mb-0">You do not have permission to modify sync settings.</p>
+        {% endif %}
       </div>
     </div>
 
@@ -118,12 +122,14 @@
                   {% else %}—{% endif %}
                 </td>
                 <td>
+                  {% if perms.netbox_kea.change_server %}
                   <form method="post" action="{% url 'plugins:netbox_kea:server_sync_now' server.pk %}" class="d-inline">
                     {% csrf_token %}
                     <button type="submit" class="btn btn-sm btn-outline-primary">
                       <i class="mdi mdi-play" aria-hidden="true"></i> Run Now
                     </button>
                   </form>
+                  {% endif %}
                 </td>
               </tr>
               {% endwith %}

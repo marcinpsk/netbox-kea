@@ -63,6 +63,7 @@
               {% endif %}
               for this server.
             </p>
+            {% if can_change_server %}
             <form method="post" action="{% url 'plugins:netbox_kea:server_sync_toggle' object.pk %}" class="mb-2">
               {% csrf_token %}
               <button type="submit" class="btn btn-sm btn-outline-secondary">
@@ -79,6 +80,7 @@
                 <i class="mdi mdi-play-circle-outline" aria-hidden="true"></i> Run Now
               </button>
             </form>
+            {% endif %}
           </div>
         </div>
       </div>

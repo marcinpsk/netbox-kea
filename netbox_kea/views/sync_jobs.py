@@ -64,7 +64,7 @@ class SyncJobsView(LoginRequiredMixin, View):
         form = forms.SyncConfigForm(
             initial={"interval_minutes": sync_cfg.interval_minutes, "sync_enabled": sync_cfg.sync_enabled}
         )
-        servers = list(Server.objects.order_by("name"))
+        servers = list(Server.objects.restrict(request.user, "view").order_by("name"))
         latest_jobs = _get_latest_jobs(servers)
         return render(
             request,
@@ -97,7 +97,7 @@ class SyncJobsView(LoginRequiredMixin, View):
             messages.success(request, "Sync configuration saved.")
             return HttpResponseRedirect(reverse("plugins:netbox_kea:sync_jobs"))
 
-        servers = list(Server.objects.order_by("name"))
+        servers = list(Server.objects.restrict(request.user, "view").order_by("name"))
         latest_jobs = _get_latest_jobs(servers)
         return render(
             request,
@@ -134,6 +134,7 @@ class ServerSyncStatusView(generic.ObjectView):
             "recent_jobs": recent_jobs,
             "latest_job": latest,
             "jobs_list_url": jobs_list_url,
+            "can_change_server": request.user.has_perm("netbox_kea.change_server"),
         }
 
 
