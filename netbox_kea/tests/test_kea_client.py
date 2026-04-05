@@ -4513,7 +4513,7 @@ class TestLeaseGetAllPagination(TestCase):
 
     @patch("requests.Session.post")
     def test_multi_page_aggregates_leases(self, mock_post):
-        """Two pages of leases are combined into a single list."""
+        """Two pages of leases are combined, and the cursor advances to the last IP on page 1."""
         page1 = [{"ip-address": "10.0.0.1"}, {"ip-address": "10.0.0.2"}]
         page2 = [{"ip-address": "10.0.0.3"}]
         mock_post.side_effect = [
@@ -4523,6 +4523,11 @@ class TestLeaseGetAllPagination(TestCase):
         leases, truncated = self.client.lease_get_all(version=4, per_page=2)
         self.assertEqual(len(leases), 3)
         self.assertFalse(truncated)
+        # Verify the second request used the last IP of page 1 as cursor
+        first_payload = mock_post.call_args_list[0].kwargs["json"]
+        second_payload = mock_post.call_args_list[1].kwargs["json"]
+        self.assertEqual(first_payload["arguments"]["from"], "0.0.0.0")
+        self.assertEqual(second_payload["arguments"]["from"], "10.0.0.2")
 
     def test_per_page_zero_raises_value_error(self):
         """per_page < 1 → ValueError before any HTTP call is made."""
@@ -4547,3 +4552,13 @@ class TestLeaseGetAllPagination(TestCase):
         with self.assertRaises(ValueError) as cm:
             self.client.lease_get_all(version=4, max_leases=-1)
         self.assertIn("max_leases", str(cm.exception))
+
+    @patch("requests.Session.post")
+    def test_non_int_count_raises_runtime_error(self, mock_post):
+        """Non-int count in response → RuntimeError instead of silently stopping early."""
+        page = [{"ip-address": "10.0.0.1"}, {"ip-address": "10.0.0.2"}]
+        # count is a string instead of int — should raise, not silently break
+        mock_post.return_value = self._page_response(leases=page, count="2")
+        with self.assertRaises(RuntimeError) as cm:
+            self.client.lease_get_all(version=4, per_page=2)
+        self.assertIn("count", str(cm.exception))

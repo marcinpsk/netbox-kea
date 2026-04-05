@@ -411,9 +411,12 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
         server.get_client.return_value = client
         MockServer.objects.all.return_value = [server]
 
-        KeaIpamSyncJob(_make_job()).run()
+        with self.assertLogs("netbox.jobs", level="INFO") as cm:
+            KeaIpamSyncJob(_make_job()).run()
 
         mock_sync_lease.assert_called_once_with(_LEASE4, cleanup=False)
+        # Verify stats['updated'] was incremented (not 'created')
+        self.assertTrue(any("updated=1" in msg and "created=0" in msg for msg in cm.output))
 
     # ------------------------------------------------------------------ #
     # both sync flags disabled                                             #
@@ -516,7 +519,8 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
         MockServer.objects.all.return_value = [server]
 
         # No WARNING should be emitted — only DEBUG
-        KeaIpamSyncJob(_make_job()).run()
+        with self.assertNoLogs("netbox_kea.jobs", level="WARNING"):
+            KeaIpamSyncJob(_make_job()).run()
 
         mock_cleanup.assert_not_called()
 
@@ -651,6 +655,8 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
         self.assertTrue(any("Unexpected error fetching reservations" in msg for msg in cm.output))
         mock_sync_lease.assert_called_once_with(_LEASE4, cleanup=False)
 
+
+class TestConfigureSyncJobInterval(SimpleTestCase):
     """Tests for NetBoxKeaConfig._configure_sync_job_interval()."""
 
     def test_interval_override_logs_warning_on_failure(self):

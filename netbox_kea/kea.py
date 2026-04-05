@@ -1034,6 +1034,12 @@ class KeaClient:
                 raise RuntimeError(
                     f"lease{version}-get-page arguments.leases is {type(page).__name__!r}, expected list"
                 )
+            for idx, lease in enumerate(page):
+                ip_addr = lease.get("ip-address") if isinstance(lease, dict) else None
+                if not isinstance(ip_addr, str) or not ip_addr:
+                    raise RuntimeError(
+                        f"lease{version}-get-page returned an invalid lease at index {idx}: missing 'ip-address'"
+                    )
             all_leases.extend(page)
             if not page:
                 break
@@ -1042,12 +1048,11 @@ class KeaClient:
                 truncated = True
                 break
             count = args.get("count")
-            if not isinstance(count, int) or count < per_page:
+            if not isinstance(count, int):
+                raise RuntimeError(f"lease{version}-get-page arguments.count is {type(count).__name__!r}, expected int")
+            if count < per_page:
                 break  # last page
-            last = page[-1]
-            cursor = last.get("ip-address") if isinstance(last, dict) else None
-            if not isinstance(cursor, str) or not cursor:
-                raise RuntimeError(f"lease{version}-get-page returned a page item without a valid 'ip-address' cursor")
+            cursor = page[-1]["ip-address"]
 
         return all_leases, truncated
 
