@@ -12,7 +12,6 @@ class Migration(migrations.Migration):
         migrations.CreateModel(
             name="SyncConfig",
             fields=[
-                ("id", models.AutoField(primary_key=True, serialize=False)),
                 ("interval_minutes", models.PositiveIntegerField(default=5)),
                 ("sync_enabled", models.BooleanField(default=True)),
             ],

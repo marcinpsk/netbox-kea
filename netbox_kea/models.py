@@ -6,6 +6,7 @@ from typing import Literal
 import requests
 from django.conf import settings
 from django.core.exceptions import ValidationError
+from django.core.validators import MinValueValidator
 from django.db import models
 from django.urls import reverse
 from netbox.constants import CENSOR_TOKEN, CENSOR_TOKEN_CHANGED
@@ -184,6 +185,7 @@ class SyncConfig(models.Model):
 
     interval_minutes = models.PositiveIntegerField(
         default=5,
+        validators=[MinValueValidator(1)],
         help_text="How often the background sync job runs (minutes). Minimum 1.",
     )
     sync_enabled = models.BooleanField(
@@ -195,8 +197,11 @@ class SyncConfig(models.Model):
         app_label = "netbox_kea"
         verbose_name = "Sync Configuration"
 
+    def __str__(self) -> str:
+        return "Sync Configuration"
+
     @classmethod
     def get(cls) -> "SyncConfig":
         """Return the singleton config row, creating it with defaults if absent."""
-        obj, _ = cls.objects.get_or_create(pk=1, defaults={"interval_minutes": 5, "sync_enabled": True})
+        obj, _ = cls.objects.get_or_create(pk=1)
         return obj

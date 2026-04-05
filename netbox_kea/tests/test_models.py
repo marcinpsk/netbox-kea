@@ -449,20 +449,17 @@ class TestSyncConfig(TestCase):
     """Tests for the SyncConfig singleton model."""
 
     def test_get_creates_with_defaults_when_missing(self):
-        SyncConfig.objects.all().delete()
         cfg = SyncConfig.get()
         self.assertEqual(cfg.interval_minutes, 5)
         self.assertTrue(cfg.sync_enabled)
 
     def test_get_returns_existing_record(self):
-        SyncConfig.objects.all().delete()
         SyncConfig.objects.create(pk=1, interval_minutes=10, sync_enabled=False)
         cfg = SyncConfig.get()
         self.assertEqual(cfg.interval_minutes, 10)
         self.assertFalse(cfg.sync_enabled)
 
     def test_get_is_idempotent(self):
-        SyncConfig.objects.all().delete()
         cfg1 = SyncConfig.get()
         cfg2 = SyncConfig.get()
         self.assertEqual(cfg1.pk, cfg2.pk)
