@@ -22,13 +22,53 @@ class Server(JobsMixin, NetBoxModel):
     """A Kea DHCP server instance managed through the Kea Control API."""
 
     name = models.CharField(unique=True, max_length=255)
-    server_url = models.CharField(
-        verbose_name="Server URL",
+    ca_url = models.CharField(
+        verbose_name="CA / Server URL",
         max_length=255,
         help_text="Default endpoint URL (Kea Control Agent or single DHCP daemon).",
     )
-    username = models.CharField(null=True, blank=True, max_length=255)
-    password = models.CharField(null=True, blank=True, max_length=255)
+    ca_username = models.CharField(
+        null=True,
+        blank=True,
+        max_length=255,
+        verbose_name="CA Username",
+        help_text="Username for the Kea Control Agent (or default for all daemons).",
+    )
+    ca_password = models.CharField(
+        null=True,
+        blank=True,
+        max_length=255,
+        verbose_name="CA Password",
+        help_text="Password for the Kea Control Agent (or default for all daemons).",
+    )
+    dhcp4_username = models.CharField(
+        null=True,
+        blank=True,
+        max_length=255,
+        verbose_name="DHCPv4 Username",
+        help_text="Username for the DHCPv4 daemon. Overrides CA credentials for DHCPv4 connections.",
+    )
+    dhcp4_password = models.CharField(
+        null=True,
+        blank=True,
+        max_length=255,
+        verbose_name="DHCPv4 Password",
+        help_text="Password for the DHCPv4 daemon. Overrides CA credentials for DHCPv4 connections.",
+    )
+    dhcp6_username = models.CharField(
+        null=True,
+        blank=True,
+        max_length=255,
+        verbose_name="DHCPv6 Username",
+        help_text="Username for the DHCPv6 daemon. Overrides CA credentials for DHCPv6 connections.",
+    )
+    dhcp6_password = models.CharField(
+        null=True,
+        blank=True,
+        max_length=255,
+        verbose_name="DHCPv6 Password",
+        help_text="Password for the DHCPv6 daemon. Overrides CA credentials for DHCPv6 connections.",
+    )
     ssl_verify = models.BooleanField(
         default=True,
         verbose_name="SSL Verification",
@@ -98,11 +138,13 @@ class Server(JobsMixin, NetBoxModel):
         return reverse("plugins:netbox_kea:server", args=[self.pk])
 
     def get_client(self, version: Literal[4, 6] | None = None) -> KeaClient:
-        """Return a configured KeaClient, targeting the protocol-specific URL when available.
+        """Return a configured KeaClient, targeting the protocol-specific URL and credentials when available.
 
         Args:
             version: DHCP protocol version (4 or 6). When provided and a protocol-specific
-                URL is configured, that URL is used instead of ``server_url``.
+                URL is configured, that URL is used instead of ``ca_url``.
+                Per-protocol credentials (dhcp4_username/password or dhcp6_username/password)
+                take precedence over CA-level credentials when set.
 
         """
         if version == 4 and self.dhcp4_url:
@@ -110,11 +152,22 @@ class Server(JobsMixin, NetBoxModel):
         elif version == 6 and self.dhcp6_url:
             url = self.dhcp6_url
         else:
-            url = self.server_url
+            url = self.ca_url
+
+        if version == 4 and (self.dhcp4_username or self.dhcp4_password):
+            username = self.dhcp4_username
+            password = self.dhcp4_password
+        elif version == 6 and (self.dhcp6_username or self.dhcp6_password):
+            username = self.dhcp6_username
+            password = self.dhcp6_password
+        else:
+            username = self.ca_username
+            password = self.ca_password
+
         return KeaClient(
             url=url,
-            username=self.username,
-            password=self.password,
+            username=username,
+            password=password,
             verify=self.ca_file_path or self.ssl_verify,
             client_cert=self.client_cert_path or None,
             client_key=self.client_key_path or None,
@@ -167,16 +220,24 @@ class Server(JobsMixin, NetBoxModel):
                 raise ValidationError({"dhcp4": "Unable to reach the Kea DHCPv4 service."}) from e
 
     def to_objectchange(self, action: str) -> None:
-        """Censor password in NetBox change log entries."""
+        """Censor all password fields in NetBox change log entries."""
         objectchange = super().to_objectchange(action)
 
-        prechange_data = objectchange.prechange_data or {}
-        original_pre_password = prechange_data.get("password")
-        if prechange_data.get("password"):
-            prechange_data["password"] = CENSOR_TOKEN
+        password_fields = ("ca_password", "dhcp4_password", "dhcp6_password")
 
-        if (post_data := objectchange.postchange_data) and (post_password := post_data.get("password")):
-            post_data["password"] = CENSOR_TOKEN_CHANGED if post_password != original_pre_password else CENSOR_TOKEN
+        prechange_data = objectchange.prechange_data or {}
+        original_pre_passwords = {f: prechange_data.get(f) for f in password_fields}
+        for field in password_fields:
+            if prechange_data.get(field):
+                prechange_data[field] = CENSOR_TOKEN
+
+        if post_data := objectchange.postchange_data:
+            for field in password_fields:
+                post_password = post_data.get(field)
+                if post_password:
+                    post_data[field] = (
+                        CENSOR_TOKEN_CHANGED if post_password != original_pre_passwords[field] else CENSOR_TOKEN
+                    )
 
         return objectchange
 
