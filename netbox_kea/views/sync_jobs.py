@@ -158,6 +158,17 @@ class ServerSyncStatusView(generic.ObjectView):
             ]
         )
         latest = recent_jobs[0] if recent_jobs else None
+
+        # Fallback: if no object-bound jobs exist, check unbound periodic runs
+        # that have a summary entry attributed to this server.
+        if latest is None:
+            for job in Job.objects.filter(object_id__isnull=True, name="Kea IPAM Sync").order_by("-created")[
+                :_JOB_HISTORY_COUNT
+            ]:
+                if any(entry.get("pk") == instance.pk for entry in (job.data or {}).get("summary", [])):
+                    latest = job
+                    break
+
         jobs_list_url = reverse("core:job_list") + f"?object_type=netbox_kea.server&object_id={instance.pk}"
         return {
             "recent_jobs": recent_jobs,
