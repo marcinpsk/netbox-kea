@@ -5,6 +5,8 @@
 from __future__ import annotations
 
 import logging
+from collections import defaultdict
+from typing import Any
 
 from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin
@@ -25,25 +27,34 @@ logger = logging.getLogger(__name__)
 _JOB_HISTORY_COUNT = 5  # rows shown in the per-server tab mini-table
 
 
-def _get_latest_jobs(servers: list[Server]) -> dict[int, object]:
-    """Return a dict mapping server.pk to most recent Job for that server (or None)."""
+def _get_latest_jobs(servers: list[Server]) -> defaultdict:
+    """Return a defaultdict mapping server.pk to the most recent Job for that server.
+
+    Servers with no matching job return None via the defaultdict default.
+    """
     from core.models import Job
 
     ct = ContentType.objects.get_for_model(Server)
     pks = [s.pk for s in servers]
-    jobs = Job.objects.filter(object_type=ct, object_id__in=pks, name="Kea IPAM Sync").order_by("object_id", "-created")
-    seen: set[int] = set()
-    latest: dict[int, object] = {}
+    jobs = (
+        Job.objects.filter(object_type=ct, object_id__in=pks, name="Kea IPAM Sync")
+        .order_by("object_id", "-created")
+        .only("pk", "object_id", "created", "status")
+    )
+    latest: dict[int, Any] = {}
     for job in jobs:
         oid = job.object_id
-        if oid not in seen:
+        if oid not in latest:
             latest[oid] = job
-            seen.add(oid)
-    return latest
+    return defaultdict(lambda: None, latest)
 
 
 class SyncJobsView(LoginRequiredMixin, View):
-    """Plugin-level Sync Jobs page: global config + cross-server summary table."""
+    """Plugin-level Sync Jobs page: global config + cross-server summary table.
+
+    GET: readable by any authenticated user (via the view_server menu guard).
+    POST: requires netbox_kea.change_syncconfig.
+    """
 
     template_name = "netbox_kea/sync_jobs.html"
 
@@ -77,9 +88,12 @@ class SyncJobsView(LoginRequiredMixin, View):
             sync_cfg.sync_enabled = form.cleaned_data["sync_enabled"]
             sync_cfg.save()
             try:
-                KeaIpamSyncJob.enqueue_once(interval=sync_cfg.interval_minutes)
+                from netbox.registry import registry
+
+                if KeaIpamSyncJob in registry["system_jobs"]:
+                    registry["system_jobs"][KeaIpamSyncJob]["interval"] = sync_cfg.interval_minutes
             except Exception:
-                logger.exception("Could not re-schedule KeaIpamSyncJob after interval change")
+                logger.exception("Could not update KeaIpamSyncJob interval in registry after config change")
             messages.success(request, "Sync configuration saved.")
             return HttpResponseRedirect(reverse("plugins:netbox_kea:sync_jobs"))
 
@@ -115,10 +129,11 @@ class ServerSyncStatusView(generic.ObjectView):
             ]
         )
         latest = recent_jobs[0] if recent_jobs else None
+        jobs_list_url = reverse("core:job_list") + f"?object_type=netbox_kea.server&object_id={instance.pk}"
         return {
             "recent_jobs": recent_jobs,
             "latest_job": latest,
-            "jobs_list_url": (f"/core/jobs/?object_type=netbox_kea.server&object_id={instance.pk}"),
+            "jobs_list_url": jobs_list_url,
         }
 
 

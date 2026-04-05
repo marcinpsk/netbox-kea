@@ -43,11 +43,14 @@ class TestSyncJobsView(TestCase):
         cfg = SyncConfig.get()
         self.assertEqual(cfg.interval_minutes, 10)
 
-    def test_post_calls_enqueue_once_with_new_interval(self):
+    def test_post_updates_registry_interval(self):
         url = reverse("plugins:netbox_kea:sync_jobs")
-        with patch("netbox_kea.views.sync_jobs.KeaIpamSyncJob") as MockJob:
+        from netbox_kea.jobs import KeaIpamSyncJob
+
+        fake_registry = {"system_jobs": {KeaIpamSyncJob: {"interval": 5}}}
+        with patch("netbox.registry.registry", fake_registry):
             self.client.post(url, {"interval_minutes": 15, "sync_enabled": True})
-        MockJob.enqueue_once.assert_called_once_with(interval=15)
+        self.assertEqual(fake_registry["system_jobs"][KeaIpamSyncJob]["interval"], 15)
 
     def test_post_invalid_interval_shows_error(self):
         url = reverse("plugins:netbox_kea:sync_jobs")
@@ -59,7 +62,8 @@ class TestSyncJobsView(TestCase):
     def test_get_without_login_redirects(self):
         self.client.logout()
         response = self.client.get(reverse("plugins:netbox_kea:sync_jobs"))
-        self.assertIn(response.status_code, [302, 403])
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("/login/", response["Location"])
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
