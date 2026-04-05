@@ -467,6 +467,7 @@ class TestSyncConfig(TestCase):
         self.assertEqual(SyncConfig.objects.count(), 1)
 
 
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestServerSyncEnabled(TestCase):
     def test_sync_enabled_defaults_to_true(self):
         server = _make_db_server()
