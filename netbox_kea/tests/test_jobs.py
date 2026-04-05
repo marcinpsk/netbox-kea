@@ -290,6 +290,8 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
         KeaIpamSyncJob(_make_job()).run()
 
         self.assertEqual(mock_sync_lease.call_count, 2)
+        # errors > 0 → cleanup must not run (partial all_synced would cause false deletions)
+        mock_cleanup.assert_not_called()
 
     @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
     @patch("netbox_kea.sync.cleanup_stale_ips_batch", return_value=0)
