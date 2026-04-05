@@ -1,0 +1,146 @@
+{# SPDX-FileCopyrightText: 2025 Marcin Zieba <marcinpsk@gmail.com> #}
+{# SPDX-License-Identifier: Apache-2.0 #}
+{% extends "base/layout.html" %}
+{% load helpers %}
+
+{% block title %}Kea Sync Jobs{% endblock %}
+
+{% block content %}
+<div class="row">
+  <div class="col-md-12">
+
+    {# Global config card #}
+    <div class="card mb-4">
+      <h5 class="card-header d-flex justify-content-between align-items-center">
+        Global Sync Configuration
+      </h5>
+      <div class="card-body">
+        {% if perms.netbox_kea.change_syncconfig %}
+        <form method="post">
+          {% csrf_token %}
+          <div class="row g-3 align-items-end">
+            <div class="col-auto">
+              <label class="form-label">{{ form.interval_minutes.label }}</label>
+              {{ form.interval_minutes }}
+              {% for err in form.interval_minutes.errors %}
+                <div class="text-danger small">{{ err }}</div>
+              {% endfor %}
+            </div>
+            <div class="col-auto d-flex align-items-center gap-2">
+              {{ form.sync_enabled }}
+              <label class="form-check-label">{{ form.sync_enabled.label }}</label>
+            </div>
+            <div class="col-auto">
+              <button type="submit" class="btn btn-primary">
+                <i class="mdi mdi-content-save-outline" aria-hidden="true"></i> Save
+              </button>
+            </div>
+          </div>
+        </form>
+        {% else %}
+        <p class="text-muted mb-0">You do not have permission to modify sync settings.</p>
+        {% endif %}
+      </div>
+    </div>
+
+    {# Cross-server summary table #}
+    <div class="card">
+      <h5 class="card-header">Server Sync Status</h5>
+      <div class="card-body p-0">
+        <table class="table table-hover mb-0">
+          <thead>
+            <tr>
+              <th>Server</th>
+              <th>Enabled</th>
+              <th>Last Sync</th>
+              <th>Status</th>
+              <th>Created</th>
+              <th>Updated</th>
+              <th>Errors</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for server in servers %}
+              {% with job=latest_jobs|get_item:server.pk %}
+              <tr>
+                <td>
+                  <a href="{{ server.get_absolute_url }}">{{ server.name }}</a>
+                </td>
+                <td>
+                  {% if server.sync_enabled %}
+                    <span class="badge text-bg-success">Enabled</span>
+                  {% else %}
+                    <span class="badge text-bg-secondary">Disabled</span>
+                  {% endif %}
+                </td>
+                <td>
+                  {% if job %}
+                    <span title="{{ job.completed }}">{{ job.completed|timesince }} ago</span>
+                  {% else %}—{% endif %}
+                </td>
+                <td>
+                  {% if job %}
+                    {% if job.status == "completed" %}
+                      <span class="badge text-bg-success">OK</span>
+                    {% elif job.status == "failed" %}
+                      <span class="badge text-bg-danger">Error</span>
+                    {% elif job.status == "running" %}
+                      <span class="badge text-bg-warning">Running</span>
+                    {% else %}
+                      <span class="badge text-bg-secondary">{{ job.status }}</span>
+                    {% endif %}
+                  {% else %}
+                    <span class="badge text-bg-secondary">Never</span>
+                  {% endif %}
+                </td>
+                <td>
+                  {% if job and job.data.summary %}
+                    {% for entry in job.data.summary %}
+                      {% if entry.pk == server.pk %}{{ entry.created }}{% endif %}
+                    {% endfor %}
+                  {% else %}—{% endif %}
+                </td>
+                <td>
+                  {% if job and job.data.summary %}
+                    {% for entry in job.data.summary %}
+                      {% if entry.pk == server.pk %}{{ entry.updated }}{% endif %}
+                    {% endfor %}
+                  {% else %}—{% endif %}
+                </td>
+                <td>
+                  {% if job and job.data.summary %}
+                    {% for entry in job.data.summary %}
+                      {% if entry.pk == server.pk %}
+                        {% if entry.errors > 0 %}
+                          <span class="text-danger">{{ entry.errors }}</span>
+                        {% else %}
+                          {{ entry.errors }}
+                        {% endif %}
+                      {% endif %}
+                    {% endfor %}
+                  {% else %}—{% endif %}
+                </td>
+                <td>
+                  {% if server.pk in allowed_server_pks %}
+                  <form method="post" action="{% url 'plugins:netbox_kea:server_sync_now' server.pk %}" class="d-inline">
+                    {% csrf_token %}
+                    <button type="submit" class="btn btn-sm btn-outline-primary">
+                      <i class="mdi mdi-play" aria-hidden="true"></i> Run Now
+                    </button>
+                  </form>
+                  {% endif %}
+                </td>
+              </tr>
+              {% endwith %}
+            {% empty %}
+              <tr><td colspan="8" class="text-muted text-center py-3">No servers configured.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+  </div>
+</div>
+{% endblock %}

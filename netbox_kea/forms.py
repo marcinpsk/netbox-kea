@@ -42,6 +42,7 @@ class ServerForm(NetBoxModelForm):
             "dhcp4_url",
             "dhcp6_url",
             "has_control_agent",
+            "sync_enabled",
             "tags",
         )
         widgets = {
@@ -1230,3 +1231,20 @@ class OptionDefForm(forms.Form):
         if not re.match(r"^[\w-]+$", name):
             raise forms.ValidationError("Name may only contain letters, digits, hyphens and underscores.")
         return name
+
+
+class SyncConfigForm(forms.Form):
+    """Form for editing the global SyncConfig (interval + kill-switch)."""
+
+    interval_minutes = forms.IntegerField(
+        label="Sync Interval (minutes)",
+        min_value=1,
+        max_value=1440,
+        initial=5,
+        help_text="How often the background sync job runs. Minimum 1 minute.",
+    )
+    sync_enabled = forms.BooleanField(
+        label="Sync Enabled (global)",
+        required=False,
+        help_text="Global kill-switch. Uncheck to pause sync for all servers.",
+    )

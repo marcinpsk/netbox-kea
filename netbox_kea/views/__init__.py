@@ -128,6 +128,14 @@ from .subnets import (  # noqa: F401
     _warn_reservation_pool_overlap,
 )
 
+# Sync job management views
+from .sync_jobs import (  # noqa: F401
+    ServerSyncNowView,
+    ServerSyncStatusView,
+    ServerSyncToggleView,
+    SyncJobsView,
+)
+
 # Sync views + bulk import views
 from .sync_views import (  # noqa: F401
     ServerLease4BulkImportView,

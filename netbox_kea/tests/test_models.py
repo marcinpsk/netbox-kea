@@ -9,11 +9,12 @@ from unittest.mock import MagicMock, patch
 
 import requests
 from django.core.exceptions import ValidationError
-from django.test import SimpleTestCase, override_settings
+from django.test import SimpleTestCase, TestCase, override_settings
 from netbox.models import NetBoxModel
 
 from netbox_kea.kea import KeaClient
-from netbox_kea.models import Server
+from netbox_kea.models import Server, SyncConfig
+from netbox_kea.tests.utils import _make_db_server
 
 # Default PLUGINS_CONFIG used across model tests so we don't need full NetBox config.
 _PLUGINS_CONFIG = {"netbox_kea": {"kea_timeout": 30}}
@@ -335,7 +336,7 @@ class TestServerToObjectchangePasswordCensoring(SimpleTestCase):
 
         server = Server(name="test-server", server_url="http://kea:8000", dhcp4=True)
         objectchange = self._make_objectchange(pre_password, post_password)
-        with patch.object(Server.__bases__[0], "to_objectchange", return_value=objectchange):
+        with patch.object(NetBoxModel, "to_objectchange", return_value=objectchange):
             return server.to_objectchange("update")
 
     def test_unchanged_password_masked_as_censor_token(self):
@@ -367,7 +368,7 @@ class TestServerToObjectchangePasswordCensoring(SimpleTestCase):
         server = Server(name="test-server", server_url="http://kea:8000", dhcp4=True, password="secret")
         objectchange = self._make_objectchange(pre_password=None, post_password="secret")
         objectchange.prechange_data = None
-        with patch.object(Server.__bases__[0], "to_objectchange", return_value=objectchange):
+        with patch.object(NetBoxModel, "to_objectchange", return_value=objectchange):
             result = server.to_objectchange("create")
         # Should not crash; None prechange is preserved (or converted to empty dict)
         self.assertIn(result.prechange_data, (None, {}))
@@ -443,3 +444,66 @@ class TestServerCleanExceptionRouting(SimpleTestCase):
             server.clean()
         msg = str(ctx.exception.message_dict.get("dhcp4", [""])[0])
         self.assertIn("internal error", msg)
+
+
+class TestSyncConfig(TestCase):
+    """Tests for the SyncConfig singleton model."""
+
+    def test_get_creates_with_defaults_when_missing(self):
+        cfg = SyncConfig.get()
+        self.assertEqual(cfg.interval_minutes, 5)
+        self.assertTrue(cfg.sync_enabled)
+
+    def test_get_returns_existing_record(self):
+        SyncConfig.objects.create(pk=1, interval_minutes=10, sync_enabled=False)
+        cfg = SyncConfig.get()
+        self.assertEqual(cfg.interval_minutes, 10)
+        self.assertFalse(cfg.sync_enabled)
+
+    def test_get_is_idempotent(self):
+        cfg1 = SyncConfig.get()
+        cfg2 = SyncConfig.get()
+        self.assertEqual(cfg1.pk, cfg2.pk)
+        self.assertEqual(SyncConfig.objects.count(), 1)
+
+    def test_get_uses_default_interval_on_first_create(self):
+        cfg = SyncConfig.get(default_interval=15)
+        self.assertEqual(cfg.interval_minutes, 15)
+
+    def test_get_does_not_override_existing_interval(self):
+        SyncConfig.objects.create(pk=1, interval_minutes=30)
+        cfg = SyncConfig.get(default_interval=99)
+        self.assertEqual(cfg.interval_minutes, 30)
+
+    def test_save_forces_pk_to_1(self):
+        cfg = SyncConfig(interval_minutes=10)
+        cfg.pk = 999
+        cfg.save()
+        self.assertEqual(cfg.pk, 1)
+        self.assertEqual(SyncConfig.objects.count(), 1)
+
+    def test_save_second_instance_merges_to_singleton(self):
+        SyncConfig.objects.create(pk=1, interval_minutes=5)
+        cfg2 = SyncConfig(interval_minutes=20)
+        cfg2.save()
+        self.assertEqual(SyncConfig.objects.count(), 1)
+        self.assertEqual(SyncConfig.objects.get(pk=1).interval_minutes, 20)
+
+    def test_delete_raises_type_error(self):
+        cfg = SyncConfig.get()
+        with self.assertRaises(TypeError):
+            cfg.delete()
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestServerSyncEnabled(TestCase):
+    def test_sync_enabled_defaults_to_true(self):
+        server = _make_db_server()
+        self.assertTrue(server.sync_enabled)
+
+    def test_sync_enabled_can_be_set_false(self):
+        server = _make_db_server()
+        server.sync_enabled = False
+        server.save(update_fields=["sync_enabled"])
+        server.refresh_from_db()
+        self.assertFalse(server.sync_enabled)

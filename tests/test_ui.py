@@ -621,7 +621,7 @@ def test_server_edit(page: Page, kea: KeaClient) -> None:
 
 
 def test_server_status(page: Page, kea: KeaClient) -> None:
-    page.get_by_role("link", name="Status").click()
+    page.get_by_role("link", name="Status", exact=True).click()
 
     ctrl_version = kea.command("version-get")[0]["arguments"]["extended"]
     dhcp4_version = kea.command("version-get", service=["dhcp4"])[0]["arguments"]["extended"]

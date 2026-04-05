@@ -6,17 +6,19 @@ from typing import Literal
 import requests
 from django.conf import settings
 from django.core.exceptions import ValidationError
+from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 from django.urls import reverse
 from netbox.constants import CENSOR_TOKEN, CENSOR_TOKEN_CHANGED
 from netbox.models import NetBoxModel
+from netbox.models.features import JobsMixin
 
 from .kea import KeaClient, KeaException
 
 logger = logging.getLogger(__name__)
 
 
-class Server(NetBoxModel):
+class Server(JobsMixin, NetBoxModel):
     """A Kea DHCP server instance managed through the Kea Control API."""
 
     name = models.CharField(unique=True, max_length=255)
@@ -75,6 +77,11 @@ class Server(NetBoxModel):
         help_text=(
             "Enable if connecting via kea-ctrl-agent. Disable when connecting directly to DHCP daemon endpoints."
         ),
+    )
+    sync_enabled = models.BooleanField(
+        verbose_name="IPAM Sync Enabled",
+        default=True,
+        help_text="Include this server in the periodic Kea→NetBox IPAM sync job.",
     )
 
     class Meta:
@@ -172,3 +179,57 @@ class Server(NetBoxModel):
             post_data["password"] = CENSOR_TOKEN_CHANGED if post_password != original_pre_password else CENSOR_TOKEN
 
         return objectchange
+
+
+class SyncConfig(models.Model):
+    """Singleton configuration for the Kea→NetBox IPAM sync job.
+
+    Stores the sync interval and global kill-switch in the database so
+    operators can change them from the UI without restarting Django.
+    Exactly one row exists (pk=1 always); ``save()`` enforces this and
+    ``delete()`` is disabled.
+    """
+
+    interval_minutes = models.PositiveIntegerField(
+        default=5,
+        validators=[MinValueValidator(1), MaxValueValidator(1440)],
+        help_text="How often the background sync job runs (minutes). Range 1–1440.",
+    )
+    sync_enabled = models.BooleanField(
+        default=True,
+        help_text="Global kill-switch. When False, no servers are synced regardless of per-server settings.",
+    )
+
+    class Meta:
+        app_label = "netbox_kea"
+        verbose_name = "Sync Configuration"
+        constraints = [
+            models.CheckConstraint(
+                check=models.Q(interval_minutes__gte=1) & models.Q(interval_minutes__lte=1440),
+                name="syncconfig_interval_minutes_range",
+            )
+        ]
+
+    def __str__(self) -> str:
+        return "Sync Configuration"
+
+    def save(self, *args, **kwargs) -> None:
+        """Force pk=1 so only one row can ever exist."""
+        self.pk = 1
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        """Prevent deletion of the singleton row."""
+        raise TypeError("SyncConfig singleton cannot be deleted.")
+
+    @classmethod
+    def get(cls, default_interval: int = 5) -> "SyncConfig":
+        """Return the singleton config row, creating it with defaults if absent.
+
+        ``default_interval`` is used only when the row does not yet exist
+        (i.e., on first boot before the operator has saved anything via the
+        UI).  Pass the value from ``PLUGINS_CONFIG`` so the config file is
+        honoured until the UI overrides it.
+        """
+        obj, _ = cls.objects.get_or_create(pk=1, defaults={"interval_minutes": default_interval})
+        return obj

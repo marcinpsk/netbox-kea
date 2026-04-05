@@ -18,6 +18,10 @@ path = [
     ".env.example",
     ".devcontainer/**",
     "netbox_kea/migrations/0003_server_dual_url.py",
+    "netbox_kea/migrations/0005_add_syncconfig.py",
+    "netbox_kea/migrations/0006_server_sync_enabled.py",
+    "netbox_kea/migrations/0007_syncconfig_constraints.py",
+    "netbox_kea/migrations/0008_add_server_jobsmixin.py",
     "netbox_kea/tests/**",
     "e2e/**",
     "netbox_kea/templates/netbox_kea/server_reservations.html",
@@ -52,7 +56,12 @@ path = [
     "netbox_kea/templates/netbox_kea/ip_kea_reservations.html",
     "netbox_kea/templates/netbox_kea/inc/ip_kea_panel.html",
     "netbox_kea/templates/netbox_kea/inc/sync_badge.html",
+    "netbox_kea/views/sync_jobs.py",
+    "netbox_kea/tests/test_views_sync_jobs.py",
+    "netbox_kea/templates/netbox_kea/sync_jobs.html",
+    "netbox_kea/templates/netbox_kea/server_sync_status.html",
     "CLAUDE.md",
+    ".superpowers/**",
 ]
 SPDX-FileCopyrightText = "Copyright (C) 2025 Marcin Zieba <marcinpsk@gmail.com>"
 SPDX-License-Identifier = "Apache-2.0"
