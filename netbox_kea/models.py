@@ -219,7 +219,7 @@ class Server(JobsMixin, NetBoxModel):
                 logger.exception("Unexpected error during DHCPv4 connectivity check")
                 raise ValidationError({"dhcp4": "Unable to reach the Kea DHCPv4 service."}) from e
 
-    def to_objectchange(self, action: str) -> None:
+    def to_objectchange(self, action: str):
         """Censor all password fields in NetBox change log entries."""
         objectchange = super().to_objectchange(action)
 

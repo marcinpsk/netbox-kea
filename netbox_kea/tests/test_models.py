@@ -445,6 +445,32 @@ class TestServerToObjectchangePasswordCensoring(SimpleTestCase):
         self.assertNotEqual(masked, "secret", "Password must be masked in postchange_data")
         self.assertEqual(masked, CENSOR_TOKEN_CHANGED)
 
+    def test_dhcp4_password_masked_in_change_log(self):
+        """dhcp4_password is censored in both prechange and postchange data."""
+        from netbox.constants import CENSOR_TOKEN
+
+        server = Server(name="test-server", ca_url="http://kea:8000", dhcp4=True)
+        objectchange = MagicMock()
+        objectchange.prechange_data = {"dhcp4_password": "v4-secret", "name": "s"}
+        objectchange.postchange_data = {"dhcp4_password": "v4-secret", "name": "s"}
+        with patch.object(NetBoxModel, "to_objectchange", return_value=objectchange):
+            result = server.to_objectchange("update")
+        self.assertEqual(result.prechange_data["dhcp4_password"], CENSOR_TOKEN)
+        self.assertEqual(result.postchange_data["dhcp4_password"], CENSOR_TOKEN)
+
+    def test_dhcp6_password_masked_in_change_log(self):
+        """dhcp6_password is censored in both prechange and postchange data."""
+        from netbox.constants import CENSOR_TOKEN
+
+        server = Server(name="test-server", ca_url="http://kea:8000", dhcp4=True)
+        objectchange = MagicMock()
+        objectchange.prechange_data = {"dhcp6_password": "v6-secret", "name": "s"}
+        objectchange.postchange_data = {"dhcp6_password": "v6-secret", "name": "s"}
+        with patch.object(NetBoxModel, "to_objectchange", return_value=objectchange):
+            result = server.to_objectchange("update")
+        self.assertEqual(result.prechange_data["dhcp6_password"], CENSOR_TOKEN)
+        self.assertEqual(result.postchange_data["dhcp6_password"], CENSOR_TOKEN)
+
 
 # ---------------------------------------------------------------------------
 # Server.clean() — exception type routing tests

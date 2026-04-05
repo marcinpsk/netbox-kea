@@ -81,9 +81,9 @@ class ServerForm(NetBoxModelForm):
             "tags",
         )
         widgets = {
-            "ca_password": forms.PasswordInput(render_value=True),
-            "dhcp4_password": forms.PasswordInput(render_value=True),
-            "dhcp6_password": forms.PasswordInput(render_value=True),
+            "ca_password": forms.PasswordInput(),
+            "dhcp4_password": forms.PasswordInput(),
+            "dhcp6_password": forms.PasswordInput(),
         }
 
 
