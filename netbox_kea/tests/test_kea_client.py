@@ -4562,3 +4562,11 @@ class TestLeaseGetAllPagination(TestCase):
         with self.assertRaises(RuntimeError) as cm:
             self.client.lease_get_all(version=4, per_page=2)
         self.assertIn("count", str(cm.exception))
+
+    @patch("requests.Session.post")
+    def test_empty_response_list_raises_runtime_error(self, mock_post):
+        """Kea returns [] (empty list) → RuntimeError with useful context, not IndexError."""
+        mock_post.return_value = _mock_http_response([])
+        with self.assertRaises(RuntimeError) as cm:
+            self.client.lease_get_all(version=4)
+        self.assertIn("lease4-get-page", str(cm.exception))

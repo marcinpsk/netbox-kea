@@ -1022,6 +1022,11 @@ class KeaClient:
                 arguments={"from": cursor, "limit": per_page},
                 check=(0, 3),
             )
+            if not resp or not isinstance(resp[0], dict):
+                raise RuntimeError(
+                    f"lease{version}-get-page returned malformed response: "
+                    f"expected non-empty list of dicts, got {resp!r:.200}"
+                )
             if resp[0]["result"] == 3:
                 break  # no more leases
             args = resp[0].get("arguments")

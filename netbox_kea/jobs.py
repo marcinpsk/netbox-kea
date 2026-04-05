@@ -144,7 +144,7 @@ def _sync_server_reservations(
                     else:
                         stats["updated"] += 1
                 except Exception:  # noqa: BLE001, PERF203
-                    ip = reservation.get("ip-address") or reservation.get("ip_address", "?")
+                    ip = reservation.get("ip-address") or (reservation.get("ip-addresses") or ["?"])[0] or "?"
                     logger.debug(
                         "Failed to sync reservation %s from server %s",
                         ip,
