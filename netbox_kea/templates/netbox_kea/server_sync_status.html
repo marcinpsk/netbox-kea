@@ -1,5 +1,123 @@
+{# SPDX-FileCopyrightText: 2025 Marcin Zieba <marcinpsk@gmail.com> #}
+{# SPDX-License-Identifier: Apache-2.0 #}
 {% extends "generic/object.html" %}
+{% load helpers %}
+
 {% block content %}
-<span>{{ object.name }}</span>
-<a href="{{ jobs_list_url }}">View jobs</a>
+<div class="row">
+  <div class="col-md-10">
+    <div class="row g-3">
+
+      {# Last sync stats card #}
+      <div class="col-md-4">
+        <div class="card h-100">
+          <h5 class="card-header">Last Sync</h5>
+          <div class="card-body">
+            {% if latest_job %}
+              <p class="mb-1">
+                {% if latest_job.status == "completed" %}
+                  <span class="badge text-bg-success">OK</span>
+                {% elif latest_job.status == "failed" %}
+                  <span class="badge text-bg-danger">Error</span>
+                {% elif latest_job.status == "running" %}
+                  <span class="badge text-bg-warning">Running</span>
+                {% else %}
+                  <span class="badge text-bg-secondary">{{ latest_job.status }}</span>
+                {% endif %}
+              </p>
+              <p class="small text-muted mb-1">{{ latest_job.completed }}</p>
+              {% if latest_job.data.summary %}
+                {% for entry in latest_job.data.summary %}
+                  {% if entry.pk == object.pk %}
+                    <hr>
+                    <div class="d-flex gap-3 small">
+                      <span>✅ Created: <strong>{{ entry.created }}</strong></span>
+                      <span>✏️ Updated: <strong>{{ entry.updated }}</strong></span>
+                      {% if entry.errors > 0 %}
+                        <span class="text-danger">❌ Errors: <strong>{{ entry.errors }}</strong></span>
+                      {% else %}
+                        <span>✔ Errors: <strong>0</strong></span>
+                      {% endif %}
+                    </div>
+                  {% endif %}
+                {% endfor %}
+              {% endif %}
+            {% else %}
+              <p class="text-muted">No sync runs recorded yet.</p>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+
+      {# Controls card #}
+      <div class="col-md-4">
+        <div class="card h-100">
+          <h5 class="card-header">Controls</h5>
+          <div class="card-body">
+            <p class="small text-muted mb-2">
+              IPAM sync is currently
+              {% if object.sync_enabled %}
+                <span class="badge text-bg-success">enabled</span>
+              {% else %}
+                <span class="badge text-bg-secondary">disabled</span>
+              {% endif %}
+              for this server.
+            </p>
+            <form method="post" action="{% url 'plugins:netbox_kea:server_sync_toggle' object.pk %}" class="mb-2">
+              {% csrf_token %}
+              <button type="submit" class="btn btn-sm btn-outline-secondary">
+                {% if object.sync_enabled %}
+                  <i class="mdi mdi-pause" aria-hidden="true"></i> Disable Sync
+                {% else %}
+                  <i class="mdi mdi-play" aria-hidden="true"></i> Enable Sync
+                {% endif %}
+              </button>
+            </form>
+            <form method="post" action="{% url 'plugins:netbox_kea:server_sync_now' object.pk %}">
+              {% csrf_token %}
+              <button type="submit" class="btn btn-sm btn-primary">
+                <i class="mdi mdi-play-circle-outline" aria-hidden="true"></i> Run Now
+              </button>
+            </form>
+          </div>
+        </div>
+      </div>
+
+      {# Job history card #}
+      <div class="col-md-4">
+        <div class="card h-100">
+          <h5 class="card-header">
+            Recent Runs
+            <a href="{{ jobs_list_url }}" class="float-end small text-muted">View all →</a>
+          </h5>
+          <div class="card-body p-0">
+            {% if recent_jobs %}
+              <table class="table table-sm mb-0">
+                <tbody>
+                  {% for job in recent_jobs %}
+                    <tr>
+                      <td class="small">{{ job.created|date:"H:i:s" }}</td>
+                      <td>
+                        {% if job.status == "completed" %}
+                          <span class="badge text-bg-success">OK</span>
+                        {% elif job.status == "failed" %}
+                          <span class="badge text-bg-danger">Error</span>
+                        {% else %}
+                          <span class="badge text-bg-secondary">{{ job.status }}</span>
+                        {% endif %}
+                      </td>
+                    </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            {% else %}
+              <p class="text-muted small p-3 mb-0">No history yet.</p>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
 {% endblock %}
