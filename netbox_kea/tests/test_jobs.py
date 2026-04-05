@@ -193,7 +193,7 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
     @patch("netbox_kea.sync.sync_lease_to_netbox", return_value=(MagicMock(), True))
     @patch("netbox_kea.models.Server")
     def test_run_skips_host_cmds_absent(self, MockServer, mock_sync_lease, mock_cleanup):
-        """reservation_get_page result=2 (host_cmds not loaded) → skip, no exception."""
+        """reservation_get_page result=2 (host_cmds not loaded) → WARNING logged, no exception."""
         server = _make_server()
         client = MagicMock()
         client.lease_get_all.return_value = ([], False)
@@ -201,8 +201,10 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
         server.get_client.return_value = client
         MockServer.objects.all.return_value = [server]
 
-        # Should not raise
-        KeaIpamSyncJob(_make_job()).run()
+        with self.assertLogs("netbox_kea.jobs", level="WARNING") as cm:
+            KeaIpamSyncJob(_make_job()).run()
+
+        self.assertTrue(any("host_cmds" in msg for msg in cm.output))
 
     @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
     @patch("netbox_kea.sync.cleanup_stale_ips_batch", return_value=0)
@@ -217,7 +219,8 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
         server.get_client.return_value = client
         MockServer.objects.all.return_value = [server]
 
-        KeaIpamSyncJob(_make_job()).run()
+        with self.assertLogs("netbox_kea.jobs", level="WARNING"):
+            KeaIpamSyncJob(_make_job()).run()
 
         # cleanup_safe=False from reservation skip — cleanup must not run
         mock_cleanup.assert_not_called()
@@ -531,7 +534,7 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
     @patch("netbox_kea.sync.sync_lease_to_netbox", return_value=(MagicMock(), True))
     @patch("netbox_kea.models.Server")
     def test_reservation_kea_exception_result2_skips_gracefully(self, MockServer, mock_sync_lease, mock_cleanup):
-        """KeaException with result==2 → debug log, no error counter increment."""
+        """KeaException with result==2 → WARNING logged (hook not loaded), no error counter increment."""
         server = _make_server()
         client = MagicMock()
         client.lease_get_all.return_value = ([], False)
@@ -540,10 +543,10 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
         server.get_client.return_value = client
         MockServer.objects.all.return_value = [server]
 
-        # No WARNING should be emitted — only DEBUG
-        with self.assertNoLogs("netbox_kea.jobs", level="WARNING"):
+        with self.assertLogs("netbox_kea.jobs", level="WARNING") as cm:
             KeaIpamSyncJob(_make_job()).run()
 
+        self.assertTrue(any("host_cmds" in msg for msg in cm.output))
         mock_cleanup.assert_not_called()
 
     # ------------------------------------------------------------------ #
@@ -695,3 +698,37 @@ class TestConfigureSyncJobInterval(SimpleTestCase):
                 cfg._configure_sync_job_interval()
 
         self.assertTrue(any("Failed to apply netbox_kea sync interval override" in msg for msg in cm.output))
+
+
+class TestGetPluginConfig(SimpleTestCase):
+    """Tests for _get_plugin_config() defensive type-checking."""
+
+    def test_returns_dict_when_plugins_config_missing(self):
+        """PLUGINS_CONFIG not set → empty dict returned, no exception."""
+        from netbox_kea.jobs import _get_plugin_config
+
+        with override_settings(PLUGINS_CONFIG={}):
+            result = _get_plugin_config()
+        self.assertIsInstance(result, dict)
+
+    def test_returns_dict_when_plugins_config_is_none(self):
+        """PLUGINS_CONFIG=None → WARNING logged, empty dict returned."""
+        from netbox_kea.jobs import _get_plugin_config
+
+        with override_settings(PLUGINS_CONFIG=None):
+            with self.assertLogs("netbox_kea.jobs", level="WARNING") as cm:
+                result = _get_plugin_config()
+
+        self.assertEqual(result, {})
+        self.assertTrue(any("PLUGINS_CONFIG" in msg for msg in cm.output))
+
+    def test_returns_dict_when_netbox_kea_section_is_not_dict(self):
+        """PLUGINS_CONFIG['netbox_kea'] is a string → WARNING logged, empty dict returned."""
+        from netbox_kea.jobs import _get_plugin_config
+
+        with override_settings(PLUGINS_CONFIG={"netbox_kea": "bad-value"}):
+            with self.assertLogs("netbox_kea.jobs", level="WARNING") as cm:
+                result = _get_plugin_config()
+
+        self.assertEqual(result, {})
+        self.assertTrue(any("netbox_kea" in msg for msg in cm.output))

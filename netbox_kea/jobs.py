@@ -46,7 +46,15 @@ def _get_plugin_config() -> dict[str, Any]:
     """Return the netbox_kea section of PLUGINS_CONFIG (never raises)."""
     from django.conf import settings
 
-    return getattr(settings, "PLUGINS_CONFIG", {}).get("netbox_kea", {})
+    plugins_config = getattr(settings, "PLUGINS_CONFIG", {})
+    if not isinstance(plugins_config, dict):
+        logger.warning("PLUGINS_CONFIG is %s, expected dict — using defaults.", type(plugins_config).__name__)
+        return {}
+    config = plugins_config.get("netbox_kea", {})
+    if not isinstance(config, dict):
+        logger.warning("PLUGINS_CONFIG['netbox_kea'] is %s, expected dict — using defaults.", type(config).__name__)
+        return {}
+    return config
 
 
 def _sync_server_leases(
@@ -158,8 +166,8 @@ def _sync_server_reservations(
             source_index = next_source
     except KeaException as exc:
         if exc.response.get("result") == 2:
-            logger.debug(
-                "Server %s (v%s): host_cmds hook not loaded — skipping reservation sync",
+            logger.warning(
+                "Server %s (v%s): host_cmds hook not loaded — reservation sync skipped",
                 server.name,
                 version,
             )
