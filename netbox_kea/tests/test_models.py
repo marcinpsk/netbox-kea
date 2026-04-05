@@ -466,6 +466,34 @@ class TestSyncConfig(TestCase):
         self.assertEqual(cfg1.pk, cfg2.pk)
         self.assertEqual(SyncConfig.objects.count(), 1)
 
+    def test_get_uses_default_interval_on_first_create(self):
+        cfg = SyncConfig.get(default_interval=15)
+        self.assertEqual(cfg.interval_minutes, 15)
+
+    def test_get_does_not_override_existing_interval(self):
+        SyncConfig.objects.create(pk=1, interval_minutes=30)
+        cfg = SyncConfig.get(default_interval=99)
+        self.assertEqual(cfg.interval_minutes, 30)
+
+    def test_save_forces_pk_to_1(self):
+        cfg = SyncConfig(interval_minutes=10)
+        cfg.pk = 999
+        cfg.save()
+        self.assertEqual(cfg.pk, 1)
+        self.assertEqual(SyncConfig.objects.count(), 1)
+
+    def test_save_second_instance_merges_to_singleton(self):
+        SyncConfig.objects.create(pk=1, interval_minutes=5)
+        cfg2 = SyncConfig(interval_minutes=20)
+        cfg2.save()
+        self.assertEqual(SyncConfig.objects.count(), 1)
+        self.assertEqual(SyncConfig.objects.get(pk=1).interval_minutes, 20)
+
+    def test_delete_raises_type_error(self):
+        cfg = SyncConfig.get()
+        with self.assertRaises(TypeError):
+            cfg.delete()
+
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestServerSyncEnabled(TestCase):

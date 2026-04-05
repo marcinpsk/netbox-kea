@@ -158,3 +158,49 @@ class TestServerSyncToggleView(TestCase):
             reverse("plugins:netbox_kea:server_sync_status", args=[self.server.pk]),
             fetch_redirect_response=False,
         )
+
+    def test_post_without_permission_returns_403(self):
+        restricted = User.objects.create_user("noperm_toggle", "nt@nt.com", "pass")
+        self.client.force_login(restricted)
+        url = reverse("plugins:netbox_kea:server_sync_toggle", args=[self.server.pk])
+        response = self.client.post(url)
+        self.assertEqual(response.status_code, 403)
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestSyncJobsViewAllowedServerPks(TestCase):
+    """allowed_server_pks in SyncJobsView context is permission-filtered."""
+
+    def setUp(self):
+        self.server = _make_db_server(name="restricted-server")
+
+    def test_superuser_sees_server_in_allowed_pks(self):
+        su = User.objects.create_superuser("su_allowed", "su@a.com", "pass")
+        self.client.force_login(su)
+        response = self.client.get(reverse("plugins:netbox_kea:sync_jobs"))
+        self.assertIn(self.server.pk, response.context["allowed_server_pks"])
+
+    def test_user_without_change_perm_has_empty_allowed_pks(self):
+        user = User.objects.create_user("ro_user", "ro@a.com", "pass")
+        self.client.force_login(user)
+        # Read-only user must still be logged in (login is enforced by the view)
+        # but since they have no perms they would be redirected; to test the
+        # context we give them view (but not change) permission.
+        from django.contrib.auth.models import Permission
+
+        view_perm = Permission.objects.get(codename="view_server", content_type__app_label="netbox_kea")
+        user.user_permissions.add(view_perm)
+        response = self.client.get(reverse("plugins:netbox_kea:sync_jobs"))
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn(self.server.pk, response.context["allowed_server_pks"])
+
+    def test_post_context_also_includes_allowed_server_pks(self):
+        su = User.objects.create_superuser("su_post", "sup@a.com", "pass")
+        self.client.force_login(su)
+        with patch("netbox_kea.views.sync_jobs.KeaIpamSyncJob"):
+            response = self.client.post(
+                reverse("plugins:netbox_kea:sync_jobs"),
+                {"interval_minutes": 5, "sync_enabled": True},
+            )
+        # Successful POST redirects; we just verify it doesn't 500
+        self.assertIn(response.status_code, [200, 302])

@@ -30,22 +30,47 @@ _JOB_HISTORY_COUNT = 5  # rows shown in the per-server tab mini-table
 def _get_latest_jobs(servers: list[Server]) -> defaultdict:
     """Return a defaultdict mapping server.pk to the most recent Job for that server.
 
-    Servers with no matching job return None via the defaultdict default.
+    Considers both object-bound jobs (from ``KeaIpamSyncJob.enqueue``) and
+    unbound periodic jobs (``object_id=NULL``, from ``@system_job`` runs).
+    Servers with no matching job return ``None`` via the defaultdict default.
     """
     from core.models import Job
 
     ct = ContentType.objects.get_for_model(Server)
     pks = [s.pk for s in servers]
-    jobs = (
+
+    # 1. Object-bound jobs (one-off enqueue per server).
+    bound_jobs = (
         Job.objects.filter(object_type=ct, object_id__in=pks, name="Kea IPAM Sync")
         .order_by("object_id", "-created")
         .only("pk", "object_id", "created", "status")
     )
     latest: dict[int, Any] = {}
-    for job in jobs:
+    for job in bound_jobs:
         oid = job.object_id
         if oid not in latest:
             latest[oid] = job
+
+    # 2. Unbound periodic jobs (object_id=NULL) as fallbacks for any server
+    #    not yet covered by a bound job.  These require the data field to
+    #    attribute them to individual servers via job.data["summary"].
+    missing_pks = [pk for pk in pks if pk not in latest]
+    if missing_pks:
+        unbound_jobs = (
+            Job.objects.filter(object_id__isnull=True, name="Kea IPAM Sync")
+            .order_by("-created")
+            .only("pk", "object_id", "created", "status", "data")
+        )
+        remaining = set(missing_pks)
+        for job in unbound_jobs:
+            if not remaining:
+                break
+            for entry in (job.data or {}).get("summary", []):
+                server_pk = entry.get("pk")
+                if server_pk in remaining:
+                    latest[server_pk] = job
+                    remaining.discard(server_pk)
+
     return defaultdict(lambda: None, latest)
 
 
@@ -65,6 +90,7 @@ class SyncJobsView(LoginRequiredMixin, View):
             initial={"interval_minutes": sync_cfg.interval_minutes, "sync_enabled": sync_cfg.sync_enabled}
         )
         servers = list(Server.objects.restrict(request.user, "view").order_by("name"))
+        allowed_server_pks = set(Server.objects.restrict(request.user, "change").values_list("pk", flat=True))
         latest_jobs = _get_latest_jobs(servers)
         return render(
             request,
@@ -73,6 +99,7 @@ class SyncJobsView(LoginRequiredMixin, View):
                 "form": form,
                 "servers": servers,
                 "latest_jobs": latest_jobs,
+                "allowed_server_pks": allowed_server_pks,
             },
         )
 
@@ -98,6 +125,7 @@ class SyncJobsView(LoginRequiredMixin, View):
             return HttpResponseRedirect(reverse("plugins:netbox_kea:sync_jobs"))
 
         servers = list(Server.objects.restrict(request.user, "view").order_by("name"))
+        allowed_server_pks = set(Server.objects.restrict(request.user, "change").values_list("pk", flat=True))
         latest_jobs = _get_latest_jobs(servers)
         return render(
             request,
@@ -106,6 +134,7 @@ class SyncJobsView(LoginRequiredMixin, View):
                 "form": form,
                 "servers": servers,
                 "latest_jobs": latest_jobs,
+                "allowed_server_pks": allowed_server_pks,
             },
         )
 
@@ -145,7 +174,7 @@ class ServerSyncNowView(LoginRequiredMixin, View):
         """Enqueue a one-off sync job for the given server."""
         if not request.user.has_perm("netbox_kea.change_server"):
             return HttpResponseForbidden()
-        server = get_object_or_404(Server, pk=pk)
+        server = get_object_or_404(Server.objects.restrict(request.user, "change"), pk=pk)
         try:
             KeaIpamSyncJob.enqueue(instance=server, server_pk=server.pk)
             messages.success(request, f"Sync job enqueued for {server.name}.")
@@ -162,7 +191,7 @@ class ServerSyncToggleView(LoginRequiredMixin, View):
         """Toggle the sync_enabled flag for the given server."""
         if not request.user.has_perm("netbox_kea.change_server"):
             return HttpResponseForbidden()
-        server = get_object_or_404(Server, pk=pk)
+        server = get_object_or_404(Server.objects.restrict(request.user, "change"), pk=pk)
         server.sync_enabled = not server.sync_enabled
         server.save(update_fields=["sync_enabled"])
         state = "enabled" if server.sync_enabled else "disabled"

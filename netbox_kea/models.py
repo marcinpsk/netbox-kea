@@ -6,7 +6,7 @@ from typing import Literal
 import requests
 from django.conf import settings
 from django.core.exceptions import ValidationError
-from django.core.validators import MinValueValidator
+from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 from django.urls import reverse
 from netbox.constants import CENSOR_TOKEN, CENSOR_TOKEN_CHANGED
@@ -185,13 +185,14 @@ class SyncConfig(models.Model):
 
     Stores the sync interval and global kill-switch in the database so
     operators can change them from the UI without restarting Django.
-    At most one row exists (pk=1 always).
+    Exactly one row exists (pk=1 always); ``save()`` enforces this and
+    ``delete()`` is disabled.
     """
 
     interval_minutes = models.PositiveIntegerField(
         default=5,
-        validators=[MinValueValidator(1)],
-        help_text="How often the background sync job runs (minutes). Minimum 1.",
+        validators=[MinValueValidator(1), MaxValueValidator(1440)],
+        help_text="How often the background sync job runs (minutes). Range 1–1440.",
     )
     sync_enabled = models.BooleanField(
         default=True,
@@ -201,12 +202,33 @@ class SyncConfig(models.Model):
     class Meta:
         app_label = "netbox_kea"
         verbose_name = "Sync Configuration"
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(interval_minutes__gte=1) & models.Q(interval_minutes__lte=1440),
+                name="syncconfig_interval_minutes_range",
+            )
+        ]
 
     def __str__(self) -> str:
         return "Sync Configuration"
 
+    def save(self, *args, **kwargs) -> None:
+        """Force pk=1 so only one row can ever exist."""
+        self.pk = 1
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        """Prevent deletion of the singleton row."""
+        raise TypeError("SyncConfig singleton cannot be deleted.")
+
     @classmethod
-    def get(cls) -> "SyncConfig":
-        """Return the singleton config row, creating it with defaults if absent."""
-        obj, _ = cls.objects.get_or_create(pk=1)
+    def get(cls, default_interval: int = 5) -> "SyncConfig":
+        """Return the singleton config row, creating it with defaults if absent.
+
+        ``default_interval`` is used only when the row does not yet exist
+        (i.e., on first boot before the operator has saved anything via the
+        UI).  Pass the value from ``PLUGINS_CONFIG`` so the config file is
+        honoured until the UI overrides it.
+        """
+        obj, _ = cls.objects.get_or_create(pk=1, defaults={"interval_minutes": default_interval})
         return obj

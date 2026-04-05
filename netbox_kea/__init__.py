@@ -44,15 +44,14 @@ class NetBoxKeaConfig(PluginConfig):
             from netbox.registry import registry
 
             from .jobs import KeaIpamSyncJob
+            from .models import SyncConfig
 
-            # Prefer the DB-persisted value; fall back to PLUGINS_CONFIG.
-            try:
-                from .models import SyncConfig
-
-                interval = SyncConfig.get().interval_minutes
-            except Exception:
-                config = getattr(settings, "PLUGINS_CONFIG", {}).get("netbox_kea", {})
-                interval = int(config.get("sync_interval_minutes", 5))
+            # Seed the SyncConfig with PLUGINS_CONFIG on first creation so the
+            # config file value is honoured until the operator saves via the UI.
+            # SyncConfig.get() only uses default_interval when the row doesn't yet exist.
+            config = getattr(settings, "PLUGINS_CONFIG", {}).get("netbox_kea", {})
+            default_interval = int(config.get("sync_interval_minutes", 5))
+            interval = SyncConfig.get(default_interval=default_interval).interval_minutes
 
             if interval < 1:
                 interval = 1

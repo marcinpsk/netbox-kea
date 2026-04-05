@@ -122,7 +122,7 @@
                   {% else %}—{% endif %}
                 </td>
                 <td>
-                  {% if perms.netbox_kea.change_server %}
+                  {% if server.pk in allowed_server_pks %}
                   <form method="post" action="{% url 'plugins:netbox_kea:server_sync_now' server.pk %}" class="d-inline">
                     {% csrf_token %}
                     <button type="submit" class="btn btn-sm btn-outline-primary">
