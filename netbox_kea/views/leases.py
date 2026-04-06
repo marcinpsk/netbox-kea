@@ -827,6 +827,7 @@ class _BaseLeaseAddView(_KeaChangeMixin, generic.ObjectView):
                 "form": self.form_class(),
                 "dhcp_version": self.dhcp_version,
                 "cancel_url": self._leases_url(server),
+                "tab": self.tab,
             },
         )
 
@@ -868,6 +869,7 @@ class _BaseLeaseAddView(_KeaChangeMixin, generic.ObjectView):
                         "form": form,
                         "dhcp_version": self.dhcp_version,
                         "cancel_url": cancel_url,
+                        "tab": self.tab,
                     },
                 )
             except requests.RequestException:
@@ -881,6 +883,7 @@ class _BaseLeaseAddView(_KeaChangeMixin, generic.ObjectView):
                         "form": form,
                         "dhcp_version": self.dhcp_version,
                         "cancel_url": cancel_url,
+                        "tab": self.tab,
                     },
                 )
             except ValueError:
@@ -896,6 +899,7 @@ class _BaseLeaseAddView(_KeaChangeMixin, generic.ObjectView):
                         "form": form,
                         "dhcp_version": self.dhcp_version,
                         "cancel_url": cancel_url,
+                        "tab": self.tab,
                     },
                 )
             # Lease created in Kea — run post-create side effects.
@@ -937,6 +941,7 @@ class _BaseLeaseAddView(_KeaChangeMixin, generic.ObjectView):
                 "form": form,
                 "dhcp_version": self.dhcp_version,
                 "cancel_url": cancel_url,
+                "tab": self.tab,
             },
         )
 

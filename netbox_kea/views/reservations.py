@@ -516,6 +516,7 @@ class ServerReservation4AddView(_KeaChangeMixin, generic.ObjectView):
                 "dhcp_version": 4,
                 "action": "Add",
                 "return_url": reverse("plugins:netbox_kea:server_reservations4", args=[pk]),
+                "tab": self.tab,
             },
         )
 
@@ -556,6 +557,7 @@ class ServerReservation4AddView(_KeaChangeMixin, generic.ObjectView):
                         "dhcp_version": 4,
                         "action": "Add",
                         "return_url": return_url,
+                        "tab": self.tab,
                     },
                 )
             # Advisory warning when the reservation IP is inside an existing pool (non-fatal)
@@ -594,6 +596,7 @@ class ServerReservation4AddView(_KeaChangeMixin, generic.ObjectView):
                 "dhcp_version": 4,
                 "action": "Add",
                 "return_url": return_url,
+                "tab": self.tab,
             },
         )
 
@@ -623,6 +626,7 @@ class ServerReservation6AddView(_KeaChangeMixin, generic.ObjectView):
                 "dhcp_version": 6,
                 "action": "Add",
                 "return_url": reverse("plugins:netbox_kea:server_reservations6", args=[pk]),
+                "tab": self.tab,
             },
         )
 
@@ -663,6 +667,7 @@ class ServerReservation6AddView(_KeaChangeMixin, generic.ObjectView):
                         "dhcp_version": 6,
                         "action": "Add",
                         "return_url": return_url,
+                        "tab": self.tab,
                     },
                 )
             # Advisory warning when any reservation IP is inside an existing pool (non-fatal)
@@ -703,6 +708,7 @@ class ServerReservation6AddView(_KeaChangeMixin, generic.ObjectView):
                 "dhcp_version": 6,
                 "action": "Add",
                 "return_url": return_url,
+                "tab": self.tab,
             },
         )
 
@@ -855,6 +861,7 @@ class ServerReservation4EditView(_KeaChangeMixin, generic.ObjectView):
                 "dhcp_version": 4,
                 "action": "Edit",
                 "return_url": return_url,
+                "tab": self.tab,
             },
         )
 
@@ -1028,6 +1035,7 @@ class ServerReservation6EditView(_KeaChangeMixin, generic.ObjectView):
                 "dhcp_version": 6,
                 "action": "Edit",
                 "return_url": return_url,
+                "tab": self.tab,
             },
         )
 
@@ -1051,6 +1059,7 @@ class ServerReservation4DeleteView(_KeaChangeMixin, generic.ObjectView):
                 "subnet_id": subnet_id,
                 "dhcp_version": 4,
                 "return_url": reverse("plugins:netbox_kea:server_reservations4", args=[pk]),
+                "tab": self.tab,
             },
         )
 
@@ -1116,6 +1125,7 @@ class ServerReservation6DeleteView(_KeaChangeMixin, generic.ObjectView):
                 "subnet_id": subnet_id,
                 "dhcp_version": 6,
                 "return_url": reverse("plugins:netbox_kea:server_reservations6", args=[pk]),
+                "tab": self.tab,
             },
         )
 

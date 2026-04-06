@@ -224,13 +224,13 @@ class Server(JobsMixin, NetBoxModel):
         prechange_data = objectchange.prechange_data or {}
         original_pre_passwords = {f: prechange_data.get(f) for f in password_fields}
         for field in password_fields:
-            if prechange_data.get(field):
+            if field in prechange_data and prechange_data[field] is not None:
                 prechange_data[field] = CENSOR_TOKEN
 
         if post_data := objectchange.postchange_data:
             for field in password_fields:
                 post_password = post_data.get(field)
-                if post_password:
+                if field in post_data and post_password is not None:
                     post_data[field] = (
                         CENSOR_TOKEN_CHANGED if post_password != original_pre_passwords[field] else CENSOR_TOKEN
                     )
