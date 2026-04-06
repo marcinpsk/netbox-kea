@@ -95,6 +95,25 @@ def test_graphql(nb_api: pynetbox.api, nb_http: requests.Session):
     assert len(r_json["errors"]) == 1
     assert r_json["errors"][0]["message"] == "Cannot query field 'ca_password' on type 'ServerType'."
 
+    for secret_field in ("dhcp4_password", "dhcp6_password"):
+        r = nb_http.post(
+            "http://localhost:8000/graphql/",
+            json={
+                "query": f"""
+{{
+  server_list {{
+    id
+    {secret_field}
+  }}
+}}
+"""
+            },
+        )
+        assert r.ok is True
+        r_json = r.json()
+        assert r_json["data"] is None, f"{secret_field} should not be queryable via GraphQL"
+        assert r_json["errors"][0]["message"] == f"Cannot query field '{secret_field}' on type 'ServerType'."
+
     r = nb_http.post(
         "http://localhost:8000/graphql/",
         json={
