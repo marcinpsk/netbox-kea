@@ -46,28 +46,28 @@ class Server(JobsMixin, NetBoxModel):
         blank=True,
         max_length=255,
         verbose_name="DHCPv4 Username",
-        help_text="Username for the DHCPv4 daemon. Overrides CA credentials for DHCPv4 connections.",
+        help_text="Username for the DHCPv4 daemon. Only used when DHCPv4 URL is configured; falls back to CA credentials otherwise.",
     )
     dhcp4_password = models.CharField(
         null=True,
         blank=True,
         max_length=255,
         verbose_name="DHCPv4 Password",
-        help_text="Password for the DHCPv4 daemon. Overrides CA credentials for DHCPv4 connections.",
+        help_text="Password for the DHCPv4 daemon. Only used when DHCPv4 URL is configured; falls back to CA credentials otherwise.",
     )
     dhcp6_username = models.CharField(
         null=True,
         blank=True,
         max_length=255,
         verbose_name="DHCPv6 Username",
-        help_text="Username for the DHCPv6 daemon. Overrides CA credentials for DHCPv6 connections.",
+        help_text="Username for the DHCPv6 daemon. Only used when DHCPv6 URL is configured; falls back to CA credentials otherwise.",
     )
     dhcp6_password = models.CharField(
         null=True,
         blank=True,
         max_length=255,
         verbose_name="DHCPv6 Password",
-        help_text="Password for the DHCPv6 daemon. Overrides CA credentials for DHCPv6 connections.",
+        help_text="Password for the DHCPv6 daemon. Only used when DHCPv6 URL is configured; falls back to CA credentials otherwise.",
     )
     ssl_verify = models.BooleanField(
         default=True,
@@ -149,16 +149,16 @@ class Server(JobsMixin, NetBoxModel):
         """
         if version == 4 and self.dhcp4_url:
             url = self.dhcp4_url
-            username = self.dhcp4_username or self.ca_username
-            password = self.dhcp4_password or self.ca_password
+            username = (self.dhcp4_username or None) or (self.ca_username or None)
+            password = (self.dhcp4_password or None) or (self.ca_password or None)
         elif version == 6 and self.dhcp6_url:
             url = self.dhcp6_url
-            username = self.dhcp6_username or self.ca_username
-            password = self.dhcp6_password or self.ca_password
+            username = (self.dhcp6_username or None) or (self.ca_username or None)
+            password = (self.dhcp6_password or None) or (self.ca_password or None)
         else:
             url = self.ca_url
-            username = self.ca_username
-            password = self.ca_password
+            username = self.ca_username or None
+            password = self.ca_password or None
 
         return KeaClient(
             url=url,
