@@ -142,25 +142,21 @@ class Server(JobsMixin, NetBoxModel):
 
         Args:
             version: DHCP protocol version (4 or 6). When provided and a protocol-specific
-                URL is configured, that URL is used instead of ``ca_url``.
-                Per-protocol credentials (dhcp4_username/password or dhcp6_username/password)
-                take precedence over CA-level credentials when set.
+                URL is configured, that URL and its corresponding per-protocol credentials
+                (with per-field CA fallback) are used. If no protocol-specific URL is
+                configured, ``ca_url`` and CA-level credentials are always used.
 
         """
         if version == 4 and self.dhcp4_url:
             url = self.dhcp4_url
-        elif version == 6 and self.dhcp6_url:
-            url = self.dhcp6_url
-        else:
-            url = self.ca_url
-
-        if version == 4:
             username = self.dhcp4_username or self.ca_username
             password = self.dhcp4_password or self.ca_password
-        elif version == 6:
+        elif version == 6 and self.dhcp6_url:
+            url = self.dhcp6_url
             username = self.dhcp6_username or self.ca_username
             password = self.dhcp6_password or self.ca_password
         else:
+            url = self.ca_url
             username = self.ca_username
             password = self.ca_password
 

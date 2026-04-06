@@ -120,10 +120,11 @@ class TestServerGetClient(SimpleTestCase):
 
     @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
     def test_v4_uses_dhcp4_credentials_when_set(self):
-        """When dhcp4_username/dhcp4_password are set, v4 client uses them."""
+        """When dhcp4_url and dhcp4_username/dhcp4_password are set, v4 client uses them."""
         server = _make_server(
             ca_username="ca-user",
             ca_password="ca-pass",
+            dhcp4_url="http://kea-v4:8001",
             dhcp4_username="v4-user",
             dhcp4_password="v4-pass",
         )
@@ -133,11 +134,26 @@ class TestServerGetClient(SimpleTestCase):
         self.assertEqual(client._session.auth.password, "v4-pass")
 
     @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
-    def test_v4_falls_back_to_ca_credentials_when_v4_creds_empty(self):
-        """When dhcp4_username/dhcp4_password are blank, v4 client uses CA creds."""
+    def test_v4_no_dhcp4_url_always_uses_ca_credentials(self):
+        """When dhcp4_url is not set, v4 client always uses CA credentials even if per-protocol creds exist."""
         server = _make_server(
             ca_username="ca-user",
             ca_password="ca-pass",
+            dhcp4_username="v4-user",
+            dhcp4_password="v4-pass",
+        )
+        client = server.get_client(version=4)
+        self.assertIsNotNone(client._session.auth)
+        self.assertEqual(client._session.auth.username, "ca-user")
+        self.assertEqual(client._session.auth.password, "ca-pass")
+
+    @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+    def test_v4_falls_back_to_ca_credentials_when_v4_creds_empty(self):
+        """When dhcp4_url is set but dhcp4 creds are blank, v4 client falls back to CA creds."""
+        server = _make_server(
+            ca_username="ca-user",
+            ca_password="ca-pass",
+            dhcp4_url="http://kea-v4:8001",
             dhcp4_username="",
             dhcp4_password="",
         )
@@ -148,10 +164,11 @@ class TestServerGetClient(SimpleTestCase):
 
     @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
     def test_v6_uses_dhcp6_credentials_when_set(self):
-        """When dhcp6_username/dhcp6_password are set, v6 client uses them."""
+        """When dhcp6_url and dhcp6_username/dhcp6_password are set, v6 client uses them."""
         server = _make_server(
             ca_username="ca-user",
             ca_password="ca-pass",
+            dhcp6_url="http://kea-v6:8002",
             dhcp6_username="v6-user",
             dhcp6_password="v6-pass",
         )
@@ -162,10 +179,11 @@ class TestServerGetClient(SimpleTestCase):
 
     @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
     def test_v6_falls_back_to_ca_credentials_when_v6_creds_empty(self):
-        """When dhcp6_username/dhcp6_password are blank, v6 client uses CA creds."""
+        """When dhcp6_url is set but dhcp6 creds are blank, v6 client falls back to CA creds."""
         server = _make_server(
             ca_username="ca-user",
             ca_password="ca-pass",
+            dhcp6_url="http://kea-v6:8002",
             dhcp6_username="",
             dhcp6_password="",
         )
@@ -180,6 +198,7 @@ class TestServerGetClient(SimpleTestCase):
         server = _make_server(
             ca_username="ca-user",
             ca_password="ca-pass",
+            dhcp4_url="http://kea-v4:8001",
             dhcp4_username="v4-user",
             dhcp4_password="v4-pass",
         )
@@ -188,10 +207,11 @@ class TestServerGetClient(SimpleTestCase):
 
     @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
     def test_v4_partial_override_falls_back_per_field(self):
-        """When only dhcp4_username is set, password falls back to ca_password individually."""
+        """When dhcp4_url set and only dhcp4_username provided, password falls back to ca_password."""
         server = _make_server(
             ca_username="ca-user",
             ca_password="ca-pass",
+            dhcp4_url="http://kea-v4:8001",
             dhcp4_username="v4-user",
             dhcp4_password="",
         )
@@ -202,10 +222,11 @@ class TestServerGetClient(SimpleTestCase):
 
     @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
     def test_v6_partial_override_falls_back_per_field(self):
-        """When only dhcp6_password is set, username falls back to ca_username individually."""
+        """When dhcp6_url set and only dhcp6_password provided, username falls back to ca_username."""
         server = _make_server(
             ca_username="ca-user",
             ca_password="ca-pass",
+            dhcp6_url="http://kea-v6:8002",
             dhcp6_username="",
             dhcp6_password="v6-pass",
         )
