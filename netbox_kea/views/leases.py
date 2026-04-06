@@ -808,6 +808,10 @@ class _BaseLeaseAddView(_KeaChangeMixin, generic.ObjectView):
     template_name = "netbox_kea/server_lease_add.html"
     dhcp_version: int
     form_class: type
+    # Use _active_tab (not `tab`) so model_view_tabs does not register this as a
+    # duplicate navigation entry — the add view URL resolves with pk-only, which
+    # would cause the parent list tab to appear twice in the tab bar.
+    _active_tab: OptionalViewTab
 
     def _leases_url(self, server: Server) -> str:
         return reverse(f"plugins:netbox_kea:server_leases{self.dhcp_version}", args=[server.pk])
@@ -827,7 +831,7 @@ class _BaseLeaseAddView(_KeaChangeMixin, generic.ObjectView):
                 "form": self.form_class(),
                 "dhcp_version": self.dhcp_version,
                 "cancel_url": self._leases_url(server),
-                "tab": self.tab,
+                "tab": self._active_tab,
             },
         )
 
@@ -869,7 +873,7 @@ class _BaseLeaseAddView(_KeaChangeMixin, generic.ObjectView):
                         "form": form,
                         "dhcp_version": self.dhcp_version,
                         "cancel_url": cancel_url,
-                        "tab": self.tab,
+                        "tab": self._active_tab,
                     },
                 )
             except requests.RequestException:
@@ -883,7 +887,7 @@ class _BaseLeaseAddView(_KeaChangeMixin, generic.ObjectView):
                         "form": form,
                         "dhcp_version": self.dhcp_version,
                         "cancel_url": cancel_url,
-                        "tab": self.tab,
+                        "tab": self._active_tab,
                     },
                 )
             except ValueError:
@@ -899,7 +903,7 @@ class _BaseLeaseAddView(_KeaChangeMixin, generic.ObjectView):
                         "form": form,
                         "dhcp_version": self.dhcp_version,
                         "cancel_url": cancel_url,
-                        "tab": self.tab,
+                        "tab": self._active_tab,
                     },
                 )
             # Lease created in Kea — run post-create side effects.
@@ -941,7 +945,7 @@ class _BaseLeaseAddView(_KeaChangeMixin, generic.ObjectView):
                 "form": form,
                 "dhcp_version": self.dhcp_version,
                 "cancel_url": cancel_url,
-                "tab": self.tab,
+                "tab": self._active_tab,
             },
         )
 
@@ -952,7 +956,7 @@ class ServerLease4AddView(_BaseLeaseAddView):
 
     dhcp_version = 4
     form_class = forms.Lease4AddForm
-    tab = ServerLeases4View.tab
+    _active_tab = ServerLeases4View.tab
 
 
 @register_model_view(Server, "lease6_add", path="leases6/add")
@@ -961,7 +965,7 @@ class ServerLease6AddView(_BaseLeaseAddView):
 
     dhcp_version = 6
     form_class = forms.Lease6AddForm
-    tab = ServerLeases6View.tab
+    _active_tab = ServerLeases6View.tab
 
 
 def _fetch_reservation_by_ip(client: KeaClient, version: int) -> tuple[dict[str, dict], bool]:
