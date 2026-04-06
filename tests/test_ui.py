@@ -57,7 +57,7 @@ def reset_user_preferences(requests_session: requests.Session, nb_api: pynetbox.
 
 @pytest.fixture
 def with_test_server(nb_api: pynetbox.api, kea_url: str, page: Page, netbox_login: None, plugin_base: str):
-    server = nb_api.plugins.kea.servers.create(name="test", server_url=kea_url)
+    server = nb_api.plugins.kea.servers.create(name="test", ca_url=kea_url)
     try:
         page.goto(f"{plugin_base}/servers/{server.id}/")
         yield
@@ -67,7 +67,7 @@ def with_test_server(nb_api: pynetbox.api, kea_url: str, page: Page, netbox_logi
 
 @pytest.fixture
 def with_test_server_only6(nb_api: pynetbox.api, kea_url: str, page: Page, netbox_login: None, plugin_base: str):
-    server = nb_api.plugins.kea.servers.create(name="only6", server_url=kea_url, dhcp4=False, dhcp6=True)
+    server = nb_api.plugins.kea.servers.create(name="only6", ca_url=kea_url, dhcp4=False, dhcp6=True)
     try:
         page.goto(f"{plugin_base}/servers/{server.id}/")
         yield
@@ -77,7 +77,7 @@ def with_test_server_only6(nb_api: pynetbox.api, kea_url: str, page: Page, netbo
 
 @pytest.fixture
 def with_test_server_only4(nb_api: pynetbox.api, kea_url: str, page: Page, netbox_login: None, plugin_base: str):
-    server = nb_api.plugins.kea.servers.create(name="only4", server_url=kea_url, dhcp4=True, dhcp6=False)
+    server = nb_api.plugins.kea.servers.create(name="only4", ca_url=kea_url, dhcp4=True, dhcp6=False)
     try:
         page.goto(f"{plugin_base}/servers/{server.id}/")
         yield
@@ -593,8 +593,8 @@ def test_server_add_delete(page: Page, plugin_base: str, kea_url: str, nb_api: p
 def test_server_bulk_delete(page: Page, plugin_base: str, nb_api: pynetbox.api, kea_url: str):
     nb_api.plugins.kea.servers.create(
         [
-            {"name": "server1", "server_url": kea_url},
-            {"name": "server2", "server_url": kea_url},
+            {"name": "server1", "ca_url": kea_url},
+            {"name": "server2", "ca_url": kea_url},
         ]
     )
 
@@ -1347,7 +1347,7 @@ def test_filter_servers_by_tag(
     plugin_base: str,
     page: Page,
 ) -> None:
-    server = nb_api.plugins.kea.servers.create(name="tag-test", server_url=kea_url, tags=[{"name": test_tag}])
+    server = nb_api.plugins.kea.servers.create(name="tag-test", ca_url=kea_url, tags=[{"name": test_tag}])
     try:
         page.goto(f"{plugin_base}/servers/")
         page.get_by_role("tab", name="Filters").click()

@@ -185,7 +185,8 @@ When DHCPv4 and DHCPv6 are served by separate Kea processes (each with its own C
 | `DHCPv4 URL` | URL of the Control Agent for the DHCPv4 daemon |
 | `DHCPv6 URL` | URL of the Control Agent for the DHCPv6 daemon |
 
-The main `CA URL` (`ca_url`) is required and acts as a fallback for any protocol without a dedicated URL. Both `DHCPv4 URL` and `DHCPv6 URL` use the same credentials as the main server.
+The main `CA URL` (`ca_url`) is required and acts as a fallback for any protocol without a dedicated URL.
+By default, both `DHCPv4 URL` and `DHCPv6 URL` use CA-level credentials; see **Per-protocol credentials** below for optional overrides.
 
 ---
 

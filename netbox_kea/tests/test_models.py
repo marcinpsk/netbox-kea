@@ -186,6 +186,34 @@ class TestServerGetClient(SimpleTestCase):
         client = server.get_client()
         self.assertEqual(client._session.auth.username, "ca-user")
 
+    @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+    def test_v4_partial_override_falls_back_per_field(self):
+        """When only dhcp4_username is set, password falls back to ca_password individually."""
+        server = _make_server(
+            ca_username="ca-user",
+            ca_password="ca-pass",
+            dhcp4_username="v4-user",
+            dhcp4_password="",
+        )
+        client = server.get_client(version=4)
+        self.assertIsNotNone(client._session.auth)
+        self.assertEqual(client._session.auth.username, "v4-user")
+        self.assertEqual(client._session.auth.password, "ca-pass")
+
+    @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+    def test_v6_partial_override_falls_back_per_field(self):
+        """When only dhcp6_password is set, username falls back to ca_username individually."""
+        server = _make_server(
+            ca_username="ca-user",
+            ca_password="ca-pass",
+            dhcp6_username="",
+            dhcp6_password="v6-pass",
+        )
+        client = server.get_client(version=6)
+        self.assertIsNotNone(client._session.auth)
+        self.assertEqual(client._session.auth.username, "ca-user")
+        self.assertEqual(client._session.auth.password, "v6-pass")
+
 
 class TestServerCleanFieldValidation(SimpleTestCase):
     """Tests for Server.clean() — field-level validation that runs before connectivity checks."""

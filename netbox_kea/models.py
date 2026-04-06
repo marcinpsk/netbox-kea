@@ -154,12 +154,12 @@ class Server(JobsMixin, NetBoxModel):
         else:
             url = self.ca_url
 
-        if version == 4 and (self.dhcp4_username or self.dhcp4_password):
-            username = self.dhcp4_username
-            password = self.dhcp4_password
-        elif version == 6 and (self.dhcp6_username or self.dhcp6_password):
-            username = self.dhcp6_username
-            password = self.dhcp6_password
+        if version == 4:
+            username = self.dhcp4_username or self.ca_username
+            password = self.dhcp4_password or self.ca_password
+        elif version == 6:
+            username = self.dhcp6_username or self.ca_username
+            password = self.dhcp6_password or self.ca_password
         else:
             username = self.ca_username
             password = self.ca_password
