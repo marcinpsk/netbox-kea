@@ -647,6 +647,7 @@ class ServerLeases6DeleteView(BaseServerLeasesDeleteView):
 
     form = forms.Lease6DeleteForm
     dhcp_version = 6
+    tab = ServerLeases6View.tab
 
 
 class ServerLeases4DeleteView(BaseServerLeasesDeleteView):
@@ -654,6 +655,7 @@ class ServerLeases4DeleteView(BaseServerLeasesDeleteView):
 
     form = forms.Lease4DeleteForm
     dhcp_version = 4
+    tab = ServerLeases4View.tab
 
 
 class _BaseLeaseEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin, View):
@@ -732,6 +734,7 @@ class _BaseLeaseEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin, View):
                 "form": form,
                 "dhcp_version": self.dhcp_version,
                 "cancel_url": self._leases_url(server),
+                "tab": self.tab,
             },
         )
 
@@ -754,6 +757,7 @@ class _BaseLeaseEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin, View):
                     "form": form,
                     "dhcp_version": self.dhcp_version,
                     "cancel_url": self._leases_url(server),
+                    "tab": self.tab,
                 },
             )
         cd = form.cleaned_data
@@ -785,6 +789,7 @@ class ServerLease4EditView(_BaseLeaseEditView):
 
     dhcp_version = 4
     form_class = forms.Lease4EditForm
+    tab = ServerLeases4View.tab
 
 
 @register_model_view(Server, "lease6_edit", path="leases6/<path:ip_address>/edit")
@@ -793,6 +798,7 @@ class ServerLease6EditView(_BaseLeaseEditView):
 
     dhcp_version = 6
     form_class = forms.Lease6EditForm
+    tab = ServerLeases6View.tab
 
 
 class _BaseLeaseAddView(_KeaChangeMixin, generic.ObjectView):
@@ -941,6 +947,7 @@ class ServerLease4AddView(_BaseLeaseAddView):
 
     dhcp_version = 4
     form_class = forms.Lease4AddForm
+    tab = ServerLeases4View.tab
 
 
 @register_model_view(Server, "lease6_add", path="leases6/add")
@@ -949,6 +956,7 @@ class ServerLease6AddView(_BaseLeaseAddView):
 
     dhcp_version = 6
     form_class = forms.Lease6AddForm
+    tab = ServerLeases6View.tab
 
 
 def _fetch_reservation_by_ip(client: KeaClient, version: int) -> tuple[dict[str, dict], bool]:

@@ -497,6 +497,7 @@ class ServerReservation4AddView(_KeaChangeMixin, generic.ObjectView):
 
     queryset = Server.objects.all()
     template_name = "netbox_kea/server_reservation_form.html"
+    tab = ServerReservations4View.tab
 
     def get(self, request: HttpRequest, pk: int) -> HttpResponse:
         """Render add form, optionally pre-filled from query parameters."""
@@ -602,6 +603,7 @@ class ServerReservation6AddView(_KeaChangeMixin, generic.ObjectView):
 
     queryset = Server.objects.all()
     template_name = "netbox_kea/server_reservation_form.html"
+    tab = ServerReservations6View.tab
 
     def get(self, request: HttpRequest, pk: int) -> HttpResponse:
         """Render add form, optionally pre-filled from query parameters."""
@@ -710,6 +712,7 @@ class ServerReservation4EditView(_KeaChangeMixin, generic.ObjectView):
 
     queryset = Server.objects.all()
     template_name = "netbox_kea/server_reservation_form.html"
+    tab = ServerReservations4View.tab
 
     def _get_reservation(self, server: Server, subnet_id: int, ip_address: str) -> dict | None:
         client = server.get_client(version=4)
@@ -861,6 +864,7 @@ class ServerReservation6EditView(_KeaChangeMixin, generic.ObjectView):
 
     queryset = Server.objects.all()
     template_name = "netbox_kea/server_reservation_form.html"
+    tab = ServerReservations6View.tab
 
     def _get_reservation(self, server: Server, subnet_id: int, ip_address: str) -> dict | None:
         client = server.get_client(version=6)
@@ -1033,6 +1037,7 @@ class ServerReservation4DeleteView(_KeaChangeMixin, generic.ObjectView):
 
     queryset = Server.objects.all()
     template_name = "netbox_kea/server_reservation_delete.html"
+    tab = ServerReservations4View.tab
 
     def get(self, request: HttpRequest, pk: int, subnet_id: int, ip_address: str) -> HttpResponse:
         """Show deletion confirmation page."""
@@ -1097,6 +1102,7 @@ class ServerReservation6DeleteView(_KeaChangeMixin, generic.ObjectView):
 
     queryset = Server.objects.all()
     template_name = "netbox_kea/server_reservation_delete.html"
+    tab = ServerReservations6View.tab
 
     def get(self, request: HttpRequest, pk: int, subnet_id: int, ip_address: str) -> HttpResponse:
         """Show deletion confirmation page."""

@@ -378,12 +378,14 @@ class ServerSubnet4PoolAddView(_BasePoolAddView):
     """Add a pool to a DHCPv4 subnet."""
 
     dhcp_version = 4
+    tab = ServerDHCP4SubnetsView.tab
 
 
 class ServerSubnet6PoolAddView(_BasePoolAddView):
     """Add a pool to a DHCPv6 subnet."""
 
     dhcp_version = 6
+    tab = ServerDHCP6SubnetsView.tab
 
 
 class _BasePoolDeleteView(_KeaChangeMixin, generic.ObjectView):
@@ -446,12 +448,14 @@ class ServerSubnet4PoolDeleteView(_BasePoolDeleteView):
     """Delete a pool from a DHCPv4 subnet."""
 
     dhcp_version = 4
+    tab = ServerDHCP4SubnetsView.tab
 
 
 class ServerSubnet6PoolDeleteView(_BasePoolDeleteView):
     """Delete a pool from a DHCPv6 subnet."""
 
     dhcp_version = 6
+    tab = ServerDHCP6SubnetsView.tab
 
 
 # ---------------------------------------------------------------------------
@@ -653,12 +657,14 @@ class ServerSubnet4AddView(_BaseSubnetAddView):
     """Add a DHCPv4 subnet."""
 
     dhcp_version = 4
+    tab = ServerDHCP4SubnetsView.tab
 
 
 class ServerSubnet6AddView(_BaseSubnetAddView):
     """Add a DHCPv6 subnet."""
 
     dhcp_version = 6
+    tab = ServerDHCP6SubnetsView.tab
 
 
 class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
@@ -1079,12 +1085,14 @@ class ServerSubnet4EditView(_BaseSubnetEditView):
     """Edit a DHCPv4 subnet's configuration."""
 
     dhcp_version = 4
+    tab = ServerDHCP4SubnetsView.tab
 
 
 class ServerSubnet6EditView(_BaseSubnetEditView):
     """Edit a DHCPv6 subnet's configuration."""
 
     dhcp_version = 6
+    tab = ServerDHCP6SubnetsView.tab
 
 
 class _BaseSubnetDeleteView(_KeaChangeMixin, generic.ObjectView):
@@ -1158,12 +1166,14 @@ class ServerSubnet4DeleteView(_BaseSubnetDeleteView):
     """Delete a DHCPv4 subnet."""
 
     dhcp_version = 4
+    tab = ServerDHCP4SubnetsView.tab
 
 
 class ServerSubnet6DeleteView(_BaseSubnetDeleteView):
     """Delete a DHCPv6 subnet."""
 
     dhcp_version = 6
+    tab = ServerDHCP6SubnetsView.tab
 
 
 class _BaseSubnetWipeView(_KeaChangeMixin, generic.ObjectView):
@@ -1241,9 +1251,11 @@ class ServerSubnet4WipeView(_BaseSubnetWipeView):
     """Wipe all DHCPv4 leases in a subnet."""
 
     dhcp_version = 4
+    tab = ServerDHCP4SubnetsView.tab
 
 
 class ServerSubnet6WipeView(_BaseSubnetWipeView):
     """Wipe all DHCPv6 leases in a subnet."""
 
     dhcp_version = 6
+    tab = ServerDHCP6SubnetsView.tab
