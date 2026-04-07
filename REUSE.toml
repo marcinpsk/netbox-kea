@@ -22,6 +22,7 @@ path = [
     "netbox_kea/migrations/0006_server_sync_enabled.py",
     "netbox_kea/migrations/0007_syncconfig_constraints.py",
     "netbox_kea/migrations/0008_add_server_jobsmixin.py",
+    "netbox_kea/migrations/0009_per_protocol_credentials.py",
     "netbox_kea/tests/**",
     "e2e/**",
     "netbox_kea/templates/netbox_kea/server_reservations.html",

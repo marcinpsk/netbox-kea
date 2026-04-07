@@ -934,7 +934,7 @@ class TestActiveLeaseBadgeLink(TestCase):
         self.client.force_login(User.objects.create_superuser("lslink_user", password="x"))
         self.server = Server.objects.create(
             name="lease-link-srv",
-            server_url="http://kea-test:8000",
+            ca_url="http://kea-test:8000",
             dhcp4=True,
             dhcp6=False,
         )
@@ -998,7 +998,7 @@ class TestActiveLeaseSyncButton(TestCase):
         self.client.force_login(User.objects.create_superuser("sync_btn_user", password="x"))
         self.server = Server.objects.create(
             name="sync-btn-srv",
-            server_url="http://kea-test:8000",
+            ca_url="http://kea-test:8000",
             dhcp4=True,
             dhcp6=False,
         )
@@ -1057,7 +1057,7 @@ class TestMultiIPv6ReservationBadgeEnrichment(TestCase):
         self.client.force_login(User.objects.create_superuser("multi_ip6_user", password="x"))
         self.server = Server.objects.create(
             name="multi-ip6-srv",
-            server_url="http://kea-test:8000",
+            ca_url="http://kea-test:8000",
             dhcp4=False,
             dhcp6=True,
         )

@@ -21,6 +21,8 @@ from ..utilities import (
     kea_error_hint,
 )
 from ._base import ConditionalLoginRequiredMixin, _KeaChangeMixin
+from .server import ServerStatusView
+from .subnets import ServerDHCP4SubnetsView, ServerDHCP6SubnetsView
 
 logger = logging.getLogger(__name__)
 
@@ -129,6 +131,7 @@ class _BaseSubnetOptionsEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin,
                 "dhcp_version": self.dhcp_version,
                 "formset": formset,
                 "return_url": return_url,
+                "tab": self.tab,
             },
         )
 
@@ -162,6 +165,7 @@ class _BaseSubnetOptionsEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin,
                     "dhcp_version": self.dhcp_version,
                     "formset": formset,
                     "return_url": return_url,
+                    "tab": self.tab,
                 },
             )
 
@@ -189,12 +193,14 @@ class ServerSubnet4OptionsEditView(_BaseSubnetOptionsEditView):
     """Edit option-data for a DHCPv4 subnet."""
 
     dhcp_version = 4
+    tab = ServerDHCP4SubnetsView.tab
 
 
 class ServerSubnet6OptionsEditView(_BaseSubnetOptionsEditView):
     """Edit option-data for a DHCPv6 subnet."""
 
     dhcp_version = 6
+    tab = ServerDHCP6SubnetsView.tab
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -260,6 +266,7 @@ class _BaseServerOptionsEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin,
                 "dhcp_version": self.dhcp_version,
                 "formset": formset,
                 "return_url": reverse("plugins:netbox_kea:server", args=[pk]),
+                "tab": self.tab,
             },
         )
 
@@ -280,6 +287,7 @@ class _BaseServerOptionsEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin,
                     "dhcp_version": self.dhcp_version,
                     "formset": formset,
                     "return_url": return_url,
+                    "tab": self.tab,
                 },
             )
 
@@ -303,12 +311,14 @@ class ServerDHCP4OptionsEditView(_BaseServerOptionsEditView):
     """Edit server-level option-data for DHCPv4."""
 
     dhcp_version = 4
+    tab = ServerStatusView.tab
 
 
 class ServerDHCP6OptionsEditView(_BaseServerOptionsEditView):
     """Edit server-level option-data for DHCPv6."""
 
     dhcp_version = 6
+    tab = ServerStatusView.tab
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -501,6 +511,7 @@ class BaseServerOptionDefAddView(_KeaChangeMixin, ConditionalLoginRequiredMixin,
                 "form": form,
                 "dhcp_version": self.dhcp_version,
                 "cancel_url": self._success_url(server),
+                "tab": self.tab,
             },
         )
 
@@ -518,6 +529,7 @@ class BaseServerOptionDefAddView(_KeaChangeMixin, ConditionalLoginRequiredMixin,
                     "form": form,
                     "dhcp_version": self.dhcp_version,
                     "cancel_url": self._success_url(server),
+                    "tab": self.tab,
                 },
             )
         option_def = {
@@ -539,12 +551,14 @@ class ServerOptionDef6AddView(BaseServerOptionDefAddView):
     """Add a DHCPv6 option definition."""
 
     dhcp_version = 6
+    tab = ServerOptionDef6View.tab
 
 
 class ServerOptionDef4AddView(BaseServerOptionDefAddView):
     """Add a DHCPv4 option definition."""
 
     dhcp_version = 4
+    tab = ServerOptionDef4View.tab
 
 
 class BaseServerOptionDefDeleteView(_KeaChangeMixin, ConditionalLoginRequiredMixin, View):
@@ -571,6 +585,7 @@ class BaseServerOptionDefDeleteView(_KeaChangeMixin, ConditionalLoginRequiredMix
                 "space": space,
                 "dhcp_version": self.dhcp_version,
                 "cancel_url": self._success_url(server),
+                "tab": self.tab,
             },
         )
 
@@ -588,9 +603,11 @@ class ServerOptionDef6DeleteView(BaseServerOptionDefDeleteView):
     """Delete a DHCPv6 option definition."""
 
     dhcp_version = 6
+    tab = ServerOptionDef6View.tab
 
 
 class ServerOptionDef4DeleteView(BaseServerOptionDefDeleteView):
     """Delete a DHCPv4 option definition."""
 
     dhcp_version = 4
+    tab = ServerOptionDef4View.tab

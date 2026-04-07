@@ -24,7 +24,7 @@ def _make_server(**kwargs) -> Server:
     """Return an unsaved Server instance with sensible defaults."""
     defaults = {
         "name": "test-server",
-        "server_url": "http://kea:8000",
+        "ca_url": "http://kea:8000",
         "dhcp4": True,
         "dhcp6": True,
     }
@@ -44,14 +44,14 @@ class TestServerGetClient(SimpleTestCase):
     """Tests for Server.get_client() — URL selection logic."""
 
     @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
-    def test_no_version_uses_server_url(self):
+    def test_no_version_uses_ca_url(self):
         server = _make_server()
         client = server.get_client()
         self.assertIsInstance(client, KeaClient)
         self.assertEqual(client.url, "http://kea:8000")
 
     @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
-    def test_version4_falls_back_to_server_url(self):
+    def test_version4_falls_back_to_ca_url(self):
         server = _make_server(dhcp4_url=None)
         client = server.get_client(version=4)
         self.assertEqual(client.url, "http://kea:8000")
@@ -63,7 +63,7 @@ class TestServerGetClient(SimpleTestCase):
         self.assertEqual(client.url, "http://kea-v4:8001")
 
     @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
-    def test_version6_falls_back_to_server_url(self):
+    def test_version6_falls_back_to_ca_url(self):
         server = _make_server(dhcp6_url=None)
         client = server.get_client(version=6)
         self.assertEqual(client.url, "http://kea:8000")
@@ -82,7 +82,7 @@ class TestServerGetClient(SimpleTestCase):
 
     @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
     def test_get_client_passes_credentials(self):
-        server = _make_server(username="admin", password="secret")
+        server = _make_server(ca_username="admin", ca_password="secret")
         client = server.get_client()
         self.assertIsNotNone(client._session.auth)
 
@@ -117,6 +117,123 @@ class TestServerGetClient(SimpleTestCase):
         server = _make_server()
         client = server.get_client()
         self.assertEqual(client.timeout, 5)
+
+    @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+    def test_v4_uses_dhcp4_credentials_when_set(self):
+        """When dhcp4_url and dhcp4_username/dhcp4_password are set, v4 client uses them."""
+        server = _make_server(
+            ca_username="ca-user",
+            ca_password="ca-pass",
+            dhcp4_url="http://kea-v4:8001",
+            dhcp4_username="v4-user",
+            dhcp4_password="v4-pass",
+        )
+        client = server.get_client(version=4)
+        self.assertIsNotNone(client._session.auth)
+        self.assertEqual(client._session.auth.username, "v4-user")
+        self.assertEqual(client._session.auth.password, "v4-pass")
+
+    @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+    def test_v4_no_dhcp4_url_always_uses_ca_credentials(self):
+        """When dhcp4_url is not set, v4 client always uses CA credentials even if per-protocol creds exist."""
+        server = _make_server(
+            ca_username="ca-user",
+            ca_password="ca-pass",
+            dhcp4_username="v4-user",
+            dhcp4_password="v4-pass",
+        )
+        client = server.get_client(version=4)
+        self.assertIsNotNone(client._session.auth)
+        self.assertEqual(client._session.auth.username, "ca-user")
+        self.assertEqual(client._session.auth.password, "ca-pass")
+
+    @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+    def test_v4_falls_back_to_ca_credentials_when_v4_creds_empty(self):
+        """When dhcp4_url is set but dhcp4 creds are blank, v4 client falls back to CA creds."""
+        server = _make_server(
+            ca_username="ca-user",
+            ca_password="ca-pass",
+            dhcp4_url="http://kea-v4:8001",
+            dhcp4_username="",
+            dhcp4_password="",
+        )
+        client = server.get_client(version=4)
+        self.assertIsNotNone(client._session.auth)
+        self.assertEqual(client._session.auth.username, "ca-user")
+        self.assertEqual(client._session.auth.password, "ca-pass")
+
+    @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+    def test_v6_uses_dhcp6_credentials_when_set(self):
+        """When dhcp6_url and dhcp6_username/dhcp6_password are set, v6 client uses them."""
+        server = _make_server(
+            ca_username="ca-user",
+            ca_password="ca-pass",
+            dhcp6_url="http://kea-v6:8002",
+            dhcp6_username="v6-user",
+            dhcp6_password="v6-pass",
+        )
+        client = server.get_client(version=6)
+        self.assertIsNotNone(client._session.auth)
+        self.assertEqual(client._session.auth.username, "v6-user")
+        self.assertEqual(client._session.auth.password, "v6-pass")
+
+    @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+    def test_v6_falls_back_to_ca_credentials_when_v6_creds_empty(self):
+        """When dhcp6_url is set but dhcp6 creds are blank, v6 client falls back to CA creds."""
+        server = _make_server(
+            ca_username="ca-user",
+            ca_password="ca-pass",
+            dhcp6_url="http://kea-v6:8002",
+            dhcp6_username="",
+            dhcp6_password="",
+        )
+        client = server.get_client(version=6)
+        self.assertIsNotNone(client._session.auth)
+        self.assertEqual(client._session.auth.username, "ca-user")
+        self.assertEqual(client._session.auth.password, "ca-pass")
+
+    @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+    def test_no_version_uses_ca_credentials(self):
+        """When version=None, always use CA credentials."""
+        server = _make_server(
+            ca_username="ca-user",
+            ca_password="ca-pass",
+            dhcp4_url="http://kea-v4:8001",
+            dhcp4_username="v4-user",
+            dhcp4_password="v4-pass",
+        )
+        client = server.get_client()
+        self.assertEqual(client._session.auth.username, "ca-user")
+
+    @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+    def test_v4_partial_override_falls_back_per_field(self):
+        """When dhcp4_url set and only dhcp4_username provided, password falls back to ca_password."""
+        server = _make_server(
+            ca_username="ca-user",
+            ca_password="ca-pass",
+            dhcp4_url="http://kea-v4:8001",
+            dhcp4_username="v4-user",
+            dhcp4_password="",
+        )
+        client = server.get_client(version=4)
+        self.assertIsNotNone(client._session.auth)
+        self.assertEqual(client._session.auth.username, "v4-user")
+        self.assertEqual(client._session.auth.password, "ca-pass")
+
+    @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+    def test_v6_partial_override_falls_back_per_field(self):
+        """When dhcp6_url set and only dhcp6_password provided, username falls back to ca_username."""
+        server = _make_server(
+            ca_username="ca-user",
+            ca_password="ca-pass",
+            dhcp6_url="http://kea-v6:8002",
+            dhcp6_username="",
+            dhcp6_password="v6-pass",
+        )
+        client = server.get_client(version=6)
+        self.assertIsNotNone(client._session.auth)
+        self.assertEqual(client._session.auth.username, "ca-user")
+        self.assertEqual(client._session.auth.password, "v6-pass")
 
 
 class TestServerCleanFieldValidation(SimpleTestCase):
@@ -305,7 +422,7 @@ class TestServerHasControlAgentDefault(SimpleTestCase):
     """Test that has_control_agent defaults to True."""
 
     def test_has_control_agent_default_true(self):
-        server = Server(name="s", server_url="http://kea:8000", dhcp4=True)
+        server = Server(name="s", ca_url="http://kea:8000", dhcp4=True)
         self.assertTrue(server.has_control_agent)
 
 
@@ -323,8 +440,8 @@ class TestServerToObjectchangePasswordCensoring(SimpleTestCase):
 
         from netbox.constants import CENSOR_TOKEN, CENSOR_TOKEN_CHANGED  # noqa: F401
 
-        prechange_data = {"password": pre_password, "name": "test-server"} if pre_password is not None else {}
-        postchange_data = {"password": post_password, "name": "test-server"} if post_password is not None else None
+        prechange_data = {"ca_password": pre_password, "name": "test-server"} if pre_password is not None else {}
+        postchange_data = {"ca_password": post_password, "name": "test-server"} if post_password is not None else None
 
         objectchange = MagicMock()
         objectchange.prechange_data = prechange_data
@@ -334,7 +451,7 @@ class TestServerToObjectchangePasswordCensoring(SimpleTestCase):
     def _call_to_objectchange(self, pre_password, post_password):
         from netbox.constants import CENSOR_TOKEN, CENSOR_TOKEN_CHANGED  # noqa: F401
 
-        server = Server(name="test-server", server_url="http://kea:8000", dhcp4=True)
+        server = Server(name="test-server", ca_url="http://kea:8000", dhcp4=True)
         objectchange = self._make_objectchange(pre_password, post_password)
         with patch.object(NetBoxModel, "to_objectchange", return_value=objectchange):
             return server.to_objectchange("update")
@@ -344,28 +461,28 @@ class TestServerToObjectchangePasswordCensoring(SimpleTestCase):
         from netbox.constants import CENSOR_TOKEN, CENSOR_TOKEN_CHANGED
 
         result = self._call_to_objectchange(pre_password="secret", post_password="secret")
-        self.assertEqual(result.postchange_data["password"], CENSOR_TOKEN)
-        self.assertNotEqual(result.postchange_data["password"], CENSOR_TOKEN_CHANGED)
+        self.assertEqual(result.postchange_data["ca_password"], CENSOR_TOKEN)
+        self.assertNotEqual(result.postchange_data["ca_password"], CENSOR_TOKEN_CHANGED)
 
     def test_changed_password_masked_as_censor_token_changed(self):
         """When post password differs from pre password, post shows CENSOR_TOKEN_CHANGED."""
         from netbox.constants import CENSOR_TOKEN_CHANGED
 
         result = self._call_to_objectchange(pre_password="old-secret", post_password="new-secret")
-        self.assertEqual(result.postchange_data["password"], CENSOR_TOKEN_CHANGED)
+        self.assertEqual(result.postchange_data["ca_password"], CENSOR_TOKEN_CHANGED)
 
     def test_pre_password_always_masked_as_censor_token(self):
         """prechange_data password is always replaced with CENSOR_TOKEN."""
         from netbox.constants import CENSOR_TOKEN
 
         result = self._call_to_objectchange(pre_password="old-secret", post_password="new-secret")
-        self.assertEqual(result.prechange_data["password"], CENSOR_TOKEN)
+        self.assertEqual(result.prechange_data["ca_password"], CENSOR_TOKEN)
 
     def test_no_prechange_data_does_not_raise(self):
         """to_objectchange handles None prechange_data without raising and masks postchange password."""
         from netbox.constants import CENSOR_TOKEN_CHANGED
 
-        server = Server(name="test-server", server_url="http://kea:8000", dhcp4=True, password="secret")
+        server = Server(name="test-server", ca_url="http://kea:8000", dhcp4=True, ca_password="secret")
         objectchange = self._make_objectchange(pre_password=None, post_password="secret")
         objectchange.prechange_data = None
         with patch.object(NetBoxModel, "to_objectchange", return_value=objectchange):
@@ -373,9 +490,35 @@ class TestServerToObjectchangePasswordCensoring(SimpleTestCase):
         # Should not crash; None prechange is preserved (or converted to empty dict)
         self.assertIn(result.prechange_data, (None, {}))
         # postchange_data password must be masked (changed from original "secret")
-        masked = result.postchange_data.get("password")
+        masked = result.postchange_data.get("ca_password")
         self.assertNotEqual(masked, "secret", "Password must be masked in postchange_data")
         self.assertEqual(masked, CENSOR_TOKEN_CHANGED)
+
+    def test_dhcp4_password_masked_in_change_log(self):
+        """dhcp4_password is censored in both prechange and postchange data."""
+        from netbox.constants import CENSOR_TOKEN
+
+        server = Server(name="test-server", ca_url="http://kea:8000", dhcp4=True)
+        objectchange = MagicMock()
+        objectchange.prechange_data = {"dhcp4_password": "v4-secret", "name": "s"}
+        objectchange.postchange_data = {"dhcp4_password": "v4-secret", "name": "s"}
+        with patch.object(NetBoxModel, "to_objectchange", return_value=objectchange):
+            result = server.to_objectchange("update")
+        self.assertEqual(result.prechange_data["dhcp4_password"], CENSOR_TOKEN)
+        self.assertEqual(result.postchange_data["dhcp4_password"], CENSOR_TOKEN)
+
+    def test_dhcp6_password_masked_in_change_log(self):
+        """dhcp6_password is censored in both prechange and postchange data."""
+        from netbox.constants import CENSOR_TOKEN
+
+        server = Server(name="test-server", ca_url="http://kea:8000", dhcp4=True)
+        objectchange = MagicMock()
+        objectchange.prechange_data = {"dhcp6_password": "v6-secret", "name": "s"}
+        objectchange.postchange_data = {"dhcp6_password": "v6-secret", "name": "s"}
+        with patch.object(NetBoxModel, "to_objectchange", return_value=objectchange):
+            result = server.to_objectchange("update")
+        self.assertEqual(result.prechange_data["dhcp6_password"], CENSOR_TOKEN)
+        self.assertEqual(result.postchange_data["dhcp6_password"], CENSOR_TOKEN)
 
 
 # ---------------------------------------------------------------------------

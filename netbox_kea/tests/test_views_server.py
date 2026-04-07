@@ -108,7 +108,7 @@ class TestServerAddView(_ViewTestBase):
                 url,
                 {
                     "name": "bad-server",
-                    "server_url": "http://unreachable.kea.example.com",
+                    "ca_url": "http://unreachable.kea.example.com",
                     "dhcp4": True,
                     "dhcp6": False,
                     "ssl_verify": True,
@@ -130,7 +130,7 @@ class TestServerAddView(_ViewTestBase):
             url,
             {
                 "name": "new-valid-server",
-                "server_url": "https://kea.new.example.com",
+                "ca_url": "https://kea.new.example.com",
                 "dhcp4": True,
                 "dhcp6": False,
                 "ssl_verify": True,
@@ -151,7 +151,7 @@ class TestServerAddView(_ViewTestBase):
             url,
             {
                 "name": "saved-server",
-                "server_url": "https://kea.saved.example.com",
+                "ca_url": "https://kea.saved.example.com",
                 "dhcp4": True,
                 "dhcp6": False,
                 "ssl_verify": True,
@@ -183,7 +183,7 @@ class TestServerEditView(_ViewTestBase):
     def test_post_missing_fields_rerenders_form(self):
         """Invalid edit POST must re-render the form (200), not redirect."""
         url = reverse("plugins:netbox_kea:server_edit", args=[self.server.pk])
-        response = self.client.post(url, {"name": "", "server_url": ""})
+        response = self.client.post(url, {"name": "", "ca_url": ""})
         self.assertEqual(response.status_code, 200)
         self._assert_no_none_pk_redirect(response)
 
@@ -198,7 +198,7 @@ class TestServerEditView(_ViewTestBase):
             url,
             {
                 "name": self.server.name,
-                "server_url": "https://kea.edited.example.com",
+                "ca_url": "https://kea.edited.example.com",
                 "dhcp4": True,
                 "dhcp6": False,
                 "ssl_verify": True,
@@ -305,7 +305,7 @@ class TestServerBulkImportView(_ViewTestBase):
 
         url = reverse("plugins:netbox_kea:server_bulk_import")
         csv_data = (
-            "name,server_url,dhcp4,dhcp6,ssl_verify,has_control_agent\r\n"
+            "name,ca_url,dhcp4,dhcp6,ssl_verify,has_control_agent\r\n"
             "import-test-server,https://import.example.com,true,false,true,false\r\n"
         )
         response = self.client.post(
@@ -325,7 +325,7 @@ class TestServerBulkImportView(_ViewTestBase):
         """
         url = reverse("plugins:netbox_kea:server_bulk_import")
         # setUp() already created a server named 'test-kea'
-        csv_data = "name,server_url,dhcp4,dhcp6\r\ntest-kea,https://dup.example.com,true,false\r\n"
+        csv_data = "name,ca_url,dhcp4,dhcp6\r\ntest-kea,https://dup.example.com,true,false\r\n"
         MockKeaClient.return_value.command.side_effect = _kea_command_side_effect
         response = self.client.post(
             url,
@@ -450,21 +450,21 @@ class TestServerFilterSet(_ViewTestBase):
         Server.objects.all().delete()
         s1 = Server.objects.create(
             name="alpha-kea",
-            server_url="http://alpha.example.com:8000",
+            ca_url="http://alpha.example.com:8000",
             dhcp4=True,
             dhcp6=False,
             has_control_agent=True,
         )
         s2 = Server.objects.create(
             name="beta-kea",
-            server_url="http://beta.example.com:8000",
+            ca_url="http://beta.example.com:8000",
             dhcp4=False,
             dhcp6=True,
             has_control_agent=False,
         )
         s3 = Server.objects.create(
             name="gamma-server",
-            server_url="http://gamma.example.com:9000",
+            ca_url="http://gamma.example.com:9000",
             dhcp4=True,
             dhcp6=True,
             has_control_agent=True,
@@ -482,12 +482,12 @@ class TestServerFilterSet(_ViewTestBase):
         self.assertIn("beta-kea", names)
         self.assertNotIn("gamma-server", names)
 
-    def test_filter_by_server_url_contains(self):
-        """ServerFilterSet supports case-insensitive server_url substring filtering."""
+    def test_filter_by_ca_url_contains(self):
+        """ServerFilterSet supports case-insensitive ca_url substring filtering."""
         from netbox_kea.filtersets import ServerFilterSet
 
         self._make_servers()
-        qs = ServerFilterSet({"server_url": "beta"}, queryset=Server.objects.all()).qs
+        qs = ServerFilterSet({"ca_url": "beta"}, queryset=Server.objects.all()).qs
         names = list(qs.values_list("name", flat=True))
         self.assertEqual(names, ["beta-kea"])
 
@@ -523,12 +523,12 @@ class TestServerFilterForm(_ViewTestBase):
         form = ServerFilterForm()
         self.assertIn("name", form.fields)
 
-    def test_filter_form_has_server_url_field(self):
-        """ServerFilterForm includes a 'server_url' text field."""
+    def test_filter_form_has_ca_url_field(self):
+        """ServerFilterForm includes a 'ca_url' text field."""
         from netbox_kea.forms import ServerFilterForm
 
         form = ServerFilterForm()
-        self.assertIn("server_url", form.fields)
+        self.assertIn("ca_url", form.fields)
 
     def test_filter_form_has_has_control_agent_field(self):
         """ServerFilterForm includes a 'has_control_agent' nullable boolean field."""
@@ -540,8 +540,8 @@ class TestServerFilterForm(_ViewTestBase):
     def test_server_list_filters_by_name_via_get(self):
         """GET /plugins/kea/servers/?name=<term> returns 200 and filters results."""
         Server.objects.all().delete()
-        Server.objects.create(name="alpha-kea", server_url="http://a:8000", dhcp4=True, dhcp6=False)
-        Server.objects.create(name="gamma-server", server_url="http://g:8000", dhcp4=True, dhcp6=False)
+        Server.objects.create(name="alpha-kea", ca_url="http://a:8000", dhcp4=True, dhcp6=False)
+        Server.objects.create(name="gamma-server", ca_url="http://g:8000", dhcp4=True, dhcp6=False)
         url = reverse("plugins:netbox_kea:server_list")
         response = self.client.get(url, {"name": "alpha"})
         self.assertEqual(response.status_code, 200)

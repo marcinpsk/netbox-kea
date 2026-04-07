@@ -329,6 +329,7 @@ class _BasePoolAddView(_KeaChangeMixin, generic.ObjectView):
                 "subnet_id": subnet_id,
                 "dhcp_version": self.dhcp_version,
                 "return_url": self._subnets_url(pk),
+                "tab": self.tab,
             },
         )
 
@@ -346,6 +347,7 @@ class _BasePoolAddView(_KeaChangeMixin, generic.ObjectView):
                     "subnet_id": subnet_id,
                     "dhcp_version": self.dhcp_version,
                     "return_url": return_url,
+                    "tab": self.tab,
                 },
             )
         pool = form.cleaned_data["pool"]
@@ -378,12 +380,14 @@ class ServerSubnet4PoolAddView(_BasePoolAddView):
     """Add a pool to a DHCPv4 subnet."""
 
     dhcp_version = 4
+    tab = ServerDHCP4SubnetsView.tab
 
 
 class ServerSubnet6PoolAddView(_BasePoolAddView):
     """Add a pool to a DHCPv6 subnet."""
 
     dhcp_version = 6
+    tab = ServerDHCP6SubnetsView.tab
 
 
 class _BasePoolDeleteView(_KeaChangeMixin, generic.ObjectView):
@@ -410,6 +414,7 @@ class _BasePoolDeleteView(_KeaChangeMixin, generic.ObjectView):
                 "subnet_id": subnet_id,
                 "dhcp_version": self.dhcp_version,
                 "return_url": self._subnets_url(pk),
+                "tab": self.tab,
             },
         )
 
@@ -446,12 +451,14 @@ class ServerSubnet4PoolDeleteView(_BasePoolDeleteView):
     """Delete a pool from a DHCPv4 subnet."""
 
     dhcp_version = 4
+    tab = ServerDHCP4SubnetsView.tab
 
 
 class ServerSubnet6PoolDeleteView(_BasePoolDeleteView):
     """Delete a pool from a DHCPv6 subnet."""
 
     dhcp_version = 6
+    tab = ServerDHCP6SubnetsView.tab
 
 
 # ---------------------------------------------------------------------------
@@ -516,6 +523,7 @@ class _BaseSubnetAddView(_KeaChangeMixin, generic.ObjectView):
                 "form": form,
                 "dhcp_version": self.dhcp_version,
                 "return_url": self._subnets_url(pk),
+                "tab": self.tab,
             },
         )
 
@@ -533,7 +541,13 @@ class _BaseSubnetAddView(_KeaChangeMixin, generic.ObjectView):
             return render(
                 request,
                 self.template_name,
-                {"object": server, "form": form, "dhcp_version": self.dhcp_version, "return_url": return_url},
+                {
+                    "object": server,
+                    "form": form,
+                    "dhcp_version": self.dhcp_version,
+                    "return_url": return_url,
+                    "tab": self.tab,
+                },
             )
 
         try:
@@ -546,7 +560,13 @@ class _BaseSubnetAddView(_KeaChangeMixin, generic.ObjectView):
             return render(
                 request,
                 self.template_name,
-                {"object": server, "form": form, "dhcp_version": self.dhcp_version, "return_url": return_url},
+                {
+                    "object": server,
+                    "form": form,
+                    "dhcp_version": self.dhcp_version,
+                    "return_url": return_url,
+                    "tab": self.tab,
+                },
             )
 
         form = forms.SubnetAddForm(request.POST)
@@ -560,6 +580,7 @@ class _BaseSubnetAddView(_KeaChangeMixin, generic.ObjectView):
                     "form": form,
                     "dhcp_version": self.dhcp_version,
                     "return_url": return_url,
+                    "tab": self.tab,
                 },
             )
         cd = form.cleaned_data
@@ -631,6 +652,7 @@ class _BaseSubnetAddView(_KeaChangeMixin, generic.ObjectView):
                     "form": form,
                     "dhcp_version": self.dhcp_version,
                     "return_url": return_url,
+                    "tab": self.tab,
                 },
             )
         except (KeaException, requests.RequestException, ValueError):
@@ -644,6 +666,7 @@ class _BaseSubnetAddView(_KeaChangeMixin, generic.ObjectView):
                     "form": form,
                     "dhcp_version": self.dhcp_version,
                     "return_url": return_url,
+                    "tab": self.tab,
                 },
             )
         return redirect(return_url)
@@ -653,12 +676,14 @@ class ServerSubnet4AddView(_BaseSubnetAddView):
     """Add a DHCPv4 subnet."""
 
     dhcp_version = 4
+    tab = ServerDHCP4SubnetsView.tab
 
 
 class ServerSubnet6AddView(_BaseSubnetAddView):
     """Add a DHCPv6 subnet."""
 
     dhcp_version = 6
+    tab = ServerDHCP6SubnetsView.tab
 
 
 class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
@@ -880,6 +905,7 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
                 "dhcp_version": self.dhcp_version,
                 "return_url": self._subnets_url(pk),
                 "inherited_options": inherited_options,
+                "tab": self.tab,
             },
         )
 
@@ -922,6 +948,7 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
                     "dhcp_version": self.dhcp_version,
                     "return_url": return_url,
                     "inherited_options": inherited_options,
+                    "tab": self.tab,
                 },
             )
         cd = form.cleaned_data
@@ -974,6 +1001,7 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
                     "dhcp_version": self.dhcp_version,
                     "return_url": return_url,
                     "inherited_options": inherited_options,
+                    "tab": self.tab,
                 },
             )
         except requests.RequestException:
@@ -990,6 +1018,7 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
                     "dhcp_version": self.dhcp_version,
                     "return_url": return_url,
                     "inherited_options": inherited_options,
+                    "tab": self.tab,
                 },
             )
         except (KeaException, requests.RequestException, ValueError):
@@ -1006,6 +1035,7 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
                     "dhcp_version": self.dhcp_version,
                     "return_url": return_url,
                     "inherited_options": inherited_options,
+                    "tab": self.tab,
                 },
             )
 
@@ -1079,12 +1109,14 @@ class ServerSubnet4EditView(_BaseSubnetEditView):
     """Edit a DHCPv4 subnet's configuration."""
 
     dhcp_version = 4
+    tab = ServerDHCP4SubnetsView.tab
 
 
 class ServerSubnet6EditView(_BaseSubnetEditView):
     """Edit a DHCPv6 subnet's configuration."""
 
     dhcp_version = 6
+    tab = ServerDHCP6SubnetsView.tab
 
 
 class _BaseSubnetDeleteView(_KeaChangeMixin, generic.ObjectView):
@@ -1125,6 +1157,7 @@ class _BaseSubnetDeleteView(_KeaChangeMixin, generic.ObjectView):
                 "subnet_cidr": subnet_cidr,
                 "dhcp_version": self.dhcp_version,
                 "return_url": self._subnets_url(pk),
+                "tab": self.tab,
             },
         )
 
@@ -1158,12 +1191,14 @@ class ServerSubnet4DeleteView(_BaseSubnetDeleteView):
     """Delete a DHCPv4 subnet."""
 
     dhcp_version = 4
+    tab = ServerDHCP4SubnetsView.tab
 
 
 class ServerSubnet6DeleteView(_BaseSubnetDeleteView):
     """Delete a DHCPv6 subnet."""
 
     dhcp_version = 6
+    tab = ServerDHCP6SubnetsView.tab
 
 
 class _BaseSubnetWipeView(_KeaChangeMixin, generic.ObjectView):
@@ -1204,6 +1239,7 @@ class _BaseSubnetWipeView(_KeaChangeMixin, generic.ObjectView):
                 "subnet_cidr": subnet_cidr,
                 "dhcp_version": self.dhcp_version,
                 "return_url": self._subnets_url(pk),
+                "tab": self.tab,
             },
         )
 
@@ -1241,9 +1277,11 @@ class ServerSubnet4WipeView(_BaseSubnetWipeView):
     """Wipe all DHCPv4 leases in a subnet."""
 
     dhcp_version = 4
+    tab = ServerDHCP4SubnetsView.tab
 
 
 class ServerSubnet6WipeView(_BaseSubnetWipeView):
     """Wipe all DHCPv6 leases in a subnet."""
 
     dhcp_version = 6
+    tab = ServerDHCP6SubnetsView.tab
