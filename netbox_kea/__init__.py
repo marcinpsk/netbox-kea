@@ -4,6 +4,8 @@ from netbox.plugins import PluginConfig
 
 logger = logging.getLogger(__name__)
 
+__version__ = "1.0.4"
+
 
 class NetBoxKeaConfig(PluginConfig):
     """NetBox plugin configuration for the Kea DHCP integration."""
@@ -11,7 +13,7 @@ class NetBoxKeaConfig(PluginConfig):
     name = "netbox_kea"
     verbose_name = "Kea"
     description = "Kea integration for NetBox"
-    version = "1.0.4"
+    version = __version__
     base_url = "kea"
     default_settings = {
         "kea_timeout": 30,
