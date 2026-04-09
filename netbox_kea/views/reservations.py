@@ -763,6 +763,7 @@ class ServerReservation4EditView(_KeaChangeMixin, generic.ObjectView):
             "dhcp_version": 4,
             "action": "Edit",
             "return_url": return_url,
+            "tab": self.tab,
         }
         # Key fields are URL-derived — disable so browsers render them read-only.
         for field_name in ("subnet_id", "ip_address", "identifier_type", "identifier"):
@@ -923,6 +924,7 @@ class ServerReservation6EditView(_KeaChangeMixin, generic.ObjectView):
             "dhcp_version": 6,
             "action": "Edit",
             "return_url": return_url,
+            "tab": self.tab,
         }
         # Key fields are URL-derived — disable so browsers render them read-only.
         for field_name in ("subnet_id", "ip_addresses", "identifier_type", "identifier"):

@@ -370,7 +370,7 @@ class _BasePoolAddView(_KeaChangeMixin, generic.ObjectView):
         except requests.RequestException:
             logger.exception("Failed to add pool to subnet %s (network error)", subnet_id)
             messages.error(request, "Network error communicating with Kea: see server logs.")
-        except (KeaException, requests.RequestException, ValueError):
+        except ValueError:
             logger.exception("Failed to add pool to subnet %s", subnet_id)
             messages.error(request, "Failed to add pool: see server logs for details.")
         return redirect(return_url)
@@ -441,7 +441,7 @@ class _BasePoolDeleteView(_KeaChangeMixin, generic.ObjectView):
         except requests.RequestException:
             logger.exception("Failed to remove pool from subnet %s (network error)", subnet_id)
             messages.error(request, "Network error communicating with Kea: see server logs.")
-        except (KeaException, requests.RequestException, ValueError):
+        except ValueError:
             logger.exception("Failed to remove pool from subnet %s", subnet_id)
             messages.error(request, "Failed to remove pool: see server logs for details.")
         return redirect(return_url)
