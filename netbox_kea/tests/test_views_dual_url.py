@@ -5,7 +5,7 @@
 When a Server has distinct ``dhcp4_url`` and ``dhcp6_url`` fields, every view
 that calls ``server.get_client(version=self.dhcp_version)`` must construct
 ``KeaClient`` with the protocol-specific URL rather than falling back to
-``server_url``.
+``ca_url``.
 
 These tests create a server with all three URLs set to different values, then
 hit representative views for each protocol version and assert that
@@ -33,7 +33,7 @@ def _make_dual_url_server(**kwargs) -> Server:
     """Create a Server with distinct v4, v6, and default URLs."""
     defaults = {
         "name": "dual-url-server",
-        "server_url": _SERVER_URL,
+        "ca_url": _SERVER_URL,
         "dhcp4_url": _DHCP4_URL,
         "dhcp6_url": _DHCP6_URL,
         "dhcp4": True,
@@ -200,11 +200,11 @@ class TestDualURLReservationViews(_DualURLBase):
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestDualURLFallback(_DualURLBase):
-    """When protocol-specific URL is not set, fall back to server_url."""
+    """When protocol-specific URL is not set, fall back to ca_url."""
 
     @patch("netbox_kea.models.KeaClient")
     def test_v4_falls_back_to_server_url(self, MockKeaClient):
-        """When dhcp4_url is empty, v4 views use server_url."""
+        """When dhcp4_url is empty, v4 views use ca_url."""
         server = _make_dual_url_server(name="v4-fallback", dhcp4_url="", dhcp6_url=_DHCP6_URL)
         MockKeaClient.return_value.command.side_effect = _kea_command_side_effect
         url = reverse("plugins:netbox_kea:server_subnets4", args=[server.pk])
@@ -214,7 +214,7 @@ class TestDualURLFallback(_DualURLBase):
 
     @patch("netbox_kea.models.KeaClient")
     def test_v6_falls_back_to_server_url(self, MockKeaClient):
-        """When dhcp6_url is empty, v6 views use server_url."""
+        """When dhcp6_url is empty, v6 views use ca_url."""
         server = _make_dual_url_server(name="v6-fallback", dhcp4_url=_DHCP4_URL, dhcp6_url="")
         MockKeaClient.return_value.command.side_effect = _kea_command_side_effect
         url = reverse("plugins:netbox_kea:server_subnets6", args=[server.pk])

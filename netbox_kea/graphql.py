@@ -10,8 +10,10 @@ from . import models
     fields=(
         "id",
         "name",
-        "server_url",
-        "username",
+        "ca_url",
+        "ca_username",
+        "dhcp4_username",
+        "dhcp6_username",
         "ssl_verify",
         "client_cert_path",
         "client_key_path",

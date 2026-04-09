@@ -216,8 +216,8 @@ class ServerTable(NetBoxTable):
         fields = (
             "pk",
             "name",
-            "server_url",
-            "username",
+            "ca_url",
+            "ca_username",
             "ssl_verify",
             "client_cert_path",
             "client_key_path",
@@ -225,7 +225,7 @@ class ServerTable(NetBoxTable):
             "dhcp6",
             "dhcp4",
         )
-        default_columns = ("pk", "name", "server_url", "dhcp6", "dhcp4")
+        default_columns = ("pk", "name", "ca_url", "dhcp6", "dhcp4")
 
 
 # we can't use NetBox table because it requires an actual model

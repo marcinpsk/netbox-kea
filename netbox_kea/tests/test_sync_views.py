@@ -41,7 +41,7 @@ _PLUGINS_CONFIG = {"netbox_kea": {"kea_timeout": 30}}
 def _make_server(**kwargs) -> Server:
     defaults = {
         "name": "sync-test-kea",
-        "server_url": "https://kea.example.com",
+        "ca_url": "https://kea.example.com",
         "dhcp4": True,
         "dhcp6": True,
         "has_control_agent": True,

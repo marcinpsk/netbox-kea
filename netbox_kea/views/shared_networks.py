@@ -163,6 +163,7 @@ class BaseServerSharedNetworkAddView(_KeaChangeMixin, ConditionalLoginRequiredMi
                 "form": form,
                 "dhcp_version": self.dhcp_version,
                 "cancel_url": self._success_url(server),
+                "tab": self.tab,
             },
         )
 
@@ -180,6 +181,7 @@ class BaseServerSharedNetworkAddView(_KeaChangeMixin, ConditionalLoginRequiredMi
                     "form": form,
                     "dhcp_version": self.dhcp_version,
                     "cancel_url": self._success_url(server),
+                    "tab": self.tab,
                 },
             )
         name = form.cleaned_data["name"]
@@ -207,12 +209,14 @@ class ServerSharedNetwork6AddView(BaseServerSharedNetworkAddView):
     """Add a new DHCPv6 shared network."""
 
     dhcp_version = 6
+    tab = ServerSharedNetworks6View.tab
 
 
 class ServerSharedNetwork4AddView(BaseServerSharedNetworkAddView):
     """Add a new DHCPv4 shared network."""
 
     dhcp_version = 4
+    tab = ServerSharedNetworks4View.tab
 
 
 class BaseServerSharedNetworkDeleteView(_KeaChangeMixin, ConditionalLoginRequiredMixin, View):
@@ -239,6 +243,7 @@ class BaseServerSharedNetworkDeleteView(_KeaChangeMixin, ConditionalLoginRequire
                 "network_name": network_name,
                 "dhcp_version": self.dhcp_version,
                 "cancel_url": self._success_url(server),
+                "tab": self.tab,
             },
         )
 
@@ -269,12 +274,14 @@ class ServerSharedNetwork6DeleteView(BaseServerSharedNetworkDeleteView):
     """Delete a DHCPv6 shared network."""
 
     dhcp_version = 6
+    tab = ServerSharedNetworks6View.tab
 
 
 class ServerSharedNetwork4DeleteView(BaseServerSharedNetworkDeleteView):
     """Delete a DHCPv4 shared network."""
 
     dhcp_version = 4
+    tab = ServerSharedNetworks4View.tab
 
 
 class BaseServerSharedNetworkEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin, View):
@@ -348,6 +355,7 @@ class BaseServerSharedNetworkEditView(_KeaChangeMixin, ConditionalLoginRequiredM
                 "network_name": network_name,
                 "dhcp_version": self.dhcp_version,
                 "cancel_url": self._success_url(server),
+                "tab": self.tab,
             },
         )
 
@@ -365,6 +373,7 @@ class BaseServerSharedNetworkEditView(_KeaChangeMixin, ConditionalLoginRequiredM
                     "network_name": network_name,
                     "dhcp_version": self.dhcp_version,
                     "cancel_url": self._success_url(server),
+                    "tab": self.tab,
                 },
             )
 
@@ -389,6 +398,7 @@ class BaseServerSharedNetworkEditView(_KeaChangeMixin, ConditionalLoginRequiredM
                     "network_name": network_name,
                     "dhcp_version": self.dhcp_version,
                     "cancel_url": self._success_url(server),
+                    "tab": self.tab,
                 },
             )
         existing_network = self._fetch_network(client, network_name)
@@ -408,6 +418,7 @@ class BaseServerSharedNetworkEditView(_KeaChangeMixin, ConditionalLoginRequiredM
                     "network_name": network_name,
                     "dhcp_version": self.dhcp_version,
                     "cancel_url": self._success_url(server),
+                    "tab": self.tab,
                 },
             )
         preserved_options: list[dict] = [
@@ -461,9 +472,11 @@ class ServerSharedNetwork6EditView(BaseServerSharedNetworkEditView):
     """Edit a DHCPv6 shared network."""
 
     dhcp_version = 6
+    tab = ServerSharedNetworks6View.tab
 
 
 class ServerSharedNetwork4EditView(BaseServerSharedNetworkEditView):
     """Edit a DHCPv4 shared network."""
 
     dhcp_version = 4
+    tab = ServerSharedNetworks4View.tab

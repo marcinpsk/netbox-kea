@@ -81,7 +81,7 @@ _LEASE6_LIST_RESPONSE = [
 def _make_server(**kwargs):
     defaults = {
         "name": "test-kea-api",
-        "server_url": "https://kea.example.com",
+        "ca_url": "https://kea.example.com",
         "dhcp4": True,
         "dhcp6": True,
         "has_control_agent": True,

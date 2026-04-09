@@ -102,7 +102,7 @@ def _make_server(**kwargs) -> Server:
     """Create a Server without triggering live connectivity checks."""
     defaults = {
         "name": "global-test",
-        "server_url": "https://kea.example.com",
+        "ca_url": "https://kea.example.com",
         "dhcp4": True,
         "dhcp6": True,
         "has_control_agent": False,

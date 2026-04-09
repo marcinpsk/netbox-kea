@@ -497,6 +497,7 @@ class ServerReservation4AddView(_KeaChangeMixin, generic.ObjectView):
 
     queryset = Server.objects.all()
     template_name = "netbox_kea/server_reservation_form.html"
+    tab = ServerReservations4View.tab
 
     def get(self, request: HttpRequest, pk: int) -> HttpResponse:
         """Render add form, optionally pre-filled from query parameters."""
@@ -515,6 +516,7 @@ class ServerReservation4AddView(_KeaChangeMixin, generic.ObjectView):
                 "dhcp_version": 4,
                 "action": "Add",
                 "return_url": reverse("plugins:netbox_kea:server_reservations4", args=[pk]),
+                "tab": self.tab,
             },
         )
 
@@ -555,6 +557,7 @@ class ServerReservation4AddView(_KeaChangeMixin, generic.ObjectView):
                         "dhcp_version": 4,
                         "action": "Add",
                         "return_url": return_url,
+                        "tab": self.tab,
                     },
                 )
             # Advisory warning when the reservation IP is inside an existing pool (non-fatal)
@@ -593,6 +596,7 @@ class ServerReservation4AddView(_KeaChangeMixin, generic.ObjectView):
                 "dhcp_version": 4,
                 "action": "Add",
                 "return_url": return_url,
+                "tab": self.tab,
             },
         )
 
@@ -602,6 +606,7 @@ class ServerReservation6AddView(_KeaChangeMixin, generic.ObjectView):
 
     queryset = Server.objects.all()
     template_name = "netbox_kea/server_reservation_form.html"
+    tab = ServerReservations6View.tab
 
     def get(self, request: HttpRequest, pk: int) -> HttpResponse:
         """Render add form, optionally pre-filled from query parameters."""
@@ -621,6 +626,7 @@ class ServerReservation6AddView(_KeaChangeMixin, generic.ObjectView):
                 "dhcp_version": 6,
                 "action": "Add",
                 "return_url": reverse("plugins:netbox_kea:server_reservations6", args=[pk]),
+                "tab": self.tab,
             },
         )
 
@@ -661,6 +667,7 @@ class ServerReservation6AddView(_KeaChangeMixin, generic.ObjectView):
                         "dhcp_version": 6,
                         "action": "Add",
                         "return_url": return_url,
+                        "tab": self.tab,
                     },
                 )
             # Advisory warning when any reservation IP is inside an existing pool (non-fatal)
@@ -701,6 +708,7 @@ class ServerReservation6AddView(_KeaChangeMixin, generic.ObjectView):
                 "dhcp_version": 6,
                 "action": "Add",
                 "return_url": return_url,
+                "tab": self.tab,
             },
         )
 
@@ -710,6 +718,7 @@ class ServerReservation4EditView(_KeaChangeMixin, generic.ObjectView):
 
     queryset = Server.objects.all()
     template_name = "netbox_kea/server_reservation_form.html"
+    tab = ServerReservations4View.tab
 
     def _get_reservation(self, server: Server, subnet_id: int, ip_address: str) -> dict | None:
         client = server.get_client(version=4)
@@ -852,6 +861,7 @@ class ServerReservation4EditView(_KeaChangeMixin, generic.ObjectView):
                 "dhcp_version": 4,
                 "action": "Edit",
                 "return_url": return_url,
+                "tab": self.tab,
             },
         )
 
@@ -861,6 +871,7 @@ class ServerReservation6EditView(_KeaChangeMixin, generic.ObjectView):
 
     queryset = Server.objects.all()
     template_name = "netbox_kea/server_reservation_form.html"
+    tab = ServerReservations6View.tab
 
     def _get_reservation(self, server: Server, subnet_id: int, ip_address: str) -> dict | None:
         client = server.get_client(version=6)
@@ -1024,6 +1035,7 @@ class ServerReservation6EditView(_KeaChangeMixin, generic.ObjectView):
                 "dhcp_version": 6,
                 "action": "Edit",
                 "return_url": return_url,
+                "tab": self.tab,
             },
         )
 
@@ -1033,6 +1045,7 @@ class ServerReservation4DeleteView(_KeaChangeMixin, generic.ObjectView):
 
     queryset = Server.objects.all()
     template_name = "netbox_kea/server_reservation_delete.html"
+    tab = ServerReservations4View.tab
 
     def get(self, request: HttpRequest, pk: int, subnet_id: int, ip_address: str) -> HttpResponse:
         """Show deletion confirmation page."""
@@ -1046,6 +1059,7 @@ class ServerReservation4DeleteView(_KeaChangeMixin, generic.ObjectView):
                 "subnet_id": subnet_id,
                 "dhcp_version": 4,
                 "return_url": reverse("plugins:netbox_kea:server_reservations4", args=[pk]),
+                "tab": self.tab,
             },
         )
 
@@ -1097,6 +1111,7 @@ class ServerReservation6DeleteView(_KeaChangeMixin, generic.ObjectView):
 
     queryset = Server.objects.all()
     template_name = "netbox_kea/server_reservation_delete.html"
+    tab = ServerReservations6View.tab
 
     def get(self, request: HttpRequest, pk: int, subnet_id: int, ip_address: str) -> HttpResponse:
         """Show deletion confirmation page."""
@@ -1110,6 +1125,7 @@ class ServerReservation6DeleteView(_KeaChangeMixin, generic.ObjectView):
                 "subnet_id": subnet_id,
                 "dhcp_version": 6,
                 "return_url": reverse("plugins:netbox_kea:server_reservations6", args=[pk]),
+                "tab": self.tab,
             },
         )
 
