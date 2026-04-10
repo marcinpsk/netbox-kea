@@ -838,6 +838,29 @@ class TestConfigureSyncJobInterval(SimpleTestCase):
 
         self.assertTrue(any("Failed to apply netbox_kea sync interval override" in msg for msg in cm.output))
 
+    def test_interval_set_from_plugins_config_no_db_query(self):
+        """PLUGINS_CONFIG.sync_interval_minutes seeds the registry without hitting the DB."""
+        from django.apps import apps
+        from netbox.registry import registry
+
+        from netbox_kea.jobs import KeaIpamSyncJob
+
+        cfg = apps.get_app_config("netbox_kea")
+
+        # Ensure the job is in the registry so we can check the interval update.
+        registry["system_jobs"].setdefault(KeaIpamSyncJob, {"interval": 999})
+        original_interval = registry["system_jobs"][KeaIpamSyncJob]["interval"]
+
+        try:
+            with override_settings(PLUGINS_CONFIG={"netbox_kea": {"sync_interval_minutes": 17}}):
+                # No DB access should occur — if it does, it raises OperationalError in the
+                # SimpleTestCase (no DB) and the test would fail with a DB error rather than pass.
+                cfg._configure_sync_job_interval()
+
+            self.assertEqual(registry["system_jobs"][KeaIpamSyncJob]["interval"], 17)
+        finally:
+            registry["system_jobs"][KeaIpamSyncJob]["interval"] = original_interval
+
 
 class TestGetPluginConfig(SimpleTestCase):
     """Tests for _get_plugin_config() defensive type-checking."""
