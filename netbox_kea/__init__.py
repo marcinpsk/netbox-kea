@@ -23,6 +23,8 @@ class NetBoxKeaConfig(PluginConfig):
         "sync_interval_minutes": 5,
         "sync_leases_enabled": True,
         "sync_reservations_enabled": True,
+        "sync_prefixes_enabled": True,
+        "sync_ip_ranges_enabled": True,
         "sync_max_leases_per_server": 50000,
     }
 

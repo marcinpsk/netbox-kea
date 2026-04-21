@@ -93,7 +93,14 @@ class SyncJobsView(LoginRequiredMixin, View):
         """Render the sync jobs overview page with config form and server table."""
         sync_cfg = SyncConfig.get(default_interval=_configured_default_interval())
         form = forms.SyncConfigForm(
-            initial={"interval_minutes": sync_cfg.interval_minutes, "sync_enabled": sync_cfg.sync_enabled}
+            initial={
+                "interval_minutes": sync_cfg.interval_minutes,
+                "sync_enabled": sync_cfg.sync_enabled,
+                "sync_leases_enabled": sync_cfg.sync_leases_enabled,
+                "sync_reservations_enabled": sync_cfg.sync_reservations_enabled,
+                "sync_prefixes_enabled": sync_cfg.sync_prefixes_enabled,
+                "sync_ip_ranges_enabled": sync_cfg.sync_ip_ranges_enabled,
+            }
         )
         servers = list(Server.objects.restrict(request.user, "view").order_by("name"))
         allowed_server_pks = set(Server.objects.restrict(request.user, "change").values_list("pk", flat=True))
@@ -120,6 +127,10 @@ class SyncJobsView(LoginRequiredMixin, View):
                 sync_cfg = SyncConfig.get(default_interval=_configured_default_interval())
                 sync_cfg.interval_minutes = form.cleaned_data["interval_minutes"]
                 sync_cfg.sync_enabled = form.cleaned_data["sync_enabled"]
+                sync_cfg.sync_leases_enabled = form.cleaned_data["sync_leases_enabled"]
+                sync_cfg.sync_reservations_enabled = form.cleaned_data["sync_reservations_enabled"]
+                sync_cfg.sync_prefixes_enabled = form.cleaned_data["sync_prefixes_enabled"]
+                sync_cfg.sync_ip_ranges_enabled = form.cleaned_data["sync_ip_ranges_enabled"]
                 sync_cfg.save()
             except Exception:
                 logger.exception("Failed to save SyncConfig")
@@ -193,11 +204,13 @@ class ServerSyncStatusView(generic.ObjectView):
                     break
 
         jobs_list_url = reverse("core:job_list") + f"?object_type=netbox_kea.server&object_id={instance.pk}"
+        sync_cfg = SyncConfig.get(default_interval=_configured_default_interval())
         return {
             "recent_jobs": recent_jobs,
             "latest_job": latest,
             "jobs_list_url": jobs_list_url,
             "can_change_server": Server.objects.restrict(request.user, "change").filter(pk=instance.pk).exists(),
+            "sync_cfg": sync_cfg,
         }
 
 

@@ -18,7 +18,7 @@
         {% if perms.netbox_kea.change_syncconfig %}
         <form method="post">
           {% csrf_token %}
-          <div class="row g-3 align-items-end">
+          <div class="row g-3 align-items-start">
             <div class="col-auto">
               <label class="form-label">{{ form.interval_minutes.label }}</label>
               {{ form.interval_minutes }}
@@ -26,11 +26,36 @@
                 <div class="text-danger small">{{ err }}</div>
               {% endfor %}
             </div>
-            <div class="col-auto d-flex align-items-center gap-2">
-              {{ form.sync_enabled }}
-              <label class="form-check-label">{{ form.sync_enabled.label }}</label>
+            <div class="col-md-8">
+              <div class="row g-2">
+                <div class="col-12">
+                  <span class="form-label fw-semibold">Sync Types</span>
+                </div>
+                <div class="col-auto d-flex align-items-center gap-2">
+                  {{ form.sync_enabled }}
+                  <label class="form-check-label">{{ form.sync_enabled.label }}</label>
+                  <span class="text-muted small">&mdash; {{ form.sync_enabled.help_text }}</span>
+                </div>
+                <div class="col-12"><hr class="my-1"></div>
+                <div class="col-auto d-flex align-items-center gap-2">
+                  {{ form.sync_leases_enabled }}
+                  <label class="form-check-label">{{ form.sync_leases_enabled.label }}</label>
+                </div>
+                <div class="col-auto d-flex align-items-center gap-2">
+                  {{ form.sync_reservations_enabled }}
+                  <label class="form-check-label">{{ form.sync_reservations_enabled.label }}</label>
+                </div>
+                <div class="col-auto d-flex align-items-center gap-2">
+                  {{ form.sync_prefixes_enabled }}
+                  <label class="form-check-label">{{ form.sync_prefixes_enabled.label }}</label>
+                </div>
+                <div class="col-auto d-flex align-items-center gap-2">
+                  {{ form.sync_ip_ranges_enabled }}
+                  <label class="form-check-label">{{ form.sync_ip_ranges_enabled.label }}</label>
+                </div>
+              </div>
             </div>
-            <div class="col-auto">
+            <div class="col-auto align-self-end">
               <button type="submit" class="btn btn-primary">
                 <i class="mdi mdi-content-save-outline" aria-hidden="true"></i> Save
               </button>

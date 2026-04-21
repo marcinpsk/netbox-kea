@@ -512,3 +512,115 @@ def cleanup_stale_ips_batch(synced_records: list[dict]) -> int:
         )
 
     return total_cleaned
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Prefix and IP Range sync (Kea subnets → NetBox IP Prefixes / pools → Ranges)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def sync_subnet_to_netbox_prefix(subnet_cidr: str) -> tuple:
+    """Create or update a NetBox Prefix from a Kea subnet CIDR string.
+
+    Behaviour:
+    - If a Prefix with this CIDR already exists (in the default/no VRF), it is
+      returned as-is (idempotent).  The description is set only when the
+      existing object has an empty description, to avoid overwriting operator
+      notes.
+    - Otherwise a new active Prefix is created with description
+      ``"Synced from Kea DHCP subnet"``.
+
+    Args:
+        subnet_cidr: CIDR notation, e.g. ``"192.168.10.0/24"`` or ``"2001:db8::/48"``.
+
+    Returns ``(prefix_object, created)`` where *created* is ``True`` for new objects.
+
+    """
+    from django.db.utils import IntegrityError, OperationalError, ProgrammingError
+    from ipam.models import Prefix
+
+    try:
+        prefix_obj, created = Prefix.objects.get_or_create(
+            prefix=subnet_cidr,
+            defaults={"status": "active", "description": "Synced from Kea DHCP subnet"},
+        )
+        if not created and not prefix_obj.description:
+            prefix_obj.description = "Synced from Kea DHCP subnet"
+            prefix_obj.save(update_fields=["description"])
+        return prefix_obj, created
+    except (ProgrammingError, OperationalError, IntegrityError):
+        raise
+    except Exception:  # noqa: BLE001
+        raise
+
+
+def _parse_pool_range(pool_str: str, subnet_prefix_len: int) -> tuple[str, str] | None:
+    """Parse a Kea pool string and return ``(start_address, end_address)`` in CIDR form.
+
+    Handles:
+    - Range format ``"192.168.10.50-192.168.10.100"`` → host IPs tagged with the
+      parent subnet prefix length.
+    - CIDR format ``"192.168.10.128/25"`` → network/broadcast addresses with the
+      pool's own prefix length.
+
+    Returns ``None`` when the format is unrecognised or parsing fails.
+    """
+    from netaddr import AddrFormatError, IPNetwork
+    from netaddr import IPAddress as NetaddrIP
+
+    pool_str = pool_str.strip()
+    try:
+        if "-" in pool_str and "/" not in pool_str:
+            parts = pool_str.split("-", 1)
+            start_ip = str(NetaddrIP(parts[0].strip()))
+            end_ip = str(NetaddrIP(parts[1].strip()))
+            return f"{start_ip}/{subnet_prefix_len}", f"{end_ip}/{subnet_prefix_len}"
+        if "/" in pool_str:
+            net = IPNetwork(pool_str)
+            return f"{net.network}/{net.prefixlen}", f"{net.broadcast}/{net.prefixlen}"
+    except (AddrFormatError, ValueError, IndexError):
+        logger.debug("Failed to parse pool range %r", pool_str)
+    return None
+
+
+def sync_pool_to_netbox_ip_range(pool_str: str, subnet_cidr: str) -> tuple | None:
+    """Create or update a NetBox IPRange from a Kea pool definition.
+
+    Args:
+        pool_str:    Kea pool string, e.g. ``"192.168.10.50-192.168.10.100"`` or
+                     ``"192.168.10.128/25"``.
+        subnet_cidr: Parent subnet CIDR (e.g. ``"192.168.10.0/24"``) used to derive
+                     the prefix length for range-format pools.
+
+    Returns ``(ip_range_object, created)`` or ``None`` when the pool string
+    cannot be parsed.
+
+    """
+    from django.db.utils import IntegrityError, OperationalError, ProgrammingError
+    from ipam.models import IPRange
+    from netaddr import AddrFormatError, IPNetwork
+
+    try:
+        subnet_prefix_len = IPNetwork(subnet_cidr).prefixlen
+    except (AddrFormatError, ValueError):
+        subnet_prefix_len = 32 if ":" not in subnet_cidr else 128
+
+    addresses = _parse_pool_range(pool_str, subnet_prefix_len)
+    if addresses is None:
+        return None
+
+    start_addr, end_addr = addresses
+    try:
+        range_obj, created = IPRange.objects.get_or_create(
+            start_address=start_addr,
+            end_address=end_addr,
+            defaults={"status": "active", "description": "Synced from Kea DHCP pool"},
+        )
+        if not created and not range_obj.description:
+            range_obj.description = "Synced from Kea DHCP pool"
+            range_obj.save(update_fields=["description"])
+        return range_obj, created
+    except (ProgrammingError, OperationalError, IntegrityError):
+        raise
+    except Exception:  # noqa: BLE001
+        raise

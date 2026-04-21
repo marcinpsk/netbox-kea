@@ -1275,7 +1275,7 @@ class OptionDefForm(forms.Form):
 
 
 class SyncConfigForm(forms.Form):
-    """Form for editing the global SyncConfig (interval + kill-switch)."""
+    """Form for editing the global SyncConfig (interval + kill-switch + per-type toggles)."""
 
     interval_minutes = forms.IntegerField(
         label="Sync Interval (minutes)",
@@ -1288,4 +1288,24 @@ class SyncConfigForm(forms.Form):
         label="Sync Enabled (global)",
         required=False,
         help_text="Global kill-switch. Uncheck to pause sync for all servers.",
+    )
+    sync_leases_enabled = forms.BooleanField(
+        label="Sync Leases",
+        required=False,
+        help_text="Sync active Kea leases to NetBox IPAM as IP addresses.",
+    )
+    sync_reservations_enabled = forms.BooleanField(
+        label="Sync Reservations",
+        required=False,
+        help_text="Sync Kea reservations to NetBox IPAM as reserved IP addresses.",
+    )
+    sync_prefixes_enabled = forms.BooleanField(
+        label="Sync Prefixes",
+        required=False,
+        help_text="Sync Kea subnets to NetBox IPAM as IP Prefixes.",
+    )
+    sync_ip_ranges_enabled = forms.BooleanField(
+        label="Sync IP Ranges",
+        required=False,
+        help_text="Sync Kea pools to NetBox IPAM as IP Ranges.",
     )

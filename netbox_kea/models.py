@@ -256,6 +256,22 @@ class SyncConfig(models.Model):
         default=True,
         help_text="Global kill-switch. When False, no servers are synced regardless of per-server settings.",
     )
+    sync_leases_enabled = models.BooleanField(
+        default=True,
+        help_text="Sync active Kea leases to NetBox IPAM as IP addresses.",
+    )
+    sync_reservations_enabled = models.BooleanField(
+        default=True,
+        help_text="Sync Kea reservations to NetBox IPAM as reserved IP addresses.",
+    )
+    sync_prefixes_enabled = models.BooleanField(
+        default=True,
+        help_text="Sync Kea subnets to NetBox IPAM as IP Prefixes.",
+    )
+    sync_ip_ranges_enabled = models.BooleanField(
+        default=True,
+        help_text="Sync Kea pools to NetBox IPAM as IP Ranges.",
+    )
 
     class Meta:
         app_label = "netbox_kea"
@@ -288,5 +304,17 @@ class SyncConfig(models.Model):
         UI).  Pass the value from ``PLUGINS_CONFIG`` so the config file is
         honoured until the UI overrides it.
         """
-        obj, _ = cls.objects.get_or_create(pk=1, defaults={"interval_minutes": default_interval})
+        from django.conf import settings
+
+        config = getattr(settings, "PLUGINS_CONFIG", {}).get("netbox_kea", {})
+        obj, _ = cls.objects.get_or_create(
+            pk=1,
+            defaults={
+                "interval_minutes": default_interval,
+                "sync_leases_enabled": config.get("sync_leases_enabled", True),
+                "sync_reservations_enabled": config.get("sync_reservations_enabled", True),
+                "sync_prefixes_enabled": config.get("sync_prefixes_enabled", True),
+                "sync_ip_ranges_enabled": config.get("sync_ip_ranges_enabled", True),
+            },
+        )
         return obj

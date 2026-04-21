@@ -184,14 +184,95 @@ def _sync_server_reservations(
     return True
 
 
+def _sync_server_prefixes_and_ranges(
+    server: Server,
+    version: int,
+    *,
+    sync_prefixes: bool,
+    sync_ip_ranges: bool,
+    stats: dict[str, int],
+) -> None:
+    """Fetch subnets from *server* for *version* and sync to NetBox Prefixes / IP Ranges.
+
+    Calls ``config-get`` once per version to obtain the full subnet list
+    (including shared-network subnets).  For each subnet:
+    - When *sync_prefixes* is ``True``, calls :func:`.sync.sync_subnet_to_netbox_prefix`.
+    - When *sync_ip_ranges* is ``True``, calls :func:`.sync.sync_pool_to_netbox_ip_range`
+      for each pool entry in the subnet.
+    """
+    from .kea import KeaException
+    from .sync import sync_pool_to_netbox_ip_range, sync_subnet_to_netbox_prefix
+
+    service = f"dhcp{version}"
+    dhcp_key = f"Dhcp{version}"
+    subnet_key = f"subnet{version}"
+
+    try:
+        client = server.get_client(version=version)
+        config = client.command("config-get", service=[service])
+    except (KeaException, Exception) as exc:  # noqa: BLE001
+        logger.warning("Failed to fetch config-get from server %s (v%s): %s", server.name, version, exc)
+        stats["errors"] += 1
+        return
+
+    try:
+        raw_args = config[0].get("arguments") if config and isinstance(config[0], dict) else None
+        conf = raw_args.get(dhcp_key, {}) if isinstance(raw_args, dict) else {}
+    except Exception:  # noqa: BLE001
+        logger.warning("Failed to parse config-get response from server %s (v%s)", server.name, version)
+        stats["errors"] += 1
+        return
+
+    subnets: list[dict] = list(conf.get(subnet_key) or [])
+    for sn in conf.get("shared-networks") or []:
+        subnets.extend(sn.get(subnet_key) or [])
+
+    logger.info("Server %s (v%s): found %d subnets for prefix/range sync", server.name, version, len(subnets))
+
+    for subnet in subnets:
+        subnet_cidr = subnet.get("subnet")
+        if not subnet_cidr:
+            continue
+
+        if sync_prefixes:
+            try:
+                _, created = sync_subnet_to_netbox_prefix(subnet_cidr)
+                if created:
+                    stats["created"] += 1
+                else:
+                    stats["updated"] += 1
+            except Exception:  # noqa: BLE001, PERF203
+                logger.debug("Failed to sync prefix %s from server %s", subnet_cidr, server.name, exc_info=True)
+                stats["errors"] += 1
+
+        if sync_ip_ranges:
+            for pool_entry in subnet.get("pools") or []:
+                pool_str = pool_entry.get("pool") if isinstance(pool_entry, dict) else None
+                if not pool_str:
+                    continue
+                try:
+                    result = sync_pool_to_netbox_ip_range(pool_str, subnet_cidr)
+                    if result is not None:
+                        _, created = result
+                        if created:
+                            stats["created"] += 1
+                        else:
+                            stats["updated"] += 1
+                except Exception:  # noqa: BLE001, PERF203
+                    logger.debug("Failed to sync pool %s from server %s", pool_str, server.name, exc_info=True)
+                    stats["errors"] += 1
+
+
 def _sync_one_server(
     server: Server,
     sync_leases: bool,
     sync_reservations: bool,
+    sync_prefixes: bool,
+    sync_ip_ranges: bool,
     max_leases: int,
     stats: dict[str, int],
 ) -> None:
-    """Sync a single server's leases and reservations."""
+    """Sync a single server's leases, reservations, prefixes, and IP ranges."""
     from .sync import cleanup_stale_ips_batch
 
     all_synced: list[dict] = []
@@ -207,6 +288,14 @@ def _sync_one_server(
             )
         if sync_reservations:
             cleanup_safe &= _sync_server_reservations(server, version, stats=stats, all_synced=all_synced)
+        if sync_prefixes or sync_ip_ranges:
+            _sync_server_prefixes_and_ranges(
+                server,
+                version,
+                sync_prefixes=sync_prefixes,
+                sync_ip_ranges=sync_ip_ranges,
+                stats=stats,
+            )
 
     if all_synced and stats["errors"] == 0 and cleanup_safe:
         cleanup_stale_ips_batch(all_synced)
@@ -246,8 +335,10 @@ class KeaIpamSyncJob(JobRunner):
                 return
 
             config = _get_plugin_config()
-            sync_leases = config.get("sync_leases_enabled", True)
-            sync_reservations = config.get("sync_reservations_enabled", True)
+            sync_leases = sync_cfg.sync_leases_enabled
+            sync_reservations = sync_cfg.sync_reservations_enabled
+            sync_prefixes = sync_cfg.sync_prefixes_enabled
+            sync_ip_ranges = sync_cfg.sync_ip_ranges_enabled
             raw_max_leases = config.get("sync_max_leases_per_server", 50000)
             try:
                 max_leases = int(raw_max_leases)
@@ -264,8 +355,8 @@ class KeaIpamSyncJob(JobRunner):
                 )
                 max_leases = 0
 
-            if not sync_leases and not sync_reservations:
-                self.logger.info("Both sync_leases_enabled and sync_reservations_enabled are False — nothing to do.")
+            if not any([sync_leases, sync_reservations, sync_prefixes, sync_ip_ranges]):
+                self.logger.info("All sync type flags are False — nothing to do.")
                 return
 
             server_pk = kwargs.get("server_pk")
@@ -292,7 +383,9 @@ class KeaIpamSyncJob(JobRunner):
                 server_stats: dict[str, int] = {"created": 0, "updated": 0, "errors": 0}
 
                 try:
-                    _sync_one_server(server, sync_leases, sync_reservations, max_leases, server_stats)
+                    _sync_one_server(
+                        server, sync_leases, sync_reservations, sync_prefixes, sync_ip_ranges, max_leases, server_stats
+                    )
                 except Exception as exc:  # noqa: BLE001, PERF203
                     self.logger.error("Unhandled error syncing server %s: %s", server.name, exc, exc_info=True)
                     server_stats["errors"] += 1

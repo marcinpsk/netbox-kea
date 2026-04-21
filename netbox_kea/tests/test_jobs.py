@@ -86,7 +86,14 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
         """Patch SyncConfig so run() doesn't hit the DB in unit tests."""
         patcher = patch("netbox_kea.models.SyncConfig")
         self.MockSyncConfig = patcher.start()
-        self.MockSyncConfig.get.return_value = MagicMock(sync_enabled=True, interval_minutes=5)
+        self.MockSyncConfig.get.return_value = MagicMock(
+            sync_enabled=True,
+            interval_minutes=5,
+            sync_leases_enabled=True,
+            sync_reservations_enabled=True,
+            sync_prefixes_enabled=False,
+            sync_ip_ranges_enabled=False,
+        )
         self.addCleanup(patcher.stop)
 
     @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
@@ -108,18 +115,14 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
         mock_sync_resv.assert_called_once_with(_RESV4, cleanup=False)
         mock_cleanup.assert_called_once()
 
-    @override_settings(
-        PLUGINS_CONFIG={
-            **_PLUGINS_CONFIG,
-            "netbox_kea": {**_PLUGINS_CONFIG["netbox_kea"], "sync_leases_enabled": False},
-        }
-    )
+    @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
     @patch("netbox_kea.sync.cleanup_stale_ips_batch", return_value=0)
     @patch("netbox_kea.sync.sync_reservation_to_netbox", return_value=(MagicMock(), False))
     @patch("netbox_kea.sync.sync_lease_to_netbox", return_value=(MagicMock(), True))
     @patch("netbox_kea.models.Server")
     def test_run_skips_leases_when_disabled(self, MockServer, mock_sync_lease, mock_sync_resv, mock_cleanup):
         """sync_leases_enabled=False → lease_get_all never called."""
+        self.MockSyncConfig.get.return_value.sync_leases_enabled = False
         server = _make_server()
         client = _make_client(reservations=[_RESV4])
         server.get_client.return_value = client
@@ -131,18 +134,14 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
         mock_sync_lease.assert_not_called()
         mock_sync_resv.assert_called_once()
 
-    @override_settings(
-        PLUGINS_CONFIG={
-            **_PLUGINS_CONFIG,
-            "netbox_kea": {**_PLUGINS_CONFIG["netbox_kea"], "sync_reservations_enabled": False},
-        }
-    )
+    @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
     @patch("netbox_kea.sync.cleanup_stale_ips_batch", return_value=0)
     @patch("netbox_kea.sync.sync_reservation_to_netbox", return_value=(MagicMock(), False))
     @patch("netbox_kea.sync.sync_lease_to_netbox", return_value=(MagicMock(), True))
     @patch("netbox_kea.models.Server")
     def test_run_skips_reservations_when_disabled(self, MockServer, mock_sync_lease, mock_sync_resv, mock_cleanup):
         """sync_reservations_enabled=False → reservation_get_page never called."""
+        self.MockSyncConfig.get.return_value.sync_reservations_enabled = False
         server = _make_server()
         client = _make_client(leases4=[_LEASE4])
         server.get_client.return_value = client
@@ -454,22 +453,18 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
     # both sync flags disabled                                             #
     # ------------------------------------------------------------------ #
 
-    @override_settings(
-        PLUGINS_CONFIG={
-            **_PLUGINS_CONFIG,
-            "netbox_kea": {
-                **_PLUGINS_CONFIG["netbox_kea"],
-                "sync_leases_enabled": False,
-                "sync_reservations_enabled": False,
-            },
-        }
-    )
+    @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
     @patch("netbox_kea.sync.cleanup_stale_ips_batch", return_value=0)
     @patch("netbox_kea.sync.sync_reservation_to_netbox", return_value=(MagicMock(), False))
     @patch("netbox_kea.sync.sync_lease_to_netbox", return_value=(MagicMock(), True))
     @patch("netbox_kea.models.Server")
     def test_both_sync_disabled_returns_early(self, MockServer, mock_sync_lease, mock_sync_resv, mock_cleanup):
-        """When both sync_leases_enabled and sync_reservations_enabled are False, job returns immediately."""
+        """When all sync type flags are False, job returns immediately."""
+        sync_cfg = self.MockSyncConfig.get.return_value
+        sync_cfg.sync_leases_enabled = False
+        sync_cfg.sync_reservations_enabled = False
+        sync_cfg.sync_prefixes_enabled = False
+        sync_cfg.sync_ip_ranges_enabled = False
         KeaIpamSyncJob(_make_job()).run()
 
         MockServer.objects.all.assert_not_called()
@@ -778,12 +773,19 @@ class TestKeaIpamSyncJobKillSwitches(SimpleTestCase):
     @patch("netbox_kea.jobs._sync_one_server")
     @patch("netbox_kea.models.Server")
     def test_job_data_summary_written_after_run(self, MockServer, mock_sync_one, MockSyncConfig):
-        MockSyncConfig.get.return_value = MagicMock(sync_enabled=True, interval_minutes=5)
+        MockSyncConfig.get.return_value = MagicMock(
+            sync_enabled=True,
+            interval_minutes=5,
+            sync_leases_enabled=True,
+            sync_reservations_enabled=True,
+            sync_prefixes_enabled=False,
+            sync_ip_ranges_enabled=False,
+        )
         server = MagicMock(pk=1, dhcp4=True, dhcp6=False, sync_enabled=True)
         server.name = "kea-prod"
         MockServer.objects.all.return_value = [server]
 
-        def fake_sync(srv, sync_leases, sync_reservations, max_leases, stats):
+        def fake_sync(srv, sync_leases, sync_reservations, sync_prefixes, sync_ip_ranges, max_leases, stats):
             stats["created"] += 3
             stats["updated"] += 7
 
@@ -806,7 +808,14 @@ class TestKeaIpamSyncJobKillSwitches(SimpleTestCase):
     @patch("netbox_kea.models.Server")
     def test_job_data_summary_written_when_data_is_none(self, MockServer, mock_sync_one, MockSyncConfig):
         """job.data['summary'] must be written even when job.data starts as None."""
-        MockSyncConfig.get.return_value = MagicMock(sync_enabled=True, interval_minutes=5)
+        MockSyncConfig.get.return_value = MagicMock(
+            sync_enabled=True,
+            interval_minutes=5,
+            sync_leases_enabled=True,
+            sync_reservations_enabled=True,
+            sync_prefixes_enabled=False,
+            sync_ip_ranges_enabled=False,
+        )
         server = MagicMock(pk=1, name="kea", dhcp4=True, dhcp6=False, sync_enabled=True)
         MockServer.objects.all.return_value = [server]
 
