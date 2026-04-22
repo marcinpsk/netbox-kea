@@ -8,7 +8,7 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("ipam", "0086_gfk_indexes"),
+        ("ipam", "0001_squashed"),
         ("netbox_kea", "0009_per_protocol_credentials"),
     ]
 
