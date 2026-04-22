@@ -1325,3 +1325,209 @@ class TestSyncCleanupParameter(TestCase):
         self.assertTrue(NbIP.objects.filter(address__startswith="10.72.0.10/").exists())
         # New IP created
         self.assertTrue(NbIP.objects.filter(address__startswith="10.72.0.20/").exists())
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TestParsePoolRange
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestParsePoolRange(TestCase):
+    """_parse_pool_range handles dash-separated and CIDR pool formats."""
+
+    def _parse(self, pool_str, subnet_prefix_len):
+        from netbox_kea.sync import _parse_pool_range
+
+        return _parse_pool_range(pool_str, subnet_prefix_len)
+
+    def test_range_format_ipv4(self):
+        """'start-end' range format returns host CIDRs tagged with subnet prefix length."""
+        start, end = self._parse("192.168.1.50-192.168.1.100", 24)
+        self.assertEqual(start, "192.168.1.50/24")
+        self.assertEqual(end, "192.168.1.100/24")
+
+    def test_range_format_ipv6(self):
+        start, end = self._parse("2001:db8::1-2001:db8::ff", 64)
+        self.assertEqual(start, "2001:db8::1/64")
+        self.assertEqual(end, "2001:db8::ff/64")
+
+    def test_cidr_format_ipv4(self):
+        """CIDR pool format returns network/last address with the pool's prefix length."""
+        start, end = self._parse("192.168.1.128/25", 24)
+        self.assertEqual(start, "192.168.1.128/25")
+        self.assertEqual(end, "192.168.1.255/25")
+
+    def test_cidr_format_ipv6(self):
+        """IPv6 CIDR pool must not produce 'None' as end address."""
+        start, end = self._parse("2001:db8::/64", 48)
+        self.assertEqual(start, "2001:db8::/64")
+        self.assertNotIn("None", end)
+        self.assertEqual(end, "2001:db8::ffff:ffff:ffff:ffff/64")
+
+    def test_cidr_host_route_ipv4(self):
+        """IPv4 /32 CIDR pool must not produce 'None' as end address."""
+        start, end = self._parse("192.168.1.1/32", 24)
+        self.assertEqual(start, "192.168.1.1/32")
+        self.assertEqual(end, "192.168.1.1/32")
+
+    def test_cidr_host_route_ipv6(self):
+        """/128 CIDR pool must not produce 'None' as end address (broadcast=None on IPv6)."""
+        start, end = self._parse("2001:db8::1/128", 64)
+        self.assertEqual(start, "2001:db8::1/128")
+        self.assertEqual(end, "2001:db8::1/128")
+
+    def test_invalid_format_returns_none(self):
+        result = self._parse("not-a-pool", 24)
+        self.assertIsNone(result)
+
+    def test_whitespace_trimmed(self):
+        start, end = self._parse("  192.168.1.50-192.168.1.100  ", 24)
+        self.assertEqual(start, "192.168.1.50/24")
+        self.assertEqual(end, "192.168.1.100/24")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TestSyncSubnetToNetboxPrefix
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestSyncSubnetToNetboxPrefix(TestCase):
+    """sync_subnet_to_netbox_prefix creates/updates NetBox Prefix objects."""
+
+    def _sync(self, cidr, vrf=None):
+        from netbox_kea.sync import sync_subnet_to_netbox_prefix
+
+        return sync_subnet_to_netbox_prefix(cidr, vrf=vrf)
+
+    def test_creates_prefix_on_first_call(self):
+        from ipam.models import Prefix
+
+        prefix_obj, created, did_update = self._sync("10.0.0.0/24")
+        self.assertTrue(created)
+        self.assertFalse(did_update)
+        self.assertEqual(Prefix.objects.filter(prefix="10.0.0.0/24").count(), 1)
+
+    def test_idempotent_on_second_call(self):
+        """Second call returns existing object without changing it."""
+        self._sync("10.1.0.0/24")
+        prefix_obj, created, did_update = self._sync("10.1.0.0/24")
+        self.assertFalse(created)
+        self.assertFalse(did_update)
+
+    def test_sets_description_and_status_on_create(self):
+        prefix_obj, created, _ = self._sync("10.2.0.0/24")
+        self.assertTrue(created)
+        self.assertEqual(prefix_obj.description, "Synced from Kea DHCP subnet")
+        self.assertEqual(prefix_obj.status, "active")
+
+    def test_updates_description_when_existing_is_empty(self):
+        from ipam.models import Prefix
+
+        Prefix.objects.create(prefix="10.3.0.0/24", description="")
+        prefix_obj, created, did_update = self._sync("10.3.0.0/24")
+        self.assertFalse(created)
+        self.assertTrue(did_update)
+        self.assertEqual(prefix_obj.description, "Synced from Kea DHCP subnet")
+
+    def test_does_not_overwrite_existing_description(self):
+        from ipam.models import Prefix
+
+        Prefix.objects.create(prefix="10.4.0.0/24", description="Custom notes")
+        prefix_obj, created, did_update = self._sync("10.4.0.0/24")
+        self.assertFalse(created)
+        self.assertFalse(did_update)
+        prefix_obj.refresh_from_db()
+        self.assertEqual(prefix_obj.description, "Custom notes")
+
+    def test_ipv6_prefix(self):
+        from ipam.models import Prefix
+
+        prefix_obj, created, _ = self._sync("2001:db8::/48")
+        self.assertTrue(created)
+        self.assertTrue(Prefix.objects.filter(prefix="2001:db8::/48").exists())
+
+    def test_returns_three_tuple(self):
+        result = self._sync("10.5.0.0/24")
+        self.assertEqual(len(result), 3)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TestSyncPoolToNetboxIPRange
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestSyncPoolToNetboxIPRange(TestCase):
+    """sync_pool_to_netbox_ip_range creates/updates NetBox IPRange objects."""
+
+    def _sync(self, pool_str, subnet_cidr, vrf=None):
+        from netbox_kea.sync import sync_pool_to_netbox_ip_range
+
+        return sync_pool_to_netbox_ip_range(pool_str, subnet_cidr, vrf=vrf)
+
+    def test_creates_range_for_dash_pool(self):
+        from ipam.models import IPRange
+
+        result = self._sync("192.168.1.50-192.168.1.100", "192.168.1.0/24")
+        self.assertIsNotNone(result)
+        range_obj, created, did_update = result
+        self.assertTrue(created)
+        self.assertFalse(did_update)
+        self.assertEqual(IPRange.objects.filter(start_address="192.168.1.50/24").count(), 1)
+
+    def test_creates_range_for_cidr_pool(self):
+        result = self._sync("192.168.1.128/25", "192.168.1.0/24")
+        self.assertIsNotNone(result)
+        range_obj, created, _ = result
+        self.assertTrue(created)
+
+    def test_idempotent_on_second_call(self):
+        self._sync("192.168.2.50-192.168.2.100", "192.168.2.0/24")
+        result = self._sync("192.168.2.50-192.168.2.100", "192.168.2.0/24")
+        self.assertIsNotNone(result)
+        _, created, did_update = result
+        self.assertFalse(created)
+        self.assertFalse(did_update)
+
+    def test_updates_description_when_existing_is_empty(self):
+        from ipam.models import IPRange
+        from netaddr import IPNetwork
+
+        IPRange.objects.create(
+            start_address=IPNetwork("192.168.3.50/24"),
+            end_address=IPNetwork("192.168.3.100/24"),
+            description="",
+        )
+        result = self._sync("192.168.3.50-192.168.3.100", "192.168.3.0/24")
+        self.assertIsNotNone(result)
+        _, created, did_update = result
+        self.assertFalse(created)
+        self.assertTrue(did_update)
+
+    def test_returns_none_for_invalid_pool(self):
+        result = self._sync("invalid-pool-string!", "192.168.1.0/24")
+        self.assertIsNone(result)
+
+    def test_ipv6_pool(self):
+        """IPv6 dash-range pools must work and not produce 'None' in addresses."""
+        result = self._sync("2001:db8::1-2001:db8::100", "2001:db8::/48")
+        self.assertIsNotNone(result)
+        range_obj, created, _ = result
+        self.assertTrue(created)
+        self.assertNotIn("None", str(range_obj.end_address))
+
+    def test_ipv6_cidr_pool_too_large_returns_none(self):
+        """A /64 IPv6 CIDR pool spans 2^64 addresses — too large for PostgreSQL bigint; skip it."""
+        result = self._sync("2001:db8::/64", "2001:db8::/48")
+        self.assertIsNone(result)
+
+    def test_returns_three_tuple(self):
+        result = self._sync("192.168.10.50-192.168.10.100", "192.168.10.0/24")
+        self.assertIsNotNone(result)
+        self.assertEqual(len(result), 3)
+
+    def test_sets_description_and_status_on_create(self):
+        result = self._sync("192.168.11.50-192.168.11.100", "192.168.11.0/24")
+        self.assertIsNotNone(result)
+        range_obj, _, _ = result
+        self.assertEqual(range_obj.description, "Synced from Kea DHCP pool")
+        self.assertEqual(range_obj.status, "active")

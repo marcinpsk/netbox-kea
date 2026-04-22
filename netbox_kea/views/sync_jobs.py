@@ -178,7 +178,7 @@ class ServerSyncStatusView(generic.ObjectView):
     """Per-server Sync Status tab."""
 
     queryset = Server.objects.all()
-    tab = ViewTab(label="Sync Status", weight=1080)
+    tab = ViewTab(label="Sync", weight=1005)
     template_name = "netbox_kea/server_sync_status.html"
 
     def get_extra_context(self, request, instance):

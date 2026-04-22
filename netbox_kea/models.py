@@ -333,8 +333,6 @@ class SyncConfig(models.Model):
         UI).  Pass the value from ``PLUGINS_CONFIG`` so the config file is
         honoured until the UI overrides it.
         """
-        from django.conf import settings
-
         config = getattr(settings, "PLUGINS_CONFIG", {}).get("netbox_kea", {})
         obj, _ = cls.objects.get_or_create(
             pk=1,

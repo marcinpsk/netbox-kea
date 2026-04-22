@@ -184,6 +184,50 @@ def _sync_server_reservations(
     return True
 
 
+def _sync_subnet_entry(
+    subnet: dict,
+    sync_prefixes: bool,
+    sync_ip_ranges: bool,
+    vrf,
+    stats: dict[str, int],
+    server_name: str,
+) -> None:
+    """Sync a single Kea subnet dict to NetBox Prefix and/or IP Ranges."""
+    from .sync import sync_pool_to_netbox_ip_range, sync_subnet_to_netbox_prefix
+
+    subnet_cidr = subnet.get("subnet")
+    if not subnet_cidr:
+        return
+
+    if sync_prefixes:
+        try:
+            _, created, did_update = sync_subnet_to_netbox_prefix(subnet_cidr, vrf=vrf)
+            if created:
+                stats["created"] += 1
+            elif did_update:
+                stats["updated"] += 1
+        except Exception:  # noqa: BLE001, PERF203
+            logger.debug("Failed to sync prefix %s from server %s", subnet_cidr, server_name, exc_info=True)
+            stats["errors"] += 1
+
+    if sync_ip_ranges:
+        for pool_entry in subnet.get("pools") or []:
+            pool_str = pool_entry.get("pool") if isinstance(pool_entry, dict) else None
+            if not pool_str:
+                continue
+            try:
+                result = sync_pool_to_netbox_ip_range(pool_str, subnet_cidr, vrf=vrf)
+                if result is not None:
+                    _, created, did_update = result
+                    if created:
+                        stats["created"] += 1
+                    elif did_update:
+                        stats["updated"] += 1
+            except Exception:  # noqa: BLE001, PERF203
+                logger.debug("Failed to sync pool %s from server %s", pool_str, server_name, exc_info=True)
+                stats["errors"] += 1
+
+
 def _sync_server_prefixes_and_ranges(
     server: Server,
     version: int,
@@ -202,9 +246,6 @@ def _sync_server_prefixes_and_ranges(
       for each pool entry in the subnet.
     - *vrf* is forwarded to both sync functions (``None`` means global VRF).
     """
-    from .kea import KeaException
-    from .sync import sync_pool_to_netbox_ip_range, sync_subnet_to_netbox_prefix
-
     service = f"dhcp{version}"
     dhcp_key = f"Dhcp{version}"
     subnet_key = f"subnet{version}"
@@ -212,7 +253,7 @@ def _sync_server_prefixes_and_ranges(
     try:
         client = server.get_client(version=version)
         config = client.command("config-get", service=[service])
-    except (KeaException, Exception) as exc:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
         logger.warning("Failed to fetch config-get from server %s (v%s): %s", server.name, version, exc)
         stats["errors"] += 1
         return
@@ -232,37 +273,7 @@ def _sync_server_prefixes_and_ranges(
     logger.info("Server %s (v%s): found %d subnets for prefix/range sync", server.name, version, len(subnets))
 
     for subnet in subnets:
-        subnet_cidr = subnet.get("subnet")
-        if not subnet_cidr:
-            continue
-
-        if sync_prefixes:
-            try:
-                _, created = sync_subnet_to_netbox_prefix(subnet_cidr, vrf=vrf)
-                if created:
-                    stats["created"] += 1
-                else:
-                    stats["updated"] += 1
-            except Exception:  # noqa: BLE001, PERF203
-                logger.debug("Failed to sync prefix %s from server %s", subnet_cidr, server.name, exc_info=True)
-                stats["errors"] += 1
-
-        if sync_ip_ranges:
-            for pool_entry in subnet.get("pools") or []:
-                pool_str = pool_entry.get("pool") if isinstance(pool_entry, dict) else None
-                if not pool_str:
-                    continue
-                try:
-                    result = sync_pool_to_netbox_ip_range(pool_str, subnet_cidr, vrf=vrf)
-                    if result is not None:
-                        _, created = result
-                        if created:
-                            stats["created"] += 1
-                        else:
-                            stats["updated"] += 1
-                except Exception:  # noqa: BLE001, PERF203
-                    logger.debug("Failed to sync pool %s from server %s", pool_str, server.name, exc_info=True)
-                    stats["errors"] += 1
+        _sync_subnet_entry(subnet, sync_prefixes, sync_ip_ranges, vrf, stats, server.name)
 
 
 def _sync_one_server(

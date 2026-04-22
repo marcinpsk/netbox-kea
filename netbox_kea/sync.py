@@ -533,7 +533,8 @@ def sync_subnet_to_netbox_prefix(subnet_cidr: str, vrf=None) -> tuple:
         subnet_cidr: CIDR notation, e.g. ``"192.168.10.0/24"`` or ``"2001:db8::/48"``.
         vrf: NetBox VRF instance to assign the prefix to.  ``None`` means the global VRF.
 
-    Returns ``(prefix_object, created)`` where *created* is ``True`` for new objects.
+    Returns ``(prefix_object, created, did_update)`` where *created* is ``True`` for new
+    objects and *did_update* is ``True`` when an existing object's description was set.
 
     """
     from ipam.models import Prefix
@@ -543,10 +544,12 @@ def sync_subnet_to_netbox_prefix(subnet_cidr: str, vrf=None) -> tuple:
         vrf=vrf,
         defaults={"status": "active", "description": "Synced from Kea DHCP subnet"},
     )
+    did_update = False
     if not created and not prefix_obj.description:
         prefix_obj.description = "Synced from Kea DHCP subnet"
         prefix_obj.save(update_fields=["description"])
-    return prefix_obj, created
+        did_update = True
+    return prefix_obj, created, did_update
 
 
 def _parse_pool_range(pool_str: str, subnet_prefix_len: int) -> tuple[str, str] | None:
@@ -572,7 +575,7 @@ def _parse_pool_range(pool_str: str, subnet_prefix_len: int) -> tuple[str, str] 
             return f"{start_ip}/{subnet_prefix_len}", f"{end_ip}/{subnet_prefix_len}"
         if "/" in pool_str:
             net = IPNetwork(pool_str)
-            return f"{net.network}/{net.prefixlen}", f"{net.broadcast}/{net.prefixlen}"
+            return f"{net.network}/{net.prefixlen}", f"{net[-1]}/{net.prefixlen}"
     except (AddrFormatError, ValueError, IndexError):
         logger.debug("Failed to parse pool range %r", pool_str)
     return None
@@ -588,7 +591,7 @@ def sync_pool_to_netbox_ip_range(pool_str: str, subnet_cidr: str, vrf=None) -> t
                      the prefix length for range-format pools.
         vrf: NetBox VRF instance to assign the IP range to.  ``None`` means the global VRF.
 
-    Returns ``(ip_range_object, created)`` or ``None`` when the pool string
+    Returns ``(ip_range_object, created, did_update)`` or ``None`` when the pool string
     cannot be parsed.
 
     """
@@ -604,14 +607,30 @@ def sync_pool_to_netbox_ip_range(pool_str: str, subnet_cidr: str, vrf=None) -> t
     if addresses is None:
         return None
 
-    start_addr, end_addr = addresses
-    range_obj, created = IPRange.objects.get_or_create(
-        start_address=start_addr,
-        end_address=end_addr,
-        vrf=vrf,
-        defaults={"status": "active", "description": "Synced from Kea DHCP pool"},
-    )
+    start_addr_str, end_addr_str = addresses
+    start_addr = IPNetwork(start_addr_str)
+    end_addr = IPNetwork(end_addr_str)
+
+    # Guard against IPv6 ranges that overflow PostgreSQL bigint (max 2^63-1).
+    # An IPRange row stores a `size` column; ranges spanning 2^63+ addresses cannot be persisted.
+    _PG_BIGINT_MAX = 9_223_372_036_854_775_807
+    if int(end_addr.ip - start_addr.ip) + 1 > _PG_BIGINT_MAX:
+        logger.debug("Skipping pool %r: range too large to store as NetBox IPRange", pool_str)
+        return None
+
+    try:
+        range_obj, created = IPRange.objects.get_or_create(
+            start_address=start_addr,
+            end_address=end_addr,
+            vrf=vrf,
+            defaults={"status": "active", "description": "Synced from Kea DHCP pool"},
+        )
+    except Exception:
+        logger.debug("Failed to create IPRange for pool %r", pool_str, exc_info=True)
+        return None
+    did_update = False
     if not created and not range_obj.description:
         range_obj.description = "Synced from Kea DHCP pool"
         range_obj.save(update_fields=["description"])
-    return range_obj, created
+        did_update = True
+    return range_obj, created, did_update
