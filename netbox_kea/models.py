@@ -123,6 +123,15 @@ class Server(JobsMixin, NetBoxModel):
         default=True,
         help_text="Include this server in the periodic Kea→NetBox IPAM sync job.",
     )
+    sync_vrf = models.ForeignKey(
+        to="ipam.VRF",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+        verbose_name="Sync VRF",
+        help_text="VRF to assign when syncing subnets as Prefixes and pools as IP Ranges. Leave blank for the global VRF.",
+    )
 
     class Meta:
         ordering = ("name",)

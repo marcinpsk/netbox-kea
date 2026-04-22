@@ -190,6 +190,7 @@ def _sync_server_prefixes_and_ranges(
     *,
     sync_prefixes: bool,
     sync_ip_ranges: bool,
+    vrf=None,
     stats: dict[str, int],
 ) -> None:
     """Fetch subnets from *server* for *version* and sync to NetBox Prefixes / IP Ranges.
@@ -199,6 +200,7 @@ def _sync_server_prefixes_and_ranges(
     - When *sync_prefixes* is ``True``, calls :func:`.sync.sync_subnet_to_netbox_prefix`.
     - When *sync_ip_ranges* is ``True``, calls :func:`.sync.sync_pool_to_netbox_ip_range`
       for each pool entry in the subnet.
+    - *vrf* is forwarded to both sync functions (``None`` means global VRF).
     """
     from .kea import KeaException
     from .sync import sync_pool_to_netbox_ip_range, sync_subnet_to_netbox_prefix
@@ -236,7 +238,7 @@ def _sync_server_prefixes_and_ranges(
 
         if sync_prefixes:
             try:
-                _, created = sync_subnet_to_netbox_prefix(subnet_cidr)
+                _, created = sync_subnet_to_netbox_prefix(subnet_cidr, vrf=vrf)
                 if created:
                     stats["created"] += 1
                 else:
@@ -251,7 +253,7 @@ def _sync_server_prefixes_and_ranges(
                 if not pool_str:
                     continue
                 try:
-                    result = sync_pool_to_netbox_ip_range(pool_str, subnet_cidr)
+                    result = sync_pool_to_netbox_ip_range(pool_str, subnet_cidr, vrf=vrf)
                     if result is not None:
                         _, created = result
                         if created:
@@ -294,6 +296,7 @@ def _sync_one_server(
                 version,
                 sync_prefixes=sync_prefixes,
                 sync_ip_ranges=sync_ip_ranges,
+                vrf=server.sync_vrf,
                 stats=stats,
             )
 
