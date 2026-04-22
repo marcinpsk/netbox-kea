@@ -207,7 +207,7 @@ def _sync_subnet_entry(
             elif did_update:
                 stats["updated"] += 1
         except Exception:  # noqa: BLE001, PERF203
-            logger.debug("Failed to sync prefix %s from server %s", subnet_cidr, server_name, exc_info=True)
+            logger.exception("Failed to sync prefix %s from server %s", subnet_cidr, server_name)
             stats["errors"] += 1
 
     if sync_ip_ranges:
@@ -232,7 +232,7 @@ def _sync_subnet_entry(
                     elif did_update:
                         stats["updated"] += 1
             except Exception:  # noqa: BLE001, PERF203
-                logger.debug("Failed to sync pool %s from server %s", pool_str, server_name, exc_info=True)
+                logger.exception("Failed to sync pool %s from server %s", pool_str, server_name)
                 stats["errors"] += 1
 
 

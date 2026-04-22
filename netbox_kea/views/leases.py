@@ -122,11 +122,17 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
         return table
 
     def get_leases_page(
-        self, client: KeaClient, subnet: IPNetwork, page: str | None, per_page: int
+        self, client: KeaClient, subnet: IPNetwork | None, page: str | None, per_page: int
     ) -> tuple[list[dict[str, Any]], str | None]:
-        """Fetch one page of leases for *subnet* and return ``(leases, next_cursor)``."""
+        """Fetch one page of leases and return ``(leases, next_cursor)``.
+
+        When *subnet* is ``None`` (all-leases mode), returns leases from the beginning of
+        the address space without subnet filtering.  Otherwise filters results to *subnet*.
+        """
         if page:
             frm = page
+        elif subnet is None:
+            frm = "0.0.0.0" if self.dhcp_version == 4 else "::"
         elif int(subnet.network) == 0:
             frm = str(subnet.network)
         else:
@@ -173,12 +179,13 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
             next_cursor = str(last["ip-address"])
         else:
             next_cursor = None
-        for i, lease in enumerate(raw_leases):
-            lease_ip = IPAddress(lease["ip-address"])
-            if lease_ip not in subnet:
-                raw_leases = raw_leases[:i]
-                next_cursor = None
-                break
+        if subnet is not None:
+            for i, lease in enumerate(raw_leases):
+                lease_ip = IPAddress(lease["ip-address"])
+                if lease_ip not in subnet:
+                    raw_leases = raw_leases[:i]
+                    next_cursor = None
+                    break
 
         subnet_leases = format_leases(raw_leases)
 
@@ -441,6 +448,14 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
                     client,
                     q,
                     form.cleaned_data["page"],
+                    per_page=get_paginate_count(request),
+                )
+                paginate = True
+            elif by == "":
+                leases, next_page = self.get_leases_page(
+                    client,
+                    None,
+                    form.cleaned_data.get("page"),
                     per_page=get_paginate_count(request),
                 )
                 paginate = True
