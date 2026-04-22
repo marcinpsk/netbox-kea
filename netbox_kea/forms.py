@@ -66,6 +66,7 @@ class ServerForm(NetBoxModelForm):
     )
 
     def __init__(self, *args, **kwargs):
+        """Initialise dynamic form fields whose querysets must be evaluated per request."""
         super().__init__(*args, **kwargs)
         from ipam.models import VRF
 

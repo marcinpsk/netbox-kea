@@ -217,7 +217,15 @@ def _sync_subnet_entry(
                 continue
             try:
                 result = sync_pool_to_netbox_ip_range(pool_str, subnet_cidr, vrf=vrf)
-                if result is not None:
+                if result is None:
+                    logger.warning(
+                        "Failed to parse pool %s in subnet %s from server %s",
+                        pool_str,
+                        subnet_cidr,
+                        server_name,
+                    )
+                    stats["errors"] += 1
+                else:
                     _, created, did_update = result
                     if created:
                         stats["created"] += 1

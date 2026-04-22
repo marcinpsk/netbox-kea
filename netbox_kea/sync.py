@@ -618,16 +618,12 @@ def sync_pool_to_netbox_ip_range(pool_str: str, subnet_cidr: str, vrf=None) -> t
         logger.debug("Skipping pool %r: range too large to store as NetBox IPRange", pool_str)
         return None
 
-    try:
-        range_obj, created = IPRange.objects.get_or_create(
-            start_address=start_addr,
-            end_address=end_addr,
-            vrf=vrf,
-            defaults={"status": "active", "description": "Synced from Kea DHCP pool"},
-        )
-    except Exception:
-        logger.debug("Failed to create IPRange for pool %r", pool_str, exc_info=True)
-        return None
+    range_obj, created = IPRange.objects.get_or_create(
+        start_address=start_addr,
+        end_address=end_addr,
+        vrf=vrf,
+        defaults={"status": "active", "description": "Synced from Kea DHCP pool"},
+    )
     did_update = False
     if not created and not range_obj.description:
         range_obj.description = "Synced from Kea DHCP pool"

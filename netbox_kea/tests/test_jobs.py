@@ -1038,14 +1038,14 @@ class TestSyncSubnetEntry(SimpleTestCase):
 
     @patch("netbox_kea.sync.sync_pool_to_netbox_ip_range", return_value=None)
     @patch("netbox_kea.sync.sync_subnet_to_netbox_prefix", return_value=(MagicMock(), False, False))
-    def test_pool_none_result_does_not_count(self, mock_prefix, mock_range):
-        """sync_pool_to_netbox_ip_range returning None (skipped) does not increment stats."""
+    def test_pool_none_result_counts_as_error(self, mock_prefix, mock_range):
+        """sync_pool_to_netbox_ip_range returning None (unparseable pool) increments errors."""
         from netbox_kea.jobs import _sync_subnet_entry
 
         stats = self._make_stats()
         subnet = {"subnet": "10.0.0.0/24", "pools": [{"pool": "10.0.0.10-10.0.0.50"}]}
         _sync_subnet_entry(subnet, sync_prefixes=False, sync_ip_ranges=True, vrf=None, stats=stats, server_name="s")
-        self.assertEqual(stats, {"created": 0, "updated": 0, "errors": 0})
+        self.assertEqual(stats, {"created": 0, "updated": 0, "errors": 1})
 
     @patch("netbox_kea.sync.sync_subnet_to_netbox_prefix", return_value=(MagicMock(), True, False))
     def test_vrf_forwarded_to_prefix_sync(self, mock_prefix):
