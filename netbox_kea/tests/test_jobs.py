@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, call, patch
 
+from core.exceptions import JobFailed
 from django.test import SimpleTestCase, override_settings
 
 from netbox_kea.jobs import KeaIpamSyncJob
@@ -175,7 +176,8 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
 
         MockServer.objects.all.return_value = [server1, server2]
 
-        KeaIpamSyncJob(_make_job()).run()
+        with self.assertRaises(JobFailed):
+            KeaIpamSyncJob(_make_job()).run()
 
         # server2 lease was still synced
         mock_sync_lease.assert_called_once_with(_LEASE4, cleanup=False)
@@ -301,8 +303,9 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
         server.get_client.return_value = client
         MockServer.objects.all.return_value = [server]
 
-        # Should not raise even though all lease syncs fail
-        KeaIpamSyncJob(_make_job()).run()
+        # JobFailed is raised when total["errors"] > 0
+        with self.assertRaises(JobFailed):
+            KeaIpamSyncJob(_make_job()).run()
 
         self.assertEqual(mock_sync_lease.call_count, 2)
         # errors > 0 → cleanup must not run (partial all_synced would cause false deletions)
@@ -427,7 +430,8 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
             MockServer.objects.all.return_value = [server]
 
             with self.assertLogs("netbox_kea.jobs", level="WARNING") as cm:
-                KeaIpamSyncJob(_make_job()).run()
+                with self.assertRaises(JobFailed):
+                    KeaIpamSyncJob(_make_job()).run()
 
         mock_cleanup.assert_not_called()
         self.assertTrue(any("skipping stale-IP cleanup" in msg for msg in cm.output))
@@ -527,7 +531,8 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
         MockServer.objects.all.return_value = [server]
 
         with self.assertLogs("netbox_kea.jobs", level="WARNING") as cm:
-            KeaIpamSyncJob(_make_job()).run()
+            with self.assertRaises(JobFailed):
+                KeaIpamSyncJob(_make_job()).run()
 
         self.assertTrue(any("Failed to fetch reservations" in msg for msg in cm.output))
 
@@ -573,7 +578,8 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
         MockServer.objects.all.return_value = [server]
 
         with self.assertLogs("netbox_kea.jobs", level="WARNING") as cm:
-            KeaIpamSyncJob(_make_job()).run()
+            with self.assertRaises(JobFailed):
+                KeaIpamSyncJob(_make_job()).run()
 
         self.assertTrue(any("Unexpected error fetching reservations" in msg for msg in cm.output))
 
@@ -593,7 +599,8 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
         MockServer.objects.all.return_value = [server]
 
         with patch("netbox_kea.sync.sync_reservation_to_netbox", side_effect=ValueError("oops")):
-            KeaIpamSyncJob(_make_job()).run()
+            with self.assertRaises(JobFailed):
+                KeaIpamSyncJob(_make_job()).run()
 
         mock_cleanup.assert_not_called()
 
@@ -616,7 +623,8 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
         MockServer.objects.all.return_value = [server]
 
         with self.assertLogs("netbox.jobs", level="ERROR") as cm:
-            KeaIpamSyncJob(_make_job()).run()
+            with self.assertRaises(JobFailed):
+                KeaIpamSyncJob(_make_job()).run()
 
         self.assertTrue(any("Unhandled error syncing server" in msg for msg in cm.output))
 
@@ -648,7 +656,8 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
         MockServer.objects.all.return_value = [server]
 
         with self.assertLogs("netbox_kea.jobs", level="WARNING") as cm:
-            KeaIpamSyncJob(_make_job()).run()
+            with self.assertRaises(JobFailed):
+                KeaIpamSyncJob(_make_job()).run()
 
         self.assertTrue(any("Failed to fetch leases" in msg for msg in cm.output))
         mock_sync_resv.assert_called_once_with(_RESV4, cleanup=False)
@@ -681,7 +690,8 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
         MockServer.objects.all.return_value = [server]
 
         with self.assertLogs("netbox_kea.jobs", level="WARNING") as cm:
-            KeaIpamSyncJob(_make_job()).run()
+            with self.assertRaises(JobFailed):
+                KeaIpamSyncJob(_make_job()).run()
 
         self.assertTrue(any("Unexpected error fetching reservations" in msg for msg in cm.output))
         mock_sync_lease.assert_called_once_with(_LEASE4, cleanup=False)

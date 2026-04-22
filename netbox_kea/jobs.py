@@ -31,6 +31,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
+from core.exceptions import JobFailed
 from netbox.jobs import JobRunner, system_job
 
 if TYPE_CHECKING:
@@ -385,15 +386,11 @@ class KeaIpamSyncJob(JobRunner):
             try:
                 max_leases = int(raw_max_leases)
             except (TypeError, ValueError):
-                self.logger.warning(
-                    "Invalid sync_max_leases_per_server=%r; falling back to 50000",
-                    raw_max_leases,
-                )
+                self.logger.warning(f"Invalid sync_max_leases_per_server={raw_max_leases!r}; falling back to 50000")
                 max_leases = 50000
             if max_leases < 0:
                 self.logger.warning(
-                    "Negative sync_max_leases_per_server=%d is not allowed; using 0 (no cap)",
-                    max_leases,
+                    f"Negative sync_max_leases_per_server={max_leases} is not allowed; using 0 (no cap)"
                 )
                 max_leases = 0
 
@@ -411,14 +408,14 @@ class KeaIpamSyncJob(JobRunner):
                 self.logger.info("No Kea servers configured — nothing to sync.")
                 return
 
-            self.logger.info("Starting Kea IPAM sync for %d server(s).", len(servers))
+            self.logger.info(f"Starting Kea IPAM sync for {len(servers)} server(s).")
             total: dict[str, int] = {"created": 0, "updated": 0, "errors": 0}
 
             for server in servers:
                 # In Run Now mode (server_pk provided), honour the explicit selection
                 # and skip the per-server enabled check.
                 if server_pk is None and not server.sync_enabled:
-                    self.logger.info("Server %s: sync_enabled=False — skipping.", server.name)
+                    self.logger.info(f"Server {server.name}: sync_enabled=False — skipping.")
                     continue
 
                 # Per-server type overrides: AND global flag with server flag.
@@ -427,7 +424,7 @@ class KeaIpamSyncJob(JobRunner):
                 effective_prefixes = sync_prefixes and server.sync_prefixes_enabled
                 effective_ip_ranges = sync_ip_ranges and server.sync_ip_ranges_enabled
 
-                self.logger.debug("Syncing server: %s (pk=%s)", server.name, server.pk)
+                self.logger.debug(f"Syncing server: {server.name} (pk={server.pk})")
                 server_stats: dict[str, int] = {"created": 0, "updated": 0, "errors": 0}
 
                 try:
@@ -441,15 +438,12 @@ class KeaIpamSyncJob(JobRunner):
                         server_stats,
                     )
                 except Exception as exc:  # noqa: BLE001, PERF203
-                    self.logger.error("Unhandled error syncing server %s: %s", server.name, exc, exc_info=True)
+                    self.logger.error(f"Unhandled error syncing server {server.name}: {exc}", exc_info=True)
                     server_stats["errors"] += 1
 
                 self.logger.info(
-                    "Server %s: created=%d updated=%d errors=%d",
-                    server.name,
-                    server_stats["created"],
-                    server_stats["updated"],
-                    server_stats["errors"],
+                    f"Server {server.name}: created={server_stats['created']}"
+                    f" updated={server_stats['updated']} errors={server_stats['errors']}"
                 )
                 for key in total:
                     total[key] += server_stats[key]
@@ -465,12 +459,11 @@ class KeaIpamSyncJob(JobRunner):
                 )
 
             self.logger.info(
-                "Kea IPAM sync complete — servers=%d created=%d updated=%d errors=%d",
-                len(summary),
-                total["created"],
-                total["updated"],
-                total["errors"],
+                f"Kea IPAM sync complete — servers={len(summary)}"
+                f" created={total['created']} updated={total['updated']} errors={total['errors']}"
             )
+            if total["errors"] > 0:
+                raise JobFailed()
         finally:
             if not isinstance(self.job.data, dict):
                 self.job.data = {}
