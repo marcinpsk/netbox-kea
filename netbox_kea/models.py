@@ -123,6 +123,26 @@ class Server(JobsMixin, NetBoxModel):
         default=True,
         help_text="Include this server in the periodic Kea→NetBox IPAM sync job.",
     )
+    sync_leases_enabled = models.BooleanField(
+        verbose_name="Sync Leases",
+        default=True,
+        help_text="Sync active DHCP leases as NetBox IP Addresses for this server.",
+    )
+    sync_reservations_enabled = models.BooleanField(
+        verbose_name="Sync Reservations",
+        default=True,
+        help_text="Sync DHCP reservations as NetBox IP Addresses for this server.",
+    )
+    sync_prefixes_enabled = models.BooleanField(
+        verbose_name="Sync Prefixes",
+        default=True,
+        help_text="Sync Kea subnets as NetBox IP Prefixes for this server.",
+    )
+    sync_ip_ranges_enabled = models.BooleanField(
+        verbose_name="Sync IP Ranges",
+        default=True,
+        help_text="Sync Kea pools as NetBox IP Ranges for this server.",
+    )
     sync_vrf = models.ForeignKey(
         to="ipam.VRF",
         on_delete=models.SET_NULL,

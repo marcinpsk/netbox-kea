@@ -54,7 +54,15 @@ class ServerForm(NetBoxModelForm):
             "dhcp6_password",
             name="DHCPv6",
         ),
-        FieldSet("sync_enabled", "sync_vrf", name="IPAM Sync"),
+        FieldSet(
+            "sync_enabled",
+            "sync_leases_enabled",
+            "sync_reservations_enabled",
+            "sync_prefixes_enabled",
+            "sync_ip_ranges_enabled",
+            "sync_vrf",
+            name="IPAM Sync",
+        ),
     )
 
     def __init__(self, *args, **kwargs):
@@ -89,6 +97,10 @@ class ServerForm(NetBoxModelForm):
             "dhcp6_url",
             "has_control_agent",
             "sync_enabled",
+            "sync_leases_enabled",
+            "sync_reservations_enabled",
+            "sync_prefixes_enabled",
+            "sync_ip_ranges_enabled",
             "sync_vrf",
             "tags",
         )

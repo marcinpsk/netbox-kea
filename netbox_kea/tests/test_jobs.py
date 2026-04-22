@@ -56,6 +56,12 @@ def _make_server(name: str = "kea1", dhcp4: bool = True, dhcp6: bool = False, pk
     server.dhcp4 = dhcp4
     server.dhcp6 = dhcp6
     server.pk = pk
+    server.sync_enabled = True
+    server.sync_leases_enabled = True
+    server.sync_reservations_enabled = True
+    server.sync_prefixes_enabled = True
+    server.sync_ip_ranges_enabled = True
+    server.sync_vrf = None
     return server
 
 

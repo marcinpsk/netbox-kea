@@ -86,11 +86,20 @@
             <p class="small text-muted mb-1">Global sync types
               (<a href="{% url 'plugins:netbox_kea:sync_jobs' %}">configure</a>):
             </p>
-            <div class="d-flex flex-wrap gap-1">
+            <div class="d-flex flex-wrap gap-1 mb-2">
               <span class="badge {% if sync_cfg.sync_leases_enabled %}text-bg-success{% else %}text-bg-secondary{% endif %}">Leases</span>
               <span class="badge {% if sync_cfg.sync_reservations_enabled %}text-bg-success{% else %}text-bg-secondary{% endif %}">Reservations</span>
               <span class="badge {% if sync_cfg.sync_prefixes_enabled %}text-bg-success{% else %}text-bg-secondary{% endif %}">Prefixes</span>
               <span class="badge {% if sync_cfg.sync_ip_ranges_enabled %}text-bg-success{% else %}text-bg-secondary{% endif %}">IP Ranges</span>
+            </div>
+            <p class="small text-muted mb-1">Server overrides
+              (<a href="{% url 'plugins:netbox_kea:server_edit' object.pk %}">configure</a>):
+            </p>
+            <div class="d-flex flex-wrap gap-1">
+              <span class="badge {% if object.sync_leases_enabled %}text-bg-success{% else %}text-bg-secondary{% endif %}">Leases</span>
+              <span class="badge {% if object.sync_reservations_enabled %}text-bg-success{% else %}text-bg-secondary{% endif %}">Reservations</span>
+              <span class="badge {% if object.sync_prefixes_enabled %}text-bg-success{% else %}text-bg-secondary{% endif %}">Prefixes</span>
+              <span class="badge {% if object.sync_ip_ranges_enabled %}text-bg-success{% else %}text-bg-secondary{% endif %}">IP Ranges</span>
             </div>
             {% endif %}
           </div>

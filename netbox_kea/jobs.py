@@ -382,12 +382,24 @@ class KeaIpamSyncJob(JobRunner):
                     self.logger.info("Server %s: sync_enabled=False — skipping.", server.name)
                     continue
 
+                # Per-server type overrides: AND global flag with server flag.
+                effective_leases = sync_leases and server.sync_leases_enabled
+                effective_reservations = sync_reservations and server.sync_reservations_enabled
+                effective_prefixes = sync_prefixes and server.sync_prefixes_enabled
+                effective_ip_ranges = sync_ip_ranges and server.sync_ip_ranges_enabled
+
                 self.logger.debug("Syncing server: %s (pk=%s)", server.name, server.pk)
                 server_stats: dict[str, int] = {"created": 0, "updated": 0, "errors": 0}
 
                 try:
                     _sync_one_server(
-                        server, sync_leases, sync_reservations, sync_prefixes, sync_ip_ranges, max_leases, server_stats
+                        server,
+                        effective_leases,
+                        effective_reservations,
+                        effective_prefixes,
+                        effective_ip_ranges,
+                        max_leases,
+                        server_stats,
                     )
                 except Exception as exc:  # noqa: BLE001, PERF203
                     self.logger.error("Unhandled error syncing server %s: %s", server.name, exc, exc_info=True)
