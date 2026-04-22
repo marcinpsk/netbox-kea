@@ -1337,7 +1337,9 @@ def test_lease_search_page_param_without_subnet(
     expect(page).to_have_url(re.compile("by="))
     page_param = "2001:db8:1::" if family == 6 else "192.0.2.0"
     page.goto(f"{page.url}&page={quote_plus(page_param)}")
-    expect(page.locator("form.form").get_by_role("alert")).to_contain_text("page is only supported with subnet.")
+    expect(page.locator("form.form").get_by_role("alert")).to_contain_text(
+        "page is only supported with subnet or all-leases search."
+    )
 
 
 def test_filter_servers_by_tag(

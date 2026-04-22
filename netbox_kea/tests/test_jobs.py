@@ -1196,7 +1196,7 @@ class TestSyncServerPrefixesAndRanges(SimpleTestCase):
 
     @patch("netbox_kea.jobs._sync_subnet_entry")
     def test_malformed_config_response_increments_errors(self, mock_entry):
-        """config-get returning empty list → errors incremented, no crash."""
+        """config-get returning a non-list → errors incremented, no subnet entries processed."""
         from netbox_kea.jobs import _sync_server_prefixes_and_ranges
 
         server = self._make_server()
@@ -1207,9 +1207,9 @@ class TestSyncServerPrefixesAndRanges(SimpleTestCase):
 
         stats = {"created": 0, "updated": 0, "errors": 0}
         _sync_server_prefixes_and_ranges(server, version=4, sync_prefixes=True, sync_ip_ranges=True, stats=stats)
-        # conf falls back to {} → subnets is [] → no entries called, no error
+        # malformed response → error counted, no subnet entries processed
         mock_entry.assert_not_called()
-        self.assertEqual(stats["errors"], 0)
+        self.assertEqual(stats["errors"], 1)
 
     @patch("netbox_kea.jobs._sync_subnet_entry")
     def test_vrf_forwarded_to_subnet_entry(self, mock_entry):

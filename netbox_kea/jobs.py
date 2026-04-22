@@ -266,11 +266,31 @@ def _sync_server_prefixes_and_ranges(
         stats["errors"] += 1
         return
 
-    try:
-        raw_args = config[0].get("arguments") if config and isinstance(config[0], dict) else None
-        conf = raw_args.get(dhcp_key, {}) if isinstance(raw_args, dict) else {}
-    except Exception:  # noqa: BLE001
-        logger.warning("Failed to parse config-get response from server %s (v%s)", server.name, version)
+    if not isinstance(config, list) or not config or not isinstance(config[0], dict):
+        logger.warning("Malformed config-get response from server %s (v%s)", server.name, version)
+        stats["errors"] += 1
+        return
+
+    response = config[0]
+    if response.get("result") != 0:
+        logger.warning(
+            "config-get failed for server %s (v%s): %s",
+            server.name,
+            version,
+            response.get("text", response),
+        )
+        stats["errors"] += 1
+        return
+
+    raw_args = response.get("arguments") or {}
+    if not isinstance(raw_args, dict):
+        logger.warning("Malformed config-get arguments from server %s (v%s)", server.name, version)
+        stats["errors"] += 1
+        return
+
+    conf = raw_args.get(dhcp_key) or {}
+    if not isinstance(conf, dict):
+        logger.warning("Malformed %s config from server %s (v%s)", dhcp_key, server.name, version)
         stats["errors"] += 1
         return
 
