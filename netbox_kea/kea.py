@@ -30,6 +30,7 @@ class KeaClient:
         client_cert: str | None = None,
         client_key: str | None = None,
         timeout: int = 30,
+        persist_config: bool = True,
     ):
         """Initialise a Kea HTTP client session.
 
@@ -41,6 +42,10 @@ class KeaClient:
             client_cert: Path to client certificate for mutual TLS.
             client_key: Path to private key matching client_cert.
             timeout: Request timeout in seconds.
+            persist_config: When True (default), ``config-write`` is issued after
+                each mutation.  Set to False when Kea configuration is managed
+                externally (e.g. Ansible, Puppet) and you do not want the plugin
+                to overwrite the on-disk config file.
 
         Raises:
             ValueError: If only one of client_cert/client_key is provided.
@@ -51,6 +56,7 @@ class KeaClient:
 
         self.url = url
         self.timeout = timeout
+        self.persist_config = persist_config
 
         self._session = requests.Session()
         if verify is not None:
@@ -114,6 +120,7 @@ class KeaClient:
         new._session.auth = self._session.auth
         new._session.verify = self._session.verify
         new._session.cert = self._session.cert
+        new.persist_config = self.persist_config
         return new
 
     def close(self) -> None:
@@ -1200,11 +1207,14 @@ class KeaClient:
                 "config-set transport/parse error for service %s — change may be live but unpersisted", service
             )
             raise AmbiguousConfigSetError(service, exc) from exc
-        try:
-            self.command("config-write", service=[service])
-        except (KeaException, requests.RequestException, ValueError) as exc:
-            logger.warning("config-write failed for service %s — change not persisted to disk", service)
-            raise PartialPersistError(service, exc) from exc
+        if self.persist_config:
+            try:
+                self.command("config-write", service=[service])
+            except (KeaException, requests.RequestException, ValueError) as exc:
+                logger.warning("config-write failed for service %s — change not persisted to disk", service)
+                raise PartialPersistError(service, exc) from exc
+        else:
+            logger.debug("persist_config disabled for service %s — skipping config-write after config-set", service)
 
     def _persist_config(self, service: str) -> None:
         """Validate the current running config and persist it to disk.
@@ -1220,6 +1230,9 @@ class KeaClient:
         3. ``config-write`` — persist the validated config to disk.  Failure raises
            :exc:`PartialPersistError` (change is live but will be lost on restart).
         """
+        if not self.persist_config:
+            logger.debug("persist_config disabled for service %s — skipping config-write", service)
+            return
         # Step 1: fetch the current in-memory config so we can validate and write it.
         try:
             resp = self.command("config-get", service=[service])

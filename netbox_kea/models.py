@@ -143,6 +143,16 @@ class Server(JobsMixin, NetBoxModel):
         default=True,
         help_text="Sync Kea pools as NetBox IP Ranges for this server.",
     )
+    persist_config = models.BooleanField(
+        verbose_name="Persist configuration",
+        default=True,
+        help_text=(
+            "When enabled, Kea's configuration file is automatically saved "
+            "(<code>config-write</code>) after each change so modifications survive a "
+            "Kea daemon restart. Disable if Kea configuration is managed externally "
+            "(e.g. Ansible, Puppet) or if you manage persistence manually."
+        ),
+    )
     sync_vrf = models.ForeignKey(
         to="ipam.VRF",
         on_delete=models.SET_NULL,
@@ -197,6 +207,7 @@ class Server(JobsMixin, NetBoxModel):
             client_cert=self.client_cert_path or None,
             client_key=self.client_key_path or None,
             timeout=settings.PLUGINS_CONFIG["netbox_kea"]["kea_timeout"],
+            persist_config=self.persist_config,
         )
 
     def clean(self) -> None:
