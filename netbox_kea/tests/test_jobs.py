@@ -1320,6 +1320,48 @@ class TestSyncServerPrefixesAndRanges(SimpleTestCase):
         _sync_server_prefixes_and_ranges(server, version=4, sync_prefixes=True, sync_ip_ranges=True, stats=stats)
         mock_entry.assert_not_called()
 
+    def test_result_nonzero_increments_prefix_errors(self):
+        """config-get returning result != 0 → prefix_errors incremented, no subnet processing."""
+        from netbox_kea.jobs import _sync_server_prefixes_and_ranges
+
+        server = self._make_server()
+        client = MagicMock()
+        client.command.return_value = [{"result": 1, "text": "internal error"}]
+        server.get_client.return_value = client
+
+        stats = {"created": 0, "updated": 0, "errors": 0, "prefix_errors": 0}
+        _sync_server_prefixes_and_ranges(server, version=4, sync_prefixes=True, sync_ip_ranges=True, stats=stats)
+        self.assertEqual(stats["prefix_errors"], 1)
+        self.assertEqual(stats["errors"], 0)
+
+    def test_malformed_arguments_not_dict_increments_prefix_errors(self):
+        """config-get with non-dict 'arguments' value → prefix_errors incremented."""
+        from netbox_kea.jobs import _sync_server_prefixes_and_ranges
+
+        server = self._make_server()
+        client = MagicMock()
+        client.command.return_value = [{"result": 0, "arguments": "not-a-dict"}]
+        server.get_client.return_value = client
+
+        stats = {"created": 0, "updated": 0, "errors": 0, "prefix_errors": 0}
+        _sync_server_prefixes_and_ranges(server, version=4, sync_prefixes=True, sync_ip_ranges=True, stats=stats)
+        self.assertEqual(stats["prefix_errors"], 1)
+        self.assertEqual(stats["errors"], 0)
+
+    def test_malformed_dhcp_config_not_dict_increments_prefix_errors(self):
+        """config-get with non-dict Dhcp4/Dhcp6 value → prefix_errors incremented."""
+        from netbox_kea.jobs import _sync_server_prefixes_and_ranges
+
+        server = self._make_server()
+        client = MagicMock()
+        client.command.return_value = [{"result": 0, "arguments": {"Dhcp4": "not-a-dict"}}]
+        server.get_client.return_value = client
+
+        stats = {"created": 0, "updated": 0, "errors": 0, "prefix_errors": 0}
+        _sync_server_prefixes_and_ranges(server, version=4, sync_prefixes=True, sync_ip_ranges=True, stats=stats)
+        self.assertEqual(stats["prefix_errors"], 1)
+        self.assertEqual(stats["errors"], 0)
+
 
 # ---------------------------------------------------------------------------
 # Tests for per-server prefix/range toggle in KeaIpamSyncJob.run()
