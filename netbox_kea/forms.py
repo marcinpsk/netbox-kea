@@ -721,6 +721,8 @@ class SubnetAddForm(_SubnetBaseForm):
         help_text="Assign this subnet to a shared network immediately after creation.",
     )
 
+    field_order = ["subnet", "subnet_id", "shared_network", "pools", "gateway", "dns_servers", "ntp_servers"]
+
     def clean_subnet(self) -> str:  # noqa: D102
         import ipaddress
 
@@ -827,6 +829,21 @@ class SubnetEditForm(_SubnetBaseForm):
         help_text="Assign this subnet to a shared network, or leave blank to use the global address pool.",
     )
     current_network = forms.CharField(widget=forms.HiddenInput(), required=False)
+
+    field_order = [
+        "subnet_cidr",
+        "shared_network",
+        "pools",
+        "gateway",
+        "dns_servers",
+        "ntp_servers",
+        "valid_lft",
+        "min_valid_lft",
+        "max_valid_lft",
+        "renew_timer",
+        "rebind_timer",
+        "current_network",
+    ]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
