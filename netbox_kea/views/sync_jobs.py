@@ -186,22 +186,28 @@ class ServerSyncStatusView(generic.ObjectView):
         from core.models import Job
 
         ct = ContentType.objects.get_for_model(Server)
-        recent_jobs = list(
+
+        # Object-bound jobs (manual "Run Now" for this specific server).
+        bound_jobs = list(
             Job.objects.filter(object_type=ct, object_id=instance.pk, name="Kea IPAM Sync").order_by("-created")[
-                :_JOB_HISTORY_COUNT
+                : _JOB_HISTORY_COUNT * 2
             ]
         )
-        latest = recent_jobs[0] if recent_jobs else None
 
-        # Fallback: if no object-bound jobs exist, check unbound periodic runs
-        # that have a summary entry attributed to this server.
-        if latest is None:
-            for job in Job.objects.filter(object_id__isnull=True, name="Kea IPAM Sync").order_by("-created")[
-                :_JOB_HISTORY_COUNT
-            ]:
-                if any(entry.get("pk") == instance.pk for entry in (job.data or {}).get("summary", [])):
-                    latest = job
-                    break
+        # Unbound periodic jobs — fetch extra candidates and filter to those
+        # that include this server in their data["summary"].
+        unbound_candidates = Job.objects.filter(object_id__isnull=True, name="Kea IPAM Sync").order_by("-created")[
+            : _JOB_HISTORY_COUNT * 10
+        ]
+        unbound_jobs = [
+            job
+            for job in unbound_candidates
+            if any(entry.get("pk") == instance.pk for entry in (job.data or {}).get("summary", []))
+        ][:_JOB_HISTORY_COUNT]
+
+        # Merge both sources; show most-recent N across manual and periodic runs.
+        recent_jobs = sorted(bound_jobs + unbound_jobs, key=lambda j: j.created, reverse=True)[:_JOB_HISTORY_COUNT]
+        latest = recent_jobs[0] if recent_jobs else None
 
         jobs_list_url = reverse("core:job_list") + f"?object_type=netbox_kea.server&object_id={instance.pk}"
         sync_cfg = SyncConfig.get(default_interval=_configured_default_interval())

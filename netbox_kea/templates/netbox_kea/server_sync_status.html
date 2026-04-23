@@ -123,7 +123,7 @@
                 <tbody>
                   {% for job in recent_jobs %}
                     <tr>
-                      <td class="small">{{ job.created|date:"H:i:s" }}</td>
+                      <td class="small">{{ job.created|date:"Y-m-d H:i" }}</td>
                       <td>
                         {% if job.status == "completed" %}
                           <span class="badge text-bg-success">OK</span>
@@ -132,6 +132,9 @@
                         {% else %}
                           <span class="badge text-bg-secondary">{{ job.status }}</span>
                         {% endif %}
+                      </td>
+                      <td class="small text-muted">
+                        {% if job.object_id %}manual{% else %}periodic{% endif %}
                       </td>
                     </tr>
                   {% endfor %}
