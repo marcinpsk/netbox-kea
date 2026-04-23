@@ -63,6 +63,7 @@ class ServerForm(NetBoxModelForm):
             "sync_vrf",
             name="IPAM Sync",
         ),
+        FieldSet("persist_config", name="Configuration"),
     )
 
     def __init__(self, *args, **kwargs):
@@ -103,6 +104,7 @@ class ServerForm(NetBoxModelForm):
             "sync_prefixes_enabled",
             "sync_ip_ranges_enabled",
             "sync_vrf",
+            "persist_config",
             "tags",
         )
         widgets = {

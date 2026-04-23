@@ -1,0 +1,11 @@
+{# SPDX-FileCopyrightText: 2025 Marcin Zieba <marcinpsk@gmail.com> #}
+{# SPDX-License-Identifier: Apache-2.0 #}
+{% if not object.persist_config %}
+<div class="alert alert-warning" role="alert">
+  <i class="mdi mdi-alert-outline" aria-hidden="true"></i>
+  <strong>Configuration persistence is disabled.</strong>
+  Changes made here will take effect immediately but will <strong>not</strong> be saved to disk.
+  Kea will lose these changes on restart.
+  To enable persistence, edit the server and enable <em>Persist configuration</em>.
+</div>
+{% endif %}
