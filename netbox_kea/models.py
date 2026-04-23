@@ -349,6 +349,7 @@ class SyncConfig(models.Model):
             pk=1,
             defaults={
                 "interval_minutes": default_interval,
+                "sync_enabled": config.get("sync_enabled", True),
                 "sync_leases_enabled": config.get("sync_leases_enabled", True),
                 "sync_reservations_enabled": config.get("sync_reservations_enabled", True),
                 "sync_prefixes_enabled": config.get("sync_prefixes_enabled", True),

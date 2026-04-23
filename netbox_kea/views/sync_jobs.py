@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import logging
 from collections import defaultdict
-from typing import Any
 
 from django.conf import settings
 from django.contrib import messages
@@ -33,51 +32,77 @@ def _configured_default_interval() -> int:
     return settings.PLUGINS_CONFIG.get("netbox_kea", {}).get("sync_interval_minutes", 5)
 
 
-def _get_latest_jobs(servers: list[Server]) -> defaultdict:
-    """Return a defaultdict mapping server.pk to the most recent Job for that server.
+def get_recent_jobs_for_servers(
+    pks: list[int],
+    *,
+    name: str = "Kea IPAM Sync",
+    limit: int = 1,
+) -> dict[int, list]:
+    """Return ``{server_pk: [jobs newest-first, up to *limit*]}`` for each pk.
 
-    Considers both object-bound jobs (from ``KeaIpamSyncJob.enqueue``) and
+    Queries both object-bound jobs (from ``KeaIpamSyncJob.enqueue``) and
     unbound periodic jobs (``object_id=NULL``, from ``@system_job`` runs).
-    Servers with no matching job return ``None`` via the defaultdict default.
+    Unbound jobs are attributed to individual servers via ``job.data["summary"]``.
+    Servers with no matching job map to an empty list.
+
+    Args:
+        pks: Server primary keys to look up.
+        name: Job name filter — defaults to ``"Kea IPAM Sync"``.
+        limit: Maximum number of jobs to return per server.
+
     """
     from core.models import Job
 
     ct = ContentType.objects.get_for_model(Server)
-    pks = [s.pk for s in servers]
+    result: dict[int, list] = {pk: [] for pk in pks}
 
-    # 1. Object-bound jobs (one-off enqueue per server).
-    bound_jobs = (
-        Job.objects.filter(object_type=ct, object_id__in=pks, name="Kea IPAM Sync")
+    # 1. Object-bound jobs ordered newest-first per server.
+    bound_qs = (
+        Job.objects.filter(object_type=ct, object_id__in=pks, name=name)
         .order_by("object_id", "-created")
         .only("pk", "object_id", "created", "status", "data")
     )
-    latest: dict[int, Any] = {}
-    for job in bound_jobs:
+    for job in bound_qs:
         oid = job.object_id
-        if oid not in latest:
-            latest[oid] = job
+        if oid in result and len(result[oid]) < limit:
+            result[oid].append(job)
 
-    # 2. Unbound periodic jobs (object_id=NULL) as fallbacks for any server
-    #    not yet covered by a bound job.  These require the data field to
-    #    attribute them to individual servers via job.data["summary"].
-    missing_pks = [pk for pk in pks if pk not in latest]
-    if missing_pks:
-        unbound_jobs = (
-            Job.objects.filter(object_id__isnull=True, name="Kea IPAM Sync")
+    # 2. Unbound periodic jobs — supplement any server still below its limit.
+    needs_more = {pk: limit - len(result[pk]) for pk in pks if len(result[pk]) < limit}
+    if needs_more:
+        scan_window = limit * 10 * max(1, len(pks))
+        unbound_qs = (
+            Job.objects.filter(object_id__isnull=True, name=name)
             .order_by("-created")
             .only("pk", "object_id", "created", "status", "data")
-        )
-        remaining = set(missing_pks)
-        for job in unbound_jobs:
-            if not remaining:
+        )[:scan_window]
+        for job in unbound_qs:
+            if not needs_more:
                 break
             for entry in (job.data or {}).get("summary", []):
                 server_pk = entry.get("pk")
-                if server_pk in remaining:
-                    latest[server_pk] = job
-                    remaining.discard(server_pk)
+                if server_pk in needs_more:
+                    result[server_pk].append(job)
+                    needs_more[server_pk] -= 1
+                    if needs_more[server_pk] <= 0:
+                        del needs_more[server_pk]
 
-    return defaultdict(lambda: None, latest)
+    # Re-sort each merged list (bound and unbound may interleave by timestamp).
+    for pk in pks:
+        if len(result[pk]) > 1:
+            result[pk].sort(key=lambda j: j.created, reverse=True)
+
+    return result
+
+
+def _get_latest_jobs(servers: list[Server]) -> defaultdict:
+    """Return a defaultdict mapping server.pk to the most recent Job (or None).
+
+    Thin wrapper around :func:`get_recent_jobs_for_servers` with ``limit=1``.
+    """
+    pks = [s.pk for s in servers]
+    jobs_by_pk = get_recent_jobs_for_servers(pks, limit=1)
+    return defaultdict(lambda: None, {pk: jobs[0] for pk, jobs in jobs_by_pk.items() if jobs})
 
 
 class SyncJobsView(LoginRequiredMixin, View):
@@ -183,30 +208,8 @@ class ServerSyncStatusView(generic.ObjectView):
 
     def get_extra_context(self, request, instance):
         """Return recent sync jobs and status context for the template."""
-        from core.models import Job
-
-        ct = ContentType.objects.get_for_model(Server)
-
-        # Object-bound jobs (manual "Run Now" for this specific server).
-        bound_jobs = list(
-            Job.objects.filter(object_type=ct, object_id=instance.pk, name="Kea IPAM Sync").order_by("-created")[
-                : _JOB_HISTORY_COUNT * 2
-            ]
-        )
-
-        # Unbound periodic jobs — fetch extra candidates and filter to those
-        # that include this server in their data["summary"].
-        unbound_candidates = Job.objects.filter(object_id__isnull=True, name="Kea IPAM Sync").order_by("-created")[
-            : _JOB_HISTORY_COUNT * 10
-        ]
-        unbound_jobs = [
-            job
-            for job in unbound_candidates
-            if any(entry.get("pk") == instance.pk for entry in (job.data or {}).get("summary", []))
-        ][:_JOB_HISTORY_COUNT]
-
-        # Merge both sources; show most-recent N across manual and periodic runs.
-        recent_jobs = sorted(bound_jobs + unbound_jobs, key=lambda j: j.created, reverse=True)[:_JOB_HISTORY_COUNT]
+        jobs_by_pk = get_recent_jobs_for_servers([instance.pk], limit=_JOB_HISTORY_COUNT)
+        recent_jobs = jobs_by_pk[instance.pk]
         latest = recent_jobs[0] if recent_jobs else None
 
         jobs_list_url = reverse("core:job_list") + f"?object_type=netbox_kea.server&object_id={instance.pk}"
