@@ -209,7 +209,7 @@ def _sync_subnet_entry(
                 stats["updated"] += 1
         except Exception:  # noqa: BLE001, PERF203
             logger.exception("Failed to sync prefix %s from server %s", subnet_cidr, server_name)
-            stats["errors"] += 1
+            stats["prefix_errors"] += 1
 
     if sync_ip_ranges:
         for pool_entry in subnet.get("pools") or []:
@@ -225,7 +225,7 @@ def _sync_subnet_entry(
                         subnet_cidr,
                         server_name,
                     )
-                    stats["errors"] += 1
+                    stats["prefix_errors"] += 1
                 else:
                     _, created, did_update = result
                     if created:
@@ -234,7 +234,7 @@ def _sync_subnet_entry(
                         stats["updated"] += 1
             except Exception:  # noqa: BLE001, PERF203
                 logger.exception("Failed to sync pool %s from server %s", pool_str, server_name)
-                stats["errors"] += 1
+                stats["prefix_errors"] += 1
 
 
 def _sync_server_prefixes_and_ranges(
@@ -264,12 +264,12 @@ def _sync_server_prefixes_and_ranges(
         config = client.command("config-get", service=[service])
     except Exception as exc:  # noqa: BLE001
         logger.warning("Failed to fetch config-get from server %s (v%s): %s", server.name, version, exc)
-        stats["errors"] += 1
+        stats["prefix_errors"] += 1
         return
 
     if not isinstance(config, list) or not config or not isinstance(config[0], dict):
         logger.warning("Malformed config-get response from server %s (v%s)", server.name, version)
-        stats["errors"] += 1
+        stats["prefix_errors"] += 1
         return
 
     response = config[0]
@@ -280,19 +280,19 @@ def _sync_server_prefixes_and_ranges(
             version,
             response.get("text", response),
         )
-        stats["errors"] += 1
+        stats["prefix_errors"] += 1
         return
 
     raw_args = response.get("arguments") or {}
     if not isinstance(raw_args, dict):
         logger.warning("Malformed config-get arguments from server %s (v%s)", server.name, version)
-        stats["errors"] += 1
+        stats["prefix_errors"] += 1
         return
 
     conf = raw_args.get(dhcp_key) or {}
     if not isinstance(conf, dict):
         logger.warning("Malformed %s config from server %s (v%s)", dhcp_key, server.name, version)
-        stats["errors"] += 1
+        stats["prefix_errors"] += 1
         return
 
     subnets: list[dict] = list(conf.get(subnet_key) or [])
@@ -344,9 +344,10 @@ def _sync_one_server(
         cleanup_stale_ips_batch(all_synced)
     elif all_synced:
         logger.warning(
-            "Server %s: skipping stale-IP cleanup (errors=%d, cleanup_safe=%s)",
+            "Server %s: skipping stale-IP cleanup (errors=%d, prefix_errors=%d, cleanup_safe=%s)",
             server.name,
             stats["errors"],
+            stats.get("prefix_errors", 0),
             cleanup_safe,
         )
 
@@ -409,7 +410,7 @@ class KeaIpamSyncJob(JobRunner):
                 return
 
             self.logger.info(f"Starting Kea IPAM sync for {len(servers)} server(s).")
-            total: dict[str, int] = {"created": 0, "updated": 0, "errors": 0}
+            total: dict[str, int] = {"created": 0, "updated": 0, "errors": 0, "prefix_errors": 0}
 
             for server in servers:
                 # In Run Now mode (server_pk provided), honour the explicit selection
@@ -425,7 +426,7 @@ class KeaIpamSyncJob(JobRunner):
                 effective_ip_ranges = sync_ip_ranges and server.sync_ip_ranges_enabled
 
                 self.logger.debug(f"Syncing server: {server.name} (pk={server.pk})")
-                server_stats: dict[str, int] = {"created": 0, "updated": 0, "errors": 0}
+                server_stats: dict[str, int] = {"created": 0, "updated": 0, "errors": 0, "prefix_errors": 0}
 
                 try:
                     _sync_one_server(
@@ -444,6 +445,7 @@ class KeaIpamSyncJob(JobRunner):
                 self.logger.info(
                     f"Server {server.name}: created={server_stats['created']}"
                     f" updated={server_stats['updated']} errors={server_stats['errors']}"
+                    f" prefix_errors={server_stats['prefix_errors']}"
                 )
                 for key in total:
                     total[key] += server_stats[key]
@@ -455,14 +457,16 @@ class KeaIpamSyncJob(JobRunner):
                         "created": server_stats["created"],
                         "updated": server_stats["updated"],
                         "errors": server_stats["errors"],
+                        "prefix_errors": server_stats["prefix_errors"],
                     }
                 )
 
             self.logger.info(
                 f"Kea IPAM sync complete — servers={len(summary)}"
-                f" created={total['created']} updated={total['updated']} errors={total['errors']}"
+                f" created={total['created']} updated={total['updated']}"
+                f" errors={total['errors']} prefix_errors={total['prefix_errors']}"
             )
-            if total["errors"] > 0:
+            if total["errors"] > 0 or total["prefix_errors"] > 0:
                 raise JobFailed()
         finally:
             if not isinstance(self.job.data, dict):

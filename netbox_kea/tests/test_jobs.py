@@ -436,6 +436,68 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
         mock_cleanup.assert_not_called()
         self.assertTrue(any("skipping stale-IP cleanup" in msg for msg in cm.output))
 
+    @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+    @patch("netbox_kea.jobs._sync_server_prefixes_and_ranges")
+    @patch("netbox_kea.sync.cleanup_stale_ips_batch", return_value=0)
+    @patch("netbox_kea.sync.sync_reservation_to_netbox", return_value=(MagicMock(), False))
+    @patch("netbox_kea.sync.sync_lease_to_netbox", return_value=(MagicMock(), True))
+    @patch("netbox_kea.models.Server")
+    def test_prefix_errors_do_not_block_stale_ip_cleanup(
+        self, MockServer, mock_sync_lease, mock_sync_resv, mock_cleanup, mock_pr
+    ):
+        """Prefix/range errors must NOT block stale-IP cleanup.
+
+        Lease+reservation sync succeeded (errors=0, all_synced non-empty, cleanup_safe=True).
+        A prefix_errors from _sync_server_prefixes_and_ranges should not prevent cleanup.
+        """
+        self.MockSyncConfig.get.return_value.sync_prefixes_enabled = True
+        self.MockSyncConfig.get.return_value.sync_ip_ranges_enabled = True
+
+        server = _make_server()
+        client = _make_client(leases4=[_LEASE4], reservations=[_RESV4])
+        server.get_client.return_value = client
+        MockServer.objects.all.return_value = [server]
+
+        # Simulate a prefix error: mutate the stats dict that's passed in
+        def _add_prefix_error(srv, version, **kwargs):
+            kwargs["stats"]["prefix_errors"] += 1
+
+        mock_pr.side_effect = _add_prefix_error
+
+        with self.assertLogs("netbox.jobs", level="INFO"):
+            with self.assertRaises(JobFailed):
+                KeaIpamSyncJob(_make_job()).run()
+
+        # Cleanup must still run despite prefix errors (lease/reservation errors=0)
+        mock_cleanup.assert_called_once()
+
+    @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+    @patch("netbox_kea.jobs._sync_server_prefixes_and_ranges")
+    @patch("netbox_kea.sync.cleanup_stale_ips_batch", return_value=0)
+    @patch("netbox_kea.sync.sync_reservation_to_netbox", return_value=(MagicMock(), False))
+    @patch("netbox_kea.sync.sync_lease_to_netbox", return_value=(MagicMock(), True))
+    @patch("netbox_kea.models.Server")
+    def test_prefix_errors_alone_raise_job_failed(
+        self, MockServer, mock_sync_lease, mock_sync_resv, mock_cleanup, mock_pr
+    ):
+        """prefix_errors > 0 with no lease/reservation errors still raises JobFailed."""
+        self.MockSyncConfig.get.return_value.sync_prefixes_enabled = True
+        self.MockSyncConfig.get.return_value.sync_ip_ranges_enabled = True
+
+        server = _make_server()
+        client = _make_client(leases4=[_LEASE4], reservations=[_RESV4])
+        server.get_client.return_value = client
+        MockServer.objects.all.return_value = [server]
+
+        def _add_prefix_error(srv, version, **kwargs):
+            kwargs["stats"]["prefix_errors"] += 1
+
+        mock_pr.side_effect = _add_prefix_error
+
+        with self.assertLogs("netbox.jobs", level="INFO"):
+            with self.assertRaises(JobFailed):
+                KeaIpamSyncJob(_make_job()).run()
+
     # ------------------------------------------------------------------ #
     # lease sync updated (not created)                                     #
     # ------------------------------------------------------------------ #
@@ -930,7 +992,7 @@ class TestSyncSubnetEntry(SimpleTestCase):
     """Tests for the _sync_subnet_entry helper in jobs.py."""
 
     def _make_stats(self):
-        return {"created": 0, "updated": 0, "errors": 0}
+        return {"created": 0, "updated": 0, "errors": 0, "prefix_errors": 0}
 
     def test_no_subnet_cidr_returns_early(self):
         """Subnet dict without 'subnet' key → no sync called, stats unchanged."""
@@ -940,7 +1002,7 @@ class TestSyncSubnetEntry(SimpleTestCase):
         with patch("netbox_kea.sync.sync_subnet_to_netbox_prefix") as mock_prefix:
             _sync_subnet_entry({}, sync_prefixes=True, sync_ip_ranges=True, vrf=None, stats=stats, server_name="s")
         mock_prefix.assert_not_called()
-        self.assertEqual(stats, {"created": 0, "updated": 0, "errors": 0})
+        self.assertEqual(stats, {"created": 0, "updated": 0, "errors": 0, "prefix_errors": 0})
 
     @patch("netbox_kea.sync.sync_subnet_to_netbox_prefix", return_value=(MagicMock(), True, False))
     def test_prefix_created_increments_created(self, mock_prefix):
@@ -990,7 +1052,7 @@ class TestSyncSubnetEntry(SimpleTestCase):
             stats=stats,
             server_name="s",
         )
-        self.assertEqual(stats, {"created": 0, "updated": 0, "errors": 0})
+        self.assertEqual(stats, {"created": 0, "updated": 0, "errors": 0, "prefix_errors": 0})
 
     @patch("netbox_kea.sync.sync_subnet_to_netbox_prefix")
     def test_sync_prefixes_false_skips_prefix_call(self, mock_prefix):
@@ -1010,7 +1072,7 @@ class TestSyncSubnetEntry(SimpleTestCase):
 
     @patch("netbox_kea.sync.sync_subnet_to_netbox_prefix", side_effect=Exception("db down"))
     def test_prefix_exception_increments_errors(self, mock_prefix):
-        """Exception in prefix sync → stats['errors'] incremented, no re-raise."""
+        """Exception in prefix sync → stats['prefix_errors'] incremented, no re-raise."""
         from netbox_kea.jobs import _sync_subnet_entry
 
         stats = self._make_stats()
@@ -1022,7 +1084,8 @@ class TestSyncSubnetEntry(SimpleTestCase):
             stats=stats,
             server_name="s",
         )
-        self.assertEqual(stats["errors"], 1)
+        self.assertEqual(stats["prefix_errors"], 1)
+        self.assertEqual(stats["errors"], 0)
 
     @patch("netbox_kea.sync.sync_pool_to_netbox_ip_range", return_value=(MagicMock(), True, False))
     @patch("netbox_kea.sync.sync_subnet_to_netbox_prefix", return_value=(MagicMock(), False, False))
@@ -1038,24 +1101,25 @@ class TestSyncSubnetEntry(SimpleTestCase):
     @patch("netbox_kea.sync.sync_pool_to_netbox_ip_range", side_effect=Exception("overflow"))
     @patch("netbox_kea.sync.sync_subnet_to_netbox_prefix", return_value=(MagicMock(), False, False))
     def test_pool_exception_increments_errors(self, mock_prefix, mock_range):
-        """Exception in pool sync → stats['errors'] incremented, no re-raise."""
+        """Exception in pool sync → stats['prefix_errors'] incremented, no re-raise."""
         from netbox_kea.jobs import _sync_subnet_entry
 
         stats = self._make_stats()
         subnet = {"subnet": "10.0.0.0/24", "pools": [{"pool": "10.0.0.10-10.0.0.50"}]}
         _sync_subnet_entry(subnet, sync_prefixes=False, sync_ip_ranges=True, vrf=None, stats=stats, server_name="s")
-        self.assertEqual(stats["errors"], 1)
+        self.assertEqual(stats["prefix_errors"], 1)
+        self.assertEqual(stats["errors"], 0)
 
     @patch("netbox_kea.sync.sync_pool_to_netbox_ip_range", return_value=None)
     @patch("netbox_kea.sync.sync_subnet_to_netbox_prefix", return_value=(MagicMock(), False, False))
     def test_pool_none_result_counts_as_error(self, mock_prefix, mock_range):
-        """sync_pool_to_netbox_ip_range returning None (unparseable pool) increments errors."""
+        """sync_pool_to_netbox_ip_range returning None (unparseable pool) increments prefix_errors."""
         from netbox_kea.jobs import _sync_subnet_entry
 
         stats = self._make_stats()
         subnet = {"subnet": "10.0.0.0/24", "pools": [{"pool": "10.0.0.10-10.0.0.50"}]}
         _sync_subnet_entry(subnet, sync_prefixes=False, sync_ip_ranges=True, vrf=None, stats=stats, server_name="s")
-        self.assertEqual(stats, {"created": 0, "updated": 0, "errors": 1})
+        self.assertEqual(stats, {"created": 0, "updated": 0, "errors": 0, "prefix_errors": 1})
 
     @patch("netbox_kea.sync.sync_subnet_to_netbox_prefix", return_value=(MagicMock(), True, False))
     def test_vrf_forwarded_to_prefix_sync(self, mock_prefix):
@@ -1160,7 +1224,7 @@ class TestSyncServerPrefixesAndRanges(SimpleTestCase):
         client.command.return_value = _DHCP4_CONFIG_RESPONSE
         server.get_client.return_value = client
 
-        stats = {"created": 0, "updated": 0, "errors": 0}
+        stats = {"created": 0, "updated": 0, "errors": 0, "prefix_errors": 0}
         _sync_server_prefixes_and_ranges(server, version=4, sync_prefixes=True, sync_ip_ranges=True, stats=stats)
 
         self.assertEqual(mock_entry.call_count, 2)
@@ -1175,24 +1239,25 @@ class TestSyncServerPrefixesAndRanges(SimpleTestCase):
         client.command.return_value = _DHCP4_CONFIG_WITH_SHARED
         server.get_client.return_value = client
 
-        stats = {"created": 0, "updated": 0, "errors": 0}
+        stats = {"created": 0, "updated": 0, "errors": 0, "prefix_errors": 0}
         _sync_server_prefixes_and_ranges(server, version=4, sync_prefixes=True, sync_ip_ranges=True, stats=stats)
         # 1 top-level subnet + 1 in shared-network = 2
         self.assertEqual(mock_entry.call_count, 2)
 
     def test_get_client_exception_increments_errors(self):
-        """get_client() failing → errors incremented, no exception propagated."""
+        """get_client() failing → prefix_errors incremented, no exception propagated."""
         from netbox_kea.jobs import _sync_server_prefixes_and_ranges
 
         server = self._make_server()
         server.get_client.side_effect = ValueError("no url")
 
-        stats = {"created": 0, "updated": 0, "errors": 0}
+        stats = {"created": 0, "updated": 0, "errors": 0, "prefix_errors": 0}
         _sync_server_prefixes_and_ranges(server, version=4, sync_prefixes=True, sync_ip_ranges=True, stats=stats)
-        self.assertEqual(stats["errors"], 1)
+        self.assertEqual(stats["prefix_errors"], 1)
+        self.assertEqual(stats["errors"], 0)
 
     def test_command_exception_increments_errors(self):
-        """client.command() failing → errors incremented."""
+        """client.command() failing → prefix_errors incremented."""
         from netbox_kea.jobs import _sync_server_prefixes_and_ranges
 
         server = self._make_server()
@@ -1200,13 +1265,14 @@ class TestSyncServerPrefixesAndRanges(SimpleTestCase):
         client.command.side_effect = Exception("timeout")
         server.get_client.return_value = client
 
-        stats = {"created": 0, "updated": 0, "errors": 0}
+        stats = {"created": 0, "updated": 0, "errors": 0, "prefix_errors": 0}
         _sync_server_prefixes_and_ranges(server, version=4, sync_prefixes=True, sync_ip_ranges=True, stats=stats)
-        self.assertEqual(stats["errors"], 1)
+        self.assertEqual(stats["prefix_errors"], 1)
+        self.assertEqual(stats["errors"], 0)
 
     @patch("netbox_kea.jobs._sync_subnet_entry")
     def test_malformed_config_response_increments_errors(self, mock_entry):
-        """config-get returning a non-list → errors incremented, no subnet entries processed."""
+        """config-get returning a non-list → prefix_errors incremented, no subnet entries processed."""
         from netbox_kea.jobs import _sync_server_prefixes_and_ranges
 
         server = self._make_server()
@@ -1215,11 +1281,12 @@ class TestSyncServerPrefixesAndRanges(SimpleTestCase):
         client.command.return_value = "not-a-list"
         server.get_client.return_value = client
 
-        stats = {"created": 0, "updated": 0, "errors": 0}
+        stats = {"created": 0, "updated": 0, "errors": 0, "prefix_errors": 0}
         _sync_server_prefixes_and_ranges(server, version=4, sync_prefixes=True, sync_ip_ranges=True, stats=stats)
-        # malformed response → error counted, no subnet entries processed
+        # malformed response → prefix error counted, no subnet entries processed
         mock_entry.assert_not_called()
-        self.assertEqual(stats["errors"], 1)
+        self.assertEqual(stats["prefix_errors"], 1)
+        self.assertEqual(stats["errors"], 0)
 
     @patch("netbox_kea.jobs._sync_subnet_entry")
     def test_vrf_forwarded_to_subnet_entry(self, mock_entry):
@@ -1232,7 +1299,7 @@ class TestSyncServerPrefixesAndRanges(SimpleTestCase):
         client.command.return_value = _DHCP4_CONFIG_RESPONSE
         server.get_client.return_value = client
 
-        stats = {"created": 0, "updated": 0, "errors": 0}
+        stats = {"created": 0, "updated": 0, "errors": 0, "prefix_errors": 0}
         _sync_server_prefixes_and_ranges(
             server, version=4, sync_prefixes=True, sync_ip_ranges=True, vrf=fake_vrf, stats=stats
         )
@@ -1249,7 +1316,7 @@ class TestSyncServerPrefixesAndRanges(SimpleTestCase):
         client.command.return_value = [{"result": 0, "arguments": {"Dhcp4": {"subnet4": []}}}]
         server.get_client.return_value = client
 
-        stats = {"created": 0, "updated": 0, "errors": 0}
+        stats = {"created": 0, "updated": 0, "errors": 0, "prefix_errors": 0}
         _sync_server_prefixes_and_ranges(server, version=4, sync_prefixes=True, sync_ip_ranges=True, stats=stats)
         mock_entry.assert_not_called()
 
