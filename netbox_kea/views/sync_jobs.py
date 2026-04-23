@@ -70,6 +70,7 @@ def get_recent_jobs_for_servers(
     # 2. Unbound periodic jobs — supplement any server still below its limit.
     needs_more = {pk: limit - len(result[pk]) for pk in pks if len(result[pk]) < limit}
     if needs_more:
+        # Heuristic window: scan far enough back to cover periodic runs for all requested servers.
         scan_window = limit * 10 * max(1, len(pks))
         unbound_qs = (
             Job.objects.filter(object_id__isnull=True, name=name)
@@ -79,7 +80,7 @@ def get_recent_jobs_for_servers(
         for job in unbound_qs:
             if not needs_more:
                 break
-            for entry in (job.data or {}).get("summary", []):
+            for entry in (job.data or {}).get("summary") or []:
                 server_pk = entry.get("pk")
                 if server_pk in needs_more:
                     result[server_pk].append(job)
