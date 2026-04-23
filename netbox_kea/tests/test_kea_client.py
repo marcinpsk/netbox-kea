@@ -4615,7 +4615,7 @@ class TestPersistConfigFlag(TestCase):
         # With persist_config=False, the config-write step should be skipped entirely.
         client = KeaClient(url="http://kea:8000", persist_config=False)
 
-        # Mock config-set to succeed (first command called by _apply_config)
+        # Mock all commands to succeed (config-test, then config-set)
         config = {"Dhcp4": {"subnet4": []}}
         mock_post.return_value = _mock_http_response([{"result": 0, "text": "Configuration successful."}])
 
