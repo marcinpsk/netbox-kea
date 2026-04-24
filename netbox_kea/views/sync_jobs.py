@@ -54,9 +54,9 @@ def get_recent_jobs_for_servers(
     from core.models import Job
 
     ct = ContentType.objects.get_for_model(Server)
-    result: dict[int, list] = {pk: [] for pk in pks}
 
-    # 1. Object-bound jobs ordered newest-first per server.
+    # 1. Object-bound jobs (manual "Run Now") — newest-first per server, up to *limit*.
+    bound_by_pk: dict[int, list] = {pk: [] for pk in pks}
     bound_qs = (
         Job.objects.filter(object_type=ct, object_id__in=pks, name=name)
         .order_by("object_id", "-created")
@@ -64,34 +64,42 @@ def get_recent_jobs_for_servers(
     )
     for job in bound_qs:
         oid = job.object_id
-        if oid in result and len(result[oid]) < limit:
-            result[oid].append(job)
+        if oid in bound_by_pk and len(bound_by_pk[oid]) < limit:
+            bound_by_pk[oid].append(job)
 
-    # 2. Unbound periodic jobs — supplement any server still below its limit.
-    needs_more = {pk: limit - len(result[pk]) for pk in pks if len(result[pk]) < limit}
-    if needs_more:
-        # Heuristic window: scan far enough back to cover periodic runs for all requested servers.
-        scan_window = limit * 10 * max(1, len(pks))
-        unbound_qs = (
-            Job.objects.filter(object_id__isnull=True, name=name)
-            .order_by("-created")
-            .only("pk", "object_id", "created", "status", "data")
-        )[:scan_window]
-        for job in unbound_qs:
-            if not needs_more:
-                break
-            for entry in (job.data or {}).get("summary") or []:
-                server_pk = entry.get("pk")
-                if server_pk in needs_more:
-                    result[server_pk].append(job)
-                    needs_more[server_pk] -= 1
-                    if needs_more[server_pk] <= 0:
-                        del needs_more[server_pk]
+    # 2. Unbound periodic jobs — always scanned independently so that a recent
+    #    periodic run is not hidden by older manual (bound) runs filling the slot.
+    #    Heuristic window: scan far enough back to cover periodic runs for all servers.
+    unbound_by_pk: dict[int, list] = {pk: [] for pk in pks}
+    needs_unbound = set(pks)
+    scan_window = limit * 10 * max(1, len(pks))
+    unbound_qs = (
+        Job.objects.filter(object_id__isnull=True, name=name)
+        .order_by("-created")
+        .only("pk", "object_id", "created", "status", "data")
+    )[:scan_window]
+    for job in unbound_qs:
+        if not needs_unbound:
+            break
+        for entry in (job.data or {}).get("summary") or []:
+            server_pk = entry.get("pk")
+            if server_pk in needs_unbound:
+                unbound_by_pk[server_pk].append(job)
+                if len(unbound_by_pk[server_pk]) >= limit:
+                    needs_unbound.discard(server_pk)
 
-    # Re-sort each merged list (bound and unbound may interleave by timestamp).
+    # 3. Merge both sources, deduplicate, sort newest-first, keep top *limit*.
+    result: dict[int, list] = {}
     for pk in pks:
-        if len(result[pk]) > 1:
-            result[pk].sort(key=lambda j: j.created, reverse=True)
+        merged = bound_by_pk[pk] + unbound_by_pk[pk]
+        seen: set[int] = set()
+        deduped = []
+        for job in merged:
+            if job.pk not in seen:
+                seen.add(job.pk)
+                deduped.append(job)
+        deduped.sort(key=lambda j: j.created, reverse=True)
+        result[pk] = deduped[:limit]
 
     return result
 
