@@ -148,7 +148,7 @@ class Server(JobsMixin, NetBoxModel):
         default=True,
         help_text=(
             "When enabled, Kea's configuration file is automatically saved "
-            "(<code>config-write</code>) after each change so modifications survive a "
+            "(config-write) after each change so modifications survive a "
             "Kea daemon restart. Disable if Kea configuration is managed externally "
             "(e.g. Ansible, Puppet) or if you manage persistence manually."
         ),

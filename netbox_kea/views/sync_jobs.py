@@ -83,10 +83,17 @@ def get_recent_jobs_for_servers(
             break
         for entry in (job.data or {}).get("summary") or []:
             server_pk = entry.get("pk")
-            if server_pk in needs_unbound:
+            if server_pk in needs_unbound and job.pk not in {j.pk for j in unbound_by_pk[server_pk]}:
                 unbound_by_pk[server_pk].append(job)
                 if len(unbound_by_pk[server_pk]) >= limit:
                     needs_unbound.discard(server_pk)
+
+    if needs_unbound:
+        logger.warning(
+            "get_recent_jobs_for_servers: scan_window=%d exhausted; periodic jobs may be missing for server pks: %s",
+            scan_window,
+            sorted(needs_unbound),
+        )
 
     # 3. Merge both sources, deduplicate, sort newest-first, keep top *limit*.
     result: dict[int, list] = {}
