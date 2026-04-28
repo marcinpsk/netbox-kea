@@ -172,7 +172,7 @@ def _run_reservation_success_side_effects(
         else:
             ip_label = _v4_ip or (_v6_ips[0] if isinstance(_v6_ips, list) and _v6_ips else "")
         try:
-            _, nb_created = sync_reservation_to_netbox(reservation, cleanup=False)
+            _, nb_created, _ = sync_reservation_to_netbox(reservation, cleanup=False)
             nb_msg = "created" if nb_created else "updated"
             messages.info(request, f"NetBox IPAddress {ip_label} {nb_msg}.")
         except (ValueError, DatabaseError, ValidationError, requests.RequestException):

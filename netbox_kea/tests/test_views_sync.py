@@ -171,7 +171,7 @@ class TestBulkReservationSyncEdgeCases(_ViewTestBase):
             {"ip-address": "10.0.0.1", "hw-address": "aa:bb:cc:dd:ee:01"},
             {"ip-address": "10.0.0.2", "hw-address": "aa:bb:cc:dd:ee:02"},
         ]
-        mock_sync.side_effect = [(MagicMock(), True), (MagicMock(), False)]
+        mock_sync.side_effect = [(MagicMock(), True, True), (MagicMock(), False, True)]
         response = self.client.post(self._url(), follow=True)
         msgs = [str(m) for m in response.context["messages"]]
         self.assertIn("Bulk sync complete: 1 created, 1 updated.", msgs)
@@ -185,7 +185,7 @@ class TestBulkReservationSyncEdgeCases(_ViewTestBase):
             {"ip-address": "10.0.0.1"},
             {"ip-address": "10.0.0.2"},
         ]
-        mock_sync.side_effect = [ValueError("db error"), (MagicMock(), True)]
+        mock_sync.side_effect = [ValueError("db error"), (MagicMock(), True, True)]
         response = self.client.post(self._url(), follow=True)
         msgs = [str(m) for m in response.context["messages"]]
         self.assertIn("Bulk sync: 1 created, 0 updated, 1 errors.", msgs)
@@ -252,7 +252,7 @@ class TestReservation4SyncViewFetchLiveData(_ViewTestBase):
         MockKeaClient.return_value.reservation_get_by_ip.return_value = live
 
         with patch("netbox_kea.views.ServerReservation4SyncView._sync") as mock_sync:
-            mock_sync.return_value = (MagicMock(), True)
+            mock_sync.return_value = (MagicMock(), True, True)
             self.client.post(self._url(), {"ip_address": "10.0.0.5", "hostname": "fallback"})
 
         mock_sync.assert_called_once()
@@ -353,7 +353,7 @@ class TestFetchLiveDataNoSyntheticFallback(_ViewTestBase):
             "subnet-id": 1,
         }
         with patch("netbox_kea.views.ServerLease4SyncView._sync") as mock_sync:
-            mock_sync.return_value = (MagicMock(), True)
+            mock_sync.return_value = (MagicMock(), True, True)
             url = reverse("plugins:netbox_kea:server_lease4_sync", args=[self.server.pk])
             response = self.client.post(url, {"ip_address": "10.0.0.1"})
         self.assertEqual(response.status_code, 200)
@@ -514,7 +514,7 @@ class TestBulkSyncBatchCleanup(_ViewTestBase):
             {"ip-address": "10.0.0.1", "hostname": "h1.example.com"},
             {"ip-address": "10.0.0.2", "hostname": "h1.example.com"},
         ]
-        mock_sync.side_effect = [(MagicMock(), True), (MagicMock(), False)]
+        mock_sync.side_effect = [(MagicMock(), True, True), (MagicMock(), False, True)]
         self.client.post(self._url(), follow=True)
         # Both calls must use cleanup=False
         for call in mock_sync.call_args_list:
@@ -530,7 +530,7 @@ class TestBulkSyncBatchCleanup(_ViewTestBase):
     def test_stale_cleaned_count_appears_in_message(self, mock_fetch, mock_sync, mock_batch):
         """When batch cleanup removes IPs, the count appears in the success message."""
         mock_fetch.return_value = [{"ip-address": "10.0.0.1", "hostname": "h.example.com"}]
-        mock_sync.return_value = (MagicMock(), True)
+        mock_sync.return_value = (MagicMock(), True, True)
         response = self.client.post(self._url(), follow=True)
         msgs = [str(m) for m in response.context["messages"]]
         self.assertTrue(any("3 stale cleaned" in m for m in msgs))
@@ -544,7 +544,7 @@ class TestBulkSyncBatchCleanup(_ViewTestBase):
             {"ip-address": "10.0.0.1", "hostname": "h1"},
             {"ip-address": "10.0.0.2", "hostname": "h2"},
         ]
-        mock_sync.side_effect = [ValueError("db error"), (MagicMock(), True)]
+        mock_sync.side_effect = [ValueError("db error"), (MagicMock(), True, True)]
         self.client.post(self._url(), follow=True)
         mock_batch.assert_not_called()
 
@@ -914,9 +914,9 @@ class TestBulkSyncPerRowErrorIsolation(_ViewTestBase):
             {"ip-address": "10.0.0.3", "hw-address": "aa:bb:cc:00:00:03"},
         ]
         mock_sync.side_effect = [
-            (MagicMock(), True),
+            (MagicMock(), True, True),
             IntegrityError("duplicate key"),
-            (MagicMock(), False),
+            (MagicMock(), False, True),
         ]
         response = self.client.post(self._url(), follow=True)
         msgs = [str(m) for m in response.context["messages"]]
@@ -946,7 +946,7 @@ class TestBulkSyncPerRowErrorIsolation(_ViewTestBase):
         mock_fetch.return_value = [
             {"ip-addresses": ["2001:db8::1"], "duid": "00:01:02:03"},
         ]
-        mock_sync.return_value = (MagicMock(), True)
+        mock_sync.return_value = (MagicMock(), True, True)
         response = self.client.post(self._url(), follow=True)
         mock_sync.assert_called_once()
         msgs = [str(m) for m in response.context["messages"]]

@@ -57,7 +57,7 @@ class _BaseSyncView(ConditionalLoginRequiredMixin, View):
         if data is None:
             return HttpResponse("Could not fetch live data from Kea.", status=400)
         try:
-            nb_ip, _created = self._sync(data)
+            nb_ip, _created, _changed = self._sync(data)
         except (ValueError, IntegrityError, ValidationError, OperationalError, ProgrammingError):
             logger.exception("Sync error for ip=%s", ip_str)
             return HttpResponse("Sync error: see server logs for details.", status=500)
@@ -184,11 +184,11 @@ class _BaseBulkReservationSyncView(ConditionalLoginRequiredMixin, View):
             if not res.get("ip-address") and not res.get("ip-addresses"):
                 continue
             try:
-                nb_ip, was_created = sync_reservation_to_netbox(res, cleanup=False)
+                nb_ip, was_created, was_changed = sync_reservation_to_netbox(res, cleanup=False)
                 synced_records.append(res)
                 if was_created:
                     created += 1
-                elif nb_ip:
+                elif was_changed:
                     updated += 1
             except (ValueError, IntegrityError, ValidationError, OperationalError, ProgrammingError):
                 ip_log = res.get("ip-address") or ", ".join(res.get("ip-addresses") or []) or "unknown"

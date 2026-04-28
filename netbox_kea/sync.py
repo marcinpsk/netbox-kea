@@ -317,7 +317,7 @@ def _apply_ip_fields(
     return changed
 
 
-def sync_lease_to_netbox(lease: dict, *, cleanup: bool = True) -> tuple[NbIPAddress, bool]:
+def sync_lease_to_netbox(lease: dict, *, cleanup: bool = True) -> tuple[NbIPAddress, bool, bool]:
     """Create or update a NetBox IPAddress from a Kea lease dictionary.
 
     The ``status`` is set to ``"active"`` and ``dns_name`` to the lease
@@ -335,8 +335,9 @@ def sync_lease_to_netbox(lease: dict, *, cleanup: bool = True) -> tuple[NbIPAddr
                  operations where the caller will perform a single cleanup pass
                  with the full keep-set via :func:`cleanup_stale_ips_batch`.
 
-    Returns ``(ip_object, created)`` where *created* is ``True`` on the first
-    call for a given IP.
+    Returns ``(ip_object, created, changed)`` where *created* is ``True`` on
+    the first call for a given IP and *changed* is ``True`` when any field was
+    modified (including on first creation).
 
     """
     from ipam.models import IPAddress as NbIP
@@ -374,10 +375,10 @@ def sync_lease_to_netbox(lease: dict, *, cleanup: bool = True) -> tuple[NbIPAddr
     if hw_address:
         _sync_mac_address(hw_address, hostname)
 
-    return ip_obj, created
+    return ip_obj, created, changed
 
 
-def sync_reservation_to_netbox(reservation: dict, *, cleanup: bool = True) -> tuple[NbIPAddress, bool]:
+def sync_reservation_to_netbox(reservation: dict, *, cleanup: bool = True) -> tuple[NbIPAddress, bool, bool]:
     """Create or update a NetBox IPAddress from a Kea reservation dictionary.
 
     The ``status`` is set to ``"reserved"`` and ``dns_name`` to the
@@ -396,8 +397,9 @@ def sync_reservation_to_netbox(reservation: dict, *, cleanup: bool = True) -> tu
 
     Raises ``ValueError`` when the reservation contains no IP address.
 
-    Returns ``(ip_object, created)`` where *created* is ``True`` if any address
-    was created for the first time.
+    Returns ``(ip_object, created, changed)`` where *created* is ``True`` if
+    any address was created for the first time and *changed* is ``True`` when
+    any address was saved (created or modified).
 
     """
     from ipam.models import IPAddress as NbIP
@@ -413,6 +415,7 @@ def sync_reservation_to_netbox(reservation: dict, *, cleanup: bool = True) -> tu
 
     primary_obj: NbIPAddress | None = None
     any_created = False
+    any_changed = False
 
     for ip_str in all_ips:
         ip_obj = get_netbox_ip(ip_str)
@@ -439,6 +442,7 @@ def sync_reservation_to_netbox(reservation: dict, *, cleanup: bool = True) -> tu
         if primary_obj is None:
             primary_obj = ip_obj
         any_created = any_created or created
+        any_changed = any_changed or changed or created
 
     # Cleanup stale IPs outside the loop — exclude ALL IPs in this reservation
     # so sibling addresses (DHCPv6 multi-address) are never treated as stale.
@@ -454,7 +458,7 @@ def sync_reservation_to_netbox(reservation: dict, *, cleanup: bool = True) -> tu
     if hw_address:
         _sync_mac_address(hw_address, hostname)
 
-    return primary_obj, any_created  # type: ignore[return-value]
+    return primary_obj, any_created, any_changed  # type: ignore[return-value]
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -94,11 +94,11 @@ def _sync_server_leases(
 
     for lease in raw_leases:
         try:
-            _ip, created = sync_lease_to_netbox(lease, cleanup=False)
+            _ip, created, changed = sync_lease_to_netbox(lease, cleanup=False)
             all_synced.append(lease)
             if created:
                 stats["created"] += 1
-            else:
+            elif changed:
                 stats["updated"] += 1
         except Exception:  # noqa: BLE001, PERF203
             logger.debug(
@@ -145,12 +145,12 @@ def _sync_server_reservations(
             )
             for reservation in page:
                 try:
-                    _ip, created = sync_reservation_to_netbox(reservation, cleanup=False)
+                    _ip, created, changed = sync_reservation_to_netbox(reservation, cleanup=False)
                     all_synced.append(reservation)
                     processed += 1
                     if created:
                         stats["created"] += 1
-                    else:
+                    elif changed:
                         stats["updated"] += 1
                 except Exception:  # noqa: BLE001, PERF203
                     ip = reservation.get("ip-address") or (reservation.get("ip-addresses") or ["?"])[0] or "?"

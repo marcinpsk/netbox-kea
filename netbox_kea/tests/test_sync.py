@@ -104,7 +104,7 @@ class TestSyncLeaseToNetbox(TestCase):
     def test_creates_new_ip_when_not_exists(self):
         from netbox_kea.sync import sync_lease_to_netbox
 
-        ip_obj, created = sync_lease_to_netbox(self._LEASE)
+        ip_obj, created, _ = sync_lease_to_netbox(self._LEASE)
         self.assertTrue(created)
         self.assertIsNotNone(ip_obj.pk)
 
@@ -112,20 +112,20 @@ class TestSyncLeaseToNetbox(TestCase):
         """A new lease without a pre-existing reservation uses 'dhcp' status."""
         from netbox_kea.sync import sync_lease_to_netbox
 
-        ip_obj, _ = sync_lease_to_netbox(self._LEASE)
+        ip_obj, _, _ = sync_lease_to_netbox(self._LEASE)
         self.assertEqual(ip_obj.status, "dhcp")
 
     def test_sets_dns_name_from_hostname(self):
         from netbox_kea.sync import sync_lease_to_netbox
 
-        ip_obj, _ = sync_lease_to_netbox(self._LEASE)
+        ip_obj, _, _ = sync_lease_to_netbox(self._LEASE)
         self.assertEqual(ip_obj.dns_name, "testhost.example.com")
 
     def test_returns_created_false_on_second_call(self):
         from netbox_kea.sync import sync_lease_to_netbox
 
         sync_lease_to_netbox(self._LEASE)
-        _, created = sync_lease_to_netbox(self._LEASE)
+        _, created, _ = sync_lease_to_netbox(self._LEASE)
         self.assertFalse(created)
 
     def test_does_not_create_duplicate_ip(self):
@@ -143,13 +143,13 @@ class TestSyncLeaseToNetbox(TestCase):
 
         sync_lease_to_netbox(self._LEASE)
         updated = {**self._LEASE, "hostname": "new-hostname.example.com"}
-        ip_obj, _ = sync_lease_to_netbox(updated)
+        ip_obj, _, _ = sync_lease_to_netbox(updated)
         self.assertEqual(ip_obj.dns_name, "new-hostname.example.com")
 
     def test_address_uses_slash32_fallback_when_no_netbox_prefix(self):
         from netbox_kea.sync import sync_lease_to_netbox
 
-        ip_obj, _ = sync_lease_to_netbox(self._LEASE)
+        ip_obj, _, _ = sync_lease_to_netbox(self._LEASE)
         self.assertTrue(str(ip_obj.address).endswith("/32"))
 
     def test_address_uses_prefix_len_when_netbox_prefix_exists(self):
@@ -159,7 +159,7 @@ class TestSyncLeaseToNetbox(TestCase):
 
         p = Prefix.objects.create(prefix="192.168.50.0/24", status="active")
         try:
-            ip_obj, _ = sync_lease_to_netbox(self._LEASE)
+            ip_obj, _, _ = sync_lease_to_netbox(self._LEASE)
             self.assertTrue(str(ip_obj.address).endswith("/24"))
         finally:
             p.delete()
@@ -167,7 +167,7 @@ class TestSyncLeaseToNetbox(TestCase):
     def test_description_contains_kea(self):
         from netbox_kea.sync import sync_lease_to_netbox
 
-        ip_obj, _ = sync_lease_to_netbox(self._LEASE)
+        ip_obj, _, _ = sync_lease_to_netbox(self._LEASE)
         self.assertIn("Kea", ip_obj.description)
 
     def test_works_without_hostname(self):
@@ -175,7 +175,7 @@ class TestSyncLeaseToNetbox(TestCase):
         from netbox_kea.sync import sync_lease_to_netbox
 
         lease = {k: v for k, v in self._LEASE.items() if k != "hostname"}
-        ip_obj, created = sync_lease_to_netbox(lease)
+        ip_obj, created, _ = sync_lease_to_netbox(lease)
         self.assertTrue(created)
         self.assertEqual(ip_obj.status, "dhcp")
 
@@ -192,7 +192,7 @@ class TestSyncLeaseToNetbox(TestCase):
             dns_name="manual.example.com",
         )
         lease_no_hostname = {k: v for k, v in self._LEASE.items() if k != "hostname"}
-        ip_obj, _ = sync_lease_to_netbox(lease_no_hostname)
+        ip_obj, _, _ = sync_lease_to_netbox(lease_no_hostname)
         # dns_name should be preserved since lease has no hostname
         self.assertEqual(ip_obj.dns_name, "manual.example.com")
 
@@ -264,14 +264,14 @@ class TestSyncReservationToNetbox(TestCase):
     def test_creates_ip_with_reserved_status(self):
         from netbox_kea.sync import sync_reservation_to_netbox
 
-        ip_obj, created = sync_reservation_to_netbox(self._RESERVATION)
+        ip_obj, created, _ = sync_reservation_to_netbox(self._RESERVATION)
         self.assertTrue(created)
         self.assertEqual(ip_obj.status, "reserved")
 
     def test_sets_dns_name_from_hostname(self):
         from netbox_kea.sync import sync_reservation_to_netbox
 
-        ip_obj, _ = sync_reservation_to_netbox(self._RESERVATION)
+        ip_obj, _, _ = sync_reservation_to_netbox(self._RESERVATION)
         self.assertEqual(ip_obj.dns_name, "reserved-host.example.com")
 
     def test_does_not_create_duplicate(self):
@@ -287,7 +287,7 @@ class TestSyncReservationToNetbox(TestCase):
         from netbox_kea.sync import sync_reservation_to_netbox
 
         sync_reservation_to_netbox(self._RESERVATION)
-        _, created = sync_reservation_to_netbox(self._RESERVATION)
+        _, created, _ = sync_reservation_to_netbox(self._RESERVATION)
         self.assertFalse(created)
 
     def test_raises_on_reservation_with_no_ip(self):
@@ -299,7 +299,7 @@ class TestSyncReservationToNetbox(TestCase):
     def test_description_contains_kea(self):
         from netbox_kea.sync import sync_reservation_to_netbox
 
-        ip_obj, _ = sync_reservation_to_netbox(self._RESERVATION)
+        ip_obj, _, _ = sync_reservation_to_netbox(self._RESERVATION)
         self.assertIn("Kea", ip_obj.description)
 
     def test_updates_existing_active_ip_downgrades_to_reserved_with_reservation_sync(self):
@@ -309,7 +309,7 @@ class TestSyncReservationToNetbox(TestCase):
         from netbox_kea.sync import sync_reservation_to_netbox
 
         NbIP.objects.create(address="192.168.51.200/32", status="active")
-        ip_obj, created = sync_reservation_to_netbox(self._RESERVATION)
+        ip_obj, created, _ = sync_reservation_to_netbox(self._RESERVATION)
         self.assertFalse(created)
         self.assertEqual(ip_obj.status, "reserved")
 
@@ -402,7 +402,7 @@ class TestSyncReservationMultiAddressV6(TestCase):
             "hostname": "v6host.example.com",
             "subnet-id": 1,
         }
-        ip_obj, created = sync_reservation_to_netbox(reservation)
+        ip_obj, created, _ = sync_reservation_to_netbox(reservation)
         self.assertTrue(created)
         self.assertTrue(
             NbIP.objects.filter(address__startswith="2001:db8::1/").exists(),
@@ -421,7 +421,7 @@ class TestSyncReservationMultiAddressV6(TestCase):
             "duid": "11:22:33:44:55:66",
             "subnet-id": 2,
         }
-        ip_obj, _ = sync_reservation_to_netbox(reservation)
+        ip_obj, _, _ = sync_reservation_to_netbox(reservation)
         self.assertTrue(str(ip_obj.address).startswith("2001:db8::10/"))
 
     def test_single_ip_address_field_still_works(self):
@@ -429,7 +429,7 @@ class TestSyncReservationMultiAddressV6(TestCase):
         from netbox_kea.sync import sync_reservation_to_netbox
 
         reservation = {"ip-address": "10.0.0.55", "hw-address": "aa:bb:cc:dd:ee:01", "subnet-id": 1}
-        ip_obj, created = sync_reservation_to_netbox(reservation)
+        ip_obj, created, _ = sync_reservation_to_netbox(reservation)
         self.assertTrue(created)
         self.assertTrue(str(ip_obj.address).startswith("10.0.0.55/"))
 
@@ -497,7 +497,7 @@ class TestSyncLeaseStatusSemantics(TestCase):
     def test_new_lease_gets_dhcp_status(self):
         from netbox_kea.sync import sync_lease_to_netbox
 
-        ip_obj, _ = sync_lease_to_netbox(self._LEASE)
+        ip_obj, _, _ = sync_lease_to_netbox(self._LEASE)
         self.assertEqual(ip_obj.status, "dhcp")
 
     def test_lease_upgrades_reserved_to_active(self):
@@ -507,7 +507,7 @@ class TestSyncLeaseStatusSemantics(TestCase):
         from netbox_kea.sync import sync_lease_to_netbox
 
         NbIP.objects.create(address="10.10.0.50/32", status="reserved", description="Synced from Kea DHCP reservation")
-        ip_obj, _ = sync_lease_to_netbox(self._LEASE)
+        ip_obj, _, _ = sync_lease_to_netbox(self._LEASE)
         self.assertEqual(ip_obj.status, "active")
 
     def test_lease_downgrades_active_to_dhcp_without_reservation(self):
@@ -517,7 +517,7 @@ class TestSyncLeaseStatusSemantics(TestCase):
         from netbox_kea.sync import sync_lease_to_netbox
 
         NbIP.objects.create(address="10.10.0.50/32", status="active", description="Synced from Kea DHCP lease")
-        ip_obj, _ = sync_lease_to_netbox(self._LEASE)
+        ip_obj, _, _ = sync_lease_to_netbox(self._LEASE)
         self.assertEqual(ip_obj.status, "dhcp")
 
 
@@ -533,7 +533,7 @@ class TestSyncReservationStatusSemantics(TestCase):
     def test_new_reservation_gets_reserved_status(self):
         from netbox_kea.sync import sync_reservation_to_netbox
 
-        ip_obj, created = sync_reservation_to_netbox(self._RESERVATION)
+        ip_obj, created, _ = sync_reservation_to_netbox(self._RESERVATION)
         self.assertTrue(created)
         self.assertEqual(ip_obj.status, "reserved")
 
@@ -544,7 +544,7 @@ class TestSyncReservationStatusSemantics(TestCase):
         from netbox_kea.sync import sync_reservation_to_netbox
 
         NbIP.objects.create(address="10.10.0.60/32", status="dhcp", description="Synced from Kea DHCP lease")
-        ip_obj, _ = sync_reservation_to_netbox(self._RESERVATION)
+        ip_obj, _, _ = sync_reservation_to_netbox(self._RESERVATION)
         self.assertEqual(ip_obj.status, "active")
 
     def test_reservation_downgrades_active_to_reserved_without_lease(self):
@@ -554,7 +554,7 @@ class TestSyncReservationStatusSemantics(TestCase):
         from netbox_kea.sync import sync_reservation_to_netbox
 
         NbIP.objects.create(address="10.10.0.60/32", status="active", description="Synced from Kea DHCP lease")
-        ip_obj, _ = sync_reservation_to_netbox(self._RESERVATION)
+        ip_obj, _, _ = sync_reservation_to_netbox(self._RESERVATION)
         self.assertEqual(ip_obj.status, "reserved")
 
 

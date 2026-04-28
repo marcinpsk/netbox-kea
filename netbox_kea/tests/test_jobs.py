@@ -105,8 +105,8 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
 
     @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
     @patch("netbox_kea.sync.cleanup_stale_ips_batch", return_value=0)
-    @patch("netbox_kea.sync.sync_reservation_to_netbox", return_value=(MagicMock(), False))
-    @patch("netbox_kea.sync.sync_lease_to_netbox", return_value=(MagicMock(), True))
+    @patch("netbox_kea.sync.sync_reservation_to_netbox", return_value=(MagicMock(), False, False))
+    @patch("netbox_kea.sync.sync_lease_to_netbox", return_value=(MagicMock(), True, True))
     @patch("netbox_kea.models.Server")
     def test_run_syncs_leases_and_reservations(self, MockServer, mock_sync_lease, mock_sync_resv, mock_cleanup):
         """Normal path: leases and reservations both synced."""
@@ -124,8 +124,8 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
 
     @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
     @patch("netbox_kea.sync.cleanup_stale_ips_batch", return_value=0)
-    @patch("netbox_kea.sync.sync_reservation_to_netbox", return_value=(MagicMock(), False))
-    @patch("netbox_kea.sync.sync_lease_to_netbox", return_value=(MagicMock(), True))
+    @patch("netbox_kea.sync.sync_reservation_to_netbox", return_value=(MagicMock(), False, False))
+    @patch("netbox_kea.sync.sync_lease_to_netbox", return_value=(MagicMock(), True, True))
     @patch("netbox_kea.models.Server")
     def test_run_skips_leases_when_disabled(self, MockServer, mock_sync_lease, mock_sync_resv, mock_cleanup):
         """sync_leases_enabled=False → lease_get_all never called."""
@@ -143,8 +143,8 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
 
     @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
     @patch("netbox_kea.sync.cleanup_stale_ips_batch", return_value=0)
-    @patch("netbox_kea.sync.sync_reservation_to_netbox", return_value=(MagicMock(), False))
-    @patch("netbox_kea.sync.sync_lease_to_netbox", return_value=(MagicMock(), True))
+    @patch("netbox_kea.sync.sync_reservation_to_netbox", return_value=(MagicMock(), False, False))
+    @patch("netbox_kea.sync.sync_lease_to_netbox", return_value=(MagicMock(), True, True))
     @patch("netbox_kea.models.Server")
     def test_run_skips_reservations_when_disabled(self, MockServer, mock_sync_lease, mock_sync_resv, mock_cleanup):
         """sync_reservations_enabled=False → reservation_get_page never called."""
@@ -162,8 +162,8 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
 
     @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
     @patch("netbox_kea.sync.cleanup_stale_ips_batch", return_value=0)
-    @patch("netbox_kea.sync.sync_reservation_to_netbox", return_value=(MagicMock(), False))
-    @patch("netbox_kea.sync.sync_lease_to_netbox", return_value=(MagicMock(), True))
+    @patch("netbox_kea.sync.sync_reservation_to_netbox", return_value=(MagicMock(), False, False))
+    @patch("netbox_kea.sync.sync_lease_to_netbox", return_value=(MagicMock(), True, True))
     @patch("netbox_kea.models.Server")
     def test_run_isolates_per_server_errors(self, MockServer, mock_sync_lease, mock_sync_resv, mock_cleanup):
         """Exception on server 1 does not prevent server 2 from syncing."""
@@ -184,8 +184,8 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
 
     @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
     @patch("netbox_kea.sync.cleanup_stale_ips_batch", return_value=0)
-    @patch("netbox_kea.sync.sync_reservation_to_netbox", return_value=(MagicMock(), False))
-    @patch("netbox_kea.sync.sync_lease_to_netbox", return_value=(MagicMock(), True))
+    @patch("netbox_kea.sync.sync_reservation_to_netbox", return_value=(MagicMock(), False, False))
+    @patch("netbox_kea.sync.sync_lease_to_netbox", return_value=(MagicMock(), True, True))
     @patch("netbox_kea.models.Server")
     def test_run_logs_truncation_warning(self, MockServer, mock_sync_lease, mock_sync_resv, mock_cleanup):
         """lease_get_all returns truncated=True → warning logged, sync still proceeds, cleanup skipped."""
@@ -204,7 +204,7 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
 
     @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
     @patch("netbox_kea.sync.cleanup_stale_ips_batch", return_value=0)
-    @patch("netbox_kea.sync.sync_lease_to_netbox", return_value=(MagicMock(), True))
+    @patch("netbox_kea.sync.sync_lease_to_netbox", return_value=(MagicMock(), True, True))
     @patch("netbox_kea.models.Server")
     def test_run_skips_host_cmds_absent(self, MockServer, mock_sync_lease, mock_cleanup):
         """reservation_get_page result=2 (host_cmds not loaded) → WARNING logged, no exception."""
@@ -222,7 +222,7 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
 
     @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
     @patch("netbox_kea.sync.cleanup_stale_ips_batch", return_value=0)
-    @patch("netbox_kea.sync.sync_lease_to_netbox", return_value=(MagicMock(), True))
+    @patch("netbox_kea.sync.sync_lease_to_netbox", return_value=(MagicMock(), True, True))
     @patch("netbox_kea.models.Server")
     def test_cleanup_skipped_when_host_cmds_absent(self, MockServer, mock_sync_lease, mock_cleanup):
         """When host_cmds not loaded (result=2), reservation sync is skipped → cleanup_safe=False → no cleanup."""
@@ -241,8 +241,8 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
 
     @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
     @patch("netbox_kea.sync.cleanup_stale_ips_batch", return_value=0)
-    @patch("netbox_kea.sync.sync_reservation_to_netbox", return_value=(MagicMock(), False))
-    @patch("netbox_kea.sync.sync_lease_to_netbox", return_value=(MagicMock(), True))
+    @patch("netbox_kea.sync.sync_reservation_to_netbox", return_value=(MagicMock(), False, False))
+    @patch("netbox_kea.sync.sync_lease_to_netbox", return_value=(MagicMock(), True, True))
     @patch("netbox_kea.models.Server")
     def test_run_v4_only_server(self, MockServer, mock_sync_lease, mock_sync_resv, mock_cleanup):
         """dhcp4=True, dhcp6=False → get_client called only with version=4."""
@@ -259,8 +259,8 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
 
     @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
     @patch("netbox_kea.sync.cleanup_stale_ips_batch", return_value=0)
-    @patch("netbox_kea.sync.sync_reservation_to_netbox", return_value=(MagicMock(), False))
-    @patch("netbox_kea.sync.sync_lease_to_netbox", return_value=(MagicMock(), True))
+    @patch("netbox_kea.sync.sync_reservation_to_netbox", return_value=(MagicMock(), False, False))
+    @patch("netbox_kea.sync.sync_lease_to_netbox", return_value=(MagicMock(), True, True))
     @patch("netbox_kea.models.Server")
     def test_run_v6_only_server(self, MockServer, mock_sync_lease, mock_sync_resv, mock_cleanup):
         """dhcp4=False, dhcp6=True → get_client called only with version=6."""
@@ -277,8 +277,8 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
 
     @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
     @patch("netbox_kea.sync.cleanup_stale_ips_batch", return_value=0)
-    @patch("netbox_kea.sync.sync_reservation_to_netbox", return_value=(MagicMock(), False))
-    @patch("netbox_kea.sync.sync_lease_to_netbox", return_value=(MagicMock(), True))
+    @patch("netbox_kea.sync.sync_reservation_to_netbox", return_value=(MagicMock(), False, False))
+    @patch("netbox_kea.sync.sync_lease_to_netbox", return_value=(MagicMock(), True, True))
     @patch("netbox_kea.models.Server")
     def test_run_no_servers_is_no_op(self, MockServer, mock_sync_lease, mock_sync_resv, mock_cleanup):
         """No servers configured → sync functions never called."""
@@ -292,7 +292,7 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
 
     @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
     @patch("netbox_kea.sync.cleanup_stale_ips_batch", return_value=0)
-    @patch("netbox_kea.sync.sync_reservation_to_netbox", return_value=(MagicMock(), False))
+    @patch("netbox_kea.sync.sync_reservation_to_netbox", return_value=(MagicMock(), False, False))
     @patch("netbox_kea.sync.sync_lease_to_netbox", side_effect=ValueError("bad address"))
     @patch("netbox_kea.models.Server")
     def test_per_lease_error_increments_error_counter(self, MockServer, mock_sync_lease, mock_sync_resv, mock_cleanup):
@@ -313,8 +313,8 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
 
     @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
     @patch("netbox_kea.sync.cleanup_stale_ips_batch", return_value=0)
-    @patch("netbox_kea.sync.sync_reservation_to_netbox", return_value=(MagicMock(), False))
-    @patch("netbox_kea.sync.sync_lease_to_netbox", return_value=(MagicMock(), True))
+    @patch("netbox_kea.sync.sync_reservation_to_netbox", return_value=(MagicMock(), False, False))
+    @patch("netbox_kea.sync.sync_lease_to_netbox", return_value=(MagicMock(), True, True))
     @patch("netbox_kea.models.Server")
     def test_cleanup_called_once_per_server(self, MockServer, mock_sync_lease, mock_sync_resv, mock_cleanup):
         """cleanup_stale_ips_batch is called exactly once per server (not per lease/reservation)."""
@@ -335,8 +335,8 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
 
     @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
     @patch("netbox_kea.sync.cleanup_stale_ips_batch", return_value=0)
-    @patch("netbox_kea.sync.sync_reservation_to_netbox", return_value=(MagicMock(), False))
-    @patch("netbox_kea.sync.sync_lease_to_netbox", return_value=(MagicMock(), True))
+    @patch("netbox_kea.sync.sync_reservation_to_netbox", return_value=(MagicMock(), False, False))
+    @patch("netbox_kea.sync.sync_lease_to_netbox", return_value=(MagicMock(), True, True))
     @patch("netbox_kea.models.Server")
     def test_dual_protocol_server_calls_both_versions(self, MockServer, mock_sync_lease, mock_sync_resv, mock_cleanup):
         """Server with dhcp4=True and dhcp6=True → get_client called for both v4 and v6."""
@@ -363,7 +363,7 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
         }
     )
     @patch("netbox_kea.sync.cleanup_stale_ips_batch", return_value=0)
-    @patch("netbox_kea.sync.sync_lease_to_netbox", return_value=(MagicMock(), True))
+    @patch("netbox_kea.sync.sync_lease_to_netbox", return_value=(MagicMock(), True, True))
     @patch("netbox_kea.models.Server")
     def test_invalid_max_leases_string_falls_back_to_default(self, MockServer, mock_sync_lease, mock_cleanup):
         """sync_max_leases_per_server='not-a-number' → warning logged, fallback to 50000."""
@@ -386,7 +386,7 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
         }
     )
     @patch("netbox_kea.sync.cleanup_stale_ips_batch", return_value=0)
-    @patch("netbox_kea.sync.sync_lease_to_netbox", return_value=(MagicMock(), True))
+    @patch("netbox_kea.sync.sync_lease_to_netbox", return_value=(MagicMock(), True, True))
     @patch("netbox_kea.models.Server")
     def test_negative_max_leases_resets_to_zero(self, MockServer, mock_sync_lease, mock_cleanup):
         """sync_max_leases_per_server=-1 → warning logged, value reset to 0 (no cap)."""
@@ -407,7 +407,7 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
 
     @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
     @patch("netbox_kea.sync.cleanup_stale_ips_batch", return_value=0)
-    @patch("netbox_kea.sync.sync_reservation_to_netbox", return_value=(MagicMock(), False))
+    @patch("netbox_kea.sync.sync_reservation_to_netbox", return_value=(MagicMock(), False, False))
     @patch("netbox_kea.models.Server")
     def test_cleanup_skipped_when_errors_occurred(self, MockServer, mock_sync_resv, mock_cleanup):
         """When lease sync errors occur, cleanup_stale_ips_batch must NOT run to avoid partial-set deletions.
@@ -422,7 +422,7 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
         def _side_effect(lease, **kwargs):
             if lease["ip-address"] == "10.0.0.2":
                 raise ValueError("bad address")
-            return (MagicMock(), True)
+            return (MagicMock(), True, True)
 
         with patch("netbox_kea.sync.sync_lease_to_netbox", side_effect=_side_effect):
             client = _make_client(leases4=[good_lease, bad_lease])
@@ -439,8 +439,8 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
     @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
     @patch("netbox_kea.jobs._sync_server_prefixes_and_ranges")
     @patch("netbox_kea.sync.cleanup_stale_ips_batch", return_value=0)
-    @patch("netbox_kea.sync.sync_reservation_to_netbox", return_value=(MagicMock(), False))
-    @patch("netbox_kea.sync.sync_lease_to_netbox", return_value=(MagicMock(), True))
+    @patch("netbox_kea.sync.sync_reservation_to_netbox", return_value=(MagicMock(), False, False))
+    @patch("netbox_kea.sync.sync_lease_to_netbox", return_value=(MagicMock(), True, True))
     @patch("netbox_kea.models.Server")
     def test_prefix_errors_do_not_block_stale_ip_cleanup(
         self, MockServer, mock_sync_lease, mock_sync_resv, mock_cleanup, mock_pr
@@ -474,8 +474,8 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
     @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
     @patch("netbox_kea.jobs._sync_server_prefixes_and_ranges")
     @patch("netbox_kea.sync.cleanup_stale_ips_batch", return_value=0)
-    @patch("netbox_kea.sync.sync_reservation_to_netbox", return_value=(MagicMock(), False))
-    @patch("netbox_kea.sync.sync_lease_to_netbox", return_value=(MagicMock(), True))
+    @patch("netbox_kea.sync.sync_reservation_to_netbox", return_value=(MagicMock(), False, False))
+    @patch("netbox_kea.sync.sync_lease_to_netbox", return_value=(MagicMock(), True, True))
     @patch("netbox_kea.models.Server")
     def test_prefix_errors_alone_raise_job_failed(
         self, MockServer, mock_sync_lease, mock_sync_resv, mock_cleanup, mock_pr
@@ -504,11 +504,11 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
 
     @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
     @patch("netbox_kea.sync.cleanup_stale_ips_batch", return_value=0)
-    @patch("netbox_kea.sync.sync_reservation_to_netbox", return_value=(MagicMock(), False))
-    @patch("netbox_kea.sync.sync_lease_to_netbox", return_value=(MagicMock(), False))  # False = updated
+    @patch("netbox_kea.sync.sync_reservation_to_netbox", return_value=(MagicMock(), False, False))
+    @patch("netbox_kea.sync.sync_lease_to_netbox", return_value=(MagicMock(), False, True))  # not created, but changed
     @patch("netbox_kea.models.Server")
     def test_lease_updated_increments_updated_counter(self, MockServer, mock_sync_lease, mock_sync_resv, mock_cleanup):
-        """sync_lease_to_netbox returning (ip, False) increments stats['updated'], not 'created'."""
+        """sync_lease_to_netbox returning (ip, False, True) increments stats['updated'], not 'created'."""
         server = _make_server()
         client = _make_client(leases4=[_LEASE4], reservations=[])
         server.get_client.return_value = client
@@ -527,8 +527,8 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
 
     @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
     @patch("netbox_kea.sync.cleanup_stale_ips_batch", return_value=0)
-    @patch("netbox_kea.sync.sync_reservation_to_netbox", return_value=(MagicMock(), False))
-    @patch("netbox_kea.sync.sync_lease_to_netbox", return_value=(MagicMock(), True))
+    @patch("netbox_kea.sync.sync_reservation_to_netbox", return_value=(MagicMock(), False, False))
+    @patch("netbox_kea.sync.sync_lease_to_netbox", return_value=(MagicMock(), True, True))
     @patch("netbox_kea.models.Server")
     def test_both_sync_disabled_returns_early(self, MockServer, mock_sync_lease, mock_sync_resv, mock_cleanup):
         """When all sync type flags are False, job returns immediately."""
@@ -550,8 +550,8 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
 
     @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
     @patch("netbox_kea.sync.cleanup_stale_ips_batch", return_value=0)
-    @patch("netbox_kea.sync.sync_reservation_to_netbox", return_value=(MagicMock(), True))
-    @patch("netbox_kea.sync.sync_lease_to_netbox", return_value=(MagicMock(), True))
+    @patch("netbox_kea.sync.sync_reservation_to_netbox", return_value=(MagicMock(), True, True))
+    @patch("netbox_kea.sync.sync_lease_to_netbox", return_value=(MagicMock(), True, True))
     @patch("netbox_kea.models.Server")
     def test_reservation_pagination_fetches_all_pages(self, MockServer, mock_sync_lease, mock_sync_resv, mock_cleanup):
         """When reservation_get_page returns non-zero next_from/next_source, loop continues."""
@@ -580,7 +580,7 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
 
     @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
     @patch("netbox_kea.sync.cleanup_stale_ips_batch", return_value=0)
-    @patch("netbox_kea.sync.sync_lease_to_netbox", return_value=(MagicMock(), True))
+    @patch("netbox_kea.sync.sync_lease_to_netbox", return_value=(MagicMock(), True, True))
     @patch("netbox_kea.models.Server")
     def test_reservation_kea_exception_non_result2_increments_errors(self, MockServer, mock_sync_lease, mock_cleanup):
         """KeaException with result != 2 on reservation fetch → warning logged, errors incremented."""
@@ -604,7 +604,7 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
 
     @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
     @patch("netbox_kea.sync.cleanup_stale_ips_batch", return_value=0)
-    @patch("netbox_kea.sync.sync_lease_to_netbox", return_value=(MagicMock(), True))
+    @patch("netbox_kea.sync.sync_lease_to_netbox", return_value=(MagicMock(), True, True))
     @patch("netbox_kea.models.Server")
     def test_reservation_kea_exception_result2_skips_gracefully(self, MockServer, mock_sync_lease, mock_cleanup):
         """KeaException with result==2 → WARNING logged (hook not loaded), no error counter increment."""
@@ -628,7 +628,7 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
 
     @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
     @patch("netbox_kea.sync.cleanup_stale_ips_batch", return_value=0)
-    @patch("netbox_kea.sync.sync_lease_to_netbox", return_value=(MagicMock(), True))
+    @patch("netbox_kea.sync.sync_lease_to_netbox", return_value=(MagicMock(), True, True))
     @patch("netbox_kea.models.Server")
     def test_reservation_generic_exception_increments_errors(self, MockServer, mock_sync_lease, mock_cleanup):
         """Unexpected exception during reservation fetch → warning logged, errors incremented."""
@@ -651,7 +651,7 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
 
     @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
     @patch("netbox_kea.sync.cleanup_stale_ips_batch", return_value=0)
-    @patch("netbox_kea.sync.sync_lease_to_netbox", return_value=(MagicMock(), True))
+    @patch("netbox_kea.sync.sync_lease_to_netbox", return_value=(MagicMock(), True, True))
     @patch("netbox_kea.models.Server")
     def test_per_reservation_sync_exception_increments_errors(self, MockServer, mock_sync_lease, mock_cleanup):
         """Individual reservation sync failure → debug logged, doesn't abort batch."""
@@ -672,8 +672,8 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
 
     @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
     @patch("netbox_kea.sync.cleanup_stale_ips_batch", side_effect=RuntimeError("db gone"))
-    @patch("netbox_kea.sync.sync_reservation_to_netbox", return_value=(MagicMock(), False))
-    @patch("netbox_kea.sync.sync_lease_to_netbox", return_value=(MagicMock(), True))
+    @patch("netbox_kea.sync.sync_reservation_to_netbox", return_value=(MagicMock(), False, False))
+    @patch("netbox_kea.sync.sync_lease_to_netbox", return_value=(MagicMock(), True, True))
     @patch("netbox_kea.models.Server")
     def test_unhandled_exception_in_sync_one_server_is_caught(
         self, MockServer, mock_sync_lease, mock_sync_resv, mock_cleanup
@@ -696,8 +696,8 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
 
     @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
     @patch("netbox_kea.sync.cleanup_stale_ips_batch", return_value=0)
-    @patch("netbox_kea.sync.sync_reservation_to_netbox", return_value=(MagicMock(), False))
-    @patch("netbox_kea.sync.sync_lease_to_netbox", return_value=(MagicMock(), True))
+    @patch("netbox_kea.sync.sync_reservation_to_netbox", return_value=(MagicMock(), False, False))
+    @patch("netbox_kea.sync.sync_lease_to_netbox", return_value=(MagicMock(), True, True))
     @patch("netbox_kea.models.Server")
     def test_get_client_failure_in_lease_sync_increments_errors(
         self, MockServer, mock_sync_lease, mock_sync_resv, mock_cleanup
@@ -730,8 +730,8 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
 
     @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
     @patch("netbox_kea.sync.cleanup_stale_ips_batch", return_value=0)
-    @patch("netbox_kea.sync.sync_reservation_to_netbox", return_value=(MagicMock(), False))
-    @patch("netbox_kea.sync.sync_lease_to_netbox", return_value=(MagicMock(), True))
+    @patch("netbox_kea.sync.sync_reservation_to_netbox", return_value=(MagicMock(), False, False))
+    @patch("netbox_kea.sync.sync_lease_to_netbox", return_value=(MagicMock(), True, True))
     @patch("netbox_kea.models.Server")
     def test_get_client_failure_in_reservation_sync_increments_errors(
         self, MockServer, mock_sync_lease, mock_sync_resv, mock_cleanup
