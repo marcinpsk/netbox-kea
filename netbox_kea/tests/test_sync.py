@@ -447,6 +447,11 @@ class TestComputeIpStatus(TestCase):
 
         return _compute_ip_status(desired_from, current_status)
 
+    def _call_two_pass(self, desired_from, current_status, ip_str, other_source_ips):
+        from netbox_kea.sync import _compute_ip_status
+
+        return _compute_ip_status(desired_from, current_status, ip_str=ip_str, other_source_ips=other_source_ips)
+
     # ── lease sync ─────────────────────────────────────────────────────────────
     def test_new_ip_lease_sync_returns_dhcp(self):
         self.assertEqual(self._call("lease", None), "dhcp")
@@ -483,6 +488,42 @@ class TestComputeIpStatus(TestCase):
     def test_existing_reserved_ip_reservation_sync_stays_reserved(self):
         """Re-syncing a reservation keeps the IP reserved (no lease exists)."""
         self.assertEqual(self._call("reservation", "reserved"), "reserved")
+
+    # ── two-pass mode (other_source_ips provided) ──────────────────────────────
+    def test_two_pass_lease_ip_in_reservation_set_returns_active(self):
+        """Lease with matching reservation pre-fetched → active."""
+        self.assertEqual(
+            self._call_two_pass("lease", "active", "1.2.3.4", frozenset(["1.2.3.4"])),
+            "active",
+        )
+
+    def test_two_pass_lease_ip_not_in_reservation_set_returns_dhcp(self):
+        """Lease with no matching reservation → dhcp."""
+        self.assertEqual(
+            self._call_two_pass("lease", "active", "1.2.3.4", frozenset()),
+            "dhcp",
+        )
+
+    def test_two_pass_reservation_ip_in_lease_set_returns_active(self):
+        """Reservation with a matching lease → active."""
+        self.assertEqual(
+            self._call_two_pass("reservation", "reserved", "1.2.3.4", frozenset(["1.2.3.4"])),
+            "active",
+        )
+
+    def test_two_pass_reservation_ip_not_in_lease_set_returns_reserved(self):
+        """Reservation with no matching lease → reserved."""
+        self.assertEqual(
+            self._call_two_pass("reservation", "active", "1.2.3.4", frozenset()),
+            "reserved",
+        )
+
+    def test_two_pass_lease_empty_ip_str_not_in_set_returns_dhcp(self):
+        """Empty ip_str with non-empty set → treated as not found → dhcp."""
+        self.assertEqual(
+            self._call_two_pass("lease", "active", "", frozenset(["1.2.3.4"])),
+            "dhcp",
+        )
 
 
 class TestSyncLeaseStatusSemantics(TestCase):

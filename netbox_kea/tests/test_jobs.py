@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import ANY, MagicMock, call, patch
 
 from core.exceptions import JobFailed
 from django.test import SimpleTestCase, override_settings
@@ -118,8 +118,8 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
         job = KeaIpamSyncJob(_make_job())
         job.run()
 
-        mock_sync_lease.assert_called_once_with(_LEASE4, cleanup=False)
-        mock_sync_resv.assert_called_once_with(_RESV4, cleanup=False)
+        mock_sync_lease.assert_called_once_with(_LEASE4, cleanup=False, reservation_ips=ANY)
+        mock_sync_resv.assert_called_once_with(_RESV4, cleanup=False, lease_ips=ANY)
         mock_cleanup.assert_called_once()
 
     @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
@@ -180,7 +180,7 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
             KeaIpamSyncJob(_make_job()).run()
 
         # server2 lease was still synced
-        mock_sync_lease.assert_called_once_with(_LEASE4, cleanup=False)
+        mock_sync_lease.assert_called_once_with(_LEASE4, cleanup=False, reservation_ips=ANY)
 
     @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
     @patch("netbox_kea.sync.cleanup_stale_ips_batch", return_value=0)
@@ -377,7 +377,7 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
 
         self.assertTrue(any("Invalid sync_max_leases_per_server" in msg for msg in cm.output))
         # Sync still ran with fallback value
-        mock_sync_lease.assert_called_once_with(_LEASE4, cleanup=False)
+        mock_sync_lease.assert_called_once_with(_LEASE4, cleanup=False, reservation_ips=ANY)
 
     @override_settings(
         PLUGINS_CONFIG={
@@ -517,8 +517,7 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
         with self.assertLogs("netbox.jobs", level="INFO") as cm:
             KeaIpamSyncJob(_make_job()).run()
 
-        mock_sync_lease.assert_called_once_with(_LEASE4, cleanup=False)
-        # Verify stats['updated'] was incremented (not 'created')
+        mock_sync_lease.assert_called_once_with(_LEASE4, cleanup=False, reservation_ips=ANY)
         self.assertTrue(any("updated=1" in msg and "created=0" in msg for msg in cm.output))
 
     # ------------------------------------------------------------------ #
@@ -562,8 +561,10 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
         resv1 = {**_RESV4, "ip-address": "10.0.0.100"}
         resv2 = {**_RESV4, "ip-address": "10.0.0.101"}
         client.reservation_get_page.side_effect = [
-            ([resv1], 1, 0),  # first page, pagination continues
-            ([resv2], 0, 0),  # second page, done
+            ([resv1], 1, 0),  # pre-fetch page 1
+            ([resv2], 0, 0),  # pre-fetch page 2
+            ([resv1], 1, 0),  # main sync page 1
+            ([resv2], 0, 0),  # main sync page 2
         ]
         server.get_client.return_value = client
         MockServer.objects.all.return_value = [server]
@@ -571,8 +572,8 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
         KeaIpamSyncJob(_make_job()).run()
 
         self.assertEqual(mock_sync_resv.call_count, 2)
-        mock_sync_resv.assert_any_call(resv1, cleanup=False)
-        mock_sync_resv.assert_any_call(resv2, cleanup=False)
+        mock_sync_resv.assert_any_call(resv1, cleanup=False, lease_ips=ANY)
+        mock_sync_resv.assert_any_call(resv2, cleanup=False, lease_ips=ANY)
 
     # ------------------------------------------------------------------ #
     # reservation KeaException non-result-2                               #
@@ -710,7 +711,7 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
 
         def _get_client_side_effect(version):
             call_count[0] += 1
-            if call_count[0] == 1:
+            if call_count[0] == 2:  # pre-fetch(1) ok, lease-sync(2) fails, resv(3) ok
                 raise ValueError("connection refused")
             return client
 
@@ -722,7 +723,7 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
                 KeaIpamSyncJob(_make_job()).run()
 
         self.assertTrue(any("Failed to fetch leases" in msg for msg in cm.output))
-        mock_sync_resv.assert_called_once_with(_RESV4, cleanup=False)
+        mock_sync_resv.assert_called_once_with(_RESV4, cleanup=False, lease_ips=ANY)
 
     # ------------------------------------------------------------------ #
     # get_client failure in _sync_server_reservations                     #
@@ -744,7 +745,7 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
 
         def _get_client_side_effect(version):
             call_count[0] += 1
-            if call_count[0] == 2:  # first call (lease) succeeds, second (resv) fails
+            if call_count[0] == 3:  # pre-fetch(1) ok, lease(2) ok, resv-sync(3) fails
                 raise ValueError("connection refused")
             return client
 
@@ -756,7 +757,7 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
                 KeaIpamSyncJob(_make_job()).run()
 
         self.assertTrue(any("Unexpected error fetching reservations" in msg for msg in cm.output))
-        mock_sync_lease.assert_called_once_with(_LEASE4, cleanup=False)
+        mock_sync_lease.assert_called_once_with(_LEASE4, cleanup=False, reservation_ips=ANY)
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)

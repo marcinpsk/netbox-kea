@@ -58,6 +58,71 @@ def _get_plugin_config() -> dict[str, Any]:
     return config
 
 
+def _prefetch_reservation_ips(server: Server, version: int) -> frozenset[str] | None:
+    """Page through all reservations and return the set of IP addresses.
+
+    Used for two-pass idempotent sync: by knowing all reservation IPs *before*
+    the lease sync, the lease sync can compute the correct final status in a
+    single write without intermediate state changes.
+
+    Returns a ``frozenset`` of IP address strings on success, or ``None`` when
+    the fetch fails (e.g. host_cmds hook not loaded or network error) — callers
+    should fall back to single-pass mode when ``None`` is returned.
+    """
+    from .kea import KeaException
+
+    service = f"dhcp{version}"
+    from_index = 0
+    source_index = 0
+    ips: set[str] = set()
+
+    try:
+        client = server.get_client(version=version)
+        while True:
+            page, next_from, next_source = client.reservation_get_page(
+                service,
+                source_index=source_index,
+                from_index=from_index,
+                limit=100,
+            )
+            for r in page:
+                ip = r.get("ip-address")
+                if ip:
+                    ips.add(ip)
+                for addr in r.get("ip-addresses", []):
+                    if addr:
+                        ips.add(addr)
+            if next_from == 0 and next_source == 0:
+                break
+            from_index = next_from
+            source_index = next_source
+    except KeaException as exc:
+        if exc.response.get("result") == 2:
+            logger.debug(
+                "Server %s (v%s): host_cmds not loaded — two-pass reservation pre-fetch skipped",
+                server.name,
+                version,
+            )
+        else:
+            logger.debug(
+                "Server %s (v%s): Kea error during reservation pre-fetch — falling back to single-pass mode: %s",
+                server.name,
+                version,
+                exc,
+            )
+        return None
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "Server %s (v%s): error during reservation pre-fetch — falling back to single-pass mode: %s",
+            server.name,
+            version,
+            exc,
+        )
+        return None
+
+    return frozenset(ips)
+
+
 def _sync_server_leases(
     server: Server,
     version: int,
@@ -65,12 +130,15 @@ def _sync_server_leases(
     max_leases: int,
     stats: dict[str, int],
     all_synced: list[dict],
-) -> bool:
+    reservation_ips: frozenset[str] | None = None,
+) -> tuple[bool, frozenset[str]]:
     """Fetch all leases from *server* for *version* and upsert into NetBox IPAM.
 
-    Returns ``True`` when the full lease set was fetched and synced without
-    truncation, ``False`` otherwise.  A ``False`` return means *all_synced* may
-    be incomplete and cleanup must be skipped.
+    Returns ``(full_fetch_ok, lease_ips)`` where *full_fetch_ok* is ``True``
+    when the full lease set was fetched without truncation (``False`` means
+    *all_synced* may be incomplete and cleanup must be skipped) and
+    *lease_ips* is the frozenset of all lease IP addresses processed this run
+    (used for two-pass idempotent reservation sync).
     """
     from .sync import sync_lease_to_netbox
 
@@ -80,7 +148,7 @@ def _sync_server_leases(
     except Exception as exc:  # noqa: BLE001
         logger.warning("Failed to fetch leases from server %s (v%s): %s", server.name, version, exc)
         stats["errors"] += 1
-        return False
+        return False, frozenset()
 
     if truncated:
         logger.warning(
@@ -92,10 +160,14 @@ def _sync_server_leases(
 
     logger.info("Server %s (v%s): fetched %d leases", server.name, version, len(raw_leases))
 
+    lease_ips: set[str] = set()
     for lease in raw_leases:
         try:
-            _ip, created, changed = sync_lease_to_netbox(lease, cleanup=False)
+            _ip, created, changed = sync_lease_to_netbox(lease, cleanup=False, reservation_ips=reservation_ips)
             all_synced.append(lease)
+            ip_addr = lease.get("ip-address")
+            if ip_addr:
+                lease_ips.add(ip_addr)
             if created:
                 stats["created"] += 1
             elif changed:
@@ -109,7 +181,7 @@ def _sync_server_leases(
             )
             stats["errors"] += 1
 
-    return not truncated
+    return not truncated, frozenset(lease_ips)
 
 
 def _sync_server_reservations(
@@ -118,6 +190,7 @@ def _sync_server_reservations(
     *,
     stats: dict[str, int],
     all_synced: list[dict],
+    lease_ips: frozenset[str] | None = None,
 ) -> bool:
     """Fetch all reservations from *server* for *version* and upsert into NetBox IPAM.
 
@@ -145,7 +218,7 @@ def _sync_server_reservations(
             )
             for reservation in page:
                 try:
-                    _ip, created, changed = sync_reservation_to_netbox(reservation, cleanup=False)
+                    _ip, created, changed = sync_reservation_to_netbox(reservation, cleanup=False, lease_ips=lease_ips)
                     all_synced.append(reservation)
                     processed += 1
                     if created:
@@ -324,12 +397,38 @@ def _sync_one_server(
     for version, enabled in ((4, server.dhcp4), (6, server.dhcp6)):
         if not enabled:
             continue
+
+        # Two-pass idempotent sync: pre-fetch reservation IPs so the lease sync
+        # can determine the correct final status without intermediate DB writes.
+        # Only pre-fetch when both sources will be synced this run; otherwise
+        # fall back to single-pass mode (None → uses current_status heuristics).
+        pre_reservation_ips: frozenset[str] | None = None
+        if sync_leases and sync_reservations:
+            pre_reservation_ips = _prefetch_reservation_ips(server, version)
+
+        lease_ips_set: frozenset[str] = frozenset()
         if sync_leases:
-            cleanup_safe &= _sync_server_leases(
-                server, version, max_leases=max_leases, stats=stats, all_synced=all_synced
+            sync_ok, lease_ips_set = _sync_server_leases(
+                server,
+                version,
+                max_leases=max_leases,
+                stats=stats,
+                all_synced=all_synced,
+                reservation_ips=pre_reservation_ips,
             )
+            cleanup_safe &= sync_ok
+
         if sync_reservations:
-            cleanup_safe &= _sync_server_reservations(server, version, stats=stats, all_synced=all_synced)
+            # Pass lease_ips_set only when we actually ran lease sync this run;
+            # None tells reservation sync to use single-pass fallback mode.
+            cleanup_safe &= _sync_server_reservations(
+                server,
+                version,
+                stats=stats,
+                all_synced=all_synced,
+                lease_ips=lease_ips_set if sync_leases else None,
+            )
+
         if sync_prefixes or sync_ip_ranges:
             _sync_server_prefixes_and_ranges(
                 server,
