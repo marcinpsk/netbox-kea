@@ -2,10 +2,13 @@
 # SPDX-License-Identifier: Apache-2.0
 """Tests for SyncJobsView, ServerSyncStatusView, ServerSyncNowView, ServerSyncToggleView."""
 
+import uuid
+from datetime import timedelta
 from unittest.mock import patch
 
 from django.test import TestCase, override_settings
 from django.urls import reverse
+from django.utils import timezone
 
 from netbox_kea.models import SyncConfig
 from netbox_kea.tests.utils import _PLUGINS_CONFIG, User, _make_db_server
@@ -291,3 +294,131 @@ class TestMigrationsApplied(TestCase):
         from netbox_kea.models import Server
 
         self.assertTrue(has_feature(Server, "jobs"), "Server must have the 'jobs' feature (JobsMixin)")
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestGetRecentJobsForServers(TestCase):
+    """Unit tests for get_recent_jobs_for_servers helper."""
+
+    def _make_job(self, *, name="Kea IPAM Sync", object_id=None, object_type=None, data=None, delta_seconds=0):
+        """Create a real Job row in the test DB."""
+        from core.models import Job
+
+        return Job.objects.create(
+            name=name,
+            object_type=object_type,
+            object_id=object_id,
+            status="completed",
+            data=data or {},
+            job_id=uuid.uuid4(),
+            created=timezone.now() - timedelta(seconds=delta_seconds),
+        )
+
+    def setUp(self):
+        from django.contrib.contenttypes.models import ContentType
+
+        from netbox_kea.models import Server
+
+        self.server_a = _make_db_server(name="server-a")
+        self.server_b = _make_db_server(name="server-b")
+        self.ct = ContentType.objects.get_for_model(Server)
+
+    def test_returns_empty_list_for_server_with_no_jobs(self):
+        from netbox_kea.views.sync_jobs import get_recent_jobs_for_servers
+
+        result = get_recent_jobs_for_servers([self.server_a.pk])
+        self.assertEqual(result[self.server_a.pk], [])
+
+    def test_returns_bound_job_for_server(self):
+        from netbox_kea.views.sync_jobs import get_recent_jobs_for_servers
+
+        job = self._make_job(object_id=self.server_a.pk, object_type=self.ct)
+        result = get_recent_jobs_for_servers([self.server_a.pk])
+        self.assertEqual(len(result[self.server_a.pk]), 1)
+        self.assertEqual(result[self.server_a.pk][0].pk, job.pk)
+
+    def test_returns_unbound_periodic_job_attributed_via_summary(self):
+        from netbox_kea.views.sync_jobs import get_recent_jobs_for_servers
+
+        job = self._make_job(data={"summary": [{"pk": self.server_a.pk, "name": "server-a"}]})
+        result = get_recent_jobs_for_servers([self.server_a.pk])
+        self.assertEqual(len(result[self.server_a.pk]), 1)
+        self.assertEqual(result[self.server_a.pk][0].pk, job.pk)
+
+    def test_periodic_job_shown_even_when_bound_jobs_fill_limit(self):
+        """Core regression: periodic (unbound) jobs must appear even when limit bound jobs exist."""
+        from netbox_kea.views.sync_jobs import get_recent_jobs_for_servers
+
+        # Create 3 bound manual jobs (older)
+        for i in range(3, 0, -1):
+            self._make_job(object_id=self.server_a.pk, object_type=self.ct, delta_seconds=i * 100)
+
+        # Create 1 periodic job (newer than all bound jobs)
+        periodic = self._make_job(
+            data={"summary": [{"pk": self.server_a.pk}]},
+            delta_seconds=10,  # very recent
+        )
+
+        result = get_recent_jobs_for_servers([self.server_a.pk], limit=3)
+        pks = [j.pk for j in result[self.server_a.pk]]
+        self.assertIn(periodic.pk, pks, "Periodic job must appear even when limit bound jobs fill the slot")
+
+    def test_most_recent_job_returned_first(self):
+        from netbox_kea.views.sync_jobs import get_recent_jobs_for_servers
+
+        old = self._make_job(object_id=self.server_a.pk, object_type=self.ct, delta_seconds=200)
+        new = self._make_job(object_id=self.server_a.pk, object_type=self.ct, delta_seconds=10)
+        result = get_recent_jobs_for_servers([self.server_a.pk], limit=5)
+        pks = [j.pk for j in result[self.server_a.pk]]
+        self.assertEqual(pks[0], new.pk)
+        self.assertEqual(pks[1], old.pk)
+
+    def test_limit_respected(self):
+        from netbox_kea.views.sync_jobs import get_recent_jobs_for_servers
+
+        for i in range(5):
+            self._make_job(object_id=self.server_a.pk, object_type=self.ct, delta_seconds=i * 10)
+        result = get_recent_jobs_for_servers([self.server_a.pk], limit=2)
+        self.assertEqual(len(result[self.server_a.pk]), 2)
+
+    def test_multiple_servers_independent(self):
+        from netbox_kea.views.sync_jobs import get_recent_jobs_for_servers
+
+        job_a = self._make_job(object_id=self.server_a.pk, object_type=self.ct)
+        job_b = self._make_job(object_id=self.server_b.pk, object_type=self.ct)
+        result = get_recent_jobs_for_servers([self.server_a.pk, self.server_b.pk])
+        self.assertEqual(result[self.server_a.pk][0].pk, job_a.pk)
+        self.assertEqual(result[self.server_b.pk][0].pk, job_b.pk)
+
+    def test_unbound_job_summary_none_does_not_raise(self):
+        from netbox_kea.views.sync_jobs import get_recent_jobs_for_servers
+
+        self._make_job(data={"summary": None})
+        # Should not raise, server gets no jobs
+        result = get_recent_jobs_for_servers([self.server_a.pk])
+        self.assertEqual(result[self.server_a.pk], [])
+
+    def test_unbound_job_missing_data_does_not_raise(self):
+        from netbox_kea.views.sync_jobs import get_recent_jobs_for_servers
+
+        self._make_job(data=None)
+        result = get_recent_jobs_for_servers([self.server_a.pk])
+        self.assertEqual(result[self.server_a.pk], [])
+
+    def test_unknown_server_pk_returns_empty(self):
+        from netbox_kea.views.sync_jobs import get_recent_jobs_for_servers
+
+        result = get_recent_jobs_for_servers([999999])
+        self.assertEqual(result[999999], [])
+
+    def test_deduplication_when_job_attributed_to_two_pks(self):
+        """An unbound job covering two servers must not be double-counted per server."""
+        from netbox_kea.views.sync_jobs import get_recent_jobs_for_servers
+
+        job = self._make_job(
+            data={"summary": [{"pk": self.server_a.pk}, {"pk": self.server_b.pk}]},
+        )
+        result = get_recent_jobs_for_servers([self.server_a.pk, self.server_b.pk])
+        # Each server sees the job exactly once
+        self.assertEqual(len([j for j in result[self.server_a.pk] if j.pk == job.pk]), 1)
+        self.assertEqual(len([j for j in result[self.server_b.pk] if j.pk == job.pk]), 1)

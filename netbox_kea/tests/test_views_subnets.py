@@ -3033,3 +3033,31 @@ class TestSubnetViewCoverageGaps(_ViewTestBase):
         response = self.client.post(url, follow=True)
         msgs = list(response.context["messages"])
         self.assertTrue(any(m.level == django_messages.ERROR for m in msgs))
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestPersistConfigBanner(_ViewTestBase):
+    """Tests that the persist_config warning banner appears when disabled."""
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_banner_absent_when_persist_config_true(self, MockKeaClient):
+        """No warning banner on subnet add when persist_config=True (default)."""
+        mock_client = MockKeaClient.return_value
+        mock_client.command.side_effect = _kea_command_side_effect
+
+        url = reverse("plugins:netbox_kea:server_subnet4_add", args=[self.server.pk])
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, "Configuration persistence is disabled.")
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_banner_present_when_persist_config_false(self, MockKeaClient):
+        """Warning banner appears on subnet add page when persist_config=False."""
+        mock_client = MockKeaClient.return_value
+        mock_client.command.side_effect = _kea_command_side_effect
+
+        server = _make_db_server(name="no-persist", persist_config=False)
+        url = reverse("plugins:netbox_kea:server_subnet4_add", args=[server.pk])
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Configuration persistence is disabled.")

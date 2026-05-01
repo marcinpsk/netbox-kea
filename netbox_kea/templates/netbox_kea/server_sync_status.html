@@ -81,6 +81,32 @@
               </button>
             </form>
             {% endif %}
+            {% if sync_cfg %}
+            <hr class="my-2">
+            {% if not sync_cfg.sync_enabled %}
+            <div class="alert alert-warning py-1 px-2 small mb-2" role="alert">
+              <i class="mdi mdi-alert-outline" aria-hidden="true"></i> Sync is globally disabled — all types are inactive regardless of per-server settings.
+            </div>
+            {% endif %}
+            <p class="small text-muted mb-1">Global sync types{% if perms.netbox_kea.change_syncconfig %}
+              (<a href="{% url 'plugins:netbox_kea:sync_jobs' %}">configure</a>){% endif %}:
+            </p>
+            <div class="d-flex flex-wrap gap-1 mb-2">
+              <span class="badge {% if sync_cfg.sync_enabled and sync_cfg.sync_leases_enabled %}text-bg-success{% else %}text-bg-secondary{% endif %}">Leases</span>
+              <span class="badge {% if sync_cfg.sync_enabled and sync_cfg.sync_reservations_enabled %}text-bg-success{% else %}text-bg-secondary{% endif %}">Reservations</span>
+              <span class="badge {% if sync_cfg.sync_enabled and sync_cfg.sync_prefixes_enabled %}text-bg-success{% else %}text-bg-secondary{% endif %}">Prefixes</span>
+              <span class="badge {% if sync_cfg.sync_enabled and sync_cfg.sync_ip_ranges_enabled %}text-bg-success{% else %}text-bg-secondary{% endif %}">IP Ranges</span>
+            </div>
+            <p class="small text-muted mb-1">Server overrides{% if can_change_server %}
+              (<a href="{% url 'plugins:netbox_kea:server_edit' object.pk %}">configure</a>){% endif %}:
+            </p>
+            <div class="d-flex flex-wrap gap-1">
+              <span class="badge {% if sync_cfg.sync_enabled and object.sync_leases_enabled and sync_cfg.sync_leases_enabled %}text-bg-success{% else %}text-bg-secondary{% endif %}">Leases</span>
+              <span class="badge {% if sync_cfg.sync_enabled and object.sync_reservations_enabled and sync_cfg.sync_reservations_enabled %}text-bg-success{% else %}text-bg-secondary{% endif %}">Reservations</span>
+              <span class="badge {% if sync_cfg.sync_enabled and object.sync_prefixes_enabled and sync_cfg.sync_prefixes_enabled %}text-bg-success{% else %}text-bg-secondary{% endif %}">Prefixes</span>
+              <span class="badge {% if sync_cfg.sync_enabled and object.sync_ip_ranges_enabled and sync_cfg.sync_ip_ranges_enabled %}text-bg-success{% else %}text-bg-secondary{% endif %}">IP Ranges</span>
+            </div>
+            {% endif %}
           </div>
         </div>
       </div>
@@ -90,7 +116,7 @@
         <div class="card h-100">
           <h5 class="card-header">
             Recent Runs
-            <a href="{{ jobs_list_url }}" class="float-end small text-muted">View all →</a>
+            <a href="{{ jobs_list_url }}" class="float-end small text-muted">View manual runs →</a>
           </h5>
           <div class="card-body p-0">
             {% if recent_jobs %}
@@ -98,7 +124,7 @@
                 <tbody>
                   {% for job in recent_jobs %}
                     <tr>
-                      <td class="small">{{ job.created|date:"H:i:s" }}</td>
+                      <td class="small">{{ job.created|date:"Y-m-d H:i" }}</td>
                       <td>
                         {% if job.status == "completed" %}
                           <span class="badge text-bg-success">OK</span>
@@ -107,6 +133,9 @@
                         {% else %}
                           <span class="badge text-bg-secondary">{{ job.status }}</span>
                         {% endif %}
+                      </td>
+                      <td class="small text-muted">
+                        {% if job.object_id %}manual{% else %}periodic{% endif %}
                       </td>
                     </tr>
                   {% endfor %}

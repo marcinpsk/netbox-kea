@@ -10,6 +10,11 @@
   </style>
 {% endblock %}
 
+{% block content %}
+{% include "netbox_kea/includes/persist_config_warning.html" %}
+{{ block.super }}
+{% endblock content %}
+
 {% block bulk_controls %}{% endblock bulk_controls %}
 
 {% block content_bottom %}

@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import logging
 from collections import defaultdict
-from typing import Any
 
 from django.conf import settings
 from django.contrib import messages
@@ -33,51 +32,93 @@ def _configured_default_interval() -> int:
     return settings.PLUGINS_CONFIG.get("netbox_kea", {}).get("sync_interval_minutes", 5)
 
 
-def _get_latest_jobs(servers: list[Server]) -> defaultdict:
-    """Return a defaultdict mapping server.pk to the most recent Job for that server.
+def get_recent_jobs_for_servers(
+    pks: list[int],
+    *,
+    name: str = "Kea IPAM Sync",
+    limit: int = 1,
+) -> dict[int, list]:
+    """Return ``{server_pk: [jobs newest-first, up to *limit*]}`` for each pk.
 
-    Considers both object-bound jobs (from ``KeaIpamSyncJob.enqueue``) and
+    Queries both object-bound jobs (from ``KeaIpamSyncJob.enqueue``) and
     unbound periodic jobs (``object_id=NULL``, from ``@system_job`` runs).
-    Servers with no matching job return ``None`` via the defaultdict default.
+    Unbound jobs are attributed to individual servers via ``job.data["summary"]``.
+    Servers with no matching job map to an empty list.
+
+    Args:
+        pks: Server primary keys to look up.
+        name: Job name filter — defaults to ``"Kea IPAM Sync"``.
+        limit: Maximum number of jobs to return per server.
+
     """
     from core.models import Job
 
     ct = ContentType.objects.get_for_model(Server)
-    pks = [s.pk for s in servers]
 
-    # 1. Object-bound jobs (one-off enqueue per server).
-    bound_jobs = (
-        Job.objects.filter(object_type=ct, object_id__in=pks, name="Kea IPAM Sync")
+    # 1. Object-bound jobs (manual "Run Now") — newest-first per server, up to *limit*.
+    bound_by_pk: dict[int, list] = {pk: [] for pk in pks}
+    bound_qs = (
+        Job.objects.filter(object_type=ct, object_id__in=pks, name=name)
         .order_by("object_id", "-created")
         .only("pk", "object_id", "created", "status", "data")
     )
-    latest: dict[int, Any] = {}
-    for job in bound_jobs:
+    for job in bound_qs:
         oid = job.object_id
-        if oid not in latest:
-            latest[oid] = job
+        if oid in bound_by_pk and len(bound_by_pk[oid]) < limit:
+            bound_by_pk[oid].append(job)
 
-    # 2. Unbound periodic jobs (object_id=NULL) as fallbacks for any server
-    #    not yet covered by a bound job.  These require the data field to
-    #    attribute them to individual servers via job.data["summary"].
-    missing_pks = [pk for pk in pks if pk not in latest]
-    if missing_pks:
-        unbound_jobs = (
-            Job.objects.filter(object_id__isnull=True, name="Kea IPAM Sync")
-            .order_by("-created")
-            .only("pk", "object_id", "created", "status", "data")
+    # 2. Unbound periodic jobs — always scanned independently so that a recent
+    #    periodic run is not hidden by older manual (bound) runs filling the slot.
+    #    Heuristic window: scan far enough back to cover periodic runs for all servers.
+    unbound_by_pk: dict[int, list] = {pk: [] for pk in pks}
+    needs_unbound = set(pks)
+    scan_window = limit * 10 * max(1, len(pks))
+    unbound_qs = (
+        Job.objects.filter(object_id__isnull=True, name=name)
+        .order_by("-created")
+        .only("pk", "object_id", "created", "status", "data")
+    )[:scan_window]
+    for job in unbound_qs:
+        if not needs_unbound:
+            break
+        for entry in (job.data or {}).get("summary") or []:
+            server_pk = entry.get("pk")
+            if server_pk in needs_unbound and job.pk not in {j.pk for j in unbound_by_pk[server_pk]}:
+                unbound_by_pk[server_pk].append(job)
+                if len(unbound_by_pk[server_pk]) >= limit:
+                    needs_unbound.discard(server_pk)
+
+    if needs_unbound:
+        logger.warning(
+            "get_recent_jobs_for_servers: scan_window=%d exhausted; periodic jobs may be missing for server pks: %s",
+            scan_window,
+            sorted(needs_unbound),
         )
-        remaining = set(missing_pks)
-        for job in unbound_jobs:
-            if not remaining:
-                break
-            for entry in (job.data or {}).get("summary", []):
-                server_pk = entry.get("pk")
-                if server_pk in remaining:
-                    latest[server_pk] = job
-                    remaining.discard(server_pk)
 
-    return defaultdict(lambda: None, latest)
+    # 3. Merge both sources, deduplicate, sort newest-first, keep top *limit*.
+    result: dict[int, list] = {}
+    for pk in pks:
+        merged = bound_by_pk[pk] + unbound_by_pk[pk]
+        seen: set[int] = set()
+        deduped = []
+        for job in merged:
+            if job.pk not in seen:
+                seen.add(job.pk)
+                deduped.append(job)
+        deduped.sort(key=lambda j: j.created, reverse=True)
+        result[pk] = deduped[:limit]
+
+    return result
+
+
+def _get_latest_jobs(servers: list[Server]) -> defaultdict:
+    """Return a defaultdict mapping server.pk to the most recent Job (or None).
+
+    Thin wrapper around :func:`get_recent_jobs_for_servers` with ``limit=1``.
+    """
+    pks = [s.pk for s in servers]
+    jobs_by_pk = get_recent_jobs_for_servers(pks, limit=1)
+    return defaultdict(lambda: None, {pk: jobs[0] for pk, jobs in jobs_by_pk.items() if jobs})
 
 
 class SyncJobsView(LoginRequiredMixin, View):
@@ -93,7 +134,14 @@ class SyncJobsView(LoginRequiredMixin, View):
         """Render the sync jobs overview page with config form and server table."""
         sync_cfg = SyncConfig.get(default_interval=_configured_default_interval())
         form = forms.SyncConfigForm(
-            initial={"interval_minutes": sync_cfg.interval_minutes, "sync_enabled": sync_cfg.sync_enabled}
+            initial={
+                "interval_minutes": sync_cfg.interval_minutes,
+                "sync_enabled": sync_cfg.sync_enabled,
+                "sync_leases_enabled": sync_cfg.sync_leases_enabled,
+                "sync_reservations_enabled": sync_cfg.sync_reservations_enabled,
+                "sync_prefixes_enabled": sync_cfg.sync_prefixes_enabled,
+                "sync_ip_ranges_enabled": sync_cfg.sync_ip_ranges_enabled,
+            }
         )
         servers = list(Server.objects.restrict(request.user, "view").order_by("name"))
         allowed_server_pks = set(Server.objects.restrict(request.user, "change").values_list("pk", flat=True))
@@ -120,6 +168,10 @@ class SyncJobsView(LoginRequiredMixin, View):
                 sync_cfg = SyncConfig.get(default_interval=_configured_default_interval())
                 sync_cfg.interval_minutes = form.cleaned_data["interval_minutes"]
                 sync_cfg.sync_enabled = form.cleaned_data["sync_enabled"]
+                sync_cfg.sync_leases_enabled = form.cleaned_data["sync_leases_enabled"]
+                sync_cfg.sync_reservations_enabled = form.cleaned_data["sync_reservations_enabled"]
+                sync_cfg.sync_prefixes_enabled = form.cleaned_data["sync_prefixes_enabled"]
+                sync_cfg.sync_ip_ranges_enabled = form.cleaned_data["sync_ip_ranges_enabled"]
                 sync_cfg.save()
             except Exception:
                 logger.exception("Failed to save SyncConfig")
@@ -167,37 +219,23 @@ class ServerSyncStatusView(generic.ObjectView):
     """Per-server Sync Status tab."""
 
     queryset = Server.objects.all()
-    tab = ViewTab(label="Sync Status", weight=1080)
+    tab = ViewTab(label="Sync", weight=1005)
     template_name = "netbox_kea/server_sync_status.html"
 
     def get_extra_context(self, request, instance):
         """Return recent sync jobs and status context for the template."""
-        from core.models import Job
-
-        ct = ContentType.objects.get_for_model(Server)
-        recent_jobs = list(
-            Job.objects.filter(object_type=ct, object_id=instance.pk, name="Kea IPAM Sync").order_by("-created")[
-                :_JOB_HISTORY_COUNT
-            ]
-        )
+        jobs_by_pk = get_recent_jobs_for_servers([instance.pk], limit=_JOB_HISTORY_COUNT)
+        recent_jobs = jobs_by_pk[instance.pk]
         latest = recent_jobs[0] if recent_jobs else None
 
-        # Fallback: if no object-bound jobs exist, check unbound periodic runs
-        # that have a summary entry attributed to this server.
-        if latest is None:
-            for job in Job.objects.filter(object_id__isnull=True, name="Kea IPAM Sync").order_by("-created")[
-                :_JOB_HISTORY_COUNT
-            ]:
-                if any(entry.get("pk") == instance.pk for entry in (job.data or {}).get("summary", [])):
-                    latest = job
-                    break
-
         jobs_list_url = reverse("core:job_list") + f"?object_type=netbox_kea.server&object_id={instance.pk}"
+        sync_cfg = SyncConfig.get(default_interval=_configured_default_interval())
         return {
             "recent_jobs": recent_jobs,
             "latest_job": latest,
             "jobs_list_url": jobs_list_url,
             "can_change_server": Server.objects.restrict(request.user, "change").filter(pk=instance.pk).exists(),
+            "sync_cfg": sync_cfg,
         }
 
 

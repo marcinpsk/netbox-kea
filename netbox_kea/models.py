@@ -123,6 +123,45 @@ class Server(JobsMixin, NetBoxModel):
         default=True,
         help_text="Include this server in the periodic Kea→NetBox IPAM sync job.",
     )
+    sync_leases_enabled = models.BooleanField(
+        verbose_name="Sync Leases",
+        default=True,
+        help_text="Sync active DHCP leases as NetBox IP Addresses for this server.",
+    )
+    sync_reservations_enabled = models.BooleanField(
+        verbose_name="Sync Reservations",
+        default=True,
+        help_text="Sync DHCP reservations as NetBox IP Addresses for this server.",
+    )
+    sync_prefixes_enabled = models.BooleanField(
+        verbose_name="Sync Prefixes",
+        default=True,
+        help_text="Sync Kea subnets as NetBox IP Prefixes for this server.",
+    )
+    sync_ip_ranges_enabled = models.BooleanField(
+        verbose_name="Sync IP Ranges",
+        default=True,
+        help_text="Sync Kea pools as NetBox IP Ranges for this server.",
+    )
+    persist_config = models.BooleanField(
+        verbose_name="Persist configuration",
+        default=True,
+        help_text=(
+            "When enabled, Kea's configuration file is automatically saved "
+            "(config-write) after each change so modifications survive a "
+            "Kea daemon restart. Disable if Kea configuration is managed externally "
+            "(e.g. Ansible, Puppet) or if you manage persistence manually."
+        ),
+    )
+    sync_vrf = models.ForeignKey(
+        to="ipam.VRF",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+        verbose_name="Sync VRF",
+        help_text="VRF to assign when syncing subnets as Prefixes and pools as IP Ranges. Leave blank for the global VRF.",
+    )
 
     class Meta:
         ordering = ("name",)
@@ -168,6 +207,7 @@ class Server(JobsMixin, NetBoxModel):
             client_cert=self.client_cert_path or None,
             client_key=self.client_key_path or None,
             timeout=settings.PLUGINS_CONFIG["netbox_kea"]["kea_timeout"],
+            persist_config=self.persist_config,
         )
 
     def clean(self) -> None:
@@ -256,6 +296,22 @@ class SyncConfig(models.Model):
         default=True,
         help_text="Global kill-switch. When False, no servers are synced regardless of per-server settings.",
     )
+    sync_leases_enabled = models.BooleanField(
+        default=True,
+        help_text="Sync active Kea leases to NetBox IPAM as IP addresses.",
+    )
+    sync_reservations_enabled = models.BooleanField(
+        default=True,
+        help_text="Sync Kea reservations to NetBox IPAM as reserved IP addresses.",
+    )
+    sync_prefixes_enabled = models.BooleanField(
+        default=True,
+        help_text="Sync Kea subnets to NetBox IPAM as IP Prefixes.",
+    )
+    sync_ip_ranges_enabled = models.BooleanField(
+        default=True,
+        help_text="Sync Kea pools to NetBox IPAM as IP Ranges.",
+    )
 
     class Meta:
         app_label = "netbox_kea"
@@ -288,5 +344,16 @@ class SyncConfig(models.Model):
         UI).  Pass the value from ``PLUGINS_CONFIG`` so the config file is
         honoured until the UI overrides it.
         """
-        obj, _ = cls.objects.get_or_create(pk=1, defaults={"interval_minutes": default_interval})
+        config = getattr(settings, "PLUGINS_CONFIG", {}).get("netbox_kea", {})
+        obj, _ = cls.objects.get_or_create(
+            pk=1,
+            defaults={
+                "interval_minutes": default_interval,
+                "sync_enabled": config.get("sync_enabled", True),
+                "sync_leases_enabled": config.get("sync_leases_enabled", True),
+                "sync_reservations_enabled": config.get("sync_reservations_enabled", True),
+                "sync_prefixes_enabled": config.get("sync_prefixes_enabled", True),
+                "sync_ip_ranges_enabled": config.get("sync_ip_ranges_enabled", True),
+            },
+        )
         return obj

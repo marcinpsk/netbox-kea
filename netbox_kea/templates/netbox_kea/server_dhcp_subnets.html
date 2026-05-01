@@ -12,6 +12,11 @@
   </style>
 {% endblock %}
 
+{% block content %}
+{% include "netbox_kea/includes/persist_config_warning.html" %}
+{{ block.super }}
+{% endblock content %}
+
 {% block bulk_controls %}
 <div class="d-flex justify-content-end gap-2">
   {% if object.dhcp4 and '4' in request.resolver_match.url_name %}

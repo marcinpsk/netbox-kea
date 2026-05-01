@@ -57,4 +57,10 @@
 
 {% render_table table %}
 
+<div class="row mt-2">
+  <div class="col-auto text-muted small">
+    Showing {{ table.objects_count }} subnet{{ table.objects_count|pluralize }}
+  </div>
+</div>
+
 {% endblock tab_content %}

@@ -4570,3 +4570,57 @@ class TestLeaseGetAllPagination(TestCase):
         with self.assertRaises(RuntimeError) as cm:
             self.client.lease_get_all(version=4)
         self.assertIn("lease4-get-page", str(cm.exception))
+
+
+class TestPersistConfigFlag(TestCase):
+    """Tests that persist_config=False skips config-write in _persist_config and _apply_config."""
+
+    def _cmds(self, mock_post):
+        payloads = [(c.kwargs.get("json") or c[1]["json"]) for c in mock_post.call_args_list]
+        return [p["command"] for p in payloads]
+
+    def test_default_persist_config_is_true(self):
+        """KeaClient defaults to persist_config=True."""
+        client = KeaClient(url="http://kea:8000")
+        self.assertTrue(client.persist_config)
+
+    def test_persist_config_false_stored(self):
+        """KeaClient stores persist_config=False when passed."""
+        client = KeaClient(url="http://kea:8000", persist_config=False)
+        self.assertFalse(client.persist_config)
+
+    def test_clone_propagates_persist_config_false(self):
+        """clone() copies persist_config=False to the new instance."""
+        client = KeaClient(url="http://kea:8000", persist_config=False)
+        cloned = client.clone()
+        self.assertFalse(cloned.persist_config)
+
+    def test_clone_propagates_persist_config_true(self):
+        """clone() copies persist_config=True (default) to the new instance."""
+        client = KeaClient(url="http://kea:8000", persist_config=True)
+        cloned = client.clone()
+        self.assertTrue(cloned.persist_config)
+
+    @patch("requests.Session.post")
+    def test_persist_config_false_skips_config_write_in_persist_config_method(self, mock_post):
+        """_persist_config() makes no HTTP calls when persist_config=False."""
+        client = KeaClient(url="http://kea:8000", persist_config=False)
+        client._persist_config("dhcp4")
+        mock_post.assert_not_called()
+
+    @patch("requests.Session.post")
+    def test_persist_config_false_skips_config_write_in_apply_config(self, mock_post):
+        """_apply_config() does not call config-write when persist_config=False."""
+        # _apply_config is called AFTER config-set has already succeeded.
+        # With persist_config=False, the config-write step should be skipped entirely.
+        client = KeaClient(url="http://kea:8000", persist_config=False)
+
+        # Mock all commands to succeed (config-test, then config-set)
+        config = {"Dhcp4": {"subnet4": []}}
+        mock_post.return_value = _mock_http_response([{"result": 0, "text": "Configuration successful."}])
+
+        client._apply_config("dhcp4", config)
+
+        cmds = self._cmds(mock_post)
+        self.assertNotIn("config-write", cmds)
+        self.assertIn("config-set", cmds)

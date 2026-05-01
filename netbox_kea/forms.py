@@ -5,7 +5,7 @@ from django.core.exceptions import ValidationError
 from netaddr import EUI, AddrFormatError, IPAddress, IPNetwork, IPRange, mac_unix_expanded
 from netbox.forms import NetBoxModelBulkEditForm, NetBoxModelFilterSetForm, NetBoxModelForm, NetBoxModelImportForm
 from utilities.forms import BOOLEAN_WITH_BLANK_CHOICES
-from utilities.forms.fields import TagFilterField
+from utilities.forms.fields import DynamicModelChoiceField, TagFilterField
 from utilities.forms.rendering import FieldSet
 
 from . import constants
@@ -54,8 +54,29 @@ class ServerForm(NetBoxModelForm):
             "dhcp6_password",
             name="DHCPv6",
         ),
-        FieldSet("sync_enabled", name="IPAM Sync"),
+        FieldSet(
+            "sync_enabled",
+            "sync_leases_enabled",
+            "sync_reservations_enabled",
+            "sync_prefixes_enabled",
+            "sync_ip_ranges_enabled",
+            "sync_vrf",
+            name="IPAM Sync",
+        ),
+        FieldSet("persist_config", name="Configuration"),
     )
+
+    def __init__(self, *args, **kwargs):
+        """Initialise dynamic form fields whose querysets must be evaluated per request."""
+        super().__init__(*args, **kwargs)
+        from ipam.models import VRF
+
+        self.fields["sync_vrf"] = DynamicModelChoiceField(
+            queryset=VRF.objects.all(),
+            required=False,
+            label="Sync VRF",
+            help_text="VRF for synced Prefixes and IP Ranges. Leave blank for the global VRF.",
+        )
 
     class Meta:
         model = Server
@@ -78,6 +99,12 @@ class ServerForm(NetBoxModelForm):
             "dhcp6_url",
             "has_control_agent",
             "sync_enabled",
+            "sync_leases_enabled",
+            "sync_reservations_enabled",
+            "sync_prefixes_enabled",
+            "sync_ip_ranges_enabled",
+            "sync_vrf",
+            "persist_config",
             "tags",
         )
         widgets = {
@@ -244,11 +271,11 @@ class BaseLeasesSarchForm(forms.Form):
 
         page = cleaned_data["page"]
         if page:
-            if by != constants.BY_SUBNET:
-                raise ValidationError({"page": "page is only supported with subnet."})
+            if by not in (constants.BY_SUBNET, ""):
+                raise ValidationError({"page": "page is only supported with subnet or all-leases search."})
             try:
                 page_ip = IPAddress(page, version=ip_version)
-                if page_ip not in cleaned_data["q"]:
+                if by == constants.BY_SUBNET and page_ip not in cleaned_data["q"]:
                     raise ValidationError({"page": "page is not in the given subnet"})
 
                 cleaned_data["page"] = str(page_ip)
@@ -696,6 +723,8 @@ class SubnetAddForm(_SubnetBaseForm):
         help_text="Assign this subnet to a shared network immediately after creation.",
     )
 
+    field_order = ["subnet", "subnet_id", "shared_network", "pools", "gateway", "dns_servers", "ntp_servers"]
+
     def clean_subnet(self) -> str:  # noqa: D102
         import ipaddress
 
@@ -802,6 +831,21 @@ class SubnetEditForm(_SubnetBaseForm):
         help_text="Assign this subnet to a shared network, or leave blank to use the global address pool.",
     )
     current_network = forms.CharField(widget=forms.HiddenInput(), required=False)
+
+    field_order = [
+        "subnet_cidr",
+        "shared_network",
+        "pools",
+        "gateway",
+        "dns_servers",
+        "ntp_servers",
+        "valid_lft",
+        "min_valid_lft",
+        "max_valid_lft",
+        "renew_timer",
+        "rebind_timer",
+        "current_network",
+    ]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1275,7 +1319,7 @@ class OptionDefForm(forms.Form):
 
 
 class SyncConfigForm(forms.Form):
-    """Form for editing the global SyncConfig (interval + kill-switch)."""
+    """Form for editing the global SyncConfig (interval + kill-switch + per-type toggles)."""
 
     interval_minutes = forms.IntegerField(
         label="Sync Interval (minutes)",
@@ -1288,4 +1332,24 @@ class SyncConfigForm(forms.Form):
         label="Sync Enabled (global)",
         required=False,
         help_text="Global kill-switch. Uncheck to pause sync for all servers.",
+    )
+    sync_leases_enabled = forms.BooleanField(
+        label="Sync Leases",
+        required=False,
+        help_text="Sync active Kea leases to NetBox IPAM as IP addresses.",
+    )
+    sync_reservations_enabled = forms.BooleanField(
+        label="Sync Reservations",
+        required=False,
+        help_text="Sync Kea reservations to NetBox IPAM as reserved IP addresses.",
+    )
+    sync_prefixes_enabled = forms.BooleanField(
+        label="Sync Prefixes",
+        required=False,
+        help_text="Sync Kea subnets to NetBox IPAM as IP Prefixes.",
+    )
+    sync_ip_ranges_enabled = forms.BooleanField(
+        label="Sync IP Ranges",
+        required=False,
+        help_text="Sync Kea pools to NetBox IPAM as IP Ranges.",
     )
