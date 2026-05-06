@@ -33,25 +33,25 @@
                 </div>
                 <div class="col-auto d-flex align-items-center gap-2">
                   {{ form.sync_enabled }}
-                  <label class="form-check-label">{{ form.sync_enabled.label }}</label>
+                  <label class="form-check-label" for="{{ form.sync_enabled.id_for_label }}">{{ form.sync_enabled.label }}</label>
                   <span class="text-muted small">&mdash; {{ form.sync_enabled.help_text }}</span>
                 </div>
                 <div class="col-12"><hr class="my-1"></div>
                 <div class="col-auto d-flex align-items-center gap-2">
                   {{ form.sync_leases_enabled }}
-                  <label class="form-check-label">{{ form.sync_leases_enabled.label }}</label>
+                  <label class="form-check-label" for="{{ form.sync_leases_enabled.id_for_label }}">{{ form.sync_leases_enabled.label }}</label>
                 </div>
                 <div class="col-auto d-flex align-items-center gap-2">
                   {{ form.sync_reservations_enabled }}
-                  <label class="form-check-label">{{ form.sync_reservations_enabled.label }}</label>
+                  <label class="form-check-label" for="{{ form.sync_reservations_enabled.id_for_label }}">{{ form.sync_reservations_enabled.label }}</label>
                 </div>
                 <div class="col-auto d-flex align-items-center gap-2">
                   {{ form.sync_prefixes_enabled }}
-                  <label class="form-check-label">{{ form.sync_prefixes_enabled.label }}</label>
+                  <label class="form-check-label" for="{{ form.sync_prefixes_enabled.id_for_label }}">{{ form.sync_prefixes_enabled.label }}</label>
                 </div>
                 <div class="col-auto d-flex align-items-center gap-2">
                   {{ form.sync_ip_ranges_enabled }}
-                  <label class="form-check-label">{{ form.sync_ip_ranges_enabled.label }}</label>
+                  <label class="form-check-label" for="{{ form.sync_ip_ranges_enabled.id_for_label }}">{{ form.sync_ip_ranges_enabled.label }}</label>
                 </div>
               </div>
             </div>

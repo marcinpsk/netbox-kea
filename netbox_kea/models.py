@@ -345,7 +345,7 @@ class SyncConfig(models.Model):
         honoured until the UI overrides it.
         """
         config = getattr(settings, "PLUGINS_CONFIG", {}).get("netbox_kea", {})
-        obj, _ = cls.objects.get_or_create(
+        obj, created = cls.objects.get_or_create(
             pk=1,
             defaults={
                 "interval_minutes": default_interval,
@@ -356,4 +356,20 @@ class SyncConfig(models.Model):
                 "sync_ip_ranges_enabled": config.get("sync_ip_ranges_enabled", True),
             },
         )
+        if not created:
+            # On upgrades, newly added type-toggle fields are initialised to their
+            # migration default (True) regardless of PLUGINS_CONFIG.  Apply the
+            # configured value for fields that are still at the migration default
+            # but the operator has explicitly disabled them in PLUGINS_CONFIG.
+            _type_fields = [
+                "sync_leases_enabled",
+                "sync_reservations_enabled",
+                "sync_prefixes_enabled",
+                "sync_ip_ranges_enabled",
+            ]
+            backfill = [f for f in _type_fields if not config.get(f, True) and getattr(obj, f)]
+            if backfill:
+                for f in backfill:
+                    setattr(obj, f, False)
+                obj.save(update_fields=backfill)
         return obj

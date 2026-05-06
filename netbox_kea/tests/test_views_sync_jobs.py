@@ -422,3 +422,134 @@ class TestGetRecentJobsForServers(TestCase):
         # Each server sees the job exactly once
         self.assertEqual(len([j for j in result[self.server_a.pk] if j.pk == job.pk]), 1)
         self.assertEqual(len([j for j in result[self.server_b.pk] if j.pk == job.pk]), 1)
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestGetAllJobsForServer(TestCase):
+    """Unit tests for get_all_jobs_for_server helper (used by per-server Jobs tab)."""
+
+    def _make_job(self, *, name="Kea IPAM Sync", object_id=None, object_type=None, data=None, delta_seconds=0):
+        from core.models import Job
+
+        return Job.objects.create(
+            name=name,
+            object_type=object_type,
+            object_id=object_id,
+            status="completed",
+            data=data or {},
+            job_id=uuid.uuid4(),
+            created=timezone.now() - timedelta(seconds=delta_seconds),
+        )
+
+    def setUp(self):
+        from django.contrib.contenttypes.models import ContentType
+
+        from netbox_kea.models import Server
+
+        self.server_a = _make_db_server(name="server-a")
+        self.server_b = _make_db_server(name="server-b")
+        self.ct = ContentType.objects.get_for_model(Server)
+
+    def test_includes_bound_jobs(self):
+        from netbox_kea.views.sync_jobs import get_all_jobs_for_server
+
+        job = self._make_job(object_id=self.server_a.pk, object_type=self.ct)
+        pks = list(get_all_jobs_for_server(self.server_a.pk).values_list("pk", flat=True))
+        self.assertIn(job.pk, pks)
+
+    def test_includes_unbound_periodic_jobs(self):
+        from netbox_kea.views.sync_jobs import get_all_jobs_for_server
+
+        job = self._make_job(data={"summary": [{"pk": self.server_a.pk, "name": "server-a"}]})
+        pks = list(get_all_jobs_for_server(self.server_a.pk).values_list("pk", flat=True))
+        self.assertIn(job.pk, pks)
+
+    def test_excludes_unrelated_periodic_jobs(self):
+        from netbox_kea.views.sync_jobs import get_all_jobs_for_server
+
+        # periodic job referencing only server_b
+        self._make_job(data={"summary": [{"pk": self.server_b.pk}]})
+        pks = list(get_all_jobs_for_server(self.server_a.pk).values_list("pk", flat=True))
+        self.assertEqual(pks, [])
+
+    def test_excludes_jobs_with_different_name(self):
+        from netbox_kea.views.sync_jobs import get_all_jobs_for_server
+
+        self._make_job(name="Some Other Job", object_id=self.server_a.pk, object_type=self.ct)
+        self._make_job(name="Some Other Job", data={"summary": [{"pk": self.server_a.pk}]})
+        pks = list(get_all_jobs_for_server(self.server_a.pk).values_list("pk", flat=True))
+        self.assertEqual(pks, [])
+
+    def test_orders_newest_first(self):
+        from netbox_kea.views.sync_jobs import get_all_jobs_for_server
+
+        old = self._make_job(object_id=self.server_a.pk, object_type=self.ct, delta_seconds=200)
+        new = self._make_job(data={"summary": [{"pk": self.server_a.pk}]}, delta_seconds=10)
+        pks = list(get_all_jobs_for_server(self.server_a.pk).values_list("pk", flat=True))
+        self.assertEqual(pks[0], new.pk)
+        self.assertEqual(pks[1], old.pk)
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestServerJobsView(TestCase):
+    """Tests for the per-server Jobs tab override (includes periodic jobs)."""
+
+    def _make_job(self, *, name="Kea IPAM Sync", object_id=None, object_type=None, data=None, delta_seconds=0):
+        from core.models import Job
+
+        return Job.objects.create(
+            name=name,
+            object_type=object_type,
+            object_id=object_id,
+            status="completed",
+            data=data or {},
+            job_id=uuid.uuid4(),
+            created=timezone.now() - timedelta(seconds=delta_seconds),
+        )
+
+    def setUp(self):
+        from django.contrib.contenttypes.models import ContentType
+
+        from netbox_kea.models import Server
+
+        self.user = User.objects.create_superuser("jobstest", "j@j.com", "pass")
+        self.client.force_login(self.user)
+        self.server = _make_db_server(name="server-jobs")
+        self.ct = ContentType.objects.get_for_model(Server)
+
+    def test_jobs_tab_url_resolves_to_override(self):
+        """The plugin must replace NetBox's auto-registered jobs view."""
+        from netbox.registry import registry
+
+        from netbox_kea.views.sync_jobs import ServerJobsView
+
+        entries = [e for e in registry["views"]["netbox_kea"]["server"] if e["name"] == "jobs"]
+        self.assertEqual(len(entries), 1, "Exactly one 'jobs' view must be registered for Server")
+        self.assertIs(entries[0]["view"], ServerJobsView)
+
+    def test_jobs_tab_renders_bound_job(self):
+        bound = self._make_job(object_id=self.server.pk, object_type=self.ct)
+        url = reverse("plugins:netbox_kea:server_jobs", args=[self.server.pk])
+        r = self.client.get(url)
+        self.assertEqual(r.status_code, 200)
+        self.assertContains(r, f"/core/jobs/{bound.pk}/")
+
+    def test_jobs_tab_renders_periodic_job(self):
+        """Regression: periodic (object_id=NULL) jobs must appear on the Jobs tab."""
+        periodic = self._make_job(data={"summary": [{"pk": self.server.pk, "name": "server-jobs"}]})
+        url = reverse("plugins:netbox_kea:server_jobs", args=[self.server.pk])
+        r = self.client.get(url)
+        self.assertEqual(r.status_code, 200)
+        self.assertContains(r, f"/core/jobs/{periodic.pk}/")
+
+    def test_jobs_tab_excludes_unrelated_periodic_job(self):
+        other = _make_db_server(name="other-server")
+        self._make_job(data={"summary": [{"pk": other.pk}]})
+        url = reverse("plugins:netbox_kea:server_jobs", args=[self.server.pk])
+        r = self.client.get(url)
+        self.assertEqual(r.status_code, 200)
+        # Table should be empty (no link to any /core/jobs/N/)
+        # Use a strict check: no rendered job rows
+        from netbox_kea.views.sync_jobs import get_all_jobs_for_server
+
+        self.assertEqual(get_all_jobs_for_server(self.server.pk).count(), 0)

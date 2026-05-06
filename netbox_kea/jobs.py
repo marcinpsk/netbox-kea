@@ -267,7 +267,7 @@ def _sync_subnet_entry(
     server_name: str,
 ) -> None:
     """Sync a single Kea subnet dict to NetBox Prefix and/or IP Ranges."""
-    from .sync import sync_pool_to_netbox_ip_range, sync_subnet_to_netbox_prefix
+    from .sync import _POOL_TOO_LARGE, sync_pool_to_netbox_ip_range, sync_subnet_to_netbox_prefix
 
     subnet_cidr = subnet.get("subnet")
     if not subnet_cidr:
@@ -291,7 +291,10 @@ def _sync_subnet_entry(
                 continue
             try:
                 result = sync_pool_to_netbox_ip_range(pool_str, subnet_cidr, vrf=vrf)
-                if result is None:
+                if result is _POOL_TOO_LARGE:
+                    # Intentional skip; not an error.
+                    pass
+                elif result is None:
                     logger.warning(
                         "Failed to parse pool %s in subnet %s from server %s",
                         pool_str,
@@ -368,9 +371,14 @@ def _sync_server_prefixes_and_ranges(
         stats["prefix_errors"] += 1
         return
 
-    subnets: list[dict] = list(conf.get(subnet_key) or [])
+    raw_subnets = conf.get(subnet_key)
+    subnets: list[dict] = list(raw_subnets) if isinstance(raw_subnets, list) else []
     for sn in conf.get("shared-networks") or []:
-        subnets.extend(sn.get(subnet_key) or [])
+        if not isinstance(sn, dict):
+            continue
+        sn_subnets = sn.get(subnet_key)
+        if isinstance(sn_subnets, list):
+            subnets.extend(sn_subnets)
 
     logger.info("Server %s (v%s): found %d subnets for prefix/range sync", server.name, version, len(subnets))
 
@@ -407,6 +415,7 @@ def _sync_one_server(
             pre_reservation_ips = _prefetch_reservation_ips(server, version)
 
         lease_ips_set: frozenset[str] = frozenset()
+        lease_phase_ok = False
         if sync_leases:
             sync_ok, lease_ips_set = _sync_server_leases(
                 server,
@@ -416,17 +425,18 @@ def _sync_one_server(
                 all_synced=all_synced,
                 reservation_ips=pre_reservation_ips,
             )
+            lease_phase_ok = sync_ok
             cleanup_safe &= sync_ok
 
         if sync_reservations:
-            # Pass lease_ips_set only when we actually ran lease sync this run;
+            # Pass lease_ips_set only when the lease phase fully completed this run;
             # None tells reservation sync to use single-pass fallback mode.
             cleanup_safe &= _sync_server_reservations(
                 server,
                 version,
                 stats=stats,
                 all_synced=all_synced,
-                lease_ips=lease_ips_set if sync_leases else None,
+                lease_ips=lease_ips_set if lease_phase_ok else None,
             )
 
         if sync_prefixes or sync_ip_ranges:

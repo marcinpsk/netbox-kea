@@ -627,6 +627,12 @@ def _parse_pool_range(pool_str: str, subnet_prefix_len: int) -> tuple[str, str] 
     return None
 
 
+# Sentinel returned by sync_pool_to_netbox_ip_range when the pool is intentionally
+# skipped because its size exceeds the PostgreSQL bigint limit.  Callers must check
+# `result is _POOL_TOO_LARGE` and treat it as a no-op (not an error).
+_POOL_TOO_LARGE: object = object()
+
+
 def sync_pool_to_netbox_ip_range(pool_str: str, subnet_cidr: str, vrf=None) -> tuple | None:
     """Create or update a NetBox IPRange from a Kea pool definition.
 
@@ -662,7 +668,7 @@ def sync_pool_to_netbox_ip_range(pool_str: str, subnet_cidr: str, vrf=None) -> t
     _PG_BIGINT_MAX = 9_223_372_036_854_775_807
     if int(end_addr.ip - start_addr.ip) + 1 > _PG_BIGINT_MAX:
         logger.debug("Skipping pool %r: range too large to store as NetBox IPRange", pool_str)
-        return None
+        return _POOL_TOO_LARGE
 
     range_obj, created = IPRange.objects.get_or_create(
         start_address=start_addr,

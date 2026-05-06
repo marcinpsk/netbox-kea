@@ -1205,6 +1205,28 @@ _DHCP4_CONFIG_WITH_SHARED = [
     }
 ]
 
+_DHCP6_CONFIG_WITH_SHARED = [
+    {
+        "result": 0,
+        "arguments": {
+            "Dhcp6": {
+                "subnet6": [{"subnet": "2001:db8::/48", "pools": []}],
+                "shared-networks": [
+                    {
+                        "name": "net-b",
+                        "subnet6": [
+                            {
+                                "subnet": "2001:db8:1::/64",
+                                "pools": [{"pool": "2001:db8:1::10-2001:db8:1::ff"}],
+                            }
+                        ],
+                    }
+                ],
+            }
+        },
+    }
+]
+
 
 class TestSyncServerPrefixesAndRanges(SimpleTestCase):
     """Tests for _sync_server_prefixes_and_ranges in jobs.py."""
@@ -1242,6 +1264,21 @@ class TestSyncServerPrefixesAndRanges(SimpleTestCase):
 
         stats = {"created": 0, "updated": 0, "errors": 0, "prefix_errors": 0}
         _sync_server_prefixes_and_ranges(server, version=4, sync_prefixes=True, sync_ip_ranges=True, stats=stats)
+        # 1 top-level subnet + 1 in shared-network = 2
+        self.assertEqual(mock_entry.call_count, 2)
+
+    @patch("netbox_kea.jobs._sync_subnet_entry")
+    def test_shared_network_subnets_v6_included(self, mock_entry):
+        """DHCPv6 shared-network subnets are appended to the sync list."""
+        from netbox_kea.jobs import _sync_server_prefixes_and_ranges
+
+        server = self._make_server()
+        client = MagicMock()
+        client.command.return_value = _DHCP6_CONFIG_WITH_SHARED
+        server.get_client.return_value = client
+
+        stats = {"created": 0, "updated": 0, "errors": 0, "prefix_errors": 0}
+        _sync_server_prefixes_and_ranges(server, version=6, sync_prefixes=True, sync_ip_ranges=True, stats=stats)
         # 1 top-level subnet + 1 in shared-network = 2
         self.assertEqual(mock_entry.call_count, 2)
 
@@ -1348,6 +1385,21 @@ class TestSyncServerPrefixesAndRanges(SimpleTestCase):
         _sync_server_prefixes_and_ranges(server, version=4, sync_prefixes=True, sync_ip_ranges=True, stats=stats)
         self.assertEqual(stats["prefix_errors"], 1)
         self.assertEqual(stats["errors"], 0)
+
+    @patch("netbox_kea.jobs._sync_subnet_entry")
+    def test_malformed_arguments_is_none_treated_as_empty(self, mock_entry):
+        """config-get with arguments=None is handled gracefully — no subnets synced, no errors."""
+        from netbox_kea.jobs import _sync_server_prefixes_and_ranges
+
+        server = self._make_server()
+        client = MagicMock()
+        client.command.return_value = [{"result": 0, "arguments": None}]
+        server.get_client.return_value = client
+
+        stats = {"created": 0, "updated": 0, "errors": 0, "prefix_errors": 0}
+        _sync_server_prefixes_and_ranges(server, version=4, sync_prefixes=True, sync_ip_ranges=True, stats=stats)
+        self.assertEqual(stats["prefix_errors"], 0)
+        mock_entry.assert_not_called()
 
     def test_malformed_dhcp_config_not_dict_increments_prefix_errors(self):
         """config-get with non-dict Dhcp4/Dhcp6 value → prefix_errors incremented."""
