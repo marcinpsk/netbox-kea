@@ -265,7 +265,7 @@ class TestReservation4AddExceptions(_ViewTestBase):
         MockKeaClient.return_value.reservation_get_page.return_value = ([], 0, 0)
         post_data = {**_VALID_RESERVATION4_POST, "sync_to_netbox": "on"}
         with patch("netbox_kea.views.reservations.sync_reservation_to_netbox") as mock_sync:
-            mock_sync.return_value = (MagicMock(), True)
+            mock_sync.return_value = (MagicMock(), True, False)
             response = self.client.post(self._url(), post_data, follow=True)
         self.assertEqual(response.status_code, 200)
         mock_sync.assert_called_once()
@@ -318,7 +318,7 @@ class TestReservation4AddExceptions(_ViewTestBase):
         MockKeaClient.return_value.reservation_get_page.return_value = ([], 0, 0)
         post_data = {**_VALID_RESERVATION4_POST, "sync_to_netbox": "on"}
         with patch("netbox_kea.views.reservations.sync_reservation_to_netbox") as mock_sync:
-            mock_sync.return_value = (MagicMock(), True)
+            mock_sync.return_value = (MagicMock(), True, False)
             response = self.client.post(self._url(), post_data, follow=True)
         self.assertEqual(response.status_code, 200)
         mock_sync.assert_called_once()
@@ -368,7 +368,7 @@ class TestReservation6AddExceptions(_ViewTestBase):
         MockKeaClient.return_value.reservation_get_page.return_value = ([], 0, 0)
         post_data = {**_VALID_RESERVATION6_POST, "sync_to_netbox": "on"}
         with patch("netbox_kea.views.reservations.sync_reservation_to_netbox") as mock_sync:
-            mock_sync.return_value = (MagicMock(), False)
+            mock_sync.return_value = (MagicMock(), False, False)
             response = self.client.post(self._url(), post_data, follow=True)
         self.assertEqual(response.status_code, 200)
         mock_sync.assert_called_once()
@@ -481,7 +481,7 @@ class TestReservation4EditExceptions(_ViewTestBase):
         MockKeaClient.return_value.reservation_update.side_effect = PartialPersistError("dhcp4", Exception("write"))
         post_data = {**_VALID_RESERVATION4_EDIT_POST, "sync_to_netbox": "on"}
         with patch("netbox_kea.views.reservations.sync_reservation_to_netbox") as mock_sync:
-            mock_sync.return_value = (MagicMock(), True)
+            mock_sync.return_value = (MagicMock(), True, False)
             response = self.client.post(self._url(), post_data, follow=True)
         self.assertEqual(response.status_code, 200)
         mock_sync.assert_called_once()
@@ -546,7 +546,7 @@ class TestReservation4EditExceptions(_ViewTestBase):
         MockKeaClient.return_value.reservation_update.return_value = None
         post_data = {**_VALID_RESERVATION4_EDIT_POST, "sync_to_netbox": "on"}
         with patch("netbox_kea.views.reservations.sync_reservation_to_netbox") as mock_sync:
-            mock_sync.return_value = (MagicMock(), False)
+            mock_sync.return_value = (MagicMock(), False, False)
             response = self.client.post(self._url(), post_data, follow=True)
         self.assertEqual(response.status_code, 200)
         mock_sync.assert_called_once()
@@ -839,7 +839,7 @@ class TestReservation6AddOptionDataAndSync(_ViewTestBase):
         """sync_to_netbox=on → sync called once and success message queued."""
         MockKeaClient.return_value.reservation_add.return_value = None
         MockKeaClient.return_value.reservation_get_page.return_value = ([], 0, 0)
-        mock_sync.return_value = (MagicMock(), True)
+        mock_sync.return_value = (MagicMock(), True, False)
         post_data = {**_VALID_RESERVATION6_POST, "sync_to_netbox": "on"}
         response = self.client.post(self._url(), post_data, follow=True)
         self.assertEqual(response.status_code, 200)
@@ -942,7 +942,7 @@ class TestReservation6EditOptionDataAndSync(_ViewTestBase):
         """sync_to_netbox=on → sync called once and info message queued."""
         self._mock_get(MockKeaClient)
         MockKeaClient.return_value.reservation_update.return_value = None
-        mock_sync.return_value = (MagicMock(), False)
+        mock_sync.return_value = (MagicMock(), False, False)
         post_data = {**_VALID_RESERVATION6_EDIT_POST, "sync_to_netbox": "on"}
         response = self.client.post(self._url(), post_data, follow=True)
         self.assertEqual(response.status_code, 200)
@@ -978,7 +978,7 @@ class TestReservation6EditOptionDataAndSync(_ViewTestBase):
 
         self._mock_get(MockKeaClient)
         MockKeaClient.return_value.reservation_update.side_effect = PartialPersistError("dhcp6", Exception("write"))
-        mock_sync.return_value = (MagicMock(), True)
+        mock_sync.return_value = (MagicMock(), True, False)
         post_data = {**_VALID_RESERVATION6_EDIT_POST, "sync_to_netbox": "on"}
         response = self.client.post(self._url(), post_data, follow=True)
         self.assertIn(response.status_code, (200, 302))
