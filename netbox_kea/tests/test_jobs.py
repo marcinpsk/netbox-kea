@@ -759,6 +759,37 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
         self.assertTrue(any("Unexpected error fetching reservations" in msg for msg in cm.output))
         mock_sync_lease.assert_called_once_with(_LEASE4, cleanup=False, reservation_ips=ANY)
 
+    # ------------------------------------------------------------------ #
+    # per-lease sync exception → had_errors path                          #
+    # ------------------------------------------------------------------ #
+
+    @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+    @patch("netbox_kea.sync.cleanup_stale_ips_batch", return_value=0)
+    @patch("netbox_kea.models.Server")
+    def test_per_lease_sync_exception_sets_had_errors_and_skips_reservation_ips(self, MockServer, mock_cleanup):
+        """When sync_lease_to_netbox raises for an individual lease, had_errors=True must
+        cause _sync_server_leases to return False, and the resulting lease_ips_set must NOT
+        be forwarded to reservation sync (None is passed instead)."""
+        server = _make_server()
+        client = _make_client(leases4=[_LEASE4], reservations=[_RESV4])
+        server.get_client.return_value = client
+        MockServer.objects.all.return_value = [server]
+
+        with patch("netbox_kea.sync.sync_lease_to_netbox", side_effect=ValueError("db gone")):
+            with patch(
+                "netbox_kea.sync.sync_reservation_to_netbox", return_value=(MagicMock(), False, False)
+            ) as mock_sync_resv:
+                with self.assertLogs("netbox_kea.jobs", level="DEBUG") as cm:
+                    with self.assertRaises(JobFailed):
+                        KeaIpamSyncJob(_make_job()).run()
+
+        # had_errors → error counter incremented, debug log emitted
+        self.assertTrue(any("Failed to sync lease" in msg for msg in cm.output))
+        # lease_ips_set NOT forwarded: reservation sync receives lease_ips=None
+        mock_sync_resv.assert_called_once_with(_RESV4, cleanup=False, lease_ips=None)
+        # cleanup must be skipped because lease phase failed
+        mock_cleanup.assert_not_called()
+
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestKeaIpamSyncJobKillSwitches(SimpleTestCase):

@@ -553,3 +553,18 @@ class TestServerJobsView(TestCase):
         from netbox_kea.views.sync_jobs import get_all_jobs_for_server
 
         self.assertEqual(get_all_jobs_for_server(self.server.pk).count(), 0)
+
+    def test_jobs_tab_returns_403_without_view_job_permission(self):
+        """Users without core.view_job must receive 403 even on direct URL access."""
+        from django.contrib.auth.models import Permission
+
+        # Create a regular user (non-superuser) with no permissions
+        unprivileged = User.objects.create_user("noperm", "n@n.com", "pass")
+        # Grant basic NetBox plugin access so the login doesn't fail before our check
+        view_server_perm = Permission.objects.get(codename="view_server")
+        unprivileged.user_permissions.add(view_server_perm)
+        self.client.force_login(unprivileged)
+
+        url = reverse("plugins:netbox_kea:server_jobs", args=[self.server.pk])
+        r = self.client.get(url)
+        self.assertEqual(r.status_code, 403)

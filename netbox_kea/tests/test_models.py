@@ -637,6 +637,52 @@ class TestSyncConfig(TestCase):
         with self.assertRaises(TypeError):
             cfg.delete()
 
+    def test_backfill_applies_disabled_fields_once(self):
+        """When an existing row has backfill_applied=False and PLUGINS_CONFIG disables a
+        field that is still True in the DB, SyncConfig.get() must set that field to False
+        and mark backfill_applied=True so subsequent calls do not reset UI overrides."""
+        SyncConfig.objects.create(
+            pk=1,
+            interval_minutes=5,
+            sync_prefixes_enabled=True,  # DB is True (migration default)
+            backfill_applied=False,  # not yet backfilled
+        )
+        plugins_cfg = {
+            "netbox_kea": {
+                "sync_prefixes_enabled": False,  # operator disabled this in PLUGINS_CONFIG
+            }
+        }
+        with override_settings(PLUGINS_CONFIG=plugins_cfg):
+            cfg = SyncConfig.get()
+
+        # Backfill must have set sync_prefixes_enabled=False
+        self.assertFalse(cfg.sync_prefixes_enabled)
+        # And persisted the marker so it won't run again
+        self.assertTrue(cfg.backfill_applied)
+        # Verify the DB row was actually updated
+        cfg.refresh_from_db()
+        self.assertFalse(cfg.sync_prefixes_enabled)
+        self.assertTrue(cfg.backfill_applied)
+
+    def test_backfill_does_not_run_when_already_applied(self):
+        """Once backfill_applied=True, SyncConfig.get() must not override UI-set values."""
+        SyncConfig.objects.create(
+            pk=1,
+            interval_minutes=5,
+            sync_prefixes_enabled=True,  # user set this to True via UI
+            backfill_applied=True,  # already backfilled
+        )
+        plugins_cfg = {
+            "netbox_kea": {
+                "sync_prefixes_enabled": False,  # operator config says False
+            }
+        }
+        with override_settings(PLUGINS_CONFIG=plugins_cfg):
+            cfg = SyncConfig.get()
+
+        # The UI override (True) must be preserved — backfill must NOT run again
+        self.assertTrue(cfg.sync_prefixes_enabled)
+
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestServerSyncEnabled(TestCase):
