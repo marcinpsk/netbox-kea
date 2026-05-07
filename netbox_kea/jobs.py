@@ -86,10 +86,12 @@ def _prefetch_reservation_ips(server: Server, version: int) -> frozenset[str] | 
                 limit=100,
             )
             for r in page:
+                if not isinstance(r, dict):
+                    continue
                 ip = r.get("ip-address")
                 if ip:
                     ips.add(ip)
-                for addr in r.get("ip-addresses", []):
+                for addr in r.get("ip-addresses") or []:
                     if addr:
                         ips.add(addr)
             if next_from == 0 and next_source == 0:

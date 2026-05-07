@@ -6,12 +6,27 @@ import uuid
 from datetime import timedelta
 from unittest.mock import patch
 
-from django.test import TestCase, override_settings
+from django.test import TestCase, override_settings, skipUnlessDBFeature
 from django.urls import reverse
 from django.utils import timezone
 
 from netbox_kea.models import SyncConfig
 from netbox_kea.tests.utils import _PLUGINS_CONFIG, User, _make_db_server
+
+
+def _make_job(*, name="Kea IPAM Sync", object_id=None, object_type=None, data=None, delta_seconds=0):
+    """Create a real Job row in the test DB."""
+    from core.models import Job
+
+    return Job.objects.create(
+        name=name,
+        object_type=object_type,
+        object_id=object_id,
+        status="completed",
+        data=data or {},
+        job_id=uuid.uuid4(),
+        created=timezone.now() - timedelta(seconds=delta_seconds),
+    )
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
@@ -300,20 +315,6 @@ class TestMigrationsApplied(TestCase):
 class TestGetRecentJobsForServers(TestCase):
     """Unit tests for get_recent_jobs_for_servers helper."""
 
-    def _make_job(self, *, name="Kea IPAM Sync", object_id=None, object_type=None, data=None, delta_seconds=0):
-        """Create a real Job row in the test DB."""
-        from core.models import Job
-
-        return Job.objects.create(
-            name=name,
-            object_type=object_type,
-            object_id=object_id,
-            status="completed",
-            data=data or {},
-            job_id=uuid.uuid4(),
-            created=timezone.now() - timedelta(seconds=delta_seconds),
-        )
-
     def setUp(self):
         from django.contrib.contenttypes.models import ContentType
 
@@ -332,7 +333,7 @@ class TestGetRecentJobsForServers(TestCase):
     def test_returns_bound_job_for_server(self):
         from netbox_kea.views.sync_jobs import get_recent_jobs_for_servers
 
-        job = self._make_job(object_id=self.server_a.pk, object_type=self.ct)
+        job = _make_job(object_id=self.server_a.pk, object_type=self.ct)
         result = get_recent_jobs_for_servers([self.server_a.pk])
         self.assertEqual(len(result[self.server_a.pk]), 1)
         self.assertEqual(result[self.server_a.pk][0].pk, job.pk)
@@ -340,7 +341,7 @@ class TestGetRecentJobsForServers(TestCase):
     def test_returns_unbound_periodic_job_attributed_via_summary(self):
         from netbox_kea.views.sync_jobs import get_recent_jobs_for_servers
 
-        job = self._make_job(data={"summary": [{"pk": self.server_a.pk, "name": "server-a"}]})
+        job = _make_job(data={"summary": [{"pk": self.server_a.pk, "name": "server-a"}]})
         result = get_recent_jobs_for_servers([self.server_a.pk])
         self.assertEqual(len(result[self.server_a.pk]), 1)
         self.assertEqual(result[self.server_a.pk][0].pk, job.pk)
@@ -351,10 +352,10 @@ class TestGetRecentJobsForServers(TestCase):
 
         # Create 3 bound manual jobs (older)
         for i in range(3, 0, -1):
-            self._make_job(object_id=self.server_a.pk, object_type=self.ct, delta_seconds=i * 100)
+            _make_job(object_id=self.server_a.pk, object_type=self.ct, delta_seconds=i * 100)
 
         # Create 1 periodic job (newer than all bound jobs)
-        periodic = self._make_job(
+        periodic = _make_job(
             data={"summary": [{"pk": self.server_a.pk}]},
             delta_seconds=10,  # very recent
         )
@@ -366,8 +367,8 @@ class TestGetRecentJobsForServers(TestCase):
     def test_most_recent_job_returned_first(self):
         from netbox_kea.views.sync_jobs import get_recent_jobs_for_servers
 
-        old = self._make_job(object_id=self.server_a.pk, object_type=self.ct, delta_seconds=200)
-        new = self._make_job(object_id=self.server_a.pk, object_type=self.ct, delta_seconds=10)
+        old = _make_job(object_id=self.server_a.pk, object_type=self.ct, delta_seconds=200)
+        new = _make_job(object_id=self.server_a.pk, object_type=self.ct, delta_seconds=10)
         result = get_recent_jobs_for_servers([self.server_a.pk], limit=5)
         pks = [j.pk for j in result[self.server_a.pk]]
         self.assertEqual(pks[0], new.pk)
@@ -377,15 +378,15 @@ class TestGetRecentJobsForServers(TestCase):
         from netbox_kea.views.sync_jobs import get_recent_jobs_for_servers
 
         for i in range(5):
-            self._make_job(object_id=self.server_a.pk, object_type=self.ct, delta_seconds=i * 10)
+            _make_job(object_id=self.server_a.pk, object_type=self.ct, delta_seconds=i * 10)
         result = get_recent_jobs_for_servers([self.server_a.pk], limit=2)
         self.assertEqual(len(result[self.server_a.pk]), 2)
 
     def test_multiple_servers_independent(self):
         from netbox_kea.views.sync_jobs import get_recent_jobs_for_servers
 
-        job_a = self._make_job(object_id=self.server_a.pk, object_type=self.ct)
-        job_b = self._make_job(object_id=self.server_b.pk, object_type=self.ct)
+        job_a = _make_job(object_id=self.server_a.pk, object_type=self.ct)
+        job_b = _make_job(object_id=self.server_b.pk, object_type=self.ct)
         result = get_recent_jobs_for_servers([self.server_a.pk, self.server_b.pk])
         self.assertEqual(result[self.server_a.pk][0].pk, job_a.pk)
         self.assertEqual(result[self.server_b.pk][0].pk, job_b.pk)
@@ -393,7 +394,7 @@ class TestGetRecentJobsForServers(TestCase):
     def test_unbound_job_summary_none_does_not_raise(self):
         from netbox_kea.views.sync_jobs import get_recent_jobs_for_servers
 
-        self._make_job(data={"summary": None})
+        _make_job(data={"summary": None})
         # Should not raise, server gets no jobs
         result = get_recent_jobs_for_servers([self.server_a.pk])
         self.assertEqual(result[self.server_a.pk], [])
@@ -401,7 +402,7 @@ class TestGetRecentJobsForServers(TestCase):
     def test_unbound_job_missing_data_does_not_raise(self):
         from netbox_kea.views.sync_jobs import get_recent_jobs_for_servers
 
-        self._make_job(data=None)
+        _make_job(data=None)
         result = get_recent_jobs_for_servers([self.server_a.pk])
         self.assertEqual(result[self.server_a.pk], [])
 
@@ -415,7 +416,7 @@ class TestGetRecentJobsForServers(TestCase):
         """An unbound job covering two servers must not be double-counted per server."""
         from netbox_kea.views.sync_jobs import get_recent_jobs_for_servers
 
-        job = self._make_job(
+        job = _make_job(
             data={"summary": [{"pk": self.server_a.pk}, {"pk": self.server_b.pk}]},
         )
         result = get_recent_jobs_for_servers([self.server_a.pk, self.server_b.pk])
@@ -425,21 +426,9 @@ class TestGetRecentJobsForServers(TestCase):
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+@skipUnlessDBFeature("supports_json_field_contains")
 class TestGetAllJobsForServer(TestCase):
     """Unit tests for get_all_jobs_for_server helper (used by per-server Jobs tab)."""
-
-    def _make_job(self, *, name="Kea IPAM Sync", object_id=None, object_type=None, data=None, delta_seconds=0):
-        from core.models import Job
-
-        return Job.objects.create(
-            name=name,
-            object_type=object_type,
-            object_id=object_id,
-            status="completed",
-            data=data or {},
-            job_id=uuid.uuid4(),
-            created=timezone.now() - timedelta(seconds=delta_seconds),
-        )
 
     def setUp(self):
         from django.contrib.contenttypes.models import ContentType
@@ -453,14 +442,14 @@ class TestGetAllJobsForServer(TestCase):
     def test_includes_bound_jobs(self):
         from netbox_kea.views.sync_jobs import get_all_jobs_for_server
 
-        job = self._make_job(object_id=self.server_a.pk, object_type=self.ct)
+        job = _make_job(object_id=self.server_a.pk, object_type=self.ct)
         pks = list(get_all_jobs_for_server(self.server_a.pk).values_list("pk", flat=True))
         self.assertIn(job.pk, pks)
 
     def test_includes_unbound_periodic_jobs(self):
         from netbox_kea.views.sync_jobs import get_all_jobs_for_server
 
-        job = self._make_job(data={"summary": [{"pk": self.server_a.pk, "name": "server-a"}]})
+        job = _make_job(data={"summary": [{"pk": self.server_a.pk, "name": "server-a"}]})
         pks = list(get_all_jobs_for_server(self.server_a.pk).values_list("pk", flat=True))
         self.assertIn(job.pk, pks)
 
@@ -468,44 +457,32 @@ class TestGetAllJobsForServer(TestCase):
         from netbox_kea.views.sync_jobs import get_all_jobs_for_server
 
         # periodic job referencing only server_b
-        self._make_job(data={"summary": [{"pk": self.server_b.pk}]})
+        _make_job(data={"summary": [{"pk": self.server_b.pk}]})
         pks = list(get_all_jobs_for_server(self.server_a.pk).values_list("pk", flat=True))
         self.assertEqual(pks, [])
 
     def test_excludes_jobs_with_different_name(self):
         from netbox_kea.views.sync_jobs import get_all_jobs_for_server
 
-        self._make_job(name="Some Other Job", object_id=self.server_a.pk, object_type=self.ct)
-        self._make_job(name="Some Other Job", data={"summary": [{"pk": self.server_a.pk}]})
+        _make_job(name="Some Other Job", object_id=self.server_a.pk, object_type=self.ct)
+        _make_job(name="Some Other Job", data={"summary": [{"pk": self.server_a.pk}]})
         pks = list(get_all_jobs_for_server(self.server_a.pk).values_list("pk", flat=True))
         self.assertEqual(pks, [])
 
     def test_orders_newest_first(self):
         from netbox_kea.views.sync_jobs import get_all_jobs_for_server
 
-        old = self._make_job(object_id=self.server_a.pk, object_type=self.ct, delta_seconds=200)
-        new = self._make_job(data={"summary": [{"pk": self.server_a.pk}]}, delta_seconds=10)
+        old = _make_job(object_id=self.server_a.pk, object_type=self.ct, delta_seconds=200)
+        new = _make_job(data={"summary": [{"pk": self.server_a.pk}]}, delta_seconds=10)
         pks = list(get_all_jobs_for_server(self.server_a.pk).values_list("pk", flat=True))
         self.assertEqual(pks[0], new.pk)
         self.assertEqual(pks[1], old.pk)
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+@skipUnlessDBFeature("supports_json_field_contains")
 class TestServerJobsView(TestCase):
     """Tests for the per-server Jobs tab override (includes periodic jobs)."""
-
-    def _make_job(self, *, name="Kea IPAM Sync", object_id=None, object_type=None, data=None, delta_seconds=0):
-        from core.models import Job
-
-        return Job.objects.create(
-            name=name,
-            object_type=object_type,
-            object_id=object_id,
-            status="completed",
-            data=data or {},
-            job_id=uuid.uuid4(),
-            created=timezone.now() - timedelta(seconds=delta_seconds),
-        )
 
     def setUp(self):
         from django.contrib.contenttypes.models import ContentType
@@ -528,7 +505,7 @@ class TestServerJobsView(TestCase):
         self.assertIs(entries[0]["view"], ServerJobsView)
 
     def test_jobs_tab_renders_bound_job(self):
-        bound = self._make_job(object_id=self.server.pk, object_type=self.ct)
+        bound = _make_job(object_id=self.server.pk, object_type=self.ct)
         url = reverse("plugins:netbox_kea:server_jobs", args=[self.server.pk])
         r = self.client.get(url)
         self.assertEqual(r.status_code, 200)
@@ -536,7 +513,7 @@ class TestServerJobsView(TestCase):
 
     def test_jobs_tab_renders_periodic_job(self):
         """Regression: periodic (object_id=NULL) jobs must appear on the Jobs tab."""
-        periodic = self._make_job(data={"summary": [{"pk": self.server.pk, "name": "server-jobs"}]})
+        periodic = _make_job(data={"summary": [{"pk": self.server.pk, "name": "server-jobs"}]})
         url = reverse("plugins:netbox_kea:server_jobs", args=[self.server.pk])
         r = self.client.get(url)
         self.assertEqual(r.status_code, 200)
@@ -544,7 +521,7 @@ class TestServerJobsView(TestCase):
 
     def test_jobs_tab_excludes_unrelated_periodic_job(self):
         other = _make_db_server(name="other-server")
-        self._make_job(data={"summary": [{"pk": other.pk}]})
+        _make_job(data={"summary": [{"pk": other.pk}]})
         url = reverse("plugins:netbox_kea:server_jobs", args=[self.server.pk])
         r = self.client.get(url)
         self.assertEqual(r.status_code, 200)
