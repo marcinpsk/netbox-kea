@@ -312,6 +312,10 @@ class SyncConfig(models.Model):
         default=True,
         help_text="Sync Kea pools to NetBox IPAM as IP Ranges.",
     )
+    backfill_applied = models.BooleanField(
+        default=False,
+        help_text="Internal flag: True once the one-time PLUGINS_CONFIG backfill has been applied.",
+    )
 
     class Meta:
         app_label = "netbox_kea"
@@ -354,22 +358,27 @@ class SyncConfig(models.Model):
                 "sync_reservations_enabled": config.get("sync_reservations_enabled", True),
                 "sync_prefixes_enabled": config.get("sync_prefixes_enabled", True),
                 "sync_ip_ranges_enabled": config.get("sync_ip_ranges_enabled", True),
+                "backfill_applied": True,
             },
         )
-        if not created:
-            # On upgrades, newly added type-toggle fields are initialised to their
-            # migration default (True) regardless of PLUGINS_CONFIG.  Apply the
-            # configured value for fields that are still at the migration default
-            # but the operator has explicitly disabled them in PLUGINS_CONFIG.
+        if not created and not obj.backfill_applied:
+            # One-time backfill: on upgrades, newly added type-toggle fields are
+            # initialised to their migration default (True) regardless of
+            # PLUGINS_CONFIG.  Apply the configured value once for fields that are
+            # still at the migration default but the operator has explicitly disabled
+            # them in PLUGINS_CONFIG.  Setting backfill_applied=True afterwards
+            # prevents this from running again so UI overrides are preserved.
             _type_fields = [
                 "sync_leases_enabled",
                 "sync_reservations_enabled",
                 "sync_prefixes_enabled",
                 "sync_ip_ranges_enabled",
             ]
-            backfill = [f for f in _type_fields if not config.get(f, True) and getattr(obj, f)]
-            if backfill:
-                for f in backfill:
+            to_save = ["backfill_applied"]
+            obj.backfill_applied = True
+            for f in _type_fields:
+                if not config.get(f, True) and getattr(obj, f):
                     setattr(obj, f, False)
-                obj.save(update_fields=backfill)
+                    to_save.append(f)
+            obj.save(update_fields=to_save)
         return obj

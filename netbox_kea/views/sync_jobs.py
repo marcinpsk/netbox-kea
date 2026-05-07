@@ -11,6 +11,7 @@ from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.contrib.contenttypes.models import ContentType
+from django.core.exceptions import PermissionDenied
 from django.db.models import Q
 from django.http import HttpResponseForbidden, HttpResponseRedirect
 from django.shortcuts import get_object_or_404, render
@@ -357,6 +358,8 @@ class ServerJobsView(View):
 
     def get(self, request, model, **kwargs):
         """Render the Jobs tab using core's object_jobs template + JobTable."""
+        if not request.user.has_perm("core.view_job"):
+            raise PermissionDenied
         from core.tables import JobTable
 
         obj = get_object_or_404(model.objects.restrict(request.user, "view"), **kwargs)

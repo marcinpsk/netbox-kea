@@ -633,7 +633,7 @@ def _parse_pool_range(pool_str: str, subnet_prefix_len: int) -> tuple[str, str] 
 _POOL_TOO_LARGE: object = object()
 
 
-def sync_pool_to_netbox_ip_range(pool_str: str, subnet_cidr: str, vrf=None) -> tuple | None:
+def sync_pool_to_netbox_ip_range(pool_str: str, subnet_cidr: str, vrf=None) -> tuple | object | None:
     """Create or update a NetBox IPRange from a Kea pool definition.
 
     Args:
@@ -643,8 +643,13 @@ def sync_pool_to_netbox_ip_range(pool_str: str, subnet_cidr: str, vrf=None) -> t
                      the prefix length for range-format pools.
         vrf: NetBox VRF instance to assign the IP range to.  ``None`` means the global VRF.
 
-    Returns ``(ip_range_object, created, did_update)`` or ``None`` when the pool string
-    cannot be parsed.
+    Returns one of three outcomes:
+
+    * ``(ip_range_object, created, did_update)`` — pool was synced successfully.
+    * ``None`` — pool string could not be parsed; caller should treat as an error.
+    * :data:`_POOL_TOO_LARGE` sentinel — pool was intentionally skipped because its
+      size exceeds the PostgreSQL bigint limit; callers should treat this as a no-op,
+      not an error.
 
     """
     from ipam.models import IPRange

@@ -134,11 +134,13 @@ def _sync_server_leases(
 ) -> tuple[bool, frozenset[str]]:
     """Fetch all leases from *server* for *version* and upsert into NetBox IPAM.
 
-    Returns ``(full_fetch_ok, lease_ips)`` where *full_fetch_ok* is ``True``
-    when the full lease set was fetched without truncation (``False`` means
-    *all_synced* may be incomplete and cleanup must be skipped) and
-    *lease_ips* is the frozenset of all lease IP addresses processed this run
-    (used for two-pass idempotent reservation sync).
+    Returns ``(fully_completed, lease_ips)`` where *fully_completed* is ``True``
+    only when the full lease set was fetched without truncation AND every
+    individual lease row synced without error (``False`` means *all_synced* or
+    *lease_ips* may be incomplete and should not be forwarded to reservation sync
+    or used for cleanup) and *lease_ips* is the frozenset of successfully synced
+    lease IP addresses processed this run (used for two-pass idempotent
+    reservation sync).
     """
     from .sync import sync_lease_to_netbox
 
@@ -161,6 +163,7 @@ def _sync_server_leases(
     logger.info("Server %s (v%s): fetched %d leases", server.name, version, len(raw_leases))
 
     lease_ips: set[str] = set()
+    had_errors = False
     for lease in raw_leases:
         try:
             _ip, created, changed = sync_lease_to_netbox(lease, cleanup=False, reservation_ips=reservation_ips)
@@ -180,8 +183,9 @@ def _sync_server_leases(
                 exc_info=True,
             )
             stats["errors"] += 1
+            had_errors = True
 
-    return not truncated, frozenset(lease_ips)
+    return not truncated and not had_errors, frozenset(lease_ips)
 
 
 def _sync_server_reservations(
@@ -372,13 +376,13 @@ def _sync_server_prefixes_and_ranges(
         return
 
     raw_subnets = conf.get(subnet_key)
-    subnets: list[dict] = list(raw_subnets) if isinstance(raw_subnets, list) else []
+    subnets: list[dict] = [s for s in raw_subnets if isinstance(s, dict)] if isinstance(raw_subnets, list) else []
     for sn in conf.get("shared-networks") or []:
         if not isinstance(sn, dict):
             continue
         sn_subnets = sn.get(subnet_key)
         if isinstance(sn_subnets, list):
-            subnets.extend(sn_subnets)
+            subnets.extend(s for s in sn_subnets if isinstance(s, dict))
 
     logger.info("Server %s (v%s): found %d subnets for prefix/range sync", server.name, version, len(subnets))
 
