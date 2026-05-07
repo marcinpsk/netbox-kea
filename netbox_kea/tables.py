@@ -120,6 +120,16 @@ LEASE_ACTIONS = """<span class="btn-group dropdown">
                 Edit lease
             </a>
         </li>
+        {% endif %}
+        {% if record.reservation_url and record.can_change_reservation %}
+        <li>
+            <a href="{{ record.reservation_url }}" class="dropdown-item">
+                <i class="mdi mdi-bookmark-outline" aria-hidden="true" title="Edit reservation"></i>
+                Edit reservation
+            </a>
+        </li>
+        {% endif %}
+        {% if record.edit_url or record.reservation_url and record.can_change_reservation %}
         <li><hr class="dropdown-divider"></li>
         {% endif %}
         {% if record.ip_address %}
