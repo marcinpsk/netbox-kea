@@ -13,9 +13,16 @@ from django.utils import timezone
 from netbox_kea.models import SyncConfig
 from netbox_kea.tests.utils import _PLUGINS_CONFIG, User, _make_db_server
 
+_MAKE_JOB_NO_DATA = object()  # sentinel: caller did not pass data at all
 
-def _make_job(*, name="Kea IPAM Sync", object_id=None, object_type=None, data=None, delta_seconds=0):
-    """Create a real Job row in the test DB."""
+
+def _make_job(*, name="Kea IPAM Sync", object_id=None, object_type=None, data=_MAKE_JOB_NO_DATA, delta_seconds=0):
+    """Create a real Job row in the test DB.
+
+    Pass ``data=None`` explicitly to store a NULL data field (exercises the
+    ``isinstance(job.data, dict)`` guard in ``get_recent_jobs_for_servers``).
+    Omitting *data* defaults to ``{}``.
+    """
     from core.models import Job
 
     return Job.objects.create(
@@ -23,7 +30,7 @@ def _make_job(*, name="Kea IPAM Sync", object_id=None, object_type=None, data=No
         object_type=object_type,
         object_id=object_id,
         status="completed",
-        data=data or {},
+        data={} if data is _MAKE_JOB_NO_DATA else data,
         job_id=uuid.uuid4(),
         created=timezone.now() - timedelta(seconds=delta_seconds),
     )
