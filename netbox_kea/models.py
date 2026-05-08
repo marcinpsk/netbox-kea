@@ -312,13 +312,17 @@ class SyncConfig(models.Model):
         default=True,
         help_text="Sync Kea pools to NetBox IPAM as IP Ranges.",
     )
+    backfill_applied = models.BooleanField(
+        default=False,
+        help_text="Internal flag: True once the one-time PLUGINS_CONFIG backfill has been applied.",
+    )
 
     class Meta:
         app_label = "netbox_kea"
         verbose_name = "Sync Configuration"
         constraints = [
             models.CheckConstraint(
-                check=models.Q(interval_minutes__gte=1) & models.Q(interval_minutes__lte=1440),
+                condition=models.Q(interval_minutes__gte=1) & models.Q(interval_minutes__lte=1440),
                 name="syncconfig_interval_minutes_range",
             )
         ]
@@ -339,13 +343,28 @@ class SyncConfig(models.Model):
     def get(cls, default_interval: int = 5) -> "SyncConfig":
         """Return the singleton config row, creating it with defaults if absent.
 
-        ``default_interval`` is used only when the row does not yet exist
-        (i.e., on first boot before the operator has saved anything via the
-        UI).  Pass the value from ``PLUGINS_CONFIG`` so the config file is
-        honoured until the UI overrides it.
+        **Creation path (first boot):** when no row exists, ``get_or_create``
+        inserts one using ``default_interval`` and the ``PLUGINS_CONFIG`` values
+        for the four type-toggle fields (``sync_leases_enabled``,
+        ``sync_reservations_enabled``, ``sync_prefixes_enabled``,
+        ``sync_ip_ranges_enabled``) so the config file is honoured until the
+        operator overrides it via the UI.  ``backfill_applied`` is set to
+        ``True`` immediately on creation so the backfill path is skipped.
+
+        **One-time backfill path (upgrades):** when an existing row is found
+        with ``backfill_applied=False`` (i.e. the row pre-dates the introduction
+        of *sync_prefixes_enabled* / *sync_ip_ranges_enabled*), the four
+        type-toggle fields are compared against ``PLUGINS_CONFIG``.  For each
+        field still at its migration default (``True``) but explicitly disabled
+        in ``PLUGINS_CONFIG``, the stored value is overridden once.  After that
+        ``backfill_applied`` is set to ``True`` and the row is saved, so future
+        calls do **not** mutate UI overrides.
+
+        ``default_interval`` is only used on the creation path; it is ignored
+        when a row already exists.
         """
         config = getattr(settings, "PLUGINS_CONFIG", {}).get("netbox_kea", {})
-        obj, _ = cls.objects.get_or_create(
+        obj, created = cls.objects.get_or_create(
             pk=1,
             defaults={
                 "interval_minutes": default_interval,
@@ -354,6 +373,27 @@ class SyncConfig(models.Model):
                 "sync_reservations_enabled": config.get("sync_reservations_enabled", True),
                 "sync_prefixes_enabled": config.get("sync_prefixes_enabled", True),
                 "sync_ip_ranges_enabled": config.get("sync_ip_ranges_enabled", True),
+                "backfill_applied": True,
             },
         )
+        if not created and not obj.backfill_applied:
+            # One-time backfill: on upgrades, newly added type-toggle fields are
+            # initialised to their migration default (True) regardless of
+            # PLUGINS_CONFIG.  Apply the configured value once for fields that are
+            # still at the migration default but the operator has explicitly disabled
+            # them in PLUGINS_CONFIG.  Setting backfill_applied=True afterwards
+            # prevents this from running again so UI overrides are preserved.
+            _type_fields = [
+                "sync_leases_enabled",
+                "sync_reservations_enabled",
+                "sync_prefixes_enabled",
+                "sync_ip_ranges_enabled",
+            ]
+            to_save = ["backfill_applied"]
+            obj.backfill_applied = True
+            for f in _type_fields:
+                if not config.get(f, True) and getattr(obj, f):
+                    setattr(obj, f, False)
+                    to_save.append(f)
+            obj.save(update_fields=to_save)
         return obj

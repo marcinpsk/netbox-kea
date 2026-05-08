@@ -1984,7 +1984,7 @@ class TestReservationSyncToNetBox(_ReservationViewBase):
         """POSTing with sync_to_netbox=on calls sync_reservation_to_netbox()."""
         mock_client = MockKeaClient.return_value
         mock_client.reservation_add.return_value = None
-        mock_sync.return_value = (MagicMock(), True)
+        mock_sync.return_value = (MagicMock(), True, True)
         response = self.client.post(self._add4_url(), self._valid_post_data(sync=True))
         self.assertEqual(response.status_code, 302)
         mock_sync.assert_called_once()
@@ -2018,7 +2018,7 @@ class TestReservationSyncToNetBox(_ReservationViewBase):
         """POSTing reservation edit with sync_to_netbox=on calls sync_reservation_to_netbox()."""
         mock_client = MockKeaClient.return_value
         mock_client.reservation_update.return_value = None
-        mock_sync.return_value = (MagicMock(), False)
+        mock_sync.return_value = (MagicMock(), False, True)
         mock_client.reservation_get.return_value = {
             "ip-address": "192.168.1.100",
             "hw-address": "aa:bb:cc:dd:ee:ff",
@@ -2440,7 +2440,7 @@ class TestSyncReservationCleanupFalse(_ReservationViewBase):
         """POSTing reservation add with sync_to_netbox=on passes cleanup=False."""
         mock_client = MockKeaClient.return_value
         mock_client.reservation_add.return_value = None
-        mock_sync.return_value = (MagicMock(), True)
+        mock_sync.return_value = (MagicMock(), True, True)
         data = {
             "subnet_id": 1,
             "ip_address": "192.168.1.100",
@@ -2701,7 +2701,7 @@ class TestReservationSyncExceptionOnSuccess(_ReservationViewBase):
         """If sync succeeds, info message shown with created/updated status."""
         mock_client = MockKeaClient.return_value
         mock_client.reservation_add.return_value = None
-        mock_sync.return_value = (MagicMock(), True)
+        mock_sync.return_value = (MagicMock(), True, True)
         response = self.client.post(self._add_url(), self._valid_post_data())
         self.assertEqual(response.status_code, 302)
         msgs = [str(m) for m in get_messages(response.wsgi_request)]

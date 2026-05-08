@@ -11,6 +11,8 @@ from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.contrib.contenttypes.models import ContentType
+from django.core.exceptions import PermissionDenied
+from django.db.models import Q
 from django.http import HttpResponseForbidden, HttpResponseRedirect
 from django.shortcuts import get_object_or_404, render
 from django.urls import reverse
@@ -55,17 +57,14 @@ def get_recent_jobs_for_servers(
 
     ct = ContentType.objects.get_for_model(Server)
 
-    # 1. Object-bound jobs (manual "Run Now") — newest-first per server, up to *limit*.
+    # 1. Object-bound jobs (manual "Run Now") — one indexed query per server with SQL LIMIT.
     bound_by_pk: dict[int, list] = {pk: [] for pk in pks}
-    bound_qs = (
-        Job.objects.filter(object_type=ct, object_id__in=pks, name=name)
-        .order_by("object_id", "-created")
-        .only("pk", "object_id", "created", "status", "data")
-    )
-    for job in bound_qs:
-        oid = job.object_id
-        if oid in bound_by_pk and len(bound_by_pk[oid]) < limit:
-            bound_by_pk[oid].append(job)
+    for pk in pks:
+        bound_by_pk[pk] = list(
+            Job.objects.filter(object_type=ct, object_id=pk, name=name)
+            .order_by("-created")
+            .only("pk", "object_id", "created", "status", "data")[:limit]
+        )
 
     # 2. Unbound periodic jobs — always scanned independently so that a recent
     #    periodic run is not hidden by older manual (bound) runs filling the slot.
@@ -81,7 +80,14 @@ def get_recent_jobs_for_servers(
     for job in unbound_qs:
         if not needs_unbound:
             break
-        for entry in (job.data or {}).get("summary") or []:
+        if not isinstance(job.data, dict):
+            continue
+        summary = job.data.get("summary")
+        if not isinstance(summary, list):
+            continue
+        for entry in summary:
+            if not isinstance(entry, dict):
+                continue
             server_pk = entry.get("pk")
             if server_pk in needs_unbound and job.pk not in {j.pk for j in unbound_by_pk[server_pk]}:
                 unbound_by_pk[server_pk].append(job)
@@ -109,6 +115,26 @@ def get_recent_jobs_for_servers(
         result[pk] = deduped[:limit]
 
     return result
+
+
+def get_all_jobs_for_server(pk: int, *, name: str = "Kea IPAM Sync"):
+    """Return a queryset of every Kea sync Job attributed to *pk*.
+
+    Includes both object-bound jobs (manual "Run Now") and unbound periodic
+    jobs whose ``data["summary"]`` references this server. Sorted newest-first.
+
+    Periodic jobs have ``object_id=NULL`` so the standard ObjectJobsView
+    misses them; this helper bridges the gap. Periodic-job lookup uses
+    PostgreSQL JSONField containment so it stays cheap even with thousands
+    of historical runs.
+    """
+    from core.models import Job
+
+    ct = ContentType.objects.get_for_model(Server)
+    bound_q = Q(object_type=ct, object_id=pk, name=name)
+    # JSONField `contains` on a list matches any element containing the given dict.
+    unbound_q = Q(object_id__isnull=True, name=name, data__summary__contains=[{"pk": pk}])
+    return Job.objects.filter(bound_q | unbound_q).order_by("-created")
 
 
 def _get_latest_jobs(servers: list[Server]) -> defaultdict:
@@ -274,3 +300,81 @@ class ServerSyncToggleView(LoginRequiredMixin, View):
         state = "enabled" if server.sync_enabled else "disabled"
         messages.success(request, f"IPAM sync {state} for {server.name}.")
         return HttpResponseRedirect(reverse("plugins:netbox_kea:server_sync_status", args=[pk]))
+
+
+def _replace_auto_jobs_view(model, replacement_view) -> None:
+    """Replace NetBox's auto-registered ``jobs`` view in the registry with our own.
+
+    NetBox's ``JobsMixin.__init_subclass__`` registers a default ``ObjectJobsView``
+    for every job-aware model. That view filters by ``object_type+object_id`` and
+    therefore cannot show periodic (system) jobs whose ``object_id`` is NULL.
+    We swap the entry so the per-server "Jobs" tab points at our subclass instead.
+    """
+    from netbox.registry import registry
+
+    app_label = model._meta.app_label
+    model_name = model._meta.model_name
+    # Ensure the nested registry structure exists so the fallback append below
+    # actually mutates the registry (chained .get() with defaults would create
+    # a detached list and silently drop the registration).
+    app_views = registry["views"].setdefault(app_label, {})
+    views = app_views.setdefault(model_name, [])
+    for entry in views:
+        if entry.get("name") == "jobs":
+            entry["view"] = replacement_view
+            entry["kwargs"] = {"model": model}
+            return
+    views.append(
+        {
+            "name": "jobs",
+            "view": replacement_view,
+            "path": "jobs",
+            "detail": True,
+            "kwargs": {"model": model},
+        }
+    )
+
+
+class ServerJobsView(View):
+    """Per-server Jobs tab, including periodic (unbound) Kea sync jobs.
+
+    The default :class:`netbox.views.generic.ObjectJobsView` only shows jobs
+    whose ``object_id`` matches the server. Periodic ``KeaIpamSyncJob`` runs
+    are stored unbound (``object_id=NULL``) and reference servers only via
+    their ``data["summary"]`` payload, so they are invisible there. This
+    subclass merges both sources, matching core's ``ObjectJobsView`` shape
+    so the existing ``core/object_jobs.html`` template works unchanged.
+    """
+
+    tab = ViewTab(
+        label="Jobs",
+        badge=lambda obj: get_all_jobs_for_server(obj.pk).count(),
+        permission="core.view_job",
+        weight=11000,
+    )
+
+    def get(self, request, model, **kwargs):
+        """Render the Jobs tab using core's object_jobs template + JobTable."""
+        if not request.user.has_perm("core.view_job"):
+            raise PermissionDenied
+        from core.tables import JobTable
+
+        obj = get_object_or_404(model.objects.restrict(request.user, "view"), **kwargs)
+        jobs = get_all_jobs_for_server(obj.pk)
+        table = JobTable(data=jobs, orderable=False)
+        table.configure(request)
+
+        base_template = f"{model._meta.app_label}/{model._meta.model_name}.html"
+        return render(
+            request,
+            "core/object_jobs.html",
+            {
+                "object": obj,
+                "table": table,
+                "base_template": base_template,
+                "tab": self.tab,
+            },
+        )
+
+
+_replace_auto_jobs_view(Server, ServerJobsView)

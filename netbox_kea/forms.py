@@ -5,7 +5,7 @@ from django.core.exceptions import ValidationError
 from netaddr import EUI, AddrFormatError, IPAddress, IPNetwork, IPRange, mac_unix_expanded
 from netbox.forms import NetBoxModelBulkEditForm, NetBoxModelFilterSetForm, NetBoxModelForm, NetBoxModelImportForm
 from utilities.forms import BOOLEAN_WITH_BLANK_CHOICES
-from utilities.forms.fields import DynamicModelChoiceField, TagFilterField
+from utilities.forms.fields import TagFilterField
 from utilities.forms.rendering import FieldSet
 
 from . import constants
@@ -71,12 +71,7 @@ class ServerForm(NetBoxModelForm):
         super().__init__(*args, **kwargs)
         from ipam.models import VRF
 
-        self.fields["sync_vrf"] = DynamicModelChoiceField(
-            queryset=VRF.objects.all(),
-            required=False,
-            label="Sync VRF",
-            help_text="VRF for synced Prefixes and IP Ranges. Leave blank for the global VRF.",
-        )
+        self.fields["sync_vrf"].queryset = VRF.objects.all()
 
     class Meta:
         model = Server

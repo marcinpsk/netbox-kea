@@ -122,6 +122,8 @@ PLUGINS_CONFIG = {
         "sync_interval_minutes": 5,
         "sync_leases_enabled": True,
         "sync_reservations_enabled": True,
+        "sync_prefixes_enabled": True,
+        "sync_ip_ranges_enabled": True,
         "sync_max_leases_per_server": 50000,
         "stale_ip_cleanup": "remove",
     }
@@ -157,6 +159,8 @@ All settings are under `PLUGINS_CONFIG["netbox_kea"]`:
 | `sync_interval_minutes` | `5` | How often the background sync job runs (minutes). Also editable via NetBox admin → Jobs |
 | `sync_leases_enabled` | `True` | Sync active DHCP leases to NetBox IPAM |
 | `sync_reservations_enabled` | `True` | Sync Kea reservations to NetBox IPAM |
+| `sync_prefixes_enabled` | `True` | Sync Kea subnets to NetBox IPAM as IP Prefixes |
+| `sync_ip_ranges_enabled` | `True` | Sync Kea pools to NetBox IPAM as IP Ranges |
 | `sync_max_leases_per_server` | `50000` | Hard cap on leases fetched per server per sync run. Set to `0` for no limit |
 
 ---
@@ -204,6 +208,24 @@ separate credentials per protocol:
 
 If per-protocol credentials are not set, the CA-level credentials (`ca_username`/`ca_password`)
 are used as the default for all connections.
+
+---
+
+### Per-server IPAM sync settings
+
+Each server has optional overrides for the IPAM sync job:
+
+| Field | Default | Description |
+|---|---|---|
+| `IPAM Sync Enabled` (`sync_enabled`) | `True` | Include this server in the periodic sync job |
+| `Sync Leases` (`sync_leases_enabled`) | `True` | Sync active DHCP leases as NetBox IP Addresses |
+| `Sync Reservations` (`sync_reservations_enabled`) | `True` | Sync DHCP reservations as NetBox IP Addresses |
+| `Sync Prefixes` (`sync_prefixes_enabled`) | `True` | Sync Kea subnets as NetBox IP Prefixes |
+| `Sync IP Ranges` (`sync_ip_ranges_enabled`) | `True` | Sync Kea pools as NetBox IP Ranges |
+| `Sync VRF` (`sync_vrf`) | None (global routing table) | VRF to assign when syncing Prefixes and IP Ranges. There is no global fallback — leave blank to use the global routing table (no VRF) |
+| `Persist configuration` (`persist_config`) | `True` | Automatically save Kea config after each change via `config-write`. Disable when Kea config is managed externally (e.g. Ansible) |
+
+These fields override the global `PLUGINS_CONFIG` values for that specific server.
 
 ---
 

@@ -8,6 +8,24 @@
         Add DHCPv{{ dhcp_version }} Lease
       </h5>
       <div class="card-body">
+        {% if object.sync_enabled and object.sync_leases_enabled %}
+        <div class="alert alert-info d-flex align-items-start mb-3" role="alert">
+          <i class="mdi mdi-sync me-2 mt-1" aria-hidden="true"></i>
+          <div>
+            <strong>Automatic IPAM sync is enabled for this server.</strong>
+            This lease will be synced to NetBox IPAM on the next scheduled sync run
+            (not instantly). You can also use the checkbox below to sync immediately.
+          </div>
+        </div>
+        {% else %}
+        <div class="alert alert-secondary d-flex align-items-start mb-3" role="alert">
+          <i class="mdi mdi-sync-off me-2 mt-1" aria-hidden="true"></i>
+          <div>
+            <strong>Automatic IPAM sync is disabled for this server.</strong>
+            Use the checkbox below to sync this lease to NetBox IPAM immediately.
+          </div>
+        </div>
+        {% endif %}
         <form method="post">
           {% csrf_token %}
 

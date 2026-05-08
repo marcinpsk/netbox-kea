@@ -24,6 +24,24 @@
         <strong>{{ action }} DHCPv{{ dhcp_version }} Reservation</strong>
       </div>
       <div class="card-body">
+        {% if object.sync_enabled and object.sync_reservations_enabled %}
+        <div class="alert alert-info d-flex align-items-start mb-3" role="alert">
+          <i class="mdi mdi-sync me-2 mt-1" aria-hidden="true"></i>
+          <div>
+            <strong>Automatic IPAM sync is enabled for this server.</strong>
+            This reservation will be synced to NetBox IPAM on the next scheduled sync run
+            (not instantly). You can also use the checkbox below to sync immediately.
+          </div>
+        </div>
+        {% else %}
+        <div class="alert alert-secondary d-flex align-items-start mb-3" role="alert">
+          <i class="mdi mdi-sync-off me-2 mt-1" aria-hidden="true"></i>
+          <div>
+            <strong>Automatic IPAM sync is disabled for this server.</strong>
+            Use the checkbox below to sync this reservation to NetBox IPAM immediately.
+          </div>
+        </div>
+        {% endif %}
         <form method="post" id="reservation-form">
           {% csrf_token %}
           {% render_form form %}

@@ -455,7 +455,7 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
                 leases, next_page = self.get_leases_page(
                     client,
                     None,
-                    form.cleaned_data.get("page"),
+                    form.cleaned_data["page"],
                     per_page=get_paginate_count(request),
                 )
                 paginate = True

@@ -120,6 +120,16 @@ LEASE_ACTIONS = """<span class="btn-group dropdown">
                 Edit lease
             </a>
         </li>
+        {% endif %}
+        {% if record.reservation_url and record.can_change_reservation %}
+        <li>
+            <a href="{{ record.reservation_url }}" class="dropdown-item">
+                <i class="mdi mdi-bookmark-outline" aria-hidden="true" title="Edit reservation"></i>
+                Edit reservation
+            </a>
+        </li>
+        {% endif %}
+        {% if record.edit_url or record.reservation_url and record.can_change_reservation %}
         <li><hr class="dropdown-divider"></li>
         {% endif %}
         {% if record.ip_address %}
@@ -280,22 +290,23 @@ class SubnetTable(GenericTable):
         verbose_name="Pool(s)",
         orderable=False,
         template_code=(
-            '<span class="d-inline-flex align-items-center flex-wrap gap-1">'
+            '<span class="d-flex flex-column gap-1 align-items-start">'
             "{% for pool in record.pools %}"
-            '<span class="badge text-bg-secondary d-inline-flex align-items-center">'
+            '<span class="d-inline-flex align-items-center gap-1 font-monospace small'
+            ' border rounded px-2 py-0 bg-body-secondary text-nowrap">'
             "{{ pool }}"
-            "{% if record.server_pk and record.id and record.can_change %} "
+            "{% if record.server_pk and record.id and record.can_change %}"
             "{% if record.dhcp_version == 4 %}"
             '<a href="{% url "plugins:netbox_kea:server_subnet4_pool_delete"'
             ' record.server_pk record.id pool %}"'
-            ' class="text-white ms-1" aria-label="Delete pool {{ pool }}">'
-            '<i class="mdi mdi-close-circle-outline" style="font-size:0.85em" aria-hidden="true"></i>'
+            ' class="text-danger ms-1 lh-1" aria-label="Delete pool {{ pool }}">'
+            '<i class="mdi mdi-close" style="font-size:0.8em" aria-hidden="true"></i>'
             "</a>"
             "{% else %}"
             '<a href="{% url "plugins:netbox_kea:server_subnet6_pool_delete"'
             ' record.server_pk record.id pool %}"'
-            ' class="text-white ms-1" aria-label="Delete pool {{ pool }}">'
-            '<i class="mdi mdi-close-circle-outline" style="font-size:0.85em" aria-hidden="true"></i>'
+            ' class="text-danger ms-1 lh-1" aria-label="Delete pool {{ pool }}">'
+            '<i class="mdi mdi-close" style="font-size:0.8em" aria-hidden="true"></i>'
             "</a>"
             "{% endif %}{% endif %}"
             "</span>"
@@ -304,13 +315,13 @@ class SubnetTable(GenericTable):
             "{% if record.server_pk and record.id and record.can_change %}"
             "{% if record.dhcp_version == 4 %}"
             '<a href="{% url "plugins:netbox_kea:server_subnet4_pool_add" record.server_pk record.id %}"'
-            ' class="btn btn-sm btn-outline-secondary" aria-label="Add pool">'
-            '<i class="mdi mdi-plus" aria-hidden="true"></i>'
+            ' class="text-muted small text-decoration-none" aria-label="Add pool">'
+            '<i class="mdi mdi-plus-circle-outline" aria-hidden="true"></i> Add pool'
             "</a>"
             "{% else %}"
             '<a href="{% url "plugins:netbox_kea:server_subnet6_pool_add" record.server_pk record.id %}"'
-            ' class="btn btn-sm btn-outline-secondary" aria-label="Add pool">'
-            '<i class="mdi mdi-plus" aria-hidden="true"></i>'
+            ' class="text-muted small text-decoration-none" aria-label="Add pool">'
+            '<i class="mdi mdi-plus-circle-outline" aria-hidden="true"></i> Add pool'
             "</a>"
             "{% endif %}{% endif %}"
             "</span>"
@@ -749,7 +760,7 @@ class SharedNetworkTable(GenericTable):
         orderable=False,
         template_code=(
             "{% for item in record.subnet_links %}"
-            '<a href="{{ item.url }}" class="badge text-bg-secondary me-1">{{ item.cidr }}</a>'
+            '<a href="{{ item.url }}" class="badge text-bg-primary me-1">{{ item.cidr }}</a>'
             "{% empty %}—{% endfor %}"
         ),
     )

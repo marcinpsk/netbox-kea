@@ -56,27 +56,45 @@ class Migration(migrations.Migration):
                 on_delete=django.db.models.deletion.SET_NULL,
                 related_name="+",
                 to="ipam.vrf",
+                verbose_name="Sync VRF",
+                help_text="VRF to assign when syncing subnets as Prefixes and pools as IP Ranges. Leave blank for the global VRF.",
             ),
         ),
         # Per-type sync toggle overrides on Server
         migrations.AddField(
             model_name="server",
             name="sync_leases_enabled",
-            field=models.BooleanField(default=True),
+            field=models.BooleanField(
+                default=True,
+                verbose_name="Sync Leases",
+                help_text="Sync active DHCP leases as NetBox IP Addresses for this server.",
+            ),
         ),
         migrations.AddField(
             model_name="server",
             name="sync_reservations_enabled",
-            field=models.BooleanField(default=True),
+            field=models.BooleanField(
+                default=True,
+                verbose_name="Sync Reservations",
+                help_text="Sync DHCP reservations as NetBox IP Addresses for this server.",
+            ),
         ),
         migrations.AddField(
             model_name="server",
             name="sync_prefixes_enabled",
-            field=models.BooleanField(default=True),
+            field=models.BooleanField(
+                default=True,
+                verbose_name="Sync Prefixes",
+                help_text="Sync Kea subnets as NetBox IP Prefixes for this server.",
+            ),
         ),
         migrations.AddField(
             model_name="server",
             name="sync_ip_ranges_enabled",
-            field=models.BooleanField(default=True),
+            field=models.BooleanField(
+                default=True,
+                verbose_name="Sync IP Ranges",
+                help_text="Sync Kea pools as NetBox IP Ranges for this server.",
+            ),
         ),
     ]

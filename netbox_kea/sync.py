@@ -112,7 +112,13 @@ def bulk_fetch_netbox_ips(ip_list: list[str]) -> dict[str, NbIPAddress]:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def _compute_ip_status(desired_from: str, current_status: str | None) -> str:
+def _compute_ip_status(
+    desired_from: str,
+    current_status: str | None,
+    *,
+    ip_str: str = "",
+    other_source_ips: frozenset[str] | None = None,
+) -> str:
     """Compute the correct NetBox IP status based on sync source and current state.
 
     Implements a semantic IP lifecycle:
@@ -123,15 +129,31 @@ def _compute_ip_status(desired_from: str, current_status: str | None) -> str:
     Args:
         desired_from: ``"lease"`` or ``"reservation"``
         current_status: current NetBox IP status, or ``None`` when the IP is new.
+        ip_str: IP address string for two-pass mode lookup.
+        other_source_ips: When provided (not ``None``), enables **two-pass mode**
+            where the set contains all IPs confirmed by the *other* sync source
+            in this run.  For lease sync, pass the pre-fetched reservation IPs;
+            for reservation sync, pass the lease IPs collected this run.
+            Two-pass mode produces fully idempotent results — IPs with both a
+            lease and a reservation converge to ``"active"`` in a single save
+            instead of toggling through intermediate states on every run.
+            Pass ``None`` (default) to use single-pass / legacy mode which
+            falls back to ``current_status`` heuristics.
 
     """
     if desired_from == "lease":
-        # If this IP already has a reservation, the device is now in use → active.
+        if other_source_ips is not None:
+            # Two-pass mode: reservation set is authoritative for this run.
+            return "active" if ip_str in other_source_ips else "dhcp"
+        # Single-pass fallback: IP already reserved in NetBox → lease activates it.
         if current_status == "reserved":
             return "active"
         return "dhcp"
     # "reservation"
-    # If this IP already has a lease, the device is active as well → active.
+    if other_source_ips is not None:
+        # Two-pass mode: lease set is authoritative for this run.
+        return "active" if ip_str in other_source_ips else "reserved"
+    # Single-pass fallback: IP already leased → reservation confirms active use.
     if current_status == "dhcp":
         return "active"
     return "reserved"
@@ -317,7 +339,12 @@ def _apply_ip_fields(
     return changed
 
 
-def sync_lease_to_netbox(lease: dict, *, cleanup: bool = True) -> tuple[NbIPAddress, bool]:
+def sync_lease_to_netbox(
+    lease: dict,
+    *,
+    cleanup: bool = True,
+    reservation_ips: frozenset[str] | None = None,
+) -> tuple[NbIPAddress, bool, bool]:
     """Create or update a NetBox IPAddress from a Kea lease dictionary.
 
     The ``status`` is set to ``"active"`` and ``dns_name`` to the lease
@@ -329,14 +356,20 @@ def sync_lease_to_netbox(lease: dict, *, cleanup: bool = True) -> tuple[NbIPAddr
     older versions).
 
     Args:
-        lease:   Raw Kea lease dictionary.
-        cleanup: When ``True`` (default), call :func:`_cleanup_stale_ips` for
-                 the hostname after syncing.  Set to ``False`` in batch
-                 operations where the caller will perform a single cleanup pass
-                 with the full keep-set via :func:`cleanup_stale_ips_batch`.
+        lease:            Raw Kea lease dictionary.
+        cleanup:          When ``True`` (default), call :func:`_cleanup_stale_ips` for
+                          the hostname after syncing.  Set to ``False`` in batch
+                          operations where the caller will perform a single cleanup pass
+                          with the full keep-set via :func:`cleanup_stale_ips_batch`.
+        reservation_ips:  Optional frozenset of all reservation IPs confirmed by the
+                          reservation pre-fetch in this sync run.  When provided,
+                          enables two-pass idempotent status computation — ``"active"``
+                          if the IP also has a reservation, ``"dhcp"`` otherwise.
+                          Pass ``None`` (default) to use single-pass fallback mode.
 
-    Returns ``(ip_object, created)`` where *created* is ``True`` on the first
-    call for a given IP.
+    Returns ``(ip_object, created, changed)`` where *created* is ``True`` on
+    the first call for a given IP and *changed* is ``True`` when any field was
+    modified (including on first creation).
 
     """
     from ipam.models import IPAddress as NbIP
@@ -354,7 +387,7 @@ def sync_lease_to_netbox(lease: dict, *, cleanup: bool = True) -> tuple[NbIPAddr
         created = False
         current_status = ip_obj.status
 
-    status = _compute_ip_status("lease", current_status)
+    status = _compute_ip_status("lease", current_status, ip_str=ip_str, other_source_ips=reservation_ips)
     changed = _apply_ip_fields(
         ip_obj,
         status=status,
@@ -374,10 +407,15 @@ def sync_lease_to_netbox(lease: dict, *, cleanup: bool = True) -> tuple[NbIPAddr
     if hw_address:
         _sync_mac_address(hw_address, hostname)
 
-    return ip_obj, created
+    return ip_obj, created, changed
 
 
-def sync_reservation_to_netbox(reservation: dict, *, cleanup: bool = True) -> tuple[NbIPAddress, bool]:
+def sync_reservation_to_netbox(
+    reservation: dict,
+    *,
+    cleanup: bool = True,
+    lease_ips: frozenset[str] | None = None,
+) -> tuple[NbIPAddress, bool, bool]:
     """Create or update a NetBox IPAddress from a Kea reservation dictionary.
 
     The ``status`` is set to ``"reserved"`` and ``dns_name`` to the
@@ -393,11 +431,17 @@ def sync_reservation_to_netbox(reservation: dict, *, cleanup: bool = True) -> tu
                      for the hostname after syncing.  Set to ``False`` in batch
                      operations where the caller will perform a single cleanup
                      pass with the full keep-set via :func:`cleanup_stale_ips_batch`.
+        lease_ips:   Optional frozenset of all lease IPs confirmed by the lease
+                     sync in this run.  When provided, enables two-pass idempotent
+                     status computation — ``"active"`` if the IP also has a lease,
+                     ``"reserved"`` otherwise.  Pass ``None`` (default) to use
+                     single-pass fallback mode.
 
     Raises ``ValueError`` when the reservation contains no IP address.
 
-    Returns ``(ip_object, created)`` where *created* is ``True`` if any address
-    was created for the first time.
+    Returns ``(ip_object, created, changed)`` where *created* is ``True`` if
+    any address was created for the first time and *changed* is ``True`` when
+    any address was saved (created or modified).
 
     """
     from ipam.models import IPAddress as NbIP
@@ -413,6 +457,7 @@ def sync_reservation_to_netbox(reservation: dict, *, cleanup: bool = True) -> tu
 
     primary_obj: NbIPAddress | None = None
     any_created = False
+    any_changed = False
 
     for ip_str in all_ips:
         ip_obj = get_netbox_ip(ip_str)
@@ -425,7 +470,7 @@ def sync_reservation_to_netbox(reservation: dict, *, cleanup: bool = True) -> tu
             created = False
             current_status = ip_obj.status
 
-        status = _compute_ip_status("reservation", current_status)
+        status = _compute_ip_status("reservation", current_status, ip_str=ip_str, other_source_ips=lease_ips)
         changed = _apply_ip_fields(
             ip_obj,
             status=status,
@@ -439,6 +484,7 @@ def sync_reservation_to_netbox(reservation: dict, *, cleanup: bool = True) -> tu
         if primary_obj is None:
             primary_obj = ip_obj
         any_created = any_created or created
+        any_changed = any_changed or changed or created
 
     # Cleanup stale IPs outside the loop — exclude ALL IPs in this reservation
     # so sibling addresses (DHCPv6 multi-address) are never treated as stale.
@@ -454,7 +500,7 @@ def sync_reservation_to_netbox(reservation: dict, *, cleanup: bool = True) -> tu
     if hw_address:
         _sync_mac_address(hw_address, hostname)
 
-    return primary_obj, any_created  # type: ignore[return-value]
+    return primary_obj, any_created, any_changed  # type: ignore[return-value]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -581,7 +627,13 @@ def _parse_pool_range(pool_str: str, subnet_prefix_len: int) -> tuple[str, str] 
     return None
 
 
-def sync_pool_to_netbox_ip_range(pool_str: str, subnet_cidr: str, vrf=None) -> tuple | None:
+# Sentinel returned by sync_pool_to_netbox_ip_range when the pool is intentionally
+# skipped because its size exceeds the PostgreSQL bigint limit.  Callers must check
+# `result is _POOL_TOO_LARGE` and treat it as a no-op (not an error).
+_POOL_TOO_LARGE: object = object()
+
+
+def sync_pool_to_netbox_ip_range(pool_str: str, subnet_cidr: str, vrf=None) -> tuple | object | None:
     """Create or update a NetBox IPRange from a Kea pool definition.
 
     Args:
@@ -591,8 +643,13 @@ def sync_pool_to_netbox_ip_range(pool_str: str, subnet_cidr: str, vrf=None) -> t
                      the prefix length for range-format pools.
         vrf: NetBox VRF instance to assign the IP range to.  ``None`` means the global VRF.
 
-    Returns ``(ip_range_object, created, did_update)`` or ``None`` when the pool string
-    cannot be parsed.
+    Returns one of three outcomes:
+
+    * ``(ip_range_object, created, did_update)`` — pool was synced successfully.
+    * ``None`` — pool string could not be parsed; caller should treat as an error.
+    * :data:`_POOL_TOO_LARGE` sentinel — pool was intentionally skipped because its
+      size exceeds the PostgreSQL bigint limit; callers should treat this as a no-op,
+      not an error.
 
     """
     from ipam.models import IPRange
@@ -616,7 +673,7 @@ def sync_pool_to_netbox_ip_range(pool_str: str, subnet_cidr: str, vrf=None) -> t
     _PG_BIGINT_MAX = 9_223_372_036_854_775_807
     if int(end_addr.ip - start_addr.ip) + 1 > _PG_BIGINT_MAX:
         logger.debug("Skipping pool %r: range too large to store as NetBox IPRange", pool_str)
-        return None
+        return _POOL_TOO_LARGE
 
     range_obj, created = IPRange.objects.get_or_create(
         start_address=start_addr,
