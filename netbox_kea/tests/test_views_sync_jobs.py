@@ -22,18 +22,26 @@ def _make_job(*, name="Kea IPAM Sync", object_id=None, object_type=None, data=_M
     Pass ``data=None`` explicitly to store a NULL data field (exercises the
     ``isinstance(job.data, dict)`` guard in ``get_recent_jobs_for_servers``).
     Omitting *data* defaults to ``{}``.
+
+    ``delta_seconds`` shifts the stored ``created`` timestamp backwards so that
+    ordering tests are reliable.  Because ``Job.created`` is ``auto_now_add``
+    Django silently ignores the field in ``create()``, so we back-fill it via
+    a raw ``update()`` call which bypasses that restriction.
     """
     from core.models import Job
 
-    return Job.objects.create(
+    job = Job.objects.create(
         name=name,
         object_type=object_type,
         object_id=object_id,
         status="completed",
         data={} if data is _MAKE_JOB_NO_DATA else data,
         job_id=uuid.uuid4(),
-        created=timezone.now() - timedelta(seconds=delta_seconds),
     )
+    if delta_seconds:
+        Job.objects.filter(pk=job.pk).update(created=timezone.now() - timedelta(seconds=delta_seconds))
+        job.refresh_from_db(fields=["created"])
+    return job
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
