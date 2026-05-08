@@ -57,17 +57,14 @@ def get_recent_jobs_for_servers(
 
     ct = ContentType.objects.get_for_model(Server)
 
-    # 1. Object-bound jobs (manual "Run Now") — newest-first per server, up to *limit*.
+    # 1. Object-bound jobs (manual "Run Now") — one indexed query per server with SQL LIMIT.
     bound_by_pk: dict[int, list] = {pk: [] for pk in pks}
-    bound_qs = (
-        Job.objects.filter(object_type=ct, object_id__in=pks, name=name)
-        .order_by("object_id", "-created")
-        .only("pk", "object_id", "created", "status", "data")
-    )
-    for job in bound_qs:
-        oid = job.object_id
-        if oid in bound_by_pk and len(bound_by_pk[oid]) < limit:
-            bound_by_pk[oid].append(job)
+    for pk in pks:
+        bound_by_pk[pk] = list(
+            Job.objects.filter(object_type=ct, object_id=pk, name=name)
+            .order_by("-created")
+            .only("pk", "object_id", "created", "status", "data")[:limit]
+        )
 
     # 2. Unbound periodic jobs — always scanned independently so that a recent
     #    periodic run is not hidden by older manual (bound) runs filling the slot.
