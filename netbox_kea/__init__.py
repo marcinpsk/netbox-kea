@@ -4,7 +4,7 @@ from netbox.plugins import PluginConfig
 
 logger = logging.getLogger(__name__)
 
-__version__ = "1.4.1"
+__version__ = "1.4.2"
 
 
 class NetBoxKeaConfig(PluginConfig):
