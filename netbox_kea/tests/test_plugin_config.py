@@ -196,3 +196,69 @@ class TestHealGhostScheduledJobs(SimpleTestCase):
 
         bad_job.delete.assert_not_called()
         good_job.delete.assert_called_once()
+
+    # ------------------------------------------------------------------
+    # Plain-string status fallback (rq < enum era)
+    # ------------------------------------------------------------------
+
+    def test_plain_string_status_failed_is_deleted(self):
+        """Cover the str(status) fallback when get_status() returns a bare string."""
+        job = _make_db_job("job-plain")
+        mock_qs = MagicMock()
+        mock_qs.exists.return_value = True
+        mock_qs.filter.return_value = mock_qs
+        mock_qs.__iter__ = lambda self: iter([job])
+
+        rq_job = MagicMock()
+        # Return a plain string instead of an enum-like object with .value
+        rq_job.get_status.return_value = "failed"
+
+        cfg = _make_config()
+        with (
+            patch("netbox_kea.jobs.KeaIpamSyncJob.get_jobs", return_value=mock_qs),
+            patch("django_rq.get_connection", return_value=MagicMock()),
+            patch("rq.job.Job.fetch", return_value=rq_job),
+        ):
+            cfg._heal_ghost_scheduled_jobs()
+
+        job.delete.assert_called_once()
+
+    def test_plain_string_status_live_not_deleted(self):
+        """A plain-string live status must not trigger deletion."""
+        job = _make_db_job("job-plain-live")
+        mock_qs = MagicMock()
+        mock_qs.exists.return_value = True
+        mock_qs.filter.return_value = mock_qs
+        mock_qs.__iter__ = lambda self: iter([job])
+
+        rq_job = MagicMock()
+        rq_job.get_status.return_value = "scheduled"
+
+        cfg = _make_config()
+        with (
+            patch("netbox_kea.jobs.KeaIpamSyncJob.get_jobs", return_value=mock_qs),
+            patch("django_rq.get_connection", return_value=MagicMock()),
+            patch("rq.job.Job.fetch", return_value=rq_job),
+        ):
+            cfg._heal_ghost_scheduled_jobs()
+
+        job.delete.assert_not_called()
+
+    # ------------------------------------------------------------------
+    # ready() wiring smoke test
+    # ------------------------------------------------------------------
+
+    def test_ready_calls_both_helpers(self):
+        """ready() must invoke _configure_sync_job_interval and _heal_ghost_scheduled_jobs."""
+        from netbox.plugins import PluginConfig
+
+        cfg = _make_config()
+        with (
+            patch.object(PluginConfig, "ready"),
+            patch.object(NetBoxKeaConfig, "_configure_sync_job_interval") as mock_configure,
+            patch.object(NetBoxKeaConfig, "_heal_ghost_scheduled_jobs") as mock_heal,
+        ):
+            cfg.ready()
+
+        mock_configure.assert_called_once()
+        mock_heal.assert_called_once()
