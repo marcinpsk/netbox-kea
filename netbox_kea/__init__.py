@@ -97,22 +97,29 @@ class NetBoxKeaConfig(PluginConfig):
 
             deleted = 0
             for db_job in candidates:
-                job_id = str(db_job.job_id) if db_job.job_id else None
-                if job_id is None:
-                    db_job.delete()
-                    deleted += 1
-                    continue
                 try:
-                    rq_job = RQJob.fetch(job_id, connection=conn)
-                    status = rq_job.get_status()
-                    # Handle both enum (rq ≥ 1.16) and plain string
-                    status_str = status.value if hasattr(status, "value") else str(status)
-                    if status_str in _DEAD:
+                    job_id = str(db_job.job_id) if db_job.job_id else None
+                    if job_id is None:
                         db_job.delete()
                         deleted += 1
-                except NoSuchJobError:
-                    db_job.delete()
-                    deleted += 1
+                        continue
+                    try:
+                        rq_job = RQJob.fetch(job_id, connection=conn)
+                        status = rq_job.get_status()
+                        # Handle both enum (rq ≥ 1.16) and plain string
+                        status_str = status.value if hasattr(status, "value") else str(status)
+                        if status_str in _DEAD:
+                            db_job.delete()
+                            deleted += 1
+                    except NoSuchJobError:
+                        db_job.delete()
+                        deleted += 1
+                except Exception:  # noqa: BLE001
+                    logger.debug(
+                        "netbox_kea: skipping ghost-job check for record %r due to per-record error.",
+                        getattr(db_job, "pk", None),
+                        exc_info=True,
+                    )
 
             if deleted:
                 logger.warning(
@@ -121,7 +128,7 @@ class NetBoxKeaConfig(PluginConfig):
                     deleted,
                 )
         except Exception:  # noqa: BLE001
-            logger.debug(
+            logger.warning(
                 "netbox_kea: ghost-job self-heal skipped (DB or Redis not available at startup).",
                 exc_info=True,
             )

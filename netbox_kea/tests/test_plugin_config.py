@@ -53,7 +53,6 @@ class TestHealGhostScheduledJobs(SimpleTestCase):
 
         cfg = _make_config()
         with (
-            patch("netbox_kea.NetBoxKeaConfig._configure_sync_job_interval"),
             patch("netbox_kea.jobs.KeaIpamSyncJob.get_jobs", return_value=mock_qs),
             patch("django_rq.get_connection", return_value=MagicMock()),
             patch("rq.job.Job.fetch", side_effect=_fetch),
@@ -169,3 +168,31 @@ class TestHealGhostScheduledJobs(SimpleTestCase):
         ):
             # Must not raise
             cfg._heal_ghost_scheduled_jobs()
+
+    def test_per_record_error_does_not_abort_remaining_records(self):
+        """A transient error on one record must not skip the others."""
+        bad_job = _make_db_job("job-bad")
+        good_job = _make_db_job("job-good")
+
+        mock_qs = MagicMock()
+        mock_qs.exists.return_value = True
+        mock_qs.filter.return_value = mock_qs
+        mock_qs.__iter__ = lambda self: iter([bad_job, good_job])
+
+        def _fetch(job_id, connection):
+            if job_id == "job-bad":
+                raise RuntimeError("transient Redis error")
+            rq = MagicMock()
+            rq.get_status.return_value = MagicMock(value="failed")
+            return rq
+
+        cfg = _make_config()
+        with (
+            patch("netbox_kea.jobs.KeaIpamSyncJob.get_jobs", return_value=mock_qs),
+            patch("django_rq.get_connection", return_value=MagicMock()),
+            patch("rq.job.Job.fetch", side_effect=_fetch),
+        ):
+            cfg._heal_ghost_scheduled_jobs()
+
+        bad_job.delete.assert_not_called()
+        good_job.delete.assert_called_once()
