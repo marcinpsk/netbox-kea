@@ -315,7 +315,7 @@ uv run pre-commit install
 uv build
 
 # Run unit tests (no Docker required)
-uv run pytest netbox_kea/tests/ --reuse-db -q
+uv run pytest -q
 
 # Run integration tests (requires Docker — see tests/test_setup.sh)
 ./tests/test_setup.sh

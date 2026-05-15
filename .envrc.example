@@ -1,0 +1,15 @@
+# .envrc.example — direnv configuration for netbox-kea-ng
+#
+# Usage:
+#   cp .envrc.example .envrc
+#   direnv allow
+#
+# Requires: direnv (https://direnv.net), uv (https://docs.astral.sh/uv)
+#
+# On `cd` into the project directory, direnv will:
+#   1. Install / sync dev dependencies into .venv
+#   2. Activate the virtual environment so pytest, ruff, etc. work without `uv run`
+
+uv sync
+
+source .venv/bin/activate

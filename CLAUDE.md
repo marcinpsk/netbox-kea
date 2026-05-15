@@ -60,10 +60,13 @@ URL request
 
 ### Core components
 
-- **`Server` model** (`models.py`): Only persisted model. Stores Kea connection config. `get_client(version=4|6|None)` returns a protocol-aware `KeaClient`. `clean()` performs live connectivity checks before saving.
+- **`Server` model** (`models.py`): Primary persisted model. Stores Kea connection config including dual-URL fields (`dhcp4_url`/`dhcp6_url`), per-protocol credentials, sync toggles, `persist_config`, and `sync_vrf`. `get_client(version=4|6|None)` returns a protocol-aware `KeaClient`. `clean()` performs live connectivity checks before saving.
+- **`SyncConfig` model** (`models.py`): Singleton (pk=1 always) for global IPAM sync settings — `interval_minutes`, `sync_enabled` (global kill-switch), four type-toggle fields, `backfill_applied`. `SyncConfig.get(default_interval)` handles creation-on-first-boot and one-time PLUGINS_CONFIG backfill; once `backfill_applied=True` the method never overrides UI changes.
 - **`KeaClient`** (`kea.py`): Wraps `requests.Session`. All Kea API calls go through `.command(command, service, arguments)` which POSTs JSON to `/api/v1/`. Methods for leases, reservations, subnets, pools, status, config. `.clone()` creates a thread-safe copy for concurrent lookups.
-- **`sync.py`**: Bridges Kea data to NetBox IPAM — `sync_lease_to_netbox()` (status=dhcp/active), `sync_reservation_to_netbox()` (status=reserved/active). Handles stale IP cleanup with `cleanup_stale_ips_batch()`.
-- **REST API** (`api/`): `NetBoxModelViewSet` for `Server` only. Password is write-only.
+- **`sync.py`**: Bridges Kea data to NetBox IPAM — `sync_lease_to_netbox()` (status=active), `sync_reservation_to_netbox()` (status=reserved). Handles stale IP cleanup with `cleanup_stale_ips_batch()`. Raises `PartialPersistError` for partial failures.
+- **`jobs.py`**: `KeaIpamSyncJob` decorated with `@system_job`. Iterates all `Server` objects, runs lease/reservation/prefix/range sync phases, writes per-server summary to job log.
+- **`__init__.py`**: `ready()` calls `_configure_sync_job_interval()` (patches in-memory RQ registry from PLUGINS_CONFIG — no DB access, safe at image build time) and `_heal_ghost_scheduled_jobs()` (removes ghost `scheduled`/`pending` DB records whose RQ counterpart is dead/missing — three-level exception nesting for startup safety).
+- **REST API** (`api/`): `NetBoxModelViewSet` for `Server` only. All password fields are write-only.
 - **GraphQL** (`graphql.py`): strawberry-django types, auto-discovered by NetBox.
 
 ### Key patterns
