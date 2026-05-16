@@ -4,8 +4,8 @@ Environment variables (all optional, have defaults):
     NETBOX_URL          NetBox base URL (default: http://localhost:8000)
     NETBOX_USERNAME     Admin username   (default: admin)
     NETBOX_PASSWORD     Admin password   (default: admin)
-    KEA_V4_URL          Live Kea DHCPv4 URL (default: https://kea-v4-api.cnad.dev)
-    KEA_V6_URL          Live Kea DHCPv6 URL (default: https://kea-v6-api.cnad.dev)
+    KEA_V4_URL          Live Kea DHCPv4 URL (default: https://kea-v4-api.example.com)
+    KEA_V6_URL          Live Kea DHCPv6 URL (default: https://kea-v6-api.example.com)
     KEA_API_USERNAME    Kea API username    (default: admin)
     KEA_API_PASSWORD    Kea API password    (required for live-Kea tests)
 """
@@ -21,8 +21,8 @@ NETBOX_URL = os.environ.get("NETBOX_URL", "http://127.0.0.1:8000")
 NETBOX_USERNAME = os.environ.get("NETBOX_USERNAME", "admin")
 NETBOX_PASSWORD = os.environ.get("NETBOX_PASSWORD", "admin")
 
-KEA_V4_URL = os.environ.get("KEA_V4_URL", "https://kea-v4-api.cnad.dev")
-KEA_V6_URL = os.environ.get("KEA_V6_URL", "https://kea-v6-api.cnad.dev")
+KEA_V4_URL = os.environ.get("KEA_V4_URL", "https://kea-v4-api.example.com")
+KEA_V6_URL = os.environ.get("KEA_V6_URL", "https://kea-v6-api.example.com")
 KEA_API_USERNAME = os.environ.get("KEA_API_USERNAME", "admin")
 KEA_API_PASSWORD = os.environ.get("KEA_API_PASSWORD", "")
 
