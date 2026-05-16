@@ -163,21 +163,6 @@ The serializer's `HyperlinkedIdentityField` uses `view_name="plugins-api:netbox_
 - **Hook detection pattern**: call `list-commands` with service, cache per request, show warning banner in UI if a required command is absent.
 - **Pool operations**: support both Kea 2.x and 3.x APIs.
 
-## Feature Roadmap
-
-### Done (current codebase)
-
-- ✅ **Dual-URL Server** — `dhcp4_url`/`dhcp6_url` fields, `has_control_agent` boolean, protocol-aware `get_client(version=)`
-- ✅ **Reservation Management** — full CRUD via `host_cmds` hook; v4 hw-address, v6 DUID; options; journal entries
-- ✅ **NetBox IPAM Sync** — leases→`IPAddress` (active), reservations→`IPAddress` (reserved), per-server toggle, background job with configurable interval, stale IP cleanup, `SyncConfig` singleton for global settings
-- ✅ **Subnet/Pool Sync** — Kea subnets→NetBox Prefixes, Kea pools→NetBox IP Ranges
-- ✅ **DNS Integration** — `dns_name` set from Kea hostname; netbox-dns IPAMDNSsync picks it up automatically
-- ✅ **Ghost Job Self-Heal** — `_heal_ghost_scheduled_jobs()` in `ready()` removes stale `scheduled` DB records after PostgreSQL failures
-
-### Pending
-
-- 🔲 **Subnet Utilization Statistics** — `stat-lease4/6-get` (requires `stat_cmds`) → utilization % column on subnet tables; degrade gracefully when hook absent
-
 ## Test Infrastructure
 
 ### Unit tests (`netbox_kea/tests/`)
