@@ -16,6 +16,7 @@ path = [
     ".github/copilot-instructions.md",
     ".github/workflows/codeql.yml",
     ".env.example",
+    ".envrc.example",
     ".devcontainer/**",
     "netbox_kea/migrations/0003_server_dual_url.py",
     "netbox_kea/migrations/0005_add_syncconfig.py",
