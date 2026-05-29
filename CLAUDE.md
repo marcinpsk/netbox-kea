@@ -43,7 +43,7 @@ E2E tests live in `e2e/` and are separate from both unit and integration tests.
 
 ### CI
 
-GitHub Actions matrix tests against NetBox v4.0–v4.5. Playwright traces uploaded as artifacts on failure.
+GitHub Actions matrix tests against NetBox v4.3–v4.5. Playwright traces uploaded as artifacts on failure.
 
 ## Architecture
 
