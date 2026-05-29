@@ -674,4 +674,7 @@ class KeaIpamSyncJob(JobRunner):
             if not isinstance(self.job.data, dict):
                 self.job.data = {}
             self.job.data["summary"] = summary
-            self.job.save(update_fields=["data"])
+            try:
+                self.job.save(update_fields=["data"])
+            except Exception:
+                logger.exception("Failed to persist sync job summary data")

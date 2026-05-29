@@ -229,6 +229,15 @@ class TestLease4API(_APITestBase):
         response = self.api_client.get(self._url(), {"ip_address": "10.0.0.1"})
         self.assertEqual(response.status_code, 502)
 
+    @patch.object(Server, "get_client")
+    def test_get_client_called_with_version_4(self, mock_get_client):
+        """The view calls server.get_client(version=4) to select the DHCPv4 endpoint."""
+        mock_client = MagicMock()
+        mock_get_client.return_value = mock_client
+        mock_client.command.return_value = _LEASE4_RESPONSE
+        self.api_client.get(self._url(), {"ip_address": "10.0.0.100"})
+        mock_get_client.assert_called_once_with(version=4)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Lease6 search tests
@@ -313,3 +322,24 @@ class TestLease6API(_APITestBase):
         call_args = mock_client.command.call_args
         service = call_args.kwargs.get("service") or (call_args.args[1] if len(call_args.args) > 1 else None)
         self.assertEqual(service, ["dhcp6"])
+
+    @patch.object(Server, "get_client")
+    def test_get_client_called_with_version_6(self, mock_get_client):
+        """The view calls server.get_client(version=6) to select the DHCPv6 endpoint."""
+        mock_client = MagicMock()
+        mock_get_client.return_value = mock_client
+        mock_client.command.return_value = [
+            {
+                "result": 0,
+                "arguments": {
+                    "ip-address": "2001:db8::1",
+                    "duid": "00:01:02:03",
+                    "iaid": 12345,
+                    "valid-lft": 3600,
+                    "cltt": 1700000000,
+                    "state": 0,
+                },
+            }
+        ]
+        self.api_client.get(self._url(), {"ip_address": "2001:db8::1"})
+        mock_get_client.assert_called_once_with(version=6)

@@ -4,6 +4,31 @@
 version = 1
 
 [[annotations]]
+# All upstream files from Devon Mar (original netbox-kea author)
+path = [
+    "README.md",
+    "LICENSE",
+    "uv.lock",
+    ".gitignore",
+    "images/**",
+    "pyproject.toml",
+    "netbox_kea/**",
+    "tests/**",
+]
+SPDX-FileCopyrightText = "Devon Mar <devon-mar@users.noreply.github.com>"
+SPDX-License-Identifier = "Apache-2.0"
+
+[[annotations]]
+# Original upstream workflow/config files
+path = [
+    ".github/workflows/ci.yml",
+    ".github/workflows/release.yml",
+    ".github/dependabot.yml",
+]
+SPDX-FileCopyrightText = "Devon Mar <devon-mar@users.noreply.github.com>"
+SPDX-License-Identifier = "Apache-2.0"
+
+[[annotations]]
 # New and modified files by Marcin Zieba
 path = [
     "REUSE.toml",
@@ -66,29 +91,4 @@ path = [
     ".superpowers/**",
 ]
 SPDX-FileCopyrightText = "Copyright (C) 2025 Marcin Zieba <marcinpsk@gmail.com>"
-SPDX-License-Identifier = "Apache-2.0"
-
-[[annotations]]
-# All upstream files from Devon Mar (original netbox-kea author)
-path = [
-    "README.md",
-    "LICENSE",
-    "uv.lock",
-    ".gitignore",
-    "images/**",
-    "pyproject.toml",
-    "netbox_kea/**",
-    "tests/**",
-]
-SPDX-FileCopyrightText = "Devon Mar <devon-mar@users.noreply.github.com>"
-SPDX-License-Identifier = "Apache-2.0"
-
-[[annotations]]
-# Original upstream workflow/config files
-path = [
-    ".github/workflows/ci.yml",
-    ".github/workflows/release.yml",
-    ".github/dependabot.yml",
-]
-SPDX-FileCopyrightText = "Devon Mar <devon-mar@users.noreply.github.com>"
 SPDX-License-Identifier = "Apache-2.0"

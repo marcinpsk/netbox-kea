@@ -206,7 +206,7 @@ class Server(JobsMixin, NetBoxModel):
             verify=self.ca_file_path or self.ssl_verify,
             client_cert=self.client_cert_path or None,
             client_key=self.client_key_path or None,
-            timeout=settings.PLUGINS_CONFIG["netbox_kea"]["kea_timeout"],
+            timeout=settings.PLUGINS_CONFIG.get("netbox_kea", {}).get("kea_timeout", 30),
             persist_config=self.persist_config,
         )
 

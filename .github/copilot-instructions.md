@@ -52,7 +52,7 @@ The compose stack includes: NetBox, netbox-worker, postgres, redis, nginx (basic
 
 Playwright end-to-end tests live in `e2e/` and are separate from both unit and integration tests.
 
-CI tests against NetBox v4.0–v4.5 using a matrix build. Playwright traces on failure are uploaded as artifacts.
+CI tests against NetBox v4.3–v4.5 using a matrix build. Playwright traces on failure are uploaded as artifacts.
 
 Ruff is configured in `pyproject.toml` — migrations are excluded from linting. Line length (E501) is ignored.
 
@@ -107,7 +107,7 @@ URL request
 
 **`jobs.py`** — `KeaIpamSyncJob` decorated with `@system_job(interval=_DEFAULT_INTERVAL)`. Iterates all `Server` objects, calls sync.py functions, writes per-server summary to job log.
 
-**`__init__.py`** — `NetBoxKeaConfig.ready()` calls `_configure_sync_job_interval()` (patches in-memory registry from PLUGINS_CONFIG, no DB access) and `_heal_ghost_scheduled_jobs()` (removes ghost `scheduled`/`pending` DB records whose RQ counterpart is dead/missing — three-level exception nesting for startup safety).
+**`__init__.py`** — `NetBoxKeaConfig.ready()` calls `_configure_sync_job_interval()` (patches in-memory registry from PLUGINS_CONFIG, no DB access). Ghost-job healing (`_heal_ghost_scheduled_jobs()`) runs inside `KeaIpamSyncJob.enqueue_once()` — not in `ready()` — to avoid DB access at app startup.
 
 **REST API** (`api/`) uses `NetBoxModelViewSet` + `NetBoxModelSerializer` — only the `Server` model is exposed. All password fields are write-only in the serializer.
 
@@ -169,7 +169,7 @@ The serializer's `HyperlinkedIdentityField` uses `view_name="plugins-api:netbox_
 
 No Docker required. All Kea HTTP calls are mocked. Key test files:
 
-- `test_plugin_config.py` — `_heal_ghost_scheduled_jobs()`, `_configure_sync_job_interval()`, `ready()` wiring
+- `test_plugin_config.py` — `_heal_ghost_scheduled_jobs()` (on `KeaIpamSyncJob`), `_configure_sync_job_interval()`, `ready()` wiring
 - `test_jobs.py` — `KeaIpamSyncJob` sync logic, subnet/lease/reservation phases
 - `test_sync.py` — `sync_lease_to_netbox()`, `sync_reservation_to_netbox()`, stale IP cleanup
 - `test_sync_views.py` / `test_views_sync_jobs.py` — IPAM sync config UI and jobs tab views
