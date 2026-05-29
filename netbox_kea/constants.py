@@ -23,9 +23,4 @@ LEASE_STATE_LABELS: dict[int, str] = {
     2: "Expired",
 }
 
-LEASE_STATE_CHOICES = [
-    ("", "Any"),
-    ("0", "Active"),
-    ("1", "Declined"),
-    ("2", "Expired"),
-]
+LEASE_STATE_CHOICES = [("", "Any")] + [(str(k), v) for k, v in LEASE_STATE_LABELS.items()]
