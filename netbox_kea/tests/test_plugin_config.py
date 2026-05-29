@@ -1,6 +1,11 @@
 # SPDX-FileCopyrightText: 2025 Marcin Zieba <marcinpsk@gmail.com>
 # SPDX-License-Identifier: Apache-2.0
-"""Unit tests for NetBoxKeaConfig.ready() helpers — _heal_ghost_scheduled_jobs."""
+"""Unit tests for the ghost-job self-heal and its scheduling wiring.
+
+The self-heal lives on ``KeaIpamSyncJob`` and runs inside an ``enqueue_once``
+override (invoked once per ``rqworker`` startup), not in ``AppConfig.ready()`` —
+keeping all DB access off the app-initialisation path.
+"""
 
 from __future__ import annotations
 
@@ -8,12 +13,7 @@ from unittest.mock import MagicMock, patch
 
 from django.test import SimpleTestCase
 
-from netbox_kea import NetBoxKeaConfig
-
-
-def _make_config() -> NetBoxKeaConfig:
-    """Return a bare NetBoxKeaConfig instance without triggering real ready() logic."""
-    return NetBoxKeaConfig.__new__(NetBoxKeaConfig)
+from netbox_kea.jobs import KeaIpamSyncJob
 
 
 def _make_db_job(job_id: str | None = "abc-123") -> MagicMock:
@@ -23,7 +23,7 @@ def _make_db_job(job_id: str | None = "abc-123") -> MagicMock:
 
 
 class TestHealGhostScheduledJobs(SimpleTestCase):
-    """Tests for NetBoxKeaConfig._heal_ghost_scheduled_jobs()."""
+    """Tests for KeaIpamSyncJob._heal_ghost_scheduled_jobs()."""
 
     def _run(self, candidates, rq_statuses: dict[str, str] | None = None, no_such: set[str] | None = None):
         """
@@ -51,13 +51,12 @@ class TestHealGhostScheduledJobs(SimpleTestCase):
             rq_job.get_status.return_value = MagicMock(value=status_str)
             return rq_job
 
-        cfg = _make_config()
         with (
             patch("netbox_kea.jobs.KeaIpamSyncJob.get_jobs", return_value=mock_qs),
             patch("django_rq.get_connection", return_value=MagicMock()),
             patch("rq.job.Job.fetch", side_effect=_fetch),
         ):
-            cfg._heal_ghost_scheduled_jobs()
+            KeaIpamSyncJob._heal_ghost_scheduled_jobs()
 
         return candidates
 
@@ -70,12 +69,11 @@ class TestHealGhostScheduledJobs(SimpleTestCase):
         mock_qs.exists.return_value = False
         mock_qs.filter.return_value = mock_qs
 
-        cfg = _make_config()
         with (
             patch("netbox_kea.jobs.KeaIpamSyncJob.get_jobs", return_value=mock_qs),
             patch("django_rq.get_connection") as mock_conn,
         ):
-            cfg._heal_ghost_scheduled_jobs()
+            KeaIpamSyncJob._heal_ghost_scheduled_jobs()
 
         mock_conn.assert_not_called()
 
@@ -149,10 +147,9 @@ class TestHealGhostScheduledJobs(SimpleTestCase):
     # ------------------------------------------------------------------
 
     def test_db_unavailable_does_not_raise(self):
-        cfg = _make_config()
         with patch("netbox_kea.jobs.KeaIpamSyncJob.get_jobs", side_effect=Exception("DB down")):
             # Must not raise
-            cfg._heal_ghost_scheduled_jobs()
+            KeaIpamSyncJob._heal_ghost_scheduled_jobs()
 
     def test_redis_unavailable_does_not_raise(self):
         job = _make_db_job("job-5")
@@ -161,13 +158,12 @@ class TestHealGhostScheduledJobs(SimpleTestCase):
         mock_qs.filter.return_value = mock_qs
         mock_qs.__iter__ = lambda self: iter([job])
 
-        cfg = _make_config()
         with (
             patch("netbox_kea.jobs.KeaIpamSyncJob.get_jobs", return_value=mock_qs),
             patch("django_rq.get_connection", side_effect=Exception("Redis down")),
         ):
             # Must not raise
-            cfg._heal_ghost_scheduled_jobs()
+            KeaIpamSyncJob._heal_ghost_scheduled_jobs()
 
     def test_per_record_error_does_not_abort_remaining_records(self):
         """A transient error on one record must not skip the others."""
@@ -186,13 +182,12 @@ class TestHealGhostScheduledJobs(SimpleTestCase):
             rq.get_status.return_value = MagicMock(value="failed")
             return rq
 
-        cfg = _make_config()
         with (
             patch("netbox_kea.jobs.KeaIpamSyncJob.get_jobs", return_value=mock_qs),
             patch("django_rq.get_connection", return_value=MagicMock()),
             patch("rq.job.Job.fetch", side_effect=_fetch),
         ):
-            cfg._heal_ghost_scheduled_jobs()
+            KeaIpamSyncJob._heal_ghost_scheduled_jobs()
 
         bad_job.delete.assert_not_called()
         good_job.delete.assert_called_once()
@@ -213,13 +208,12 @@ class TestHealGhostScheduledJobs(SimpleTestCase):
         # Return a plain string instead of an enum-like object with .value
         rq_job.get_status.return_value = "failed"
 
-        cfg = _make_config()
         with (
             patch("netbox_kea.jobs.KeaIpamSyncJob.get_jobs", return_value=mock_qs),
             patch("django_rq.get_connection", return_value=MagicMock()),
             patch("rq.job.Job.fetch", return_value=rq_job),
         ):
-            cfg._heal_ghost_scheduled_jobs()
+            KeaIpamSyncJob._heal_ghost_scheduled_jobs()
 
         job.delete.assert_called_once()
 
@@ -234,31 +228,36 @@ class TestHealGhostScheduledJobs(SimpleTestCase):
         rq_job = MagicMock()
         rq_job.get_status.return_value = "scheduled"
 
-        cfg = _make_config()
         with (
             patch("netbox_kea.jobs.KeaIpamSyncJob.get_jobs", return_value=mock_qs),
             patch("django_rq.get_connection", return_value=MagicMock()),
             patch("rq.job.Job.fetch", return_value=rq_job),
         ):
-            cfg._heal_ghost_scheduled_jobs()
+            KeaIpamSyncJob._heal_ghost_scheduled_jobs()
 
         job.delete.assert_not_called()
 
-    # ------------------------------------------------------------------
-    # ready() wiring smoke test
-    # ------------------------------------------------------------------
 
-    def test_ready_calls_both_helpers(self):
-        """ready() must invoke _configure_sync_job_interval and _heal_ghost_scheduled_jobs."""
-        from netbox.plugins import PluginConfig
+class TestEnqueueOnceWiring(SimpleTestCase):
+    """The enqueue_once override must heal first, then delegate to NetBox."""
 
-        cfg = _make_config()
+    def test_enqueue_once_heals_then_delegates(self):
+        """Ghost-heal runs before super().enqueue_once(), and kwargs pass through."""
+        manager = MagicMock()
+        sentinel = object()
+
+        # Patch the heal on our class and JobRunner.enqueue_once (the super impl).
         with (
-            patch.object(PluginConfig, "ready"),
-            patch.object(NetBoxKeaConfig, "_configure_sync_job_interval") as mock_configure,
-            patch.object(NetBoxKeaConfig, "_heal_ghost_scheduled_jobs") as mock_heal,
+            patch.object(KeaIpamSyncJob, "_heal_ghost_scheduled_jobs") as mock_heal,
+            patch("netbox.jobs.JobRunner.enqueue_once", return_value=sentinel) as mock_super,
         ):
-            cfg.ready()
+            manager.attach_mock(mock_heal, "heal")
+            manager.attach_mock(mock_super, "enqueue")
 
-        mock_configure.assert_called_once()
-        mock_heal.assert_called_once()
+            result = KeaIpamSyncJob.enqueue_once(interval=5)
+
+        # Delegated return value is forwarded unchanged.
+        self.assertIs(result, sentinel)
+        # Heal ran before the delegation, and kwargs were forwarded.
+        self.assertEqual([c[0] for c in manager.mock_calls], ["heal", "enqueue"])
+        mock_super.assert_called_once_with(interval=5)
