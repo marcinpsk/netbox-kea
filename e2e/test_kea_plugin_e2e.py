@@ -1303,7 +1303,7 @@ class TestSubnetManagementLiveKea:
     def _kea4_cleanup_subnet(self, kea4_call, cidr: str) -> None:
         """Remove every Kea subnet whose CIDR matches *cidr* (direct API call)."""
         data = kea4_call("subnet4-list")
-        for s in data.get("arguments", {}).get("subnets", []):
+        for s in (data.get("arguments") or {}).get("subnets", []):
             if s.get("subnet") == cidr:
                 kea4_call("subnet4-del", {"id": s["id"]})
 

@@ -144,7 +144,9 @@ class KeaClient:
 
         """
         resp = self.command("list-commands", service=[service])
-        return set(resp[0].get("arguments", []))
+        if not resp or not isinstance(resp[0], dict):
+            raise RuntimeError(f"list-commands returned malformed response: {resp!r}")
+        return set(resp[0].get("arguments") or [])
 
     def reservation_get_page(
         self,
@@ -942,6 +944,10 @@ class KeaClient:
         if resp[0]["result"] == 3:
             raise KeaException(resp[0])
         lease = resp[0]["arguments"]
+        if not isinstance(lease, dict):
+            raise ValueError(
+                f"lease{version}-get returned result=0 but arguments is {type(lease).__name__}, expected dict"
+            )
         if hostname is not None:
             lease["hostname"] = hostname
         if hw_address is not None:

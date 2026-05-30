@@ -86,6 +86,9 @@ class ServerViewSet(NetBoxModelViewSet):
         except KeaException:
             logger.exception("Kea error on server %s", server.name)
             return Response({"detail": "An internal error occurred"}, status=status.HTTP_502_BAD_GATEWAY)
+        except ValueError:
+            logger.exception("Configuration error for server %s", server.name)
+            return Response({"detail": "Server configuration error."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         except Exception:
             logger.exception("Unexpected error fetching leases from %s", server.name)
             return Response({"detail": "An internal error occurred"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
@@ -226,6 +229,9 @@ class ServerViewSet(NetBoxModelViewSet):
         except KeaException:
             logger.exception("Kea error on server %s", server.name)
             return Response({"detail": "An internal error occurred"}, status=status.HTTP_502_BAD_GATEWAY)
+        except ValueError:
+            logger.exception("Configuration error for server %s", server.name)
+            return Response({"detail": "Server configuration error."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         except Exception:
             logger.exception("Unexpected error fetching reservations from %s", server.name)
             return Response({"detail": "An internal error occurred"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

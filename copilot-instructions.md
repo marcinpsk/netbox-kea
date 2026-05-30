@@ -36,7 +36,7 @@ uv run pre-commit install
 
 Unit tests live in `netbox_kea/tests/`. `pythonpath` is set to `/opt/netbox/netbox` and `DJANGO_SETTINGS_MODULE=netbox.settings`.
 
-Integration tests live in `tests/`. E2E tests live in `e2e/`. CI tests against NetBox v4.0–v4.5 using a matrix build. Playwright traces on failure are uploaded as artifacts.
+Integration tests live in `tests/`. E2E tests live in `e2e/`. CI tests against NetBox v4.3–v4.5 using a matrix build. Playwright traces on failure are uploaded as artifacts.
 
 Ruff is configured in `pyproject.toml` — migrations are excluded from linting. Line length 120, max complexity 15. E501 ignored (handled by formatter). Docstrings required except in tests/migrations/`__init__.py`.
 

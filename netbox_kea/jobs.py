@@ -482,6 +482,93 @@ class KeaIpamSyncJob(JobRunner):
     class Meta:
         name = "Kea IPAM Sync"
 
+    @classmethod
+    def enqueue_once(cls, *args: Any, **kwargs: Any) -> Any:
+        """Heal ghost scheduled-job records before delegating to NetBox.
+
+        NetBox schedules system jobs by calling ``enqueue_once`` on the job class
+        once per ``rqworker`` startup (``core/management/commands/rqworker.py``).
+        That runs after app initialisation and on the worker process only — so it
+        is the correct place to reconcile stale schedule state, unlike
+        ``AppConfig.ready()`` which also fires during ``collectstatic``/``migrate``
+        (where the DB may be unreachable) and triggers Django's "database access
+        during app initialization" warning.
+
+        We clean ghost records first, then delegate to the stock
+        ``enqueue_once`` so it can create a fresh schedule.  ``*args``/``**kwargs``
+        are forwarded verbatim to insulate against signature drift across NetBox
+        versions.
+        """
+        cls._heal_ghost_scheduled_jobs()
+        return super().enqueue_once(*args, **kwargs)
+
+    @classmethod
+    def _heal_ghost_scheduled_jobs(cls) -> None:
+        """Remove ghost scheduled-job DB records that have no live RQ counterpart.
+
+        A ghost record arises when a periodic job's execution fails at the DB level
+        (e.g. PostgreSQL in recovery mode) — the DB record stays ``scheduled`` forever
+        while RQ marks the job ``failed``.  NetBox's ``enqueue_once()`` trusts the DB
+        status and skips re-scheduling, silently breaking the periodic chain.
+
+        Deleting stale DB records here lets the immediately-following
+        ``super().enqueue_once()`` call create a fresh schedule.
+
+        Safe to call in all contexts:
+        - Never enqueues jobs (the caller handles that).
+        - All DB and Redis I/O is wrapped so a missing DB or a Redis still coming
+          up at worker startup never breaks scheduling.
+        """
+        try:
+            import django_rq
+            from rq.exceptions import NoSuchJobError
+            from rq.job import Job as RQJob
+
+            candidates = cls.get_jobs(None).filter(status__in=("scheduled", "pending"))
+            if not candidates.exists():
+                return
+
+            conn = django_rq.get_connection("default")
+            _DEAD = {"failed", "canceled", "stopped"}
+
+            deleted = 0
+            for db_job in candidates:
+                try:
+                    job_id = str(db_job.job_id) if db_job.job_id else None
+                    if job_id is None:
+                        db_job.delete()
+                        deleted += 1
+                        continue
+                    try:
+                        rq_job = RQJob.fetch(job_id, connection=conn)
+                        status = rq_job.get_status()
+                        # Handle both enum (rq ≥ 1.16) and plain string
+                        status_str = status.value if hasattr(status, "value") else str(status)
+                        if status_str in _DEAD:
+                            db_job.delete()
+                            deleted += 1
+                    except NoSuchJobError:
+                        db_job.delete()
+                        deleted += 1
+                except Exception:  # noqa: BLE001
+                    logger.debug(
+                        "netbox_kea: skipping ghost-job check for record %r due to per-record error.",
+                        getattr(db_job, "pk", None),
+                        exc_info=True,
+                    )
+
+            if deleted:
+                logger.warning(
+                    "netbox_kea: removed %d ghost scheduled-job record(s) with a dead or missing "
+                    "RQ counterpart. Periodic IPAM sync will resume now.",
+                    deleted,
+                )
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "netbox_kea: ghost-job self-heal skipped (DB or Redis not available at scheduling time).",
+                exc_info=True,
+            )
+
     def run(self, *args: Any, **kwargs: Any) -> None:
         """Execute the sync across all servers."""
         from .models import Server, SyncConfig
@@ -587,4 +674,7 @@ class KeaIpamSyncJob(JobRunner):
             if not isinstance(self.job.data, dict):
                 self.job.data = {}
             self.job.data["summary"] = summary
-            self.job.save(update_fields=["data"])
+            try:
+                self.job.save(update_fields=["data"])
+            except Exception:
+                logger.exception("Failed to persist sync job summary data")

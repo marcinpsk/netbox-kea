@@ -18,6 +18,18 @@ from .kea import KeaClient, KeaException
 logger = logging.getLogger(__name__)
 
 
+def _get_kea_timeout(default: int = 30) -> int:
+    """Return kea_timeout from PLUGINS_CONFIG, coerced to int with a safe fallback."""
+    plugins_config = getattr(settings, "PLUGINS_CONFIG", {})
+    if not isinstance(plugins_config, dict):
+        return default
+    raw = (plugins_config.get("netbox_kea") or {}).get("kea_timeout", default)
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return default
+
+
 class Server(JobsMixin, NetBoxModel):
     """A Kea DHCP server instance managed through the Kea Control API."""
 
@@ -206,7 +218,7 @@ class Server(JobsMixin, NetBoxModel):
             verify=self.ca_file_path or self.ssl_verify,
             client_cert=self.client_cert_path or None,
             client_key=self.client_key_path or None,
-            timeout=settings.PLUGINS_CONFIG["netbox_kea"]["kea_timeout"],
+            timeout=_get_kea_timeout(),
             persist_config=self.persist_config,
         )
 

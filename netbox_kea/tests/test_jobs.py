@@ -1199,6 +1199,28 @@ class TestSyncSubnetEntry(SimpleTestCase):
         )
         mock_range.assert_not_called()
 
+    def test_pool_too_large_is_silently_skipped(self):
+        """_POOL_TOO_LARGE sentinel from sync_pool_to_netbox_ip_range → stats unchanged (line 302)."""
+        from netbox_kea.jobs import _sync_subnet_entry
+        from netbox_kea.sync import _POOL_TOO_LARGE
+
+        stats = self._make_stats()
+        subnet = {"subnet": "10.0.0.0/8", "pools": [{"pool": "10.0.0.0-10.255.255.255"}]}
+        with patch("netbox_kea.sync.sync_pool_to_netbox_ip_range", return_value=_POOL_TOO_LARGE):
+            _sync_subnet_entry(subnet, sync_prefixes=False, sync_ip_ranges=True, vrf=None, stats=stats, server_name="s")
+        self.assertEqual(stats, {"created": 0, "updated": 0, "errors": 0, "prefix_errors": 0})
+
+    @patch("netbox_kea.sync.sync_pool_to_netbox_ip_range", return_value=(MagicMock(), False, True))
+    def test_pool_updated_increments_updated(self, mock_range):
+        """Updated IP range (created=False, did_update=True) increments stats['updated'] (lines 315-316)."""
+        from netbox_kea.jobs import _sync_subnet_entry
+
+        stats = self._make_stats()
+        subnet = {"subnet": "10.0.0.0/24", "pools": [{"pool": "10.0.0.10-10.0.0.50"}]}
+        _sync_subnet_entry(subnet, sync_prefixes=False, sync_ip_ranges=True, vrf=None, stats=stats, server_name="s")
+        self.assertEqual(stats["updated"], 1)
+        self.assertEqual(stats["created"], 0)
+
 
 # ---------------------------------------------------------------------------
 # Tests for _sync_server_prefixes_and_ranges (unit — no DB)
@@ -1446,6 +1468,39 @@ class TestSyncServerPrefixesAndRanges(SimpleTestCase):
         self.assertEqual(stats["prefix_errors"], 1)
         self.assertEqual(stats["errors"], 0)
 
+    @patch("netbox_kea.jobs._sync_subnet_entry")
+    def test_non_dict_shared_network_entry_is_skipped(self, mock_entry):
+        """A non-dict item in shared-networks list is silently skipped (line 384)."""
+        from netbox_kea.jobs import _sync_server_prefixes_and_ranges
+
+        server = self._make_server()
+        client = MagicMock()
+        # shared-networks contains one non-dict entry followed by a valid dict entry
+        client.command.return_value = [
+            {
+                "result": 0,
+                "arguments": {
+                    "Dhcp4": {
+                        "subnet4": [],
+                        "shared-networks": [
+                            "not-a-dict",
+                            {
+                                "name": "net-a",
+                                "subnet4": [{"subnet": "10.1.0.0/24", "pools": []}],
+                            },
+                        ],
+                    }
+                },
+            }
+        ]
+        server.get_client.return_value = client
+
+        stats = {"created": 0, "updated": 0, "errors": 0, "prefix_errors": 0}
+        _sync_server_prefixes_and_ranges(server, version=4, sync_prefixes=True, sync_ip_ranges=True, stats=stats)
+        # The valid subnet from the second shared-network entry should still be processed
+        mock_entry.assert_called_once()
+        self.assertEqual(stats["prefix_errors"], 0)
+
 
 # ---------------------------------------------------------------------------
 # Tests for per-server prefix/range toggle in KeaIpamSyncJob.run()
@@ -1578,3 +1633,117 @@ class TestAllSyncTypesDisabled(SimpleTestCase):
 
         MockServer.objects.all.assert_not_called()
         self.assertTrue(any("nothing to do" in msg.lower() for msg in cm.output))
+
+
+# ---------------------------------------------------------------------------
+# Tests for _prefetch_reservation_ips edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestPrefetchReservationIpsEdgeCases(SimpleTestCase):
+    """Edge-case tests for _prefetch_reservation_ips (lines 90, 95-96 in jobs.py)."""
+
+    def _make_server(self):
+        server = MagicMock()
+        server.name = "kea1"
+        return server
+
+    def test_non_dict_page_item_is_skipped(self):
+        """Non-dict items in the reservation page are silently skipped (line 90)."""
+        from netbox_kea.jobs import _prefetch_reservation_ips
+
+        server = self._make_server()
+        client = MagicMock()
+        page = ["not-a-dict", {"ip-address": "10.0.0.1"}]
+        client.reservation_get_page.return_value = (page, 0, 0)
+        server.get_client.return_value = client
+
+        result = _prefetch_reservation_ips(server, version=4)
+
+        self.assertIsNotNone(result)
+        self.assertIn("10.0.0.1", result)
+        self.assertEqual(len(result), 1)
+
+    def test_ipv6_ip_addresses_list_collected(self):
+        """Reservation with ip-addresses list → all addresses added to result set (lines 95-96)."""
+        from netbox_kea.jobs import _prefetch_reservation_ips
+
+        server = self._make_server()
+        client = MagicMock()
+        page = [{"ip-addresses": ["2001:db8::1", "2001:db8::2"]}]
+        client.reservation_get_page.return_value = (page, 0, 0)
+        server.get_client.return_value = client
+
+        result = _prefetch_reservation_ips(server, version=6)
+
+        self.assertIsNotNone(result)
+        self.assertIn("2001:db8::1", result)
+        self.assertIn("2001:db8::2", result)
+
+
+# ---------------------------------------------------------------------------
+# Tests for reservation updated path in _sync_server_reservations
+# ---------------------------------------------------------------------------
+
+
+class TestSyncServerReservationsUpdated(SimpleTestCase):
+    """Tests that an updated reservation (changed=True, created=False) increments stats['updated']."""
+
+    def _make_server(self):
+        server = MagicMock()
+        server.name = "kea1"
+        return server
+
+    @patch("netbox_kea.sync.sync_reservation_to_netbox", return_value=(MagicMock(), False, True))
+    def test_reservation_updated_increments_stats(self, mock_sync_resv):
+        """changed=True in sync_reservation_to_netbox → stats['updated'] += 1 (line 233)."""
+        from netbox_kea.jobs import _sync_server_reservations
+
+        server = self._make_server()
+        client = MagicMock()
+        client.reservation_get_page.return_value = ([_RESV4], 0, 0)
+        server.get_client.return_value = client
+
+        stats = {"created": 0, "updated": 0, "errors": 0, "prefix_errors": 0}
+        all_synced: list = []
+        result = _sync_server_reservations(server, version=4, stats=stats, all_synced=all_synced)
+
+        self.assertTrue(result)
+        self.assertEqual(stats["updated"], 1)
+        self.assertEqual(stats["created"], 0)
+
+
+# ---------------------------------------------------------------------------
+# Tests for job.save() failure in run() finally block
+# ---------------------------------------------------------------------------
+
+
+class TestJobSaveFailure(SimpleTestCase):
+    """Tests that job.save() failure in the finally block is caught and logged."""
+
+    def setUp(self):
+        patcher = patch("netbox_kea.models.SyncConfig")
+        self.MockSyncConfig = patcher.start()
+        self.MockSyncConfig.get.return_value = MagicMock(
+            sync_enabled=True,
+            interval_minutes=5,
+            sync_leases_enabled=False,
+            sync_reservations_enabled=False,
+            sync_prefixes_enabled=False,
+            sync_ip_ranges_enabled=False,
+        )
+        self.addCleanup(patcher.stop)
+
+    @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+    @patch("netbox_kea.models.Server")
+    def test_save_exception_is_caught_and_logged(self, MockServer):
+        """job.save() raising an exception is caught; run() does not re-raise (lines 679-680)."""
+        MockServer.objects.all.return_value = []
+        mock_job = _make_job()
+        mock_job.data = {}
+        mock_job.save.side_effect = Exception("db write failed")
+
+        with self.assertLogs("netbox_kea.jobs", level="ERROR") as cm:
+            KeaIpamSyncJob(mock_job).run()
+
+        self.assertTrue(any("persist" in msg.lower() or "summary" in msg.lower() for msg in cm.output))

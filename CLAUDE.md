@@ -43,7 +43,7 @@ E2E tests live in `e2e/` and are separate from both unit and integration tests.
 
 ### CI
 
-GitHub Actions matrix tests against NetBox v4.0–v4.5. Playwright traces uploaded as artifacts on failure.
+GitHub Actions matrix tests against NetBox v4.3–v4.5. Playwright traces uploaded as artifacts on failure.
 
 ## Architecture
 
@@ -65,7 +65,7 @@ URL request
 - **`KeaClient`** (`kea.py`): Wraps `requests.Session`. All Kea API calls go through `.command(command, service, arguments)` which POSTs JSON to `/api/v1/`. Methods for leases, reservations, subnets, pools, status, config. `.clone()` creates a thread-safe copy for concurrent lookups.
 - **`sync.py`**: Bridges Kea data to NetBox IPAM — `sync_lease_to_netbox()` (status=active), `sync_reservation_to_netbox()` (status=reserved). Handles stale IP cleanup with `cleanup_stale_ips_batch()`. Raises `PartialPersistError` for partial failures.
 - **`jobs.py`**: `KeaIpamSyncJob` decorated with `@system_job`. Iterates all `Server` objects, runs lease/reservation/prefix/range sync phases, writes per-server summary to job log.
-- **`__init__.py`**: `ready()` calls `_configure_sync_job_interval()` (patches in-memory RQ registry from PLUGINS_CONFIG — no DB access, safe at image build time) and `_heal_ghost_scheduled_jobs()` (removes ghost `scheduled`/`pending` DB records whose RQ counterpart is dead/missing — three-level exception nesting for startup safety).
+- **`__init__.py`**: `ready()` calls `_configure_sync_job_interval()` (patches in-memory RQ registry from PLUGINS_CONFIG — no DB access, safe at image build time).
 - **REST API** (`api/`): `NetBoxModelViewSet` for `Server` only. All password fields are write-only.
 - **GraphQL** (`graphql.py`): strawberry-django types, auto-discovered by NetBox.
 

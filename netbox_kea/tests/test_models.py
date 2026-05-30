@@ -13,7 +13,7 @@ from django.test import SimpleTestCase, TestCase, override_settings
 from netbox.models import NetBoxModel
 
 from netbox_kea.kea import KeaClient
-from netbox_kea.models import Server, SyncConfig
+from netbox_kea.models import Server, SyncConfig, _get_kea_timeout
 from netbox_kea.tests.utils import _make_db_server
 
 # Default PLUGINS_CONFIG used across model tests so we don't need full NetBox config.
@@ -696,3 +696,48 @@ class TestServerSyncEnabled(TestCase):
         server.save(update_fields=["sync_enabled"])
         server.refresh_from_db()
         self.assertFalse(server.sync_enabled)
+
+
+class TestGetKeaTimeout(SimpleTestCase):
+    """Tests for _get_kea_timeout() helper."""
+
+    @override_settings(PLUGINS_CONFIG={"netbox_kea": {"kea_timeout": 10}})
+    def test_returns_configured_value(self):
+        self.assertEqual(_get_kea_timeout(), 10)
+
+    @override_settings(PLUGINS_CONFIG={"netbox_kea": {}})
+    def test_returns_default_when_key_missing(self):
+        self.assertEqual(_get_kea_timeout(), 30)
+
+    @override_settings(PLUGINS_CONFIG={})
+    def test_returns_default_when_netbox_kea_section_missing(self):
+        self.assertEqual(_get_kea_timeout(), 30)
+
+    @override_settings(PLUGINS_CONFIG={"netbox_kea": None})
+    def test_returns_default_when_netbox_kea_is_none(self):
+        """PLUGINS_CONFIG["netbox_kea"]=None must not raise AttributeError."""
+        self.assertEqual(_get_kea_timeout(), 30)
+
+    @override_settings(PLUGINS_CONFIG=None)
+    def test_returns_default_when_plugins_config_is_none(self):
+        self.assertEqual(_get_kea_timeout(), 30)
+
+    @override_settings(PLUGINS_CONFIG="not-a-dict")
+    def test_returns_default_when_plugins_config_is_not_dict(self):
+        self.assertEqual(_get_kea_timeout(), 30)
+
+    @override_settings(PLUGINS_CONFIG={"netbox_kea": {"kea_timeout": "abc"}})
+    def test_returns_default_when_kea_timeout_is_non_numeric_string(self):
+        self.assertEqual(_get_kea_timeout(), 30)
+
+    @override_settings(PLUGINS_CONFIG={"netbox_kea": {"kea_timeout": "15"}})
+    def test_accepts_numeric_string(self):
+        self.assertEqual(_get_kea_timeout(), 15)
+
+    @override_settings(PLUGINS_CONFIG={"netbox_kea": {"kea_timeout": None}})
+    def test_returns_default_when_kea_timeout_is_none(self):
+        self.assertEqual(_get_kea_timeout(), 30)
+
+    def test_custom_default(self):
+        with self.settings(PLUGINS_CONFIG={}):
+            self.assertEqual(_get_kea_timeout(default=60), 60)
