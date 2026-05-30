@@ -4624,3 +4624,255 @@ class TestPersistConfigFlag(TestCase):
         cmds = self._cmds(mock_post)
         self.assertNotIn("config-write", cmds)
         self.assertIn("config-set", cmds)
+
+
+# ---------------------------------------------------------------------------
+# Coverage-gap tests — lines not yet exercised by the suite above
+# ---------------------------------------------------------------------------
+
+
+class TestGetAvailableCommandsMalformed(TestCase):
+    """get_available_commands raises RuntimeError on empty / non-dict response (line 148)."""
+
+    def setUp(self):
+        self.client = KeaClient(url="http://kea:8000")
+
+    def test_empty_list_raises_runtime_error(self):
+        """Empty response list hits the 'not resp' branch and raises RuntimeError (line 148)."""
+        with patch.object(self.client._session, "post", return_value=_mock_http_response([])):
+            with self.assertRaises(RuntimeError):
+                self.client.get_available_commands("dhcp4")
+
+
+class TestReservationGetByIpMalformedSubnets(TestCase):
+    """reservation_get_by_ip skips subnets with bad CIDRs or missing 'id' (lines 332-333, 337)."""
+
+    def setUp(self):
+        self.client = KeaClient(url="http://kea:8000")
+
+    _RESERVATION_FOUND = [{"result": 0, "arguments": {"ip-address": "10.0.0.5", "subnet-id": 1}}]
+    _RESERVATION_NOT_FOUND = [{"result": 3, "text": "Host not found."}]
+
+    def _subnet_list_resp(self, subnets):
+        return [{"result": 0, "arguments": {"subnets": subnets}}]
+
+    def test_subnet_missing_subnet_key_is_skipped(self):
+        """Subnet without 'subnet' key triggers KeyError → continue (lines 332-333)."""
+        subnets = [
+            {"id": 99},  # no 'subnet' key → KeyError → skipped
+            {"subnet": "10.0.0.0/24", "id": 1},  # valid subnet found after
+        ]
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(self._subnet_list_resp(subnets), self._RESERVATION_FOUND),
+        ):
+            result = self.client.reservation_get_by_ip(4, "10.0.0.5")
+        self.assertIsNotNone(result)
+
+    def test_subnet_invalid_cidr_is_skipped(self):
+        """Subnet with unparseable CIDR triggers ValueError → continue (lines 332-333)."""
+        subnets = [
+            {"subnet": "not-a-cidr", "id": 99},  # ValueError → skipped
+            {"subnet": "10.0.0.0/24", "id": 1},
+        ]
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(self._subnet_list_resp(subnets), self._RESERVATION_FOUND),
+        ):
+            result = self.client.reservation_get_by_ip(4, "10.0.0.5")
+        self.assertIsNotNone(result)
+
+    def test_matching_subnet_without_id_is_skipped(self):
+        """Subnet matches the IP but has no 'id' key → skipped (line 337), returns None."""
+        subnets = [
+            {"subnet": "10.0.0.0/24"},  # matches 10.0.0.5 but no 'id' → skipped
+        ]
+        with patch.object(
+            self.client._session,
+            "post",
+            return_value=_mock_http_response(self._subnet_list_resp(subnets)),
+        ):
+            result = self.client.reservation_get_by_ip(4, "10.0.0.5")
+        self.assertIsNone(result)
+
+
+class TestNetworkUpdateClearInterface(TestCase):
+    """network_update with interface='' removes the interface key (line 563)."""
+
+    def setUp(self):
+        self.client = KeaClient(url="http://kea:8000")
+
+    def _payloads(self, mock_post):
+        return [(c.kwargs.get("json") or c[1]["json"]) for c in mock_post.call_args_list]
+
+    def test_empty_interface_string_removes_interface_key(self):
+        """Passing interface='' should call network.pop('interface', None), removing the key."""
+        config_with_iface = [
+            {
+                "result": 0,
+                "arguments": {
+                    "Dhcp4": {
+                        "shared-networks": [
+                            {"name": "prod-net", "interface": "eth0", "option-data": [], "subnet4": []},
+                        ],
+                        "subnet4": [],
+                    }
+                },
+            }
+        ]
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(
+                config_with_iface,
+                _CONFIG_TEST_OK_RESP,
+                _CONFIG_SET_OK_RESP,
+                _CONFIG_WRITE_RESP,
+            ),
+        ) as mock_post:
+            self.client.network_update(version=4, name="prod-net", interface="")
+        payloads = self._payloads(mock_post)
+        config_set_payload = next(p for p in payloads if p["command"] == "config-set")
+        networks = config_set_payload["arguments"]["Dhcp4"]["shared-networks"]
+        target = next(n for n in networks if n["name"] == "prod-net")
+        self.assertNotIn("interface", target)
+
+
+class TestConfigGetShapeGuardAdditional(TestCase):
+    """network_update, subnet_update_options, and option_def_list raise KeaException on null config-get (lines 546, 746, 814)."""
+
+    def setUp(self):
+        self.client = KeaClient(url="http://kea:8000")
+
+    def _null_args_response(self):
+        return _mock_http_response([{"result": 0, "arguments": None}])
+
+    @patch("requests.Session.post")
+    def test_network_update_null_arguments_raises_kea_exception(self, mock_post):
+        """network_update raises KeaException when config-get returns null arguments (line 546)."""
+        mock_post.return_value = self._null_args_response()
+        with self.assertRaises(KeaException):
+            self.client.network_update(version=4, name="any-net")
+
+    @patch("requests.Session.post")
+    def test_subnet_update_options_null_arguments_raises_kea_exception(self, mock_post):
+        """subnet_update_options raises KeaException when config-get returns null arguments (line 746)."""
+        mock_post.return_value = self._null_args_response()
+        with self.assertRaises(KeaException):
+            self.client.subnet_update_options(version=4, subnet_id=1, options=[])
+
+    @patch("requests.Session.post")
+    def test_option_def_list_null_arguments_raises_kea_exception(self, mock_post):
+        """option_def_list raises KeaException when config-get returns null arguments (line 814)."""
+        mock_post.return_value = self._null_args_response()
+        with self.assertRaises(KeaException):
+            self.client.option_def_list(version=4)
+
+
+class TestLeaseUpdateGuards(TestCase):
+    """lease_update guards on result=3 and non-dict arguments (lines 944-945, 948)."""
+
+    def setUp(self):
+        self.client = KeaClient(url="http://kea:8000")
+
+    def test_result3_raises_kea_exception(self):
+        """command() returning result=3 directly (bypassing check_response) raises KeaException (line 945)."""
+        # check_response would normally raise for result=3; patch command() to bypass it
+        # and test the explicit guard at line 944-945.
+        with patch.object(
+            self.client,
+            "command",
+            return_value=[{"result": 3, "text": "Lease not found."}],
+        ):
+            with self.assertRaises(KeaException):
+                self.client.lease_update(version=4, ip_address="10.0.0.1")
+
+    def test_non_dict_arguments_raises_value_error(self):
+        """result=0 with non-dict arguments raises ValueError (line 948)."""
+        resp = [{"result": 0, "arguments": None}]
+        with patch.object(self.client._session, "post", return_value=_mock_http_response(resp)):
+            with self.assertRaises(ValueError):
+                self.client.lease_update(version=4, ip_address="10.0.0.1")
+
+
+class TestLeaseGetByIpNonDictArguments(TestCase):
+    """lease_get_by_ip raises ValueError when result=0 but arguments is not a dict (line 991)."""
+
+    def setUp(self):
+        self.client = KeaClient(url="http://kea:8000")
+
+    def test_non_dict_arguments_raises_value_error(self):
+        """result=0 with non-dict (e.g. None) arguments raises ValueError."""
+        resp = [{"result": 0, "arguments": None}]
+        with patch.object(self.client._session, "post", return_value=_mock_http_response(resp)):
+            with self.assertRaises(ValueError):
+                self.client.lease_get_by_ip(version=4, ip_address="10.0.0.1")
+
+
+class TestLeaseGetAllMalformedArguments(TestCase):
+    """lease_get_all raises RuntimeError when arguments is not a dict or leases is not a list (lines 1047, 1052)."""
+
+    def setUp(self):
+        self.client = KeaClient(url="http://kea:8000")
+
+    @patch("requests.Session.post")
+    def test_arguments_not_dict_raises_runtime_error(self, mock_post):
+        """result=0 with non-dict arguments raises RuntimeError (line 1047)."""
+        mock_post.return_value = _mock_http_response([{"result": 0, "arguments": "unexpected"}])
+        with self.assertRaises(RuntimeError) as cm:
+            self.client.lease_get_all(version=4)
+        self.assertIn("arguments", str(cm.exception))
+
+    @patch("requests.Session.post")
+    def test_leases_not_list_raises_runtime_error(self, mock_post):
+        """result=0, arguments is dict, but leases value is not a list raises RuntimeError (line 1052)."""
+        mock_post.return_value = _mock_http_response([{"result": 0, "arguments": {"leases": "bad"}}])
+        with self.assertRaises(RuntimeError) as cm:
+            self.client.lease_get_all(version=4)
+        self.assertIn("leases", str(cm.exception))
+
+
+class TestApplyConfigTransportError(TestCase):
+    """_apply_config raises KeaConfigTestError when config-test raises RequestException (lines 1203-1208)."""
+
+    def setUp(self):
+        self.client = KeaClient(url="http://kea:8000")
+
+    def test_config_test_request_exception_raises_kea_config_test_error(self):
+        """requests.ConnectionError during config-test propagates as KeaConfigTestError."""
+
+        def side_effect(*args, **kwargs):
+            cmd = (kwargs.get("json") or {}).get("command", "")
+            if cmd == "config-test":
+                raise requests.ConnectionError("Connection refused")
+            return _mock_http_response([{"result": 0, "text": "OK"}])
+
+        with patch.object(self.client._session, "post", side_effect=side_effect):
+            with self.assertRaises(KeaConfigTestError):
+                self.client._apply_config("dhcp4", {"Dhcp4": {}})
+
+
+class TestPersistConfigRespShape(TestCase):
+    """_persist_config handles an unexpected dict resp from command() (line 1254)."""
+
+    def setUp(self):
+        self.client = KeaClient(url="http://kea:8000")
+
+    def test_command_returns_dict_falls_through_to_config_write(self):
+        """When command() returns a plain dict for config-get, _persist_config still calls config-write."""
+        cmds_seen = []
+
+        def mock_command(cmd, **kwargs):
+            cmds_seen.append(cmd)
+            if cmd == "config-get":
+                # Return a dict (not a list) — hits the else branch at line 1254
+                return {"result": 0, "arguments": {"Dhcp4": {}}}
+            # config-test and config-write succeed normally
+            return [{"result": 0, "text": "OK"}]
+
+        with patch.object(self.client, "command", side_effect=mock_command):
+            self.client._persist_config("dhcp4")
+        self.assertIn("config-get", cmds_seen)
+        self.assertIn("config-write", cmds_seen)
