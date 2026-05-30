@@ -23,7 +23,7 @@ def _get_kea_timeout(default: int = 30) -> int:
     plugins_config = getattr(settings, "PLUGINS_CONFIG", {})
     if not isinstance(plugins_config, dict):
         return default
-    raw = plugins_config.get("netbox_kea", {}).get("kea_timeout", default)
+    raw = (plugins_config.get("netbox_kea") or {}).get("kea_timeout", default)
     try:
         return int(raw)
     except (TypeError, ValueError):
