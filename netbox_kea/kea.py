@@ -144,6 +144,8 @@ class KeaClient:
 
         """
         resp = self.command("list-commands", service=[service])
+        if not resp or not isinstance(resp[0], dict):
+            raise RuntimeError(f"list-commands returned malformed response: {resp!r}")
         return set(resp[0].get("arguments") or [])
 
     def reservation_get_page(
