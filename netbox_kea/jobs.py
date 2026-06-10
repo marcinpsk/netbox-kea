@@ -133,6 +133,7 @@ def _sync_server_leases(
     stats: dict[str, int],
     all_synced: list[dict],
     reservation_ips: frozenset[str] | None = None,
+    subnet_prefix_map: dict[int, int] | None = None,
 ) -> tuple[bool, frozenset[str]]:
     """Fetch all leases from *server* for *version* and upsert into NetBox IPAM.
 
@@ -168,7 +169,9 @@ def _sync_server_leases(
     had_errors = False
     for lease in raw_leases:
         try:
-            _ip, created, changed = sync_lease_to_netbox(lease, cleanup=False, reservation_ips=reservation_ips)
+            _ip, created, changed = sync_lease_to_netbox(
+                lease, cleanup=False, reservation_ips=reservation_ips, subnet_prefix_map=subnet_prefix_map
+            )
             all_synced.append(lease)
             ip_addr = lease.get("ip-address")
             if ip_addr:
@@ -197,6 +200,7 @@ def _sync_server_reservations(
     stats: dict[str, int],
     all_synced: list[dict],
     lease_ips: frozenset[str] | None = None,
+    subnet_prefix_map: dict[int, int] | None = None,
 ) -> bool:
     """Fetch all reservations from *server* for *version* and upsert into NetBox IPAM.
 
@@ -224,7 +228,9 @@ def _sync_server_reservations(
             )
             for reservation in page:
                 try:
-                    _ip, created, changed = sync_reservation_to_netbox(reservation, cleanup=False, lease_ips=lease_ips)
+                    _ip, created, changed = sync_reservation_to_netbox(
+                        reservation, cleanup=False, lease_ips=lease_ips, subnet_prefix_map=subnet_prefix_map
+                    )
                     all_synced.append(reservation)
                     processed += 1
                     if created:
@@ -319,23 +325,12 @@ def _sync_subnet_entry(
                 stats["prefix_errors"] += 1
 
 
-def _sync_server_prefixes_and_ranges(
-    server: Server,
-    version: int,
-    *,
-    sync_prefixes: bool,
-    sync_ip_ranges: bool,
-    vrf=None,
-    stats: dict[str, int],
-) -> None:
-    """Fetch subnets from *server* for *version* and sync to NetBox Prefixes / IP Ranges.
+def _fetch_kea_subnets(server: Server, version: int) -> list[dict] | None:
+    """Fetch and merge the full subnet list (incl. shared-network subnets) via ``config-get``.
 
-    Calls ``config-get`` once per version to obtain the full subnet list
-    (including shared-network subnets).  For each subnet:
-    - When *sync_prefixes* is ``True``, calls :func:`.sync.sync_subnet_to_netbox_prefix`.
-    - When *sync_ip_ranges* is ``True``, calls :func:`.sync.sync_pool_to_netbox_ip_range`
-      for each pool entry in the subnet.
-    - *vrf* is forwarded to both sync functions (``None`` means global VRF).
+    Returns the list of subnet dicts on success (possibly empty), or ``None``
+    when the fetch or parse fails.  Does not touch ``stats`` — callers decide
+    how a ``None`` result affects error accounting for their phase.
     """
     service = f"dhcp{version}"
     dhcp_key = f"Dhcp{version}"
@@ -346,13 +341,11 @@ def _sync_server_prefixes_and_ranges(
         config = client.command("config-get", service=[service])
     except Exception as exc:  # noqa: BLE001
         logger.warning("Failed to fetch config-get from server %s (v%s): %s", server.name, version, exc)
-        stats["prefix_errors"] += 1
-        return
+        return None
 
     if not isinstance(config, list) or not config or not isinstance(config[0], dict):
         logger.warning("Malformed config-get response from server %s (v%s)", server.name, version)
-        stats["prefix_errors"] += 1
-        return
+        return None
 
     response = config[0]
     if response.get("result") != 0:
@@ -362,20 +355,17 @@ def _sync_server_prefixes_and_ranges(
             version,
             response.get("text", response),
         )
-        stats["prefix_errors"] += 1
-        return
+        return None
 
     raw_args = response.get("arguments") or {}
     if not isinstance(raw_args, dict):
         logger.warning("Malformed config-get arguments from server %s (v%s)", server.name, version)
-        stats["prefix_errors"] += 1
-        return
+        return None
 
     conf = raw_args.get(dhcp_key) or {}
     if not isinstance(conf, dict):
         logger.warning("Malformed %s config from server %s (v%s)", dhcp_key, server.name, version)
-        stats["prefix_errors"] += 1
-        return
+        return None
 
     raw_subnets = conf.get(subnet_key)
     subnets: list[dict] = [s for s in raw_subnets if isinstance(s, dict)] if isinstance(raw_subnets, list) else []
@@ -385,6 +375,55 @@ def _sync_server_prefixes_and_ranges(
         sn_subnets = sn.get(subnet_key)
         if isinstance(sn_subnets, list):
             subnets.extend(s for s in sn_subnets if isinstance(s, dict))
+
+    return subnets
+
+
+def _build_subnet_prefix_map(subnets: list[dict] | None) -> dict[int, int]:
+    """Map Kea ``subnet-id`` → prefix length from a list of subnet dicts.
+
+    This is the authoritative source for the mask of a lease/reservation IP:
+    the record's ``subnet-id`` points directly at the subnet it was allocated
+    from.  Subnets with a missing/unparseable id or CIDR are skipped.
+    """
+    from netaddr import AddrFormatError, IPNetwork
+
+    result: dict[int, int] = {}
+    for subnet in subnets or []:
+        sid = subnet.get("id")
+        cidr = subnet.get("subnet")
+        if sid is None or not cidr:
+            continue
+        try:
+            result[int(sid)] = IPNetwork(cidr).prefixlen
+        except (AddrFormatError, ValueError, TypeError):
+            continue
+    return result
+
+
+def _sync_server_prefixes_and_ranges(
+    server: Server,
+    version: int,
+    *,
+    subnets: list[dict] | None,
+    sync_prefixes: bool,
+    sync_ip_ranges: bool,
+    vrf=None,
+    stats: dict[str, int],
+) -> None:
+    """Sync a pre-fetched subnet list to NetBox Prefixes / IP Ranges.
+
+    *subnets* is the list returned by :func:`_fetch_kea_subnets` (``None`` when
+    the config fetch failed).  For each subnet:
+    - When *sync_prefixes* is ``True``, calls :func:`.sync.sync_subnet_to_netbox_prefix`.
+    - When *sync_ip_ranges* is ``True``, calls :func:`.sync.sync_pool_to_netbox_ip_range`
+      for each pool entry in the subnet.
+    - *vrf* is forwarded to both sync functions (``None`` means global VRF).
+    """
+    if subnets is None:
+        logger.warning("Server %s (v%s): skipping prefix/range sync — subnet fetch failed", server.name, version)
+        stats["prefix_errors"] += 1
+        return
 
     logger.info("Server %s (v%s): found %d subnets for prefix/range sync", server.name, version, len(subnets))
 
@@ -412,6 +451,17 @@ def _sync_one_server(
         if not enabled:
             continue
 
+        # Fetch the Kea subnet list once per version and derive the authoritative
+        # {subnet-id: prefix_len} map.  Each lease/reservation carries a subnet-id
+        # pointing at the subnet it was allocated from, so this is the definitive
+        # source for the IP mask (NetBox prefix matching is only a fallback).
+        subnets = (
+            _fetch_kea_subnets(server, version)
+            if any((sync_leases, sync_reservations, sync_prefixes, sync_ip_ranges))
+            else None
+        )
+        subnet_prefix_map = _build_subnet_prefix_map(subnets)
+
         # Two-pass idempotent sync: pre-fetch reservation IPs so the lease sync
         # can determine the correct final status without intermediate DB writes.
         # Only pre-fetch when both sources will be synced this run; otherwise
@@ -430,6 +480,7 @@ def _sync_one_server(
                 stats=stats,
                 all_synced=all_synced,
                 reservation_ips=pre_reservation_ips,
+                subnet_prefix_map=subnet_prefix_map,
             )
             lease_phase_ok = sync_ok
             cleanup_safe &= sync_ok
@@ -443,12 +494,14 @@ def _sync_one_server(
                 stats=stats,
                 all_synced=all_synced,
                 lease_ips=lease_ips_set if lease_phase_ok else None,
+                subnet_prefix_map=subnet_prefix_map,
             )
 
         if sync_prefixes or sync_ip_ranges:
             _sync_server_prefixes_and_ranges(
                 server,
                 version,
+                subnets=subnets,
                 sync_prefixes=sync_prefixes,
                 sync_ip_ranges=sync_ip_ranges,
                 vrf=server.sync_vrf,

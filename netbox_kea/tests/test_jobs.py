@@ -118,8 +118,8 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
         job = KeaIpamSyncJob(_make_job())
         job.run()
 
-        mock_sync_lease.assert_called_once_with(_LEASE4, cleanup=False, reservation_ips=ANY)
-        mock_sync_resv.assert_called_once_with(_RESV4, cleanup=False, lease_ips=ANY)
+        mock_sync_lease.assert_called_once_with(_LEASE4, cleanup=False, reservation_ips=ANY, subnet_prefix_map=ANY)
+        mock_sync_resv.assert_called_once_with(_RESV4, cleanup=False, lease_ips=ANY, subnet_prefix_map=ANY)
         mock_cleanup.assert_called_once()
 
     @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
@@ -180,7 +180,7 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
             KeaIpamSyncJob(_make_job()).run()
 
         # server2 lease was still synced
-        mock_sync_lease.assert_called_once_with(_LEASE4, cleanup=False, reservation_ips=ANY)
+        mock_sync_lease.assert_called_once_with(_LEASE4, cleanup=False, reservation_ips=ANY, subnet_prefix_map=ANY)
 
     @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
     @patch("netbox_kea.sync.cleanup_stale_ips_batch", return_value=0)
@@ -377,7 +377,7 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
 
         self.assertTrue(any("Invalid sync_max_leases_per_server" in msg for msg in cm.output))
         # Sync still ran with fallback value
-        mock_sync_lease.assert_called_once_with(_LEASE4, cleanup=False, reservation_ips=ANY)
+        mock_sync_lease.assert_called_once_with(_LEASE4, cleanup=False, reservation_ips=ANY, subnet_prefix_map=ANY)
 
     @override_settings(
         PLUGINS_CONFIG={
@@ -517,7 +517,7 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
         with self.assertLogs("netbox.jobs", level="INFO") as cm:
             KeaIpamSyncJob(_make_job()).run()
 
-        mock_sync_lease.assert_called_once_with(_LEASE4, cleanup=False, reservation_ips=ANY)
+        mock_sync_lease.assert_called_once_with(_LEASE4, cleanup=False, reservation_ips=ANY, subnet_prefix_map=ANY)
         self.assertTrue(any("updated=1" in msg and "created=0" in msg for msg in cm.output))
 
     # ------------------------------------------------------------------ #
@@ -572,8 +572,8 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
         KeaIpamSyncJob(_make_job()).run()
 
         self.assertEqual(mock_sync_resv.call_count, 2)
-        mock_sync_resv.assert_any_call(resv1, cleanup=False, lease_ips=ANY)
-        mock_sync_resv.assert_any_call(resv2, cleanup=False, lease_ips=ANY)
+        mock_sync_resv.assert_any_call(resv1, cleanup=False, lease_ips=ANY, subnet_prefix_map=ANY)
+        mock_sync_resv.assert_any_call(resv2, cleanup=False, lease_ips=ANY, subnet_prefix_map=ANY)
 
     # ------------------------------------------------------------------ #
     # reservation KeaException non-result-2                               #
@@ -723,7 +723,7 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
                 KeaIpamSyncJob(_make_job()).run()
 
         self.assertTrue(any("Failed to fetch leases" in msg for msg in cm.output))
-        mock_sync_resv.assert_called_once_with(_RESV4, cleanup=False, lease_ips=ANY)
+        mock_sync_resv.assert_called_once_with(_RESV4, cleanup=False, lease_ips=ANY, subnet_prefix_map=ANY)
 
     # ------------------------------------------------------------------ #
     # get_client failure in _sync_server_reservations                     #
@@ -757,7 +757,7 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
                 KeaIpamSyncJob(_make_job()).run()
 
         self.assertTrue(any("Unexpected error fetching reservations" in msg for msg in cm.output))
-        mock_sync_lease.assert_called_once_with(_LEASE4, cleanup=False, reservation_ips=ANY)
+        mock_sync_lease.assert_called_once_with(_LEASE4, cleanup=False, reservation_ips=ANY, subnet_prefix_map=ANY)
 
     # ------------------------------------------------------------------ #
     # per-lease sync exception → had_errors path                          #
@@ -786,7 +786,7 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
         # had_errors → error counter incremented, debug log emitted
         self.assertTrue(any("Failed to sync lease" in msg for msg in cm.output))
         # lease_ips_set NOT forwarded: reservation sync receives lease_ips=None
-        mock_sync_resv.assert_called_once_with(_RESV4, cleanup=False, lease_ips=None)
+        mock_sync_resv.assert_called_once_with(_RESV4, cleanup=False, lease_ips=None, subnet_prefix_map=ANY)
         # cleanup must be skipped because lease phase failed
         mock_cleanup.assert_not_called()
 
@@ -1281,8 +1281,141 @@ _DHCP6_CONFIG_WITH_SHARED = [
 ]
 
 
+class TestFetchKeaSubnets(SimpleTestCase):
+    """_fetch_kea_subnets fetches + parses the Kea subnet list, returning None on failure."""
+
+    def _make_server(self, name="kea1"):
+        server = MagicMock()
+        server.name = name
+        return server
+
+    def _server_returning(self, command_return=None, command_side_effect=None, get_client_side_effect=None):
+        server = self._make_server()
+        if get_client_side_effect is not None:
+            server.get_client.side_effect = get_client_side_effect
+            return server
+        client = MagicMock()
+        if command_side_effect is not None:
+            client.command.side_effect = command_side_effect
+        else:
+            client.command.return_value = command_return
+        server.get_client.return_value = client
+        return server
+
+    def test_returns_subnet_list(self):
+        from netbox_kea.jobs import _fetch_kea_subnets
+
+        server = self._server_returning(_DHCP4_CONFIG_RESPONSE)
+        self.assertEqual(len(_fetch_kea_subnets(server, 4)), 2)
+
+    def test_shared_network_subnets_included(self):
+        from netbox_kea.jobs import _fetch_kea_subnets
+
+        server = self._server_returning(_DHCP4_CONFIG_WITH_SHARED)
+        # 1 top-level subnet + 1 in shared-network = 2
+        self.assertEqual(len(_fetch_kea_subnets(server, 4)), 2)
+
+    def test_shared_network_subnets_v6_included(self):
+        from netbox_kea.jobs import _fetch_kea_subnets
+
+        server = self._server_returning(_DHCP6_CONFIG_WITH_SHARED)
+        self.assertEqual(len(_fetch_kea_subnets(server, 6)), 2)
+
+    def test_get_client_exception_returns_none(self):
+        from netbox_kea.jobs import _fetch_kea_subnets
+
+        server = self._server_returning(get_client_side_effect=ValueError("no url"))
+        self.assertIsNone(_fetch_kea_subnets(server, 4))
+
+    def test_command_exception_returns_none(self):
+        from netbox_kea.jobs import _fetch_kea_subnets
+
+        server = self._server_returning(command_side_effect=Exception("timeout"))
+        self.assertIsNone(_fetch_kea_subnets(server, 4))
+
+    def test_malformed_non_list_returns_none(self):
+        from netbox_kea.jobs import _fetch_kea_subnets
+
+        server = self._server_returning("not-a-list")
+        self.assertIsNone(_fetch_kea_subnets(server, 4))
+
+    def test_result_nonzero_returns_none(self):
+        from netbox_kea.jobs import _fetch_kea_subnets
+
+        server = self._server_returning([{"result": 1, "text": "internal error"}])
+        self.assertIsNone(_fetch_kea_subnets(server, 4))
+
+    def test_arguments_not_dict_returns_none(self):
+        from netbox_kea.jobs import _fetch_kea_subnets
+
+        server = self._server_returning([{"result": 0, "arguments": "not-a-dict"}])
+        self.assertIsNone(_fetch_kea_subnets(server, 4))
+
+    def test_arguments_none_returns_empty_list(self):
+        from netbox_kea.jobs import _fetch_kea_subnets
+
+        server = self._server_returning([{"result": 0, "arguments": None}])
+        self.assertEqual(_fetch_kea_subnets(server, 4), [])
+
+    def test_dhcp_config_not_dict_returns_none(self):
+        from netbox_kea.jobs import _fetch_kea_subnets
+
+        server = self._server_returning([{"result": 0, "arguments": {"Dhcp4": "not-a-dict"}}])
+        self.assertIsNone(_fetch_kea_subnets(server, 4))
+
+    def test_empty_subnet_list_returns_empty(self):
+        from netbox_kea.jobs import _fetch_kea_subnets
+
+        server = self._server_returning([{"result": 0, "arguments": {"Dhcp4": {"subnet4": []}}}])
+        self.assertEqual(_fetch_kea_subnets(server, 4), [])
+
+    def test_non_dict_shared_network_entry_is_skipped(self):
+        from netbox_kea.jobs import _fetch_kea_subnets
+
+        server = self._server_returning(
+            [
+                {
+                    "result": 0,
+                    "arguments": {
+                        "Dhcp4": {
+                            "subnet4": [],
+                            "shared-networks": [
+                                "not-a-dict",
+                                {"name": "net-a", "subnet4": [{"subnet": "10.1.0.0/24", "pools": []}]},
+                            ],
+                        }
+                    },
+                }
+            ]
+        )
+        subnets = _fetch_kea_subnets(server, 4)
+        self.assertEqual(len(subnets), 1)
+        self.assertEqual(subnets[0]["subnet"], "10.1.0.0/24")
+
+
+class TestBuildSubnetPrefixMap(SimpleTestCase):
+    """_build_subnet_prefix_map maps Kea subnet-id → prefix length."""
+
+    def test_builds_map_from_subnet_cidrs(self):
+        from netbox_kea.jobs import _build_subnet_prefix_map
+
+        subnets = [{"id": 1, "subnet": "10.0.0.0/24"}, {"id": 10, "subnet": "2001:db8::/64"}]
+        self.assertEqual(_build_subnet_prefix_map(subnets), {1: 24, 10: 64})
+
+    def test_skips_entries_missing_id_or_cidr_or_unparseable(self):
+        from netbox_kea.jobs import _build_subnet_prefix_map
+
+        subnets = [{"subnet": "10.0.0.0/24"}, {"id": 2}, {"id": 3, "subnet": "bad"}]
+        self.assertEqual(_build_subnet_prefix_map(subnets), {})
+
+    def test_none_returns_empty_map(self):
+        from netbox_kea.jobs import _build_subnet_prefix_map
+
+        self.assertEqual(_build_subnet_prefix_map(None), {})
+
+
 class TestSyncServerPrefixesAndRanges(SimpleTestCase):
-    """Tests for _sync_server_prefixes_and_ranges in jobs.py."""
+    """_sync_server_prefixes_and_ranges processes a pre-fetched subnet list."""
 
     def _make_server(self, name="kea1"):
         server = MagicMock()
@@ -1292,214 +1425,60 @@ class TestSyncServerPrefixesAndRanges(SimpleTestCase):
 
     @patch("netbox_kea.jobs._sync_subnet_entry")
     def test_syncs_each_subnet(self, mock_entry):
-        """Happy path: two subnets → _sync_subnet_entry called twice."""
+        """Two subnets → _sync_subnet_entry called twice."""
         from netbox_kea.jobs import _sync_server_prefixes_and_ranges
 
-        server = self._make_server()
-        client = MagicMock()
-        client.command.return_value = _DHCP4_CONFIG_RESPONSE
-        server.get_client.return_value = client
-
+        subnets = [{"subnet": "10.0.0.0/24", "pools": []}, {"subnet": "10.0.1.0/24", "pools": []}]
         stats = {"created": 0, "updated": 0, "errors": 0, "prefix_errors": 0}
-        _sync_server_prefixes_and_ranges(server, version=4, sync_prefixes=True, sync_ip_ranges=True, stats=stats)
-
+        _sync_server_prefixes_and_ranges(
+            self._make_server(), version=4, subnets=subnets, sync_prefixes=True, sync_ip_ranges=True, stats=stats
+        )
         self.assertEqual(mock_entry.call_count, 2)
 
     @patch("netbox_kea.jobs._sync_subnet_entry")
-    def test_shared_network_subnets_included(self, mock_entry):
-        """Shared-network subnets are appended to the sync list."""
+    def test_none_subnets_increments_prefix_errors(self, mock_entry):
+        """subnets=None (fetch failed) → prefix_errors incremented, no entries processed."""
         from netbox_kea.jobs import _sync_server_prefixes_and_ranges
 
-        server = self._make_server()
-        client = MagicMock()
-        client.command.return_value = _DHCP4_CONFIG_WITH_SHARED
-        server.get_client.return_value = client
-
         stats = {"created": 0, "updated": 0, "errors": 0, "prefix_errors": 0}
-        _sync_server_prefixes_and_ranges(server, version=4, sync_prefixes=True, sync_ip_ranges=True, stats=stats)
-        # 1 top-level subnet + 1 in shared-network = 2
-        self.assertEqual(mock_entry.call_count, 2)
-
-    @patch("netbox_kea.jobs._sync_subnet_entry")
-    def test_shared_network_subnets_v6_included(self, mock_entry):
-        """DHCPv6 shared-network subnets are appended to the sync list."""
-        from netbox_kea.jobs import _sync_server_prefixes_and_ranges
-
-        server = self._make_server()
-        client = MagicMock()
-        client.command.return_value = _DHCP6_CONFIG_WITH_SHARED
-        server.get_client.return_value = client
-
-        stats = {"created": 0, "updated": 0, "errors": 0, "prefix_errors": 0}
-        _sync_server_prefixes_and_ranges(server, version=6, sync_prefixes=True, sync_ip_ranges=True, stats=stats)
-        # 1 top-level subnet + 1 in shared-network = 2
-        self.assertEqual(mock_entry.call_count, 2)
-
-    def test_get_client_exception_increments_errors(self):
-        """get_client() failing → prefix_errors incremented, no exception propagated."""
-        from netbox_kea.jobs import _sync_server_prefixes_and_ranges
-
-        server = self._make_server()
-        server.get_client.side_effect = ValueError("no url")
-
-        stats = {"created": 0, "updated": 0, "errors": 0, "prefix_errors": 0}
-        _sync_server_prefixes_and_ranges(server, version=4, sync_prefixes=True, sync_ip_ranges=True, stats=stats)
-        self.assertEqual(stats["prefix_errors"], 1)
-        self.assertEqual(stats["errors"], 0)
-
-    def test_command_exception_increments_errors(self):
-        """client.command() failing → prefix_errors incremented."""
-        from netbox_kea.jobs import _sync_server_prefixes_and_ranges
-
-        server = self._make_server()
-        client = MagicMock()
-        client.command.side_effect = Exception("timeout")
-        server.get_client.return_value = client
-
-        stats = {"created": 0, "updated": 0, "errors": 0, "prefix_errors": 0}
-        _sync_server_prefixes_and_ranges(server, version=4, sync_prefixes=True, sync_ip_ranges=True, stats=stats)
-        self.assertEqual(stats["prefix_errors"], 1)
-        self.assertEqual(stats["errors"], 0)
-
-    @patch("netbox_kea.jobs._sync_subnet_entry")
-    def test_malformed_config_response_increments_errors(self, mock_entry):
-        """config-get returning a non-list → prefix_errors incremented, no subnet entries processed."""
-        from netbox_kea.jobs import _sync_server_prefixes_and_ranges
-
-        server = self._make_server()
-        client = MagicMock()
-        # Return a string instead of list to trigger the malformed path
-        client.command.return_value = "not-a-list"
-        server.get_client.return_value = client
-
-        stats = {"created": 0, "updated": 0, "errors": 0, "prefix_errors": 0}
-        _sync_server_prefixes_and_ranges(server, version=4, sync_prefixes=True, sync_ip_ranges=True, stats=stats)
-        # malformed response → prefix error counted, no subnet entries processed
+        _sync_server_prefixes_and_ranges(
+            self._make_server(), version=4, subnets=None, sync_prefixes=True, sync_ip_ranges=True, stats=stats
+        )
         mock_entry.assert_not_called()
         self.assertEqual(stats["prefix_errors"], 1)
         self.assertEqual(stats["errors"], 0)
+
+    @patch("netbox_kea.jobs._sync_subnet_entry")
+    def test_empty_subnet_list_no_calls(self, mock_entry):
+        """Empty subnet list → _sync_subnet_entry never called, no errors."""
+        from netbox_kea.jobs import _sync_server_prefixes_and_ranges
+
+        stats = {"created": 0, "updated": 0, "errors": 0, "prefix_errors": 0}
+        _sync_server_prefixes_and_ranges(
+            self._make_server(), version=4, subnets=[], sync_prefixes=True, sync_ip_ranges=True, stats=stats
+        )
+        mock_entry.assert_not_called()
+        self.assertEqual(stats["prefix_errors"], 0)
 
     @patch("netbox_kea.jobs._sync_subnet_entry")
     def test_vrf_forwarded_to_subnet_entry(self, mock_entry):
         """vrf kwarg is passed through to each _sync_subnet_entry call."""
         from netbox_kea.jobs import _sync_server_prefixes_and_ranges
 
-        server = self._make_server()
         fake_vrf = MagicMock()
-        client = MagicMock()
-        client.command.return_value = _DHCP4_CONFIG_RESPONSE
-        server.get_client.return_value = client
-
+        subnets = [{"subnet": "10.0.0.0/24", "pools": []}]
         stats = {"created": 0, "updated": 0, "errors": 0, "prefix_errors": 0}
         _sync_server_prefixes_and_ranges(
-            server, version=4, sync_prefixes=True, sync_ip_ranges=True, vrf=fake_vrf, stats=stats
+            self._make_server(),
+            version=4,
+            subnets=subnets,
+            sync_prefixes=True,
+            sync_ip_ranges=True,
+            vrf=fake_vrf,
+            stats=stats,
         )
         for c in mock_entry.call_args_list:
             self.assertEqual(c.args[3], fake_vrf)  # vrf is the 4th positional arg
-
-    @patch("netbox_kea.jobs._sync_subnet_entry")
-    def test_empty_subnet_list_no_calls(self, mock_entry):
-        """Config with no subnets → _sync_subnet_entry never called."""
-        from netbox_kea.jobs import _sync_server_prefixes_and_ranges
-
-        server = self._make_server()
-        client = MagicMock()
-        client.command.return_value = [{"result": 0, "arguments": {"Dhcp4": {"subnet4": []}}}]
-        server.get_client.return_value = client
-
-        stats = {"created": 0, "updated": 0, "errors": 0, "prefix_errors": 0}
-        _sync_server_prefixes_and_ranges(server, version=4, sync_prefixes=True, sync_ip_ranges=True, stats=stats)
-        mock_entry.assert_not_called()
-
-    def test_result_nonzero_increments_prefix_errors(self):
-        """config-get returning result != 0 → prefix_errors incremented, no subnet processing."""
-        from netbox_kea.jobs import _sync_server_prefixes_and_ranges
-
-        server = self._make_server()
-        client = MagicMock()
-        client.command.return_value = [{"result": 1, "text": "internal error"}]
-        server.get_client.return_value = client
-
-        stats = {"created": 0, "updated": 0, "errors": 0, "prefix_errors": 0}
-        _sync_server_prefixes_and_ranges(server, version=4, sync_prefixes=True, sync_ip_ranges=True, stats=stats)
-        self.assertEqual(stats["prefix_errors"], 1)
-        self.assertEqual(stats["errors"], 0)
-
-    def test_malformed_arguments_not_dict_increments_prefix_errors(self):
-        """config-get with non-dict 'arguments' value → prefix_errors incremented."""
-        from netbox_kea.jobs import _sync_server_prefixes_and_ranges
-
-        server = self._make_server()
-        client = MagicMock()
-        client.command.return_value = [{"result": 0, "arguments": "not-a-dict"}]
-        server.get_client.return_value = client
-
-        stats = {"created": 0, "updated": 0, "errors": 0, "prefix_errors": 0}
-        _sync_server_prefixes_and_ranges(server, version=4, sync_prefixes=True, sync_ip_ranges=True, stats=stats)
-        self.assertEqual(stats["prefix_errors"], 1)
-        self.assertEqual(stats["errors"], 0)
-
-    @patch("netbox_kea.jobs._sync_subnet_entry")
-    def test_malformed_arguments_is_none_treated_as_empty(self, mock_entry):
-        """config-get with arguments=None is handled gracefully — no subnets synced, no errors."""
-        from netbox_kea.jobs import _sync_server_prefixes_and_ranges
-
-        server = self._make_server()
-        client = MagicMock()
-        client.command.return_value = [{"result": 0, "arguments": None}]
-        server.get_client.return_value = client
-
-        stats = {"created": 0, "updated": 0, "errors": 0, "prefix_errors": 0}
-        _sync_server_prefixes_and_ranges(server, version=4, sync_prefixes=True, sync_ip_ranges=True, stats=stats)
-        self.assertEqual(stats["prefix_errors"], 0)
-        mock_entry.assert_not_called()
-
-    def test_malformed_dhcp_config_not_dict_increments_prefix_errors(self):
-        """config-get with non-dict Dhcp4/Dhcp6 value → prefix_errors incremented."""
-        from netbox_kea.jobs import _sync_server_prefixes_and_ranges
-
-        server = self._make_server()
-        client = MagicMock()
-        client.command.return_value = [{"result": 0, "arguments": {"Dhcp4": "not-a-dict"}}]
-        server.get_client.return_value = client
-
-        stats = {"created": 0, "updated": 0, "errors": 0, "prefix_errors": 0}
-        _sync_server_prefixes_and_ranges(server, version=4, sync_prefixes=True, sync_ip_ranges=True, stats=stats)
-        self.assertEqual(stats["prefix_errors"], 1)
-        self.assertEqual(stats["errors"], 0)
-
-    @patch("netbox_kea.jobs._sync_subnet_entry")
-    def test_non_dict_shared_network_entry_is_skipped(self, mock_entry):
-        """A non-dict item in shared-networks list is silently skipped (line 384)."""
-        from netbox_kea.jobs import _sync_server_prefixes_and_ranges
-
-        server = self._make_server()
-        client = MagicMock()
-        # shared-networks contains one non-dict entry followed by a valid dict entry
-        client.command.return_value = [
-            {
-                "result": 0,
-                "arguments": {
-                    "Dhcp4": {
-                        "subnet4": [],
-                        "shared-networks": [
-                            "not-a-dict",
-                            {
-                                "name": "net-a",
-                                "subnet4": [{"subnet": "10.1.0.0/24", "pools": []}],
-                            },
-                        ],
-                    }
-                },
-            }
-        ]
-        server.get_client.return_value = client
-
-        stats = {"created": 0, "updated": 0, "errors": 0, "prefix_errors": 0}
-        _sync_server_prefixes_and_ranges(server, version=4, sync_prefixes=True, sync_ip_ranges=True, stats=stats)
-        # The valid subnet from the second shared-network entry should still be processed
-        mock_entry.assert_called_once()
-        self.assertEqual(stats["prefix_errors"], 0)
 
 
 # ---------------------------------------------------------------------------
