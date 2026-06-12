@@ -19,7 +19,19 @@
   </style>
 {% endblock %}
 
-{% block content %}{% include "netbox_kea/server_dhcp_leases_htmx.html" with is_embedded=True %}{% endblock %}
+{% block content %}
+{% if object.dhcp4 and object.dhcp6 %}
+<ul class="nav nav-pills justify-content-center mb-3">
+  <li class="nav-item">
+    <a class="nav-link{% if dhcp_version == 4 %} active{% endif %}" href="{% url 'plugins:netbox_kea:server_leases4' object.pk %}">DHCPv4</a>
+  </li>
+  <li class="nav-item">
+    <a class="nav-link{% if dhcp_version == 6 %} active{% endif %}" href="{% url 'plugins:netbox_kea:server_leases6' object.pk %}">DHCPv6</a>
+  </li>
+</ul>
+{% endif %}
+{% include "netbox_kea/server_dhcp_leases_htmx.html" with is_embedded=True %}
+{% endblock %}
 {% block content_bottom %}
   {% if add_url or bulk_import_url %}
   <div class="mt-3 d-flex gap-2">

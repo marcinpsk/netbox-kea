@@ -304,6 +304,8 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
         ctx: dict[str, Any] = {
             "form": form,
             "table": table,
+            # Drives the in-page v4/v6 protocol toggle on the merged Leases tab.
+            "dhcp_version": self.dhcp_version,
         }
         if can_change:
             ctx["add_url"] = reverse(
@@ -570,24 +572,44 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
             )
 
 
+# Single consolidated "Leases" tab shared by the v4 and v6 leases views. Only
+# ServerLeases4View carries it as a class attribute (so exactly one tab entry is
+# generated); ServerLeases6View injects it via get_extra_context so the same tab
+# stays highlighted when viewing v6. An in-page v4/v6 toggle (template) switches
+# between the two underlying URLs, which are unchanged.
+_LEASES_TAB = OptionalViewTab(label="Leases", weight=1010, is_enabled=lambda s: s.dhcp4 or s.dhcp6)
+
+
 @register_model_view(Server, "leases6")
 class ServerLeases6View(BaseServerLeasesView[tables.LeaseTable6]):
-    """DHCPv6 leases tab for a Kea Server."""
+    """DHCPv6 leases view (rendered under the shared Leases tab)."""
 
-    tab = OptionalViewTab(label="DHCPv6 Leases", weight=1015, is_enabled=lambda s: s.dhcp6)
     form = forms.Leases6SearchForm
     table = tables.LeaseTable6
     dhcp_version = 6
 
+    def get_extra_context(self, request: HttpRequest, instance: Server) -> dict[str, Any]:
+        """Highlight the shared Leases tab (this view has no class-level tab of its own)."""
+        ctx = super().get_extra_context(request, instance)
+        ctx["tab"] = _LEASES_TAB
+        return ctx
+
 
 @register_model_view(Server, "leases4")
 class ServerLeases4View(BaseServerLeasesView[tables.LeaseTable4]):
-    """DHCPv4 leases tab for a Kea Server."""
+    """DHCPv4 leases view; owns the shared Leases tab."""
 
-    tab = OptionalViewTab(label="DHCPv4 Leases", weight=1010, is_enabled=lambda s: s.dhcp4)
+    tab = _LEASES_TAB
     form = forms.Leases4SearchForm
     table = tables.LeaseTable4
     dhcp_version = 4
+
+    def get(self, request: HttpRequest, **kwargs) -> HttpResponse:
+        """Redirect to the v6 leases view on v6-only servers so the merged tab works."""
+        instance = self.get_object(**kwargs)
+        if not instance.dhcp4 and instance.dhcp6:
+            return redirect(reverse("plugins:netbox_kea:server_leases6", args=[instance.pk]))
+        return super().get(request, **kwargs)
 
 
 class FakeLeaseModelMeta:
@@ -705,7 +727,7 @@ class ServerLeases6DeleteView(BaseServerLeasesDeleteView):
 
     form = forms.Lease6DeleteForm
     dhcp_version = 6
-    tab = ServerLeases6View.tab
+    tab = _LEASES_TAB
 
 
 class ServerLeases4DeleteView(BaseServerLeasesDeleteView):
@@ -713,7 +735,7 @@ class ServerLeases4DeleteView(BaseServerLeasesDeleteView):
 
     form = forms.Lease4DeleteForm
     dhcp_version = 4
-    tab = ServerLeases4View.tab
+    tab = _LEASES_TAB
 
 
 class _BaseLeaseEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin, View):
@@ -847,7 +869,7 @@ class ServerLease4EditView(_BaseLeaseEditView):
 
     dhcp_version = 4
     form_class = forms.Lease4EditForm
-    tab = ServerLeases4View.tab
+    tab = _LEASES_TAB
 
 
 @register_model_view(Server, "lease6_edit", path="leases6/<path:ip_address>/edit")
@@ -856,7 +878,7 @@ class ServerLease6EditView(_BaseLeaseEditView):
 
     dhcp_version = 6
     form_class = forms.Lease6EditForm
-    tab = ServerLeases6View.tab
+    tab = _LEASES_TAB
 
 
 class _BaseLeaseAddView(_KeaChangeMixin, generic.ObjectView):
@@ -1014,7 +1036,7 @@ class ServerLease4AddView(_BaseLeaseAddView):
 
     dhcp_version = 4
     form_class = forms.Lease4AddForm
-    _active_tab = ServerLeases4View.tab
+    _active_tab = _LEASES_TAB
 
 
 @register_model_view(Server, "lease6_add", path="leases6/add")
@@ -1023,7 +1045,7 @@ class ServerLease6AddView(_BaseLeaseAddView):
 
     dhcp_version = 6
     form_class = forms.Lease6AddForm
-    _active_tab = ServerLeases6View.tab
+    _active_tab = _LEASES_TAB
 
 
 def _fetch_reservation_by_ip(client: KeaClient, version: int) -> tuple[dict[str, dict], bool]:
