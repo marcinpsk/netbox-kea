@@ -1,7 +1,9 @@
 {% extends "generic/object.html" %}
 {% load form_helpers %}
+{% load kea_options %}
 
 {% block content %}
+{% kea_option_datalist dhcp_version %}
 <div class="row">
   <div class="col col-md-6 offset-md-3">
     {% if lease_diff %}

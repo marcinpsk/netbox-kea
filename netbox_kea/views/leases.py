@@ -57,6 +57,43 @@ def _is_valid_lease_entry(entry: dict) -> bool:
     return True
 
 
+def _fetch_subnet_choices(server: Server, version: int) -> list[tuple[str, str]]:
+    """Return ``[(cidr, "cidr (id N)"), ...]`` for the server's configured subnets.
+
+    Used to populate the lease-search quick-select dropdown. Pulls the (small)
+    subnet list from ``config-get`` — including shared-network subnets — and
+    degrades to an empty list on any error so the search form still renders.
+    """
+    try:
+        client = server.get_client(version=version)
+        resp = client.command("config-get", service=[f"dhcp{version}"])
+    except (KeaException, requests.RequestException, ValueError):
+        logger.debug("Could not fetch subnet choices for dhcp%s on server %s", version, server.pk, exc_info=True)
+        return []
+    args = resp[0].get("arguments") if isinstance(resp, list) and resp and isinstance(resp[0], dict) else None
+    if not isinstance(args, dict):
+        return []
+    dhcp_conf = args.get(f"Dhcp{version}", {})
+    if not isinstance(dhcp_conf, dict):
+        return []
+
+    choices: list[tuple[str, str]] = []
+
+    def _collect(subnets: Any) -> None:
+        for s in subnets or []:
+            if isinstance(s, dict) and s.get("subnet"):
+                sid = s.get("id")
+                cidr = s["subnet"]
+                choices.append((cidr, f"{cidr} (id {sid})" if sid is not None else cidr))
+
+    _collect(dhcp_conf.get(f"subnet{version}"))
+    for sn in dhcp_conf.get("shared-networks") or []:
+        if isinstance(sn, dict):
+            _collect(sn.get(f"subnet{version}"))
+    choices.sort(key=lambda c: c[1])
+    return choices
+
+
 def _add_lease_journal(
     server: "Server",
     user: Any,
@@ -120,6 +157,13 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
         table = self.table(data, user=request.user)
         table.configure(request)
         return table
+
+    def _make_search_form(self, server: Server, data: Any | None = None):
+        """Build the lease-search form with the subnet quick-select choices populated."""
+        subnet_choices = _fetch_subnet_choices(server, self.dhcp_version)
+        if data is None:
+            return self.form(subnet_choices=subnet_choices)
+        return self.form(data, subnet_choices=subnet_choices)
 
     def get_leases_page(
         self, client: KeaClient, subnet: IPNetwork | None, page: str | None, per_page: int
@@ -255,7 +299,7 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
         # For non-htmx requests.
 
         table = self.get_table([], request)
-        form = self.form(request.GET) if "q" in request.GET else self.form()
+        form = self._make_search_form(instance, request.GET if "q" in request.GET else None)
         can_change = Server.objects.restrict(request.user, "change").filter(pk=instance.pk).exists()
         ctx: dict[str, Any] = {
             "form": form,
@@ -274,12 +318,11 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
 
     def get_export(self, request: HttpRequest, **kwargs) -> HttpResponse:
         """Stream all matching leases as a CSV download."""
-        form = self.form(request.GET)
+        instance = self.get_object(**kwargs)
+        form = self._make_search_form(instance, request.GET)
         if not form.is_valid():
             messages.warning(request, "Invalid form for export.")
             return redirect(request.path)
-
-        instance = self.get_object(**kwargs)
 
         by = form.cleaned_data["by"]
         if not by:
@@ -425,7 +468,7 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
             return super().get(request, **kwargs)
 
         try:
-            form = self.form(request.GET)
+            form = self._make_search_form(instance, request.GET)
             if not form.is_valid():
                 table = self.get_table([], request)
                 return render(

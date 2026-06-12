@@ -1,7 +1,9 @@
 {% extends "generic/object.html" %}
+{% load kea_options %}
 
 {% block content %}
 {% include "netbox_kea/includes/persist_config_warning.html" %}
+{% kea_option_datalist dhcp_version %}
 <div class="row">
   <div class="col-md-10">
     <div class="card">

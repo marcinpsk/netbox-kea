@@ -209,6 +209,29 @@ class BaseLeasesSarchForm(forms.Form):
         choices=constants.LEASE_STATE_CHOICES,
         help_text="Filter results by lease state.",
     )
+    # Quick-select dropdown of the server's configured subnets. Choices are
+    # injected by the view at instantiation (small data set from config-get);
+    # when no choices are available the field is removed so it doesn't render an
+    # empty dropdown. Selecting a subnet is a convenience that drives a
+    # ``by=subnet`` search without the user having to type a CIDR.
+    subnet = forms.ChoiceField(
+        label="Subnet",
+        required=False,
+        choices=[("", "— Select a subnet —")],
+        help_text="Quick-select a configured subnet (overrides Search when set).",
+    )
+
+    # Keep the existing visual order (Search, State, Attribute) and append the
+    # subnet quick-select after the attribute selector.
+    field_order = ["q", "state", "by", "subnet"]
+
+    def __init__(self, *args, subnet_choices: list[tuple[str, str]] | None = None, **kwargs) -> None:
+        """Populate the subnet quick-select choices, or drop the field when none."""
+        super().__init__(*args, **kwargs)
+        if subnet_choices:
+            self.fields["subnet"].choices = [("", "— Select a subnet —"), *subnet_choices]
+        else:
+            self.fields.pop("subnet", None)
 
     def clean(self) -> dict[str, Any] | None:
         """Validate and normalise search fields according to the selected search type."""
@@ -216,6 +239,15 @@ class BaseLeasesSarchForm(forms.Form):
         cleaned_data = super().clean()
         q = cleaned_data.get("q")
         by = cleaned_data.get("by")
+
+        # A subnet picked from the quick-select dropdown drives a by=subnet search,
+        # unless the user also typed an explicit Search value (which takes priority).
+        subnet_sel = cleaned_data.get("subnet")
+        if subnet_sel and not q:
+            by = constants.BY_SUBNET
+            q = subnet_sel
+            cleaned_data["by"] = by
+            cleaned_data["q"] = q
 
         if q and not by:
             raise ValidationError({"by": "Search attribute is empty."})
@@ -968,7 +1000,11 @@ class SubnetOptionsForm(forms.Form):
 
     name = forms.CharField(
         max_length=128,
-        help_text="Kea option name (e.g. routers, domain-name-servers).",
+        help_text="Kea option name (e.g. routers, domain-name-servers). Pick a standard option or type any name.",
+        # `list` links the input to the <datalist id="kea-option-names"> rendered
+        # by the {% kea_option_datalist %} tag — an editable combobox: standard
+        # options are suggested while free-form names remain allowed.
+        widget=forms.TextInput(attrs={"list": "kea-option-names", "autocomplete": "off"}),
     )
     data = forms.CharField(
         max_length=512,
