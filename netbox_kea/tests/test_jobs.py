@@ -711,7 +711,9 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
 
         def _get_client_side_effect(version):
             call_count[0] += 1
-            if call_count[0] == 2:  # pre-fetch(1) ok, lease-sync(2) fails, resv(3) ok
+            # get_client call order per version: fetch-subnets(1), prefetch-resv-ips(2),
+            # lease-sync(3) fails, resv-sync(4) ok.
+            if call_count[0] == 3:
                 raise ValueError("connection refused")
             return client
 
@@ -745,7 +747,9 @@ class TestKeaIpamSyncJobRun(SimpleTestCase):
 
         def _get_client_side_effect(version):
             call_count[0] += 1
-            if call_count[0] == 3:  # pre-fetch(1) ok, lease(2) ok, resv-sync(3) fails
+            # get_client call order per version: fetch-subnets(1), prefetch-resv-ips(2),
+            # lease-sync(3) ok, resv-sync(4) fails.
+            if call_count[0] == 4:
                 raise ValueError("connection refused")
             return client
 
