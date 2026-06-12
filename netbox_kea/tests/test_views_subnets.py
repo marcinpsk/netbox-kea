@@ -80,14 +80,18 @@ class TestServerSubnets6View(_ViewTestBase):
 
     @patch("netbox_kea.models.KeaClient")
     def test_get_sets_tab_in_context(self, MockKeaClient):
-        """F2: GET response must include 'tab' in context for tab bar highlighting."""
-        from netbox_kea.views import ServerDHCP6SubnetsView
+        """F2: GET response must include 'tab' in context for tab bar highlighting.
+
+        v4 and v6 subnets now render under the single shared 'Subnets' tab
+        (owned by ServerDHCP4SubnetsView); the v6 view injects it via context.
+        """
+        from netbox_kea.views import ServerDHCP4SubnetsView
 
         MockKeaClient.return_value.command.side_effect = _kea_command_side_effect
         url = reverse("plugins:netbox_kea:server_subnets6", args=[self.server.pk])
         response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
-        self.assertIs(response.context["tab"], ServerDHCP6SubnetsView.tab)
+        self.assertIs(response.context["tab"], ServerDHCP4SubnetsView.tab)
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)

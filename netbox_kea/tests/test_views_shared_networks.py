@@ -144,13 +144,13 @@ class TestServerSharedNetworks4View(_ViewTestBase):
 
     @patch("netbox_kea.models.KeaClient")
     def test_get_sets_tab_in_context(self, MockKeaClient):
-        """F2: GET response must include 'tab' in context for tab bar highlighting."""
-        from netbox_kea.views import ServerSharedNetworks4View
+        """F2: shared networks render under the shared 'Subnets' tab."""
+        from netbox_kea.views.subnets import _SUBNETS_TAB
 
         MockKeaClient.return_value.command.return_value = _SHARED_NETWORKS_CONFIG_V4
         response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
-        self.assertIs(response.context["tab"], ServerSharedNetworks4View.tab)
+        self.assertIs(response.context["tab"], _SUBNETS_TAB)
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
@@ -183,13 +183,13 @@ class TestServerSharedNetworks6View(_ViewTestBase):
 
     @patch("netbox_kea.models.KeaClient")
     def test_get_sets_tab_in_context(self, MockKeaClient):
-        """F2: GET response must include 'tab' in context for tab bar highlighting."""
-        from netbox_kea.views import ServerSharedNetworks6View
+        """F2: shared networks render under the shared 'Subnets' tab."""
+        from netbox_kea.views.subnets import _SUBNETS_TAB
 
         MockKeaClient.return_value.command.return_value = _SHARED_NETWORKS_CONFIG_V6
         response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
-        self.assertIs(response.context["tab"], ServerSharedNetworks6View.tab)
+        self.assertIs(response.context["tab"], _SUBNETS_TAB)
 
 
 # ---------------------------------------------------------------------------
