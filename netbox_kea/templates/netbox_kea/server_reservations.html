@@ -2,6 +2,16 @@
 {% load render_table from django_tables2 %}
 
 {% block content %}
+{% if object.dhcp4 and object.dhcp6 %}
+<ul class="nav nav-pills justify-content-center mb-3">
+  <li class="nav-item">
+    <a class="nav-link{% if dhcp_version == 4 %} active{% endif %}" href="{% url 'plugins:netbox_kea:server_reservations4' object.pk %}">DHCPv4</a>
+  </li>
+  <li class="nav-item">
+    <a class="nav-link{% if dhcp_version == 6 %} active{% endif %}" href="{% url 'plugins:netbox_kea:server_reservations6' object.pk %}">DHCPv6</a>
+  </li>
+</ul>
+{% endif %}
 <div class="row mb-3">
   <div class="col">
     {% if not hook_available %}

@@ -330,13 +330,25 @@ def _filter_reservations(
     return result
 
 
+# Single consolidated "Reservations" tab shared by the v4 and v6 views (see the
+# analogous _LEASES_TAB in views/leases.py for the mechanism).
+_RESERVATIONS_TAB = OptionalViewTab(label="Reservations", weight=1040, is_enabled=lambda s: s.dhcp4 or s.dhcp6)
+
+
 @register_model_view(Server, "reservations4")
 class ServerReservations4View(generic.ObjectView):
-    """DHCPv4 reservations tab — lists all reservations from host_cmds hook."""
+    """DHCPv4 reservations view; owns the shared Reservations tab."""
 
     queryset = Server.objects.all()
-    tab = OptionalViewTab(label="DHCPv4 Reservations", weight=1040, is_enabled=lambda s: s.dhcp4)
+    tab = _RESERVATIONS_TAB
     template_name = "netbox_kea/server_reservations.html"
+
+    def get(self, request: HttpRequest, **kwargs) -> HttpResponse:
+        """Redirect to the v6 view on v6-only servers so the merged tab works."""
+        instance = self.get_object(**kwargs)
+        if not instance.dhcp4 and instance.dhcp6:
+            return redirect(reverse("plugins:netbox_kea:server_reservations6", args=[instance.pk]))
+        return super().get(request, **kwargs)
 
     def get_extra_context(self, request: HttpRequest, instance: Server) -> dict[str, Any]:
         """Fetch reservations from Kea, apply search filters, and build the table."""
@@ -409,10 +421,9 @@ class ServerReservations4View(generic.ObjectView):
 
 @register_model_view(Server, "reservations6")
 class ServerReservations6View(generic.ObjectView):
-    """DHCPv6 reservations tab — lists all reservations from host_cmds hook."""
+    """DHCPv6 reservations view (rendered under the shared Reservations tab)."""
 
     queryset = Server.objects.all()
-    tab = OptionalViewTab(label="DHCPv6 Reservations", weight=1045, is_enabled=lambda s: s.dhcp6)
     template_name = "netbox_kea/server_reservations.html"
 
     def get_extra_context(self, request: HttpRequest, instance: Server) -> dict[str, Any]:
@@ -480,6 +491,8 @@ class ServerReservations6View(generic.ObjectView):
         return {
             "table": table,
             "dhcp_version": 6,
+            # Highlight the shared Reservations tab (this view has no class tab).
+            "tab": _RESERVATIONS_TAB,
             "hook_available": hook_available,
             "search_form": search_form,
             "add_url": reverse("plugins:netbox_kea:server_reservation6_add", args=[server.pk]) if can_change else None,
@@ -497,7 +510,7 @@ class ServerReservation4AddView(_KeaChangeMixin, generic.ObjectView):
 
     queryset = Server.objects.all()
     template_name = "netbox_kea/server_reservation_form.html"
-    tab = ServerReservations4View.tab
+    tab = _RESERVATIONS_TAB
 
     def get(self, request: HttpRequest, pk: int) -> HttpResponse:
         """Render add form, optionally pre-filled from query parameters."""
@@ -606,7 +619,7 @@ class ServerReservation6AddView(_KeaChangeMixin, generic.ObjectView):
 
     queryset = Server.objects.all()
     template_name = "netbox_kea/server_reservation_form.html"
-    tab = ServerReservations6View.tab
+    tab = _RESERVATIONS_TAB
 
     def get(self, request: HttpRequest, pk: int) -> HttpResponse:
         """Render add form, optionally pre-filled from query parameters."""
@@ -718,7 +731,7 @@ class ServerReservation4EditView(_KeaChangeMixin, generic.ObjectView):
 
     queryset = Server.objects.all()
     template_name = "netbox_kea/server_reservation_form.html"
-    tab = ServerReservations4View.tab
+    tab = _RESERVATIONS_TAB
 
     def _get_reservation(self, server: Server, subnet_id: int, ip_address: str) -> dict | None:
         client = server.get_client(version=4)
@@ -872,7 +885,7 @@ class ServerReservation6EditView(_KeaChangeMixin, generic.ObjectView):
 
     queryset = Server.objects.all()
     template_name = "netbox_kea/server_reservation_form.html"
-    tab = ServerReservations6View.tab
+    tab = _RESERVATIONS_TAB
 
     def _get_reservation(self, server: Server, subnet_id: int, ip_address: str) -> dict | None:
         client = server.get_client(version=6)
@@ -1047,7 +1060,7 @@ class ServerReservation4DeleteView(_KeaChangeMixin, generic.ObjectView):
 
     queryset = Server.objects.all()
     template_name = "netbox_kea/server_reservation_delete.html"
-    tab = ServerReservations4View.tab
+    tab = _RESERVATIONS_TAB
 
     def get(self, request: HttpRequest, pk: int, subnet_id: int, ip_address: str) -> HttpResponse:
         """Show deletion confirmation page."""
@@ -1113,7 +1126,7 @@ class ServerReservation6DeleteView(_KeaChangeMixin, generic.ObjectView):
 
     queryset = Server.objects.all()
     template_name = "netbox_kea/server_reservation_delete.html"
-    tab = ServerReservations6View.tab
+    tab = _RESERVATIONS_TAB
 
     def get(self, request: HttpRequest, pk: int, subnet_id: int, ip_address: str) -> HttpResponse:
         """Show deletion confirmation page."""
