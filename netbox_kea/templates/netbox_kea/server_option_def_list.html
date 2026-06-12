@@ -3,6 +3,7 @@
 {% extends "generic/object.html" %}
 
 {% block content %}
+{% include "netbox_kea/inc/config_nav.html" %}
 {% if options_load_error %}
 <div class="alert alert-warning" role="alert">
   <i class="mdi mdi-alert-circle-outline" aria-hidden="true"></i>

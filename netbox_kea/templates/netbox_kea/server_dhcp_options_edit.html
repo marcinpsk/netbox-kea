@@ -2,6 +2,7 @@
 {% load kea_options %}
 
 {% block content %}
+{% include "netbox_kea/inc/config_nav.html" %}
 {% include "netbox_kea/includes/persist_config_warning.html" %}
 {% kea_option_datalist dhcp_version %}
 <div class="row">

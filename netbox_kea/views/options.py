@@ -21,10 +21,36 @@ from ..utilities import (
     kea_error_hint,
 )
 from ._base import ConditionalLoginRequiredMixin, _KeaChangeMixin
-from .server import ServerStatusView
-from .subnets import ServerDHCP4SubnetsView, ServerDHCP6SubnetsView
+from .subnets import _SUBNETS_TAB
 
 logger = logging.getLogger(__name__)
+
+# Single consolidated "Config" tab covering server-level option-data AND custom
+# option definitions for both protocols. Owned by ServerOptionDef4View; the other
+# views inject it via config_nav_context(). Two in-page toggles — section
+# (Server Options | Option Definitions) and family (v4 | v6) — switch between the
+# four underlying URLs, which are unchanged.
+_CONFIG_TAB = OptionalViewTab(label="Config", weight=1050, is_enabled=lambda s: s.dhcp4 or s.dhcp6)
+
+
+def config_nav_context(server_pk: int, section: str, dhcp_version: int) -> dict[str, Any]:
+    """Build context for the Config tab's section+family toggle nav.
+
+    ``section`` is ``"options"`` (server option-data editor) or ``"option_def"``
+    (custom option definitions list).
+    """
+    options_name = "server_dhcp{}_options_edit"
+    optiondef_name = "server_option_def{}"
+    family_name = options_name if section == "options" else optiondef_name
+    return {
+        "tab": _CONFIG_TAB,
+        "config_section": section,
+        "dhcp_version": dhcp_version,
+        "nav_options_url": reverse(f"plugins:netbox_kea:{options_name.format(dhcp_version)}", args=[server_pk]),
+        "nav_optiondef_url": reverse(f"plugins:netbox_kea:{optiondef_name.format(dhcp_version)}", args=[server_pk]),
+        "nav_v4_url": reverse(f"plugins:netbox_kea:{family_name.format(4)}", args=[server_pk]),
+        "nav_v6_url": reverse(f"plugins:netbox_kea:{family_name.format(6)}", args=[server_pk]),
+    }
 
 
 @contextmanager
@@ -193,14 +219,14 @@ class ServerSubnet4OptionsEditView(_BaseSubnetOptionsEditView):
     """Edit option-data for a DHCPv4 subnet."""
 
     dhcp_version = 4
-    tab = ServerDHCP4SubnetsView.tab
+    tab = _SUBNETS_TAB
 
 
 class ServerSubnet6OptionsEditView(_BaseSubnetOptionsEditView):
     """Edit option-data for a DHCPv6 subnet."""
 
     dhcp_version = 6
-    tab = ServerDHCP6SubnetsView.tab
+    tab = _SUBNETS_TAB
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -263,10 +289,9 @@ class _BaseServerOptionsEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin,
             {
                 "object": server,
                 "server": server,
-                "dhcp_version": self.dhcp_version,
                 "formset": formset,
                 "return_url": reverse("plugins:netbox_kea:server", args=[pk]),
-                "tab": self.tab,
+                **config_nav_context(server.pk, "options", self.dhcp_version),
             },
         )
 
@@ -284,10 +309,9 @@ class _BaseServerOptionsEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin,
                 {
                     "object": server,
                     "server": server,
-                    "dhcp_version": self.dhcp_version,
                     "formset": formset,
                     "return_url": return_url,
-                    "tab": self.tab,
+                    **config_nav_context(server.pk, "options", self.dhcp_version),
                 },
             )
 
@@ -311,14 +335,12 @@ class ServerDHCP4OptionsEditView(_BaseServerOptionsEditView):
     """Edit server-level option-data for DHCPv4."""
 
     dhcp_version = 4
-    tab = ServerStatusView.tab
 
 
 class ServerDHCP6OptionsEditView(_BaseServerOptionsEditView):
     """Edit server-level option-data for DHCPv6."""
 
     dhcp_version = 6
-    tab = ServerStatusView.tab
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -460,8 +482,7 @@ class BaseServerOptionDefView(ConditionalLoginRequiredMixin, View):
             "server": server,
             "option_defs": enriched_defs,
             "options_load_error": options_load_error,
-            "dhcp_version": self.dhcp_version,
-            "tab": self.tab,
+            **config_nav_context(server.pk, "option_def", self.dhcp_version),
         }
         if can_change:
             ctx["add_url"] = reverse(
@@ -473,18 +494,24 @@ class BaseServerOptionDefView(ConditionalLoginRequiredMixin, View):
 
 @register_model_view(Server, "option_def6")
 class ServerOptionDef6View(BaseServerOptionDefView):
-    """DHCPv6 option-def tab."""
+    """DHCPv6 option-def view (rendered under the shared Config tab)."""
 
-    tab = OptionalViewTab(label="DHCPv6 Option Definitions", weight=1055, is_enabled=lambda s: s.dhcp6)
     dhcp_version = 6
 
 
 @register_model_view(Server, "option_def4")
 class ServerOptionDef4View(BaseServerOptionDefView):
-    """DHCPv4 option-def tab."""
+    """DHCPv4 option-def view; owns the shared Config tab."""
 
-    tab = OptionalViewTab(label="DHCPv4 Option Definitions", weight=1050, is_enabled=lambda s: s.dhcp4)
+    tab = _CONFIG_TAB
     dhcp_version = 4
+
+    def get(self, request: HttpRequest, pk: int) -> HttpResponse:
+        """Redirect to the v6 view on v6-only servers so the merged tab works."""
+        server = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
+        if not server.dhcp4 and server.dhcp6:
+            return redirect(reverse("plugins:netbox_kea:server_option_def6", args=[pk]))
+        return super().get(request, pk=pk)
 
 
 class BaseServerOptionDefAddView(_KeaChangeMixin, ConditionalLoginRequiredMixin, View):
@@ -551,14 +578,14 @@ class ServerOptionDef6AddView(BaseServerOptionDefAddView):
     """Add a DHCPv6 option definition."""
 
     dhcp_version = 6
-    tab = ServerOptionDef6View.tab
+    tab = _CONFIG_TAB
 
 
 class ServerOptionDef4AddView(BaseServerOptionDefAddView):
     """Add a DHCPv4 option definition."""
 
     dhcp_version = 4
-    tab = ServerOptionDef4View.tab
+    tab = _CONFIG_TAB
 
 
 class BaseServerOptionDefDeleteView(_KeaChangeMixin, ConditionalLoginRequiredMixin, View):
@@ -603,11 +630,11 @@ class ServerOptionDef6DeleteView(BaseServerOptionDefDeleteView):
     """Delete a DHCPv6 option definition."""
 
     dhcp_version = 6
-    tab = ServerOptionDef6View.tab
+    tab = _CONFIG_TAB
 
 
 class ServerOptionDef4DeleteView(BaseServerOptionDefDeleteView):
     """Delete a DHCPv4 option definition."""
 
     dhcp_version = 4
-    tab = ServerOptionDef4View.tab
+    tab = _CONFIG_TAB
