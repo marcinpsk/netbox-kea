@@ -67,7 +67,9 @@ def _fetch_subnet_choices(server: Server, version: int) -> list[tuple[str, str]]
     try:
         client = server.get_client(version=version)
         resp = client.command("config-get", service=[f"dhcp{version}"])
-    except (KeaException, requests.RequestException, ValueError):
+    except (KeaException, requests.RequestException, ValueError, RuntimeError):
+        # Best-effort: the subnet quick-select is a convenience, so any failure to
+        # fetch the subnet list must never break the lease search/export page.
         logger.debug("Could not fetch subnet choices for dhcp%s on server %s", version, server.pk, exc_info=True)
         return []
     args = resp[0].get("arguments") if isinstance(resp, list) and resp and isinstance(resp[0], dict) else None
