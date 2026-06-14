@@ -29,6 +29,7 @@ from django.test import TestCase, override_settings
 from django.urls import reverse
 
 from netbox_kea.models import Server
+from netbox_kea.views.leases import _fetch_subnet_choices, _subnet_choices_cache_key
 
 from .utils import _PLUGINS_CONFIG, _make_db_server, _ViewTestBase
 
@@ -3962,3 +3963,85 @@ class TestGetLeasesPageSubnetEdgeCases(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "10.0.0.5")
         self.assertNotContains(response, "10.0.1.5")
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestFetchSubnetChoices(TestCase):
+    """_fetch_subnet_choices(): network-order sorting + 5-minute caching.
+
+    Uses a real Server and the real Django cache; only the Kea client boundary is
+    mocked (get_client returns a client whose .command() yields canned
+    ``config-get`` JSON).
+    """
+
+    # subnet4 ids/CIDRs are intentionally out of order, and chosen so that
+    # network order (10.0.1 < 10.0.2 < 10.0.10) differs from lexicographic label
+    # order (".10." sorts before ".2.").  Includes a shared-network subnet.
+    _CONFIG = [
+        {
+            "result": 0,
+            "arguments": {
+                "Dhcp4": {
+                    "subnet4": [
+                        {"id": 3, "subnet": "10.0.2.0/24"},
+                        {"id": 1, "subnet": "10.0.10.0/24"},
+                        {"id": 2, "subnet": "10.0.1.0/24"},
+                    ],
+                    "shared-networks": [
+                        {"name": "sn-a", "subnet4": [{"id": 4, "subnet": "192.168.0.0/16"}]},
+                    ],
+                }
+            },
+        }
+    ]
+
+    def setUp(self):
+        self.server = _make_db_server()
+        self._clear_cache()
+        self.addCleanup(self._clear_cache)
+
+    def _clear_cache(self):
+        # Delete only our own keys so we never disturb the shared dev-server cache.
+        from django.core.cache import cache
+
+        for v in (4, 6):
+            cache.delete(_subnet_choices_cache_key(self.server, v))
+
+    def _client_returning_config(self):
+        client = MagicMock()
+        client.command.return_value = self._CONFIG
+        return client
+
+    def test_choices_sorted_by_network_not_lexicographically(self):
+        client = self._client_returning_config()
+        with patch.object(Server, "get_client", return_value=client):
+            choices = _fetch_subnet_choices(self.server, 4)
+        self.assertEqual(
+            [c[0] for c in choices],
+            ["10.0.1.0/24", "10.0.2.0/24", "10.0.10.0/24", "192.168.0.0/16"],
+        )
+        # Label keeps the Kea subnet id alongside the CIDR.
+        self.assertEqual(choices[0], ("10.0.1.0/24", "10.0.1.0/24 (id 2)"))
+
+    def test_result_is_cached_second_call_skips_kea(self):
+        client = self._client_returning_config()
+        with patch.object(Server, "get_client", return_value=client) as get_client:
+            first = _fetch_subnet_choices(self.server, 4)
+            second = _fetch_subnet_choices(self.server, 4)
+        self.assertEqual(first, second)
+        # config-get hit Kea exactly once; the second render is served from cache.
+        self.assertEqual(client.command.call_count, 1)
+        self.assertEqual(get_client.call_count, 1)
+
+    def test_transient_error_returns_empty_and_is_not_cached(self):
+        failing = MagicMock()
+        failing.command.side_effect = RuntimeError("kea unreachable")
+        with patch.object(Server, "get_client", return_value=failing):
+            self.assertEqual(_fetch_subnet_choices(self.server, 4), [])
+
+        # A failed fetch must not be cached, so the next render retries and succeeds.
+        ok = self._client_returning_config()
+        with patch.object(Server, "get_client", return_value=ok):
+            choices = _fetch_subnet_choices(self.server, 4)
+        self.assertTrue(choices)
+        self.assertEqual(ok.command.call_count, 1)

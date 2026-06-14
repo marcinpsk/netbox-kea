@@ -8,6 +8,7 @@ from urllib.parse import urlencode as _urlencode
 
 import requests
 from django.contrib import messages
+from django.core.cache import cache
 from django.core.exceptions import ValidationError
 from django.db import DatabaseError
 from django.db.utils import OperationalError, ProgrammingError
@@ -16,7 +17,7 @@ from django.http.request import HttpRequest
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.views import View
-from netaddr import IPAddress, IPNetwork
+from netaddr import AddrFormatError, IPAddress, IPNetwork
 from netbox.tables import BaseTable
 from netbox.views import generic
 from utilities.exceptions import AbortRequest
@@ -57,13 +58,44 @@ def _is_valid_lease_entry(entry: dict) -> bool:
     return True
 
 
+# The quick-select subnet list rarely changes, but ``config-get`` returns the
+# *entire* Kea server config (potentially large). Cache the derived choices so
+# the initial page render fetches once and subsequent HTMX paginations reuse the
+# cached list instead of re-hitting Kea on every page flip.
+_SUBNET_CHOICES_TTL = 300  # seconds (5 minutes)
+
+
+def _subnet_choices_cache_key(server: Server, version: int) -> str:
+    return f"netbox_kea:lease_subnet_choices:{server.pk}:{version}"
+
+
+def _subnet_sort_key(choice: tuple[str, str]) -> tuple[int, Any]:
+    """Sort key that orders subnet choices by network (address then prefix).
+
+    Falls back to the CIDR string for anything netaddr can't parse, kept in a
+    separate bucket so the two key types are never compared against each other.
+    """
+    try:
+        return (0, IPNetwork(choice[0]))
+    except (AddrFormatError, ValueError):
+        return (1, choice[0])
+
+
 def _fetch_subnet_choices(server: Server, version: int) -> list[tuple[str, str]]:
     """Return ``[(cidr, "cidr (id N)"), ...]`` for the server's configured subnets.
 
-    Used to populate the lease-search quick-select dropdown. Pulls the (small)
-    subnet list from ``config-get`` — including shared-network subnets — and
-    degrades to an empty list on any error so the search form still renders.
+    Used to populate the lease-search quick-select dropdown. Pulls the subnet
+    list from ``config-get`` — including shared-network subnets — and degrades to
+    an empty list on any error so the search form still renders. Successful
+    results (including a legitimately empty list) are cached for
+    ``_SUBNET_CHOICES_TTL`` seconds per server+version; transient errors are not
+    cached so the next render retries.
     """
+    cache_key = _subnet_choices_cache_key(server, version)
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return cached
+
     try:
         client = server.get_client(version=version)
         resp = client.command("config-get", service=[f"dhcp{version}"])
@@ -92,7 +124,8 @@ def _fetch_subnet_choices(server: Server, version: int) -> list[tuple[str, str]]
     for sn in dhcp_conf.get("shared-networks") or []:
         if isinstance(sn, dict):
             _collect(sn.get(f"subnet{version}"))
-    choices.sort(key=lambda c: c[1])
+    choices.sort(key=_subnet_sort_key)
+    cache.set(cache_key, choices, _SUBNET_CHOICES_TTL)
     return choices
 
 
