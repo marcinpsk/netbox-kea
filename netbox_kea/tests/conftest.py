@@ -15,6 +15,8 @@ avoids that. In an isolated CI environment (only netbox_kea installed) this is a
 harmless no-op.
 """
 
+import pytest
+
 
 def pytest_configure(config):  # noqa: D103
     try:
@@ -26,3 +28,32 @@ def pytest_configure(config):  # noqa: D103
         get_resolver()._populate()
     except Exception:  # noqa: BLE001 — best effort; never block collection
         pass
+
+
+@pytest.fixture(scope="session")
+def django_db_setup(request, django_test_environment, django_db_blocker):
+    """Use a plugin-specific test DB name to avoid conflicts with other plugins
+    running concurrently in a shared devcontainer (e.g. netbox-routing uses
+    'test_netbox'; this fixture switches us to 'test_netbox_kea').
+
+    Mirrors pytest-django's own ``django_db_setup`` semantics so ``--reuse-db``
+    and ``--create-db`` keep working: the DB is kept between runs unless
+    ``--create-db`` is given, and torn down at session end only when it wasn't
+    reused (so re-runs stay fast).
+    """
+    from django.conf import settings
+    from django.test.utils import setup_databases, teardown_databases
+
+    settings.DATABASES["default"].setdefault("TEST", {})["NAME"] = "test_netbox_kea"
+
+    keepdb = request.config.getvalue("reuse_db") and not request.config.getvalue("create_db")
+    verbosity = request.config.option.verbose
+
+    with django_db_blocker.unblock():
+        db_cfg = setup_databases(verbosity=verbosity, interactive=False, keepdb=keepdb)
+
+    yield
+
+    if not keepdb:
+        with django_db_blocker.unblock():
+            teardown_databases(db_cfg, verbosity=verbosity)

@@ -11,70 +11,68 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from django.test import SimpleTestCase
+from django.test import SimpleTestCase, TestCase
 
 from netbox_kea.jobs import KeaIpamSyncJob
 
 
-def _make_db_job(job_id: str | None = "abc-123") -> MagicMock:
-    mock = MagicMock()
-    mock.job_id = job_id
-    return mock
+class TestHealGhostScheduledJobs(TestCase):
+    """Tests for KeaIpamSyncJob._heal_ghost_scheduled_jobs().
 
+    Uses real ``core.models.Job`` rows so the ORM queries inside
+    ``_heal_ghost_scheduled_jobs`` run against the actual DB.  RQ is still
+    mocked — Redis is the true external boundary.
+    """
 
-class TestHealGhostScheduledJobs(SimpleTestCase):
-    """Tests for KeaIpamSyncJob._heal_ghost_scheduled_jobs()."""
+    def _make_job(self, status: str = "scheduled"):
+        """Create a real Job row with the given status."""
+        import uuid
 
-    def _run(self, candidates, rq_statuses: dict[str, str] | None = None, no_such: set[str] | None = None):
-        """
-        Helper: run _heal_ghost_scheduled_jobs() with mocked DB queryset and RQ jobs.
+        from core.models import Job
 
-        candidates  — list of mock DB job objects
-        rq_statuses — {job_id: status_str} for jobs that exist in RQ
-        no_such     — set of job_ids that raise NoSuchJobError
+        return Job.objects.create(
+            name=KeaIpamSyncJob.name,
+            status=status,
+            job_id=uuid.uuid4(),
+        )
+
+    def _heal(self, rq_statuses: dict | None = None, no_such: set | None = None):
+        """Run _heal_ghost_scheduled_jobs() with RQ responses pre-configured.
+
+        ``rq_statuses`` — {str(job_id): status_string} for jobs that exist in RQ.
+        ``no_such``     — set of str(job_id) values that raise NoSuchJobError.
+        Jobs not listed in either dict return status "scheduled" (kept alive).
         """
         rq_statuses = rq_statuses or {}
         no_such = no_such or set()
 
-        mock_qs = MagicMock()
-        mock_qs.exists.return_value = bool(candidates)
-        mock_qs.filter.return_value = mock_qs
-        mock_qs.__iter__ = lambda self: iter(candidates)
-
-        def _fetch(job_id, connection):
-            if job_id in no_such:
+        def _fetch(job_id, connection, **kwargs):
+            # NetBox's Job.delete() signal may call RQJob.fetch with extra kwargs
+            # (e.g. serializer=); accept and ignore them.
+            str_id = str(job_id)
+            if str_id in no_such:
                 from rq.exceptions import NoSuchJobError
 
-                raise NoSuchJobError(job_id)
+                raise NoSuchJobError(str_id)
             rq_job = MagicMock()
-            status_str = rq_statuses.get(job_id, "scheduled")
+            status_str = rq_statuses.get(str_id, "scheduled")
             rq_job.get_status.return_value = MagicMock(value=status_str)
             return rq_job
 
         with (
-            patch("netbox_kea.jobs.KeaIpamSyncJob.get_jobs", return_value=mock_qs),
             patch("django_rq.get_connection", return_value=MagicMock()),
             patch("rq.job.Job.fetch", side_effect=_fetch),
         ):
             KeaIpamSyncJob._heal_ghost_scheduled_jobs()
-
-        return candidates
 
     # ------------------------------------------------------------------
     # No candidates — early exit
     # ------------------------------------------------------------------
 
     def test_no_candidates_returns_early_without_rq_connection(self):
-        mock_qs = MagicMock()
-        mock_qs.exists.return_value = False
-        mock_qs.filter.return_value = mock_qs
-
-        with (
-            patch("netbox_kea.jobs.KeaIpamSyncJob.get_jobs", return_value=mock_qs),
-            patch("django_rq.get_connection") as mock_conn,
-        ):
+        # Empty DB → candidates.exists() is False → returns before connecting to RQ.
+        with patch("django_rq.get_connection") as mock_conn:
             KeaIpamSyncJob._heal_ghost_scheduled_jobs()
-
         mock_conn.assert_not_called()
 
     # ------------------------------------------------------------------
@@ -82,63 +80,91 @@ class TestHealGhostScheduledJobs(SimpleTestCase):
     # ------------------------------------------------------------------
 
     def test_failed_rq_job_is_deleted(self):
-        job = _make_db_job("job-1")
-        self._run([job], rq_statuses={"job-1": "failed"})
-        job.delete.assert_called_once()
+        from core.models import Job
+
+        job = self._make_job()
+        self._heal(rq_statuses={str(job.job_id): "failed"})
+        self.assertFalse(Job.objects.filter(pk=job.pk).exists())
 
     def test_canceled_rq_job_is_deleted(self):
-        job = _make_db_job("job-2")
-        self._run([job], rq_statuses={"job-2": "canceled"})
-        job.delete.assert_called_once()
+        from core.models import Job
+
+        job = self._make_job()
+        self._heal(rq_statuses={str(job.job_id): "canceled"})
+        self.assertFalse(Job.objects.filter(pk=job.pk).exists())
 
     def test_stopped_rq_job_is_deleted(self):
-        job = _make_db_job("job-3")
-        self._run([job], rq_statuses={"job-3": "stopped"})
-        job.delete.assert_called_once()
+        from core.models import Job
+
+        job = self._make_job()
+        self._heal(rq_statuses={str(job.job_id): "stopped"})
+        self.assertFalse(Job.objects.filter(pk=job.pk).exists())
 
     def test_no_such_job_in_redis_is_deleted(self):
-        job = _make_db_job("job-4")
-        self._run([job], no_such={"job-4"})
-        job.delete.assert_called_once()
+        from core.models import Job
+
+        job = self._make_job()
+        self._heal(no_such={str(job.job_id)})
+        self.assertFalse(Job.objects.filter(pk=job.pk).exists())
 
     def test_no_job_id_is_deleted(self):
-        job = _make_db_job(job_id=None)
-        self._run([job])
-        job.delete.assert_called_once()
+        """Defensive path: a row with job_id=None is deleted without checking RQ.
+
+        Uses a mock row because ``job_id`` is ``null=False`` in the DB, making this
+        state unreachable via normal ORM saves; the guard still protects against
+        unexpected DB state (e.g. direct SQL inserts or future schema changes).
+        """
+        mock_row = MagicMock()
+        mock_row.job_id = None
+
+        with (
+            patch.object(KeaIpamSyncJob, "get_jobs") as mock_get_jobs,
+            patch("django_rq.get_connection", return_value=MagicMock()),
+        ):
+            mock_qs = MagicMock()
+            mock_qs.exists.return_value = True
+            mock_qs.filter.return_value = mock_qs
+            mock_qs.__iter__ = lambda self: iter([mock_row])
+            mock_get_jobs.return_value = mock_qs
+            KeaIpamSyncJob._heal_ghost_scheduled_jobs()
+
+        mock_row.delete.assert_called_once()
 
     # ------------------------------------------------------------------
     # Live job — must NOT be deleted
     # ------------------------------------------------------------------
 
     def test_live_scheduled_rq_job_not_deleted(self):
-        job = _make_db_job("job-live")
-        self._run([job], rq_statuses={"job-live": "scheduled"})
-        job.delete.assert_not_called()
+        from core.models import Job
+
+        job = self._make_job()
+        self._heal(rq_statuses={str(job.job_id): "scheduled"})
+        self.assertTrue(Job.objects.filter(pk=job.pk).exists())
 
     def test_live_queued_rq_job_not_deleted(self):
-        job = _make_db_job("job-queued")
-        self._run([job], rq_statuses={"job-queued": "queued"})
-        job.delete.assert_not_called()
+        from core.models import Job
+
+        job = self._make_job()
+        self._heal(rq_statuses={str(job.job_id): "queued"})
+        self.assertTrue(Job.objects.filter(pk=job.pk).exists())
 
     # ------------------------------------------------------------------
     # Warning log when ghosts are removed
     # ------------------------------------------------------------------
 
     def test_warning_logged_when_ghost_deleted(self):
-        job = _make_db_job("job-warn")
+        job = self._make_job()
         with self.assertLogs("netbox_kea", level="WARNING") as cm:
-            self._run([job], rq_statuses={"job-warn": "failed"})
+            self._heal(rq_statuses={str(job.job_id): "failed"})
         self.assertTrue(any("ghost" in msg.lower() for msg in cm.output))
 
     def test_no_warning_when_nothing_deleted(self):
-        job = _make_db_job("job-ok")
-        # Should not produce WARNING-level logs
         import logging
 
+        job = self._make_job()
         with self.assertLogs("netbox_kea", level="DEBUG") as cm:
-            # Emit a debug log ourselves so assertLogs doesn't fail on empty
             logging.getLogger("netbox_kea").debug("sentinel")
-            self._run([job], rq_statuses={"job-ok": "scheduled"})
+            self._heal(rq_statuses={str(job.job_id): "scheduled"})
         warnings = [m for m in cm.output if "WARNING" in m and "ghost" in m.lower()]
         self.assertEqual(warnings, [])
 
@@ -147,50 +173,37 @@ class TestHealGhostScheduledJobs(SimpleTestCase):
     # ------------------------------------------------------------------
 
     def test_db_unavailable_does_not_raise(self):
+        # Simulate DB failure by patching get_jobs(); RQ is never reached.
         with patch("netbox_kea.jobs.KeaIpamSyncJob.get_jobs", side_effect=Exception("DB down")):
-            # Must not raise
             KeaIpamSyncJob._heal_ghost_scheduled_jobs()
 
     def test_redis_unavailable_does_not_raise(self):
-        job = _make_db_job("job-5")
-        mock_qs = MagicMock()
-        mock_qs.exists.return_value = True
-        mock_qs.filter.return_value = mock_qs
-        mock_qs.__iter__ = lambda self: iter([job])
-
-        with (
-            patch("netbox_kea.jobs.KeaIpamSyncJob.get_jobs", return_value=mock_qs),
-            patch("django_rq.get_connection", side_effect=Exception("Redis down")),
-        ):
-            # Must not raise
+        self._make_job()  # ensure candidates.exists() is True
+        with patch("django_rq.get_connection", side_effect=Exception("Redis down")):
             KeaIpamSyncJob._heal_ghost_scheduled_jobs()
 
     def test_per_record_error_does_not_abort_remaining_records(self):
         """A transient error on one record must not skip the others."""
-        bad_job = _make_db_job("job-bad")
-        good_job = _make_db_job("job-good")
+        from core.models import Job
 
-        mock_qs = MagicMock()
-        mock_qs.exists.return_value = True
-        mock_qs.filter.return_value = mock_qs
-        mock_qs.__iter__ = lambda self: iter([bad_job, good_job])
+        bad_job = self._make_job()
+        good_job = self._make_job()
 
         def _fetch(job_id, connection):
-            if job_id == "job-bad":
+            if str(job_id) == str(bad_job.job_id):
                 raise RuntimeError("transient Redis error")
-            rq = MagicMock()
-            rq.get_status.return_value = MagicMock(value="failed")
-            return rq
+            rq_job = MagicMock()
+            rq_job.get_status.return_value = MagicMock(value="failed")
+            return rq_job
 
         with (
-            patch("netbox_kea.jobs.KeaIpamSyncJob.get_jobs", return_value=mock_qs),
             patch("django_rq.get_connection", return_value=MagicMock()),
             patch("rq.job.Job.fetch", side_effect=_fetch),
         ):
             KeaIpamSyncJob._heal_ghost_scheduled_jobs()
 
-        bad_job.delete.assert_not_called()
-        good_job.delete.assert_called_once()
+        self.assertTrue(Job.objects.filter(pk=bad_job.pk).exists())
+        self.assertFalse(Job.objects.filter(pk=good_job.pk).exists())
 
     # ------------------------------------------------------------------
     # Plain-string status fallback (rq < enum era)
@@ -198,44 +211,41 @@ class TestHealGhostScheduledJobs(SimpleTestCase):
 
     def test_plain_string_status_failed_is_deleted(self):
         """Cover the str(status) fallback when get_status() returns a bare string."""
-        job = _make_db_job("job-plain")
-        mock_qs = MagicMock()
-        mock_qs.exists.return_value = True
-        mock_qs.filter.return_value = mock_qs
-        mock_qs.__iter__ = lambda self: iter([job])
+        from core.models import Job
 
-        rq_job = MagicMock()
-        # Return a plain string instead of an enum-like object with .value
-        rq_job.get_status.return_value = "failed"
+        job = self._make_job()
+
+        def _fetch(job_id, connection):
+            rq_job = MagicMock()
+            rq_job.get_status.return_value = "failed"  # plain string, no .value
+            return rq_job
 
         with (
-            patch("netbox_kea.jobs.KeaIpamSyncJob.get_jobs", return_value=mock_qs),
             patch("django_rq.get_connection", return_value=MagicMock()),
-            patch("rq.job.Job.fetch", return_value=rq_job),
+            patch("rq.job.Job.fetch", side_effect=_fetch),
         ):
             KeaIpamSyncJob._heal_ghost_scheduled_jobs()
 
-        job.delete.assert_called_once()
+        self.assertFalse(Job.objects.filter(pk=job.pk).exists())
 
     def test_plain_string_status_live_not_deleted(self):
         """A plain-string live status must not trigger deletion."""
-        job = _make_db_job("job-plain-live")
-        mock_qs = MagicMock()
-        mock_qs.exists.return_value = True
-        mock_qs.filter.return_value = mock_qs
-        mock_qs.__iter__ = lambda self: iter([job])
+        from core.models import Job
 
-        rq_job = MagicMock()
-        rq_job.get_status.return_value = "scheduled"
+        job = self._make_job()
+
+        def _fetch(job_id, connection):
+            rq_job = MagicMock()
+            rq_job.get_status.return_value = "scheduled"  # plain string
+            return rq_job
 
         with (
-            patch("netbox_kea.jobs.KeaIpamSyncJob.get_jobs", return_value=mock_qs),
             patch("django_rq.get_connection", return_value=MagicMock()),
-            patch("rq.job.Job.fetch", return_value=rq_job),
+            patch("rq.job.Job.fetch", side_effect=_fetch),
         ):
             KeaIpamSyncJob._heal_ghost_scheduled_jobs()
 
-        job.delete.assert_not_called()
+        self.assertTrue(Job.objects.filter(pk=job.pk).exists())
 
 
 class TestEnqueueOnceWiring(SimpleTestCase):
