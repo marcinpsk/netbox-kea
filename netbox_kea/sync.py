@@ -458,10 +458,10 @@ def sync_lease_to_netbox(
     ip_str: str = lease["ip-address"]
     hostname: str = lease.get("hostname", "")
     subnet_id = lease.get("subnet-id")
+    prefix_len = _resolve_prefix_length(ip_str, subnet_id, subnet_prefix_map)
 
     ip_obj = get_netbox_ip(ip_str)
     if ip_obj is None:
-        prefix_len = _resolve_prefix_length(ip_str, subnet_id, subnet_prefix_map)
         ip_obj = NbIP(address=f"{ip_str}/{prefix_len}")
         created = True
         current_status = None
@@ -474,7 +474,7 @@ def sync_lease_to_netbox(
 
     # Correct the mask on existing Kea-synced IPs (e.g. a legacy /32 that should
     # be /24) from the authoritative Kea subnet prefix length.
-    if not created and _apply_ip_mask(ip_obj, ip_str, _resolve_prefix_length(ip_str, subnet_id, subnet_prefix_map)):
+    if not created and _apply_ip_mask(ip_obj, ip_str, prefix_len):
         changed = True
 
     if created or changed:
@@ -547,9 +547,9 @@ def sync_reservation_to_netbox(
     any_changed = False
 
     for ip_str in all_ips:
+        prefix_len = _resolve_prefix_length(ip_str, subnet_id, subnet_prefix_map)
         ip_obj = get_netbox_ip(ip_str)
         if ip_obj is None:
-            prefix_len = _resolve_prefix_length(ip_str, subnet_id, subnet_prefix_map)
             ip_obj = NbIP(address=f"{ip_str}/{prefix_len}")
             created = True
             current_status = None
@@ -562,7 +562,7 @@ def sync_reservation_to_netbox(
 
         # Correct the mask on existing Kea-synced IPs from the authoritative
         # Kea subnet prefix length (fixes legacy /32 rows).
-        if not created and _apply_ip_mask(ip_obj, ip_str, _resolve_prefix_length(ip_str, subnet_id, subnet_prefix_map)):
+        if not created and _apply_ip_mask(ip_obj, ip_str, prefix_len):
             changed = True
 
         if created or changed:
