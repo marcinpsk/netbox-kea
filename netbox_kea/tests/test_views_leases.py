@@ -4020,8 +4020,9 @@ class TestFetchSubnetChoices(TestCase):
             [c[0] for c in choices],
             ["10.0.1.0/24", "10.0.2.0/24", "10.0.10.0/24", "192.168.0.0/16"],
         )
-        # Label keeps the Kea subnet id alongside the CIDR.
-        self.assertEqual(choices[0], ("10.0.1.0/24", "10.0.1.0/24 (id 2)"))
+        # Each choice carries (cidr, subnet_id) so the template can build both the
+        # Subnet (CIDR) and Subnet-ID comboboxes.
+        self.assertEqual(choices[0], ("10.0.1.0/24", 2))
 
     def test_result_is_cached_second_call_skips_kea(self):
         client = self._client_returning_config()
@@ -4045,3 +4046,43 @@ class TestFetchSubnetChoices(TestCase):
             choices = _fetch_subnet_choices(self.server, 4)
         self.assertTrue(choices)
         self.assertEqual(ok.command.call_count, 1)
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestLeaseSearchSubnetCombobox(_ViewTestBase):
+    """Lease search form renders an editable Subnet/Subnet-ID combobox on the Search field.
+
+    There is no separate subnet selector — the attribute selector drives which
+    (if any) datalist the Search field is associated with.
+    """
+
+    def _url(self):
+        return reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+
+    @patch("netbox_kea.views.leases._fetch_subnet_choices")
+    def test_datalists_and_toggle_script_rendered(self, mock_choices):
+        mock_choices.return_value = [("10.0.1.0/24", 2), ("10.0.2.0/24", 3)]
+        body = self.client.get(self._url()).content.decode()
+        # Both comboboxes present with the right values.
+        self.assertIn('id="kea-lease-subnet-cidrs"', body)
+        self.assertIn('id="kea-lease-subnet-ids"', body)
+        self.assertIn('value="10.0.1.0/24"', body)  # CIDR option (by=subnet)
+        self.assertIn('value="2"', body)  # subnet-id option (by=subnet_id)
+        # The toggle script wires the Search field (q) to the attribute selector (by).
+        self.assertIn("syncSubnetCombobox", body)
+        self.assertIn('getElementById("id_by")', body)
+
+    @patch("netbox_kea.views.leases._fetch_subnet_choices")
+    def test_no_separate_subnet_select_field(self, mock_choices):
+        mock_choices.return_value = [("10.0.1.0/24", 2)]
+        body = self.client.get(self._url()).content.decode()
+        # The old standalone subnet quick-select is gone.
+        self.assertNotIn('name="subnet"', body)
+        self.assertNotIn("Select a subnet", body)
+
+    @patch("netbox_kea.views.leases._fetch_subnet_choices")
+    def test_no_datalists_when_no_subnets(self, mock_choices):
+        mock_choices.return_value = []
+        body = self.client.get(self._url()).content.decode()
+        self.assertNotIn("kea-lease-subnet-cidrs", body)
+        self.assertNotIn("syncSubnetCombobox", body)

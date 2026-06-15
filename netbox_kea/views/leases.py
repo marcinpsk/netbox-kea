@@ -69,7 +69,7 @@ def _subnet_choices_cache_key(server: Server, version: int) -> str:
     return f"netbox_kea:lease_subnet_choices:{server.pk}:{version}"
 
 
-def _subnet_sort_key(choice: tuple[str, str]) -> tuple[int, Any]:
+def _subnet_sort_key(choice: tuple[str, int | None]) -> tuple[int, Any]:
     """Sort key that orders subnet choices by network (address then prefix).
 
     Falls back to the CIDR string for anything netaddr can't parse, kept in a
@@ -81,13 +81,15 @@ def _subnet_sort_key(choice: tuple[str, str]) -> tuple[int, Any]:
         return (1, choice[0])
 
 
-def _fetch_subnet_choices(server: Server, version: int) -> list[tuple[str, str]]:
-    """Return ``[(cidr, "cidr (id N)"), ...]`` for the server's configured subnets.
+def _fetch_subnet_choices(server: Server, version: int) -> list[tuple[str, int | None]]:
+    """Return ``[(cidr, subnet_id), ...]`` for the server's configured subnets.
 
-    Used to populate the lease-search quick-select dropdown. Pulls the subnet
-    list from ``config-get`` — including shared-network subnets — and degrades to
-    an empty list on any error so the search form still renders. Successful
-    results (including a legitimately empty list) are cached for
+    Used to populate the lease-search Subnet / Subnet-ID combobox (an editable
+    ``<datalist>`` on the Search field). The CIDR drives a ``by=subnet`` search
+    and the id drives a ``by=subnet_id`` search, so both are returned. Pulls the
+    subnet list from ``config-get`` — including shared-network subnets — and
+    degrades to an empty list on any error so the search form still renders.
+    Successful results (including a legitimately empty list) are cached for
     ``_SUBNET_CHOICES_TTL`` seconds per server+version; transient errors are not
     cached so the next render retries.
     """
@@ -111,14 +113,13 @@ def _fetch_subnet_choices(server: Server, version: int) -> list[tuple[str, str]]
     if not isinstance(dhcp_conf, dict):
         return []
 
-    choices: list[tuple[str, str]] = []
+    choices: list[tuple[str, int | None]] = []
 
     def _collect(subnets: Any) -> None:
         for s in subnets or []:
             if isinstance(s, dict) and s.get("subnet"):
                 sid = s.get("id")
-                cidr = s["subnet"]
-                choices.append((cidr, f"{cidr} (id {sid})" if sid is not None else cidr))
+                choices.append((s["subnet"], sid if isinstance(sid, int) else None))
 
     _collect(dhcp_conf.get(f"subnet{version}"))
     for sn in dhcp_conf.get("shared-networks") or []:
