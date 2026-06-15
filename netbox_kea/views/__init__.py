@@ -138,6 +138,7 @@ from .sync_jobs import (  # noqa: F401
 
 # Sync views + bulk import views
 from .sync_views import (  # noqa: F401
+    ReservationCheckNetboxIPView,
     ServerLease4BulkImportView,
     ServerLease4SyncView,
     ServerLease6BulkImportView,

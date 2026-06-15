@@ -1215,3 +1215,49 @@ class TestReservationMutationBareExcept(_ViewTestBase):
         url = reverse("plugins:netbox_kea:server_reservation6_add", args=[self.server.pk])
         with self.assertRaises(AttributeError):
             self.client.post(url, {**_VALID_RESERVATION6_POST})
+
+
+# ---------------------------------------------------------------------------
+# Issue #64 Part 1: live NetBox IP-check advisory wiring on the Add form
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestReservationAddFormIPCheckWiring(_ViewTestBase):
+    """The reservation Add form renders the NetBox IP-check target div + blur script.
+
+    These render the real view → template (no Kea call needed for the Add GET),
+    standing in for a live-render check since the advisory is plain-fetch JS.
+    """
+
+    def test_v4_add_form_includes_ip_check_div_and_script(self):
+        url = reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk])
+        body = self.client.get(url).content.decode()
+        check_url = reverse("plugins:netbox_kea:reservation_check_ip", args=[self.server.pk])
+        self.assertIn('id="netbox-ip-check"', body)
+        self.assertIn(check_url, body)
+        self.assertIn('addEventListener("blur"', body)
+        # v4 watches the single-IP field.
+        self.assertIn('"id_ip_address"', body)
+
+    def test_v6_add_form_targets_multi_ip_field(self):
+        url = reverse("plugins:netbox_kea:server_reservation6_add", args=[self.server.pk])
+        body = self.client.get(url).content.decode()
+        self.assertIn('id="netbox-ip-check"', body)
+        # v6 watches the comma-separated ip_addresses field.
+        self.assertIn('"id_ip_addresses"', body)
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_edit_form_omits_blur_script(self, MockKeaClient):
+        """Edit mode disables the IP field, so the advisory script must not attach."""
+        MockKeaClient.return_value.reservation_get.return_value = {
+            "hw-address": "aa:bb:cc:dd:ee:ff",
+            "ip-address": "10.0.0.55",
+            "subnet-id": 1,
+        }
+        MockKeaClient.return_value.lease_get_by_ip.return_value = None
+        url = reverse("plugins:netbox_kea:server_reservation4_edit", args=[self.server.pk, 1, "10.0.0.55"])
+        body = self.client.get(url).content.decode()
+        check_url = reverse("plugins:netbox_kea:reservation_check_ip", args=[self.server.pk])
+        self.assertNotIn('addEventListener("blur"', body)
+        self.assertNotIn(check_url, body)

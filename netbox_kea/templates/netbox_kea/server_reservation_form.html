@@ -48,6 +48,9 @@
           {% csrf_token %}
           {% render_form form %}
 
+          {# Advisory NetBox IPAM conflict check (Add mode only) — populated on IP blur. #}
+          <div id="netbox-ip-check"></div>
+
           {# DHCP Options section #}
           <hr>
           {% if dhcp_version == 4 %}
@@ -123,4 +126,40 @@
 </div>
 
 {% include "netbox_kea/inc/formset_add_row.html" %}
+
+{% if action == "Add" %}
+{% comment %}
+  Live NetBox IPAM conflict advisory: on blur of the IP field, fetch a small
+  HTML fragment and show it under the field.  Plain fetch, no HTMX dependency.
+  Only attached in Add mode — the IP field is disabled (read-only) when editing.
+{% endcomment %}
+<script>
+(function () {
+  var fieldId = {{ dhcp_version }} === 6 ? "id_ip_addresses" : "id_ip_address";
+  var input = document.getElementById(fieldId);
+  var target = document.getElementById("netbox-ip-check");
+  if (!input || !target) { return; }
+  var baseUrl = "{% url 'plugins:netbox_kea:reservation_check_ip' object.pk %}";
+
+  input.addEventListener("blur", function () {
+    var value = (input.value || "").trim();
+    // DHCPv6 reservations may list several comma-separated addresses; check the first.
+    if (value.indexOf(",") !== -1) {
+      value = value.split(",")[0].trim();
+    }
+    if (!value) {
+      target.innerHTML = "";
+      return;
+    }
+    fetch(baseUrl + "?ip=" + encodeURIComponent(value), {
+      headers: { "X-Requested-With": "XMLHttpRequest" },
+      credentials: "same-origin",
+    })
+      .then(function (resp) { return resp.ok ? resp.text() : ""; })
+      .then(function (html) { target.innerHTML = html; })
+      .catch(function () { target.innerHTML = ""; });
+  });
+})();
+</script>
+{% endif %}
 {% endblock %}

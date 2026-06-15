@@ -167,10 +167,16 @@ def _sync_server_leases(
 
     lease_ips: set[str] = set()
     had_errors = False
+    # Foreign (manually-curated) NetBox IPs skipped to avoid overwriting them.
+    conflicts: list[str] = []
     for lease in raw_leases:
         try:
             _ip, created, changed = sync_lease_to_netbox(
-                lease, cleanup=False, reservation_ips=reservation_ips, subnet_prefix_map=subnet_prefix_map
+                lease,
+                cleanup=False,
+                reservation_ips=reservation_ips,
+                subnet_prefix_map=subnet_prefix_map,
+                conflicts=conflicts,
             )
             all_synced.append(lease)
             ip_addr = lease.get("ip-address")
@@ -190,6 +196,7 @@ def _sync_server_leases(
             stats["errors"] += 1
             had_errors = True
 
+    stats["conflicts"] = stats.get("conflicts", 0) + len(conflicts)
     return not truncated and not had_errors, frozenset(lease_ips)
 
 
@@ -216,6 +223,8 @@ def _sync_server_reservations(
     from_index = 0
     source_index = 0
     processed = 0
+    # Foreign (manually-curated) NetBox IPs skipped to avoid overwriting them.
+    conflicts: list[str] = []
 
     try:
         client = server.get_client(version=version)
@@ -229,7 +238,11 @@ def _sync_server_reservations(
             for reservation in page:
                 try:
                     _ip, created, changed = sync_reservation_to_netbox(
-                        reservation, cleanup=False, lease_ips=lease_ips, subnet_prefix_map=subnet_prefix_map
+                        reservation,
+                        cleanup=False,
+                        lease_ips=lease_ips,
+                        subnet_prefix_map=subnet_prefix_map,
+                        conflicts=conflicts,
                     )
                     all_synced.append(reservation)
                     processed += 1
@@ -266,6 +279,7 @@ def _sync_server_reservations(
         stats["errors"] += 1
         return False
 
+    stats["conflicts"] = stats.get("conflicts", 0) + len(conflicts)
     logger.info("Server %s (v%s): synced %d reservations", server.name, version, processed)
     return True
 
@@ -665,7 +679,7 @@ class KeaIpamSyncJob(JobRunner):
                 return
 
             self.logger.info(f"Starting Kea IPAM sync for {len(servers)} server(s).")
-            total: dict[str, int] = {"created": 0, "updated": 0, "errors": 0, "prefix_errors": 0}
+            total: dict[str, int] = {"created": 0, "updated": 0, "errors": 0, "prefix_errors": 0, "conflicts": 0}
 
             for server in servers:
                 # In Run Now mode (server_pk provided), honour the explicit selection
@@ -681,7 +695,13 @@ class KeaIpamSyncJob(JobRunner):
                 effective_ip_ranges = sync_ip_ranges and server.sync_ip_ranges_enabled
 
                 self.logger.debug(f"Syncing server: {server.name} (pk={server.pk})")
-                server_stats: dict[str, int] = {"created": 0, "updated": 0, "errors": 0, "prefix_errors": 0}
+                server_stats: dict[str, int] = {
+                    "created": 0,
+                    "updated": 0,
+                    "errors": 0,
+                    "prefix_errors": 0,
+                    "conflicts": 0,
+                }
 
                 try:
                     _sync_one_server(
@@ -701,9 +721,10 @@ class KeaIpamSyncJob(JobRunner):
                     f"Server {server.name}: created={server_stats['created']}"
                     f" updated={server_stats['updated']} errors={server_stats['errors']}"
                     f" prefix_errors={server_stats['prefix_errors']}"
+                    f" conflicts={server_stats['conflicts']}"
                 )
                 for key in total:
-                    total[key] += server_stats[key]
+                    total[key] += server_stats.get(key, 0)
 
                 summary.append(
                     {
@@ -713,6 +734,7 @@ class KeaIpamSyncJob(JobRunner):
                         "updated": server_stats["updated"],
                         "errors": server_stats["errors"],
                         "prefix_errors": server_stats["prefix_errors"],
+                        "conflicts": server_stats["conflicts"],
                     }
                 )
 
@@ -720,6 +742,7 @@ class KeaIpamSyncJob(JobRunner):
                 f"Kea IPAM sync complete — servers={len(summary)}"
                 f" created={total['created']} updated={total['updated']}"
                 f" errors={total['errors']} prefix_errors={total['prefix_errors']}"
+                f" conflicts={total['conflicts']}"
             )
             if total["errors"] > 0 or total["prefix_errors"] > 0:
                 raise JobFailed()

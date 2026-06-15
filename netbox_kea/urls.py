@@ -75,6 +75,11 @@ urlpatterns = (
         name="server_leases4_delete",
     ),
     path(
+        "servers/<int:pk>/reservation/check-ip/",
+        views.ReservationCheckNetboxIPView.as_view(),
+        name="reservation_check_ip",
+    ),
+    path(
         "servers/<int:pk>/reservations4/add/",
         views.ServerReservation4AddView.as_view(),
         name="server_reservation4_add",

@@ -347,6 +347,18 @@ def _is_kea_managed_description(description: str | None) -> bool:
     return not description or description.startswith(_KEA_DESC_PREFIX)
 
 
+def is_kea_managed_ip(ip_obj: NbIPAddress) -> bool:
+    """Return ``True`` when *ip_obj* is safe for the sync to claim/overwrite.
+
+    A NetBox IP is *Kea-managed* when its ``description`` is blank or starts
+    with ``"Synced from Kea DHCP"`` (see :func:`_is_kea_managed_description`).
+    Any other description marks the IP as a manually-curated ("foreign") entry
+    that an unattended (bulk / background) sync must not overwrite unless
+    explicitly forced.
+    """
+    return _is_kea_managed_description(getattr(ip_obj, "description", "") or "")
+
+
 def _status_description(status: str) -> str:
     """Return the Kea-sync description that matches the semantic *status*.
 
@@ -419,6 +431,8 @@ def sync_lease_to_netbox(
     cleanup: bool = True,
     reservation_ips: frozenset[str] | None = None,
     subnet_prefix_map: dict[int, int] | None = None,
+    force: bool = False,
+    conflicts: list[str] | None = None,
 ) -> tuple[NbIPAddress, bool, bool]:
     """Create or update a NetBox IPAddress from a Kea lease dictionary.
 
@@ -447,6 +461,14 @@ def sync_lease_to_netbox(
         subnet_prefix_map: Optional ``{subnet-id: prefix_len}`` map built from the
                           Kea config.  Used to resolve the authoritative mask and
                           to correct legacy ``/32`` rows on existing Kea-synced IPs.
+        force:            When ``False`` (default) and the existing NetBox IP is
+                          *foreign* (manually curated — see :func:`is_kea_managed_ip`),
+                          the IP is left untouched and ``(ip_obj, False, False)`` is
+                          returned.  Set ``True`` for explicit single-record syncs
+                          (e.g. the per-row Sync button) to override the guard.
+        conflicts:        Optional list accumulator.  When provided, each foreign IP
+                          skipped because ``force`` is ``False`` is appended so callers
+                          (bulk views / background job) can report a conflict count.
 
     Returns ``(ip_object, created, changed)`` where *created* is ``True`` on
     the first call for a given IP and *changed* is ``True`` when any field was
@@ -468,6 +490,16 @@ def sync_lease_to_netbox(
     else:
         created = False
         current_status = ip_obj.status
+        # Protect manually-curated NetBox IPs from unattended overwrites.
+        if not force and not is_kea_managed_ip(ip_obj):
+            logger.debug(
+                "Skipping foreign NetBox IP %s (description=%r) — not Kea-managed; pass force=True to override",
+                ip_str,
+                ip_obj.description,
+            )
+            if conflicts is not None:
+                conflicts.append(ip_str)
+            return ip_obj, False, False
 
     status = _compute_ip_status("lease", current_status, ip_str=ip_str, other_source_ips=reservation_ips)
     changed = _apply_ip_fields(ip_obj, status=status, hostname=hostname)
@@ -498,6 +530,8 @@ def sync_reservation_to_netbox(
     cleanup: bool = True,
     lease_ips: frozenset[str] | None = None,
     subnet_prefix_map: dict[int, int] | None = None,
+    force: bool = False,
+    conflicts: list[str] | None = None,
 ) -> tuple[NbIPAddress, bool, bool]:
     """Create or update a NetBox IPAddress from a Kea reservation dictionary.
 
@@ -522,6 +556,14 @@ def sync_reservation_to_netbox(
         subnet_prefix_map: Optional ``{subnet-id: prefix_len}`` map built from the
                      Kea config.  Used to resolve the authoritative mask and to
                      correct legacy ``/32`` rows on existing Kea-synced IPs.
+        force:       When ``False`` (default), any address whose existing NetBox IP
+                     is *foreign* (manually curated — see :func:`is_kea_managed_ip`)
+                     is skipped and left untouched; sibling addresses in the same
+                     reservation are still synced.  Set ``True`` for explicit
+                     single-record syncs (e.g. the per-row Sync button) to override.
+        conflicts:   Optional list accumulator.  When provided, each foreign address
+                     skipped because ``force`` is ``False`` is appended so callers
+                     (bulk views / background job) can report a conflict count.
 
     Raises ``ValueError`` when the reservation contains no IP address.
 
@@ -556,6 +598,21 @@ def sync_reservation_to_netbox(
         else:
             created = False
             current_status = ip_obj.status
+            # Protect manually-curated NetBox IPs from unattended overwrites.
+            # Skip just this address; sibling addresses are still processed.
+            if not force and not is_kea_managed_ip(ip_obj):
+                logger.debug(
+                    "Skipping foreign NetBox IP %s (description=%r) — not Kea-managed; pass force=True to override",
+                    ip_str,
+                    ip_obj.description,
+                )
+                if conflicts is not None:
+                    conflicts.append(ip_str)
+                # Still expose the (untouched) object as the primary result so
+                # callers get a handle even when every address is a conflict.
+                if primary_obj is None:
+                    primary_obj = ip_obj
+                continue
 
         status = _compute_ip_status("reservation", current_status, ip_str=ip_str, other_source_ips=lease_ips)
         changed = _apply_ip_fields(ip_obj, status=status, hostname=hostname)

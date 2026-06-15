@@ -30,13 +30,16 @@
                 {% for entry in latest_job.data.summary %}
                   {% if entry.pk == object.pk %}
                     <hr>
-                    <div class="d-flex gap-3 small">
+                    <div class="d-flex flex-wrap gap-3 small">
                       <span>✅ Created: <strong>{{ entry.created }}</strong></span>
                       <span>✏️ Updated: <strong>{{ entry.updated }}</strong></span>
                       {% if entry.errors > 0 %}
                         <span class="text-danger">❌ Errors: <strong>{{ entry.errors }}</strong></span>
                       {% else %}
                         <span>✔ Errors: <strong>0</strong></span>
+                      {% endif %}
+                      {% if entry.conflicts %}
+                        <span class="text-warning" title="Foreign NetBox IPs skipped to avoid overwriting them">⚠ Conflicts: <strong>{{ entry.conflicts }}</strong></span>
                       {% endif %}
                     </div>
                   {% endif %}

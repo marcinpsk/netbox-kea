@@ -454,3 +454,111 @@ class TestReservation6BulkSyncView(_SyncViewBase):
         url = reverse("plugins:netbox_kea:server_reservation6_bulk_sync", args=[99999])
         response = self.client.post(url, content_type="application/json")
         self.assertEqual(response.status_code, 404)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Issue #64: bulk-sync conflict protection + live IP-check endpoint
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestReservationBulkSyncConflictProtection(_SyncViewBase):
+    """Bulk reservation sync must not overwrite foreign NetBox IPs; conflicts are counted."""
+
+    def _url(self):
+        return reverse("plugins:netbox_kea:server_reservation4_bulk_sync", args=[self.server.pk])
+
+    def test_foreign_ip_not_overwritten_and_counted(self):
+        from django.contrib import messages as django_messages
+
+        NbIP.objects.create(address="10.0.20.5/32", status="active", description="Router loopback")
+        mock_client = MagicMock()
+        mock_client.reservation_get_page.return_value = (
+            [{"ip-address": "10.0.20.5", "hostname": "foreign", "subnet-id": 1}],
+            0,
+            0,
+        )
+        with patch("netbox_kea.models.KeaClient", return_value=mock_client):
+            response = self.client.post(self._url(), follow=True)
+
+        # Foreign IP left untouched.
+        ip = NbIP.objects.get(address="10.0.20.5/32")
+        self.assertEqual(ip.status, "active")
+        self.assertEqual(ip.description, "Router loopback")
+        # Conflict surfaced in the summary message.
+        msgs = [str(m) for m in django_messages.get_messages(response.wsgi_request)]
+        self.assertTrue(any("1 conflicts skipped" in m for m in msgs), msgs)
+
+    def test_managed_ip_still_synced_alongside_conflict(self):
+        NbIP.objects.create(address="10.0.20.6/32", status="active", description="Router loopback")
+        mock_client = MagicMock()
+        mock_client.reservation_get_page.return_value = (
+            [
+                {"ip-address": "10.0.20.6", "hostname": "foreign", "subnet-id": 1},
+                {"ip-address": "10.0.20.7", "hostname": "managed", "subnet-id": 1},
+            ],
+            0,
+            0,
+        )
+        with patch("netbox_kea.models.KeaClient", return_value=mock_client):
+            self.client.post(self._url(), follow=True)
+
+        # Foreign untouched, the other reservation claimed normally.
+        self.assertEqual(NbIP.objects.get(address="10.0.20.6/32").status, "active")
+        claimed = NbIP.objects.filter(address__startswith="10.0.20.7/").first()
+        self.assertIsNotNone(claimed)
+        self.assertEqual(claimed.status, "reserved")
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestReservationCheckNetboxIPView(_SyncViewBase):
+    """GET endpoint that advises whether an IP already exists in NetBox IPAM."""
+
+    def _url(self):
+        return reverse("plugins:netbox_kea:reservation_check_ip", args=[self.server.pk])
+
+    def test_empty_when_ip_missing(self):
+        response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content.decode().strip(), "")
+
+    def test_empty_when_ip_invalid(self):
+        response = self.client.get(self._url(), {"ip": "not-an-ip"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content.decode().strip(), "")
+
+    def test_empty_when_ip_not_in_netbox(self):
+        response = self.client.get(self._url(), {"ip": "10.0.40.99"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content.decode().strip(), "")
+
+    def test_info_alert_for_kea_managed_ip(self):
+        NbIP.objects.create(address="10.0.40.1/24", status="reserved", description="Synced from Kea DHCP reservation")
+        response = self.client.get(self._url(), {"ip": "10.0.40.1"})
+        body = response.content.decode()
+        self.assertIn("alert-info", body)
+        self.assertIn("Already in NetBox IPAM", body)
+
+    def test_info_alert_for_blank_description_ip(self):
+        NbIP.objects.create(address="10.0.40.2/24", status="active", description="")
+        response = self.client.get(self._url(), {"ip": "10.0.40.2"})
+        body = response.content.decode()
+        self.assertIn("alert-info", body)
+
+    def test_warning_alert_for_foreign_ip(self):
+        NbIP.objects.create(address="10.0.40.3/24", status="active", description="Router loopback")
+        response = self.client.get(self._url(), {"ip": "10.0.40.3"})
+        body = response.content.decode()
+        self.assertIn("alert-warning", body)
+        self.assertIn("not", body.lower())
+        self.assertIn("Router loopback", body)
+
+    def test_404_for_nonexistent_server(self):
+        url = reverse("plugins:netbox_kea:reservation_check_ip", args=[99999])
+        response = self.client.get(url, {"ip": "10.0.40.1"})
+        self.assertEqual(response.status_code, 404)
+
+    def test_login_required(self):
+        self.client.logout()
+        response = self.client.get(self._url(), {"ip": "10.0.40.1"})
+        self.assertIn(response.status_code, [302, 403])

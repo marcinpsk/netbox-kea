@@ -560,6 +560,34 @@ class TestKeaIpamSyncJobRun(TestCase):
         self.assertEqual(entry["errors"], 0)
         mock_job.save.assert_called_once_with(update_fields=["data"])
 
+    def test_foreign_ip_skipped_and_counted_in_summary(self):
+        """A foreign NetBox IP is never overwritten by the background job, and is counted.
+
+        Issue #64 acceptance: a NetBox IP with description 'Router loopback' is
+        never overwritten by a bulk/background sync run, and the conflict count is
+        visible in the per-server summary.
+        """
+        from ipam.models import IPAddress
+
+        # v4-only so the shared Kea fake doesn't replay the v4 reservation under v6.
+        self._make_db_server(name="kea-conflict", dhcp6=False)
+        IPAddress.objects.create(address="10.0.0.100/32", status="active", description="Router loopback")
+        with _patch_kea(leases4=[], reservations=[_RESV4]):
+            mock_job = _make_job()
+            try:
+                KeaIpamSyncJob(mock_job).run()
+            except JobFailed:
+                pass
+
+        # Foreign IP left exactly as the operator set it.
+        ip = IPAddress.objects.get(address="10.0.0.100/32")
+        self.assertEqual(ip.status, "active")
+        self.assertEqual(ip.description, "Router loopback")
+
+        # Conflict surfaced in the per-server summary.
+        entry = next(e for e in mock_job.data["summary"] if e["name"] == "kea-conflict")
+        self.assertEqual(entry["conflicts"], 1)
+
     # ── reservation generic exception ─────────────────────────────────────
 
     def test_reservation_generic_exception_increments_errors(self):

@@ -82,6 +82,7 @@
               <th>Created</th>
               <th>Updated</th>
               <th>Errors</th>
+              <th>Conflicts</th>
               <th></th>
             </tr>
           </thead>
@@ -147,6 +148,19 @@
                   {% else %}—{% endif %}
                 </td>
                 <td>
+                  {% if job and job.data.summary %}
+                    {% for entry in job.data.summary %}
+                      {% if entry.pk == server.pk %}
+                        {% if entry.conflicts %}
+                          <span class="text-warning" title="Foreign NetBox IPs skipped to avoid overwriting them">{{ entry.conflicts }}</span>
+                        {% else %}
+                          {{ entry.conflicts|default:0 }}
+                        {% endif %}
+                      {% endif %}
+                    {% endfor %}
+                  {% else %}—{% endif %}
+                </td>
+                <td>
                   {% if server.pk in allowed_server_pks %}
                   <form method="post" action="{% url 'plugins:netbox_kea:server_sync_now' server.pk %}" class="d-inline">
                     {% csrf_token %}
@@ -159,7 +173,7 @@
               </tr>
               {% endwith %}
             {% empty %}
-              <tr><td colspan="8" class="text-muted text-center py-3">No servers configured.</td></tr>
+              <tr><td colspan="9" class="text-muted text-center py-3">No servers configured.</td></tr>
             {% endfor %}
           </tbody>
         </table>

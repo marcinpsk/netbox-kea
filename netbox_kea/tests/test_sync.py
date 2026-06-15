@@ -1780,3 +1780,179 @@ class TestDescriptionSelfHeal(TestCase):
         reservation = {"ip-address": "10.63.125.142", "hostname": "h", "subnet-id": 1}
         ip_obj, _, _ = sync_reservation_to_netbox(reservation, lease_ips=frozenset())
         self.assertEqual(ip_obj.description, "Customer gateway — do not touch")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TestForeignIPConflictProtection (issue #64, Option A)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestIsKeaManagedIP(TestCase):
+    """is_kea_managed_ip classifies an existing NetBox IP as safe-to-overwrite or foreign."""
+
+    def test_blank_description_is_managed(self):
+        from ipam.models import IPAddress as NbIP
+
+        from netbox_kea.sync import is_kea_managed_ip
+
+        ip = NbIP(address="10.0.0.1/24", status="active", description="")
+        self.assertTrue(is_kea_managed_ip(ip))
+
+    def test_synced_description_is_managed(self):
+        from ipam.models import IPAddress as NbIP
+
+        from netbox_kea.sync import is_kea_managed_ip
+
+        ip = NbIP(address="10.0.0.2/24", status="active", description="Synced from Kea DHCP lease")
+        self.assertTrue(is_kea_managed_ip(ip))
+
+    def test_foreign_description_is_not_managed(self):
+        from ipam.models import IPAddress as NbIP
+
+        from netbox_kea.sync import is_kea_managed_ip
+
+        ip = NbIP(address="10.0.0.3/24", status="active", description="Router loopback")
+        self.assertFalse(is_kea_managed_ip(ip))
+
+
+class TestReservationForeignIPProtection(TestCase):
+    """Bulk/unattended reservation sync must not overwrite foreign NetBox IPs.
+
+    Acceptance criteria from issue #64 (Option A):
+    - "Router loopback" IP is never overwritten by a bulk sync run.
+    - blank-description IP is claimed normally.
+    - "Synced from Kea DHCP lease" IP is updated normally.
+    """
+
+    _RESERVATION = {
+        "ip-address": "192.168.51.200",
+        "hw-address": "11:22:33:44:55:66",
+        "hostname": "reserved-host.example.com",
+        "subnet-id": 1,
+    }
+
+    def test_foreign_ip_is_not_overwritten(self):
+        from ipam.models import IPAddress as NbIP
+
+        from netbox_kea.sync import sync_reservation_to_netbox
+
+        NbIP.objects.create(address="192.168.51.200/32", status="active", description="Router loopback")
+        ip_obj, created, changed = sync_reservation_to_netbox(self._RESERVATION)
+        self.assertFalse(created)
+        self.assertFalse(changed)
+        # Status and description are left exactly as the operator set them.
+        ip_obj.refresh_from_db()
+        self.assertEqual(ip_obj.status, "active")
+        self.assertEqual(ip_obj.description, "Router loopback")
+
+    def test_foreign_ip_is_recorded_as_conflict(self):
+        from ipam.models import IPAddress as NbIP
+
+        from netbox_kea.sync import sync_reservation_to_netbox
+
+        NbIP.objects.create(address="192.168.51.200/32", status="active", description="Router loopback")
+        conflicts: list[str] = []
+        sync_reservation_to_netbox(self._RESERVATION, conflicts=conflicts)
+        self.assertEqual(conflicts, ["192.168.51.200"])
+
+    def test_force_overwrites_foreign_ip(self):
+        from ipam.models import IPAddress as NbIP
+
+        from netbox_kea.sync import sync_reservation_to_netbox
+
+        NbIP.objects.create(address="192.168.51.200/32", status="active", description="Router loopback")
+        ip_obj, created, changed = sync_reservation_to_netbox(self._RESERVATION, force=True)
+        self.assertFalse(created)
+        self.assertTrue(changed)
+        ip_obj.refresh_from_db()
+        self.assertEqual(ip_obj.status, "reserved")
+
+    def test_blank_description_ip_is_claimed(self):
+        from ipam.models import IPAddress as NbIP
+
+        from netbox_kea.sync import sync_reservation_to_netbox
+
+        NbIP.objects.create(address="192.168.51.200/32", status="active", description="")
+        ip_obj, created, changed = sync_reservation_to_netbox(self._RESERVATION)
+        self.assertFalse(created)
+        self.assertTrue(changed)
+        ip_obj.refresh_from_db()
+        self.assertEqual(ip_obj.status, "reserved")
+
+    def test_kea_managed_ip_is_updated(self):
+        from ipam.models import IPAddress as NbIP
+
+        from netbox_kea.sync import sync_reservation_to_netbox
+
+        NbIP.objects.create(address="192.168.51.200/32", status="active", description="Synced from Kea DHCP lease")
+        ip_obj, created, changed = sync_reservation_to_netbox(self._RESERVATION)
+        self.assertFalse(created)
+        self.assertTrue(changed)
+        ip_obj.refresh_from_db()
+        self.assertEqual(ip_obj.status, "reserved")
+
+    def test_multi_address_skips_only_foreign_sibling(self):
+        """A v6 reservation with one foreign + one new address syncs the new one and skips the foreign."""
+        from ipam.models import IPAddress as NbIP
+
+        from netbox_kea.sync import sync_reservation_to_netbox
+
+        NbIP.objects.create(address="2001:db8::1/64", status="active", description="Router loopback")
+        reservation = {
+            "ip-addresses": ["2001:db8::1", "2001:db8::2"],
+            "hostname": "v6-host",
+            "subnet-id": 1,
+        }
+        conflicts: list[str] = []
+        sync_reservation_to_netbox(reservation, conflicts=conflicts)
+
+        # Foreign sibling untouched.
+        foreign = NbIP.objects.get(address="2001:db8::1/64")
+        self.assertEqual(foreign.status, "active")
+        self.assertEqual(foreign.description, "Router loopback")
+        # New sibling created with reserved status.
+        new_ip = NbIP.objects.filter(address__startswith="2001:db8::2/").first()
+        self.assertIsNotNone(new_ip)
+        self.assertEqual(new_ip.status, "reserved")
+        self.assertEqual(conflicts, ["2001:db8::1"])
+
+
+class TestLeaseForeignIPProtection(TestCase):
+    """Bulk/unattended lease sync must not overwrite foreign NetBox IPs."""
+
+    _LEASE = {"ip-address": "192.168.51.210", "hostname": "leased-host", "subnet-id": 1}
+
+    def test_foreign_ip_is_not_overwritten(self):
+        from ipam.models import IPAddress as NbIP
+
+        from netbox_kea.sync import sync_lease_to_netbox
+
+        NbIP.objects.create(address="192.168.51.210/32", status="active", description="Router loopback")
+        ip_obj, created, changed = sync_lease_to_netbox(self._LEASE)
+        self.assertFalse(created)
+        self.assertFalse(changed)
+        ip_obj.refresh_from_db()
+        self.assertEqual(ip_obj.status, "active")
+        self.assertEqual(ip_obj.description, "Router loopback")
+
+    def test_foreign_ip_is_recorded_as_conflict(self):
+        from ipam.models import IPAddress as NbIP
+
+        from netbox_kea.sync import sync_lease_to_netbox
+
+        NbIP.objects.create(address="192.168.51.210/32", status="active", description="Router loopback")
+        conflicts: list[str] = []
+        sync_lease_to_netbox(self._LEASE, conflicts=conflicts)
+        self.assertEqual(conflicts, ["192.168.51.210"])
+
+    def test_force_overwrites_foreign_ip(self):
+        from ipam.models import IPAddress as NbIP
+
+        from netbox_kea.sync import sync_lease_to_netbox
+
+        NbIP.objects.create(address="192.168.51.210/32", status="active", description="Router loopback")
+        ip_obj, created, changed = sync_lease_to_netbox(self._LEASE, force=True)
+        self.assertFalse(created)
+        self.assertTrue(changed)
+        ip_obj.refresh_from_db()
+        self.assertEqual(ip_obj.status, "dhcp")
