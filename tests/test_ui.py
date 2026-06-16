@@ -460,10 +460,18 @@ def open_leases(page: Page, version: Literal[4, 6]) -> None:
     """Open the consolidated Leases tab and select the DHCPv4/DHCPv6 family pill.
 
     The per-protocol tabs were merged into a single "Leases" tab with an in-page
-    v4/v6 nav-pill toggle (rendered only on dual-stack servers).
+    v4/v6 nav-pill toggle that is rendered only on dual-stack servers. On a
+    single-protocol server there is no pill — the tab already lands on the one
+    enabled protocol — so the pill click is skipped.
     """
     page.get_by_role("link", name="Leases", exact=True).click()
-    page.get_by_role("link", name=f"DHCPv{version}", exact=True).click()
+    # Wait until the leases page has loaded (search field is present on single + dual)
+    # before probing for the family pill, so .count() reflects the new page.
+    page.locator("#id_q").wait_for()
+    pill = page.get_by_role("link", name=f"DHCPv{version}", exact=True)
+    if pill.count():
+        pill.click()
+        page.locator("#id_q").wait_for()
 
 
 def open_subnets(page: Page, version: Literal[4, 6]) -> None:
@@ -552,7 +560,10 @@ def test_navigation_view(page: Page) -> None:
     ],
 )
 def test_navigation_add(page: Page) -> None:
-    open_kea_menu(page).get_by_role("link", name="Add", exact=True).click()
+    menu = open_kea_menu(page)
+    # The Add button is hidden until its menu row is hovered (CSS :hover reveal).
+    menu.get_by_role("link", name="Servers", exact=True).hover()
+    menu.get_by_role("link", name="Add", exact=True).click()
 
     expect(page).to_have_title(re.compile("^Add a new server.*"))
 
