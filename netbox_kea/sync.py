@@ -608,8 +608,11 @@ def sync_reservation_to_netbox(
                 )
                 if conflicts is not None:
                     conflicts.append(ip_str)
-                # Still expose the (untouched) object as the primary result so
-                # callers get a handle even when every address is a conflict.
+                # Expose the (untouched) foreign object as the primary handle when no
+                # managed address has been seen yet. NOTE: if a *later* sibling is
+                # managed and synced, the returned primary still points at this skipped
+                # conflict — callers consume created/changed/conflicts, not the returned
+                # object (force=True callers never reach this branch), so this is fine.
                 if primary_obj is None:
                     primary_obj = ip_obj
                 continue

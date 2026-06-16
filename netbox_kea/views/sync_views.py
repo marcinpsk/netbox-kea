@@ -272,9 +272,14 @@ class ReservationCheckNetboxIPView(ConditionalLoginRequiredMixin, View):
         except (AddrFormatError, ValueError):
             return HttpResponse("")
 
-        from ..sync import get_netbox_ip, is_kea_managed_ip
+        from ipam.models import IPAddress as NbIP
 
-        nb_ip = get_netbox_ip(ip_str)
+        from ..sync import is_kea_managed_ip
+
+        # Scope the lookup to IPs this user may view so the advisory never leaks an
+        # IP's status/description/assignment to someone without IPAM access. Mirrors
+        # get_netbox_ip()'s host match but adds NetBox object-level permission filtering.
+        nb_ip = NbIP.objects.restrict(request.user, "view").filter(address__startswith=f"{ip_str}/").first()
         if nb_ip is None:
             return HttpResponse("")
 

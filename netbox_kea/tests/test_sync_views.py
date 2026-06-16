@@ -562,3 +562,49 @@ class TestReservationCheckNetboxIPView(_SyncViewBase):
         self.client.logout()
         response = self.client.get(self._url(), {"ip": "10.0.40.1"})
         self.assertIn(response.status_code, [302, 403])
+
+    def test_respects_ipam_view_permission(self):
+        """A user who can view the server but not IPAM IPs must get an empty advisory.
+
+        The advisory leaks an IP's status/description/assignment, so the lookup
+        must be scoped with ``.restrict(user, "view")``. With an unrestricted
+        lookup this user would see the foreign-IP warning for an IP they have no
+        permission to view.
+        """
+        from django.contrib.contenttypes.models import ContentType
+        from users.models import ObjectPermission
+
+        NbIP.objects.create(address="10.0.40.7/24", status="active", description="Router loopback")
+
+        limited = User.objects.create_user(username="limited_ipcheck", password="pass")
+        # Grant server view but deliberately NO ipam.view_ipaddress permission.
+        perm = ObjectPermission.objects.create(name="view-server-only-ipcheck", actions=["view"])
+        perm.object_types.add(ContentType.objects.get_for_model(Server))
+        perm.users.add(limited)
+        self.client.force_login(limited)
+
+        response = self.client.get(self._url(), {"ip": "10.0.40.7"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content.decode().strip(), "")
+
+    def test_advisory_shown_when_user_has_ipam_view_permission(self):
+        """The same lookup still renders the advisory once the user can view IPAM IPs."""
+        from django.contrib.contenttypes.models import ContentType
+        from ipam.models import IPAddress as IpamIP
+        from users.models import ObjectPermission
+
+        NbIP.objects.create(address="10.0.40.8/24", status="active", description="Router loopback")
+
+        limited = User.objects.create_user(username="limited_ipcheck_ok", password="pass")
+        server_perm = ObjectPermission.objects.create(name="view-server-ipcheck-ok", actions=["view"])
+        server_perm.object_types.add(ContentType.objects.get_for_model(Server))
+        server_perm.users.add(limited)
+        ip_perm = ObjectPermission.objects.create(name="view-ipam-ipcheck-ok", actions=["view"])
+        ip_perm.object_types.add(ContentType.objects.get_for_model(IpamIP))
+        ip_perm.users.add(limited)
+        self.client.force_login(limited)
+
+        response = self.client.get(self._url(), {"ip": "10.0.40.8"})
+        body = response.content.decode()
+        self.assertIn("alert-warning", body)
+        self.assertIn("Router loopback", body)

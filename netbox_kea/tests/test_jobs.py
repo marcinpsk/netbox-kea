@@ -588,6 +588,32 @@ class TestKeaIpamSyncJobRun(TestCase):
         entry = next(e for e in mock_job.data["summary"] if e["name"] == "kea-conflict")
         self.assertEqual(entry["conflicts"], 1)
 
+    def test_config_get_failure_falls_back_to_prefix_match_and_logs(self):
+        """When config-get fails, leases still sync (NetBox-prefix fallback) and it's logged.
+
+        The Kea subnet-id → prefix-length map is the authoritative mask source, but
+        a config-get failure must degrade gracefully to NetBox prefix matching rather
+        than dropping the lease — and surface an INFO log so the degradation is visible.
+        """
+        from ipam.models import IPAddress
+
+        self._make_db_server(name="kea-noconfig", dhcp6=False)
+
+        def _failing_config_get(self, cmd, service=None, arguments=None, check=None):
+            if cmd == "config-get":
+                raise RuntimeError("config-get boom")
+            return [{"result": 0, "arguments": {}}]
+
+        with _patch_kea(leases4=[_LEASE4]):
+            with patch.object(KeaClient, "command", _failing_config_get):
+                with self.assertLogs("netbox_kea.jobs", level="INFO") as cm:
+                    self._run()
+
+        # Lease IP still created despite the missing Kea subnet config.
+        self.assertTrue(IPAddress.objects.filter(address__startswith="10.0.0.1/").exists())
+        # Fallback is surfaced to the operator.
+        self.assertTrue(any("fall back to NetBox prefix matching" in m for m in cm.output))
+
     # ── reservation generic exception ─────────────────────────────────────
 
     def test_reservation_generic_exception_increments_errors(self):

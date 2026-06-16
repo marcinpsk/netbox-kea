@@ -476,6 +476,16 @@ def _sync_one_server(
         )
         subnet_prefix_map = _build_subnet_prefix_map(subnets)
 
+        # If config-get failed but we're still syncing leases/reservations, masks
+        # degrade to NetBox prefix matching (then /32|/128). Surface that so an
+        # operator can tell why a mask looks wrong without it being a hard error.
+        if subnets is None and (sync_leases or sync_reservations):
+            logger.info(
+                "Server %s (v%s): config-get unavailable — lease/reservation masks fall back to NetBox prefix matching",
+                server.name,
+                version,
+            )
+
         # Two-pass idempotent sync: pre-fetch reservation IPs so the lease sync
         # can determine the correct final status without intermediate DB writes.
         # Only pre-fetch when both sources will be synced this run; otherwise
