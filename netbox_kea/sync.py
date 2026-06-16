@@ -377,12 +377,20 @@ def _apply_ip_fields(
     ip_obj: NbIPAddress,
     status: str,
     hostname: str,
+    *,
+    claim: bool = False,
 ) -> bool:
     """Apply *status*, *hostname* (dns_name), and a status-derived description to *ip_obj*.
 
     The description is derived from *status* via :func:`_status_description` and
     self-heals on every run for Kea-managed IPs — so an IP first created from a
     lease but later (also) reserved no longer stays labelled ``"... lease"``.
+
+    When *claim* is ``True`` (an explicit forced sync), the Kea-managed description
+    is written even over a foreign (manually-curated) one — so the override is
+    *sticky*: :func:`is_kea_managed_ip` returns ``True`` afterwards and the next
+    unattended sync updates the IP normally instead of re-reporting it as a
+    conflict. When ``False`` (default), a foreign description is preserved.
 
     Returns ``True`` when any field was changed and the object should be saved.
     """
@@ -399,27 +407,28 @@ def _apply_ip_fields(
         changed = True
 
     description = _status_description(status)
-    if _is_kea_managed_description(ip_obj.description) and ip_obj.description != description:
+    if (claim or _is_kea_managed_description(ip_obj.description)) and ip_obj.description != description:
         ip_obj.description = description
         changed = True
 
     return changed
 
 
-def _apply_ip_mask(ip_obj: NbIPAddress, ip_str: str, prefix_len: int) -> bool:
+def _apply_ip_mask(ip_obj: NbIPAddress, ip_str: str, prefix_len: int, *, force: bool = False) -> bool:
     """Correct a Kea-synced IP's prefix length to *prefix_len*.
 
     Only rewrites the mask when the IP is Kea-managed (see
-    :func:`_is_kea_managed_description`).  Manually-curated IPs are left
-    untouched.  This is what fixes legacy rows that were stored as ``/32``
-    before the authoritative Kea subnet mask was used.
+    :func:`_is_kea_managed_description`) — unless *force* is ``True`` (an explicit
+    forced sync claiming the IP), in which case the mask is corrected regardless.
+    Manually-curated IPs are otherwise left untouched.  This is what fixes legacy
+    rows that were stored as ``/32`` before the authoritative Kea subnet mask was used.
 
     Returns ``True`` when the address was changed.
     """
     desired = f"{ip_str}/{prefix_len}"
     if str(ip_obj.address) == desired:
         return False
-    if not _is_kea_managed_description(ip_obj.description):
+    if not force and not _is_kea_managed_description(ip_obj.description):
         return False
     ip_obj.address = desired
     return True
@@ -502,11 +511,11 @@ def sync_lease_to_netbox(
             return ip_obj, False, False
 
     status = _compute_ip_status("lease", current_status, ip_str=ip_str, other_source_ips=reservation_ips)
-    changed = _apply_ip_fields(ip_obj, status=status, hostname=hostname)
+    changed = _apply_ip_fields(ip_obj, status=status, hostname=hostname, claim=force)
 
     # Correct the mask on existing Kea-synced IPs (e.g. a legacy /32 that should
     # be /24) from the authoritative Kea subnet prefix length.
-    if not created and _apply_ip_mask(ip_obj, ip_str, prefix_len):
+    if not created and _apply_ip_mask(ip_obj, ip_str, prefix_len, force=force):
         changed = True
 
     if created or changed:
@@ -618,11 +627,11 @@ def sync_reservation_to_netbox(
                 continue
 
         status = _compute_ip_status("reservation", current_status, ip_str=ip_str, other_source_ips=lease_ips)
-        changed = _apply_ip_fields(ip_obj, status=status, hostname=hostname)
+        changed = _apply_ip_fields(ip_obj, status=status, hostname=hostname, claim=force)
 
         # Correct the mask on existing Kea-synced IPs from the authoritative
         # Kea subnet prefix length (fixes legacy /32 rows).
-        if not created and _apply_ip_mask(ip_obj, ip_str, prefix_len):
+        if not created and _apply_ip_mask(ip_obj, ip_str, prefix_len, force=force):
             changed = True
 
         if created or changed:

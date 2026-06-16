@@ -142,22 +142,26 @@
   var baseUrl = "{% url 'plugins:netbox_kea:reservation_check_ip' object.pk %}";
 
   input.addEventListener("blur", function () {
-    var value = (input.value || "").trim();
-    // DHCPv6 reservations may list several comma-separated addresses; check the first.
-    if (value.indexOf(",") !== -1) {
-      value = value.split(",")[0].trim();
-    }
-    if (!value) {
+    // DHCPv6 reservations may list several comma-separated addresses; check each
+    // one so a conflict in the 2nd+ address is not silently missed.
+    var values = (input.value || "")
+      .split(",")
+      .map(function (value) { return value.trim(); })
+      .filter(Boolean);
+    if (!values.length) {
       target.innerHTML = "";
       return;
     }
-    fetch(baseUrl + "?ip=" + encodeURIComponent(value), {
-      headers: { "X-Requested-With": "XMLHttpRequest" },
-      credentials: "same-origin",
-    })
-      .then(function (resp) { return resp.ok ? resp.text() : ""; })
-      .then(function (html) { target.innerHTML = html; })
-      .catch(function () { target.innerHTML = ""; });
+    Promise.all(values.map(function (value) {
+      return fetch(baseUrl + "?ip=" + encodeURIComponent(value), {
+        headers: { "X-Requested-With": "XMLHttpRequest" },
+        credentials: "same-origin",
+      })
+        .then(function (resp) { return resp.ok ? resp.text() : ""; })
+        .catch(function () { return ""; });
+    })).then(function (fragments) {
+      target.innerHTML = fragments.filter(Boolean).join("");
+    });
   });
 })();
 </script>

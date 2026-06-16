@@ -614,6 +614,44 @@ class TestKeaIpamSyncJobRun(TestCase):
         # Fallback is surfaced to the operator.
         self.assertTrue(any("fall back to NetBox prefix matching" in m for m in cm.output))
 
+    def test_subnet_prefix_map_masks_lease_from_config_get(self):
+        """A lease's mask comes from the Kea subnet-id map (config-get), not a NetBox Prefix.
+
+        Guards the _sync_one_server → sync-helper ``subnet_prefix_map`` wiring: with
+        NO NetBox Prefix present, the only way the lease is saved as /24 (rather than
+        the /32 fallback) is the ``{subnet-id: prefix_len}`` map derived from config-get.
+        If _sync_one_server stopped forwarding subnet_prefix_map, this would regress to /32.
+        """
+        from ipam.models import IPAddress, Prefix
+
+        # Prefix/range sync off so the /24 cannot come from a *created* NetBox Prefix.
+        self._make_db_server(
+            name="kea-mask",
+            dhcp6=False,
+            sync_prefixes_enabled=False,
+            sync_ip_ranges_enabled=False,
+        )
+        lease = {"ip-address": "10.0.0.50", "hostname": "masked-host", "subnet-id": 1}
+
+        def _config_with_subnet(self, cmd, service=None, arguments=None, check=None):
+            return [
+                {
+                    "result": 0,
+                    "arguments": {
+                        "Dhcp4": {"subnet4": [{"id": 1, "subnet": "10.0.0.0/24", "pools": []}], "shared-networks": []}
+                    },
+                }
+            ]
+
+        with _patch_kea(leases4=[lease]):
+            with patch.object(KeaClient, "command", _config_with_subnet):
+                self._run()
+
+        ip = IPAddress.objects.get(address__startswith="10.0.0.50/")
+        self.assertEqual(str(ip.address), "10.0.0.50/24")
+        # No NetBox Prefix was created — the mask came from config-get, not prefix matching.
+        self.assertFalse(Prefix.objects.filter(prefix="10.0.0.0/24").exists())
+
     # ── reservation generic exception ─────────────────────────────────────
 
     def test_reservation_generic_exception_increments_errors(self):

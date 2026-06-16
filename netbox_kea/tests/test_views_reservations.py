@@ -1247,6 +1247,19 @@ class TestReservationAddFormIPCheckWiring(_ViewTestBase):
         # v6 watches the comma-separated ip_addresses field.
         self.assertIn('"id_ip_addresses"', body)
 
+    def test_v6_add_form_script_checks_every_address(self):
+        """The blur script must check *all* comma-separated v6 addresses, not just the first.
+
+        Regression guard: the original handler used split(",")[0], so a conflict in
+        the 2nd+ DHCPv6 address was silently missed.
+        """
+        url = reverse("plugins:netbox_kea:server_reservation6_add", args=[self.server.pk])
+        body = self.client.get(url).content.decode()
+        # Splits the field and fans a lookup out per address — never a single-index pick.
+        self.assertIn('.split(",")', body)
+        self.assertIn("Promise.all", body)
+        self.assertNotIn('split(",")[0]', body)
+
     @patch("netbox_kea.models.KeaClient")
     def test_edit_form_omits_blur_script(self, MockKeaClient):
         """Edit mode disables the IP field, so the advisory script must not attach."""

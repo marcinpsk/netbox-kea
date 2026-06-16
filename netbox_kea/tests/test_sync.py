@@ -1916,6 +1916,40 @@ class TestReservationForeignIPProtection(TestCase):
         self.assertEqual(new_ip.status, "reserved")
         self.assertEqual(conflicts, ["2001:db8::1"])
 
+    def test_force_claims_ip_so_later_sync_does_not_conflict(self):
+        """A forced sync must *claim* the IP (rewrite to a Kea-managed description).
+
+        Otherwise the override is not sticky: the foreign description survives, so
+        every subsequent unattended sync re-reports the same IP as a conflict.
+        """
+        from ipam.models import IPAddress as NbIP
+
+        from netbox_kea.sync import is_kea_managed_ip, sync_reservation_to_netbox
+
+        NbIP.objects.create(address="192.168.51.200/32", status="active", description="Router loopback")
+
+        ip_obj, _created, _changed = sync_reservation_to_netbox(self._RESERVATION, force=True)
+        ip_obj.refresh_from_db()
+        # The IP is now owned by Kea — description rewritten to the managed marker.
+        self.assertTrue(is_kea_managed_ip(ip_obj))
+        self.assertTrue(ip_obj.description.startswith("Synced from Kea DHCP"))
+
+        # A later unattended (force=False) sync no longer treats it as foreign.
+        conflicts: list[str] = []
+        sync_reservation_to_netbox(self._RESERVATION, conflicts=conflicts)
+        self.assertEqual(conflicts, [])
+
+    def test_force_corrects_mask_on_foreign_ip(self):
+        """A forced sync must also fix a foreign IP's mask from the authoritative Kea subnet."""
+        from ipam.models import IPAddress as NbIP
+
+        from netbox_kea.sync import sync_reservation_to_netbox
+
+        NbIP.objects.create(address="192.168.51.200/32", status="active", description="Router loopback")
+        sync_reservation_to_netbox(self._RESERVATION, force=True, subnet_prefix_map={1: 24})
+        ip_obj = NbIP.objects.get(address__startswith="192.168.51.200/")
+        self.assertEqual(str(ip_obj.address), "192.168.51.200/24")
+
 
 class TestLeaseForeignIPProtection(TestCase):
     """Bulk/unattended lease sync must not overwrite foreign NetBox IPs."""
@@ -1956,3 +1990,18 @@ class TestLeaseForeignIPProtection(TestCase):
         self.assertTrue(changed)
         ip_obj.refresh_from_db()
         self.assertEqual(ip_obj.status, "dhcp")
+
+    def test_force_claims_ip_so_later_sync_does_not_conflict(self):
+        """A forced lease sync must claim the IP so the next unattended sync doesn't re-conflict."""
+        from ipam.models import IPAddress as NbIP
+
+        from netbox_kea.sync import is_kea_managed_ip, sync_lease_to_netbox
+
+        NbIP.objects.create(address="192.168.51.210/32", status="active", description="Router loopback")
+        ip_obj, _created, _changed = sync_lease_to_netbox(self._LEASE, force=True)
+        ip_obj.refresh_from_db()
+        self.assertTrue(is_kea_managed_ip(ip_obj))
+
+        conflicts: list[str] = []
+        sync_lease_to_netbox(self._LEASE, conflicts=conflicts)
+        self.assertEqual(conflicts, [])
