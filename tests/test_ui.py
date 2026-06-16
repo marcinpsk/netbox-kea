@@ -561,9 +561,10 @@ def test_navigation_view(page: Page) -> None:
 )
 def test_navigation_add(page: Page) -> None:
     menu = open_kea_menu(page)
-    # The Add button is hidden until its menu row is hovered (CSS :hover reveal).
-    menu.get_by_role("link", name="Servers", exact=True).hover()
-    menu.get_by_role("link", name="Add", exact=True).click()
+    # The menu Add button is visibility:hidden until its row is hovered (a CSS
+    # reveal that behaves inconsistently across NetBox versions). Dispatch the
+    # click directly to the link so the test exercises its href, not the hover.
+    menu.get_by_role("link", name="Add", exact=True).dispatch_event("click")
 
     expect(page).to_have_title(re.compile("^Add a new server.*"))
 
