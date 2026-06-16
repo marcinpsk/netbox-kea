@@ -75,10 +75,13 @@ def _subnet_sort_key(choice: tuple[str, int | None]) -> tuple[int, Any]:
     Falls back to the CIDR string for anything netaddr can't parse, kept in a
     separate bucket so the two key types are never compared against each other.
     """
+    cidr = choice[0]
+    if not isinstance(cidr, str):
+        return (1, str(cidr))
     try:
-        return (0, IPNetwork(choice[0]))
-    except (AddrFormatError, ValueError):
-        return (1, choice[0])
+        return (0, IPNetwork(cidr))
+    except (AddrFormatError, ValueError, TypeError):
+        return (1, cidr)
 
 
 def _fetch_subnet_choices(server: Server, version: int) -> list[tuple[str, int | None]]:
@@ -117,9 +120,15 @@ def _fetch_subnet_choices(server: Server, version: int) -> list[tuple[str, int |
 
     def _collect(subnets: Any) -> None:
         for s in subnets or []:
-            if isinstance(s, dict) and s.get("subnet"):
-                sid = s.get("id")
-                choices.append((s["subnet"], sid if isinstance(sid, int) else None))
+            if not isinstance(s, dict):
+                continue
+            cidr = s.get("subnet")
+            # Only accept string CIDRs; a non-string value would make the later
+            # choices.sort() raise TypeError (500) instead of degrading gracefully.
+            if not isinstance(cidr, str) or not cidr:
+                continue
+            sid = s.get("id")
+            choices.append((cidr, sid if isinstance(sid, int) else None))
 
     _collect(dhcp_conf.get(f"subnet{version}"))
     for sn in dhcp_conf.get("shared-networks") or []:
@@ -1045,7 +1054,13 @@ class _BaseLeaseAddView(_KeaChangeMixin, generic.ObjectView):
                 dhcp_version=self.dhcp_version,
                 request=request,
             )
-            if cd.get("sync_to_netbox"):
+            if cd.get("sync_to_netbox") and not (
+                request.user.has_perm("ipam.add_ipaddress") and request.user.has_perm("ipam.change_ipaddress")
+            ):
+                # Writing IPAM requires IPAM write permission, not just server edit
+                # (mirrors the per-row/bulk sync endpoints and the reservation form).
+                messages.warning(request, "Lease created, but it was not synced to NetBox (requires IPAM permission).")
+            elif cd.get("sync_to_netbox"):
                 try:
                     sync_lease_to_netbox(lease)
                     messages.success(request, f"IPAddress {cd['ip_address']} synced to NetBox.")

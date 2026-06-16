@@ -135,6 +135,13 @@ class ServerSharedNetworks4View(BaseServerSharedNetworksView):
 
     dhcp_version = 4
 
+    def get(self, request: HttpRequest, **kwargs: Any) -> HttpResponse:
+        """Redirect to the v6 view on v6-only servers so the merged tab works."""
+        instance = self.get_object(**kwargs)
+        if not instance.dhcp4 and instance.dhcp6:
+            return redirect(reverse("plugins:netbox_kea:server_shared_networks6", args=[instance.pk]))
+        return super().get(request, **kwargs)
+
 
 class BaseServerSharedNetworkAddView(_KeaChangeMixin, ConditionalLoginRequiredMixin, View):
     """Add a new shared network to a Kea server.

@@ -140,7 +140,12 @@ class TestServerSharedNetworks4View(_ViewTestBase):
         response = self.client.get(url)
         self.assertEqual(response.status_code, 302)
         self._assert_no_none_pk_redirect(response)
-        self.assertIn(str(v6_only.pk), response.url)
+        # Merged-tab contract: a v6-only server's v4 shared-networks URL redirects to
+        # the v6 route (not the server detail page), mirroring leases4/subnets4.
+        self.assertEqual(
+            response.url,
+            reverse("plugins:netbox_kea:server_shared_networks6", args=[v6_only.pk]),
+        )
 
     @patch("netbox_kea.models.KeaClient")
     def test_get_sets_tab_in_context(self, MockKeaClient):

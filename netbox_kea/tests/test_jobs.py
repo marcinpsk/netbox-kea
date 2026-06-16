@@ -1268,6 +1268,33 @@ class TestBuildSubnetPrefixMap(SimpleTestCase):
         self.assertEqual(_build_subnet_prefix_map(None), {})
 
 
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestSyncServerReservationsReturnValue(TestCase):
+    """_sync_server_reservations must report failure when any individual row fails.
+
+    Returning True on a partial failure would let _sync_one_server keep
+    cleanup_safe=True and run stale cleanup with an incomplete keep-set, deleting
+    live IPs whose reservation failed to sync.
+    """
+
+    def test_returns_false_when_a_row_fails(self):
+        from netbox_kea.jobs import _sync_server_reservations
+
+        server = MagicMock()
+        server.name = "kea-fail"
+        client = MagicMock()
+        # A reservation with no ip-address makes sync_reservation_to_netbox raise
+        # ValueError, which the loop catches and counts as an error.
+        client.reservation_get_page.return_value = ([{"hostname": "bad", "subnet-id": 1}], 0, 0)
+        server.get_client.return_value = client
+
+        stats = {"created": 0, "updated": 0, "errors": 0, "prefix_errors": 0, "conflicts": 0}
+        ok = _sync_server_reservations(server, 4, stats=stats, all_synced=[])
+
+        self.assertFalse(ok)
+        self.assertEqual(stats["errors"], 1)
+
+
 class TestSyncServerPrefixesAndRanges(SimpleTestCase):
     """_sync_server_prefixes_and_ranges processes a pre-fetched subnet list."""
 

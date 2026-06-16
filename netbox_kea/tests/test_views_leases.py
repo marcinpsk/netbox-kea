@@ -1239,6 +1239,28 @@ class TestLeaseAddSyncToNetBox(_ViewTestBase):
         self.assertEqual(response.status_code, 302)
         MockKeaClient.return_value.lease_add.assert_called_once()
 
+    @patch("netbox_kea.views.leases.sync_lease_to_netbox")
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_lease4_add_sync_skipped_without_ipam_permission(self, MockKeaClient, mock_sync):
+        """A user with server-change but no IPAM write permission must not trigger the IPAM sync."""
+        from django.contrib.auth import get_user_model
+        from django.contrib.contenttypes.models import ContentType
+        from users.models import ObjectPermission
+
+        User = get_user_model()
+        limited = User.objects.create_user(username="lease_no_ipam", password="x")
+        perm = ObjectPermission.objects.create(name="change-server-lease-noipam", actions=["view", "change"])
+        perm.object_types.add(ContentType.objects.get_for_model(Server))
+        perm.users.add(limited)
+        self.client.force_login(limited)
+
+        MockKeaClient.return_value.lease_add.return_value = None
+        response = self.client.post(self._url(version=4), self._post4(sync=True))
+        # Lease still created in Kea (302), but the IPAM sync was gated out.
+        self.assertEqual(response.status_code, 302)
+        MockKeaClient.return_value.lease_add.assert_called_once()
+        mock_sync.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # TestBulkLeaseImportView — bulk lease CSV import (Gap C)
@@ -4023,6 +4045,32 @@ class TestFetchSubnetChoices(TestCase):
         # Each choice carries (cidr, subnet_id) so the template can build both the
         # Subnet (CIDR) and Subnet-ID comboboxes.
         self.assertEqual(choices[0], ("10.0.1.0/24", 2))
+
+    def test_non_string_subnet_values_do_not_500(self):
+        """Malformed subnet entries (non-string CIDR) are skipped, not fed to sort() → no TypeError/500."""
+        bad_config = [
+            {
+                "result": 0,
+                "arguments": {
+                    "Dhcp4": {
+                        "subnet4": [
+                            {"id": 1, "subnet": "10.0.1.0/24"},
+                            {"id": 2, "subnet": 12345},  # int, not str
+                            {"id": 3, "subnet": ["10.0.3.0/24"]},  # list, not str
+                            {"id": 4, "subnet": None},  # None
+                            {"id": 5},  # missing subnet
+                        ],
+                        "shared-networks": [],
+                    }
+                },
+            }
+        ]
+        client = MagicMock()
+        client.command.return_value = bad_config
+        with patch.object(Server, "get_client", return_value=client):
+            choices = _fetch_subnet_choices(self.server, 4)
+        # Only the valid string CIDR survives; the call returns cleanly.
+        self.assertEqual(choices, [("10.0.1.0/24", 1)])
 
     def test_result_is_cached_second_call_skips_kea(self):
         client = self._client_returning_config()

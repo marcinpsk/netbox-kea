@@ -223,6 +223,7 @@ def _sync_server_reservations(
     from_index = 0
     source_index = 0
     processed = 0
+    had_errors = False
     # Foreign (manually-curated) NetBox IPs skipped to avoid overwriting them.
     conflicts: list[str] = []
 
@@ -259,6 +260,7 @@ def _sync_server_reservations(
                         exc_info=True,
                     )
                     stats["errors"] += 1
+                    had_errors = True
             if next_from == 0 and next_source == 0:
                 break
             from_index = next_from
@@ -281,7 +283,9 @@ def _sync_server_reservations(
 
     stats["conflicts"] = stats.get("conflicts", 0) + len(conflicts)
     logger.info("Server %s (v%s): synced %d reservations", server.name, version, processed)
-    return True
+    # Mirror the lease path: a per-row failure must not leave cleanup_safe=True,
+    # or stale cleanup runs with an incomplete keep-set and may delete live IPs.
+    return not had_errors
 
 
 def _sync_subnet_entry(

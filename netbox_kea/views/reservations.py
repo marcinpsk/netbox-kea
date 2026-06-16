@@ -164,7 +164,15 @@ def _run_reservation_success_side_effects(
         dhcp_version=dhcp_version,
         request=request,
     )
-    if sync_to_netbox:
+    if sync_to_netbox and not (
+        request.user.has_perm("ipam.add_ipaddress") and request.user.has_perm("ipam.change_ipaddress")
+    ):
+        # The sync below uses force=True, overriding the foreign-IP guard and
+        # writing IPAM records. change_server permission alone is not enough —
+        # require IPAM write permission (mirrors the per-row/bulk sync endpoints).
+        logger.warning("User %r ticked sync-to-NetBox without IPAM write permission — sync skipped", request.user)
+        messages.warning(request, f"Reservation {action}, but it was not synced to NetBox (requires IPAM permission).")
+    elif sync_to_netbox:
         _v4_ip = reservation.get("ip-address") or ""
         _v6_ips = reservation.get("ip-addresses")
         if isinstance(_v6_ips, list) and len(_v6_ips) > 1:

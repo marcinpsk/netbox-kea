@@ -873,6 +873,68 @@ class TestReservation6AddOptionDataAndSync(_ViewTestBase):
 
 
 # ---------------------------------------------------------------------------
+# Reservation sync requires IPAM write permission (force=True overwrite guard)
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestReservationSyncRequiresIpamPermission(_ViewTestBase):
+    """The reservation-form sync uses force=True (overrides the foreign-IP guard).
+
+    It must require IPAM write permission, not just server-edit access — otherwise
+    a user with change_server but no IPAM rights could overwrite curated IPAddress
+    records.
+    """
+
+    _RES = {
+        "ip-address": "192.0.2.55",
+        "hw-address": "11:22:33:44:55:66",
+        "hostname": "res-host",
+        "subnet-id": 1,
+    }
+
+    def _request(self, user):
+        from django.contrib.messages.storage.fallback import FallbackStorage
+        from django.test import RequestFactory
+
+        request = RequestFactory().post("/")
+        request.user = user
+        setattr(request, "session", "session")
+        setattr(request, "_messages", FallbackStorage(request))
+        return request
+
+    def test_sync_skipped_without_ipam_permission(self):
+        from django.contrib.auth import get_user_model
+        from ipam.models import IPAddress
+
+        from netbox_kea.views.reservations import _run_reservation_success_side_effects
+
+        IPAddress.objects.create(address="192.0.2.55/32", status="active", description="Router loopback")
+        limited = get_user_model().objects.create_user(username="res_no_ipam", password="x")
+        _run_reservation_success_side_effects(
+            self._request(limited), self.server, dict(self._RES), 4, "created", sync_to_netbox=True
+        )
+        # Foreign IP left exactly as the operator set it — the force-sync was gated out.
+        ip = IPAddress.objects.get(address="192.0.2.55/32")
+        self.assertEqual(ip.status, "active")
+        self.assertEqual(ip.description, "Router loopback")
+
+    def test_sync_runs_with_ipam_permission(self):
+        from ipam.models import IPAddress
+
+        from netbox_kea.views.reservations import _run_reservation_success_side_effects
+
+        IPAddress.objects.create(address="192.0.2.55/32", status="active", description="Router loopback")
+        # self.user is a superuser → has IPAM write permission.
+        _run_reservation_success_side_effects(
+            self._request(self.user), self.server, dict(self._RES), 4, "created", sync_to_netbox=True
+        )
+        ip = IPAddress.objects.get(address__startswith="192.0.2.55/")
+        # With IPAM permission the force-sync claims the IP (reserved status).
+        self.assertEqual(ip.status, "reserved")
+
+
+# ---------------------------------------------------------------------------
 # Reservation6 Edit — option-data and sync paths
 # ---------------------------------------------------------------------------
 
