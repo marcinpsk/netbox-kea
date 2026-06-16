@@ -561,10 +561,10 @@ def test_navigation_view(page: Page) -> None:
 )
 def test_navigation_add(page: Page) -> None:
     menu = open_kea_menu(page)
-    # The menu Add button is visibility:hidden until its row is hovered (a CSS
-    # reveal that behaves inconsistently across NetBox versions). Dispatch the
-    # click directly to the link so the test exercises its href, not the hover.
-    menu.get_by_role("link", name="Add", exact=True).dispatch_event("click")
+    # The menu Add button is an icon-only, hover-revealed link whose accessible
+    # name and visibility vary across NetBox versions. Target it by href and
+    # dispatch the click directly so the test exercises the link, not the CSS reveal.
+    menu.locator('a[href$="/servers/add/"]').dispatch_event("click")
 
     expect(page).to_have_title(re.compile("^Add a new server.*"))
 
@@ -594,7 +594,7 @@ def test_navigation_view_no_access(page: Page) -> None:
     ],
 )
 def test_navigation_add_no_access(page: Page) -> None:
-    expect(open_kea_menu(page).get_by_role("link", name="Add", exact=True)).to_have_count(0)
+    expect(open_kea_menu(page).locator('a[href$="/servers/add/"]')).to_have_count(0)
 
 
 def test_server_add_delete(page: Page, plugin_base: str, kea_url: str, nb_api: pynetbox.api) -> None:
