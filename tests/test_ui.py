@@ -475,9 +475,20 @@ def open_leases(page: Page, version: Literal[4, 6]) -> None:
 
 
 def open_subnets(page: Page, version: Literal[4, 6]) -> None:
-    """Open the consolidated Subnets tab and select the DHCPv4/DHCPv6 family pill."""
+    """Open the consolidated Subnets tab and select the DHCPv4/DHCPv6 family pill.
+
+    Like :func:`open_leases`, the v4/v6 family pill is rendered only on dual-stack
+    servers; on a single-protocol server the tab already lands on the one enabled
+    protocol, so the pill click is skipped.
+    """
     page.get_by_role("link", name="Subnets", exact=True).click()
-    page.get_by_role("link", name=f"DHCPv{version}", exact=True).click()
+    # Wait until the subnets page has loaded (section nav present on single + dual)
+    # before probing for the family pill, so .count() reflects the new page.
+    page.get_by_role("link", name="Shared Networks", exact=True).wait_for()
+    pill = page.get_by_role("link", name=f"DHCPv{version}", exact=True)
+    if pill.count():
+        pill.click()
+        page.get_by_role("link", name="Shared Networks", exact=True).wait_for()
 
 
 def search_lease(page: Page, version: Literal[4, 6], by: str, q: str) -> None:
@@ -1407,13 +1418,22 @@ def test_one_service_only(page: Page, version: Literal[6, 4], request: pytest.Fi
     expect(page.get_by_role("link", name="DHCPv4", exact=True)).to_have_count(0)
     expect(page.get_by_role("link", name="DHCPv6", exact=True)).to_have_count(0)
 
+    # The Subnets tab mirrors the same single-service landing behavior.
+    page.goto(server_url)
+    page.get_by_role("link", name="Subnets", exact=True).click()
+    expect(page).to_have_url(re.compile(rf"/subnets{version}/$"))
+
     if version == 6:
-        # v4 is disabled: the v4 URL redirects to the enabled v6 leases (merged-tab UX).
+        # v4 is disabled: the v4 URL redirects to the enabled v6 page (merged-tab UX).
         page.goto(urljoin(server_url, "leases4/"))
         expect(page).to_have_url(urljoin(server_url, "leases6/"))
+        page.goto(urljoin(server_url, "subnets4/"))
+        expect(page).to_have_url(urljoin(server_url, "subnets6/"))
     else:
         # v6 is disabled: the v6 URL redirects back to the server detail page.
         page.goto(urljoin(server_url, "leases6/"))
+        expect(page).to_have_url(server_url)
+        page.goto(urljoin(server_url, "subnets6/"))
         expect(page).to_have_url(server_url)
 
 

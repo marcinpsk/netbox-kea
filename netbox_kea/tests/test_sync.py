@@ -2005,3 +2005,14 @@ class TestLeaseForeignIPProtection(TestCase):
         conflicts: list[str] = []
         sync_lease_to_netbox(self._LEASE, conflicts=conflicts)
         self.assertEqual(conflicts, [])
+
+    def test_force_corrects_mask_on_foreign_lease_ip(self):
+        """A forced lease sync must fix a foreign IP's mask from the authoritative Kea subnet."""
+        from ipam.models import IPAddress as NbIP
+
+        from netbox_kea.sync import sync_lease_to_netbox
+
+        NbIP.objects.create(address="192.168.51.210/32", status="active", description="Router loopback")
+        sync_lease_to_netbox(self._LEASE, force=True, subnet_prefix_map={1: 24})
+        ip_obj = NbIP.objects.get(address__startswith="192.168.51.210/")
+        self.assertEqual(str(ip_obj.address), "192.168.51.210/24")
