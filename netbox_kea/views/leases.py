@@ -119,7 +119,11 @@ def _fetch_subnet_choices(server: Server, version: int) -> list[tuple[str, int |
     choices: list[tuple[str, int | None]] = []
 
     def _collect(subnets: Any) -> None:
-        for s in subnets or []:
+        # A malformed payload (e.g. ``"subnet4": 1``) is non-iterable; iterating it
+        # would raise TypeError outside the fetch try → 500. Degrade to empty instead.
+        if not isinstance(subnets, list):
+            return
+        for s in subnets:
             if not isinstance(s, dict):
                 continue
             cidr = s.get("subnet")
@@ -131,12 +135,43 @@ def _fetch_subnet_choices(server: Server, version: int) -> list[tuple[str, int |
             choices.append((cidr, sid if isinstance(sid, int) else None))
 
     _collect(dhcp_conf.get(f"subnet{version}"))
-    for sn in dhcp_conf.get("shared-networks") or []:
+    shared_networks = dhcp_conf.get("shared-networks")
+    if not isinstance(shared_networks, list):
+        shared_networks = []
+    for sn in shared_networks:
         if isinstance(sn, dict):
             _collect(sn.get(f"subnet{version}"))
     choices.sort(key=_subnet_sort_key)
     cache.set(cache_key, choices, _SUBNET_CHOICES_TTL)
     return choices
+
+
+def _run_lease_sync_to_netbox(request: HttpRequest, lease: dict, ip_address: str) -> None:
+    """Sync a just-created lease to NetBox IPAM, gated on IPAM write permission.
+
+    Requires ``ipam.add_ipaddress`` + ``ipam.change_ipaddress`` (server-edit access
+    alone is not enough — mirrors the per-row/bulk sync endpoints). The sync uses
+    ``force=False``, so a foreign (non-Kea-managed) NetBox IP is skipped rather than
+    overwritten; that skip is reported as a warning instead of a misleading "synced"
+    message. Queues a success/warning message; never raises.
+    """
+    if not (request.user.has_perm("ipam.add_ipaddress") and request.user.has_perm("ipam.change_ipaddress")):
+        messages.warning(request, "Lease created, but it was not synced to NetBox (requires IPAM permission).")
+        return
+    try:
+        conflicts: list[str] = []
+        _nb_ip, nb_created, nb_changed = sync_lease_to_netbox(lease, conflicts=conflicts)
+        if conflicts:
+            messages.warning(
+                request,
+                f"Lease created, but NetBox IPAM sync was skipped: {ip_address} already exists and is not Kea-managed.",
+            )
+        else:
+            nb_action = "created" if nb_created else "updated" if nb_changed else "already up to date"
+            messages.success(request, f"IPAddress {ip_address} {nb_action} in NetBox.")
+    except (ValueError, DatabaseError, ValidationError, requests.RequestException):
+        logger.exception("Failed to sync lease %s to NetBox", ip_address)
+        messages.warning(request, "Lease created but NetBox IPAM sync failed; see server logs.")
 
 
 def _add_lease_journal(
@@ -1054,19 +1089,8 @@ class _BaseLeaseAddView(_KeaChangeMixin, generic.ObjectView):
                 dhcp_version=self.dhcp_version,
                 request=request,
             )
-            if cd.get("sync_to_netbox") and not (
-                request.user.has_perm("ipam.add_ipaddress") and request.user.has_perm("ipam.change_ipaddress")
-            ):
-                # Writing IPAM requires IPAM write permission, not just server edit
-                # (mirrors the per-row/bulk sync endpoints and the reservation form).
-                messages.warning(request, "Lease created, but it was not synced to NetBox (requires IPAM permission).")
-            elif cd.get("sync_to_netbox"):
-                try:
-                    sync_lease_to_netbox(lease)
-                    messages.success(request, f"IPAddress {cd['ip_address']} synced to NetBox.")
-                except (ValueError, DatabaseError, ValidationError, requests.RequestException):
-                    logger.exception("Failed to sync lease %s to NetBox", cd.get("ip_address"))
-                    messages.warning(request, "Lease created but NetBox IPAM sync failed; see server logs.")
+            if cd.get("sync_to_netbox"):
+                _run_lease_sync_to_netbox(request, lease, cd["ip_address"])
             return redirect(cancel_url)
         return render(
             request,

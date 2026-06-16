@@ -1261,6 +1261,26 @@ class TestLeaseAddSyncToNetBox(_ViewTestBase):
         MockKeaClient.return_value.lease_add.assert_called_once()
         mock_sync.assert_not_called()
 
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_lease4_add_reports_foreign_ip_skip(self, MockKeaClient):
+        """A foreign NetBox IP (force=False) is skipped and reported as such, not 'synced'."""
+        from ipam.models import IPAddress
+
+        MockKeaClient.return_value.lease_add.return_value = None
+        # self.client is the superuser (has IPAM perms) → reaches the real sync.
+        IPAddress.objects.create(address="10.0.0.200/24", status="active", description="Router loopback")
+        response = self.client.post(self._url(version=4), self._post4(sync=True), follow=True)
+        self.assertEqual(response.status_code, 200)
+        msgs = [m.message for m in response.context["messages"]]
+        self.assertTrue(
+            any("skipped" in m.lower() and "not kea-managed" in m.lower() for m in msgs),
+            f"Expected a foreign-IP skip warning, got: {msgs}",
+        )
+        # Foreign IP left exactly as the operator set it.
+        ip = IPAddress.objects.get(address="10.0.0.200/24")
+        self.assertEqual(ip.status, "active")
+        self.assertEqual(ip.description, "Router loopback")
+
 
 # ---------------------------------------------------------------------------
 # TestBulkLeaseImportView — bulk lease CSV import (Gap C)
@@ -4071,6 +4091,15 @@ class TestFetchSubnetChoices(TestCase):
             choices = _fetch_subnet_choices(self.server, 4)
         # Only the valid string CIDR survives; the call returns cleanly.
         self.assertEqual(choices, [("10.0.1.0/24", 1)])
+
+    def test_non_list_subnet_containers_do_not_500(self):
+        """Non-list subnet4 / shared-networks containers degrade to empty, not TypeError/500."""
+        bad_config = [{"result": 0, "arguments": {"Dhcp4": {"subnet4": 1, "shared-networks": 1}}}]
+        client = MagicMock()
+        client.command.return_value = bad_config
+        with patch.object(Server, "get_client", return_value=client):
+            choices = _fetch_subnet_choices(self.server, 4)
+        self.assertEqual(choices, [])
 
     def test_result_is_cached_second_call_skips_kea(self):
         client = self._client_returning_config()
