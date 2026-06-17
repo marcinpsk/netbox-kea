@@ -23,9 +23,18 @@ def _multiline_comment_lines(text: str) -> list[int]:
     """
     offenders: list[int] = []
     for lineno, line in enumerate(text.splitlines(), start=1):
-        idx = line.find("{#")
-        if idx != -1 and "#}" not in line[idx:]:
-            offenders.append(lineno)
+        # Walk every ``{#`` on the line — inspecting only the first occurrence
+        # would miss a later unclosed marker like ``{# ok #} {# broken``.
+        pos = 0
+        while True:
+            idx = line.find("{#", pos)
+            if idx == -1:
+                break
+            end = line.find("#}", idx + 2)
+            if end == -1:
+                offenders.append(lineno)
+                break
+            pos = end + 2
     return offenders
 
 
@@ -46,6 +55,14 @@ class TestTemplateComments(SimpleTestCase):
         """A well-formed single-line comment (and a normal line) must not be flagged."""
         good = '{# a header comment #}\n<input id="id_q">\n{# another note #}\n'
         self.assertEqual(_multiline_comment_lines(good), [])
+
+    def test_detector_flags_later_unclosed_comment_on_same_line(self):
+        """A line that closes one comment then opens a second, unclosed ``{#`` is flagged.
+
+        Inspecting only the first ``{#`` per line would miss this — the first
+        comment is closed, so the scan must keep walking past it.
+        """
+        self.assertEqual(_multiline_comment_lines("{# ok #} {# broken\nmore #}\n"), [1])
 
     def test_no_multiline_comments_in_plugin_templates(self):
         """No shipped template may contain a multi-line ``{# #}`` comment."""

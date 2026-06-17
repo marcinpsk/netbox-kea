@@ -4056,8 +4056,11 @@ class TestFetchSubnetChoices(TestCase):
 
     def test_choices_sorted_by_network_not_lexicographically(self):
         client = self._client_returning_config()
-        with patch.object(Server, "get_client", return_value=client):
+        with patch.object(Server, "get_client", return_value=client) as get_client:
             choices = _fetch_subnet_choices(self.server, 4)
+        # The helper must request the protocol-specific client (dual-URL servers
+        # route v4/v6 to different endpoints).
+        get_client.assert_called_once_with(version=4)
         self.assertEqual(
             [c[0] for c in choices],
             ["10.0.1.0/24", "10.0.2.0/24", "10.0.10.0/24", "192.168.0.0/16"],
@@ -4065,6 +4068,32 @@ class TestFetchSubnetChoices(TestCase):
         # Each choice carries (cidr, subnet_id) so the template can build both the
         # Subnet (CIDR) and Subnet-ID comboboxes.
         self.assertEqual(choices[0], ("10.0.1.0/24", 2))
+
+    def test_v6_shared_network_subnet6_is_parsed(self):
+        """Dhcp6/subnet6 and shared-networks[].subnet6 parse via version-aware keys.
+
+        Locks the v6 contract so a cross-protocol regression (e.g. reading
+        ``subnet4`` for a v6 request) is caught.
+        """
+        config6 = [
+            {
+                "result": 0,
+                "arguments": {
+                    "Dhcp6": {
+                        "subnet6": [{"id": 11, "subnet": "2001:db8:1::/64"}],
+                        "shared-networks": [
+                            {"name": "sn6", "subnet6": [{"id": 12, "subnet": "2001:db8:2::/64"}]},
+                        ],
+                    }
+                },
+            }
+        ]
+        client = MagicMock()
+        client.command.return_value = config6
+        with patch.object(Server, "get_client", return_value=client) as get_client:
+            choices = _fetch_subnet_choices(self.server, 6)
+        get_client.assert_called_once_with(version=6)
+        self.assertEqual(choices, [("2001:db8:1::/64", 11), ("2001:db8:2::/64", 12)])
 
     def test_non_string_subnet_values_do_not_500(self):
         """Malformed subnet entries (non-string CIDR) are skipped, not fed to sort() → no TypeError/500."""
@@ -4109,7 +4138,8 @@ class TestFetchSubnetChoices(TestCase):
         self.assertEqual(first, second)
         # config-get hit Kea exactly once; the second render is served from cache.
         self.assertEqual(client.command.call_count, 1)
-        self.assertEqual(get_client.call_count, 1)
+        # The single client request used the protocol-specific version.
+        get_client.assert_called_once_with(version=4)
 
     def test_transient_error_returns_empty_and_is_not_cached(self):
         failing = MagicMock()

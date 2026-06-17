@@ -264,11 +264,14 @@ class ReservationCheckNetboxIPView(ConditionalLoginRequiredMixin, View):
         # enumerate NetBox IPAM through this endpoint.
         get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
 
-        ip_str = (request.GET.get("ip") or "").strip()
-        if not ip_str:
+        raw_ip = (request.GET.get("ip") or "").strip()
+        if not raw_ip:
             return HttpResponse("")
         try:
-            IPAddress(ip_str)
+            # Canonicalize before the DB lookup: non-canonical forms (especially
+            # IPv6 case/zero-compression variants) would otherwise miss the stored
+            # canonical record and suppress the conflict advisory.
+            ip_str = str(IPAddress(raw_ip))
         except (AddrFormatError, ValueError):
             return HttpResponse("")
 

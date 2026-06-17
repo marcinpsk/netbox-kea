@@ -15,10 +15,19 @@ avoids that. In an isolated CI environment (only netbox_kea installed) this is a
 harmless no-op.
 """
 
+import logging
+
 import pytest
 
+logger = logging.getLogger(__name__)
 
-def pytest_configure(config):  # noqa: D103
+
+def _prepopulate_url_resolver() -> None:
+    """Best-effort: import every plugin urlconf so namespaces register early.
+
+    Never blocks collection. Failures are *logged* (not silently swallowed) so a
+    real bootstrap error isn't hidden behind a later, confusing ``NoReverseMatch``.
+    """
     try:
         import django
 
@@ -27,7 +36,11 @@ def pytest_configure(config):  # noqa: D103
 
         get_resolver()._populate()
     except Exception:  # noqa: BLE001 — best effort; never block collection
-        pass
+        logger.exception("Failed to pre-populate Django URL resolver during pytest_configure")
+
+
+def pytest_configure(config):  # noqa: D103
+    _prepopulate_url_resolver()
 
 
 @pytest.fixture(scope="session")

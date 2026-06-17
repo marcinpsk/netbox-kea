@@ -553,6 +553,21 @@ class TestReservationCheckNetboxIPView(_SyncViewBase):
         self.assertIn("not", body.lower())
         self.assertIn("Router loopback", body)
 
+    def test_matches_noncanonical_ipv6_query(self):
+        """A non-canonical IPv6 query (expanded/zero-padded) still matches the
+        canonical stored record — the view normalizes the input before the lookup.
+
+        The DB stores ``2001:db8::5/64``; querying with the fully-expanded form
+        must canonicalize to the same value so the conflict advisory still fires.
+        Without normalization the ``address__startswith`` lookup would miss it and
+        silently suppress the warning.
+        """
+        NbIP.objects.create(address="2001:db8::5/64", status="active", description="Router loopback")
+        response = self.client.get(self._url(), {"ip": "2001:0db8:0000:0000:0000:0000:0000:0005"})
+        body = response.content.decode()
+        self.assertIn("alert-warning", body)
+        self.assertIn("Router loopback", body)
+
     def test_404_for_nonexistent_server(self):
         url = reverse("plugins:netbox_kea:reservation_check_ip", args=[99999])
         response = self.client.get(url, {"ip": "10.0.40.1"})
