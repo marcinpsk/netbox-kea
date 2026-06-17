@@ -25,7 +25,10 @@ logger = logging.getLogger(__name__)
 def _prepopulate_url_resolver() -> None:
     """Best-effort: import every plugin urlconf so namespaces register early.
 
-    Never blocks collection. Failures are *logged* (not silently swallowed) so a
+    Must run with DB access unblocked (see ``django_db_setup``): ``_populate()`` can
+    import plugin urlconfs that touch the database, which pytest-django blocks during
+    ``pytest_configure`` (raising ``RuntimeError: Database access not allowed``, so the
+    bootstrap silently never ran). Failures are *logged* (not silently swallowed) so a
     real bootstrap error isn't hidden behind a later, confusing ``NoReverseMatch``.
     """
     try:
@@ -35,12 +38,8 @@ def _prepopulate_url_resolver() -> None:
         from django.urls import get_resolver
 
         get_resolver()._populate()
-    except Exception:  # noqa: BLE001 — best effort; never block collection
-        logger.exception("Failed to pre-populate Django URL resolver during pytest_configure")
-
-
-def pytest_configure(config):  # noqa: D103
-    _prepopulate_url_resolver()
+    except Exception:  # noqa: BLE001 — best effort; never block the test session
+        logger.exception("Failed to pre-populate Django URL resolver")
 
 
 @pytest.fixture(scope="session")
@@ -64,6 +63,10 @@ def django_db_setup(request, django_test_environment, django_db_blocker):
 
     with django_db_blocker.unblock():
         db_cfg = setup_databases(verbosity=verbosity, interactive=False, keepdb=keepdb)
+        # Populate the URL resolver now that DB access is unblocked — importing some
+        # plugin urlconfs touches the DB, so doing this in pytest_configure raised
+        # "Database access not allowed". Runs once per session, before any DB test.
+        _prepopulate_url_resolver()
 
     yield
 
