@@ -23,9 +23,11 @@ fabricating mock class, then lets you carve out the legitimate cases three ways 
 
          python3 netbox_kea/tests/mock_discipline.py --update-baseline
 
-``AsyncMock`` is intentionally NOT flagged by default (set ``INCLUDE_ASYNCMOCK = True`` to
-opt in): it is the idiomatic way to stub an awaitable boundary, and flagging all of them
-would bury the signal. Tune the policy by editing the constants below as the suite evolves.
+``AsyncMock`` is flagged here too (``INCLUDE_ASYNCMOCK = True``). It is normally left off —
+in async-heavy code it is the idiomatic awaitable stub, and flagging all of them buries the
+signal — but this plugin is entirely synchronous (no ``async def``/``await``/``asyncio``), so
+an ``AsyncMock`` is almost always a mistake and worth catching. Flip it back to ``False`` if
+real async boundaries are introduced. Tune the policy by editing the constants below.
 
 Stdlib-only by design: this module imports nothing from ``netbox_kea`` (which would pull in
 NetBox/Django), so it runs as a standalone pre-commit hook on the host without a NetBox
@@ -46,8 +48,9 @@ _BASELINE_PATH = TESTS_ROOT / "mock_discipline_baseline.txt"
 
 # Mock classes that fabricate arbitrary attributes when unspecced — the dangerous kind.
 _FABRICATING_MOCKS = {"MagicMock", "NonCallableMagicMock", "Mock", "NonCallableMock"}
-# Flip to also flag AsyncMock (idiomatic for awaitable boundaries — noisy, off by default).
-INCLUDE_ASYNCMOCK = False
+# Also flag AsyncMock: this plugin is sync-only, so an awaitable stub is almost always a
+# mistake. Set False if real async boundaries are introduced (then it would bury the signal).
+INCLUDE_ASYNCMOCK = True
 # Keyword args that bound a mock to a real interface (or delegate to a real object).
 _BOUNDING_KWARGS = {"spec", "spec_set", "autospec", "wraps"}
 # Inline opt-out marker (in a comment): `# mock-ok` or `# mock-ok: reason`.

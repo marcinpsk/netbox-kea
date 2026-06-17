@@ -87,8 +87,16 @@ def test_marker_must_be_in_a_comment_not_a_string():
     assert len(hits) == 1
 
 
-def test_asyncmock_not_flagged_by_default():
+def test_asyncmock_flagged_when_enabled():
+    """This plugin is sync-only, so AsyncMock is flagged too (INCLUDE_ASYNCMOCK = True)."""
     src = "from unittest.mock import AsyncMock\n\ndef test_x():\n    return AsyncMock()\n"
+    hits = scan_source(src, "t.py")
+    assert [h.mock for h in hits] == ["AsyncMock"]
+
+
+def test_asyncmock_bound_with_spec_is_accepted():
+    """A spec-bound AsyncMock (real awaitable interface) is still allowed."""
+    src = "from unittest.mock import AsyncMock\nclass C: ...\n\ndef test_x():\n    return AsyncMock(spec=C)\n"
     assert scan_source(src, "t.py") == []
 
 
