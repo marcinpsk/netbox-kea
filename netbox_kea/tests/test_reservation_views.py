@@ -20,8 +20,9 @@ from urllib.parse import urlencode
 from django.contrib.messages import WARNING, get_messages
 from django.test import SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
+from ipam.models import IPAddress as NbIP
 
-from netbox_kea.kea import KeaException, PartialPersistError
+from netbox_kea.kea import KeaClient, KeaException, PartialPersistError
 from netbox_kea.models import Server
 from netbox_kea.views import _filter_reservations
 
@@ -1038,7 +1039,7 @@ class TestActiveLeaseSyncButton(TestCase):
             0,
         )
         mock_client.command.return_value = [{"result": 0, "arguments": {"leases": [{"ip-address": "10.60.0.5"}]}}]
-        nb_ip = MagicMock()
+        nb_ip = MagicMock(spec=NbIP)
         nb_ip.get_absolute_url.return_value = "/ipam/ip-addresses/42/"
         mock_bulk_fetch.return_value = {"10.60.0.5": nb_ip}
         response = self.client.get(self._url())
@@ -1080,7 +1081,7 @@ class TestMultiIPv6ReservationBadgeEnrichment(TestCase):
     def test_multi_ip_all_synced_shows_synced_badge(self, MockKeaClient, mock_bulk_fetch):
         """v6 reservation with extra_ips — ALL IPs in NetBox → Synced shown, no sync button."""
         self._mock_client(MockKeaClient, _SAMPLE_RESERVATION6_MULTI_IP)
-        nb1, nb2, nb3 = MagicMock(), MagicMock(), MagicMock()
+        nb1, nb2, nb3 = MagicMock(spec=NbIP), MagicMock(spec=NbIP), MagicMock(spec=NbIP)
         nb1.get_absolute_url.return_value = "/ipam/ip-addresses/101/"
         nb2.get_absolute_url.return_value = "/ipam/ip-addresses/102/"
         nb3.get_absolute_url.return_value = "/ipam/ip-addresses/103/"
@@ -1102,7 +1103,7 @@ class TestMultiIPv6ReservationBadgeEnrichment(TestCase):
     def test_multi_ip_partial_sync_shows_sync_button(self, MockKeaClient, mock_bulk_fetch):
         """v6 reservation with extra_ips — only primary in NetBox → shows Synced AND sync button."""
         self._mock_client(MockKeaClient, _SAMPLE_RESERVATION6_MULTI_IP)
-        nb1 = MagicMock()
+        nb1 = MagicMock(spec=NbIP)
         nb1.get_absolute_url.return_value = "/ipam/ip-addresses/101/"
         # Only the first IP is in NetBox; 2001:db8::2 and ::3 are missing.
         mock_bulk_fetch.return_value = {"2001:db8::1": nb1}
@@ -1328,7 +1329,7 @@ class TestServerSubnet4AddView(_ReservationViewBase):
         self.assertContains(resp, "id_subnet")
 
     def test_post_valid_calls_subnet_add_and_redirects(self):
-        mock_client = MagicMock()
+        mock_client = MagicMock(spec=KeaClient)
         mock_client.subnet_add.return_value = None
         mock_client.command.return_value = [{"result": 0, "arguments": {"Dhcp4": {"shared-networks": []}}}]
         with patch("netbox_kea.models.KeaClient", return_value=mock_client):
@@ -1357,7 +1358,7 @@ class TestServerSubnet4AddView(_ReservationViewBase):
         )
 
     def test_post_with_options_passes_them_to_subnet_add(self):
-        mock_client = MagicMock()
+        mock_client = MagicMock(spec=KeaClient)
         mock_client.subnet_add.return_value = None
         mock_client.command.return_value = [{"result": 0, "arguments": {"Dhcp4": {"shared-networks": []}}}]
         with patch("netbox_kea.models.KeaClient", return_value=mock_client):
@@ -1398,7 +1399,7 @@ class TestServerSubnet4AddView(_ReservationViewBase):
         self.assertContains(resp, "Invalid subnet CIDR")
 
     def test_post_kea_error_shows_message_and_rerenders(self):
-        mock_client = MagicMock()
+        mock_client = MagicMock(spec=KeaClient)
         mock_client.subnet_add.side_effect = KeaException({"result": 1, "text": "subnet already exists"}, index=0)
         mock_client.command.return_value = [{"result": 0, "arguments": {"Dhcp4": {"shared-networks": []}}}]
         with patch("netbox_kea.models.KeaClient", return_value=mock_client):
@@ -1425,7 +1426,7 @@ class TestServerSubnet4DeleteView(_ReservationViewBase):
         return reverse("plugins:netbox_kea:server_subnet4_delete", args=[self.server.pk, subnet_id])
 
     def test_get_renders_confirmation(self):
-        mock_client = MagicMock()
+        mock_client = MagicMock(spec=KeaClient)
         mock_client.command.return_value = [
             {"result": 0, "arguments": {"subnet4": [{"id": 5, "subnet": "10.99.0.0/24", "pools": []}]}}
         ]
@@ -1435,7 +1436,7 @@ class TestServerSubnet4DeleteView(_ReservationViewBase):
         self.assertContains(resp, "10.99.0.0/24")
 
     def test_post_calls_subnet_del_and_redirects(self):
-        mock_client = MagicMock()
+        mock_client = MagicMock(spec=KeaClient)
         mock_client.subnet_del.return_value = None
         with patch("netbox_kea.models.KeaClient", return_value=mock_client):
             resp = self.client.post(self._delete_url())
@@ -1445,7 +1446,7 @@ class TestServerSubnet4DeleteView(_ReservationViewBase):
         mock_client.subnet_del.assert_called_once_with(version=4, subnet_id=5)
 
     def test_post_kea_error_shows_message(self):
-        mock_client = MagicMock()
+        mock_client = MagicMock(spec=KeaClient)
         mock_client.subnet_del.side_effect = KeaException({"result": 1, "text": "subnet not found"}, index=0)
         with patch("netbox_kea.models.KeaClient", return_value=mock_client):
             resp = self.client.post(self._delete_url())
@@ -1461,7 +1462,7 @@ class TestServerSubnet6AddView(_ReservationViewBase):
         return reverse("plugins:netbox_kea:server_subnet6_add", args=[self.server.pk])
 
     def test_post_valid_uses_version_6(self):
-        mock_client = MagicMock()
+        mock_client = MagicMock(spec=KeaClient)
         mock_client.subnet_add.return_value = None
         mock_client.command.return_value = [{"result": 0, "arguments": {"Dhcp6": {"shared-networks": []}}}]
         with patch("netbox_kea.models.KeaClient", return_value=mock_client):
@@ -1497,7 +1498,7 @@ class TestServerSubnet6DeleteView(_ReservationViewBase):
         return reverse("plugins:netbox_kea:server_subnet6_delete", args=[self.server.pk, subnet_id])
 
     def test_post_calls_subnet_del_v6(self):
-        mock_client = MagicMock()
+        mock_client = MagicMock(spec=KeaClient)
         mock_client.subnet_del.return_value = None
         with patch("netbox_kea.models.KeaClient", return_value=mock_client):
             resp = self.client.post(self._delete_url())
@@ -1984,7 +1985,7 @@ class TestReservationSyncToNetBox(_ReservationViewBase):
         """POSTing with sync_to_netbox=on calls sync_reservation_to_netbox()."""
         mock_client = MockKeaClient.return_value
         mock_client.reservation_add.return_value = None
-        mock_sync.return_value = (MagicMock(), True, True)
+        mock_sync.return_value = (MagicMock(spec=NbIP), True, True)
         response = self.client.post(self._add4_url(), self._valid_post_data(sync=True))
         self.assertEqual(response.status_code, 302)
         mock_sync.assert_called_once()
@@ -2018,7 +2019,7 @@ class TestReservationSyncToNetBox(_ReservationViewBase):
         """POSTing reservation edit with sync_to_netbox=on calls sync_reservation_to_netbox()."""
         mock_client = MockKeaClient.return_value
         mock_client.reservation_update.return_value = None
-        mock_sync.return_value = (MagicMock(), False, True)
+        mock_sync.return_value = (MagicMock(spec=NbIP), False, True)
         mock_client.reservation_get.return_value = {
             "ip-address": "192.168.1.100",
             "hw-address": "aa:bb:cc:dd:ee:ff",
@@ -2440,7 +2441,7 @@ class TestSyncReservationCleanupFalse(_ReservationViewBase):
         """POSTing reservation add with sync_to_netbox=on passes cleanup=False."""
         mock_client = MockKeaClient.return_value
         mock_client.reservation_add.return_value = None
-        mock_sync.return_value = (MagicMock(), True, True)
+        mock_sync.return_value = (MagicMock(spec=NbIP), True, True)
         data = {
             "subnet_id": 1,
             "ip_address": "192.168.1.100",
@@ -2701,7 +2702,7 @@ class TestReservationSyncExceptionOnSuccess(_ReservationViewBase):
         """If sync succeeds, info message shown with created/updated status."""
         mock_client = MockKeaClient.return_value
         mock_client.reservation_add.return_value = None
-        mock_sync.return_value = (MagicMock(), True, True)
+        mock_sync.return_value = (MagicMock(spec=NbIP), True, True)
         response = self.client.post(self._add_url(), self._valid_post_data())
         self.assertEqual(response.status_code, 302)
         msgs = [str(m) for m in get_messages(response.wsgi_request)]
@@ -2903,7 +2904,7 @@ class TestEnrichReservationsWithLeaseStatus(SimpleTestCase):
 
     def _make_mock_client(self, command_side_effect=None, command_return=None):
         """Create a mock KeaClient with clone() context-manager wired up."""
-        mock_client = MagicMock()
+        mock_client = MagicMock(spec=KeaClient)
         _wire_mock_clone(mock_client)
         if command_side_effect is not None:
             mock_client.command.side_effect = command_side_effect

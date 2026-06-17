@@ -16,6 +16,7 @@ from django.test import TestCase, override_settings
 from django.urls import reverse
 from rest_framework.test import APIClient
 
+from netbox_kea.kea import KeaClient
 from netbox_kea.models import Server
 
 User = get_user_model()
@@ -166,7 +167,7 @@ class TestReservation4API(_APITestBase):
     @patch("netbox_kea.models.KeaClient")
     def test_get_by_ip_and_subnet_returns_200(self, MockKeaClient):
         """?ip_address=10.0.0.50&subnet_id=1 returns 200 with reservation data."""
-        mock_client = MagicMock()
+        mock_client = MagicMock(spec=KeaClient)
         MockKeaClient.return_value = mock_client
         mock_client.reservation_get.return_value = _RESERVATION4_RESPONSE[0]["arguments"]
         response = self.api_client.get(self._url(), {"ip_address": "10.0.0.50", "subnet_id": "1"})
@@ -175,7 +176,7 @@ class TestReservation4API(_APITestBase):
     @patch("netbox_kea.models.KeaClient")
     def test_get_by_ip_and_subnet_returns_count_and_results(self, MockKeaClient):
         """Response includes 'count' and 'results' keys."""
-        mock_client = MagicMock()
+        mock_client = MagicMock(spec=KeaClient)
         MockKeaClient.return_value = mock_client
         mock_client.reservation_get.return_value = _RESERVATION4_RESPONSE[0]["arguments"]
         response = self.api_client.get(self._url(), {"ip_address": "10.0.0.50", "subnet_id": "1"})
@@ -187,7 +188,7 @@ class TestReservation4API(_APITestBase):
     @patch("netbox_kea.models.KeaClient")
     def test_get_by_hw_address_and_subnet_returns_200(self, MockKeaClient):
         """?hw_address=aa:bb&subnet_id=1 returns 200."""
-        mock_client = MagicMock()
+        mock_client = MagicMock(spec=KeaClient)
         MockKeaClient.return_value = mock_client
         mock_client.reservation_get.return_value = _RESERVATION4_RESPONSE[0]["arguments"]
         response = self.api_client.get(self._url(), {"hw_address": "aa:bb:cc:dd:ee:ff", "subnet_id": "1"})
@@ -196,7 +197,7 @@ class TestReservation4API(_APITestBase):
     @patch("netbox_kea.models.KeaClient")
     def test_get_by_subnet_id_uses_get_page(self, MockKeaClient):
         """?subnet_id=1 (no IP/hw) calls reservation_get_page and returns results."""
-        mock_client = MagicMock()
+        mock_client = MagicMock(spec=KeaClient)
         MockKeaClient.return_value = mock_client
         # reservation_get_page returns (hosts, next_from, next_source_index)
         mock_client.reservation_get_page.return_value = (
@@ -211,7 +212,7 @@ class TestReservation4API(_APITestBase):
     @patch("netbox_kea.models.KeaClient")
     def test_get_by_subnet_id_paginates_all_pages(self, MockKeaClient):
         """?subnet_id=1 fetches ALL pages from reservation_get_page, not just the first."""
-        mock_client = MagicMock()
+        mock_client = MagicMock(spec=KeaClient)
         MockKeaClient.return_value = mock_client
         page1_host = {"ip-address": "10.0.0.51", "hw-address": "aa:bb:cc:dd:ee:01", "subnet-id": 1}
         page2_host = {"ip-address": "10.0.0.52", "hw-address": "aa:bb:cc:dd:ee:02", "subnet-id": 1}
@@ -227,7 +228,7 @@ class TestReservation4API(_APITestBase):
     @patch("netbox_kea.models.KeaClient")
     def test_not_found_returns_empty_results(self, MockKeaClient):
         """When reservation_get returns None, results is empty list with count=0."""
-        mock_client = MagicMock()
+        mock_client = MagicMock(spec=KeaClient)
         MockKeaClient.return_value = mock_client
         mock_client.reservation_get.return_value = None
         response = self.api_client.get(self._url(), {"ip_address": "10.0.0.99", "subnet_id": "1"})
@@ -241,7 +242,7 @@ class TestReservation4API(_APITestBase):
         """When Kea is unreachable, returns HTTP 502."""
         import requests as rq
 
-        mock_client = MagicMock()
+        mock_client = MagicMock(spec=KeaClient)
         MockKeaClient.return_value = mock_client
         mock_client.reservation_get.side_effect = rq.ConnectionError("refused")
         response = self.api_client.get(self._url(), {"ip_address": "10.0.0.1", "subnet_id": "1"})
@@ -250,7 +251,7 @@ class TestReservation4API(_APITestBase):
     @patch("netbox_kea.models.KeaClient")
     def test_uses_dhcp4_service(self, MockKeaClient):
         """The v4 endpoint calls reservation_get with service='dhcp4'."""
-        mock_client = MagicMock()
+        mock_client = MagicMock(spec=KeaClient)
         MockKeaClient.return_value = mock_client
         mock_client.reservation_get.return_value = _RESERVATION4_RESPONSE[0]["arguments"]
         self.api_client.get(self._url(), {"ip_address": "10.0.0.50", "subnet_id": "1"})
@@ -284,7 +285,7 @@ class TestReservation6API(_APITestBase):
     @patch("netbox_kea.models.KeaClient")
     def test_get_by_ip_and_subnet_returns_200(self, MockKeaClient):
         """?ip_address=2001:db8::50&subnet_id=10 returns 200."""
-        mock_client = MagicMock()
+        mock_client = MagicMock(spec=KeaClient)
         MockKeaClient.return_value = mock_client
         mock_client.reservation_get.return_value = _RESERVATION6_SINGLE[0]["arguments"]
         response = self.api_client.get(self._url(), {"ip_address": "2001:db8::50", "subnet_id": "10"})
@@ -293,7 +294,7 @@ class TestReservation6API(_APITestBase):
     @patch("netbox_kea.models.KeaClient")
     def test_get_by_duid_and_subnet_returns_200(self, MockKeaClient):
         """?duid=00:01:02:03&subnet_id=10 returns 200."""
-        mock_client = MagicMock()
+        mock_client = MagicMock(spec=KeaClient)
         MockKeaClient.return_value = mock_client
         mock_client.reservation_get.return_value = _RESERVATION6_SINGLE[0]["arguments"]
         response = self.api_client.get(self._url(), {"duid": "00:01:02:03", "subnet_id": "10"})
@@ -302,7 +303,7 @@ class TestReservation6API(_APITestBase):
     @patch("netbox_kea.models.KeaClient")
     def test_uses_dhcp6_service(self, MockKeaClient):
         """The v6 endpoint calls reservation_get with service='dhcp6'."""
-        mock_client = MagicMock()
+        mock_client = MagicMock(spec=KeaClient)
         MockKeaClient.return_value = mock_client
         mock_client.reservation_get.return_value = _RESERVATION6_SINGLE[0]["arguments"]
         self.api_client.get(self._url(), {"ip_address": "2001:db8::50", "subnet_id": "10"})

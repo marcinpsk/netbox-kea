@@ -26,6 +26,7 @@ from django.test import TestCase, override_settings
 from django.urls import reverse
 from ipam.models import IPAddress as NbIP
 
+from netbox_kea.kea import KeaClient
 from netbox_kea.models import Server
 
 User = get_user_model()
@@ -309,7 +310,7 @@ class TestReservation4BulkSyncView(_SyncViewBase):
         return reverse("plugins:netbox_kea:server_reservation4_bulk_sync", args=[self.server.pk])
 
     def test_redirects_after_success(self):
-        mock_client = MagicMock()
+        mock_client = MagicMock(spec=KeaClient)
         mock_client.reservation_get_page.return_value = (
             [{"ip-address": "10.0.10.1", "hostname": "bulk-host", "subnet-id": 1}],
             0,
@@ -322,7 +323,7 @@ class TestReservation4BulkSyncView(_SyncViewBase):
 
     def test_creates_netbox_ips_for_all_reservations(self):
 
-        mock_client = MagicMock()
+        mock_client = MagicMock(spec=KeaClient)
         mock_client.reservation_get_page.return_value = (
             [
                 {"ip-address": "10.0.11.1", "hostname": "bulk-1", "subnet-id": 1},
@@ -338,7 +339,7 @@ class TestReservation4BulkSyncView(_SyncViewBase):
 
     def test_created_ips_have_reserved_status(self):
 
-        mock_client = MagicMock()
+        mock_client = MagicMock(spec=KeaClient)
         mock_client.reservation_get_page.return_value = (
             [{"ip-address": "10.0.12.1", "hostname": "bulk-rsv", "subnet-id": 1}],
             0,
@@ -472,7 +473,7 @@ class TestReservationBulkSyncConflictProtection(_SyncViewBase):
         from django.contrib import messages as django_messages
 
         NbIP.objects.create(address="10.0.20.5/32", status="active", description="Router loopback")
-        mock_client = MagicMock()
+        mock_client = MagicMock(spec=KeaClient)
         mock_client.reservation_get_page.return_value = (
             [{"ip-address": "10.0.20.5", "hostname": "foreign", "subnet-id": 1}],
             0,
@@ -491,7 +492,7 @@ class TestReservationBulkSyncConflictProtection(_SyncViewBase):
 
     def test_managed_ip_still_synced_alongside_conflict(self):
         NbIP.objects.create(address="10.0.20.6/32", status="active", description="Router loopback")
-        mock_client = MagicMock()
+        mock_client = MagicMock(spec=KeaClient)
         mock_client.reservation_get_page.return_value = (
             [
                 {"ip-address": "10.0.20.6", "hostname": "foreign", "subnet-id": 1},

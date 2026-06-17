@@ -23,7 +23,7 @@ from netbox_kea.kea import (
 
 def _mock_http_response(json_data, status_code=200):
     """Build a mock requests.Response returning *json_data*."""
-    mock_resp = MagicMock()
+    mock_resp = MagicMock(spec=requests.Response)
     mock_resp.status_code = status_code
     mock_resp.json.return_value = json_data
     if status_code >= 400:

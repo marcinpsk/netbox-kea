@@ -29,7 +29,9 @@ import requests as req
 from django.contrib import messages as django_messages
 from django.test import override_settings
 from django.urls import reverse
+from ipam.models import IPAddress as NbIP
 
+from netbox_kea.kea import KeaClient
 from netbox_kea.views import _get_reservation_identifier as _extract_identifier
 
 from .utils import _PLUGINS_CONFIG, _ViewTestBase
@@ -265,7 +267,7 @@ class TestReservation4AddExceptions(_ViewTestBase):
         MockKeaClient.return_value.reservation_get_page.return_value = ([], 0, 0)
         post_data = {**_VALID_RESERVATION4_POST, "sync_to_netbox": "on"}
         with patch("netbox_kea.views.reservations.sync_reservation_to_netbox") as mock_sync:
-            mock_sync.return_value = (MagicMock(), True, False)
+            mock_sync.return_value = (MagicMock(spec=NbIP), True, False)
             response = self.client.post(self._url(), post_data, follow=True)
         self.assertEqual(response.status_code, 200)
         mock_sync.assert_called_once()
@@ -318,7 +320,7 @@ class TestReservation4AddExceptions(_ViewTestBase):
         MockKeaClient.return_value.reservation_get_page.return_value = ([], 0, 0)
         post_data = {**_VALID_RESERVATION4_POST, "sync_to_netbox": "on"}
         with patch("netbox_kea.views.reservations.sync_reservation_to_netbox") as mock_sync:
-            mock_sync.return_value = (MagicMock(), True, False)
+            mock_sync.return_value = (MagicMock(spec=NbIP), True, False)
             response = self.client.post(self._url(), post_data, follow=True)
         self.assertEqual(response.status_code, 200)
         mock_sync.assert_called_once()
@@ -368,7 +370,7 @@ class TestReservation6AddExceptions(_ViewTestBase):
         MockKeaClient.return_value.reservation_get_page.return_value = ([], 0, 0)
         post_data = {**_VALID_RESERVATION6_POST, "sync_to_netbox": "on"}
         with patch("netbox_kea.views.reservations.sync_reservation_to_netbox") as mock_sync:
-            mock_sync.return_value = (MagicMock(), False, False)
+            mock_sync.return_value = (MagicMock(spec=NbIP), False, False)
             response = self.client.post(self._url(), post_data, follow=True)
         self.assertEqual(response.status_code, 200)
         mock_sync.assert_called_once()
@@ -481,7 +483,7 @@ class TestReservation4EditExceptions(_ViewTestBase):
         MockKeaClient.return_value.reservation_update.side_effect = PartialPersistError("dhcp4", Exception("write"))
         post_data = {**_VALID_RESERVATION4_EDIT_POST, "sync_to_netbox": "on"}
         with patch("netbox_kea.views.reservations.sync_reservation_to_netbox") as mock_sync:
-            mock_sync.return_value = (MagicMock(), True, False)
+            mock_sync.return_value = (MagicMock(spec=NbIP), True, False)
             response = self.client.post(self._url(), post_data, follow=True)
         self.assertEqual(response.status_code, 200)
         mock_sync.assert_called_once()
@@ -546,7 +548,7 @@ class TestReservation4EditExceptions(_ViewTestBase):
         MockKeaClient.return_value.reservation_update.return_value = None
         post_data = {**_VALID_RESERVATION4_EDIT_POST, "sync_to_netbox": "on"}
         with patch("netbox_kea.views.reservations.sync_reservation_to_netbox") as mock_sync:
-            mock_sync.return_value = (MagicMock(), False, False)
+            mock_sync.return_value = (MagicMock(spec=NbIP), False, False)
             response = self.client.post(self._url(), post_data, follow=True)
         self.assertEqual(response.status_code, 200)
         mock_sync.assert_called_once()
@@ -783,10 +785,12 @@ class TestReservationListEnrichmentExceptions(_ViewTestBase):
         # lease4-get-all raises an unexpected error — must set on the cloned client
         # since _enrich_reservations_with_lease_status calls client.clone()
         MockKeaClient.return_value.clone.return_value.command.side_effect = RuntimeError("unexpected")
-        MockKeaClient.return_value.clone.return_value.__enter__ = MagicMock(
+        MockKeaClient.return_value.clone.return_value.__enter__ = MagicMock(  # mock-ok: CM protocol stub
             return_value=MockKeaClient.return_value.clone.return_value
         )
-        MockKeaClient.return_value.clone.return_value.__exit__ = MagicMock(return_value=None)
+        MockKeaClient.return_value.clone.return_value.__exit__ = MagicMock(
+            return_value=None
+        )  # mock-ok: CM protocol stub
         response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
         MockKeaClient.return_value.clone.return_value.command.assert_called()
@@ -839,7 +843,7 @@ class TestReservation6AddOptionDataAndSync(_ViewTestBase):
         """sync_to_netbox=on → sync called once and success message queued."""
         MockKeaClient.return_value.reservation_add.return_value = None
         MockKeaClient.return_value.reservation_get_page.return_value = ([], 0, 0)
-        mock_sync.return_value = (MagicMock(), True, False)
+        mock_sync.return_value = (MagicMock(spec=NbIP), True, False)
         post_data = {**_VALID_RESERVATION6_POST, "sync_to_netbox": "on"}
         response = self.client.post(self._url(), post_data, follow=True)
         self.assertEqual(response.status_code, 200)
@@ -1004,7 +1008,7 @@ class TestReservation6EditOptionDataAndSync(_ViewTestBase):
         """sync_to_netbox=on → sync called once and info message queued."""
         self._mock_get(MockKeaClient)
         MockKeaClient.return_value.reservation_update.return_value = None
-        mock_sync.return_value = (MagicMock(), False, False)
+        mock_sync.return_value = (MagicMock(spec=NbIP), False, False)
         post_data = {**_VALID_RESERVATION6_EDIT_POST, "sync_to_netbox": "on"}
         response = self.client.post(self._url(), post_data, follow=True)
         self.assertEqual(response.status_code, 200)
@@ -1040,7 +1044,7 @@ class TestReservation6EditOptionDataAndSync(_ViewTestBase):
 
         self._mock_get(MockKeaClient)
         MockKeaClient.return_value.reservation_update.side_effect = PartialPersistError("dhcp6", Exception("write"))
-        mock_sync.return_value = (MagicMock(), True, False)
+        mock_sync.return_value = (MagicMock(spec=NbIP), True, False)
         post_data = {**_VALID_RESERVATION6_EDIT_POST, "sync_to_netbox": "on"}
         response = self.client.post(self._url(), post_data, follow=True)
         self.assertIn(response.status_code, (200, 302))
@@ -1084,10 +1088,10 @@ class TestEnrichReservationsLeaseStatusCoverage(_ViewTestBase):
         """lease-get-all result=3 → _fetch_leases_for_subnet returns [] → active lease not found."""
         from netbox_kea.views import _enrich_reservations_with_lease_status
 
-        client = MagicMock()
-        clone_mock = MagicMock()
-        clone_mock.__enter__ = MagicMock(return_value=clone_mock)
-        clone_mock.__exit__ = MagicMock(return_value=None)
+        client = MagicMock(spec=KeaClient)
+        clone_mock = MagicMock(spec=KeaClient)
+        clone_mock.__enter__ = MagicMock(return_value=clone_mock)  # mock-ok: CM protocol stub
+        clone_mock.__exit__ = MagicMock(return_value=None)  # mock-ok: CM protocol stub
         clone_mock.command.return_value = [{"result": 3, "arguments": {}}]
         client.clone.return_value = clone_mock
         reservations = [{"ip-address": "10.0.0.1", "subnet-id": 42}]
@@ -1101,10 +1105,10 @@ class TestEnrichReservationsLeaseStatusCoverage(_ViewTestBase):
         from netbox_kea.kea import KeaException
         from netbox_kea.views import _enrich_reservations_with_lease_status
 
-        client = MagicMock()
-        clone_mock = MagicMock()
-        clone_mock.__enter__ = MagicMock(return_value=clone_mock)
-        clone_mock.__exit__ = MagicMock(return_value=None)
+        client = MagicMock(spec=KeaClient)
+        clone_mock = MagicMock(spec=KeaClient)
+        clone_mock.__enter__ = MagicMock(return_value=clone_mock)  # mock-ok: CM protocol stub
+        clone_mock.__exit__ = MagicMock(return_value=None)  # mock-ok: CM protocol stub
         clone_mock.command.side_effect = KeaException({"result": 1, "text": "error"}, index=0)
         client.clone.return_value = clone_mock
         reservations = [{"ip-address": "10.0.0.1", "subnet-id": 42}]
@@ -1116,7 +1120,7 @@ class TestEnrichReservationsLeaseStatusCoverage(_ViewTestBase):
         """Reservations without subnet-id → unique_subnet_ids empty → enrichment returns early."""
         from netbox_kea.views import _enrich_reservations_with_lease_status
 
-        client = MagicMock()
+        client = MagicMock(spec=KeaClient)
         reservations = [{"ip-address": "10.0.0.1"}]  # no subnet-id
         _enrich_reservations_with_lease_status(client, reservations, 4)
         # client.clone should never be called when there are no valid subnet-ids
@@ -1126,7 +1130,7 @@ class TestEnrichReservationsLeaseStatusCoverage(_ViewTestBase):
         """Exception from as_completed → outer except swallows it and enrichment returns early."""
         from netbox_kea.views import _enrich_reservations_with_lease_status
 
-        client = MagicMock()
+        client = MagicMock(spec=KeaClient)
         client.command.return_value = [{"result": 0, "arguments": {"leases": []}}]
         reservations = [{"ip-address": "10.0.0.1", "subnet-id": 42}]
         with patch(
@@ -1153,7 +1157,7 @@ class TestWarnPoolReservationOverlapCoverage(_ViewTestBase):
         """Pool string without dash (CIDR notation) → IPNetwork path is taken."""
         from netbox_kea.views import _warn_pool_reservation_overlap
 
-        client = MagicMock()
+        client = MagicMock(spec=KeaClient)
         client.reservation_get_page.return_value = ([], 0, 0)
         request = self._make_request()
         # Should not raise; CIDR pool path
@@ -1165,7 +1169,7 @@ class TestWarnPoolReservationOverlapCoverage(_ViewTestBase):
         """Host whose subnet-id doesn't match the requested subnet_id is skipped."""
         from netbox_kea.views import _warn_pool_reservation_overlap
 
-        client = MagicMock()
+        client = MagicMock(spec=KeaClient)
         # Return a host with subnet-id=999 (different from requested subnet_id=1)
         client.reservation_get_page.side_effect = [
             ([{"subnet-id": 999, "ip-address": "10.0.0.5"}], 0, 0),
@@ -1180,7 +1184,7 @@ class TestWarnPoolReservationOverlapCoverage(_ViewTestBase):
         """Malformed IP address string is silently skipped (inner except path)."""
         from netbox_kea.views import _warn_pool_reservation_overlap
 
-        client = MagicMock()
+        client = MagicMock(spec=KeaClient)
         client.reservation_get_page.side_effect = [
             ([{"subnet-id": 1, "ip-address": "NOT_AN_IP"}], 0, 0),
         ]
@@ -1204,7 +1208,7 @@ class TestWarnReservationPoolOverlapCoverage(_ViewTestBase):
         """Pool entry with empty pool string is silently skipped."""
         from netbox_kea.views import _warn_reservation_pool_overlap
 
-        client = MagicMock()
+        client = MagicMock(spec=KeaClient)
         client.command.return_value = [
             {
                 "result": 0,
@@ -1221,7 +1225,7 @@ class TestWarnReservationPoolOverlapCoverage(_ViewTestBase):
         """Pool string without dash (CIDR notation) → IPNetwork path is taken."""
         from netbox_kea.views import _warn_reservation_pool_overlap
 
-        client = MagicMock()
+        client = MagicMock(spec=KeaClient)
         client.command.return_value = [
             {
                 "result": 0,
@@ -1239,7 +1243,7 @@ class TestWarnReservationPoolOverlapCoverage(_ViewTestBase):
         """Exception from client.command is swallowed and no warning is issued."""
         from netbox_kea.views import _warn_reservation_pool_overlap
 
-        client = MagicMock()
+        client = MagicMock(spec=KeaClient)
         client.command.side_effect = req.RequestException("network failure")
         request = self._make_request()
         # Should not raise; exception is swallowed

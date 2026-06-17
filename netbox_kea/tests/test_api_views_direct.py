@@ -17,7 +17,8 @@ from django.test import SimpleTestCase, override_settings
 from rest_framework import status
 
 from netbox_kea.api.views import ServerViewSet
-from netbox_kea.kea import KeaException
+from netbox_kea.kea import KeaClient, KeaException
+from netbox_kea.models import Server
 
 _PLUGINS_CONFIG = {"netbox_kea": {"kea_timeout": 30}}
 
@@ -30,17 +31,17 @@ def _make_view():
     view = ServerViewSet()
     view.kwargs = {}
     view.format_kwarg = None
-    mock_server = MagicMock()
+    mock_server = MagicMock(spec=Server)
     mock_server.name = "test-server"
-    view.get_object = MagicMock(return_value=mock_server)
-    view.check_permissions = MagicMock()
-    view.check_object_permissions = MagicMock()
+    view.get_object = MagicMock(return_value=mock_server)  # mock-ok: stub DRF get_object
+    view.check_permissions = MagicMock()  # mock-ok: stub DRF permission hook for direct view call
+    view.check_object_permissions = MagicMock()  # mock-ok: stub DRF object-permission hook
     return view, mock_server
 
 
 def _make_request(query_params: dict):
     """Return a minimal mock request with the given query_params dict."""
-    req = MagicMock()
+    req = MagicMock()  # mock-ok: minimal DRF request (query_params only)
     req.query_params = query_params
     return req
 
@@ -48,7 +49,7 @@ def _make_request(query_params: dict):
 def _view_with_command(command_return):
     """Return (view, mock_client) with client.command pre-configured."""
     view, server = _make_view()
-    mock_client = MagicMock()
+    mock_client = MagicMock(spec=KeaClient)
     mock_client.command.return_value = command_return
     server.get_client.return_value = mock_client
     return view, mock_client
@@ -65,7 +66,7 @@ class TestLeaseActionDispatch(SimpleTestCase):
 
     def test_leases4_dispatches_with_version_4(self):
         view, server = _make_view()
-        mock_client = MagicMock()
+        mock_client = MagicMock(spec=KeaClient)
         mock_client.command.return_value = [{"result": 0, "arguments": None}]
         server.get_client.return_value = mock_client
         response = view.leases4(_make_request({"ip_address": "10.0.0.1"}), pk=1)
@@ -74,7 +75,7 @@ class TestLeaseActionDispatch(SimpleTestCase):
 
     def test_leases6_dispatches_with_version_6(self):
         view, server = _make_view()
-        mock_client = MagicMock()
+        mock_client = MagicMock(spec=KeaClient)
         mock_client.command.return_value = [{"result": 0, "arguments": None}]
         server.get_client.return_value = mock_client
         response = view.leases6(_make_request({"ip_address": "2001:db8::1"}), pk=1)
@@ -208,7 +209,7 @@ class TestFetchLeasesDuid(SimpleTestCase):
     def test_duid_on_v4_falls_through_to_empty(self):
         """duid provided on v4 skips the duid branch; no other param matches → empty (line 168)."""
         view, server = _make_view()
-        mock_client = MagicMock()
+        mock_client = MagicMock(spec=KeaClient)
         server.get_client.return_value = mock_client
         response = view._lease_search(_make_request({"duid": "00:01:02:03"}), version=4)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
@@ -263,7 +264,7 @@ class TestReservationActionDispatch(SimpleTestCase):
 
     def test_reservations4_dispatches_with_version_4(self):
         view, server = _make_view()
-        mock_client = MagicMock()
+        mock_client = MagicMock(spec=KeaClient)
         mock_client.reservation_get.return_value = {"ip-address": "10.0.0.50", "subnet-id": 1}
         server.get_client.return_value = mock_client
         response = view.reservations4(_make_request({"ip_address": "10.0.0.50", "subnet_id": "1"}), pk=1)
@@ -272,7 +273,7 @@ class TestReservationActionDispatch(SimpleTestCase):
 
     def test_reservations6_dispatches_with_version_6(self):
         view, server = _make_view()
-        mock_client = MagicMock()
+        mock_client = MagicMock(spec=KeaClient)
         mock_client.reservation_get.return_value = {"ip-addresses": ["2001:db8::50"], "subnet-id": 10}
         server.get_client.return_value = mock_client
         response = view.reservations6(_make_request({"ip_address": "2001:db8::50", "subnet_id": "10"}), pk=1)
@@ -350,7 +351,7 @@ class TestFetchReservationsIpAndSubnet(SimpleTestCase):
 
     def test_found_returns_one_reservation(self):
         view, server = _make_view()
-        mock_client = MagicMock()
+        mock_client = MagicMock(spec=KeaClient)
         mock_client.reservation_get.return_value = {"ip-address": "10.0.0.50", "subnet-id": 1}
         server.get_client.return_value = mock_client
         response = view._reservation_search(_make_request({"ip_address": "10.0.0.50", "subnet_id": "1"}), version=4)
@@ -359,7 +360,7 @@ class TestFetchReservationsIpAndSubnet(SimpleTestCase):
 
     def test_not_found_returns_empty(self):
         view, server = _make_view()
-        mock_client = MagicMock()
+        mock_client = MagicMock(spec=KeaClient)
         mock_client.reservation_get.return_value = None
         server.get_client.return_value = mock_client
         response = view._reservation_search(_make_request({"ip_address": "10.0.0.99", "subnet_id": "1"}), version=4)
@@ -373,7 +374,7 @@ class TestFetchReservationsHwAndSubnet(SimpleTestCase):
 
     def test_found_returns_one_reservation(self):
         view, server = _make_view()
-        mock_client = MagicMock()
+        mock_client = MagicMock(spec=KeaClient)
         mock_client.reservation_get.return_value = {"ip-address": "10.0.0.50", "hw-address": "aa:bb:cc:dd:ee:ff"}
         server.get_client.return_value = mock_client
         response = view._reservation_search(
@@ -389,7 +390,7 @@ class TestFetchReservationsDuidAndSubnet(SimpleTestCase):
 
     def test_found_returns_one_reservation(self):
         view, server = _make_view()
-        mock_client = MagicMock()
+        mock_client = MagicMock(spec=KeaClient)
         mock_client.reservation_get.return_value = {"ip-addresses": ["2001:db8::50"], "duid": "00:01:02:03"}
         server.get_client.return_value = mock_client
         response = view._reservation_search(_make_request({"duid": "00:01:02:03", "subnet_id": "10"}), version=6)
@@ -403,7 +404,7 @@ class TestFetchReservationsSubnetOnly(SimpleTestCase):
 
     def test_single_page_returns_all_hosts(self):
         view, server = _make_view()
-        mock_client = MagicMock()
+        mock_client = MagicMock(spec=KeaClient)
         host = {"ip-address": "10.0.0.50", "subnet-id": 1}
         mock_client.reservation_get_page.return_value = ([host], 0, 0)
         server.get_client.return_value = mock_client
@@ -413,7 +414,7 @@ class TestFetchReservationsSubnetOnly(SimpleTestCase):
 
     def test_multi_page_collects_all_hosts(self):
         view, server = _make_view()
-        mock_client = MagicMock()
+        mock_client = MagicMock(spec=KeaClient)
         host1 = {"ip-address": "10.0.0.1", "subnet-id": 1}
         host2 = {"ip-address": "10.0.0.2", "subnet-id": 1}
         mock_client.reservation_get_page.side_effect = [
@@ -427,7 +428,7 @@ class TestFetchReservationsSubnetOnly(SimpleTestCase):
 
     def test_filters_by_subnet_id(self):
         view, server = _make_view()
-        mock_client = MagicMock()
+        mock_client = MagicMock(spec=KeaClient)
         host_in = {"ip-address": "10.0.0.1", "subnet-id": 1}
         host_out = {"ip-address": "10.0.0.2", "subnet-id": 2}
         mock_client.reservation_get_page.return_value = ([host_in, host_out], 0, 0)
@@ -444,7 +445,7 @@ class TestFetchReservationsNoMatch(SimpleTestCase):
     def test_duid_without_subnet_on_v4_returns_empty(self):
         """duid only on v4 (no subnet_id) — none of the 4 branches fires → empty list."""
         view, server = _make_view()
-        mock_client = MagicMock()
+        mock_client = MagicMock(spec=KeaClient)
         server.get_client.return_value = mock_client
         response = view._reservation_search(_make_request({"duid": "00:01:02:03"}), version=4)
         self.assertEqual(response.status_code, status.HTTP_200_OK)

@@ -54,13 +54,13 @@ class TestHealGhostScheduledJobs(TestCase):
                 from rq.exceptions import NoSuchJobError
 
                 raise NoSuchJobError(str_id)
-            rq_job = MagicMock()
+            rq_job = MagicMock()  # mock-ok: RQ job (scheduler boundary)
             status_str = rq_statuses.get(str_id, "scheduled")
-            rq_job.get_status.return_value = MagicMock(value=status_str)
+            rq_job.get_status.return_value = MagicMock(value=status_str)  # mock-ok: RQ JobStatus enum value
             return rq_job
 
         with (
-            patch("django_rq.get_connection", return_value=MagicMock()),
+            patch("django_rq.get_connection", return_value=MagicMock()),  # mock-ok: redis connection (external)
             patch("rq.job.Job.fetch", side_effect=_fetch),
         ):
             KeaIpamSyncJob._heal_ghost_scheduled_jobs()
@@ -114,14 +114,14 @@ class TestHealGhostScheduledJobs(TestCase):
         state unreachable via normal ORM saves; the guard still protects against
         unexpected DB state (e.g. direct SQL inserts or future schema changes).
         """
-        mock_row = MagicMock()
+        mock_row = MagicMock()  # mock-ok: minimal scheduled-job row
         mock_row.job_id = None
 
         with (
             patch.object(KeaIpamSyncJob, "get_jobs") as mock_get_jobs,
-            patch("django_rq.get_connection", return_value=MagicMock()),
+            patch("django_rq.get_connection", return_value=MagicMock()),  # mock-ok: redis connection (external)
         ):
-            mock_qs = MagicMock()
+            mock_qs = MagicMock()  # mock-ok: queryset stand-in for ghost-job scan
             mock_qs.exists.return_value = True
             mock_qs.filter.return_value = mock_qs
             mock_qs.__iter__ = lambda self: iter([mock_row])
@@ -192,12 +192,12 @@ class TestHealGhostScheduledJobs(TestCase):
         def _fetch(job_id, connection):
             if str(job_id) == str(bad_job.job_id):
                 raise RuntimeError("transient Redis error")
-            rq_job = MagicMock()
+            rq_job = MagicMock()  # mock-ok: RQ job (scheduler boundary)
             rq_job.get_status.return_value = MagicMock(value="failed")
             return rq_job
 
         with (
-            patch("django_rq.get_connection", return_value=MagicMock()),
+            patch("django_rq.get_connection", return_value=MagicMock()),  # mock-ok: redis connection (external)
             patch("rq.job.Job.fetch", side_effect=_fetch),
         ):
             KeaIpamSyncJob._heal_ghost_scheduled_jobs()
@@ -216,12 +216,12 @@ class TestHealGhostScheduledJobs(TestCase):
         job = self._make_job()
 
         def _fetch(job_id, connection):
-            rq_job = MagicMock()
+            rq_job = MagicMock()  # mock-ok: RQ job (scheduler boundary)
             rq_job.get_status.return_value = "failed"  # plain string, no .value
             return rq_job
 
         with (
-            patch("django_rq.get_connection", return_value=MagicMock()),
+            patch("django_rq.get_connection", return_value=MagicMock()),  # mock-ok: redis connection (external)
             patch("rq.job.Job.fetch", side_effect=_fetch),
         ):
             KeaIpamSyncJob._heal_ghost_scheduled_jobs()
@@ -235,12 +235,12 @@ class TestHealGhostScheduledJobs(TestCase):
         job = self._make_job()
 
         def _fetch(job_id, connection):
-            rq_job = MagicMock()
+            rq_job = MagicMock()  # mock-ok: RQ job (scheduler boundary)
             rq_job.get_status.return_value = "scheduled"  # plain string
             return rq_job
 
         with (
-            patch("django_rq.get_connection", return_value=MagicMock()),
+            patch("django_rq.get_connection", return_value=MagicMock()),  # mock-ok: redis connection (external)
             patch("rq.job.Job.fetch", side_effect=_fetch),
         ):
             KeaIpamSyncJob._heal_ghost_scheduled_jobs()
@@ -253,7 +253,7 @@ class TestEnqueueOnceWiring(SimpleTestCase):
 
     def test_enqueue_once_heals_then_delegates(self):
         """Ghost-heal runs before super().enqueue_once(), and kwargs pass through."""
-        manager = MagicMock()
+        manager = MagicMock()  # mock-ok: call-order manager (attach_mock/mock_calls)
         sentinel = object()
 
         # Patch the heal on our class and JobRunner.enqueue_once (the super impl).

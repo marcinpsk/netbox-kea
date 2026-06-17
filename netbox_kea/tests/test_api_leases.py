@@ -16,6 +16,7 @@ from django.test import TestCase, override_settings
 from django.urls import reverse
 from rest_framework.test import APIClient
 
+from netbox_kea.kea import KeaClient
 from netbox_kea.models import Server
 
 User = get_user_model()
@@ -161,7 +162,7 @@ class TestLease4API(_APITestBase):
     @patch("netbox_kea.models.KeaClient")
     def test_get_by_ip_address_returns_200(self, MockKeaClient):
         """?ip_address=10.0.0.100 returns 200 with lease data."""
-        mock_client = MagicMock()
+        mock_client = MagicMock(spec=KeaClient)
         MockKeaClient.return_value = mock_client
         mock_client.command.return_value = _LEASE4_RESPONSE
         response = self.api_client.get(self._url(), {"ip_address": "10.0.0.100"})
@@ -170,7 +171,7 @@ class TestLease4API(_APITestBase):
     @patch("netbox_kea.models.KeaClient")
     def test_get_by_ip_address_results_in_response(self, MockKeaClient):
         """Response includes a 'results' list and 'count' key."""
-        mock_client = MagicMock()
+        mock_client = MagicMock(spec=KeaClient)
         MockKeaClient.return_value = mock_client
         mock_client.command.return_value = _LEASE4_RESPONSE
         response = self.api_client.get(self._url(), {"ip_address": "10.0.0.100"})
@@ -182,7 +183,7 @@ class TestLease4API(_APITestBase):
     @patch("netbox_kea.models.KeaClient")
     def test_get_by_hw_address_returns_200(self, MockKeaClient):
         """?hw_address=aa:bb:cc:dd:ee:ff returns 200 with lease list."""
-        mock_client = MagicMock()
+        mock_client = MagicMock(spec=KeaClient)
         MockKeaClient.return_value = mock_client
         mock_client.command.return_value = _LEASE4_LIST_RESPONSE
         response = self.api_client.get(self._url(), {"hw_address": "aa:bb:cc:dd:ee:ff"})
@@ -192,7 +193,7 @@ class TestLease4API(_APITestBase):
     @patch("netbox_kea.models.KeaClient")
     def test_get_by_hostname_returns_200(self, MockKeaClient):
         """?hostname=host.example.com returns 200."""
-        mock_client = MagicMock()
+        mock_client = MagicMock(spec=KeaClient)
         MockKeaClient.return_value = mock_client
         mock_client.command.return_value = _LEASE4_LIST_RESPONSE
         response = self.api_client.get(self._url(), {"hostname": "host.example.com"})
@@ -201,7 +202,7 @@ class TestLease4API(_APITestBase):
     @patch("netbox_kea.models.KeaClient")
     def test_get_by_subnet_id_returns_200(self, MockKeaClient):
         """?subnet_id=1 returns 200."""
-        mock_client = MagicMock()
+        mock_client = MagicMock(spec=KeaClient)
         MockKeaClient.return_value = mock_client
         mock_client.command.return_value = _LEASE4_LIST_RESPONSE
         response = self.api_client.get(self._url(), {"subnet_id": "1"})
@@ -210,7 +211,7 @@ class TestLease4API(_APITestBase):
     @patch("netbox_kea.models.KeaClient")
     def test_not_found_returns_empty_results(self, MockKeaClient):
         """When Kea returns result=3 (not found), results is empty list."""
-        mock_client = MagicMock()
+        mock_client = MagicMock(spec=KeaClient)
         MockKeaClient.return_value = mock_client
         mock_client.command.return_value = _LEASE4_NOT_FOUND
         response = self.api_client.get(self._url(), {"ip_address": "10.0.0.99"})
@@ -223,7 +224,7 @@ class TestLease4API(_APITestBase):
         """When Kea is unreachable, returns HTTP 502."""
         import requests as rq
 
-        mock_client = MagicMock()
+        mock_client = MagicMock(spec=KeaClient)
         MockKeaClient.return_value = mock_client
         mock_client.command.side_effect = rq.ConnectionError("refused")
         response = self.api_client.get(self._url(), {"ip_address": "10.0.0.1"})
@@ -232,7 +233,7 @@ class TestLease4API(_APITestBase):
     @patch.object(Server, "get_client")
     def test_get_client_called_with_version_4(self, mock_get_client):
         """The view calls server.get_client(version=4) to select the DHCPv4 endpoint."""
-        mock_client = MagicMock()
+        mock_client = MagicMock(spec=KeaClient)
         mock_get_client.return_value = mock_client
         mock_client.command.return_value = _LEASE4_RESPONSE
         self.api_client.get(self._url(), {"ip_address": "10.0.0.100"})
@@ -271,7 +272,7 @@ class TestLease6API(_APITestBase):
     @patch("netbox_kea.models.KeaClient")
     def test_get_by_ip_address_returns_200(self, MockKeaClient):
         """?ip_address=2001:db8::1 returns 200 with v6 lease data."""
-        mock_client = MagicMock()
+        mock_client = MagicMock(spec=KeaClient)
         MockKeaClient.return_value = mock_client
         mock_client.command.return_value = [
             {
@@ -293,7 +294,7 @@ class TestLease6API(_APITestBase):
     @patch("netbox_kea.models.KeaClient")
     def test_get_by_duid_returns_200(self, MockKeaClient):
         """?duid=00:01:02:03 returns 200 with v6 lease list."""
-        mock_client = MagicMock()
+        mock_client = MagicMock(spec=KeaClient)
         MockKeaClient.return_value = mock_client
         mock_client.command.return_value = _LEASE6_LIST_RESPONSE
         response = self.api_client.get(self._url(), {"duid": "00:01:02:03"})
@@ -303,7 +304,7 @@ class TestLease6API(_APITestBase):
     @patch("netbox_kea.models.KeaClient")
     def test_uses_dhcp6_service(self, MockKeaClient):
         """The v6 endpoint calls Kea with service=['dhcp6']."""
-        mock_client = MagicMock()
+        mock_client = MagicMock(spec=KeaClient)
         MockKeaClient.return_value = mock_client
         mock_client.command.return_value = [
             {
@@ -326,7 +327,7 @@ class TestLease6API(_APITestBase):
     @patch.object(Server, "get_client")
     def test_get_client_called_with_version_6(self, mock_get_client):
         """The view calls server.get_client(version=6) to select the DHCPv6 endpoint."""
-        mock_client = MagicMock()
+        mock_client = MagicMock(spec=KeaClient)
         mock_get_client.return_value = mock_client
         mock_client.command.return_value = [
             {

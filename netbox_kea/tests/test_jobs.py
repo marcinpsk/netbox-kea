@@ -24,9 +24,12 @@ from unittest.mock import MagicMock, patch
 
 from core.exceptions import JobFailed
 from django.test import SimpleTestCase, TestCase, override_settings
+from ipam.models import IPAddress as NbIP
+from ipam.models import IPRange, Prefix
 
 from netbox_kea.jobs import KeaIpamSyncJob
 from netbox_kea.kea import KeaClient, KeaException
+from netbox_kea.models import Server, SyncConfig
 
 _PLUGINS_CONFIG = {
     "netbox_kea": {
@@ -65,15 +68,15 @@ _RESV4 = {"ip-address": "10.0.0.100", "hw-address": "11:22:33:44:55:66", "hostna
 
 def _make_job() -> MagicMock:
     """Create a minimal mock Job object for JobRunner.__init__."""
-    mock_job = MagicMock()
+    mock_job = MagicMock()  # mock-ok: NetBox job-runner stand-in
     mock_job.data = {}
-    mock_job.log = MagicMock()
+    mock_job.log = MagicMock()  # mock-ok: job log sink
     return mock_job
 
 
 def _make_server(name: str = "kea1", dhcp4: bool = True, dhcp6: bool = False, pk: int = 1) -> MagicMock:
     """Return a MagicMock Server — used only by SimpleTestCase helper tests."""
-    server = MagicMock()
+    server = MagicMock(spec=Server)
     server.name = name
     server.dhcp4 = dhcp4
     server.dhcp6 = dhcp6
@@ -890,7 +893,7 @@ class TestSyncSubnetEntry(SimpleTestCase):
         mock_prefix.assert_not_called()
         self.assertEqual(stats, {"created": 0, "updated": 0, "errors": 0, "prefix_errors": 0})
 
-    @patch("netbox_kea.sync.sync_subnet_to_netbox_prefix", return_value=(MagicMock(), True, False))
+    @patch("netbox_kea.sync.sync_subnet_to_netbox_prefix", return_value=(MagicMock(spec=Prefix), True, False))
     def test_prefix_created_increments_created(self, mock_prefix):
         """New prefix (created=True) increments stats['created']."""
         from netbox_kea.jobs import _sync_subnet_entry
@@ -907,7 +910,7 @@ class TestSyncSubnetEntry(SimpleTestCase):
         self.assertEqual(stats["created"], 1)
         self.assertEqual(stats["updated"], 0)
 
-    @patch("netbox_kea.sync.sync_subnet_to_netbox_prefix", return_value=(MagicMock(), False, True))
+    @patch("netbox_kea.sync.sync_subnet_to_netbox_prefix", return_value=(MagicMock(spec=Prefix), False, True))
     def test_prefix_updated_increments_updated(self, mock_prefix):
         """Updated prefix (created=False, did_update=True) increments stats['updated']."""
         from netbox_kea.jobs import _sync_subnet_entry
@@ -924,7 +927,7 @@ class TestSyncSubnetEntry(SimpleTestCase):
         self.assertEqual(stats["updated"], 1)
         self.assertEqual(stats["created"], 0)
 
-    @patch("netbox_kea.sync.sync_subnet_to_netbox_prefix", return_value=(MagicMock(), False, False))
+    @patch("netbox_kea.sync.sync_subnet_to_netbox_prefix", return_value=(MagicMock(spec=Prefix), False, False))
     def test_prefix_idempotent_does_not_increment(self, mock_prefix):
         """Unchanged prefix (created=False, did_update=False) leaves stats at 0."""
         from netbox_kea.jobs import _sync_subnet_entry
@@ -973,8 +976,8 @@ class TestSyncSubnetEntry(SimpleTestCase):
         self.assertEqual(stats["prefix_errors"], 1)
         self.assertEqual(stats["errors"], 0)
 
-    @patch("netbox_kea.sync.sync_pool_to_netbox_ip_range", return_value=(MagicMock(), True, False))
-    @patch("netbox_kea.sync.sync_subnet_to_netbox_prefix", return_value=(MagicMock(), False, False))
+    @patch("netbox_kea.sync.sync_pool_to_netbox_ip_range", return_value=(MagicMock(spec=IPRange), True, False))
+    @patch("netbox_kea.sync.sync_subnet_to_netbox_prefix", return_value=(MagicMock(spec=Prefix), False, False))
     def test_pool_created_increments_created(self, mock_prefix, mock_range):
         """New IP range (created=True) increments stats['created']."""
         from netbox_kea.jobs import _sync_subnet_entry
@@ -985,7 +988,7 @@ class TestSyncSubnetEntry(SimpleTestCase):
         self.assertEqual(stats["created"], 1)
 
     @patch("netbox_kea.sync.sync_pool_to_netbox_ip_range", side_effect=Exception("overflow"))
-    @patch("netbox_kea.sync.sync_subnet_to_netbox_prefix", return_value=(MagicMock(), False, False))
+    @patch("netbox_kea.sync.sync_subnet_to_netbox_prefix", return_value=(MagicMock(spec=Prefix), False, False))
     def test_pool_exception_increments_errors(self, mock_prefix, mock_range):
         """Exception in pool sync → stats['prefix_errors'] incremented, no re-raise."""
         from netbox_kea.jobs import _sync_subnet_entry
@@ -997,7 +1000,7 @@ class TestSyncSubnetEntry(SimpleTestCase):
         self.assertEqual(stats["errors"], 0)
 
     @patch("netbox_kea.sync.sync_pool_to_netbox_ip_range", return_value=None)
-    @patch("netbox_kea.sync.sync_subnet_to_netbox_prefix", return_value=(MagicMock(), False, False))
+    @patch("netbox_kea.sync.sync_subnet_to_netbox_prefix", return_value=(MagicMock(spec=Prefix), False, False))
     def test_pool_none_result_counts_as_error(self, mock_prefix, mock_range):
         """sync_pool_to_netbox_ip_range returning None (unparseable pool) increments prefix_errors."""
         from netbox_kea.jobs import _sync_subnet_entry
@@ -1007,12 +1010,12 @@ class TestSyncSubnetEntry(SimpleTestCase):
         _sync_subnet_entry(subnet, sync_prefixes=False, sync_ip_ranges=True, vrf=None, stats=stats, server_name="s")
         self.assertEqual(stats, {"created": 0, "updated": 0, "errors": 0, "prefix_errors": 1})
 
-    @patch("netbox_kea.sync.sync_subnet_to_netbox_prefix", return_value=(MagicMock(), True, False))
+    @patch("netbox_kea.sync.sync_subnet_to_netbox_prefix", return_value=(MagicMock(spec=Prefix), True, False))
     def test_vrf_forwarded_to_prefix_sync(self, mock_prefix):
         """vrf value is forwarded to sync_subnet_to_netbox_prefix."""
         from netbox_kea.jobs import _sync_subnet_entry
 
-        fake_vrf = MagicMock()
+        fake_vrf = MagicMock()  # mock-ok: VRF stand-in (sync_vrf value)
         _sync_subnet_entry(
             {"subnet": "10.0.0.0/24"},
             sync_prefixes=True,
@@ -1024,12 +1027,12 @@ class TestSyncSubnetEntry(SimpleTestCase):
         _, call_kwargs = mock_prefix.call_args
         self.assertEqual(call_kwargs["vrf"], fake_vrf)
 
-    @patch("netbox_kea.sync.sync_pool_to_netbox_ip_range", return_value=(MagicMock(), True, False))
+    @patch("netbox_kea.sync.sync_pool_to_netbox_ip_range", return_value=(MagicMock(spec=IPRange), True, False))
     def test_vrf_forwarded_to_pool_sync(self, mock_range):
         """vrf value is forwarded to sync_pool_to_netbox_ip_range."""
         from netbox_kea.jobs import _sync_subnet_entry
 
-        fake_vrf = MagicMock()
+        fake_vrf = MagicMock()  # mock-ok: VRF stand-in (sync_vrf value)
         subnet = {"subnet": "10.0.0.0/24", "pools": [{"pool": "10.0.0.10-10.0.0.50"}]}
         _sync_subnet_entry(
             subnet,
@@ -1064,7 +1067,7 @@ class TestSyncSubnetEntry(SimpleTestCase):
             _sync_subnet_entry(subnet, sync_prefixes=False, sync_ip_ranges=True, vrf=None, stats=stats, server_name="s")
         self.assertEqual(stats, {"created": 0, "updated": 0, "errors": 0, "prefix_errors": 0})
 
-    @patch("netbox_kea.sync.sync_pool_to_netbox_ip_range", return_value=(MagicMock(), False, True))
+    @patch("netbox_kea.sync.sync_pool_to_netbox_ip_range", return_value=(MagicMock(spec=IPRange), False, True))
     def test_pool_updated_increments_updated(self, mock_range):
         """Updated IP range (created=False, did_update=True) increments stats['updated'] (lines 315-316)."""
         from netbox_kea.jobs import _sync_subnet_entry
@@ -1139,7 +1142,7 @@ class TestFetchKeaSubnets(SimpleTestCase):
     """_fetch_kea_subnets fetches + parses the Kea subnet list, returning None on failure."""
 
     def _make_server(self, name="kea1"):
-        server = MagicMock()
+        server = MagicMock(spec=Server)
         server.name = name
         return server
 
@@ -1148,7 +1151,7 @@ class TestFetchKeaSubnets(SimpleTestCase):
         if get_client_side_effect is not None:
             server.get_client.side_effect = get_client_side_effect
             return server
-        client = MagicMock()
+        client = MagicMock(spec=KeaClient)
         if command_side_effect is not None:
             client.command.side_effect = command_side_effect
         else:
@@ -1280,9 +1283,9 @@ class TestSyncServerReservationsReturnValue(TestCase):
     def test_returns_false_when_a_row_fails(self):
         from netbox_kea.jobs import _sync_server_reservations
 
-        server = MagicMock()
+        server = MagicMock(spec=Server)
         server.name = "kea-fail"
-        client = MagicMock()
+        client = MagicMock(spec=KeaClient)
         # A reservation with no ip-address makes sync_reservation_to_netbox raise
         # ValueError, which the loop catches and counts as an error.
         client.reservation_get_page.return_value = ([{"hostname": "bad", "subnet-id": 1}], 0, 0)
@@ -1299,7 +1302,7 @@ class TestSyncServerPrefixesAndRanges(SimpleTestCase):
     """_sync_server_prefixes_and_ranges processes a pre-fetched subnet list."""
 
     def _make_server(self, name="kea1"):
-        server = MagicMock()
+        server = MagicMock(spec=Server)
         server.name = name
         server.sync_vrf = None
         return server
@@ -1346,7 +1349,7 @@ class TestSyncServerPrefixesAndRanges(SimpleTestCase):
         """vrf kwarg is passed through to each _sync_subnet_entry call."""
         from netbox_kea.jobs import _sync_server_prefixes_and_ranges
 
-        fake_vrf = MagicMock()
+        fake_vrf = MagicMock()  # mock-ok: VRF stand-in (sync_vrf value)
         subnets = [{"subnet": "10.0.0.0/24", "pools": []}]
         stats = {"created": 0, "updated": 0, "errors": 0, "prefix_errors": 0}
         _sync_server_prefixes_and_ranges(
@@ -1374,6 +1377,7 @@ class TestPerServerPrefixRangeToggles(SimpleTestCase):
         patcher = patch("netbox_kea.models.SyncConfig")
         self.MockSyncConfig = patcher.start()
         self.MockSyncConfig.get.return_value = MagicMock(
+            spec=SyncConfig,
             sync_enabled=True,
             interval_minutes=5,
             sync_leases_enabled=False,
@@ -1451,7 +1455,7 @@ class TestPerServerPrefixRangeToggles(SimpleTestCase):
     def test_sync_vrf_forwarded_to_prefix_range_sync(self, MockServer, mock_pr):
         """server.sync_vrf is forwarded as vrf= to _sync_server_prefixes_and_ranges."""
         server = _make_server()
-        fake_vrf = MagicMock(name="vrf-red")
+        fake_vrf = MagicMock(name="vrf-red")  # mock-ok: VRF stand-in (sync_vrf value)
         server.sync_vrf = fake_vrf
         server.sync_prefixes_enabled = True
         server.sync_ip_ranges_enabled = True
@@ -1475,6 +1479,7 @@ class TestAllSyncTypesDisabled(SimpleTestCase):
         patcher = patch("netbox_kea.models.SyncConfig")
         self.MockSyncConfig = patcher.start()
         self.MockSyncConfig.get.return_value = MagicMock(
+            spec=SyncConfig,
             sync_enabled=True,
             interval_minutes=5,
             sync_leases_enabled=False,
@@ -1504,7 +1509,7 @@ class TestPrefetchReservationIpsEdgeCases(SimpleTestCase):
     """Edge-case tests for _prefetch_reservation_ips (lines 90, 95-96 in jobs.py)."""
 
     def _make_server(self):
-        server = MagicMock()
+        server = MagicMock(spec=Server)
         server.name = "kea1"
         return server
 
@@ -1513,7 +1518,7 @@ class TestPrefetchReservationIpsEdgeCases(SimpleTestCase):
         from netbox_kea.jobs import _prefetch_reservation_ips
 
         server = self._make_server()
-        client = MagicMock()
+        client = MagicMock(spec=KeaClient)
         page = ["not-a-dict", {"ip-address": "10.0.0.1"}]
         client.reservation_get_page.return_value = (page, 0, 0)
         server.get_client.return_value = client
@@ -1529,7 +1534,7 @@ class TestPrefetchReservationIpsEdgeCases(SimpleTestCase):
         from netbox_kea.jobs import _prefetch_reservation_ips
 
         server = self._make_server()
-        client = MagicMock()
+        client = MagicMock(spec=KeaClient)
         page = [{"ip-addresses": ["2001:db8::1", "2001:db8::2"]}]
         client.reservation_get_page.return_value = (page, 0, 0)
         server.get_client.return_value = client
@@ -1550,17 +1555,17 @@ class TestSyncServerReservationsUpdated(SimpleTestCase):
     """Tests that an updated reservation (changed=True, created=False) increments stats['updated']."""
 
     def _make_server(self):
-        server = MagicMock()
+        server = MagicMock(spec=Server)
         server.name = "kea1"
         return server
 
-    @patch("netbox_kea.sync.sync_reservation_to_netbox", return_value=(MagicMock(), False, True))
+    @patch("netbox_kea.sync.sync_reservation_to_netbox", return_value=(MagicMock(spec=NbIP), False, True))
     def test_reservation_updated_increments_stats(self, mock_sync_resv):
         """changed=True in sync_reservation_to_netbox → stats['updated'] += 1 (line 233)."""
         from netbox_kea.jobs import _sync_server_reservations
 
         server = self._make_server()
-        client = MagicMock()
+        client = MagicMock(spec=KeaClient)
         client.reservation_get_page.return_value = ([_RESV4], 0, 0)
         server.get_client.return_value = client
 
@@ -1585,6 +1590,7 @@ class TestJobSaveFailure(SimpleTestCase):
         patcher = patch("netbox_kea.models.SyncConfig")
         self.MockSyncConfig = patcher.start()
         self.MockSyncConfig.get.return_value = MagicMock(
+            spec=SyncConfig,
             sync_enabled=True,
             interval_minutes=5,
             sync_leases_enabled=False,

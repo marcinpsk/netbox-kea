@@ -970,7 +970,11 @@ class TestNetboxDnsAvailable(TestCase):
         import importlib.util as _ilu
         from unittest.mock import MagicMock, patch
 
-        with patch.object(_ilu, "find_spec", return_value=MagicMock()):
+        with patch.object(
+            _ilu,
+            "find_spec",
+            return_value=MagicMock(),  # mock-ok: importlib find_spec stub
+        ):
             from netbox_kea.sync import netbox_dns_available
 
             self.assertTrue(netbox_dns_available())
@@ -1066,7 +1070,9 @@ class TestFindPrefixLengthPostgresPath(TestCase):
         """When the net_contains filter returns a prefix, return its length."""
         from unittest.mock import MagicMock, patch
 
-        mock_prefix = MagicMock()
+        from ipam.models import Prefix
+
+        mock_prefix = MagicMock(spec=Prefix)
         mock_prefix.prefix = "10.0.0.0/24"
         with patch("ipam.models.Prefix.objects") as mock_objects:
             mock_objects.filter.return_value.order_by.return_value.first.return_value = mock_prefix
@@ -1083,7 +1089,9 @@ class TestFindPrefixLengthSQLiteException(TestCase):
         """When IPNetwork parsing raises inside the loop, the exception is caught and we continue."""
         from unittest.mock import MagicMock, patch
 
-        mock_bad_prefix = MagicMock()
+        from ipam.models import Prefix
+
+        mock_bad_prefix = MagicMock(spec=Prefix)
         mock_bad_prefix.prefix = "bad-prefix"
         with patch("ipam.models.Prefix.objects") as mock_objects:
             from django.db.utils import ProgrammingError
