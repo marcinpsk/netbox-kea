@@ -73,7 +73,7 @@ def find_prefix_length(ip_str: str) -> int:
 
 def _resolve_prefix_length(
     ip_str: str,
-    subnet_id: int | None,
+    subnet_id: int | str | None,
     subnet_prefix_map: dict[int, int] | None,
 ) -> int:
     """Resolve the authoritative prefix length for a lease/reservation IP.
@@ -89,9 +89,17 @@ def _resolve_prefix_length(
     covering prefix (e.g. a ``/8`` but no ``/24``) or no prefix at all.
     """
     if subnet_prefix_map and subnet_id is not None:
-        plen = subnet_prefix_map.get(subnet_id)
-        if plen is not None:
-            return plen
+        # The map is int-keyed (see _build_subnet_prefix_map); a string-valued
+        # "subnet-id" from a Kea record must be normalized or it silently misses
+        # the authoritative mask and falls back to a (possibly wrong) NetBox/default.
+        try:
+            subnet_key = int(subnet_id)
+        except (TypeError, ValueError):
+            subnet_key = None
+        if subnet_key is not None:
+            plen = subnet_prefix_map.get(subnet_key)
+            if plen is not None:
+                return plen
     return find_prefix_length(ip_str)
 
 

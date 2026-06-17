@@ -2039,3 +2039,35 @@ class TestApplyIpMaskForeignProtection(TestCase):
         changed = _apply_ip_mask(ip, "10.0.0.5", 24, force=False)
         self.assertFalse(changed)
         self.assertEqual(str(ip.address), "10.0.0.5/32")
+
+
+class TestResolvePrefixLengthSubnetIdNormalization(TestCase):
+    """The Kea subnet-id is normalized to int before the (int-keyed) prefix map lookup."""
+
+    def test_string_subnet_id_still_hits_prefix_map_end_to_end(self):
+        """A string-valued 'subnet-id' must still match the authoritative Kea mask.
+
+        _build_subnet_prefix_map keys by int(sid); a raw string id would miss it and
+        fall back to NetBox/default, persisting the wrong prefix.
+        """
+        from ipam.models import IPAddress as NbIP
+
+        from netbox_kea.sync import sync_lease_to_netbox
+
+        lease = {
+            "ip-address": "10.77.0.5",
+            "hw-address": "aa:bb:cc:dd:ee:ff",
+            "subnet-id": "1",  # string, as some payloads/imports provide it
+            "valid-lft": 3600,
+            "cltt": 1700000000,
+        }
+        sync_lease_to_netbox(lease, subnet_prefix_map={1: 24})
+        ip = NbIP.objects.get(address__startswith="10.77.0.5/")
+        self.assertEqual(str(ip.address), "10.77.0.5/24")
+
+    def test_resolve_prefix_length_unparseable_subnet_id_falls_back(self):
+        """A non-numeric subnet-id degrades to find_prefix_length, not a crash."""
+        from netbox_kea.sync import _resolve_prefix_length
+
+        # No matching NetBox Prefix → default /32 (not a TypeError on int()).
+        self.assertEqual(_resolve_prefix_length("10.88.0.9", "not-a-number", {1: 24}), 32)
