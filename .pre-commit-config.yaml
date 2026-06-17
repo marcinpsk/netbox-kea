@@ -25,6 +25,18 @@ repos:
         args: [--fix, --exit-non-zero-on-fix]
       - id: ruff-format
 
+  # In-house test-quality guard: flag new spec-less MagicMock/Mock used as object
+  # stand-ins (see netbox_kea/tests/mock_discipline.py). Stdlib-only; scans the whole
+  # netbox_kea/tests/ tree. Existing usages are grandfathered in the baseline file.
+  - repo: local
+    hooks:
+      - id: mock-discipline
+        name: mock-discipline (no new spec-less MagicMock/Mock)
+        entry: python3 netbox_kea/tests/mock_discipline.py
+        language: system
+        pass_filenames: false
+        files: ^netbox_kea/tests/.*\.py$
+
   # Conventional commit message validation
   - repo: https://github.com/compilerla/conventional-pre-commit
     rev: v4.4.0
