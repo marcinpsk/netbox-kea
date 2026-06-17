@@ -9,7 +9,17 @@ baseline-grandfathered usages are allowed.
 
 from __future__ import annotations
 
-from netbox_kea.tests.mock_discipline import _counts_by_site, scan_source, scan_tree, unapproved
+from netbox_kea.tests import mock_discipline as md
+from netbox_kea.tests.mock_discipline import (
+    Violation,
+    _comment_lines,
+    _counts_by_site,
+    load_baseline,
+    save_baseline,
+    scan_source,
+    scan_tree,
+    unapproved,
+)
 
 
 def test_no_unapproved_mocks_beyond_baseline():
@@ -171,3 +181,66 @@ def test_scan_tree_skips_the_guard_and_its_test():
     files = {v.path for v in scan_tree()}
     assert "mock_discipline.py" not in files
     assert "test_mock_discipline.py" not in files
+
+
+def test_violation_str_format():
+    """Violation renders the file:line: message a developer sees."""
+    v = Violation("sub/test_x.py", 12, "TestC.test_y", "MagicMock")
+    assert str(v) == "sub/test_x.py:12: unapproved MagicMock() in TestC.test_y()"
+    assert v.site == "sub/test_x.py::TestC.test_y"
+
+
+def test_comment_lines_handles_unparsable_source():
+    """A tokenizer error (e.g. an unterminated string) degrades to {} rather than raising."""
+    assert _comment_lines("x = 'unterminated\n") == {}
+
+
+def test_load_baseline_missing_file_returns_empty(tmp_path):
+    assert load_baseline(tmp_path / "nope.txt") == {}
+
+
+def test_save_and_load_baseline_roundtrip(tmp_path):
+    """save_baseline writes a header + sorted entries that load_baseline reads back exactly."""
+    counts = {"b.py::g": 1, "a.py::f": 2}
+    path = tmp_path / "baseline.txt"
+    save_baseline(counts, path)
+    text = path.read_text()
+    assert "Mock-discipline baseline" in text  # explanatory header written (incl. SPDX tags)
+    assert not text.endswith("\n\n")  # exactly one trailing newline
+    assert load_baseline(path) == counts
+
+
+def test_main_update_baseline_writes_and_reports(capsys):
+    """`--update-baseline` rescans, rewrites the baseline, and reports the count (exit 0).
+
+    The real baseline is currently empty and the tree is clean, so this regenerates it
+    byte-identically; snapshot/restore guards against any future non-empty state.
+    """
+    backup = md._BASELINE_PATH.read_text()
+    try:
+        rc = md._main(["--update-baseline"])
+    finally:
+        md._BASELINE_PATH.write_text(backup)
+    assert rc == 0
+    assert "baseline updated" in capsys.readouterr().out
+
+
+def test_main_reports_and_exits_nonzero_on_violation(capsys):
+    """`_main([])` prints each unapproved mock and returns 1 when the tree has one."""
+    bad_file = md.TESTS_ROOT / "_tmp_mockcheck_cov.py"
+    bad_file.write_text("from unittest.mock import MagicMock\n\ndef test_x():\n    return MagicMock()\n")
+    try:
+        rc = md._main([])
+        out = capsys.readouterr().out
+    finally:
+        bad_file.unlink()
+    assert rc == 1
+    assert "_tmp_mockcheck_cov.py" in out
+    assert "unapproved mock" in out
+
+
+def test_main_clean_tree_exits_zero(capsys):
+    """`_main([])` returns 0 and reports zero when the tree is clean (current state)."""
+    rc = md._main([])
+    assert rc == 0
+    assert "0 unapproved mock(s)" in capsys.readouterr().out

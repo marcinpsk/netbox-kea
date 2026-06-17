@@ -1199,3 +1199,20 @@ class TestParseLeaseCsvValidationPaths(TestCase):
         with self.assertRaises(ValueError) as ctx:
             self._parse(csv, version=4)
         self.assertIn("MAC", str(ctx.exception))
+
+
+class TestKeaOptionDatalist(TestCase):
+    """kea_option_datalist template tag: DHCP-version handling."""
+
+    def test_invalid_version_falls_back_to_4(self):
+        """A non-int dhcp_version degrades to v4 rather than raising."""
+        from netbox_kea.templatetags.kea_options import kea_option_datalist
+
+        ctx = kea_option_datalist("not-an-int")
+        self.assertEqual(ctx["dhcp_version"], 4)
+        self.assertIn("options", ctx)
+
+    def test_valid_version_passed_through(self):
+        from netbox_kea.templatetags.kea_options import kea_option_datalist
+
+        self.assertEqual(kea_option_datalist(6)["dhcp_version"], 6)

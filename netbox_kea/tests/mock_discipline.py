@@ -254,7 +254,7 @@ def _main(argv: list[str]) -> int:
     return 1 if bad else 0
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover — CLI entrypoint; _main() is unit-tested
     import sys
 
     raise SystemExit(_main(sys.argv[1:]))

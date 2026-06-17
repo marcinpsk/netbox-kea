@@ -31,7 +31,7 @@ from ipam.models import IPAddress as NbIP
 
 from netbox_kea.kea import KeaClient
 from netbox_kea.models import Server
-from netbox_kea.views.leases import _fetch_subnet_choices, _subnet_choices_cache_key
+from netbox_kea.views.leases import _fetch_subnet_choices, _subnet_choices_cache_key, _subnet_sort_key
 
 from .utils import _PLUGINS_CONFIG, _make_db_server, _ViewTestBase
 
@@ -1282,6 +1282,22 @@ class TestLeaseAddSyncToNetBox(_ViewTestBase):
         ip = IPAddress.objects.get(address="10.0.0.200/24")
         self.assertEqual(ip.status, "active")
         self.assertEqual(ip.description, "Router loopback")
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_lease4_add_reports_successful_sync(self, MockKeaClient):
+        """A fresh IP synced to NetBox reports a created/updated success message."""
+        from ipam.models import IPAddress
+
+        MockKeaClient.return_value.lease_add.return_value = None
+        # No pre-existing row → the real sync creates it, no conflict → success message.
+        response = self.client.post(self._url(version=4), self._post4(sync=True), follow=True)
+        self.assertEqual(response.status_code, 200)
+        msgs = [m.message for m in response.context["messages"]]
+        self.assertTrue(
+            any("10.0.0.200" in m and "netbox" in m.lower() and "created" in m.lower() for m in msgs),
+            f"Expected a NetBox sync success message, got: {msgs}",
+        )
+        self.assertTrue(IPAddress.objects.filter(address__startswith="10.0.0.200/").exists())
 
 
 # ---------------------------------------------------------------------------
@@ -4131,6 +4147,28 @@ class TestFetchSubnetChoices(TestCase):
         with patch.object(Server, "get_client", return_value=client):
             choices = _fetch_subnet_choices(self.server, 4)
         self.assertEqual(choices, [])
+
+    def test_non_dict_dhcp_conf_returns_empty(self):
+        """A non-dict ``Dhcp4`` payload degrades to no choices (not an AttributeError)."""
+        client = MagicMock(spec=KeaClient)
+        client.command.return_value = [{"result": 0, "arguments": {"Dhcp4": "not-a-dict"}}]
+        with patch.object(Server, "get_client", return_value=client):
+            self.assertEqual(_fetch_subnet_choices(self.server, 4), [])
+
+    def test_non_dict_subnet_entry_is_skipped(self):
+        """Non-dict entries inside subnet4 are skipped; valid dict entries still parse."""
+        client = MagicMock(spec=KeaClient)
+        client.command.return_value = [
+            {"result": 0, "arguments": {"Dhcp4": {"subnet4": [1, {"id": 2, "subnet": "10.0.0.0/24"}]}}}
+        ]
+        with patch.object(Server, "get_client", return_value=client):
+            self.assertEqual(_fetch_subnet_choices(self.server, 4), [("10.0.0.0/24", 2)])
+
+    def test_subnet_sort_key_handles_non_string_and_unparseable(self):
+        """_subnet_sort_key buckets non-string and unparseable CIDRs apart from real networks."""
+        self.assertEqual(_subnet_sort_key((12345, 1)), (1, "12345"))  # non-string CIDR
+        self.assertEqual(_subnet_sort_key(("not-a-cidr", 2)), (1, "not-a-cidr"))  # unparseable string
+        self.assertEqual(_subnet_sort_key(("10.0.0.0/24", 3))[0], 0)  # real network sorts first
 
     def test_result_is_cached_second_call_skips_kea(self):
         client = self._client_returning_config()

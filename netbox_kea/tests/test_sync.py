@@ -2024,3 +2024,18 @@ class TestLeaseForeignIPProtection(TestCase):
         sync_lease_to_netbox(self._LEASE, force=True, subnet_prefix_map={1: 24})
         ip_obj = NbIP.objects.get(address__startswith="192.168.51.210/")
         self.assertEqual(str(ip_obj.address), "192.168.51.210/24")
+
+
+class TestApplyIpMaskForeignProtection(TestCase):
+    """_apply_ip_mask leaves a non-Kea-managed IP untouched unless force=True."""
+
+    def test_foreign_ip_mask_not_rewritten_without_force(self):
+        from ipam.models import IPAddress as NbIP
+
+        from netbox_kea.sync import _apply_ip_mask
+
+        ip = NbIP.objects.create(address="10.0.0.5/32", status="active", description="Router loopback")
+        # Desired /24 differs from the stored /32, but the IP is foreign and force=False → skip.
+        changed = _apply_ip_mask(ip, "10.0.0.5", 24, force=False)
+        self.assertFalse(changed)
+        self.assertEqual(str(ip.address), "10.0.0.5/32")

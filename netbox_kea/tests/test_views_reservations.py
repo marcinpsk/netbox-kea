@@ -34,7 +34,21 @@ from ipam.models import IPAddress as NbIP
 from netbox_kea.kea import KeaClient
 from netbox_kea.views import _get_reservation_identifier as _extract_identifier
 
-from .utils import _PLUGINS_CONFIG, _ViewTestBase
+from .utils import _PLUGINS_CONFIG, _make_db_server, _ViewTestBase
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestReservations4V6OnlyRedirect(_ViewTestBase):
+    """A v6-only server's /reservations4/ redirects to the merged tab's v6 route."""
+
+    def test_get_reservations4_on_v6_only_server_redirects_to_v6(self):
+        v6_only = _make_db_server(name="v6-only-resv", dhcp4=False, dhcp6=True)
+        response = self.client.get(reverse("plugins:netbox_kea:server_reservations4", args=[v6_only.pk]))
+        self.assertRedirects(
+            response,
+            reverse("plugins:netbox_kea:server_reservations6", args=[v6_only.pk]),
+            fetch_redirect_response=False,
+        )
 
 
 class TestExtractIdentifier(_unittest.TestCase):
