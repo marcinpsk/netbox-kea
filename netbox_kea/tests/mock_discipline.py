@@ -218,7 +218,9 @@ def save_baseline(counts: dict[str, int], path: Path = _BASELINE_PATH) -> None:
     ]
     # REUSE-IgnoreEnd
     body = [f"{site}\t{counts[site]}" for site in sorted(counts)]
-    path.write_text("\n".join(header + body) + "\n", encoding="utf-8")
+    # rstrip so an empty body (no grandfathered mocks) doesn't leave a trailing blank
+    # line that the end-of-file-fixer hook would strip on the next commit.
+    path.write_text("\n".join(header + body).rstrip("\n") + "\n", encoding="utf-8")
 
 
 def unapproved(root: Path = TESTS_ROOT, baseline: dict[str, int] | None = None) -> list[Violation]:
