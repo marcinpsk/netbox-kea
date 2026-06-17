@@ -189,7 +189,7 @@ class TestHealGhostScheduledJobs(TestCase):
         bad_job = self._make_job()
         good_job = self._make_job()
 
-        def _fetch(job_id, connection):
+        def _fetch(job_id, connection, **kwargs):  # match rq Job.fetch(id, connection, serializer)
             if str(job_id) == str(bad_job.job_id):
                 raise RuntimeError("transient Redis error")
             rq_job = MagicMock()  # mock-ok: RQ job (scheduler boundary)
@@ -215,7 +215,7 @@ class TestHealGhostScheduledJobs(TestCase):
 
         job = self._make_job()
 
-        def _fetch(job_id, connection):
+        def _fetch(job_id, connection, **kwargs):  # match rq Job.fetch(id, connection, serializer)
             rq_job = MagicMock()  # mock-ok: RQ job (scheduler boundary)
             rq_job.get_status.return_value = "failed"  # plain string, no .value
             return rq_job
@@ -234,7 +234,7 @@ class TestHealGhostScheduledJobs(TestCase):
 
         job = self._make_job()
 
-        def _fetch(job_id, connection):
+        def _fetch(job_id, connection, **kwargs):  # match rq Job.fetch(id, connection, serializer)
             rq_job = MagicMock()  # mock-ok: RQ job (scheduler boundary)
             rq_job.get_status.return_value = "scheduled"  # plain string
             return rq_job
