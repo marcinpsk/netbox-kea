@@ -6,6 +6,9 @@ from datetime import datetime
 from unittest import TestCase
 from unittest.mock import MagicMock, patch
 
+from django.http import HttpResponse
+
+from netbox_kea.models import Server
 from netbox_kea.utilities import (
     _enrich_lease,
     check_dhcp_enabled,
@@ -238,7 +241,7 @@ class TestCheckDhcpEnabled(TestCase):
     """Tests for check_dhcp_enabled() — redirect guard."""
 
     def _make_server(self, dhcp4=True, dhcp6=True):
-        server = MagicMock()
+        server = MagicMock(spec=Server)
         server.dhcp4 = dhcp4
         server.dhcp6 = dhcp6
         server.get_absolute_url.return_value = "/plugins/kea/servers/1/"
@@ -825,7 +828,7 @@ class TestExportTable(TestCase):
         from netbox_kea.utilities import export_table
 
         if table is None:
-            table = MagicMock()
+            table = MagicMock()  # mock-ok: table input; TableExport (the real boundary) is patched
             table.available_columns = []
         return export_table(table, filename, use_selected_columns=use_selected_columns)
 
@@ -834,7 +837,7 @@ class TestExportTable(TestCase):
         """export_table returns the HttpResponse from TableExport.response()."""
         from django.http import HttpResponse
 
-        mock_exp = MagicMock()
+        mock_exp = MagicMock()  # mock-ok: TableExport instance (external lib, patched)
         MockExport.return_value = mock_exp
         mock_exp.response.return_value = HttpResponse()
 
@@ -846,9 +849,9 @@ class TestExportTable(TestCase):
     @patch("netbox_kea.utilities.TableExport")
     def test_pk_and_actions_always_excluded(self, MockExport):
         """pk and actions columns are always excluded regardless of use_selected_columns."""
-        mock_exp = MagicMock()
+        mock_exp = MagicMock()  # mock-ok: TableExport instance (external lib, patched)
         MockExport.return_value = mock_exp
-        mock_exp.response.return_value = MagicMock()
+        mock_exp.response.return_value = HttpResponse()
 
         self._call()
 
@@ -860,12 +863,15 @@ class TestExportTable(TestCase):
     @patch("netbox_kea.utilities.TableExport")
     def test_use_selected_columns_adds_available_columns(self, MockExport):
         """When use_selected_columns=True, all available_columns names are also excluded."""
-        mock_exp = MagicMock()
+        mock_exp = MagicMock()  # mock-ok: TableExport instance (external lib, patched)
         MockExport.return_value = mock_exp
-        mock_exp.response.return_value = MagicMock()
+        mock_exp.response.return_value = HttpResponse()
 
-        table = MagicMock()
-        table.available_columns = [("ip_address", MagicMock()), ("hostname", MagicMock())]
+        table = MagicMock()  # mock-ok: table input; TableExport (the real boundary) is patched
+        table.available_columns = [
+            ("ip_address", None),
+            ("hostname", None),
+        ]
 
         self._call(table=table, use_selected_columns=True)
 
@@ -877,12 +883,12 @@ class TestExportTable(TestCase):
     @patch("netbox_kea.utilities.TableExport")
     def test_use_selected_columns_false_leaves_available_columns_in(self, MockExport):
         """When use_selected_columns=False (default), available_columns are NOT excluded."""
-        mock_exp = MagicMock()
+        mock_exp = MagicMock()  # mock-ok: TableExport instance (external lib, patched)
         MockExport.return_value = mock_exp
-        mock_exp.response.return_value = MagicMock()
+        mock_exp.response.return_value = HttpResponse()
 
-        table = MagicMock()
-        table.available_columns = [("ip_address", MagicMock())]
+        table = MagicMock()  # mock-ok: table input; TableExport (the real boundary) is patched
+        table.available_columns = [("ip_address", None)]
 
         self._call(table=table, use_selected_columns=False)
 
@@ -907,14 +913,14 @@ class TestOptionalViewTab(TestCase):
     def test_render_returns_none_when_disabled(self):
         """render() returns None when is_enabled(instance) is False."""
         tab = self._make_tab(is_enabled=lambda _: False)
-        instance = MagicMock()
+        instance = object()
         result = tab.render(instance)
         self.assertIsNone(result)
 
     def test_render_returns_dict_when_enabled(self):
         """render() returns a non-None dict when is_enabled(instance) is True."""
         tab = self._make_tab(is_enabled=lambda _: True)
-        instance = MagicMock()
+        instance = object()
         result = tab.render(instance)
         self.assertIsNotNone(result)
 
@@ -922,7 +928,7 @@ class TestOptionalViewTab(TestCase):
         """is_enabled callable is called with the instance passed to render()."""
         received = []
         tab = self._make_tab(is_enabled=lambda inst: received.append(inst) or True)
-        sentinel = MagicMock()
+        sentinel = object()
         tab.render(sentinel)
         self.assertEqual(received, [sentinel])
 
@@ -1193,3 +1199,20 @@ class TestParseLeaseCsvValidationPaths(TestCase):
         with self.assertRaises(ValueError) as ctx:
             self._parse(csv, version=4)
         self.assertIn("MAC", str(ctx.exception))
+
+
+class TestKeaOptionDatalist(TestCase):
+    """kea_option_datalist template tag: DHCP-version handling."""
+
+    def test_invalid_version_falls_back_to_4(self):
+        """A non-int dhcp_version degrades to v4 rather than raising."""
+        from netbox_kea.templatetags.kea_options import kea_option_datalist
+
+        ctx = kea_option_datalist("not-an-int")
+        self.assertEqual(ctx["dhcp_version"], 4)
+        self.assertIn("options", ctx)
+
+    def test_valid_version_passed_through(self):
+        from netbox_kea.templatetags.kea_options import kea_option_datalist
+
+        self.assertEqual(kea_option_datalist(6)["dhcp_version"], 6)

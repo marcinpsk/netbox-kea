@@ -450,8 +450,49 @@ def test_cluster(nb_api: pynetbox.api):
     cluster_type.delete()
 
 
+def open_kea_menu(page: Page):
+    """Open the top-level "DHCP Kea" sidebar menu and return its container locator."""
+    page.get_by_role("button", name="DHCP Kea").click()
+    return page.locator("li.nav-item.dropdown").filter(has=page.get_by_role("button", name="DHCP Kea"))
+
+
+def open_leases(page: Page, version: Literal[4, 6]) -> None:
+    """Open the consolidated Leases tab and select the DHCPv4/DHCPv6 family pill.
+
+    The per-protocol tabs were merged into a single "Leases" tab with an in-page
+    v4/v6 nav-pill toggle that is rendered only on dual-stack servers. On a
+    single-protocol server there is no pill — the tab already lands on the one
+    enabled protocol — so the pill click is skipped.
+    """
+    page.get_by_role("link", name="Leases", exact=True).click()
+    # Wait until the leases page has loaded (search field is present on single + dual)
+    # before probing for the family pill, so .count() reflects the new page.
+    page.locator("#id_q").wait_for()
+    pill = page.get_by_role("link", name=f"DHCPv{version}", exact=True)
+    if pill.count():
+        pill.click()
+        page.locator("#id_q").wait_for()
+
+
+def open_subnets(page: Page, version: Literal[4, 6]) -> None:
+    """Open the consolidated Subnets tab and select the DHCPv4/DHCPv6 family pill.
+
+    Like :func:`open_leases`, the v4/v6 family pill is rendered only on dual-stack
+    servers; on a single-protocol server the tab already lands on the one enabled
+    protocol, so the pill click is skipped.
+    """
+    page.get_by_role("link", name="Subnets", exact=True).click()
+    # Wait until the subnets page has loaded (section nav present on single + dual)
+    # before probing for the family pill, so .count() reflects the new page.
+    page.get_by_role("link", name="Shared Networks", exact=True).wait_for()
+    pill = page.get_by_role("link", name=f"DHCPv{version}", exact=True)
+    if pill.count():
+        pill.click()
+        page.get_by_role("link", name="Shared Networks", exact=True).wait_for()
+
+
 def search_lease(page: Page, version: Literal[4, 6], by: str, q: str) -> None:
-    page.get_by_role("link", name=f"DHCPv{version} Leases").click()
+    open_leases(page, version)
     page.locator("#id_q").fill(q)
     page.locator("#id_by + div.form-select").click()
     page.locator("#id_by-ts-dropdown").get_by_role("option", name=by, exact=True).click()
@@ -513,8 +554,7 @@ def configure_table(page: Page, *selected_coumns: str) -> None:
     ],
 )
 def test_navigation_view(page: Page) -> None:
-    page.get_by_role("button", name="󰐱 Plugins").click()
-    page.get_by_role("link", name="Servers").click()
+    open_kea_menu(page).get_by_role("link", name="Servers", exact=True).click()
 
     expect(page).to_have_title(re.compile("^Servers.*"))
 
@@ -531,9 +571,11 @@ def test_navigation_view(page: Page) -> None:
     ],
 )
 def test_navigation_add(page: Page) -> None:
-    page.get_by_role("button", name="󰐱 Plugins").click()
-    page.get_by_role("link", name="Servers").hover()
-    page.get_by_role("link", name="󱇬", exact=True).click()
+    menu = open_kea_menu(page)
+    # The menu Add button is an icon-only, hover-revealed link whose accessible
+    # name and visibility vary across NetBox versions. Target it by href and
+    # dispatch the click directly so the test exercises the link, not the CSS reveal.
+    menu.locator('a[href$="/servers/add/"]').dispatch_event("click")
 
     expect(page).to_have_title(re.compile("^Add a new server.*"))
 
@@ -549,7 +591,7 @@ def test_navigation_add(page: Page) -> None:
     ],
 )
 def test_navigation_view_no_access(page: Page) -> None:
-    expect(page.get_by_role("button", name="󰐱 Plugins")).to_have_count(0)
+    expect(page.get_by_role("button", name="DHCP Kea")).to_have_count(0)
 
 
 @pytest.mark.parametrize(
@@ -563,9 +605,7 @@ def test_navigation_view_no_access(page: Page) -> None:
     ],
 )
 def test_navigation_add_no_access(page: Page) -> None:
-    page.get_by_role("button", name="󰐱 Plugins").click()
-    page.get_by_role("link", name="Servers").hover()
-    expect(page.get_by_role("link", name="󱇬", exact=True)).to_have_count(0)
+    expect(open_kea_menu(page).locator('a[href$="/servers/add/"]')).to_have_count(0)
 
 
 def test_server_add_delete(page: Page, plugin_base: str, kea_url: str, nb_api: pynetbox.api) -> None:
@@ -659,7 +699,7 @@ def test_dhcp_subnets(
     subnets: Sequence[tuple[str, str, str | None]],
 ) -> None:
     for i, (subnet_id, subnet, shared_network) in enumerate(subnets):
-        page.get_by_role("link", name=f"DHCPv{family} Subnets").click()
+        open_subnets(page, family)
         configure_table(page, "id", "subnet", "shared_network")
         rows = page.locator("table > tbody > tr")
         tds = rows.nth(i).locator("td")
@@ -727,7 +767,7 @@ def test_dhcp_subnets(
 def test_dhcp_subnets_export_csv(
     page: Page, kea: KeaClient, family: int, all_data: bool, expected_data: list[dict]
 ) -> None:
-    page.get_by_role("link", name=f"DHCPv{family} Subnets").click()
+    open_subnets(page, family)
 
     if all_data is False:
         configure_table(page, "id", "subnet")
@@ -751,7 +791,7 @@ def test_dhcp_subnets_export_csv(
 
 @pytest.mark.parametrize("family", (4, 6))
 def test_dhcp_subnets_configure_table(page: Page, kea: KeaClient, family: int) -> None:
-    page.get_by_role("link", name=f"DHCPv{family} Subnets").click()
+    open_subnets(page, family)
 
     configure_table(page, "subnet")
     expect(page.locator(".object-list > thead > tr > th > a")).to_have_text(["Subnet", ""])
@@ -801,7 +841,7 @@ def test_dhcp_subnets_configure_table(page: Page, kea: KeaClient, family: int) -
     ),
 )
 def test_dhcp_lease_invalid_search_values(page: Page, kea: KeaClient, version: int, by: str, q: str) -> None:
-    page.get_by_role("link", name=f"DHCPv{version} Leases").click()
+    open_leases(page, version)
     page.locator("#id_q").fill(q)
     page.locator("#id_by + div.form-select").click()
     page.locator("#id_by-ts-dropdown").get_by_role("option", name=by, exact=True).click()
@@ -1367,24 +1407,34 @@ def test_one_service_only(page: Page, version: Literal[6, 4], request: pytest.Fi
     request.getfixturevalue(f"with_test_server_only{version}")
 
     server_url = page.url
-    pages4 = int(version == 4)
-    pages6 = int(version == 6)
-    expect(page.get_by_role("link", name="DHCPv4 Leases")).to_have_count(pages4)
-    expect(page.get_by_role("link", name="DHCPv4 Subnets")).to_have_count(pages4)
-    expect(page.get_by_role("link", name="DHCPv6 Leases")).to_have_count(pages6)
-    expect(page.get_by_role("link", name="DHCPv6 Subnets")).to_have_count(pages6)
 
-    page.goto(urljoin(server_url, "leases6/"))
-    if version == 4:
-        expect(page).to_have_url(server_url)
-    else:
-        expect(page).not_to_have_url(server_url)
+    # The consolidated Leases/Subnets tabs are present for a single-protocol server.
+    expect(page.get_by_role("link", name="Leases", exact=True)).to_have_count(1)
+    expect(page.get_by_role("link", name="Subnets", exact=True)).to_have_count(1)
 
-    page.goto(urljoin(server_url, "leases4/"))
+    # The Leases tab lands on the one enabled protocol, with no v4/v6 family pills.
+    page.get_by_role("link", name="Leases", exact=True).click()
+    expect(page).to_have_url(re.compile(rf"/leases{version}/$"))
+    expect(page.get_by_role("link", name="DHCPv4", exact=True)).to_have_count(0)
+    expect(page.get_by_role("link", name="DHCPv6", exact=True)).to_have_count(0)
+
+    # The Subnets tab mirrors the same single-service landing behavior.
+    page.goto(server_url)
+    page.get_by_role("link", name="Subnets", exact=True).click()
+    expect(page).to_have_url(re.compile(rf"/subnets{version}/$"))
+
     if version == 6:
-        expect(page).to_have_url(server_url)
+        # v4 is disabled: the v4 URL redirects to the enabled v6 page (merged-tab UX).
+        page.goto(urljoin(server_url, "leases4/"))
+        expect(page).to_have_url(urljoin(server_url, "leases6/"))
+        page.goto(urljoin(server_url, "subnets4/"))
+        expect(page).to_have_url(urljoin(server_url, "subnets6/"))
     else:
-        expect(page).not_to_have_url(server_url)
+        # v6 is disabled: the v6 URL redirects back to the server detail page.
+        page.goto(urljoin(server_url, "leases6/"))
+        expect(page).to_have_url(server_url)
+        page.goto(urljoin(server_url, "subnets6/"))
+        expect(page).to_have_url(server_url)
 
 
 @pytest.mark.parametrize("version", (6, 4))

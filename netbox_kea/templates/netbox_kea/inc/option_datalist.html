@@ -1,0 +1,6 @@
+{# Standard DHCPv{{ dhcp_version }} option names — backs the editable option-name combobox. #}
+<datalist id="kea-option-names">
+  {% for name, code in options %}
+    <option value="{{ name }}">code {{ code }}</option>
+  {% endfor %}
+</datalist>

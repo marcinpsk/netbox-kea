@@ -1,5 +1,7 @@
-{# HTMX fragment returned after a successful lease/reservation → NetBox IP sync.
-   Replaces the content of the table cell that triggered the sync. #}
+{% comment %}
+  HTMX fragment returned after a successful lease/reservation → NetBox IP sync.
+  Replaces the content of the table cell that triggered the sync.
+{% endcomment %}
 {% if nb_ip %}
 <a href="{{ nb_ip.get_absolute_url }}"
    class="badge text-bg-success text-decoration-none"

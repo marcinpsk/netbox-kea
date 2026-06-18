@@ -20,6 +20,44 @@
           <div class="alert alert-danger" role="alert">{{ e }}</div>
         {% endfor %}
         {% render_form form %}
+        {% if form.subnet_choices %}
+        {% comment %}
+          Editable comboboxes for the Search field: offered only when the
+          selected attribute is Subnet (CIDR) or Subnet ID. Free typing stays
+          allowed — a <datalist> only suggests, it never constrains.
+        {% endcomment %}
+        <datalist id="kea-lease-subnet-cidrs">
+          {% for cidr, sid in form.subnet_choices %}
+          <option value="{{ cidr }}">{% if sid is not None %}id {{ sid }}{% endif %}</option>
+          {% endfor %}
+        </datalist>
+        <datalist id="kea-lease-subnet-ids">
+          {% for cidr, sid in form.subnet_choices %}
+          {% if sid is not None %}<option value="{{ sid }}">{{ cidr }}</option>{% endif %}
+          {% endfor %}
+        </datalist>
+        <script>
+        (function () {
+          var by = document.getElementById("id_by");
+          var q = document.getElementById("id_q");
+          if (!by || !q) { return; }
+          function syncSubnetCombobox() {
+            if (by.value === "subnet") {
+              q.setAttribute("list", "kea-lease-subnet-cidrs");
+              q.setAttribute("placeholder", "Select or type a subnet (CIDR)");
+            } else if (by.value === "subnet_id") {
+              q.setAttribute("list", "kea-lease-subnet-ids");
+              q.setAttribute("placeholder", "Select or type a subnet ID");
+            } else {
+              q.removeAttribute("list");
+              q.removeAttribute("placeholder");
+            }
+          }
+          by.addEventListener("change", syncSubnetCombobox);
+          syncSubnetCombobox();
+        })();
+        </script>
+        {% endif %}
         <div class="text-end">
           <div id="search-indicator" class="spinner-border d-inline-block align-middle htmx-indicator me-2" role="status">
             <span class="visually-hidden">Loading...</span>

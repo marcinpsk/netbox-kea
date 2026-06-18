@@ -140,17 +140,22 @@ class TestServerSharedNetworks4View(_ViewTestBase):
         response = self.client.get(url)
         self.assertEqual(response.status_code, 302)
         self._assert_no_none_pk_redirect(response)
-        self.assertIn(str(v6_only.pk), response.url)
+        # Merged-tab contract: a v6-only server's v4 shared-networks URL redirects to
+        # the v6 route (not the server detail page), mirroring leases4/subnets4.
+        self.assertEqual(
+            response.url,
+            reverse("plugins:netbox_kea:server_shared_networks6", args=[v6_only.pk]),
+        )
 
     @patch("netbox_kea.models.KeaClient")
     def test_get_sets_tab_in_context(self, MockKeaClient):
-        """F2: GET response must include 'tab' in context for tab bar highlighting."""
-        from netbox_kea.views import ServerSharedNetworks4View
+        """F2: shared networks render under the shared 'Subnets' tab."""
+        from netbox_kea.views.subnets import _SUBNETS_TAB
 
         MockKeaClient.return_value.command.return_value = _SHARED_NETWORKS_CONFIG_V4
         response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
-        self.assertIs(response.context["tab"], ServerSharedNetworks4View.tab)
+        self.assertIs(response.context["tab"], _SUBNETS_TAB)
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
@@ -183,13 +188,13 @@ class TestServerSharedNetworks6View(_ViewTestBase):
 
     @patch("netbox_kea.models.KeaClient")
     def test_get_sets_tab_in_context(self, MockKeaClient):
-        """F2: GET response must include 'tab' in context for tab bar highlighting."""
-        from netbox_kea.views import ServerSharedNetworks6View
+        """F2: shared networks render under the shared 'Subnets' tab."""
+        from netbox_kea.views.subnets import _SUBNETS_TAB
 
         MockKeaClient.return_value.command.return_value = _SHARED_NETWORKS_CONFIG_V6
         response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
-        self.assertIs(response.context["tab"], ServerSharedNetworks6View.tab)
+        self.assertIs(response.context["tab"], _SUBNETS_TAB)
 
 
 # ---------------------------------------------------------------------------

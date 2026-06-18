@@ -31,6 +31,7 @@ from django.test import TestCase, override_settings
 from django.urls import reverse
 
 from netbox_kea import constants
+from netbox_kea.kea import KeaClient
 from netbox_kea.models import Server
 
 User = get_user_model()
@@ -977,7 +978,7 @@ class TestCombinedReservations4Enrichment(_CombinedViewBase):
     @patch("netbox_kea.models.KeaClient")
     def test_active_lease_badge_when_lease_exists(self, MockKeaClient):
         """A reservation with an active lease must show 'Active Lease' badge."""
-        clone_mock = MagicMock()
+        clone_mock = MagicMock(spec=KeaClient)
         clone_mock.command.return_value = [{"result": 0, "arguments": {"leases": [{"ip-address": "10.20.0.5"}]}}]
         clone_mock.__enter__ = lambda s: s
         clone_mock.__exit__ = lambda s, *a: None
@@ -990,7 +991,7 @@ class TestCombinedReservations4Enrichment(_CombinedViewBase):
     @patch("netbox_kea.models.KeaClient")
     def test_no_lease_badge_when_no_active_lease(self, MockKeaClient):
         """A reservation without active lease must show 'No Lease' badge."""
-        clone_mock = MagicMock()
+        clone_mock = MagicMock(spec=KeaClient)
         clone_mock.command.return_value = [{"result": 0, "arguments": {"leases": []}}]
         clone_mock.__enter__ = lambda s: s
         clone_mock.__exit__ = lambda s, *a: None
@@ -1143,7 +1144,7 @@ class TestCombinedReservations6Enrichment(_CombinedViewBase):
     @patch("netbox_kea.models.KeaClient")
     def test_active_lease_badge_when_lease_exists(self, MockKeaClient):
         """A v6 reservation with an active lease must show 'Active Lease' badge."""
-        clone_mock = MagicMock()
+        clone_mock = MagicMock(spec=KeaClient)
         clone_mock.command.return_value = [{"result": 0, "arguments": {"leases": [{"ip-address": "2001:db8::5"}]}}]
         clone_mock.__enter__ = lambda s: s
         clone_mock.__exit__ = lambda s, *a: None
@@ -1160,7 +1161,7 @@ class TestCombinedReservations6Enrichment(_CombinedViewBase):
     @patch("netbox_kea.models.KeaClient")
     def test_no_lease_badge_when_no_active_lease(self, MockKeaClient):
         """A v6 reservation without active lease must show 'No Lease' badge."""
-        clone_mock = MagicMock()
+        clone_mock = MagicMock(spec=KeaClient)
         clone_mock.command.return_value = [{"result": 0, "arguments": {"leases": []}}]
         clone_mock.__enter__ = lambda s: s
         clone_mock.__exit__ = lambda s, *a: None

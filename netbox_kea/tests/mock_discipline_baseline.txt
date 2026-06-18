@@ -1,0 +1,7 @@
+# SPDX-FileCopyrightText: 2025 Marcin Zieba <marcinpsk@gmail.com>
+# SPDX-License-Identifier: Apache-2.0
+# Mock-discipline baseline — grandfathered spec-less MagicMock/Mock usages.
+# Each line: <relpath-from-netbox_kea/tests>::<qualname>\t<allowed-count>.
+# Shrink this file over time: replace a mock with a real object or a spec=-bounded
+# mock, or add an inline `# mock-ok: <reason>`. Regenerate after an intentional
+# change with:  python3 netbox_kea/tests/mock_discipline.py --update-baseline

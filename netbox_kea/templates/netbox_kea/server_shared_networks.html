@@ -11,6 +11,7 @@
 {% endblock %}
 
 {% block content %}
+{% include "netbox_kea/inc/subnets_nav.html" %}
 {% include "netbox_kea/includes/persist_config_warning.html" %}
 {{ block.super }}
 {% endblock content %}

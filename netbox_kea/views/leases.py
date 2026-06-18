@@ -8,6 +8,7 @@ from urllib.parse import urlencode as _urlencode
 
 import requests
 from django.contrib import messages
+from django.core.cache import cache
 from django.core.exceptions import ValidationError
 from django.db import DatabaseError
 from django.db.utils import OperationalError, ProgrammingError
@@ -16,7 +17,7 @@ from django.http.request import HttpRequest
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.views import View
-from netaddr import IPAddress, IPNetwork
+from netaddr import AddrFormatError, IPAddress, IPNetwork
 from netbox.tables import BaseTable
 from netbox.views import generic
 from utilities.exceptions import AbortRequest
@@ -55,6 +56,122 @@ def _is_valid_lease_entry(entry: dict) -> bool:
         logger.warning("Skipping lease entry with invalid ip-address: %r", addr)
         return False
     return True
+
+
+# The quick-select subnet list rarely changes, but ``config-get`` returns the
+# *entire* Kea server config (potentially large). Cache the derived choices so
+# the initial page render fetches once and subsequent HTMX paginations reuse the
+# cached list instead of re-hitting Kea on every page flip.
+_SUBNET_CHOICES_TTL = 300  # seconds (5 minutes)
+
+
+def _subnet_choices_cache_key(server: Server, version: int) -> str:
+    return f"netbox_kea:lease_subnet_choices:{server.pk}:{version}"
+
+
+def _subnet_sort_key(choice: tuple[str, int | None]) -> tuple[int, Any]:
+    """Sort key that orders subnet choices by network (address then prefix).
+
+    Falls back to the CIDR string for anything netaddr can't parse, kept in a
+    separate bucket so the two key types are never compared against each other.
+    """
+    cidr = choice[0]
+    if not isinstance(cidr, str):
+        return (1, str(cidr))
+    try:
+        return (0, IPNetwork(cidr))
+    except (AddrFormatError, ValueError, TypeError):
+        return (1, cidr)
+
+
+def _fetch_subnet_choices(server: Server, version: int) -> list[tuple[str, int | None]]:
+    """Return ``[(cidr, subnet_id), ...]`` for the server's configured subnets.
+
+    Used to populate the lease-search Subnet / Subnet-ID combobox (an editable
+    ``<datalist>`` on the Search field). The CIDR drives a ``by=subnet`` search
+    and the id drives a ``by=subnet_id`` search, so both are returned. Pulls the
+    subnet list from ``config-get`` — including shared-network subnets — and
+    degrades to an empty list on any error so the search form still renders.
+    Successful results (including a legitimately empty list) are cached for
+    ``_SUBNET_CHOICES_TTL`` seconds per server+version; transient errors are not
+    cached so the next render retries.
+    """
+    cache_key = _subnet_choices_cache_key(server, version)
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    try:
+        client = server.get_client(version=version)
+        resp = client.command("config-get", service=[f"dhcp{version}"])
+    except (KeaException, requests.RequestException, ValueError, RuntimeError):
+        # Best-effort: the subnet quick-select is a convenience, so any failure to
+        # fetch the subnet list must never break the lease search/export page.
+        logger.debug("Could not fetch subnet choices for dhcp%s on server %s", version, server.pk, exc_info=True)
+        return []
+    args = resp[0].get("arguments") if isinstance(resp, list) and resp and isinstance(resp[0], dict) else None
+    if not isinstance(args, dict):
+        return []
+    dhcp_conf = args.get(f"Dhcp{version}", {})
+    if not isinstance(dhcp_conf, dict):
+        return []
+
+    choices: list[tuple[str, int | None]] = []
+
+    def _collect(subnets: Any) -> None:
+        # A malformed payload (e.g. ``"subnet4": 1``) is non-iterable; iterating it
+        # would raise TypeError outside the fetch try → 500. Degrade to empty instead.
+        if not isinstance(subnets, list):
+            return
+        for s in subnets:
+            if not isinstance(s, dict):
+                continue
+            cidr = s.get("subnet")
+            # Only accept string CIDRs; a non-string value would make the later
+            # choices.sort() raise TypeError (500) instead of degrading gracefully.
+            if not isinstance(cidr, str) or not cidr:
+                continue
+            sid = s.get("id")
+            choices.append((cidr, sid if isinstance(sid, int) else None))
+
+    _collect(dhcp_conf.get(f"subnet{version}"))
+    shared_networks = dhcp_conf.get("shared-networks")
+    if not isinstance(shared_networks, list):
+        shared_networks = []
+    for sn in shared_networks:
+        if isinstance(sn, dict):
+            _collect(sn.get(f"subnet{version}"))
+    choices.sort(key=_subnet_sort_key)
+    cache.set(cache_key, choices, _SUBNET_CHOICES_TTL)
+    return choices
+
+
+def _run_lease_sync_to_netbox(request: HttpRequest, lease: dict, ip_address: str) -> None:
+    """Sync a just-created lease to NetBox IPAM, gated on IPAM write permission.
+
+    Requires ``ipam.add_ipaddress`` + ``ipam.change_ipaddress`` (server-edit access
+    alone is not enough — mirrors the per-row/bulk sync endpoints). The sync uses
+    ``force=False``, so a foreign (non-Kea-managed) NetBox IP is skipped rather than
+    overwritten; that skip is reported as a warning instead of a misleading "synced"
+    message. Queues a success/warning message; never raises.
+    """
+    if not (request.user.has_perm("ipam.add_ipaddress") and request.user.has_perm("ipam.change_ipaddress")):
+        messages.warning(request, "Lease created, but it was not synced to NetBox (requires IPAM permission).")
+        return
+    try:
+        conflicts: list[str] = []
+        _nb_ip, nb_created, nb_changed = sync_lease_to_netbox(lease, conflicts=conflicts)
+        if conflicts:
+            messages.warning(
+                request,
+                f"Lease created, but NetBox IPAM sync was skipped: {ip_address} already exists and is not Kea-managed.",
+            )
+        else:
+            nb_action = "created" if nb_created else "updated" if nb_changed else "already up to date"
+            messages.success(request, f"IPAddress {ip_address} {nb_action} in NetBox.")
+    except (ValueError, DatabaseError, ValidationError, requests.RequestException):
+        logger.exception("Failed to sync lease %s to NetBox", ip_address)
+        messages.warning(request, "Lease created but NetBox IPAM sync failed; see server logs.")
 
 
 def _add_lease_journal(
@@ -120,6 +237,13 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
         table = self.table(data, user=request.user)
         table.configure(request)
         return table
+
+    def _make_search_form(self, server: Server, data: Any | None = None):
+        """Build the lease-search form with the subnet quick-select choices populated."""
+        subnet_choices = _fetch_subnet_choices(server, self.dhcp_version)
+        if data is None:
+            return self.form(subnet_choices=subnet_choices)
+        return self.form(data, subnet_choices=subnet_choices)
 
     def get_leases_page(
         self, client: KeaClient, subnet: IPNetwork | None, page: str | None, per_page: int
@@ -255,11 +379,13 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
         # For non-htmx requests.
 
         table = self.get_table([], request)
-        form = self.form(request.GET) if "q" in request.GET else self.form()
+        form = self._make_search_form(instance, request.GET if "q" in request.GET else None)
         can_change = Server.objects.restrict(request.user, "change").filter(pk=instance.pk).exists()
         ctx: dict[str, Any] = {
             "form": form,
             "table": table,
+            # Drives the in-page v4/v6 protocol toggle on the merged Leases tab.
+            "dhcp_version": self.dhcp_version,
         }
         if can_change:
             ctx["add_url"] = reverse(
@@ -274,12 +400,11 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
 
     def get_export(self, request: HttpRequest, **kwargs) -> HttpResponse:
         """Stream all matching leases as a CSV download."""
-        form = self.form(request.GET)
+        instance = self.get_object(**kwargs)
+        form = self._make_search_form(instance, request.GET)
         if not form.is_valid():
             messages.warning(request, "Invalid form for export.")
             return redirect(request.path)
-
-        instance = self.get_object(**kwargs)
 
         by = form.cleaned_data["by"]
         if not by:
@@ -425,7 +550,7 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
             return super().get(request, **kwargs)
 
         try:
-            form = self.form(request.GET)
+            form = self._make_search_form(instance, request.GET)
             if not form.is_valid():
                 table = self.get_table([], request)
                 return render(
@@ -527,24 +652,44 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
             )
 
 
+# Single consolidated "Leases" tab shared by the v4 and v6 leases views. Only
+# ServerLeases4View carries it as a class attribute (so exactly one tab entry is
+# generated); ServerLeases6View injects it via get_extra_context so the same tab
+# stays highlighted when viewing v6. An in-page v4/v6 toggle (template) switches
+# between the two underlying URLs, which are unchanged.
+_LEASES_TAB = OptionalViewTab(label="Leases", weight=1010, is_enabled=lambda s: s.dhcp4 or s.dhcp6)
+
+
 @register_model_view(Server, "leases6")
 class ServerLeases6View(BaseServerLeasesView[tables.LeaseTable6]):
-    """DHCPv6 leases tab for a Kea Server."""
+    """DHCPv6 leases view (rendered under the shared Leases tab)."""
 
-    tab = OptionalViewTab(label="DHCPv6 Leases", weight=1015, is_enabled=lambda s: s.dhcp6)
     form = forms.Leases6SearchForm
     table = tables.LeaseTable6
     dhcp_version = 6
 
+    def get_extra_context(self, request: HttpRequest, instance: Server) -> dict[str, Any]:
+        """Highlight the shared Leases tab (this view has no class-level tab of its own)."""
+        ctx = super().get_extra_context(request, instance)
+        ctx["tab"] = _LEASES_TAB
+        return ctx
+
 
 @register_model_view(Server, "leases4")
 class ServerLeases4View(BaseServerLeasesView[tables.LeaseTable4]):
-    """DHCPv4 leases tab for a Kea Server."""
+    """DHCPv4 leases view; owns the shared Leases tab."""
 
-    tab = OptionalViewTab(label="DHCPv4 Leases", weight=1010, is_enabled=lambda s: s.dhcp4)
+    tab = _LEASES_TAB
     form = forms.Leases4SearchForm
     table = tables.LeaseTable4
     dhcp_version = 4
+
+    def get(self, request: HttpRequest, **kwargs) -> HttpResponse:
+        """Redirect to the v6 leases view on v6-only servers so the merged tab works."""
+        instance = self.get_object(**kwargs)
+        if not instance.dhcp4 and instance.dhcp6:
+            return redirect(reverse("plugins:netbox_kea:server_leases6", args=[instance.pk]))
+        return super().get(request, **kwargs)
 
 
 class FakeLeaseModelMeta:
@@ -662,7 +807,7 @@ class ServerLeases6DeleteView(BaseServerLeasesDeleteView):
 
     form = forms.Lease6DeleteForm
     dhcp_version = 6
-    tab = ServerLeases6View.tab
+    tab = _LEASES_TAB
 
 
 class ServerLeases4DeleteView(BaseServerLeasesDeleteView):
@@ -670,7 +815,7 @@ class ServerLeases4DeleteView(BaseServerLeasesDeleteView):
 
     form = forms.Lease4DeleteForm
     dhcp_version = 4
-    tab = ServerLeases4View.tab
+    tab = _LEASES_TAB
 
 
 class _BaseLeaseEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin, View):
@@ -804,7 +949,7 @@ class ServerLease4EditView(_BaseLeaseEditView):
 
     dhcp_version = 4
     form_class = forms.Lease4EditForm
-    tab = ServerLeases4View.tab
+    tab = _LEASES_TAB
 
 
 @register_model_view(Server, "lease6_edit", path="leases6/<path:ip_address>/edit")
@@ -813,7 +958,7 @@ class ServerLease6EditView(_BaseLeaseEditView):
 
     dhcp_version = 6
     form_class = forms.Lease6EditForm
-    tab = ServerLeases6View.tab
+    tab = _LEASES_TAB
 
 
 class _BaseLeaseAddView(_KeaChangeMixin, generic.ObjectView):
@@ -945,12 +1090,7 @@ class _BaseLeaseAddView(_KeaChangeMixin, generic.ObjectView):
                 request=request,
             )
             if cd.get("sync_to_netbox"):
-                try:
-                    sync_lease_to_netbox(lease)
-                    messages.success(request, f"IPAddress {cd['ip_address']} synced to NetBox.")
-                except (ValueError, DatabaseError, ValidationError, requests.RequestException):
-                    logger.exception("Failed to sync lease %s to NetBox", cd.get("ip_address"))
-                    messages.warning(request, "Lease created but NetBox IPAM sync failed; see server logs.")
+                _run_lease_sync_to_netbox(request, lease, cd["ip_address"])
             return redirect(cancel_url)
         return render(
             request,
@@ -971,7 +1111,7 @@ class ServerLease4AddView(_BaseLeaseAddView):
 
     dhcp_version = 4
     form_class = forms.Lease4AddForm
-    _active_tab = ServerLeases4View.tab
+    _active_tab = _LEASES_TAB
 
 
 @register_model_view(Server, "lease6_add", path="leases6/add")
@@ -980,7 +1120,7 @@ class ServerLease6AddView(_BaseLeaseAddView):
 
     dhcp_version = 6
     form_class = forms.Lease6AddForm
-    _active_tab = ServerLeases6View.tab
+    _active_tab = _LEASES_TAB
 
 
 def _fetch_reservation_by_ip(client: KeaClient, version: int) -> tuple[dict[str, dict], bool]:

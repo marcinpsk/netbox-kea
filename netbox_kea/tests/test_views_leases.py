@@ -27,8 +27,11 @@ from unittest.mock import MagicMock, patch
 import requests
 from django.test import TestCase, override_settings
 from django.urls import reverse
+from ipam.models import IPAddress as NbIP
 
+from netbox_kea.kea import KeaClient
 from netbox_kea.models import Server
+from netbox_kea.views.leases import _fetch_subnet_choices, _subnet_choices_cache_key, _subnet_sort_key
 
 from .utils import _PLUGINS_CONFIG, _make_db_server, _ViewTestBase
 
@@ -546,7 +549,7 @@ class TestEnrichLeasesErrorPaths(_ViewTestBase):
         mock_client.__enter__ = lambda s: s
         mock_client.__exit__ = lambda s, *a: None
         mock_client.reservation_get.return_value = None
-        nb_ip = MagicMock()
+        nb_ip = MagicMock(spec=NbIP)
         nb_ip.get_absolute_url.return_value = "/ipam/ip-addresses/99/"
         mock_bulk_fetch.return_value = {"10.0.0.5": nb_ip}
         url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
@@ -1212,7 +1215,7 @@ class TestLeaseAddSyncToNetBox(_ViewTestBase):
     def test_post_lease4_add_with_sync_calls_sync_lease(self, MockKeaClient, mock_sync):
         """POST with sync_to_netbox=on calls sync_lease_to_netbox() with the lease dict."""
         MockKeaClient.return_value.lease_add.return_value = None
-        mock_sync.return_value = (MagicMock(), True)
+        mock_sync.return_value = (MagicMock(spec=NbIP), True)
         response = self.client.post(self._url(version=4), self._post4(sync=True))
         self.assertEqual(response.status_code, 302)
         mock_sync.assert_called_once()
@@ -1237,6 +1240,64 @@ class TestLeaseAddSyncToNetBox(_ViewTestBase):
         response = self.client.post(self._url(version=4), self._post4(sync=True))
         self.assertEqual(response.status_code, 302)
         MockKeaClient.return_value.lease_add.assert_called_once()
+
+    @patch("netbox_kea.views.leases.sync_lease_to_netbox")
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_lease4_add_sync_skipped_without_ipam_permission(self, MockKeaClient, mock_sync):
+        """A user with server-change but no IPAM write permission must not trigger the IPAM sync."""
+        from django.contrib.auth import get_user_model
+        from django.contrib.contenttypes.models import ContentType
+        from users.models import ObjectPermission
+
+        User = get_user_model()
+        limited = User.objects.create_user(username="lease_no_ipam", password="x")
+        perm = ObjectPermission.objects.create(name="change-server-lease-noipam", actions=["view", "change"])
+        perm.object_types.add(ContentType.objects.get_for_model(Server))
+        perm.users.add(limited)
+        self.client.force_login(limited)
+
+        MockKeaClient.return_value.lease_add.return_value = None
+        response = self.client.post(self._url(version=4), self._post4(sync=True))
+        # Lease still created in Kea (302), but the IPAM sync was gated out.
+        self.assertEqual(response.status_code, 302)
+        MockKeaClient.return_value.lease_add.assert_called_once()
+        mock_sync.assert_not_called()
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_lease4_add_reports_foreign_ip_skip(self, MockKeaClient):
+        """A foreign NetBox IP (force=False) is skipped and reported as such, not 'synced'."""
+        from ipam.models import IPAddress
+
+        MockKeaClient.return_value.lease_add.return_value = None
+        # self.client is the superuser (has IPAM perms) → reaches the real sync.
+        IPAddress.objects.create(address="10.0.0.200/24", status="active", description="Router loopback")
+        response = self.client.post(self._url(version=4), self._post4(sync=True), follow=True)
+        self.assertEqual(response.status_code, 200)
+        msgs = [m.message for m in response.context["messages"]]
+        self.assertTrue(
+            any("skipped" in m.lower() and "not kea-managed" in m.lower() for m in msgs),
+            f"Expected a foreign-IP skip warning, got: {msgs}",
+        )
+        # Foreign IP left exactly as the operator set it.
+        ip = IPAddress.objects.get(address="10.0.0.200/24")
+        self.assertEqual(ip.status, "active")
+        self.assertEqual(ip.description, "Router loopback")
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_lease4_add_reports_successful_sync(self, MockKeaClient):
+        """A fresh IP synced to NetBox reports a created/updated success message."""
+        from ipam.models import IPAddress
+
+        MockKeaClient.return_value.lease_add.return_value = None
+        # No pre-existing row → the real sync creates it, no conflict → success message.
+        response = self.client.post(self._url(version=4), self._post4(sync=True), follow=True)
+        self.assertEqual(response.status_code, 200)
+        msgs = [m.message for m in response.context["messages"]]
+        self.assertTrue(
+            any("10.0.0.200" in m and "netbox" in m.lower() and "created" in m.lower() for m in msgs),
+            f"Expected a NetBox sync success message, got: {msgs}",
+        )
+        self.assertTrue(IPAddress.objects.filter(address__startswith="10.0.0.200/").exists())
 
 
 # ---------------------------------------------------------------------------
@@ -1562,7 +1623,7 @@ class TestEnrichLeasesWithBadgesCanChange(_ViewTestBase):
         with (
             patch("netbox_kea.views.leases._fetch_reservation_by_ip_for_leases", return_value=({}, False, set())),
             patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
-            patch.object(server, "get_client", return_value=MagicMock()),
+            patch.object(server, "get_client", return_value=MagicMock(spec=KeaClient)),
         ):
             _enrich_leases_with_badges([lease], server, 4, can_delete=False, can_change=False)
         self.assertNotIn("edit_url", lease)
@@ -1579,7 +1640,7 @@ class TestEnrichLeasesWithBadgesCanChange(_ViewTestBase):
         with (
             patch("netbox_kea.views.leases._fetch_reservation_by_ip_for_leases", return_value=({}, False, set())),
             patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
-            patch.object(server, "get_client", return_value=MagicMock()),
+            patch.object(server, "get_client", return_value=MagicMock(spec=KeaClient)),
         ):
             _enrich_leases_with_badges([lease], server, 4, can_delete=False, can_change=True)
         self.assertIn("edit_url", lease)
@@ -1608,7 +1669,7 @@ class TestEnrichLeasesReservationFlags(_ViewTestBase):
                 return_value=({"10.0.0.5": rsv}, True, set()),
             ),
             patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
-            patch.object(server, "get_client", return_value=MagicMock()),
+            patch.object(server, "get_client", return_value=MagicMock(spec=KeaClient)),
         ):
             _enrich_leases_with_badges([lease], server, 4, can_delete=False, can_change=False)
         self.assertTrue(lease["is_reserved"])
@@ -1622,7 +1683,7 @@ class TestEnrichLeasesReservationFlags(_ViewTestBase):
         with (
             patch("netbox_kea.views.leases._fetch_reservation_by_ip_for_leases", return_value=({}, True, set())),
             patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
-            patch.object(server, "get_client", return_value=MagicMock()),
+            patch.object(server, "get_client", return_value=MagicMock(spec=KeaClient)),
         ):
             _enrich_leases_with_badges([lease], server, 4, can_delete=False, can_change=False)
         self.assertFalse(lease["is_reserved"])
@@ -1640,7 +1701,7 @@ class TestEnrichLeasesReservationFlags(_ViewTestBase):
                 return_value=({"10.0.0.5": rsv}, True, set()),
             ),
             patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
-            patch.object(server, "get_client", return_value=MagicMock()),
+            patch.object(server, "get_client", return_value=MagicMock(spec=KeaClient)),
         ):
             _enrich_leases_with_badges([lease], server, 4, can_delete=False, can_change=False)
         self.assertIsNotNone(lease["reservation_url"])
@@ -1661,7 +1722,7 @@ class TestEnrichLeasesReservationFlags(_ViewTestBase):
                 return_value=({"10.0.0.5": rsv}, True, set()),
             ),
             patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
-            patch.object(server, "get_client", return_value=MagicMock()),
+            patch.object(server, "get_client", return_value=MagicMock(spec=KeaClient)),
         ):
             _enrich_leases_with_badges([lease], server, 4, can_delete=False, can_change=True)
         self.assertIsNotNone(lease["reservation_url"])
@@ -1676,7 +1737,7 @@ class TestEnrichLeasesReservationFlags(_ViewTestBase):
         with (
             patch("netbox_kea.views.leases._fetch_reservation_by_ip_for_leases", return_value=({}, True, set())),
             patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
-            patch.object(server, "get_client", return_value=MagicMock()),
+            patch.object(server, "get_client", return_value=MagicMock(spec=KeaClient)),
         ):
             _enrich_leases_with_badges([lease], server, 4, can_delete=False, can_change=False)
         self.assertIsNone(lease.get("create_reservation_url"))
@@ -1691,7 +1752,7 @@ class TestEnrichLeasesReservationFlags(_ViewTestBase):
             patch("netbox_kea.views.leases._fetch_reservation_by_ip_for_leases", return_value=({}, True, set())),
             patch("netbox_kea.views.leases._fetch_reservation_by_mac_for_leases", return_value=({}, set())),
             patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
-            patch.object(server, "get_client", return_value=MagicMock()),
+            patch.object(server, "get_client", return_value=MagicMock(spec=KeaClient)),
         ):
             _enrich_leases_with_badges([lease], server, 4, can_delete=False, can_change=True)
         self.assertIsNotNone(lease.get("create_reservation_url"))
@@ -2322,7 +2383,7 @@ class TestGetLeasesCoverage(_ViewTestBase):
         from netbox_kea.views import ServerLeases4View
 
         view = ServerLeases4View()
-        mock_client = MagicMock()
+        mock_client = MagicMock(spec=KeaClient)
         with self.assertRaises(AbortRequest):
             view.get_leases(mock_client, "test_query", "not_a_valid_by")
 
@@ -3086,7 +3147,7 @@ class TestPendingIpChangeDetection(_ViewTestBase):
                 return_value=({("aa:bb:cc:dd:ee:01", 1): mac_rsv}, set()),
             ),
             patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
-            patch.object(server, "get_client", return_value=MagicMock()),
+            patch.object(server, "get_client", return_value=MagicMock(spec=KeaClient)),
         ):
             _enrich_leases_with_badges([lease], server, 4, can_delete=False, can_change=True)
         self.assertTrue(lease["pending_ip_change"])
@@ -3102,7 +3163,7 @@ class TestPendingIpChangeDetection(_ViewTestBase):
             patch("netbox_kea.views.leases._fetch_reservation_by_ip_for_leases", return_value=({}, True, set())),
             patch("netbox_kea.views.leases._fetch_reservation_by_mac_for_leases", return_value=({}, set())),
             patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
-            patch.object(server, "get_client", return_value=MagicMock()),
+            patch.object(server, "get_client", return_value=MagicMock(spec=KeaClient)),
         ):
             _enrich_leases_with_badges([lease], server, 4, can_delete=False, can_change=True)
         self.assertFalse(lease["pending_ip_change"])
@@ -3122,7 +3183,7 @@ class TestPendingIpChangeDetection(_ViewTestBase):
                 return_value=({("aa:bb:cc:dd:ee:01", 1): mac_rsv}, set()),
             ),
             patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
-            patch.object(server, "get_client", return_value=MagicMock()),
+            patch.object(server, "get_client", return_value=MagicMock(spec=KeaClient)),
         ):
             _enrich_leases_with_badges([lease], server, 4, can_delete=False, can_change=True)
         self.assertIsNone(lease.get("sync_url"))
@@ -3141,7 +3202,7 @@ class TestPendingIpChangeDetection(_ViewTestBase):
                 return_value=({("aa:bb:cc:dd:ee:01", 1): mac_rsv}, set()),
             ),
             patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
-            patch.object(server, "get_client", return_value=MagicMock()),
+            patch.object(server, "get_client", return_value=MagicMock(spec=KeaClient)),
         ):
             _enrich_leases_with_badges([lease], server, 4, can_delete=False, can_change=True)
         self.assertIsNone(lease.get("create_reservation_url"))
@@ -3160,7 +3221,7 @@ class TestPendingIpChangeDetection(_ViewTestBase):
                 return_value=({("aa:bb:cc:dd:ee:01", 1): mac_rsv}, set()),
             ),
             patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
-            patch.object(server, "get_client", return_value=MagicMock()),
+            patch.object(server, "get_client", return_value=MagicMock(spec=KeaClient)),
         ):
             _enrich_leases_with_badges([lease], server, 4, can_delete=False, can_change=True)
         self.assertIsNotNone(lease["reservation_url"])
@@ -3180,7 +3241,7 @@ class TestPendingIpChangeDetection(_ViewTestBase):
                 return_value=({("aa:bb:cc:dd:ee:01", 1): mac_rsv}, set()),
             ),
             patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
-            patch.object(server, "get_client", return_value=MagicMock()),
+            patch.object(server, "get_client", return_value=MagicMock(spec=KeaClient)),
         ):
             _enrich_leases_with_badges([lease], server, 4, can_delete=False, can_change=False)
         self.assertTrue(lease["pending_ip_change"])
@@ -3202,7 +3263,7 @@ class TestPendingIpChangeDetection(_ViewTestBase):
             ),
             patch("netbox_kea.views.leases._fetch_reservation_by_mac_for_leases", return_value=({}, set())),
             patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
-            patch.object(server, "get_client", return_value=MagicMock()),
+            patch.object(server, "get_client", return_value=MagicMock(spec=KeaClient)),
         ):
             _enrich_leases_with_badges([lease], server, 4, can_delete=False, can_change=True)
         self.assertFalse(lease["pending_ip_change"])
@@ -3214,7 +3275,7 @@ class TestPendingIpChangeDetection(_ViewTestBase):
 
         server = self.server
         lease = {"ip_address": "10.0.0.10", "hw_address": "aa:bb:cc:dd:ee:01", "subnet_id": 1}
-        mock_client = MagicMock()
+        mock_client = MagicMock(spec=KeaClient)
         with (
             patch(
                 "netbox_kea.views.leases._fetch_reservation_by_ip_for_leases",
@@ -3237,7 +3298,7 @@ class TestPendingIpChangeDetection(_ViewTestBase):
             patch("netbox_kea.views.leases._fetch_reservation_by_ip_for_leases", return_value=({}, True, set())),
             patch("netbox_kea.views.leases._fetch_reservation_by_mac_for_leases", side_effect=RuntimeError("boom")),
             patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
-            patch.object(server, "get_client", return_value=MagicMock()),
+            patch.object(server, "get_client", return_value=MagicMock(spec=KeaClient)),
         ):
             _enrich_leases_with_badges([lease], server, 4, can_delete=False, can_change=True)
         self.assertFalse(lease.get("pending_ip_change", False))
@@ -3307,7 +3368,7 @@ class TestFetchReservationByMac(_ViewTestBase):
         """MAC reservation at different IP must be included in result."""
         from netbox_kea.views.leases import _fetch_reservation_by_mac_for_leases
 
-        mock_client = MagicMock()
+        mock_client = MagicMock(spec=KeaClient)
         rsv = {"ip-address": "10.0.0.20", "hw-address": "aa:bb:cc:dd:ee:01", "subnet-id": 1}
         mock_client.clone.return_value = mock_client
         mock_client.__enter__ = lambda s: s
@@ -3323,7 +3384,7 @@ class TestFetchReservationByMac(_ViewTestBase):
         """MAC reservation at same IP as lease must NOT be included (already handled by IP lookup)."""
         from netbox_kea.views.leases import _fetch_reservation_by_mac_for_leases
 
-        mock_client = MagicMock()
+        mock_client = MagicMock(spec=KeaClient)
         rsv = {"ip-address": "10.0.0.10", "hw-address": "aa:bb:cc:dd:ee:01", "subnet-id": 1}
         mock_client.clone.return_value = mock_client
         mock_client.__enter__ = lambda s: s
@@ -3337,7 +3398,7 @@ class TestFetchReservationByMac(_ViewTestBase):
         """Leases in already_matched_ips must not trigger a MAC lookup."""
         from netbox_kea.views.leases import _fetch_reservation_by_mac_for_leases
 
-        mock_client = MagicMock()
+        mock_client = MagicMock(spec=KeaClient)
         mock_client.clone.return_value = mock_client
         mock_client.__enter__ = lambda s: s
         mock_client.__exit__ = lambda s, *a: None
@@ -3350,7 +3411,7 @@ class TestFetchReservationByMac(_ViewTestBase):
         """Leases in failed_ips must not trigger a MAC lookup."""
         from netbox_kea.views.leases import _fetch_reservation_by_mac_for_leases
 
-        mock_client = MagicMock()
+        mock_client = MagicMock(spec=KeaClient)
         mock_client.clone.return_value = mock_client
         mock_client.__enter__ = lambda s: s
         mock_client.__exit__ = lambda s, *a: None
@@ -3363,7 +3424,7 @@ class TestFetchReservationByMac(_ViewTestBase):
         """When reservation_get returns None, result must be empty."""
         from netbox_kea.views.leases import _fetch_reservation_by_mac_for_leases
 
-        mock_client = MagicMock()
+        mock_client = MagicMock(spec=KeaClient)
         mock_client.clone.return_value = mock_client
         mock_client.__enter__ = lambda s: s
         mock_client.__exit__ = lambda s, *a: None
@@ -3376,7 +3437,7 @@ class TestFetchReservationByMac(_ViewTestBase):
         """An exception from reservation_get must not crash; MAC is simply omitted."""
         from netbox_kea.views.leases import _fetch_reservation_by_mac_for_leases
 
-        mock_client = MagicMock()
+        mock_client = MagicMock(spec=KeaClient)
         mock_client.clone.return_value = mock_client
         mock_client.__enter__ = lambda s: s
         mock_client.__exit__ = lambda s, *a: None
@@ -3390,7 +3451,7 @@ class TestFetchReservationByMac(_ViewTestBase):
         """Multiple leases with the same MAC must only trigger one reservation_get call."""
         from netbox_kea.views.leases import _fetch_reservation_by_mac_for_leases
 
-        mock_client = MagicMock()
+        mock_client = MagicMock(spec=KeaClient)
         mock_client.clone.return_value = mock_client
         mock_client.__enter__ = lambda s: s
         mock_client.__exit__ = lambda s, *a: None
@@ -3962,3 +4023,213 @@ class TestGetLeasesPageSubnetEdgeCases(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "10.0.0.5")
         self.assertNotContains(response, "10.0.1.5")
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestFetchSubnetChoices(TestCase):
+    """_fetch_subnet_choices(): network-order sorting + 5-minute caching.
+
+    Uses a real Server and the real Django cache; only the Kea client boundary is
+    mocked (get_client returns a client whose .command() yields canned
+    ``config-get`` JSON).
+    """
+
+    # subnet4 ids/CIDRs are intentionally out of order, and chosen so that
+    # network order (10.0.1 < 10.0.2 < 10.0.10) differs from lexicographic label
+    # order (".10." sorts before ".2.").  Includes a shared-network subnet.
+    _CONFIG = [
+        {
+            "result": 0,
+            "arguments": {
+                "Dhcp4": {
+                    "subnet4": [
+                        {"id": 3, "subnet": "10.0.2.0/24"},
+                        {"id": 1, "subnet": "10.0.10.0/24"},
+                        {"id": 2, "subnet": "10.0.1.0/24"},
+                    ],
+                    "shared-networks": [
+                        {"name": "sn-a", "subnet4": [{"id": 4, "subnet": "192.168.0.0/16"}]},
+                    ],
+                }
+            },
+        }
+    ]
+
+    def setUp(self):
+        self.server = _make_db_server()
+        self._clear_cache()
+        self.addCleanup(self._clear_cache)
+
+    def _clear_cache(self):
+        # Delete only our own keys so we never disturb the shared dev-server cache.
+        from django.core.cache import cache
+
+        for v in (4, 6):
+            cache.delete(_subnet_choices_cache_key(self.server, v))
+
+    def _client_returning_config(self):
+        client = MagicMock(spec=KeaClient)
+        client.command.return_value = self._CONFIG
+        return client
+
+    def test_choices_sorted_by_network_not_lexicographically(self):
+        client = self._client_returning_config()
+        with patch.object(Server, "get_client", return_value=client) as get_client:
+            choices = _fetch_subnet_choices(self.server, 4)
+        # The helper must request the protocol-specific client (dual-URL servers
+        # route v4/v6 to different endpoints).
+        get_client.assert_called_once_with(version=4)
+        self.assertEqual(
+            [c[0] for c in choices],
+            ["10.0.1.0/24", "10.0.2.0/24", "10.0.10.0/24", "192.168.0.0/16"],
+        )
+        # Each choice carries (cidr, subnet_id) so the template can build both the
+        # Subnet (CIDR) and Subnet-ID comboboxes.
+        self.assertEqual(choices[0], ("10.0.1.0/24", 2))
+
+    def test_v6_shared_network_subnet6_is_parsed(self):
+        """Dhcp6/subnet6 and shared-networks[].subnet6 parse via version-aware keys.
+
+        Locks the v6 contract so a cross-protocol regression (e.g. reading
+        ``subnet4`` for a v6 request) is caught.
+        """
+        config6 = [
+            {
+                "result": 0,
+                "arguments": {
+                    "Dhcp6": {
+                        "subnet6": [{"id": 11, "subnet": "2001:db8:1::/64"}],
+                        "shared-networks": [
+                            {"name": "sn6", "subnet6": [{"id": 12, "subnet": "2001:db8:2::/64"}]},
+                        ],
+                    }
+                },
+            }
+        ]
+        client = MagicMock(spec=KeaClient)
+        client.command.return_value = config6
+        with patch.object(Server, "get_client", return_value=client) as get_client:
+            choices = _fetch_subnet_choices(self.server, 6)
+        get_client.assert_called_once_with(version=6)
+        self.assertEqual(choices, [("2001:db8:1::/64", 11), ("2001:db8:2::/64", 12)])
+
+    def test_non_string_subnet_values_do_not_500(self):
+        """Malformed subnet entries (non-string CIDR) are skipped, not fed to sort() → no TypeError/500."""
+        bad_config = [
+            {
+                "result": 0,
+                "arguments": {
+                    "Dhcp4": {
+                        "subnet4": [
+                            {"id": 1, "subnet": "10.0.1.0/24"},
+                            {"id": 2, "subnet": 12345},  # int, not str
+                            {"id": 3, "subnet": ["10.0.3.0/24"]},  # list, not str
+                            {"id": 4, "subnet": None},  # None
+                            {"id": 5},  # missing subnet
+                        ],
+                        "shared-networks": [],
+                    }
+                },
+            }
+        ]
+        client = MagicMock(spec=KeaClient)
+        client.command.return_value = bad_config
+        with patch.object(Server, "get_client", return_value=client):
+            choices = _fetch_subnet_choices(self.server, 4)
+        # Only the valid string CIDR survives; the call returns cleanly.
+        self.assertEqual(choices, [("10.0.1.0/24", 1)])
+
+    def test_non_list_subnet_containers_do_not_500(self):
+        """Non-list subnet4 / shared-networks containers degrade to empty, not TypeError/500."""
+        bad_config = [{"result": 0, "arguments": {"Dhcp4": {"subnet4": 1, "shared-networks": 1}}}]
+        client = MagicMock(spec=KeaClient)
+        client.command.return_value = bad_config
+        with patch.object(Server, "get_client", return_value=client):
+            choices = _fetch_subnet_choices(self.server, 4)
+        self.assertEqual(choices, [])
+
+    def test_non_dict_dhcp_conf_returns_empty(self):
+        """A non-dict ``Dhcp4`` payload degrades to no choices (not an AttributeError)."""
+        client = MagicMock(spec=KeaClient)
+        client.command.return_value = [{"result": 0, "arguments": {"Dhcp4": "not-a-dict"}}]
+        with patch.object(Server, "get_client", return_value=client):
+            self.assertEqual(_fetch_subnet_choices(self.server, 4), [])
+
+    def test_non_dict_subnet_entry_is_skipped(self):
+        """Non-dict entries inside subnet4 are skipped; valid dict entries still parse."""
+        client = MagicMock(spec=KeaClient)
+        client.command.return_value = [
+            {"result": 0, "arguments": {"Dhcp4": {"subnet4": [1, {"id": 2, "subnet": "10.0.0.0/24"}]}}}
+        ]
+        with patch.object(Server, "get_client", return_value=client):
+            self.assertEqual(_fetch_subnet_choices(self.server, 4), [("10.0.0.0/24", 2)])
+
+    def test_subnet_sort_key_handles_non_string_and_unparseable(self):
+        """_subnet_sort_key buckets non-string and unparseable CIDRs apart from real networks."""
+        self.assertEqual(_subnet_sort_key((12345, 1)), (1, "12345"))  # non-string CIDR
+        self.assertEqual(_subnet_sort_key(("not-a-cidr", 2)), (1, "not-a-cidr"))  # unparseable string
+        self.assertEqual(_subnet_sort_key(("10.0.0.0/24", 3))[0], 0)  # real network sorts first
+
+    def test_result_is_cached_second_call_skips_kea(self):
+        client = self._client_returning_config()
+        with patch.object(Server, "get_client", return_value=client) as get_client:
+            first = _fetch_subnet_choices(self.server, 4)
+            second = _fetch_subnet_choices(self.server, 4)
+        self.assertEqual(first, second)
+        # config-get hit Kea exactly once; the second render is served from cache.
+        self.assertEqual(client.command.call_count, 1)
+        # The single client request used the protocol-specific version.
+        get_client.assert_called_once_with(version=4)
+
+    def test_transient_error_returns_empty_and_is_not_cached(self):
+        failing = MagicMock(spec=KeaClient)
+        failing.command.side_effect = RuntimeError("kea unreachable")
+        with patch.object(Server, "get_client", return_value=failing):
+            self.assertEqual(_fetch_subnet_choices(self.server, 4), [])
+
+        # A failed fetch must not be cached, so the next render retries and succeeds.
+        ok = self._client_returning_config()
+        with patch.object(Server, "get_client", return_value=ok):
+            choices = _fetch_subnet_choices(self.server, 4)
+        self.assertTrue(choices)
+        self.assertEqual(ok.command.call_count, 1)
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestLeaseSearchSubnetCombobox(_ViewTestBase):
+    """Lease search form renders an editable Subnet/Subnet-ID combobox on the Search field.
+
+    There is no separate subnet selector — the attribute selector drives which
+    (if any) datalist the Search field is associated with.
+    """
+
+    def _url(self):
+        return reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+
+    @patch("netbox_kea.views.leases._fetch_subnet_choices")
+    def test_datalists_and_toggle_script_rendered(self, mock_choices):
+        mock_choices.return_value = [("10.0.1.0/24", 2), ("10.0.2.0/24", 3)]
+        body = self.client.get(self._url()).content.decode()
+        # Both comboboxes present with the right values.
+        self.assertIn('id="kea-lease-subnet-cidrs"', body)
+        self.assertIn('id="kea-lease-subnet-ids"', body)
+        self.assertIn('value="10.0.1.0/24"', body)  # CIDR option (by=subnet)
+        self.assertIn('value="2"', body)  # subnet-id option (by=subnet_id)
+        # The toggle script wires the Search field (q) to the attribute selector (by).
+        self.assertIn("syncSubnetCombobox", body)
+        self.assertIn('getElementById("id_by")', body)
+
+    @patch("netbox_kea.views.leases._fetch_subnet_choices")
+    def test_no_separate_subnet_select_field(self, mock_choices):
+        mock_choices.return_value = [("10.0.1.0/24", 2)]
+        body = self.client.get(self._url()).content.decode()
+        # The old standalone subnet quick-select is gone.
+        self.assertNotIn('name="subnet"', body)
+        self.assertNotIn("Select a subnet", body)
+
+    @patch("netbox_kea.views.leases._fetch_subnet_choices")
+    def test_no_datalists_when_no_subnets(self, mock_choices):
+        mock_choices.return_value = []
+        body = self.client.get(self._url()).content.decode()
+        self.assertNotIn("kea-lease-subnet-cidrs", body)
+        self.assertNotIn("syncSubnetCombobox", body)

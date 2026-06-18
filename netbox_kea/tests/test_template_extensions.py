@@ -11,6 +11,7 @@ from urllib.parse import parse_qs, urlparse
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
+from ipam.models import IPAddress as NbIP
 
 from netbox_kea.models import Server
 from netbox_kea.template_extensions import IPAddressKeaPanel
@@ -31,7 +32,7 @@ def _make_server(name, dhcp4=True, dhcp6=False):
 
 def _make_nb_ip(ip_str, dns_name="host.example.com", pk=99):
     """Build a mock IPAddress object as IPAddressKeaPanel expects."""
-    nb_ip = MagicMock()
+    nb_ip = MagicMock(spec=NbIP)
     nb_ip.pk = pk
     nb_ip.dns_name = dns_name
     nb_ip.address.ip = ip_str
@@ -41,10 +42,10 @@ def _make_nb_ip(ip_str, dns_name="host.example.com", pk=99):
 def _make_panel(nb_ip, user=None):
     """Instantiate IPAddressKeaPanel with a minimal fake context."""
     if user is None:
-        user = MagicMock()
+        user = MagicMock()  # mock-ok: minimal user for panel permission context
     context = {
         "object": nb_ip,
-        "request": MagicMock(user=user),
+        "request": MagicMock(user=user),  # mock-ok: minimal request context
     }
     return IPAddressKeaPanel(context)
 
@@ -60,13 +61,13 @@ class TestIPAddressKeaPanelEdgeCases(TestCase):
 
     def test_no_object_in_context_returns_empty_string(self):
         """If context has no 'object', right_page() returns ''."""
-        panel = IPAddressKeaPanel({"request": MagicMock()})
+        panel = IPAddressKeaPanel({"request": MagicMock()})  # mock-ok: minimal request context
         result = panel.right_page()
         self.assertEqual(result, "")
 
     def test_nb_ip_without_address_returns_empty_string(self):
         """If nb_ip.address is falsy, right_page() returns ''."""
-        nb_ip = MagicMock()
+        nb_ip = MagicMock(spec=NbIP)
         nb_ip.address = None
         panel = _make_panel(nb_ip)
         result = panel.right_page()
@@ -74,7 +75,7 @@ class TestIPAddressKeaPanelEdgeCases(TestCase):
 
     def test_nb_ip_address_without_ip_returns_empty_string(self):
         """If nb_ip.address.ip is falsy, right_page() returns ''."""
-        nb_ip = MagicMock()
+        nb_ip = MagicMock(spec=NbIP)
         nb_ip.address.ip = ""
         panel = _make_panel(nb_ip)
         result = panel.right_page()

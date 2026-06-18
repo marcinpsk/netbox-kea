@@ -1,0 +1,30 @@
+{# SPDX-FileCopyrightText: 2025 Marcin Zieba <marcinpsk@gmail.com> #}
+{# SPDX-License-Identifier: Apache-2.0 #}
+{% comment %}
+  Advisory fragment shown under the reservation Add form's IP field.
+  Rendered by ReservationCheckNetboxIPView; empty body means "no advisory".
+{% endcomment %}
+{% if nb_ip %}
+{% if kea_managed %}
+<div class="alert alert-info d-flex align-items-start mt-2" role="alert">
+  <i class="mdi mdi-information-outline me-2 mt-1" aria-hidden="true"></i>
+  <div>
+    Already in NetBox IPAM
+    (<a href="{{ nb_ip.get_absolute_url }}">{{ nb_ip.address }}</a>,
+    status: {{ nb_ip.get_status_display }}). Saving will update it.
+  </div>
+</div>
+{% else %}
+<div class="alert alert-warning d-flex align-items-start mt-2" role="alert">
+  <i class="mdi mdi-alert-outline me-2 mt-1" aria-hidden="true"></i>
+  <div>
+    This IP exists in NetBox and was <strong>not</strong> created by Kea sync
+    (<a href="{{ nb_ip.get_absolute_url }}">{{ nb_ip.address }}</a>,
+    status: {{ nb_ip.get_status_display }}{% if nb_ip.description %},
+    description: <code>{{ nb_ip.description }}</code>{% endif %}{% if nb_ip.assigned_object %},
+    assigned to: {% if nb_ip.assigned_object.parent_object %}{{ nb_ip.assigned_object.parent_object }}/{% endif %}{{ nb_ip.assigned_object }}{% endif %}).
+    Syncing will overwrite this entry.
+  </div>
+</div>
+{% endif %}
+{% endif %}

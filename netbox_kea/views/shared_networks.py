@@ -16,11 +16,11 @@ from .. import forms, tables
 from ..kea import KeaClient, KeaException, PartialPersistError
 from ..models import Server
 from ..utilities import (
-    OptionalViewTab,
     check_dhcp_enabled,
     kea_error_hint,
 )
 from ._base import ConditionalLoginRequiredMixin, _KeaChangeMixin
+from .subnets import _SUBNETS_TAB, subnets_nav_context
 
 logger = logging.getLogger(__name__)
 
@@ -117,26 +117,30 @@ class BaseServerSharedNetworksView(generic.ObjectChildrenView):
                     f"plugins:netbox_kea:server_shared_network{self.dhcp_version}_add",
                     args=[instance.pk],
                 ),
-                "dhcp_version": self.dhcp_version,
-                "tab": self.tab,
+                **subnets_nav_context(instance.pk, "shared_networks", self.dhcp_version),
             },
         )
 
 
 @register_model_view(Server, "shared_networks6")
 class ServerSharedNetworks6View(BaseServerSharedNetworksView):
-    """DHCPv6 shared networks tab."""
+    """DHCPv6 shared networks view (rendered under the shared Subnets tab)."""
 
-    tab = OptionalViewTab(label="DHCPv6 Shared Networks", weight=1035, is_enabled=lambda s: s.dhcp6)
     dhcp_version = 6
 
 
 @register_model_view(Server, "shared_networks4")
 class ServerSharedNetworks4View(BaseServerSharedNetworksView):
-    """DHCPv4 shared networks tab."""
+    """DHCPv4 shared networks view (rendered under the shared Subnets tab)."""
 
-    tab = OptionalViewTab(label="DHCPv4 Shared Networks", weight=1025, is_enabled=lambda s: s.dhcp4)
     dhcp_version = 4
+
+    def get(self, request: HttpRequest, **kwargs: Any) -> HttpResponse:
+        """Redirect to the v6 view on v6-only servers so the merged tab works."""
+        instance = self.get_object(**kwargs)
+        if not instance.dhcp4 and instance.dhcp6:
+            return redirect(reverse("plugins:netbox_kea:server_shared_networks6", args=[instance.pk]))
+        return super().get(request, **kwargs)
 
 
 class BaseServerSharedNetworkAddView(_KeaChangeMixin, ConditionalLoginRequiredMixin, View):
@@ -209,14 +213,14 @@ class ServerSharedNetwork6AddView(BaseServerSharedNetworkAddView):
     """Add a new DHCPv6 shared network."""
 
     dhcp_version = 6
-    tab = ServerSharedNetworks6View.tab
+    tab = _SUBNETS_TAB
 
 
 class ServerSharedNetwork4AddView(BaseServerSharedNetworkAddView):
     """Add a new DHCPv4 shared network."""
 
     dhcp_version = 4
-    tab = ServerSharedNetworks4View.tab
+    tab = _SUBNETS_TAB
 
 
 class BaseServerSharedNetworkDeleteView(_KeaChangeMixin, ConditionalLoginRequiredMixin, View):
@@ -274,14 +278,14 @@ class ServerSharedNetwork6DeleteView(BaseServerSharedNetworkDeleteView):
     """Delete a DHCPv6 shared network."""
 
     dhcp_version = 6
-    tab = ServerSharedNetworks6View.tab
+    tab = _SUBNETS_TAB
 
 
 class ServerSharedNetwork4DeleteView(BaseServerSharedNetworkDeleteView):
     """Delete a DHCPv4 shared network."""
 
     dhcp_version = 4
-    tab = ServerSharedNetworks4View.tab
+    tab = _SUBNETS_TAB
 
 
 class BaseServerSharedNetworkEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin, View):
@@ -472,11 +476,11 @@ class ServerSharedNetwork6EditView(BaseServerSharedNetworkEditView):
     """Edit a DHCPv6 shared network."""
 
     dhcp_version = 6
-    tab = ServerSharedNetworks6View.tab
+    tab = _SUBNETS_TAB
 
 
 class ServerSharedNetwork4EditView(BaseServerSharedNetworkEditView):
     """Edit a DHCPv4 shared network."""
 
     dhcp_version = 4
-    tab = ServerSharedNetworks4View.tab
+    tab = _SUBNETS_TAB

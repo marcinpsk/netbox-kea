@@ -880,3 +880,28 @@ class TestSharedNetworkEditForm(SimpleTestCase):
         form = self._form(relay_addresses="  10.0.0.1 , 10.0.0.2  ")
         self.assertTrue(form.is_valid(), form.errors)
         self.assertEqual(form.cleaned_data["relay_addresses"], "10.0.0.1,10.0.0.2")
+
+
+class TestLeasesSearchFormSubnetCombobox(SimpleTestCase):
+    """The lease search form has no standalone subnet field; choices feed the template combobox."""
+
+    def test_no_subnet_field_even_when_choices_supplied(self):
+        # Previously a separate ``subnet`` quick-select field was added; it's gone now.
+        form = Leases4SearchForm(subnet_choices=[("10.0.0.0/24", 1)])
+        self.assertNotIn("subnet", form.fields)
+
+    def test_subnet_choices_exposed_for_template(self):
+        form = Leases6SearchForm(subnet_choices=[("2001:db8::/64", 5)])
+        self.assertEqual(form.subnet_choices, [("2001:db8::/64", 5)])
+
+    def test_subnet_choices_defaults_to_empty(self):
+        self.assertEqual(Leases4SearchForm().subnet_choices, [])
+
+    def test_subnet_search_still_validates(self):
+        form = Leases4SearchForm(data={"by": "subnet", "q": "192.168.1.0/24"})
+        self.assertTrue(form.is_valid(), form.errors)
+
+    def test_subnet_id_search_still_validates(self):
+        form = Leases4SearchForm(data={"by": "subnet_id", "q": "3"})
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.cleaned_data["q"], 3)

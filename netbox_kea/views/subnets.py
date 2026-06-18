@@ -28,6 +28,30 @@ logger = logging.getLogger(__name__)
 
 _POOL_RE = re.compile(r"^[0-9a-fA-F.:/-]{3,100}$")
 
+# Single consolidated "Subnets" tab covering subnets AND shared networks for both
+# protocols. Owned by ServerDHCP4SubnetsView (the one class-level tab); the other
+# three list views (subnets6, shared_networks4/6) inject it via render context.
+# Two in-page toggles — section (Subnets | Shared Networks) and family (v4 | v6) —
+# switch between the four underlying URLs, which are all unchanged.
+_SUBNETS_TAB = OptionalViewTab(label="Subnets", weight=1020, is_enabled=lambda s: s.dhcp4 or s.dhcp6)
+
+
+def subnets_nav_context(server_pk: int, section: str, dhcp_version: int) -> dict[str, Any]:
+    """Build context for the Subnets/Shared-Networks section+family toggle nav.
+
+    ``section`` is ``"subnets"`` or ``"shared_networks"``. Returns the shared tab
+    plus the four URLs the toggles link to.
+    """
+    return {
+        "tab": _SUBNETS_TAB,
+        "section": section,
+        "dhcp_version": dhcp_version,
+        "nav_subnets_url": reverse(f"plugins:netbox_kea:server_subnets{dhcp_version}", args=[server_pk]),
+        "nav_shared_url": reverse(f"plugins:netbox_kea:server_shared_networks{dhcp_version}", args=[server_pk]),
+        "nav_v4_url": reverse(f"plugins:netbox_kea:server_{section}4", args=[server_pk]),
+        "nav_v6_url": reverse(f"plugins:netbox_kea:server_{section}6", args=[server_pk]),
+    }
+
 
 class BaseServerDHCPSubnetsView(generic.ObjectChildrenView):
     """Base view for the subnet list tab; fetches subnet data from Kea config."""
@@ -175,25 +199,31 @@ class BaseServerDHCPSubnetsView(generic.ObjectChildrenView):
                 "table": table,
                 "table_config": f"{table.name}_config",
                 "return_url": request.get_full_path(),
-                "tab": self.tab,
+                **subnets_nav_context(instance.pk, "subnets", self.dhcp_version),
             },
         )
 
 
 @register_model_view(Server, "subnets6")
 class ServerDHCP6SubnetsView(BaseServerDHCPSubnetsView):
-    """DHCPv6 subnets tab for a Kea Server."""
+    """DHCPv6 subnets view (rendered under the shared Subnets tab)."""
 
-    tab = OptionalViewTab(label="DHCPv6 Subnets", weight=1030, is_enabled=lambda s: s.dhcp6)
     dhcp_version = 6
 
 
 @register_model_view(Server, "subnets4")
 class ServerDHCP4SubnetsView(BaseServerDHCPSubnetsView):
-    """DHCPv4 subnets tab for a Kea Server."""
+    """DHCPv4 subnets view; owns the shared Subnets tab."""
 
-    tab = OptionalViewTab(label="DHCPv4 Subnets", weight=1020, is_enabled=lambda s: s.dhcp4)
+    tab = _SUBNETS_TAB
     dhcp_version = 4
+
+    def get(self, request: HttpRequest, **kwargs: Any) -> HttpResponse:
+        """Redirect to the v6 view on v6-only servers so the merged tab works."""
+        instance = self.get_object(**kwargs)
+        if not instance.dhcp4 and instance.dhcp6:
+            return redirect(reverse("plugins:netbox_kea:server_subnets6", args=[instance.pk]))
+        return super().get(request, **kwargs)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -380,14 +410,14 @@ class ServerSubnet4PoolAddView(_BasePoolAddView):
     """Add a pool to a DHCPv4 subnet."""
 
     dhcp_version = 4
-    tab = ServerDHCP4SubnetsView.tab
+    tab = _SUBNETS_TAB
 
 
 class ServerSubnet6PoolAddView(_BasePoolAddView):
     """Add a pool to a DHCPv6 subnet."""
 
     dhcp_version = 6
-    tab = ServerDHCP6SubnetsView.tab
+    tab = _SUBNETS_TAB
 
 
 class _BasePoolDeleteView(_KeaChangeMixin, generic.ObjectView):
@@ -451,14 +481,14 @@ class ServerSubnet4PoolDeleteView(_BasePoolDeleteView):
     """Delete a pool from a DHCPv4 subnet."""
 
     dhcp_version = 4
-    tab = ServerDHCP4SubnetsView.tab
+    tab = _SUBNETS_TAB
 
 
 class ServerSubnet6PoolDeleteView(_BasePoolDeleteView):
     """Delete a pool from a DHCPv6 subnet."""
 
     dhcp_version = 6
-    tab = ServerDHCP6SubnetsView.tab
+    tab = _SUBNETS_TAB
 
 
 # ---------------------------------------------------------------------------
@@ -676,14 +706,14 @@ class ServerSubnet4AddView(_BaseSubnetAddView):
     """Add a DHCPv4 subnet."""
 
     dhcp_version = 4
-    tab = ServerDHCP4SubnetsView.tab
+    tab = _SUBNETS_TAB
 
 
 class ServerSubnet6AddView(_BaseSubnetAddView):
     """Add a DHCPv6 subnet."""
 
     dhcp_version = 6
-    tab = ServerDHCP6SubnetsView.tab
+    tab = _SUBNETS_TAB
 
 
 class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
@@ -1109,14 +1139,14 @@ class ServerSubnet4EditView(_BaseSubnetEditView):
     """Edit a DHCPv4 subnet's configuration."""
 
     dhcp_version = 4
-    tab = ServerDHCP4SubnetsView.tab
+    tab = _SUBNETS_TAB
 
 
 class ServerSubnet6EditView(_BaseSubnetEditView):
     """Edit a DHCPv6 subnet's configuration."""
 
     dhcp_version = 6
-    tab = ServerDHCP6SubnetsView.tab
+    tab = _SUBNETS_TAB
 
 
 class _BaseSubnetDeleteView(_KeaChangeMixin, generic.ObjectView):
@@ -1191,14 +1221,14 @@ class ServerSubnet4DeleteView(_BaseSubnetDeleteView):
     """Delete a DHCPv4 subnet."""
 
     dhcp_version = 4
-    tab = ServerDHCP4SubnetsView.tab
+    tab = _SUBNETS_TAB
 
 
 class ServerSubnet6DeleteView(_BaseSubnetDeleteView):
     """Delete a DHCPv6 subnet."""
 
     dhcp_version = 6
-    tab = ServerDHCP6SubnetsView.tab
+    tab = _SUBNETS_TAB
 
 
 class _BaseSubnetWipeView(_KeaChangeMixin, generic.ObjectView):
@@ -1277,11 +1307,11 @@ class ServerSubnet4WipeView(_BaseSubnetWipeView):
     """Wipe all DHCPv4 leases in a subnet."""
 
     dhcp_version = 4
-    tab = ServerDHCP4SubnetsView.tab
+    tab = _SUBNETS_TAB
 
 
 class ServerSubnet6WipeView(_BaseSubnetWipeView):
     """Wipe all DHCPv6 leases in a subnet."""
 
     dhcp_version = 6
-    tab = ServerDHCP6SubnetsView.tab
+    tab = _SUBNETS_TAB

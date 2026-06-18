@@ -1,7 +1,9 @@
 {% extends "generic/object.html" %}
 {% load form_helpers %}
+{% load kea_options %}
 
 {% block content %}
+{% kea_option_datalist dhcp_version %}
 <div class="row">
   <div class="col col-md-6 offset-md-3">
     {% if lease_diff %}
@@ -45,6 +47,9 @@
         <form method="post" id="reservation-form">
           {% csrf_token %}
           {% render_form form %}
+
+          {# Advisory NetBox IPAM conflict check (Add mode only) — populated on IP blur. #}
+          <div id="netbox-ip-check"></div>
 
           {# DHCP Options section #}
           <hr>
@@ -121,4 +126,44 @@
 </div>
 
 {% include "netbox_kea/inc/formset_add_row.html" %}
+
+{% if action == "Add" %}
+{% comment %}
+  Live NetBox IPAM conflict advisory: on blur of the IP field, fetch a small
+  HTML fragment and show it under the field.  Plain fetch, no HTMX dependency.
+  Only attached in Add mode — the IP field is disabled (read-only) when editing.
+{% endcomment %}
+<script>
+(function () {
+  var fieldId = {{ dhcp_version }} === 6 ? "id_ip_addresses" : "id_ip_address";
+  var input = document.getElementById(fieldId);
+  var target = document.getElementById("netbox-ip-check");
+  if (!input || !target) { return; }
+  var baseUrl = "{% url 'plugins:netbox_kea:reservation_check_ip' object.pk %}";
+
+  input.addEventListener("blur", function () {
+    // DHCPv6 reservations may list several comma-separated addresses; check each
+    // one so a conflict in the 2nd+ address is not silently missed.
+    var values = (input.value || "")
+      .split(",")
+      .map(function (value) { return value.trim(); })
+      .filter(Boolean);
+    if (!values.length) {
+      target.innerHTML = "";
+      return;
+    }
+    Promise.all(values.map(function (value) {
+      return fetch(baseUrl + "?ip=" + encodeURIComponent(value), {
+        headers: { "X-Requested-With": "XMLHttpRequest" },
+        credentials: "same-origin",
+      })
+        .then(function (resp) { return resp.ok ? resp.text() : ""; })
+        .catch(function () { return ""; });
+    })).then(function (fragments) {
+      target.innerHTML = fragments.filter(Boolean).join("");
+    });
+  });
+})();
+</script>
+{% endif %}
 {% endblock %}

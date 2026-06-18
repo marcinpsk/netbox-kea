@@ -133,6 +133,7 @@ def _sync_server_leases(
     stats: dict[str, int],
     all_synced: list[dict],
     reservation_ips: frozenset[str] | None = None,
+    subnet_prefix_map: dict[int, int] | None = None,
 ) -> tuple[bool, frozenset[str]]:
     """Fetch all leases from *server* for *version* and upsert into NetBox IPAM.
 
@@ -166,9 +167,17 @@ def _sync_server_leases(
 
     lease_ips: set[str] = set()
     had_errors = False
+    # Foreign (manually-curated) NetBox IPs skipped to avoid overwriting them.
+    conflicts: list[str] = []
     for lease in raw_leases:
         try:
-            _ip, created, changed = sync_lease_to_netbox(lease, cleanup=False, reservation_ips=reservation_ips)
+            _ip, created, changed = sync_lease_to_netbox(
+                lease,
+                cleanup=False,
+                reservation_ips=reservation_ips,
+                subnet_prefix_map=subnet_prefix_map,
+                conflicts=conflicts,
+            )
             all_synced.append(lease)
             ip_addr = lease.get("ip-address")
             if ip_addr:
@@ -187,6 +196,7 @@ def _sync_server_leases(
             stats["errors"] += 1
             had_errors = True
 
+    stats["conflicts"] = stats.get("conflicts", 0) + len(conflicts)
     return not truncated and not had_errors, frozenset(lease_ips)
 
 
@@ -197,6 +207,7 @@ def _sync_server_reservations(
     stats: dict[str, int],
     all_synced: list[dict],
     lease_ips: frozenset[str] | None = None,
+    subnet_prefix_map: dict[int, int] | None = None,
 ) -> bool:
     """Fetch all reservations from *server* for *version* and upsert into NetBox IPAM.
 
@@ -212,6 +223,9 @@ def _sync_server_reservations(
     from_index = 0
     source_index = 0
     processed = 0
+    had_errors = False
+    # Foreign (manually-curated) NetBox IPs skipped to avoid overwriting them.
+    conflicts: list[str] = []
 
     try:
         client = server.get_client(version=version)
@@ -224,7 +238,13 @@ def _sync_server_reservations(
             )
             for reservation in page:
                 try:
-                    _ip, created, changed = sync_reservation_to_netbox(reservation, cleanup=False, lease_ips=lease_ips)
+                    _ip, created, changed = sync_reservation_to_netbox(
+                        reservation,
+                        cleanup=False,
+                        lease_ips=lease_ips,
+                        subnet_prefix_map=subnet_prefix_map,
+                        conflicts=conflicts,
+                    )
                     all_synced.append(reservation)
                     processed += 1
                     if created:
@@ -240,6 +260,7 @@ def _sync_server_reservations(
                         exc_info=True,
                     )
                     stats["errors"] += 1
+                    had_errors = True
             if next_from == 0 and next_source == 0:
                 break
             from_index = next_from
@@ -260,8 +281,11 @@ def _sync_server_reservations(
         stats["errors"] += 1
         return False
 
+    stats["conflicts"] = stats.get("conflicts", 0) + len(conflicts)
     logger.info("Server %s (v%s): synced %d reservations", server.name, version, processed)
-    return True
+    # Mirror the lease path: a per-row failure must not leave cleanup_safe=True,
+    # or stale cleanup runs with an incomplete keep-set and may delete live IPs.
+    return not had_errors
 
 
 def _sync_subnet_entry(
@@ -319,23 +343,12 @@ def _sync_subnet_entry(
                 stats["prefix_errors"] += 1
 
 
-def _sync_server_prefixes_and_ranges(
-    server: Server,
-    version: int,
-    *,
-    sync_prefixes: bool,
-    sync_ip_ranges: bool,
-    vrf=None,
-    stats: dict[str, int],
-) -> None:
-    """Fetch subnets from *server* for *version* and sync to NetBox Prefixes / IP Ranges.
+def _fetch_kea_subnets(server: Server, version: int) -> list[dict] | None:
+    """Fetch and merge the full subnet list (incl. shared-network subnets) via ``config-get``.
 
-    Calls ``config-get`` once per version to obtain the full subnet list
-    (including shared-network subnets).  For each subnet:
-    - When *sync_prefixes* is ``True``, calls :func:`.sync.sync_subnet_to_netbox_prefix`.
-    - When *sync_ip_ranges* is ``True``, calls :func:`.sync.sync_pool_to_netbox_ip_range`
-      for each pool entry in the subnet.
-    - *vrf* is forwarded to both sync functions (``None`` means global VRF).
+    Returns the list of subnet dicts on success (possibly empty), or ``None``
+    when the fetch or parse fails.  Does not touch ``stats`` — callers decide
+    how a ``None`` result affects error accounting for their phase.
     """
     service = f"dhcp{version}"
     dhcp_key = f"Dhcp{version}"
@@ -346,13 +359,11 @@ def _sync_server_prefixes_and_ranges(
         config = client.command("config-get", service=[service])
     except Exception as exc:  # noqa: BLE001
         logger.warning("Failed to fetch config-get from server %s (v%s): %s", server.name, version, exc)
-        stats["prefix_errors"] += 1
-        return
+        return None
 
     if not isinstance(config, list) or not config or not isinstance(config[0], dict):
         logger.warning("Malformed config-get response from server %s (v%s)", server.name, version)
-        stats["prefix_errors"] += 1
-        return
+        return None
 
     response = config[0]
     if response.get("result") != 0:
@@ -362,20 +373,17 @@ def _sync_server_prefixes_and_ranges(
             version,
             response.get("text", response),
         )
-        stats["prefix_errors"] += 1
-        return
+        return None
 
     raw_args = response.get("arguments") or {}
     if not isinstance(raw_args, dict):
         logger.warning("Malformed config-get arguments from server %s (v%s)", server.name, version)
-        stats["prefix_errors"] += 1
-        return
+        return None
 
     conf = raw_args.get(dhcp_key) or {}
     if not isinstance(conf, dict):
         logger.warning("Malformed %s config from server %s (v%s)", dhcp_key, server.name, version)
-        stats["prefix_errors"] += 1
-        return
+        return None
 
     raw_subnets = conf.get(subnet_key)
     subnets: list[dict] = [s for s in raw_subnets if isinstance(s, dict)] if isinstance(raw_subnets, list) else []
@@ -385,6 +393,55 @@ def _sync_server_prefixes_and_ranges(
         sn_subnets = sn.get(subnet_key)
         if isinstance(sn_subnets, list):
             subnets.extend(s for s in sn_subnets if isinstance(s, dict))
+
+    return subnets
+
+
+def _build_subnet_prefix_map(subnets: list[dict] | None) -> dict[int, int]:
+    """Map Kea ``subnet-id`` → prefix length from a list of subnet dicts.
+
+    This is the authoritative source for the mask of a lease/reservation IP:
+    the record's ``subnet-id`` points directly at the subnet it was allocated
+    from.  Subnets with a missing/unparseable id or CIDR are skipped.
+    """
+    from netaddr import AddrFormatError, IPNetwork
+
+    result: dict[int, int] = {}
+    for subnet in subnets or []:
+        sid = subnet.get("id")
+        cidr = subnet.get("subnet")
+        if sid is None or not cidr:
+            continue
+        try:
+            result[int(sid)] = IPNetwork(cidr).prefixlen
+        except (AddrFormatError, ValueError, TypeError):
+            continue
+    return result
+
+
+def _sync_server_prefixes_and_ranges(
+    server: Server,
+    version: int,
+    *,
+    subnets: list[dict] | None,
+    sync_prefixes: bool,
+    sync_ip_ranges: bool,
+    vrf=None,
+    stats: dict[str, int],
+) -> None:
+    """Sync a pre-fetched subnet list to NetBox Prefixes / IP Ranges.
+
+    *subnets* is the list returned by :func:`_fetch_kea_subnets` (``None`` when
+    the config fetch failed).  For each subnet:
+    - When *sync_prefixes* is ``True``, calls :func:`.sync.sync_subnet_to_netbox_prefix`.
+    - When *sync_ip_ranges* is ``True``, calls :func:`.sync.sync_pool_to_netbox_ip_range`
+      for each pool entry in the subnet.
+    - *vrf* is forwarded to both sync functions (``None`` means global VRF).
+    """
+    if subnets is None:
+        logger.warning("Server %s (v%s): skipping prefix/range sync — subnet fetch failed", server.name, version)
+        stats["prefix_errors"] += 1
+        return
 
     logger.info("Server %s (v%s): found %d subnets for prefix/range sync", server.name, version, len(subnets))
 
@@ -412,6 +469,27 @@ def _sync_one_server(
         if not enabled:
             continue
 
+        # Fetch the Kea subnet list once per version and derive the authoritative
+        # {subnet-id: prefix_len} map.  Each lease/reservation carries a subnet-id
+        # pointing at the subnet it was allocated from, so this is the definitive
+        # source for the IP mask (NetBox prefix matching is only a fallback).
+        subnets = (
+            _fetch_kea_subnets(server, version)
+            if any((sync_leases, sync_reservations, sync_prefixes, sync_ip_ranges))
+            else None
+        )
+        subnet_prefix_map = _build_subnet_prefix_map(subnets)
+
+        # If config-get failed but we're still syncing leases/reservations, masks
+        # degrade to NetBox prefix matching (then /32|/128). Surface that so an
+        # operator can tell why a mask looks wrong without it being a hard error.
+        if subnets is None and (sync_leases or sync_reservations):
+            logger.info(
+                "Server %s (v%s): config-get unavailable — lease/reservation masks fall back to NetBox prefix matching",
+                server.name,
+                version,
+            )
+
         # Two-pass idempotent sync: pre-fetch reservation IPs so the lease sync
         # can determine the correct final status without intermediate DB writes.
         # Only pre-fetch when both sources will be synced this run; otherwise
@@ -430,6 +508,7 @@ def _sync_one_server(
                 stats=stats,
                 all_synced=all_synced,
                 reservation_ips=pre_reservation_ips,
+                subnet_prefix_map=subnet_prefix_map,
             )
             lease_phase_ok = sync_ok
             cleanup_safe &= sync_ok
@@ -443,12 +522,14 @@ def _sync_one_server(
                 stats=stats,
                 all_synced=all_synced,
                 lease_ips=lease_ips_set if lease_phase_ok else None,
+                subnet_prefix_map=subnet_prefix_map,
             )
 
         if sync_prefixes or sync_ip_ranges:
             _sync_server_prefixes_and_ranges(
                 server,
                 version,
+                subnets=subnets,
                 sync_prefixes=sync_prefixes,
                 sync_ip_ranges=sync_ip_ranges,
                 vrf=server.sync_vrf,
@@ -612,7 +693,7 @@ class KeaIpamSyncJob(JobRunner):
                 return
 
             self.logger.info(f"Starting Kea IPAM sync for {len(servers)} server(s).")
-            total: dict[str, int] = {"created": 0, "updated": 0, "errors": 0, "prefix_errors": 0}
+            total: dict[str, int] = {"created": 0, "updated": 0, "errors": 0, "prefix_errors": 0, "conflicts": 0}
 
             for server in servers:
                 # In Run Now mode (server_pk provided), honour the explicit selection
@@ -628,7 +709,13 @@ class KeaIpamSyncJob(JobRunner):
                 effective_ip_ranges = sync_ip_ranges and server.sync_ip_ranges_enabled
 
                 self.logger.debug(f"Syncing server: {server.name} (pk={server.pk})")
-                server_stats: dict[str, int] = {"created": 0, "updated": 0, "errors": 0, "prefix_errors": 0}
+                server_stats: dict[str, int] = {
+                    "created": 0,
+                    "updated": 0,
+                    "errors": 0,
+                    "prefix_errors": 0,
+                    "conflicts": 0,
+                }
 
                 try:
                     _sync_one_server(
@@ -648,9 +735,10 @@ class KeaIpamSyncJob(JobRunner):
                     f"Server {server.name}: created={server_stats['created']}"
                     f" updated={server_stats['updated']} errors={server_stats['errors']}"
                     f" prefix_errors={server_stats['prefix_errors']}"
+                    f" conflicts={server_stats['conflicts']}"
                 )
                 for key in total:
-                    total[key] += server_stats[key]
+                    total[key] += server_stats.get(key, 0)
 
                 summary.append(
                     {
@@ -660,6 +748,7 @@ class KeaIpamSyncJob(JobRunner):
                         "updated": server_stats["updated"],
                         "errors": server_stats["errors"],
                         "prefix_errors": server_stats["prefix_errors"],
+                        "conflicts": server_stats["conflicts"],
                     }
                 )
 
@@ -667,6 +756,7 @@ class KeaIpamSyncJob(JobRunner):
                 f"Kea IPAM sync complete — servers={len(summary)}"
                 f" created={total['created']} updated={total['updated']}"
                 f" errors={total['errors']} prefix_errors={total['prefix_errors']}"
+                f" conflicts={total['conflicts']}"
             )
             if total["errors"] > 0 or total["prefix_errors"] > 0:
                 raise JobFailed()

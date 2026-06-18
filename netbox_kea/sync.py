@@ -71,6 +71,38 @@ def find_prefix_length(ip_str: str) -> int:
     return best_len if best_len >= 0 else default
 
 
+def _resolve_prefix_length(
+    ip_str: str,
+    subnet_id: int | str | None,
+    subnet_prefix_map: dict[int, int] | None,
+) -> int:
+    """Resolve the authoritative prefix length for a lease/reservation IP.
+
+    Resolution order:
+
+    1. The Kea subnet the record belongs to (via its ``subnet-id``) — this is
+       the definitive mask, since the IP is allocated from that exact subnet.
+    2. The longest containing NetBox Prefix (:func:`find_prefix_length`).
+    3. ``/32`` (IPv4) or ``/128`` (IPv6) when nothing else matches.
+
+    Preferring the Kea subnet avoids mis-masking when NetBox holds an unrelated
+    covering prefix (e.g. a ``/8`` but no ``/24``) or no prefix at all.
+    """
+    if subnet_prefix_map and subnet_id is not None:
+        # The map is int-keyed (see _build_subnet_prefix_map); a string-valued
+        # "subnet-id" from a Kea record must be normalized or it silently misses
+        # the authoritative mask and falls back to a (possibly wrong) NetBox/default.
+        try:
+            subnet_key = int(subnet_id)
+        except (TypeError, ValueError):
+            subnet_key = None
+        if subnet_key is not None:
+            plen = subnet_prefix_map.get(subnet_key)
+            if plen is not None:
+                return plen
+    return find_prefix_length(ip_str)
+
+
 def get_netbox_ip(ip_str: str) -> NbIPAddress | None:
     """Return the first NetBox IPAddress whose host portion matches *ip_str*.
 
@@ -310,13 +342,63 @@ def _sync_mac_address(hw_address: str, hostname: str = "") -> None:
         logger.debug("Failed to sync MAC address %s to NetBox DCIM", hw_address, exc_info=True)
 
 
+_KEA_DESC_PREFIX = "Synced from Kea DHCP"
+
+
+def _is_kea_managed_description(description: str | None) -> bool:
+    """Return ``True`` when *description* is safe for the sync to overwrite.
+
+    A description is Kea-managed when it is empty (the IP is being adopted this
+    run) or starts with ``"Synced from Kea DHCP"``.  Manually-curated
+    descriptions are left untouched.
+    """
+    return not description or description.startswith(_KEA_DESC_PREFIX)
+
+
+def is_kea_managed_ip(ip_obj: NbIPAddress) -> bool:
+    """Return ``True`` when *ip_obj* is safe for the sync to claim/overwrite.
+
+    A NetBox IP is *Kea-managed* when its ``description`` is blank or starts
+    with ``"Synced from Kea DHCP"`` (see :func:`_is_kea_managed_description`).
+    Any other description marks the IP as a manually-curated ("foreign") entry
+    that an unattended (bulk / background) sync must not overwrite unless
+    explicitly forced.
+    """
+    return _is_kea_managed_description(getattr(ip_obj, "description", "") or "")
+
+
+def _status_description(status: str) -> str:
+    """Return the Kea-sync description that matches the semantic *status*.
+
+    - ``dhcp``     → dynamic lease, no reservation
+    - ``reserved`` → reservation only, no active lease
+    - ``active``   → both an active lease and a reservation
+    """
+    if status == "dhcp":
+        return f"{_KEA_DESC_PREFIX} lease"
+    if status == "active":
+        return f"{_KEA_DESC_PREFIX} lease + reservation"
+    return f"{_KEA_DESC_PREFIX} reservation"  # "reserved"
+
+
 def _apply_ip_fields(
     ip_obj: NbIPAddress,
     status: str,
     hostname: str,
-    description: str,
+    *,
+    claim: bool = False,
 ) -> bool:
-    """Apply *status*, *hostname* (dns_name), and *description* to *ip_obj*.
+    """Apply *status*, *hostname* (dns_name), and a status-derived description to *ip_obj*.
+
+    The description is derived from *status* via :func:`_status_description` and
+    self-heals on every run for Kea-managed IPs — so an IP first created from a
+    lease but later (also) reserved no longer stays labelled ``"... lease"``.
+
+    When *claim* is ``True`` (an explicit forced sync), the Kea-managed description
+    is written even over a foreign (manually-curated) one — so the override is
+    *sticky*: :func:`is_kea_managed_ip` returns ``True`` afterwards and the next
+    unattended sync updates the IP normally instead of re-reporting it as a
+    conflict. When ``False`` (default), a foreign description is preserved.
 
     Returns ``True`` when any field was changed and the object should be saved.
     """
@@ -332,11 +414,32 @@ def _apply_ip_fields(
         ip_obj.dns_name = hostname
         changed = True
 
-    if not ip_obj.description:
+    description = _status_description(status)
+    if (claim or _is_kea_managed_description(ip_obj.description)) and ip_obj.description != description:
         ip_obj.description = description
         changed = True
 
     return changed
+
+
+def _apply_ip_mask(ip_obj: NbIPAddress, ip_str: str, prefix_len: int, *, force: bool = False) -> bool:
+    """Correct a Kea-synced IP's prefix length to *prefix_len*.
+
+    Only rewrites the mask when the IP is Kea-managed (see
+    :func:`_is_kea_managed_description`) — unless *force* is ``True`` (an explicit
+    forced sync claiming the IP), in which case the mask is corrected regardless.
+    Manually-curated IPs are otherwise left untouched.  This is what fixes legacy
+    rows that were stored as ``/32`` before the authoritative Kea subnet mask was used.
+
+    Returns ``True`` when the address was changed.
+    """
+    desired = f"{ip_str}/{prefix_len}"
+    if str(ip_obj.address) == desired:
+        return False
+    if not force and not _is_kea_managed_description(ip_obj.description):
+        return False
+    ip_obj.address = desired
+    return True
 
 
 def sync_lease_to_netbox(
@@ -344,12 +447,18 @@ def sync_lease_to_netbox(
     *,
     cleanup: bool = True,
     reservation_ips: frozenset[str] | None = None,
+    subnet_prefix_map: dict[int, int] | None = None,
+    force: bool = False,
+    conflicts: list[str] | None = None,
 ) -> tuple[NbIPAddress, bool, bool]:
     """Create or update a NetBox IPAddress from a Kea lease dictionary.
 
-    The ``status`` is set to ``"active"`` and ``dns_name`` to the lease
-    hostname.  When a matching NetBox prefix exists the correct prefix length
-    is used; otherwise ``/32`` (IPv4) or ``/128`` (IPv6) is used.
+    The ``status`` is ``"dhcp"`` (or ``"active"`` when the IP also has a
+    reservation) and ``dns_name`` is set to the lease hostname.  The description
+    self-heals to match the status (see :func:`_status_description`).  The prefix
+    length is resolved by :func:`_resolve_prefix_length` — the Kea subnet (via
+    ``subnet-id`` + *subnet_prefix_map*) is authoritative, falling back to the
+    longest matching NetBox prefix, then ``/32`` / ``/128``.
 
     Also creates/updates a ``MACAddress`` entry in DCIM when the lease
     includes a ``hw-address`` field (NetBox ≥ 4.1 only; silently skipped on
@@ -366,6 +475,17 @@ def sync_lease_to_netbox(
                           enables two-pass idempotent status computation — ``"active"``
                           if the IP also has a reservation, ``"dhcp"`` otherwise.
                           Pass ``None`` (default) to use single-pass fallback mode.
+        subnet_prefix_map: Optional ``{subnet-id: prefix_len}`` map built from the
+                          Kea config.  Used to resolve the authoritative mask and
+                          to correct legacy ``/32`` rows on existing Kea-synced IPs.
+        force:            When ``False`` (default) and the existing NetBox IP is
+                          *foreign* (manually curated — see :func:`is_kea_managed_ip`),
+                          the IP is left untouched and ``(ip_obj, False, False)`` is
+                          returned.  Set ``True`` for explicit single-record syncs
+                          (e.g. the per-row Sync button) to override the guard.
+        conflicts:        Optional list accumulator.  When provided, each foreign IP
+                          skipped because ``force`` is ``False`` is appended so callers
+                          (bulk views / background job) can report a conflict count.
 
     Returns ``(ip_object, created, changed)`` where *created* is ``True`` on
     the first call for a given IP and *changed* is ``True`` when any field was
@@ -376,24 +496,35 @@ def sync_lease_to_netbox(
 
     ip_str: str = lease["ip-address"]
     hostname: str = lease.get("hostname", "")
+    subnet_id = lease.get("subnet-id")
+    prefix_len = _resolve_prefix_length(ip_str, subnet_id, subnet_prefix_map)
 
     ip_obj = get_netbox_ip(ip_str)
     if ip_obj is None:
-        prefix_len = find_prefix_length(ip_str)
         ip_obj = NbIP(address=f"{ip_str}/{prefix_len}")
         created = True
         current_status = None
     else:
         created = False
         current_status = ip_obj.status
+        # Protect manually-curated NetBox IPs from unattended overwrites.
+        if not force and not is_kea_managed_ip(ip_obj):
+            logger.debug(
+                "Skipping foreign NetBox IP %s (description=%r) — not Kea-managed; pass force=True to override",
+                ip_str,
+                ip_obj.description,
+            )
+            if conflicts is not None:
+                conflicts.append(ip_str)
+            return ip_obj, False, False
 
     status = _compute_ip_status("lease", current_status, ip_str=ip_str, other_source_ips=reservation_ips)
-    changed = _apply_ip_fields(
-        ip_obj,
-        status=status,
-        hostname=hostname,
-        description="Synced from Kea DHCP lease",
-    )
+    changed = _apply_ip_fields(ip_obj, status=status, hostname=hostname, claim=force)
+
+    # Correct the mask on existing Kea-synced IPs (e.g. a legacy /32 that should
+    # be /24) from the authoritative Kea subnet prefix length.
+    if not created and _apply_ip_mask(ip_obj, ip_str, prefix_len, force=force):
+        changed = True
 
     if created or changed:
         ip_obj.save()
@@ -415,6 +546,9 @@ def sync_reservation_to_netbox(
     *,
     cleanup: bool = True,
     lease_ips: frozenset[str] | None = None,
+    subnet_prefix_map: dict[int, int] | None = None,
+    force: bool = False,
+    conflicts: list[str] | None = None,
 ) -> tuple[NbIPAddress, bool, bool]:
     """Create or update a NetBox IPAddress from a Kea reservation dictionary.
 
@@ -436,6 +570,17 @@ def sync_reservation_to_netbox(
                      status computation — ``"active"`` if the IP also has a lease,
                      ``"reserved"`` otherwise.  Pass ``None`` (default) to use
                      single-pass fallback mode.
+        subnet_prefix_map: Optional ``{subnet-id: prefix_len}`` map built from the
+                     Kea config.  Used to resolve the authoritative mask and to
+                     correct legacy ``/32`` rows on existing Kea-synced IPs.
+        force:       When ``False`` (default), any address whose existing NetBox IP
+                     is *foreign* (manually curated — see :func:`is_kea_managed_ip`)
+                     is skipped and left untouched; sibling addresses in the same
+                     reservation are still synced.  Set ``True`` for explicit
+                     single-record syncs (e.g. the per-row Sync button) to override.
+        conflicts:   Optional list accumulator.  When provided, each foreign address
+                     skipped because ``force`` is ``False`` is appended so callers
+                     (bulk views / background job) can report a conflict count.
 
     Raises ``ValueError`` when the reservation contains no IP address.
 
@@ -451,6 +596,7 @@ def sync_reservation_to_netbox(
         raise ValueError("Reservation has no ip-address or ip-addresses field.")
 
     hostname: str = reservation.get("hostname", "")
+    subnet_id = reservation.get("subnet-id")
     all_ips: list[str] = [primary_ip]
     if "ip-addresses" in reservation and len(reservation["ip-addresses"]) > 1:
         all_ips = reservation["ip-addresses"]
@@ -460,23 +606,41 @@ def sync_reservation_to_netbox(
     any_changed = False
 
     for ip_str in all_ips:
+        prefix_len = _resolve_prefix_length(ip_str, subnet_id, subnet_prefix_map)
         ip_obj = get_netbox_ip(ip_str)
         if ip_obj is None:
-            prefix_len = find_prefix_length(ip_str)
             ip_obj = NbIP(address=f"{ip_str}/{prefix_len}")
             created = True
             current_status = None
         else:
             created = False
             current_status = ip_obj.status
+            # Protect manually-curated NetBox IPs from unattended overwrites.
+            # Skip just this address; sibling addresses are still processed.
+            if not force and not is_kea_managed_ip(ip_obj):
+                logger.debug(
+                    "Skipping foreign NetBox IP %s (description=%r) — not Kea-managed; pass force=True to override",
+                    ip_str,
+                    ip_obj.description,
+                )
+                if conflicts is not None:
+                    conflicts.append(ip_str)
+                # Expose the (untouched) foreign object as the primary handle when no
+                # managed address has been seen yet. NOTE: if a *later* sibling is
+                # managed and synced, the returned primary still points at this skipped
+                # conflict — callers consume created/changed/conflicts, not the returned
+                # object (force=True callers never reach this branch), so this is fine.
+                if primary_obj is None:
+                    primary_obj = ip_obj
+                continue
 
         status = _compute_ip_status("reservation", current_status, ip_str=ip_str, other_source_ips=lease_ips)
-        changed = _apply_ip_fields(
-            ip_obj,
-            status=status,
-            hostname=hostname,
-            description="Synced from Kea DHCP reservation",
-        )
+        changed = _apply_ip_fields(ip_obj, status=status, hostname=hostname, claim=force)
+
+        # Correct the mask on existing Kea-synced IPs from the authoritative
+        # Kea subnet prefix length (fixes legacy /32 rows).
+        if not created and _apply_ip_mask(ip_obj, ip_str, prefix_len, force=force):
+            changed = True
 
         if created or changed:
             ip_obj.save()

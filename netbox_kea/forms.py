@@ -209,6 +209,18 @@ class BaseLeasesSarchForm(forms.Form):
         choices=constants.LEASE_STATE_CHOICES,
         help_text="Filter results by lease state.",
     )
+    # Visual order: Search value, State, Attribute selector.
+    field_order = ["q", "state", "by"]
+
+    def __init__(self, *args, subnet_choices: list[tuple[str, int | None]] | None = None, **kwargs) -> None:
+        """Stash the configured-subnet list so the template can build the Search combobox.
+
+        The choices drive an editable ``<datalist>`` on the Search field (``q``)
+        that the template wires up only when the selected attribute is *Subnet*
+        or *Subnet ID* — there is no separate subnet selector field.
+        """
+        super().__init__(*args, **kwargs)
+        self.subnet_choices: list[tuple[str, int | None]] = subnet_choices or []
 
     def clean(self) -> dict[str, Any] | None:
         """Validate and normalise search fields according to the selected search type."""
@@ -968,7 +980,11 @@ class SubnetOptionsForm(forms.Form):
 
     name = forms.CharField(
         max_length=128,
-        help_text="Kea option name (e.g. routers, domain-name-servers).",
+        help_text="Kea option name (e.g. routers, domain-name-servers). Pick a standard option or type any name.",
+        # `list` links the input to the <datalist id="kea-option-names"> rendered
+        # by the {% kea_option_datalist %} tag — an editable combobox: standard
+        # options are suggested while free-form names remain allowed.
+        widget=forms.TextInput(attrs={"list": "kea-option-names", "autocomplete": "off"}),
     )
     data = forms.CharField(
         max_length=512,

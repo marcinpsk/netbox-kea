@@ -94,7 +94,8 @@ class ServerLease4SyncView(_BaseSyncView):
     def _sync(self, data: dict):
         from ..sync import sync_lease_to_netbox
 
-        return sync_lease_to_netbox(data)
+        # Per-row Sync button = explicit user intent → override foreign-IP guard.
+        return sync_lease_to_netbox(data, force=True)
 
 
 class ServerLease6SyncView(_BaseSyncView):
@@ -112,7 +113,8 @@ class ServerLease6SyncView(_BaseSyncView):
     def _sync(self, data: dict):
         from ..sync import sync_lease_to_netbox
 
-        return sync_lease_to_netbox(data)
+        # Per-row Sync button = explicit user intent → override foreign-IP guard.
+        return sync_lease_to_netbox(data, force=True)
 
 
 class ServerReservation4SyncView(_BaseSyncView):
@@ -130,7 +132,8 @@ class ServerReservation4SyncView(_BaseSyncView):
     def _sync(self, data: dict):
         from ..sync import sync_reservation_to_netbox
 
-        return sync_reservation_to_netbox(data, cleanup=False)
+        # Per-row Sync button = explicit user intent → override foreign-IP guard.
+        return sync_reservation_to_netbox(data, cleanup=False, force=True)
 
 
 class ServerReservation6SyncView(_BaseSyncView):
@@ -148,7 +151,8 @@ class ServerReservation6SyncView(_BaseSyncView):
     def _sync(self, data: dict):
         from ..sync import sync_reservation_to_netbox
 
-        return sync_reservation_to_netbox(data, cleanup=False)
+        # Per-row Sync button = explicit user intent → override foreign-IP guard.
+        return sync_reservation_to_netbox(data, cleanup=False, force=True)
 
 
 class _BaseBulkReservationSyncView(ConditionalLoginRequiredMixin, View):
@@ -180,11 +184,13 @@ class _BaseBulkReservationSyncView(ConditionalLoginRequiredMixin, View):
 
         created = updated = errors = 0
         synced_records: list[dict] = []
+        # Foreign (manually-curated) NetBox IPs skipped to avoid overwriting them.
+        conflicts: list[str] = []
         for res in reservations:
             if not res.get("ip-address") and not res.get("ip-addresses"):
                 continue
             try:
-                nb_ip, was_created, was_changed = sync_reservation_to_netbox(res, cleanup=False)
+                nb_ip, was_created, was_changed = sync_reservation_to_netbox(res, cleanup=False, conflicts=conflicts)
                 synced_records.append(res)
                 if was_created:
                     created += 1
@@ -194,6 +200,7 @@ class _BaseBulkReservationSyncView(ConditionalLoginRequiredMixin, View):
                 ip_log = res.get("ip-address") or ", ".join(res.get("ip-addresses") or []) or "unknown"
                 logger.exception("Failed to sync reservation %s", ip_log)
                 errors += 1
+        conflicts_skipped = len(conflicts)
 
         # Run stale-IP cleanup once per hostname with the full keep-set
         # to prevent false positives when multiple records share a hostname.
@@ -203,10 +210,17 @@ class _BaseBulkReservationSyncView(ConditionalLoginRequiredMixin, View):
             stale_cleaned = cleanup_stale_ips_batch(synced_records)
 
         stale_msg = f", {stale_cleaned} stale cleaned" if stale_cleaned else ""
+        conflict_msg = f", {conflicts_skipped} conflicts skipped" if conflicts_skipped else ""
         if errors:
             messages.warning(
                 request,
-                f"Bulk sync: {created} created, {updated} updated, {errors} errors{stale_msg}.",
+                f"Bulk sync: {created} created, {updated} updated, {errors} errors{conflict_msg}{stale_msg}.",
+            )
+        elif conflicts_skipped:
+            messages.warning(
+                request,
+                f"Bulk sync complete: {created} created, {updated} updated, "
+                f"{conflicts_skipped} conflicts skipped{stale_msg}.",
             )
         else:
             messages.success(
@@ -230,6 +244,53 @@ class ServerReservation6BulkSyncView(_BaseBulkReservationSyncView):
     """Bulk sync all DHCPv6 reservations to NetBox IPAM."""
 
     dhcp_version = 6
+
+
+class ReservationCheckNetboxIPView(ConditionalLoginRequiredMixin, View):
+    """Advisory GET endpoint: report whether *ip* already exists in NetBox IPAM.
+
+    Used by the reservation **Add** form to warn (without blocking) when the IP
+    the user is entering already exists in NetBox — especially when it is a
+    *foreign* (manually-curated) entry that a sync would overwrite.
+
+    Server-scoped via ``pk`` so the existing ``Server`` view permission applies.
+    Returns an empty body when the ``ip`` query param is missing/invalid or the
+    IP is not present in NetBox; otherwise renders an advisory HTML fragment.
+    """
+
+    def get(self, request: HttpRequest, pk: int) -> HttpResponse:
+        """Look up *ip* in NetBox IPAM and return an advisory fragment (or empty body)."""
+        # Scope to a viewable server so anonymous/unauthorised probes can't
+        # enumerate NetBox IPAM through this endpoint.
+        get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
+
+        raw_ip = (request.GET.get("ip") or "").strip()
+        if not raw_ip:
+            return HttpResponse("")
+        try:
+            # Canonicalize before the DB lookup: non-canonical forms (especially
+            # IPv6 case/zero-compression variants) would otherwise miss the stored
+            # canonical record and suppress the conflict advisory.
+            ip_str = str(IPAddress(raw_ip))
+        except (AddrFormatError, ValueError):
+            return HttpResponse("")
+
+        from ipam.models import IPAddress as NbIP
+
+        from ..sync import is_kea_managed_ip
+
+        # Scope the lookup to IPs this user may view so the advisory never leaks an
+        # IP's status/description/assignment to someone without IPAM access. Mirrors
+        # get_netbox_ip()'s host match but adds NetBox object-level permission filtering.
+        nb_ip = NbIP.objects.restrict(request.user, "view").filter(address__startswith=f"{ip_str}/").first()
+        if nb_ip is None:
+            return HttpResponse("")
+
+        return render(
+            request,
+            "netbox_kea/inc/reservation_ip_check.html",
+            {"nb_ip": nb_ip, "kea_managed": is_kea_managed_ip(nb_ip)},
+        )
 
 
 # ─────────────────────────────────────────────────────────────────────────────

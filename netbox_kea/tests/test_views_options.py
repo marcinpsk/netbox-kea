@@ -518,13 +518,13 @@ class TestServerOptionDef6ListView(_ViewTestBase):
 
     @patch("netbox_kea.models.KeaClient")
     def test_get_sets_tab_in_context(self, MockKeaClient):
-        """F2: GET response must include 'tab' in context for tab bar highlighting."""
-        from netbox_kea.views import ServerOptionDef6View
+        """F2: option definitions render under the shared 'Config' tab."""
+        from netbox_kea.views.options import _CONFIG_TAB
 
         MockKeaClient.return_value.option_def_list.return_value = []
         response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
-        self.assertIs(response.context["tab"], ServerOptionDef6View.tab)
+        self.assertIs(response.context["tab"], _CONFIG_TAB)
 
 
 # ---------------------------------------------------------------------------
