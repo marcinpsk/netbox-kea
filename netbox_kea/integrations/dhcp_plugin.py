@@ -29,6 +29,9 @@ v1 scope (import + diff, read-only against Kea):
   these fully defaulted and inherited, so each subnet field is stored **only when
   it differs from the DHCPServer parent** (parent-diff suppression) — otherwise it
   is left blank to inherit, keeping the records minimal and faithful.
+* **Client classes** (``client-classes``) are imported as ``ClientClass`` rows
+  (test/template-test, additional-list flag, BOOTP + lifetime settings, options),
+  named ``"<server>: <kea-name>"`` since the plugin requires a globally-unique name.
 * **Deferred** (reported, not imported): shared-network grouping (the plugin's
   ``SharedNetwork`` requires a prefix Kea does not model — member subnets are
   flattened onto the ``DHCPServer``).
@@ -42,6 +45,7 @@ from dataclasses import dataclass, field
 from django.apps import apps
 
 from ..mappers.kea_to_dhcp import (
+    ClientClassIntent,
     OptionDefIntent,
     OptionIntent,
     ReservationIntent,
@@ -72,6 +76,8 @@ class ImportSummary:
     options_updated: int = 0
     options_skipped: int = 0
     option_defs_created: int = 0
+    client_classes_created: int = 0
+    client_classes_updated: int = 0
     shared_networks_deferred: int = 0
     errors: int = 0
     warnings: list[str] = field(default_factory=list)
@@ -472,25 +478,27 @@ def _apply_global_settings(dhcp_server, settings: dict, summary: ImportSummary) 
             summary.warn(f"DHCPServer settings: {exc}")
 
 
-def _apply_subnet_settings(subnet_obj, dhcp_server, settings: dict, summary: ImportSummary) -> bool:
-    """Set subnet tuning fields only where they differ from the stored DHCPServer parent.
+def _apply_inherited_settings(obj, parent, settings: dict, field_map, summary: ImportSummary) -> bool:
+    """Set *obj* tuning fields only where they differ from the stored *parent*.
 
     This is the parent-diff suppression: ``config-get`` returns every value fully
-    inherited, so a subnet value equal to the server's is left blank (it inherits).
-    Returns ``True`` if any field on *subnet_obj* changed.
+    inherited, so a child value equal to its parent's is left blank (it inherits).
+    The ``model_fields`` guard skips fields *obj* does not have, so a single field
+    map can serve models with different mixins (e.g. ``Subnet`` vs ``ClientClass``).
+    Returns ``True`` if any field on *obj* changed.
     """
-    model_fields = {f.name for f in subnet_obj._meta.get_fields()}
+    model_fields = {f.name for f in obj._meta.get_fields()}
     changed = False
-    for kea_key, attr, transform in _SUBNET_FIELDS:
+    for kea_key, attr, transform in field_map:
         if attr not in model_fields or kea_key not in settings:
             continue
         value = _transform_value(transform, settings[kea_key], kea_key, summary)
         if _is_unset(value):
             continue
-        if value == getattr(dhcp_server, attr, None):
-            continue  # inherited from the DHCPServer parent — leave blank
-        if getattr(subnet_obj, attr, None) != value:
-            setattr(subnet_obj, attr, value)
+        if value == getattr(parent, attr, None):
+            continue  # inherited from the parent — leave blank
+        if getattr(obj, attr, None) != value:
+            setattr(obj, attr, value)
             changed = True
     return changed
 
@@ -507,6 +515,53 @@ def upsert_dhcp_server(server):
         name=server.name,
         defaults={"description": "Imported from Kea by netbox-kea"},
     )
+    return obj
+
+
+def _client_class_name(server, kea_name: str) -> str:
+    """Namespace a Kea class name to this server (NetBoxDHCPModelMixin needs a unique name)."""
+    return f"{server.name}: {kea_name}"[:255]
+
+
+def upsert_client_class(server, dhcp_server, intent: ClientClassIntent, custom_defs, summary: ImportSummary):
+    """Get/create the DHCP-plugin ``ClientClass`` for *intent* (match by namespaced name)."""
+    ClientClass = _model("ClientClass")
+    cc_name = _client_class_name(server, intent.name)
+    obj = ClientClass.objects.filter(name=cc_name).first()
+    created = obj is None
+    if obj is None:
+        obj = ClientClass(name=cc_name, dhcp_server=dhcp_server)
+
+    changed = created
+    if obj.dhcp_server_id != dhcp_server.pk:
+        obj.dhcp_server = dhcp_server
+        changed = True
+    if obj.test != (intent.test or ""):
+        obj.test = intent.test or ""
+        changed = True
+    if obj.template_test != (intent.template_test or ""):
+        obj.template_test = intent.template_test or ""
+        changed = True
+    if intent.only_in_additional_list is not None and obj.only_in_additional_list != intent.only_in_additional_list:
+        obj.only_in_additional_list = intent.only_in_additional_list
+        changed = True
+    if _apply_inherited_settings(obj, dhcp_server, intent.settings, _COMMON_FIELDS, summary):
+        changed = True
+
+    try:
+        if changed:
+            obj.save()
+    except Exception as exc:  # noqa: BLE001 — one bad class must not abort the import
+        summary.errors += 1
+        summary.warn(f"client-class {intent.name}: {exc}")
+        return None
+
+    if created:
+        summary.client_classes_created += 1
+    elif changed:
+        summary.client_classes_updated += 1
+
+    upsert_options(obj, intent.options, intent.family, dhcp_server, custom_defs, summary)
     return obj
 
 
@@ -560,7 +615,7 @@ def upsert_subnet(server, dhcp_server, intent: SubnetIntent, summary: ImportSumm
                 existing.dhcp_server = dhcp_server
                 existing.shared_network = None
                 changed = True
-            if _apply_subnet_settings(existing, dhcp_server, intent.settings, summary):
+            if _apply_inherited_settings(existing, dhcp_server, intent.settings, _SUBNET_FIELDS, summary):
                 changed = True
             if changed:
                 existing.save()
@@ -574,7 +629,7 @@ def upsert_subnet(server, dhcp_server, intent: SubnetIntent, summary: ImportSumm
                 dhcp_server=dhcp_server,
                 shared_network=None,
             )
-            _apply_subnet_settings(subnet_obj, dhcp_server, intent.settings, summary)
+            _apply_inherited_settings(subnet_obj, dhcp_server, intent.settings, _SUBNET_FIELDS, summary)
             subnet_obj.save()
             summary.subnets_created += 1
             if intent.kea_subnet_id is not None:
@@ -691,9 +746,11 @@ def import_server_config(server, config: ServerConfigIntent) -> ImportSummary:
     dhcp_server = upsert_dhcp_server(server)
     custom_defs = _custom_def_index(config)
 
-    # Global (server-level) tuning fields + options.
+    # Global (server-level) tuning fields + options + client classes.
     _apply_global_settings(dhcp_server, config.global_settings, summary)
     upsert_options(dhcp_server, config.global_options, config.family, dhcp_server, custom_defs, summary)
+    for cc_intent in config.client_classes:
+        upsert_client_class(server, dhcp_server, cc_intent, custom_defs, summary)
 
     for subnet_intent in config.subnets:
         subnet_obj = upsert_subnet(server, dhcp_server, subnet_intent, summary)

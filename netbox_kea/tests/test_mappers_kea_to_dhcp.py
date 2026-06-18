@@ -344,6 +344,48 @@ class TestParseDhcpConfigSettings(SimpleTestCase):
         self.assertEqual(result.subnets[0].settings, {})
 
 
+class TestParseDhcpConfigClientClasses(SimpleTestCase):
+    """Kea ``client-classes`` are parsed into ClientClassIntent."""
+
+    def test_client_class_parsed(self):
+        conf = {
+            "client-classes": [
+                {
+                    "name": "voip",
+                    "test": "substring(option[60].hex,0,6) == 'Aastra'",
+                    "next-server": "192.0.2.254",
+                    "boot-file-name": "/dev/null",
+                    "server-hostname": "hal9000",
+                    "option-data": [{"code": 3, "data": "10.0.0.1", "space": "dhcp4"}],
+                }
+            ],
+            "subnet4": [],
+        }
+        cc = parse_dhcp_config(conf, 4).client_classes[0]
+        self.assertEqual(cc.name, "voip")
+        self.assertEqual(cc.family, 4)
+        self.assertEqual(cc.test, "substring(option[60].hex,0,6) == 'Aastra'")
+        self.assertEqual(cc.settings["next-server"], "192.0.2.254")
+        self.assertEqual(cc.settings["boot-file-name"], "/dev/null")
+        self.assertEqual(cc.options[0].code, 3)
+
+    def test_only_if_required_falls_back_to_additional_list(self):
+        conf = {"client-classes": [{"name": "c1", "only-if-required": True}]}
+        self.assertIs(parse_dhcp_config(conf, 4).client_classes[0].only_in_additional_list, True)
+
+    def test_only_in_additional_list_preferred(self):
+        conf = {"client-classes": [{"name": "c1", "only-in-additional-list": True, "only-if-required": False}]}
+        self.assertIs(parse_dhcp_config(conf, 4).client_classes[0].only_in_additional_list, True)
+
+    def test_class_without_name_and_non_dict_skipped(self):
+        conf = {"client-classes": [{"test": "x"}, "garbage", None, {"name": "ok"}]}
+        ccs = parse_dhcp_config(conf, 4).client_classes
+        self.assertEqual([c.name for c in ccs], ["ok"])
+
+    def test_no_client_classes_yields_empty(self):
+        self.assertEqual(parse_dhcp_config({"subnet4": []}, 4).client_classes, [])
+
+
 class TestParseDhcpConfigRobustness(SimpleTestCase):
     def test_subnet_without_cidr_is_skipped(self):
         conf = {"subnet4": [{"id": 1}, {"id": 2, "subnet": "10.0.0.0/24"}]}

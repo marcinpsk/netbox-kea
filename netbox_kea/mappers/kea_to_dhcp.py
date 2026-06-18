@@ -207,6 +207,19 @@ class SharedNetworkIntent:
     options: tuple[OptionIntent, ...]
 
 
+@dataclass(frozen=True)
+class ClientClassIntent:
+    """A Kea client-class (classification rule + per-class settings/options)."""
+
+    name: str
+    family: int
+    test: str
+    template_test: str
+    only_in_additional_list: bool | None
+    options: tuple[OptionIntent, ...]
+    settings: dict = field(default_factory=dict)
+
+
 @dataclass
 class ServerConfigIntent:
     """Everything importable from one ``(server, family)`` Kea config block."""
@@ -214,6 +227,7 @@ class ServerConfigIntent:
     family: int
     shared_networks: list[SharedNetworkIntent] = field(default_factory=list)
     subnets: list[SubnetIntent] = field(default_factory=list)
+    client_classes: list[ClientClassIntent] = field(default_factory=list)
     global_options: tuple[OptionIntent, ...] = ()
     option_defs: tuple[OptionDefIntent, ...] = ()
     global_settings: dict = field(default_factory=dict)
@@ -348,6 +362,28 @@ def _subnet_intent(raw: dict, family: int, shared_network: str | None) -> Subnet
     )
 
 
+def _client_class_intent(raw: dict, family: int) -> ClientClassIntent | None:
+    """Normalize one Kea ``client-classes`` entry; return ``None`` if unusable."""
+    if not isinstance(raw, dict):
+        return None
+    name = raw.get("name")
+    if not name:
+        return None
+    # Kea renamed ``only-if-required`` → ``only-in-additional-list`` (2.7.4); accept either.
+    only = raw.get("only-in-additional-list")
+    if only is None:
+        only = raw.get("only-if-required")
+    return ClientClassIntent(
+        name=name,
+        family=family,
+        test=raw.get("test", "") or "",
+        template_test=raw.get("template-test", "") or "",
+        only_in_additional_list=only,
+        options=_options(raw.get("option-data")),
+        settings=_settings(raw),
+    )
+
+
 def parse_dhcp_config(conf: dict, version: int) -> ServerConfigIntent:
     """Parse a Kea ``Dhcp4``/``Dhcp6`` config block into a :class:`ServerConfigIntent`.
 
@@ -368,6 +404,11 @@ def parse_dhcp_config(conf: dict, version: int) -> ServerConfigIntent:
     result.global_options = _options(conf.get("option-data"))
     result.option_defs = _option_defs(conf.get("option-def"))
     result.global_settings = _settings(conf)
+
+    for raw_cc in conf.get("client-classes") or []:
+        cc = _client_class_intent(raw_cc, family)
+        if cc is not None:
+            result.client_classes.append(cc)
 
     for raw in conf.get(subnet_key) or []:
         subnet = _subnet_intent(raw, family, shared_network=None)

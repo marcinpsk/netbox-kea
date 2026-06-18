@@ -403,6 +403,88 @@ class DhcpPluginTuningImportTest(TestCase):
 
 @tag("dhcp_plugin")
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class DhcpPluginClientClassImportTest(TestCase):
+    """Importing Kea ``client-classes`` into netbox_dhcp ``ClientClass`` rows."""
+
+    @classmethod
+    def setUpClass(cls):
+        if not apps.is_installed(DHCP_PLUGIN):
+            raise cls.skipException(f"{DHCP_PLUGIN} not installed")
+        super().setUpClass()
+
+    def setUp(self):
+        self.server = _make_db_server(name=f"kea-cc-{timezone.now().timestamp()}")
+        from netbox_kea.integrations import dhcp_plugin
+
+        self.adapter = dhcp_plugin
+
+    def _conf(self):
+        return {
+            "next-server": "0.0.0.0",
+            "client-classes": [
+                {
+                    "name": "voip",
+                    "test": "substring(option[60].hex,0,6) == 'Aastra'",
+                    "next-server": "192.0.2.254",
+                    "boot-file-name": "/dev/null",
+                    "server-hostname": "hal9000",
+                    "option-data": [{"code": 3, "name": "routers", "data": "10.0.0.1", "space": "dhcp4"}],
+                }
+            ],
+            "subnet4": [],
+        }
+
+    def test_client_class_created_with_settings_and_options(self):
+        from django.contrib.contenttypes.models import ContentType
+
+        ClientClass = apps.get_model(DHCP_PLUGIN, "ClientClass")
+        Option = apps.get_model(DHCP_PLUGIN, "Option")
+        DHCPServer = apps.get_model(DHCP_PLUGIN, "DHCPServer")
+
+        summary = self.adapter.import_server_config(self.server, parse_dhcp_config(self._conf(), 4))
+        self.assertEqual(summary.errors, 0, summary.warnings)
+        self.assertEqual(summary.client_classes_created, 1)
+        self.assertEqual(summary.options_created, 1)  # the class's routers option
+
+        cc = ClientClass.objects.get(name=f"{self.server.name}: voip")
+        self.assertEqual(cc.dhcp_server, DHCPServer.objects.get(name=self.server.name))
+        self.assertEqual(cc.test, "substring(option[60].hex,0,6) == 'Aastra'")
+        # BOOTP settings differ from the server baseline → stored on the class.
+        self.assertEqual(cc.next_server, "192.0.2.254")
+        self.assertEqual(cc.boot_file_name, "/dev/null")
+        self.assertEqual(cc.server_hostname, "hal9000")
+        # The class's option was imported and assigned to the ClientClass.
+        ct = ContentType.objects.get_for_model(ClientClass)
+        self.assertTrue(Option.objects.filter(assigned_object_type=ct, assigned_object_id=cc.pk).exists())
+
+    def test_client_class_name_is_namespaced_to_server(self):
+        ClientClass = apps.get_model(DHCP_PLUGIN, "ClientClass")
+        self.adapter.import_server_config(self.server, parse_dhcp_config(self._conf(), 4))
+        # Namespaced so two servers' identically-named Kea classes don't collide.
+        self.assertTrue(ClientClass.objects.filter(name=f"{self.server.name}: voip").exists())
+        self.assertFalse(ClientClass.objects.filter(name="voip").exists())
+
+    def test_reimport_is_idempotent(self):
+        ClientClass = apps.get_model(DHCP_PLUGIN, "ClientClass")
+        self.adapter.import_server_config(self.server, parse_dhcp_config(self._conf(), 4))
+        second = self.adapter.import_server_config(self.server, parse_dhcp_config(self._conf(), 4))
+        self.assertEqual(second.client_classes_created, 0)
+        self.assertEqual(second.client_classes_updated, 0)
+        self.assertEqual(ClientClass.objects.filter(name=f"{self.server.name}: voip").count(), 1)
+
+    def test_changed_test_expression_reported_as_updated(self):
+        ClientClass = apps.get_model(DHCP_PLUGIN, "ClientClass")
+        conf = self._conf()
+        self.adapter.import_server_config(self.server, parse_dhcp_config(conf, 4))
+        conf["client-classes"][0]["test"] = "substring(option[60].hex,0,4) == 'Cisco'"
+        second = self.adapter.import_server_config(self.server, parse_dhcp_config(conf, 4))
+        self.assertEqual(second.client_classes_updated, 1)
+        cc = ClientClass.objects.get(name=f"{self.server.name}: voip")
+        self.assertEqual(cc.test, "substring(option[60].hex,0,4) == 'Cisco'")
+
+
+@tag("dhcp_plugin")
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class DhcpPluginStaleCleanupGuardTest(TestCase):
     """Stale-IP cleanup must never remove an IP a netbox_dhcp reservation references."""
 
