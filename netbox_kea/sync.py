@@ -292,6 +292,16 @@ def _cleanup_stale_ips(
     else:
         stale_qs = stale_qs.exclude(address__contains=":")
 
+    # Never touch IPs the NetBox DHCP plugin references: deleting one would violate
+    # its PROTECT FKs and deprecating/blanking one would corrupt an authored
+    # reservation (its ipv4_address/ipv6_addresses FK is SET_NULL).
+    from .integrations import dhcp_plugin
+
+    if dhcp_plugin.is_available():
+        protected_ids = dhcp_plugin.sys4_referenced_ip_ids()
+        if protected_ids:
+            stale_qs = stale_qs.exclude(pk__in=protected_ids)
+
     count = stale_qs.count()
     if count == 0:
         return 0
