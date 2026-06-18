@@ -485,6 +485,85 @@ class DhcpPluginClientClassImportTest(TestCase):
 
 @tag("dhcp_plugin")
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class DhcpPluginPageReservationImportTest(TestCase):
+    """DB-backed reservations (reservation-get-page) import into the right subnet/server."""
+
+    @classmethod
+    def setUpClass(cls):
+        if not apps.is_installed(DHCP_PLUGIN):
+            raise cls.skipException(f"{DHCP_PLUGIN} not installed")
+        super().setUpClass()
+
+    def setUp(self):
+        self.server = _make_db_server(name=f"kea-pageres-{timezone.now().timestamp()}")
+        from netbox_kea.integrations import dhcp_plugin
+        from netbox_kea.mappers.kea_to_dhcp import parse_reservations_page
+
+        self.adapter = dhcp_plugin
+        self._parse_page = parse_reservations_page
+
+    def _intent(self, conf, hosts):
+        intent = parse_dhcp_config(conf, 4)
+        intent.page_reservations = self._parse_page(hosts, 4)
+        return intent
+
+    def test_db_reservation_imported_into_linked_subnet(self):
+        from ipam.models import IPAddress
+
+        Subnet = apps.get_model(DHCP_PLUGIN, "Subnet")
+        HostReservation = apps.get_model(DHCP_PLUGIN, "HostReservation")
+
+        # Subnet is in config-get; the reservation is ONLY in the hosts DB (subnet-id 7).
+        conf = {"subnet4": [{"id": 7, "subnet": "10.40.0.0/24"}]}
+        hosts = [{"subnet-id": 7, "hw-address": "aa:bb:cc:dd:ee:40", "ip-address": "10.40.0.50", "hostname": "db-host"}]
+        summary = self.adapter.import_server_config(self.server, self._intent(conf, hosts))
+
+        self.assertEqual(summary.errors, 0, summary.warnings)
+        self.assertEqual(summary.reservations_created, 1, summary.warnings)
+        subnet = Subnet.objects.get(prefix__prefix="10.40.0.0/24")
+        res = HostReservation.objects.get(subnet=subnet)
+        self.assertEqual(res.hostname, "db-host")
+        # Shares the same IPAM IPAddress the reservation sync maintains.
+        self.assertEqual(res.ipv4_address, IPAddress.objects.get(address="10.40.0.50/24"))
+
+    def test_global_reservation_attached_to_dhcp_server(self):
+        HostReservation = apps.get_model(DHCP_PLUGIN, "HostReservation")
+        DHCPServer = apps.get_model(DHCP_PLUGIN, "DHCPServer")
+
+        conf = {"subnet4": []}
+        hosts = [
+            {"subnet-id": 0, "hw-address": "aa:bb:cc:dd:ee:00", "ip-address": "10.0.0.9", "hostname": "global-host"}
+        ]
+        summary = self.adapter.import_server_config(self.server, self._intent(conf, hosts))
+
+        self.assertEqual(summary.errors, 0, summary.warnings)
+        res = HostReservation.objects.get(hostname="global-host")
+        self.assertIsNone(res.subnet)  # global → attached to the DHCPServer, not a subnet
+        self.assertEqual(res.dhcp_server, DHCPServer.objects.get(name=self.server.name))
+
+    def test_unknown_subnet_id_skipped_with_warning(self):
+        HostReservation = apps.get_model(DHCP_PLUGIN, "HostReservation")
+        conf = {"subnet4": []}  # subnet-id 99 was never imported
+        hosts = [{"subnet-id": 99, "hw-address": "aa:bb:cc:dd:ee:99", "ip-address": "10.99.0.5"}]
+        summary = self.adapter.import_server_config(self.server, self._intent(conf, hosts))
+
+        self.assertEqual(summary.reservations_created, 0)
+        self.assertFalse(HostReservation.objects.exists())
+        self.assertTrue(any("unknown subnet-id 99" in w for w in summary.warnings), summary.warnings)
+
+    def test_reimport_is_idempotent(self):
+        HostReservation = apps.get_model(DHCP_PLUGIN, "HostReservation")
+        conf = {"subnet4": [{"id": 7, "subnet": "10.41.0.0/24"}]}
+        hosts = [{"subnet-id": 7, "hw-address": "aa:bb:cc:dd:ee:41", "ip-address": "10.41.0.50"}]
+
+        self.adapter.import_server_config(self.server, self._intent(conf, hosts))
+        second = self.adapter.import_server_config(self.server, self._intent(conf, hosts))
+        self.assertEqual(second.reservations_created, 0)
+        self.assertEqual(HostReservation.objects.count(), 1)
+
+
+@tag("dhcp_plugin")
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class DhcpPluginStaleCleanupGuardTest(TestCase):
     """Stale-IP cleanup must never remove an IP a netbox_dhcp reservation references."""
 

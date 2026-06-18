@@ -7,7 +7,7 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 
 from .. import filtersets, models
-from ..kea import KeaClient, KeaException
+from ..kea import KeaClient, KeaException, iter_reservations
 from ..utilities import format_leases
 from .serializers import ServerSerializer
 
@@ -264,16 +264,6 @@ class ServerViewSet(NetBoxModelViewSet):
 
         if subnet_id:
             # Page through all reservations exhaustively, then filter by subnet_id client-side.
-            all_hosts: list[dict] = []
-            source_index, from_index = 0, 0
-            while True:
-                page, next_from, next_source = client.reservation_get_page(
-                    service, source_index=source_index, from_index=from_index
-                )
-                all_hosts.extend(page)
-                if not page or (next_from == 0 and next_source == 0):
-                    break
-                source_index, from_index = next_source, next_from
-            return [h for h in all_hosts if str(h.get("subnet-id", "")) == str(subnet_id)]
+            return [h for h in iter_reservations(client, service) if str(h.get("subnet-id", "")) == str(subnet_id)]
 
         return []

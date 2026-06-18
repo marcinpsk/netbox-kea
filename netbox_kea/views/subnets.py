@@ -14,7 +14,7 @@ from utilities.htmx import htmx_partial
 from utilities.views import register_model_view
 
 from .. import forms, tables
-from ..kea import KeaClient, KeaException, PartialPersistError
+from ..kea import KeaClient, KeaException, PartialPersistError, iter_reservations
 from ..models import Server
 from ..utilities import (
     OptionalViewTab,
@@ -254,26 +254,16 @@ def _warn_pool_reservation_overlap(
             pool_range = IPNetwork(pool_str)
 
         overlapping: list[str] = []
-        source_index, from_index = 0, 0
-        while True:
-            hosts, from_index, source_index = client.reservation_get_page(
-                service=f"dhcp{version}",
-                source_index=source_index,
-                from_index=from_index,
-                limit=200,
-            )
-            for host in hosts:
-                if host.get("subnet-id") != subnet_id:
-                    continue
-                candidate_ips = list(filter(None, [host.get("ip-address")] + list(host.get("ip-addresses") or [])))
-                for ip_str in candidate_ips:
-                    try:
-                        if IPAddress(ip_str) in pool_range:
-                            overlapping.append(ip_str)
-                    except Exception:  # noqa: BLE001, PERF203
-                        pass
-            if from_index == 0 and source_index == 0:
-                break
+        for host in iter_reservations(client, f"dhcp{version}", limit=200):
+            if host.get("subnet-id") != subnet_id:
+                continue
+            candidate_ips = list(filter(None, [host.get("ip-address")] + list(host.get("ip-addresses") or [])))
+            for ip_str in candidate_ips:
+                try:
+                    if IPAddress(ip_str) in pool_range:
+                        overlapping.append(ip_str)
+                except Exception:  # noqa: BLE001, PERF203
+                    pass
 
         if overlapping:
             sample = ", ".join(overlapping[:5])

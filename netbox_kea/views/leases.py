@@ -25,7 +25,7 @@ from utilities.paginator import EnhancedPaginator, get_paginate_count
 from utilities.views import GetReturnURLMixin, register_model_view
 
 from .. import constants, forms, tables
-from ..kea import KeaClient, KeaException
+from ..kea import KeaClient, KeaException, iter_reservations
 from ..models import Server
 from ..signals import lease_added, leases_deleted
 from ..sync import sync_lease_to_netbox
@@ -1129,22 +1129,12 @@ def _fetch_reservation_by_ip(client: KeaClient, version: int) -> tuple[dict[str,
     Returns ``(reservation_by_ip, host_cmds_available)``.
     """
     reservation_by_ip: dict[str, dict] = {}
-    from_index = 0
-    source_index = 0
-    while True:
-        page, next_from, next_source = client.reservation_get_page(
-            f"dhcp{version}", limit=1000, source_index=source_index, from_index=from_index
-        )
-        for r in page:
-            if "ip-address" in r:
-                reservation_by_ip[r["ip-address"]] = r
-            elif "ip-addresses" in r:
-                for addr in r["ip-addresses"]:
-                    reservation_by_ip[addr] = r
-        if next_from == 0 and next_source == 0:
-            break
-        from_index = next_from
-        source_index = next_source
+    for r in iter_reservations(client, f"dhcp{version}", limit=1000):
+        if "ip-address" in r:
+            reservation_by_ip[r["ip-address"]] = r
+        elif "ip-addresses" in r:
+            for addr in r["ip-addresses"]:
+                reservation_by_ip[addr] = r
     return reservation_by_ip, True
 
 

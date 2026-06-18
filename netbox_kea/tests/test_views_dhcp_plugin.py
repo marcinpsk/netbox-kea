@@ -16,6 +16,7 @@ from django.test import SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
+from netbox_kea.kea import KeaClient
 from netbox_kea.views import dhcp_plugin_sync as dps
 
 from .utils import _make_db_server
@@ -24,16 +25,25 @@ DHCP_PLUGIN = "netbox_dhcp"
 _PLUGINS_CONFIG = {"netbox_kea": {"kea_timeout": 30}}
 
 
-class _FakeKeaClient:
-    """Minimal stand-in for KeaClient that answers ``config-get`` only."""
+class _FakeKeaClient(KeaClient):
+    """Stand-in for KeaClient that answers ``config-get`` and ``reservation-get-page``.
 
-    def __init__(self, conf_by_version: dict[int, dict]):
+    Subclasses the real client (and skips its session setup) so the genuine
+    ``reservation_get_page``/``iter_reservations`` pagination logic runs against the
+    faked ``command`` — only the Kea HTTP boundary is replaced, never the ORM.
+    """
+
+    def __init__(self, conf_by_version: dict[int, dict], hosts_by_version: dict[int, list] | None = None):
         self._conf = conf_by_version
+        self._hosts = hosts_by_version or {}
 
-    def command(self, cmd, service=None, arguments=None):
-        if cmd == "config-get":
-            version = 6 if service and service[0] == "dhcp6" else 4
+    def command(self, command, service=None, arguments=None, check=(0,)):
+        version = 6 if service and service[0] == "dhcp6" else 4
+        if command == "config-get":
             return [{"result": 0, "arguments": {f"Dhcp{version}": self._conf.get(version, {})}}]
+        if command == "reservation-get-page":
+            hosts = self._hosts.get(version, [])
+            return [{"result": 0, "arguments": {"hosts": hosts, "next": {"from": 0, "source-index": 0}}}]
         return [{"result": 0, "arguments": {}}]
 
 
@@ -151,6 +161,23 @@ class SyncNowEndToEndTest(TestCase):
 
         ct = ContentType.objects.get_for_model(Subnet)
         self.assertTrue(Option.objects.filter(assigned_object_type=ct, assigned_object_id=subnet.pk).exists())
+
+    def test_post_imports_db_backed_reservations(self):
+        # Subnet is in config-get; the reservation lives ONLY in the hosts DB
+        # (reservation-get-page) — the case config-get-only import was missing.
+        conf = {4: {"subnet4": [{"id": 1, "subnet": "10.89.0.0/24"}]}}
+        hosts = {
+            4: [{"subnet-id": 1, "hw-address": "aa:bb:cc:dd:ee:89", "ip-address": "10.89.0.50", "hostname": "db-res"}]
+        }
+        fake = _FakeKeaClient(conf, hosts)
+        with patch("netbox_kea.models.Server.get_client", return_value=fake):
+            resp = self.client.post(self.url, follow=True)
+
+        self.assertContains(resp, "1 reservations created")
+        Subnet = apps.get_model(DHCP_PLUGIN, "Subnet")
+        HostReservation = apps.get_model(DHCP_PLUGIN, "HostReservation")
+        subnet = Subnet.objects.get(prefix__prefix="10.89.0.0/24")
+        self.assertTrue(HostReservation.objects.filter(subnet=subnet, hostname="db-res").exists())
 
     def test_drift_view_renders_imported_status(self):
         conf = {4: {"subnet4": [{"id": 1, "subnet": "10.88.0.0/24"}]}}

@@ -15,6 +15,7 @@ from netbox_kea.mappers.kea_to_dhcp import (
     OptionDefIntent,
     OptionIntent,
     parse_dhcp_config,
+    parse_reservations_page,
 )
 
 
@@ -384,6 +385,46 @@ class TestParseDhcpConfigClientClasses(SimpleTestCase):
 
     def test_no_client_classes_yields_empty(self):
         self.assertEqual(parse_dhcp_config({"subnet4": []}, 4).client_classes, [])
+
+
+class TestParseReservationsPage(SimpleTestCase):
+    """DB-backed reservation pages (reservation-get-page) group by Kea subnet-id."""
+
+    def test_groups_by_subnet_id(self):
+        hosts = [
+            {"subnet-id": 1, "hw-address": "aa:bb:cc:dd:ee:01", "ip-address": "10.0.0.5", "hostname": "h1"},
+            {"subnet-id": 1, "hw-address": "aa:bb:cc:dd:ee:02", "ip-address": "10.0.0.6"},
+            {"subnet-id": 2, "hw-address": "aa:bb:cc:dd:ee:03", "ip-address": "10.0.1.5"},
+        ]
+        grouped = parse_reservations_page(hosts, 4)
+        self.assertEqual(set(grouped), {1, 2})
+        self.assertEqual(len(grouped[1]), 2)
+        self.assertEqual(grouped[1][0].identifier, "aa:bb:cc:dd:ee:01")
+        self.assertEqual(grouped[1][0].ip_address, "10.0.0.5")
+        self.assertEqual(grouped[1][0].family, 4)
+
+    def test_missing_subnet_id_groups_as_global_zero(self):
+        hosts = [{"hw-address": "aa:bb:cc:dd:ee:01", "ip-address": "10.0.0.5"}]
+        self.assertEqual(set(parse_reservations_page(hosts, 4)), {0})
+
+    def test_unparseable_subnet_id_groups_as_zero(self):
+        hosts = [{"subnet-id": "x", "hw-address": "aa:bb:cc:dd:ee:01", "ip-address": "10.0.0.5"}]
+        self.assertEqual(set(parse_reservations_page(hosts, 4)), {0})
+
+    def test_non_dict_entries_skipped(self):
+        hosts = ["nope", None, {"subnet-id": 1, "hw-address": "aa:bb:cc:dd:ee:01", "ip-address": "10.0.0.5"}]
+        grouped = parse_reservations_page(hosts, 4)
+        self.assertEqual(set(grouped), {1})
+        self.assertEqual(len(grouped[1]), 1)
+
+    def test_non_list_returns_empty(self):
+        self.assertEqual(parse_reservations_page("nope", 4), {})
+
+    def test_v6_addresses_parsed(self):
+        hosts = [{"subnet-id": 3, "duid": "01:02:03", "ip-addresses": ["2001:db8::5"], "hostname": "h6"}]
+        res = parse_reservations_page(hosts, 6)[3][0]
+        self.assertEqual(res.identifier_type, "duid")
+        self.assertEqual(res.ip_addresses, ("2001:db8::5",))
 
 
 class TestParseDhcpConfigRobustness(SimpleTestCase):

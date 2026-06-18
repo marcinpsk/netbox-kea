@@ -231,6 +231,9 @@ class ServerConfigIntent:
     global_options: tuple[OptionIntent, ...] = ()
     option_defs: tuple[OptionDefIntent, ...] = ()
     global_settings: dict = field(default_factory=dict)
+    # DB-backed host reservations (from reservation-get-page), grouped by Kea subnet-id
+    # (0 = global). These never appear in config-get when a hosts database is used.
+    page_reservations: dict[int, tuple[ReservationIntent, ...]] = field(default_factory=dict)
 
 
 def _option_intent(raw: dict) -> OptionIntent | None:
@@ -360,6 +363,31 @@ def _subnet_intent(raw: dict, family: int, shared_network: str | None) -> Subnet
         options=_options(raw.get("option-data")),
         settings=_settings(raw),
     )
+
+
+def parse_reservations_page(hosts, family: int) -> dict[int, tuple[ReservationIntent, ...]]:
+    """Group ``reservation-get-page`` host dicts into ReservationIntents by Kea subnet-id.
+
+    Each host carries a ``subnet-id`` (0 for a global reservation).  The host dicts
+    have the same shape as inline subnet reservations, so :func:`_reservation_intent`
+    parses them directly.  Malformed/identifier-less entries are dropped.
+    """
+    grouped: dict[int, list[ReservationIntent]] = {}
+    if not isinstance(hosts, list):
+        return {}
+    for raw in hosts:
+        if not isinstance(raw, dict):
+            continue
+        res = _reservation_intent(raw, family)
+        if res is None:
+            continue
+        sid = raw.get("subnet-id")
+        try:
+            sid = int(sid) if sid is not None else 0
+        except (TypeError, ValueError):
+            sid = 0
+        grouped.setdefault(sid, []).append(res)
+    return {sid: tuple(reservations) for sid, reservations in grouped.items()}
 
 
 def _client_class_intent(raw: dict, family: int) -> ClientClassIntent | None:

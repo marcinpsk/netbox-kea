@@ -21,8 +21,8 @@ from netbox.views import generic
 from utilities.views import register_model_view
 
 from ..integrations import dhcp_plugin
-from ..kea import KeaException
-from ..mappers.kea_to_dhcp import parse_dhcp_config
+from ..kea import KeaException, iter_reservations
+from ..mappers.kea_to_dhcp import parse_dhcp_config, parse_reservations_page
 from ..models import Server
 from ..utilities import OptionalViewTab
 
@@ -56,10 +56,14 @@ def _extract_dhcp_conf(resp, version: int) -> dict | None:
     return conf if isinstance(conf, dict) else None
 
 
-def _fetch_config_intent(server: Server, version: int):
+def _fetch_config_intent(server: Server, version: int, *, with_reservations: bool = False):
     """Read live ``config-get`` for one version and parse it to intent (read-only).
 
-    Returns the :class:`ServerConfigIntent`, or ``None`` if Kea could not be read.
+    ``config-get`` is issued exactly once here.  When *with_reservations* is set, the
+    DB-backed host reservations are also drained (``reservation-get-page``) **on the
+    same client** and attached to the intent — they never appear in ``config-get``
+    when a hosts database is used.  Returns the :class:`ServerConfigIntent`, or
+    ``None`` if Kea could not be read.
     """
     try:
         client = server.get_client(version=version)
@@ -70,7 +74,26 @@ def _fetch_config_intent(server: Server, version: int):
     conf = _extract_dhcp_conf(resp, version)
     if conf is None:
         return None
-    return parse_dhcp_config(conf, version)
+    intent = parse_dhcp_config(conf, version)
+    if with_reservations:
+        intent.page_reservations = _fetch_reservation_pages(client, version, server)
+    return intent
+
+
+def _fetch_reservation_pages(client, version: int, server: Server) -> dict:
+    """Drain DB-backed host reservations via ``reservation-get-page``, grouped by subnet-id.
+
+    Returns ``{}`` (and logs) when the ``host_cmds`` hook is absent or Kea cannot be
+    read — a missing hosts backend is not an error for the import.
+    """
+    try:
+        hosts = list(iter_reservations(client, f"dhcp{version}"))
+    except (KeaException, requests.RequestException, ValueError):
+        logger.warning(
+            "DHCP-plugin sync: reservation-get-page failed for %s (v%s)", server.name, version, exc_info=True
+        )
+        return {}
+    return parse_reservations_page(hosts, version)
 
 
 def run_dhcp_plugin_import(server: Server) -> list[tuple[int, object]]:
@@ -80,7 +103,7 @@ def run_dhcp_plugin_import(server: Server) -> list[tuple[int, object]]:
     """
     results: list[tuple[int, object]] = []
     for version in _enabled_versions(server):
-        intent = _fetch_config_intent(server, version)
+        intent = _fetch_config_intent(server, version, with_reservations=True)
         if intent is None:
             continue
         results.append((version, dhcp_plugin.import_server_config(server, intent)))
