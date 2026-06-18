@@ -76,15 +76,18 @@ def _fetch_config_intent(server: Server, version: int, *, with_reservations: boo
         return None
     intent = parse_dhcp_config(conf, version)
     if with_reservations:
-        intent.page_reservations = _fetch_reservation_pages(client, version, server)
+        pages, available = _fetch_reservation_pages(client, version, server)
+        intent.page_reservations = pages
+        intent.reservations_unavailable = not available
     return intent
 
 
-def _fetch_reservation_pages(client, version: int, server: Server) -> dict:
+def _fetch_reservation_pages(client, version: int, server: Server) -> tuple[dict, bool]:
     """Drain DB-backed host reservations via ``reservation-get-page``, grouped by subnet-id.
 
-    Returns ``{}`` (and logs) when the ``host_cmds`` hook is absent or Kea cannot be
-    read — a missing hosts backend is not an error for the import.
+    Returns ``({}, False)`` (and logs) when the ``host_cmds`` hook is absent or Kea
+    cannot be read — a missing hosts backend is not a hard error for the import, but
+    the ``False`` lets the caller report that DB-backed reservations may be missing.
     """
     try:
         hosts = list(iter_reservations(client, f"dhcp{version}"))
@@ -92,8 +95,8 @@ def _fetch_reservation_pages(client, version: int, server: Server) -> dict:
         logger.warning(
             "DHCP-plugin sync: reservation-get-page failed for %s (v%s)", server.name, version, exc_info=True
         )
-        return {}
-    return parse_reservations_page(hosts, version)
+        return {}, False
+    return parse_reservations_page(hosts, version), True
 
 
 def run_dhcp_plugin_import(server: Server) -> list[tuple[int, object]]:
@@ -259,7 +262,13 @@ class ServerDhcpPluginSyncNowView(View):
                 )
             if notes:
                 text += f" ({'; '.join(notes)})"
-            if summary.errors:
+            if summary.reservations_unread:
+                messages.warning(
+                    request,
+                    f"{text} — DB-backed host reservations could not be read "
+                    "(is the host_cmds hook loaded?); reservation counts may be incomplete.",
+                )
+            elif summary.errors:
                 messages.warning(request, f"{text} — {summary.errors} errors (see logs).")
             else:
                 messages.success(request, text + ".")

@@ -16,7 +16,7 @@ from django.test import SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
-from netbox_kea.kea import KeaClient
+from netbox_kea.kea import KeaClient, KeaException
 from netbox_kea.views import dhcp_plugin_sync as dps
 
 from .utils import _make_db_server
@@ -33,15 +33,24 @@ class _FakeKeaClient(KeaClient):
     faked ``command`` — only the Kea HTTP boundary is replaced, never the ORM.
     """
 
-    def __init__(self, conf_by_version: dict[int, dict], hosts_by_version: dict[int, list] | None = None):
+    def __init__(
+        self,
+        conf_by_version: dict[int, dict],
+        hosts_by_version: dict[int, list] | None = None,
+        reservations_available: bool = True,
+    ):
         self._conf = conf_by_version
         self._hosts = hosts_by_version or {}
+        self._reservations_available = reservations_available
 
     def command(self, command, service=None, arguments=None, check=(0,)):
         version = 6 if service and service[0] == "dhcp6" else 4
         if command == "config-get":
             return [{"result": 0, "arguments": {f"Dhcp{version}": self._conf.get(version, {})}}]
         if command == "reservation-get-page":
+            if not self._reservations_available:
+                # Simulate host_cmds not loaded (Kea result code 2).
+                raise KeaException({"result": 2, "text": "command not supported", "arguments": None})
             hosts = self._hosts.get(version, [])
             return [{"result": 0, "arguments": {"hosts": hosts, "next": {"from": 0, "source-index": 0}}}]
         return [{"result": 0, "arguments": {}}]
@@ -178,6 +187,14 @@ class SyncNowEndToEndTest(TestCase):
         HostReservation = apps.get_model(DHCP_PLUGIN, "HostReservation")
         subnet = Subnet.objects.get(prefix__prefix="10.89.0.0/24")
         self.assertTrue(HostReservation.objects.filter(subnet=subnet, hostname="db-res").exists())
+
+    def test_post_warns_when_reservations_unreadable(self):
+        # Finding 4: host_cmds absent → the import must say reservations couldn't be read.
+        conf = {4: {"subnet4": [{"id": 1, "subnet": "10.90.0.0/24"}]}}
+        fake = _FakeKeaClient(conf, reservations_available=False)
+        with patch("netbox_kea.models.Server.get_client", return_value=fake):
+            resp = self.client.post(self.url, follow=True)
+        self.assertContains(resp, "could not be read")
 
     def test_drift_view_renders_imported_status(self):
         conf = {4: {"subnet4": [{"id": 1, "subnet": "10.88.0.0/24"}]}}

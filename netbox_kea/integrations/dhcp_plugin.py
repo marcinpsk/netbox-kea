@@ -83,6 +83,9 @@ class ImportSummary:
     client_classes_created: int = 0
     client_classes_updated: int = 0
     shared_networks_deferred: int = 0
+    # True when the DB-backed host reservations could not be read (e.g. host_cmds
+    # hook not loaded), so the reservation counts above may be incomplete.
+    reservations_unread: bool = False
     errors: int = 0
     warnings: list[str] = field(default_factory=list)
 
@@ -143,7 +146,7 @@ def _ensure_ip_range(pool_str: str, subnet_cidr: str, vrf):
     return range_obj
 
 
-def _ensure_reservation_addresses(intent: ReservationIntent, kea_subnet_id: int | None, subnet_cidr: str):
+def _ensure_reservation_addresses(intent: ReservationIntent, kea_subnet_id: int | None, subnet_cidr: str, family: int):
     """Ensure the reservation's IPAM rows exist (status=reserved) and return them.
 
     Reuses :func:`sync_reservation_to_netbox` so the DHCP-plugin reservation shares
@@ -168,8 +171,8 @@ def _ensure_reservation_addresses(intent: ReservationIntent, kea_subnet_id: int 
 
     try:
         prefix_len = IPNetwork(subnet_cidr).prefixlen
-    except Exception:  # noqa: BLE001 — fall back to host mask if subnet CIDR is odd
-        prefix_len = 128 if ":" in subnet_cidr else 32
+    except Exception:  # noqa: BLE001 — no subnet CIDR (global reservation): use the family host mask
+        prefix_len = 128 if family == 6 else 32
     spm = {kea_subnet_id: prefix_len} if kea_subnet_id is not None else None
 
     try:
@@ -452,13 +455,19 @@ def _transform_value(transform, raw, kea_key: str, summary: ImportSummary):
         return None
 
 
-def _apply_global_settings(dhcp_server, settings: dict, summary: ImportSummary) -> None:
+def _apply_global_settings(dhcp_server, settings: dict, summary: ImportSummary, *, primary: bool) -> None:
     """Populate ``DHCPServer`` global tuning fields from a Kea config block.
 
-    Only fills fields that are currently unset, so a dual-stack server's first
-    (DHCPv4) import wins shared fields and the DHCPv6 import fills the gaps (e.g.
-    ``preferred-lifetime``, ``pd-allocator``) — netbox_dhcp has a single
-    ``DHCPServer`` row spanning both protocols.
+    netbox_dhcp has a single ``DHCPServer`` row spanning both protocols, so one
+    family is authoritative.  The *primary* family (DHCPv4, or whichever family is
+    enabled on a single-stack server) **mirrors** its values — re-import re-syncs a
+    changed global value.  The secondary family only **fills gaps** (e.g. the
+    DHCPv6-only ``preferred-lifetime``/``pd-allocator``) so it never clobbers the
+    primary family's shared fields and dual-stack re-imports do not thrash.
+
+    Known limitation: a change to a *secondary-only* field (e.g. DHCPv6
+    ``preferred-lifetime``) on a dual-stack server is not re-synced, since the
+    secondary family is fill-only for an already-set field.
     """
     if not settings:
         return
@@ -467,13 +476,19 @@ def _apply_global_settings(dhcp_server, settings: dict, summary: ImportSummary) 
     for kea_key, attr, transform in _SERVER_FIELDS:
         if attr not in model_fields or kea_key not in settings:
             continue
-        if not _is_unset(getattr(dhcp_server, attr, None)):
-            continue  # already set (e.g. by the other protocol) — don't clobber
         value = _transform_value(transform, settings[kea_key], kea_key, summary)
         if _is_unset(value):
             continue
-        setattr(dhcp_server, attr, value)
-        changed = True
+        current = getattr(dhcp_server, attr, None)
+        if primary:
+            # This family owns the global config — mirror changed values on re-import.
+            if current != value:
+                setattr(dhcp_server, attr, value)
+                changed = True
+        elif _is_unset(current):
+            # Secondary protocol only fills gaps the primary family did not set.
+            setattr(dhcp_server, attr, value)
+            changed = True
     if changed:
         try:
             dhcp_server.save()
@@ -483,26 +498,33 @@ def _apply_global_settings(dhcp_server, settings: dict, summary: ImportSummary) 
 
 
 def _apply_inherited_settings(obj, parent, settings: dict, field_map, summary: ImportSummary) -> bool:
-    """Set *obj* tuning fields only where they differ from the stored *parent*.
+    """Mirror *obj*'s tuning fields to Kea, storing only genuine overrides.
 
-    This is the parent-diff suppression: ``config-get`` returns every value fully
-    inherited, so a child value equal to its parent's is left blank (it inherits).
-    The ``model_fields`` guard skips fields *obj* does not have, so a single field
-    map can serve models with different mixins (e.g. ``Subnet`` vs ``ClientClass``).
+    ``config-get`` returns every value fully inherited, so a field is stored on the
+    child only when it is present and **differs** from the stored *parent*
+    (parent-diff suppression).  A value equal to the parent — or one Kea no longer
+    reports — is **cleared**, so a removed Kea override does not linger as stale data
+    on re-import.  The ``model_fields`` guard skips fields *obj* does not have, so one
+    field map serves models with different mixins (e.g. ``Subnet`` vs ``ClientClass``).
     Returns ``True`` if any field on *obj* changed.
     """
     model_fields = {f.name for f in obj._meta.get_fields()}
     changed = False
     for kea_key, attr, transform in field_map:
-        if attr not in model_fields or kea_key not in settings:
+        if attr not in model_fields:
             continue
-        value = _transform_value(transform, settings[kea_key], kea_key, summary)
-        if _is_unset(value):
-            continue
-        if value == getattr(parent, attr, None):
-            continue  # inherited from the parent — leave blank
-        if getattr(obj, attr, None) != value:
-            setattr(obj, attr, value)
+        value = _transform_value(transform, settings[kea_key], kea_key, summary) if kea_key in settings else None
+        # Store only a genuine override (present and differing from the parent);
+        # otherwise clear it so the child inherits (and stale overrides don't linger).
+        if not _is_unset(value) and value != getattr(parent, attr, None):
+            desired = value
+        else:
+            # "Cleared" value: None for nullable fields, the field's empty default
+            # (e.g. "" for a non-null CharField like hostname_char_set) otherwise.
+            db_field = obj._meta.get_field(attr)
+            desired = None if db_field.null else db_field.get_default()
+        if getattr(obj, attr, None) != desired:
+            setattr(obj, attr, desired)
             changed = True
     return changed
 
@@ -523,7 +545,13 @@ def upsert_dhcp_server(server):
 
 
 def _client_class_name(server, kea_name: str) -> str:
-    """Namespace a Kea class name to this server (NetBoxDHCPModelMixin needs a unique name)."""
+    """Namespace a Kea class name to this server (NetBoxDHCPModelMixin needs a unique name).
+
+    Note: this namespaced name will NOT match the bare Kea class name referenced from
+    a subnet's ``client-classes`` list or another class's ``test`` expression.  That is
+    fine for the v1 import (those references are not imported), but a future push-back /
+    reference-resolution phase must map the bare Kea name back to this namespaced row.
+    """
     return f"{server.name}: {kea_name}"[:255]
 
 
@@ -709,7 +737,7 @@ def _upsert_reservation(res, subnet_obj, dhcp_server, cidr, kea_subnet_id, famil
         summary.warn(f"reservation in {scope} has no identifier — skipped")
         return
 
-    ipv4_ip, ipv6_ips, mac_obj = _ensure_reservation_addresses(res, kea_subnet_id, cidr)
+    ipv4_ip, ipv6_ips, mac_obj = _ensure_reservation_addresses(res, kea_subnet_id, cidr, family)
 
     if subnet_obj is not None:
         base = HostReservation.objects.filter(subnet=subnet_obj)
@@ -790,11 +818,14 @@ def import_server_config(server, config: ServerConfigIntent) -> ImportSummary:
     pools/reservations matched structurally) rather than duplicating them.
     """
     summary = ImportSummary()
+    summary.reservations_unread = config.reservations_unavailable
     dhcp_server = upsert_dhcp_server(server)
     custom_defs = _custom_def_index(config)
 
-    # Global (server-level) tuning fields + options + client classes.
-    _apply_global_settings(dhcp_server, config.global_settings, summary)
+    # Global (server-level) tuning fields + options + client classes. DHCPv4 (or the
+    # only enabled family) is authoritative for the shared, single DHCPServer row.
+    primary = config.family == 4 or not server.dhcp4
+    _apply_global_settings(dhcp_server, config.global_settings, summary, primary=primary)
     upsert_options(dhcp_server, config.global_options, config.family, dhcp_server, custom_defs, summary)
     for cc_intent in config.client_classes:
         upsert_client_class(server, dhcp_server, cc_intent, custom_defs, summary)

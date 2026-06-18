@@ -400,6 +400,29 @@ class DhcpPluginTuningImportTest(TestCase):
         self.assertEqual(second.subnets_created, 0)
         self.assertEqual(second.subnets_updated, 0)  # nothing changed → not reported as updated
 
+    def test_subnet_override_cleared_when_value_returns_to_inherited(self):
+        # Finding 1: a removed Kea override must not linger as stale data on re-import.
+        Subnet = apps.get_model(DHCP_PLUGIN, "Subnet")
+        conf1 = {"valid-lifetime": 3600, "subnet4": [{"id": 7, "subnet": "10.42.0.0/24", "valid-lifetime": 7200}]}
+        self.adapter.import_server_config(self.server, parse_dhcp_config(conf1, 4))
+        subnet = Subnet.objects.get(prefix__prefix="10.42.0.0/24")
+        self.assertEqual(subnet.valid_lifetime, 7200)
+
+        # Override removed in Kea (subnet value now equals the global) → must be cleared.
+        conf2 = {"valid-lifetime": 3600, "subnet4": [{"id": 7, "subnet": "10.42.0.0/24", "valid-lifetime": 3600}]}
+        second = self.adapter.import_server_config(self.server, parse_dhcp_config(conf2, 4))
+        subnet.refresh_from_db()
+        self.assertIsNone(subnet.valid_lifetime)  # inherits again, not stale 7200
+        self.assertEqual(second.subnets_updated, 1)
+
+    def test_global_setting_change_resyncs_on_reimport(self):
+        # Finding 2: a changed global value must re-sync (was write-once before).
+        DHCPServer = apps.get_model(DHCP_PLUGIN, "DHCPServer")
+        self.adapter.import_server_config(self.server, parse_dhcp_config({"valid-lifetime": 3600, "subnet4": []}, 4))
+        self.adapter.import_server_config(self.server, parse_dhcp_config({"valid-lifetime": 7200, "subnet4": []}, 4))
+        srv = DHCPServer.objects.get(name=self.server.name)
+        self.assertEqual(srv.valid_lifetime, 7200)
+
 
 @tag("dhcp_plugin")
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
@@ -560,6 +583,18 @@ class DhcpPluginPageReservationImportTest(TestCase):
         second = self.adapter.import_server_config(self.server, self._intent(conf, hosts))
         self.assertEqual(second.reservations_created, 0)
         self.assertEqual(HostReservation.objects.count(), 1)
+
+    def test_global_v6_reservation_gets_host_mask(self):
+        # Finding 3: a global (subnet-less) IPv6 reservation must get a /128, not /32.
+        from ipam.models import IPAddress
+
+        intent = parse_dhcp_config({"subnet6": []}, 6)
+        hosts = [{"subnet-id": 0, "duid": "01:02:03:0a", "ip-addresses": ["2001:db8:aa::5"], "hostname": "g6"}]
+        intent.page_reservations = self._parse_page(hosts, 6)
+        summary = self.adapter.import_server_config(self.server, intent)
+
+        self.assertEqual(summary.errors, 0, summary.warnings)
+        self.assertTrue(IPAddress.objects.filter(address="2001:db8:aa::5/128").exists())
 
 
 @tag("dhcp_plugin")

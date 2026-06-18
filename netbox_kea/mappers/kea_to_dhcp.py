@@ -234,6 +234,9 @@ class ServerConfigIntent:
     # DB-backed host reservations (from reservation-get-page), grouped by Kea subnet-id
     # (0 = global). These never appear in config-get when a hosts database is used.
     page_reservations: dict[int, tuple[ReservationIntent, ...]] = field(default_factory=dict)
+    # True when reservation-get-page could not be read (e.g. host_cmds not loaded);
+    # lets the importer report that DB-backed reservations may be missing.
+    reservations_unavailable: bool = False
 
 
 def _option_intent(raw: dict) -> OptionIntent | None:
