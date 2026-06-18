@@ -219,18 +219,21 @@ class ServerDhcpPluginSyncNowView(View):
                 f"DHCPv{version}: {summary.subnets_created} subnets created, "
                 f"{summary.subnets_updated} updated, {summary.pools_created} pools, "
                 f"{summary.reservations_created} reservations created, "
-                f"{summary.reservations_updated} updated"
+                f"{summary.reservations_updated} updated, "
+                f"{summary.options_created} options created, {summary.options_updated} updated"
             )
-            deferred = []
+            notes = []
+            if summary.option_defs_created:
+                notes.append(f"{summary.option_defs_created} custom option definition(s) created")
+            if summary.options_skipped:
+                notes.append(f"{summary.options_skipped} option(s) skipped (unresolved/invalid)")
             if summary.shared_networks_deferred:
-                deferred.append(
+                notes.append(
                     f"{summary.shared_networks_deferred} shared-network subnet(s) imported "
                     "individually (grouping not represented)"
                 )
-            if summary.options_deferred:
-                deferred.append(f"{summary.options_deferred} options skipped")
-            if deferred:
-                text += f" ({'; '.join(deferred)})"
+            if notes:
+                text += f" ({'; '.join(notes)})"
             if summary.errors:
                 messages.warning(request, f"{text} — {summary.errors} errors (see logs).")
             else:

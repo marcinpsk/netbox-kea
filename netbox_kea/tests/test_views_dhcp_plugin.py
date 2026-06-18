@@ -128,7 +128,12 @@ class SyncNowEndToEndTest(TestCase):
         conf = {
             4: {
                 "subnet4": [
-                    {"id": 1, "subnet": "10.88.0.0/24", "pools": [{"pool": "10.88.0.10-10.88.0.99"}]},
+                    {
+                        "id": 1,
+                        "subnet": "10.88.0.0/24",
+                        "pools": [{"pool": "10.88.0.10-10.88.0.99"}],
+                        "option-data": [{"code": 3, "name": "routers", "data": "10.88.0.1", "space": "dhcp4"}],
+                    },
                 ]
             }
         }
@@ -137,8 +142,15 @@ class SyncNowEndToEndTest(TestCase):
             resp = self.client.post(self.url, follow=True)
 
         self.assertContains(resp, "1 subnets created")
+        self.assertContains(resp, "1 options created")
         Subnet = apps.get_model(DHCP_PLUGIN, "Subnet")
         self.assertTrue(Subnet.objects.filter(prefix__prefix="10.88.0.0/24").exists())
+        Option = apps.get_model(DHCP_PLUGIN, "Option")
+        subnet = Subnet.objects.get(prefix__prefix="10.88.0.0/24")
+        from django.contrib.contenttypes.models import ContentType
+
+        ct = ContentType.objects.get_for_model(Subnet)
+        self.assertTrue(Option.objects.filter(assigned_object_type=ct, assigned_object_id=subnet.pk).exists())
 
     def test_drift_view_renders_imported_status(self):
         conf = {4: {"subnet4": [{"id": 1, "subnet": "10.88.0.0/24"}]}}

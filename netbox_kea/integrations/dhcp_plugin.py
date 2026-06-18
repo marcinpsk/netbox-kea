@@ -19,9 +19,14 @@ v1 scope (import + diff, read-only against Kea):
   ``(server, protocol)`` and cannot live in the plugin's globally-unique
   ``Subnet.subnet_id``.  Pools and reservations match structurally within their
   resolved parent subnet.
+* DHCP **options** (``option-data``) are imported at every scope we model —
+  ``DHCPServer`` (global), ``Subnet``, ``Pool``, ``HostReservation`` — binding to
+  the sys4-shipped standard ``OptionDefinition`` (by space+code), or to a
+  server-scoped custom definition created from a Kea ``option-def``.  Options
+  whose definition cannot be resolved are skipped (counted), never fatal.
 * **Deferred** (reported, not imported): shared-network grouping (the plugin's
   ``SharedNetwork`` requires a prefix Kea does not model — member subnets are
-  flattened onto the ``DHCPServer``) and per-object DHCP options.
+  flattened onto the ``DHCPServer``).
 """
 
 from __future__ import annotations
@@ -31,7 +36,13 @@ from dataclasses import dataclass, field
 
 from django.apps import apps
 
-from ..mappers.kea_to_dhcp import ReservationIntent, ServerConfigIntent, SubnetIntent
+from ..mappers.kea_to_dhcp import (
+    OptionDefIntent,
+    OptionIntent,
+    ReservationIntent,
+    ServerConfigIntent,
+    SubnetIntent,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -52,8 +63,11 @@ class ImportSummary:
     pools_created: int = 0
     reservations_created: int = 0
     reservations_updated: int = 0
+    options_created: int = 0
+    options_updated: int = 0
+    options_skipped: int = 0
+    option_defs_created: int = 0
     shared_networks_deferred: int = 0
-    options_deferred: int = 0
     errors: int = 0
     warnings: list[str] = field(default_factory=list)
 
@@ -181,6 +195,134 @@ def _resolve_mac(hw_address: str | None):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# DHCP options (option-data → Option, binding to standard/custom OptionDefinition)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _default_space(family: int) -> str:
+    """Return the Kea/sys4 default option space for a protocol family."""
+    return "dhcp6" if family == 6 else "dhcp4"
+
+
+def _send_option(opt: OptionIntent) -> str | None:
+    """Map Kea ``always-send``/``never-send`` flags to the plugin's single choice."""
+    if opt.always_send:
+        return "always-send"
+    if opt.never_send:
+        return "never-send"
+    return None
+
+
+def _custom_def_index(config: ServerConfigIntent) -> dict[tuple, OptionDefIntent]:
+    """Index a config's custom ``option-def`` entries by ``(space, code)`` for lookup."""
+    index: dict[tuple, OptionDefIntent] = {}
+    for d in config.option_defs:
+        if d.code is None:
+            continue
+        index[(d.space or _default_space(config.family), d.code)] = d
+    return index
+
+
+def _create_custom_option_def(def_intent: OptionDefIntent, family: int, dhcp_server, summary: ImportSummary):
+    """Create a non-standard ``OptionDefinition`` for a Kea custom option, scoped to the server."""
+    OptionDefinition = _model("OptionDefinition")
+    space = def_intent.space or _default_space(family)
+    fam = 6 if space == "dhcp6" else 4
+    try:
+        obj = OptionDefinition(
+            name=def_intent.name or f"option-{def_intent.code}",
+            family=fam,
+            space=space,
+            code=def_intent.code,
+            type=def_intent.type or "string",
+            array=def_intent.array,
+            record_types=list(def_intent.record_types) or None,
+            encapsulate=def_intent.encapsulate,
+            standard=False,
+            dhcp_server=dhcp_server,
+        )
+        obj.save()
+        summary.option_defs_created += 1
+        return obj
+    except Exception as exc:  # noqa: BLE001 — a bad definition must not abort the import
+        summary.warn(f"option-def code={def_intent.code}: {exc}")
+        return None
+
+
+def _resolve_option_definition(opt: OptionIntent, family: int, dhcp_server, custom_defs, summary):
+    """Find (or create) the ``OptionDefinition`` a Kea ``option-data`` entry refers to.
+
+    Prefers the sys4-shipped **standard** definition (by space+code, else space+name);
+    falls back to a server-scoped **custom** definition (existing, or created from a Kea
+    ``option-def``).  Returns ``None`` when the option cannot be resolved.
+    """
+    OptionDefinition = _model("OptionDefinition")
+    space = opt.space or _default_space(family)
+
+    standard = OptionDefinition.objects.filter(standard=True, space=space)
+    if opt.code is not None:
+        found = standard.filter(code=opt.code).first()
+    elif opt.name:
+        found = standard.filter(name=opt.name).first()
+    else:
+        found = None
+    if found is not None:
+        return found
+
+    custom = OptionDefinition.objects.filter(standard=False, dhcp_server=dhcp_server, space=space)
+    if opt.code is not None:
+        found = custom.filter(code=opt.code).first()
+    elif opt.name:
+        found = custom.filter(name=opt.name).first()
+    if found is not None:
+        return found
+
+    if opt.code is not None:
+        def_intent = custom_defs.get((space, opt.code))
+        if def_intent is not None:
+            return _create_custom_option_def(def_intent, family, dhcp_server, summary)
+    return None
+
+
+def upsert_options(parent_obj, options, family: int, dhcp_server, custom_defs, summary: ImportSummary) -> None:
+    """Upsert DHCP-plugin ``Option`` rows for *options* assigned to *parent_obj*.
+
+    Idempotent: one Option per ``(parent, definition)``.  Options whose definition
+    cannot be resolved — or whose data fails the plugin's validators — are skipped
+    with a warning rather than aborting the import.
+    """
+    if not options:
+        return
+    from django.contrib.contenttypes.models import ContentType
+
+    Option = _model("Option")
+    ct = ContentType.objects.get_for_model(type(parent_obj))
+    for opt in options:
+        definition = _resolve_option_definition(opt, family, dhcp_server, custom_defs, summary)
+        if definition is None:
+            summary.options_skipped += 1
+            summary.warn(f"option {opt.match_key}: no matching definition, skipped")
+            continue
+        try:
+            existing = Option.objects.filter(
+                assigned_object_type=ct, assigned_object_id=parent_obj.pk, definition=definition
+            ).first()
+            created = existing is None
+            obj = existing or Option(definition=definition, assigned_object_type=ct, assigned_object_id=parent_obj.pk)
+            obj.data = opt.data or ""
+            obj.csv_format = opt.csv_format
+            obj.send_option = _send_option(opt)
+            obj.save()
+            if created:
+                summary.options_created += 1
+            else:
+                summary.options_updated += 1
+        except Exception as exc:  # noqa: BLE001 — one bad option must not abort the import
+            summary.options_skipped += 1
+            summary.warn(f"option {opt.match_key}: {exc}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Upserts
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -276,14 +418,12 @@ def upsert_subnet(server, dhcp_server, intent: SubnetIntent, summary: ImportSumm
 
     if intent.shared_network is not None:
         summary.shared_networks_deferred += 1
-    if intent.options:
-        summary.options_deferred += len(intent.options)
 
     return subnet_obj
 
 
-def upsert_pools(subnet_obj, intent: SubnetIntent, server, summary: ImportSummary):
-    """Get/create DHCP-plugin ``Pool`` rows for each Kea pool in *intent*."""
+def upsert_pools(subnet_obj, intent: SubnetIntent, server, summary: ImportSummary, dhcp_server, custom_defs):
+    """Get/create DHCP-plugin ``Pool`` rows (and their options) for each Kea pool in *intent*."""
     Pool = _model("Pool")
     for pool_intent in intent.pools:
         range_obj = _ensure_ip_range(pool_intent.pool, intent.cidr, server.sync_vrf)
@@ -291,7 +431,7 @@ def upsert_pools(subnet_obj, intent: SubnetIntent, server, summary: ImportSummar
             summary.warn(f"pool {pool_intent.pool} in {intent.cidr}: unusable range, skipped")
             continue
         try:
-            _obj, created = Pool.objects.get_or_create(
+            pool_obj, created = Pool.objects.get_or_create(
                 subnet=subnet_obj,
                 ip_range=range_obj,
                 defaults={"name": _pool_name(subnet_obj, pool_intent)},
@@ -301,6 +441,8 @@ def upsert_pools(subnet_obj, intent: SubnetIntent, server, summary: ImportSummar
         except Exception as exc:  # noqa: BLE001
             summary.errors += 1
             summary.warn(f"pool {pool_intent.pool} in {intent.cidr}: {exc}")
+            continue
+        upsert_options(pool_obj, pool_intent.options, intent.family, dhcp_server, custom_defs, summary)
 
 
 def _find_reservation(HostReservation, subnet_obj, intent: ReservationIntent, mac_obj):
@@ -320,16 +462,14 @@ def _find_reservation(HostReservation, subnet_obj, intent: ReservationIntent, ma
     return None
 
 
-def upsert_reservations(subnet_obj, intent: SubnetIntent, summary: ImportSummary):
-    """Get/create DHCP-plugin ``HostReservation`` rows for each Kea reservation in *intent*."""
+def upsert_reservations(subnet_obj, intent: SubnetIntent, summary: ImportSummary, dhcp_server, custom_defs):
+    """Get/create DHCP-plugin ``HostReservation`` rows (and their options) per Kea reservation."""
     HostReservation = _model("HostReservation")
 
     for res in intent.reservations:
         if res.identifier_type is None:
             summary.warn(f"reservation in {intent.cidr} has no identifier — skipped")
             continue
-        if res.options:
-            summary.options_deferred += len(res.options)
 
         ipv4_ip, ipv6_ips, mac_obj = _ensure_reservation_addresses(res, intent.kea_subnet_id, intent.cidr)
 
@@ -352,6 +492,8 @@ def upsert_reservations(subnet_obj, intent: SubnetIntent, summary: ImportSummary
         except Exception as exc:  # noqa: BLE001
             summary.errors += 1
             summary.warn(f"reservation {res.identifier} in {intent.cidr}: {exc}")
+            continue
+        upsert_options(obj, res.options, res.family, dhcp_server, custom_defs, summary)
 
 
 def _apply_reservation_identifier(obj, res: ReservationIntent, mac_obj) -> None:
@@ -371,12 +513,18 @@ def import_server_config(server, config: ServerConfigIntent) -> ImportSummary:
     """
     summary = ImportSummary()
     dhcp_server = upsert_dhcp_server(server)
+    custom_defs = _custom_def_index(config)
+
+    # Global (server-level) options.
+    upsert_options(dhcp_server, config.global_options, config.family, dhcp_server, custom_defs, summary)
+
     for subnet_intent in config.subnets:
         subnet_obj = upsert_subnet(server, dhcp_server, subnet_intent, summary)
         if subnet_obj is None:
             continue
-        upsert_pools(subnet_obj, subnet_intent, server, summary)
-        upsert_reservations(subnet_obj, subnet_intent, summary)
+        upsert_options(subnet_obj, subnet_intent.options, config.family, dhcp_server, custom_defs, summary)
+        upsert_pools(subnet_obj, subnet_intent, server, summary, dhcp_server, custom_defs)
+        upsert_reservations(subnet_obj, subnet_intent, summary, dhcp_server, custom_defs)
     return summary
 
 

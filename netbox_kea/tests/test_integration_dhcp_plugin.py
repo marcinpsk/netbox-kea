@@ -174,6 +174,126 @@ class DhcpPluginAdapterTest(TestCase):
 
 @tag("dhcp_plugin")
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class DhcpPluginOptionImportTest(TestCase):
+    """Importing Kea ``option-data`` into netbox_dhcp ``Option`` rows (real ORM + defs)."""
+
+    @classmethod
+    def setUpClass(cls):
+        if not apps.is_installed(DHCP_PLUGIN):
+            raise cls.skipException(f"{DHCP_PLUGIN} not installed")
+        super().setUpClass()
+
+    def setUp(self):
+        self.server = _make_db_server(name=f"kea-opt-{timezone.now().timestamp()}")
+        from netbox_kea.integrations import dhcp_plugin
+
+        self.adapter = dhcp_plugin
+
+    def _ct(self, model):
+        from django.contrib.contenttypes.models import ContentType
+
+        return ContentType.objects.get_for_model(model)
+
+    def test_standard_subnet_option_binds_to_shipped_definition(self):
+        Subnet = apps.get_model(DHCP_PLUGIN, "Subnet")
+        Option = apps.get_model(DHCP_PLUGIN, "Option")
+        conf = {
+            "subnet4": [
+                {
+                    "id": 1,
+                    "subnet": "10.21.0.0/24",
+                    "option-data": [
+                        {"code": 3, "name": "routers", "data": "10.21.0.1", "space": "dhcp4", "always-send": True}
+                    ],
+                }
+            ]
+        }
+        summary = self.adapter.import_server_config(self.server, parse_dhcp_config(conf, 4))
+        self.assertEqual(summary.errors, 0, summary.warnings)
+        self.assertEqual(summary.options_created, 1, summary.warnings)
+        self.assertEqual(summary.options_skipped, 0, summary.warnings)
+
+        subnet = Subnet.objects.get(prefix__prefix="10.21.0.0/24")
+        opt = Option.objects.get(assigned_object_type=self._ct(Subnet), assigned_object_id=subnet.pk)
+        self.assertEqual(opt.definition.code, 3)
+        self.assertTrue(opt.definition.standard)  # bound to the sys4-shipped standard def
+        self.assertEqual(opt.data, "10.21.0.1")
+        self.assertEqual(opt.send_option, "always-send")
+
+    def test_global_option_assigned_to_dhcp_server(self):
+        DHCPServer = apps.get_model(DHCP_PLUGIN, "DHCPServer")
+        Option = apps.get_model(DHCP_PLUGIN, "Option")
+        conf = {
+            "option-data": [{"code": 6, "name": "domain-name-servers", "data": "1.1.1.1", "space": "dhcp4"}],
+            "subnet4": [],
+        }
+        summary = self.adapter.import_server_config(self.server, parse_dhcp_config(conf, 4))
+        self.assertEqual(summary.options_created, 1, summary.warnings)
+        srv = DHCPServer.objects.get(name=self.server.name)
+        opt = Option.objects.get(assigned_object_type=self._ct(DHCPServer), assigned_object_id=srv.pk)
+        self.assertEqual(opt.definition.code, 6)
+
+    def test_custom_option_def_is_created_and_bound(self):
+        OptionDefinition = apps.get_model(DHCP_PLUGIN, "OptionDefinition")
+        Option = apps.get_model(DHCP_PLUGIN, "Option")
+        conf = {
+            "option-def": [{"code": 224, "name": "my-custom", "space": "dhcp4", "type": "string"}],
+            "subnet4": [
+                {
+                    "id": 1,
+                    "subnet": "10.22.0.0/24",
+                    "option-data": [{"code": 224, "name": "my-custom", "data": "hello", "space": "dhcp4"}],
+                }
+            ],
+        }
+        summary = self.adapter.import_server_config(self.server, parse_dhcp_config(conf, 4))
+        self.assertEqual(summary.errors, 0, summary.warnings)
+        self.assertEqual(summary.option_defs_created, 1, summary.warnings)
+        self.assertEqual(summary.options_created, 1, summary.warnings)
+
+        definition = OptionDefinition.objects.get(code=224, standard=False)
+        self.assertEqual(definition.name, "my-custom")
+        self.assertEqual(definition.dhcp_server.name, self.server.name)
+        self.assertTrue(Option.objects.filter(definition=definition).exists())
+
+    def test_unresolvable_option_is_skipped_not_fatal(self):
+        # Custom code with no option-def → no definition to bind → skipped, import still ok.
+        conf = {
+            "subnet4": [
+                {
+                    "id": 1,
+                    "subnet": "10.23.0.0/24",
+                    "option-data": [{"code": 231, "data": "x", "space": "dhcp4"}],
+                }
+            ]
+        }
+        summary = self.adapter.import_server_config(self.server, parse_dhcp_config(conf, 4))
+        self.assertEqual(summary.errors, 0)
+        self.assertEqual(summary.options_created, 0)
+        self.assertEqual(summary.options_skipped, 1, summary.warnings)
+        self.assertEqual(summary.subnets_created, 1)  # subnet still imported
+
+    def test_reimport_updates_option_not_duplicated(self):
+        Subnet = apps.get_model(DHCP_PLUGIN, "Subnet")
+        Option = apps.get_model(DHCP_PLUGIN, "Option")
+        conf = {
+            "subnet4": [
+                {"id": 1, "subnet": "10.24.0.0/24", "option-data": [{"code": 3, "data": "10.24.0.1", "space": "dhcp4"}]}
+            ]
+        }
+        self.adapter.import_server_config(self.server, parse_dhcp_config(conf, 4))
+        conf["subnet4"][0]["option-data"][0]["data"] = "10.24.0.254"
+        second = self.adapter.import_server_config(self.server, parse_dhcp_config(conf, 4))
+
+        self.assertEqual(second.options_created, 0)
+        self.assertEqual(second.options_updated, 1)
+        subnet = Subnet.objects.get(prefix__prefix="10.24.0.0/24")
+        opt = Option.objects.get(assigned_object_type=self._ct(Subnet), assigned_object_id=subnet.pk)
+        self.assertEqual(opt.data, "10.24.0.254")
+
+
+@tag("dhcp_plugin")
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class DhcpPluginStaleCleanupGuardTest(TestCase):
     """Stale-IP cleanup must never remove an IP a netbox_dhcp reservation references."""
 

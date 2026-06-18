@@ -12,6 +12,7 @@ from django.test import SimpleTestCase
 
 from netbox_kea.mappers.kea_to_dhcp import (
     RESERVATION_IDENTIFIER_TYPES,
+    OptionDefIntent,
     OptionIntent,
     parse_dhcp_config,
 )
@@ -211,6 +212,91 @@ class TestParseDhcpConfigOptions(SimpleTestCase):
             ]
         }
         self.assertEqual(parse_dhcp_config(conf, 4).shared_networks[0].options[0].code, 6)
+
+    def test_global_options_captured(self):
+        conf = {
+            "option-data": [
+                {"code": 6, "name": "domain-name-servers", "data": "1.1.1.1", "space": "dhcp4", "always-send": False}
+            ],
+            "subnet4": [],
+        }
+        opts = parse_dhcp_config(conf, 4).global_options
+        self.assertEqual(len(opts), 1)
+        self.assertEqual(opts[0].code, 6)
+        self.assertEqual(opts[0].name, "domain-name-servers")
+
+    def test_never_send_flag_captured(self):
+        conf = {"option-data": [{"code": 6, "data": "1.1.1.1", "space": "dhcp4", "never-send": True}]}
+        self.assertIs(parse_dhcp_config(conf, 4).global_options[0].never_send, True)
+
+    def test_pool_options_captured(self):
+        conf = {
+            "subnet4": [
+                {
+                    "id": 1,
+                    "subnet": "10.0.0.0/24",
+                    "pools": [
+                        {
+                            "pool": "10.0.0.10-10.0.0.99",
+                            "option-data": [{"code": 3, "data": "10.0.0.1", "space": "dhcp4"}],
+                        }
+                    ],
+                }
+            ]
+        }
+        pool = parse_dhcp_config(conf, 4).subnets[0].pools[0]
+        self.assertEqual(pool.pool, "10.0.0.10-10.0.0.99")
+        self.assertEqual(pool.options[0].code, 3)
+
+
+class TestParseDhcpConfigOptionDefs(SimpleTestCase):
+    """Custom ``option-def`` entries are parsed into OptionDefIntent."""
+
+    def test_option_def_parsed(self):
+        conf = {
+            "option-def": [
+                {
+                    "code": 222,
+                    "name": "my-opt",
+                    "space": "dhcp4",
+                    "type": "string",
+                    "array": False,
+                    "record-types": [],
+                    "encapsulate": "",
+                }
+            ]
+        }
+        defs = parse_dhcp_config(conf, 4).option_defs
+        self.assertEqual(len(defs), 1)
+        self.assertEqual(
+            defs[0],
+            OptionDefIntent(
+                code=222,
+                name="my-opt",
+                space="dhcp4",
+                type="string",
+                array=False,
+                record_types=(),
+                encapsulate=None,
+            ),
+        )
+        self.assertEqual(defs[0].match_key, ("dhcp4", 222))
+
+    def test_record_types_captured(self):
+        conf = {
+            "option-def": [
+                {"code": 223, "name": "r", "space": "dhcp4", "type": "record", "record-types": ["uint8", "string"]}
+            ]
+        }
+        self.assertEqual(parse_dhcp_config(conf, 4).option_defs[0].record_types, ("uint8", "string"))
+
+    def test_non_dict_option_def_skipped(self):
+        conf = {"option-def": ["nope", None, {"code": 224, "name": "ok", "space": "dhcp4", "type": "string"}]}
+        defs = parse_dhcp_config(conf, 4).option_defs
+        self.assertEqual([d.code for d in defs], [224])
+
+    def test_no_option_def_yields_empty(self):
+        self.assertEqual(parse_dhcp_config({"subnet4": []}, 4).option_defs, ())
 
 
 class TestParseDhcpConfigRobustness(SimpleTestCase):

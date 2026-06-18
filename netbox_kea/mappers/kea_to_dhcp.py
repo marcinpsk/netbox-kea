@@ -47,10 +47,29 @@ class OptionIntent:
     data: str
     csv_format: bool | None
     always_send: bool | None
+    never_send: bool | None = None
 
     @property
     def match_key(self) -> tuple:
         """Identity within a parent: (space, code) — or (space, name) when code is absent."""
+        return (self.space, self.code if self.code is not None else self.name)
+
+
+@dataclass(frozen=True)
+class OptionDefIntent:
+    """A Kea custom ``option-def`` entry (defines a non-standard option code)."""
+
+    code: int | None
+    name: str | None
+    space: str | None
+    type: str | None
+    array: bool | None
+    record_types: tuple[str, ...]
+    encapsulate: str | None
+
+    @property
+    def match_key(self) -> tuple:
+        """Identity: (space, code) — or (space, name) when code is absent."""
         return (self.space, self.code if self.code is not None else self.name)
 
 
@@ -89,6 +108,7 @@ class PoolIntent:
     """A Kea pool string (``start-end`` range or ``CIDR``) within a subnet."""
 
     pool: str
+    options: tuple[OptionIntent, ...] = ()
 
     @property
     def match_key(self) -> str:
@@ -125,6 +145,8 @@ class ServerConfigIntent:
     family: int
     shared_networks: list[SharedNetworkIntent] = field(default_factory=list)
     subnets: list[SubnetIntent] = field(default_factory=list)
+    global_options: tuple[OptionIntent, ...] = ()
+    option_defs: tuple[OptionDefIntent, ...] = ()
 
 
 def _option_intent(raw: dict) -> OptionIntent | None:
@@ -143,6 +165,7 @@ def _option_intent(raw: dict) -> OptionIntent | None:
         data=raw.get("data", "") or "",
         csv_format=raw.get("csv-format"),
         always_send=raw.get("always-send"),
+        never_send=raw.get("never-send"),
     )
 
 
@@ -151,6 +174,36 @@ def _options(raw_list) -> tuple[OptionIntent, ...]:
     if not isinstance(raw_list, list):
         return ()
     out = [_option_intent(o) for o in raw_list]
+    return tuple(o for o in out if o is not None)
+
+
+def _option_def_intent(raw: dict) -> OptionDefIntent | None:
+    """Normalize one Kea ``option-def`` dict; return ``None`` if not a dict."""
+    if not isinstance(raw, dict):
+        return None
+    code = raw.get("code")
+    try:
+        code = int(code) if code is not None else None
+    except (TypeError, ValueError):
+        code = None
+    record_types = raw.get("record-types")
+    record_types = tuple(str(r) for r in record_types) if isinstance(record_types, list) else ()
+    return OptionDefIntent(
+        code=code,
+        name=raw.get("name"),
+        space=raw.get("space"),
+        type=raw.get("type"),
+        array=raw.get("array"),
+        record_types=record_types,
+        encapsulate=raw.get("encapsulate") or None,
+    )
+
+
+def _option_defs(raw_list) -> tuple[OptionDefIntent, ...]:
+    """Normalize an ``option-def`` list, dropping non-dict entries."""
+    if not isinstance(raw_list, list):
+        return ()
+    out = [_option_def_intent(o) for o in raw_list]
     return tuple(o for o in out if o is not None)
 
 
@@ -185,14 +238,16 @@ def _reservation_intent(raw: dict, family: int) -> ReservationIntent | None:
 
 
 def _pools(raw_list) -> tuple[PoolIntent, ...]:
-    """Normalize a subnet's ``pools`` list to non-empty pool strings."""
+    """Normalize a subnet's ``pools`` list to non-empty pool strings (with options)."""
     if not isinstance(raw_list, list):
         return ()
     out: list[PoolIntent] = []
     for entry in raw_list:
-        pool = entry.get("pool") if isinstance(entry, dict) else None
+        if not isinstance(entry, dict):
+            continue
+        pool = entry.get("pool")
         if pool:
-            out.append(PoolIntent(pool=pool))
+            out.append(PoolIntent(pool=pool, options=_options(entry.get("option-data"))))
     return tuple(out)
 
 
@@ -238,6 +293,9 @@ def parse_dhcp_config(conf: dict, version: int) -> ServerConfigIntent:
 
     if not isinstance(conf, dict):
         return result
+
+    result.global_options = _options(conf.get("option-data"))
+    result.option_defs = _option_defs(conf.get("option-def"))
 
     for raw in conf.get(subnet_key) or []:
         subnet = _subnet_intent(raw, family, shared_network=None)
