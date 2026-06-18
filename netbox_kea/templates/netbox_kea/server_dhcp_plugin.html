@@ -19,9 +19,14 @@
         <div class="card-body">
           <p class="small text-muted mb-2">
             Import this server's live Kea data-tier configuration (subnets, pools, reservations)
-            into the NetBox DHCP plugin. Reads Kea read-only; idempotent. Shared-network grouping
-            and DHCP options are not imported yet.
+            into the NetBox DHCP plugin. Reads Kea read-only; idempotent.
           </p>
+          <div class="alert alert-warning py-2 px-3 small mb-2" role="alert">
+            <i class="mdi mdi-alert-outline" aria-hidden="true"></i>
+            Kea <strong>shared-networks</strong> are a different concept from the DHCP plugin's
+            <em>Shared Networks</em> and are <strong>not</strong> imported as such — a shared-network's
+            member subnets are imported individually. DHCP <strong>options</strong> are not imported.
+          </div>
           {% if can_sync %}
             <form method="post" action="{% url 'plugins:netbox_kea:server_dhcp_plugin_sync' object.pk %}">
               {% csrf_token %}

@@ -161,8 +161,10 @@ class Server(JobsMixin, NetBoxModel):
         default=False,
         help_text=(
             "When the NetBox DHCP plugin (netbox_dhcp) is installed, allow importing this "
-            "server's Kea data-tier config (subnets, shared networks, pools, reservations, "
-            "options) into the DHCP plugin's models. Has no effect if the plugin is absent."
+            "server's Kea data tier (subnets, pools, host reservations) into the DHCP plugin's "
+            "models. Note: Kea shared-networks are a different concept and are NOT imported as "
+            "DHCP-plugin Shared Networks (their member subnets are imported individually); DHCP "
+            "options are not imported. Has no effect if the plugin is absent."
         ),
     )
     persist_config = models.BooleanField(

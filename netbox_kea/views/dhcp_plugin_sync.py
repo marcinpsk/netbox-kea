@@ -223,9 +223,12 @@ class ServerDhcpPluginSyncNowView(View):
             )
             deferred = []
             if summary.shared_networks_deferred:
-                deferred.append(f"{summary.shared_networks_deferred} shared-network subnets flattened")
+                deferred.append(
+                    f"{summary.shared_networks_deferred} shared-network subnet(s) imported "
+                    "individually (grouping not represented)"
+                )
             if summary.options_deferred:
-                deferred.append(f"{summary.options_deferred} options deferred")
+                deferred.append(f"{summary.options_deferred} options skipped")
             if deferred:
                 text += f" ({'; '.join(deferred)})"
             if summary.errors:

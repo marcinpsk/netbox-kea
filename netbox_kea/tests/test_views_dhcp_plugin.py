@@ -149,3 +149,5 @@ class SyncNowEndToEndTest(TestCase):
             resp = self.client.get(tab_url)
         self.assertContains(resp, "Imported")
         self.assertContains(resp, "10.88.0.0/24")
+        # The tab warns that Kea shared-networks are a different concept (not imported as such).
+        self.assertContains(resp, "different concept")
