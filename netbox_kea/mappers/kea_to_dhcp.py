@@ -36,6 +36,74 @@ RESERVATION_IDENTIFIER_TYPES: tuple[str, ...] = (
     "flex-id",
 )
 
+# Scalar Kea config keys that map onto netbox_dhcp tuning fields (lifetimes, timers,
+# lease/DDNS/BOOTP/network settings, and server-level globals).  ``config-get``
+# returns these fully defaulted+inherited at both the global and subnet scope; the
+# adapter decides which apply to which model and suppresses values inherited from
+# the parent.  Captured verbatim here (the Kea→sys4 field mapping lives in the adapter).
+KEA_SETTINGS_KEYS: tuple[str, ...] = (
+    # lifetimes / timers
+    "valid-lifetime",
+    "min-valid-lifetime",
+    "max-valid-lifetime",
+    "preferred-lifetime",
+    "min-preferred-lifetime",
+    "max-preferred-lifetime",
+    "offer-lifetime",
+    "renew-timer",
+    "rebind-timer",
+    # lease behaviour
+    "match-client-id",
+    "authoritative",
+    "reservations-global",
+    "reservations-out-of-pool",
+    "reservations-in-subnet",
+    "calculate-tee-times",
+    "t1-percent",
+    "t2-percent",
+    "cache-threshold",
+    "cache-max-age",
+    "store-extended-info",
+    "allocator",
+    "pd-allocator",
+    # DDNS
+    "ddns-send-updates",
+    "ddns-override-no-update",
+    "ddns-override-client-update",
+    "ddns-replace-client-name",
+    "ddns-generated-prefix",
+    "ddns-qualifying-suffix",
+    "ddns-update-on-renew",
+    "ddns-conflict-resolution-mode",
+    "ddns-ttl-percent",
+    "ddns-ttl",
+    "ddns-ttl-min",
+    "ddns-ttl-max",
+    "hostname-char-set",
+    "hostname-char-replacement",
+    # BOOTP
+    "next-server",
+    "server-hostname",
+    "boot-file-name",
+    # network (subnet)
+    "relay",
+    "interface-id",
+    "rapid-commit",
+    # server-level globals
+    "decline-probation-period",
+    "host-reservation-identifiers",
+    "echo-client-id",
+    "relay-supplied-options",
+    "server-id",
+)
+
+
+def _settings(raw: dict) -> dict:
+    """Extract the subset of :data:`KEA_SETTINGS_KEYS` present in a Kea config dict."""
+    if not isinstance(raw, dict):
+        return {}
+    return {k: raw[k] for k in KEA_SETTINGS_KEYS if k in raw}
+
 
 @dataclass(frozen=True)
 class OptionIntent:
@@ -127,6 +195,7 @@ class SubnetIntent:
     pools: tuple[PoolIntent, ...]
     reservations: tuple[ReservationIntent, ...]
     options: tuple[OptionIntent, ...]
+    settings: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -147,6 +216,7 @@ class ServerConfigIntent:
     subnets: list[SubnetIntent] = field(default_factory=list)
     global_options: tuple[OptionIntent, ...] = ()
     option_defs: tuple[OptionDefIntent, ...] = ()
+    global_settings: dict = field(default_factory=dict)
 
 
 def _option_intent(raw: dict) -> OptionIntent | None:
@@ -274,6 +344,7 @@ def _subnet_intent(raw: dict, family: int, shared_network: str | None) -> Subnet
         pools=_pools(raw.get("pools")),
         reservations=reservations,
         options=_options(raw.get("option-data")),
+        settings=_settings(raw),
     )
 
 
@@ -296,6 +367,7 @@ def parse_dhcp_config(conf: dict, version: int) -> ServerConfigIntent:
 
     result.global_options = _options(conf.get("option-data"))
     result.option_defs = _option_defs(conf.get("option-def"))
+    result.global_settings = _settings(conf)
 
     for raw in conf.get(subnet_key) or []:
         subnet = _subnet_intent(raw, family, shared_network=None)

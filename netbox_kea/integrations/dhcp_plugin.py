@@ -24,6 +24,11 @@ v1 scope (import + diff, read-only against Kea):
   the sys4-shipped standard ``OptionDefinition`` (by space+code), or to a
   server-scoped custom definition created from a Kea ``option-def``.  Options
   whose definition cannot be resolved are skipped (counted), never fatal.
+* **Tuning fields** (lifetimes, timers, lease/DDNS/BOOTP/network settings) are
+  imported onto the ``DHCPServer`` (global) and ``Subnet``.  ``config-get`` returns
+  these fully defaulted and inherited, so each subnet field is stored **only when
+  it differs from the DHCPServer parent** (parent-diff suppression) — otherwise it
+  is left blank to inherit, keeping the records minimal and faithful.
 * **Deferred** (reported, not imported): shared-network grouping (the plugin's
   ``SharedNetwork`` requires a prefix Kea does not model — member subnets are
   flattened onto the ``DHCPServer``).
@@ -323,6 +328,174 @@ def upsert_options(parent_obj, options, family: int, dhcp_server, custom_defs, s
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Tuning fields (lifetimes/timers/lease/DDNS/BOOTP/network) — Kea key → sys4 field
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _decimal(value):
+    """Coerce a Kea numeric to ``Decimal`` via ``str`` (avoids float-precision noise)."""
+    from decimal import Decimal
+
+    return None if value is None else Decimal(str(value))
+
+
+def _norm_ddns_replace(value):
+    """Map Kea ``ddns-replace-client-name`` (hyphenated) to the plugin's underscored choice."""
+    return value.replace("-", "_") if isinstance(value, str) else value
+
+
+def _relay_to_str(value):
+    """Flatten a Kea ``relay`` (``{"ip-addresses": [...]}``) to the plugin's CSV string."""
+    if isinstance(value, dict):
+        addrs = value.get("ip-addresses") or []
+    elif isinstance(value, list):
+        addrs = value
+    else:
+        return value or None
+    return ", ".join(addrs) if addrs else None
+
+
+def _server_id_type(value):
+    """Reduce a Kea ``server-id`` dict to its ``type`` (the plugin stores only the type)."""
+    return value.get("type") if isinstance(value, dict) else value
+
+
+def _hr_identifiers(value):
+    """Keep only host-reservation identifier types the plugin's choice set knows."""
+    if not isinstance(value, list):
+        return None
+    valid = {"circuit-id", "hw-address", "duid", "client-id"}
+    return [x for x in value if x in valid] or None
+
+
+# (kea_key, sys4_attr, transform). Fields shared by DHCPServer + Subnet.
+_COMMON_FIELDS: tuple[tuple[str, str, object], ...] = (
+    ("valid-lifetime", "valid_lifetime", None),
+    ("min-valid-lifetime", "min_valid_lifetime", None),
+    ("max-valid-lifetime", "max_valid_lifetime", None),
+    ("preferred-lifetime", "preferred_lifetime", None),
+    ("min-preferred-lifetime", "min_preferred_lifetime", None),
+    ("max-preferred-lifetime", "max_preferred_lifetime", None),
+    ("offer-lifetime", "offer_lifetime", None),
+    ("renew-timer", "renew_timer", None),
+    ("rebind-timer", "rebind_timer", None),
+    ("match-client-id", "match_client_id", None),
+    ("authoritative", "authoritative", None),
+    ("reservations-global", "reservations_global", None),
+    ("reservations-out-of-pool", "reservations_out_of_pool", None),
+    ("reservations-in-subnet", "reservations_in_subnet", None),
+    ("calculate-tee-times", "calculate_tee_times", None),
+    ("t1-percent", "t1_percent", _decimal),
+    ("t2-percent", "t2_percent", _decimal),
+    ("cache-threshold", "cache_threshold", _decimal),
+    ("cache-max-age", "cache_max_age", None),
+    ("store-extended-info", "store_extended_info", None),
+    ("allocator", "allocator", None),
+    ("pd-allocator", "pd_allocator", None),
+    ("ddns-send-updates", "ddns_send_updates", None),
+    ("ddns-override-no-update", "ddns_override_no_update", None),
+    ("ddns-override-client-update", "ddns_override_client_update", None),
+    ("ddns-replace-client-name", "ddns_replace_client_name", _norm_ddns_replace),
+    ("ddns-generated-prefix", "ddns_generated_prefix", None),
+    ("ddns-qualifying-suffix", "ddns_qualifying_suffix", None),
+    ("ddns-update-on-renew", "ddns_update_on_renew", None),
+    ("ddns-conflict-resolution-mode", "ddns_conflict_resolution_mode", None),
+    ("ddns-ttl-percent", "ddns_ttl_percent", _decimal),
+    ("ddns-ttl", "ddns_ttl", None),
+    ("ddns-ttl-min", "ddns_ttl_min", None),
+    ("ddns-ttl-max", "ddns_ttl_max", None),
+    ("hostname-char-set", "hostname_char_set", None),
+    ("hostname-char-replacement", "hostname_char_replacement", None),
+    ("next-server", "next_server", None),
+    ("server-hostname", "server_hostname", None),
+    ("boot-file-name", "boot_file_name", None),
+)
+
+_SUBNET_FIELDS: tuple[tuple[str, str, object], ...] = _COMMON_FIELDS + (
+    ("relay", "relay", _relay_to_str),
+    ("interface-id", "interface_id", None),
+    ("rapid-commit", "rapid_commit", None),
+)
+
+_SERVER_FIELDS: tuple[tuple[str, str, object], ...] = _COMMON_FIELDS + (
+    ("decline-probation-period", "decline_probation_period", None),
+    ("host-reservation-identifiers", "host_reservation_identifiers", _hr_identifiers),
+    ("echo-client-id", "echo_client_id", None),
+    ("relay-supplied-options", "relay_supplied_options", None),
+    ("server-id", "server_id", _server_id_type),
+)
+
+
+def _is_unset(value) -> bool:
+    """Return ``True`` for values treated as 'not configured' (None / empty str / empty list)."""
+    return value is None or value == "" or value == []
+
+
+def _transform_value(transform, raw, kea_key: str, summary: ImportSummary):
+    """Apply a field transform, returning ``None`` (and warning) if it raises."""
+    if transform is None:
+        return raw
+    try:
+        return transform(raw)
+    except Exception as exc:  # noqa: BLE001 — a bad scalar must not abort the import
+        summary.warn(f"setting {kea_key}: {exc}")
+        return None
+
+
+def _apply_global_settings(dhcp_server, settings: dict, summary: ImportSummary) -> None:
+    """Populate ``DHCPServer`` global tuning fields from a Kea config block.
+
+    Only fills fields that are currently unset, so a dual-stack server's first
+    (DHCPv4) import wins shared fields and the DHCPv6 import fills the gaps (e.g.
+    ``preferred-lifetime``, ``pd-allocator``) — netbox_dhcp has a single
+    ``DHCPServer`` row spanning both protocols.
+    """
+    if not settings:
+        return
+    model_fields = {f.name for f in dhcp_server._meta.get_fields()}
+    changed = False
+    for kea_key, attr, transform in _SERVER_FIELDS:
+        if attr not in model_fields or kea_key not in settings:
+            continue
+        if not _is_unset(getattr(dhcp_server, attr, None)):
+            continue  # already set (e.g. by the other protocol) — don't clobber
+        value = _transform_value(transform, settings[kea_key], kea_key, summary)
+        if _is_unset(value):
+            continue
+        setattr(dhcp_server, attr, value)
+        changed = True
+    if changed:
+        try:
+            dhcp_server.save()
+        except Exception as exc:  # noqa: BLE001
+            summary.errors += 1
+            summary.warn(f"DHCPServer settings: {exc}")
+
+
+def _apply_subnet_settings(subnet_obj, dhcp_server, settings: dict, summary: ImportSummary) -> bool:
+    """Set subnet tuning fields only where they differ from the stored DHCPServer parent.
+
+    This is the parent-diff suppression: ``config-get`` returns every value fully
+    inherited, so a subnet value equal to the server's is left blank (it inherits).
+    Returns ``True`` if any field on *subnet_obj* changed.
+    """
+    model_fields = {f.name for f in subnet_obj._meta.get_fields()}
+    changed = False
+    for kea_key, attr, transform in _SUBNET_FIELDS:
+        if attr not in model_fields or kea_key not in settings:
+            continue
+        value = _transform_value(transform, settings[kea_key], kea_key, summary)
+        if _is_unset(value):
+            continue
+        if value == getattr(dhcp_server, attr, None):
+            continue  # inherited from the DHCPServer parent — leave blank
+        if getattr(subnet_obj, attr, None) != value:
+            setattr(subnet_obj, attr, value)
+            changed = True
+    return changed
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Upserts
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -387,6 +560,8 @@ def upsert_subnet(server, dhcp_server, intent: SubnetIntent, summary: ImportSumm
                 existing.dhcp_server = dhcp_server
                 existing.shared_network = None
                 changed = True
+            if _apply_subnet_settings(existing, dhcp_server, intent.settings, summary):
+                changed = True
             if changed:
                 existing.save()
                 summary.subnets_updated += 1
@@ -399,6 +574,7 @@ def upsert_subnet(server, dhcp_server, intent: SubnetIntent, summary: ImportSumm
                 dhcp_server=dhcp_server,
                 shared_network=None,
             )
+            _apply_subnet_settings(subnet_obj, dhcp_server, intent.settings, summary)
             subnet_obj.save()
             summary.subnets_created += 1
             if intent.kea_subnet_id is not None:
@@ -515,7 +691,8 @@ def import_server_config(server, config: ServerConfigIntent) -> ImportSummary:
     dhcp_server = upsert_dhcp_server(server)
     custom_defs = _custom_def_index(config)
 
-    # Global (server-level) options.
+    # Global (server-level) tuning fields + options.
+    _apply_global_settings(dhcp_server, config.global_settings, summary)
     upsert_options(dhcp_server, config.global_options, config.family, dhcp_server, custom_defs, summary)
 
     for subnet_intent in config.subnets:

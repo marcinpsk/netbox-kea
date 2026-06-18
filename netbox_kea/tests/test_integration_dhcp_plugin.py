@@ -294,6 +294,115 @@ class DhcpPluginOptionImportTest(TestCase):
 
 @tag("dhcp_plugin")
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class DhcpPluginTuningImportTest(TestCase):
+    """Tuning fields land on DHCPServer/Subnet with parent-diff suppression (real ORM)."""
+
+    @classmethod
+    def setUpClass(cls):
+        if not apps.is_installed(DHCP_PLUGIN):
+            raise cls.skipException(f"{DHCP_PLUGIN} not installed")
+        super().setUpClass()
+
+    def setUp(self):
+        self.server = _make_db_server(name=f"kea-tune-{timezone.now().timestamp()}")
+        from netbox_kea.integrations import dhcp_plugin
+
+        self.adapter = dhcp_plugin
+
+    def test_global_settings_applied_to_dhcp_server(self):
+        from decimal import Decimal
+
+        DHCPServer = apps.get_model(DHCP_PLUGIN, "DHCPServer")
+        conf = {
+            "valid-lifetime": 3600,
+            "renew-timer": 900,
+            "allocator": "iterative",
+            "t1-percent": 0.5,
+            "decline-probation-period": 86400,
+            "ddns-replace-client-name": "when-not-present",
+            "server-id": {"type": "LLT", "enterprise-id": 0},
+            "host-reservation-identifiers": ["hw-address", "duid", "circuit-id", "client-id"],
+            "subnet4": [],
+        }
+        self.adapter.import_server_config(self.server, parse_dhcp_config(conf, 4))
+
+        srv = DHCPServer.objects.get(name=self.server.name)
+        self.assertEqual(srv.valid_lifetime, 3600)
+        self.assertEqual(srv.renew_timer, 900)
+        self.assertEqual(srv.allocator, "iterative")
+        self.assertEqual(srv.t1_percent, Decimal("0.5"))
+        self.assertEqual(srv.decline_probation_period, 86400)
+        # hyphenated Kea value normalized to the plugin's underscored choice
+        self.assertEqual(srv.ddns_replace_client_name, "when_not_present")
+        # server-id dict reduced to its type
+        self.assertEqual(srv.server_id, "LLT")
+        self.assertEqual(srv.host_reservation_identifiers, ["hw-address", "duid", "circuit-id", "client-id"])
+
+    def test_subnet_value_equal_to_global_is_suppressed(self):
+        Subnet = apps.get_model(DHCP_PLUGIN, "Subnet")
+        conf = {
+            "valid-lifetime": 3600,
+            "subnet4": [
+                # subnet repeats the (inherited) global value — must NOT be stored on the subnet
+                {"id": 1, "subnet": "10.30.0.0/24", "valid-lifetime": 3600},
+            ],
+        }
+        self.adapter.import_server_config(self.server, parse_dhcp_config(conf, 4))
+        subnet = Subnet.objects.get(prefix__prefix="10.30.0.0/24")
+        self.assertIsNone(subnet.valid_lifetime)  # inherits from the DHCPServer parent
+
+    def test_subnet_value_differing_from_global_is_stored(self):
+        Subnet = apps.get_model(DHCP_PLUGIN, "Subnet")
+        conf = {
+            "valid-lifetime": 3600,
+            "subnet4": [
+                {"id": 1, "subnet": "10.31.0.0/24", "valid-lifetime": 7200, "relay": {"ip-addresses": ["10.31.0.3"]}},
+            ],
+        }
+        self.adapter.import_server_config(self.server, parse_dhcp_config(conf, 4))
+        subnet = Subnet.objects.get(prefix__prefix="10.31.0.0/24")
+        self.assertEqual(subnet.valid_lifetime, 7200)  # genuine per-subnet override stored
+        self.assertEqual(subnet.relay, "10.31.0.3")  # relay dict flattened to CSV
+
+    def test_v6_style_decimal_does_not_raise(self):
+        # 0.8 has no exact float repr; the str-based Decimal coercion must keep it clean.
+        from decimal import Decimal
+
+        Subnet = apps.get_model(DHCP_PLUGIN, "Subnet")
+        conf = {
+            "t2-percent": 0.5,
+            "subnet6": [{"id": 1, "subnet": "2001:db8:30::/64", "t2-percent": 0.8}],
+        }
+        summary = self.adapter.import_server_config(self.server, parse_dhcp_config(conf, 6))
+        self.assertEqual(summary.errors, 0, summary.warnings)
+        subnet = Subnet.objects.get(prefix__prefix="2001:db8:30::/64")
+        self.assertEqual(subnet.t2_percent, Decimal("0.8"))
+
+    def test_dualstack_global_first_family_wins_shared_fields(self):
+        DHCPServer = apps.get_model(DHCP_PLUGIN, "DHCPServer")
+        # v4 sets shared valid-lifetime; v6 supplies preferred-lifetime and a *different*
+        # valid-lifetime that must NOT clobber v4's (single DHCPServer spans both).
+        self.adapter.import_server_config(self.server, parse_dhcp_config({"valid-lifetime": 3600, "subnet4": []}, 4))
+        self.adapter.import_server_config(
+            self.server, parse_dhcp_config({"valid-lifetime": 4000, "preferred-lifetime": 3000, "subnet6": []}, 6)
+        )
+        srv = DHCPServer.objects.get(name=self.server.name)
+        self.assertEqual(srv.valid_lifetime, 3600)  # v4 (first) wins the shared field
+        self.assertEqual(srv.preferred_lifetime, 3000)  # v6 fills the gap
+
+    def test_tuning_reimport_is_idempotent(self):
+        conf = {
+            "valid-lifetime": 3600,
+            "subnet4": [{"id": 1, "subnet": "10.32.0.0/24", "valid-lifetime": 7200}],
+        }
+        self.adapter.import_server_config(self.server, parse_dhcp_config(conf, 4))
+        second = self.adapter.import_server_config(self.server, parse_dhcp_config(conf, 4))
+        self.assertEqual(second.subnets_created, 0)
+        self.assertEqual(second.subnets_updated, 0)  # nothing changed → not reported as updated
+
+
+@tag("dhcp_plugin")
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class DhcpPluginStaleCleanupGuardTest(TestCase):
     """Stale-IP cleanup must never remove an IP a netbox_dhcp reservation references."""
 

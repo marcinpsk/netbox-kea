@@ -299,6 +299,51 @@ class TestParseDhcpConfigOptionDefs(SimpleTestCase):
         self.assertEqual(parse_dhcp_config({"subnet4": []}, 4).option_defs, ())
 
 
+class TestParseDhcpConfigSettings(SimpleTestCase):
+    """Scalar tuning keys are captured verbatim at global + subnet scope."""
+
+    def test_global_settings_captured(self):
+        conf = {
+            "valid-lifetime": 3600,
+            "allocator": "iterative",
+            "t1-percent": 0.5,
+            "server-id": {"type": "LLT", "enterprise-id": 0},
+            "host-reservation-identifiers": ["hw-address", "duid"],
+            "not-a-tuning-key": "ignored",
+            "subnet4": [],
+        }
+        gs = parse_dhcp_config(conf, 4).global_settings
+        self.assertEqual(gs["valid-lifetime"], 3600)
+        self.assertEqual(gs["allocator"], "iterative")
+        self.assertEqual(gs["t1-percent"], 0.5)
+        self.assertEqual(gs["server-id"], {"type": "LLT", "enterprise-id": 0})
+        self.assertEqual(gs["host-reservation-identifiers"], ["hw-address", "duid"])
+        self.assertNotIn("not-a-tuning-key", gs)
+
+    def test_subnet_settings_captured(self):
+        conf = {
+            "subnet4": [
+                {
+                    "id": 1,
+                    "subnet": "10.0.0.0/24",
+                    "valid-lifetime": 7200,
+                    "relay": {"ip-addresses": ["10.0.0.3"]},
+                    "rapid-commit": False,
+                }
+            ]
+        }
+        settings = parse_dhcp_config(conf, 4).subnets[0].settings
+        self.assertEqual(settings["valid-lifetime"], 7200)
+        self.assertEqual(settings["relay"], {"ip-addresses": ["10.0.0.3"]})
+        self.assertIs(settings["rapid-commit"], False)
+
+    def test_settings_default_empty(self):
+        conf = {"subnet4": [{"id": 1, "subnet": "10.0.0.0/24"}]}
+        result = parse_dhcp_config(conf, 4)
+        self.assertEqual(result.global_settings, {})
+        self.assertEqual(result.subnets[0].settings, {})
+
+
 class TestParseDhcpConfigRobustness(SimpleTestCase):
     def test_subnet_without_cidr_is_skipped(self):
         conf = {"subnet4": [{"id": 1}, {"id": 2, "subnet": "10.0.0.0/24"}]}
