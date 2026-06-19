@@ -45,14 +45,22 @@ def _enabled_versions(server: Server) -> list[int]:
 
 
 def _extract_dhcp_conf(resp, version: int) -> dict | None:
-    """Pull the ``Dhcp4``/``Dhcp6`` block out of a ``config-get`` response, or ``None``."""
+    """Pull the ``Dhcp4``/``Dhcp6`` block out of a ``config-get`` response, or ``None``.
+
+    Raises ``RuntimeError`` on a malformed response *shape* so a protocol/contract
+    failure is surfaced rather than silently downgraded to "no config". Returns
+    ``None`` only for the legitimate cases: a non-zero Kea ``result`` or this
+    version's block simply being absent.
+    """
     dhcp_key = f"Dhcp{version}"
     if not isinstance(resp, list) or not resp or not isinstance(resp[0], dict):
-        return None
+        raise RuntimeError("Malformed Kea config-get response: expected a non-empty list of dicts")
     if resp[0].get("result") != 0:
         return None
     args = resp[0].get("arguments") or {}
-    conf = args.get(dhcp_key) if isinstance(args, dict) else None
+    if not isinstance(args, dict):
+        raise RuntimeError("Malformed Kea config-get response: 'arguments' must be a dict")
+    conf = args.get(dhcp_key)
     return conf if isinstance(conf, dict) else None
 
 
@@ -68,10 +76,10 @@ def _fetch_config_intent(server: Server, version: int, *, with_reservations: boo
     try:
         client = server.get_client(version=version)
         resp = client.command("config-get", service=[f"dhcp{version}"])
-    except (KeaException, requests.RequestException, ValueError):
+        conf = _extract_dhcp_conf(resp, version)
+    except (KeaException, requests.RequestException, ValueError, RuntimeError):
         logger.warning("DHCP-plugin sync: config-get failed for %s (v%s)", server.name, version, exc_info=True)
         return None
-    conf = _extract_dhcp_conf(resp, version)
     if conf is None:
         return None
     intent = parse_dhcp_config(conf, version)
@@ -231,7 +239,13 @@ class ServerDhcpPluginSyncNowView(View):
 
         try:
             results = run_dhcp_plugin_import(server)
-        except Exception:
+        except (KeaException, requests.RequestException, ValueError):
+            # Expected external-boundary failures (Kea read / validation);
+            # PartialPersistError is a KeaException subclass and lands here too.
+            logger.exception("DHCP-plugin import failed for server %s (Kea read/validation)", server.name)
+            messages.error(request, "An internal error occurred during the DHCP-plugin import.")
+            return redirect
+        except Exception:  # noqa: BLE001 — DB/unexpected errors are logged here, never leaked as a 500 traceback
             logger.exception("DHCP-plugin import failed for server %s", server.name)
             messages.error(request, "An internal error occurred during the DHCP-plugin import.")
             return redirect

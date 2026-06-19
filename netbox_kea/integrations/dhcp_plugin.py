@@ -631,13 +631,13 @@ def upsert_subnet(server, dhcp_server, intent: SubnetIntent, summary: ImportSumm
     Subnet = _model("Subnet")
     KeaDhcpLink = _link_model()
 
-    prefix_obj = _ensure_prefix(intent.cidr, server.sync_vrf)
-
     existing = None
     if intent.kea_subnet_id is not None:
         existing = _linked_subnet(server, intent.family, intent.kea_subnet_id)
 
     try:
+        # Inside the try so one bad CIDR is counted as a per-subnet error, not fatal.
+        prefix_obj = _ensure_prefix(intent.cidr, server.sync_vrf)
         if existing is not None:
             changed = False
             if existing.prefix_id != prefix_obj.pk:
@@ -665,13 +665,17 @@ def upsert_subnet(server, dhcp_server, intent: SubnetIntent, summary: ImportSumm
             subnet_obj.save()
             summary.subnets_created += 1
             if intent.kea_subnet_id is not None:
+                # Key on the authoritative Kea identity, not the sys4 object: a stale
+                # link (its subnet deleted out from under it) must be *relinked* to the
+                # new subnet, not collide with the keadhcplink_unique_subnet_identity
+                # constraint as a fresh (object_type, object_id) create would.
                 KeaDhcpLink.objects.update_or_create(
-                    object_type=ContentType.objects.get_for_model(Subnet),
-                    object_id=subnet_obj.pk,
+                    server=server,
+                    family=intent.family,
+                    kea_subnet_id=intent.kea_subnet_id,
                     defaults={
-                        "server": server,
-                        "family": intent.family,
-                        "kea_subnet_id": intent.kea_subnet_id,
+                        "object_type": ContentType.objects.get_for_model(Subnet),
+                        "object_id": subnet_obj.pk,
                     },
                 )
     except Exception as exc:  # noqa: BLE001 — one bad subnet must not abort the import
@@ -737,8 +741,6 @@ def _upsert_reservation(res, subnet_obj, dhcp_server, cidr, kea_subnet_id, famil
         summary.warn(f"reservation in {scope} has no identifier — skipped")
         return
 
-    ipv4_ip, ipv6_ips, mac_obj = _ensure_reservation_addresses(res, kea_subnet_id, cidr, family)
-
     if subnet_obj is not None:
         base = HostReservation.objects.filter(subnet=subnet_obj)
         scope_name = subnet_obj.name
@@ -747,6 +749,8 @@ def _upsert_reservation(res, subnet_obj, dhcp_server, cidr, kea_subnet_id, famil
         scope_name = dhcp_server.name
 
     try:
+        # Inside the try so a resolver failure is counted per-reservation, not fatal.
+        ipv4_ip, ipv6_ips, mac_obj = _ensure_reservation_addresses(res, kea_subnet_id, cidr, family)
         obj = _find_reservation(base, res, mac_obj)
         created = obj is None
         if obj is None:
@@ -760,7 +764,9 @@ def _upsert_reservation(res, subnet_obj, dhcp_server, cidr, kea_subnet_id, famil
         if res.family == 4:
             obj.ipv4_address = ipv4_ip
         obj.save()
-        if res.family == 6 and ipv6_ips:
+        if res.family == 6:
+            # set() unconditionally so re-importing a reservation that dropped its
+            # IPv6 addresses clears the stale M2M relations (empty list = clear).
             obj.ipv6_addresses.set(ipv6_ips)
         if created:
             summary.reservations_created += 1

@@ -1524,5 +1524,12 @@ def iter_reservations(client: "KeaClient", service: str, limit: int = 100) -> It
         # Stop when Kea's cursor resets, or an empty page (guards against a loop).
         if not page or (next_from == 0 and next_source == 0):
             break
+        # Guard against a stalled cursor: a non-empty page whose cursor did not
+        # advance would otherwise loop forever and hang the worker.
+        if next_from == from_index and next_source == source_index:
+            raise RuntimeError(
+                f"reservation-get-page cursor did not advance for {service}: "
+                f"source-index={next_source}, from={next_from}"
+            )
         from_index = next_from
         source_index = next_source

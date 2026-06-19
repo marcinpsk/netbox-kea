@@ -1130,11 +1130,16 @@ def _fetch_reservation_by_ip(client: KeaClient, version: int) -> tuple[dict[str,
     """
     reservation_by_ip: dict[str, dict] = {}
     for r in iter_reservations(client, f"dhcp{version}", limit=1000):
-        if "ip-address" in r:
-            reservation_by_ip[r["ip-address"]] = r
-        elif "ip-addresses" in r:
-            for addr in r["ip-addresses"]:
-                reservation_by_ip[addr] = r
+        # Normalize: Kea may send a null/non-list ip-addresses; iterating it raw
+        # would TypeError and break lease-page rendering.
+        ip = r.get("ip-address")
+        if isinstance(ip, str) and ip:
+            reservation_by_ip[ip] = r
+        raw_addrs = r.get("ip-addresses")
+        if isinstance(raw_addrs, list):
+            for addr in raw_addrs:
+                if isinstance(addr, str) and addr:
+                    reservation_by_ip[addr] = r
     return reservation_by_ip, True
 
 

@@ -11,6 +11,7 @@ directly; the ORM, IPAM/DCIM models, and the ``netbox_dhcp`` models are all real
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
 from django.apps import apps
 from django.test import TestCase, override_settings, tag
@@ -172,6 +173,117 @@ class DhcpPluginAdapterTest(TestCase):
         # Flattened onto the DHCPServer, not a (prefix-requiring) SharedNetwork.
         self.assertIsNotNone(subnet.dhcp_server)
         self.assertIsNone(subnet.shared_network)
+
+    # ── per-object error isolation ───────────────────────────────────────────
+
+    def test_bad_cidr_is_per_subnet_error_not_fatal(self):
+        """One unparseable subnet CIDR is counted as an error; other subnets still import."""
+        Subnet = apps.get_model(DHCP_PLUGIN, "Subnet")
+        conf = {
+            "subnet4": [
+                {"id": 1, "subnet": "not-a-cidr"},  # _ensure_prefix raises → caught per-subnet
+                {"id": 2, "subnet": "10.51.0.0/24"},
+            ]
+        }
+        summary = self.adapter.import_server_config(self.server, parse_dhcp_config(conf, 4))
+        self.assertGreaterEqual(summary.errors, 1)
+        # The bad subnet did not abort the import: the good one is present.
+        self.assertTrue(Subnet.objects.filter(prefix__prefix="10.51.0.0/24").exists())
+        self.assertEqual(summary.subnets_created, 1)
+
+    def test_reservation_resolver_failure_is_per_reservation(self):
+        """A resolver error on one reservation does not stop the others in the subnet."""
+        HostReservation = apps.get_model(DHCP_PLUGIN, "HostReservation")
+        conf = {
+            "subnet4": [
+                {
+                    "id": 3,
+                    "subnet": "10.53.0.0/24",
+                    "reservations": [
+                        {"hw-address": "aa:bb:cc:dd:ee:a1", "ip-address": "10.53.0.10", "hostname": "r1"},
+                        {"hw-address": "aa:bb:cc:dd:ee:a2", "ip-address": "10.53.0.11", "hostname": "r2"},
+                    ],
+                }
+            ]
+        }
+        real = self.adapter._ensure_reservation_addresses
+        calls = {"n": 0}
+
+        def flaky(res, *args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("resolver boom")
+            return real(res, *args, **kwargs)
+
+        with patch.object(self.adapter, "_ensure_reservation_addresses", side_effect=flaky):
+            summary = self.adapter.import_server_config(self.server, parse_dhcp_config(conf, 4))
+
+        self.assertGreaterEqual(summary.errors, 1)
+        self.assertEqual(summary.reservations_created, 1)
+        self.assertTrue(HostReservation.objects.filter(hostname="r2").exists())
+
+    # ── idempotency edge cases ────────────────────────────────────────────────
+
+    def test_stale_link_is_relinked_not_collided(self):
+        """A dangling KeaDhcpLink (its subnet deleted) is relinked on re-import."""
+        from netbox_kea.models import KeaDhcpLink
+
+        Subnet = apps.get_model(DHCP_PLUGIN, "Subnet")
+        conf = {"subnet4": [{"id": 1, "subnet": "10.52.0.0/24"}]}  # bare: deletable without children
+
+        self.adapter.import_server_config(self.server, parse_dhcp_config(conf, 4))
+        link = KeaDhcpLink.objects.get(server=self.server, family=4, kea_subnet_id=1)
+        old_pk = link.sys4_object.pk
+
+        # Subnet deleted out from under the link; the link row survives, dangling.
+        Subnet.objects.filter(pk=old_pk).delete()
+        link.refresh_from_db()
+        self.assertIsNone(link.sys4_object)
+
+        # Re-import must relink the stale identity row, not violate the
+        # keadhcplink_unique_subnet_identity constraint by creating a duplicate.
+        summary = self.adapter.import_server_config(self.server, parse_dhcp_config(conf, 4))
+        self.assertEqual(summary.errors, 0, summary.warnings)
+        links = KeaDhcpLink.objects.filter(server=self.server, family=4, kea_subnet_id=1)
+        self.assertEqual(links.count(), 1)
+        new_subnet = links.first().sys4_object
+        self.assertIsNotNone(new_subnet)
+        self.assertNotEqual(new_subnet.pk, old_pk)
+
+    def test_reimport_clears_dropped_ipv6_addresses(self):
+        """Re-importing a v6 reservation that lost its addresses clears the stale M2M relations."""
+        HostReservation = apps.get_model(DHCP_PLUGIN, "HostReservation")
+        with_addrs = {
+            "subnet6": [
+                {
+                    "id": 4,
+                    "subnet": "2001:db8:53::/64",
+                    "reservations": [
+                        {
+                            "duid": "0a:0b:0c",
+                            "ip-addresses": ["2001:db8:53::10", "2001:db8:53::11"],
+                            "hostname": "v6r",
+                        }
+                    ],
+                }
+            ]
+        }
+        self.adapter.import_server_config(self.server, parse_dhcp_config(with_addrs, 6))
+        res = HostReservation.objects.get(hostname="v6r")
+        self.assertEqual(res.ipv6_addresses.count(), 2)
+
+        without_addrs = {
+            "subnet6": [
+                {
+                    "id": 4,
+                    "subnet": "2001:db8:53::/64",
+                    "reservations": [{"duid": "0a:0b:0c", "ip-addresses": [], "hostname": "v6r"}],
+                }
+            ]
+        }
+        self.adapter.import_server_config(self.server, parse_dhcp_config(without_addrs, 6))
+        res.refresh_from_db()
+        self.assertEqual(res.ipv6_addresses.count(), 0)
 
 
 @tag("dhcp_plugin")

@@ -58,20 +58,36 @@ class _FakeKeaClient(KeaClient):
 
 
 class ExtractDhcpConfTest(SimpleTestCase):
-    """`_extract_dhcp_conf` pulls the right block and rejects malformed shapes."""
+    """`_extract_dhcp_conf` pulls the right block and *raises* on malformed shapes."""
 
     def test_extracts_dhcp4_block(self):
         resp = [{"result": 0, "arguments": {"Dhcp4": {"subnet4": []}}}]
         self.assertEqual(dps._extract_dhcp_conf(resp, 4), {"subnet4": []})
 
     def test_wrong_result_code_returns_none(self):
+        # A non-zero Kea result is a legitimate "no config", not a contract failure.
         self.assertIsNone(dps._extract_dhcp_conf([{"result": 1, "arguments": {"Dhcp4": {}}}], 4))
 
-    def test_non_list_returns_none(self):
-        self.assertIsNone(dps._extract_dhcp_conf({"not": "a list"}, 4))
-
     def test_missing_block_returns_none(self):
+        # The version's block simply being absent is legitimate "no config".
         self.assertIsNone(dps._extract_dhcp_conf([{"result": 0, "arguments": {}}], 6))
+
+    def test_non_list_raises(self):
+        # Malformed *shape* must surface, not be silently downgraded to "no config".
+        with self.assertRaises(RuntimeError):
+            dps._extract_dhcp_conf({"not": "a list"}, 4)
+
+    def test_empty_list_raises(self):
+        with self.assertRaises(RuntimeError):
+            dps._extract_dhcp_conf([], 4)
+
+    def test_non_dict_item_raises(self):
+        with self.assertRaises(RuntimeError):
+            dps._extract_dhcp_conf(["not-a-dict"], 4)
+
+    def test_non_dict_arguments_raises(self):
+        with self.assertRaises(RuntimeError):
+            dps._extract_dhcp_conf([{"result": 0, "arguments": ["not", "a", "dict"]}], 4)
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
@@ -208,3 +224,68 @@ class SyncNowEndToEndTest(TestCase):
         self.assertContains(resp, "10.88.0.0/24")
         # The tab warns that Kea shared-networks are a different concept (not imported as such).
         self.assertContains(resp, "different concept")
+
+
+class _MalformedConfigClient(KeaClient):
+    """Fake client whose ``config-get`` returns a malformed (non-list) shape."""
+
+    def __init__(self):
+        pass
+
+    def command(self, command, service=None, arguments=None, check=(0,)):
+        return {"not": "a list"}
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class FetchConfigIntentTest(TestCase):
+    """`_fetch_config_intent` surfaces a malformed config-get as a logged skip, not a crash."""
+
+    def setUp(self):
+        self.server = _make_db_server(dhcp4=True, dhcp6=False)
+
+    def test_malformed_config_get_is_logged_and_skipped(self):
+        with patch("netbox_kea.models.Server.get_client", return_value=_MalformedConfigClient()):
+            with self.assertLogs("netbox_kea.views.dhcp_plugin_sync", level="WARNING") as cm:
+                result = dps._fetch_config_intent(self.server, 4)
+        # Malformed shape → RuntimeError raised in _extract_dhcp_conf, caught here as a
+        # read failure: the version is skipped (None) and the problem is logged, not
+        # silently downgraded to "no config".
+        self.assertIsNone(result)
+        self.assertTrue(any("config-get failed" in line for line in cm.output))
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class SyncNowErrorHandlingTest(TestCase):
+    """The sync action follows the exception contract and never leaks a traceback."""
+
+    def setUp(self):
+        from django.contrib.auth import get_user_model
+
+        User = get_user_model()
+        self.user = User.objects.create_superuser("dps-err", "err@example.com", "pw")
+        self.client.force_login(self.user)
+        self.server = _make_db_server(sync_dhcp_plugin_enabled=True, dhcp4=True, dhcp6=False)
+        self.url = reverse("plugins:netbox_kea:server_dhcp_plugin_sync", args=[self.server.pk])
+
+    def test_kea_exception_routes_through_specific_handler(self):
+        # A KeaException (or its PartialPersistError subclass) is handled by the
+        # dedicated contract branch, logged distinctly, and shown as a generic error.
+        with (
+            patch.object(dps.dhcp_plugin, "is_available", return_value=True),
+            patch.object(dps, "run_dhcp_plugin_import", side_effect=KeaException({"result": 1, "text": "boom"})),
+        ):
+            with self.assertLogs("netbox_kea.views.dhcp_plugin_sync", level="ERROR") as cm:
+                resp = self.client.post(self.url, follow=True)
+        self.assertContains(resp, "An internal error occurred")
+        self.assertTrue(any("Kea read/validation" in line for line in cm.output))
+
+    def test_unexpected_exception_is_caught_not_leaked(self):
+        # A non-contract error (e.g. a DB error) still hits the fallback: logged,
+        # never surfaced as a 500 traceback.
+        with (
+            patch.object(dps.dhcp_plugin, "is_available", return_value=True),
+            patch.object(dps, "run_dhcp_plugin_import", side_effect=RuntimeError("db gone")),
+        ):
+            resp = self.client.post(self.url, follow=True)
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, "An internal error occurred")

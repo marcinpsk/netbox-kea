@@ -18,6 +18,7 @@ from netbox_kea.kea import (
     KeaException,
     PartialPersistError,
     check_response,
+    iter_reservations,
 )
 
 
@@ -423,6 +424,56 @@ class TestReservationGetPage(TestCase):
         with self._patched_post(resp):
             with self.assertRaises(KeaException):
                 self.client.reservation_get_page("dhcp4")
+
+
+class TestIterReservations(TestCase):
+    """The module-level ``iter_reservations`` pages until Kea's cursor resets — and bails on a stall."""
+
+    class _ScriptedClient:
+        """Minimal stand-in exposing ``reservation_get_page`` with scripted pages.
+
+        Each page is ``(hosts, next_from, next_source)``; ``iter_reservations`` only
+        calls ``reservation_get_page``, so a tiny fake exercises the real loop logic.
+        """
+
+        def __init__(self, pages):
+            self._pages = pages
+            self.calls = 0
+
+        def reservation_get_page(self, service, *, source_index=0, from_index=0, limit=100):
+            page = self._pages[self.calls]
+            self.calls += 1
+            return page
+
+    def test_pages_until_cursor_resets(self):
+        client = self._ScriptedClient(
+            [
+                ([{"id": 1}], 1, 0),  # full page → advance
+                ([{"id": 2}], 0, 0),  # cursor reset → stop after yielding
+            ]
+        )
+        hosts = list(iter_reservations(client, "dhcp4"))
+        self.assertEqual([h["id"] for h in hosts], [1, 2])
+        self.assertEqual(client.calls, 2)
+
+    def test_empty_page_terminates(self):
+        client = self._ScriptedClient([([], 0, 0)])
+        self.assertEqual(list(iter_reservations(client, "dhcp4")), [])
+        self.assertEqual(client.calls, 1)
+
+    def test_stalled_cursor_raises_instead_of_looping(self):
+        # A non-empty page whose cursor never advances would loop forever without
+        # the guard. The script is capped so an unfixed (looping) impl raises
+        # IndexError rather than hanging; the fixed impl raises RuntimeError first.
+        client = self._ScriptedClient(
+            [
+                ([{"id": 1}], 5, 2),  # advance to (from=5, source=2)
+                ([{"id": 2}], 5, 2),  # SAME cursor → stall → must raise
+                ([{"id": 3}], 5, 2),  # only reached by a buggy looping impl
+            ]
+        )
+        with self.assertRaises(RuntimeError):
+            list(iter_reservations(client, "dhcp4"))
 
 
 class TestReservationAdd(TestCase):

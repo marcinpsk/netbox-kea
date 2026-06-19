@@ -2186,6 +2186,19 @@ class TestFetchReservationByIP(_ViewTestBase):
         self.assertIn("10.0.0.1", result)
         self.assertIn("10.0.0.2", result)
 
+    def test_malformed_ip_fields_do_not_crash_rendering(self):
+        """A null/non-list ``ip-addresses`` (or null ``ip-address``) must be tolerated, not TypeError."""
+        page = [
+            {"subnet-id": 1, "ip-address": "10.0.0.5", "hw-address": "aa:bb:cc:dd:ee:01"},
+            {"subnet-id": 1, "ip-addresses": None, "hw-address": "aa:bb:cc:dd:ee:02"},  # null → no crash
+            {"subnet-id": 1, "ip-addresses": ["2001:db8::1", None, 7], "duid": "00:01"},  # mixed
+            {"subnet-id": 1, "ip-address": None, "hw-address": "aa:bb:cc:dd:ee:03"},  # null ip-address ignored
+        ]
+        result, available = self._run([(page, 0, 0)])
+        self.assertTrue(available)
+        # Only the well-formed string addresses are mapped; None/non-str are skipped.
+        self.assertEqual(set(result), {"10.0.0.5", "2001:db8::1"})
+
 
 # ---------------------------------------------------------------------------
 # _enrich_leases_with_badges — exception paths
