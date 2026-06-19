@@ -10,6 +10,8 @@ directly; the ORM, IPAM/DCIM models, and the ``netbox_dhcp`` models are all real
 
 from __future__ import annotations
 
+import unittest
+
 from django.apps import apps
 from django.test import TestCase, override_settings, tag
 from django.utils import timezone
@@ -58,7 +60,7 @@ class DhcpPluginAdapterTest(TestCase):
     @classmethod
     def setUpClass(cls):
         if not apps.is_installed(DHCP_PLUGIN):
-            raise cls.skipException(f"{DHCP_PLUGIN} not installed")
+            raise unittest.SkipTest(f"{DHCP_PLUGIN} not installed")
         super().setUpClass()
 
     def setUp(self):
@@ -180,7 +182,7 @@ class DhcpPluginOptionImportTest(TestCase):
     @classmethod
     def setUpClass(cls):
         if not apps.is_installed(DHCP_PLUGIN):
-            raise cls.skipException(f"{DHCP_PLUGIN} not installed")
+            raise unittest.SkipTest(f"{DHCP_PLUGIN} not installed")
         super().setUpClass()
 
     def setUp(self):
@@ -300,7 +302,7 @@ class DhcpPluginTuningImportTest(TestCase):
     @classmethod
     def setUpClass(cls):
         if not apps.is_installed(DHCP_PLUGIN):
-            raise cls.skipException(f"{DHCP_PLUGIN} not installed")
+            raise unittest.SkipTest(f"{DHCP_PLUGIN} not installed")
         super().setUpClass()
 
     def setUp(self):
@@ -432,7 +434,7 @@ class DhcpPluginClientClassImportTest(TestCase):
     @classmethod
     def setUpClass(cls):
         if not apps.is_installed(DHCP_PLUGIN):
-            raise cls.skipException(f"{DHCP_PLUGIN} not installed")
+            raise unittest.SkipTest(f"{DHCP_PLUGIN} not installed")
         super().setUpClass()
 
     def setUp(self):
@@ -514,7 +516,7 @@ class DhcpPluginPageReservationImportTest(TestCase):
     @classmethod
     def setUpClass(cls):
         if not apps.is_installed(DHCP_PLUGIN):
-            raise cls.skipException(f"{DHCP_PLUGIN} not installed")
+            raise unittest.SkipTest(f"{DHCP_PLUGIN} not installed")
         super().setUpClass()
 
     def setUp(self):
@@ -605,7 +607,7 @@ class DhcpPluginStaleCleanupGuardTest(TestCase):
     @classmethod
     def setUpClass(cls):
         if not apps.is_installed(DHCP_PLUGIN):
-            raise cls.skipException(f"{DHCP_PLUGIN} not installed")
+            raise unittest.SkipTest(f"{DHCP_PLUGIN} not installed")
         super().setUpClass()
 
     def setUp(self):

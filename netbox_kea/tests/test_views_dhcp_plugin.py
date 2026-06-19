@@ -9,6 +9,7 @@ gated on ``netbox_dhcp`` being installed.  Only the Kea HTTP boundary is faked
 
 from __future__ import annotations
 
+import unittest
 from unittest.mock import patch
 
 from django.apps import apps
@@ -126,7 +127,7 @@ class SyncNowEndToEndTest(TestCase):
     @classmethod
     def setUpClass(cls):
         if not apps.is_installed(DHCP_PLUGIN):
-            raise cls.skipException(f"{DHCP_PLUGIN} not installed")
+            raise unittest.SkipTest(f"{DHCP_PLUGIN} not installed")
         super().setUpClass()
 
     def setUp(self):
