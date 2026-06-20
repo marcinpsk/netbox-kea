@@ -2107,3 +2107,21 @@ class TestCleanupBatchProtectedIdsComputedOnce(TestCase):
 
         # One resolve for the whole batch — not one per (hostname, family) group.
         self.assertEqual(spy.call_count, 1)
+
+    def test_protected_ids_not_resolved_when_no_candidates(self):
+        from unittest.mock import patch
+
+        from netbox_kea.sync import cleanup_stale_ips_batch
+
+        # Records with no usable hostname/IP yield an empty candidate set, so the
+        # protected-ID lookup (a full reservation-table scan) must be skipped.
+        records = [{"hostname": "", "ip-address": "10.40.0.200"}, {"ip-address": "10.40.0.201"}]
+
+        with (
+            patch("netbox_kea.integrations.dhcp_plugin.is_available", return_value=True),
+            patch("netbox_kea.integrations.dhcp_plugin.sys4_referenced_ip_ids", return_value=set()) as spy,
+        ):
+            result = cleanup_stale_ips_batch(records)
+
+        self.assertEqual(result, 0)
+        self.assertEqual(spy.call_count, 0)

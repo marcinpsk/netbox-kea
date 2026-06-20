@@ -727,6 +727,11 @@ def cleanup_stale_ips_batch(synced_records: list[dict]) -> int:
             family = 6 if ":" in ip else 4
             hostname_ips.setdefault((hostname, family), set()).add(ip)
 
+    # No cleanup candidates → skip the protected-ID lookup entirely. Computing it
+    # here would trigger a full reservation-table scan for a no-op batch.
+    if not hostname_ips:
+        return 0
+
     # Compute the DHCP-plugin protected-IP set once for the whole batch instead of
     # rescanning the reservation tables inside every per-hostname cleanup call.
     from .integrations import dhcp_plugin
