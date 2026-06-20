@@ -15,7 +15,7 @@ from netbox.views import generic
 from utilities.views import register_model_view
 
 from .. import forms, tables
-from ..kea import KeaClient, KeaException, PartialPersistError
+from ..kea import KeaClient, KeaException, PartialPersistError, iter_reservations
 from ..models import Server
 from ..signals import reservation_created, reservation_deleted, reservation_updated
 from ..sync import sync_reservation_to_netbox
@@ -367,16 +367,7 @@ class ServerReservations4View(generic.ObjectView):
         reservations: list[dict] = []
         try:
             client = server.get_client(version=4)
-            source_index, from_index, limit = 0, 0, 100
-            while True:
-                page, next_from, next_source = client.reservation_get_page(
-                    "dhcp4", source_index=source_index, from_index=from_index, limit=limit
-                )
-                reservations.extend(page)
-                if next_from == 0 and next_source == 0:
-                    break
-                from_index = next_from
-                source_index = next_source
+            reservations = list(iter_reservations(client, "dhcp4"))
         except KeaException as exc:
             if exc.response.get("result") == 2:
                 hook_available = False
@@ -443,16 +434,7 @@ class ServerReservations6View(generic.ObjectView):
         reservations: list[dict] = []
         try:
             client = server.get_client(version=6)
-            source_index, from_index, limit = 0, 0, 100
-            while True:
-                page, next_from, next_source = client.reservation_get_page(
-                    "dhcp6", source_index=source_index, from_index=from_index, limit=limit
-                )
-                reservations.extend(page)
-                if next_from == 0 and next_source == 0:
-                    break
-                from_index = next_from
-                source_index = next_source
+            reservations = list(iter_reservations(client, "dhcp6"))
         except KeaException as exc:
             if exc.response.get("result") == 2:
                 hook_available = False

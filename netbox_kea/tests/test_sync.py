@@ -2071,3 +2071,57 @@ class TestResolvePrefixLengthSubnetIdNormalization(TestCase):
 
         # No matching NetBox Prefix → default /32 (not a TypeError on int()).
         self.assertEqual(_resolve_prefix_length("10.88.0.9", "not-a-number", {1: 24}), 32)
+
+
+@override_settings(PLUGINS_CONFIG=_STALE_PLUGINS_CONFIG)
+class TestCleanupBatchProtectedIdsComputedOnce(TestCase):
+    """cleanup_stale_ips_batch resolves the DHCP-plugin protected-IP set once per run.
+
+    Previously each per-hostname ``_cleanup_stale_ips`` re-scanned the reservation
+    tables via ``sys4_referenced_ip_ids`` — an N× full-table scan during large syncs.
+    """
+
+    _KEA_DESC = "Synced from Kea DHCP lease"
+
+    def _make_stale(self, host, ip):
+        from ipam.models import IPAddress as NbIP
+
+        NbIP.objects.create(address=f"{ip}/32", status="dhcp", dns_name=host, description=self._KEA_DESC)
+
+    def test_protected_ids_resolved_once_for_many_hostnames(self):
+        from unittest.mock import patch
+
+        from netbox_kea.sync import cleanup_stale_ips_batch
+
+        for i in range(3):
+            self._make_stale(f"host{i}.example.com", f"10.40.0.{10 + i}")
+        records = [{"hostname": f"host{i}.example.com", "ip-address": f"10.40.0.{100 + i}"} for i in range(3)]
+
+        # The plugin boundary isn't installed in CI, so stand it in: force "available"
+        # and count how often the referenced-IP set is resolved across the batch.
+        with (
+            patch("netbox_kea.integrations.dhcp_plugin.is_available", return_value=True),
+            patch("netbox_kea.integrations.dhcp_plugin.sys4_referenced_ip_ids", return_value=set()) as spy,
+        ):
+            cleanup_stale_ips_batch(records)
+
+        # One resolve for the whole batch — not one per (hostname, family) group.
+        self.assertEqual(spy.call_count, 1)
+
+    def test_protected_ids_not_resolved_when_no_candidates(self):
+        from unittest.mock import patch
+
+        from netbox_kea.sync import cleanup_stale_ips_batch
+
+        # Records with no usable hostname/IP yield an empty candidate set, so the
+        # protected-ID lookup (a full reservation-table scan) must be skipped.
+        records = [{"hostname": "", "ip-address": "10.40.0.200"}, {"ip-address": "10.40.0.201"}]
+
+        with (
+            patch("netbox_kea.integrations.dhcp_plugin.is_available", return_value=True),
+            patch("netbox_kea.integrations.dhcp_plugin.sys4_referenced_ip_ids", return_value=set()) as spy,
+        ):
+            result = cleanup_stale_ips_batch(records)
+
+        self.assertEqual(result, 0)
+        self.assertEqual(spy.call_count, 0)

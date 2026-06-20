@@ -1,7 +1,7 @@
 import copy
 import ipaddress
 import logging
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from typing import Any, TypedDict
 
 import requests
@@ -1493,3 +1493,43 @@ def check_response(resp: list[KeaResponse], ok_codes: Sequence[int]) -> None:
     for idx, kr in enumerate(resp):
         if kr["result"] not in ok_codes:
             raise KeaException(kr, index=idx)
+
+
+def iter_reservations(client: "KeaClient", service: str, limit: int = 100) -> Iterator[dict[str, Any]]:
+    """Yield every host reservation for *service*, paging through ``reservation-get-page``.
+
+    The single home for the ``(from, source-index)`` cursor loop so callers never
+    re-implement it.  Defined as a function (not a method) so it drives whatever
+    ``client.reservation_get_page`` is in play — including the mocks the test suite
+    configures on the client.  Propagates :class:`KeaException` on a Kea error (e.g.
+    ``host_cmds`` not loaded), exactly as ``reservation_get_page`` does; callers wrap
+    the iteration in a ``try``/``except``.
+
+    Args:
+        client: A :class:`KeaClient` (or compatible) exposing ``reservation_get_page``.
+        service: Target service (``"dhcp4"`` or ``"dhcp6"``).
+        limit: Page size requested from Kea.
+
+    Yields:
+        Each host-reservation dict, across all sources/pages.
+
+    """
+    from_index = 0
+    source_index = 0
+    while True:
+        page, next_from, next_source = client.reservation_get_page(
+            service, source_index=source_index, from_index=from_index, limit=limit
+        )
+        yield from page
+        # Stop when Kea's cursor resets, or an empty page (guards against a loop).
+        if not page or (next_from == 0 and next_source == 0):
+            break
+        # Guard against a stalled cursor: a non-empty page whose cursor did not
+        # advance would otherwise loop forever and hang the worker.
+        if next_from == from_index and next_source == source_index:
+            raise RuntimeError(
+                f"reservation-get-page cursor did not advance for {service}: "
+                f"source-index={next_source}, from={next_from}"
+            )
+        from_index = next_from
+        source_index = next_source

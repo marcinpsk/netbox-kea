@@ -1,0 +1,97 @@
+{# SPDX-FileCopyrightText: 2025 Marcin Zieba <marcinpsk@gmail.com> #}
+{# SPDX-License-Identifier: Apache-2.0 #}
+{% extends "generic/object.html" %}
+{% load helpers %}
+
+{% block content %}
+<div class="row">
+  <div class="col-md-12">
+
+    {% if not plugin_available %}
+      <div class="alert alert-warning" role="alert">
+        <i class="mdi mdi-alert-outline" aria-hidden="true"></i>
+        The NetBox DHCP plugin (<code>netbox_dhcp</code>) is not installed. This tab has no effect.
+      </div>
+    {% else %}
+
+      <div class="card mb-3">
+        <h5 class="card-header">Sync to DHCP plugin</h5>
+        <div class="card-body">
+          <p class="small text-muted mb-2">
+            Import this server's live Kea data-tier configuration (subnets, pools, reservations)
+            into the NetBox DHCP plugin. Reads Kea read-only; idempotent.
+          </p>
+          <div class="alert alert-warning py-2 px-3 small mb-2" role="alert">
+            <i class="mdi mdi-alert-outline" aria-hidden="true"></i>
+            Kea <strong>shared-networks</strong> are a different concept from the DHCP plugin's
+            <em>Shared Networks</em> and are <strong>not</strong> imported as such — a shared-network's
+            member subnets are imported individually. DHCP <strong>options</strong> are not imported.
+          </div>
+          {% if can_sync %}
+            <form method="post" action="{% url 'plugins:netbox_kea:server_dhcp_plugin_sync' object.pk %}">
+              {% csrf_token %}
+              <button type="submit" class="btn btn-sm btn-primary">
+                <i class="mdi mdi-database-import-outline" aria-hidden="true"></i> Sync to DHCP plugin now
+              </button>
+            </form>
+          {% else %}
+            <span class="text-muted small">You need server change + IPAM add/change permissions to run this.</span>
+          {% endif %}
+        </div>
+      </div>
+
+      <div class="card">
+        <h5 class="card-header">Drift &mdash; live Kea vs. imported records</h5>
+        <div class="card-body p-0">
+          {% if drift.kea_unreachable %}
+            <div class="alert alert-warning m-3" role="alert">
+              <i class="mdi mdi-alert-outline" aria-hidden="true"></i>
+              Could not read live configuration from Kea for one or more versions; showing last-imported records where available.
+            </div>
+          {% endif %}
+          {% for v in drift.versions %}
+            <h6 class="px-3 pt-3">DHCPv{{ v.version }}</h6>
+            <table class="table table-hover">
+              <thead>
+                <tr>
+                  <th>Kea subnet-id</th>
+                  <th>Prefix</th>
+                  <th>Status</th>
+                  <th>Pools</th>
+                  <th>Reservations</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for row in v.rows %}
+                  <tr>
+                    <td>{{ row.kea_subnet_id|placeholder }}</td>
+                    <td>{{ row.cidr|placeholder }}</td>
+                    <td>
+                      {% if row.status == "imported" %}
+                        <span class="badge text-bg-success">Imported</span>
+                      {% elif row.status == "new" %}
+                        <span class="badge text-bg-info">New in Kea</span>
+                      {% elif row.status == "orphaned" %}
+                        <span class="badge text-bg-warning">Orphaned (gone from Kea)</span>
+                      {% else %}
+                        <span class="badge text-bg-secondary">Unknown</span>
+                      {% endif %}
+                    </td>
+                    <td>{{ row.pools }}</td>
+                    <td>{{ row.reservations }}</td>
+                  </tr>
+                {% empty %}
+                  <tr><td colspan="5" class="text-muted">No subnets.</td></tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          {% empty %}
+            <p class="text-muted p-3 mb-0">No DHCP versions enabled on this server.</p>
+          {% endfor %}
+        </div>
+      </div>
+
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

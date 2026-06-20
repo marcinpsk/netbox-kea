@@ -37,6 +37,11 @@ urlpatterns = (
     path("sync-jobs/", views.SyncJobsView.as_view(), name="sync_jobs"),
     path("servers/<int:pk>/sync-now/", views.ServerSyncNowView.as_view(), name="server_sync_now"),
     path("servers/<int:pk>/sync-toggle/", views.ServerSyncToggleView.as_view(), name="server_sync_toggle"),
+    path(
+        "servers/<int:pk>/dhcp-plugin/sync/",
+        views.ServerDhcpPluginSyncNowView.as_view(),
+        name="server_dhcp_plugin_sync",
+    ),
     path("servers/", views.ServerListView.as_view(), name="server_list"),
     path("servers/add/", views.ServerEditView.as_view(), name="server_add"),
     path(

@@ -246,6 +246,7 @@ def _cleanup_stale_ips(
     *,
     mode: str = "remove",
     exclude_ips: frozenset[str] | None = None,
+    protected_ids: set[int] | None = None,
 ) -> int:
     """Remove or deprecate old Kea-synced IPs that have the same hostname but a different address.
 
@@ -267,6 +268,11 @@ def _cleanup_stale_ips(
                      status to ``deprecated``; ``"none"`` skips cleanup entirely.
         exclude_ips: Additional IP strings to exclude (e.g. all IPs in a multi-address
                      DHCPv6 reservation so sibling addresses are not cleaned up).
+        protected_ids: Pre-computed set of ``ipam.IPAddress`` PKs referenced by the
+                     NetBox DHCP plugin, to exclude from cleanup. Pass this once per
+                     sync run (see :func:`cleanup_stale_ips_batch`) to avoid the
+                     full-table scan :func:`dhcp_plugin.sys4_referenced_ip_ids`
+                     performs on every call. When ``None`` it is computed on demand.
 
     Returns the number of IPs cleaned up.
 
@@ -291,6 +297,16 @@ def _cleanup_stale_ips(
         stale_qs = stale_qs.filter(address__contains=":")
     else:
         stale_qs = stale_qs.exclude(address__contains=":")
+
+    # Never touch IPs the NetBox DHCP plugin references: deleting one would violate
+    # its PROTECT FKs and deprecating/blanking one would corrupt an authored
+    # reservation (its ipv4_address/ipv6_addresses FK is SET_NULL).
+    if protected_ids is None:
+        from .integrations import dhcp_plugin
+
+        protected_ids = dhcp_plugin.sys4_referenced_ip_ids() if dhcp_plugin.is_available() else set()
+    if protected_ids:
+        stale_qs = stale_qs.exclude(pk__in=protected_ids)
 
     count = stale_qs.count()
     if count == 0:
@@ -711,6 +727,17 @@ def cleanup_stale_ips_batch(synced_records: list[dict]) -> int:
             family = 6 if ":" in ip else 4
             hostname_ips.setdefault((hostname, family), set()).add(ip)
 
+    # No cleanup candidates → skip the protected-ID lookup entirely. Computing it
+    # here would trigger a full reservation-table scan for a no-op batch.
+    if not hostname_ips:
+        return 0
+
+    # Compute the DHCP-plugin protected-IP set once for the whole batch instead of
+    # rescanning the reservation tables inside every per-hostname cleanup call.
+    from .integrations import dhcp_plugin
+
+    protected_ids = dhcp_plugin.sys4_referenced_ip_ids() if dhcp_plugin.is_available() else set()
+
     total_cleaned = 0
     for (hostname, _family), all_ips in hostname_ips.items():
         primary_ip = next(iter(all_ips))
@@ -719,6 +746,7 @@ def cleanup_stale_ips_batch(synced_records: list[dict]) -> int:
             hostname,
             mode=mode,
             exclude_ips=frozenset(all_ips),
+            protected_ids=protected_ids,
         )
 
     return total_cleaned

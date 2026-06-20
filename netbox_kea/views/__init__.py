@@ -32,6 +32,12 @@ from .dhcp_control import (  # noqa: F401
     ServerDHCP6EnableView,
 )
 
+# Sync job management views
+from .dhcp_plugin_sync import (  # noqa: F401
+    ServerDhcpPluginSyncNowView,
+    ServerDhcpPluginView,
+)
+
 # Lease list/delete/add/sync views + low-level helpers
 from .leases import (  # noqa: F401
     BaseServerLeasesDeleteView,
@@ -127,8 +133,6 @@ from .subnets import (  # noqa: F401
     _warn_pool_reservation_overlap,
     _warn_reservation_pool_overlap,
 )
-
-# Sync job management views
 from .sync_jobs import (  # noqa: F401
     ServerSyncNowView,
     ServerSyncStatusView,

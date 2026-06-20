@@ -5,6 +5,7 @@ from typing import Literal
 
 import requests
 from django.conf import settings
+from django.contrib.contenttypes.fields import GenericForeignKey
 from django.core.exceptions import ValidationError
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
@@ -154,6 +155,17 @@ class Server(JobsMixin, NetBoxModel):
         verbose_name="Sync IP Ranges",
         default=True,
         help_text="Sync Kea pools as NetBox IP Ranges for this server.",
+    )
+    sync_dhcp_plugin_enabled = models.BooleanField(
+        verbose_name="Sync to DHCP plugin",
+        default=False,
+        help_text=(
+            "When the NetBox DHCP plugin (netbox_dhcp) is installed, allow importing this "
+            "server's Kea data tier (subnets, pools, host reservations) into the DHCP plugin's "
+            "models. Note: Kea shared-networks are a different concept and are NOT imported as "
+            "DHCP-plugin Shared Networks (their member subnets are imported individually); DHCP "
+            "options are not imported. Has no effect if the plugin is absent."
+        ),
     )
     persist_config = models.BooleanField(
         verbose_name="Persist configuration",
@@ -409,3 +421,58 @@ class SyncConfig(models.Model):
                     to_save.append(f)
             obj.save(update_fields=to_save)
         return obj
+
+
+class KeaDhcpLink(models.Model):
+    """Maps a Kea object identity to the netbox-plugin-dhcp (``netbox_dhcp``) record imported from it.
+
+    Kea's ``subnet-id`` is unique only per ``(server, protocol)`` — overlaps across
+    servers and between the v4/v6 daemons are normal — but ``netbox_dhcp``'s
+    ``Subnet.subnet_id`` is a single *global* unique namespace (and its auto-allocator
+    hands out a global ``max+1``).  Kea's id therefore cannot be stored there.  This
+    link holds the authoritative ``(server, family, kea_subnet_id)`` identity and points
+    — via a ``GenericForeignKey`` so there is no hard migration dependency on
+    ``netbox_dhcp`` being installed — at the imported DHCP-plugin object.  It is the
+    match key for idempotent re-import and the future home for accept/lock + drift state.
+    """
+
+    server = models.ForeignKey(
+        to="netbox_kea.Server",
+        on_delete=models.CASCADE,
+        related_name="dhcp_plugin_links",
+    )
+    family = models.PositiveSmallIntegerField(
+        help_text="IP family of the linked object (4 or 6).",
+    )
+    kea_subnet_id = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        help_text="Kea subnet-id for subnet links; null for objects without a Kea subnet-id.",
+    )
+    object_type = models.ForeignKey(
+        to="contenttypes.ContentType",
+        on_delete=models.CASCADE,
+        related_name="+",
+    )
+    object_id = models.PositiveBigIntegerField()
+    sys4_object = GenericForeignKey("object_type", "object_id")
+    created = models.DateTimeField(auto_now_add=True)
+    last_synced = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        app_label = "netbox_kea"
+        verbose_name = "Kea DHCP-plugin link"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["object_type", "object_id"],
+                name="keadhcplink_unique_sys4_object",
+            ),
+            models.UniqueConstraint(
+                fields=["server", "family", "kea_subnet_id"],
+                name="keadhcplink_unique_subnet_identity",
+                condition=models.Q(kea_subnet_id__isnull=False),
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.server} v{self.family} subnet-id={self.kea_subnet_id} → {self.object_type_id}:{self.object_id}"

@@ -12,7 +12,7 @@ from django.urls import reverse
 from django.views import View
 
 from .. import constants, forms, tables
-from ..kea import KeaException
+from ..kea import KeaException, iter_reservations
 from ..models import Server
 from ..utilities import (
     _enrich_reservation_sort_key,
@@ -457,25 +457,13 @@ def _fetch_reservations_from_server(server: "Server", version: int) -> list[dict
     service = f"dhcp{version}"
     client = server.get_client(version=version)
     reservations: list[dict[str, Any]] = []
-    from_index = 0
-    source_index = 0
-    while True:
-        page, next_from, next_source = client.reservation_get_page(
-            service, source_index=source_index, from_index=from_index, limit=100
-        )
-        for r in page:
-            r.setdefault("subnet_id", r.get("subnet-id", 0))
-            r.setdefault(
-                "ip_address", r.get("ip-address", r.get("ip-addresses", [""])[0] if r.get("ip-addresses") else "")
-            )
-            r["server_name"] = server.name
-            r["server_pk"] = server.pk
-            _enrich_reservation_sort_key(r)
-        reservations.extend(page)
-        if next_from == 0 and next_source == 0:
-            break
-        from_index = next_from
-        source_index = next_source
+    for r in iter_reservations(client, service):
+        r.setdefault("subnet_id", r.get("subnet-id", 0))
+        r.setdefault("ip_address", r.get("ip-address", r.get("ip-addresses", [""])[0] if r.get("ip-addresses") else ""))
+        r["server_name"] = server.name
+        r["server_pk"] = server.pk
+        _enrich_reservation_sort_key(r)
+        reservations.append(r)
     return reservations
 
 

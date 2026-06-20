@@ -69,35 +69,22 @@ def _prefetch_reservation_ips(server: Server, version: int) -> frozenset[str] | 
     the fetch fails (e.g. host_cmds hook not loaded or network error) — callers
     should fall back to single-pass mode when ``None`` is returned.
     """
-    from .kea import KeaException
+    from .kea import KeaException, iter_reservations
 
     service = f"dhcp{version}"
-    from_index = 0
-    source_index = 0
     ips: set[str] = set()
 
     try:
         client = server.get_client(version=version)
-        while True:
-            page, next_from, next_source = client.reservation_get_page(
-                service,
-                source_index=source_index,
-                from_index=from_index,
-                limit=100,
-            )
-            for r in page:
-                if not isinstance(r, dict):
-                    continue
-                ip = r.get("ip-address")
-                if ip:
-                    ips.add(ip)
-                for addr in r.get("ip-addresses") or []:
-                    if addr:
-                        ips.add(addr)
-            if next_from == 0 and next_source == 0:
-                break
-            from_index = next_from
-            source_index = next_source
+        for r in iter_reservations(client, service):
+            if not isinstance(r, dict):
+                continue
+            ip = r.get("ip-address")
+            if ip:
+                ips.add(ip)
+            for addr in r.get("ip-addresses") or []:
+                if addr:
+                    ips.add(addr)
     except KeaException as exc:
         if exc.response.get("result") == 2:
             logger.debug(
@@ -216,12 +203,10 @@ def _sync_server_reservations(
     A ``False`` return means *all_synced* may be incomplete and cleanup must be
     skipped.
     """
-    from .kea import KeaException
+    from .kea import KeaException, iter_reservations
     from .sync import sync_reservation_to_netbox
 
     service = f"dhcp{version}"
-    from_index = 0
-    source_index = 0
     processed = 0
     had_errors = False
     # Foreign (manually-curated) NetBox IPs skipped to avoid overwriting them.
@@ -229,42 +214,31 @@ def _sync_server_reservations(
 
     try:
         client = server.get_client(version=version)
-        while True:
-            page, next_from, next_source = client.reservation_get_page(
-                service,
-                source_index=source_index,
-                from_index=from_index,
-                limit=100,
-            )
-            for reservation in page:
-                try:
-                    _ip, created, changed = sync_reservation_to_netbox(
-                        reservation,
-                        cleanup=False,
-                        lease_ips=lease_ips,
-                        subnet_prefix_map=subnet_prefix_map,
-                        conflicts=conflicts,
-                    )
-                    all_synced.append(reservation)
-                    processed += 1
-                    if created:
-                        stats["created"] += 1
-                    elif changed:
-                        stats["updated"] += 1
-                except Exception:  # noqa: BLE001, PERF203
-                    ip = reservation.get("ip-address") or (reservation.get("ip-addresses") or ["?"])[0] or "?"
-                    logger.debug(
-                        "Failed to sync reservation %s from server %s",
-                        ip,
-                        server.name,
-                        exc_info=True,
-                    )
-                    stats["errors"] += 1
-                    had_errors = True
-            if next_from == 0 and next_source == 0:
-                break
-            from_index = next_from
-            source_index = next_source
+        for reservation in iter_reservations(client, service):
+            try:
+                _ip, created, changed = sync_reservation_to_netbox(
+                    reservation,
+                    cleanup=False,
+                    lease_ips=lease_ips,
+                    subnet_prefix_map=subnet_prefix_map,
+                    conflicts=conflicts,
+                )
+                all_synced.append(reservation)
+                processed += 1
+                if created:
+                    stats["created"] += 1
+                elif changed:
+                    stats["updated"] += 1
+            except Exception:  # noqa: BLE001, PERF203
+                ip = reservation.get("ip-address") or (reservation.get("ip-addresses") or ["?"])[0] or "?"
+                logger.debug(
+                    "Failed to sync reservation %s from server %s",
+                    ip,
+                    server.name,
+                    exc_info=True,
+                )
+                stats["errors"] += 1
+                had_errors = True
     except KeaException as exc:
         if exc.response.get("result") == 2:
             logger.warning(

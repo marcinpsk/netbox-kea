@@ -129,7 +129,8 @@ addopts = "--ignore=tests/docker"
 
 [tool.coverage.run]
 source = ["netbox_kea"]
-omit = ["*/migrations/*"]
+# Don't measure coverage of the test suite itself — only of the code under test.
+omit = ["*/migrations/*", "*/tests/*"]
 
 [tool.coverage.report]
 show_missing = true
