@@ -49,6 +49,55 @@ class TestFetchSharedNetworksFromServer(_ViewTestBase):
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestCombinedResponseShapeGuards(_ViewTestBase):
+    """Malformed Kea responses (empty list / non-dict entry) must raise RuntimeError.
+
+    ``KeaClient.command`` only guarantees a *list*; ``check_response`` iterating an
+    empty list raises nothing, so indexing ``resp[0]["result"]`` / ``config[0][...]``
+    blows up with ``IndexError``/``TypeError``. The sibling subnet/option/server
+    views guard this with ``isinstance(resp, list) and resp and isinstance(resp[0],
+    dict)`` and raise ``RuntimeError``; these combined helpers must do the same
+    (CLAUDE.md: "Validate Kea response shape before indexing … raise RuntimeError").
+    """
+
+    def _patched(self, command_return):
+        p = patch("netbox_kea.models.KeaClient")
+        mock = p.start()
+        self.addCleanup(p.stop)
+        mock.return_value.command.return_value = command_return
+        return mock
+
+    def test_leases_empty_response_raises_runtime_error(self):
+        from netbox_kea import constants
+        from netbox_kea.views import _fetch_leases_from_server
+
+        self._patched([])
+        with self.assertRaises(RuntimeError):
+            _fetch_leases_from_server(self.server, "10.0.0.1", constants.BY_IP, 4)
+
+    def test_all_leases_non_dict_entry_raises_runtime_error(self):
+        from netbox_kea.views import _fetch_all_leases_from_server
+
+        self._patched(["not-a-dict"])
+        with self.assertRaises(RuntimeError):
+            _fetch_all_leases_from_server(self.server, 4)
+
+    def test_subnets_empty_response_raises_runtime_error(self):
+        from netbox_kea.views import _fetch_subnets_from_server
+
+        self._patched([])
+        with self.assertRaises(RuntimeError):
+            _fetch_subnets_from_server(self.server, 4)
+
+    def test_shared_networks_empty_response_raises_runtime_error(self):
+        from netbox_kea.views import _fetch_shared_networks_from_server
+
+        self._patched([])
+        with self.assertRaises(RuntimeError):
+            _fetch_shared_networks_from_server(self.server, 4)
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestCombinedReservationsMultiPage(_ViewTestBase):
     """Lines 4065-4066: combined reservations multi-page pagination."""
 

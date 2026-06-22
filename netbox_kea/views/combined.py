@@ -26,6 +26,20 @@ from .reservations import _enrich_reservations_with_badges, _filter_reservations
 logger = logging.getLogger(__name__)
 
 
+def _require_first_entry(resp: Any, what: str) -> dict[str, Any]:
+    """Validate a Kea command-response shape and return its first entry.
+
+    ``KeaClient.command`` only guarantees a list, and ``check_response`` iterating
+    an empty list raises nothing — so indexing ``resp[0]`` on a malformed (empty or
+    non-dict) payload blows up with ``IndexError``/``TypeError``. Surface it as a
+    ``RuntimeError`` (the contract callers already catch) instead, matching the
+    guard the subnet/option/server views use.
+    """
+    if not isinstance(resp, list) or not resp or not isinstance(resp[0], dict):
+        raise RuntimeError(f"Malformed Kea response for {what}")
+    return resp[0]
+
+
 def _fetch_leases_from_server(server: Server, q: Any, by: str, version: int) -> list[dict[str, Any]]:
     """Fetch leases matching *q*/*by* from a single server and tag with server info.
 
@@ -68,10 +82,11 @@ def _fetch_leases_from_server(server: Server, q: Any, by: str, version: int) -> 
         check=(0, 3),
     )
 
-    if resp[0]["result"] == 3:
+    entry = _require_first_entry(resp, f"lease{version}-get{command_suffix}")
+    if entry["result"] == 3:
         return []
 
-    args = resp[0]["arguments"]
+    args = entry["arguments"]
     if args is None:
         raise RuntimeError(f"Unexpected None arguments from lease{version}-get{command_suffix}")
 
@@ -117,9 +132,10 @@ def _fetch_all_leases_from_server(
             arguments={"from": cursor, "limit": per_page},
             check=(0, 3),
         )
-        if resp[0]["result"] == 3:
+        entry = _require_first_entry(resp, f"lease{version}-get-page")
+        if entry["result"] == 3:
             break
-        args = resp[0]["arguments"]
+        args = entry["arguments"]
         if args is None:
             raise RuntimeError(f"Unexpected None arguments from lease{version}-get-page")
         raw_leases = args["leases"]
@@ -216,11 +232,12 @@ def _fetch_subnets_from_server(server: "Server", version: int) -> list[dict[str,
 
     client = server.get_client(version=version)
     config = client.command("config-get", service=[f"dhcp{version}"])
-    if config[0]["arguments"] is None:
+    entry = _require_first_entry(config, f"config-get for dhcp{version}")
+    if entry["arguments"] is None:
         raise RuntimeError(f"Unexpected None arguments from config-get for dhcp{version}")
     dhcp_key = f"Dhcp{version}"
     subnet_key = f"subnet{version}"
-    args = config[0]["arguments"].get(dhcp_key, {})
+    args = entry["arguments"].get(dhcp_key, {})
     result = [
         {
             "id": s["id"],
@@ -347,9 +364,10 @@ def _fetch_shared_networks_from_server(server: "Server", version: int) -> list[d
     """Fetch all shared networks from a single server's config-get and tag with server info."""
     client = server.get_client(version=version)
     config = client.command("config-get", service=[f"dhcp{version}"])
-    if config[0]["arguments"] is None:
+    entry = _require_first_entry(config, f"config-get for dhcp{version}")
+    if entry["arguments"] is None:
         raise RuntimeError(f"Unexpected None arguments from config-get for dhcp{version}")
-    dhcp_conf = config[0]["arguments"].get(f"Dhcp{version}", {})
+    dhcp_conf = entry["arguments"].get(f"Dhcp{version}", {})
     result = []
     for sn in dhcp_conf.get("shared-networks", []):
         subnets = sn.get(f"subnet{version}", [])
