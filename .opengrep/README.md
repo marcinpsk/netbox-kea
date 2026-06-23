@@ -64,7 +64,7 @@ The `opengrep` hook in `.pre-commit-config.yaml` runs at the **pre-push** stage
 (not on every commit). Install the hook types once:
 
 ```bash
-pre-commit install --install-hooks
+uv run pre-commit install --install-hooks
 ```
 
 CI runs the same rules in the `opengrep` job (`.github/workflows/ci.yml`), so a
