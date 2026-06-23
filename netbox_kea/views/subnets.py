@@ -262,7 +262,7 @@ def _warn_pool_reservation_overlap(
                 try:
                     if IPAddress(ip_str) in pool_range:
                         overlapping.append(ip_str)
-                except Exception:  # noqa: BLE001, PERF203
+                except Exception:  # noqa: BLE001, PERF203, S110  skip unparseable reservation IPs
                     pass
 
         if overlapping:

@@ -134,6 +134,30 @@ jobs:
       - name: REUSE compliance
         run: uv run reuse lint
 
+  opengrep:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+        with:
+          persist-credentials: false
+
+      - name: Install opengrep
+        env:
+          OPENGREP_VERSION: v1.23.0
+          OPENGREP_SHA256: 1f06548af379ab6080698a609612890ffad2d92dc2172f1e97d38d48096d5ef8
+        run: |
+          curl -fsSL -o /usr/local/bin/opengrep \
+            "https://github.com/opengrep/opengrep/releases/download/${OPENGREP_VERSION}/opengrep_manylinux_x86"
+          echo "${OPENGREP_SHA256}  /usr/local/bin/opengrep" | sha256sum -c -
+          chmod +x /usr/local/bin/opengrep
+          opengrep --version
+
+      - name: Run opengrep rule-tests
+        run: ./scripts/opengrep-test.sh
+
+      - name: Run opengrep custom ruleset
+        run: ./scripts/opengrep-scan.sh
+
   test:
     strategy:
       fail-fast: false

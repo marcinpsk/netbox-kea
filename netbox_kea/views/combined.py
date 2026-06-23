@@ -118,7 +118,7 @@ def _fetch_all_leases_from_server(
 
     """
     client = server.get_client(version=version)
-    start_ip = "0.0.0.0" if version == 4 else "::"
+    start_ip = "0.0.0.0" if version == 4 else "::"  # noqa: S104  lease-page pagination cursor, not a socket bind
     per_page = 250
 
     all_leases: list[dict[str, Any]] = []

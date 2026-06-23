@@ -70,8 +70,13 @@ exclude = ["netbox_kea/tests"]
 
 [tool.ruff]
 line-length = 120
+# force-exclude so excluded paths are skipped even when passed explicitly
+# (e.g. by the ruff pre-commit hook). Keeps the opengrep rule-test fixtures —
+# which deliberately contain rule-violating code — out of ruff's scope.
+force-exclude = true
 exclude = [
   "netbox_kea/migrations",
+  ".opengrep",
 ]
 
 [tool.ruff.lint]
@@ -84,6 +89,7 @@ select = [
   "I",
   "PERF",  # perflint
   "RET",   # flake8-return
+  "S",     # flake8-bandit (security smells)
   "UP",
   "W",
 ]
@@ -115,10 +121,12 @@ max-complexity = 15
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"]
 "*/migrations/*.py" = ["D"]
-"*/tests/*.py" = ["D"]
-"tests/*.py" = ["D"]
-"e2e/*.py" = ["D"]
-".devcontainer/**/*.py" = ["D", "C4"]
+# Test code: bandit/security smells (asserts, hardcoded test creds, bind-all,
+# try/except/pass in helpers) are expected fixtures, not production risks.
+"*/tests/*.py" = ["D", "S"]
+"tests/*.py" = ["D", "S"]
+"e2e/*.py" = ["D", "S"]
+".devcontainer/**/*.py" = ["D", "C4", "S"]
 "netbox_kea/forms.py" = ["C901"]  # upstream complex validation logic
 
 [tool.pytest.ini_options]

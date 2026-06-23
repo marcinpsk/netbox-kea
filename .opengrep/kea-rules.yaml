@@ -1,0 +1,97 @@
+# SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
+# SPDX-License-Identifier: Apache-2.0
+#
+# Custom opengrep ruleset encoding the project's CLAUDE.md security/correctness
+# invariants. These run ON TOP OF CodeRabbit's default opengrep packs: the file
+# is intentionally NOT named opengrep.yml / at the repo root, so CodeRabbit does
+# NOT treat it as its config (which would replace its default ruleset). Instead
+# these rules are enforced by the local pre-push hook and the CI opengrep job
+# (scripts/opengrep-scan.sh), while CodeRabbit keeps running its own packs.
+#
+# Rule-test fixtures live in .opengrep/tests/; run them with scripts/opengrep-test.sh.
+rules:
+  - id: kea-get-client-missing-version
+    languages: [python]
+    severity: WARNING
+    message: >-
+      Pass an explicit DHCP version to server.get_client(version=...) when the
+      version is known. On dual-URL servers, omitting version= can hit the wrong
+      daemon endpoint. If the call is deliberately version-agnostic (e.g. the
+      Control Agent status check), suppress it on that line with
+      `# nosemgrep: kea-get-client-missing-version`.
+    metadata:
+      category: correctness
+      confidence: HIGH
+      references:
+        - "CLAUDE.md: Always pass version= to server.get_client()"
+    paths:
+      exclude:
+        - "**/tests/**"
+        - "**/migrations/**"
+    patterns:
+      - pattern: $X.get_client()
+
+  - id: kea-exception-detail-in-response
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Do not leak exception details to user-facing responses. str(exc) or an
+      f-string interpolating a caught exception can expose internal URLs, TLS
+      details, or Kea API config. Log server-side with logger.exception() and
+      return a generic message (or a sanitised kea_error_hint()).
+    metadata:
+      category: security
+      confidence: HIGH
+      cwe:
+        - "CWE-209: Generation of Error Message Containing Sensitive Information"
+      owasp:
+        - "A09:2021 - Security Logging and Monitoring Failures"
+      references:
+        - "CLAUDE.md: Never leak exception details to HTTP responses"
+    paths:
+      exclude:
+        - "**/tests/**"
+        - "**/migrations/**"
+    patterns:
+      - pattern-inside: |
+          try:
+              ...
+          except $EXC as $E:
+              ...
+      - pattern-either:
+          - pattern: messages.error($REQ, str($E), ...)
+          - pattern: messages.warning($REQ, str($E), ...)
+          - pattern: messages.info($REQ, str($E), ...)
+          - pattern: messages.error($REQ, f"...{$E}...", ...)
+          - pattern: messages.warning($REQ, f"...{$E}...", ...)
+          - pattern: messages.info($REQ, f"...{$E}...", ...)
+          - pattern: HttpResponse(str($E), ...)
+          - pattern: HttpResponse(f"...{$E}...", ...)
+          - pattern: HttpResponseBadRequest(str($E), ...)
+          - pattern: HttpResponseBadRequest(f"...{$E}...", ...)
+          - pattern: HttpResponseServerError(str($E), ...)
+          - pattern: HttpResponseServerError(f"...{$E}...", ...)
+          - pattern: JsonResponse(str($E), ...)
+          - pattern: Response(str($E), ...)
+          - pattern: Response(f"...{$E}...", ...)
+
+  - id: kea-command-result-indexed-without-guard
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Do not index a Kea command result directly (client.command(...)[0]).
+      command() only guarantees a list; an empty or malformed payload makes
+      [0] raise IndexError/TypeError. Assign the result and validate its shape
+      (non-empty list with a dict first entry) before indexing — see
+      _require_first_entry() in views/combined.py.
+    metadata:
+      category: correctness
+      confidence: HIGH
+      references:
+        - "CLAUDE.md: Validate Kea response shape before indexing resp[0]"
+    paths:
+      exclude:
+        - "**/tests/**"
+        - "**/migrations/**"
+    patterns:
+      - pattern: $C.command(...)[0]
