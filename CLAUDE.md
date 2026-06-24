@@ -15,7 +15,9 @@ uv run ruff check netbox_kea/              # lint
 uv run ruff format --check netbox_kea/     # check formatting
 uv run ruff format netbox_kea/             # auto-format
 uv run reuse lint                          # SPDX/REUSE compliance
-uv run pre-commit install                  # install pre-commit hooks
+uv run pre-commit install --install-hooks  # install pre-commit hooks (incl. pre-push opengrep)
+./scripts/opengrep-scan.sh                 # custom opengrep ruleset gate (pre-push + CI)
+./scripts/opengrep-test.sh                 # opengrep rule-tests
 ```
 
 ### Unit tests (no Docker required)
@@ -86,6 +88,11 @@ URL request
 - Pool operations support both Kea 2.x and 3.x APIs.
 
 ## Security & Code Quality Rules
+
+Several of these rules are machine-enforced by the custom opengrep ruleset in
+`.opengrep/kea-rules.yaml` (see `.opengrep/README.md`) — run on pre-push and in
+CI, *in addition* to CodeRabbit's default opengrep packs. When a rule below has a
+matching opengrep rule, a violation fails the gate before review.
 
 - **Never leak exception details to HTTP responses.** Use `logger.exception()` for server-side logging and return a generic message like `"An internal error occurred"` to users. Raw `str(exc)` can expose internal URLs, TLS details, or Kea API config.
 - **Always pass `version=` to `server.get_client()`** when the DHCP version is known (e.g., `server.get_client(version=self.dhcp_version)`). Omitting it may hit the wrong endpoint when dual URLs are configured.

@@ -256,7 +256,7 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
         if page:
             frm = page
         elif subnet is None:
-            frm = "0.0.0.0" if self.dhcp_version == 4 else "::"
+            frm = "0.0.0.0" if self.dhcp_version == 4 else "::"  # noqa: S104  lease-page start cursor, not a socket bind
         elif int(subnet.network) == 0:
             frm = str(subnet.network)
         else:
@@ -461,7 +461,7 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
         """
         instance = self.get_object(**kwargs)
 
-        start_ip = "0.0.0.0" if self.dhcp_version == 4 else "::"
+        start_ip = "0.0.0.0" if self.dhcp_version == 4 else "::"  # noqa: S104  lease-page start cursor, not a socket bind
         per_page = 1000
 
         all_leases: list[dict[str, Any]] = []

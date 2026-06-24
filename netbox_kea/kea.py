@@ -1024,7 +1024,7 @@ class KeaClient:
         if max_leases is not None and max_leases < 1:
             raise ValueError(f"max_leases must be >= 1 (or None for no cap), got {max_leases!r}")
         service = f"dhcp{version}"
-        cursor = "0.0.0.0" if version == 4 else "::"
+        cursor = "0.0.0.0" if version == 4 else "::"  # noqa: S104  lease-page pagination cursor, not a socket bind
         all_leases: list[dict] = []
         truncated = False
 

@@ -65,7 +65,7 @@ def find_prefix_length(ip_str: str) -> int:
             net = IPNetwork(str(prefix.prefix))
             if ip in net and net.prefixlen > best_len:
                 best_len = net.prefixlen
-        except Exception:  # noqa: BLE001, PERF203
+        except Exception:  # noqa: BLE001, PERF203, S112  skip unparseable prefixes
             continue
 
     return best_len if best_len >= 0 else default
@@ -202,7 +202,7 @@ def _update_mac_description(mac_obj: object, hostname: str) -> bool:
 
     Returns ``True`` when the description was changed.
     """
-    TOKEN = "dhcp_hostname: "
+    TOKEN = "dhcp_hostname: "  # noqa: S105  description-label prefix, not a credential
     new_value = f"{TOKEN}{hostname}"
     desc = mac_obj.description or ""
     has_interface = getattr(mac_obj, "assigned_object", None) is not None

@@ -219,7 +219,9 @@ class ServerStatusView(generic.ObjectView):
         result: dict[str, dict[str, Any]] = {}
         if server.has_control_agent:
             try:
-                result["Control Agent"] = self._get_ca_status(server.get_client())
+                # Control Agent is version-agnostic (top-level CA endpoint, not dhcp4/dhcp6).
+                ca_client = server.get_client()  # nosemgrep: kea-get-client-missing-version
+                result["Control Agent"] = self._get_ca_status(ca_client)
             except (KeaException, requests.RequestException, ValueError, RuntimeError):
                 logger.exception("Failed to fetch Control Agent status for server %s", server.pk)
         result.update(self._get_dhcp_status(server))

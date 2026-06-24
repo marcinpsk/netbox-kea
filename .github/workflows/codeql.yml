@@ -45,6 +45,12 @@ jobs:
         with:
           languages: ${{ matrix.language }}
           build-mode: ${{ matrix.build-mode }}
+          # The opengrep rule-test fixtures deliberately contain vulnerable
+          # patterns (so the rule-tests are meaningful) and are not shipped code.
+          # Exclude them from CodeQL, mirroring the ruff exclusion.
+          config: |
+            paths-ignore:
+              - '.opengrep/**'
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@c793b717bc78562f491db7b0e93a3a178b099162  # v4

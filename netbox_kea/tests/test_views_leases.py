@@ -2375,6 +2375,47 @@ class TestGetLeasesPageEdgeCases(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
 
 
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestGetLeasesPageAllLeasesMode(_ViewTestBase):
+    """All-leases browse mode (``by=""``) starts pagination at the address-space root.
+
+    Covers ``BaseServerLeasesView.get_leases_page()`` when *subnet* is ``None``: the
+    lease-page ``from`` cursor must be ``"0.0.0.0"`` for DHCPv4 and ``"::"`` for
+    DHCPv6. The existing get_leases_page tests all pass ``by=subnet``, so the
+    ``subnet is None`` branch was otherwise unexercised.
+    """
+
+    def _url4(self):
+        return reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+
+    def _url6(self):
+        return reverse("plugins:netbox_kea:server_leases6", args=[self.server.pk])
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_all_leases_v4_starts_from_zero_address(self, MockKeaClient):
+        """``by=""`` on the v4 view must call lease4-get-page with ``from="0.0.0.0"``."""
+        mock_client = MockKeaClient.return_value
+        mock_client.command.return_value = [{"result": 0, "arguments": {"count": 0, "leases": []}}]
+
+        response = self.client.get(self._url4(), {"by": ""}, HTTP_HX_REQUEST="true")
+
+        self.assertEqual(response.status_code, 200)
+        page_call = next(c for c in mock_client.command.call_args_list if c.args[0] == "lease4-get-page")
+        self.assertEqual(page_call.kwargs["arguments"]["from"], "0.0.0.0")
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_all_leases_v6_starts_from_unspecified_address(self, MockKeaClient):
+        """``by=""`` on the v6 view must call lease6-get-page with ``from="::"``."""
+        mock_client = MockKeaClient.return_value
+        mock_client.command.return_value = [{"result": 0, "arguments": {"count": 0, "leases": []}}]
+
+        response = self.client.get(self._url6(), {"by": ""}, HTTP_HX_REQUEST="true")
+
+        self.assertEqual(response.status_code, 200)
+        page_call = next(c for c in mock_client.command.call_args_list if c.args[0] == "lease6-get-page")
+        self.assertEqual(page_call.kwargs["arguments"]["from"], "::")
+
+
 # ---------------------------------------------------------------------------
 # get_leases — AbortRequest and null args (lines 522, 535)
 # ---------------------------------------------------------------------------
