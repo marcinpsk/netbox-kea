@@ -660,6 +660,12 @@ class _SubnetBaseForm(forms.Form):
         max_length=255,
         help_text="Comma-separated IP addresses or hostnames.",
     )
+    ddns_qualifying_suffix = forms.CharField(
+        label="DDNS qualifying suffix",
+        required=False,
+        max_length=255,
+        help_text="Domain suffix appended to hostnames before sending DDNS updates (e.g. example.com.).",
+    )
 
     def clean_pools(self) -> list[str]:  # noqa: D102
         value = self.cleaned_data["pools"].strip()
@@ -730,7 +736,7 @@ class SubnetAddForm(_SubnetBaseForm):
         help_text="Assign this subnet to a shared network immediately after creation.",
     )
 
-    field_order = ["subnet", "subnet_id", "shared_network", "pools", "gateway", "dns_servers", "ntp_servers"]
+    field_order = ["subnet", "subnet_id", "shared_network", "pools", "gateway", "dns_servers", "ntp_servers", "ddns_qualifying_suffix"]
 
     def clean_subnet(self) -> str:  # noqa: D102
         import ipaddress
@@ -851,6 +857,7 @@ class SubnetEditForm(_SubnetBaseForm):
         "max_valid_lft",
         "renew_timer",
         "rebind_timer",
+        "ddns_qualifying_suffix",
         "current_network",
     ]
 

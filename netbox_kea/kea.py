@@ -349,6 +349,7 @@ class KeaClient:
         gateway: str | None = None,
         dns_servers: list[str] | None = None,
         ntp_servers: list[str] | None = None,
+        ddns_qualifying_suffix: str | None = None,
     ) -> int | None:
         """Add a new subnet to Kea and persist the change.
 
@@ -412,6 +413,8 @@ class KeaClient:
             )
         if option_data:
             subnet_def["option-data"] = option_data
+        if ddns_qualifying_suffix:
+            subnet_def["ddns-qualifying-suffix"] = ddns_qualifying_suffix
         try:
             last_exc: KeaException | None = None
             add_resp: list | None = None
@@ -625,6 +628,7 @@ class KeaClient:
         gateway: str | None = None,
         dns_servers: list[str] | None = None,
         ntp_servers: list[str] | None = None,
+        ddns_qualifying_suffix: str | None = None,
         valid_lft: int | None = None,
         min_valid_lft: int | None = None,
         max_valid_lft: int | None = None,
@@ -698,6 +702,9 @@ class KeaClient:
                 }
             )
         subnet_def["option-data"] = preserved_opts + new_opts
+
+        if ddns_qualifying_suffix is not None:
+            subnet_def["ddns-qualifying-suffix"] = ddns_qualifying_suffix
 
         # pools: replace only when the caller explicitly passes a value
         if pools is not None:
