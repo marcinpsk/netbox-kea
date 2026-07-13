@@ -376,6 +376,7 @@ class KeaClient:
                 list_resp = self.command(
                     f"subnet{version}-list",
                     service=[service],
+                    check=(0, 3),  # result=3 means no subnets yet — treat as empty list
                 )
                 existing = (
                     (list_resp[0].get("arguments") or {}).get("subnets", [])
