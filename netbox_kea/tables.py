@@ -344,13 +344,14 @@ class SubnetTable(GenericTable):
         verbose_name="Options",
         orderable=False,
         template_code="""{% with opts=record.options %}
-{% if opts %}
+{% if opts or record.ddns_qualifying_suffix %}
 <span>
 {% if opts.gateway %}<span title="Gateway">GW: {{ opts.gateway }}</span>{% endif %}
 {% if opts.dns_servers %} <span data-bs-toggle="tooltip" title="DNS: {{ opts.dns_servers }}">
   <abbr>DNS{% if opts.domain_name %}: {{ opts.domain_name }}{% endif %}</abbr>
 </span>{% endif %}
 {% if opts.ntp_servers %} <span data-bs-toggle="tooltip" title="NTP">NTP: {{ opts.ntp_servers }}</span>{% endif %}
+{% if record.ddns_qualifying_suffix %} <span data-bs-toggle="tooltip" title="DDNS qualifying suffix: {{ record.ddns_qualifying_suffix }}">DDNS: {{ record.ddns_qualifying_suffix }}</span>{% endif %}
 </span>
 {% endif %}{% endwith %}""",
     )

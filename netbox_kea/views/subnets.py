@@ -95,6 +95,7 @@ class BaseServerDHCPSubnetsView(generic.ObjectChildrenView):
             "options": format_option_data(s.get("option-data") or [], version=self.dhcp_version),
             "pools": [p.get("pool", "") for p in (s.get("pools") or []) if isinstance(p, dict) and p.get("pool")],
             "can_change": can_change,
+            "ddns_qualifying_suffix": s.get("ddns-qualifying-suffix") or "",
         }
         if shared_network:
             row["shared_network"] = shared_network
