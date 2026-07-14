@@ -378,11 +378,17 @@ class KeaClient:
                     service=[service],
                     check=(0, 3),  # result=3 means no subnets yet — treat as empty list
                 )
-                existing = (
-                    (list_resp[0].get("arguments") or {}).get("subnets", [])
-                    if isinstance(list_resp, list) and list_resp and isinstance(list_resp[0], dict)
-                    else []
-                )
+                if not list_resp or not isinstance(list_resp[0], dict):
+                    raise RuntimeError(f"subnet{version}-list returned malformed response: {list_resp!r}")
+                if list_resp[0].get("result") == 3:
+                    existing = []
+                else:
+                    arguments = list_resp[0].get("arguments")
+                    if not isinstance(arguments, dict) or not isinstance(arguments.get("subnets"), list):
+                        raise RuntimeError(
+                            f"subnet{version}-list returned malformed arguments: {list_resp[0]!r}"
+                        )
+                    existing = arguments["subnets"]
                 max_id = max((s.get("id", 0) for s in existing), default=0)
                 subnet_def["id"] = max_id + 1
             except KeaException:
