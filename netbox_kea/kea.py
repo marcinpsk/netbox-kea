@@ -385,9 +385,7 @@ class KeaClient:
                 else:
                     arguments = list_resp[0].get("arguments")
                     if not isinstance(arguments, dict) or not isinstance(arguments.get("subnets"), list):
-                        raise RuntimeError(
-                            f"subnet{version}-list returned malformed arguments: {list_resp[0]!r}"
-                        )
+                        raise RuntimeError(f"subnet{version}-list returned malformed arguments: {list_resp[0]!r}")
                     existing = arguments["subnets"]
                 max_id = max((s.get("id", 0) for s in existing), default=0)
                 subnet_def["id"] = max_id + 1
