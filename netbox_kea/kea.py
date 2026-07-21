@@ -705,8 +705,10 @@ class KeaClient:
             )
         subnet_def["option-data"] = preserved_opts + new_opts
 
-        if ddns_qualifying_suffix is not None:
+        if ddns_qualifying_suffix:
             subnet_def["ddns-qualifying-suffix"] = ddns_qualifying_suffix
+        else:
+            subnet_def.pop("ddns-qualifying-suffix", None)
 
         # pools: replace only when the caller explicitly passes a value
         if pools is not None:

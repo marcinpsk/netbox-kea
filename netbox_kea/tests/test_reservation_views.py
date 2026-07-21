@@ -1385,6 +1385,34 @@ class TestServerSubnet4AddView(_ReservationViewBase):
             ddns_qualifying_suffix=None,
         )
 
+    def test_post_with_ddns_suffix_passes_it_to_subnet_add(self):
+        mock_client = MagicMock(spec=KeaClient)
+        mock_client.subnet_add.return_value = None
+        mock_client.command.return_value = [{"result": 0, "arguments": {"Dhcp4": {"shared-networks": []}}}]
+        with patch("netbox_kea.models.KeaClient", return_value=mock_client):
+            self.client.post(
+                self._add_url(),
+                data={
+                    "subnet": "10.99.0.0/24",
+                    "subnet_id": "",
+                    "pools": "",
+                    "gateway": "",
+                    "dns_servers": "",
+                    "ntp_servers": "",
+                    "ddns_qualifying_suffix": "example.com.",
+                },
+            )
+        mock_client.subnet_add.assert_called_once_with(
+            version=4,
+            subnet_cidr="10.99.0.0/24",
+            subnet_id=None,
+            pools=[],
+            gateway=None,
+            dns_servers=[],
+            ntp_servers=[],
+            ddns_qualifying_suffix="example.com.",
+        )
+
     def test_post_invalid_cidr_rerenders_form(self):
         resp = self.client.post(
             self._add_url(),
@@ -1491,6 +1519,34 @@ class TestServerSubnet6AddView(_ReservationViewBase):
             dns_servers=[],
             ntp_servers=[],
             ddns_qualifying_suffix=None,
+        )
+
+    def test_post_with_ddns_suffix_passes_it_to_subnet_add(self):
+        mock_client = MagicMock(spec=KeaClient)
+        mock_client.subnet_add.return_value = None
+        mock_client.command.return_value = [{"result": 0, "arguments": {"Dhcp6": {"shared-networks": []}}}]
+        with patch("netbox_kea.models.KeaClient", return_value=mock_client):
+            self.client.post(
+                self._add_url(),
+                data={
+                    "subnet": "2001:db8:99::/48",
+                    "subnet_id": "",
+                    "pools": "",
+                    "gateway": "",
+                    "dns_servers": "",
+                    "ntp_servers": "",
+                    "ddns_qualifying_suffix": "example.com.",
+                },
+            )
+        mock_client.subnet_add.assert_called_once_with(
+            version=6,
+            subnet_cidr="2001:db8:99::/48",
+            subnet_id=None,
+            pools=[],
+            gateway=None,
+            dns_servers=[],
+            ntp_servers=[],
+            ddns_qualifying_suffix="example.com.",
         )
 
 
