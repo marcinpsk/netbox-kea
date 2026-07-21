@@ -22,7 +22,7 @@ NetBox plugin for the [Kea DHCP](https://www.isc.org/kea/) server. Manage your D
 
 ### Core (from upstream)
 
-- View Kea daemon status (Control Agent + DHCPv4/DHCPv6 daemons)
+- View Kea daemon status (DHCPv4/DHCPv6 daemons — and the Control Agent on Kea < 3.0)
 - Full DHCPv4 and DHCPv6 support
 - Search, view, delete and export DHCP leases
 - Search for NetBox devices/VMs directly from DHCP leases
@@ -61,8 +61,8 @@ NetBox plugin for the [Kea DHCP](https://www.isc.org/kea/) server. Manage your D
 - Enable/disable DHCPv4 and DHCPv6 daemons from the NetBox UI
 
 **Dual-URL Server**
-- Optional separate URLs for DHCPv4 and DHCPv6 Control Agents
-- Supports environments where v4 and v6 are served by separate Kea processes
+- Optional separate URLs for the DHCPv4 and DHCPv6 endpoints
+- Supports Kea 3.0+ (each daemon exposes its own HTTP control socket) and split v4/v6 deployments
 
 **Global / Cross-Server Views**
 - Combined dashboard, lease, reservation, subnet and shared-network views across all servers
@@ -76,7 +76,7 @@ NetBox plugin for the [Kea DHCP](https://www.isc.org/kea/) server. Manage your D
 ## Requirements
 
 - NetBox 4.3 – 4.6
-- [Kea Control Agent](https://kea.readthedocs.io/en/latest/arm/agent.html)
+- Kea 3.0+ (recommended) — the plugin connects directly to each daemon's built-in HTTP control socket (`kea-dhcp4` / `kea-dhcp6`). The [Kea Control Agent](https://kea.readthedocs.io/en/latest/arm/agent.html) was deprecated in Kea 2.7 and removed in 3.0; on Kea < 3.0, point the server URL at the Control Agent instead.
 - [`lease_cmds`](https://kea.readthedocs.io/en/latest/arm/hooks.html#lease-cmds-lease-commands-for-easier-lease-management) hook library (for lease search and management)
 - [`host_cmds`](https://kea.readthedocs.io/en/latest/arm/hooks.html#host-cmds) hook library (optional, for reservation management)
 - [`subnet_cmds`](https://kea.readthedocs.io/en/latest/arm/hooks.html#subnet-cmds) hook library (optional, for subnet add/edit/delete)
@@ -89,9 +89,9 @@ The plugin degrades gracefully when optional hooks are absent — tabs for unava
 
 | netbox-kea-ng | NetBox | Kea |
 |---|---|---|
-| 1.x | 4.3 – 4.6 | 2.4+ |
+| 1.x | 4.3 – 4.6 | 3.0+ recommended (2.4+ via Control Agent) |
 
-Tested with Kea v2.4.1 using the `memfile` lease database. Other versions and databases should also work.
+On Kea 3.0+ the plugin talks directly to each DHCP daemon's HTTP control socket; on Kea < 3.0 it connects through the (now-deprecated) Control Agent. Tested with the `memfile` lease database.
 
 ---
 
@@ -169,11 +169,11 @@ All settings are under `PLUGINS_CONFIG["netbox_kea"]`:
 
 ### Single-URL (standard)
 
-Configure one `Server` URL that points to the Kea Control Agent:
+Configure one `Server` URL that points to the Kea HTTP endpoint (a DHCP daemon's control socket on Kea 3.0+, or the Control Agent on Kea < 3.0):
 
 | Field | Description |
 |---|---|
-| `CA / Server URL` (`ca_url`) | URL of the Kea Control Agent (e.g. `https://kea.example.com:8000`) |
+| `CA / Server URL` (`ca_url`) | URL of the Kea HTTP endpoint — a DHCP daemon control socket (Kea 3.0+) or the Control Agent (Kea < 3.0), e.g. `https://kea.example.com:8000` |
 | `DHCPv4` | Enable DHCPv4 lease/reservation/subnet management |
 | `DHCPv6` | Enable DHCPv6 lease/reservation/subnet management |
 | `CA Username` (`ca_username`) / `CA Password` (`ca_password`) | HTTP Basic Auth credentials (if required) |
@@ -182,12 +182,12 @@ Configure one `Server` URL that points to the Kea Control Agent:
 
 ### Dual-URL (separate v4/v6 processes)
 
-When DHCPv4 and DHCPv6 are served by separate Kea processes (each with its own Control Agent):
+When DHCPv4 and DHCPv6 have separate endpoints — the norm on Kea 3.0+, where each daemon exposes its own HTTP control socket:
 
 | Field | Description |
 |---|---|
-| `DHCPv4 URL` | URL of the Control Agent for the DHCPv4 daemon |
-| `DHCPv6 URL` | URL of the Control Agent for the DHCPv6 daemon |
+| `DHCPv4 URL` | URL of the DHCPv4 daemon's HTTP control socket (or its Control Agent on Kea < 3.0) |
+| `DHCPv6 URL` | URL of the DHCPv6 daemon's HTTP control socket (or its Control Agent on Kea < 3.0) |
 
 The main `CA URL` (`ca_url`) is required and acts as a fallback for any protocol without a dedicated URL.
 By default, both `DHCPv4 URL` and `DHCPv6 URL` use CA-level credentials; see **Per-protocol credentials** below for optional overrides.

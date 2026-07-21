@@ -38,7 +38,7 @@ class ServerForm(NetBoxModelForm):
             "client_cert_path",
             "client_key_path",
             "ca_file_path",
-            name="Control Agent / Default Connection",
+            name="Server Connection (Control Agent or DHCP daemon)",
         ),
         FieldSet(
             "dhcp4",
