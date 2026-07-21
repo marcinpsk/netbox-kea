@@ -538,8 +538,13 @@ def configure_table(page: Page, *selected_coumns: str) -> None:
         page.locator(f'#id_available_columns > option[value="{sc}"]').click()
         page.get_by_text("Add", exact=True).click()
 
+    # Submit the column selection. NetBox <=4.5 labelled this button "Save"; 4.6 reworked the
+    # table-config modal and renamed it "Apply" (id=apply_tableconfig). Both trigger a full-page
+    # navigation on success (4.6 sets window.location.href = origin + pathname), so expect_navigation holds.
+    apply_button = page.locator("#apply_tableconfig")
+    submit = apply_button if apply_button.count() else page.get_by_role("button", name="Save")
     with page.expect_navigation():
-        page.get_by_role("button", name="Save").click()
+        submit.click()
 
 
 @pytest.mark.parametrize(
