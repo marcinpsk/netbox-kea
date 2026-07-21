@@ -1079,6 +1079,35 @@ class TestSubnetAdd(TestCase):
         # _SUBNET4_LIST_RESP has ids 1 and 2, so auto-assigned should be 3
         self.assertEqual(add_call["arguments"]["subnet4"][0]["id"], 3)
 
+    def test_subnet_add_auto_assigns_id_1_when_no_subnets_exist(self):
+        """result=3 (no subnets configured yet) is accepted via check=(0, 3) and treated as an empty list, so the first subnet gets id 1 — the case this fix restores on Kea 3.x."""
+        empty_list_resp = [{"result": 3, "text": "no subnets configured"}]
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(empty_list_resp, _SUBNET4_ADD_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _OK),
+        ) as mock_post:
+            self.client.subnet_add(version=4, subnet_cidr="10.99.0.0/24")
+        add_call = next(
+            c.kwargs.get("json") or c[1]["json"]
+            for c in mock_post.call_args_list
+            if (c.kwargs.get("json") or c[1]["json"])["command"] == "subnet4-add"
+        )
+        self.assertEqual(add_call["arguments"]["subnet4"][0]["id"], 1)
+
+    def test_subnet_add_raises_on_malformed_list_response(self):
+        """A subnet-list response with no result envelope (empty list) must raise RuntimeError, not be silently treated as empty — otherwise id 1 could collide with real subnets."""
+        with patch.object(self.client._session, "post", side_effect=_side_effects([])):
+            with self.assertRaises(RuntimeError):
+                self.client.subnet_add(version=4, subnet_cidr="10.99.0.0/24")
+
+    def test_subnet_add_raises_on_malformed_list_arguments(self):
+        """A result=0 subnet-list response missing arguments.subnets must raise RuntimeError rather than assume "no subnets" and assign a colliding id 1."""
+        malformed = [{"result": 0}]  # ok result code, but no 'arguments' — can't trust it as empty
+        with patch.object(self.client._session, "post", side_effect=_side_effects(malformed)):
+            with self.assertRaises(RuntimeError):
+                self.client.subnet_add(version=4, subnet_cidr="10.99.0.0/24")
+
     def test_subnet_add_includes_pools(self):
         """subnet4-add payload includes pools when provided."""
         with patch.object(
