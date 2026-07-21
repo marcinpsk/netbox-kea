@@ -361,6 +361,7 @@ class KeaClient:
             gateway: Optional default gateway IP (sets option ``routers``; DHCPv4 only).
             dns_servers: Optional list of DNS server IPs.
             ntp_servers: Optional list of NTP server hostnames/IPs.
+            ddns_qualifying_suffix: Optional DDNS qualifying suffix for dynamic DNS updates.
 
         Raises:
             KeaException: If Kea returns a non-zero result code.
@@ -652,6 +653,7 @@ class KeaClient:
             gateway: Default gateway IP (option ``routers``, DHCPv4 only).
             dns_servers: List of DNS server IP strings.
             ntp_servers: List of NTP server hostnames/IPs.
+            ddns_qualifying_suffix: Optional DDNS qualifying suffix for dynamic DNS updates.
             valid_lft: Preferred lease lifetime in seconds.
             min_valid_lft: Minimum lease lifetime in seconds.
             max_valid_lft: Maximum lease lifetime in seconds.

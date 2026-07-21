@@ -1355,6 +1355,7 @@ class TestServerSubnet4AddView(_ReservationViewBase):
             gateway=None,
             dns_servers=[],
             ntp_servers=[],
+            ddns_qualifying_suffix=None,
         )
 
     def test_post_with_options_passes_them_to_subnet_add(self):
@@ -1381,6 +1382,7 @@ class TestServerSubnet4AddView(_ReservationViewBase):
             gateway="10.99.0.1",
             dns_servers=["8.8.8.8"],
             ntp_servers=[],
+            ddns_qualifying_suffix=None,
         )
 
     def test_post_invalid_cidr_rerenders_form(self):
@@ -1488,6 +1490,7 @@ class TestServerSubnet6AddView(_ReservationViewBase):
             gateway=None,
             dns_servers=[],
             ntp_servers=[],
+            ddns_qualifying_suffix=None,
         )
 
 
