@@ -163,11 +163,19 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - netbox: v4.3
-          - netbox: v4.4
-          - netbox: v4.5
+          # Bracket the support window (floor + ceiling) plus dev, rather than every
+          # minor. NetBox can break at minors, but the ends keep the middle low-risk
+          # while cutting CI cost; bump the ceiling when a new stable ships.
+          - netbox: v4.3        # floor — minimum supported NetBox
+          - netbox: v4.6        # ceiling — latest stable NetBox
+          # NetBox develop branch (unreleased "main"); allowed to fail so upstream
+          # churn gives early signal without blocking merges (see continue-on-error).
+          - netbox: snapshot
+            experimental: true
 
     runs-on: ubuntu-latest
+    # Only the experimental (develop/"main") leg may fail without failing the job.
+    continue-on-error: ${{ matrix.experimental || false }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -178,11 +186,16 @@ jobs:
         with:
           enable-cache: true
 
-      - name: Setup Python 3.12
+      - name: Set up Python
         id: setup-python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
-          python-version-file: pyproject.toml
+          # Pin the test-driver Python to the 3.14 line (tracks the latest 3.14.x patch —
+          # minor-line, not an exact patch). Without this, reading requires-python (">=3.10")
+          # lets setup-python float to whatever release is newest. This only runs the
+          # black-box test client (playwright/API); NetBox runs in its container on its own
+          # bundled Python, so it is not tied to any matrix leg.
+          python-version: "3.14"
 
       - name: Ensure playwright browsers are installed
         run: uv run playwright install --with-deps
