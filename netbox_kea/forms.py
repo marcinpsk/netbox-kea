@@ -736,7 +736,16 @@ class SubnetAddForm(_SubnetBaseForm):
         help_text="Assign this subnet to a shared network immediately after creation.",
     )
 
-    field_order = ["subnet", "subnet_id", "shared_network", "pools", "gateway", "dns_servers", "ntp_servers", "ddns_qualifying_suffix"]
+    field_order = [
+        "subnet",
+        "subnet_id",
+        "shared_network",
+        "pools",
+        "gateway",
+        "dns_servers",
+        "ntp_servers",
+        "ddns_qualifying_suffix",
+    ]
 
     def clean_subnet(self) -> str:  # noqa: D102
         import ipaddress
