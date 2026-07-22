@@ -37,6 +37,19 @@ def _check_no_django_error(page: Page) -> None:
     assert "Page not found" not in title, f"Django 404 at {page.url}"
 
 
+def _submit_and_wait_nav(page: Page, js: str) -> None:
+    """Run a form-submitting JS snippet and wait for the resulting navigation.
+
+    Replaces the deprecated/racy ``page.expect_navigation()``: capture the current
+    URL, run the submit, then wait for the URL to change (these submits always
+    redirect to a different page) and for the network to settle.
+    """
+    prev_url = page.url
+    page.evaluate(js)
+    page.wait_for_url(lambda u: u != prev_url)
+    page.wait_for_load_state("networkidle")
+
+
 def _assert_no_none_pk(page: Page) -> None:
     """Fail if the URL contains the tell-tale pk=None pattern (regression guard)."""
     assert not re.search(r"/None(?:[/?#]|$)", page.url), f"URL contains /None — pk=None bug triggered at {page.url}"
@@ -360,12 +373,11 @@ class TestLiveKeaServer:
         page.goto(f"{plugin_base}/servers/{server_id}/delete/")
         _check_no_django_error(page)
 
-        # Submit via JS with explicit navigation wait — djDebug intercepts pointer events
-        with page.expect_navigation():
-            page.evaluate(
-                "var forms = document.querySelectorAll('form[method=\"post\"]'); forms[forms.length - 1].submit()"
-            )
-        page.wait_for_load_state("networkidle")
+        # Submit via JS — djDebug intercepts pointer events.
+        _submit_and_wait_nav(
+            page,
+            "var forms = document.querySelectorAll('form[method=\"post\"]'); forms[forms.length - 1].submit()",
+        )
 
         _check_no_django_error(page)
         _assert_no_http_errors(track_http_errors)
@@ -647,9 +659,7 @@ class TestBadgeEnrichmentLiveKea:
         """Delete a DHCPv4 reservation via the delete confirmation form."""
         page.goto(f"{plugin_base}/servers/{server_id}/reservations4/{subnet_id}/{ip}/delete/")
         page.wait_for_load_state("networkidle")
-        with page.expect_navigation():
-            page.evaluate("document.querySelector('form[method=\"post\"]').submit()")
-        page.wait_for_load_state("networkidle")
+        _submit_and_wait_nav(page, "document.querySelector('form[method=\"post\"]').submit()")
 
     def test_reserved_badge_appears_on_leases4_for_known_reservation(
         self,
@@ -927,9 +937,7 @@ class TestReservationCRUDLiveKea:
 
     def _submit_form_by_field(self, page: Page, field_id: str) -> None:
         """Submit the form that contains *field_id*, waiting for the resulting navigation."""
-        with page.expect_navigation():
-            page.evaluate(f"document.getElementById('{field_id}').closest('form').submit()")
-        page.wait_for_load_state("networkidle")
+        _submit_and_wait_nav(page, f"document.getElementById('{field_id}').closest('form').submit()")
 
     def _fill_reservation_form(
         self,
@@ -977,12 +985,11 @@ class TestReservationCRUDLiveKea:
         page.goto(self._reservation_delete_url(plugin_base, server_id, self._SUBNET_ID, self._TEST_IP))
         page.wait_for_load_state("networkidle")
         if "/delete/" in page.url:
-            with page.expect_navigation():
-                page.evaluate(
-                    "document.querySelectorAll('form[method=\"post\"]')"
-                    "[ document.querySelectorAll('form[method=\"post\"]').length - 1 ].submit()"
-                )
-            page.wait_for_load_state("networkidle")
+            _submit_and_wait_nav(
+                page,
+                "document.querySelectorAll('form[method=\"post\"]')"
+                "[ document.querySelectorAll('form[method=\"post\"]').length - 1 ].submit()",
+            )
 
         # ---- 1. CREATE ----
         page.goto(self._reservation_add_url(plugin_base, server_id))
@@ -1029,12 +1036,11 @@ class TestReservationCRUDLiveKea:
         page.wait_for_load_state("networkidle")
         _check_no_django_error(page)
         # The delete confirmation form has only one unique element — submit it directly
-        with page.expect_navigation():
-            page.evaluate(
-                "document.querySelectorAll('form[method=\"post\"]')"
-                "[ document.querySelectorAll('form[method=\"post\"]').length - 1 ].submit()"
-            )
-        page.wait_for_load_state("networkidle")
+        _submit_and_wait_nav(
+            page,
+            "document.querySelectorAll('form[method=\"post\"]')"
+            "[ document.querySelectorAll('form[method=\"post\"]').length - 1 ].submit()",
+        )
         _check_no_django_error(page)
         _assert_no_http_errors(track_http_errors)
 
@@ -1263,9 +1269,7 @@ class TestPoolManagementLiveKea:
         page.wait_for_load_state("networkidle")
         _check_no_django_error(page)
         page.fill("#id_pool", test_pool)
-        with page.expect_navigation():
-            page.evaluate("document.getElementById('id_pool').closest('form').submit()")
-        page.wait_for_load_state("networkidle")
+        _submit_and_wait_nav(page, "document.getElementById('id_pool').closest('form').submit()")
         _check_no_django_error(page)
         _assert_no_http_errors(track_http_errors)
 
@@ -1278,12 +1282,11 @@ class TestPoolManagementLiveKea:
         page.goto(self._pool_delete_url(plugin_base, server_id, subnet_id, test_pool))
         page.wait_for_load_state("networkidle")
         _check_no_django_error(page)
-        with page.expect_navigation():
-            page.evaluate(
-                "document.querySelectorAll('form[method=\"post\"]')"
-                "[ document.querySelectorAll('form[method=\"post\"]').length - 1 ].submit()"
-            )
-        page.wait_for_load_state("networkidle")
+        _submit_and_wait_nav(
+            page,
+            "document.querySelectorAll('form[method=\"post\"]')"
+            "[ document.querySelectorAll('form[method=\"post\"]').length - 1 ].submit()",
+        )
         _check_no_django_error(page)
         _assert_no_http_errors(track_http_errors)
 
@@ -1351,9 +1354,7 @@ class TestSubnetManagementLiveKea:
             page.fill("#id_pools", test_pool)
             page.fill("#id_gateway", "10.254.253.1")
 
-            with page.expect_navigation():
-                page.evaluate("document.getElementById('id_subnet').closest('form').submit()")
-            page.wait_for_load_state("networkidle")
+            _submit_and_wait_nav(page, "document.getElementById('id_subnet').closest('form').submit()")
             _check_no_django_error(page)
             _assert_no_http_errors(track_http_errors)
 
@@ -1381,9 +1382,7 @@ class TestSubnetManagementLiveKea:
             _check_no_django_error(page)
             assert test_subnet in page.content(), "Subnet CIDR not shown on delete confirmation page"
 
-            with page.expect_navigation():
-                page.evaluate("document.querySelector('.card-body form[method=\"post\"]').submit()")
-            page.wait_for_load_state("networkidle")
+            _submit_and_wait_nav(page, "document.querySelector('.card-body form[method=\"post\"]').submit()")
             _check_no_django_error(page)
             _assert_no_http_errors(track_http_errors)
 

@@ -562,12 +562,14 @@ def configure_table(page: Page, *selected_coumns: str) -> None:
         page.get_by_text("Add", exact=True).click()
 
     # Submit the column selection. NetBox <=4.5 labelled this button "Save"; 4.6 reworked the
-    # table-config modal and renamed it "Apply" (id=apply_tableconfig). Both trigger a full-page
-    # navigation on success (4.6 sets window.location.href = origin + pathname), so expect_navigation holds.
+    # table-config modal and renamed it "Apply" (id=apply_tableconfig). Both reload to
+    # origin + pathname on success (4.6 sets window.location.href), stripping the query string.
     apply_button = page.locator("#apply_tableconfig")
     submit = apply_button if apply_button.count() else page.get_by_role("button", name="Save")
-    with page.expect_navigation():
-        submit.click()
+    # wait_for_url (not the deprecated/racy expect_navigation) for that query-less URL.
+    target = page.url.split("?", 1)[0]
+    submit.click()
+    page.wait_for_url(target)
 
 
 @pytest.mark.parametrize(
@@ -603,9 +605,10 @@ def test_navigation_add(page: Page) -> None:
     # The menu Add button is an icon-only, hover-revealed link whose accessible
     # name and visibility vary across NetBox versions. Target it by href and
     # dispatch the click directly so the test exercises the link, not the CSS reveal.
-    # Wait for the navigation the click triggers, so the title assertion doesn't race a slow load.
-    with page.expect_navigation(url=re.compile(r"/servers/add/")):
-        menu.locator('a[href$="/servers/add/"]').dispatch_event("click")
+    # Dispatch the click, then wait_for_url (expect_navigation is deprecated/racy) so the title
+    # assertion doesn't race a slow load.
+    menu.locator('a[href$="/servers/add/"]').dispatch_event("click")
+    page.wait_for_url(re.compile(r"/servers/add/"))
 
     expect(page).to_have_title(re.compile("^Add a new server.*"))
 
