@@ -33,7 +33,7 @@ from netbox_kea.kea import KeaClient
 from netbox_kea.models import Server
 from netbox_kea.views.leases import _fetch_subnet_choices, _subnet_choices_cache_key, _subnet_sort_key
 
-from .kea_stub import stub_kea
+from .kea_stub import queued, stub_kea
 from .utils import _PLUGINS_CONFIG, _make_db_server, _ViewTestBase
 
 
@@ -200,6 +200,10 @@ class TestReservedBadgeOnLeases(_ViewTestBase):
             response = self._htmx_get(url, {"by": "ip", "q": "192.168.1.100"})
 
         self.assertEqual(response.status_code, 200)
+        # HX-Push-Url is set only on the success render path, and the lease row must
+        # appear — together these prove the table rendered, not the exception partial.
+        self.assertIn("HX-Push-Url", response.headers)
+        self.assertContains(response, "192.168.1.100")
         # The column header says "Reserved" — check no badge link is rendered
         self.assertNotContains(response, 'text-decoration-none">Reserved</a>')
 
@@ -216,8 +220,11 @@ class TestReservedBadgeOnLeases(_ViewTestBase):
         ):
             response = self._htmx_get(url, {"by": "ip", "q": "192.168.1.100"})
 
-        # Must not 500; page renders normally without badge
+        # Must not 500; page renders normally (success path sets HX-Push-Url and
+        # shows the lease row) without a reservation badge.
         self.assertEqual(response.status_code, 200)
+        self.assertIn("HX-Push-Url", response.headers)
+        self.assertContains(response, "192.168.1.100")
         self.assertNotContains(response, 'text-decoration-none">Reserved</a>')
 
 
@@ -444,10 +451,10 @@ class TestLeaseExport(_ViewTestBase):
         with stub_kea(
             {
                 "config-get": self._CONFIG4,
-                "lease4-get-page": [
+                "lease4-get-page": queued(
                     {"result": 0, "arguments": {"leases": page1_leases, "count": 3}},
                     {"result": 3, "arguments": None},
-                ],
+                ),
             }
         ) as kea:
             # Pass per_page=3 so that count(3) == per_page(3) triggers the next-page fetch.
@@ -750,10 +757,10 @@ class TestLeaseExportAll(_ViewTestBase):
         ]
         with stub_kea(
             {
-                "lease4-get-page": [
+                "lease4-get-page": queued(
                     {"result": 0, "arguments": {"leases": page1, "count": 1000}},
                     {"result": 3, "arguments": None},
-                ]
+                )
             }
         ) as kea:
             response = self.client.get(self._url4(), {"export_all": "1"})
@@ -1369,7 +1376,7 @@ class TestBulkLeaseImportView(_ViewTestBase):
             ]
         )
         # Row 1 succeeds (result 0), row 2 fails (result 1 → real client raises KeaException).
-        with stub_kea({"lease4-add": [{"result": 0}, {"result": 1, "text": "bad"}]}):
+        with stub_kea({"lease4-add": queued({"result": 0}, {"result": 1, "text": "bad"})}):
             response = self.client.post(self._url(version=4), self._post(version=4, csv_bytes=csv_bytes))
         self.assertEqual(response.status_code, 200)
         result = response.context["result"]
@@ -2047,7 +2054,7 @@ class TestFetchAllLeasesFromServer(_ViewTestBase):
         # Each element of *responses* is a one-service Kea reply list; unwrap to the
         # single dict and feed them as a FIFO on lease4-get-page (the last repeats).
         page_responses = [r[0] for r in responses]
-        with stub_kea({"lease4-get-page": page_responses}):
+        with stub_kea({"lease4-get-page": queued(*page_responses)}):
             return _fetch_all_leases_from_server(self.server, version=4, max_leases=max_leases)
 
     def test_result_3_stops_loop(self):
@@ -2123,7 +2130,7 @@ class TestFetchReservationByIP(_ViewTestBase):
             for (hosts, nf, ns) in pages
         ]
         client = self.server.get_client(version=4)
-        with stub_kea({"reservation-get-page": responses}):
+        with stub_kea({"reservation-get-page": queued(*responses)}):
             return _fetch_reservation_by_ip(client, version=4)
 
     def test_single_ip_reservation(self):
@@ -2550,7 +2557,7 @@ class TestLeasePartialDelete(_ViewTestBase):
         """When the first IP fails, the second IP is still deleted."""
         # First lease4-del fails (result 1 → KeaException), second succeeds.
         with stub_kea(
-            {"lease4-del": [{"result": 1, "text": "not found"}, {"result": 0}], "config-get": self._CONFIG4}
+            {"lease4-del": queued({"result": 1, "text": "not found"}, {"result": 0}), "config-get": self._CONFIG4}
         ) as kea:
             response = self.client.post(
                 self._url(),
@@ -2573,7 +2580,9 @@ class TestLeasePartialDelete(_ViewTestBase):
 
     def test_partial_failure_shows_warning(self):
         """When some IPs fail, a warning message about partial failure is shown."""
-        with stub_kea({"lease4-del": [{"result": 1, "text": "not found"}, {"result": 0}], "config-get": self._CONFIG4}):
+        with stub_kea(
+            {"lease4-del": queued({"result": 1, "text": "not found"}, {"result": 0}), "config-get": self._CONFIG4}
+        ):
             response = self.client.post(
                 self._url(),
                 {"lease_ips": ["10.0.0.1", "10.0.0.2"], "_confirm": "1", "pk": ["10.0.0.1", "10.0.0.2"]},
@@ -2679,7 +2688,7 @@ class TestLeaseExportStateFilter(_ViewTestBase):
             {"result": 3, "arguments": None},
         ]
         # Request export with state=1 (declined only)
-        with stub_kea({"config-get": config, "lease4-get-page": pages}):
+        with stub_kea({"config-get": config, "lease4-get-page": queued(*pages)}):
             response = self.client.get(
                 self._url(),
                 {
@@ -3702,7 +3711,7 @@ class TestLeaseDeletePartialFailure(_ViewTestBase):
     def test_partial_failure_shows_mixed_messages(self):
         """Some leases succeed, others fail with KeaException → mixed messages."""
         # First lease4-del succeeds (result 0), second fails (result 1 → KeaException).
-        with stub_kea({"lease4-del": [{"result": 0}, {"result": 1, "text": "lease not found"}]}):
+        with stub_kea({"lease4-del": queued({"result": 0}, {"result": 1, "text": "lease not found"})}):
             response = self.client.post(
                 self._url(),
                 {"pk": ["10.0.0.1", "10.0.0.2"], "_confirm": "1"},

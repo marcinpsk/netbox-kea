@@ -16,6 +16,8 @@ threads used by the reservation/lease-enrichment views.
 
 from __future__ import annotations
 
+import threading
+from collections import deque
 from contextlib import contextmanager
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -40,14 +42,46 @@ def _is_exc(obj: Any) -> bool:
     return isinstance(obj, BaseException) or (isinstance(obj, type) and issubclass(obj, BaseException))
 
 
+class ResponseQueue:
+    """An explicit FIFO of sequential responses for one command.
+
+    Each call consumes the next response; once a single response remains it
+    repeats (so callers can register ``queued(page, end)`` and let ``end`` answer
+    every subsequent call). Kept distinct from a plain ``list`` so an ordinary
+    multi-service Kea response — itself a list — is never mistaken for a queue.
+    """
+
+    def __init__(self, responses: Any) -> None:
+        self._items: deque = deque(responses)
+        if not self._items:
+            raise ValueError("queued() requires at least one response")
+
+    def next(self) -> Any:
+        """Pop the next response (the last one repeats). Caller holds the stub lock."""
+        return self._items.popleft() if len(self._items) > 1 else self._items[0]
+
+
+def queued(*responses: Any) -> ResponseQueue:
+    """Register a sequence of responses answered in order for one command.
+
+    ``stub_kea({"lease4-get-page": queued(page1, page2, end)})`` returns ``page1``
+    on the first call, ``page2`` on the second, then ``end`` for every call after.
+    """
+    return ResponseQueue(responses)
+
+
 class KeaHttpStub:
     """Dispatch Kea commands by name and record the request bodies sent.
 
     ``responses`` maps a command name to what that command should return. A value
     may be:
 
-    * a dict/list payload — used for every call of that command;
-    * a ``list`` — consumed as a FIFO queue (the last item repeats);
+    * a ``dict`` payload — the single ``.json()`` entry, used for every call;
+    * a ``list`` payload — returned **verbatim** as the ``.json()`` body (Kea
+      returns one entry per targeted service, so a real multi-service response is
+      a list);
+    * a :class:`ResponseQueue` from :func:`queued` — sequential responses, one per
+      call (the last repeats), for pagination / partial-failure paths;
     * a callable ``(body) -> payload`` — for argument-dependent responses;
     * an exception instance or class — **raised** when the command is called, or
       returned by a callable, to simulate a transport error (e.g.
@@ -59,22 +93,28 @@ class KeaHttpStub:
 
     ``KeaClient`` expects a JSON list (one entry per targeted service); a payload
     that is not already a list is wrapped in a single-element list.
+
+    Request recording and queue dispatch are guarded by a lock because the
+    reservation/lease-enrichment views ``clone()`` the client and POST from worker
+    threads.
     """
 
     def __init__(self, responses: dict[str, Any]) -> None:
-        self._responses = {k: (list(v) if isinstance(v, list) else v) for k, v in responses.items()}
+        self._responses = dict(responses)
         self.requests: list[dict[str, Any]] = []
+        self._lock = threading.Lock()
 
     def __call__(self, url: str, **kwargs: Any) -> MagicMock:
         body = kwargs.get("json") or {}
-        self.requests.append(body)
-        cmd = body.get("command")
-        if cmd not in self._responses:
-            raise AssertionError(f"KeaHttpStub: no response registered for command {cmd!r} (url={url})")
-        spec = self._responses[cmd]
-        if isinstance(spec, list):
-            spec = spec.pop(0) if len(spec) > 1 else spec[0]
-        # A callable (but not an exception class) is resolved against the body.
+        with self._lock:
+            self.requests.append(body)
+            cmd = body.get("command")
+            if cmd not in self._responses:
+                raise AssertionError(f"KeaHttpStub: no response registered for command {cmd!r} (url={url})")
+            spec = self._responses[cmd]
+            if isinstance(spec, ResponseQueue):
+                spec = spec.next()
+        # Callables/exceptions are resolved outside the lock (they may be slow or raise).
         if callable(spec) and not _is_exc(spec):
             spec = spec(body)
         if _is_exc(spec):
@@ -84,11 +124,13 @@ class KeaHttpStub:
     # --- assertion helpers ---
     def commands(self) -> list[str]:
         """Ordered list of command names sent."""
-        return [r.get("command") for r in self.requests]
+        with self._lock:
+            return [r.get("command") for r in self.requests]
 
     def bodies(self, command: str) -> list[dict[str, Any]]:
         """Every request body sent for *command* (for asserting args / absence of ``service``)."""
-        return [r for r in self.requests if r.get("command") == command]
+        with self._lock:
+            return [r for r in self.requests if r.get("command") == command]
 
 
 @contextmanager
