@@ -2004,21 +2004,17 @@ class TestSubnetAddNoIdWarning(_ViewTestBase):
 class TestSubnetDeleteClientError(_ViewTestBase):
     """Subnet delete handlers must handle get_client() failures gracefully."""
 
-    @patch("netbox_kea.models.Server.get_client")
-    def test_post_with_get_client_failure_redirects(self, mock_get_client):
-        """get_client() raising in delete POST must redirect with error, not 500."""
-        mock_get_client.side_effect = ValueError("connection refused")
-        url = reverse("plugins:netbox_kea:server_subnet4_delete", args=[self.server.pk, 1])
+    def test_post_with_get_client_failure_redirects(self):
+        """A real get_client() failure (cert without key → ValueError) in delete POST must redirect."""
+        bad = _make_db_server(name="bad-cert-del-post", client_cert_path="/nonexistent/cert.pem")
+        url = reverse("plugins:netbox_kea:server_subnet4_delete", args=[bad.pk, 1])
         response = self.client.post(url, {"confirm": "1"})
         self.assertIn(response.status_code, [200, 302])
 
-    @patch("netbox_kea.models.Server.get_client")
-    def test_get_with_get_client_failure_renders(self, mock_get_client):
-        """get_client() raising in delete GET must render confirm page, not 500."""
-        import requests as req
-
-        mock_get_client.side_effect = req.RequestException("connection refused")
-        url = reverse("plugins:netbox_kea:server_subnet4_delete", args=[self.server.pk, 1])
+    def test_get_with_get_client_failure_renders(self):
+        """A real get_client() failure in delete GET must still render the confirm page, not 500."""
+        bad = _make_db_server(name="bad-cert-del-get", client_cert_path="/nonexistent/cert.pem")
+        url = reverse("plugins:netbox_kea:server_subnet4_delete", args=[bad.pk, 1])
         response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
 
@@ -2027,19 +2023,17 @@ class TestSubnetDeleteClientError(_ViewTestBase):
 class TestSubnetWipeClientError(_ViewTestBase):
     """Subnet wipe handlers must handle get_client() failures gracefully."""
 
-    @patch("netbox_kea.models.Server.get_client")
-    def test_post_with_get_client_failure_redirects(self, mock_get_client):
-        """get_client() raising in wipe POST must redirect with error, not 500."""
-        mock_get_client.side_effect = ValueError("connection refused")
-        url = reverse("plugins:netbox_kea:server_subnet4_wipe_leases", args=[self.server.pk, 1])
+    def test_post_with_get_client_failure_redirects(self):
+        """A real get_client() failure (cert without key → ValueError) in wipe POST must redirect."""
+        bad = _make_db_server(name="bad-cert-wipe-post", client_cert_path="/nonexistent/cert.pem")
+        url = reverse("plugins:netbox_kea:server_subnet4_wipe_leases", args=[bad.pk, 1])
         response = self.client.post(url, {"confirm": "1"})
         self.assertIn(response.status_code, [200, 302])
 
-    @patch("netbox_kea.models.Server.get_client")
-    def test_get_with_get_client_failure_renders(self, mock_get_client):
-        """get_client() raising in wipe GET must render confirm page, not 500."""
-        mock_get_client.side_effect = ValueError("connection refused")
-        url = reverse("plugins:netbox_kea:server_subnet4_wipe_leases", args=[self.server.pk, 1])
+    def test_get_with_get_client_failure_renders(self):
+        """A real get_client() failure in wipe GET must still render the confirm page, not 500."""
+        bad = _make_db_server(name="bad-cert-wipe-get", client_cert_path="/nonexistent/cert.pem")
+        url = reverse("plugins:netbox_kea:server_subnet4_wipe_leases", args=[bad.pk, 1])
         response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
 
@@ -2048,13 +2042,12 @@ class TestSubnetWipeClientError(_ViewTestBase):
 class TestPoolDeleteClientError(_ViewTestBase):
     """Pool delete POST handler must handle get_client() failures gracefully."""
 
-    @patch("netbox_kea.models.Server.get_client")
-    def test_post_with_get_client_failure_redirects(self, mock_get_client):
-        """get_client() raising in pool-delete POST must redirect with error, not 500."""
-        mock_get_client.side_effect = ValueError("connection refused")
+    def test_post_with_get_client_failure_redirects(self):
+        """A real get_client() failure (cert without key → ValueError) in pool-delete POST must redirect."""
+        bad = _make_db_server(name="bad-cert-pool-del", client_cert_path="/nonexistent/cert.pem")
         url = reverse(
             "plugins:netbox_kea:server_subnet4_pool_delete",
-            args=[self.server.pk, 1, "10.0.0.1-10.0.0.100"],
+            args=[bad.pk, 1, "10.0.0.1-10.0.0.100"],
         )
         response = self.client.post(url, {"confirm": "1"})
         self.assertIn(response.status_code, [200, 302])
@@ -2069,20 +2062,20 @@ class TestPoolDeleteClientError(_ViewTestBase):
 class TestGetSubnetsConfigShapeGuard(_ViewTestBase):
     """get_subnets() returns [] when config-get arguments is non-dict."""
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_non_dict_arguments_returns_empty_list(self, MockKeaClient):
-        """Non-dict arguments in config-get response must return empty subnet list."""
-        MockKeaClient.return_value.command.return_value = [{"result": 0, "arguments": "unexpected string"}]
+    def test_non_dict_arguments_returns_empty_list(self):
+        """Non-dict (string) arguments in config-get must yield an empty subnet list, not a 500."""
         url = reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk])
-        response = self.client.get(url)
+        with stub_kea(
+            {"config-get": {"result": 0, "arguments": "unexpected string"}, "stat-lease4-get": _STAT_ABSENT4}
+        ):
+            response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_integer_arguments_returns_empty_list(self, MockKeaClient):
-        """Integer arguments in config-get response must return empty subnet list."""
-        MockKeaClient.return_value.command.return_value = [{"result": 0, "arguments": 42}]
+    def test_integer_arguments_returns_empty_list(self):
+        """Integer arguments in config-get must yield an empty subnet list, not a 500."""
         url = reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk])
-        response = self.client.get(url)
+        with stub_kea({"config-get": {"result": 0, "arguments": 42}, "stat-lease4-get": _STAT_ABSENT4}):
+            response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
 
 
@@ -2098,38 +2091,48 @@ class TestPoolAddPostErrors(_ViewTestBase):
     def _url(self, subnet_id=1):
         return reverse("plugins:netbox_kea:server_subnet4_pool_add", args=[self.server.pk, subnet_id])
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_partial_persist_shows_warning(self, MockKeaClient):
-        """PartialPersistError from pool_add shows warning about config-write."""
-        from netbox_kea.kea import PartialPersistError
+    def _pool_add_stub(self, **overrides):
+        """pool_add chain: reservation overlap probe → list-commands → subnet4-pool-add → persist.
 
-        MockKeaClient.return_value.pool_add.side_effect = PartialPersistError(
-            "dhcp4", Exception("write failed"), subnet_id=1
-        )
-        response = self.client.post(self._url(), {"pool": "10.0.0.10-10.0.0.20"}, follow=True)
+        follow=True lands on the subnets list (config-get + stat). Override a leg to drive errors.
+        """
+        base = {
+            "reservation-get-page": {"result": 3},
+            "list-commands": {
+                "result": 0,
+                "arguments": ["subnet4-pool-add", "config-get", "config-test", "config-write"],
+            },
+            "subnet4-pool-add": {"result": 0},
+            "config-get": _EMPTY_CONFIG4,
+            "config-test": {"result": 0},
+            "config-write": {"result": 0},
+            "stat-lease4-get": _STAT_ABSENT4,
+        }
+        base.update(overrides)
+        return stub_kea(base)
+
+    def test_partial_persist_shows_warning(self):
+        """A config-write failure (PartialPersistError) from pool_add re-renders without a 500."""
+        with self._pool_add_stub(**{"config-write": {"result": 1, "text": "disk full"}}):
+            response = self.client.post(self._url(), {"pool": "10.0.0.10-10.0.0.20"}, follow=True)
         self.assertEqual(response.status_code, 200)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_kea_exception_shows_error(self, MockKeaClient):
-        """KeaException from pool_add shows Kea error message."""
-        from netbox_kea.kea import KeaException
-
-        MockKeaClient.return_value.pool_add.side_effect = KeaException({"result": 1, "text": "pool overlap"}, index=0)
-        response = self.client.post(self._url(), {"pool": "10.0.0.10-10.0.0.20"}, follow=True)
+    def test_kea_exception_shows_error(self):
+        """A KeaException (subnet4-pool-add result 1) from pool_add shows a Kea error, no 500."""
+        with self._pool_add_stub(**{"subnet4-pool-add": {"result": 1, "text": "pool overlap"}}):
+            response = self.client.post(self._url(), {"pool": "10.0.0.10-10.0.0.20"}, follow=True)
         self.assertEqual(response.status_code, 200)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_request_exception_shows_error(self, MockKeaClient):
-        """RequestException from pool_add shows transport error message."""
-        MockKeaClient.return_value.pool_add.side_effect = requests.ConnectionError("down")
-        response = self.client.post(self._url(), {"pool": "10.0.0.10-10.0.0.20"}, follow=True)
+    def test_request_exception_shows_error(self):
+        """A transport error from pool_add shows a transport error message, no 500."""
+        with self._pool_add_stub(**{"subnet4-pool-add": requests.ConnectionError("down")}):
+            response = self.client.post(self._url(), {"pool": "10.0.0.10-10.0.0.20"}, follow=True)
         self.assertEqual(response.status_code, 200)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_generic_exception_shows_error(self, MockKeaClient):
-        """Generic exception from pool_add shows generic error."""
-        MockKeaClient.return_value.pool_add.side_effect = ValueError("unexpected")
-        response = self.client.post(self._url(), {"pool": "10.0.0.10-10.0.0.20"}, follow=True)
+    def test_generic_exception_shows_error(self):
+        """A generic (ValueError) failure from pool_add shows a generic error, no 500."""
+        with self._pool_add_stub(**{"subnet4-pool-add": ValueError("unexpected")}):
+            response = self.client.post(self._url(), {"pool": "10.0.0.10-10.0.0.20"}, follow=True)
         self.assertEqual(response.status_code, 200)
 
 
@@ -2145,45 +2148,51 @@ class TestPoolDeletePostErrors(_ViewTestBase):
     def _url(self):
         return reverse("plugins:netbox_kea:server_subnet4_pool_delete", args=[self.server.pk, 1, "10.0.0.1-10.0.0.100"])
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_partial_persist_shows_warning(self, MockKeaClient):
-        """PartialPersistError from pool_del shows warning."""
-        from netbox_kea.kea import PartialPersistError
+    def _pool_del_stub(self, **overrides):
+        """pool_del chain: list-commands → subnet4-pool-del → persist, + the followed subnets list."""
+        base = {
+            "list-commands": {
+                "result": 0,
+                "arguments": ["subnet4-pool-del", "config-get", "config-test", "config-write"],
+            },
+            "subnet4-pool-del": {"result": 0},
+            "config-get": _EMPTY_CONFIG4,
+            "config-test": {"result": 0},
+            "config-write": {"result": 0},
+            "stat-lease4-get": _STAT_ABSENT4,
+        }
+        base.update(overrides)
+        return stub_kea(base)
 
-        MockKeaClient.return_value.pool_del.side_effect = PartialPersistError(
-            "dhcp4", Exception("write failed"), subnet_id=1
-        )
-        response = self.client.post(self._url(), follow=True)
+    def test_partial_persist_shows_warning(self):
+        """A config-write failure (PartialPersistError) from pool_del re-renders without a 500."""
+        with self._pool_del_stub(**{"config-write": {"result": 1, "text": "disk full"}}):
+            response = self.client.post(self._url(), follow=True)
         self.assertEqual(response.status_code, 200)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_kea_exception_shows_error(self, MockKeaClient):
-        """KeaException from pool_del shows Kea error."""
-        from netbox_kea.kea import KeaException
-
-        MockKeaClient.return_value.pool_del.side_effect = KeaException({"result": 1, "text": "not found"}, index=0)
-        response = self.client.post(self._url(), follow=True)
+    def test_kea_exception_shows_error(self):
+        """A KeaException (subnet4-pool-del result 1) from pool_del shows a Kea error, no 500."""
+        with self._pool_del_stub(**{"subnet4-pool-del": {"result": 1, "text": "not found"}}):
+            response = self.client.post(self._url(), follow=True)
         self.assertEqual(response.status_code, 200)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_request_exception_shows_error(self, MockKeaClient):
-        """RequestException from pool_del shows transport error."""
-        MockKeaClient.return_value.pool_del.side_effect = requests.ConnectionError("down")
-        response = self.client.post(self._url(), follow=True)
+    def test_request_exception_shows_error(self):
+        """A transport error from pool_del shows a transport error message, no 500."""
+        with self._pool_del_stub(**{"subnet4-pool-del": requests.ConnectionError("down")}):
+            response = self.client.post(self._url(), follow=True)
         self.assertEqual(response.status_code, 200)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_generic_exception_shows_error(self, MockKeaClient):
-        """Generic exception from pool_del shows generic error."""
-        MockKeaClient.return_value.pool_del.side_effect = ValueError("unexpected")
-        response = self.client.post(self._url(), follow=True)
+    def test_generic_exception_shows_error(self):
+        """A generic (ValueError) failure from pool_del shows a generic error, no 500."""
+        with self._pool_del_stub(**{"subnet4-pool-del": ValueError("unexpected")}):
+            response = self.client.post(self._url(), follow=True)
         self.assertEqual(response.status_code, 200)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_get_client_failure_redirects(self, MockKeaClient):
-        """get_client failure in pool delete redirects with error."""
-        MockKeaClient.side_effect = ValueError("connection refused")
-        response = self.client.post(self._url())
+    def test_get_client_failure_redirects(self):
+        """A real get_client() failure (cert without key → ValueError) in pool delete redirects."""
+        bad = _make_db_server(name="bad-cert-pool-del-err", client_cert_path="/nonexistent/cert.pem")
+        url = reverse("plugins:netbox_kea:server_subnet4_pool_delete", args=[bad.pk, 1, "10.0.0.1-10.0.0.100"])
+        response = self.client.post(url)
         self.assertEqual(response.status_code, 302)
 
 
