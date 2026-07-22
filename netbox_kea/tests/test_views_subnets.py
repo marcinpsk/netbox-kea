@@ -1609,41 +1609,38 @@ class TestSubnetEditFormInitialFields(_ViewTestBase):
     def _url(self, subnet_id=42):
         return reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, subnet_id])
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_get_populates_ntp_and_lease_times(self, MockKeaClient):
+    def test_get_populates_ntp_and_lease_times(self):
         """_form_initial picks up ntp-servers, min-valid-lft, max-valid-lft, renew/rebind-timer."""
-        subnet_resp = [
-            {
-                "result": 0,
-                "arguments": {
-                    "subnet4": [
-                        {
-                            "id": 42,
-                            "subnet": "10.0.0.0/24",
-                            "pools": [],
-                            "option-data": [
-                                {"name": "ntp-servers", "data": "10.0.0.1"},
-                            ],
-                            "valid-lft": 3600,
-                            "min-valid-lft": 1800,
-                            "max-valid-lft": 7200,
-                            "renew-timer": 900,
-                            "rebind-timer": 1500,
-                        }
-                    ]
-                },
-            }
-        ]
-        config_resp = [
-            {
-                "result": 0,
-                "arguments": {"Dhcp4": {"subnet4": [{"id": 42, "subnet": "10.0.0.0/24"}], "shared-networks": []}},
-            }
-        ]
-        # command() is called twice: subnet4-get first, then config-get
-        MockKeaClient.return_value.command.side_effect = [subnet_resp, config_resp]
-        response = self.client.get(self._url())
+        subnet_resp = {
+            "result": 0,
+            "arguments": {
+                "subnet4": [
+                    {
+                        "id": 42,
+                        "subnet": "10.0.0.0/24",
+                        "pools": [],
+                        "option-data": [{"name": "ntp-servers", "data": "10.0.0.1"}],
+                        "valid-lft": 3600,
+                        "min-valid-lft": 1800,
+                        "max-valid-lft": 7200,
+                        "renew-timer": 900,
+                        "rebind-timer": 1500,
+                    }
+                ]
+            },
+        }
+        config_resp = {
+            "result": 0,
+            "arguments": {"Dhcp4": {"subnet4": [{"id": 42, "subnet": "10.0.0.0/24"}], "shared-networks": []}},
+        }
+        with stub_kea({"subnet4-get": subnet_resp, "config-get": config_resp}):
+            response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
+        initial = response.context["form"].initial
+        self.assertEqual(initial.get("min_valid_lft"), 1800)
+        self.assertEqual(initial.get("max_valid_lft"), 7200)
+        self.assertEqual(initial.get("renew_timer"), 900)
+        self.assertEqual(initial.get("rebind_timer"), 1500)
 
 
 # ---------------------------------------------------------------------------
@@ -1655,33 +1652,29 @@ class TestSubnetEditFormInitialFields(_ViewTestBase):
 class TestGetNetworkDataUnnamedNetwork(_ViewTestBase):
     """Line 2913: shared-network without a name key is skipped."""
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_unnamed_network_skipped_in_choices(self, MockKeaClient):
-        """Network with no 'name' key is not added to choices."""
-        config_resp = [
-            {
-                "result": 0,
-                "arguments": {
-                    "Dhcp4": {
-                        "subnet4": [{"id": 42, "subnet": "10.0.0.0/24"}],
-                        "shared-networks": [
-                            {"subnet4": []},  # no 'name' key → skipped
-                            {"name": "valid-net", "subnet4": []},
-                        ],
-                    }
-                },
-            }
-        ]
-        subnet_resp = [
-            {
-                "result": 0,
-                "arguments": {"subnet4": [{"id": 42, "subnet": "10.0.0.0/24", "pools": [], "option-data": []}]},
-            }
-        ]
-        MockKeaClient.return_value.command.side_effect = [subnet_resp, config_resp]
+    def test_unnamed_network_skipped_in_choices(self):
+        """Network with no 'name' key is not added to choices; the named one still appears."""
+        config_resp = {
+            "result": 0,
+            "arguments": {
+                "Dhcp4": {
+                    "subnet4": [{"id": 42, "subnet": "10.0.0.0/24"}],
+                    "shared-networks": [
+                        {"subnet4": []},  # no 'name' key → skipped
+                        {"name": "valid-net", "subnet4": []},
+                    ],
+                }
+            },
+        }
+        subnet_resp = {
+            "result": 0,
+            "arguments": {"subnet4": [{"id": 42, "subnet": "10.0.0.0/24", "pools": [], "option-data": []}]},
+        }
         url = reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, 42])
-        response = self.client.get(url)
+        with stub_kea({"subnet4-get": subnet_resp, "config-get": config_resp}):
+            response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "valid-net")
 
 
 # ---------------------------------------------------------------------------
@@ -1693,16 +1686,14 @@ class TestGetNetworkDataUnnamedNetwork(_ViewTestBase):
 class TestFetchNetworkNonDictArgs(_ViewTestBase):
     """Lines 1462-1463: config-get returns non-dict args → log warning + return {}."""
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_get_non_dict_args_redirects(self, MockKeaClient):
-        """config-get returns arguments=None → _fetch_network returns {} → redirect."""
-        mock_client = MockKeaClient.return_value
-        mock_client.command.return_value = [{"result": 0, "arguments": None}]
+    def test_get_non_dict_args_redirects(self):
+        """config-get returning arguments=None → _fetch_network returns {} → redirect."""
         url = reverse(
             "plugins:netbox_kea:server_shared_network4_edit",
             args=[self.server.pk, "test-net"],
         )
-        response = self.client.get(url)
+        with stub_kea({"config-get": {"result": 0, "arguments": None}}):
+            response = self.client.get(url)
         # network not found → redirects back to shared_networks4
         self.assertEqual(response.status_code, 302)
         self.assertIn(f"/servers/{self.server.pk}/", response.url)
@@ -1717,15 +1708,11 @@ class TestFetchNetworkNonDictArgs(_ViewTestBase):
 class TestGetNetworkChoicesKeaException(_ViewTestBase):
     """Lines 2737-2738: KeaException in _get_network_choices → returns default choice."""
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_kea_exception_returns_global_pool_only(self, MockKeaClient):
-        """config-get raises KeaException → returns [('', '— (global pool) —')]."""
-        from netbox_kea.kea import KeaException
-
-        mock_client = MockKeaClient.return_value
-        mock_client.command.side_effect = KeaException({"result": 1, "text": "error"}, index=0)
+    def test_kea_exception_returns_global_pool_only(self):
+        """config-get failing (result 1 → KeaException) → the add form falls back to global-pool only."""
         url = reverse("plugins:netbox_kea:server_subnet4_add", args=[self.server.pk])
-        response = self.client.get(url)
+        with stub_kea({"config-get": {"result": 1, "text": "error"}}):
+            response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
 
 
@@ -1738,39 +1725,31 @@ class TestGetNetworkChoicesKeaException(_ViewTestBase):
 class TestGetInheritedOptionsParseOpts(_ViewTestBase):
     """Lines 2974, 2977-2978: _parse_opts handles 'routers' and 'ntp-servers' entries."""
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_global_options_routers_and_ntp_servers_inherited(self, MockKeaClient):
+    def test_global_options_routers_and_ntp_servers_inherited(self):
         """GET subnet4_edit with global routers + ntp-servers → inherited_options populated."""
-        mock_client = MockKeaClient.return_value
-
-        subnet_resp = [
-            {
-                "result": 0,
-                "arguments": {"subnet4": [{"id": 42, "subnet": "10.0.0.0/24", "pools": [], "option-data": []}]},
-            }
-        ]
-        config_resp = [
-            {
-                "result": 0,
-                "arguments": {
-                    "Dhcp4": {
-                        "subnet4": [],
-                        "shared-networks": [],
-                        "option-data": [
-                            {"name": "routers", "data": "10.0.0.1"},
-                            {"name": "ntp-servers", "data": "10.0.0.2"},
-                        ],
-                    }
-                },
-            }
-        ]
-        mock_client.command.side_effect = [subnet_resp, config_resp]
+        subnet_resp = {
+            "result": 0,
+            "arguments": {"subnet4": [{"id": 42, "subnet": "10.0.0.0/24", "pools": [], "option-data": []}]},
+        }
+        config_resp = {
+            "result": 0,
+            "arguments": {
+                "Dhcp4": {
+                    "subnet4": [],
+                    "shared-networks": [],
+                    "option-data": [
+                        {"name": "routers", "data": "10.0.0.1"},
+                        {"name": "ntp-servers", "data": "10.0.0.2"},
+                    ],
+                }
+            },
+        }
         url = reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, 42])
-        response = self.client.get(url)
+        with stub_kea({"subnet4-get": subnet_resp, "config-get": config_resp}):
+            response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         # inherited_options should have gateway and ntp_servers from global config
-        ctx = response.context
-        inherited = ctx.get("inherited_options", {})
+        inherited = response.context.get("inherited_options", {})
         self.assertIn("gateway", inherited)
         self.assertIn("ntp_servers", inherited)
 
