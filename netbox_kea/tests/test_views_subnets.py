@@ -1484,25 +1484,22 @@ class TestSubnetListViewEdgeCases(_ViewTestBase):
     def _url(self):
         return reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk])
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_null_config_arguments_raises(self, MockKeaClient):
+    def test_null_config_arguments_raises(self):
         """Null config-get arguments returns an empty table (degraded 200 state)."""
-        MockKeaClient.return_value.command.return_value = [{"result": 0, "arguments": None}]
-        response = self.client.get(self._url())
+        with stub_kea({"config-get": {"result": 0, "arguments": None}, "stat-lease4-get": _STAT_ABSENT4}):
+            response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_export_returns_csv(self, MockKeaClient):
-        """Line 1173: ?export=csv returns a CSV file response."""
-        MockKeaClient.return_value.command.side_effect = _kea_command_side_effect
-        response = self.client.get(self._url() + "?export=csv")
+    def test_export_returns_csv(self):
+        """?export=csv returns a CSV file response."""
+        with stub_kea({"config-get": _EMPTY_CONFIG4, "stat-lease4-get": _STAT_ABSENT4}):
+            response = self.client.get(self._url() + "?export=csv")
         self.assertEqual(response.status_code, 200)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_htmx_partial_returns_table_fragment(self, MockKeaClient):
-        """Line 1181: HTMX request to subnet view returns partial table."""
-        MockKeaClient.return_value.command.side_effect = _kea_command_side_effect
-        response = self.client.get(self._url(), HTTP_HX_REQUEST="true")
+    def test_htmx_partial_returns_table_fragment(self):
+        """HTMX request to the subnet view returns a partial table fragment."""
+        with stub_kea({"config-get": _EMPTY_CONFIG4, "stat-lease4-get": _STAT_ABSENT4}):
+            response = self.client.get(self._url(), HTTP_HX_REQUEST="true")
         self.assertEqual(response.status_code, 200)
 
 
@@ -1518,22 +1515,17 @@ class TestSubnetDeleteExceptionPaths(_ViewTestBase):
     def _url(self, subnet_id=42):
         return reverse("plugins:netbox_kea:server_subnet4_delete", args=[self.server.pk, subnet_id])
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_get_exception_still_renders(self, MockKeaClient):
-        """Lines 3177-3178: exception in GET (subnet-get) → still renders confirm page."""
-        from netbox_kea.kea import KeaException
-
-        MockKeaClient.return_value.command.side_effect = KeaException(
-            {"result": 1, "text": "subnet-get failed"}, index=0
-        )
-        response = self.client.get(self._url())
+    def test_get_exception_still_renders(self):
+        """A subnet-get failure (result 1 → KeaException) in GET must still render the confirm page."""
+        with stub_kea({"subnet4-get": {"result": 1, "text": "subnet-get failed"}}):
+            response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_generic_exception_shows_error(self, MockKeaClient):
-        """Lines 3203-3205: generic exception on subnet_del redirects with error."""
-        MockKeaClient.return_value.subnet_del.side_effect = ValueError("crash")
-        response = self.client.post(self._url())
+    def test_post_generic_exception_shows_error(self):
+        """A generic (ValueError) failure on subnet_del must redirect with an error, no 500."""
+        # subnet4-del raises ValueError at the boundary → view's generic-error branch redirects.
+        with stub_kea({"subnet4-del": ValueError("crash")}):
+            response = self.client.post(self._url())
         self.assertEqual(response.status_code, 302)
 
 
@@ -1546,105 +1538,59 @@ class TestSubnetDeleteExceptionPaths(_ViewTestBase):
 class TestFetchSubnetsFromServer(_ViewTestBase):
     """Lines 3807-3855: _fetch_subnets_from_server edge cases."""
 
-    def _run(self, side_effect=None, return_value=None):
+    def _run(self, responses):
+        """Call _fetch_subnets_from_server against a real client with the given stubbed responses."""
         from netbox_kea.views import _fetch_subnets_from_server
 
-        with patch("netbox_kea.models.KeaClient") as MockKea:
-            if side_effect is not None:
-                MockKea.return_value.command.side_effect = side_effect
-            elif return_value is not None:
-                MockKea.return_value.command.return_value = return_value
+        with stub_kea(responses):
             return _fetch_subnets_from_server(self.server, version=4)
 
     def test_null_arguments_raises(self):
-        """Line 3808: null arguments raises RuntimeError."""
+        """Null config-get arguments raises RuntimeError."""
         with self.assertRaises(RuntimeError):
-            self._run(return_value=[{"result": 0, "arguments": None}])
+            self._run({"config-get": {"result": 0, "arguments": None}})
 
     def test_subnets_in_shared_network_included(self):
-        """Line 3827: subnets nested inside shared-networks are included."""
-        config = [
-            {
-                "result": 0,
-                "arguments": {
-                    "Dhcp4": {
-                        "subnet4": [],
-                        "shared-networks": [
-                            {
-                                "name": "prod",
-                                "subnet4": [
-                                    {"id": 10, "subnet": "192.168.0.0/24"},
-                                ],
-                            }
-                        ],
-                    }
-                },
-            }
-        ]
-
-        # stat-lease4-get raises to simulate missing hook
-        def _side(cmd, **kwargs):
-            if cmd == "stat-lease4-get":
-                raise RuntimeError("no stat_cmds")
-            return config  # return the list, not config[0]
-
-        result = self._run(side_effect=_side)
+        """Subnets nested inside shared-networks are included."""
+        config = {
+            "result": 0,
+            "arguments": {
+                "Dhcp4": {
+                    "subnet4": [],
+                    "shared-networks": [{"name": "prod", "subnet4": [{"id": 10, "subnet": "192.168.0.0/24"}]}],
+                }
+            },
+        }
+        # stat-lease4-get result 2 → KeaException, exactly as a missing stat_cmds hook behaves.
+        result = self._run({"config-get": config, "stat-lease4-get": _STAT_ABSENT4})
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]["subnet"], "192.168.0.0/24")
 
     def test_stat_cmds_exception_swallowed(self):
-        """Lines 3853-3855: stat_cmds exception is swallowed."""
-        config_resp = [
-            {
-                "result": 0,
-                "arguments": {
-                    "Dhcp4": {
-                        "subnet4": [{"id": 1, "subnet": "10.0.0.0/24"}],
-                        "shared-networks": [],
-                    }
-                },
-            }
-        ]
-
-        def _side(cmd, **kwargs):
-            if cmd == "stat-lease4-get":
-                raise RuntimeError("stat_cmds not loaded")
-            return config_resp  # return the list, not config_resp[0]
-
-        result = self._run(side_effect=_side)
+        """A stat_cmds failure (missing hook) is swallowed; subnets are still returned."""
+        config_resp = {
+            "result": 0,
+            "arguments": {"Dhcp4": {"subnet4": [{"id": 1, "subnet": "10.0.0.0/24"}], "shared-networks": []}},
+        }
+        result = self._run({"config-get": config_resp, "stat-lease4-get": _STAT_ABSENT4})
         self.assertEqual(len(result), 1)
 
     def test_stat_cmds_success_updates_subnet(self):
-        """Line 3853: s.update(stats[s['id']]) called when stat-lease4-get returns valid data."""
-        config_resp = [
-            {
-                "result": 0,
-                "arguments": {
-                    "Dhcp4": {
-                        "subnet4": [{"id": 1, "subnet": "10.0.0.0/24"}],
-                        "shared-networks": [],
-                    }
-                },
-            }
-        ]
-        stat_resp = [
-            {
-                "result": 0,
-                "arguments": {
-                    "result-set": {
-                        "columns": ["subnet-id", "total-addresses", "assigned-addresses"],
-                        "rows": [[1, 100, 25]],
-                    }
-                },
-            }
-        ]
-
-        def _side(cmd, **kwargs):
-            if cmd == "stat-lease4-get":
-                return stat_resp
-            return config_resp
-
-        result = self._run(side_effect=_side)
+        """Valid stat-lease4-get data is merged into the subnet dict."""
+        config_resp = {
+            "result": 0,
+            "arguments": {"Dhcp4": {"subnet4": [{"id": 1, "subnet": "10.0.0.0/24"}], "shared-networks": []}},
+        }
+        stat_resp = {
+            "result": 0,
+            "arguments": {
+                "result-set": {
+                    "columns": ["subnet-id", "total-addresses", "assigned-addresses"],
+                    "rows": [[1, 100, 25]],
+                }
+            },
+        }
+        result = self._run({"config-get": config_resp, "stat-lease4-get": stat_resp})
         self.assertEqual(len(result), 1)
         # stat data was merged into the subnet dict
         self.assertEqual(result[0].get("total"), 100)
