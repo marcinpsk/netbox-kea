@@ -7,7 +7,9 @@ Also contains pure-Python unit tests for helper functions defined in views.py
 because they are tightly coupled to view logic.
 
 These tests verify correct HTTP responses and redirect behaviour for every view.
-All Kea HTTP calls are mocked so no running Kea instance is required.
+They drive a **real** ``KeaClient`` and stub only the HTTP boundary via
+``kea_stub.stub_kea`` (see that module), so the actual request payloads Kea would
+receive are exercised and can be asserted on; no running Kea instance is required.
 
 Test organisation strategy
 --------------------------
@@ -22,15 +24,13 @@ which does **not** call ``Model.clean()`` and therefore does not trigger live Ke
 connectivity checks.
 """
 
-from unittest.mock import patch
-
 import requests
 from django.contrib import messages as django_messages
 from django.test import override_settings
 from django.urls import reverse
 
 from .kea_stub import queued, stub_kea
-from .utils import _PLUGINS_CONFIG, _kea_command_side_effect, _make_db_server, _ViewTestBase
+from .utils import _PLUGINS_CONFIG, _make_db_server, _ViewTestBase
 
 # Shared stub responses for the subnet list/table views, which issue config-get
 # (subnets + shared-networks) then stat-lease{v}-get (utilisation; degrades if the
@@ -2714,25 +2714,19 @@ class TestSubnetViewCoverageGaps(_ViewTestBase):
 class TestPersistConfigBanner(_ViewTestBase):
     """Tests that the persist_config warning banner appears when disabled."""
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_banner_absent_when_persist_config_true(self, MockKeaClient):
+    def test_banner_absent_when_persist_config_true(self):
         """No warning banner on subnet add when persist_config=True (default)."""
-        mock_client = MockKeaClient.return_value
-        mock_client.command.side_effect = _kea_command_side_effect
-
         url = reverse("plugins:netbox_kea:server_subnet4_add", args=[self.server.pk])
-        response = self.client.get(url)
+        with stub_kea({"config-get": _EMPTY_CONFIG4}):
+            response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         self.assertNotContains(response, "Configuration persistence is disabled.")
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_banner_present_when_persist_config_false(self, MockKeaClient):
+    def test_banner_present_when_persist_config_false(self):
         """Warning banner appears on subnet add page when persist_config=False."""
-        mock_client = MockKeaClient.return_value
-        mock_client.command.side_effect = _kea_command_side_effect
-
         server = _make_db_server(name="no-persist", persist_config=False)
         url = reverse("plugins:netbox_kea:server_subnet4_add", args=[server.pk])
-        response = self.client.get(url)
+        with stub_kea({"config-get": _EMPTY_CONFIG4}):
+            response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Configuration persistence is disabled.")
