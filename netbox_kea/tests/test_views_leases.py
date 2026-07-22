@@ -229,7 +229,14 @@ class TestReservedBadgeOnLeases(_ViewTestBase):
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestLeaseSearchPaths(_ViewTestBase):
     """Each search-by type in BaseServerLeasesView.get_leases() must dispatch the
-    correct Kea command with correct arguments, via HTMX GET."""
+    correct Kea command with correct arguments, via HTMX GET.
+
+    De-mocked: exercises the real ``KeaClient`` so the actual request payload built
+    by ``KeaClient.command()`` — command name, ``arguments``, and ``service`` — is
+    asserted, not a ``MagicMock`` call-arg. Only the HTTP boundary
+    (``requests.Session.post``) is stubbed. A search issues ``config-get`` (subnet
+    quick-select) → ``lease{v}-get…`` → per-lease ``reservation-get`` enrichment.
+    """
 
     _LEASE4 = {
         "ip-address": "10.0.0.5",
@@ -240,6 +247,12 @@ class TestLeaseSearchPaths(_ViewTestBase):
         "valid-lft": 3600,
         "cltt": 1_700_000_000,
     }
+    # The lease-search page fetches the subnet quick-select via config-get first.
+    _CONFIG4 = {"result": 0, "arguments": {"Dhcp4": {"subnet4": [{"id": 1, "subnet": "10.0.0.0/24"}]}}}
+    _CONFIG6 = {"result": 0, "arguments": {"Dhcp6": {"subnet6": [{"id": 1, "subnet": "2001:db8::/64"}]}}}
+    # Reservation enrichment runs for every returned lease; "not found" (result 3)
+    # means no reservation, which is all these lease-command tests care about.
+    _NO_RESERVATION = {"result": 3}
 
     def _htmx_get(self, url, data):
         return self.client.get(url, data=data, HTTP_HX_REQUEST="true")
@@ -250,89 +263,123 @@ class TestLeaseSearchPaths(_ViewTestBase):
     def _url6(self):
         return reverse("plugins:netbox_kea:server_leases6", args=[self.server.pk])
 
-    def _setup_mock(self, MockKeaClient, leases, multiple=True):
-        mock_client = MockKeaClient.return_value
-        if multiple:
-            mock_client.command.return_value = [{"result": 0, "arguments": {"leases": leases, "count": len(leases)}}]
-        else:
-            mock_client.command.return_value = [{"result": 0, "arguments": leases[0] if leases else {}}]
-        mock_client.reservation_get_page.return_value = ([], 0, 0)
-        return mock_client
+    def _multi(self, leases):
+        """Multi-result lease-get response envelope (leases list + count)."""
+        return {"result": 0, "arguments": {"leases": leases, "count": len(leases)}}
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_search_by_hw_address_sends_correct_command(self, MockKeaClient):
+    def _single(self, lease):
+        """Single-result lease-get response envelope (lease fields under arguments)."""
+        return {"result": 0, "arguments": dict(lease)}
+
+    def test_search_by_hw_address_sends_correct_command(self):
         """BY_HW_ADDRESS must call lease4-get-by-hw-address with hw-address argument."""
-        mock_client = self._setup_mock(MockKeaClient, [dict(self._LEASE4)])
-        response = self._htmx_get(self._url4(), {"by": "hw", "q": "aa:bb:cc:dd:ee:ff"})
+        with stub_kea(
+            {
+                "config-get": self._CONFIG4,
+                "lease4-get-by-hw-address": self._multi([dict(self._LEASE4)]),
+                "reservation-get": self._NO_RESERVATION,
+            }
+        ) as kea:
+            response = self._htmx_get(self._url4(), {"by": "hw", "q": "aa:bb:cc:dd:ee:ff"})
         self.assertEqual(response.status_code, 200)
-        cmd_names = [c.args[0] for c in mock_client.command.call_args_list]
-        self.assertIn("lease4-get-by-hw-address", cmd_names)
-        call = next(c for c in mock_client.command.call_args_list if c.args[0] == "lease4-get-by-hw-address")
-        self.assertEqual(call.kwargs["arguments"]["hw-address"], "aa:bb:cc:dd:ee:ff")
+        self.assertIn("lease4-get-by-hw-address", kea.commands())
+        body = kea.bodies("lease4-get-by-hw-address")[0]
+        self.assertEqual(body["arguments"]["hw-address"], "aa:bb:cc:dd:ee:ff")
+        self.assertEqual(body["service"], ["dhcp4"])
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_search_by_hostname_sends_correct_command(self, MockKeaClient):
+    def test_search_by_hostname_sends_correct_command(self):
         """BY_HOSTNAME must call lease4-get-by-hostname with hostname argument."""
-        mock_client = self._setup_mock(MockKeaClient, [dict(self._LEASE4)])
-        response = self._htmx_get(self._url4(), {"by": "hostname", "q": "search-host"})
+        with stub_kea(
+            {
+                "config-get": self._CONFIG4,
+                "lease4-get-by-hostname": self._multi([dict(self._LEASE4)]),
+                "reservation-get": self._NO_RESERVATION,
+            }
+        ) as kea:
+            response = self._htmx_get(self._url4(), {"by": "hostname", "q": "search-host"})
         self.assertEqual(response.status_code, 200)
-        cmd_names = [c.args[0] for c in mock_client.command.call_args_list]
-        self.assertIn("lease4-get-by-hostname", cmd_names)
-        call = next(c for c in mock_client.command.call_args_list if c.args[0] == "lease4-get-by-hostname")
-        self.assertEqual(call.kwargs["arguments"]["hostname"], "search-host")
+        self.assertIn("lease4-get-by-hostname", kea.commands())
+        body = kea.bodies("lease4-get-by-hostname")[0]
+        self.assertEqual(body["arguments"]["hostname"], "search-host")
+        self.assertEqual(body["service"], ["dhcp4"])
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_search_by_client_id_sends_correct_command(self, MockKeaClient):
+    def test_search_by_client_id_sends_correct_command(self):
         """BY_CLIENT_ID must call lease4-get-by-client-id with client-id argument."""
-        mock_client = self._setup_mock(MockKeaClient, [dict(self._LEASE4)])
-        response = self._htmx_get(self._url4(), {"by": "client_id", "q": "01:aa:bb:cc:dd:ee:ff"})
+        with stub_kea(
+            {
+                "config-get": self._CONFIG4,
+                "lease4-get-by-client-id": self._multi([dict(self._LEASE4)]),
+                "reservation-get": self._NO_RESERVATION,
+            }
+        ) as kea:
+            response = self._htmx_get(self._url4(), {"by": "client_id", "q": "01:aa:bb:cc:dd:ee:ff"})
         self.assertEqual(response.status_code, 200)
-        cmd_names = [c.args[0] for c in mock_client.command.call_args_list]
-        self.assertIn("lease4-get-by-client-id", cmd_names)
-        call = next(c for c in mock_client.command.call_args_list if c.args[0] == "lease4-get-by-client-id")
-        self.assertEqual(call.kwargs["arguments"]["client-id"], "01:aa:bb:cc:dd:ee:ff")
+        self.assertIn("lease4-get-by-client-id", kea.commands())
+        body = kea.bodies("lease4-get-by-client-id")[0]
+        self.assertEqual(body["arguments"]["client-id"], "01:aa:bb:cc:dd:ee:ff")
+        self.assertEqual(body["service"], ["dhcp4"])
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_search_by_subnet_id_sends_correct_command(self, MockKeaClient):
+    def test_search_by_subnet_id_sends_correct_command(self):
         """BY_SUBNET_ID must call lease4-get-all with subnets=[<id>]."""
-        mock_client = self._setup_mock(MockKeaClient, [dict(self._LEASE4)])
-        response = self._htmx_get(self._url4(), {"by": "subnet_id", "q": "1"})
+        with stub_kea(
+            {
+                "config-get": self._CONFIG4,
+                "lease4-get-all": self._multi([dict(self._LEASE4)]),
+                "reservation-get": self._NO_RESERVATION,
+            }
+        ) as kea:
+            response = self._htmx_get(self._url4(), {"by": "subnet_id", "q": "1"})
         self.assertEqual(response.status_code, 200)
-        cmd_names = [c.args[0] for c in mock_client.command.call_args_list]
-        self.assertIn("lease4-get-all", cmd_names)
-        call = next(c for c in mock_client.command.call_args_list if c.args[0] == "lease4-get-all")
-        self.assertEqual(call.kwargs["arguments"]["subnets"], [1])
+        self.assertIn("lease4-get-all", kea.commands())
+        body = kea.bodies("lease4-get-all")[0]
+        self.assertEqual(body["arguments"]["subnets"], [1])
+        self.assertEqual(body["service"], ["dhcp4"])
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_search_by_ip_returns_200(self, MockKeaClient):
+    def test_search_by_ip_returns_200(self):
         """BY_IP must call lease4-get with ip-address argument and return 200."""
-        mock_client = self._setup_mock(MockKeaClient, [dict(self._LEASE4)], multiple=False)
-        response = self._htmx_get(self._url4(), {"by": "ip", "q": "10.0.0.5"})
+        with stub_kea(
+            {
+                "config-get": self._CONFIG4,
+                "lease4-get": self._single(self._LEASE4),
+                "reservation-get": self._NO_RESERVATION,
+            }
+        ) as kea:
+            response = self._htmx_get(self._url4(), {"by": "ip", "q": "10.0.0.5"})
         self.assertEqual(response.status_code, 200)
-        cmd_names = [c.args[0] for c in mock_client.command.call_args_list]
-        self.assertIn("lease4-get", cmd_names)
+        self.assertIn("lease4-get", kea.commands())
+        body = kea.bodies("lease4-get")[0]
+        self.assertEqual(body["arguments"]["ip-address"], "10.0.0.5")
+        self.assertEqual(body["service"], ["dhcp4"])
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_search_result_3_returns_empty_table(self, MockKeaClient):
+    def test_search_result_3_returns_empty_table(self):
         """result=3 (not found) must render an empty table, not a 500."""
-        mock_client = MockKeaClient.return_value
-        mock_client.command.return_value = [{"result": 3, "arguments": None}]
-        mock_client.reservation_get_page.return_value = ([], 0, 0)
-        response = self._htmx_get(self._url4(), {"by": "ip", "q": "10.0.0.99"})
+        # Empty result short-circuits enrichment, so no reservation-get is issued.
+        with stub_kea(
+            {
+                "config-get": self._CONFIG4,
+                "lease4-get": {"result": 3, "arguments": None},
+            }
+        ) as kea:
+            response = self._htmx_get(self._url4(), {"by": "ip", "q": "10.0.0.99"})
         self.assertEqual(response.status_code, 200)
+        self.assertIn("lease4-get", kea.commands())
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_search_by_duid_v6_sends_correct_command(self, MockKeaClient):
+    def test_search_by_duid_v6_sends_correct_command(self):
         """BY_DUID on the v6 endpoint must call lease6-get-by-duid."""
         server6 = _make_db_server(name="kea-v6-search", ca_url="https://kea6.example.com", dhcp4=False, dhcp6=True)
-        mock_client = MockKeaClient.return_value
-        mock_client.command.return_value = [{"result": 0, "arguments": {"leases": [], "count": 0}}]
-        mock_client.reservation_get_page.return_value = ([], 0, 0)
         url = reverse("plugins:netbox_kea:server_leases6", args=[server6.pk])
-        response = self._htmx_get(url, {"by": "duid", "q": "00:01:aa:bb:cc:dd"})
+        with stub_kea(
+            {
+                "config-get": self._CONFIG6,
+                "lease6-get-by-duid": self._multi([]),
+            }
+        ) as kea:
+            response = self._htmx_get(url, {"by": "duid", "q": "00:01:aa:bb:cc:dd"})
         self.assertEqual(response.status_code, 200)
-        cmd_names = [c.args[0] for c in mock_client.command.call_args_list]
-        self.assertIn("lease6-get-by-duid", cmd_names)
+        self.assertIn("lease6-get-by-duid", kea.commands())
+        body = kea.bodies("lease6-get-by-duid")[0]
+        self.assertEqual(body["arguments"]["duid"], "00:01:aa:bb:cc:dd")
+        self.assertEqual(body["service"], ["dhcp6"])
 
 
 # ─────────────────────────────────────────────────────────────────────────────
