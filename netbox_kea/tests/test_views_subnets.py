@@ -2205,106 +2205,66 @@ class TestPoolDeletePostErrors(_ViewTestBase):
 class TestSubnetAddPostNetworkErrors(_ViewTestBase):
     """Cover subnet add POST network assignment errors."""
 
+    _CONFIG4_MYNET = {
+        "result": 0,
+        "arguments": {"Dhcp4": {"shared-networks": [{"name": "my-net"}], "subnet4": []}},
+    }
+
     def _url(self):
         return reverse("plugins:netbox_kea:server_subnet4_add", args=[self.server.pk])
 
-    def _setup_client(self, MockKeaClient, subnet_add_effect=None, network_add_effect=None):
-        """Set up common mock for subnet_add + network flow."""
-        mock_client = MockKeaClient.return_value
-        # config-get for shared networks (used by _get_network_choices)
-        mock_client.command.return_value = [
-            {"result": 0, "arguments": {"Dhcp4": {"shared-networks": [{"name": "my-net"}], "subnet4": []}}}
-        ]
-        if subnet_add_effect:
-            mock_client.subnet_add.side_effect = subnet_add_effect
-        else:
-            mock_client.subnet_add.return_value = 99  # returns new subnet ID
-        if network_add_effect:
-            mock_client.network_subnet_add.side_effect = network_add_effect
-        return mock_client
+    def _add_stub(self, config, **overrides):
+        """subnet_add chain (config-get choices → subnet4-list → subnet4-add → persist) + network move."""
+        base = {
+            "config-get": config,
+            "subnet4-list": {"result": 0, "arguments": {"subnets": []}},
+            "subnet4-add": {"result": 0, "arguments": {"subnets": [{"id": 99}]}},
+            "config-test": {"result": 0},
+            "config-write": {"result": 0},
+            "network4-subnet-add": {"result": 0},
+            "stat-lease4-get": _STAT_ABSENT4,
+        }
+        base.update(overrides)
+        return stub_kea(base)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_network_assign_kea_exception_shows_warning(self, MockKeaClient):
-        """KeaException from network_subnet_add shows warning (subnet already created)."""
-        from netbox_kea.kea import KeaException
+    def _post_data(self, shared_network=""):
+        return {
+            "subnet": "10.99.0.0/24",
+            "shared_network": shared_network,
+            "pools": "",
+            "gateway": "",
+            "dns_servers": "",
+            "ntp_servers": "",
+        }
 
-        self._setup_client(
-            MockKeaClient,
-            network_add_effect=KeaException({"result": 1, "text": "network error"}, index=0),
-        )
-        response = self.client.post(
-            self._url(),
-            {
-                "subnet": "10.99.0.0/24",
-                "shared_network": "my-net",
-                "pools": "",
-                "gateway": "",
-                "dns_servers": "",
-                "ntp_servers": "",
-            },
-            follow=True,
-        )
+    def test_network_assign_kea_exception_shows_warning(self):
+        """A KeaException from network_subnet_add (subnet already created) shows a warning, no 500."""
+        with self._add_stub(self._CONFIG4_MYNET, **{"network4-subnet-add": {"result": 1, "text": "network error"}}):
+            response = self.client.post(self._url(), self._post_data(shared_network="my-net"), follow=True)
         self.assertEqual(response.status_code, 200)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_subnet_add_request_exception_rerenders(self, MockKeaClient):
-        """RequestException from subnet_add re-renders form."""
-        self._setup_client(
-            MockKeaClient,
-            subnet_add_effect=requests.ConnectionError("down"),
-        )
-        response = self.client.post(
-            self._url(),
-            {
-                "subnet": "10.99.0.0/24",
-                "shared_network": "",
-                "pools": "",
-                "gateway": "",
-                "dns_servers": "",
-                "ntp_servers": "",
-            },
-        )
+    def test_subnet_add_request_exception_rerenders(self):
+        """A transport error from subnet_add re-renders the form."""
+        with self._add_stub(_EMPTY_CONFIG4, **{"subnet4-add": requests.ConnectionError("down")}):
+            response = self.client.post(self._url(), self._post_data())
         self.assertIn(response.status_code, [200, 302])
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_subnet_add_generic_exception_rerenders(self, MockKeaClient):
-        """Generic exception from subnet_add re-renders form."""
-        self._setup_client(
-            MockKeaClient,
-            subnet_add_effect=ValueError("unexpected"),
-        )
-        response = self.client.post(
-            self._url(),
-            {
-                "subnet": "10.99.0.0/24",
-                "shared_network": "",
-                "pools": "",
-                "gateway": "",
-                "dns_servers": "",
-                "ntp_servers": "",
-            },
-        )
+    def test_subnet_add_generic_exception_rerenders(self):
+        """A generic (ValueError) failure from subnet_add re-renders the form."""
+        with self._add_stub(_EMPTY_CONFIG4, **{"subnet4-add": ValueError("unexpected")}):
+            response = self.client.post(self._url(), self._post_data())
         self.assertIn(response.status_code, [200, 302])
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_subnet_add_no_id_with_network_shows_warning(self, MockKeaClient):
-        """When subnet_add returns None (no ID), network assignment is skipped with warning."""
-        mock_client = self._setup_client(MockKeaClient)
-        mock_client.subnet_add.return_value = None
-        response = self.client.post(
-            self._url(),
-            {
-                "subnet": "10.99.0.0/24",
-                "shared_network": "my-net",
-                "pools": "",
-                "gateway": "",
-                "dns_servers": "",
-                "ntp_servers": "",
-            },
-            follow=True,
-        )
+    def test_subnet_add_no_id_with_network_shows_warning(self):
+        """When subnet_add returns no id, network assignment is skipped with a warning."""
+        # subnet4-list fails and subnet4-add echoes no id → subnet_add returns None despite a clean persist.
+        with self._add_stub(
+            self._CONFIG4_MYNET,
+            **{"subnet4-list": {"result": 1, "text": "not loaded"}, "subnet4-add": {"result": 0}},
+        ) as kea:
+            response = self.client.post(self._url(), self._post_data(shared_network="my-net"), follow=True)
         self.assertEqual(response.status_code, 200)
-        mock_client.network_subnet_add.assert_not_called()
+        self.assertNotIn("network4-subnet-add", kea.commands())
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2316,19 +2276,17 @@ class TestSubnetAddPostNetworkErrors(_ViewTestBase):
 class TestSubnetAddGetClientError(_ViewTestBase):
     """Cover subnet add GET when client creation fails."""
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_get_client_error_disables_network_field(self, MockKeaClient):
-        """ValueError from get_client in GET disables shared network field."""
-        MockKeaClient.side_effect = ValueError("bad config")
-        url = reverse("plugins:netbox_kea:server_subnet4_add", args=[self.server.pk])
+    def test_get_client_error_disables_network_field(self):
+        """A real get_client() failure (cert without key → ValueError) in GET disables the network field."""
+        bad = _make_db_server(name="bad-cert-add-get", client_cert_path="/nonexistent/cert.pem")
+        url = reverse("plugins:netbox_kea:server_subnet4_add", args=[bad.pk])
         response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_client_error_rerenders(self, MockKeaClient):
-        """ValueError from get_client in POST re-renders form with error."""
-        MockKeaClient.side_effect = ValueError("bad config")
-        url = reverse("plugins:netbox_kea:server_subnet4_add", args=[self.server.pk])
+    def test_post_client_error_rerenders(self):
+        """A real get_client() failure in POST re-renders the form with an error, no 500."""
+        bad = _make_db_server(name="bad-cert-add-post", client_cert_path="/nonexistent/cert.pem")
+        url = reverse("plugins:netbox_kea:server_subnet4_add", args=[bad.pk])
         response = self.client.post(
             url,
             {
@@ -2352,12 +2310,11 @@ class TestSubnetAddGetClientError(_ViewTestBase):
 class TestGetSubnetsError(_ViewTestBase):
     """Cover get_subnets() error path."""
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_config_get_value_error_shows_empty(self, MockKeaClient):
-        """ValueError from config-get shows empty subnets with error message."""
-        MockKeaClient.return_value.command.side_effect = ValueError("bad JSON")
+    def test_config_get_value_error_shows_empty(self):
+        """A ValueError from config-get shows an empty subnet list with an error message, no 500."""
         url = reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk])
-        response = self.client.get(url)
+        with stub_kea({"config-get": ValueError("bad JSON"), "stat-lease4-get": _STAT_ABSENT4}):
+            response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
 
 
@@ -2370,96 +2327,59 @@ class TestGetSubnetsError(_ViewTestBase):
 class TestSubnetListNonDictItems(_ViewTestBase):
     """F9: Non-dict items in top-level subnets list and shared-networks list."""
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_non_dict_items_in_subnet_list_skipped(self, MockKeaClient):
+    def test_non_dict_items_in_subnet_list_skipped(self):
         """Non-dict entries (string, int) in subnet4 list are skipped; valid subnet shows."""
-
-        def _cmd(command, **_kwargs):
-            if command == "config-get":
-                return [
-                    {
-                        "result": 0,
-                        "arguments": {
-                            "Dhcp4": {
-                                "subnet4": [
-                                    {"id": 1, "subnet": "10.0.0.0/24"},
-                                    "malformed",
-                                    42,
-                                ],
-                                "shared-networks": [],
-                            }
-                        },
-                    }
-                ]
-            return [{"result": 0, "arguments": {}}]
-
-        MockKeaClient.return_value.command.side_effect = _cmd
+        config = {
+            "result": 0,
+            "arguments": {
+                "Dhcp4": {
+                    "subnet4": [{"id": 1, "subnet": "10.0.0.0/24"}, "malformed", 42],
+                    "shared-networks": [],
+                }
+            },
+        }
         url = reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk])
-        response = self.client.get(url)
+        with stub_kea({"config-get": config, "stat-lease4-get": _STAT_ABSENT4}):
+            response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "10.0.0.0/24")
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_non_dict_items_in_shared_networks_skipped(self, MockKeaClient):
+    def test_non_dict_items_in_shared_networks_skipped(self):
         """Non-dict entries in shared-networks list are skipped; valid network shows."""
-
-        def _cmd(command, **_kwargs):
-            if command == "config-get":
-                return [
-                    {
-                        "result": 0,
-                        "arguments": {
-                            "Dhcp4": {
-                                "subnet4": [],
-                                "shared-networks": [
-                                    {
-                                        "name": "net1",
-                                        "subnet4": [{"id": 1, "subnet": "10.0.0.0/24"}],
-                                    },
-                                    "invalid",
-                                ],
-                            }
-                        },
-                    }
-                ]
-            return [{"result": 0, "arguments": {}}]
-
-        MockKeaClient.return_value.command.side_effect = _cmd
+        config = {
+            "result": 0,
+            "arguments": {
+                "Dhcp4": {
+                    "subnet4": [],
+                    "shared-networks": [
+                        {"name": "net1", "subnet4": [{"id": 1, "subnet": "10.0.0.0/24"}]},
+                        "invalid",
+                    ],
+                }
+            },
+        }
         url = reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk])
-        response = self.client.get(url)
+        with stub_kea({"config-get": config, "stat-lease4-get": _STAT_ABSENT4}):
+            response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "10.0.0.0/24")
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_non_dict_subnet_inside_shared_network_skipped(self, MockKeaClient):
+    def test_non_dict_subnet_inside_shared_network_skipped(self):
         """Non-dict subnet items within a shared-network's subnet list are skipped."""
-
-        def _cmd(command, **_kwargs):
-            if command == "config-get":
-                return [
-                    {
-                        "result": 0,
-                        "arguments": {
-                            "Dhcp4": {
-                                "subnet4": [],
-                                "shared-networks": [
-                                    {
-                                        "name": "net1",
-                                        "subnet4": [
-                                            {"id": 1, "subnet": "10.0.0.0/24"},
-                                            "bad",
-                                        ],
-                                    },
-                                ],
-                            }
-                        },
-                    }
-                ]
-            return [{"result": 0, "arguments": {}}]
-
-        MockKeaClient.return_value.command.side_effect = _cmd
+        config = {
+            "result": 0,
+            "arguments": {
+                "Dhcp4": {
+                    "subnet4": [],
+                    "shared-networks": [
+                        {"name": "net1", "subnet4": [{"id": 1, "subnet": "10.0.0.0/24"}, "bad"]},
+                    ],
+                }
+            },
+        }
         url = reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk])
-        response = self.client.get(url)
+        with stub_kea({"config-get": config, "stat-lease4-get": _STAT_ABSENT4}):
+            response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "10.0.0.0/24")
 
