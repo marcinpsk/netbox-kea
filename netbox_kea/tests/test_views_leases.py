@@ -3288,42 +3288,37 @@ class TestPendingIpChangeBadgeRendering(_ViewTestBase):
     def _htmx_get(self, url, data):
         return self.client.get(url, data=data, HTTP_HX_REQUEST="true")
 
-    @patch("netbox_kea.sync.bulk_fetch_netbox_ips")
+    _CONFIG4 = {"result": 0, "arguments": {"Dhcp4": {"subnet4": [{"id": 7, "subnet": "10.0.0.0/24"}]}}}
+    _MAC_RSV = {"subnet-id": 7, "ip-address": "10.0.0.20", "hw-address": "aa:bb:cc:dd:ee:01"}
+
+    def _stub(self):
+        """Real lease search + IP reservation lookup that finds nothing (result 3)."""
+        return stub_kea(
+            {
+                "config-get": self._CONFIG4,
+                "lease4-get": {"result": 0, "arguments": dict(self._LEASE4)},
+                "reservation-get": {"result": 3},  # no IP-based match
+            }
+        )
+
     @patch("netbox_kea.views.leases._fetch_reservation_by_mac_for_leases")
-    @patch("netbox_kea.models.KeaClient")
-    def test_pending_ip_badge_renders_in_response(self, MockKeaClient, mock_mac_fetch, mock_bulk_fetch):
+    def test_pending_ip_badge_renders_in_response(self, mock_mac_fetch):
         """The lease table must show a 'Pending' badge with the reserved IP when pending change detected."""
-        mock_client = MockKeaClient.return_value
-        mock_client.clone.return_value = mock_client
-        mock_client.__enter__ = lambda s: s
-        mock_client.__exit__ = lambda s, *a: None
-        mock_client.command.return_value = [{"result": 0, "arguments": {"ip-address": "10.0.0.10", **self._LEASE4}}]
-        mock_client.reservation_get.return_value = None  # No IP-based match
-        mac_rsv = {"subnet-id": 7, "ip-address": "10.0.0.20", "hw-address": "aa:bb:cc:dd:ee:01"}
-        mock_mac_fetch.return_value = ({("aa:bb:cc:dd:ee:01", 7): mac_rsv}, set())
-        mock_bulk_fetch.return_value = {}
+        mock_mac_fetch.return_value = ({("aa:bb:cc:dd:ee:01", 7): self._MAC_RSV}, set())
         url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
-        response = self._htmx_get(url, {"by": "ip", "q": "10.0.0.10"})
+        with self._stub():
+            response = self._htmx_get(url, {"by": "ip", "q": "10.0.0.10"})
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Pending")
         self.assertContains(response, "10.0.0.20")
 
-    @patch("netbox_kea.sync.bulk_fetch_netbox_ips")
     @patch("netbox_kea.views.leases._fetch_reservation_by_mac_for_leases")
-    @patch("netbox_kea.models.KeaClient")
-    def test_pending_ip_badge_does_not_show_sync_button(self, MockKeaClient, mock_mac_fetch, mock_bulk_fetch):
+    def test_pending_ip_badge_does_not_show_sync_button(self, mock_mac_fetch):
         """When pending IP change detected, the Sync button must NOT appear."""
-        mock_client = MockKeaClient.return_value
-        mock_client.clone.return_value = mock_client
-        mock_client.__enter__ = lambda s: s
-        mock_client.__exit__ = lambda s, *a: None
-        mock_client.command.return_value = [{"result": 0, "arguments": {"ip-address": "10.0.0.10", **self._LEASE4}}]
-        mock_client.reservation_get.return_value = None
-        mac_rsv = {"subnet-id": 7, "ip-address": "10.0.0.20", "hw-address": "aa:bb:cc:dd:ee:01"}
-        mock_mac_fetch.return_value = ({("aa:bb:cc:dd:ee:01", 7): mac_rsv}, set())
-        mock_bulk_fetch.return_value = {}
+        mock_mac_fetch.return_value = ({("aa:bb:cc:dd:ee:01", 7): self._MAC_RSV}, set())
         url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
-        response = self._htmx_get(url, {"by": "ip", "q": "10.0.0.10"})
+        with self._stub():
+            response = self._htmx_get(url, {"by": "ip", "q": "10.0.0.10"})
         self.assertEqual(response.status_code, 200)
         self.assertNotContains(response, "Sync</button>")
 
@@ -3332,18 +3327,17 @@ class TestPendingIpChangeBadgeRendering(_ViewTestBase):
 class TestFetchReservationByMac(_ViewTestBase):
     """Tests for _fetch_reservation_by_mac_for_leases helper function."""
 
+    def _client(self):
+        return self.server.get_client(version=4)
+
     def test_returns_reservation_when_ip_differs(self):
         """MAC reservation at different IP must be included in result."""
         from netbox_kea.views.leases import _fetch_reservation_by_mac_for_leases
 
-        mock_client = MagicMock(spec=KeaClient)
         rsv = {"ip-address": "10.0.0.20", "hw-address": "aa:bb:cc:dd:ee:01", "subnet-id": 1}
-        mock_client.clone.return_value = mock_client
-        mock_client.__enter__ = lambda s: s
-        mock_client.__exit__ = lambda s, *a: None
-        mock_client.reservation_get.return_value = rsv
         leases = [{"ip_address": "10.0.0.10", "hw_address": "aa:bb:cc:dd:ee:01", "subnet_id": 1}]
-        result, failed = _fetch_reservation_by_mac_for_leases(mock_client, 4, leases, set(), set())
+        with stub_kea({"reservation-get": {"result": 0, "arguments": rsv}}):
+            result, failed = _fetch_reservation_by_mac_for_leases(self._client(), 4, leases, set(), set())
         self.assertIn(("aa:bb:cc:dd:ee:01", 1), result)
         self.assertEqual(result[("aa:bb:cc:dd:ee:01", 1)]["ip-address"], "10.0.0.20")
         self.assertEqual(failed, set())
@@ -3352,66 +3346,49 @@ class TestFetchReservationByMac(_ViewTestBase):
         """MAC reservation at same IP as lease must NOT be included (already handled by IP lookup)."""
         from netbox_kea.views.leases import _fetch_reservation_by_mac_for_leases
 
-        mock_client = MagicMock(spec=KeaClient)
         rsv = {"ip-address": "10.0.0.10", "hw-address": "aa:bb:cc:dd:ee:01", "subnet-id": 1}
-        mock_client.clone.return_value = mock_client
-        mock_client.__enter__ = lambda s: s
-        mock_client.__exit__ = lambda s, *a: None
-        mock_client.reservation_get.return_value = rsv
         leases = [{"ip_address": "10.0.0.10", "hw_address": "aa:bb:cc:dd:ee:01", "subnet_id": 1}]
-        result, failed = _fetch_reservation_by_mac_for_leases(mock_client, 4, leases, set(), set())
+        with stub_kea({"reservation-get": {"result": 0, "arguments": rsv}}):
+            result, failed = _fetch_reservation_by_mac_for_leases(self._client(), 4, leases, set(), set())
         self.assertEqual(result, {})
 
     def test_skips_already_matched_ips(self):
         """Leases in already_matched_ips must not trigger a MAC lookup."""
         from netbox_kea.views.leases import _fetch_reservation_by_mac_for_leases
 
-        mock_client = MagicMock(spec=KeaClient)
-        mock_client.clone.return_value = mock_client
-        mock_client.__enter__ = lambda s: s
-        mock_client.__exit__ = lambda s, *a: None
         leases = [{"ip_address": "10.0.0.10", "hw_address": "aa:bb:cc:dd:ee:01", "subnet_id": 1}]
-        result, failed = _fetch_reservation_by_mac_for_leases(mock_client, 4, leases, {"10.0.0.10"}, set())
+        # Empty registry: any reservation-get would raise, proving none is issued.
+        with stub_kea({}) as kea:
+            result, failed = _fetch_reservation_by_mac_for_leases(self._client(), 4, leases, {"10.0.0.10"}, set())
         self.assertEqual(result, {})
-        mock_client.reservation_get.assert_not_called()
+        self.assertEqual(kea.commands(), [])
 
     def test_skips_failed_ips(self):
         """Leases in failed_ips must not trigger a MAC lookup."""
         from netbox_kea.views.leases import _fetch_reservation_by_mac_for_leases
 
-        mock_client = MagicMock(spec=KeaClient)
-        mock_client.clone.return_value = mock_client
-        mock_client.__enter__ = lambda s: s
-        mock_client.__exit__ = lambda s, *a: None
         leases = [{"ip_address": "10.0.0.10", "hw_address": "aa:bb:cc:dd:ee:01", "subnet_id": 1}]
-        result, failed = _fetch_reservation_by_mac_for_leases(mock_client, 4, leases, set(), {"10.0.0.10"})
+        with stub_kea({}) as kea:
+            result, failed = _fetch_reservation_by_mac_for_leases(self._client(), 4, leases, set(), {"10.0.0.10"})
         self.assertEqual(result, {})
-        mock_client.reservation_get.assert_not_called()
+        self.assertEqual(kea.commands(), [])
 
     def test_returns_empty_for_no_mac_reservation(self):
         """When reservation_get returns None, result must be empty."""
         from netbox_kea.views.leases import _fetch_reservation_by_mac_for_leases
 
-        mock_client = MagicMock(spec=KeaClient)
-        mock_client.clone.return_value = mock_client
-        mock_client.__enter__ = lambda s: s
-        mock_client.__exit__ = lambda s, *a: None
-        mock_client.reservation_get.return_value = None
         leases = [{"ip_address": "10.0.0.10", "hw_address": "aa:bb:cc:dd:ee:01", "subnet_id": 1}]
-        result, failed = _fetch_reservation_by_mac_for_leases(mock_client, 4, leases, set(), set())
+        with stub_kea({"reservation-get": {"result": 3}}):
+            result, failed = _fetch_reservation_by_mac_for_leases(self._client(), 4, leases, set(), set())
         self.assertEqual(result, {})
 
     def test_exception_in_worker_is_swallowed(self):
         """An exception from reservation_get must not crash; MAC is simply omitted."""
         from netbox_kea.views.leases import _fetch_reservation_by_mac_for_leases
 
-        mock_client = MagicMock(spec=KeaClient)
-        mock_client.clone.return_value = mock_client
-        mock_client.__enter__ = lambda s: s
-        mock_client.__exit__ = lambda s, *a: None
-        mock_client.reservation_get.side_effect = RuntimeError("connection failed")
         leases = [{"ip_address": "10.0.0.10", "hw_address": "aa:bb:cc:dd:ee:01", "subnet_id": 1}]
-        result, failed = _fetch_reservation_by_mac_for_leases(mock_client, 4, leases, set(), set())
+        with stub_kea({"reservation-get": RuntimeError("connection failed")}):
+            result, failed = _fetch_reservation_by_mac_for_leases(self._client(), 4, leases, set(), set())
         self.assertEqual(result, {})
         self.assertIn(("aa:bb:cc:dd:ee:01", 1), failed)
 
@@ -3419,17 +3396,13 @@ class TestFetchReservationByMac(_ViewTestBase):
         """Multiple leases with the same MAC must only trigger one reservation_get call."""
         from netbox_kea.views.leases import _fetch_reservation_by_mac_for_leases
 
-        mock_client = MagicMock(spec=KeaClient)
-        mock_client.clone.return_value = mock_client
-        mock_client.__enter__ = lambda s: s
-        mock_client.__exit__ = lambda s, *a: None
-        mock_client.reservation_get.return_value = None
         leases = [
             {"ip_address": "10.0.0.10", "hw_address": "aa:bb:cc:dd:ee:01", "subnet_id": 1},
             {"ip_address": "10.0.0.11", "hw_address": "aa:bb:cc:dd:ee:01", "subnet_id": 1},
         ]
-        _fetch_reservation_by_mac_for_leases(mock_client, 4, leases, set(), set())
-        self.assertEqual(mock_client.reservation_get.call_count, 1)
+        with stub_kea({"reservation-get": {"result": 3}}) as kea:
+            _fetch_reservation_by_mac_for_leases(self._client(), 4, leases, set(), set())
+        self.assertEqual(kea.commands().count("reservation-get"), 1)
 
 
 # ---------------------------------------------------------------------------
