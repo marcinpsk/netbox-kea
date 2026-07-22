@@ -119,6 +119,28 @@ def _list_stub6(hosts=None):
     return stub_kea({"reservation-get-page": _res_page(hosts), "lease6-get-all": _LEASE_NONE6})
 
 
+def _subnet_get(version, pools=None, subnet_id=1):
+    """A ``subnet{v}-get`` result for the reservation-add pool-overlap probe.
+
+    *pools* is a list of pool range strings (e.g. ``["192.168.1.50-192.168.1.200"]``);
+    the probe warns only when the reservation IP falls inside one of them.
+    """
+    return {
+        "result": 0,
+        "arguments": {f"subnet{version}": [{"id": subnet_id, "pools": [{"pool": p} for p in (pools or [])]}]},
+    }
+
+
+def _res_get(reservation):
+    """A ``reservation-get`` result: the host fields Kea returns directly inside ``arguments``."""
+    return {"result": 0, "arguments": dict(reservation)}
+
+
+#: ``reservation-get`` / ``lease{v}-get`` with result 3 = no such record.
+_RES_NOT_FOUND = {"result": 3}
+_LEASE_NOT_FOUND = {"result": 3}
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Shared base
 # ─────────────────────────────────────────────────────────────────────────────
@@ -315,81 +337,70 @@ class TestServerReservation4AddView(_ReservationViewBase):
             "hostname": "testhost.example.com",
         }
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_get_renders_form(self, MockKeaClient):
+    def test_get_renders_form(self):
+        # GET renders the add form only — no Kea traffic.
         response = self.client.get(self._add_url())
         self.assertEqual(response.status_code, 200)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_valid_creates_reservation_and_redirects(self, MockKeaClient):
-        mock_client = MockKeaClient.return_value
-        mock_client.reservation_add.return_value = None
-        response = self.client.post(self._add_url(), self._valid_post_data())
+    def test_post_valid_creates_reservation_and_redirects(self):
+        with stub_kea({"subnet4-get": _subnet_get(4), "reservation-add": {"result": 0}}) as kea:
+            response = self.client.post(self._add_url(), self._valid_post_data())
         self.assertEqual(response.status_code, 302)
         # Must redirect to the server's reservations page (not to /None/)
         self.assertNotIn("None", response.url)
-        mock_client.reservation_add.assert_called_once()
+        self.assertEqual(kea.commands().count("reservation-add"), 1)
+        # The real payload carries the identifier the form submitted.
+        added = kea.bodies("reservation-add")[0]["arguments"]["reservation"]
+        self.assertEqual(added["ip-address"], "192.168.1.100")
+        self.assertEqual(added["hw-address"], "aa:bb:cc:dd:ee:ff")
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_invalid_rerenders_form(self, MockKeaClient):
-        # Empty POST — all required fields missing
+    def test_post_invalid_rerenders_form(self):
+        # Empty POST — all required fields missing; form invalid before any Kea call.
         response = self.client.post(self._add_url(), {})
         self.assertEqual(response.status_code, 200)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_missing_ip_address_rerenders_form(self, MockKeaClient):
+    def test_post_missing_ip_address_rerenders_form(self):
         data = self._valid_post_data()
         del data["ip_address"]
         response = self.client.post(self._add_url(), data)
         self.assertEqual(response.status_code, 200)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_kea_error_shows_error_message(self, MockKeaClient):
-        mock_client = MockKeaClient.return_value
-        mock_client.reservation_add.side_effect = KeaException(
-            {"result": 1, "text": "failed to add host: conflicts with existing reservation"},
-            index=0,
-        )
-        response = self.client.post(self._add_url(), self._valid_post_data())
+    def test_post_kea_error_shows_error_message(self):
+        # reservation-add result 1 → real KeaClient raises KeaException → view re-renders.
+        with stub_kea(
+            {
+                "subnet4-get": _subnet_get(4),
+                "reservation-add": {"result": 1, "text": "failed to add host: conflicts with existing reservation"},
+            }
+        ):
+            response = self.client.post(self._add_url(), self._valid_post_data())
         # Must not crash with 500; either re-render (200) or redirect with error
         self.assertIn(response.status_code, (200, 302))
 
     # ── F4: reservation-in-pool overlap warning ───────────────────────────────
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_warns_when_reservation_ip_inside_pool(self, MockKeaClient):
+    def test_post_warns_when_reservation_ip_inside_pool(self):
         """F4: POST adding a reservation whose IP is inside an existing pool shows a non-blocking warning."""
-        mock_client = MockKeaClient.return_value
-        mock_client.reservation_add.return_value = None
-        # subnet4-get returns subnet with a pool that covers the reservation IP (192.168.1.100)
-        mock_client.command.return_value = [
-            {
-                "result": 0,
-                "arguments": {"subnet4": [{"id": 1, "pools": [{"pool": "192.168.1.50-192.168.1.200"}]}]},
-            }
-        ]
-        response = self.client.post(self._add_url(), self._valid_post_data())
+        # subnet4-get returns a pool that covers the reservation IP (192.168.1.100).
+        with stub_kea(
+            {"subnet4-get": _subnet_get(4, pools=["192.168.1.50-192.168.1.200"]), "reservation-add": {"result": 0}}
+        ) as kea:
+            response = self.client.post(self._add_url(), self._valid_post_data())
         # Non-blocking: still redirects
         self.assertEqual(response.status_code, 302)
-        mock_client.reservation_add.assert_called_once()
+        self.assertEqual(kea.commands().count("reservation-add"), 1)
         storage = list(get_messages(response.wsgi_request))
         self.assertTrue(any(m.level == WARNING for m in storage))
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_no_warning_when_reservation_ip_outside_pool(self, MockKeaClient):
+    def test_post_no_warning_when_reservation_ip_outside_pool(self):
         """F4: No warning when the reservation IP is not in any existing pool."""
-        mock_client = MockKeaClient.return_value
-        mock_client.reservation_add.return_value = None
-        # Pool does NOT cover the reservation IP
-        mock_client.command.return_value = [
-            {
-                "result": 0,
-                "arguments": {"subnet4": [{"id": 1, "pools": [{"pool": "192.168.1.10-192.168.1.50"}]}]},
-            }
-        ]
-        response = self.client.post(self._add_url(), self._valid_post_data())
+        # Pool does NOT cover the reservation IP.
+        with stub_kea(
+            {"subnet4-get": _subnet_get(4, pools=["192.168.1.10-192.168.1.50"]), "reservation-add": {"result": 0}}
+        ) as kea:
+            response = self.client.post(self._add_url(), self._valid_post_data())
         self.assertEqual(response.status_code, 302)
-        mock_client.reservation_add.assert_called_once()
+        self.assertEqual(kea.commands().count("reservation-add"), 1)
         storage = list(get_messages(response.wsgi_request))
         self.assertFalse(any(m.level == WARNING for m in storage))
 
@@ -415,33 +426,27 @@ class TestServerReservation6AddView(_ReservationViewBase):
             "hostname": "testhost6.example.com",
         }
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_get_renders_form(self, MockKeaClient):
+    def test_get_renders_form(self):
         response = self.client.get(self._add_url())
         self.assertEqual(response.status_code, 200)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_valid_creates_reservation_and_redirects(self, MockKeaClient):
-        mock_client = MockKeaClient.return_value
-        mock_client.reservation_add.return_value = None
-        response = self.client.post(self._add_url(), self._valid_post_data())
+    def test_post_valid_creates_reservation_and_redirects(self):
+        with stub_kea({"subnet6-get": _subnet_get(6), "reservation-add": {"result": 0}}) as kea:
+            response = self.client.post(self._add_url(), self._valid_post_data())
         self.assertEqual(response.status_code, 302)
         self.assertNotIn("None", response.url)
-        mock_client.reservation_add.assert_called_once()
+        self.assertEqual(kea.commands().count("reservation-add"), 1)
+        added = kea.bodies("reservation-add")[0]["arguments"]["reservation"]
+        self.assertEqual(added["ip-addresses"], ["2001:db8::100"])
+        self.assertEqual(added["duid"], "00:01:02:03:04:05:06:07")
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_invalid_rerenders_form(self, MockKeaClient):
+    def test_post_invalid_rerenders_form(self):
         response = self.client.post(self._add_url(), {})
         self.assertEqual(response.status_code, 200)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_kea_error_shows_error_message(self, MockKeaClient):
-        mock_client = MockKeaClient.return_value
-        mock_client.reservation_add.side_effect = KeaException(
-            {"result": 1, "text": "failed to add host"},
-            index=0,
-        )
-        response = self.client.post(self._add_url(), self._valid_post_data())
+    def test_post_kea_error_shows_error_message(self):
+        with stub_kea({"subnet6-get": _subnet_get(6), "reservation-add": {"result": 1, "text": "failed to add host"}}):
+            response = self.client.post(self._add_url(), self._valid_post_data())
         self.assertIn(response.status_code, (200, 302))
 
 
@@ -472,38 +477,28 @@ class TestServerReservation4EditView(_ReservationViewBase):
             "hostname": "updated-host.example.com",
         }
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_get_prepopulates_form_with_reservation_data(self, MockKeaClient):
-        mock_client = MockKeaClient.return_value
-        mock_client.reservation_get.return_value = _SAMPLE_RESERVATION4
-        response = self.client.get(self._edit_url())
+    def test_get_prepopulates_form_with_reservation_data(self):
+        with stub_kea({"reservation-get": _res_get(_SAMPLE_RESERVATION4), "lease4-get": _LEASE_NOT_FOUND}):
+            response = self.client.get(self._edit_url())
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, self._IP)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_get_404_when_reservation_not_found(self, MockKeaClient):
-        mock_client = MockKeaClient.return_value
-        mock_client.reservation_get.return_value = None  # not found
-        response = self.client.get(self._edit_url())
+    def test_get_404_when_reservation_not_found(self):
+        with stub_kea({"reservation-get": _RES_NOT_FOUND}):
+            response = self.client.get(self._edit_url())
         self.assertEqual(response.status_code, 404)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_valid_updates_reservation_and_redirects(self, MockKeaClient):
-        mock_client = MockKeaClient.return_value
-        mock_client.reservation_get.return_value = _SAMPLE_RESERVATION4
-        mock_client.reservation_update.return_value = None
-        response = self.client.post(self._edit_url(), self._valid_post_data())
+    def test_post_valid_updates_reservation_and_redirects(self):
+        with stub_kea({"reservation-get": _res_get(_SAMPLE_RESERVATION4), "reservation-update": {"result": 0}}) as kea:
+            response = self.client.post(self._edit_url(), self._valid_post_data())
         self.assertEqual(response.status_code, 302)
         self.assertNotIn("None", response.url)
-        mock_client.reservation_update.assert_called_once()
+        self.assertEqual(kea.commands().count("reservation-update"), 1)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_invalid_rerenders_form(self, MockKeaClient):
-        mock_client = MockKeaClient.return_value
-        mock_client.reservation_get.return_value = _SAMPLE_RESERVATION4
-        # All form fields (subnet_id, ip_address, identifier_type, identifier) are disabled in the
+    def test_post_invalid_rerenders_form(self):
+        # All key fields (subnet_id, ip_address, identifier_type, identifier) are disabled in the
         # edit POST handler and take their values from existing.  Trigger invalidity via the options
-        # formset: submit a row with data but no name (name is required).
+        # formset: submit a row with data but no name (name is required).  The update never fires.
         data = self._valid_post_data()
         data.update(
             {
@@ -515,54 +510,57 @@ class TestServerReservation4EditView(_ReservationViewBase):
                 "options-0-data": "192.168.1.1",
             }
         )
-        response = self.client.post(self._edit_url(), data)
+        with stub_kea({"reservation-get": _res_get(_SAMPLE_RESERVATION4)}) as kea:
+            response = self.client.post(self._edit_url(), data)
         self.assertEqual(response.status_code, 200)
+        self.assertNotIn("reservation-update", kea.commands())
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_kea_error_shows_error_message(self, MockKeaClient):
-        mock_client = MockKeaClient.return_value
-        mock_client.reservation_get.return_value = _SAMPLE_RESERVATION4
-        mock_client.reservation_update.side_effect = KeaException(
-            {"result": 1, "text": "failed to update host"},
-            index=0,
-        )
-        response = self.client.post(self._edit_url(), self._valid_post_data())
+    def test_post_kea_error_shows_error_message(self):
+        with stub_kea(
+            {
+                "reservation-get": _res_get(_SAMPLE_RESERVATION4),
+                "reservation-update": {"result": 1, "text": "failed to update host"},
+            }
+        ):
+            response = self.client.post(self._edit_url(), self._valid_post_data())
         self.assertIn(response.status_code, (200, 302))
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_get_shows_lease_diff_when_hostname_differs(self, MockKeaClient):
+    def test_get_shows_lease_diff_when_hostname_differs(self):
         """GET must add lease_diff to context when active lease hostname differs."""
-        mock_client = MockKeaClient.return_value
-        mock_client.reservation_get.return_value = _SAMPLE_RESERVATION4  # hostname: "testhost.example.com"
-        mock_client.lease_get_by_ip.return_value = {
-            "ip-address": self._IP,
-            "hostname": "lease-host.example.com",
-        }
-        response = self.client.get(self._edit_url())
+        # _SAMPLE_RESERVATION4 hostname is "testhost.example.com"; the active lease differs.
+        with stub_kea(
+            {
+                "reservation-get": _res_get(_SAMPLE_RESERVATION4),
+                "lease4-get": {
+                    "result": 0,
+                    "arguments": {"ip-address": self._IP, "hostname": "lease-host.example.com"},
+                },
+            }
+        ):
+            response = self.client.get(self._edit_url())
         self.assertEqual(response.status_code, 200)
         self.assertIn("lease_diff", response.context)
         self.assertEqual(response.context["lease_diff"]["hostname"], "lease-host.example.com")
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_get_no_lease_diff_when_hostname_matches(self, MockKeaClient):
+    def test_get_no_lease_diff_when_hostname_matches(self):
         """GET must not include lease_diff when lease hostname matches reservation."""
-        mock_client = MockKeaClient.return_value
-        mock_client.reservation_get.return_value = _SAMPLE_RESERVATION4  # hostname: "testhost.example.com"
-        mock_client.lease_get_by_ip.return_value = {
-            "ip-address": self._IP,
-            "hostname": "testhost.example.com",
-        }
-        response = self.client.get(self._edit_url())
+        with stub_kea(
+            {
+                "reservation-get": _res_get(_SAMPLE_RESERVATION4),
+                "lease4-get": {"result": 0, "arguments": {"ip-address": self._IP, "hostname": "testhost.example.com"}},
+            }
+        ):
+            response = self.client.get(self._edit_url())
         self.assertEqual(response.status_code, 200)
         self.assertNotIn("lease_diff", response.context)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_get_no_lease_diff_when_lease_fetch_raises(self, MockKeaClient):
+    def test_get_no_lease_diff_when_lease_fetch_raises(self):
         """GET must not crash or add lease_diff when the lease fetch raises KeaException."""
-        mock_client = MockKeaClient.return_value
-        mock_client.reservation_get.return_value = _SAMPLE_RESERVATION4
-        mock_client.lease_get_by_ip.side_effect = KeaException({"result": 3, "text": "not found"}, index=0)
-        response = self.client.get(self._edit_url())
+        # lease4-get result 1 → real KeaClient raises KeaException → the diff branch is skipped.
+        with stub_kea(
+            {"reservation-get": _res_get(_SAMPLE_RESERVATION4), "lease4-get": {"result": 1, "text": "error"}}
+        ):
+            response = self.client.get(self._edit_url())
         self.assertEqual(response.status_code, 200)
         self.assertNotIn("lease_diff", response.context)
 
@@ -585,38 +583,31 @@ class TestServerReservation6EditView(_ReservationViewBase):
             args=[self.server.pk, self._SUBNET_ID, self._IP],
         )
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_get_prepopulates_form_with_reservation_data(self, MockKeaClient):
-        mock_client = MockKeaClient.return_value
-        mock_client.reservation_get.return_value = _SAMPLE_RESERVATION6
-        response = self.client.get(self._edit_url())
+    def test_get_prepopulates_form_with_reservation_data(self):
+        with stub_kea({"reservation-get": _res_get(_SAMPLE_RESERVATION6), "lease6-get": _LEASE_NOT_FOUND}):
+            response = self.client.get(self._edit_url())
         self.assertEqual(response.status_code, 200)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_get_404_when_reservation_not_found(self, MockKeaClient):
-        mock_client = MockKeaClient.return_value
-        mock_client.reservation_get.return_value = None
-        response = self.client.get(self._edit_url())
+    def test_get_404_when_reservation_not_found(self):
+        with stub_kea({"reservation-get": _RES_NOT_FOUND}):
+            response = self.client.get(self._edit_url())
         self.assertEqual(response.status_code, 404)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_valid_updates_reservation_and_redirects(self, MockKeaClient):
-        mock_client = MockKeaClient.return_value
-        mock_client.reservation_get.return_value = _SAMPLE_RESERVATION6
-        mock_client.reservation_update.return_value = None
-        response = self.client.post(
-            self._edit_url(),
-            {
-                "subnet_id": self._SUBNET_ID,
-                "ip_addresses": "2001:db8::100",
-                "identifier_type": "duid",
-                "identifier": "00:01:02:03:04:05",
-                "hostname": "testhost6.example.com",
-            },
-        )
+    def test_post_valid_updates_reservation_and_redirects(self):
+        with stub_kea({"reservation-get": _res_get(_SAMPLE_RESERVATION6), "reservation-update": {"result": 0}}) as kea:
+            response = self.client.post(
+                self._edit_url(),
+                {
+                    "subnet_id": self._SUBNET_ID,
+                    "ip_addresses": "2001:db8::100",
+                    "identifier_type": "duid",
+                    "identifier": "00:01:02:03:04:05",
+                    "hostname": "testhost6.example.com",
+                },
+            )
         self.assertEqual(response.status_code, 302)
         self.assertNotIn("None", response.url)
-        mock_client.reservation_update.assert_called_once()
+        self.assertEqual(kea.commands().count("reservation-update"), 1)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -637,30 +628,24 @@ class TestServerReservation4DeleteView(_ReservationViewBase):
             args=[self.server.pk, self._SUBNET_ID, self._IP],
         )
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_get_shows_confirmation_page(self, MockKeaClient):
+    def test_get_shows_confirmation_page(self):
+        # GET renders the confirmation page only — no Kea traffic.
         response = self.client.get(self._delete_url())
         self.assertEqual(response.status_code, 200)
         # The confirmation page should mention the IP being deleted
         self.assertContains(response, self._IP)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_deletes_reservation_and_redirects(self, MockKeaClient):
-        mock_client = MockKeaClient.return_value
-        mock_client.reservation_del.return_value = None
-        response = self.client.post(self._delete_url(), {"confirm": "true"})
+    def test_post_deletes_reservation_and_redirects(self):
+        with stub_kea({"reservation-del": {"result": 0}}) as kea:
+            response = self.client.post(self._delete_url(), {"confirm": "true"})
         self.assertEqual(response.status_code, 302)
         self.assertNotIn("None", response.url)
-        mock_client.reservation_del.assert_called_once()
+        self.assertEqual(kea.commands().count("reservation-del"), 1)
+        self.assertEqual(kea.bodies("reservation-del")[0]["arguments"]["ip-address"], self._IP)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_kea_error_shows_message(self, MockKeaClient):
-        mock_client = MockKeaClient.return_value
-        mock_client.reservation_del.side_effect = KeaException(
-            {"result": 1, "text": "Host not found."},
-            index=0,
-        )
-        response = self.client.post(self._delete_url(), {"confirm": "true"})
+    def test_post_kea_error_shows_message(self):
+        with stub_kea({"reservation-del": {"result": 1, "text": "Host not found."}}):
+            response = self.client.post(self._delete_url(), {"confirm": "true"})
         # Must not crash with 500
         self.assertIn(response.status_code, (200, 302))
 
@@ -691,29 +676,22 @@ class TestServerReservation6DeleteView(_ReservationViewBase):
             args=[self.server.pk, self._SUBNET_ID, self._IP],
         )
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_get_shows_confirmation_page(self, MockKeaClient):
+    def test_get_shows_confirmation_page(self):
         response = self.client.get(self._delete_url())
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, self._IP)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_deletes_reservation_and_redirects(self, MockKeaClient):
-        mock_client = MockKeaClient.return_value
-        mock_client.reservation_del.return_value = None
-        response = self.client.post(self._delete_url(), {"confirm": "true"})
+    def test_post_deletes_reservation_and_redirects(self):
+        with stub_kea({"reservation-del": {"result": 0}}) as kea:
+            response = self.client.post(self._delete_url(), {"confirm": "true"})
         self.assertEqual(response.status_code, 302)
         self.assertNotIn("None", response.url)
-        mock_client.reservation_del.assert_called_once()
+        self.assertEqual(kea.commands().count("reservation-del"), 1)
+        self.assertEqual(kea.bodies("reservation-del")[0]["arguments"]["ip-address"], self._IP)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_kea_error_shows_message(self, MockKeaClient):
-        mock_client = MockKeaClient.return_value
-        mock_client.reservation_del.side_effect = KeaException(
-            {"result": 1, "text": "Host not found."},
-            index=0,
-        )
-        response = self.client.post(self._delete_url(), {"confirm": "true"})
+    def test_post_kea_error_shows_message(self):
+        with stub_kea({"reservation-del": {"result": 1, "text": "Host not found."}}):
+            response = self.client.post(self._delete_url(), {"confirm": "true"})
         self.assertIn(response.status_code, (200, 302))
 
 
