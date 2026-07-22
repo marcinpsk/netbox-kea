@@ -1668,67 +1668,58 @@ class TestReservationSearch4View(_ReservationViewBase):
             return f"{base}?{urlencode(params)}"
         return base
 
-    def _mock_two_reservations(self, MockKeaClient):
-        mock_client = MockKeaClient.return_value
-        mock_client.get_available_commands.return_value = _RESERVATION_COMMANDS
-        mock_client.reservation_get_page.return_value = (
-            [dict(_SAMPLE_RESERVATION4), dict(_EXTRA_RESERVATION4)],
-            0,
-            0,
+    def _stub(self):
+        """Reservations4-list stub with two reservations (subnets 1 and 2) + lease enrichment."""
+        return stub_kea(
+            {
+                "reservation-get-page": _res_page([dict(_SAMPLE_RESERVATION4), dict(_EXTRA_RESERVATION4)]),
+                "lease4-get-all": _LEASE_NONE4,
+            }
         )
-        mock_client.command.return_value = [{"result": 0, "arguments": {"leases": [], "count": 0}}]
-        return mock_client
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_no_params_shows_all_reservations(self, MockKeaClient):
-        self._mock_two_reservations(MockKeaClient)
-        response = self.client.get(self._url())
+    def test_no_params_shows_all_reservations(self):
+        with self._stub():
+            response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, _SAMPLE_RESERVATION4["ip-address"])
         self.assertContains(response, _EXTRA_RESERVATION4["ip-address"])
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_q_filters_by_hostname(self, MockKeaClient):
-        self._mock_two_reservations(MockKeaClient)
-        response = self.client.get(self._url(q="testhost"))
+    def test_q_filters_by_hostname(self):
+        with self._stub():
+            response = self.client.get(self._url(q="testhost"))
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, _SAMPLE_RESERVATION4["ip-address"])
         self.assertNotContains(response, _EXTRA_RESERVATION4["ip-address"])
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_q_filters_by_ip(self, MockKeaClient):
-        self._mock_two_reservations(MockKeaClient)
-        response = self.client.get(self._url(q="10.0.0.99"))
+    def test_q_filters_by_ip(self):
+        with self._stub():
+            response = self.client.get(self._url(q="10.0.0.99"))
         self.assertEqual(response.status_code, 200)
         self.assertNotContains(response, _SAMPLE_RESERVATION4["ip-address"])
         self.assertContains(response, _EXTRA_RESERVATION4["ip-address"])
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_subnet_id_filter(self, MockKeaClient):
-        self._mock_two_reservations(MockKeaClient)
-        response = self.client.get(self._url(subnet_id=1))
+    def test_subnet_id_filter(self):
+        with self._stub():
+            response = self.client.get(self._url(subnet_id=1))
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, _SAMPLE_RESERVATION4["ip-address"])
         self.assertNotContains(response, _EXTRA_RESERVATION4["ip-address"])
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_search_form_in_context(self, MockKeaClient):
-        self._mock_two_reservations(MockKeaClient)
-        response = self.client.get(self._url(q="testhost"))
+    def test_search_form_in_context(self):
+        with self._stub():
+            response = self.client.get(self._url(q="testhost"))
         self.assertIn("search_form", response.context)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_empty_q_shows_all(self, MockKeaClient):
-        self._mock_two_reservations(MockKeaClient)
-        response = self.client.get(self._url(q=""))
+    def test_empty_q_shows_all(self):
+        with self._stub():
+            response = self.client.get(self._url(q=""))
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, _SAMPLE_RESERVATION4["ip-address"])
         self.assertContains(response, _EXTRA_RESERVATION4["ip-address"])
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_no_match_shows_no_ips(self, MockKeaClient):
-        self._mock_two_reservations(MockKeaClient)
-        response = self.client.get(self._url(q="zzz-no-match-zzz"))
+    def test_no_match_shows_no_ips(self):
+        with self._stub():
+            response = self.client.get(self._url(q="zzz-no-match-zzz"))
         self.assertEqual(response.status_code, 200)
         self.assertNotContains(response, _SAMPLE_RESERVATION4["ip-address"])
         self.assertNotContains(response, _EXTRA_RESERVATION4["ip-address"])
@@ -1744,59 +1735,51 @@ class TestReservationSearch6View(_ReservationViewBase):
             return f"{base}?{urlencode(params)}"
         return base
 
-    def _mock_two_reservations(self, MockKeaClient):
-        mock_client = MockKeaClient.return_value
-        mock_client.get_available_commands.return_value = _RESERVATION_COMMANDS
-        mock_client.reservation_get_page.return_value = (
-            [dict(_SAMPLE_RESERVATION6), dict(_EXTRA_RESERVATION6)],
-            0,
-            0,
+    def _stub(self):
+        """Reservations6-list stub with two reservations (subnets 1 and 20) + lease enrichment."""
+        return stub_kea(
+            {
+                "reservation-get-page": _res_page([dict(_SAMPLE_RESERVATION6), dict(_EXTRA_RESERVATION6)]),
+                "lease6-get-all": _LEASE_NONE6,
+            }
         )
-        mock_client.command.return_value = [{"result": 0, "arguments": {"leases": [], "count": 0}}]
-        return mock_client
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_no_params_shows_all_reservations(self, MockKeaClient):
-        self._mock_two_reservations(MockKeaClient)
-        response = self.client.get(self._url())
+    def test_no_params_shows_all_reservations(self):
+        with self._stub():
+            response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, _SAMPLE_RESERVATION6["ip-addresses"][0])
         self.assertContains(response, _EXTRA_RESERVATION6["ip-addresses"][0])
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_q_filters_by_hostname(self, MockKeaClient):
-        self._mock_two_reservations(MockKeaClient)
-        response = self.client.get(self._url(q="testhost6"))
+    def test_q_filters_by_hostname(self):
+        with self._stub():
+            response = self.client.get(self._url(q="testhost6"))
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, _SAMPLE_RESERVATION6["ip-addresses"][0])
         self.assertNotContains(response, _EXTRA_RESERVATION6["ip-addresses"][0])
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_q_filters_by_duid(self, MockKeaClient):
-        self._mock_two_reservations(MockKeaClient)
-        response = self.client.get(self._url(q="ff:ee:dd"))
+    def test_q_filters_by_duid(self):
+        with self._stub():
+            response = self.client.get(self._url(q="ff:ee:dd"))
         self.assertEqual(response.status_code, 200)
         self.assertNotContains(response, _SAMPLE_RESERVATION6["ip-addresses"][0])
         self.assertContains(response, _EXTRA_RESERVATION6["ip-addresses"][0])
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_subnet_id_filter(self, MockKeaClient):
-        self._mock_two_reservations(MockKeaClient)
-        response = self.client.get(self._url(subnet_id=1))
+    def test_subnet_id_filter(self):
+        with self._stub():
+            response = self.client.get(self._url(subnet_id=1))
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, _SAMPLE_RESERVATION6["ip-addresses"][0])
         self.assertNotContains(response, _EXTRA_RESERVATION6["ip-addresses"][0])
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_search_form_in_context(self, MockKeaClient):
-        self._mock_two_reservations(MockKeaClient)
-        response = self.client.get(self._url(q="testhost6"))
+    def test_search_form_in_context(self):
+        with self._stub():
+            response = self.client.get(self._url(q="testhost6"))
         self.assertIn("search_form", response.context)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_no_match_shows_no_ips(self, MockKeaClient):
-        self._mock_two_reservations(MockKeaClient)
-        response = self.client.get(self._url(q="zzz-no-match-zzz"))
+    def test_no_match_shows_no_ips(self):
+        with self._stub():
+            response = self.client.get(self._url(q="zzz-no-match-zzz"))
         self.assertEqual(response.status_code, 200)
         self.assertNotContains(response, _SAMPLE_RESERVATION6["ip-addresses"][0])
         self.assertNotContains(response, _EXTRA_RESERVATION6["ip-addresses"][0])
@@ -1833,85 +1816,67 @@ class TestBulkReservationImport(_ReservationViewBase):
         url = _import_url(self.server.pk, 6)
         self.assertIn("import", url)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_get_renders_form(self, MockKeaClient):
-        """GET renders the import form (200 OK)."""
-        MockKeaClient.return_value.get_available_commands.return_value = _RESERVATION_COMMANDS
+    def test_get_renders_form(self):
+        """GET renders the import form (200 OK) — no Kea traffic."""
         response = self.client.get(_import_url(self.server.pk, 4))
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "import", msg_prefix="", html=False)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_valid_v4_csv_creates_reservations(self, MockKeaClient):
-        """POST valid v4 CSV creates two reservations and shows created count."""
-        mock_client = MockKeaClient.return_value
-        mock_client.get_available_commands.return_value = _RESERVATION_COMMANDS
-        mock_client.reservation_add.return_value = None
-        csv_file = io.BytesIO(_BULK_IMPORT_V4_CSV.encode())
+    def _csv_upload(self, csv_text):
+        csv_file = io.BytesIO(csv_text.encode())
         csv_file.name = "import.csv"
-        response = self.client.post(
-            _import_url(self.server.pk, 4),
-            {"csv_file": csv_file},
-            format="multipart",
-        )
+        return csv_file
+
+    def test_post_valid_v4_csv_creates_reservations(self):
+        """POST valid v4 CSV creates two reservations and shows created count."""
+        # The import loops reservation_add per row → one reservation-add command each.
+        with stub_kea({"reservation-add": {"result": 0}}) as kea:
+            response = self.client.post(
+                _import_url(self.server.pk, 4),
+                {"csv_file": self._csv_upload(_BULK_IMPORT_V4_CSV)},
+                format="multipart",
+            )
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(mock_client.reservation_add.call_count, 2)
+        self.assertEqual(kea.commands().count("reservation-add"), 2)
         self.assertContains(response, "Created")  # result summary shown
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_valid_v6_csv_creates_reservation(self, MockKeaClient):
+    def test_post_valid_v6_csv_creates_reservation(self):
         """POST valid v6 CSV creates one reservation."""
-        mock_client = MockKeaClient.return_value
-        mock_client.get_available_commands.return_value = _RESERVATION_COMMANDS
-        mock_client.reservation_add.return_value = None
-        csv_file = io.BytesIO(_BULK_IMPORT_V6_CSV.encode())
-        csv_file.name = "import.csv"
-        response = self.client.post(
-            _import_url(self.server.pk, 6),
-            {"csv_file": csv_file},
-            format="multipart",
-        )
+        with stub_kea({"reservation-add": {"result": 0}}) as kea:
+            response = self.client.post(
+                _import_url(self.server.pk, 6),
+                {"csv_file": self._csv_upload(_BULK_IMPORT_V6_CSV)},
+                format="multipart",
+            )
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(mock_client.reservation_add.call_count, 1)
+        self.assertEqual(kea.commands().count("reservation-add"), 1)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_skips_duplicate_reservations(self, MockKeaClient):
+    def test_post_skips_duplicate_reservations(self):
         """result=1 with 'already exists' text is counted as skipped, not error."""
-        mock_client = MockKeaClient.return_value
-        mock_client.get_available_commands.return_value = _RESERVATION_COMMANDS
-        dup_exc = KeaException({"result": 1, "text": "Host already exists."}, index=0)
-        mock_client.reservation_add.side_effect = dup_exc
-        csv_file = io.BytesIO(_BULK_IMPORT_V4_CSV.encode())
-        csv_file.name = "import.csv"
-        response = self.client.post(
-            _import_url(self.server.pk, 4),
-            {"csv_file": csv_file},
-            format="multipart",
-        )
+        # reservation-add result 1 "already exists" → real KeaException → counted as skipped.
+        with stub_kea({"reservation-add": {"result": 1, "text": "Host already exists."}}):
+            response = self.client.post(
+                _import_url(self.server.pk, 4),
+                {"csv_file": self._csv_upload(_BULK_IMPORT_V4_CSV)},
+                format="multipart",
+            )
         self.assertEqual(response.status_code, 200)
         # No hard error — page still 200 with skipped count shown
         self.assertContains(response, "Skipped (already exist)")  # skipped summary shown
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_shows_errors_on_kea_failure(self, MockKeaClient):
+    def test_post_shows_errors_on_kea_failure(self):
         """KeaException (non-duplicate) is counted as error and shown on page."""
-        mock_client = MockKeaClient.return_value
-        mock_client.get_available_commands.return_value = _RESERVATION_COMMANDS
-        mock_client.reservation_add.side_effect = KeaException({"result": 1, "text": "subnet not found"})
-        csv_file = io.BytesIO(_BULK_IMPORT_V4_CSV.encode())
-        csv_file.name = "import.csv"
-        response = self.client.post(
-            _import_url(self.server.pk, 4),
-            {"csv_file": csv_file},
-            format="multipart",
-        )
+        with stub_kea({"reservation-add": {"result": 1, "text": "subnet not found"}}):
+            response = self.client.post(
+                _import_url(self.server.pk, 4),
+                {"csv_file": self._csv_upload(_BULK_IMPORT_V4_CSV)},
+                format="multipart",
+            )
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "error", msg_prefix="", html=False)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_requires_file(self, MockKeaClient):
-        """POST without csv_file shows form with error."""
-        MockKeaClient.return_value.get_available_commands.return_value = _RESERVATION_COMMANDS
+    def test_post_requires_file(self):
+        """POST without csv_file shows form with error — the form is invalid before any Kea call."""
         response = self.client.post(_import_url(self.server.pk, 4), {})
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "required", msg_prefix="", html=False)
@@ -1922,10 +1887,9 @@ class TestBulkReservationImport(_ReservationViewBase):
         response = self.client.get(_import_url(self.server.pk, 4))
         self.assertIn(response.status_code, (302, 403))
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_invalid_csv_shows_error(self, MockKeaClient):
+    def test_post_invalid_csv_shows_error(self):
         """Uploading a CSV with missing required column shows error without crashing."""
-        MockKeaClient.return_value.get_available_commands.return_value = _RESERVATION_COMMANDS
+        # The CSV fails to parse before a client is built → no Kea traffic.
         bad_csv = b"some-random-column,another\nvalue1,value2\n"
         csv_file = io.BytesIO(bad_csv)
         csv_file.name = "bad.csv"
@@ -1937,22 +1901,15 @@ class TestBulkReservationImport(_ReservationViewBase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "error", msg_prefix="", html=False)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_summary_shows_created_skipped_errors_counts(self, MockKeaClient):
+    def test_summary_shows_created_skipped_errors_counts(self):
         """Result page shows three distinct count values: created, skipped, errors."""
-        mock_client = MockKeaClient.return_value
-        mock_client.get_available_commands.return_value = _RESERVATION_COMMANDS
-
-        # row 1 → success, row 2 → already exists (skip)
-        dup_exc = KeaException({"result": 1, "text": "Host already exists."}, index=0)
-        mock_client.reservation_add.side_effect = [None, dup_exc]
-        csv_file = io.BytesIO(_BULK_IMPORT_V4_CSV.encode())
-        csv_file.name = "import.csv"
-        response = self.client.post(
-            _import_url(self.server.pk, 4),
-            {"csv_file": csv_file},
-            format="multipart",
-        )
+        # row 1 → success, row 2 → already exists (skip).
+        with stub_kea({"reservation-add": queued({"result": 0}, {"result": 1, "text": "Host already exists."})}):
+            response = self.client.post(
+                _import_url(self.server.pk, 4),
+                {"csv_file": self._csv_upload(_BULK_IMPORT_V4_CSV)},
+                format="multipart",
+            )
         self.assertEqual(response.status_code, 200)
         self.assertIn("created", response.content.decode().lower())
         self.assertIn("skipped", response.content.decode().lower())
