@@ -165,56 +165,56 @@ class TestReservedBadgeOnLeases(_ViewTestBase):
         "subnet-id": 1,
         "hostname": "testhost",
     }
+    # The lease-search page fetches the subnet quick-select via config-get first.
+    _CONFIG4 = {"result": 0, "arguments": {"Dhcp4": {"subnet4": [{"id": 1, "subnet": "192.168.1.0/24"}]}}}
 
     def _htmx_get(self, url, data):
         """Issue an HTMX GET request (adds HX-Request header)."""
         return self.client.get(url, data=data, HTTP_HX_REQUEST="true")
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_reserved_badge_shown_when_reservation_exists(self, MockKeaClient):
+    def test_reserved_badge_shown_when_reservation_exists(self):
         """When a lease IP has a corresponding reservation, the table cell shows 'Reserved'."""
-        mock_client = MockKeaClient.return_value
-        # Lease search by IP
-        mock_client.command.return_value = [{"result": 0, "arguments": {"ip-address": "192.168.1.100", **self._LEASE4}}]
-        # Reservation lookup returns a matching reservation for this specific IP
-        mock_client.reservation_get.return_value = self._RESERVATION4
-
         url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
-        response = self._htmx_get(url, {"by": "ip", "q": "192.168.1.100"})
+        with stub_kea(
+            {
+                "config-get": self._CONFIG4,
+                "lease4-get": {"result": 0, "arguments": {"ip-address": "192.168.1.100", **self._LEASE4}},
+                "reservation-get": {"result": 0, "arguments": self._RESERVATION4},
+            }
+        ):
+            response = self._htmx_get(url, {"by": "ip", "q": "192.168.1.100"})
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Reserved")
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_no_reserved_badge_when_no_reservation(self, MockKeaClient):
+    def test_no_reserved_badge_when_no_reservation(self):
         """When no reservation exists for the lease IP, no badge is rendered."""
-        mock_client = MockKeaClient.return_value
-        mock_client.command.return_value = [{"result": 0, "arguments": {"ip-address": "192.168.1.100", **self._LEASE4}}]
-        # No reservation found for this IP
-        mock_client.reservation_get.return_value = None
-
         url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
-        response = self._htmx_get(url, {"by": "ip", "q": "192.168.1.100"})
+        with stub_kea(
+            {
+                "config-get": self._CONFIG4,
+                "lease4-get": {"result": 0, "arguments": {"ip-address": "192.168.1.100", **self._LEASE4}},
+                "reservation-get": {"result": 3},  # not found
+            }
+        ):
+            response = self._htmx_get(url, {"by": "ip", "q": "192.168.1.100"})
 
         self.assertEqual(response.status_code, 200)
         # The column header says "Reserved" — check no badge link is rendered
         self.assertNotContains(response, 'text-decoration-none">Reserved</a>')
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_no_crash_when_host_cmds_unavailable(self, MockKeaClient):
+    def test_no_crash_when_host_cmds_unavailable(self):
         """When host_cmds is not loaded, reservation lookup is skipped and no badge shown."""
-        from netbox_kea.kea import KeaException
-
-        mock_client = MockKeaClient.return_value
-        mock_client.command.return_value = [{"result": 0, "arguments": {"ip-address": "192.168.1.100", **self._LEASE4}}]
-        # host_cmds not loaded — result=2 means unknown command
-        mock_client.reservation_get.side_effect = KeaException(
-            {"result": 2, "text": "unknown command 'reservation-get'"},
-            index=0,
-        )
-
         url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
-        response = self._htmx_get(url, {"by": "ip", "q": "192.168.1.100"})
+        with stub_kea(
+            {
+                "config-get": self._CONFIG4,
+                "lease4-get": {"result": 0, "arguments": {"ip-address": "192.168.1.100", **self._LEASE4}},
+                # host_cmds not loaded — result=2 (unknown command) makes reservation_get raise KeaException.
+                "reservation-get": {"result": 2, "text": "unknown command 'reservation-get'"},
+            }
+        ):
+            response = self._htmx_get(url, {"by": "ip", "q": "192.168.1.100"})
 
         # Must not 500; page renders normally without badge
         self.assertEqual(response.status_code, 200)
