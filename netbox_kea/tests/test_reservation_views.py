@@ -22,7 +22,7 @@ from django.test import SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
 from ipam.models import IPAddress as NbIP
 
-from netbox_kea.kea import KeaClient, KeaException, PartialPersistError
+from netbox_kea.kea import KeaClient, KeaException
 from netbox_kea.models import Server
 from netbox_kea.views import _filter_reservations
 
@@ -1945,66 +1945,54 @@ class TestReservationSyncToNetBox(_ReservationViewBase):
             data["sync_to_netbox"] = "on"
         return data
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_add_form_has_sync_to_netbox_field(self, MockKeaClient):
-        """GET reservation add renders a sync_to_netbox checkbox."""
-        MockKeaClient.return_value.get_available_commands.return_value = _RESERVATION_COMMANDS
+    def _synced_ip_exists(self):
+        return NbIP.objects.filter(address__startswith="192.168.1.100/").exists()
+
+    def test_add_form_has_sync_to_netbox_field(self):
+        """GET reservation add renders a sync_to_netbox checkbox — no Kea traffic."""
         response = self.client.get(self._add4_url())
         self.assertEqual(response.status_code, 200)
         self.assertIn("sync_to_netbox", response.content.decode())
 
-    @patch("netbox_kea.views.reservations.sync_reservation_to_netbox")
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_add_with_sync_checked_calls_sync(self, MockKeaClient, mock_sync):
-        """POSTing with sync_to_netbox=on calls sync_reservation_to_netbox()."""
-        mock_client = MockKeaClient.return_value
-        mock_client.reservation_add.return_value = None
-        mock_sync.return_value = (MagicMock(spec=NbIP), True, True)
-        response = self.client.post(self._add4_url(), self._valid_post_data(sync=True))
+    def test_post_add_with_sync_checked_calls_sync(self):
+        """POSTing with sync_to_netbox=on runs the real sync → a NetBox IPAddress is created."""
+        with stub_kea({"subnet4-get": _subnet_get(4), "reservation-add": {"result": 0}}):
+            response = self.client.post(self._add4_url(), self._valid_post_data(sync=True))
         self.assertEqual(response.status_code, 302)
-        mock_sync.assert_called_once()
-        called_reservation = mock_sync.call_args[0][0]
-        self.assertEqual(called_reservation["ip-address"], "192.168.1.100")
+        self.assertTrue(self._synced_ip_exists())
+
+    def test_post_add_without_sync_does_not_call_sync(self):
+        """POSTing without sync_to_netbox must not create a NetBox IPAddress."""
+        with stub_kea({"subnet4-get": _subnet_get(4), "reservation-add": {"result": 0}}):
+            response = self.client.post(self._add4_url(), self._valid_post_data(sync=False))
+        self.assertEqual(response.status_code, 302)
+        self.assertFalse(self._synced_ip_exists())
 
     @patch("netbox_kea.views.reservations.sync_reservation_to_netbox")
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_add_without_sync_does_not_call_sync(self, MockKeaClient, mock_sync):
-        """POSTing without sync_to_netbox does NOT call sync_reservation_to_netbox()."""
-        mock_client = MockKeaClient.return_value
-        mock_client.reservation_add.return_value = None
-        response = self.client.post(self._add4_url(), self._valid_post_data(sync=False))
-        self.assertEqual(response.status_code, 302)
-        mock_sync.assert_not_called()
+    def test_post_add_sync_failure_still_redirects(self, mock_sync):
+        """Sync failure is a warning; the Kea reservation creation still succeeds.
 
-    @patch("netbox_kea.views.reservations.sync_reservation_to_netbox")
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_add_sync_failure_still_redirects(self, MockKeaClient, mock_sync):
-        """Sync failure is a warning; Kea reservation creation still succeeds."""
-        mock_client = MockKeaClient.return_value
-        mock_client.reservation_add.return_value = None
+        The sync boundary (a NetBox-side function tested in test_sync.py) is patched
+        to raise so the view's error handling is exercised; the KeaClient is real.
+        """
         mock_sync.side_effect = ValueError("Reservation has no ip-address or ip-addresses field.")
-        response = self.client.post(self._add4_url(), self._valid_post_data(sync=True))
+        with stub_kea({"subnet4-get": _subnet_get(4), "reservation-add": {"result": 0}}) as kea:
+            response = self.client.post(self._add4_url(), self._valid_post_data(sync=True))
         self.assertEqual(response.status_code, 302)
-        mock_client.reservation_add.assert_called_once()
+        self.assertEqual(kea.commands().count("reservation-add"), 1)
 
-    @patch("netbox_kea.views.reservations.sync_reservation_to_netbox")
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_edit_with_sync_checked_calls_sync(self, MockKeaClient, mock_sync):
-        """POSTing reservation edit with sync_to_netbox=on calls sync_reservation_to_netbox()."""
-        mock_client = MockKeaClient.return_value
-        mock_client.reservation_update.return_value = None
-        mock_sync.return_value = (MagicMock(spec=NbIP), False, True)
-        mock_client.reservation_get.return_value = {
+    def test_post_edit_with_sync_checked_calls_sync(self):
+        """POSTing reservation edit with sync_to_netbox=on runs the real sync → IPAddress created."""
+        existing = {
             "ip-address": "192.168.1.100",
             "hw-address": "aa:bb:cc:dd:ee:ff",
             "subnet-id": 1,
             "hostname": "testhost.example.com",
         }
-        response = self.client.post(self._edit4_url(), self._valid_post_data(sync=True))
+        with stub_kea({"reservation-get": _res_get(existing), "reservation-update": {"result": 0}}):
+            response = self.client.post(self._edit4_url(), self._valid_post_data(sync=True))
         self.assertEqual(response.status_code, 302)
-        mock_sync.assert_called_once()
-        called_reservation = mock_sync.call_args[0][0]
-        self.assertEqual(called_reservation["ip-address"], "192.168.1.100")
+        self.assertTrue(self._synced_ip_exists())
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2012,29 +2000,13 @@ class TestReservationSyncToNetBox(_ReservationViewBase):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
-class TestPartialPersistErrorOnReservationAdd(_ReservationViewBase):
-    """PartialPersistError on reservation4 add shows warning and redirects (not 500)."""
-
-    def _url(self):
-        return reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk])
-
-    @patch("netbox_kea.models.KeaClient")
-    def test_partial_persist_error_shows_warning_and_redirects(self, MockKeaClient):
-        mock_client = MockKeaClient.return_value
-        mock_client.reservation_add.side_effect = PartialPersistError("dhcp4", Exception("config-write failed"))
-        response = self.client.post(
-            self._url(),
-            {
-                "subnet_id": 1,
-                "ip_address": "192.168.1.100",
-                "identifier_type": "hw-address",
-                "identifier": "aa:bb:cc:dd:ee:ff",
-                "hostname": "testhost.example.com",
-            },
-        )
-        # PartialPersistError should redirect (302) with a warning message, not crash (500)
-        self.assertEqual(response.status_code, 302)
+# NOTE: there is no ``TestPartialPersistErrorOnReservationAdd`` here. Reservation
+# writes (reservation-add/-update/-del) issue a single Kea command and never call
+# config-write, so ``KeaClient.reservation_add`` cannot raise ``PartialPersistError``.
+# The view's ``except PartialPersistError`` branch after reservation_add is therefore
+# unreachable through the real client and cannot be exercised without mocking the
+# client to raise. The equivalent guarantee for config-persisting writes is covered by
+# the pool_add / subnet_add / subnet_del cases below (real config-write result 1).
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
@@ -2046,11 +2018,10 @@ class TestPartialPersistErrorOnPoolAdd(_ReservationViewBase):
     def _url(self):
         return reverse("plugins:netbox_kea:server_subnet4_pool_add", args=[self.server.pk, self._SUBNET_ID])
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_partial_persist_error_shows_warning_and_redirects(self, MockKeaClient):
-        mock_client = MockKeaClient.return_value
-        mock_client.pool_add.side_effect = PartialPersistError("dhcp4", Exception("config-write failed"))
-        response = self.client.post(self._url(), {"pool": "10.0.0.50-10.0.0.99"})
+    def test_partial_persist_error_shows_warning_and_redirects(self):
+        # A real config-write failure (result 1) after the pool is applied → PartialPersistError.
+        with _pool_add_stub(4, **{"config-write": {"result": 1, "text": "config-write failed"}}):
+            response = self.client.post(self._url(), {"pool": "10.0.0.50-10.0.0.99"})
         self.assertEqual(response.status_code, 302)
 
 
@@ -2061,18 +2032,10 @@ class TestPartialPersistErrorOnSubnetAdd(_ReservationViewBase):
     def _url(self):
         return reverse("plugins:netbox_kea:server_subnet4_add", args=[self.server.pk])
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_partial_persist_error_shows_warning_and_redirects(self, MockKeaClient):
-        mock_client = MockKeaClient.return_value
-        mock_client.subnet_add.side_effect = PartialPersistError("dhcp4", Exception("config-write failed"))
-        mock_client.command.return_value = [{"result": 0, "arguments": {"Dhcp4": {"shared-networks": []}}}]
-        response = self.client.post(
-            self._url(),
-            {
-                "subnet": "10.10.0.0/24",
-            },
-        )
-        mock_client.subnet_add.assert_called_once()
+    def test_partial_persist_error_shows_warning_and_redirects(self):
+        with _subnet_add_stub(4, **{"config-write": {"result": 1, "text": "config-write failed"}}) as kea:
+            response = self.client.post(self._url(), {"subnet": "10.10.0.0/24"})
+        self.assertEqual(kea.commands().count("subnet4-add"), 1)
         self.assertEqual(response.status_code, 302)
 
 
@@ -2085,11 +2048,9 @@ class TestPartialPersistErrorOnSubnetDelete(_ReservationViewBase):
     def _url(self):
         return reverse("plugins:netbox_kea:server_subnet4_delete", args=[self.server.pk, self._SUBNET_ID])
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_partial_persist_error_shows_warning_and_redirects(self, MockKeaClient):
-        mock_client = MockKeaClient.return_value
-        mock_client.subnet_del.side_effect = PartialPersistError("dhcp4", Exception("config-write failed"))
-        response = self.client.post(self._url(), {"confirm": True})
+    def test_partial_persist_error_shows_warning_and_redirects(self):
+        with _subnet_del_stub(4, subnet_id=self._SUBNET_ID, **{"config-write": {"result": 1, "text": "failed"}}):
+            response = self.client.post(self._url(), {"confirm": True})
         self.assertEqual(response.status_code, 302)
 
 
