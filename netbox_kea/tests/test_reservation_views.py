@@ -26,6 +26,7 @@ from netbox_kea.kea import KeaClient, KeaException, PartialPersistError
 from netbox_kea.models import Server
 from netbox_kea.views import _filter_reservations
 
+from .kea_stub import queued, stub_kea
 from .utils import _PLUGINS_CONFIG, User, _make_db_server
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -60,11 +61,62 @@ _RESERVATION_COMMANDS = {
 
 
 def _wire_mock_clone(mock_client):
-    """Wire clone/context-manager on a mock KeaClient so worker threads see the same instance."""
+    """Wire clone/context-manager on a mock KeaClient so worker threads see the same instance.
+
+    Temporary: retained only until the last mock-based class below is de-mocked.
+    """
     mock_client.clone.return_value = mock_client
     mock_client.__enter__ = lambda s: s
     mock_client.__exit__ = lambda s, *a: None
     return mock_client
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Shared stub responses (real KeaClient + HTTP-boundary stub)
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# The reservation list/edit/delete views drive a real ``KeaClient``; only the HTTP
+# boundary is stubbed via ``kea_stub.stub_kea`` so the actual request payloads are
+# exercised. Command chains issued by the views:
+#   list GET:  ``reservation-get-page`` (drained via ``iter_reservations``) then, if
+#              any reservations are found, ``lease{v}-get-all`` per unique subnet
+#              (lease-status enrichment; NetBox IPAM badges hit the DB, not Kea).
+#   add POST:  ``reservation-get-page`` + ``list-commands`` (pool-overlap probe, both
+#              non-fatal) then ``reservation-add``. No config-write — reservation
+#              writes do not persist, so they never raise PartialPersistError.
+#   edit GET:  ``reservation-get`` (prefill) + ``lease{v}-get`` (hostname diff).
+#   edit POST: ``reservation-get`` (reload existing) + ``reservation-update``.
+#   delete POST: ``reservation-del``.
+
+
+def _res_page(hosts, *, next_from=0, next_source=0):
+    """A ``reservation-get-page`` result: *hosts* plus Kea's pagination cursor.
+
+    ``next_from``/``next_source`` both 0 marks the source exhausted, so
+    ``iter_reservations`` stops after this page.
+    """
+    return {"result": 0, "arguments": {"hosts": hosts, "next": {"from": next_from, "source-index": next_source}}}
+
+
+#: ``reservation-get-page`` with no hosts (source exhausted → empty reservation list).
+_RES_EMPTY_PAGE = {"result": 3}
+#: ``lease{v}-get-all`` with no active leases in the subnet (result 3 = empty).
+_LEASE_NONE4 = {"result": 3}
+_LEASE_NONE6 = {"result": 3}
+
+
+def _list_stub4(hosts=None):
+    """``stub_kea`` for the DHCPv4 reservations list view: get-page drain + lease enrichment."""
+    if hosts is None:
+        hosts = [dict(_SAMPLE_RESERVATION4)]
+    return stub_kea({"reservation-get-page": _res_page(hosts), "lease4-get-all": _LEASE_NONE4})
+
+
+def _list_stub6(hosts=None):
+    """``stub_kea`` for the DHCPv6 reservations list view: get-page drain + lease enrichment."""
+    if hosts is None:
+        hosts = [dict(_SAMPLE_RESERVATION6)]
+    return stub_kea({"reservation-get-page": _res_page(hosts), "lease6-get-all": _LEASE_NONE6})
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -85,20 +137,6 @@ class _ReservationViewBase(TestCase):
         self.client.force_login(self.user)
         self.server = _make_db_server()
 
-    def _mock_client_with_reservations4(self, MockKeaClient):
-        mock_client = MockKeaClient.return_value
-        mock_client.get_available_commands.return_value = _RESERVATION_COMMANDS
-        mock_client.reservation_get_page.return_value = ([dict(_SAMPLE_RESERVATION4)], 0, 0)
-        mock_client.command.return_value = [{"result": 0, "arguments": {"leases": [], "count": 0}}]
-        return mock_client
-
-    def _mock_client_with_reservations6(self, MockKeaClient):
-        mock_client = MockKeaClient.return_value
-        mock_client.get_available_commands.return_value = _RESERVATION_COMMANDS
-        mock_client.reservation_get_page.return_value = ([dict(_SAMPLE_RESERVATION6)], 0, 0)
-        mock_client.command.return_value = [{"result": 0, "arguments": {"leases": [], "count": 0}}]
-        return mock_client
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TestServerReservations4View
@@ -109,59 +147,46 @@ class _ReservationViewBase(TestCase):
 class TestServerReservations4View(_ReservationViewBase):
     """GET /plugins/kea/servers/<pk>/reservations4/"""
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_list_returns_200(self, MockKeaClient):
-        self._mock_client_with_reservations4(MockKeaClient)
+    def test_list_returns_200(self):
         url = reverse("plugins:netbox_kea:server_reservations4", args=[self.server.pk])
-        response = self.client.get(url)
+        with _list_stub4():
+            response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_list_shows_reservations_in_table(self, MockKeaClient):
-        self._mock_client_with_reservations4(MockKeaClient)
+    def test_list_shows_reservations_in_table(self):
         url = reverse("plugins:netbox_kea:server_reservations4", args=[self.server.pk])
-        response = self.client.get(url)
+        with _list_stub4():
+            response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "192.168.1.100")
         self.assertContains(response, "aa:bb:cc:dd:ee:ff")
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_list_when_hook_not_loaded_shows_warning(self, MockKeaClient):
-        mock_client = MockKeaClient.return_value
-        mock_client.reservation_get_page.side_effect = KeaException(
-            {"result": 2, "text": "unknown command 'reservation-get-page'"},
-            index=0,
-        )
+    def test_list_when_hook_not_loaded_shows_warning(self):
+        # result==2 (unknown command) → reservation_get_page raises KeaException,
+        # the view marks the host_cmds hook unavailable instead of crashing.
         url = reverse("plugins:netbox_kea:server_reservations4", args=[self.server.pk])
-        response = self.client.get(url)
+        with stub_kea({"reservation-get-page": {"result": 2, "text": "unknown command 'reservation-get-page'"}}):
+            response = self.client.get(url)
         # Must not crash with 500; show the page with a warning indicator
         self.assertEqual(response.status_code, 200)
         self.assertFalse(response.context["hook_available"])
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_general_kea_error_keeps_hook_available(self, MockKeaClient):
+    def test_general_kea_error_keeps_hook_available(self):
         """Result code 1 (general Kea error) keeps hook_available=True.
 
         Only result==2 (unknown command = hook not loaded) should set
         hook_available=False.  Other errors are transient/backend failures.
         """
-        mock_client = MockKeaClient.return_value
-        mock_client.reservation_get_page.side_effect = KeaException(
-            {"result": 1, "text": "missing parameter 'limit'"},
-            index=0,
-        )
         url = reverse("plugins:netbox_kea:server_reservations4", args=[self.server.pk])
-        response = self.client.get(url)
+        with stub_kea({"reservation-get-page": {"result": 1, "text": "missing parameter 'limit'"}}):
+            response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.context["hook_available"])
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_list_handles_empty_reservations(self, MockKeaClient):
-        mock_client = MockKeaClient.return_value
-        mock_client.get_available_commands.return_value = _RESERVATION_COMMANDS
-        mock_client.reservation_get_page.return_value = ([], 0, 0)
+    def test_list_handles_empty_reservations(self):
         url = reverse("plugins:netbox_kea:server_reservations4", args=[self.server.pk])
-        response = self.client.get(url)
+        with stub_kea({"reservation-get-page": _RES_EMPTY_PAGE}):
+            response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
 
     def test_get_nonexistent_server_returns_404(self):
@@ -176,37 +201,29 @@ class TestServerReservations4View(_ReservationViewBase):
         self.assertEqual(response.status_code, 302)
         self.assertIn("login", response.url)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_drains_multiple_pages_from_kea(self, MockKeaClient):
-        """View must call reservation_get_page in a loop until all pages are fetched."""
-        mock_client = MockKeaClient.return_value
-        mock_client.get_available_commands.return_value = _RESERVATION_COMMANDS
+    def test_drains_multiple_pages_from_kea(self):
+        """View must page reservation-get-page in a loop until all pages are fetched."""
+        # page1 is a full page (100 == the view's limit) with the cursor advanced, so
+        # iter_reservations continues; page2 resets the cursor, ending the drain.
+        page1 = [dict(_SAMPLE_RESERVATION4, **{"ip-address": f"10.0.0.{i}", "subnet-id": 1}) for i in range(1, 101)]
         page2 = [dict(_SAMPLE_RESERVATION4, **{"ip-address": "10.0.1.1", "subnet-id": 1})]
-        # Simulate drain: side_effect returns full page then partial page.
-        # The view uses limit=100 internally, so page1 has < 100 items and will
-        # be detected as the last page after 1 call — use side_effect to control
-        # the 2-call sequence explicitly via a larger page1.
-        page1_full = [
-            dict(_SAMPLE_RESERVATION4, **{"ip-address": f"10.0.0.{i}", "subnet-id": 1})
-            for i in range(1, 101)  # exactly 100 items == limit → loop continues
-        ]
-        mock_client.reservation_get_page.side_effect = [
-            (page1_full, 100, 0),
-            (page2, 0, 0),
-        ]
-        mock_client.command.return_value = [{"result": 0, "arguments": {"leases": [], "count": 0}}]
         url = reverse("plugins:netbox_kea:server_reservations4", args=[self.server.pk])
-        response = self.client.get(url)
+        with stub_kea(
+            {
+                "reservation-get-page": queued(_res_page(page1, next_from=100), _res_page(page2)),
+                "lease4-get-all": _LEASE_NONE4,
+            }
+        ) as kea:
+            response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
-        # The crucial assertion: view made exactly 2 calls (drain loop worked)
-        self.assertEqual(mock_client.reservation_get_page.call_count, 2)
+        # The crucial assertion: view issued exactly 2 get-page calls (drain loop worked).
+        self.assertEqual(kea.commands().count("reservation-get-page"), 2)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_reservation_table_data_has_ip_sort_key(self, MockKeaClient):
+    def test_reservation_table_data_has_ip_sort_key(self):
         """F1: each reservation dict in the table must have an integer _ip_sort_key."""
-        self._mock_client_with_reservations4(MockKeaClient)
         url = reverse("plugins:netbox_kea:server_reservations4", args=[self.server.pk])
-        response = self.client.get(url)
+        with _list_stub4():
+            response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         table = response.context["table"]
         for row in table.data:
@@ -223,28 +240,23 @@ class TestServerReservations4View(_ReservationViewBase):
 class TestServerReservations6View(_ReservationViewBase):
     """GET /plugins/kea/servers/<pk>/reservations6/"""
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_list_returns_200(self, MockKeaClient):
-        self._mock_client_with_reservations6(MockKeaClient)
+    def test_list_returns_200(self):
         url = reverse("plugins:netbox_kea:server_reservations6", args=[self.server.pk])
-        response = self.client.get(url)
+        with _list_stub6():
+            response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_list_shows_reservations_in_table(self, MockKeaClient):
-        self._mock_client_with_reservations6(MockKeaClient)
+    def test_list_shows_reservations_in_table(self):
         url = reverse("plugins:netbox_kea:server_reservations6", args=[self.server.pk])
-        response = self.client.get(url)
+        with _list_stub6():
+            response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "2001:db8::100")
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_list_handles_empty_reservations(self, MockKeaClient):
-        mock_client = MockKeaClient.return_value
-        mock_client.get_available_commands.return_value = _RESERVATION_COMMANDS
-        mock_client.reservation_get_page.return_value = ([], 0, 0)
+    def test_list_handles_empty_reservations(self):
         url = reverse("plugins:netbox_kea:server_reservations6", args=[self.server.pk])
-        response = self.client.get(url)
+        with stub_kea({"reservation-get-page": _RES_EMPTY_PAGE}):
+            response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
 
     def test_get_nonexistent_server_returns_404(self):
@@ -252,35 +264,28 @@ class TestServerReservations6View(_ReservationViewBase):
         response = self.client.get(url)
         self.assertEqual(response.status_code, 404)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_drains_multiple_pages_from_kea(self, MockKeaClient):
-        """View must call reservation_get_page in a loop until all pages are fetched."""
-        mock_client = MockKeaClient.return_value
-        mock_client.get_available_commands.return_value = _RESERVATION_COMMANDS
-        page2 = [dict(_SAMPLE_RESERVATION6, **{"ip-addresses": ["2001:db8::ff01"], "subnet-id": 1})]
-        mock_client.reservation_get_page.side_effect = [
-            (
-                [
-                    dict(_SAMPLE_RESERVATION6, **{"ip-addresses": [f"2001:db8::{i:x}"], "subnet-id": 1})
-                    for i in range(100)
-                ],
-                100,
-                0,
-            ),
-            (page2, 0, 0),
+    def test_drains_multiple_pages_from_kea(self):
+        """View must page reservation-get-page in a loop until all pages are fetched."""
+        page1 = [
+            dict(_SAMPLE_RESERVATION6, **{"ip-addresses": [f"2001:db8::{i:x}"], "subnet-id": 1}) for i in range(100)
         ]
-        mock_client.command.return_value = [{"result": 0, "arguments": {"leases": [], "count": 0}}]
+        page2 = [dict(_SAMPLE_RESERVATION6, **{"ip-addresses": ["2001:db8::ff01"], "subnet-id": 1})]
         url = reverse("plugins:netbox_kea:server_reservations6", args=[self.server.pk])
-        response = self.client.get(url)
+        with stub_kea(
+            {
+                "reservation-get-page": queued(_res_page(page1, next_from=100), _res_page(page2)),
+                "lease6-get-all": _LEASE_NONE6,
+            }
+        ) as kea:
+            response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(mock_client.reservation_get_page.call_count, 2)
+        self.assertEqual(kea.commands().count("reservation-get-page"), 2)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_action_hrefs_contain_ipv6_address(self, MockKeaClient):
+    def test_action_hrefs_contain_ipv6_address(self):
         """Edit/delete action links must embed the IPv6 address in the URL path (issue #12)."""
-        self._mock_client_with_reservations6(MockKeaClient)
         url = reverse("plugins:netbox_kea:server_reservations6", args=[self.server.pk])
-        response = self.client.get(url)
+        with _list_stub6():
+            response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         ip = _SAMPLE_RESERVATION6["ip-addresses"][0]
         subnet_id = _SAMPLE_RESERVATION6["subnet-id"]
