@@ -2707,16 +2707,17 @@ class TestHtmxHandlerExceptNarrowing(_ViewTestBase):
     def _url(self):
         return reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_attribute_error_not_swallowed_by_htmx_handler(self, MockKeaClient):
+    def test_attribute_error_not_swallowed_by_htmx_handler(self):
         """An AttributeError inside the HTMX handler must propagate (not be caught silently)."""
-        MockKeaClient.return_value.command.side_effect = AttributeError("mock programming bug")
-        with self.assertRaises(AttributeError):
-            self.client.get(
-                self._url(),
-                HTTP_HX_REQUEST="true",
-                data={"by": "subnet", "q": "10.0.0.0/24"},
-            )
+        config = {"result": 0, "arguments": {"Dhcp4": {"subnet4": []}}}
+        # The HTMX handler narrows its except clauses, so an AttributeError propagates.
+        with stub_kea({"config-get": config, "lease4-get-page": AttributeError("stub programming bug")}):
+            with self.assertRaises(AttributeError):
+                self.client.get(
+                    self._url(),
+                    HTTP_HX_REQUEST="true",
+                    data={"by": "subnet", "q": "10.0.0.0/24"},
+                )
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
@@ -2726,47 +2727,40 @@ class TestLeaseDeleteLoopTransportErrors(_ViewTestBase):
     def _url(self):
         return reverse("plugins:netbox_kea:server_leases4_delete", args=[self.server.pk])
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_request_exception_continues_loop(self, MockKeaClient):
+    _CONFIG4 = {"result": 0, "arguments": {"Dhcp4": {"subnet4": []}}}
+
+    def test_request_exception_continues_loop(self):
         import requests as _requests
 
-        mock_client = MockKeaClient.return_value
-        call_count = {"n": 0}
+        # First IP's delete raises a transport error; the loop must still delete the second.
+        def del_resp(body):
+            if body["arguments"]["ip-address"] == "10.0.0.1":
+                return _requests.ConnectionError("down")
+            return {"result": 0}
 
-        def side_effect(cmd, **kwargs):
-            ip = kwargs.get("arguments", {}).get("ip-address", "")
-            call_count["n"] += 1
-            if ip == "10.0.0.1":
-                raise _requests.ConnectionError("down")
-
-        mock_client.command.side_effect = side_effect
-        response = self.client.post(
-            self._url(),
-            {"pk": ["10.0.0.1", "10.0.0.2"], "_confirm": "1"},
-            follow=True,
-        )
+        with stub_kea({"lease4-del": del_resp, "config-get": self._CONFIG4}) as kea:
+            response = self.client.post(
+                self._url(),
+                {"pk": ["10.0.0.1", "10.0.0.2"], "_confirm": "1"},
+                follow=True,
+            )
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(call_count["n"], 2)
+        self.assertEqual(kea.commands().count("lease4-del"), 2)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_value_error_continues_loop(self, MockKeaClient):
-        mock_client = MockKeaClient.return_value
-        call_count = {"n": 0}
+    def test_value_error_continues_loop(self):
+        def del_resp(body):
+            if body["arguments"]["ip-address"] == "10.0.0.1":
+                return ValueError("bad JSON")
+            return {"result": 0}
 
-        def side_effect(cmd, **kwargs):
-            ip = kwargs.get("arguments", {}).get("ip-address", "")
-            call_count["n"] += 1
-            if ip == "10.0.0.1":
-                raise ValueError("bad JSON")
-
-        mock_client.command.side_effect = side_effect
-        response = self.client.post(
-            self._url(),
-            {"pk": ["10.0.0.1", "10.0.0.2"], "_confirm": "1"},
-            follow=True,
-        )
+        with stub_kea({"lease4-del": del_resp, "config-get": self._CONFIG4}) as kea:
+            response = self.client.post(
+                self._url(),
+                {"pk": ["10.0.0.1", "10.0.0.2"], "_confirm": "1"},
+                follow=True,
+            )
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(call_count["n"], 2)
+        self.assertEqual(kea.commands().count("lease4-del"), 2)
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
@@ -2776,24 +2770,24 @@ class TestLeaseExportTransportErrors(_ViewTestBase):
     def _url(self):
         return reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_request_exception_redirects_with_error(self, MockKeaClient):
+    _CONFIG4 = {"result": 0, "arguments": {"Dhcp4": {"subnet4": []}}}
+
+    def test_request_exception_redirects_with_error(self):
         import requests as _requests
 
-        MockKeaClient.return_value.command.side_effect = _requests.ConnectionError("down")
-        response = self.client.get(
-            self._url(),
-            {"export": "1", "by": "subnet", "q": "10.0.0.0/24"},
-        )
+        with stub_kea({"config-get": self._CONFIG4, "lease4-get-page": _requests.ConnectionError("down")}):
+            response = self.client.get(
+                self._url(),
+                {"export": "1", "by": "subnet", "q": "10.0.0.0/24"},
+            )
         self.assertIn(response.status_code, [200, 302])
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_value_error_redirects_with_error(self, MockKeaClient):
-        MockKeaClient.return_value.command.side_effect = ValueError("bad JSON")
-        response = self.client.get(
-            self._url(),
-            {"export": "1", "by": "subnet", "q": "10.0.0.0/24"},
-        )
+    def test_value_error_redirects_with_error(self):
+        with stub_kea({"config-get": self._CONFIG4, "lease4-get-page": ValueError("bad JSON")}):
+            response = self.client.get(
+                self._url(),
+                {"export": "1", "by": "subnet", "q": "10.0.0.0/24"},
+            )
         self.assertIn(response.status_code, [200, 302])
 
 
@@ -2806,21 +2800,19 @@ class TestLeaseExportTransportErrors(_ViewTestBase):
 class TestSingleLeaseGetTransportErrors(_ViewTestBase):
     """Single-lease GET must handle RequestException/ValueError gracefully."""
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_request_exception_redirects(self, MockKeaClient):
+    def test_request_exception_redirects(self):
         """requests.RequestException from lease-get must redirect with error message."""
-        MockKeaClient.return_value.command.side_effect = requests.ConnectionError("down")
         url = reverse("plugins:netbox_kea:server_lease4_edit", args=[self.server.pk, "10.0.0.1"])
-        response = self.client.get(url)
+        with stub_kea({"lease4-get": requests.ConnectionError("down")}):
+            response = self.client.get(url)
         self.assertEqual(response.status_code, 302)
         self.assertIn(str(self.server.pk), response.url)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_value_error_redirects(self, MockKeaClient):
+    def test_value_error_redirects(self):
         """ValueError from lease-get must redirect with error message."""
-        MockKeaClient.return_value.command.side_effect = ValueError("bad JSON")
         url = reverse("plugins:netbox_kea:server_lease4_edit", args=[self.server.pk, "10.0.0.1"])
-        response = self.client.get(url)
+        with stub_kea({"lease4-get": ValueError("bad JSON")}):
+            response = self.client.get(url)
         self.assertEqual(response.status_code, 302)
         self.assertIn(str(self.server.pk), response.url)
 
@@ -2834,21 +2826,20 @@ class TestSingleLeaseGetTransportErrors(_ViewTestBase):
 class TestLeaseEditPostTransportErrors(_ViewTestBase):
     """Lease edit POST must handle RequestException/ValueError gracefully."""
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_request_exception_redirects(self, MockKeaClient):
+    def test_request_exception_redirects(self):
         """requests.RequestException from lease_update must redirect."""
-        MockKeaClient.return_value.lease_update.side_effect = requests.ConnectionError("down")
+        # lease_update's first command is lease{v}-get; raising there surfaces the transport error.
         url = reverse("plugins:netbox_kea:server_lease4_edit", args=[self.server.pk, "10.0.0.1"])
-        response = self.client.post(url, {"hostname": "host", "valid_lft": "3600"})
+        with stub_kea({"lease4-get": requests.ConnectionError("down")}):
+            response = self.client.post(url, {"hostname": "host", "valid_lft": "3600"})
         self.assertEqual(response.status_code, 302)
         self.assertIn(str(self.server.pk), response.url)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_value_error_redirects(self, MockKeaClient):
+    def test_value_error_redirects(self):
         """ValueError from lease_update must redirect."""
-        MockKeaClient.return_value.lease_update.side_effect = ValueError("bad value")
         url = reverse("plugins:netbox_kea:server_lease4_edit", args=[self.server.pk, "10.0.0.1"])
-        response = self.client.post(url, {"hostname": "host", "valid_lft": "3600"})
+        with stub_kea({"lease4-get": ValueError("bad value")}):
+            response = self.client.post(url, {"hostname": "host", "valid_lft": "3600"})
         self.assertEqual(response.status_code, 302)
         self.assertIn(str(self.server.pk), response.url)
 
@@ -2862,12 +2853,11 @@ class TestLeaseEditPostTransportErrors(_ViewTestBase):
 class TestLeaseAddValueError(_ViewTestBase):
     """Lease add POST must handle ValueError gracefully."""
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_value_error_rerenders_form(self, MockKeaClient):
+    def test_value_error_rerenders_form(self):
         """ValueError from lease_add must not propagate as 500."""
-        MockKeaClient.return_value.lease_add.side_effect = ValueError("bad value")
         url = reverse("plugins:netbox_kea:server_lease4_add", args=[self.server.pk])
-        response = self.client.post(url, {"ip_address": "10.0.0.99"})
+        with stub_kea({"lease4-add": ValueError("bad value")}):
+            response = self.client.post(url, {"ip_address": "10.0.0.99"})
         self.assertIn(response.status_code, [200, 302])
 
 
@@ -2880,28 +2870,26 @@ class TestLeaseAddValueError(_ViewTestBase):
 class TestLeaseJournalExceptionNarrowing(_ViewTestBase):
     """_add_lease_journal except must only catch DB errors, not all exceptions."""
 
-    @patch("netbox_kea.models.KeaClient")
     @patch("netbox_kea.views.leases._add_lease_journal")
-    def test_database_error_does_not_fail_request(self, mock_journal, MockKeaClient):
+    def test_database_error_does_not_fail_request(self, mock_journal):
         """DatabaseError from _add_lease_journal must be caught; lease add still redirects."""
         from django.db import DatabaseError
 
         mock_journal.side_effect = DatabaseError("DB error")
-        MockKeaClient.return_value.lease_add.return_value = [{"result": 0}]
         url = reverse("plugins:netbox_kea:server_lease4_add", args=[self.server.pk])
-        response = self.client.post(url, {"ip_address": "10.0.0.55"})
+        with stub_kea({"lease4-add": {"result": 0}}):
+            response = self.client.post(url, {"ip_address": "10.0.0.55"})
         self.assertIn(response.status_code, [200, 302])
 
-    @patch("netbox_kea.models.KeaClient")
     @patch("netbox_kea.views.leases._add_lease_journal")
-    def test_operational_error_does_not_fail_request(self, mock_journal, MockKeaClient):
+    def test_operational_error_does_not_fail_request(self, mock_journal):
         """OperationalError from _add_lease_journal must be caught; lease add still redirects."""
         from django.db import OperationalError
 
         mock_journal.side_effect = OperationalError("DB lock")
-        MockKeaClient.return_value.lease_add.return_value = [{"result": 0}]
         url = reverse("plugins:netbox_kea:server_lease4_add", args=[self.server.pk])
-        response = self.client.post(url, {"ip_address": "10.0.0.56"})
+        with stub_kea({"lease4-add": {"result": 0}}):
+            response = self.client.post(url, {"ip_address": "10.0.0.56"})
         self.assertIn(response.status_code, [200, 302])
 
 
@@ -2917,18 +2905,20 @@ class TestLeaseExportClientError(_ViewTestBase):
     def _url(self):
         return reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_get_client_value_error_redirects(self, MockKeaClient):
+    def test_get_client_value_error_redirects(self):
         """ValueError from get_client in export redirects with error."""
-        MockKeaClient.side_effect = ValueError("bad TLS")
-        response = self.client.get(self._url(), {"export": "form", "by": "subnet", "q": "10.0.0.0/24"})
+        # A cert without a key makes the real KeaClient constructor raise ValueError.
+        bad = _make_db_server(name="badtls-export", client_cert_path="/x/cert.pem")
+        url = reverse("plugins:netbox_kea:server_leases4", args=[bad.pk])
+        with stub_kea({"config-get": {"result": 0, "arguments": {"Dhcp4": {"subnet4": []}}}}):
+            response = self.client.get(url, {"export": "form", "by": "subnet", "q": "10.0.0.0/24"})
         self.assertIn(response.status_code, [200, 302])
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_runtime_error_during_fetch_redirects(self, MockKeaClient):
+    def test_runtime_error_during_fetch_redirects(self):
         """RuntimeError during lease fetch in export redirects with error."""
-        MockKeaClient.return_value.command.side_effect = RuntimeError("unexpected")
-        response = self.client.get(self._url(), {"export": "form", "by": "subnet", "q": "10.0.0.0/24"})
+        config = {"result": 0, "arguments": {"Dhcp4": {"subnet4": []}}}
+        with stub_kea({"config-get": config, "lease4-get-page": RuntimeError("unexpected")}):
+            response = self.client.get(self._url(), {"export": "form", "by": "subnet", "q": "10.0.0.0/24"})
         self.assertIn(response.status_code, [200, 302])
 
 
@@ -2944,28 +2934,27 @@ class TestLeaseHtmxErrorHandler(_ViewTestBase):
     def _url(self):
         return reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_kea_exception_renders_htmx_error(self, MockKeaClient):
-        """KeaException in HTMX handler renders error template."""
-        from netbox_kea.kea import KeaException
+    _CONFIG4 = {"result": 0, "arguments": {"Dhcp4": {"subnet4": []}}}
 
-        MockKeaClient.return_value.command.side_effect = KeaException({"result": 1, "text": "err"}, index=0)
-        response = self.client.get(
-            self._url(),
-            {"by": "subnet", "q": "10.0.0.0/24"},
-            HTTP_HX_REQUEST="true",
-        )
+    def test_kea_exception_renders_htmx_error(self):
+        """KeaException in HTMX handler renders error template."""
+        # result=1 on lease4-get-page makes the real client raise KeaException.
+        with stub_kea({"config-get": self._CONFIG4, "lease4-get-page": {"result": 1, "text": "err"}}):
+            response = self.client.get(
+                self._url(),
+                {"by": "subnet", "q": "10.0.0.0/24"},
+                HTTP_HX_REQUEST="true",
+            )
         self.assertEqual(response.status_code, 200)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_request_exception_renders_htmx_error(self, MockKeaClient):
+    def test_request_exception_renders_htmx_error(self):
         """requests.RequestException in HTMX handler renders error template."""
-        MockKeaClient.return_value.command.side_effect = requests.ConnectionError("down")
-        response = self.client.get(
-            self._url(),
-            {"by": "subnet", "q": "10.0.0.0/24"},
-            HTTP_HX_REQUEST="true",
-        )
+        with stub_kea({"config-get": self._CONFIG4, "lease4-get-page": requests.ConnectionError("down")}):
+            response = self.client.get(
+                self._url(),
+                {"by": "subnet", "q": "10.0.0.0/24"},
+                HTTP_HX_REQUEST="true",
+            )
         self.assertEqual(response.status_code, 200)
 
 
@@ -2981,32 +2970,35 @@ class TestLeaseEditGetValidation(_ViewTestBase):
     def _url(self, ip="10.0.0.1"):
         return reverse("plugins:netbox_kea:server_lease4_edit", args=[self.server.pk, ip])
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_lease_not_found_result3_redirects(self, MockKeaClient):
+    _CONFIG4 = {"result": 0, "arguments": {"Dhcp4": {"subnet4": []}}}
+
+    def test_lease_not_found_result3_redirects(self):
         """result=3 from Kea (lease not found) shows warning and redirects."""
-        MockKeaClient.return_value.command.return_value = [{"result": 3, "text": "not found"}]
-        response = self.client.get(self._url(), follow=True)
+        with stub_kea({"lease4-get": {"result": 3, "text": "not found"}, "config-get": self._CONFIG4}):
+            response = self.client.get(self._url(), follow=True)
         self.assertEqual(response.status_code, 200)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_bad_response_shape_redirects(self, MockKeaClient):
-        """Non-dict response redirects with error."""
-        MockKeaClient.return_value.command.return_value = ["not a dict"]
-        response = self.client.get(self._url(), follow=True)
+    def test_bad_response_shape_redirects(self):
+        """An empty (shapeless) response list redirects with error."""
+        # A real command returning [] passes the result-code check but fails the
+        # view's resp[0] shape guard → redirect.
+        with stub_kea({"lease4-get": lambda body: [], "config-get": self._CONFIG4}):
+            response = self.client.get(self._url(), follow=True)
         self.assertEqual(response.status_code, 200)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_bad_arguments_redirects(self, MockKeaClient):
-        """arguments=None in response redirects with error."""
-        MockKeaClient.return_value.command.return_value = [{"result": 0, "arguments": "not a dict"}]
-        response = self.client.get(self._url(), follow=True)
+    def test_bad_arguments_redirects(self):
+        """Non-dict arguments in response redirects with error."""
+        with stub_kea({"lease4-get": {"result": 0, "arguments": "not a dict"}, "config-get": self._CONFIG4}):
+            response = self.client.get(self._url(), follow=True)
         self.assertEqual(response.status_code, 200)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_get_client_value_error_redirects(self, MockKeaClient):
+    def test_get_client_value_error_redirects(self):
         """ValueError from get_client redirects with error."""
-        MockKeaClient.side_effect = ValueError("bad TLS")
-        response = self.client.get(self._url(), follow=True)
+        # A cert without a key makes the real KeaClient constructor raise ValueError.
+        bad = _make_db_server(name="badtls-edit", client_cert_path="/x/cert.pem")
+        url = reverse("plugins:netbox_kea:server_lease4_edit", args=[bad.pk, "10.0.0.1"])
+        with stub_kea({"config-get": self._CONFIG4}):
+            response = self.client.get(url, follow=True)
         self.assertEqual(response.status_code, 200)
 
 
@@ -3022,18 +3014,19 @@ class TestLeaseUpdatePostErrors(_ViewTestBase):
     def _url(self, ip="10.0.0.1"):
         return reverse("plugins:netbox_kea:server_lease4_edit", args=[self.server.pk, ip])
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_request_exception_redirects(self, MockKeaClient):
+    _CONFIG4 = {"result": 0, "arguments": {"Dhcp4": {"subnet4": []}}}
+
+    def test_request_exception_redirects(self):
         """RequestException from lease_update redirects with error."""
-        MockKeaClient.return_value.lease_update.side_effect = requests.ConnectionError("down")
-        response = self.client.post(self._url(), {"hostname": "test", "valid_lft": "3600"}, follow=True)
+        # lease_update's first command is lease4-get; raising there surfaces the transport error.
+        with stub_kea({"lease4-get": requests.ConnectionError("down"), "config-get": self._CONFIG4}):
+            response = self.client.post(self._url(), {"hostname": "test", "valid_lft": "3600"}, follow=True)
         self.assertEqual(response.status_code, 200)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_value_error_redirects(self, MockKeaClient):
+    def test_value_error_redirects(self):
         """ValueError from lease_update redirects with error."""
-        MockKeaClient.return_value.lease_update.side_effect = ValueError("bad JSON")
-        response = self.client.post(self._url(), {"hostname": "test", "valid_lft": "3600"}, follow=True)
+        with stub_kea({"lease4-get": ValueError("bad JSON"), "config-get": self._CONFIG4}):
+            response = self.client.post(self._url(), {"hostname": "test", "valid_lft": "3600"}, follow=True)
         self.assertEqual(response.status_code, 200)
 
 
@@ -3052,27 +3045,23 @@ class TestLeaseAddPostErrors(_ViewTestBase):
     def _valid_form(self):
         return {"ip_address": "10.0.0.1", "subnet_id": "1", "hw_address": "aa:bb:cc:00:00:01", "valid_lft": "3600"}
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_kea_exception_rerenders_form(self, MockKeaClient):
+    def test_kea_exception_rerenders_form(self):
         """KeaException from lease_add re-renders form with error."""
-        from netbox_kea.kea import KeaException
-
-        MockKeaClient.return_value.lease_add.side_effect = KeaException({"result": 1, "text": "dup"}, index=0)
-        response = self.client.post(self._url(), self._valid_form())
+        # result=1 on lease4-add makes the real client raise KeaException.
+        with stub_kea({"lease4-add": {"result": 1, "text": "dup"}}):
+            response = self.client.post(self._url(), self._valid_form())
         self.assertEqual(response.status_code, 200)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_request_exception_rerenders_form(self, MockKeaClient):
+    def test_request_exception_rerenders_form(self):
         """RequestException from lease_add re-renders form with error."""
-        MockKeaClient.return_value.lease_add.side_effect = requests.ConnectionError("down")
-        response = self.client.post(self._url(), self._valid_form())
+        with stub_kea({"lease4-add": requests.ConnectionError("down")}):
+            response = self.client.post(self._url(), self._valid_form())
         self.assertEqual(response.status_code, 200)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_value_error_rerenders_form(self, MockKeaClient):
+    def test_value_error_rerenders_form(self):
         """ValueError from lease_add re-renders form with error."""
-        MockKeaClient.return_value.lease_add.side_effect = ValueError("bad JSON")
-        response = self.client.post(self._url(), self._valid_form())
+        with stub_kea({"lease4-add": ValueError("bad JSON")}):
+            response = self.client.post(self._url(), self._valid_form())
         self.assertEqual(response.status_code, 200)
 
 
@@ -3092,14 +3081,14 @@ class TestLeaseAddSideEffectErrors(_ViewTestBase):
         return {"ip_address": "10.0.0.1", "subnet_id": "1", "hw_address": "aa:bb:cc:00:00:01", "valid_lft": "3600"}
 
     @patch("netbox_kea.views.leases._add_lease_journal")
-    @patch("netbox_kea.models.KeaClient")
-    def test_journal_db_error_still_succeeds(self, MockKeaClient, mock_journal):
+    def test_journal_db_error_still_succeeds(self, mock_journal):
         """DatabaseError in journal entry creation still redirects successfully."""
         from django.db import DatabaseError
 
-        MockKeaClient.return_value.lease_add.return_value = None
         mock_journal.side_effect = DatabaseError("DB error")
-        response = self.client.post(self._url(), self._valid_form(), follow=True)
+        config = {"result": 0, "arguments": {"Dhcp4": {"subnet4": []}}}
+        with stub_kea({"lease4-add": {"result": 0}, "config-get": config}):
+            response = self.client.post(self._url(), self._valid_form(), follow=True)
         self.assertEqual(response.status_code, 200)
 
 
