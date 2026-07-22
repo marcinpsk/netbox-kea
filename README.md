@@ -167,9 +167,9 @@ All settings are under `PLUGINS_CONFIG["netbox_kea"]`:
 
 ## Server Configuration
 
-### Single-URL (standard)
+### Single-URL (Control Agent, or a single-protocol daemon)
 
-Configure one `Server` URL that points to the Kea HTTP endpoint (a DHCP daemon's control socket on Kea 3.0+, or the Control Agent on Kea < 3.0):
+Point one `Server` URL at a Kea endpoint that serves every enabled protocol — a Control Agent (Kea < 3.0, which fronts both DHCPv4 and DHCPv6), or a single DHCP daemon's HTTP control socket (Kea 3.0+) when the server runs only DHCPv4 *or* only DHCPv6. A dual-stack Kea 3.0+ deployment needs one URL per daemon — see **Dual-URL** below.
 
 | Field | Description |
 |---|---|
