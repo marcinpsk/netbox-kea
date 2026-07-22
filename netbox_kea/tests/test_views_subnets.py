@@ -375,93 +375,115 @@ _SUBNET6_GET_FULL = [
 class TestServerSubnet4EditView(_ViewTestBase):
     """Tests for ServerSubnet4EditView (GET prefill + POST update)."""
 
+    # subnet_update reads the live subnet before merging; give it one to merge onto.
+    _LIVE_SUBNET4 = {
+        "result": 0,
+        "arguments": {"subnet4": [{"id": 42, "subnet": "10.0.0.0/24", "pools": [], "option-data": []}]},
+    }
+
     def _url(self, subnet_id=42):
         return reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, subnet_id])
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_get_returns_200(self, MockKeaClient):
+    def _get_stub(self, subnet=None, config=None):
+        """GET chain: subnet{v}-get (prefill) then config-get (network/inherited data)."""
+        return stub_kea(
+            {
+                "subnet4-get": subnet if subnet is not None else _SUBNET4_GET_FULL[0],
+                "config-get": config if config is not None else _CONFIG4_NO_NETWORKS[0],
+            }
+        )
+
+    def _post_stub(self, **overrides):
+        """POST chain: view config-get + real subnet_update (subnet-get → update → persist)."""
+        base = {
+            "config-get": _CONFIG4_NO_NETWORKS[0],
+            "subnet4-get": self._LIVE_SUBNET4,
+            "subnet4-update": {"result": 0},
+            "config-test": {"result": 0},
+            "config-write": {"result": 0},
+        }
+        base.update(overrides)
+        return stub_kea(base)
+
+    @staticmethod
+    def _updated_subnet(kea):
+        """The subnet object in the real subnet4-update payload."""
+        return kea.bodies("subnet4-update")[0]["arguments"]["subnet4"][0]
+
+    def test_get_returns_200(self):
         """GET must render the edit form with status 200."""
-        MockKeaClient.return_value.command.return_value = _SUBNET4_GET_FULL
-        response = self.client.get(self._url())
+        with self._get_stub():
+            response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_get_prefills_form_with_current_subnet_values(self, MockKeaClient):
+    def test_get_prefills_form_with_current_subnet_values(self):
         """GET must pre-populate form with current subnet CIDR and pools."""
-        MockKeaClient.return_value.command.return_value = _SUBNET4_GET_FULL
-        response = self.client.get(self._url())
+        with self._get_stub():
+            response = self.client.get(self._url())
         self.assertContains(response, "10.0.0.0/24")
         self.assertContains(response, "10.0.0.100-10.0.0.200")
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_get_when_subnet_fetch_fails_redirects_with_error(self, MockKeaClient):
+    def test_get_when_subnet_fetch_fails_redirects_with_error(self):
         """GET must redirect to the subnet list when the subnet-get Kea call fails."""
-        from netbox_kea.kea import KeaException
-
-        MockKeaClient.return_value.command.side_effect = KeaException({"result": 1, "text": "not found"}, index=0)
-        response = self.client.get(self._url())
+        with stub_kea({"subnet4-get": {"result": 1, "text": "not found"}}):
+            response = self.client.get(self._url())
         self.assertEqual(response.status_code, 302)
         self.assertIn("subnets", response.url)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_valid_form_calls_subnet_update_and_redirects(self, MockKeaClient):
+    def test_post_valid_form_calls_subnet_update_and_redirects(self):
         """POST with valid form must call subnet_update and redirect to subnet list."""
-        MockKeaClient.return_value.subnet_update.return_value = None
-        MockKeaClient.return_value.command.return_value = _CONFIG4_NO_NETWORKS
-        response = self.client.post(
-            self._url(subnet_id=42),
-            {
-                "subnet_cidr": "10.0.0.0/24",
-                "pools": "10.0.0.100-10.0.0.200",
-                "gateway": "10.0.0.1",
-                "dns_servers": "",
-                "ntp_servers": "",
-            },
-        )
+        with self._post_stub() as kea:
+            response = self.client.post(
+                self._url(subnet_id=42),
+                {
+                    "subnet_cidr": "10.0.0.0/24",
+                    "pools": "10.0.0.100-10.0.0.200",
+                    "gateway": "10.0.0.1",
+                    "dns_servers": "",
+                    "ntp_servers": "",
+                },
+            )
         self.assertEqual(response.status_code, 302)
         self._assert_no_none_pk_redirect(response)
-        MockKeaClient.return_value.subnet_update.assert_called_once()
+        self.assertIn("subnet4-update", kea.commands())
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_passes_correct_version_and_subnet_id_to_subnet_update(self, MockKeaClient):
-        """POST must call subnet_update with version=4 and the correct subnet_id."""
-        MockKeaClient.return_value.subnet_update.return_value = None
-        MockKeaClient.return_value.command.return_value = _CONFIG4_NO_NETWORKS
-        self.client.post(
-            self._url(subnet_id=42),
-            {"subnet_cidr": "10.0.0.0/24", "pools": "", "gateway": "", "dns_servers": "", "ntp_servers": ""},
-        )
-        call_kwargs = MockKeaClient.return_value.subnet_update.call_args
-        self.assertEqual(call_kwargs.kwargs.get("version") or call_kwargs[1].get("version"), 4)
-        subnet_id_arg = call_kwargs.kwargs.get("subnet_id") or call_kwargs[1].get("subnet_id")
-        self.assertEqual(subnet_id_arg, 42)
+    def test_post_passes_correct_version_and_subnet_id_to_subnet_update(self):
+        """POST must issue subnet4-update (version=4) for the correct subnet_id."""
+        with self._post_stub() as kea:
+            self.client.post(
+                self._url(subnet_id=42),
+                {"subnet_cidr": "10.0.0.0/24", "pools": "", "gateway": "", "dns_servers": "", "ntp_servers": ""},
+            )
+        self.assertEqual(self._updated_subnet(kea)["id"], 42)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_on_kea_exception_shows_error_and_rerenders(self, MockKeaClient):
+    def test_post_on_kea_exception_shows_error_and_rerenders(self):
         """POST that raises KeaException must re-render the form (not crash)."""
-        from netbox_kea.kea import KeaException
-
-        MockKeaClient.return_value.subnet_update.side_effect = KeaException(
-            {"result": 1, "text": "subnet cmds not loaded"}, index=0
-        )
-        response = self.client.post(
-            self._url(subnet_id=42),
-            {"subnet_cidr": "10.0.0.0/24", "pools": "", "gateway": "", "dns_servers": "", "ntp_servers": ""},
-        )
+        # result=1 on subnet4-update makes the real client raise KeaException.
+        with self._post_stub(**{"subnet4-update": {"result": 1, "text": "subnet cmds not loaded"}}):
+            response = self.client.post(
+                self._url(subnet_id=42),
+                {"subnet_cidr": "10.0.0.0/24", "pools": "", "gateway": "", "dns_servers": "", "ntp_servers": ""},
+            )
         # Should show error (redirect or re-render, not 500)
         self.assertIn(response.status_code, (200, 302))
         self._assert_no_none_pk_redirect(response)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_invalid_form_rerenders_with_200(self, MockKeaClient):
+    def test_post_invalid_form_rerenders_with_200(self):
         """POST with invalid data (bad gateway IP) must re-render the form."""
-        MockKeaClient.return_value.command.return_value = _CONFIG4_NO_NETWORKS
-        response = self.client.post(
-            self._url(subnet_id=42),
-            {"subnet_cidr": "10.0.0.0/24", "pools": "", "gateway": "not-an-ip", "dns_servers": "", "ntp_servers": ""},
-        )
+        # Invalid form re-renders after the network config-get, before any subnet4-update.
+        with stub_kea({"config-get": _CONFIG4_NO_NETWORKS[0]}) as kea:
+            response = self.client.post(
+                self._url(subnet_id=42),
+                {
+                    "subnet_cidr": "10.0.0.0/24",
+                    "pools": "",
+                    "gateway": "not-an-ip",
+                    "dns_servers": "",
+                    "ntp_servers": "",
+                },
+            )
         self.assertEqual(response.status_code, 200)
-        MockKeaClient.return_value.subnet_update.assert_not_called()
+        self.assertNotIn("subnet4-update", kea.commands())
 
     def test_get_requires_login(self):
         """Unauthenticated GET must redirect to login."""
@@ -475,190 +497,157 @@ class TestServerSubnet4EditView(_ViewTestBase):
         response = self.client.post(self._url(), {})
         self.assertIn(response.status_code, (302, 403))
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_passes_renew_rebind_timers_to_subnet_update(self, MockKeaClient):
-        """F11: POST with renew_timer and rebind_timer must pass them to subnet_update."""
-        MockKeaClient.return_value.subnet_update.return_value = None
-        MockKeaClient.return_value.command.return_value = _CONFIG4_NO_NETWORKS
-        self.client.post(
-            self._url(subnet_id=42),
-            {
-                "subnet_cidr": "10.0.0.0/24",
-                "pools": "",
-                "gateway": "",
-                "dns_servers": "",
-                "ntp_servers": "",
-                "renew_timer": "600",
-                "rebind_timer": "900",
-            },
-        )
-        call_kwargs = MockKeaClient.return_value.subnet_update.call_args
-        kwargs = call_kwargs.kwargs if call_kwargs.kwargs else call_kwargs[1]
-        self.assertEqual(kwargs.get("renew_timer"), 600)
-        self.assertEqual(kwargs.get("rebind_timer"), 900)
+    def test_post_passes_renew_rebind_timers_to_subnet_update(self):
+        """F11: POST with renew_timer and rebind_timer must reach the subnet4-update payload."""
+        with self._post_stub() as kea:
+            self.client.post(
+                self._url(subnet_id=42),
+                {
+                    "subnet_cidr": "10.0.0.0/24",
+                    "pools": "",
+                    "gateway": "",
+                    "dns_servers": "",
+                    "ntp_servers": "",
+                    "renew_timer": "600",
+                    "rebind_timer": "900",
+                },
+            )
+        subnet = self._updated_subnet(kea)
+        self.assertEqual(subnet["renew-timer"], 600)
+        self.assertEqual(subnet["rebind-timer"], 900)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_omits_timers_when_not_supplied(self, MockKeaClient):
-        """F11: POST without timer fields must pass None/absent to subnet_update."""
-        MockKeaClient.return_value.subnet_update.return_value = None
-        MockKeaClient.return_value.command.return_value = _CONFIG4_NO_NETWORKS
-        self.client.post(
-            self._url(subnet_id=42),
-            {"subnet_cidr": "10.0.0.0/24", "pools": "", "gateway": "", "dns_servers": "", "ntp_servers": ""},
-        )
-        call_kwargs = MockKeaClient.return_value.subnet_update.call_args
-        kwargs = call_kwargs.kwargs if call_kwargs.kwargs else call_kwargs[1]
-        self.assertIsNone(kwargs.get("renew_timer"))
-        self.assertIsNone(kwargs.get("rebind_timer"))
+    def test_post_omits_timers_when_not_supplied(self):
+        """F11: POST without timer fields must leave them out of the subnet4-update payload."""
+        with self._post_stub() as kea:
+            self.client.post(
+                self._url(subnet_id=42),
+                {"subnet_cidr": "10.0.0.0/24", "pools": "", "gateway": "", "dns_servers": "", "ntp_servers": ""},
+            )
+        subnet = self._updated_subnet(kea)
+        self.assertNotIn("renew-timer", subnet)
+        self.assertNotIn("rebind-timer", subnet)
 
     # ── DDNS qualifying suffix ────────────────────────────────────────────────
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_passes_ddns_qualifying_suffix_to_subnet_update(self, MockKeaClient):
-        """POST with a DDNS suffix must forward it to subnet_update."""
-        MockKeaClient.return_value.subnet_update.return_value = None
-        MockKeaClient.return_value.command.return_value = _CONFIG4_NO_NETWORKS
-        self.client.post(
-            self._url(subnet_id=42),
-            {
-                "subnet_cidr": "10.0.0.0/24",
-                "pools": "",
-                "gateway": "",
-                "dns_servers": "",
-                "ntp_servers": "",
-                "ddns_qualifying_suffix": "example.com.",
-            },
-        )
-        call_kwargs = MockKeaClient.return_value.subnet_update.call_args
-        kwargs = call_kwargs.kwargs if call_kwargs.kwargs else call_kwargs[1]
-        self.assertEqual(kwargs.get("ddns_qualifying_suffix"), "example.com.")
+    def test_post_passes_ddns_qualifying_suffix_to_subnet_update(self):
+        """POST with a DDNS suffix must reach the subnet4-update payload."""
+        with self._post_stub() as kea:
+            self.client.post(
+                self._url(subnet_id=42),
+                {
+                    "subnet_cidr": "10.0.0.0/24",
+                    "pools": "",
+                    "gateway": "",
+                    "dns_servers": "",
+                    "ntp_servers": "",
+                    "ddns_qualifying_suffix": "example.com.",
+                },
+            )
+        self.assertEqual(self._updated_subnet(kea)["ddns-qualifying-suffix"], "example.com.")
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_clears_ddns_qualifying_suffix_with_empty_string(self, MockKeaClient):
-        """Clearing the DDNS field on edit must pass "" (explicit clear), not None (keep).
+    def test_post_clears_ddns_qualifying_suffix_with_empty_string(self):
+        """Clearing the DDNS field on edit must remove it from the subnet4-update payload.
 
-        The edit form is always fully populated, so an empty field means "clear".
-        This locks the view→client wiring: reverting the call to ``... or None`` would
-        coerce the cleared field to None (= preserve) and silently drop the clear —
-        the client tests then verify "" removes ``ddns-qualifying-suffix`` from the payload.
+        The edit form is always fully populated, so an empty field means "clear". The
+        live subnet carries a suffix; the cleared POST must drop it. This locks the
+        view→client wiring: reverting the call to ``... or None`` would coerce the
+        cleared field to None (= preserve), so the live suffix would survive in the payload.
         """
-        MockKeaClient.return_value.subnet_update.return_value = None
-        MockKeaClient.return_value.command.return_value = _CONFIG4_NO_NETWORKS
-        self.client.post(
-            self._url(subnet_id=42),
-            {
-                "subnet_cidr": "10.0.0.0/24",
-                "pools": "",
-                "gateway": "",
-                "dns_servers": "",
-                "ntp_servers": "",
-                "ddns_qualifying_suffix": "",
+        live_with_ddns = {
+            "result": 0,
+            "arguments": {
+                "subnet4": [
+                    {
+                        "id": 42,
+                        "subnet": "10.0.0.0/24",
+                        "pools": [],
+                        "option-data": [],
+                        "ddns-qualifying-suffix": "old.example.com.",
+                    }
+                ]
             },
-        )
-        call_kwargs = MockKeaClient.return_value.subnet_update.call_args
-        kwargs = call_kwargs.kwargs if call_kwargs.kwargs else call_kwargs[1]
-        self.assertEqual(kwargs.get("ddns_qualifying_suffix"), "")
-        self.assertIsNotNone(kwargs.get("ddns_qualifying_suffix"))
+        }
+        with self._post_stub(**{"subnet4-get": live_with_ddns}) as kea:
+            self.client.post(
+                self._url(subnet_id=42),
+                {
+                    "subnet_cidr": "10.0.0.0/24",
+                    "pools": "",
+                    "gateway": "",
+                    "dns_servers": "",
+                    "ntp_servers": "",
+                    "ddns_qualifying_suffix": "",
+                },
+            )
+        self.assertNotIn("ddns-qualifying-suffix", self._updated_subnet(kea))
 
     # ── F5: inherited options ─────────────────────────────────────────────────
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_get_passes_inherited_dns_from_global_config(self, MockKeaClient):
+    _SUBNET4_NO_OPTS = {
+        "result": 0,
+        "arguments": {"subnet4": [{"id": 42, "subnet": "10.0.0.0/24", "pools": [], "option-data": []}]},
+    }
+
+    def test_get_passes_inherited_dns_from_global_config(self):
         """F5: When subnet has no DNS set, inherited_options contains global DNS."""
-        mock_client = MockKeaClient.return_value
-        subnet_no_opts = [
-            {
-                "result": 0,
-                "arguments": {"subnet4": [{"id": 42, "subnet": "10.0.0.0/24", "pools": [], "option-data": []}]},
-            }
-        ]
-        config_with_global_dns = [
-            {
-                "result": 0,
-                "arguments": {
-                    "Dhcp4": {
-                        "option-data": [{"name": "domain-name-servers", "data": "8.8.8.8"}],
-                        "shared-networks": [],
-                    }
-                },
-            }
-        ]
-        mock_client.command.side_effect = [subnet_no_opts, config_with_global_dns]
-        response = self.client.get(self._url())
+        config_with_global_dns = {
+            "result": 0,
+            "arguments": {
+                "Dhcp4": {"option-data": [{"name": "domain-name-servers", "data": "8.8.8.8"}], "shared-networks": []}
+            },
+        }
+        with self._get_stub(subnet=self._SUBNET4_NO_OPTS, config=config_with_global_dns):
+            response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
         inherited = response.context.get("inherited_options", {})
         self.assertIn("dns_servers", inherited)
         self.assertEqual(inherited["dns_servers"]["value"], "8.8.8.8")
         self.assertEqual(inherited["dns_servers"]["source"], "global")
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_get_inherited_options_empty_when_kea_config_fails(self, MockKeaClient):
+    def test_get_inherited_options_empty_when_kea_config_fails(self):
         """F5: When config-get raises KeaException, inherited_options is an empty dict."""
-        from netbox_kea.kea import KeaException
-
-        mock_client = MockKeaClient.return_value
-        # First command call (subnet lookup) succeeds; second (config-get) fails.
-        mock_client.command.side_effect = [
-            _SUBNET4_GET_FULL,
-            KeaException({"result": 1, "text": "err"}, index=0),
-        ]
-        response = self.client.get(self._url())
+        # subnet lookup succeeds; the network config-get fails (result 1 → KeaException).
+        with self._get_stub(subnet=_SUBNET4_GET_FULL[0], config={"result": 1, "text": "err"}):
+            response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
         inherited = response.context.get("inherited_options", {})
         self.assertEqual(inherited, {})
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_get_inherited_options_excludes_field_already_set_in_subnet(self, MockKeaClient):
+    def test_get_inherited_options_excludes_field_already_set_in_subnet(self):
         """F5: Fields already set in the subnet itself are excluded from inherited_options."""
-        mock_client = MockKeaClient.return_value
         # _SUBNET4_GET_FULL has domain-name-servers: 8.8.8.8 in option-data
-        config_with_global_dns = [
-            {
-                "result": 0,
-                "arguments": {
-                    "Dhcp4": {
-                        "option-data": [{"name": "domain-name-servers", "data": "1.1.1.1"}],
-                        "shared-networks": [],
-                    }
-                },
-            }
-        ]
-        mock_client.command.side_effect = [_SUBNET4_GET_FULL, config_with_global_dns]
-        response = self.client.get(self._url())
+        config_with_global_dns = {
+            "result": 0,
+            "arguments": {
+                "Dhcp4": {"option-data": [{"name": "domain-name-servers", "data": "1.1.1.1"}], "shared-networks": []}
+            },
+        }
+        with self._get_stub(subnet=_SUBNET4_GET_FULL[0], config=config_with_global_dns):
+            response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
         inherited = response.context.get("inherited_options", {})
         # dns_servers is already set by subnet — should NOT appear as inherited
         self.assertNotIn("dns_servers", inherited)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_get_inherited_options_prefers_shared_network_over_global(self, MockKeaClient):
+    def test_get_inherited_options_prefers_shared_network_over_global(self):
         """F5: Shared-network option-data overrides global in inherited_options."""
-        mock_client = MockKeaClient.return_value
-        subnet_no_opts = [
-            {
-                "result": 0,
-                "arguments": {"subnet4": [{"id": 42, "subnet": "10.0.0.0/24", "pools": [], "option-data": []}]},
-            }
-        ]
-        config_shared_net = [
-            {
-                "result": 0,
-                "arguments": {
-                    "Dhcp4": {
-                        "option-data": [{"name": "domain-name-servers", "data": "8.8.8.8"}],
-                        "shared-networks": [
-                            {
-                                "name": "net-alpha",
-                                "subnet4": [{"id": 42}],
-                                "option-data": [{"name": "domain-name-servers", "data": "192.168.1.1"}],
-                            }
-                        ],
-                    }
-                },
-            }
-        ]
-        mock_client.command.side_effect = [subnet_no_opts, config_shared_net]
-        response = self.client.get(self._url())
+        config_shared_net = {
+            "result": 0,
+            "arguments": {
+                "Dhcp4": {
+                    "option-data": [{"name": "domain-name-servers", "data": "8.8.8.8"}],
+                    "shared-networks": [
+                        {
+                            "name": "net-alpha",
+                            "subnet4": [{"id": 42}],
+                            "option-data": [{"name": "domain-name-servers", "data": "192.168.1.1"}],
+                        }
+                    ],
+                }
+            },
+        }
+        with self._get_stub(subnet=self._SUBNET4_NO_OPTS, config=config_shared_net):
+            response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
         inherited = response.context.get("inherited_options", {})
         self.assertIn("dns_servers", inherited)
