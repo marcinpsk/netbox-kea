@@ -646,7 +646,9 @@ def test_server_add_delete(page: Page, plugin_base: str, kea_url: str, nb_api: p
     page.get_by_label("Name", exact=True).fill(server_name)
     page.get_by_label("CA / Server URL", exact=True).fill(kea_url)
     # This URL is a single Kea 3.0 DHCPv4 daemon; disable v6 so the connectivity check passes.
-    page.get_by_label("DHCPv6", exact=True).uncheck()
+    # Target the checkbox by id — NetBox 4.6 also renders a "DHCPv6" fieldset legend, so a
+    # label match is ambiguous (strict-mode violation).
+    page.locator("#id_dhcp6").uncheck()
     page.get_by_role("button", name="Create", exact=True).click()
 
     expect(page).to_have_title(re.compile(f"^{server_name}"))
