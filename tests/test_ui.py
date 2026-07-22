@@ -108,8 +108,8 @@ class _DualEndpointKeaClient:
 def kea_client() -> _DualEndpointKeaClient:
     # Kea 3.0: two daemons, each on its own host-exposed HTTP control socket.
     return _DualEndpointKeaClient(
-        KeaClient("http://localhost:8001"),  # kea-dhcp4
-        KeaClient("http://localhost:8003"),  # kea-dhcp6
+        KeaClient("http://127.0.0.1:8001"),  # kea-dhcp4 (loopback-bound)
+        KeaClient("http://127.0.0.1:8003"),  # kea-dhcp6 (loopback-bound)
     )
 
 
@@ -702,6 +702,8 @@ def test_server_status(page: Page, kea: _DualEndpointKeaClient) -> None:
     locator = page.locator(".tab-content")
     expect(locator).to_contain_text(dhcp4_version)
     expect(locator).to_contain_text(dhcp6_version)
+    # has_control_agent=False must hide the Control Agent row.
+    expect(locator).not_to_contain_text("Control Agent")
 
 
 @pytest.mark.parametrize(
