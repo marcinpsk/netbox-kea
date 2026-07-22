@@ -29,30 +29,35 @@ from django.contrib import messages as django_messages
 from django.test import override_settings
 from django.urls import reverse
 
+from .kea_stub import stub_kea
 from .utils import _PLUGINS_CONFIG, _kea_command_side_effect, _make_db_server, _ViewTestBase
+
+# Shared stub responses for the subnet list/table views, which issue config-get
+# (subnets + shared-networks) then stat-lease{v}-get (utilisation; degrades if the
+# stat_cmds hook is absent — modelled by result 2 → KeaException → skipped).
+_EMPTY_CONFIG4 = {"result": 0, "arguments": {"Dhcp4": {"subnet4": [], "shared-networks": []}}}
+_EMPTY_CONFIG6 = {"result": 0, "arguments": {"Dhcp6": {"subnet6": [], "shared-networks": []}}}
+_STAT_ABSENT4 = {"result": 2, "text": "unknown command 'stat-lease4-get'"}
+_STAT_ABSENT6 = {"result": 2, "text": "unknown command 'stat-lease6-get'"}
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestServerSubnets4View(_ViewTestBase):
     """GET /plugins/kea/servers/<pk>/subnets4/"""
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_get_returns_200(self, MockKeaClient):
-        mock_client = MockKeaClient.return_value
-        mock_client.command.side_effect = _kea_command_side_effect
-
+    def test_get_returns_200(self):
         url = reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk])
-        response = self.client.get(url)
+        with stub_kea({"config-get": _EMPTY_CONFIG4, "stat-lease4-get": _STAT_ABSENT4}):
+            response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_get_sets_tab_in_context(self, MockKeaClient):
+    def test_get_sets_tab_in_context(self):
         """F2: GET response must include 'tab' in context for tab bar highlighting."""
         from netbox_kea.views import ServerDHCP4SubnetsView
 
-        MockKeaClient.return_value.command.side_effect = _kea_command_side_effect
         url = reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk])
-        response = self.client.get(url)
+        with stub_kea({"config-get": _EMPTY_CONFIG4, "stat-lease4-get": _STAT_ABSENT4}):
+            response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         self.assertIs(response.context["tab"], ServerDHCP4SubnetsView.tab)
 
@@ -69,17 +74,13 @@ class TestServerSubnets4View(_ViewTestBase):
 class TestServerSubnets6View(_ViewTestBase):
     """GET /plugins/kea/servers/<pk>/subnets6/"""
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_get_returns_200(self, MockKeaClient):
-        mock_client = MockKeaClient.return_value
-        mock_client.command.side_effect = _kea_command_side_effect
-
+    def test_get_returns_200(self):
         url = reverse("plugins:netbox_kea:server_subnets6", args=[self.server.pk])
-        response = self.client.get(url)
+        with stub_kea({"config-get": _EMPTY_CONFIG6, "stat-lease6-get": _STAT_ABSENT6}):
+            response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_get_sets_tab_in_context(self, MockKeaClient):
+    def test_get_sets_tab_in_context(self):
         """F2: GET response must include 'tab' in context for tab bar highlighting.
 
         v4 and v6 subnets now render under the single shared 'Subnets' tab
@@ -87,9 +88,9 @@ class TestServerSubnets6View(_ViewTestBase):
         """
         from netbox_kea.views import ServerDHCP4SubnetsView
 
-        MockKeaClient.return_value.command.side_effect = _kea_command_side_effect
         url = reverse("plugins:netbox_kea:server_subnets6", args=[self.server.pk])
-        response = self.client.get(url)
+        with stub_kea({"config-get": _EMPTY_CONFIG6, "stat-lease6-get": _STAT_ABSENT6}):
+            response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         self.assertIs(response.context["tab"], ServerDHCP4SubnetsView.tab)
 
@@ -113,41 +114,34 @@ class TestSubnetEnrichment(_ViewTestBase):
         }
         return [{"result": 0, "arguments": {dhcp_key: {subnet_key: [subnet], "shared-networks": []}}}]
 
-    def _side_effect_v4(self, cmd, service=None, **kwargs):
-        if cmd == "config-get":
-            return self._config_with_subnet(4)
-        return _kea_command_side_effect(cmd, service=service, **kwargs)
+    def _stub(self):
+        """Subnet list with one option/pool-carrying subnet; stat_cmds hook absent."""
+        return stub_kea({"config-get": self._config_with_subnet(4)[0], "stat-lease4-get": _STAT_ABSENT4})
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_subnet_table_includes_options_data(self, MockKeaClient):
+    def test_subnet_table_includes_options_data(self):
         """Each subnet dict in the table must carry parsed option-data."""
-        mock_client = MockKeaClient.return_value
-        mock_client.command.side_effect = self._side_effect_v4
         url = reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk])
-        response = self.client.get(url)
+        with self._stub():
+            response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         # Table rows should contain gateway info from the subnet options
         self.assertContains(response, "10.0.0.1")
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_subnet_table_includes_pool_ranges(self, MockKeaClient):
+    def test_subnet_table_includes_pool_ranges(self):
         """Each subnet dict must carry pool range data."""
-        mock_client = MockKeaClient.return_value
-        mock_client.command.side_effect = self._side_effect_v4
         url = reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk])
-        response = self.client.get(url)
+        with self._stub():
+            response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "10.0.0.50-10.0.0.99")
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_subnet_table_data_has_subnet_sort_key(self, MockKeaClient):
+    def test_subnet_table_data_has_subnet_sort_key(self):
         """F1: each subnet dict must have an integer _subnet_sort_key for numeric sort."""
         import ipaddress
 
-        mock_client = MockKeaClient.return_value
-        mock_client.command.side_effect = self._side_effect_v4
         url = reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk])
-        response = self.client.get(url)
+        with self._stub():
+            response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         table = response.context["table"]
         for row in table.data:
@@ -204,94 +198,47 @@ def _config_with_one_subnet(service=None):
 class TestSubnetUtilizationStats(_ViewTestBase):
     """Subnet table must show a utilization column when ``stat_cmds`` hook is loaded."""
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_utilization_percentage_shown_in_table(self, MockKeaClient):
+    @staticmethod
+    def _stat(assigned, total=100):
+        """A stat-lease4-get response for one subnet with the given utilisation."""
+        return {
+            "result": 0,
+            "arguments": {
+                "result-set": {
+                    "columns": ["subnet-id", "total-addresses", "assigned-addresses", "declined-addresses"],
+                    "rows": [[1, total, assigned, 0]],
+                }
+            },
+        }
+
+    def test_utilization_percentage_shown_in_table(self):
         """25/100 addresses → '25%' utilization shown in subnets4 table."""
-
-        def side_effect(cmd, service=None, arguments=None, check=None):
-            if cmd == "config-get":
-                return _config_with_one_subnet(service)
-            if cmd == "stat-lease4-get":
-                return _STAT_LEASE4_RESPONSE
-            return [{"result": 0, "arguments": {}}]
-
-        MockKeaClient.return_value.command.side_effect = side_effect
         url = reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk])
-        response = self.client.get(url)
+        with stub_kea({"config-get": _config_with_one_subnet()[0], "stat-lease4-get": _STAT_LEASE4_RESPONSE[0]}):
+            response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "25%")
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_no_crash_when_stat_cmds_unavailable(self, MockKeaClient):
+    def test_no_crash_when_stat_cmds_unavailable(self):
         """When stat_cmds hook is not loaded, subnets page must still render (200)."""
-        from netbox_kea.kea import KeaException
-
-        def side_effect(cmd, service=None, arguments=None, check=None):
-            if cmd == "config-get":
-                return _config_with_one_subnet(service)
-            if cmd == "stat-lease4-get":
-                raise KeaException(
-                    {"result": 2, "text": "unknown command 'stat-lease4-get'"},
-                    index=0,
-                )
-            return [{"result": 0, "arguments": {}}]
-
-        MockKeaClient.return_value.command.side_effect = side_effect
         url = reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk])
-        response = self.client.get(url)
+        with stub_kea({"config-get": _config_with_one_subnet()[0], "stat-lease4-get": _STAT_ABSENT4}):
+            response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_zero_percent_when_no_leases_assigned(self, MockKeaClient):
+    def test_zero_percent_when_no_leases_assigned(self):
         """0 assigned / 100 total → '0%' utilization."""
-
-        def side_effect(cmd, service=None, arguments=None, check=None):
-            if cmd == "config-get":
-                return _config_with_one_subnet(service)
-            if cmd == "stat-lease4-get":
-                return [
-                    {
-                        "result": 0,
-                        "arguments": {
-                            "result-set": {
-                                "columns": ["subnet-id", "total-addresses", "assigned-addresses", "declined-addresses"],
-                                "rows": [[1, 100, 0, 0]],
-                            }
-                        },
-                    }
-                ]
-            return [{"result": 0, "arguments": {}}]
-
-        MockKeaClient.return_value.command.side_effect = side_effect
         url = reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk])
-        response = self.client.get(url)
+        with stub_kea({"config-get": _config_with_one_subnet()[0], "stat-lease4-get": self._stat(0)}):
+            response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "0%")
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_hundred_percent_when_fully_utilized(self, MockKeaClient):
+    def test_hundred_percent_when_fully_utilized(self):
         """All addresses assigned → '100%' utilization."""
-
-        def side_effect(cmd, service=None, arguments=None, check=None):
-            if cmd == "config-get":
-                return _config_with_one_subnet(service)
-            if cmd == "stat-lease4-get":
-                return [
-                    {
-                        "result": 0,
-                        "arguments": {
-                            "result-set": {
-                                "columns": ["subnet-id", "total-addresses", "assigned-addresses", "declined-addresses"],
-                                "rows": [[1, 50, 50, 0]],
-                            }
-                        },
-                    }
-                ]
-            return [{"result": 0, "arguments": {}}]
-
-        MockKeaClient.return_value.command.side_effect = side_effect
         url = reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk])
-        response = self.client.get(url)
+        with stub_kea({"config-get": _config_with_one_subnet()[0], "stat-lease4-get": self._stat(50, total=50)}):
+            response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "100%")
 
@@ -308,55 +255,41 @@ class TestServerSubnet4WipeView(_ViewTestBase):
     def _url(self, subnet_id=42):
         return reverse("plugins:netbox_kea:server_subnet4_wipe_leases", args=[self.server.pk, subnet_id])
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_get_returns_confirmation_page(self, MockKeaClient):
+    def test_get_returns_confirmation_page(self):
         """GET must show the wipe confirmation page with subnet info."""
-        mock_client = MockKeaClient.return_value
-        mock_client.command.return_value = [
-            {"result": 0, "arguments": {"subnet4": [{"id": 42, "subnet": "10.0.0.0/24"}]}}
-        ]
-        response = self.client.get(self._url())
+        subnet = {"result": 0, "arguments": {"subnet4": [{"id": 42, "subnet": "10.0.0.0/24"}]}}
+        with stub_kea({"subnet4-get": subnet}):
+            response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "10.0.0.0/24")
         self.assertContains(response, "42")
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_get_shows_form_when_subnet_fetch_fails(self, MockKeaClient):
+    def test_get_shows_form_when_subnet_fetch_fails(self):
         """GET must still return 200 even when the subnet-get Kea call fails."""
-        from netbox_kea.kea import KeaException
-
-        mock_client = MockKeaClient.return_value
-        mock_client.command.side_effect = KeaException({"result": 1, "text": "not found"}, index=0)
-        response = self.client.get(self._url())
+        with stub_kea({"subnet4-get": {"result": 1, "text": "not found"}}):
+            response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_calls_lease_wipe_and_redirects(self, MockKeaClient):
+    def test_post_calls_lease_wipe_and_redirects(self):
         """POST must call lease_wipe on the client and redirect to the subnets tab."""
-        mock_client = MockKeaClient.return_value
-        mock_client.lease_wipe.return_value = None
-        response = self.client.post(self._url(subnet_id=10))
+        with stub_kea({"lease4-wipe": {"result": 0}}) as kea:
+            response = self.client.post(self._url(subnet_id=10))
         self.assertEqual(response.status_code, 302)
         self._assert_no_none_pk_redirect(response)
-        mock_client.lease_wipe.assert_called_once_with(version=4, subnet_id=10)
+        self.assertIn("lease4-wipe", kea.commands())
+        self.assertEqual(kea.bodies("lease4-wipe")[0]["arguments"]["subnet-id"], 10)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_on_kea_exception_shows_error_message(self, MockKeaClient):
+    def test_post_on_kea_exception_shows_error_message(self):
         """POST that causes a KeaException must flash an error and redirect (no 500)."""
-        from netbox_kea.kea import KeaException
-
-        mock_client = MockKeaClient.return_value
-        mock_client.lease_wipe.side_effect = KeaException({"result": 1, "text": "hook not loaded"}, index=0)
-        response = self.client.post(self._url())
+        with stub_kea({"lease4-wipe": {"result": 1, "text": "hook not loaded"}}):
+            response = self.client.post(self._url())
         self.assertEqual(response.status_code, 302)
         self._assert_no_none_pk_redirect(response)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_on_unexpected_exception_shows_error_message(self, MockKeaClient):
+    def test_post_on_unexpected_exception_shows_error_message(self):
         """POST that raises an unexpected exception must redirect (no 500)."""
-        mock_client = MockKeaClient.return_value
-        mock_client.lease_wipe.side_effect = ValueError("unexpected")
-        response = self.client.post(self._url())
+        with stub_kea({"lease4-wipe": ValueError("unexpected")}):
+            response = self.client.post(self._url())
         self.assertEqual(response.status_code, 302)
         self._assert_no_none_pk_redirect(response)
 
@@ -380,24 +313,20 @@ class TestServerSubnet6WipeView(_ViewTestBase):
     def _url(self, subnet_id=7):
         return reverse("plugins:netbox_kea:server_subnet6_wipe_leases", args=[self.server.pk, subnet_id])
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_get_returns_200(self, MockKeaClient):
-        mock_client = MockKeaClient.return_value
-        mock_client.command.return_value = [
-            {"result": 0, "arguments": {"subnet6": [{"id": 7, "subnet": "2001:db8::/32"}]}}
-        ]
-        response = self.client.get(self._url())
+    def test_get_returns_200(self):
+        subnet = {"result": 0, "arguments": {"subnet6": [{"id": 7, "subnet": "2001:db8::/32"}]}}
+        with stub_kea({"subnet6-get": subnet}):
+            response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "2001:db8::/32")
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_calls_lease_wipe_v6(self, MockKeaClient):
+    def test_post_calls_lease_wipe_v6(self):
         """POST must call lease_wipe with version=6."""
-        mock_client = MockKeaClient.return_value
-        mock_client.lease_wipe.return_value = None
-        response = self.client.post(self._url(subnet_id=7))
+        with stub_kea({"lease6-wipe": {"result": 0}}) as kea:
+            response = self.client.post(self._url(subnet_id=7))
         self.assertEqual(response.status_code, 302)
-        mock_client.lease_wipe.assert_called_once_with(version=6, subnet_id=7)
+        self.assertIn("lease6-wipe", kea.commands())
+        self.assertEqual(kea.bodies("lease6-wipe")[0]["arguments"]["subnet-id"], 7)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
