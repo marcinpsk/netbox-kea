@@ -716,62 +716,33 @@ class TestActiveLeaseStatusOnReservations(_ReservationViewBase):
         "valid-lft": 86400,
     }
 
-    def _prepare_mock_client(self, MockKeaClient, reservation_page=None):
-        """Wire the common mock_client context manager and reservation_get_page."""
-        mock_client = MockKeaClient.return_value
-        _wire_mock_clone(mock_client)
-        mock_client.reservation_get_page.return_value = (
-            reservation_page if reservation_page is not None else ([dict(_SAMPLE_RESERVATION4)], 0, 0)
-        )
-        return mock_client
+    def _stub(self, lease_all):
+        """Reservations-list stub: one reservation + a given ``lease4-get-all`` response."""
+        return stub_kea({"reservation-get-page": _res_page([dict(_SAMPLE_RESERVATION4)]), "lease4-get-all": lease_all})
 
-    def _mock_with_lease(self, MockKeaClient):
-        """Reservation + matching active lease for 192.168.1.100."""
-        mock_client = self._prepare_mock_client(MockKeaClient)
-        # lease4-get-all returns a lease matching the reservation IP
-        mock_client.command.return_value = [
-            {
-                "result": 0,
-                "arguments": {"leases": [self._LEASE4], "count": 1},
-            }
-        ]
-        return mock_client
-
-    def _mock_with_no_lease(self, MockKeaClient):
-        """Reservation present but no active lease."""
-        mock_client = self._prepare_mock_client(MockKeaClient)
-        mock_client.command.return_value = [{"result": 0, "arguments": {"leases": [], "count": 0}}]
-        return mock_client
-
-    @patch("netbox_kea.models.KeaClient")
-    def test_active_lease_badge_shown(self, MockKeaClient):
+    def test_active_lease_badge_shown(self):
         """When a matching lease exists the 'Active Lease' badge must be rendered."""
-        self._mock_with_lease(MockKeaClient)
         url = reverse("plugins:netbox_kea:server_reservations4", args=[self.server.pk])
-        response = self.client.get(url)
+        with self._stub({"result": 0, "arguments": {"leases": [self._LEASE4], "count": 1}}):
+            response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Active Lease")
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_no_active_lease_badge_shown_when_no_lease(self, MockKeaClient):
+    def test_no_active_lease_badge_shown_when_no_lease(self):
         """When no lease exists for the reservation IP 'No Lease' must be rendered."""
-        self._mock_with_no_lease(MockKeaClient)
         url = reverse("plugins:netbox_kea:server_reservations4", args=[self.server.pk])
-        response = self.client.get(url)
+        with self._stub({"result": 0, "arguments": {"leases": [], "count": 0}}):
+            response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "No Lease")
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_no_crash_when_lease_cmds_unavailable(self, MockKeaClient):
+    def test_no_crash_when_lease_cmds_unavailable(self):
         """When lease_cmds hook is missing the reservation page must still load."""
-        mock_client = self._prepare_mock_client(MockKeaClient)
-        # lease4-get-all unknown → KeaException result=2
-        mock_client.command.side_effect = KeaException(
-            {"result": 2, "text": "unknown command 'lease4-get-all'"},
-            index=0,
-        )
+        # lease4-get-all unknown → result 2 → real KeaClient raises KeaException →
+        # enrichment leaves has_active_lease unset, so no badge is rendered.
         url = reverse("plugins:netbox_kea:server_reservations4", args=[self.server.pk])
-        response = self.client.get(url)
+        with self._stub({"result": 2, "text": "unknown command 'lease4-get-all'"}):
+            response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         # No "Active Lease" or "No Lease" badge when hook unavailable
         self.assertNotContains(response, "Active Lease")
@@ -796,26 +767,23 @@ class TestReservation4EditGetPrefill(_ReservationViewBase):
             args=[self.server.pk, self._SUBNET_ID, self._IP],
         )
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_edit_get_returns_200_and_shows_ip(self, MockKeaClient):
-        """reservation_get must return the reservation dict so the form is pre-filled."""
-        MockKeaClient.return_value.reservation_get.return_value = _SAMPLE_RESERVATION4
-        response = self.client.get(self._edit_url())
+    def test_edit_get_returns_200_and_shows_ip(self):
+        """reservation-get must return the reservation dict so the form is pre-filled."""
+        with stub_kea({"reservation-get": _res_get(_SAMPLE_RESERVATION4), "lease4-get": _LEASE_NOT_FOUND}):
+            response = self.client.get(self._edit_url())
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, self._IP)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_edit_get_shows_hostname_in_form(self, MockKeaClient):
+    def test_edit_get_shows_hostname_in_form(self):
         """Form must be pre-filled with hostname from the existing reservation."""
-        MockKeaClient.return_value.reservation_get.return_value = _SAMPLE_RESERVATION4
-        response = self.client.get(self._edit_url())
+        with stub_kea({"reservation-get": _res_get(_SAMPLE_RESERVATION4), "lease4-get": _LEASE_NOT_FOUND}):
+            response = self.client.get(self._edit_url())
         self.assertContains(response, "testhost.example.com")
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_edit_get_404_when_reservation_get_returns_none(self, MockKeaClient):
-        """If reservation_get returns None (not found) the view must 404."""
-        MockKeaClient.return_value.reservation_get.return_value = None
-        response = self.client.get(self._edit_url())
+    def test_edit_get_404_when_reservation_get_returns_none(self):
+        """If reservation-get returns not-found (result 3) the view must 404."""
+        with stub_kea({"reservation-get": _RES_NOT_FOUND}):
+            response = self.client.get(self._edit_url())
         self.assertEqual(response.status_code, 404)
 
 
@@ -828,14 +796,13 @@ class TestReservation4EditGetPrefill(_ReservationViewBase):
 class TestReservation4AddPrefill(_ReservationViewBase):
     """GET /reservations4/add/?ip_address=...&identifier=... must pre-fill the form."""
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_add_get_no_params_renders_empty_form(self, MockKeaClient):
+    def test_add_get_no_params_renders_empty_form(self):
+        # GET add renders the form only — no Kea traffic.
         url = reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk])
         response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_add_get_with_ip_and_mac_prefills_form(self, MockKeaClient):
+    def test_add_get_with_ip_and_mac_prefills_form(self):
         """Query params must pre-fill the form fields."""
         url = (
             reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk])
@@ -868,31 +835,39 @@ class TestLeaseReserveBadge(_ReservationViewBase):
         "valid-lft": 3600,
         "state": 0,
     }
+    # The lease-search page fetches the subnet quick-select via config-get first.
+    _CONFIG4 = {"result": 0, "arguments": {"Dhcp4": {"subnet4": [{"id": 1, "subnet": "192.168.1.0/24"}]}}}
 
     def _htmx_get(self, data):
         url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
         return self.client.get(url, data=data, HTTP_HX_REQUEST="true")
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_reserve_badge_shown_when_no_reservation(self, MockKeaClient):
+    def test_reserve_badge_shown_when_no_reservation(self):
         """A lease without a matching reservation must show '+ Reserve' link."""
-        mock = MockKeaClient.return_value
-        mock.reservation_get.return_value = None
-        mock.command.return_value = [{"result": 0, "arguments": {**self._LEASE}}]
-        response = self._htmx_get({"by": "ip", "q": "192.168.1.200"})
+        # reservation-get result 3 → no reservation → the row offers "+ Reserve".
+        with stub_kea(
+            {
+                "config-get": self._CONFIG4,
+                "lease4-get": {"result": 0, "arguments": {**self._LEASE}},
+                "reservation-get": {"result": 3},
+            }
+        ):
+            response = self._htmx_get({"by": "ip", "q": "192.168.1.200"})
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Reserve")
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_reserved_badge_shown_when_reservation_exists(self, MockKeaClient):
+    def test_reserved_badge_shown_when_reservation_exists(self):
         """A lease WITH a matching reservation must show 'Reserved' link, not '+ Reserve'."""
-        mock = MockKeaClient.return_value
-        _wire_mock_clone(mock)
         reservation = dict(_SAMPLE_RESERVATION4)
         reservation["ip-address"] = "192.168.1.200"
-        mock.reservation_get.return_value = reservation
-        mock.command.return_value = [{"result": 0, "arguments": {**self._LEASE}}]
-        response = self._htmx_get({"by": "ip", "q": "192.168.1.200"})
+        with stub_kea(
+            {
+                "config-get": self._CONFIG4,
+                "lease4-get": {"result": 0, "arguments": {**self._LEASE}},
+                "reservation-get": {"result": 0, "arguments": reservation},
+            }
+        ):
+            response = self._htmx_get({"by": "ip", "q": "192.168.1.200"})
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Reserved")
         self.assertNotContains(response, "+ Reserve")
@@ -926,14 +901,19 @@ class TestActiveLeaseBadgeLink(TestCase):
     def _url(self):
         return reverse("plugins:netbox_kea:server_reservations4", args=[self.server.pk])
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_active_lease_badge_is_link_to_lease_search(self, MockKeaClient):
+    def _stub(self, leases):
+        """Reservations-list stub: one reservation + a ``lease4-get-all`` leases payload."""
+        return stub_kea(
+            {
+                "reservation-get-page": _res_page([dict(_SAMPLE_RESERVATION4_WITH_IP)]),
+                "lease4-get-all": {"result": 0, "arguments": {"leases": leases}},
+            }
+        )
+
+    def test_active_lease_badge_is_link_to_lease_search(self):
         """When active lease exists the badge must be an <a> linking to lease search by IP."""
-        mock_client = MockKeaClient.return_value
-        _wire_mock_clone(mock_client)
-        mock_client.reservation_get_page.return_value = ([dict(_SAMPLE_RESERVATION4_WITH_IP)], 0, 0)
-        mock_client.command.return_value = [{"result": 0, "arguments": {"leases": [{"ip-address": "10.50.0.9"}]}}]
-        response = self.client.get(self._url())
+        with self._stub([{"ip-address": "10.50.0.9"}]):
+            response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
         # Badge must be a link, not a plain span
         self.assertContains(response, "Active Lease</a>")
@@ -941,14 +921,10 @@ class TestActiveLeaseBadgeLink(TestCase):
         expected_href = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk]) + "?q=10.50.0.9&by=ip"
         self.assertContains(response, expected_href)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_no_lease_badge_is_not_a_link(self, MockKeaClient):
+    def test_no_lease_badge_is_not_a_link(self):
         """'No Lease' badge must remain a plain non-clickable element."""
-        mock_client = MockKeaClient.return_value
-        _wire_mock_clone(mock_client)
-        mock_client.reservation_get_page.return_value = ([dict(_SAMPLE_RESERVATION4_WITH_IP)], 0, 0)
-        mock_client.command.return_value = [{"result": 0, "arguments": {"leases": []}}]
-        response = self.client.get(self._url())
+        with self._stub([]):
+            response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "No Lease")
         # Must NOT be a link
@@ -990,42 +966,32 @@ class TestActiveLeaseSyncButton(TestCase):
     def _url(self):
         return reverse("plugins:netbox_kea:server_reservations4", args=[self.server.pk])
 
-    @patch("netbox_kea.sync.bulk_fetch_netbox_ips")
-    @patch("netbox_kea.models.KeaClient")
-    def test_sync_button_shown_when_active_lease_and_no_netbox_ip(self, MockKeaClient, mock_bulk_fetch):
-        """When active lease and no NetBox IP: 'Active Lease' badge AND Sync button rendered."""
-        mock_client = MockKeaClient.return_value
-        _wire_mock_clone(mock_client)
-        mock_client.reservation_get_page.return_value = (
-            [dict(_SAMPLE_RESERVATION4_FOR_SYNC)],
-            0,
-            0,
+    def _stub(self):
+        """Reservations-list stub: the sync reservation + a matching active lease."""
+        return stub_kea(
+            {
+                "reservation-get-page": _res_page([dict(_SAMPLE_RESERVATION4_FOR_SYNC)]),
+                "lease4-get-all": {"result": 0, "arguments": {"leases": [{"ip-address": "10.60.0.5"}]}},
+            }
         )
-        mock_client.command.return_value = [{"result": 0, "arguments": {"leases": [{"ip-address": "10.60.0.5"}]}}]
-        mock_bulk_fetch.return_value = {}  # no NetBox IPs found
-        response = self.client.get(self._url())
+
+    def test_sync_button_shown_when_active_lease_and_no_netbox_ip(self):
+        """When active lease and no NetBox IP: 'Active Lease' badge AND Sync button rendered."""
+        # No NetBox IPAddress exists for 10.60.0.5 → the real bulk_fetch returns nothing.
+        with self._stub():
+            response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Active Lease</a>")
         # Sync button must link to the specific reservation4 sync endpoint
         sync_url = reverse("plugins:netbox_kea:server_reservation4_sync", args=[self.server.pk])
         self.assertContains(response, sync_url)
 
-    @patch("netbox_kea.sync.bulk_fetch_netbox_ips")
-    @patch("netbox_kea.models.KeaClient")
-    def test_sync_button_not_shown_when_active_lease_and_netbox_ip_exists(self, MockKeaClient, mock_bulk_fetch):
+    def test_sync_button_not_shown_when_active_lease_and_netbox_ip_exists(self):
         """When active lease AND NetBox IP already synced: no Sync button in lease_status cell."""
-        mock_client = MockKeaClient.return_value
-        _wire_mock_clone(mock_client)
-        mock_client.reservation_get_page.return_value = (
-            [dict(_SAMPLE_RESERVATION4_FOR_SYNC)],
-            0,
-            0,
-        )
-        mock_client.command.return_value = [{"result": 0, "arguments": {"leases": [{"ip-address": "10.60.0.5"}]}}]
-        nb_ip = MagicMock(spec=NbIP)
-        nb_ip.get_absolute_url.return_value = "/ipam/ip-addresses/42/"
-        mock_bulk_fetch.return_value = {"10.60.0.5": nb_ip}
-        response = self.client.get(self._url())
+        # A real NetBox IPAddress makes the reservation appear synced.
+        NbIP.objects.create(address="10.60.0.5/32")
+        with self._stub():
+            response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Active Lease</a>")
         # Synced link shown in netbox_ip column — but NO individual reservation4 sync button
@@ -1049,62 +1015,46 @@ class TestMultiIPv6ReservationBadgeEnrichment(TestCase):
     def _url(self):
         return reverse("plugins:netbox_kea:server_reservations6", args=[self.server.pk])
 
-    def _mock_client(self, MockKeaClient, reservation):
-        mock_client = MockKeaClient.return_value
-        _wire_mock_clone(mock_client)
-        mock_client.reservation_get_page.return_value = ([dict(reservation)], 0, 0)
-        # Lease lookup — KeaException so we skip lease enrichment cleanly.
-        mock_client.command.side_effect = KeaException(
-            {"result": 2, "text": "unknown command 'lease6-get-all'"}, index=0
+    def _stub(self, reservation):
+        """Reservations6-list stub: one reservation; lease6-get-all absent (hook not loaded)."""
+        return stub_kea(
+            {
+                "reservation-get-page": _res_page([dict(reservation)]),
+                # lease6-get-all unknown → KeaException → lease enrichment cleanly skipped.
+                "lease6-get-all": {"result": 2, "text": "unknown command 'lease6-get-all'"},
+            }
         )
-        return mock_client
 
-    @patch("netbox_kea.sync.bulk_fetch_netbox_ips")
-    @patch("netbox_kea.models.KeaClient")
-    def test_multi_ip_all_synced_shows_synced_badge(self, MockKeaClient, mock_bulk_fetch):
-        """v6 reservation with extra_ips — ALL IPs in NetBox → Synced shown, no sync button."""
-        self._mock_client(MockKeaClient, _SAMPLE_RESERVATION6_MULTI_IP)
-        nb1, nb2, nb3 = MagicMock(spec=NbIP), MagicMock(spec=NbIP), MagicMock(spec=NbIP)
-        nb1.get_absolute_url.return_value = "/ipam/ip-addresses/101/"
-        nb2.get_absolute_url.return_value = "/ipam/ip-addresses/102/"
-        nb3.get_absolute_url.return_value = "/ipam/ip-addresses/103/"
-        mock_bulk_fetch.return_value = {"2001:db8::1": nb1, "2001:db8::2": nb2, "2001:db8::3": nb3}
+    def test_multi_ip_all_synced_shows_synced_badge(self):
+        """v6 reservation with extra_ips — ALL IPs in NetBox → Synced shown, no sync button.
 
-        response = self.client.get(self._url())
+        Creating a NetBox IPAddress for every reservation address (primary + extras)
+        proves the badge enrichment builds its lookup list from all of them.
+        """
+        for addr in _SAMPLE_RESERVATION6_MULTI_IP["ip-addresses"]:
+            NbIP.objects.create(address=f"{addr}/128")
+        with self._stub(_SAMPLE_RESERVATION6_MULTI_IP):
+            response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Synced</a>")
         sync_url = reverse("plugins:netbox_kea:server_reservation6_sync", args=[self.server.pk])
         self.assertNotContains(response, sync_url)
-        # Verify that ALL reservation IPs were passed to bulk_fetch_netbox_ips
-        called_ips = mock_bulk_fetch.call_args[0][0]
-        self.assertIn("2001:db8::1", called_ips)
-        self.assertIn("2001:db8::2", called_ips)
-        self.assertIn("2001:db8::3", called_ips)
 
-    @patch("netbox_kea.sync.bulk_fetch_netbox_ips")
-    @patch("netbox_kea.models.KeaClient")
-    def test_multi_ip_partial_sync_shows_sync_button(self, MockKeaClient, mock_bulk_fetch):
+    def test_multi_ip_partial_sync_shows_sync_button(self):
         """v6 reservation with extra_ips — only primary in NetBox → shows Synced AND sync button."""
-        self._mock_client(MockKeaClient, _SAMPLE_RESERVATION6_MULTI_IP)
-        nb1 = MagicMock(spec=NbIP)
-        nb1.get_absolute_url.return_value = "/ipam/ip-addresses/101/"
-        # Only the first IP is in NetBox; 2001:db8::2 and ::3 are missing.
-        mock_bulk_fetch.return_value = {"2001:db8::1": nb1}
-
-        response = self.client.get(self._url())
+        # Only the first IP is in NetBox; 2001:db8::2 and ::3 are missing → partial sync.
+        NbIP.objects.create(address="2001:db8::1/128")
+        with self._stub(_SAMPLE_RESERVATION6_MULTI_IP):
+            response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Synced</a>")
         sync_url = reverse("plugins:netbox_kea:server_reservation6_sync", args=[self.server.pk])
         self.assertContains(response, sync_url)
 
-    @patch("netbox_kea.sync.bulk_fetch_netbox_ips")
-    @patch("netbox_kea.models.KeaClient")
-    def test_multi_ip_none_synced_shows_sync_button(self, MockKeaClient, mock_bulk_fetch):
+    def test_multi_ip_none_synced_shows_sync_button(self):
         """v6 reservation with extra_ips — no IPs in NetBox → sync button shown."""
-        self._mock_client(MockKeaClient, _SAMPLE_RESERVATION6_MULTI_IP)
-        mock_bulk_fetch.return_value = {}
-
-        response = self.client.get(self._url())
+        with self._stub(_SAMPLE_RESERVATION6_MULTI_IP):
+            response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
         self.assertNotContains(response, "Synced</a>")
         sync_url = reverse("plugins:netbox_kea:server_reservation6_sync", args=[self.server.pk])
