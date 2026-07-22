@@ -9,14 +9,15 @@ services:
     volumes:
       - ./kea_configs/:/etc/kea/:ro
     # Host-exposed for the test-side KeaClient (netbox->kea uses the service name).
+    # Bind to loopback only — these are unauthenticated Kea management sockets.
     ports:
-      - 8001:8000
+      - 127.0.0.1:8001:8000
   kea-dhcp6:
     <<: *kea
     image: docker.cloudsmith.io/isc/docker/kea-dhcp6:3.0.3
     command: kea-dhcp6 -c /etc/kea/kea-dhcp6.conf
     ports:
-      - 8003:8000
+      - 127.0.0.1:8003:8000
   nginx:
     image: nginx:alpine-slim
     depends_on:
