@@ -713,30 +713,18 @@ class TestLeaseExportAll(_ViewTestBase):
     def _url6(self):
         return reverse("plugins:netbox_kea:server_leases6", args=[self.server.pk])
 
-    def _single_page_side_effect(self, cmd, service=None, arguments=None, check=None):
-        """Kea returns one page with one lease, then empty (result=3) on next call."""
-        if cmd == "lease4-get-page":
-            frm = arguments.get("from", "")
-            if frm == "0.0.0.0":
-                return [{"result": 0, "arguments": {"leases": [self._LEASE], "count": 1}}]
-            return [{"result": 3, "arguments": None}]
-        return [{"result": 0, "arguments": {}}]
-
-    @patch("netbox_kea.models.KeaClient")
-    def test_export_all_returns_csv(self, MockKeaClient):
+    def test_export_all_returns_csv(self):
         """?export_all=1 must return text/csv."""
-        mock_client = MockKeaClient.return_value
-        mock_client.command.side_effect = self._single_page_side_effect
-        response = self.client.get(self._url4(), {"export_all": "1"})
+        # One page of one lease (count 1 < per_page 1000) ends pagination after one call.
+        with stub_kea({"lease4-get-page": {"result": 0, "arguments": {"leases": [self._LEASE], "count": 1}}}):
+            response = self.client.get(self._url4(), {"export_all": "1"})
         self.assertEqual(response.status_code, 200)
         self.assertIn("text/csv", response.get("Content-Type", ""))
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_export_all_includes_lease_data(self, MockKeaClient):
+    def test_export_all_includes_lease_data(self):
         """?export_all=1 CSV must contain the lease IP address."""
-        mock_client = MockKeaClient.return_value
-        mock_client.command.side_effect = self._single_page_side_effect
-        response = self.client.get(self._url4(), {"export_all": "1"})
+        with stub_kea({"lease4-get-page": {"result": 0, "arguments": {"leases": [self._LEASE], "count": 1}}}):
+            response = self.client.get(self._url4(), {"export_all": "1"})
         self.assertEqual(response.status_code, 200)
         content = (
             b"".join(response.streaming_content).decode()
@@ -745,12 +733,10 @@ class TestLeaseExportAll(_ViewTestBase):
         )
         self.assertIn("10.0.0.1", content)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_export_all_paginates_all_leases(self, MockKeaClient):
+    def test_export_all_paginates_all_leases(self):
         """?export_all=1 must paginate until Kea returns result=3."""
-        # The view uses per_page=1000. Return count=1000 on the first call so the
-        # view sees a full page and issues a second request; the second call returns
-        # result=3 to signal end-of-data.
+        # The view uses per_page=1000. Report count==1000 on the first page so the
+        # view sees a full page and issues a second request; page 2 returns result=3.
         page1 = [
             {
                 "ip-address": f"10.0.0.{i}",
@@ -762,56 +748,36 @@ class TestLeaseExportAll(_ViewTestBase):
             }
             for i in range(1, 3)
         ]
-        call_count = {"n": 0}
-
-        def paginate_side_effect(cmd, service=None, arguments=None, check=None):
-            if cmd != "lease4-get-page":
-                return [{"result": 0, "arguments": {}}]
-            call_count["n"] += 1
-            if call_count["n"] == 1:
-                # Report count==1000 so the view thinks there may be more pages.
-                return [{"result": 0, "arguments": {"leases": page1, "count": 1000}}]
-            return [{"result": 3, "arguments": None}]
-
-        MockKeaClient.return_value.command.side_effect = paginate_side_effect
-        response = self.client.get(self._url4(), {"export_all": "1"})
+        with stub_kea(
+            {
+                "lease4-get-page": [
+                    {"result": 0, "arguments": {"leases": page1, "count": 1000}},
+                    {"result": 3, "arguments": None},
+                ]
+            }
+        ) as kea:
+            response = self.client.get(self._url4(), {"export_all": "1"})
         self.assertEqual(response.status_code, 200)
         self.assertIn("text/csv", response.get("Content-Type", ""))
-        self.assertGreaterEqual(call_count["n"], 2)
+        self.assertGreaterEqual(kea.commands().count("lease4-get-page"), 2)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_export_all_v6_starts_from_double_colon(self, MockKeaClient):
+    def test_export_all_v6_starts_from_double_colon(self):
         """?export_all=1 for v6 must start the cursor from '::'."""
-        call_args_list = []
-
-        def v6_side_effect(cmd, service=None, arguments=None, check=None):
-            if cmd == "lease6-get-page":
-                call_args_list.append(arguments)
-                return [{"result": 3, "arguments": None}]
-            return [{"result": 0, "arguments": {}}]
-
-        MockKeaClient.return_value.command.side_effect = v6_side_effect
-        response = self.client.get(self._url6(), {"export_all": "1"})
+        with stub_kea({"lease6-get-page": {"result": 3, "arguments": None}}) as kea:
+            response = self.client.get(self._url6(), {"export_all": "1"})
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(len(call_args_list), 1)
-        self.assertEqual(call_args_list[0]["from"], "::")
+        pages = kea.bodies("lease6-get-page")
+        self.assertEqual(len(pages), 1)
+        self.assertEqual(pages[0]["arguments"]["from"], "::")
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_export_all_v4_starts_from_zero_ip(self, MockKeaClient):
+    def test_export_all_v4_starts_from_zero_ip(self):
         """?export_all=1 for v4 must start the cursor from '0.0.0.0'."""
-        call_args_list = []
-
-        def v4_side_effect(cmd, service=None, arguments=None, check=None):
-            if cmd == "lease4-get-page":
-                call_args_list.append(arguments)
-                return [{"result": 3, "arguments": None}]
-            return [{"result": 0, "arguments": {}}]
-
-        MockKeaClient.return_value.command.side_effect = v4_side_effect
-        response = self.client.get(self._url4(), {"export_all": "1"})
+        with stub_kea({"lease4-get-page": {"result": 3, "arguments": None}}) as kea:
+            response = self.client.get(self._url4(), {"export_all": "1"})
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(len(call_args_list), 1)
-        self.assertEqual(call_args_list[0]["from"], "0.0.0.0")
+        pages = kea.bodies("lease4-get-page")
+        self.assertEqual(len(pages), 1)
+        self.assertEqual(pages[0]["arguments"]["from"], "0.0.0.0")
 
 
 # TestLeaseEditView
@@ -855,58 +821,57 @@ class TestLeaseEditView(_ViewTestBase):
         self.assertIn("leases", url)
         self.assertIn("edit", url)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_get_returns_200(self, MockKeaClient):
+    def test_get_returns_200(self):
         """GET returns 200 OK."""
-        MockKeaClient.return_value.command.return_value = _LEASE4_GET_RESP
-        response = self.client.get(self._url())
+        with stub_kea({"lease4-get": _LEASE4_GET_RESP[0]}):
+            response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_get_prefills_hostname(self, MockKeaClient):
+    def test_get_prefills_hostname(self):
         """GET pre-fills hostname from the existing lease."""
-        MockKeaClient.return_value.command.return_value = _LEASE4_GET_RESP
-        response = self.client.get(self._url())
+        with stub_kea({"lease4-get": _LEASE4_GET_RESP[0]}):
+            response = self.client.get(self._url())
         content = response.content.decode()
         self.assertIn("host1.example.com", content)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_get_prefills_hw_address(self, MockKeaClient):
+    def test_get_prefills_hw_address(self):
         """GET pre-fills hw_address from the existing lease (v4 only)."""
-        MockKeaClient.return_value.command.return_value = _LEASE4_GET_RESP
-        response = self.client.get(self._url())
+        with stub_kea({"lease4-get": _LEASE4_GET_RESP[0]}):
+            response = self.client.get(self._url())
         content = response.content.decode()
         self.assertIn("aa:bb:cc:dd:ee:ff", content)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_calls_lease_update_and_redirects(self, MockKeaClient):
+    def test_post_calls_lease_update_and_redirects(self):
         """POST with valid data calls lease_update and redirects."""
-        MockKeaClient.return_value.lease_update.return_value = None
-        response = self.client.post(
-            self._url(),
-            {
-                "hostname": "newhost.example.com",
-                "hw_address": "11:22:33:44:55:66",
-                "valid_lft": "7200",
-            },
-        )
+        # lease_update reads the current lease (lease4-get) then writes lease4-update.
+        with stub_kea({"lease4-get": _LEASE4_GET_RESP[0], "lease4-update": {"result": 0}}) as kea:
+            response = self.client.post(
+                self._url(),
+                {
+                    "hostname": "newhost.example.com",
+                    "hw_address": "11:22:33:44:55:66",
+                    "valid_lft": "7200",
+                },
+            )
         self.assertEqual(response.status_code, 302)
-        MockKeaClient.return_value.lease_update.assert_called_once()
+        self.assertIn("lease4-update", kea.commands())
+        update_args = kea.bodies("lease4-update")[0]["arguments"]
+        self.assertEqual(update_args["hostname"], "newhost.example.com")
+        self.assertEqual(update_args["hw-address"], "11:22:33:44:55:66")
+        self.assertEqual(update_args["valid-lft"], 7200)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_kea_exception_redirects_with_error(self, MockKeaClient):
+    def test_post_kea_exception_redirects_with_error(self):
         """POST that raises KeaException shows error and redirects."""
-        from netbox_kea.kea import KeaException
-
-        MockKeaClient.return_value.lease_update.side_effect = KeaException({"result": 1, "text": "lease not found"})
-        response = self.client.post(
-            self._url(),
-            {
-                "hostname": "newhost.example.com",
-                "hw_address": "11:22:33:44:55:66",
-                "valid_lft": "7200",
-            },
-        )
+        # result=1 on lease4-update makes the real client raise KeaException.
+        with stub_kea({"lease4-get": _LEASE4_GET_RESP[0], "lease4-update": {"result": 1, "text": "lease not found"}}):
+            response = self.client.post(
+                self._url(),
+                {
+                    "hostname": "newhost.example.com",
+                    "hw_address": "11:22:33:44:55:66",
+                    "valid_lft": "7200",
+                },
+            )
         self.assertEqual(response.status_code, 302)
 
     def test_get_requires_login(self):
@@ -997,83 +962,91 @@ class TestLeaseStateFilter(_ViewTestBase):
     def _url4(self):
         return reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_state_column_rendered_in_table(self, MockKeaClient):
+    # Subnet quick-select fetched via config-get; reservation enrichment finds none.
+    _CONFIG4 = {"result": 0, "arguments": {"Dhcp4": {"subnet4": [{"id": 1, "subnet": "10.0.0.0/24"}]}}}
+
+    def test_state_column_rendered_in_table(self):
         """Lease table includes a state_label column header."""
-        mock_client = MockKeaClient.return_value
-        mock_client.command.return_value = _STATE_LEASES_RESP
-        mock_client.reservation_get_page.return_value = ([], 0, 0)
-        response = self._htmx_get(self._url4(), {"by": "hw", "q": "aa:bb:cc:dd:ee:01"})
+        with stub_kea(
+            {
+                "config-get": self._CONFIG4,
+                "lease4-get-by-hw-address": _STATE_LEASES_RESP[0],
+                "reservation-get": {"result": 3},
+            }
+        ):
+            response = self._htmx_get(self._url4(), {"by": "hw", "q": "aa:bb:cc:dd:ee:01"})
         self.assertEqual(response.status_code, 200)
         # State column header must be present
         self.assertContains(response, "State")
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_state_label_active_rendered(self, MockKeaClient):
+    def test_state_label_active_rendered(self):
         """Active lease shows 'Active' state badge."""
-        mock_client = MockKeaClient.return_value
-        mock_client.command.return_value = [
+        active_lease = _STATE_LEASES_RESP[0]["arguments"]["leases"][0]
+        with stub_kea(
             {
-                "result": 0,
-                "arguments": {"leases": [_STATE_LEASES_RESP[0]["arguments"]["leases"][0]]},
+                "config-get": self._CONFIG4,
+                "lease4-get-by-hw-address": {"result": 0, "arguments": {"leases": [active_lease]}},
+                "reservation-get": {"result": 3},
             }
-        ]
-        mock_client.reservation_get_page.return_value = ([], 0, 0)
-        response = self._htmx_get(self._url4(), {"by": "hw", "q": "aa:bb:cc:dd:ee:01"})
+        ):
+            response = self._htmx_get(self._url4(), {"by": "hw", "q": "aa:bb:cc:dd:ee:01"})
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Active")
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_state_label_declined_rendered(self, MockKeaClient):
+    def test_state_label_declined_rendered(self):
         """Declined lease shows 'Declined' state badge."""
-        mock_client = MockKeaClient.return_value
-        mock_client.command.return_value = [
+        declined_lease = _STATE_LEASES_RESP[0]["arguments"]["leases"][1]
+        with stub_kea(
             {
-                "result": 0,
-                "arguments": {"leases": [_STATE_LEASES_RESP[0]["arguments"]["leases"][1]]},
+                "config-get": self._CONFIG4,
+                "lease4-get-by-hw-address": {"result": 0, "arguments": {"leases": [declined_lease]}},
+                "reservation-get": {"result": 3},
             }
-        ]
-        mock_client.reservation_get_page.return_value = ([], 0, 0)
-        response = self._htmx_get(self._url4(), {"by": "hw", "q": "aa:bb:cc:dd:ee:02"})
+        ):
+            response = self._htmx_get(self._url4(), {"by": "hw", "q": "aa:bb:cc:dd:ee:02"})
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Declined")
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_state_filter_declined_hides_active(self, MockKeaClient):
+    def test_state_filter_declined_hides_active(self):
         """State filter=1 (Declined) excludes Active leases from search results."""
-        mock_client = MockKeaClient.return_value
-        mock_client.command.return_value = _STATE_LEASES_RESP
-        mock_client.reservation_get_page.return_value = ([], 0, 0)
-        response = self._htmx_get(self._url4(), {"by": "hostname", "q": "host", "state": "1"})
+        with stub_kea(
+            {
+                "config-get": self._CONFIG4,
+                "lease4-get-by-hostname": _STATE_LEASES_RESP[0],
+                "reservation-get": {"result": 3},
+            }
+        ):
+            response = self._htmx_get(self._url4(), {"by": "hostname", "q": "host", "state": "1"})
         self.assertEqual(response.status_code, 200)
         # Active and Expired hosts should not appear
         self.assertNotContains(response, "active-host")
         self.assertNotContains(response, "expired-host")
         self.assertContains(response, "declined-host")
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_state_filter_any_returns_all(self, MockKeaClient):
+    def test_state_filter_any_returns_all(self):
         """Empty state filter (Any) returns all leases."""
-        mock_client = MockKeaClient.return_value
-        mock_client.command.return_value = _STATE_LEASES_RESP
-        mock_client.reservation_get_page.return_value = ([], 0, 0)
-        response = self._htmx_get(self._url4(), {"by": "hostname", "q": "host", "state": ""})
+        with stub_kea(
+            {
+                "config-get": self._CONFIG4,
+                "lease4-get-by-hostname": _STATE_LEASES_RESP[0],
+                "reservation-get": {"result": 3},
+            }
+        ):
+            response = self._htmx_get(self._url4(), {"by": "hostname", "q": "host", "state": ""})
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "active-host")
         self.assertContains(response, "declined-host")
         self.assertContains(response, "expired-host")
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_state_filter_applied_on_paginated_subnet_search(self, MockKeaClient):
+    def test_state_filter_applied_on_paginated_subnet_search(self):
         """State filter also applies to paginated subnet-based search."""
-        mock_client = MockKeaClient.return_value
-        # First call: lease4-get-page; second: reservation_get_page
-        mock_client.command.return_value = _PAGE_LEASES_RESP
-        mock_client.reservation_get_page.return_value = ([], 0, 0)
-        response = self._htmx_get(
-            self._url4(),
-            {"by": "subnet", "q": "10.0.0.0/24", "state": "1"},
-        )
+        with stub_kea(
+            {"config-get": self._CONFIG4, "lease4-get-page": _PAGE_LEASES_RESP[0], "reservation-get": {"result": 3}}
+        ):
+            response = self._htmx_get(
+                self._url4(),
+                {"by": "subnet", "q": "10.0.0.0/24", "state": "1"},
+            )
         self.assertEqual(response.status_code, 200)
         self.assertNotContains(response, "page-active")
         self.assertContains(response, "page-declined")
