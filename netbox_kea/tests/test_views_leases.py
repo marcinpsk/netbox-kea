@@ -1412,13 +1412,12 @@ class TestLeaseSignals(_ViewTestBase):
         "valid_lft": 3600,
     }
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_lease_add_fires_lease_added_signal(self, MockKeaClient):
+    # Pool-overlap advisory fetches the subnet; no pools → no overlap warning.
+    _SUBNET4 = {"result": 0, "arguments": {"subnet4": [{"id": 1, "subnet": "10.0.0.0/24", "pools": []}]}}
+
+    def test_lease_add_fires_lease_added_signal(self):
         """_BaseLeaseAddView.post must send lease_added signal after successful add."""
         from netbox_kea import signals
-
-        mock_client = MockKeaClient.return_value
-        mock_client.lease_add.return_value = None
 
         received = []
 
@@ -1428,7 +1427,8 @@ class TestLeaseSignals(_ViewTestBase):
         signals.lease_added.connect(handler)
         try:
             url = reverse("plugins:netbox_kea:server_lease4_add", args=[self.server.pk])
-            self.client.post(url, self._LEASE4)
+            with stub_kea({"lease4-add": {"result": 0}}):
+                self.client.post(url, self._LEASE4)
         finally:
             signals.lease_added.disconnect(handler)
 
@@ -1437,13 +1437,9 @@ class TestLeaseSignals(_ViewTestBase):
         self.assertEqual(received[0]["dhcp_version"], 4)
         self.assertEqual(received[0]["server"].pk, self.server.pk)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_lease_delete_fires_leases_deleted_signal(self, MockKeaClient):
+    def test_lease_delete_fires_leases_deleted_signal(self):
         """BaseServerLeasesDeleteView.post must send leases_deleted signal after successful delete."""
         from netbox_kea import signals
-
-        mock_client = MockKeaClient.return_value
-        mock_client.command.return_value = [{"result": 0, "text": "Success"}]
 
         received = []
 
@@ -1453,7 +1449,8 @@ class TestLeaseSignals(_ViewTestBase):
         signals.leases_deleted.connect(handler)
         try:
             url = reverse("plugins:netbox_kea:server_leases4_delete", args=[self.server.pk])
-            self.client.post(url, {"pk": "10.0.0.5", "_confirm": "1"})
+            with stub_kea({"lease4-del": {"result": 0}}):
+                self.client.post(url, {"pk": "10.0.0.5", "_confirm": "1"})
         finally:
             signals.leases_deleted.disconnect(handler)
 
@@ -1461,14 +1458,9 @@ class TestLeaseSignals(_ViewTestBase):
         self.assertIn("10.0.0.5", received[0]["ip_addresses"])
         self.assertEqual(received[0]["dhcp_version"], 4)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_reservation_add_fires_reservation_created_signal(self, MockKeaClient):
+    def test_reservation_add_fires_reservation_created_signal(self):
         """ServerReservation4AddView.post must send reservation_created signal."""
         from netbox_kea import signals
-
-        mock_client = MockKeaClient.return_value
-        mock_client.reservation_add.return_value = None
-        mock_client.command.return_value = [{"result": 0, "text": "Success"}]  # config-write
 
         received = []
 
@@ -1478,30 +1470,26 @@ class TestLeaseSignals(_ViewTestBase):
         signals.reservation_created.connect(handler)
         try:
             url = reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk])
-            self.client.post(
-                url,
-                {
-                    "subnet_id": 1,
-                    "ip_address": "10.0.0.10",
-                    "identifier_type": "hw-address",
-                    "identifier": "aa:bb:cc:dd:ee:01",
-                    "hostname": "",
-                },
-            )
+            with stub_kea({"subnet4-get": self._SUBNET4, "reservation-add": {"result": 0}}):
+                self.client.post(
+                    url,
+                    {
+                        "subnet_id": 1,
+                        "ip_address": "10.0.0.10",
+                        "identifier_type": "hw-address",
+                        "identifier": "aa:bb:cc:dd:ee:01",
+                        "hostname": "",
+                    },
+                )
         finally:
             signals.reservation_created.disconnect(handler)
 
         self.assertEqual(len(received), 1)
         self.assertEqual(received[0]["dhcp_version"], 4)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_reservation_delete_fires_reservation_deleted_signal(self, MockKeaClient):
+    def test_reservation_delete_fires_reservation_deleted_signal(self):
         """ServerReservation4DeleteView.post must send reservation_deleted signal."""
         from netbox_kea import signals
-
-        mock_client = MockKeaClient.return_value
-        mock_client.reservation_del.return_value = None
-        mock_client.command.return_value = [{"result": 0, "text": "Success"}]
 
         received = []
 
@@ -1514,7 +1502,8 @@ class TestLeaseSignals(_ViewTestBase):
                 "plugins:netbox_kea:server_reservation4_delete",
                 args=[self.server.pk, 1, "10.0.0.10"],
             )
-            self.client.post(url)
+            with stub_kea({"reservation-del": {"result": 0}}):
+                self.client.post(url)
         finally:
             signals.reservation_deleted.disconnect(handler)
 
@@ -1527,30 +1516,28 @@ class TestLeaseSignals(_ViewTestBase):
 class TestLeaseJournalEntries(_ViewTestBase):
     """Lease add and delete views must create JournalEntry records on the Server."""
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_lease_add_creates_journal_entry(self, MockKeaClient):
+    def test_lease_add_creates_journal_entry(self):
         """A successful lease add must create a JournalEntry attached to the server."""
         from django.contrib.contenttypes.models import ContentType
         from extras.models import JournalEntry
 
-        mock_client = MockKeaClient.return_value
-        mock_client.lease_add.return_value = None
         url = reverse("plugins:netbox_kea:server_lease4_add", args=[self.server.pk])
         server_ct = ContentType.objects.get_for_model(self.server)
         before = JournalEntry.objects.filter(
             assigned_object_id=self.server.pk,
             assigned_object_type=server_ct,
         ).count()
-        self.client.post(
-            url,
-            {
-                "ip_address": "10.0.0.5",
-                "hw_address": "aa:bb:cc:dd:ee:01",
-                "hostname": "journal-host",
-                "subnet_id": 1,
-                "valid_lft": 3600,
-            },
-        )
+        with stub_kea({"lease4-add": {"result": 0}}):
+            self.client.post(
+                url,
+                {
+                    "ip_address": "10.0.0.5",
+                    "hw_address": "aa:bb:cc:dd:ee:01",
+                    "hostname": "journal-host",
+                    "subnet_id": 1,
+                    "valid_lft": 3600,
+                },
+            )
         after = JournalEntry.objects.filter(assigned_object_id=self.server.pk, assigned_object_type=server_ct).count()
         self.assertEqual(after, before + 1)
         entry = JournalEntry.objects.filter(assigned_object_id=self.server.pk, assigned_object_type=server_ct).latest(
@@ -1558,18 +1545,16 @@ class TestLeaseJournalEntries(_ViewTestBase):
         )
         self.assertIn("10.0.0.5", entry.comments)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_lease_delete_creates_journal_entry(self, MockKeaClient):
+    def test_lease_delete_creates_journal_entry(self):
         """A successful lease delete must create a JournalEntry attached to the server."""
         from django.contrib.contenttypes.models import ContentType
         from extras.models import JournalEntry
 
-        mock_client = MockKeaClient.return_value
-        mock_client.command.return_value = [{"result": 0, "text": "Success"}]
         url = reverse("plugins:netbox_kea:server_leases4_delete", args=[self.server.pk])
         server_ct = ContentType.objects.get_for_model(self.server)
         before = JournalEntry.objects.filter(assigned_object_id=self.server.pk, assigned_object_type=server_ct).count()
-        self.client.post(url, {"pk": "10.0.0.5", "_confirm": "1"})
+        with stub_kea({"lease4-del": {"result": 0}}):
+            self.client.post(url, {"pk": "10.0.0.5", "_confirm": "1"})
         after = JournalEntry.objects.filter(assigned_object_id=self.server.pk, assigned_object_type=server_ct).count()
         self.assertEqual(after, before + 1)
         entry = JournalEntry.objects.filter(assigned_object_id=self.server.pk, assigned_object_type=server_ct).latest(
@@ -1742,59 +1727,44 @@ class TestEnrichLeasesReservationFlags(_ViewTestBase):
 class TestEnrichLeasesExceptionPaths(_ViewTestBase):
     """_enrich_leases_with_badges exception branches (KeaException result≠2 and generic)."""
 
+    _CONFIG4 = {"result": 0, "arguments": {"Dhcp4": {"subnet4": [{"id": 1, "subnet": "10.0.0.0/24"}]}}}
+    _LEASE4 = {
+        "ip-address": "10.0.0.1",
+        "hw-address": "aa:bb:cc:dd:ee:ff",
+        "subnet-id": 1,
+        "valid-lft": 3600,
+        "cltt": 0,
+    }
+
     def _url(self):
         return reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_kea_exception_non_hook_swallowed(self, MockKeaClient):
-        """KeaException with result≠2 is swallowed and view returns 200."""
+    def test_kea_exception_non_hook_swallowed(self):
+        """KeaException with result≠2 raised by the reservation fetch is swallowed; view returns 200."""
         from netbox_kea.kea import KeaException
 
-        mock_client = MockKeaClient.return_value
-        mock_client.lease4_get_page.return_value = (
-            [
-                {
-                    "ip-address": "10.0.0.1",
-                    "hw-address": "aa:bb:cc:dd:ee:ff",
-                    "hostname": "host1",
-                    "subnet-id": 1,
-                    "valid-lft": 3600,
-                    "cltt": 0,
-                }
-            ],
-            0,
-            0,
-        )
-        with patch(
-            "netbox_kea.views.leases._fetch_reservation_by_ip_for_leases",
-            side_effect=KeaException({"result": 1, "text": "error"}, index=0),
+        # Real lease search returns one lease; force the reservation fetch to raise so the
+        # enrichment outer handler is exercised. (failed_ips then short-circuits the MAC pass.)
+        with (
+            stub_kea({"config-get": self._CONFIG4, "lease4-get": {"result": 0, "arguments": dict(self._LEASE4)}}),
+            patch(
+                "netbox_kea.views.leases._fetch_reservation_by_ip_for_leases",
+                side_effect=KeaException({"result": 1, "text": "error"}, index=0),
+            ),
         ):
-            response = self.client.get(self._url())
+            response = self.client.get(self._url() + "?by=ip&q=10.0.0.1", HTTP_HX_REQUEST="true")
         self.assertEqual(response.status_code, 200)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_generic_exception_in_enrichment_swallowed(self, MockKeaClient):
+    def test_generic_exception_in_enrichment_swallowed(self):
         """Generic exception in enrichment is swallowed and view returns 200."""
-        mock_client = MockKeaClient.return_value
-        mock_client.lease4_get_page.return_value = (
-            [
-                {
-                    "ip-address": "10.0.0.2",
-                    "hw-address": "aa:bb:cc:dd:ee:01",
-                    "hostname": "host2",
-                    "subnet-id": 1,
-                    "valid-lft": 3600,
-                    "cltt": 0,
-                }
-            ],
-            0,
-            0,
-        )
-        with patch(
-            "netbox_kea.views.leases._fetch_reservation_by_ip_for_leases",
-            side_effect=RuntimeError("unexpected error"),
+        with (
+            stub_kea({"config-get": self._CONFIG4, "lease4-get": {"result": 0, "arguments": dict(self._LEASE4)}}),
+            patch(
+                "netbox_kea.views.leases._fetch_reservation_by_ip_for_leases",
+                side_effect=RuntimeError("unexpected error"),
+            ),
         ):
-            response = self.client.get(self._url())
+            response = self.client.get(self._url() + "?by=ip&q=10.0.0.1", HTTP_HX_REQUEST="true")
         self.assertEqual(response.status_code, 200)
 
 
@@ -1875,16 +1845,18 @@ class TestJournalHelperEdgeCases(_ViewTestBase):
 class TestHTMXExceptionHandler(_ViewTestBase):
     """Lines 731-736: exception during HTMX partial rendering returns error partial."""
 
+    _CONFIG4 = {"result": 0, "arguments": {"Dhcp4": {"subnet4": [{"id": 1, "subnet": "10.0.0.0/24"}]}}}
+
     def _url(self):
         return reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_htmx_exception_returns_error_partial(self, MockKeaClient):
-        MockKeaClient.return_value.command.side_effect = RuntimeError("boom")
-        response = self.client.get(
-            self._url() + "?q=10.0.0.1&by=ip",
-            HTTP_HX_REQUEST="true",
-        )
+    def test_htmx_exception_returns_error_partial(self):
+        # A RuntimeError from the lease fetch must be caught and rendered as the HTMX error partial.
+        with stub_kea({"config-get": self._CONFIG4, "lease4-get": RuntimeError("boom")}):
+            response = self.client.get(
+                self._url() + "?q=10.0.0.1&by=ip",
+                HTTP_HX_REQUEST="true",
+            )
         # Must not crash — returns HTMX error partial
         self.assertIn(response.status_code, (200, 500))
 
@@ -1898,41 +1870,39 @@ class TestHTMXExceptionHandler(_ViewTestBase):
 class TestLeaseEditGet(_ViewTestBase):
     """Lines 894-896, 899-900, 910: lease edit GET error paths."""
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_get_kea_exception_redirects(self, MockKeaClient):
+    def test_get_kea_exception_redirects(self):
         """KeaException in lease4 GET redirects to leases page."""
-        from netbox_kea.kea import KeaException
-
-        MockKeaClient.return_value.command.side_effect = KeaException({"result": 1, "text": "err"}, index=0)
+        # result=1 makes lease4-get raise KeaException in the real client.
         url = reverse("plugins:netbox_kea:server_lease4_edit", args=[self.server.pk, "10.0.0.1"])
-        response = self.client.get(url)
+        with stub_kea({"lease4-get": {"result": 1, "text": "err"}}):
+            response = self.client.get(url)
         self.assertEqual(response.status_code, 302)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_get_lease_not_found_redirects(self, MockKeaClient):
+    def test_get_lease_not_found_redirects(self):
         """result=3 (not found) in lease4 GET redirects to leases page."""
-        MockKeaClient.return_value.command.return_value = [{"result": 3, "arguments": None}]
         url = reverse("plugins:netbox_kea:server_lease4_edit", args=[self.server.pk, "10.0.0.1"])
-        response = self.client.get(url)
+        with stub_kea({"lease4-get": {"result": 3, "arguments": None}}):
+            response = self.client.get(url)
         self.assertEqual(response.status_code, 302)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_get_v6_lease_includes_duid(self, MockKeaClient):
+    def test_get_v6_lease_includes_duid(self):
         """v6 lease GET includes duid in form initial (line 910)."""
         server6 = _make_db_server(name="kea6-only", ca_url="https://kea6.example.com", dhcp4=False, dhcp6=True)
-        MockKeaClient.return_value.command.return_value = [
-            {
-                "result": 0,
-                "arguments": {
-                    "ip-address": "2001:db8::1",
-                    "duid": "00:01:00:01",
-                    "hostname": "v6host",
-                    "valid-lft": 3600,
-                },
-            }
-        ]
         url = reverse("plugins:netbox_kea:server_lease6_edit", args=[server6.pk, "2001:db8::1"])
-        response = self.client.get(url)
+        with stub_kea(
+            {
+                "lease6-get": {
+                    "result": 0,
+                    "arguments": {
+                        "ip-address": "2001:db8::1",
+                        "duid": "00:01:00:01",
+                        "hostname": "v6host",
+                        "valid-lft": 3600,
+                    },
+                }
+            }
+        ):
+            response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "00:01:00:01")
 
@@ -1946,11 +1916,13 @@ class TestLeaseEditGet(_ViewTestBase):
 class TestLeaseEditPostInvalidForm(_ViewTestBase):
     """Line 931: lease edit POST with invalid form re-renders with 200."""
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_invalid_form_rerenders(self, MockKeaClient):
+    def test_post_invalid_form_rerenders(self):
         url = reverse("plugins:netbox_kea:server_lease4_edit", args=[self.server.pk, "10.0.0.1"])
-        response = self.client.post(url, {"hostname": "", "valid_lft": "not-a-number"})
+        # Invalid form re-renders before any Kea call — empty registry proves none is issued.
+        with stub_kea({}) as kea:
+            response = self.client.post(url, {"hostname": "", "valid_lft": "not-a-number"})
         self.assertEqual(response.status_code, 200)
+        self.assertEqual(kea.commands(), [])
 
 
 # ---------------------------------------------------------------------------
@@ -1962,20 +1934,20 @@ class TestLeaseEditPostInvalidForm(_ViewTestBase):
 class TestLeaseAddGenericException(_ViewTestBase):
     """Lines 1056-1058: generic exception on lease_add re-renders form."""
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_generic_exception_rerenders_form(self, MockKeaClient):
-        MockKeaClient.return_value.lease_add.side_effect = requests.RequestException("unexpected crash")
+    def test_generic_exception_rerenders_form(self):
         url = reverse("plugins:netbox_kea:server_lease4_add", args=[self.server.pk])
-        response = self.client.post(
-            url,
-            {
-                "ip_address": "10.0.0.99",
-                "subnet_id": "1",
-                "hw_address": "aa:bb:cc:dd:ee:ff",
-                "hostname": "testhost",
-                "valid_lft": "3600",
-            },
-        )
+        # A transport error from lease4-add must re-render the form with an error message.
+        with stub_kea({"lease4-add": requests.RequestException("unexpected crash")}):
+            response = self.client.post(
+                url,
+                {
+                    "ip_address": "10.0.0.99",
+                    "subnet_id": "1",
+                    "hw_address": "aa:bb:cc:dd:ee:ff",
+                    "hostname": "testhost",
+                    "valid_lft": "3600",
+                },
+            )
         self.assertEqual(response.status_code, 200)
         msgs = [m.message for m in response.context["messages"]]
         self.assertTrue(any("Failed to create lease" in m or "internal" in m.lower() for m in msgs))
