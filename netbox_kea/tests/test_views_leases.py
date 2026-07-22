@@ -33,6 +33,7 @@ from netbox_kea.kea import KeaClient
 from netbox_kea.models import Server
 from netbox_kea.views.leases import _fetch_subnet_choices, _subnet_choices_cache_key, _subnet_sort_key
 
+from .kea_stub import stub_kea
 from .utils import _PLUGINS_CONFIG, _make_db_server, _ViewTestBase
 
 
@@ -107,21 +108,22 @@ class TestServerLeases4DeleteView(_ViewTestBase):
         self.assertEqual(response.status_code, 302)
         self._assert_no_none_pk_redirect(response)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_htmx_single_lease_returns_hx_refresh(self, MockKeaClient):
+    def test_post_htmx_single_lease_returns_hx_refresh(self):
         """An HTMX POST with a single IP and _confirm returns HX-Refresh: true instead of redirect."""
-        mock_client = MockKeaClient.return_value
-        mock_client.command.return_value = [{"result": 0, "text": "Success"}]
         url = reverse("plugins:netbox_kea:server_leases4_delete", args=[self.server.pk])
-        response = self.client.post(
-            url,
-            {"pk": "192.0.2.1", "_confirm": "1"},
-            HTTP_HX_REQUEST="true",
-        )
+        with stub_kea({"lease4-del": {"result": 0, "text": "Success"}}) as kea:
+            response = self.client.post(
+                url,
+                {"pk": "192.0.2.1", "_confirm": "1"},
+                HTTP_HX_REQUEST="true",
+            )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.headers.get("HX-Refresh"), "true")
-        cmd_names = [c.args[0] for c in mock_client.command.call_args_list]
-        self.assertIn("lease4-del", cmd_names)
+        # De-mocked: assert the real request payload built by KeaClient.command(), not a mock call.
+        self.assertEqual(kea.commands(), ["lease4-del"])
+        body = kea.bodies("lease4-del")[0]
+        self.assertEqual(body["arguments"], {"ip-address": "192.0.2.1"})
+        self.assertEqual(body["service"], ["dhcp4"])
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
