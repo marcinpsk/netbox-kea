@@ -660,28 +660,58 @@ class TestServerSubnet4EditView(_ViewTestBase):
 class TestServerSubnet6EditView(_ViewTestBase):
     """Tests for ServerSubnet6EditView — verifies v6 variant uses correct version."""
 
+    # subnet_update reads the live subnet before merging; give it one to merge onto.
+    _LIVE_SUBNET6 = {
+        "result": 0,
+        "arguments": {"subnet6": [{"id": 7, "subnet": "2001:db8::/48", "pools": [], "option-data": []}]},
+    }
+
     def _url(self, subnet_id=7):
         return reverse("plugins:netbox_kea:server_subnet6_edit", args=[self.server.pk, subnet_id])
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_get_returns_200(self, MockKeaClient):
+    def _get_stub(self, subnet=None, config=None):
+        """GET chain: subnet6-get (prefill) then config-get (network/inherited data)."""
+        return stub_kea(
+            {
+                "subnet6-get": subnet if subnet is not None else _SUBNET6_GET_FULL[0],
+                "config-get": config if config is not None else _CONFIG6_NO_NETWORKS[0],
+            }
+        )
+
+    def _post_stub(self, **overrides):
+        """POST chain: view config-get + real subnet_update (subnet6-get → update → persist)."""
+        base = {
+            "config-get": _CONFIG6_NO_NETWORKS[0],
+            "subnet6-get": self._LIVE_SUBNET6,
+            "subnet6-update": {"result": 0},
+            "config-test": {"result": 0},
+            "config-write": {"result": 0},
+        }
+        base.update(overrides)
+        return stub_kea(base)
+
+    @staticmethod
+    def _updated_subnet(kea):
+        """The subnet object in the real subnet6-update payload."""
+        return kea.bodies("subnet6-update")[0]["arguments"]["subnet6"][0]
+
+    def test_get_returns_200(self):
         """GET must return 200 for IPv6 edit view."""
-        MockKeaClient.return_value.command.return_value = _SUBNET6_GET_FULL
-        response = self.client.get(self._url())
+        with self._get_stub():
+            response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_calls_subnet_update_with_version_6(self, MockKeaClient):
-        """POST must call subnet_update with version=6."""
-        MockKeaClient.return_value.subnet_update.return_value = None
-        MockKeaClient.return_value.command.return_value = _CONFIG6_NO_NETWORKS
-        self.client.post(
-            self._url(subnet_id=7),
-            {"subnet_cidr": "2001:db8::/48", "pools": "", "gateway": "", "dns_servers": "", "ntp_servers": ""},
-        )
-        call_kwargs = MockKeaClient.return_value.subnet_update.call_args
-        version_arg = call_kwargs.kwargs.get("version") or call_kwargs[1].get("version")
-        self.assertEqual(version_arg, 6)
+    def test_post_calls_subnet_update_with_version_6(self):
+        """POST must issue subnet6-update (the v6-specific command) for the correct subnet_id."""
+        with self._post_stub() as kea:
+            response = self.client.post(
+                self._url(subnet_id=7),
+                {"subnet_cidr": "2001:db8::/48", "pools": "", "gateway": "", "dns_servers": "", "ntp_servers": ""},
+            )
+        self.assertEqual(response.status_code, 302)
+        self._assert_no_none_pk_redirect(response)
+        self.assertIn("subnet6-update", kea.commands())
+        self.assertEqual(self._updated_subnet(kea)["id"], 7)
 
 
 # ---------------------------------------------------------------------------
@@ -762,6 +792,12 @@ _CONFIG6_NO_NETWORKS = [
 class TestServerSubnet4EditViewNetworkAssignment(_ViewTestBase):
     """Tests for shared-network assignment in ServerSubnet4EditView."""
 
+    # subnet_update reads the live subnet before merging; give it one to merge onto.
+    _LIVE_SUBNET4 = {
+        "result": 0,
+        "arguments": {"subnet4": [{"id": 42, "subnet": "10.0.0.0/24", "pools": [], "option-data": []}]},
+    }
+
     def _url(self, subnet_id=42):
         return reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, subnet_id])
 
@@ -776,97 +812,91 @@ class TestServerSubnet4EditViewNetworkAssignment(_ViewTestBase):
             "current_network": current_network,
         }
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_get_shows_network_dropdown_with_available_networks(self, MockKeaClient):
+    def _get_stub(self, config):
+        """GET chain: subnet4-get (prefill) then config-get (network data drives the dropdown)."""
+        return stub_kea({"subnet4-get": _SUBNET4_GET_FULL[0], "config-get": config})
+
+    def _post_stub(self, config, **overrides):
+        """POST chain: config-get (current network + choices) + real subnet_update + network move.
+
+        The view determines the *current* network server-side from config-get (not from the
+        POST body), so the config passed here decides whether add/del actually fire.
+        ``network4-subnet-add``/``-del`` are always registered; the view only issues the ones
+        the membership change requires.
+        """
+        base = {
+            "config-get": config,
+            "subnet4-get": self._LIVE_SUBNET4,
+            "subnet4-update": {"result": 0},
+            "config-test": {"result": 0},
+            "config-write": {"result": 0},
+            "network4-subnet-add": {"result": 0},
+            "network4-subnet-del": {"result": 0},
+        }
+        base.update(overrides)
+        return stub_kea(base)
+
+    def test_get_shows_network_dropdown_with_available_networks(self):
         """GET must render the form with a shared_network dropdown listing available networks."""
-        mock_client = MockKeaClient.return_value
-        # First call: subnet4-get, Second call: config-get for networks
-        mock_client.command.side_effect = [_SUBNET4_GET_FULL, _CONFIG4_NO_NETWORKS]
-        response = self.client.get(self._url())
+        with self._get_stub(config=_CONFIG4_NO_NETWORKS[0]):
+            response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "net-alpha")
         self.assertContains(response, "net-beta")
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_get_preselects_current_network_when_subnet_belongs_to_network(self, MockKeaClient):
+    def test_get_preselects_current_network_when_subnet_belongs_to_network(self):
         """GET must pre-select the current shared network in the dropdown."""
-        mock_client = MockKeaClient.return_value
-        mock_client.command.side_effect = [_SUBNET4_GET_FULL, _CONFIG4_WITH_SUBNET_IN_NETWORK]
-        response = self.client.get(self._url())
+        with self._get_stub(config=_CONFIG4_WITH_SUBNET_IN_NETWORK[0]):
+            response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
         # The form initial value should be net-alpha (selected option)
         self.assertContains(response, "net-alpha")
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_assigns_subnet_to_network_calls_network_subnet_add(self, MockKeaClient):
-        """POST moving subnet into a network must call network_subnet_add."""
-        mock_client = MockKeaClient.return_value
-        # config-get for current network (subnet not in any network)
-        mock_client.command.return_value = _CONFIG4_NO_NETWORKS
-        mock_client.subnet_update.return_value = None
-        mock_client.network_subnet_add.return_value = None
-
-        response = self.client.post(self._url(), self._post_data(shared_network="net-alpha", current_network=""))
+    def test_post_assigns_subnet_to_network_calls_network_subnet_add(self):
+        """POST moving subnet into a network must issue network4-subnet-add (and no del)."""
+        # config places subnet 42 in NO network → current_network == "".
+        with self._post_stub(config=_CONFIG4_NO_NETWORKS[0]) as kea:
+            response = self.client.post(self._url(), self._post_data(shared_network="net-alpha", current_network=""))
         self.assertIn(response.status_code, (200, 302))
-        mock_client.network_subnet_add.assert_called_once()
-        call_kwargs = mock_client.network_subnet_add.call_args.kwargs or mock_client.network_subnet_add.call_args[1]
-        self.assertEqual(call_kwargs.get("name"), "net-alpha")
-        self.assertEqual(call_kwargs.get("subnet_id"), 42)
+        self.assertIn("network4-subnet-add", kea.commands())
+        self.assertNotIn("network4-subnet-del", kea.commands())
+        args = kea.bodies("network4-subnet-add")[0]["arguments"]
+        self.assertEqual(args["name"], "net-alpha")
+        self.assertEqual(args["id"], 42)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_removes_subnet_from_network_calls_network_subnet_del(self, MockKeaClient):
-        """POST clearing network (current→blank) must call network_subnet_del."""
-        mock_client = MockKeaClient.return_value
-        mock_client.command.return_value = _CONFIG4_WITH_SUBNET_IN_NETWORK
-        mock_client.subnet_update.return_value = None
-        mock_client.network_subnet_del.return_value = None
-
-        response = self.client.post(self._url(), self._post_data(shared_network="", current_network="net-alpha"))
+    def test_post_removes_subnet_from_network_calls_network_subnet_del(self):
+        """POST clearing network (current→blank) must issue network4-subnet-del (and no add)."""
+        # config places subnet 42 in net-alpha → current_network == "net-alpha".
+        with self._post_stub(config=_CONFIG4_WITH_SUBNET_IN_NETWORK[0]) as kea:
+            response = self.client.post(self._url(), self._post_data(shared_network="", current_network="net-alpha"))
         self.assertIn(response.status_code, (200, 302))
-        mock_client.network_subnet_del.assert_called_once()
-        call_kwargs = mock_client.network_subnet_del.call_args.kwargs or mock_client.network_subnet_del.call_args[1]
-        self.assertEqual(call_kwargs.get("name"), "net-alpha")
-        self.assertEqual(call_kwargs.get("subnet_id"), 42)
+        self.assertIn("network4-subnet-del", kea.commands())
+        self.assertNotIn("network4-subnet-add", kea.commands())
+        args = kea.bodies("network4-subnet-del")[0]["arguments"]
+        self.assertEqual(args["name"], "net-alpha")
+        self.assertEqual(args["id"], 42)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_changes_network_calls_del_then_add(self, MockKeaClient):
-        """POST changing from one network to another must call del then add."""
-        mock_client = MockKeaClient.return_value
-        mock_client.command.return_value = _CONFIG4_WITH_SUBNET_IN_NETWORK
-        mock_client.subnet_update.return_value = None
-        mock_client.network_subnet_del.return_value = None
-        mock_client.network_subnet_add.return_value = None
+    def test_post_changes_network_calls_del_then_add(self):
+        """POST changing from one network to another must issue both add and del."""
+        with self._post_stub(config=_CONFIG4_WITH_SUBNET_IN_NETWORK[0]) as kea:
+            self.client.post(self._url(), self._post_data(shared_network="net-beta", current_network="net-alpha"))
+        self.assertIn("network4-subnet-add", kea.commands())
+        self.assertIn("network4-subnet-del", kea.commands())
+        self.assertEqual(kea.bodies("network4-subnet-del")[0]["arguments"]["name"], "net-alpha")
+        self.assertEqual(kea.bodies("network4-subnet-add")[0]["arguments"]["name"], "net-beta")
 
-        self.client.post(self._url(), self._post_data(shared_network="net-beta", current_network="net-alpha"))
-        mock_client.network_subnet_del.assert_called_once()
-        mock_client.network_subnet_add.assert_called_once()
-        del_kwargs = mock_client.network_subnet_del.call_args.kwargs or mock_client.network_subnet_del.call_args[1]
-        add_kwargs = mock_client.network_subnet_add.call_args.kwargs or mock_client.network_subnet_add.call_args[1]
-        self.assertEqual(del_kwargs.get("name"), "net-alpha")
-        self.assertEqual(add_kwargs.get("name"), "net-beta")
+    def test_post_no_network_change_does_not_call_network_subnet_methods(self):
+        """POST when network is unchanged must NOT issue network4-subnet-add or -del."""
+        with self._post_stub(config=_CONFIG4_WITH_SUBNET_IN_NETWORK[0]) as kea:
+            self.client.post(self._url(), self._post_data(shared_network="net-alpha", current_network="net-alpha"))
+        self.assertNotIn("network4-subnet-add", kea.commands())
+        self.assertNotIn("network4-subnet-del", kea.commands())
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_no_network_change_does_not_call_network_subnet_methods(self, MockKeaClient):
-        """POST when network is unchanged must NOT call network_subnet_add or del."""
-        mock_client = MockKeaClient.return_value
-        mock_client.command.return_value = _CONFIG4_WITH_SUBNET_IN_NETWORK
-        mock_client.subnet_update.return_value = None
-
-        self.client.post(self._url(), self._post_data(shared_network="net-alpha", current_network="net-alpha"))
-        mock_client.network_subnet_add.assert_not_called()
-        mock_client.network_subnet_del.assert_not_called()
-
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_network_assignment_with_version_4(self, MockKeaClient):
-        """POST network_subnet_add must be called with version=4 for v4 subnets."""
-        mock_client = MockKeaClient.return_value
-        mock_client.command.return_value = _CONFIG4_NO_NETWORKS
-        mock_client.subnet_update.return_value = None
-        mock_client.network_subnet_add.return_value = None
-
-        self.client.post(self._url(), self._post_data(shared_network="net-alpha", current_network=""))
-        call_kwargs = mock_client.network_subnet_add.call_args.kwargs or mock_client.network_subnet_add.call_args[1]
-        self.assertEqual(call_kwargs.get("version"), 4)
+    def test_post_network_assignment_with_version_4(self):
+        """POST must issue network4-subnet-add (the v4-specific command) for v4 subnets."""
+        with self._post_stub(config=_CONFIG4_NO_NETWORKS[0]) as kea:
+            self.client.post(self._url(), self._post_data(shared_network="net-alpha", current_network=""))
+        self.assertIn("network4-subnet-add", kea.commands())
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -890,13 +920,6 @@ _CONFIG4_NETWORKS_FOR_ADD = [
 ]
 
 
-def _mock_kea_command_for_subnet_add(cmd, **kw):
-    """Return a subnet-list response for list commands, else the available networks config."""
-    if "list" in cmd:
-        return [{"result": 0, "arguments": {"subnets": []}}]
-    return _CONFIG4_NETWORKS_FOR_ADD
-
-
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestServerSubnet4AddViewSharedNetwork(_ViewTestBase):
     """GET/POST /plugins/kea/servers/<pk>/subnets4/add/ — shared_network field."""
@@ -915,46 +938,50 @@ class TestServerSubnet4AddViewSharedNetwork(_ViewTestBase):
             "shared_network": shared_network,
         }
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_get_shows_shared_network_dropdown(self, MockKeaClient):
+    def _add_stub(self, **overrides):
+        """POST chain: config-get (choices) + real subnet_add (list→add→persist) + network move.
+
+        subnet_id is left blank, so subnet_add auto-assigns via subnet4-list (empty → id 1);
+        subnet4-add echoes id 1, which is what the follow-up network4-subnet-add targets.
+        network4-subnet-add is always registered; the view only issues it when a network is set.
+        """
+        base = {
+            "config-get": _CONFIG4_NETWORKS_FOR_ADD[0],
+            "subnet4-list": {"result": 0, "arguments": {"subnets": []}},
+            "subnet4-add": {"result": 0, "arguments": {"subnets": [{"id": 1}]}},
+            "config-test": {"result": 0},
+            "config-write": {"result": 0},
+            "network4-subnet-add": {"result": 0},
+        }
+        base.update(overrides)
+        return stub_kea(base)
+
+    def test_get_shows_shared_network_dropdown(self):
         """GET must render a shared_network dropdown populated from Kea config."""
-        mock_client = MockKeaClient.return_value
-        mock_client.command.side_effect = _mock_kea_command_for_subnet_add
-        response = self.client.get(self._url())
+        with stub_kea({"config-get": _CONFIG4_NETWORKS_FOR_ADD[0]}):
+            response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "net-alpha")
         self.assertContains(response, "net-beta")
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_with_shared_network_calls_network_subnet_add(self, MockKeaClient):
-        """POST with shared_network set must call network_subnet_add after subnet creation."""
-        mock_client = MockKeaClient.return_value
-        mock_client.command.side_effect = _mock_kea_command_for_subnet_add
-        mock_client.subnet_add.return_value = 1
-        mock_client.network_subnet_add.return_value = None
-
-        response = self.client.post(self._url(), self._valid_post_data(shared_network="net-alpha"))
+    def test_post_with_shared_network_calls_network_subnet_add(self):
+        """POST with shared_network set must issue network4-subnet-add after subnet creation."""
+        with self._add_stub() as kea:
+            response = self.client.post(self._url(), self._valid_post_data(shared_network="net-alpha"))
         self.assertIn(response.status_code, (302, 200))
-        mock_client.network_subnet_add.assert_called_once()
-        call_kwargs = mock_client.network_subnet_add.call_args[1] or {}
-        call_args = mock_client.network_subnet_add.call_args[0]
-        name = call_kwargs.get("name") or (call_args[1] if len(call_args) > 1 else None)
-        self.assertEqual(name, "net-alpha")
-        subnet_id = call_kwargs.get("subnet_id") or (call_args[2] if len(call_args) > 2 else None)
-        self.assertEqual(subnet_id, 1)
-        version = call_kwargs.get("version") or (call_args[0] if len(call_args) > 0 else None)
-        self.assertEqual(version, 4)
+        self.assertIn("subnet4-add", kea.commands())
+        self.assertIn("network4-subnet-add", kea.commands())
+        args = kea.bodies("network4-subnet-add")[0]["arguments"]
+        self.assertEqual(args["name"], "net-alpha")
+        self.assertEqual(args["id"], 1)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_without_shared_network_does_not_call_network_subnet_add(self, MockKeaClient):
-        """POST without shared_network must NOT call network_subnet_add."""
-        mock_client = MockKeaClient.return_value
-        mock_client.command.side_effect = _mock_kea_command_for_subnet_add
-        mock_client.subnet_add.return_value = None
-
-        response = self.client.post(self._url(), self._valid_post_data(shared_network=""))
+    def test_post_without_shared_network_does_not_call_network_subnet_add(self):
+        """POST without shared_network must NOT issue network4-subnet-add."""
+        with self._add_stub() as kea:
+            response = self.client.post(self._url(), self._valid_post_data(shared_network=""))
         self.assertIn(response.status_code, (302, 200))
-        mock_client.network_subnet_add.assert_not_called()
+        self.assertIn("subnet4-add", kea.commands())
+        self.assertNotIn("network4-subnet-add", kea.commands())
 
 
 # ---------------------------------------------------------------------------
