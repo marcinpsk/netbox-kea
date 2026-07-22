@@ -35,6 +35,11 @@ def _http_response(payload: Any, status: int = 200) -> MagicMock:
     return resp
 
 
+def _is_exc(obj: Any) -> bool:
+    """True if *obj* is an exception instance or an exception class."""
+    return isinstance(obj, BaseException) or (isinstance(obj, type) and issubclass(obj, BaseException))
+
+
 class KeaHttpStub:
     """Dispatch Kea commands by name and record the request bodies sent.
 
@@ -43,7 +48,14 @@ class KeaHttpStub:
 
     * a dict/list payload — used for every call of that command;
     * a ``list`` — consumed as a FIFO queue (the last item repeats);
-    * a callable ``(body) -> payload`` — for argument-dependent responses.
+    * a callable ``(body) -> payload`` — for argument-dependent responses;
+    * an exception instance or class — **raised** when the command is called, or
+      returned by a callable, to simulate a transport error (e.g.
+      ``requests.ConnectionError``) at the HTTP boundary. This lets error-path
+      tests drive the real ``KeaClient`` error handling instead of mocking
+      ``command.side_effect``. A KeaException-style failure is instead modelled by
+      returning a payload with a non-accepted ``result`` code, which the real
+      ``KeaClient.command()`` turns into a ``KeaException``.
 
     ``KeaClient`` expects a JSON list (one entry per targeted service); a payload
     that is not already a list is wrapped in a single-element list.
@@ -60,13 +72,14 @@ class KeaHttpStub:
         if cmd not in self._responses:
             raise AssertionError(f"KeaHttpStub: no response registered for command {cmd!r} (url={url})")
         spec = self._responses[cmd]
-        if callable(spec):
-            payload = spec(body)
-        elif isinstance(spec, list):
-            payload = spec.pop(0) if len(spec) > 1 else spec[0]
-        else:
-            payload = spec
-        return _http_response(payload if isinstance(payload, list) else [payload])
+        if isinstance(spec, list):
+            spec = spec.pop(0) if len(spec) > 1 else spec[0]
+        # A callable (but not an exception class) is resolved against the body.
+        if callable(spec) and not _is_exc(spec):
+            spec = spec(body)
+        if _is_exc(spec):
+            raise spec() if isinstance(spec, type) else spec
+        return _http_response(spec if isinstance(spec, list) else [spec])
 
     # --- assertion helpers ---
     def commands(self) -> list[str]:
