@@ -603,7 +603,9 @@ def test_navigation_add(page: Page) -> None:
     # The menu Add button is an icon-only, hover-revealed link whose accessible
     # name and visibility vary across NetBox versions. Target it by href and
     # dispatch the click directly so the test exercises the link, not the CSS reveal.
-    menu.locator('a[href$="/servers/add/"]').dispatch_event("click")
+    # Wait for the navigation the click triggers, so the title assertion doesn't race a slow load.
+    with page.expect_navigation(url=re.compile(r"/servers/add/")):
+        menu.locator('a[href$="/servers/add/"]').dispatch_event("click")
 
     expect(page).to_have_title(re.compile("^Add a new server.*"))
 
@@ -876,7 +878,10 @@ def test_dhcp_lease_invalid_search_values(page: Page, kea: KeaClient, version: i
     page.locator("#id_q").fill(q)
     page.locator("#id_by + div.form-select").click()
     page.locator("#id_by-ts-dropdown").get_by_role("option", name=by, exact=True).click()
-    page.get_by_role("button", name="Search").click()
+    # Wait for the search response before asserting the server-rendered validation error,
+    # so the assertion doesn't race the htmx form re-render (mirrors search_lease()).
+    with page.expect_response(re.compile(f"/leases{version}/")):
+        page.get_by_role("button", name="Search").click()
     expect_form_error_search(page, True)
     expect(page.locator("div.table-container")).to_have_count(0)
 
