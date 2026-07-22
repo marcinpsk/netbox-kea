@@ -45,6 +45,13 @@ def kea_dhcp6_url() -> str:
 
 
 @pytest.fixture(scope="session")
+def kea_server_kwargs(kea_url: str, kea_dhcp6_url: str) -> dict:
+    """Server-create kwargs for the Kea 3.0 dual-daemon harness (no Control Agent):
+    ca_url/DHCPv4 -> kea-dhcp4, DHCPv6 -> kea-dhcp6, and has_control_agent disabled."""
+    return {"ca_url": kea_url, "dhcp6_url": kea_dhcp6_url, "has_control_agent": False}
+
+
+@pytest.fixture(scope="session")
 def nb_http(netbox_token: str) -> requests.Session:
     s = requests.Session()
     auth_prefix = "Bearer" if netbox_token.startswith("nbt_") else "Token"

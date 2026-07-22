@@ -6,17 +6,16 @@ import requests
 from pynetbox.core.query import RequestError
 
 
-def test_server_api_add_delete(nb_api: pynetbox.api):
+def test_server_api_add_delete(nb_api: pynetbox.api, kea_url: str, kea_server_kwargs: dict):
     name = "test"
-    ca_url = "http://kea-ctrl-agent:8000"
 
-    server = nb_api.plugins.kea.servers.create(name=name, ca_url=ca_url)
+    server = nb_api.plugins.kea.servers.create(name=name, **kea_server_kwargs)
     assert server.name == name
-    assert server.ca_url == ca_url
+    assert server.ca_url == kea_url
 
     # We shouldn't be able to add a server with the same name
     with pytest.raises(RequestError):
-        nb_api.plugins.kea.servers.create(name=name, ca_url="http://kea-ctrl-agent:8000")
+        nb_api.plugins.kea.servers.create(name=name, **kea_server_kwargs)
 
     new_name = "new-name"
     server.update({"name": new_name})
@@ -28,11 +27,11 @@ def test_server_api_add_delete(nb_api: pynetbox.api):
     assert server.delete() is True
 
 
-def test_server_api_bulk_actions(nb_api: pynetbox.api):
+def test_server_api_bulk_actions(nb_api: pynetbox.api, kea_server_kwargs: dict):
     servers = nb_api.plugins.kea.servers.create(
         [
-            {"name": "server1", "ca_url": "http://kea-ctrl-agent:8000"},
-            {"name": "server2", "ca_url": "http://kea-ctrl-agent:8000"},
+            {"name": "server1", **kea_server_kwargs},
+            {"name": "server2", **kea_server_kwargs},
         ]
     )
     for s in servers:
@@ -43,8 +42,8 @@ def test_server_api_bulk_actions(nb_api: pynetbox.api):
     assert nb_api.plugins.kea.servers.delete(servers) is True
 
 
-def test_graphql(nb_api: pynetbox.api, nb_http: requests.Session):
-    server = nb_api.plugins.kea.servers.create(name="gql-test", ca_url="http://kea-ctrl-agent:8000")
+def test_graphql(nb_api: pynetbox.api, nb_http: requests.Session, kea_server_kwargs: dict):
+    server = nb_api.plugins.kea.servers.create(name="gql-test", **kea_server_kwargs)
     r = nb_http.post(
         "http://localhost:8000/graphql/",
         json={
@@ -171,6 +170,8 @@ def test_server_create_basic_auth(
         ca_url=kea_basic_url,
         ca_username=kea_basic_username,
         ca_password=kea_basic_password,
+        # nginx fronts only kea-dhcp4 for the connection-mode endpoints.
+        dhcp6=False,
     )
 
 
@@ -187,6 +188,8 @@ def test_server_create_client_cert(
         client_cert_path=kea_client_cert,
         client_key_path=kea_client_key,
         ca_file_path=kea_ca,
+        # nginx fronts only kea-dhcp4 for the connection-mode endpoints.
+        dhcp6=False,
     )
 
 
@@ -257,6 +260,8 @@ def test_server_create_https(nb_api: pynetbox.api, kea_https_url: str, kea_ca: s
         name="https",
         ca_url=kea_https_url,
         ca_file_path=kea_ca,
+        # nginx fronts only kea-dhcp4 for the connection-mode endpoints.
+        dhcp6=False,
     )
 
 
@@ -286,6 +291,8 @@ def test_server_create_no_ssl_verify(
         name="insecure",
         ca_url=kea_https_url,
         ssl_verify=False,
+        # nginx fronts only kea-dhcp4 for the connection-mode endpoints.
+        dhcp6=False,
     )
 
 
@@ -293,17 +300,18 @@ def test_server_create_dhcp4_false_dhcp6_false(nb_api: pynetbox.api, kea_url: st
     with pytest.raises(RequestError):
         nb_api.plugins.kea.servers.create(
             name="no-services-enabled",
-            ca_url="http://kea-ctrl-agent:8000",
+            ca_url=kea_url,
             dhcp4=False,
             dhcp6=False,
         )
 
 
-def test_server_api_changelog_password_censored(nb_api: pynetbox.api, nb_http: requests.Session):
+def test_server_api_changelog_password_censored(
+    nb_api: pynetbox.api, nb_http: requests.Session, kea_server_kwargs: dict
+):
     name = "changelog-test"
-    ca_url = "http://kea-ctrl-agent:8000"
 
-    server = nb_api.plugins.kea.servers.create(name=name, ca_url=ca_url)
+    server = nb_api.plugins.kea.servers.create(name=name, **kea_server_kwargs)
     assert server.name == name
 
     version = nb_api.status()["netbox-version"]
