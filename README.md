@@ -75,7 +75,7 @@ NetBox plugin for the [Kea DHCP](https://www.isc.org/kea/) server. Manage your D
 
 ## Requirements
 
-- NetBox 4.3, 4.4 or 4.5
+- NetBox 4.3 – 4.6
 - [Kea Control Agent](https://kea.readthedocs.io/en/latest/arm/agent.html)
 - [`lease_cmds`](https://kea.readthedocs.io/en/latest/arm/hooks.html#lease-cmds-lease-commands-for-easier-lease-management) hook library (for lease search and management)
 - [`host_cmds`](https://kea.readthedocs.io/en/latest/arm/hooks.html#host-cmds) hook library (optional, for reservation management)
@@ -89,7 +89,7 @@ The plugin degrades gracefully when optional hooks are absent — tabs for unava
 
 | netbox-kea-ng | NetBox | Kea |
 |---|---|---|
-| 1.x | 4.3 – 4.5 | 2.4+ |
+| 1.x | 4.3 – 4.6 | 2.4+ |
 
 Tested with Kea v2.4.1 using the `memfile` lease database. Other versions and databases should also work.
 
