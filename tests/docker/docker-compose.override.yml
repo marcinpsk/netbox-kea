@@ -1,32 +1,29 @@
 ---
+# Kea 3.0 removed the Control Agent: each DHCP daemon exposes its own HTTP control
+# socket, so the plugin connects to kea-dhcp4 and kea-dhcp6 directly (dual-URL).
+# Images are ISC's official open-source builds (docker.cloudsmith.io/isc/docker).
 services:
-  kea-dhcp6: &kea
-    build:
-      context: .
-      dockerfile: Dockerfile-kea
-    command: /usr/sbin/kea-dhcp6 -c /config/kea-dhcp6.conf
+  kea-dhcp4: &kea
+    image: docker.cloudsmith.io/isc/docker/kea-dhcp4:3.0.3
+    command: kea-dhcp4 -c /etc/kea/kea-dhcp4.conf
     volumes:
-      - ./kea_configs/:/config/:ro
-      - kea-run:/run/kea/
-  kea-dhcp4:
-    <<: *kea
-    command: /usr/sbin/kea-dhcp4 -c /config/kea-dhcp4.conf
-  kea-ctrl-agent:
-    <<: *kea
-    command: /usr/sbin/kea-ctrl-agent -c /config/kea-ctrl-agent.conf
-    depends_on:
-      - kea-dhcp4
-      - kea-dhcp6
+      - ./kea_configs/:/etc/kea/:ro
+    # Host-exposed for the test-side KeaClient (netbox->kea uses the service name).
+    # Bind to loopback only — these are unauthenticated Kea management sockets.
     ports:
-      - 8001:8000
+      - 127.0.0.1:8001:8000
+  kea-dhcp6:
+    <<: *kea
+    image: docker.cloudsmith.io/isc/docker/kea-dhcp6:3.0.3
+    command: kea-dhcp6 -c /etc/kea/kea-dhcp6.conf
+    ports:
+      - 127.0.0.1:8003:8000
   nginx:
     image: nginx:alpine-slim
     depends_on:
-      - kea-ctrl-agent
+      - kea-dhcp4
+      - kea-dhcp6
     volumes:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
       - ./htpasswd:/etc/nginx/htpasswd:ro
       - ./certs:/etc/nginx/certs/:ro
-volumes:
-  kea-run:
-    driver: local

@@ -56,8 +56,12 @@ def reset_user_preferences(requests_session: requests.Session, nb_api: pynetbox.
 
 
 @pytest.fixture
-def with_test_server(nb_api: pynetbox.api, kea_url: str, page: Page, netbox_login: None, plugin_base: str):
-    server = nb_api.plugins.kea.servers.create(name="test", ca_url=kea_url)
+def with_test_server(
+    nb_api: pynetbox.api, kea_url: str, kea_dhcp6_url: str, page: Page, netbox_login: None, plugin_base: str
+):
+    server = nb_api.plugins.kea.servers.create(
+        name="test", ca_url=kea_url, dhcp6_url=kea_dhcp6_url, has_control_agent=False
+    )
     try:
         page.goto(f"{plugin_base}/servers/{server.id}/")
         yield
@@ -66,8 +70,10 @@ def with_test_server(nb_api: pynetbox.api, kea_url: str, page: Page, netbox_logi
 
 
 @pytest.fixture
-def with_test_server_only6(nb_api: pynetbox.api, kea_url: str, page: Page, netbox_login: None, plugin_base: str):
-    server = nb_api.plugins.kea.servers.create(name="only6", ca_url=kea_url, dhcp4=False, dhcp6=True)
+def with_test_server_only6(nb_api: pynetbox.api, kea_dhcp6_url: str, page: Page, netbox_login: None, plugin_base: str):
+    server = nb_api.plugins.kea.servers.create(
+        name="only6", ca_url=kea_dhcp6_url, dhcp4=False, dhcp6=True, has_control_agent=False
+    )
     try:
         page.goto(f"{plugin_base}/servers/{server.id}/")
         yield
@@ -77,7 +83,9 @@ def with_test_server_only6(nb_api: pynetbox.api, kea_url: str, page: Page, netbo
 
 @pytest.fixture
 def with_test_server_only4(nb_api: pynetbox.api, kea_url: str, page: Page, netbox_login: None, plugin_base: str):
-    server = nb_api.plugins.kea.servers.create(name="only4", ca_url=kea_url, dhcp4=True, dhcp6=False)
+    server = nb_api.plugins.kea.servers.create(
+        name="only4", ca_url=kea_url, dhcp4=True, dhcp6=False, has_control_agent=False
+    )
     try:
         page.goto(f"{plugin_base}/servers/{server.id}/")
         yield
@@ -85,13 +93,28 @@ def with_test_server_only4(nb_api: pynetbox.api, kea_url: str, page: Page, netbo
         server.delete()
 
 
-@pytest.fixture
-def kea_client() -> KeaClient:
-    return KeaClient("http://localhost:8001")
+class _DualEndpointKeaClient:
+    """Test-side client for Kea 3.0 (no Control Agent): routes each service to its own daemon socket."""
+
+    def __init__(self, dhcp4: KeaClient, dhcp6: KeaClient) -> None:
+        self._clients = {"dhcp4": dhcp4, "dhcp6": dhcp6}
+
+    def command(self, command, service=None, arguments=None, check=(0,)):
+        svc = (service or ["dhcp4"])[0]
+        return self._clients[svc].command(command, service=[svc], arguments=arguments, check=check)
 
 
 @pytest.fixture
-def kea(with_test_server: None, kea_client: KeaClient) -> KeaClient:
+def kea_client() -> _DualEndpointKeaClient:
+    # Kea 3.0: two daemons, each on its own host-exposed HTTP control socket.
+    return _DualEndpointKeaClient(
+        KeaClient("http://127.0.0.1:8001"),  # kea-dhcp4 (loopback-bound)
+        KeaClient("http://127.0.0.1:8003"),  # kea-dhcp6 (loopback-bound)
+    )
+
+
+@pytest.fixture
+def kea(with_test_server: None, kea_client: _DualEndpointKeaClient) -> _DualEndpointKeaClient:
     return kea_client
 
 
@@ -622,6 +645,10 @@ def test_server_add_delete(page: Page, plugin_base: str, kea_url: str, nb_api: p
 
     page.get_by_label("Name", exact=True).fill(server_name)
     page.get_by_label("CA / Server URL", exact=True).fill(kea_url)
+    # This URL is a single Kea 3.0 DHCPv4 daemon; disable v6 so the connectivity check passes.
+    # Target the checkbox by id — NetBox 4.6 also renders a "DHCPv6" fieldset legend, so a
+    # label match is ambiguous (strict-mode violation).
+    page.locator("#id_dhcp6").uncheck()
     page.get_by_role("button", name="Create", exact=True).click()
 
     expect(page).to_have_title(re.compile(f"^{server_name}"))
@@ -635,11 +662,11 @@ def test_server_add_delete(page: Page, plugin_base: str, kea_url: str, nb_api: p
     assert server is None
 
 
-def test_server_bulk_delete(page: Page, plugin_base: str, nb_api: pynetbox.api, kea_url: str):
+def test_server_bulk_delete(page: Page, plugin_base: str, nb_api: pynetbox.api, kea_url: str, kea_dhcp6_url: str):
     nb_api.plugins.kea.servers.create(
         [
-            {"name": "server1", "ca_url": kea_url},
-            {"name": "server2", "ca_url": kea_url},
+            {"name": "server1", "ca_url": kea_url, "dhcp6_url": kea_dhcp6_url, "has_control_agent": False},
+            {"name": "server2", "ca_url": kea_url, "dhcp6_url": kea_dhcp6_url, "has_control_agent": False},
         ]
     )
 
@@ -665,17 +692,18 @@ def test_server_edit(page: Page, kea: KeaClient) -> None:
     expect(page).to_have_title(re.compile(f"^{new_name}"))
 
 
-def test_server_status(page: Page, kea: KeaClient) -> None:
+def test_server_status(page: Page, kea: _DualEndpointKeaClient) -> None:
     page.get_by_role("link", name="Status", exact=True).click()
 
-    ctrl_version = kea.command("version-get")[0]["arguments"]["extended"]
+    # has_control_agent=False (Kea 3.0): the status view shows the daemon versions, not a CA row.
     dhcp4_version = kea.command("version-get", service=["dhcp4"])[0]["arguments"]["extended"]
     dhcp6_version = kea.command("version-get", service=["dhcp6"])[0]["arguments"]["extended"]
 
     locator = page.locator(".tab-content")
-    expect(locator).to_contain_text(ctrl_version)
     expect(locator).to_contain_text(dhcp4_version)
     expect(locator).to_contain_text(dhcp6_version)
+    # has_control_agent=False must hide the Control Agent row.
+    expect(locator).not_to_contain_text("Control Agent")
 
 
 @pytest.mark.parametrize(
@@ -1391,10 +1419,17 @@ def test_filter_servers_by_tag(
     nb_api: pynetbox.api,
     test_tag: str,
     kea_url: str,
+    kea_dhcp6_url: str,
     plugin_base: str,
     page: Page,
 ) -> None:
-    server = nb_api.plugins.kea.servers.create(name="tag-test", ca_url=kea_url, tags=[{"name": test_tag}])
+    server = nb_api.plugins.kea.servers.create(
+        name="tag-test",
+        ca_url=kea_url,
+        dhcp6_url=kea_dhcp6_url,
+        has_control_agent=False,
+        tags=[{"name": test_tag}],
+    )
     try:
         page.goto(f"{plugin_base}/servers/")
         page.get_by_role("tab", name="Filters").click()

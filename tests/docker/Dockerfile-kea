@@ -1,2 +1,0 @@
-FROM alpine:3.19
-RUN apk add kea-ctrl-agent kea-dhcp4 kea-dhcp6 kea-hook-lease-cmds kea-hook-stat-cmds

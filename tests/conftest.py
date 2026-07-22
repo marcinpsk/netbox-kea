@@ -34,7 +34,21 @@ def netbox_password() -> str:
 
 @pytest.fixture(scope="session")
 def kea_url() -> str:
-    return "http://kea-ctrl-agent:8000"
+    # Kea 3.0: no Control Agent — the DHCPv4 daemon's own HTTP control socket.
+    # Used as ca_url / DHCPv4 endpoint; pair with kea_dhcp6_url for the v6 daemon.
+    return "http://kea-dhcp4:8000"
+
+
+@pytest.fixture(scope="session")
+def kea_dhcp6_url() -> str:
+    return "http://kea-dhcp6:8000"
+
+
+@pytest.fixture(scope="session")
+def kea_server_kwargs(kea_url: str, kea_dhcp6_url: str) -> dict:
+    """Server-create kwargs for the Kea 3.0 dual-daemon harness (no Control Agent):
+    ca_url/DHCPv4 -> kea-dhcp4, DHCPv6 -> kea-dhcp6, and has_control_agent disabled."""
+    return {"ca_url": kea_url, "dhcp6_url": kea_dhcp6_url, "has_control_agent": False}
 
 
 @pytest.fixture(scope="session")
