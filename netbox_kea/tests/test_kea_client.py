@@ -1325,6 +1325,36 @@ class TestSubnetAdd(TestCase):
                 self.client.subnet_add(version=4, subnet_cidr="10.99.0.0/24")
         self.assertIsNone(ctx.exception.subnet_id)
 
+    def _add_payload(self, mock_post):
+        """Return the subnet4-add call arguments dict."""
+        return next(
+            (c.kwargs.get("json") or c[1]["json"])
+            for c in mock_post.call_args_list
+            if (c.kwargs.get("json") or c[1]["json"])["command"] == "subnet4-add"
+        )
+
+    def test_sends_ddns_qualifying_suffix_when_provided(self):
+        """ddns-qualifying-suffix is included in the subnet4-add payload when provided."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(_SUBNET4_LIST_RESP, _SUBNET4_ADD_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _OK),
+        ) as mock_post:
+            self.client.subnet_add(version=4, subnet_cidr="10.99.0.0/24", ddns_qualifying_suffix="example.com.")
+        subnet_obj = self._add_payload(mock_post)["arguments"]["subnet4"][0]
+        self.assertEqual(subnet_obj["ddns-qualifying-suffix"], "example.com.")
+
+    def test_omits_ddns_qualifying_suffix_when_not_provided(self):
+        """ddns-qualifying-suffix is absent from the subnet4-add payload when not provided."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(_SUBNET4_LIST_RESP, _SUBNET4_ADD_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _OK),
+        ) as mock_post:
+            self.client.subnet_add(version=4, subnet_cidr="10.99.0.0/24")
+        subnet_obj = self._add_payload(mock_post)["arguments"]["subnet4"][0]
+        self.assertNotIn("ddns-qualifying-suffix", subnet_obj)
+
 
 class TestSubnetDel(TestCase):
     """Tests for KeaClient.subnet_del()."""
@@ -1924,6 +1954,79 @@ class TestSubnetUpdate(TestCase):
         payload = self._update_payload(mock_post)
         subnet_obj = payload["arguments"]["subnet4"][0]
         self.assertEqual(subnet_obj["max-valid-lft"], 7200)
+
+    def test_sends_ddns_qualifying_suffix_when_provided(self):
+        """ddns-qualifying-suffix is included in the payload when provided."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(
+                _SUBNET4_GET, _SUBNET_UPDATE_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _CONFIG_WRITE_RESP
+            ),
+        ) as mock_post:
+            self.client.subnet_update(
+                version=4, subnet_id=1, subnet_cidr="10.0.0.0/24", ddns_qualifying_suffix="example.com."
+            )
+        payload = self._update_payload(mock_post)
+        subnet_obj = payload["arguments"]["subnet4"][0]
+        self.assertEqual(subnet_obj["ddns-qualifying-suffix"], "example.com.")
+
+    def test_does_not_add_ddns_qualifying_suffix_when_absent_from_live_subnet_and_not_provided(self):
+        """ddns-qualifying-suffix stays absent when the live subnet lacks it and arg is not provided."""
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(
+                _SUBNET4_GET, _SUBNET_UPDATE_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _CONFIG_WRITE_RESP
+            ),
+        ) as mock_post:
+            self.client.subnet_update(version=4, subnet_id=1, subnet_cidr="10.0.0.0/24")
+        payload = self._update_payload(mock_post)
+        subnet_obj = payload["arguments"]["subnet4"][0]
+        self.assertNotIn("ddns-qualifying-suffix", subnet_obj)
+
+    def test_clears_ddns_qualifying_suffix_present_in_live_subnet(self):
+        """Passing "" removes ddns-qualifying-suffix even when the live subnet had one."""
+        live_with_ddns = [
+            {
+                "result": 0,
+                "arguments": {
+                    "subnet4": [{"id": 1, "subnet": "10.0.0.0/24", "ddns-qualifying-suffix": "old.example.com."}]
+                },
+            }
+        ]
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(
+                live_with_ddns, _SUBNET_UPDATE_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _CONFIG_WRITE_RESP
+            ),
+        ) as mock_post:
+            self.client.subnet_update(version=4, subnet_id=1, subnet_cidr="10.0.0.0/24", ddns_qualifying_suffix="")
+        payload = self._update_payload(mock_post)
+        subnet_obj = payload["arguments"]["subnet4"][0]
+        self.assertNotIn("ddns-qualifying-suffix", subnet_obj)
+
+    def test_preserves_ddns_qualifying_suffix_when_omitted(self):
+        """Omitting the arg keeps the live subnet's existing suffix (None = preserve)."""
+        live_with_ddns = [
+            {
+                "result": 0,
+                "arguments": {
+                    "subnet4": [{"id": 1, "subnet": "10.0.0.0/24", "ddns-qualifying-suffix": "keep.example.com."}]
+                },
+            }
+        ]
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(
+                live_with_ddns, _SUBNET_UPDATE_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _CONFIG_WRITE_RESP
+            ),
+        ) as mock_post:
+            self.client.subnet_update(version=4, subnet_id=1, subnet_cidr="10.0.0.0/24")
+        subnet_obj = self._update_payload(mock_post)["arguments"]["subnet4"][0]
+        self.assertEqual(subnet_obj["ddns-qualifying-suffix"], "keep.example.com.")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

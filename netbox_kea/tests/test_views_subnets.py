@@ -582,6 +582,55 @@ class TestServerSubnet4EditView(_ViewTestBase):
         self.assertIsNone(kwargs.get("renew_timer"))
         self.assertIsNone(kwargs.get("rebind_timer"))
 
+    # ── DDNS qualifying suffix ────────────────────────────────────────────────
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_passes_ddns_qualifying_suffix_to_subnet_update(self, MockKeaClient):
+        """POST with a DDNS suffix must forward it to subnet_update."""
+        MockKeaClient.return_value.subnet_update.return_value = None
+        MockKeaClient.return_value.command.return_value = _CONFIG4_NO_NETWORKS
+        self.client.post(
+            self._url(subnet_id=42),
+            {
+                "subnet_cidr": "10.0.0.0/24",
+                "pools": "",
+                "gateway": "",
+                "dns_servers": "",
+                "ntp_servers": "",
+                "ddns_qualifying_suffix": "example.com.",
+            },
+        )
+        call_kwargs = MockKeaClient.return_value.subnet_update.call_args
+        kwargs = call_kwargs.kwargs if call_kwargs.kwargs else call_kwargs[1]
+        self.assertEqual(kwargs.get("ddns_qualifying_suffix"), "example.com.")
+
+    @patch("netbox_kea.models.KeaClient")
+    def test_post_clears_ddns_qualifying_suffix_with_empty_string(self, MockKeaClient):
+        """Clearing the DDNS field on edit must pass "" (explicit clear), not None (keep).
+
+        The edit form is always fully populated, so an empty field means "clear".
+        This locks the view→client wiring: reverting the call to ``... or None`` would
+        coerce the cleared field to None (= preserve) and silently drop the clear —
+        the client tests then verify "" removes ``ddns-qualifying-suffix`` from the payload.
+        """
+        MockKeaClient.return_value.subnet_update.return_value = None
+        MockKeaClient.return_value.command.return_value = _CONFIG4_NO_NETWORKS
+        self.client.post(
+            self._url(subnet_id=42),
+            {
+                "subnet_cidr": "10.0.0.0/24",
+                "pools": "",
+                "gateway": "",
+                "dns_servers": "",
+                "ntp_servers": "",
+                "ddns_qualifying_suffix": "",
+            },
+        )
+        call_kwargs = MockKeaClient.return_value.subnet_update.call_args
+        kwargs = call_kwargs.kwargs if call_kwargs.kwargs else call_kwargs[1]
+        self.assertEqual(kwargs.get("ddns_qualifying_suffix"), "")
+        self.assertIsNotNone(kwargs.get("ddns_qualifying_suffix"))
+
     # ── F5: inherited options ─────────────────────────────────────────────────
 
     @patch("netbox_kea.models.KeaClient")

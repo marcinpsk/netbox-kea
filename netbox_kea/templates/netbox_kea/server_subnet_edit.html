@@ -78,6 +78,15 @@
             {% for err in form.ntp_servers.errors %}<div class="text-danger small">{{ err }}</div>{% endfor %}
           </div>
 
+          <div class="mb-3">
+            <label for="{{ form.ddns_qualifying_suffix.id_for_label }}" class="form-label">{{ form.ddns_qualifying_suffix.label }}</label>
+            {{ form.ddns_qualifying_suffix }}
+            {% if form.ddns_qualifying_suffix.help_text %}
+              <div class="form-text text-muted">{{ form.ddns_qualifying_suffix.help_text }}</div>
+            {% endif %}
+            {% for err in form.ddns_qualifying_suffix.errors %}<div class="text-danger small">{{ err }}</div>{% endfor %}
+          </div>
+
           <hr>
           <div class="mb-3">
             <label for="{{ form.shared_network.id_for_label }}" class="form-label">

@@ -349,6 +349,7 @@ class KeaClient:
         gateway: str | None = None,
         dns_servers: list[str] | None = None,
         ntp_servers: list[str] | None = None,
+        ddns_qualifying_suffix: str | None = None,
     ) -> int | None:
         """Add a new subnet to Kea and persist the change.
 
@@ -360,6 +361,7 @@ class KeaClient:
             gateway: Optional default gateway IP (sets option ``routers``; DHCPv4 only).
             dns_servers: Optional list of DNS server IPs.
             ntp_servers: Optional list of NTP server hostnames/IPs.
+            ddns_qualifying_suffix: Optional DDNS qualifying suffix for dynamic DNS updates.
 
         Raises:
             KeaException: If Kea returns a non-zero result code.
@@ -412,6 +414,8 @@ class KeaClient:
             )
         if option_data:
             subnet_def["option-data"] = option_data
+        if ddns_qualifying_suffix:
+            subnet_def["ddns-qualifying-suffix"] = ddns_qualifying_suffix
         try:
             last_exc: KeaException | None = None
             add_resp: list | None = None
@@ -625,6 +629,7 @@ class KeaClient:
         gateway: str | None = None,
         dns_servers: list[str] | None = None,
         ntp_servers: list[str] | None = None,
+        ddns_qualifying_suffix: str | None = None,
         valid_lft: int | None = None,
         min_valid_lft: int | None = None,
         max_valid_lft: int | None = None,
@@ -648,6 +653,8 @@ class KeaClient:
             gateway: Default gateway IP (option ``routers``, DHCPv4 only).
             dns_servers: List of DNS server IP strings.
             ntp_servers: List of NTP server hostnames/IPs.
+            ddns_qualifying_suffix: DDNS qualifying suffix.  ``None`` = omit (Kea keeps
+                existing); ``""`` = explicitly clear; a value sets it.
             valid_lft: Preferred lease lifetime in seconds.
             min_valid_lft: Minimum lease lifetime in seconds.
             max_valid_lft: Maximum lease lifetime in seconds.
@@ -698,6 +705,13 @@ class KeaClient:
                 }
             )
         subnet_def["option-data"] = preserved_opts + new_opts
+
+        # ddns-qualifying-suffix: None = omit (Kea keeps existing); "" = explicitly clear; a value sets it.
+        if ddns_qualifying_suffix is not None:
+            if ddns_qualifying_suffix:
+                subnet_def["ddns-qualifying-suffix"] = ddns_qualifying_suffix
+            else:
+                subnet_def.pop("ddns-qualifying-suffix", None)
 
         # pools: replace only when the caller explicitly passes a value
         if pools is not None:

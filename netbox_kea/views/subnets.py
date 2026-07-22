@@ -95,6 +95,7 @@ class BaseServerDHCPSubnetsView(generic.ObjectChildrenView):
             "options": format_option_data(s.get("option-data") or [], version=self.dhcp_version),
             "pools": [p.get("pool", "") for p in (s.get("pools") or []) if isinstance(p, dict) and p.get("pool")],
             "can_change": can_change,
+            "ddns_qualifying_suffix": s.get("ddns-qualifying-suffix") or "",
         }
         if shared_network:
             row["shared_network"] = shared_network
@@ -613,6 +614,7 @@ class _BaseSubnetAddView(_KeaChangeMixin, generic.ObjectView):
                 gateway=cd["gateway"] or None,
                 dns_servers=cd["dns_servers"],
                 ntp_servers=cd["ntp_servers"],
+                ddns_qualifying_suffix=cd.get("ddns_qualifying_suffix") or None,
             )
             messages.success(request, f"Subnet {cd['subnet']} added.")
             shared_network = cd.get("shared_network", "")
@@ -832,6 +834,8 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
             initial["renew_timer"] = subnet["renew-timer"]
         if subnet.get("rebind-timer") is not None:
             initial["rebind_timer"] = subnet["rebind-timer"]
+        if subnet.get("ddns-qualifying-suffix"):
+            initial["ddns_qualifying_suffix"] = subnet["ddns-qualifying-suffix"]
 
         return initial
 
@@ -998,6 +1002,7 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
                 gateway=cd["gateway"] or None,
                 dns_servers=cd["dns_servers"] or None,
                 ntp_servers=cd["ntp_servers"] or None,
+                ddns_qualifying_suffix=cd.get("ddns_qualifying_suffix"),
                 valid_lft=cd.get("valid_lft"),
                 min_valid_lft=cd.get("min_valid_lft"),
                 max_valid_lft=cd.get("max_valid_lft"),
