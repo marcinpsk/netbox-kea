@@ -1099,75 +1099,64 @@ class TestLeaseAddView(_ViewTestBase):
         self.assertIn("leases", url)
         self.assertIn("add", url)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_get_lease4_add_returns_200(self, MockKeaClient):
+    def test_get_lease4_add_returns_200(self):
         """GET /leases4/add/ returns 200 and renders the add form."""
         response = self.client.get(self._url(version=4))
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "ip_address")
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_get_lease6_add_returns_200(self, MockKeaClient):
+    def test_get_lease6_add_returns_200(self):
         """GET /leases6/add/ returns 200 and shows duid + iaid fields."""
         response = self.client.get(self._url(version=6))
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "duid")
         self.assertContains(response, "iaid")
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_lease4_add_valid_redirects(self, MockKeaClient):
+    def test_post_lease4_add_valid_redirects(self):
         """POST valid v4 lease data redirects to the lease list."""
-        MockKeaClient.return_value.lease_add.return_value = None
-        response = self.client.post(self._url(version=4), self._valid_post4())
+        with stub_kea({"lease4-add": {"result": 0}}):
+            response = self.client.post(self._url(version=4), self._valid_post4())
         self.assertEqual(response.status_code, 302)
         self.assertNotIn("None", response.url)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_lease4_add_calls_kea_with_correct_args(self, MockKeaClient):
+    def test_post_lease4_add_calls_kea_with_correct_args(self):
         """POST v4 calls lease_add with ip-address, hw-address, and subnet-id."""
-        mock_client = MockKeaClient.return_value
-        mock_client.lease_add.return_value = None
-        self.client.post(self._url(version=4), self._valid_post4())
-        mock_client.lease_add.assert_called_once()
-        args = mock_client.lease_add.call_args
-        lease = args[0][1] if args[0] else args[1].get("lease", args[0][1])
+        with stub_kea({"lease4-add": {"result": 0}}) as kea:
+            self.client.post(self._url(version=4), self._valid_post4())
+        self.assertIn("lease4-add", kea.commands())
+        lease = kea.bodies("lease4-add")[0]["arguments"]
         self.assertEqual(lease["ip-address"], "10.0.0.200")
         self.assertEqual(lease.get("hw-address"), "aa:bb:cc:dd:ee:ff")
         self.assertEqual(lease.get("subnet-id"), 1)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_lease4_add_invalid_ip_shows_form_errors(self, MockKeaClient):
+    def test_post_lease4_add_invalid_ip_shows_form_errors(self):
         """POST with a non-IPv4 string re-renders form with validation errors."""
-        response = self.client.post(self._url(version=4), self._valid_post4(ip_address="not-an-ip"))
+        # Empty registry: any Kea command would raise — proves no lease was created.
+        with stub_kea({}) as kea:
+            response = self.client.post(self._url(version=4), self._valid_post4(ip_address="not-an-ip"))
         self.assertEqual(response.status_code, 200)
-        MockKeaClient.return_value.lease_add.assert_not_called()
+        self.assertEqual(kea.commands(), [])
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_lease4_add_kea_exception_shows_error_message(self, MockKeaClient):
+    def test_post_lease4_add_kea_exception_shows_error_message(self):
         """POST that triggers a KeaException shows error and re-renders (no redirect)."""
-        from netbox_kea.kea import KeaException
-
-        MockKeaClient.return_value.lease_add.side_effect = KeaException({"result": 1, "text": "address already in use"})
-        response = self.client.post(self._url(version=4), self._valid_post4())
+        # result=1 on lease4-add makes the real client raise KeaException.
+        with stub_kea({"lease4-add": {"result": 1, "text": "address already in use"}}):
+            response = self.client.post(self._url(version=4), self._valid_post4())
         self.assertIn(response.status_code, (200, 302))
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_lease6_add_valid_redirects(self, MockKeaClient):
+    def test_post_lease6_add_valid_redirects(self):
         """POST valid v6 lease data redirects to the lease list."""
-        MockKeaClient.return_value.lease_add.return_value = None
-        response = self.client.post(self._url(version=6), self._valid_post6())
+        with stub_kea({"lease6-add": {"result": 0}}):
+            response = self.client.post(self._url(version=6), self._valid_post6())
         self.assertEqual(response.status_code, 302)
         self.assertNotIn("None", response.url)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_lease6_add_calls_kea_with_correct_args(self, MockKeaClient):
+    def test_post_lease6_add_calls_kea_with_correct_args(self):
         """POST v6 calls lease_add with ip-address, duid, and iaid."""
-        mock_client = MockKeaClient.return_value
-        mock_client.lease_add.return_value = None
-        self.client.post(self._url(version=6), self._valid_post6())
-        mock_client.lease_add.assert_called_once()
-        args = mock_client.lease_add.call_args
-        lease = args[0][1] if args[0] else args[1].get("lease")
+        with stub_kea({"lease6-add": {"result": 0}}) as kea:
+            self.client.post(self._url(version=6), self._valid_post6())
+        self.assertIn("lease6-add", kea.commands())
+        lease = kea.bodies("lease6-add")[0]["arguments"]
         self.assertEqual(lease["ip-address"], "2001:db8::200")
         self.assertEqual(lease.get("duid"), "00:01:02:03:04:05")
         self.assertEqual(lease.get("iaid"), 12345)
@@ -1203,47 +1192,45 @@ class TestLeaseAddSyncToNetBox(_ViewTestBase):
             data["sync_to_netbox"] = "on"
         return data
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_lease4_add_form_has_sync_to_netbox_field(self, MockKeaClient):
+    # A followed redirect lands on the leases page, which fetches the subnet quick-select.
+    _CONFIG4 = {"result": 0, "arguments": {"Dhcp4": {"subnet4": []}}}
+
+    def test_lease4_add_form_has_sync_to_netbox_field(self):
         """GET lease4 add page renders a sync_to_netbox checkbox."""
         response = self.client.get(self._url(version=4))
         self.assertEqual(response.status_code, 200)
         self.assertIn("sync_to_netbox", response.content.decode())
 
     @patch("netbox_kea.views.leases.sync_lease_to_netbox")
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_lease4_add_with_sync_calls_sync_lease(self, MockKeaClient, mock_sync):
+    def test_post_lease4_add_with_sync_calls_sync_lease(self, mock_sync):
         """POST with sync_to_netbox=on calls sync_lease_to_netbox() with the lease dict."""
-        MockKeaClient.return_value.lease_add.return_value = None
-        mock_sync.return_value = (MagicMock(spec=NbIP), True)
-        response = self.client.post(self._url(version=4), self._post4(sync=True))
+        mock_sync.return_value = (MagicMock(spec=NbIP), True, False)
+        with stub_kea({"lease4-add": {"result": 0}}):
+            response = self.client.post(self._url(version=4), self._post4(sync=True))
         self.assertEqual(response.status_code, 302)
         mock_sync.assert_called_once()
         lease = mock_sync.call_args[0][0]
         self.assertEqual(lease["ip-address"], "10.0.0.200")
 
     @patch("netbox_kea.views.leases.sync_lease_to_netbox")
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_lease4_add_without_sync_does_not_call_sync(self, MockKeaClient, mock_sync):
+    def test_post_lease4_add_without_sync_does_not_call_sync(self, mock_sync):
         """POST without sync_to_netbox does NOT call sync_lease_to_netbox()."""
-        MockKeaClient.return_value.lease_add.return_value = None
-        response = self.client.post(self._url(version=4), self._post4(sync=False))
+        with stub_kea({"lease4-add": {"result": 0}}):
+            response = self.client.post(self._url(version=4), self._post4(sync=False))
         self.assertEqual(response.status_code, 302)
         mock_sync.assert_not_called()
 
     @patch("netbox_kea.views.leases.sync_lease_to_netbox")
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_lease4_add_sync_failure_does_not_prevent_kea_success(self, MockKeaClient, mock_sync):
+    def test_post_lease4_add_sync_failure_does_not_prevent_kea_success(self, mock_sync):
         """Sync failure is a warning; the lease creation still succeeds (302 redirect)."""
-        MockKeaClient.return_value.lease_add.return_value = None
         mock_sync.side_effect = ValueError("NetBox unreachable")
-        response = self.client.post(self._url(version=4), self._post4(sync=True))
+        with stub_kea({"lease4-add": {"result": 0}}) as kea:
+            response = self.client.post(self._url(version=4), self._post4(sync=True))
         self.assertEqual(response.status_code, 302)
-        MockKeaClient.return_value.lease_add.assert_called_once()
+        self.assertEqual(kea.commands().count("lease4-add"), 1)
 
     @patch("netbox_kea.views.leases.sync_lease_to_netbox")
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_lease4_add_sync_skipped_without_ipam_permission(self, MockKeaClient, mock_sync):
+    def test_post_lease4_add_sync_skipped_without_ipam_permission(self, mock_sync):
         """A user with server-change but no IPAM write permission must not trigger the IPAM sync."""
         from django.contrib.auth import get_user_model
         from django.contrib.contenttypes.models import ContentType
@@ -1256,22 +1243,21 @@ class TestLeaseAddSyncToNetBox(_ViewTestBase):
         perm.users.add(limited)
         self.client.force_login(limited)
 
-        MockKeaClient.return_value.lease_add.return_value = None
-        response = self.client.post(self._url(version=4), self._post4(sync=True))
+        with stub_kea({"lease4-add": {"result": 0}}) as kea:
+            response = self.client.post(self._url(version=4), self._post4(sync=True))
         # Lease still created in Kea (302), but the IPAM sync was gated out.
         self.assertEqual(response.status_code, 302)
-        MockKeaClient.return_value.lease_add.assert_called_once()
+        self.assertEqual(kea.commands().count("lease4-add"), 1)
         mock_sync.assert_not_called()
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_lease4_add_reports_foreign_ip_skip(self, MockKeaClient):
+    def test_post_lease4_add_reports_foreign_ip_skip(self):
         """A foreign NetBox IP (force=False) is skipped and reported as such, not 'synced'."""
         from ipam.models import IPAddress
 
-        MockKeaClient.return_value.lease_add.return_value = None
         # self.client is the superuser (has IPAM perms) → reaches the real sync.
         IPAddress.objects.create(address="10.0.0.200/24", status="active", description="Router loopback")
-        response = self.client.post(self._url(version=4), self._post4(sync=True), follow=True)
+        with stub_kea({"lease4-add": {"result": 0}, "config-get": self._CONFIG4}):
+            response = self.client.post(self._url(version=4), self._post4(sync=True), follow=True)
         self.assertEqual(response.status_code, 200)
         msgs = [m.message for m in response.context["messages"]]
         self.assertTrue(
@@ -1283,14 +1269,13 @@ class TestLeaseAddSyncToNetBox(_ViewTestBase):
         self.assertEqual(ip.status, "active")
         self.assertEqual(ip.description, "Router loopback")
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_lease4_add_reports_successful_sync(self, MockKeaClient):
+    def test_post_lease4_add_reports_successful_sync(self):
         """A fresh IP synced to NetBox reports a created/updated success message."""
         from ipam.models import IPAddress
 
-        MockKeaClient.return_value.lease_add.return_value = None
         # No pre-existing row → the real sync creates it, no conflict → success message.
-        response = self.client.post(self._url(version=4), self._post4(sync=True), follow=True)
+        with stub_kea({"lease4-add": {"result": 0}, "config-get": self._CONFIG4}):
+            response = self.client.post(self._url(version=4), self._post4(sync=True), follow=True)
         self.assertEqual(response.status_code, 200)
         msgs = [m.message for m in response.context["messages"]]
         self.assertTrue(
@@ -1333,45 +1318,36 @@ class TestBulkLeaseImportView(_ViewTestBase):
         f.name = "leases.csv"
         return {"csv_file": f}
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_get_v4_returns_200(self, MockKeaClient):
+    def test_get_v4_returns_200(self):
         """GET lease4 bulk import page returns 200."""
         response = self.client.get(self._url(version=4))
         self.assertEqual(response.status_code, 200)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_get_v6_returns_200(self, MockKeaClient):
+    def test_get_v6_returns_200(self):
         """GET lease6 bulk import page returns 200."""
         response = self.client.get(self._url(version=6))
         self.assertEqual(response.status_code, 200)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_v4_valid_csv_calls_lease_add(self, MockKeaClient):
+    def test_post_v4_valid_csv_calls_lease_add(self):
         """POST with valid v4 CSV calls lease_add once per row."""
-        MockKeaClient.return_value.lease_add.return_value = None
-        response = self.client.post(self._url(version=4), self._post(version=4))
+        with stub_kea({"lease4-add": {"result": 0}}) as kea:
+            response = self.client.post(self._url(version=4), self._post(version=4))
         self.assertEqual(response.status_code, 200)
-        MockKeaClient.return_value.lease_add.assert_called_once()
-        args = MockKeaClient.return_value.lease_add.call_args[0]
-        self.assertEqual(args[0], 4)
-        self.assertEqual(args[1]["ip-address"], "10.0.0.10")
+        self.assertEqual(kea.commands().count("lease4-add"), 1)
+        self.assertEqual(kea.bodies("lease4-add")[0]["arguments"]["ip-address"], "10.0.0.10")
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_v6_valid_csv_calls_lease_add(self, MockKeaClient):
+    def test_post_v6_valid_csv_calls_lease_add(self):
         """POST with valid v6 CSV calls lease_add with correct duid and iaid."""
-        MockKeaClient.return_value.lease_add.return_value = None
-        response = self.client.post(self._url(version=6), self._post(version=6))
+        with stub_kea({"lease6-add": {"result": 0}}) as kea:
+            response = self.client.post(self._url(version=6), self._post(version=6))
         self.assertEqual(response.status_code, 200)
-        MockKeaClient.return_value.lease_add.assert_called_once()
-        args = MockKeaClient.return_value.lease_add.call_args[0]
-        self.assertEqual(args[0], 6)
-        self.assertEqual(args[1]["duid"], "00:01:02:03")
-        self.assertEqual(args[1]["iaid"], 12345)
+        self.assertEqual(kea.commands().count("lease6-add"), 1)
+        args = kea.bodies("lease6-add")[0]["arguments"]
+        self.assertEqual(args["duid"], "00:01:02:03")
+        self.assertEqual(args["iaid"], 12345)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_multiple_rows_calls_lease_add_per_row(self, MockKeaClient):
+    def test_post_multiple_rows_calls_lease_add_per_row(self):
         """Each CSV row triggers one lease_add call."""
-        MockKeaClient.return_value.lease_add.return_value = None
         csv_bytes = self._csv4(
             rows=[
                 "10.0.0.10,aa:bb:cc:dd:ee:01,1,3600,h1\n",
@@ -1379,36 +1355,35 @@ class TestBulkLeaseImportView(_ViewTestBase):
                 "10.0.0.12,aa:bb:cc:dd:ee:03,1,3600,h3\n",
             ]
         )
-        response = self.client.post(self._url(version=4), self._post(version=4, csv_bytes=csv_bytes))
+        with stub_kea({"lease4-add": {"result": 0}}) as kea:
+            response = self.client.post(self._url(version=4), self._post(version=4, csv_bytes=csv_bytes))
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(MockKeaClient.return_value.lease_add.call_count, 3)
+        self.assertEqual(kea.commands().count("lease4-add"), 3)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_partial_failure_shows_error_count(self, MockKeaClient):
+    def test_post_partial_failure_shows_error_count(self):
         """If some rows fail, result context shows correct created/error counts."""
-        from netbox_kea.kea import KeaException
-
-        mock_client = MockKeaClient.return_value
-        mock_client.lease_add.side_effect = [None, KeaException({"result": 1, "text": "bad"}, index=0)]
         csv_bytes = self._csv4(
             rows=[
                 "10.0.0.10,aa:bb:cc:dd:ee:01,1,3600,h1\n",
                 "10.0.0.11,aa:bb:cc:dd:ee:02,1,3600,h2\n",
             ]
         )
-        response = self.client.post(self._url(version=4), self._post(version=4, csv_bytes=csv_bytes))
+        # Row 1 succeeds (result 0), row 2 fails (result 1 → real client raises KeaException).
+        with stub_kea({"lease4-add": [{"result": 0}, {"result": 1, "text": "bad"}]}):
+            response = self.client.post(self._url(version=4), self._post(version=4, csv_bytes=csv_bytes))
         self.assertEqual(response.status_code, 200)
         result = response.context["result"]
         self.assertEqual(result["created"], 1)
         self.assertEqual(result["errors"], 1)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_empty_csv_shows_form_error(self, MockKeaClient):
+    def test_post_empty_csv_shows_form_error(self):
         """Uploading a CSV with only a header (no data rows) returns 200 with empty result."""
-        MockKeaClient.return_value.lease_add.return_value = None
         csv_bytes = b"ip-address,hw-address\n"
-        response = self.client.post(self._url(version=4), self._post(version=4, csv_bytes=csv_bytes))
+        # Header-only CSV → zero rows → no lease command issued (empty registry proves it).
+        with stub_kea({}) as kea:
+            response = self.client.post(self._url(version=4), self._post(version=4, csv_bytes=csv_bytes))
         self.assertEqual(response.status_code, 200)
+        self.assertEqual(kea.commands(), [])
         result = response.context.get("result")
         if result is not None:
             self.assertEqual(result["created"], 0)
