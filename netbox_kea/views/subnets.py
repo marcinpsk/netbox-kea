@@ -1002,7 +1002,7 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
                 gateway=cd["gateway"] or None,
                 dns_servers=cd["dns_servers"] or None,
                 ntp_servers=cd["ntp_servers"] or None,
-                ddns_qualifying_suffix=cd.get("ddns_qualifying_suffix") or None,
+                ddns_qualifying_suffix=cd.get("ddns_qualifying_suffix"),
                 valid_lft=cd.get("valid_lft"),
                 min_valid_lft=cd.get("min_valid_lft"),
                 max_valid_lft=cd.get("max_valid_lft"),
