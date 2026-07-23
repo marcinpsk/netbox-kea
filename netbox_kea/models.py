@@ -203,6 +203,15 @@ class Server(JobsMixin, NetBoxModel):
     def get_client(self, version: Literal[4, 6] | None = None) -> KeaClient:
         """Return a configured KeaClient, targeting the protocol-specific URL and credentials when available.
 
+        The ``service`` command argument is sent only when this server is fronted by
+        a Control Agent (``has_control_agent``), which routes commands to daemons by
+        service. When connecting directly to a DHCP daemon (``has_control_agent`` is
+        False) ``service`` is dropped, because Kea 3.2.0+ rejects a ``service`` that
+        does not match the daemon the request lands on. ``has_control_agent`` is the
+        single source of truth here: a protocol-specific ``dhcp{4,6}_url`` may itself
+        point at a per-protocol Control Agent (Kea < 3.0) or a bare daemon socket
+        (Kea 3.0+), so the routing decision follows the flag, not the URL.
+
         Args:
             version: DHCP protocol version (4 or 6). When provided and a protocol-specific
                 URL is configured, that URL and its corresponding per-protocol credentials
@@ -232,6 +241,7 @@ class Server(JobsMixin, NetBoxModel):
             client_key=self.client_key_path or None,
             timeout=_get_kea_timeout(),
             persist_config=self.persist_config,
+            send_service=self.has_control_agent,
         )
 
     def clean(self) -> None:

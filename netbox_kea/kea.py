@@ -31,6 +31,7 @@ class KeaClient:
         client_key: str | None = None,
         timeout: int = 30,
         persist_config: bool = True,
+        send_service: bool = True,
     ):
         """Initialise a Kea HTTP client session.
 
@@ -46,6 +47,12 @@ class KeaClient:
                 each mutation.  Set to False when Kea configuration is managed
                 externally (e.g. Ansible, Puppet) and you do not want the plugin
                 to overwrite the on-disk config file.
+            send_service: When True (default), the ``service`` argument is included
+                in the command body — correct for a Control Agent, which routes by
+                service.  Set to False when *url* points **directly** at a DHCP
+                daemon: Kea 3.2.0+ rejects a ``service`` that does not match the
+                daemon, and ISC recommends omitting it for direct connections
+                (3.0.x silently ignored it).
 
         Raises:
             ValueError: If only one of client_cert/client_key is provided.
@@ -57,6 +64,7 @@ class KeaClient:
         self.url = url
         self.timeout = timeout
         self.persist_config = persist_config
+        self.send_service = send_service
 
         self._session = requests.Session()
         if verify is not None:
@@ -78,6 +86,8 @@ class KeaClient:
         Args:
             command: Kea command name (e.g. ``"lease4-get-all"``).
             service: List of target services (e.g. ``["dhcp4"]``). Omit for CA-level commands.
+                Dropped from the request body when the client targets a DHCP daemon
+                directly (``send_service=False``) — see :meth:`__init__`.
             arguments: Optional command arguments payload.
             check: Sequence of acceptable result codes. Pass ``None`` to skip checking.
 
@@ -91,7 +101,10 @@ class KeaClient:
         """
         body: dict[str, Any] = {"command": command}
 
-        if service is not None:
+        # A direct daemon connection must not carry ``service``: Kea 3.2.0+ rejects a
+        # non-matching service, and callers pass a version-matched singleton that is
+        # redundant when the URL already targets that one daemon.
+        if service is not None and self.send_service:
             body["service"] = service
 
         if arguments is not None:
@@ -121,6 +134,7 @@ class KeaClient:
         new._session.verify = self._session.verify
         new._session.cert = self._session.cert
         new.persist_config = self.persist_config
+        new.send_service = self.send_service
         return new
 
     def close(self) -> None:

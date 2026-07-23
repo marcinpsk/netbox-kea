@@ -239,6 +239,54 @@ class TestServerGetClient(SimpleTestCase):
         self.assertEqual(client._session.auth.password, "v6-pass")
 
 
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestGetClientSendService(SimpleTestCase):
+    """get_client() decides whether ``service`` is sent, and command() honours it end-to-end.
+
+    ``has_control_agent`` is the single source of truth: a Control Agent routes by
+    ``service`` (send it); a direct DHCP-daemon connection must omit it (Kea 3.2.0+
+    rejects a mismatched service). This holds regardless of *which* URL is used —
+    a protocol-specific ``dhcp{4,6}_url`` may itself point at a per-protocol Control
+    Agent (Kea < 3.0) or a bare daemon socket (Kea 3.0+).
+    """
+
+    def _sent_body(self, client, cmd="lease4-get"):
+        """Issue *cmd* through the real client against the HTTP-boundary stub; return the sent body."""
+        with stub_kea({cmd: {"result": 0, "arguments": {}}}) as kea:
+            client.command(cmd, service=["dhcp4"])
+        return kea.bodies(cmd)[0]
+
+    def test_control_agent_sends_service(self):
+        # ca_url + has_control_agent → CA endpoint → service is included.
+        client = _make_server(ca_url="https://kea.example.com", has_control_agent=True).get_client(version=4)
+        self.assertTrue(client.send_service)
+        self.assertEqual(self._sent_body(client)["service"], ["dhcp4"])
+
+    def test_direct_daemon_omits_service(self):
+        # ca_url points straight at a daemon (no Control Agent) → service dropped.
+        client = _make_server(ca_url="https://kea-daemon.example.com", has_control_agent=False).get_client(version=4)
+        self.assertFalse(client.send_service)
+        self.assertNotIn("service", self._sent_body(client))
+
+    def test_protocol_url_control_agent_still_routes_by_service(self):
+        # A protocol-specific URL pointing at a per-protocol Control Agent (Kea < 3.0)
+        # must KEEP service so the CA can route to the daemon (regression for the case
+        # where every dhcp{4,6}_url was wrongly treated as a bare daemon).
+        client = _make_server(dhcp4_url="https://kea-v4-ca.example.com", has_control_agent=True).get_client(version=4)
+        self.assertTrue(client.send_service)
+        self.assertEqual(self._sent_body(client)["service"], ["dhcp4"])
+
+    def test_protocol_url_direct_daemon_omits_service(self):
+        # A protocol-specific bare daemon socket (Kea 3.0+, no Control Agent) → service dropped.
+        client = _make_server(dhcp6_url="https://kea-v6.example.com", has_control_agent=False).get_client(version=6)
+        self.assertFalse(client.send_service)
+
+    def test_clone_preserves_send_service(self):
+        # Worker threads clone(); the flag must survive so a cloned direct client stays direct.
+        client = _make_server(has_control_agent=False).get_client(version=4)
+        self.assertFalse(client.clone().send_service)
+
+
 class TestServerCleanFieldValidation(SimpleTestCase):
     """Tests for Server.clean() — field-level validation that runs before connectivity checks."""
 
