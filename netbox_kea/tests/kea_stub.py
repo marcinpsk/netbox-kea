@@ -174,6 +174,14 @@ def _subnet_get(version: int, pools: list[str] | None = None, subnet_id: int = 1
     }
 
 
+def _subnet_list(version: int, subnets: list[dict[str, Any]]) -> dict[str, Any]:  # noqa: ARG001 - version kept for call-site symmetry with _subnet_get
+    """A ``subnet{v}-list`` payload (read by ``reservation_get_by_ip`` to find candidate subnets).
+
+    *subnets* is the list of subnet dicts (each ``{"id": …, "subnet": <cidr>}``) Kea reports.
+    """
+    return {"result": 0, "arguments": {"subnets": list(subnets)}}
+
+
 @contextmanager
 def stub_kea(responses: dict[str, Any]):
     """Exercise a view against a real ``KeaClient`` with the HTTP boundary stubbed.

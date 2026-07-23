@@ -35,7 +35,7 @@ from ipam.models import IPAddress as NbIP
 
 from netbox_kea.models import Server
 
-from .kea_stub import _res_page, stub_kea
+from .kea_stub import _res_page, _subnet_list, stub_kea
 
 User = get_user_model()
 
@@ -65,11 +65,6 @@ def _reservation_get(hostname, **extra):
         return {"result": 0, "arguments": {"ip-address": ip, "hostname": hostname, "subnet-id": 1, **extra}}
 
     return _resp
-
-
-def _subnet_list(version, cidr):
-    """A ``subnet{v}-list`` payload with one subnet (so reservation_get_by_ip finds it)."""
-    return {"result": 0, "arguments": {"subnets": [{"id": 1, "subnet": cidr}]}}
 
 
 def _make_server(**kwargs) -> Server:
@@ -233,7 +228,7 @@ class TestReservation4SyncView(_SyncViewBase):
         super().setUp()
         self._start_stub(
             {
-                "subnet4-list": _subnet_list(4, "10.0.0.0/24"),
+                "subnet4-list": _subnet_list(4, [{"id": 1, "subnet": "10.0.0.0/24"}]),
                 "reservation-get": _reservation_get("mock-res.local", **{"hw-address": "aa:bb:cc:00:00:02"}),
             }
         )
@@ -281,7 +276,7 @@ class TestReservation6SyncView(_SyncViewBase):
         super().setUp()
         self._start_stub(
             {
-                "subnet6-list": _subnet_list(6, "2001:db8:1::/64"),
+                "subnet6-list": _subnet_list(6, [{"id": 1, "subnet": "2001:db8:1::/64"}]),
                 "reservation-get": _reservation_get("mock-v6res.local", duid="01:02:03:04"),
             }
         )

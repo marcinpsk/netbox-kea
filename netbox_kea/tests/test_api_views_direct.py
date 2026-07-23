@@ -26,7 +26,7 @@ from rest_framework import status
 from netbox_kea.api.views import ServerViewSet
 from netbox_kea.models import Server
 
-from .kea_stub import queued, stub_kea
+from .kea_stub import _res_page, queued, stub_kea
 
 _PLUGINS_CONFIG = {"netbox_kea": {"kea_timeout": 30}}
 
@@ -422,13 +422,10 @@ class TestFetchReservationsDuidAndSubnet(SimpleTestCase):
 class TestFetchReservationsSubnetOnly(SimpleTestCase):
     """subnet_id-only pagination branch in _fetch_reservations (reservation-get-page)."""
 
-    def _page(self, hosts, *, next_from=0, next_source=0):
-        return {"result": 0, "arguments": {"hosts": hosts, "next": {"from": next_from, "source-index": next_source}}}
-
     def test_single_page_returns_all_hosts(self):
         view, _ = _make_view()
         host = {"ip-address": "10.0.0.50", "subnet-id": 1}
-        with stub_kea({"reservation-get-page": self._page([host])}):
+        with stub_kea({"reservation-get-page": _res_page([host])}):
             response = view._reservation_search(_make_request({"subnet_id": "1"}), version=4)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["count"], 1)
@@ -438,8 +435,8 @@ class TestFetchReservationsSubnetOnly(SimpleTestCase):
         host1 = {"ip-address": "10.0.0.1", "subnet-id": 1}
         host2 = {"ip-address": "10.0.0.2", "subnet-id": 1}
         pages = queued(
-            self._page([host1], next_from=1, next_source=1),  # not exhausted
-            self._page([host2]),  # exhausted
+            _res_page([host1], next_from=1, next_source=1),  # not exhausted
+            _res_page([host2]),  # exhausted
         )
         with stub_kea({"reservation-get-page": pages}):
             response = view._reservation_search(_make_request({"subnet_id": "1"}), version=4)
@@ -450,7 +447,7 @@ class TestFetchReservationsSubnetOnly(SimpleTestCase):
         view, _ = _make_view()
         host_in = {"ip-address": "10.0.0.1", "subnet-id": 1}
         host_out = {"ip-address": "10.0.0.2", "subnet-id": 2}
-        with stub_kea({"reservation-get-page": self._page([host_in, host_out])}):
+        with stub_kea({"reservation-get-page": _res_page([host_in, host_out])}):
             response = view._reservation_search(_make_request({"subnet_id": "1"}), version=4)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["count"], 1)

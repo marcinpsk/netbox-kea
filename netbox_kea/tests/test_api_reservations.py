@@ -19,7 +19,7 @@ from rest_framework.test import APIClient
 
 from netbox_kea.models import Server
 
-from .kea_stub import queued, stub_kea
+from .kea_stub import _res_page, queued, stub_kea
 
 User = get_user_model()
 
@@ -41,39 +41,10 @@ _RESERVATION4_RESPONSE = [
 # Not found — reservation-get result=3
 _RESERVATION_NOT_FOUND = [{"result": 3, "text": "Host not found."}]
 
-# reservation-get-page returns a "hosts" list under arguments
-_RESERVATION4_PAGE_RESPONSE = [
-    {
-        "result": 0,
-        "arguments": {
-            "hosts": [
-                {
-                    "ip-address": "10.0.0.50",
-                    "hw-address": "aa:bb:cc:dd:ee:ff",
-                    "subnet-id": 1,
-                    "hostname": "reserved.example.com",
-                }
-            ],
-            "next": {"from": 0, "source-index": 0},
-        },
-    }
-]
-
-_RESERVATION6_PAGE_RESPONSE = [
-    {
-        "result": 0,
-        "arguments": {
-            "hosts": [
-                {
-                    "ip-addresses": ["2001:db8::50"],
-                    "duid": "00:01:02:03",
-                    "subnet-id": 10,
-                }
-            ],
-            "next": {"from": 0, "source-index": 0},
-        },
-    }
-]
+# reservation-get-page returns a "hosts" list under arguments (shared page shape).
+_RESERVATION4_PAGE_RESPONSE = _res_page(
+    [{"ip-address": "10.0.0.50", "hw-address": "aa:bb:cc:dd:ee:ff", "subnet-id": 1, "hostname": "reserved.example.com"}]
+)
 
 _RESERVATION6_SINGLE = [
     {
@@ -197,20 +168,11 @@ class TestReservation4API(_APITestBase):
 
     def test_get_by_subnet_id_paginates_all_pages(self):
         """?subnet_id=1 fetches ALL pages from reservation-get-page, not just the first."""
-        page1 = {
-            "result": 0,
-            "arguments": {
-                "hosts": [{"ip-address": "10.0.0.51", "hw-address": "aa:bb:cc:dd:ee:01", "subnet-id": 1}],
-                "next": {"from": 1, "source-index": 0},  # not exhausted
-            },
-        }
-        page2 = {
-            "result": 0,
-            "arguments": {
-                "hosts": [{"ip-address": "10.0.0.52", "hw-address": "aa:bb:cc:dd:ee:02", "subnet-id": 1}],
-                "next": {"from": 0, "source-index": 0},  # exhausted
-            },
-        }
+        page1 = _res_page(
+            [{"ip-address": "10.0.0.51", "hw-address": "aa:bb:cc:dd:ee:01", "subnet-id": 1}],
+            next_from=1,  # not exhausted
+        )
+        page2 = _res_page([{"ip-address": "10.0.0.52", "hw-address": "aa:bb:cc:dd:ee:02", "subnet-id": 1}])  # exhausted
         with stub_kea({"reservation-get-page": queued(page1, page2)}) as kea:
             response = self.api_client.get(self._url(), {"subnet_id": "1"})
         self.assertEqual(response.status_code, 200)

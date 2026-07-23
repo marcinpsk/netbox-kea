@@ -37,7 +37,7 @@ from django.test import override_settings
 from django.urls import reverse
 from ipam.models import IPAddress as NbIP
 
-from .kea_stub import _res_get, _res_page, queued, stub_kea
+from .kea_stub import _res_get, _res_page, _subnet_list, queued, stub_kea
 from .utils import _PLUGINS_CONFIG, User, _ViewTestBase
 
 # ---------------------------------------------------------------------------
@@ -58,11 +58,6 @@ def _lease4(ip="10.0.0.1"):
             "subnet-id": 1,
         },
     }
-
-
-def _subnet_list(version, subnets):
-    """A ``subnet{v}-list`` payload (used by ``reservation_get_by_ip`` to find candidate subnets)."""
-    return {"result": 0, "arguments": {"subnets": list(subnets)}}
 
 
 def _messages(response):
@@ -301,8 +296,8 @@ class TestReservation4SyncViewFetchLiveData(_ViewTestBase):
         self.assertEqual(response.status_code, 400)
         mock_sync.assert_not_called()
 
-    def test_falls_back_on_kea_exception(self):
-        """When the subnet-list call fails (KeaException), response is 400."""
+    def test_kea_exception_returns_400_without_sync(self):
+        """When the subnet-list call fails (KeaException), response is 400 (no sync)."""
         with (
             stub_kea({"subnet4-list": {"result": 1, "text": "not found"}}),
             patch("netbox_kea.views.ServerReservation4SyncView._sync") as mock_sync,
@@ -326,8 +321,8 @@ class TestReservation6SyncViewFetchLiveData(_ViewTestBase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(kea.bodies("subnet6-list")[0]["service"], ["dhcp6"])
 
-    def test_falls_back_on_request_exception(self):
-        """When the subnet-list call raises a transport error, response is 400."""
+    def test_request_exception_returns_400_without_sync(self):
+        """When the subnet-list call raises a transport error, response is 400 (no sync)."""
         with stub_kea({"subnet6-list": requests.RequestException("timeout")}):
             response = self.client.post(self._url(), {"ip_address": "2001:db8::1", "hostname": "fallback6"})
         self.assertEqual(response.status_code, 400)
