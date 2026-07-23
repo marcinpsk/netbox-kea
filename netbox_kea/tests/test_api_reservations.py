@@ -6,18 +6,20 @@ These tests cover:
 - GET /api/plugins/netbox-kea/servers/{pk}/reservations4/
 - GET /api/plugins/netbox-kea/servers/{pk}/reservations6/
 
-All Kea HTTP calls are mocked; no running Kea instance required.
+These tests drive the **real** ``KeaClient``; only the HTTP boundary is stubbed
+via ``kea_stub.stub_kea``. The reservation endpoints issue ``reservation-get``
+(lookup by ip/hw/duid + subnet) or ``reservation-get-page`` (paginated, subnet-id
+only); the request payloads are exercised and asserted.
 """
-
-from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
 from django.urls import reverse
 from rest_framework.test import APIClient
 
-from netbox_kea.kea import KeaClient
 from netbox_kea.models import Server
+
+from .kea_stub import queued, stub_kea
 
 User = get_user_model()
 
@@ -164,99 +166,79 @@ class TestReservation4API(_APITestBase):
         response = self.api_client.get(self._url(pk=99999), {"subnet_id": "1"})
         self.assertEqual(response.status_code, 404)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_get_by_ip_and_subnet_returns_200(self, MockKeaClient):
+    def test_get_by_ip_and_subnet_returns_200(self):
         """?ip_address=10.0.0.50&subnet_id=1 returns 200 with reservation data."""
-        mock_client = MagicMock(spec=KeaClient)
-        MockKeaClient.return_value = mock_client
-        mock_client.reservation_get.return_value = _RESERVATION4_RESPONSE[0]["arguments"]
-        response = self.api_client.get(self._url(), {"ip_address": "10.0.0.50", "subnet_id": "1"})
+        with stub_kea({"reservation-get": _RESERVATION4_RESPONSE}):
+            response = self.api_client.get(self._url(), {"ip_address": "10.0.0.50", "subnet_id": "1"})
         self.assertEqual(response.status_code, 200)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_get_by_ip_and_subnet_returns_count_and_results(self, MockKeaClient):
+    def test_get_by_ip_and_subnet_returns_count_and_results(self):
         """Response includes 'count' and 'results' keys."""
-        mock_client = MagicMock(spec=KeaClient)
-        MockKeaClient.return_value = mock_client
-        mock_client.reservation_get.return_value = _RESERVATION4_RESPONSE[0]["arguments"]
-        response = self.api_client.get(self._url(), {"ip_address": "10.0.0.50", "subnet_id": "1"})
+        with stub_kea({"reservation-get": _RESERVATION4_RESPONSE}):
+            response = self.api_client.get(self._url(), {"ip_address": "10.0.0.50", "subnet_id": "1"})
         data = response.json()
         self.assertIn("count", data)
         self.assertIn("results", data)
         self.assertEqual(data["count"], 1)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_get_by_hw_address_and_subnet_returns_200(self, MockKeaClient):
+    def test_get_by_hw_address_and_subnet_returns_200(self):
         """?hw_address=aa:bb&subnet_id=1 returns 200."""
-        mock_client = MagicMock(spec=KeaClient)
-        MockKeaClient.return_value = mock_client
-        mock_client.reservation_get.return_value = _RESERVATION4_RESPONSE[0]["arguments"]
-        response = self.api_client.get(self._url(), {"hw_address": "aa:bb:cc:dd:ee:ff", "subnet_id": "1"})
+        with stub_kea({"reservation-get": _RESERVATION4_RESPONSE}):
+            response = self.api_client.get(self._url(), {"hw_address": "aa:bb:cc:dd:ee:ff", "subnet_id": "1"})
         self.assertEqual(response.status_code, 200)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_get_by_subnet_id_uses_get_page(self, MockKeaClient):
-        """?subnet_id=1 (no IP/hw) calls reservation_get_page and returns results."""
-        mock_client = MagicMock(spec=KeaClient)
-        MockKeaClient.return_value = mock_client
-        # reservation_get_page returns (hosts, next_from, next_source_index)
-        mock_client.reservation_get_page.return_value = (
-            _RESERVATION4_PAGE_RESPONSE[0]["arguments"]["hosts"],
-            0,
-            0,
-        )
-        response = self.api_client.get(self._url(), {"subnet_id": "1"})
+    def test_get_by_subnet_id_uses_get_page(self):
+        """?subnet_id=1 (no IP/hw) drives reservation-get-page and returns results."""
+        with stub_kea({"reservation-get-page": _RESERVATION4_PAGE_RESPONSE}) as kea:
+            response = self.api_client.get(self._url(), {"subnet_id": "1"})
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["count"], 1)
+        self.assertIn("reservation-get-page", kea.commands())
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_get_by_subnet_id_paginates_all_pages(self, MockKeaClient):
-        """?subnet_id=1 fetches ALL pages from reservation_get_page, not just the first."""
-        mock_client = MagicMock(spec=KeaClient)
-        MockKeaClient.return_value = mock_client
-        page1_host = {"ip-address": "10.0.0.51", "hw-address": "aa:bb:cc:dd:ee:01", "subnet-id": 1}
-        page2_host = {"ip-address": "10.0.0.52", "hw-address": "aa:bb:cc:dd:ee:02", "subnet-id": 1}
-        mock_client.reservation_get_page.side_effect = [
-            ([page1_host], 1, 0),  # first page: next_from=1, not exhausted
-            ([page2_host], 0, 0),  # second page: exhausted
-        ]
-        response = self.api_client.get(self._url(), {"subnet_id": "1"})
+    def test_get_by_subnet_id_paginates_all_pages(self):
+        """?subnet_id=1 fetches ALL pages from reservation-get-page, not just the first."""
+        page1 = {
+            "result": 0,
+            "arguments": {
+                "hosts": [{"ip-address": "10.0.0.51", "hw-address": "aa:bb:cc:dd:ee:01", "subnet-id": 1}],
+                "next": {"from": 1, "source-index": 0},  # not exhausted
+            },
+        }
+        page2 = {
+            "result": 0,
+            "arguments": {
+                "hosts": [{"ip-address": "10.0.0.52", "hw-address": "aa:bb:cc:dd:ee:02", "subnet-id": 1}],
+                "next": {"from": 0, "source-index": 0},  # exhausted
+            },
+        }
+        with stub_kea({"reservation-get-page": queued(page1, page2)}) as kea:
+            response = self.api_client.get(self._url(), {"subnet_id": "1"})
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["count"], 2)
-        self.assertEqual(mock_client.reservation_get_page.call_count, 2)
+        self.assertEqual(len(kea.bodies("reservation-get-page")), 2)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_not_found_returns_empty_results(self, MockKeaClient):
-        """When reservation_get returns None, results is empty list with count=0."""
-        mock_client = MagicMock(spec=KeaClient)
-        MockKeaClient.return_value = mock_client
-        mock_client.reservation_get.return_value = None
-        response = self.api_client.get(self._url(), {"ip_address": "10.0.0.99", "subnet_id": "1"})
+    def test_not_found_returns_empty_results(self):
+        """When reservation-get returns not-found (result 3), results is empty with count=0."""
+        with stub_kea({"reservation-get": _RESERVATION_NOT_FOUND}):
+            response = self.api_client.get(self._url(), {"ip_address": "10.0.0.99", "subnet_id": "1"})
         self.assertEqual(response.status_code, 200)
         data = response.json()
         self.assertEqual(data["count"], 0)
         self.assertEqual(data["results"], [])
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_kea_connection_error_returns_502(self, MockKeaClient):
+    def test_kea_connection_error_returns_502(self):
         """When Kea is unreachable, returns HTTP 502."""
         import requests as rq
 
-        mock_client = MagicMock(spec=KeaClient)
-        MockKeaClient.return_value = mock_client
-        mock_client.reservation_get.side_effect = rq.ConnectionError("refused")
-        response = self.api_client.get(self._url(), {"ip_address": "10.0.0.1", "subnet_id": "1"})
+        with stub_kea({"reservation-get": rq.ConnectionError("refused")}):
+            response = self.api_client.get(self._url(), {"ip_address": "10.0.0.1", "subnet_id": "1"})
         self.assertEqual(response.status_code, 502)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_uses_dhcp4_service(self, MockKeaClient):
-        """The v4 endpoint calls reservation_get with service='dhcp4'."""
-        mock_client = MagicMock(spec=KeaClient)
-        MockKeaClient.return_value = mock_client
-        mock_client.reservation_get.return_value = _RESERVATION4_RESPONSE[0]["arguments"]
-        self.api_client.get(self._url(), {"ip_address": "10.0.0.50", "subnet_id": "1"})
-        call_args = mock_client.reservation_get.call_args
-        self.assertEqual(call_args.args[0], "dhcp4")
+    def test_uses_dhcp4_service(self):
+        """The v4 endpoint issues reservation-get to service='dhcp4'."""
+        with stub_kea({"reservation-get": _RESERVATION4_RESPONSE}) as kea:
+            self.api_client.get(self._url(), {"ip_address": "10.0.0.50", "subnet_id": "1"})
+        self.assertEqual(kea.bodies("reservation-get")[0]["service"], ["dhcp4"])
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -282,30 +264,20 @@ class TestReservation6API(_APITestBase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("subnet_id", response.json()["detail"])
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_get_by_ip_and_subnet_returns_200(self, MockKeaClient):
+    def test_get_by_ip_and_subnet_returns_200(self):
         """?ip_address=2001:db8::50&subnet_id=10 returns 200."""
-        mock_client = MagicMock(spec=KeaClient)
-        MockKeaClient.return_value = mock_client
-        mock_client.reservation_get.return_value = _RESERVATION6_SINGLE[0]["arguments"]
-        response = self.api_client.get(self._url(), {"ip_address": "2001:db8::50", "subnet_id": "10"})
+        with stub_kea({"reservation-get": _RESERVATION6_SINGLE}):
+            response = self.api_client.get(self._url(), {"ip_address": "2001:db8::50", "subnet_id": "10"})
         self.assertEqual(response.status_code, 200)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_get_by_duid_and_subnet_returns_200(self, MockKeaClient):
+    def test_get_by_duid_and_subnet_returns_200(self):
         """?duid=00:01:02:03&subnet_id=10 returns 200."""
-        mock_client = MagicMock(spec=KeaClient)
-        MockKeaClient.return_value = mock_client
-        mock_client.reservation_get.return_value = _RESERVATION6_SINGLE[0]["arguments"]
-        response = self.api_client.get(self._url(), {"duid": "00:01:02:03", "subnet_id": "10"})
+        with stub_kea({"reservation-get": _RESERVATION6_SINGLE}):
+            response = self.api_client.get(self._url(), {"duid": "00:01:02:03", "subnet_id": "10"})
         self.assertEqual(response.status_code, 200)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_uses_dhcp6_service(self, MockKeaClient):
-        """The v6 endpoint calls reservation_get with service='dhcp6'."""
-        mock_client = MagicMock(spec=KeaClient)
-        MockKeaClient.return_value = mock_client
-        mock_client.reservation_get.return_value = _RESERVATION6_SINGLE[0]["arguments"]
-        self.api_client.get(self._url(), {"ip_address": "2001:db8::50", "subnet_id": "10"})
-        call_args = mock_client.reservation_get.call_args
-        self.assertEqual(call_args.args[0], "dhcp6")
+    def test_uses_dhcp6_service(self):
+        """The v6 endpoint issues reservation-get to service='dhcp6'."""
+        with stub_kea({"reservation-get": _RESERVATION6_SINGLE}) as kea:
+            self.api_client.get(self._url(), {"ip_address": "2001:db8::50", "subnet_id": "10"})
+        self.assertEqual(kea.bodies("reservation-get")[0]["service"], ["dhcp6"])
