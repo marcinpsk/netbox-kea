@@ -31,6 +31,14 @@ from netbox_kea.jobs import KeaIpamSyncJob
 from netbox_kea.kea import KeaClient, KeaException
 from netbox_kea.models import Server, SyncConfig
 
+from .kea_stub import stub_kea
+
+
+def _res_page(hosts):
+    """A single exhausted ``reservation-get-page`` payload carrying *hosts*."""
+    return {"result": 0, "arguments": {"hosts": list(hosts), "next": {"from": 0, "source-index": 0}}}
+
+
 _PLUGINS_CONFIG = {
     "netbox_kea": {
         "kea_timeout": 30,
@@ -1141,113 +1149,114 @@ _DHCP6_CONFIG_WITH_SHARED = [
 class TestFetchKeaSubnets(SimpleTestCase):
     """_fetch_kea_subnets fetches + parses the Kea subnet list, returning None on failure."""
 
-    def _make_server(self, name="kea1"):
-        server = MagicMock(spec=Server)
+    def _server(self, name="kea1"):
+        # Server is a plain container here (only .name + .get_client are read); the
+        # client it returns is a REAL KeaClient whose HTTP boundary stub_kea covers.
+        server = MagicMock(spec=Server)  # mock-ok: Server container for a job helper (name + get_client)
         server.name = name
+        server.get_client.return_value = KeaClient(url="https://kea.example.com")
         return server
 
-    def _server_returning(self, command_return=None, command_side_effect=None, get_client_side_effect=None):
-        server = self._make_server()
-        if get_client_side_effect is not None:
-            server.get_client.side_effect = get_client_side_effect
-            return server
-        client = MagicMock(spec=KeaClient)
-        if command_side_effect is not None:
-            client.command.side_effect = command_side_effect
-        else:
-            client.command.return_value = command_return
-        server.get_client.return_value = client
-        return server
+    @contextmanager
+    def _config_get(self, response):
+        """Yield a server whose real client answers ``config-get`` with *response*.
+
+        *response* is a raw Kea payload (list) or an exception instance the stub
+        raises at the HTTP boundary.
+        """
+        with stub_kea({"config-get": response}):
+            yield self._server()
 
     def test_returns_subnet_list(self):
         from netbox_kea.jobs import _fetch_kea_subnets
 
-        server = self._server_returning(_DHCP4_CONFIG_RESPONSE)
-        self.assertEqual(len(_fetch_kea_subnets(server, 4)), 2)
+        with self._config_get(_DHCP4_CONFIG_RESPONSE) as server:
+            self.assertEqual(len(_fetch_kea_subnets(server, 4)), 2)
 
     def test_shared_network_subnets_included(self):
         from netbox_kea.jobs import _fetch_kea_subnets
 
-        server = self._server_returning(_DHCP4_CONFIG_WITH_SHARED)
-        # 1 top-level subnet + 1 in shared-network = 2
-        self.assertEqual(len(_fetch_kea_subnets(server, 4)), 2)
+        with self._config_get(_DHCP4_CONFIG_WITH_SHARED) as server:
+            # 1 top-level subnet + 1 in shared-network = 2
+            self.assertEqual(len(_fetch_kea_subnets(server, 4)), 2)
 
     def test_shared_network_subnets_v6_included(self):
         from netbox_kea.jobs import _fetch_kea_subnets
 
-        server = self._server_returning(_DHCP6_CONFIG_WITH_SHARED)
-        self.assertEqual(len(_fetch_kea_subnets(server, 6)), 2)
+        with self._config_get(_DHCP6_CONFIG_WITH_SHARED) as server:
+            self.assertEqual(len(_fetch_kea_subnets(server, 6)), 2)
 
     def test_get_client_exception_returns_none(self):
         from netbox_kea.jobs import _fetch_kea_subnets
 
-        server = self._server_returning(get_client_side_effect=ValueError("no url"))
-        self.assertIsNone(_fetch_kea_subnets(server, 4))
+        # cert-without-key makes the real get_client() raise ValueError → helper returns None.
+        server = Server(name="kea1", ca_url="https://kea.example.com", dhcp4=True, client_cert_path="/x.pem")
+        with stub_kea({}):
+            self.assertIsNone(_fetch_kea_subnets(server, 4))
 
     def test_command_exception_returns_none(self):
         from netbox_kea.jobs import _fetch_kea_subnets
 
-        server = self._server_returning(command_side_effect=Exception("timeout"))
-        self.assertIsNone(_fetch_kea_subnets(server, 4))
-
-    def test_malformed_non_list_returns_none(self):
-        from netbox_kea.jobs import _fetch_kea_subnets
-
-        server = self._server_returning("not-a-list")
-        self.assertIsNone(_fetch_kea_subnets(server, 4))
+        # A transport error at the boundary propagates through command() → helper returns None.
+        with self._config_get(Exception("timeout")) as server:
+            self.assertIsNone(_fetch_kea_subnets(server, 4))
 
     def test_result_nonzero_returns_none(self):
         from netbox_kea.jobs import _fetch_kea_subnets
 
-        server = self._server_returning([{"result": 1, "text": "internal error"}])
-        self.assertIsNone(_fetch_kea_subnets(server, 4))
+        with self._config_get([{"result": 1, "text": "internal error"}]) as server:
+            self.assertIsNone(_fetch_kea_subnets(server, 4))
 
     def test_arguments_not_dict_returns_none(self):
         from netbox_kea.jobs import _fetch_kea_subnets
 
-        server = self._server_returning([{"result": 0, "arguments": "not-a-dict"}])
-        self.assertIsNone(_fetch_kea_subnets(server, 4))
+        with self._config_get([{"result": 0, "arguments": "not-a-dict"}]) as server:
+            self.assertIsNone(_fetch_kea_subnets(server, 4))
 
     def test_arguments_none_returns_empty_list(self):
         from netbox_kea.jobs import _fetch_kea_subnets
 
-        server = self._server_returning([{"result": 0, "arguments": None}])
-        self.assertEqual(_fetch_kea_subnets(server, 4), [])
+        with self._config_get([{"result": 0, "arguments": None}]) as server:
+            self.assertEqual(_fetch_kea_subnets(server, 4), [])
 
     def test_dhcp_config_not_dict_returns_none(self):
         from netbox_kea.jobs import _fetch_kea_subnets
 
-        server = self._server_returning([{"result": 0, "arguments": {"Dhcp4": "not-a-dict"}}])
-        self.assertIsNone(_fetch_kea_subnets(server, 4))
+        with self._config_get([{"result": 0, "arguments": {"Dhcp4": "not-a-dict"}}]) as server:
+            self.assertIsNone(_fetch_kea_subnets(server, 4))
 
     def test_empty_subnet_list_returns_empty(self):
         from netbox_kea.jobs import _fetch_kea_subnets
 
-        server = self._server_returning([{"result": 0, "arguments": {"Dhcp4": {"subnet4": []}}}])
-        self.assertEqual(_fetch_kea_subnets(server, 4), [])
+        with self._config_get([{"result": 0, "arguments": {"Dhcp4": {"subnet4": []}}}]) as server:
+            self.assertEqual(_fetch_kea_subnets(server, 4), [])
 
     def test_non_dict_shared_network_entry_is_skipped(self):
         from netbox_kea.jobs import _fetch_kea_subnets
 
-        server = self._server_returning(
-            [
-                {
-                    "result": 0,
-                    "arguments": {
-                        "Dhcp4": {
-                            "subnet4": [],
-                            "shared-networks": [
-                                "not-a-dict",
-                                {"name": "net-a", "subnet4": [{"subnet": "10.1.0.0/24", "pools": []}]},
-                            ],
-                        }
-                    },
-                }
-            ]
-        )
-        subnets = _fetch_kea_subnets(server, 4)
+        config = [
+            {
+                "result": 0,
+                "arguments": {
+                    "Dhcp4": {
+                        "subnet4": [],
+                        "shared-networks": [
+                            "not-a-dict",
+                            {"name": "net-a", "subnet4": [{"subnet": "10.1.0.0/24", "pools": []}]},
+                        ],
+                    }
+                },
+            }
+        ]
+        with self._config_get(config) as server:
+            subnets = _fetch_kea_subnets(server, 4)
         self.assertEqual(len(subnets), 1)
         self.assertEqual(subnets[0]["subnet"], "10.1.0.0/24")
+
+    # NOTE: the old test_malformed_non_list_returns_none was removed — a non-list Kea
+    # response is unreachable through the real client (KeaClient.command() raises
+    # ValueError on a non-list body, which _fetch_kea_subnets catches → None). That
+    # None outcome is already covered by test_command_exception_returns_none.
 
 
 class TestBuildSubnetPrefixMap(SimpleTestCase):
@@ -1283,16 +1292,15 @@ class TestSyncServerReservationsReturnValue(TestCase):
     def test_returns_false_when_a_row_fails(self):
         from netbox_kea.jobs import _sync_server_reservations
 
-        server = MagicMock(spec=Server)
+        server = MagicMock(spec=Server)  # mock-ok: Server container (name/pk/get_client) for a job helper
         server.name = "kea-fail"
-        client = MagicMock(spec=KeaClient)
-        # A reservation with no ip-address makes sync_reservation_to_netbox raise
-        # ValueError, which the loop catches and counts as an error.
-        client.reservation_get_page.return_value = ([{"hostname": "bad", "subnet-id": 1}], 0, 0)
-        server.get_client.return_value = client
-
+        server.pk = 1
+        server.get_client.return_value = KeaClient(url="https://kea.example.com")
+        # A reservation with no ip-address makes the REAL sync_reservation_to_netbox
+        # raise ValueError, which the loop catches and counts as an error.
         stats = {"created": 0, "updated": 0, "errors": 0, "prefix_errors": 0, "conflicts": 0}
-        ok = _sync_server_reservations(server, 4, stats=stats, all_synced=[])
+        with stub_kea({"reservation-get-page": _res_page([{"hostname": "bad", "subnet-id": 1}])}):
+            ok = _sync_server_reservations(server, 4, stats=stats, all_synced=[])
 
         self.assertFalse(ok)
         self.assertEqual(stats["errors"], 1)
@@ -1518,12 +1526,10 @@ class TestPrefetchReservationIpsEdgeCases(SimpleTestCase):
         from netbox_kea.jobs import _prefetch_reservation_ips
 
         server = self._make_server()
-        client = MagicMock(spec=KeaClient)
+        server.get_client.return_value = KeaClient(url="https://kea.example.com")
         page = ["not-a-dict", {"ip-address": "10.0.0.1"}]
-        client.reservation_get_page.return_value = (page, 0, 0)
-        server.get_client.return_value = client
-
-        result = _prefetch_reservation_ips(server, version=4)
+        with stub_kea({"reservation-get-page": _res_page(page)}):
+            result = _prefetch_reservation_ips(server, version=4)
 
         self.assertIsNotNone(result)
         self.assertIn("10.0.0.1", result)
@@ -1534,12 +1540,10 @@ class TestPrefetchReservationIpsEdgeCases(SimpleTestCase):
         from netbox_kea.jobs import _prefetch_reservation_ips
 
         server = self._make_server()
-        client = MagicMock(spec=KeaClient)
+        server.get_client.return_value = KeaClient(url="https://kea.example.com")
         page = [{"ip-addresses": ["2001:db8::1", "2001:db8::2"]}]
-        client.reservation_get_page.return_value = (page, 0, 0)
-        server.get_client.return_value = client
-
-        result = _prefetch_reservation_ips(server, version=6)
+        with stub_kea({"reservation-get-page": _res_page(page)}):
+            result = _prefetch_reservation_ips(server, version=6)
 
         self.assertIsNotNone(result)
         self.assertIn("2001:db8::1", result)
@@ -1565,13 +1569,13 @@ class TestSyncServerReservationsUpdated(SimpleTestCase):
         from netbox_kea.jobs import _sync_server_reservations
 
         server = self._make_server()
-        client = MagicMock(spec=KeaClient)
-        client.reservation_get_page.return_value = ([_RESV4], 0, 0)
-        server.get_client.return_value = client
+        server.pk = 1
+        server.get_client.return_value = KeaClient(url="https://kea.example.com")
 
         stats = {"created": 0, "updated": 0, "errors": 0, "prefix_errors": 0}
         all_synced: list = []
-        result = _sync_server_reservations(server, version=4, stats=stats, all_synced=all_synced)
+        with stub_kea({"reservation-get-page": _res_page([_RESV4])}):
+            result = _sync_server_reservations(server, version=4, stats=stats, all_synced=all_synced)
 
         self.assertTrue(result)
         self.assertEqual(stats["updated"], 1)
