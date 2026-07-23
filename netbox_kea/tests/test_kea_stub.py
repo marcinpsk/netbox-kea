@@ -64,6 +64,14 @@ def test_callable_resolves_against_request_body():
     assert _call(stub) == [{"echo": "x"}]
 
 
+def test_urls_records_endpoints_in_order():
+    """``urls()`` records each POST endpoint in call order (for dual-URL routing asserts)."""
+    stub = KeaHttpStub({"x": {"result": 0}})
+    stub("http://v4:1", json={"command": "x"})
+    stub("http://v6:2", json={"command": "x"})
+    assert stub.urls() == ["http://v4:1", "http://v6:2"]
+
+
 def test_exception_value_is_raised():
     stub = KeaHttpStub({"x": requests.ConnectionError("down")})
     with pytest.raises(requests.ConnectionError):

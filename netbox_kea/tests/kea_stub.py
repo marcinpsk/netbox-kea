@@ -102,12 +102,14 @@ class KeaHttpStub:
     def __init__(self, responses: dict[str, Any]) -> None:
         self._responses = dict(responses)
         self.requests: list[dict[str, Any]] = []
+        self._urls: list[str] = []
         self._lock = threading.Lock()
 
     def __call__(self, url: str, **kwargs: Any) -> MagicMock:
         body = kwargs.get("json") or {}
         with self._lock:
             self.requests.append(body)
+            self._urls.append(url)
             cmd = body.get("command")
             if cmd not in self._responses:
                 raise AssertionError(f"KeaHttpStub: no response registered for command {cmd!r} (url={url})")
@@ -131,6 +133,15 @@ class KeaHttpStub:
         """Every request body sent for *command* (for asserting args / absence of ``service``)."""
         with self._lock:
             return [r for r in self.requests if r.get("command") == command]
+
+    def urls(self) -> list[str]:
+        """Ordered list of endpoint URLs POSTed to (parallel to :meth:`commands`).
+
+        Lets dual-URL tests assert that a per-version client hit the protocol-specific
+        endpoint (``dhcp4_url``/``dhcp6_url``) rather than the shared CA URL.
+        """
+        with self._lock:
+            return list(self._urls)
 
 
 @contextmanager
