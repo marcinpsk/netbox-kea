@@ -43,7 +43,10 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           repository: netbox-community/netbox
-          ref: v4.5.5
+          # Pinned to an exact 4.6.x patch so the committed query-count baselines
+          # (netbox_kea/tests/query_counts.json) stay stable — a floating tag would
+          # drift the counts on NetBox patch releases. Bump + re-record together.
+          ref: v4.6.4
           path: netbox
           persist-credentials: false
 
