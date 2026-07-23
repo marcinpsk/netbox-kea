@@ -6,115 +6,113 @@ Also contains pure-Python unit tests for helper functions defined in views.py
 (e.g. ``_extract_identifier``), which do not require a database but live here
 because they are tightly coupled to view logic.
 
-These tests verify correct HTTP responses and redirect behaviour for every view.
-All Kea HTTP calls are mocked so no running Kea instance is required.
-
-Test organisation strategy
---------------------------
-Each view class gets its own ``TestCase`` subclass so failures are isolated and
-clearly named.  Every test that triggers a redirect asserts that the redirect URL
-contains an *integer* pk (never the string "None"), which is the pattern that
-revealed the original ``POST /plugins/kea/servers/None`` 404 bug.
-
-View tests use ``django.test.TestCase`` because they write to the test database
-(user + server fixtures).  Server objects are created via ``Server.objects.create()``
-which does **not** call ``Model.clean()`` and therefore does not trigger live Kea
-connectivity checks.
+These tests drive the **real** ``KeaClient``; only the HTTP boundary is stubbed
+via ``kea_stub.stub_kea``, so the combined multi-server fetch helpers exercise the
+real request/response path.
 """
-
-from unittest.mock import patch
 
 from django.test import override_settings
 from django.urls import reverse
 
+from .kea_stub import queued, stub_kea
 from .utils import _PLUGINS_CONFIG, _ViewTestBase
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestFetchSharedNetworksFromServer(_ViewTestBase):
-    """Line 3939: _fetch_shared_networks_from_server with null config raises RuntimeError."""
+    """_fetch_shared_networks_from_server with null config-get arguments raises RuntimeError."""
 
     def test_null_config_raises_runtime_error(self):
         from netbox_kea.views import _fetch_shared_networks_from_server
 
-        with patch("netbox_kea.models.KeaClient") as MockKea:
-            MockKea.return_value.command.return_value = [{"result": 0, "arguments": None}]
+        with stub_kea({"config-get": [{"result": 0, "arguments": None}]}):
             with self.assertRaises(RuntimeError):
                 _fetch_shared_networks_from_server(self.server, version=4)
 
 
 # ---------------------------------------------------------------------------
-# Combined reservations — multi-page pagination
+# Combined fetch helpers — response-shape guards
 # ---------------------------------------------------------------------------
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestCombinedResponseShapeGuards(_ViewTestBase):
-    """Malformed Kea responses (empty list / non-dict entry) must raise RuntimeError.
+    """An empty Kea response list must raise RuntimeError before indexing ``resp[0]``.
 
     ``KeaClient.command`` only guarantees a *list*; ``check_response`` iterating an
-    empty list raises nothing, so indexing ``resp[0]["result"]`` / ``config[0][...]``
-    blows up with ``IndexError``/``TypeError``. The sibling subnet/option/server
-    views guard this with ``isinstance(resp, list) and resp and isinstance(resp[0],
-    dict)`` and raise ``RuntimeError``; these combined helpers must do the same
-    (CLAUDE.md: "Validate Kea response shape before indexing … raise RuntimeError").
-    """
+    empty list raises nothing, so a helper that indexes ``resp[0]["result"]`` would
+    blow up with ``IndexError``. These combined helpers guard with
+    ``_require_first_entry`` and raise ``RuntimeError`` instead (CLAUDE.md: "Validate
+    Kea response shape before indexing … raise RuntimeError").
 
-    def _patched(self, command_return):
-        p = patch("netbox_kea.models.KeaClient")
-        mock = p.start()
-        self.addCleanup(p.stop)
-        mock.return_value.command.return_value = command_return
-        return mock
+    A *non-dict* first entry (e.g. ``["not-a-dict"]``) is not exercised here: with the
+    real client it never reaches the helper's guard because ``check_response`` (which
+    every one of these commands runs with ``check=(0, 3)``) indexes ``entry["result"]``
+    first and raises on the non-subscriptable entry. The empty-list case below covers
+    the ``_require_first_entry`` guard through a response the real client can produce.
+    """
 
     def test_leases_empty_response_raises_runtime_error(self):
         from netbox_kea import constants
         from netbox_kea.views import _fetch_leases_from_server
 
-        self._patched([])
-        with self.assertRaises(RuntimeError):
-            _fetch_leases_from_server(self.server, "10.0.0.1", constants.BY_IP, 4)
+        with stub_kea({"lease4-get": []}):
+            with self.assertRaises(RuntimeError):
+                _fetch_leases_from_server(self.server, "10.0.0.1", constants.BY_IP, 4)
 
-    def test_all_leases_non_dict_entry_raises_runtime_error(self):
+    def test_all_leases_empty_response_raises_runtime_error(self):
         from netbox_kea.views import _fetch_all_leases_from_server
 
-        self._patched(["not-a-dict"])
-        with self.assertRaises(RuntimeError):
-            _fetch_all_leases_from_server(self.server, 4)
+        with stub_kea({"lease4-get-page": []}):
+            with self.assertRaises(RuntimeError):
+                _fetch_all_leases_from_server(self.server, 4)
 
     def test_subnets_empty_response_raises_runtime_error(self):
         from netbox_kea.views import _fetch_subnets_from_server
 
-        self._patched([])
-        with self.assertRaises(RuntimeError):
-            _fetch_subnets_from_server(self.server, 4)
+        with stub_kea({"config-get": []}):
+            with self.assertRaises(RuntimeError):
+                _fetch_subnets_from_server(self.server, 4)
 
     def test_shared_networks_empty_response_raises_runtime_error(self):
         from netbox_kea.views import _fetch_shared_networks_from_server
 
-        self._patched([])
-        with self.assertRaises(RuntimeError):
-            _fetch_shared_networks_from_server(self.server, 4)
+        with stub_kea({"config-get": []}):
+            with self.assertRaises(RuntimeError):
+                _fetch_shared_networks_from_server(self.server, 4)
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestCombinedReservationsMultiPage(_ViewTestBase):
-    """Lines 4065-4066: combined reservations multi-page pagination."""
+    """Combined reservations must follow reservation-get-page across multiple pages."""
 
     def _url(self):
         return reverse("plugins:netbox_kea:combined_reservations4") + f"?server={self.server.pk}"
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_multi_page_pagination_followed(self, MockKeaClient):
-        """Lines 4065-4066: from_index/source_index advance across pages."""
-        page1 = [{"subnet-id": 1, "ip-address": "10.0.0.1", "hw-address": "aa:bb:cc:dd:ee:01"}]
-        page2 = [{"subnet-id": 1, "ip-address": "10.0.0.2", "hw-address": "aa:bb:cc:dd:ee:02"}]
-        MockKeaClient.return_value.reservation_get_page.side_effect = [
-            (page1, 1, 1),
-            (page2, 0, 0),
-        ]
-        response = self.client.get(self._url())
+    def test_multi_page_pagination_followed(self):
+        """from/source-index advance across pages until the cursor is exhausted."""
+        page1 = {
+            "result": 0,
+            "arguments": {
+                "hosts": [{"subnet-id": 1, "ip-address": "10.0.0.1", "hw-address": "aa:bb:cc:dd:ee:01"}],
+                "next": {"from": 1, "source-index": 1},  # not exhausted
+            },
+        }
+        page2 = {
+            "result": 0,
+            "arguments": {
+                "hosts": [{"subnet-id": 1, "ip-address": "10.0.0.2", "hw-address": "aa:bb:cc:dd:ee:02"}],
+                "next": {"from": 0, "source-index": 0},  # exhausted
+            },
+        }
+        stub = {
+            "reservation-get-page": queued(page1, page2),
+            # active-lease badge enrichment queries lease4-get-all per unique subnet
+            "lease4-get-all": {"result": 0, "arguments": {"leases": []}},
+        }
+        with stub_kea(stub) as kea:
+            response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(MockKeaClient.return_value.reservation_get_page.call_count, 2)
+        self.assertEqual(len(kea.bodies("reservation-get-page")), 2)
         self.assertIn(b"10.0.0.1", response.content)
         self.assertIn(b"10.0.0.2", response.content)

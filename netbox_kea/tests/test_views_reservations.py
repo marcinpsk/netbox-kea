@@ -7,7 +7,9 @@ Also contains pure-Python unit tests for helper functions defined in views.py
 because they are tightly coupled to view logic.
 
 These tests verify correct HTTP responses and redirect behaviour for every view.
-All Kea HTTP calls are mocked so no running Kea instance is required.
+They drive a **real** ``KeaClient``; only the HTTP boundary is stubbed via
+``kea_stub.stub_kea``, so the request payloads the views actually send to Kea are
+exercised (and can be asserted on) instead of asserting against a ``MagicMock``.
 
 Test organisation strategy
 --------------------------
@@ -20,10 +22,21 @@ View tests use ``django.test.TestCase`` because they write to the test database
 (user + server fixtures).  Server objects are created via ``Server.objects.create()``
 which does **not** call ``Model.clean()`` and therefore does not trigger live Kea
 connectivity checks.
+
+NOTE — reservation writes never persist
+---------------------------------------
+``KeaClient.reservation_add`` / ``reservation_update`` / ``reservation_del`` each
+issue a *single* Kea command and never ``config-write`` (host_cmds writes to a host
+backend, not the config file).  The ``except PartialPersistError`` branch that
+follows each of those calls in the view is therefore unreachable through the real
+client — it only ever fired when a ``MagicMock`` injected the exception into a
+method that cannot raise it.  Those mock-only tests are omitted here; the
+persisting-write guarantee is covered by the pool/subnet PartialPersist cases in
+``test_reservation_views.py`` (real ``config-write`` result 1).
 """
 
 import unittest as _unittest  # alias to avoid pytest collection confusion
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import requests as req
 from django.contrib import messages as django_messages
@@ -34,7 +47,39 @@ from ipam.models import IPAddress as NbIP
 from netbox_kea.kea import KeaClient
 from netbox_kea.views import _get_reservation_identifier as _extract_identifier
 
+from .kea_stub import _res_get, _res_page, _subnet_get, stub_kea
 from .utils import _PLUGINS_CONFIG, _make_db_server, _ViewTestBase
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Shared stub responses (real KeaClient + HTTP-boundary stub)
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Command chains issued by the reservation views:
+#   list GET:  ``reservation-get-page`` (drained via ``iter_reservations``) then, if
+#              any reservations are found, ``lease{v}-get-all`` per unique subnet
+#              (lease-status enrichment; NetBox IPAM badges hit the DB, not Kea).
+#   add POST:  ``subnet{v}-get`` (pool-overlap probe, non-fatal) + ``reservation-add``.
+#   edit GET:  ``reservation-get`` (prefill) + ``lease{v}-get`` (hostname diff).
+#   edit POST: ``reservation-get`` (reload existing) + ``reservation-update``.
+#   delete POST: ``reservation-del``.
+#
+# A POST followed with ``follow=True`` lands on the reservations list, which then
+# issues ``reservation-get-page`` again — so those stubs also register it.
+
+
+#: ``reservation-get-page`` with no hosts (source exhausted → empty reservation list).
+_RES_EMPTY_PAGE = {"result": 3}
+#: ``reservation-get`` / ``lease{v}-get`` with result 3 = no such record.
+_RES_NOT_FOUND = {"result": 3}
+_LEASE_NOT_FOUND = {"result": 3}
+
+#: Existing-reservation payloads used to seed the edit POST reload.
+_EDIT4_EXISTING = {"hw-address": "aa:bb:cc:dd:ee:ff", "ip-address": "10.0.0.55", "subnet-id": 1}
+_EDIT6_EXISTING = {
+    "ip-addresses": ["2001:db8::1"],
+    "duid": "00:01:00:01:12:34:56:78:aa:bb:cc:dd:ee:ff",
+    "subnet-id": 1,
+}
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
@@ -163,41 +208,30 @@ class TestReservation4ListExceptions(_ViewTestBase):
     def _url(self):
         return reverse("plugins:netbox_kea:server_reservations4", args=[self.server.pk])
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_hook_not_available_shows_warning(self, MockKeaClient):
-        """KeaException result=2 sets hook_available=False without crashing."""
-        from netbox_kea.kea import KeaException
-
-        MockKeaClient.return_value.reservation_get_page.side_effect = KeaException(
-            {"result": 2, "text": "hook not loaded"}, index=0
-        )
-        response = self.client.get(self._url())
+    def test_hook_not_available_shows_warning(self):
+        """reservation-get-page result=2 sets hook_available=False without crashing."""
+        with stub_kea({"reservation-get-page": {"result": 2, "text": "unknown command 'reservation-get-page'"}}):
+            response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
         self.assertFalse(response.context.get("hook_available", True))
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_network_error_during_fetch_keeps_hook_available(self, MockKeaClient):
-        """requests.RequestException during reservation_get_page keeps hook_available=True.
+    def test_network_error_during_fetch_keeps_hook_available(self):
+        """A transport error during reservation-get-page keeps hook_available=True.
 
         Transport errors do not indicate the hook is missing — only result==2 does.
         """
-        MockKeaClient.return_value.reservation_get_page.side_effect = req.RequestException("connection refused")
-        response = self.client.get(self._url())
+        with stub_kea({"reservation-get-page": req.RequestException("connection refused")}):
+            response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.context.get("hook_available", False))
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_kea_exception_non_result2_keeps_hook_available(self, MockKeaClient):
-        """KeaException with result!=2 keeps hook_available=True.
+    def test_kea_exception_non_result2_keeps_hook_available(self):
+        """A reservation-get-page result!=2 keeps hook_available=True.
 
         Only result==2 (unknown command = hook not loaded) should hide the hook UI.
         """
-        from netbox_kea.kea import KeaException
-
-        MockKeaClient.return_value.reservation_get_page.side_effect = KeaException(
-            {"result": 1, "text": "general error"}, index=0
-        )
-        response = self.client.get(self._url())
+        with stub_kea({"reservation-get-page": {"result": 1, "text": "general error"}}):
+            response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.context.get("hook_available", False))
 
@@ -209,41 +243,30 @@ class TestReservation6ListExceptions(_ViewTestBase):
     def _url(self):
         return reverse("plugins:netbox_kea:server_reservations6", args=[self.server.pk])
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_hook_not_available_shows_warning(self, MockKeaClient):
-        """KeaException result=2 sets hook_available=False without crashing."""
-        from netbox_kea.kea import KeaException
-
-        MockKeaClient.return_value.reservation_get_page.side_effect = KeaException(
-            {"result": 2, "text": "hook not loaded"}, index=0
-        )
-        response = self.client.get(self._url())
+    def test_hook_not_available_shows_warning(self):
+        """reservation-get-page result=2 sets hook_available=False without crashing."""
+        with stub_kea({"reservation-get-page": {"result": 2, "text": "unknown command 'reservation-get-page'"}}):
+            response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
         self.assertFalse(response.context.get("hook_available", True))
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_network_error_during_fetch_keeps_hook_available(self, MockKeaClient):
-        """requests.RequestException during reservation_get_page keeps hook_available=True.
+    def test_network_error_during_fetch_keeps_hook_available(self):
+        """A transport error during reservation-get-page keeps hook_available=True.
 
         Transport errors do not indicate the hook is missing — only result==2 does.
         """
-        MockKeaClient.return_value.reservation_get_page.side_effect = req.RequestException("timeout")
-        response = self.client.get(self._url())
+        with stub_kea({"reservation-get-page": req.RequestException("timeout")}):
+            response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.context.get("hook_available", False))
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_kea_exception_non_result2_keeps_hook_available(self, MockKeaClient):
-        """KeaException with result!=2 keeps hook_available=True.
+    def test_kea_exception_non_result2_keeps_hook_available(self):
+        """A reservation-get-page result!=2 keeps hook_available=True.
 
         Only result==2 (unknown command = hook not loaded) should hide the hook UI.
         """
-        from netbox_kea.kea import KeaException
-
-        MockKeaClient.return_value.reservation_get_page.side_effect = KeaException(
-            {"result": 1, "text": "general error"}, index=0
-        )
-        response = self.client.get(self._url())
+        with stub_kea({"reservation-get-page": {"result": 1, "text": "general error"}}):
+            response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.context.get("hook_available", False))
 
@@ -260,92 +283,50 @@ class TestReservation4AddExceptions(_ViewTestBase):
     def _url(self):
         return reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk])
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_partial_persist_error_redirects_with_warning(self, MockKeaClient):
-        """PartialPersistError must redirect with a warning message."""
-        from netbox_kea.kea import PartialPersistError
-
-        MockKeaClient.return_value.reservation_add.side_effect = PartialPersistError("dhcp4", Exception("write"))
-        MockKeaClient.return_value.reservation_get_page.return_value = ([], 0, 0)
-        response = self.client.post(self._url(), _VALID_RESERVATION4_POST, follow=True)
-        self.assertEqual(response.status_code, 200)
-        msgs = list(response.context["messages"])
-        self.assertTrue(any(m.level == django_messages.WARNING for m in msgs))
-
-    @patch("netbox_kea.models.KeaClient")
-    def test_partial_persist_with_sync_to_netbox(self, MockKeaClient):
-        """PartialPersistError with sync_to_netbox=True must attempt IPAM sync."""
-        from netbox_kea.kea import PartialPersistError
-
-        MockKeaClient.return_value.reservation_add.side_effect = PartialPersistError("dhcp4", Exception("write"))
-        MockKeaClient.return_value.reservation_get_page.return_value = ([], 0, 0)
-        post_data = {**_VALID_RESERVATION4_POST, "sync_to_netbox": "on"}
-        with patch("netbox_kea.views.reservations.sync_reservation_to_netbox") as mock_sync:
-            mock_sync.return_value = (MagicMock(spec=NbIP), True, False)
-            response = self.client.post(self._url(), post_data, follow=True)
-        self.assertEqual(response.status_code, 200)
-        mock_sync.assert_called_once()
-
-    @patch("netbox_kea.models.KeaClient")
-    def test_partial_persist_sync_failure_shows_warning(self, MockKeaClient):
-        """PartialPersistError + sync error must show two warnings."""
-        from netbox_kea.kea import PartialPersistError
-
-        MockKeaClient.return_value.reservation_add.side_effect = PartialPersistError("dhcp4", Exception("write"))
-        MockKeaClient.return_value.reservation_get_page.return_value = ([], 0, 0)
-        post_data = {**_VALID_RESERVATION4_POST, "sync_to_netbox": "on"}
-        with patch("netbox_kea.views.reservations.sync_reservation_to_netbox", side_effect=ValueError("sync boom")):
-            response = self.client.post(self._url(), post_data, follow=True)
-        msgs = list(response.context["messages"])
-        self.assertTrue(any("sync failed" in m.message.lower() for m in msgs))
-
-    @patch("netbox_kea.models.KeaClient")
-    def test_kea_exception_rerenders_form(self, MockKeaClient):
-        """KeaException must re-render the form with an error message."""
-        from netbox_kea.kea import KeaException
-
-        MockKeaClient.return_value.reservation_add.side_effect = KeaException(
-            {"result": 1, "text": "already exists"}, index=0
-        )
-        MockKeaClient.return_value.reservation_get_page.return_value = ([], 0, 0)
-        response = self.client.post(self._url(), _VALID_RESERVATION4_POST)
+    def test_kea_exception_rerenders_form(self):
+        """A reservation-add error must re-render the form with an error message."""
+        with stub_kea({"subnet4-get": _subnet_get(4), "reservation-add": {"result": 1, "text": "already exists"}}):
+            response = self.client.post(self._url(), _VALID_RESERVATION4_POST)
         self.assertEqual(response.status_code, 200)
         msgs = list(django_messages.get_messages(response.wsgi_request))
         self.assertTrue(any(m.level == django_messages.ERROR for m in msgs))
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_kea_exception_result1_rerenders_form(self, MockKeaClient):
-        """KeaException from reservation_add must re-render the form with an error message."""
-        from netbox_kea.kea import KeaException
-
-        MockKeaClient.return_value.reservation_add.side_effect = KeaException(
-            {"result": 1, "text": "server error"}, index=0
-        )
-        MockKeaClient.return_value.reservation_get_page.return_value = ([], 0, 0)
-        response = self.client.post(self._url(), _VALID_RESERVATION4_POST)
+    def test_kea_exception_result1_rerenders_form(self):
+        """A reservation-add result=1 must re-render the form with an error message."""
+        with stub_kea({"subnet4-get": _subnet_get(4), "reservation-add": {"result": 1, "text": "server error"}}):
+            response = self.client.post(self._url(), _VALID_RESERVATION4_POST)
         self.assertEqual(response.status_code, 200)
         msgs = list(django_messages.get_messages(response.wsgi_request))
         self.assertTrue(any(m.level == django_messages.ERROR for m in msgs))
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_success_with_sync_to_netbox(self, MockKeaClient):
-        """Successful add with sync_to_netbox=True must call sync and show info message."""
-        MockKeaClient.return_value.reservation_add.return_value = None
-        MockKeaClient.return_value.reservation_get_page.return_value = ([], 0, 0)
+    def test_success_with_sync_to_netbox(self):
+        """Successful add with sync_to_netbox=True runs the real sync → NetBox IP created."""
         post_data = {**_VALID_RESERVATION4_POST, "sync_to_netbox": "on"}
-        with patch("netbox_kea.views.reservations.sync_reservation_to_netbox") as mock_sync:
-            mock_sync.return_value = (MagicMock(spec=NbIP), True, False)
+        with stub_kea(
+            {"subnet4-get": _subnet_get(4), "reservation-add": {"result": 0}, "reservation-get-page": _RES_EMPTY_PAGE}
+        ) as kea:
             response = self.client.post(self._url(), post_data, follow=True)
         self.assertEqual(response.status_code, 200)
-        mock_sync.assert_called_once()
+        self.assertEqual(kea.commands().count("reservation-add"), 1)
+        self.assertTrue(NbIP.objects.filter(address__startswith="10.0.0.55/").exists())
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_success_sync_failure_shows_warning(self, MockKeaClient):
-        """Successful add where sync raises must show a warning (no 500)."""
-        MockKeaClient.return_value.reservation_add.return_value = None
-        MockKeaClient.return_value.reservation_get_page.return_value = ([], 0, 0)
+    def test_success_sync_failure_shows_warning(self):
+        """Successful add where sync raises must show a warning (no 500).
+
+        The sync boundary (a NetBox-side function tested in test_sync.py) is patched
+        to raise so the view's error handling is exercised; the KeaClient is real.
+        """
         post_data = {**_VALID_RESERVATION4_POST, "sync_to_netbox": "on"}
-        with patch("netbox_kea.views.reservations.sync_reservation_to_netbox", side_effect=ValueError("sync fail")):
+        with (
+            patch("netbox_kea.views.reservations.sync_reservation_to_netbox", side_effect=ValueError("sync fail")),
+            stub_kea(
+                {
+                    "subnet4-get": _subnet_get(4),
+                    "reservation-add": {"result": 0},
+                    "reservation-get-page": _RES_EMPTY_PAGE,
+                }
+            ),
+        ):
             response = self.client.post(self._url(), post_data, follow=True)
         msgs = list(response.context["messages"])
         self.assertTrue(any("sync failed" in m.message.lower() for m in msgs))
@@ -363,68 +344,21 @@ class TestReservation6AddExceptions(_ViewTestBase):
     def _url(self):
         return reverse("plugins:netbox_kea:server_reservation6_add", args=[self.server.pk])
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_partial_persist_error_redirects_with_warning(self, MockKeaClient):
-        """PartialPersistError must redirect with a warning message."""
-        from netbox_kea.kea import PartialPersistError
-
-        MockKeaClient.return_value.reservation_add.side_effect = PartialPersistError("dhcp6", Exception("write"))
-        MockKeaClient.return_value.reservation_get_page.return_value = ([], 0, 0)
-        response = self.client.post(self._url(), _VALID_RESERVATION6_POST, follow=True)
-        self.assertEqual(response.status_code, 200)
-        msgs = list(response.context["messages"])
-        self.assertTrue(any(m.level == django_messages.WARNING for m in msgs))
-
-    @patch("netbox_kea.models.KeaClient")
-    def test_partial_persist_with_sync_to_netbox(self, MockKeaClient):
-        """PartialPersistError with sync_to_netbox=True must attempt IPAM sync and show recovery message."""
-        from netbox_kea.kea import PartialPersistError
-
-        MockKeaClient.return_value.reservation_add.side_effect = PartialPersistError("dhcp6", Exception("write"))
-        MockKeaClient.return_value.reservation_get_page.return_value = ([], 0, 0)
-        post_data = {**_VALID_RESERVATION6_POST, "sync_to_netbox": "on"}
-        with patch("netbox_kea.views.reservations.sync_reservation_to_netbox") as mock_sync:
-            mock_sync.return_value = (MagicMock(spec=NbIP), False, False)
-            response = self.client.post(self._url(), post_data, follow=True)
-        self.assertEqual(response.status_code, 200)
-        mock_sync.assert_called_once()
-        msgs = list(response.context["messages"])
-        self.assertTrue(any(m.level == django_messages.WARNING for m in msgs), "Expected warning about partial persist")
-
-    @patch("netbox_kea.models.KeaClient")
-    def test_partial_persist_sync_failure_shows_warning(self, MockKeaClient):
-        """PartialPersistError + sync exception must show warning about sync failure."""
-        from netbox_kea.kea import PartialPersistError
-
-        MockKeaClient.return_value.reservation_add.side_effect = PartialPersistError("dhcp6", Exception("write"))
-        MockKeaClient.return_value.reservation_get_page.return_value = ([], 0, 0)
-        post_data = {**_VALID_RESERVATION6_POST, "sync_to_netbox": "on"}
-        with patch("netbox_kea.views.reservations.sync_reservation_to_netbox", side_effect=ValueError("sync boom")):
-            response = self.client.post(self._url(), post_data, follow=True)
-        msgs = list(response.context["messages"])
-        self.assertTrue(any("sync failed" in m.message.lower() for m in msgs))
-
-    @patch("netbox_kea.models.KeaClient")
-    def test_kea_exception_rerenders_form(self, MockKeaClient):
-        """KeaException must re-render the form with an error message, not leak raw Kea text."""
-        from netbox_kea.kea import KeaException
-
+    def test_kea_exception_rerenders_form(self):
+        """A reservation-add error must re-render the form without leaking raw Kea text."""
         sentinel = "kea-detail-should-not-leak"
-        MockKeaClient.return_value.reservation_add.side_effect = KeaException({"result": 1, "text": sentinel}, index=0)
-        MockKeaClient.return_value.reservation_get_page.return_value = ([], 0, 0)
-        response = self.client.post(self._url(), _VALID_RESERVATION6_POST)
+        with stub_kea({"subnet6-get": _subnet_get(6), "reservation-add": {"result": 1, "text": sentinel}}):
+            response = self.client.post(self._url(), _VALID_RESERVATION6_POST)
         self.assertEqual(response.status_code, 200)
         msgs = list(django_messages.get_messages(response.wsgi_request))
         self.assertTrue(any(m.level == django_messages.ERROR for m in msgs))
         self.assertFalse(any(sentinel in str(m) for m in msgs))
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_generic_exception_propagates(self, MockKeaClient):
-        """Unexpected exception must propagate (not be silently caught)."""
-        MockKeaClient.return_value.reservation_add.side_effect = RuntimeError("bang")
-        MockKeaClient.return_value.reservation_get_page.return_value = ([], 0, 0)
-        with self.assertRaises(RuntimeError):
-            self.client.post(self._url(), _VALID_RESERVATION6_POST)
+    def test_generic_exception_propagates(self):
+        """An unexpected transport-layer error must propagate (not be silently caught)."""
+        with stub_kea({"subnet6-get": _subnet_get(6), "reservation-add": RuntimeError("bang")}):
+            with self.assertRaises(RuntimeError):
+                self.client.post(self._url(), _VALID_RESERVATION6_POST)
 
 
 # ---------------------------------------------------------------------------
@@ -439,145 +373,69 @@ class TestReservation4EditExceptions(_ViewTestBase):
     def _url(self, subnet_id=1, ip="10.0.0.55"):
         return reverse("plugins:netbox_kea:server_reservation4_edit", args=[self.server.pk, subnet_id, ip])
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_get_redirects_on_kea_exception(self, MockKeaClient):
-        """GET that raises KeaException during reservation fetch must redirect."""
-        from netbox_kea.kea import KeaException
-
-        MockKeaClient.return_value.reservation_get.side_effect = KeaException(
-            {"result": 1, "text": "server error"}, index=0
-        )
-        response = self.client.get(self._url())
+    def test_get_redirects_on_kea_exception(self):
+        """GET that raises a Kea error during reservation fetch must redirect."""
+        with stub_kea({"reservation-get": {"result": 1, "text": "server error"}}):
+            response = self.client.get(self._url())
         self.assertEqual(response.status_code, 302)
         self._assert_no_none_pk_redirect(response)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_get_redirects_on_transport_error(self, MockKeaClient):
-        """GET that raises RequestException during reservation fetch must redirect."""
-        import requests as _req
-
-        MockKeaClient.return_value.reservation_get.side_effect = _req.ConnectionError("down")
-        response = self.client.get(self._url())
+    def test_get_redirects_on_transport_error(self):
+        """GET that raises a transport error during reservation fetch must redirect."""
+        with stub_kea({"reservation-get": req.ConnectionError("down")}):
+            response = self.client.get(self._url())
         self.assertEqual(response.status_code, 302)
         self._assert_no_none_pk_redirect(response)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_get_404_when_reservation_not_found(self, MockKeaClient):
+    def test_get_404_when_reservation_not_found(self):
         """GET must return 404 when reservation_get returns None."""
-        MockKeaClient.return_value.reservation_get.return_value = None
-        response = self.client.get(self._url())
+        with stub_kea({"reservation-get": _RES_NOT_FOUND}):
+            response = self.client.get(self._url())
         self.assertEqual(response.status_code, 404)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_partial_persist_error_redirects(self, MockKeaClient):
-        """PartialPersistError on reservation_update must redirect with warning."""
-        from netbox_kea.kea import PartialPersistError
-
-        MockKeaClient.return_value.reservation_get.return_value = {
-            "hw-address": "aa:bb:cc:dd:ee:ff",
-            "ip-address": "10.0.0.55",
-            "subnet-id": 1,
-        }
-        MockKeaClient.return_value.reservation_update.side_effect = PartialPersistError("dhcp4", Exception("write"))
-        response = self.client.post(self._url(), _VALID_RESERVATION4_EDIT_POST, follow=True)
-        self.assertEqual(response.status_code, 200)
-        msgs = list(response.context["messages"])
-        self.assertTrue(any(m.level == django_messages.WARNING for m in msgs))
-
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_partial_persist_with_sync(self, MockKeaClient):
-        """PartialPersistError with sync_to_netbox attempts sync."""
-        from netbox_kea.kea import PartialPersistError
-
-        MockKeaClient.return_value.reservation_get.return_value = {
-            "hw-address": "aa:bb:cc:dd:ee:ff",
-            "ip-address": "10.0.0.55",
-            "subnet-id": 1,
-        }
-        MockKeaClient.return_value.reservation_update.side_effect = PartialPersistError("dhcp4", Exception("write"))
-        post_data = {**_VALID_RESERVATION4_EDIT_POST, "sync_to_netbox": "on"}
-        with patch("netbox_kea.views.reservations.sync_reservation_to_netbox") as mock_sync:
-            mock_sync.return_value = (MagicMock(spec=NbIP), True, False)
-            response = self.client.post(self._url(), post_data, follow=True)
-        self.assertEqual(response.status_code, 200)
-        mock_sync.assert_called_once()
-
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_partial_persist_sync_failure(self, MockKeaClient):
-        """PartialPersistError + sync failure shows warning."""
-        from netbox_kea.kea import PartialPersistError
-
-        MockKeaClient.return_value.reservation_get.return_value = {
-            "hw-address": "aa:bb:cc:dd:ee:ff",
-            "ip-address": "10.0.0.55",
-            "subnet-id": 1,
-        }
-        MockKeaClient.return_value.reservation_update.side_effect = PartialPersistError("dhcp4", Exception("write"))
-        post_data = {**_VALID_RESERVATION4_EDIT_POST, "sync_to_netbox": "on"}
-        with patch("netbox_kea.views.reservations.sync_reservation_to_netbox", side_effect=ValueError("sync")):
-            response = self.client.post(self._url(), post_data, follow=True)
-        msgs = list(response.context["messages"])
-        self.assertTrue(any("sync failed" in m.message.lower() for m in msgs))
-
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_kea_exception_rerenders_form(self, MockKeaClient):
-        """KeaException on reservation_update must re-render the form with error message."""
-        from netbox_kea.kea import KeaException
-
-        MockKeaClient.return_value.reservation_get.return_value = {
-            "hw-address": "aa:bb:cc:dd:ee:ff",
-            "ip-address": "10.0.0.55",
-            "subnet-id": 1,
-        }
-        MockKeaClient.return_value.reservation_update.side_effect = KeaException(
-            {"result": 1, "text": "not found"}, index=0
-        )
-        response = self.client.post(self._url(), _VALID_RESERVATION4_EDIT_POST)
+    def test_post_kea_exception_rerenders_form(self):
+        """A reservation-update error must re-render the form with an error message."""
+        with stub_kea({"reservation-get": _res_get(_EDIT4_EXISTING), "reservation-update": {"result": 1, "text": "x"}}):
+            response = self.client.post(self._url(), _VALID_RESERVATION4_EDIT_POST)
         self.assertEqual(response.status_code, 200)
         msgs = list(response.context["messages"])
         self.assertTrue(
             any("Kea reported an error" in str(m) for m in msgs), "Expected KeaException hint in flash message"
         )
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_generic_exception_propagates(self, MockKeaClient):
-        """Unexpected exception on reservation_update must propagate."""
-        MockKeaClient.return_value.reservation_get.return_value = {
-            "hw-address": "aa:bb:cc:dd:ee:ff",
-            "ip-address": "10.0.0.55",
-            "subnet-id": 1,
-        }
-        MockKeaClient.return_value.reservation_update.side_effect = RuntimeError("crash")
-        with self.assertRaises(RuntimeError):
-            self.client.post(self._url(), _VALID_RESERVATION4_EDIT_POST)
+    def test_post_generic_exception_propagates(self):
+        """An unexpected transport-layer error on reservation-update must propagate."""
+        with stub_kea({"reservation-get": _res_get(_EDIT4_EXISTING), "reservation-update": RuntimeError("crash")}):
+            with self.assertRaises(RuntimeError):
+                self.client.post(self._url(), _VALID_RESERVATION4_EDIT_POST)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_success_with_sync(self, MockKeaClient):
-        """Successful update with sync_to_netbox calls sync and shows info."""
-        MockKeaClient.return_value.reservation_get.return_value = {
-            "hw-address": "aa:bb:cc:dd:ee:ff",
-            "ip-address": "10.0.0.55",
-            "subnet-id": 1,
-        }
-        MockKeaClient.return_value.reservation_update.return_value = None
+    def test_post_success_with_sync(self):
+        """Successful update with sync_to_netbox runs the real sync → NetBox IP created."""
         post_data = {**_VALID_RESERVATION4_EDIT_POST, "sync_to_netbox": "on"}
-        with patch("netbox_kea.views.reservations.sync_reservation_to_netbox") as mock_sync:
-            mock_sync.return_value = (MagicMock(spec=NbIP), False, False)
+        with stub_kea(
+            {
+                "reservation-get": _res_get(_EDIT4_EXISTING),
+                "reservation-update": {"result": 0},
+                "reservation-get-page": _RES_EMPTY_PAGE,
+            }
+        ):
             response = self.client.post(self._url(), post_data, follow=True)
         self.assertEqual(response.status_code, 200)
-        mock_sync.assert_called_once()
+        self.assertTrue(NbIP.objects.filter(address__startswith="10.0.0.55/").exists())
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_success_sync_failure_shows_warning(self, MockKeaClient):
-        """Successful update where sync raises must show warning."""
-        MockKeaClient.return_value.reservation_get.return_value = {
-            "hw-address": "aa:bb:cc:dd:ee:ff",
-            "ip-address": "10.0.0.55",
-            "subnet-id": 1,
-        }
-        MockKeaClient.return_value.reservation_update.return_value = None
+    def test_post_success_sync_failure_shows_warning(self):
+        """Successful update where sync raises must show a warning."""
         post_data = {**_VALID_RESERVATION4_EDIT_POST, "sync_to_netbox": "on"}
-        with patch("netbox_kea.views.reservations.sync_reservation_to_netbox", side_effect=ValueError("oops")):
+        with (
+            patch("netbox_kea.views.reservations.sync_reservation_to_netbox", side_effect=ValueError("oops")),
+            stub_kea(
+                {
+                    "reservation-get": _res_get(_EDIT4_EXISTING),
+                    "reservation-update": {"result": 0},
+                    "reservation-get-page": _RES_EMPTY_PAGE,
+                }
+            ),
+        ):
             response = self.client.post(self._url(), post_data, follow=True)
         msgs = list(response.context["messages"])
         self.assertTrue(any("sync failed" in m.message.lower() for m in msgs))
@@ -595,73 +453,39 @@ class TestReservation6EditExceptions(_ViewTestBase):
     def _url(self, subnet_id=1, ip="2001:db8::1"):
         return reverse("plugins:netbox_kea:server_reservation6_edit", args=[self.server.pk, subnet_id, ip])
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_get_redirects_on_kea_exception(self, MockKeaClient):
-        """GET that raises KeaException during reservation fetch must redirect."""
-        from netbox_kea.kea import KeaException
-
-        MockKeaClient.return_value.reservation_get.side_effect = KeaException({"result": 1, "text": "error"}, index=0)
-        response = self.client.get(self._url())
+    def test_get_redirects_on_kea_exception(self):
+        """GET that raises a Kea error during reservation fetch must redirect."""
+        with stub_kea({"reservation-get": {"result": 1, "text": "error"}}):
+            response = self.client.get(self._url())
         self.assertEqual(response.status_code, 302)
         self._assert_no_none_pk_redirect(response)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_get_redirects_on_transport_error(self, MockKeaClient):
-        """GET that raises RequestException during reservation fetch must redirect."""
-        import requests as _req
-
-        MockKeaClient.return_value.reservation_get.side_effect = _req.ConnectionError("down")
-        response = self.client.get(self._url())
+    def test_get_redirects_on_transport_error(self):
+        """GET that raises a transport error during reservation fetch must redirect."""
+        with stub_kea({"reservation-get": req.ConnectionError("down")}):
+            response = self.client.get(self._url())
         self.assertEqual(response.status_code, 302)
         self._assert_no_none_pk_redirect(response)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_get_404_when_reservation_not_found(self, MockKeaClient):
+    def test_get_404_when_reservation_not_found(self):
         """GET must return 404 when reservation_get returns None."""
-        MockKeaClient.return_value.reservation_get.return_value = None
-        response = self.client.get(self._url())
+        with stub_kea({"reservation-get": _RES_NOT_FOUND}):
+            response = self.client.get(self._url())
         self.assertEqual(response.status_code, 404)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_partial_persist_error_redirects(self, MockKeaClient):
-        """PartialPersistError on reservation_update must redirect with warning."""
-        from netbox_kea.kea import PartialPersistError
-
-        MockKeaClient.return_value.reservation_get.return_value = {
-            "ip-addresses": ["2001:db8::1"],
-            "duid": "00:01:00:01:12:34:56:78:aa:bb:cc:dd:ee:ff",
-        }
-        MockKeaClient.return_value.reservation_update.side_effect = PartialPersistError("dhcp6", Exception("write"))
-        response = self.client.post(self._url(), _VALID_RESERVATION6_EDIT_POST, follow=True)
-        self.assertEqual(response.status_code, 200)
-        msgs = list(response.context["messages"])
-        self.assertTrue(any(m.level == django_messages.WARNING for m in msgs))
-
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_kea_exception_rerenders_form(self, MockKeaClient):
-        """KeaException on reservation_update must re-render the form."""
-        from netbox_kea.kea import KeaException
-
-        MockKeaClient.return_value.reservation_get.return_value = {
-            "ip-addresses": ["2001:db8::1"],
-            "duid": "00:01:00:01:12:34:56:78:aa:bb:cc:dd:ee:ff",
-        }
-        MockKeaClient.return_value.reservation_update.side_effect = KeaException(
-            {"result": 1, "text": "error"}, index=0
-        )
-        response = self.client.post(self._url(), _VALID_RESERVATION6_EDIT_POST)
+    def test_post_kea_exception_rerenders_form(self):
+        """A reservation-update error must re-render the form."""
+        with stub_kea(
+            {"reservation-get": _res_get(_EDIT6_EXISTING), "reservation-update": {"result": 1, "text": "error"}}
+        ):
+            response = self.client.post(self._url(), _VALID_RESERVATION6_EDIT_POST)
         self.assertEqual(response.status_code, 200)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_generic_exception_propagates(self, MockKeaClient):
-        """Unexpected exception on reservation_update must propagate."""
-        MockKeaClient.return_value.reservation_get.return_value = {
-            "ip-addresses": ["2001:db8::1"],
-            "duid": "00:01:00:01:12:34:56:78:aa:bb:cc:dd:ee:ff",
-        }
-        MockKeaClient.return_value.reservation_update.side_effect = RuntimeError("crash")
-        with self.assertRaises(RuntimeError):
-            self.client.post(self._url(), _VALID_RESERVATION6_EDIT_POST)
+    def test_post_generic_exception_propagates(self):
+        """An unexpected transport-layer error on reservation-update must propagate."""
+        with stub_kea({"reservation-get": _res_get(_EDIT6_EXISTING), "reservation-update": RuntimeError("crash")}):
+            with self.assertRaises(RuntimeError):
+                self.client.post(self._url(), _VALID_RESERVATION6_EDIT_POST)
 
 
 # ---------------------------------------------------------------------------
@@ -676,35 +500,18 @@ class TestReservation4DeleteExceptions(_ViewTestBase):
     def _url(self, subnet_id=1, ip="10.0.0.55"):
         return reverse("plugins:netbox_kea:server_reservation4_delete", args=[self.server.pk, subnet_id, ip])
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_partial_persist_error_redirects_with_warning(self, MockKeaClient):
-        """PartialPersistError must redirect with warning and still run side effects."""
-        from netbox_kea.kea import PartialPersistError
-
-        MockKeaClient.return_value.reservation_del.side_effect = PartialPersistError("dhcp4", Exception("write"))
-        response = self.client.post(self._url(), follow=True)
-        self.assertEqual(response.status_code, 200)
-        msgs = list(response.context["messages"])
-        self.assertTrue(any(m.level == django_messages.WARNING for m in msgs))
-
-    @patch("netbox_kea.models.KeaClient")
-    def test_kea_exception_shows_error(self, MockKeaClient):
-        """KeaException must show an error message and redirect."""
-        from netbox_kea.kea import KeaException
-
-        MockKeaClient.return_value.reservation_del.side_effect = KeaException(
-            {"result": 1, "text": "not found"}, index=0
-        )
-        response = self.client.post(self._url(), follow=True)
+    def test_kea_exception_shows_error(self):
+        """A reservation-del error must show an error message and redirect."""
+        with stub_kea({"reservation-del": {"result": 1, "text": "not found"}, "reservation-get-page": _RES_EMPTY_PAGE}):
+            response = self.client.post(self._url(), follow=True)
         msgs = list(response.context["messages"])
         self.assertTrue(any(m.level == django_messages.ERROR for m in msgs))
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_generic_exception_propagates(self, MockKeaClient):
-        """Unexpected exception must propagate (not show a generic error message)."""
-        MockKeaClient.return_value.reservation_del.side_effect = RuntimeError("crash")
-        with self.assertRaises(RuntimeError):
-            self.client.post(self._url())
+    def test_generic_exception_propagates(self):
+        """An unexpected transport-layer error must propagate (not show a generic error message)."""
+        with stub_kea({"reservation-del": RuntimeError("crash")}):
+            with self.assertRaises(RuntimeError):
+                self.client.post(self._url())
 
 
 # ---------------------------------------------------------------------------
@@ -719,33 +526,18 @@ class TestReservation6DeleteExceptions(_ViewTestBase):
     def _url(self, subnet_id=1, ip="2001:db8::1"):
         return reverse("plugins:netbox_kea:server_reservation6_delete", args=[self.server.pk, subnet_id, ip])
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_partial_persist_error_redirects_with_warning(self, MockKeaClient):
-        """PartialPersistError must redirect with warning."""
-        from netbox_kea.kea import PartialPersistError
-
-        MockKeaClient.return_value.reservation_del.side_effect = PartialPersistError("dhcp6", Exception("write"))
-        response = self.client.post(self._url(), follow=True)
-        self.assertEqual(response.status_code, 200)
-        msgs = list(response.context["messages"])
-        self.assertTrue(any(m.level == django_messages.WARNING for m in msgs))
-
-    @patch("netbox_kea.models.KeaClient")
-    def test_kea_exception_shows_error(self, MockKeaClient):
-        """KeaException must show an error message."""
-        from netbox_kea.kea import KeaException
-
-        MockKeaClient.return_value.reservation_del.side_effect = KeaException({"result": 1, "text": "error"}, index=0)
-        response = self.client.post(self._url(), follow=True)
+    def test_kea_exception_shows_error(self):
+        """A reservation-del error must show an error message."""
+        with stub_kea({"reservation-del": {"result": 1, "text": "error"}, "reservation-get-page": _RES_EMPTY_PAGE}):
+            response = self.client.post(self._url(), follow=True)
         msgs = list(response.context["messages"])
         self.assertTrue(any(m.level == django_messages.ERROR for m in msgs))
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_generic_exception_propagates(self, MockKeaClient):
-        """Unexpected exception must propagate (not show a generic error message)."""
-        MockKeaClient.return_value.reservation_del.side_effect = RuntimeError("crash")
-        with self.assertRaises(RuntimeError):
-            self.client.post(self._url())
+    def test_generic_exception_propagates(self):
+        """An unexpected transport-layer error must propagate (not show a generic error message)."""
+        with stub_kea({"reservation-del": RuntimeError("crash")}):
+            with self.assertRaises(RuntimeError):
+                self.client.post(self._url())
 
 
 # ---------------------------------------------------------------------------
@@ -775,39 +567,27 @@ class TestGetReservationOptionsFormsetPartial(_ViewTestBase):
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestReservationListEnrichmentExceptions(_ViewTestBase):
-    """_enrich_reservations_with_lease_status: thread pool exception paths."""
+    """_enrich_reservations_with_lease_status: thread pool exception paths (via the list view)."""
 
     def _url(self):
         return reverse("plugins:netbox_kea:server_reservations4", args=[self.server.pk])
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_no_reservations_skips_enrichment(self, MockKeaClient):
-        """Line 1650: empty reservation list → enrichment returns early."""
-        MockKeaClient.return_value.reservation_get_page.return_value = ([], 0, 0)
-        response = self.client.get(self._url())
+    def test_no_reservations_skips_enrichment(self):
+        """An empty reservation list → enrichment returns early (no lease query issued)."""
+        with stub_kea({"reservation-get-page": _RES_EMPTY_PAGE}) as kea:
+            response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
-        MockKeaClient.return_value.clone.assert_not_called()
+        self.assertNotIn("lease4-get-all", kea.commands())
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_thread_pool_generic_exception_returns_early(self, MockKeaClient):
-        """Line 1662-1663: generic exception in thread pool causes enrichment to return."""
-        MockKeaClient.return_value.reservation_get_page.return_value = (
-            [{"subnet-id": 1, "ip-address": "10.0.0.5", "hw-address": "aa:bb:cc:dd:ee:ff"}],
-            0,
-            0,
-        )
-        # lease4-get-all raises an unexpected error — must set on the cloned client
-        # since _enrich_reservations_with_lease_status calls client.clone()
-        MockKeaClient.return_value.clone.return_value.command.side_effect = RuntimeError("unexpected")
-        MockKeaClient.return_value.clone.return_value.__enter__ = MagicMock(  # mock-ok: CM protocol stub
-            return_value=MockKeaClient.return_value.clone.return_value
-        )
-        MockKeaClient.return_value.clone.return_value.__exit__ = MagicMock(
-            return_value=None
-        )  # mock-ok: CM protocol stub
-        response = self.client.get(self._url())
+    def test_thread_pool_generic_exception_returns_early(self):
+        """A generic error in the lease-enrichment worker causes enrichment to return early."""
+        host = {"subnet-id": 1, "ip-address": "10.0.0.5", "hw-address": "aa:bb:cc:dd:ee:ff"}
+        # lease4-get-all raises an unexpected error in the worker thread; the enrichment
+        # outer except swallows it so the list still renders.
+        with stub_kea({"reservation-get-page": _res_page([host]), "lease4-get-all": RuntimeError("unexpected")}) as kea:
+            response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
-        MockKeaClient.return_value.clone.return_value.command.assert_called()
+        self.assertIn("lease4-get-all", kea.commands())
 
 
 # ---------------------------------------------------------------------------
@@ -815,16 +595,13 @@ class TestReservationListEnrichmentExceptions(_ViewTestBase):
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestReservation6AddOptionDataAndSync(_ViewTestBase):
-    """Lines 2008, 2027-2034: Reservation6 add with option-data and sync."""
+    """Reservation6 add with option-data and sync-to-NetBox."""
 
     def _url(self):
         return reverse("plugins:netbox_kea:server_reservation6_add", args=[self.server.pk])
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_with_option_data_included(self, MockKeaClient):
-        """option-data is included in reservation payload when formset has entries."""
-        MockKeaClient.return_value.reservation_add.return_value = None
-        MockKeaClient.return_value.reservation_get_page.return_value = ([], 0, 0)
+    def test_post_with_option_data_included(self):
+        """option-data is included in the reservation-add payload when the formset has entries."""
         post_data = {
             **_VALID_RESERVATION6_POST,
             "options-TOTAL_FORMS": "1",
@@ -836,32 +613,25 @@ class TestReservation6AddOptionDataAndSync(_ViewTestBase):
             "options-0-always_send": "",
             "options-0-DELETE": "",
         }
-        response = self.client.post(self._url(), post_data)
+        with stub_kea({"subnet6-get": _subnet_get(6), "reservation-add": {"result": 0}}) as kea:
+            response = self.client.post(self._url(), post_data)
         self.assertIn(response.status_code, (200, 302))
-        self.assertTrue(MockKeaClient.return_value.reservation_add.called)
-        call_args = MockKeaClient.return_value.reservation_add.call_args
-        # Extract the reservation dict (second positional arg to reservation_add)
-        reservation_dict = (
-            call_args[0][1]
-            if call_args[0] and len(call_args[0]) > 1
-            else (call_args.kwargs or {}).get("reservation", {})
-        )
+        self.assertEqual(kea.commands().count("reservation-add"), 1)
+        reservation_dict = kea.bodies("reservation-add")[0]["arguments"]["reservation"]
         option_data = reservation_dict.get("option-data", [])
         dns_entry = next((o for o in option_data if o.get("name") == "dns-servers"), None)
         self.assertIsNotNone(dns_entry, "dns-servers option not found in reservation option-data")
         self.assertEqual(dns_entry["data"], "2001:4860:4860::8888")
 
-    @patch("netbox_kea.views.reservations.sync_reservation_to_netbox")
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_sync_success(self, MockKeaClient, mock_sync):
-        """sync_to_netbox=on → sync called once and success message queued."""
-        MockKeaClient.return_value.reservation_add.return_value = None
-        MockKeaClient.return_value.reservation_get_page.return_value = ([], 0, 0)
-        mock_sync.return_value = (MagicMock(spec=NbIP), True, False)
+    def test_post_sync_success(self):
+        """sync_to_netbox=on runs the real sync → NetBox IP created + info message queued."""
         post_data = {**_VALID_RESERVATION6_POST, "sync_to_netbox": "on"}
-        response = self.client.post(self._url(), post_data, follow=True)
+        with stub_kea(
+            {"subnet6-get": _subnet_get(6), "reservation-add": {"result": 0}, "reservation-get-page": _RES_EMPTY_PAGE}
+        ):
+            response = self.client.post(self._url(), post_data, follow=True)
         self.assertEqual(response.status_code, 200)
-        mock_sync.assert_called_once()
+        self.assertTrue(NbIP.objects.filter(address__startswith="2001:db8::1/").exists())
         msgs = list(response.context["messages"])
         self.assertTrue(
             any(
@@ -873,14 +643,14 @@ class TestReservation6AddOptionDataAndSync(_ViewTestBase):
         )
 
     @patch("netbox_kea.views.reservations.sync_reservation_to_netbox")
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_sync_exception_shows_warning(self, MockKeaClient, mock_sync):
+    def test_post_sync_exception_shows_warning(self, mock_sync):
         """sync raises exception → warning message queued (reservation still created)."""
-        MockKeaClient.return_value.reservation_add.return_value = None
-        MockKeaClient.return_value.reservation_get_page.return_value = ([], 0, 0)
         mock_sync.side_effect = ValueError("sync failed")
         post_data = {**_VALID_RESERVATION6_POST, "sync_to_netbox": "on"}
-        response = self.client.post(self._url(), post_data, follow=True)
+        with stub_kea(
+            {"subnet6-get": _subnet_get(6), "reservation-add": {"result": 0}, "reservation-get-page": _RES_EMPTY_PAGE}
+        ):
+            response = self.client.post(self._url(), post_data, follow=True)
         self.assertEqual(response.status_code, 200)
         mock_sync.assert_called_once()
         msgs = list(response.context["messages"])
@@ -959,7 +729,15 @@ class TestReservationSyncRequiresIpamPermission(_ViewTestBase):
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestReservation6EditOptionDataAndSync(_ViewTestBase):
-    """Lines 2292, 2307-2314, 2327-2334: Reservation6 edit with option-data and sync."""
+    """Reservation6 edit with option-data and sync-to-NetBox."""
+
+    _EXISTING = {
+        "subnet-id": 1,
+        "ip-addresses": ["2001:db8::1", "2001:db8::2"],
+        "duid": "00:01:00:01:12:34:56:78:aa:bb:cc:dd:ee:ff",
+        "hostname": "v6host",
+        "option-data": [],
+    }
 
     def _url(self):
         return reverse(
@@ -967,24 +745,12 @@ class TestReservation6EditOptionDataAndSync(_ViewTestBase):
             args=[self.server.pk, 1, "2001:db8::1"],
         )
 
-    def _mock_get(self, MockKeaClient):
-        MockKeaClient.return_value.reservation_get.return_value = {
-            "subnet-id": 1,
-            "ip-addresses": ["2001:db8::1", "2001:db8::2"],
-            "duid": "00:01:00:01:12:34:56:78:aa:bb:cc:dd:ee:ff",
-            "hostname": "v6host",
-            "option-data": [],
-        }
+    def test_post_with_option_data(self):
+        """option-data is included in the reservation-update payload when the formset has entries.
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_with_option_data(self, MockKeaClient):
-        """option-data is included in reservation_update payload when formset has entries.
-
-        Uses edit-shaped payload (no subnet_id/ip_addresses) and a two-address mock_get
-        to verify the multi-IP preserve path runs and both IPs are preserved.
+        Uses an edit-shaped payload (no subnet_id/ip_addresses) and a two-address existing
+        reservation to verify the multi-IP preserve path runs and both IPs are preserved.
         """
-        self._mock_get(MockKeaClient)
-        MockKeaClient.return_value.reservation_update.return_value = None
         post_data = {
             **_VALID_RESERVATION6_EDIT_POST,
             "options-TOTAL_FORMS": "1",
@@ -996,15 +762,11 @@ class TestReservation6EditOptionDataAndSync(_ViewTestBase):
             "options-0-always_send": "",
             "options-0-DELETE": "",
         }
-        response = self.client.post(self._url(), post_data)
+        with stub_kea({"reservation-get": _res_get(self._EXISTING), "reservation-update": {"result": 0}}) as kea:
+            response = self.client.post(self._url(), post_data)
         self.assertIn(response.status_code, (200, 302))
-        self.assertTrue(MockKeaClient.return_value.reservation_update.called)
-        call_args = MockKeaClient.return_value.reservation_update.call_args
-        reservation_dict = (
-            call_args[0][1]
-            if call_args[0] and len(call_args[0]) > 1
-            else (call_args.kwargs or {}).get("reservation", {})
-        )
+        self.assertEqual(kea.commands().count("reservation-update"), 1)
+        reservation_dict = kea.bodies("reservation-update")[0]["arguments"]["reservation"]
         # Both original IPs must be preserved (not collapsed to one).
         self.assertEqual(
             reservation_dict.get("ip-addresses"),
@@ -1016,17 +778,19 @@ class TestReservation6EditOptionDataAndSync(_ViewTestBase):
         self.assertIsNotNone(ntp_entry, "ntp-servers option not found in reservation option-data")
         self.assertEqual(ntp_entry["data"], "2001:db8::1:1")
 
-    @patch("netbox_kea.views.reservations.sync_reservation_to_netbox")
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_sync_success(self, MockKeaClient, mock_sync):
-        """sync_to_netbox=on → sync called once and info message queued."""
-        self._mock_get(MockKeaClient)
-        MockKeaClient.return_value.reservation_update.return_value = None
-        mock_sync.return_value = (MagicMock(spec=NbIP), False, False)
+    def test_post_sync_success(self):
+        """sync_to_netbox=on runs the real sync → info message queued."""
         post_data = {**_VALID_RESERVATION6_EDIT_POST, "sync_to_netbox": "on"}
-        response = self.client.post(self._url(), post_data, follow=True)
+        with stub_kea(
+            {
+                "reservation-get": _res_get(self._EXISTING),
+                "reservation-update": {"result": 0},
+                "reservation-get-page": _RES_EMPTY_PAGE,
+            }
+        ):
+            response = self.client.post(self._url(), post_data, follow=True)
         self.assertEqual(response.status_code, 200)
-        mock_sync.assert_called_once()
+        self.assertTrue(NbIP.objects.filter(address__startswith="2001:db8::1/").exists())
         msgs = list(response.context["messages"])
         self.assertTrue(
             any(m.level == django_messages.INFO for m in msgs),
@@ -1034,14 +798,18 @@ class TestReservation6EditOptionDataAndSync(_ViewTestBase):
         )
 
     @patch("netbox_kea.views.reservations.sync_reservation_to_netbox")
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_sync_exception(self, MockKeaClient, mock_sync):
+    def test_post_sync_exception(self, mock_sync):
         """sync exception → warning message queued (reservation still updated)."""
-        self._mock_get(MockKeaClient)
-        MockKeaClient.return_value.reservation_update.return_value = None
         mock_sync.side_effect = ValueError("sync fail")
         post_data = {**_VALID_RESERVATION6_EDIT_POST, "sync_to_netbox": "on"}
-        response = self.client.post(self._url(), post_data, follow=True)
+        with stub_kea(
+            {
+                "reservation-get": _res_get(self._EXISTING),
+                "reservation-update": {"result": 0},
+                "reservation-get-page": _RES_EMPTY_PAGE,
+            }
+        ):
+            response = self.client.post(self._url(), post_data, follow=True)
         self.assertEqual(response.status_code, 200)
         mock_sync.assert_called_once()
         msgs = list(response.context["messages"])
@@ -1050,83 +818,40 @@ class TestReservation6EditOptionDataAndSync(_ViewTestBase):
             f"Expected WARNING message on sync failure, got: {[(m.level, m.message) for m in msgs]}",
         )
 
-    @patch("netbox_kea.views.reservations.sync_reservation_to_netbox")
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_partial_persist_with_sync(self, MockKeaClient, mock_sync):
-        """Lines 2327-2334: PartialPersistError + sync success."""
-        from netbox_kea.kea import PartialPersistError
-
-        self._mock_get(MockKeaClient)
-        MockKeaClient.return_value.reservation_update.side_effect = PartialPersistError("dhcp6", Exception("write"))
-        mock_sync.return_value = (MagicMock(spec=NbIP), True, False)
-        post_data = {**_VALID_RESERVATION6_EDIT_POST, "sync_to_netbox": "on"}
-        response = self.client.post(self._url(), post_data, follow=True)
-        self.assertIn(response.status_code, (200, 302))
-        mock_sync.assert_called_once()
-        msgs = list(response.context["messages"])
-        self.assertTrue(
-            any(m.level == django_messages.WARNING for m in msgs),
-            f"Expected WARNING for config-write failure, got: {[(m.level, m.message) for m in msgs]}",
-        )
-
-    @patch("netbox_kea.views.reservations.sync_reservation_to_netbox")
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_partial_persist_with_sync_exception(self, MockKeaClient, mock_sync):
-        """Lines 2332-2334: PartialPersistError + sync exception → warning."""
-        from netbox_kea.kea import PartialPersistError
-
-        self._mock_get(MockKeaClient)
-        MockKeaClient.return_value.reservation_update.side_effect = PartialPersistError("dhcp6", Exception("write"))
-        mock_sync.side_effect = ValueError("db error")
-        post_data = {**_VALID_RESERVATION6_EDIT_POST, "sync_to_netbox": "on"}
-        response = self.client.post(self._url(), post_data, follow=True)
-        self.assertIn(response.status_code, (200, 302))
-        mock_sync.assert_called_once()
-        msgs = list(response.context["messages"])
-        self.assertTrue(
-            any("sync failed" in str(m).lower() for m in msgs),
-            f"Expected 'sync failed' warning, got: {[str(m) for m in msgs]}",
-        )
-
 
 # ---------------------------------------------------------------------------
-# _enrich_reservations_with_lease_status — edge cases (lines 1641, 1645, 1650, 1662-1663)
+# _enrich_reservations_with_lease_status — direct unit tests (real KeaClient)
 # ---------------------------------------------------------------------------
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestEnrichReservationsLeaseStatusCoverage(_ViewTestBase):
-    """_enrich_reservations_with_lease_status: direct unit tests for edge cases."""
+    """_enrich_reservations_with_lease_status: direct unit tests for edge cases.
+
+    These drive a real ``KeaClient`` (no DB needed) with the HTTP boundary stubbed;
+    ``clone()`` builds a fresh session in each worker thread, which the class-level
+    ``requests.Session.post`` patch also covers.
+    """
 
     def test_result3_returns_empty_list(self):
-        """lease-get-all result=3 → _fetch_leases_for_subnet returns [] → active lease not found."""
+        """lease-get-all result=3 → subnet confirmed empty → has_active_lease set False."""
         from netbox_kea.views import _enrich_reservations_with_lease_status
 
-        client = MagicMock(spec=KeaClient)
-        clone_mock = MagicMock(spec=KeaClient)
-        clone_mock.__enter__ = MagicMock(return_value=clone_mock)  # mock-ok: CM protocol stub
-        clone_mock.__exit__ = MagicMock(return_value=None)  # mock-ok: CM protocol stub
-        clone_mock.command.return_value = [{"result": 3, "arguments": {}}]
-        client.clone.return_value = clone_mock
         reservations = [{"ip-address": "10.0.0.1", "subnet-id": 42}]
-        # Should not raise; lease_cmds result=3 → empty list → no has_active_lease set
-        _enrich_reservations_with_lease_status(client, reservations, 4)
+        with stub_kea({"lease4-get-all": {"result": 3}}):
+            client = KeaClient(url="https://kea.example.com")
+            _enrich_reservations_with_lease_status(client, reservations, 4)
         # result=3 means empty — confirmed no active lease, so has_active_lease is set False
         self.assertFalse(reservations[0].get("has_active_lease", True))
 
     def test_kea_exception_non_result2_returns_empty(self):
-        """KeaException with result != 2 → subnet treated as indeterminate → has_active_lease unset."""
-        from netbox_kea.kea import KeaException
+        """A lease-get-all result != 2/3 → subnet treated as indeterminate → has_active_lease unset."""
         from netbox_kea.views import _enrich_reservations_with_lease_status
 
-        client = MagicMock(spec=KeaClient)
-        clone_mock = MagicMock(spec=KeaClient)
-        clone_mock.__enter__ = MagicMock(return_value=clone_mock)  # mock-ok: CM protocol stub
-        clone_mock.__exit__ = MagicMock(return_value=None)  # mock-ok: CM protocol stub
-        clone_mock.command.side_effect = KeaException({"result": 1, "text": "error"}, index=0)
-        client.clone.return_value = clone_mock
         reservations = [{"ip-address": "10.0.0.1", "subnet-id": 42}]
-        _enrich_reservations_with_lease_status(client, reservations, 4)
+        with stub_kea({"lease4-get-all": {"result": 1, "text": "error"}}):
+            client = KeaClient(url="https://kea.example.com")
+            _enrich_reservations_with_lease_status(client, reservations, 4)
         # result != 2 → subnet indeterminate → has_active_lease must remain unset
         self.assertNotIn("has_active_lease", reservations[0])
 
@@ -1134,23 +859,26 @@ class TestEnrichReservationsLeaseStatusCoverage(_ViewTestBase):
         """Reservations without subnet-id → unique_subnet_ids empty → enrichment returns early."""
         from netbox_kea.views import _enrich_reservations_with_lease_status
 
-        client = MagicMock(spec=KeaClient)
         reservations = [{"ip-address": "10.0.0.1"}]  # no subnet-id
-        _enrich_reservations_with_lease_status(client, reservations, 4)
-        # client.clone should never be called when there are no valid subnet-ids
-        client.clone.assert_not_called()
+        with stub_kea({}) as kea:
+            client = KeaClient(url="https://kea.example.com")
+            _enrich_reservations_with_lease_status(client, reservations, 4)
+        # No valid subnet-ids → no Kea traffic at all.
+        self.assertEqual(kea.commands(), [])
 
     def test_as_completed_exception_returns_early(self):
         """Exception from as_completed → outer except swallows it and enrichment returns early."""
         from netbox_kea.views import _enrich_reservations_with_lease_status
 
-        client = MagicMock(spec=KeaClient)
-        client.command.return_value = [{"result": 0, "arguments": {"leases": []}}]
         reservations = [{"ip-address": "10.0.0.1", "subnet-id": 42}]
-        with patch(
-            "netbox_kea.views.reservations.concurrent.futures.as_completed",
-            side_effect=RuntimeError("as_completed failed"),
-        ) as mock_as_completed:
+        with (
+            patch(
+                "netbox_kea.views.reservations.concurrent.futures.as_completed",
+                side_effect=RuntimeError("as_completed failed"),
+            ) as mock_as_completed,
+            stub_kea({"lease4-get-all": {"result": 3}}),
+        ):
+            client = KeaClient(url="https://kea.example.com")
             _enrich_reservations_with_lease_status(client, reservations, 4)
         # as_completed must have been reached (executor submitted tasks)
         mock_as_completed.assert_called_once()
@@ -1171,11 +899,10 @@ class TestWarnPoolReservationOverlapCoverage(_ViewTestBase):
         """Pool string without dash (CIDR notation) → IPNetwork path is taken."""
         from netbox_kea.views import _warn_pool_reservation_overlap
 
-        client = MagicMock(spec=KeaClient)
-        client.reservation_get_page.return_value = ([], 0, 0)
         request = self._make_request()
-        # Should not raise; CIDR pool path
-        _warn_pool_reservation_overlap(request, client, 4, subnet_id=1, pool_str="10.0.0.0/24")
+        with stub_kea({"reservation-get-page": _RES_EMPTY_PAGE}):
+            client = self.server.get_client(version=4)
+            _warn_pool_reservation_overlap(request, client, 4, subnet_id=1, pool_str="10.0.0.0/24")
         msgs = list(django_messages.get_messages(request))
         self.assertEqual(len(msgs), 0)
 
@@ -1183,13 +910,10 @@ class TestWarnPoolReservationOverlapCoverage(_ViewTestBase):
         """Host whose subnet-id doesn't match the requested subnet_id is skipped."""
         from netbox_kea.views import _warn_pool_reservation_overlap
 
-        client = MagicMock(spec=KeaClient)
-        # Return a host with subnet-id=999 (different from requested subnet_id=1)
-        client.reservation_get_page.side_effect = [
-            ([{"subnet-id": 999, "ip-address": "10.0.0.5"}], 0, 0),
-        ]
         request = self._make_request()
-        _warn_pool_reservation_overlap(request, client, 4, subnet_id=1, pool_str="10.0.0.0-10.0.0.100")
+        with stub_kea({"reservation-get-page": _res_page([{"subnet-id": 999, "ip-address": "10.0.0.5"}])}):
+            client = self.server.get_client(version=4)
+            _warn_pool_reservation_overlap(request, client, 4, subnet_id=1, pool_str="10.0.0.0-10.0.0.100")
         # host skipped → no warning
         msgs = list(django_messages.get_messages(request))
         self.assertEqual(len(msgs), 0)
@@ -1198,13 +922,10 @@ class TestWarnPoolReservationOverlapCoverage(_ViewTestBase):
         """Malformed IP address string is silently skipped (inner except path)."""
         from netbox_kea.views import _warn_pool_reservation_overlap
 
-        client = MagicMock(spec=KeaClient)
-        client.reservation_get_page.side_effect = [
-            ([{"subnet-id": 1, "ip-address": "NOT_AN_IP"}], 0, 0),
-        ]
         request = self._make_request()
-        # Should not raise; malformed IP is silently skipped
-        _warn_pool_reservation_overlap(request, client, 4, subnet_id=1, pool_str="10.0.0.0-10.0.0.100")
+        with stub_kea({"reservation-get-page": _res_page([{"subnet-id": 1, "ip-address": "NOT_AN_IP"}])}):
+            client = self.server.get_client(version=4)
+            _warn_pool_reservation_overlap(request, client, 4, subnet_id=1, pool_str="10.0.0.0-10.0.0.100")
         msgs = list(django_messages.get_messages(request))
         self.assertEqual(len(msgs), 0)
 
@@ -1222,46 +943,33 @@ class TestWarnReservationPoolOverlapCoverage(_ViewTestBase):
         """Pool entry with empty pool string is silently skipped."""
         from netbox_kea.views import _warn_reservation_pool_overlap
 
-        client = MagicMock(spec=KeaClient)
-        client.command.return_value = [
-            {
-                "result": 0,
-                "arguments": {"subnet4": [{"id": 1, "subnet": "10.0.0.0/24", "pools": [{"pool": ""}]}]},
-            }
-        ]
         request = self._make_request()
-        # Should not raise; empty pool string is skipped
-        _warn_reservation_pool_overlap(request, client, 4, subnet_id=1, ip_str="10.0.0.5")
+        with stub_kea({"subnet4-get": _subnet_get(4, pools=[""])}):
+            client = self.server.get_client(version=4)
+            _warn_reservation_pool_overlap(request, client, 4, subnet_id=1, ip_str="10.0.0.5")
         msgs = list(django_messages.get_messages(request))
         self.assertEqual(len(msgs), 0)
 
     def test_cidr_pool_creates_ipnetwork(self):
-        """Pool string without dash (CIDR notation) → IPNetwork path is taken."""
+        """Pool string without dash (CIDR notation) → IPNetwork path is taken; IP inside → warning."""
         from netbox_kea.views import _warn_reservation_pool_overlap
 
-        client = MagicMock(spec=KeaClient)
-        client.command.return_value = [
-            {
-                "result": 0,
-                "arguments": {"subnet4": [{"id": 1, "subnet": "10.0.0.0/24", "pools": [{"pool": "10.0.0.0/24"}]}]},
-            }
-        ]
         request = self._make_request()
-        # IP is in pool → warning issued; CIDR pool path (line 2571)
-        _warn_reservation_pool_overlap(request, client, 4, subnet_id=1, ip_str="10.0.0.5")
+        with stub_kea({"subnet4-get": _subnet_get(4, pools=["10.0.0.0/24"])}):
+            client = self.server.get_client(version=4)
+            _warn_reservation_pool_overlap(request, client, 4, subnet_id=1, ip_str="10.0.0.5")
         msgs = list(django_messages.get_messages(request))
         self.assertEqual(len(msgs), 1)
         self.assertEqual(msgs[0].level, django_messages.WARNING)
 
     def test_client_command_exception_swallowed(self):
-        """Exception from client.command is swallowed and no warning is issued."""
+        """A transport error from client.command is swallowed and no warning is issued."""
         from netbox_kea.views import _warn_reservation_pool_overlap
 
-        client = MagicMock(spec=KeaClient)
-        client.command.side_effect = req.RequestException("network failure")
         request = self._make_request()
-        # Should not raise; exception is swallowed
-        _warn_reservation_pool_overlap(request, client, 4, subnet_id=1, ip_str="10.0.0.5")
+        with stub_kea({"subnet4-get": req.RequestException("network failure")}):
+            client = self.server.get_client(version=4)
+            _warn_reservation_pool_overlap(request, client, 4, subnet_id=1, ip_str="10.0.0.5")
         msgs = list(django_messages.get_messages(request))
         self.assertEqual(len(msgs), 0)
 
@@ -1275,26 +983,19 @@ class TestWarnReservationPoolOverlapCoverage(_ViewTestBase):
 class TestReservationMutationBareExcept(_ViewTestBase):
     """Reservation mutation handlers must not swallow programming errors via bare except Exception."""
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_attribute_error_from_add_propagates(self, MockKeaClient):
-        """An AttributeError from reservation_add must propagate (not become an error message)."""
-        MockKeaClient.return_value.reservation_add.side_effect = AttributeError("programming bug")
+    def test_attribute_error_from_add_propagates(self):
+        """An AttributeError raised at the Kea boundary during reservation-add must propagate."""
         url = reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk])
-        with self.assertRaises(AttributeError):
-            self.client.post(
-                url,
-                {
-                    **_VALID_RESERVATION4_POST,
-                },
-            )
+        with stub_kea({"subnet4-get": _subnet_get(4), "reservation-add": AttributeError("programming bug")}):
+            with self.assertRaises(AttributeError):
+                self.client.post(url, {**_VALID_RESERVATION4_POST})
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_attribute_error_from_v6_add_propagates(self, MockKeaClient):
-        """An AttributeError from reservation_add (v6) must propagate."""
-        MockKeaClient.return_value.reservation_add.side_effect = AttributeError("programming bug")
+    def test_attribute_error_from_v6_add_propagates(self):
+        """An AttributeError raised at the Kea boundary during reservation-add (v6) must propagate."""
         url = reverse("plugins:netbox_kea:server_reservation6_add", args=[self.server.pk])
-        with self.assertRaises(AttributeError):
-            self.client.post(url, {**_VALID_RESERVATION6_POST})
+        with stub_kea({"subnet6-get": _subnet_get(6), "reservation-add": AttributeError("programming bug")}):
+            with self.assertRaises(AttributeError):
+                self.client.post(url, {**_VALID_RESERVATION6_POST})
 
 
 # ---------------------------------------------------------------------------
@@ -1340,17 +1041,12 @@ class TestReservationAddFormIPCheckWiring(_ViewTestBase):
         self.assertIn("Promise.all", body)
         self.assertNotIn('split(",")[0]', body)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_edit_form_omits_blur_script(self, MockKeaClient):
+    def test_edit_form_omits_blur_script(self):
         """Edit mode disables the IP field, so the advisory script must not attach."""
-        MockKeaClient.return_value.reservation_get.return_value = {
-            "hw-address": "aa:bb:cc:dd:ee:ff",
-            "ip-address": "10.0.0.55",
-            "subnet-id": 1,
-        }
-        MockKeaClient.return_value.lease_get_by_ip.return_value = None
+        existing = {"hw-address": "aa:bb:cc:dd:ee:ff", "ip-address": "10.0.0.55", "subnet-id": 1}
         url = reverse("plugins:netbox_kea:server_reservation4_edit", args=[self.server.pk, 1, "10.0.0.55"])
-        body = self.client.get(url).content.decode()
+        with stub_kea({"reservation-get": _res_get(existing), "lease4-get": _LEASE_NOT_FOUND}):
+            body = self.client.get(url).content.decode()
         check_url = reverse("plugins:netbox_kea:reservation_check_ip", args=[self.server.pk])
         self.assertNotIn('addEventListener("blur"', body)
         self.assertNotIn(check_url, body)

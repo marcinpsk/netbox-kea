@@ -31,7 +31,43 @@ from django.urls import reverse
 
 from netbox_kea.models import Server
 
-from .utils import _PLUGINS_CONFIG, User, _kea_command_side_effect, _make_db_server, _ViewTestBase
+from .kea_stub import stub_kea
+from .utils import _PLUGINS_CONFIG, User, _make_db_server, _ViewTestBase
+
+# ---------------------------------------------------------------------------
+# Kea response builders (real KeaClient + HTTP-boundary stub)
+# ---------------------------------------------------------------------------
+#
+# Server.clean() runs a live connectivity check (``version-get`` per enabled
+# service), and the status view issues ``status-get`` + ``version-get`` per
+# daemon (CA-level = no service; DHCP = service=["dhcp{v}"]) plus ``config-get``
+# for the global-options block. The stub keys by command name only, so where a
+# test needs CA-vs-service-specific responses it registers a callable
+# ``(body) -> payload`` that branches on ``body.get("service")``.
+
+_VERSION_OK = {"result": 0, "arguments": {"extended": "3.0.3"}}
+
+
+def _ok_status(**args):
+    """A ``status-get`` payload (result 0) with sensible daemon defaults."""
+    base = {"pid": 1234, "uptime": 3600, "reload": 0}
+    base.update(args)
+    return {"result": 0, "arguments": base}
+
+
+def _config_get_empty(body):
+    """A ``config-get`` payload with no global option-data, for the queried service."""
+    svc = (body.get("service") or [""])[0]
+    version = 6 if svc == "dhcp6" else 4
+    key = f"Dhcp{version}"
+    return {"result": 0, "arguments": {key: {"option-data": [], f"subnet{version}": [], "shared-networks": []}}}
+
+
+def _status_stub(**overrides):
+    """Stub the happy-path status view: status-get + version-get + config-get."""
+    base = {"status-get": _ok_status(), "version-get": _VERSION_OK, "config-get": _config_get_empty}
+    base.update(overrides)
+    return stub_kea(base)
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
@@ -119,45 +155,40 @@ class TestServerAddView(_ViewTestBase):
         self._assert_no_none_pk_redirect(response)
         self.assertNotIn(b"servers/None", response.content)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_valid_data_redirects_to_integer_pk(self, MockKeaClient):
+    def test_post_valid_data_redirects_to_integer_pk(self):
         """Successful server creation must redirect to servers/<int:pk>/, never /servers/None/."""
-        mock_client = MockKeaClient.return_value
-        mock_client.command.side_effect = _kea_command_side_effect
-
+        # Server.clean() runs a live version-get connectivity check on the enabled service.
         url = reverse("plugins:netbox_kea:server_add")
-        response = self.client.post(
-            url,
-            {
-                "name": "new-valid-server",
-                "ca_url": "https://kea.new.example.com",
-                "dhcp4": True,
-                "dhcp6": False,
-                "ssl_verify": True,
-                "has_control_agent": True,
-            },
-        )
+        with stub_kea({"version-get": _VERSION_OK}):
+            response = self.client.post(
+                url,
+                {
+                    "name": "new-valid-server",
+                    "ca_url": "https://kea.new.example.com",
+                    "dhcp4": True,
+                    "dhcp6": False,
+                    "ssl_verify": True,
+                    "has_control_agent": True,
+                },
+            )
         self.assertEqual(response.status_code, 302)
         self._assert_redirect_to_integer_pk(response)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_valid_server_is_saved_to_db(self, MockKeaClient):
+    def test_post_valid_server_is_saved_to_db(self):
         """After successful add, the Server object must exist in the DB."""
-        mock_client = MockKeaClient.return_value
-        mock_client.command.side_effect = _kea_command_side_effect
-
         url = reverse("plugins:netbox_kea:server_add")
-        self.client.post(
-            url,
-            {
-                "name": "saved-server",
-                "ca_url": "https://kea.saved.example.com",
-                "dhcp4": True,
-                "dhcp6": False,
-                "ssl_verify": True,
-                "has_control_agent": True,
-            },
-        )
+        with stub_kea({"version-get": _VERSION_OK}):
+            self.client.post(
+                url,
+                {
+                    "name": "saved-server",
+                    "ca_url": "https://kea.saved.example.com",
+                    "dhcp4": True,
+                    "dhcp6": False,
+                    "ssl_verify": True,
+                    "has_control_agent": True,
+                },
+            )
         self.assertTrue(Server.objects.filter(name="saved-server").exists())
 
 
@@ -187,24 +218,21 @@ class TestServerEditView(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         self._assert_no_none_pk_redirect(response)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_valid_edit_redirects_to_same_server(self, MockKeaClient):
+    def test_post_valid_edit_redirects_to_same_server(self):
         """Successful edit must redirect to the same server's detail URL."""
-        mock_client = MockKeaClient.return_value
-        mock_client.command.side_effect = _kea_command_side_effect
-
         url = reverse("plugins:netbox_kea:server_edit", args=[self.server.pk])
-        response = self.client.post(
-            url,
-            {
-                "name": self.server.name,
-                "ca_url": "https://kea.edited.example.com",
-                "dhcp4": True,
-                "dhcp6": False,
-                "ssl_verify": True,
-                "has_control_agent": True,
-            },
-        )
+        with stub_kea({"version-get": _VERSION_OK}):
+            response = self.client.post(
+                url,
+                {
+                    "name": self.server.name,
+                    "ca_url": "https://kea.edited.example.com",
+                    "dhcp4": True,
+                    "dhcp6": False,
+                    "ssl_verify": True,
+                    "has_control_agent": True,
+                },
+            )
         self.assertEqual(response.status_code, 302)
         self._assert_redirect_to_integer_pk(response)
         # Must redirect to THIS server's pk, not some other.
@@ -244,24 +272,18 @@ class TestServerDeleteView(_ViewTestBase):
 class TestServerStatusView(_ViewTestBase):
     """GET /plugins/kea/servers/<pk>/status/"""
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_get_returns_200(self, MockKeaClient):
-        mock_client = MockKeaClient.return_value
-        mock_client.command.side_effect = _kea_command_side_effect
-
+    def test_get_returns_200(self):
         url = reverse("plugins:netbox_kea:server_status", args=[self.server.pk])
-        response = self.client.get(url)
+        with _status_stub():
+            response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_get_without_control_agent_returns_200(self, MockKeaClient):
+    def test_get_without_control_agent_returns_200(self):
         """Status view with has_control_agent=False must still return 200."""
-        mock_client = MockKeaClient.return_value
-        mock_client.command.side_effect = _kea_command_side_effect
-
         server = _make_db_server(name="direct-daemon", has_control_agent=False)
         url = reverse("plugins:netbox_kea:server_status", args=[server.pk])
-        response = self.client.get(url)
+        with _status_stub():
+            response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
 
     def test_get_nonexistent_returns_404(self):
@@ -297,40 +319,38 @@ class TestServerBulkImportView(_ViewTestBase):
         self.assertEqual(response.status_code, 302)
         self.assertIn("login", response.url)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_valid_csv_creates_server(self, MockKeaClient):
+    def test_post_valid_csv_creates_server(self):
         """Valid CSV must create the server and redirect."""
-        mock_client = MockKeaClient.return_value
-        mock_client.command.side_effect = _kea_command_side_effect
-
+        # Server.clean() runs a live version-get connectivity check per imported row.
         url = reverse("plugins:netbox_kea:server_bulk_import")
         csv_data = (
             "name,ca_url,dhcp4,dhcp6,ssl_verify,has_control_agent\r\n"
             "import-test-server,https://import.example.com,true,false,true,false\r\n"
         )
-        response = self.client.post(
-            url,
-            {"data": csv_data, "format": "csv", "csv_delimiter": ","},
-        )
+        with stub_kea({"version-get": _VERSION_OK}):
+            response = self.client.post(
+                url,
+                {"data": csv_data, "format": "csv", "csv_delimiter": ","},
+            )
         # Either 200 (results page) or 302 (redirect on success)
         self.assertIn(response.status_code, [200, 302])
         self.assertTrue(Server.objects.filter(name="import-test-server").exists())
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_duplicate_name_returns_error_not_500(self, MockKeaClient):
+    def test_post_duplicate_name_returns_error_not_500(self):
         """Duplicate server name must re-render the form with errors, not 500.
 
-        KeaClient is mocked to guard against future regressions where the unique
-        constraint fires *after* clean() runs (which would attempt a live connection).
+        The real clean() connectivity check (version-get) runs first, then the unique
+        constraint on name fires — this guards against a regression where the constraint
+        error would surface as a 500 instead of a form error.
         """
         url = reverse("plugins:netbox_kea:server_bulk_import")
         # setUp() already created a server named 'test-kea'
         csv_data = "name,ca_url,dhcp4,dhcp6\r\ntest-kea,https://dup.example.com,true,false\r\n"
-        MockKeaClient.return_value.command.side_effect = _kea_command_side_effect
-        response = self.client.post(
-            url,
-            {"data": csv_data, "format": "csv", "csv_delimiter": ","},
-        )
+        with stub_kea({"version-get": _VERSION_OK}):
+            response = self.client.post(
+                url,
+                {"data": csv_data, "format": "csv", "csv_delimiter": ","},
+            )
         self.assertIn(response.status_code, [200, 400])
         # Only one server with this name must exist
         self.assertEqual(Server.objects.filter(name="test-kea").count(), 1)
@@ -360,40 +380,43 @@ _CONFIG_WITH_OPTIONS_V4 = {
 }
 
 
-def _kea_command_with_global_options(cmd, service=None, arguments=None, check=None):
-    """Mock side-effect that includes option-data in config-get."""
-    if cmd == "status-get":
-        return [{"result": 0, "arguments": {"pid": 1, "uptime": 100, "reload": 0}}]
-    if cmd == "version-get":
-        return [{"result": 0, "arguments": {"extended": "2.4.1"}}]
-    if cmd == "config-get":
-        if service and service[0] == "dhcp6":
-            return [
-                {
-                    "result": 0,
-                    "arguments": {
-                        "Dhcp6": {
-                            "option-data": [{"code": 23, "name": "dns-servers", "data": "2001:db8::1"}],
-                            "subnet6": [],
-                            "shared-networks": [],
-                        }
-                    },
+def _config_get_with_options(body):
+    """A ``config-get`` payload carrying global option-data for the queried service."""
+    svc = (body.get("service") or [""])[0]
+    if svc == "dhcp6":
+        return {
+            "result": 0,
+            "arguments": {
+                "Dhcp6": {
+                    "option-data": [{"code": 23, "name": "dns-servers", "data": "2001:db8::1"}],
+                    "subnet6": [],
+                    "shared-networks": [],
                 }
-            ]
-        return [{"result": 0, "arguments": {"Dhcp4": _CONFIG_WITH_OPTIONS_V4}}]
-    return [{"result": 0, "arguments": {}}]
+            },
+        }
+    return {"result": 0, "arguments": {"Dhcp4": _CONFIG_WITH_OPTIONS_V4}}
+
+
+def _global_options_stub(**overrides):
+    """Status view stub whose config-get exposes global option-data (v2.4.1 daemon)."""
+    base = {
+        "status-get": {"result": 0, "arguments": {"pid": 1, "uptime": 100, "reload": 0}},
+        "version-get": {"result": 0, "arguments": {"extended": "2.4.1"}},
+        "config-get": _config_get_with_options,
+    }
+    base.update(overrides)
+    return stub_kea(base)
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestServerStatusGlobalOptions(_ViewTestBase):
     """Status view must render global DHCP options extracted from ``config-get``."""
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_global_options_present_in_context(self, MockKeaClient):
+    def test_global_options_present_in_context(self):
         """``global_options`` context key must exist and contain parsed option dicts."""
-        MockKeaClient.return_value.command.side_effect = _kea_command_with_global_options
         url = reverse("plugins:netbox_kea:server_status", args=[self.server.pk])
-        response = self.client.get(url)
+        with _global_options_stub():
+            response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         self.assertIn("global_options", response.context)
         opts = response.context["global_options"]
@@ -403,35 +426,26 @@ class TestServerStatusGlobalOptions(_ViewTestBase):
         self.assertIn("Dns Servers", opts.get("DHCPv4", {}))
         self.assertEqual(opts.get("DHCPv4", {}).get("Dns Servers"), "8.8.8.8, 8.8.4.4")
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_global_options_dns_rendered_in_html(self, MockKeaClient):
+    def test_global_options_dns_rendered_in_html(self):
         """DNS server IP must appear somewhere in the rendered status page."""
-        MockKeaClient.return_value.command.side_effect = _kea_command_with_global_options
         url = reverse("plugins:netbox_kea:server_status", args=[self.server.pk])
-        response = self.client.get(url)
+        with _global_options_stub():
+            response = self.client.get(url)
         self.assertContains(response, "8.8.8.8")
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_global_options_domain_name_rendered(self, MockKeaClient):
+    def test_global_options_domain_name_rendered(self):
         """Domain name option must also appear in the status page HTML."""
-        MockKeaClient.return_value.command.side_effect = _kea_command_with_global_options
         url = reverse("plugins:netbox_kea:server_status", args=[self.server.pk])
-        response = self.client.get(url)
+        with _global_options_stub():
+            response = self.client.get(url)
         self.assertContains(response, "example.com")
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_status_still_200_when_config_get_fails(self, MockKeaClient):
+    def test_status_still_200_when_config_get_fails(self):
         """If ``config-get`` raises, the status page must still return 200 (graceful degradation)."""
-        from netbox_kea.kea import KeaException
-
-        def side_effect(cmd, service=None, arguments=None, check=None):
-            if cmd == "config-get":
-                raise KeaException({"result": 1, "text": "internal error"}, index=0)
-            return _kea_command_with_global_options(cmd, service=service)
-
-        MockKeaClient.return_value.command.side_effect = side_effect
+        # config-get result 1 → real KeaException → _get_global_options swallows it → {}.
         url = reverse("plugins:netbox_kea:server_status", args=[self.server.pk])
-        response = self.client.get(url)
+        with _global_options_stub(**{"config-get": {"result": 1, "text": "internal error"}}):
+            response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context["global_options"], {})
 
@@ -593,44 +607,36 @@ class TestStatusViewNullArgs(_ViewTestBase):
     def _url(self):
         return reverse("plugins:netbox_kea:server_status", args=[self.server.pk])
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_get_ca_status_empty_args_degrades_gracefully(self, MockKeaClient):
+    def test_get_ca_status_empty_args_degrades_gracefully(self):
         """_get_ca_status degrades gracefully when arguments is empty."""
 
-        def _side(cmd, service=None, **kwargs):
-            if cmd == "status-get" and (not service or "dhcp" not in service[0]):
-                return [{"result": 0, "arguments": {}}]  # empty → falsy
-            if cmd == "version-get" and (not service or "dhcp" not in service[0]):
-                return [{"result": 0, "arguments": {"extended": "2.0"}}]
-            if cmd == "status-get":
-                return [{"result": 0, "arguments": {"pid": 1, "uptime": 0, "reload": 0}}]
-            if cmd == "version-get":
-                return [{"result": 0, "arguments": {"extended": "2.0"}}]
-            return [{"result": 0, "arguments": {}}]
+        def _status(body):
+            svc = body.get("service")
+            if not svc or "dhcp" not in svc[0]:
+                return {"result": 0, "arguments": {}}  # CA → empty → RuntimeError
+            return {"result": 0, "arguments": {"pid": 1, "uptime": 0, "reload": 0}}
 
-        MockKeaClient.return_value.command.side_effect = _side
+        stub = {"status-get": _status, "version-get": {"result": 0, "arguments": {"extended": "2.0"}}}
         # The view catches exceptions from _get_ca_status; page still renders with empty statuses
-        response = self.client.get(self._url())
+        with _status_stub(**stub):
+            response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
         services_by_name = {s["name"]: s for s in response.context["services"]}
         if "Control Agent" in services_by_name:
             self.assertEqual(services_by_name["Control Agent"]["status_data"], {})
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_get_dhcp_status_null_args_degrades_gracefully(self, MockKeaClient):
+    def test_get_dhcp_status_null_args_degrades_gracefully(self):
         """_get_dhcp_status degrades gracefully when arguments is None."""
 
-        def _side(cmd, service=None, **kwargs):
-            if cmd == "status-get" and service and "dhcp" in service[0]:
-                return [{"result": 0, "arguments": None}]
-            if cmd == "status-get":
-                return [{"result": 0, "arguments": {"pid": 1, "uptime": 0, "reload": 0}}]
-            if cmd == "version-get":
-                return [{"result": 0, "arguments": {"extended": "2.0"}}]
-            return [{"result": 0, "arguments": {}}]
+        def _status(body):
+            svc = body.get("service")
+            if svc and "dhcp" in svc[0]:
+                return {"result": 0, "arguments": None}  # dhcp → None → RuntimeError
+            return {"result": 0, "arguments": {"pid": 1, "uptime": 0, "reload": 0}}
 
-        MockKeaClient.return_value.command.side_effect = _side
-        response = self.client.get(self._url())
+        stub = {"status-get": _status, "version-get": {"result": 0, "arguments": {"extended": "2.0"}}}
+        with _status_stub(**stub):
+            response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
         # When arguments is None, _get_dhcp_status raises RuntimeError and the view
         # falls back to empty status_data — the service entry must still exist.
@@ -642,39 +648,34 @@ class TestStatusViewNullArgs(_ViewTestBase):
             "DHCPv4 status_data must be empty/degraded when arguments is None",
         )
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_get_dhcp_status_ha_fields_included(self, MockKeaClient):
-        """Lines 370-373: HA fields are present when high-availability in status-get."""
+    def test_get_dhcp_status_ha_fields_included(self):
+        """HA fields are present when high-availability is in status-get."""
 
-        def _side(cmd, service=None, **kwargs):
-            if cmd == "status-get" and service and "dhcp" in service[0]:
-                return [
-                    {
-                        "result": 0,
-                        "arguments": {
-                            "pid": 1,
-                            "uptime": 100,
-                            "reload": 0,
-                            "high-availability": [
-                                {
-                                    "ha-mode": "load-balancing",
-                                    "ha-servers": {
-                                        "local": {"role": "primary", "state": "active"},
-                                        "remote": {"connection-interrupted": False, "age": 10, "role": "secondary"},
-                                    },
-                                }
-                            ],
-                        },
-                    }
-                ]
-            if cmd == "status-get":
-                return [{"result": 0, "arguments": {"pid": 1, "uptime": 100, "reload": 0}}]
-            if cmd == "version-get":
-                return [{"result": 0, "arguments": {"extended": "2.4.1"}}]
-            return [{"result": 0, "arguments": {}}]
+        def _status(body):
+            svc = body.get("service")
+            if svc and "dhcp" in svc[0]:
+                return {
+                    "result": 0,
+                    "arguments": {
+                        "pid": 1,
+                        "uptime": 100,
+                        "reload": 0,
+                        "high-availability": [
+                            {
+                                "ha-mode": "load-balancing",
+                                "ha-servers": {
+                                    "local": {"role": "primary", "state": "active"},
+                                    "remote": {"connection-interrupted": False, "age": 10, "role": "secondary"},
+                                },
+                            }
+                        ],
+                    },
+                }
+            return {"result": 0, "arguments": {"pid": 1, "uptime": 100, "reload": 0}}
 
-        MockKeaClient.return_value.command.side_effect = _side
-        response = self.client.get(self._url())
+        stub = {"status-get": _status, "version-get": {"result": 0, "arguments": {"extended": "2.4.1"}}}
+        with _status_stub(**stub):
+            response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "HA")
 
@@ -691,21 +692,16 @@ class TestGetGlobalOptionsGenericException(_ViewTestBase):
     def _url(self):
         return reverse("plugins:netbox_kea:server_status", args=[self.server.pk])
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_generic_exception_swallowed(self, MockKeaClient):
-        """Generic exception in config-get for global options is swallowed and the page renders normally."""
-
-        def _side(cmd, service=None, **kwargs):
-            if cmd == "config-get":
-                raise requests.RequestException("unexpected crash")
-            if cmd == "status-get":
-                return [{"result": 0, "arguments": {"pid": 1, "uptime": 0, "reload": 0}}]
-            if cmd == "version-get":
-                return [{"result": 0, "arguments": {"extended": "2.0"}}]
-            return [{"result": 0, "arguments": {}}]
-
-        MockKeaClient.return_value.command.side_effect = _side
-        response = self.client.get(self._url())
+    def test_generic_exception_swallowed(self):
+        """A transport error in config-get for global options is swallowed; the page renders normally."""
+        # config-get raises a transport error at the boundary → _get_global_options swallows it → {}.
+        stub = {
+            "status-get": {"result": 0, "arguments": {"pid": 1, "uptime": 0, "reload": 0}},
+            "version-get": {"result": 0, "arguments": {"extended": "2.0"}},
+            "config-get": requests.RequestException("unexpected crash"),
+        }
+        with stub_kea(stub):
+            response = self.client.get(self._url())
         # Exception in get_extra_context() is caught by the outer try/except in get_extra_context;
         # the page must still render as 200 (degraded state, not 500).
         self.assertEqual(response.status_code, 200)
@@ -721,8 +717,7 @@ class TestGetGlobalOptionsGenericException(_ViewTestBase):
 class TestBulkDeletePermission(_ViewTestBase):
     """Line 800: POST without bulk_delete_lease_from_server permission returns 403."""
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_user_without_bulk_delete_perm_gets_403(self, MockKeaClient):
+    def test_user_without_bulk_delete_perm_gets_403(self):
         from users.models import ObjectPermission
 
         # Grant view-only ObjectPermission so get_object() succeeds
@@ -734,9 +729,11 @@ class TestBulkDeletePermission(_ViewTestBase):
         view_op.object_types.add(ct)
         self.client.force_login(viewer)
         url = reverse("plugins:netbox_kea:server_leases4_delete", args=[self.server.pk])
-        # User can view the server but has no bulk_delete_lease_from_server perm
-        response = self.client.post(url, {"pk": ["10.0.0.1"], "confirm": "1"})
+        # Permission check returns 403 before any Kea traffic.
+        with stub_kea({}) as kea:
+            response = self.client.post(url, {"pk": ["10.0.0.1"], "confirm": "1"})
         self.assertEqual(response.status_code, 403)
+        self.assertEqual(kea.commands(), [])
 
 
 # ---------------------------------------------------------------------------
@@ -779,39 +776,20 @@ class TestKeaChangeMixinNoPk(_ViewTestBase):
 class TestStatusViewNullVersionArgs(_ViewTestBase):
     """Lines 323, 357: version-get returns None arguments → RuntimeError caught internally."""
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_ca_version_get_null_args_returns_200(self, MockKeaClient):
-        """Line 323: CA version-get returns None args → RuntimeError caught in get_extra_context."""
-        mock_client = MockKeaClient.return_value
-
-        def _side_effect(cmd, service=None, arguments=None, check=None):
-            if cmd == "status-get":
-                return [{"result": 0, "arguments": {"pid": 1, "uptime": 60, "reload": 0}}]
-            if cmd == "version-get":
-                return [{"result": 0, "arguments": None}]
-            return [{"result": 0, "arguments": {}}]
-
-        mock_client.command.side_effect = _side_effect
+    def test_ca_version_get_null_args_returns_200(self):
+        """CA version-get returns None args → RuntimeError caught in get_extra_context."""
+        stub = {"status-get": _ok_status(uptime=60), "version-get": {"result": 0, "arguments": None}}
         url = reverse("plugins:netbox_kea:server_status", args=[self.server.pk])
-        response = self.client.get(url)
+        with _status_stub(**stub):
+            response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         services_by_name = {s["name"]: s for s in response.context["services"]}
         if "Control Agent" in services_by_name:
             self.assertEqual(services_by_name["Control Agent"]["status_data"], {})
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_dhcp_version_get_null_args_returns_200(self, MockKeaClient):
-        """Line 357: DHCP service version-get returns None args → RuntimeError caught."""
-        mock_client = MockKeaClient.return_value
-
-        def _side_effect(cmd, service=None, arguments=None, check=None):
-            if cmd == "status-get":
-                return [{"result": 0, "arguments": {"pid": 1, "uptime": 60, "reload": 0}}]
-            if cmd == "version-get":
-                return [{"result": 0, "arguments": None}]
-            return [{"result": 0, "arguments": {}}]
-
-        mock_client.command.side_effect = _side_effect
+    def test_dhcp_version_get_null_args_returns_200(self):
+        """DHCP service version-get returns None args → RuntimeError caught."""
+        stub = {"status-get": _ok_status(uptime=60), "version-get": {"result": 0, "arguments": None}}
         server_dhcp_only = _make_db_server(
             name="dhcp-only-sv",
             has_control_agent=False,
@@ -819,5 +797,6 @@ class TestStatusViewNullVersionArgs(_ViewTestBase):
             dhcp6=False,
         )
         url = reverse("plugins:netbox_kea:server_status", args=[server_dhcp_only.pk])
-        response = self.client.get(url)
+        with _status_stub(**stub):
+            response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
