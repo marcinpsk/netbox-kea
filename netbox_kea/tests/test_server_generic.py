@@ -119,8 +119,13 @@ class ServerAPITestCase(
 ):
     """Standard REST API for Server: detail/list/create/update/delete.
 
-    GraphQL is intentionally excluded (the plugin ships no GraphQL schema), so the
-    individual CRUD mixins are composed rather than the bundled ``APIViewTestCase``.
+    The individual REST CRUD mixins are composed rather than the bundled
+    ``APIViewTestCase`` because the plugin's GraphQL schema uses the legacy
+    single-module ``netbox_kea/graphql.py`` layout, so NetBox's ``GraphQLTestCase``
+    (which resolves ``netbox_kea.graphql.types.ServerType``) raises
+    ``GraphQLTypeNotFound``. Composing the REST mixins keeps this focused on the
+    REST API and leaves GraphQL out until the schema moves to the ``graphql/``
+    package layout.
     """
 
     model = Server
