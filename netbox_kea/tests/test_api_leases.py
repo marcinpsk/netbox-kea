@@ -6,18 +6,37 @@ These tests cover:
 - GET /api/plugins/netbox-kea/servers/{pk}/leases4/
 - GET /api/plugins/netbox-kea/servers/{pk}/leases6/
 
-All Kea HTTP calls are mocked; no running Kea instance required.
+These tests drive the **real** ``KeaClient``; only the HTTP boundary is stubbed
+via ``kea_stub.stub_kea``. The lease endpoints issue ``lease{v}-get`` (by IP),
+``lease{v}-get-by-hw-address``, ``lease6-get-by-duid``,
+``lease{v}-get-by-hostname``, or ``lease{v}-get-all`` (by subnet); the real
+request payloads (command + service) are exercised and asserted.
 """
-
-from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
 from django.urls import reverse
 from rest_framework.test import APIClient
 
-from netbox_kea.kea import KeaClient
 from netbox_kea.models import Server
+
+from .kea_stub import stub_kea
+
+# A single DHCPv6 lease (result 0) returned by lease6-get.
+_LEASE6_RESPONSE = [
+    {
+        "result": 0,
+        "arguments": {
+            "ip-address": "2001:db8::1",
+            "duid": "00:01:02:03",
+            "iaid": 12345,
+            "subnet-id": 10,
+            "valid-lft": 3600,
+            "cltt": 1700000000,
+            "state": 0,
+        },
+    }
+]
 
 User = get_user_model()
 
@@ -159,85 +178,61 @@ class TestLease4API(_APITestBase):
         response = self.api_client.get(url, {"ip_address": "10.0.0.1"})
         self.assertEqual(response.status_code, 404)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_get_by_ip_address_returns_200(self, MockKeaClient):
+    def test_get_by_ip_address_returns_200(self):
         """?ip_address=10.0.0.100 returns 200 with lease data."""
-        mock_client = MagicMock(spec=KeaClient)
-        MockKeaClient.return_value = mock_client
-        mock_client.command.return_value = _LEASE4_RESPONSE
-        response = self.api_client.get(self._url(), {"ip_address": "10.0.0.100"})
+        with stub_kea({"lease4-get": _LEASE4_RESPONSE}):
+            response = self.api_client.get(self._url(), {"ip_address": "10.0.0.100"})
         self.assertEqual(response.status_code, 200)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_get_by_ip_address_results_in_response(self, MockKeaClient):
+    def test_get_by_ip_address_results_in_response(self):
         """Response includes a 'results' list and 'count' key."""
-        mock_client = MagicMock(spec=KeaClient)
-        MockKeaClient.return_value = mock_client
-        mock_client.command.return_value = _LEASE4_RESPONSE
-        response = self.api_client.get(self._url(), {"ip_address": "10.0.0.100"})
+        with stub_kea({"lease4-get": _LEASE4_RESPONSE}):
+            response = self.api_client.get(self._url(), {"ip_address": "10.0.0.100"})
         data = response.json()
         self.assertIn("results", data)
         self.assertIn("count", data)
         self.assertEqual(data["count"], 1)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_get_by_hw_address_returns_200(self, MockKeaClient):
+    def test_get_by_hw_address_returns_200(self):
         """?hw_address=aa:bb:cc:dd:ee:ff returns 200 with lease list."""
-        mock_client = MagicMock(spec=KeaClient)
-        MockKeaClient.return_value = mock_client
-        mock_client.command.return_value = _LEASE4_LIST_RESPONSE
-        response = self.api_client.get(self._url(), {"hw_address": "aa:bb:cc:dd:ee:ff"})
+        with stub_kea({"lease4-get-by-hw-address": _LEASE4_LIST_RESPONSE}):
+            response = self.api_client.get(self._url(), {"hw_address": "aa:bb:cc:dd:ee:ff"})
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["count"], 1)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_get_by_hostname_returns_200(self, MockKeaClient):
+    def test_get_by_hostname_returns_200(self):
         """?hostname=host.example.com returns 200."""
-        mock_client = MagicMock(spec=KeaClient)
-        MockKeaClient.return_value = mock_client
-        mock_client.command.return_value = _LEASE4_LIST_RESPONSE
-        response = self.api_client.get(self._url(), {"hostname": "host.example.com"})
+        with stub_kea({"lease4-get-by-hostname": _LEASE4_LIST_RESPONSE}):
+            response = self.api_client.get(self._url(), {"hostname": "host.example.com"})
         self.assertEqual(response.status_code, 200)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_get_by_subnet_id_returns_200(self, MockKeaClient):
+    def test_get_by_subnet_id_returns_200(self):
         """?subnet_id=1 returns 200."""
-        mock_client = MagicMock(spec=KeaClient)
-        MockKeaClient.return_value = mock_client
-        mock_client.command.return_value = _LEASE4_LIST_RESPONSE
-        response = self.api_client.get(self._url(), {"subnet_id": "1"})
+        with stub_kea({"lease4-get-all": _LEASE4_LIST_RESPONSE}):
+            response = self.api_client.get(self._url(), {"subnet_id": "1"})
         self.assertEqual(response.status_code, 200)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_not_found_returns_empty_results(self, MockKeaClient):
+    def test_not_found_returns_empty_results(self):
         """When Kea returns result=3 (not found), results is empty list."""
-        mock_client = MagicMock(spec=KeaClient)
-        MockKeaClient.return_value = mock_client
-        mock_client.command.return_value = _LEASE4_NOT_FOUND
-        response = self.api_client.get(self._url(), {"ip_address": "10.0.0.99"})
+        with stub_kea({"lease4-get": _LEASE4_NOT_FOUND}):
+            response = self.api_client.get(self._url(), {"ip_address": "10.0.0.99"})
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["count"], 0)
         self.assertEqual(response.json()["results"], [])
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_kea_connection_error_returns_502(self, MockKeaClient):
+    def test_kea_connection_error_returns_502(self):
         """When Kea is unreachable, returns HTTP 502."""
         import requests as rq
 
-        mock_client = MagicMock(spec=KeaClient)
-        MockKeaClient.return_value = mock_client
-        mock_client.command.side_effect = rq.ConnectionError("refused")
-        response = self.api_client.get(self._url(), {"ip_address": "10.0.0.1"})
+        with stub_kea({"lease4-get": rq.ConnectionError("refused")}):
+            response = self.api_client.get(self._url(), {"ip_address": "10.0.0.1"})
         self.assertEqual(response.status_code, 502)
 
-    @patch.object(Server, "get_client")
-    def test_get_client_called_with_version_4(self, mock_get_client):
-        """The view calls server.get_client(version=4) to select the DHCPv4 endpoint."""
-        mock_client = MagicMock(spec=KeaClient)
-        mock_get_client.return_value = mock_client
-        mock_client.command.return_value = _LEASE4_RESPONSE
-        self.api_client.get(self._url(), {"ip_address": "10.0.0.100"})
-        mock_get_client.assert_called_once_with(version=4)
+    def test_uses_dhcp4_service(self):
+        """The v4 endpoint issues lease4-get to service=['dhcp4'] (version=4 routing)."""
+        with stub_kea({"lease4-get": _LEASE4_RESPONSE}) as kea:
+            self.api_client.get(self._url(), {"ip_address": "10.0.0.100"})
+        self.assertEqual(kea.bodies("lease4-get")[0]["service"], ["dhcp4"])
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -269,78 +264,28 @@ class TestLease6API(_APITestBase):
         response = self.api_client.get(url, {"ip_address": "2001:db8::1"})
         self.assertEqual(response.status_code, 404)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_get_by_ip_address_returns_200(self, MockKeaClient):
+    def test_get_by_ip_address_returns_200(self):
         """?ip_address=2001:db8::1 returns 200 with v6 lease data."""
-        mock_client = MagicMock(spec=KeaClient)
-        MockKeaClient.return_value = mock_client
-        mock_client.command.return_value = [
-            {
-                "result": 0,
-                "arguments": {
-                    "ip-address": "2001:db8::1",
-                    "duid": "00:01:02:03",
-                    "iaid": 12345,
-                    "subnet-id": 10,
-                    "valid-lft": 3600,
-                    "cltt": 1700000000,
-                    "state": 0,
-                },
-            }
-        ]
-        response = self.api_client.get(self._url(), {"ip_address": "2001:db8::1"})
+        with stub_kea({"lease6-get": _LEASE6_RESPONSE}):
+            response = self.api_client.get(self._url(), {"ip_address": "2001:db8::1"})
         self.assertEqual(response.status_code, 200)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_get_by_duid_returns_200(self, MockKeaClient):
+    def test_get_by_duid_returns_200(self):
         """?duid=00:01:02:03 returns 200 with v6 lease list."""
-        mock_client = MagicMock(spec=KeaClient)
-        MockKeaClient.return_value = mock_client
-        mock_client.command.return_value = _LEASE6_LIST_RESPONSE
-        response = self.api_client.get(self._url(), {"duid": "00:01:02:03"})
+        with stub_kea({"lease6-get-by-duid": _LEASE6_LIST_RESPONSE}):
+            response = self.api_client.get(self._url(), {"duid": "00:01:02:03"})
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["count"], 1)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_uses_dhcp6_service(self, MockKeaClient):
-        """The v6 endpoint calls Kea with service=['dhcp6']."""
-        mock_client = MagicMock(spec=KeaClient)
-        MockKeaClient.return_value = mock_client
-        mock_client.command.return_value = [
-            {
-                "result": 0,
-                "arguments": {
-                    "ip-address": "2001:db8::1",
-                    "duid": "00:01:02:03",
-                    "iaid": 12345,
-                    "valid-lft": 3600,
-                    "cltt": 1700000000,
-                    "state": 0,
-                },
-            }
-        ]
-        self.api_client.get(self._url(), {"ip_address": "2001:db8::1"})
-        call_args = mock_client.command.call_args
-        service = call_args.kwargs.get("service") or (call_args.args[1] if len(call_args.args) > 1 else None)
-        self.assertEqual(service, ["dhcp6"])
+    def test_uses_dhcp6_service(self):
+        """The v6 endpoint issues lease6-get to service=['dhcp6']."""
+        with stub_kea({"lease6-get": _LEASE6_RESPONSE}) as kea:
+            self.api_client.get(self._url(), {"ip_address": "2001:db8::1"})
+        self.assertEqual(kea.bodies("lease6-get")[0]["service"], ["dhcp6"])
 
-    @patch.object(Server, "get_client")
-    def test_get_client_called_with_version_6(self, mock_get_client):
-        """The view calls server.get_client(version=6) to select the DHCPv6 endpoint."""
-        mock_client = MagicMock(spec=KeaClient)
-        mock_get_client.return_value = mock_client
-        mock_client.command.return_value = [
-            {
-                "result": 0,
-                "arguments": {
-                    "ip-address": "2001:db8::1",
-                    "duid": "00:01:02:03",
-                    "iaid": 12345,
-                    "valid-lft": 3600,
-                    "cltt": 1700000000,
-                    "state": 0,
-                },
-            }
-        ]
-        self.api_client.get(self._url(), {"ip_address": "2001:db8::1"})
-        mock_get_client.assert_called_once_with(version=6)
+    def test_uses_version_6_command(self):
+        """The v6 endpoint selects the DHCPv6 client → issues the lease6-* command variant."""
+        with stub_kea({"lease6-get": _LEASE6_RESPONSE}) as kea:
+            self.api_client.get(self._url(), {"ip_address": "2001:db8::1"})
+        self.assertIn("lease6-get", kea.commands())
+        self.assertNotIn("lease4-get", kea.commands())
