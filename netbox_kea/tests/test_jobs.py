@@ -28,7 +28,7 @@ from ipam.models import IPAddress as NbIP
 from ipam.models import IPRange, Prefix
 
 from netbox_kea.jobs import KeaIpamSyncJob
-from netbox_kea.kea import KeaClient, KeaException
+from netbox_kea.kea import KeaClient
 from netbox_kea.models import Server, SyncConfig
 
 from .kea_stub import _res_page, stub_kea
@@ -92,46 +92,57 @@ def _make_server(name: str = "kea1", dhcp4: bool = True, dhcp6: bool = False, pk
     return server
 
 
+def _lease_page(leases: list[dict] | None) -> dict:
+    """A ``lease{v}-get-page`` payload holding *leases* as a single page.
+
+    ``count == len(leases) < per_page`` (250) so the real ``lease_get_all``
+    pagination loop stops after this one page. An empty list is reported with
+    Kea's "no leases" result code 3, exactly as a live daemon answers.
+    """
+    leases = list(leases or [])
+    if not leases:
+        return {"result": 3, "text": "0 lease(s) found"}
+    return {"result": 0, "arguments": {"leases": leases, "count": len(leases)}}
+
+
+def _empty_config(body: dict) -> dict:
+    """A ``config-get`` payload with no subnets, keyed by the requested service."""
+    svc = (body.get("service") or ["dhcp4"])[0]
+    root, subnets = ("Dhcp6", "subnet6") if svc == "dhcp6" else ("Dhcp4", "subnet4")
+    return {"result": 0, "arguments": {root: {subnets: [], "shared-networks": []}}}
+
+
 @contextmanager
 def _patch_kea(
     *,
     leases4: list[dict] | None = None,
     leases6: list[dict] | None = None,
     reservations: list[dict] | None = None,
-    truncated: bool = False,
+    responses: dict | None = None,
 ):
-    """Patch only the Kea HTTP layer; all real ORM and sync code runs normally.
+    """Stub only the Kea HTTP boundary; the real ``KeaClient`` and all ORM/sync run.
 
-    Replaces three ``KeaClient`` instance methods with deterministic fakes:
+    Registers the commands ``KeaIpamSyncJob`` issues — ``config-get``,
+    ``lease{4,6}-get-page`` and ``reservation-get-page`` — so the real
+    ``lease_get_all`` / ``reservation_get_page`` pagination and ``command()``
+    response parsing actually execute. A broken parser can no longer stay green
+    behind a method-level ``MagicMock``, and truncation is driven by the real
+    ``max_leases`` cap rather than a faked flag.
 
-    * ``command``              — returns an empty-subnet ``config-get`` response.
-    * ``lease_get_all``        — returns *leases4* / *leases6* with *truncated* flag.
-    * ``reservation_get_page`` — returns *reservations* in a single page (no pagination).
-
-    Because the patches target the *class*, every ``KeaClient`` instance created
-    inside ``server.get_client()`` during the test uses the same fakes.
+    Pass *responses* to override or add a command for one test — e.g. a
+    ``config-get`` carrying a subnet, a ``reservation-get-page`` returning a Kea
+    error code, or an exception instance raised at the HTTP boundary.
     """
-
-    def _fake_command(self, cmd, service=None, arguments=None, check=None):
-        svc = (service or ["dhcp4"])[0]
-        if svc == "dhcp6":
-            return [{"result": 0, "arguments": {"Dhcp6": {"subnet6": [], "shared-networks": []}}}]
-        return [{"result": 0, "arguments": {"Dhcp4": {"subnet4": [], "shared-networks": []}}}]
-
-    def _fake_lease_get_all(self, version=4, *, per_page=250, max_leases=None):
-        if version == 6:
-            return (list(leases6 or []), truncated)
-        return (list(leases4 or []), truncated)
-
-    def _fake_reservation_get_page(self, service, source_index=0, from_index=0, limit=100):
-        return (list(reservations or []), 0, 0)
-
-    with (
-        patch.object(KeaClient, "command", _fake_command),
-        patch.object(KeaClient, "lease_get_all", _fake_lease_get_all),
-        patch.object(KeaClient, "reservation_get_page", _fake_reservation_get_page),
-    ):
-        yield
+    registry: dict = {
+        "config-get": _empty_config,
+        "lease4-get-page": _lease_page(leases4),
+        "lease6-get-page": _lease_page(leases6),
+        "reservation-get-page": _res_page(list(reservations or [])),
+    }
+    if responses:
+        registry.update(responses)
+    with stub_kea(registry) as stub:
+        yield stub
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
@@ -357,9 +368,16 @@ class TestKeaIpamSyncJobRun(TestCase):
 
     # ── truncation ─────────────────────────────────────────────────────────
 
-    @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG_CLEANUP)
+    @override_settings(
+        PLUGINS_CONFIG={"netbox_kea": {**_PLUGINS_CONFIG_CLEANUP["netbox_kea"], "sync_max_leases_per_server": 1}}
+    )
     def test_truncation_warning_skips_cleanup(self):
-        """Truncated lease fetch → warning logged and stale IP not removed."""
+        """Truncated lease fetch → warning logged and stale IP not removed.
+
+        Two leases with ``max_leases=1`` genuinely exceed the cap, so the real
+        ``lease_get_all`` drops the overflow lease and returns ``truncated=True``
+        — the real truncation path, not a faked flag or a complete-dataset edge case.
+        """
         from ipam.models import IPAddress
 
         self._make_db_server()
@@ -369,26 +387,31 @@ class TestKeaIpamSyncJobRun(TestCase):
             dns_name="host1",
             description="Synced from Kea DHCP (dhcp)",
         )
-        with _patch_kea(leases4=[_LEASE4], truncated=True):
+        overflow = {**_LEASE4, "ip-address": "10.0.0.2", "hostname": "host2"}
+        with _patch_kea(leases4=[_LEASE4, overflow]):
             with self.assertLogs("netbox_kea.jobs", level="WARNING") as cm:
                 self._run()
         self.assertTrue(any("truncated" in msg for msg in cm.output))
+        # The overflow lease past the cap was genuinely dropped, not synced.
+        self.assertFalse(IPAddress.objects.filter(address__startswith="10.0.0.2/").exists())
         # Cleanup must be skipped when fetch was truncated.
         self.assertTrue(IPAddress.objects.filter(pk=stale.pk).exists())
 
     # ── host_cmds hook absent ─────────────────────────────────────────────
 
     def test_host_cmds_absent_warning_logged(self):
-        """KeaException(result=2) from reservation_get_page → WARNING about host_cmds."""
+        """result=2 (unknown command) from reservation-get-page → WARNING about host_cmds.
+
+        The real ``command()`` turns the result-2 code into a ``KeaException``,
+        which the job reads as "host_cmds hook not loaded".
+        """
         self._make_db_server()
-
-        def _absent(self, service, source_index=0, from_index=0, limit=100):
-            raise KeaException({"result": 2, "text": "unknown command"})
-
-        with _patch_kea(leases4=[_LEASE4]):
-            with patch.object(KeaClient, "reservation_get_page", _absent):
-                with self.assertLogs("netbox_kea.jobs", level="WARNING") as cm:
-                    self._run()
+        with _patch_kea(
+            leases4=[_LEASE4],
+            responses={"reservation-get-page": {"result": 2, "text": "unknown command"}},
+        ):
+            with self.assertLogs("netbox_kea.jobs", level="WARNING") as cm:
+                self._run()
         self.assertTrue(any("host_cmds" in msg for msg in cm.output))
 
     @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG_CLEANUP)
@@ -404,13 +427,12 @@ class TestKeaIpamSyncJobRun(TestCase):
             description="Synced from Kea DHCP (dhcp)",
         )
 
-        def _absent(self, service, source_index=0, from_index=0, limit=100):
-            raise KeaException({"result": 2, "text": "unknown command"})
-
-        with _patch_kea(leases4=[_LEASE4]):
-            with patch.object(KeaClient, "reservation_get_page", _absent):
-                with self.assertLogs("netbox_kea.jobs", level="WARNING"):
-                    self._run()
+        with _patch_kea(
+            leases4=[_LEASE4],
+            responses={"reservation-get-page": {"result": 2, "text": "unknown command"}},
+        ):
+            with self.assertLogs("netbox_kea.jobs", level="WARNING"):
+                self._run()
         self.assertTrue(IPAddress.objects.filter(pk=stale.pk).exists())
 
     # ── stale-IP cleanup ──────────────────────────────────────────────────
@@ -469,19 +491,16 @@ class TestKeaIpamSyncJobRun(TestCase):
         resv1 = {**_RESV4, "ip-address": "10.0.0.100"}
         resv2 = {**_RESV4, "ip-address": "10.0.0.101", "hw-address": "22:33:44:55:66:77"}
 
-        call_count = {"n": 0}
+        def _paged(body):
+            # Drive the real (from, source-index) cursor loop: page 1 hands out a
+            # non-zero cursor, page 2 exhausts the source. Stateless on ``from`` so
+            # it answers both the pre-fetch and main-sync passes identically.
+            if body["arguments"]["from"] == 0:
+                return _res_page([resv1], next_from=1)
+            return _res_page([resv2])
 
-        def _paged(self, service, source_index=0, from_index=0, limit=100):
-            call_count["n"] += 1
-            # First two calls are pre-fetch (page 1 then page 2).
-            # Next two calls are main sync (same pages again).
-            if call_count["n"] in (1, 3):
-                return ([resv1], 1, 0)  # non-zero next_from → continue
-            return ([resv2], 0, 0)  # done
-
-        with _patch_kea(leases4=[]):
-            with patch.object(KeaClient, "reservation_get_page", _paged):
-                self._run()
+        with _patch_kea(leases4=[], responses={"reservation-get-page": _paged}):
+            self._run()
 
         self.assertTrue(IPAddress.objects.filter(address__startswith="10.0.0.100/").exists())
         self.assertTrue(IPAddress.objects.filter(address__startswith="10.0.0.101/").exists())
@@ -525,16 +544,14 @@ class TestKeaIpamSyncJobRun(TestCase):
     # ── reservation KeaException (non-result-2) ───────────────────────────
 
     def test_reservation_kea_error_increments_errors_and_raises_job_failed(self):
-        """KeaException(result=1) from reservation_get_page → errors++ → JobFailed."""
+        """result=1 from reservation-get-page → KeaException → errors++ → JobFailed."""
         self._make_db_server()
-
-        def _err(self, service, source_index=0, from_index=0, limit=100):
-            raise KeaException({"result": 1, "text": "internal error"})
-
-        with _patch_kea(leases4=[_LEASE4]):
-            with patch.object(KeaClient, "reservation_get_page", _err):
-                with self.assertLogs("netbox_kea.jobs", level="WARNING") as cm:
-                    self._run_raises()
+        with _patch_kea(
+            leases4=[_LEASE4],
+            responses={"reservation-get-page": {"result": 1, "text": "internal error"}},
+        ):
+            with self.assertLogs("netbox_kea.jobs", level="WARNING") as cm:
+                self._run_raises()
         self.assertTrue(any("Failed to fetch reservations" in msg for msg in cm.output))
 
     # ── per-reservation sync exception ───────────────────────────────────
@@ -604,15 +621,12 @@ class TestKeaIpamSyncJobRun(TestCase):
 
         self._make_db_server(name="kea-noconfig", dhcp6=False)
 
-        def _failing_config_get(self, cmd, service=None, arguments=None, check=None):
-            if cmd == "config-get":
-                raise RuntimeError("config-get boom")
-            return [{"result": 0, "arguments": {}}]
-
-        with _patch_kea(leases4=[_LEASE4]):
-            with patch.object(KeaClient, "command", _failing_config_get):
-                with self.assertLogs("netbox_kea.jobs", level="INFO") as cm:
-                    self._run()
+        with _patch_kea(
+            leases4=[_LEASE4],
+            responses={"config-get": RuntimeError("config-get boom")},
+        ):
+            with self.assertLogs("netbox_kea.jobs", level="INFO") as cm:
+                self._run()
 
         # Lease IP still created despite the missing Kea subnet config.
         self.assertTrue(IPAddress.objects.filter(address__startswith="10.0.0.1/").exists())
@@ -637,20 +651,15 @@ class TestKeaIpamSyncJobRun(TestCase):
             sync_ip_ranges_enabled=False,
         )
         lease = {"ip-address": "10.0.0.50", "hostname": "masked-host", "subnet-id": 1}
+        config_with_subnet = {
+            "result": 0,
+            "arguments": {
+                "Dhcp4": {"subnet4": [{"id": 1, "subnet": "10.0.0.0/24", "pools": []}], "shared-networks": []}
+            },
+        }
 
-        def _config_with_subnet(self, cmd, service=None, arguments=None, check=None):
-            return [
-                {
-                    "result": 0,
-                    "arguments": {
-                        "Dhcp4": {"subnet4": [{"id": 1, "subnet": "10.0.0.0/24", "pools": []}], "shared-networks": []}
-                    },
-                }
-            ]
-
-        with _patch_kea(leases4=[lease]):
-            with patch.object(KeaClient, "command", _config_with_subnet):
-                self._run()
+        with _patch_kea(leases4=[lease], responses={"config-get": config_with_subnet}):
+            self._run()
 
         ip = IPAddress.objects.get(address__startswith="10.0.0.50/")
         self.assertEqual(str(ip.address), "10.0.0.50/24")
@@ -660,16 +669,14 @@ class TestKeaIpamSyncJobRun(TestCase):
     # ── reservation generic exception ─────────────────────────────────────
 
     def test_reservation_generic_exception_increments_errors(self):
-        """RuntimeError from reservation_get_page → warning logged → JobFailed."""
+        """A transport error on reservation-get-page → warning logged → JobFailed."""
         self._make_db_server()
-
-        def _runtime_err(self, service, source_index=0, from_index=0, limit=100):
-            raise RuntimeError("unexpected")
-
-        with _patch_kea(leases4=[_LEASE4]):
-            with patch.object(KeaClient, "reservation_get_page", _runtime_err):
-                with self.assertLogs("netbox_kea.jobs", level="WARNING") as cm:
-                    self._run_raises()
+        with _patch_kea(
+            leases4=[_LEASE4],
+            responses={"reservation-get-page": RuntimeError("unexpected")},
+        ):
+            with self.assertLogs("netbox_kea.jobs", level="WARNING") as cm:
+                self._run_raises()
         self.assertTrue(any("Unexpected error fetching reservations" in msg for msg in cm.output))
 
     # ── unhandled exception in _sync_one_server ────────────────────────
