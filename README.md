@@ -91,7 +91,7 @@ The plugin degrades gracefully when optional hooks are absent — tabs for unava
 |---|---|---|
 | 1.x | 4.3 – 4.6 | 3.0+ recommended (2.4+ via Control Agent) |
 
-On Kea 3.0+ the plugin talks directly to each DHCP daemon's HTTP control socket; on Kea < 3.0 it connects through the (now-deprecated) Control Agent. CI tests against **Kea 3.0.3** using the `memfile` lease database.
+On Kea 3.0+ the plugin talks directly to each DHCP daemon's HTTP control socket; on Kea < 3.0 it connects through the (now-deprecated) Control Agent. CI tests against **Kea 3.2.0** using the `memfile` lease database.
 
 ---
 
