@@ -323,9 +323,13 @@ class TestReservation6SyncViewFetchLiveData(_ViewTestBase):
 
     def test_request_exception_returns_400_without_sync(self):
         """When the subnet-list call raises a transport error, response is 400 (no sync)."""
-        with stub_kea({"subnet6-list": requests.RequestException("timeout")}):
+        with (
+            stub_kea({"subnet6-list": requests.RequestException("timeout")}),
+            patch("netbox_kea.views.ServerReservation6SyncView._sync") as mock_sync,
+        ):
             response = self.client.post(self._url(), {"ip_address": "2001:db8::1", "hostname": "fallback6"})
         self.assertEqual(response.status_code, 400)
+        mock_sync.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
