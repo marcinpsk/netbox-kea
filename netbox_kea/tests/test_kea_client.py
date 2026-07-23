@@ -114,6 +114,11 @@ class TestKeaClientInit(TestCase):
         cloned = client.clone()
         self.assertEqual(cloned._session.cert, client._session.cert)
 
+    def test_clone_preserves_send_service(self):
+        """clone() carries send_service so a cloned worker-thread client stays direct."""
+        self.assertFalse(KeaClient(url="http://kea:8000", send_service=False).clone().send_service)
+        self.assertTrue(KeaClient(url="http://kea:8000").clone().send_service)
+
     """Tests for KeaClient.command()."""
 
     def setUp(self):
@@ -144,6 +149,15 @@ class TestKeaClientInit(TestCase):
         resp = [{"result": 0, "text": "ok"}]
         with patch.object(self.client._session, "post", return_value=_mock_http_response(resp)) as mock_post:
             self.client.command("list-commands")
+        sent_json = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get("json")
+        self.assertNotIn("service", sent_json)
+
+    def test_command_omits_service_when_send_service_false(self):
+        """A direct-daemon client (send_service=False) drops a supplied service from the body."""
+        client = KeaClient(url="http://kea-daemon:8000", send_service=False)
+        resp = [{"result": 0, "text": "ok"}]
+        with patch.object(client._session, "post", return_value=_mock_http_response(resp)) as mock_post:
+            client.command("lease4-get", service=["dhcp4"])
         sent_json = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get("json")
         self.assertNotIn("service", sent_json)
 
