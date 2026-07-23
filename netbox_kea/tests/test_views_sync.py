@@ -37,7 +37,7 @@ from django.test import override_settings
 from django.urls import reverse
 from ipam.models import IPAddress as NbIP
 
-from .kea_stub import queued, stub_kea
+from .kea_stub import _res_get, _res_page, queued, stub_kea
 from .utils import _PLUGINS_CONFIG, User, _ViewTestBase
 
 # ---------------------------------------------------------------------------
@@ -63,20 +63,6 @@ def _lease4(ip="10.0.0.1"):
 def _subnet_list(version, subnets):
     """A ``subnet{v}-list`` payload (used by ``reservation_get_by_ip`` to find candidate subnets)."""
     return {"result": 0, "arguments": {"subnets": list(subnets)}}
-
-
-def _res_get(reservation):
-    """A ``reservation-get`` payload: the host fields Kea returns directly inside ``arguments``."""
-    return {"result": 0, "arguments": dict(reservation)}
-
-
-def _res_page(hosts, *, next_from=0, next_source=0):
-    """A ``reservation-get-page`` payload: *hosts* plus Kea's pagination cursor.
-
-    ``next_from``/``next_source`` both 0 marks the source exhausted, so
-    ``iter_reservations`` stops after this page.
-    """
-    return {"result": 0, "arguments": {"hosts": hosts, "next": {"from": next_from, "source-index": next_source}}}
 
 
 def _messages(response):
@@ -304,7 +290,7 @@ class TestReservation4SyncViewFetchLiveData(_ViewTestBase):
         # reservation_get_by_ip(4, "10.0.0.5") → reservation-get scoped to the matching subnet + IP.
         self.assertEqual(kea.bodies("reservation-get")[0]["arguments"], {"subnet-id": 1, "ip-address": "10.0.0.5"})
 
-    def test_falls_back_to_synthetic_when_reservation_not_found(self):
+    def test_reservation_not_found_returns_400_without_sync(self):
         """When reservation_get_by_ip returns None (reservation-get result 3), response is 400 (no sync)."""
         stub = {
             "subnet4-list": _subnet_list(4, [{"id": 1, "subnet": "10.0.0.0/24"}]),

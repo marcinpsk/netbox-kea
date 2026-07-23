@@ -72,6 +72,27 @@ def test_urls_records_endpoints_in_order():
     assert stub.urls() == ["http://v4:1", "http://v6:2"]
 
 
+def test_shared_response_builders_shape():
+    """Lock the shape of the shared reservation builders so callers can't drift."""
+    from netbox_kea.tests.kea_stub import _res_get, _res_page, _subnet_get
+
+    host = {"ip-address": "10.0.0.1", "subnet-id": 1}
+    # _res_page: hosts snapshot + pagination cursor (both 0 == source exhausted).
+    assert _res_page([host]) == {
+        "result": 0,
+        "arguments": {"hosts": [host], "next": {"from": 0, "source-index": 0}},
+    }
+    assert _res_page([], next_from=2, next_source=1)["arguments"]["next"] == {"from": 2, "source-index": 1}
+    # _res_get: host fields returned directly under arguments.
+    assert _res_get(host) == {"result": 0, "arguments": host}
+    # _subnet_get: subnet{v} list carrying id + pools for the pool-overlap probe.
+    assert _subnet_get(4, pools=["10.0.0.10-10.0.0.20"], subnet_id=7) == {
+        "result": 0,
+        "arguments": {"subnet4": [{"id": 7, "pools": [{"pool": "10.0.0.10-10.0.0.20"}]}]},
+    }
+    assert _subnet_get(6)["arguments"]["subnet6"][0]["pools"] == []
+
+
 def test_exception_value_is_raised():
     stub = KeaHttpStub({"x": requests.ConnectionError("down")})
     with pytest.raises(requests.ConnectionError):

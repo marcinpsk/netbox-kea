@@ -1860,8 +1860,10 @@ class TestHTMXExceptionHandler(_ViewTestBase):
                 self._url() + "?q=10.0.0.1&by=ip",
                 HTTP_HX_REQUEST="true",
             )
-        # Must not crash — returns HTMX error partial
-        self.assertIn(response.status_code, (200, 500))
+        # Must not crash — the outer handler catches the RuntimeError and renders
+        # the HTMX error partial (never a 500; accepting 500 would let a regression
+        # where the handler stops catching the error pass unnoticed).
+        self.assertEqual(response.status_code, 200)
 
 
 # ---------------------------------------------------------------------------

@@ -47,7 +47,7 @@ from ipam.models import IPAddress as NbIP
 from netbox_kea.kea import KeaClient
 from netbox_kea.views import _get_reservation_identifier as _extract_identifier
 
-from .kea_stub import stub_kea
+from .kea_stub import _res_get, _res_page, _subnet_get, stub_kea
 from .utils import _PLUGINS_CONFIG, _make_db_server, _ViewTestBase
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -65,32 +65,6 @@ from .utils import _PLUGINS_CONFIG, _make_db_server, _ViewTestBase
 #
 # A POST followed with ``follow=True`` lands on the reservations list, which then
 # issues ``reservation-get-page`` again — so those stubs also register it.
-
-
-def _res_page(hosts, *, next_from=0, next_source=0):
-    """A ``reservation-get-page`` result: *hosts* plus Kea's pagination cursor.
-
-    ``next_from``/``next_source`` both 0 marks the source exhausted, so
-    ``iter_reservations`` stops after this page.
-    """
-    return {"result": 0, "arguments": {"hosts": hosts, "next": {"from": next_from, "source-index": next_source}}}
-
-
-def _res_get(reservation):
-    """A ``reservation-get`` result: the host fields Kea returns directly inside ``arguments``."""
-    return {"result": 0, "arguments": dict(reservation)}
-
-
-def _subnet_get(version, pools=None, subnet_id=1):
-    """A ``subnet{v}-get`` result for the reservation-add pool-overlap probe.
-
-    *pools* is a list of pool range strings; the probe warns only when the
-    reservation IP falls inside one of them.
-    """
-    return {
-        "result": 0,
-        "arguments": {f"subnet{version}": [{"id": subnet_id, "pools": [{"pool": p} for p in (pools or [])]}]},
-    }
 
 
 #: ``reservation-get-page`` with no hosts (source exhausted → empty reservation list).

@@ -35,7 +35,7 @@ from ipam.models import IPAddress as NbIP
 
 from netbox_kea.models import Server
 
-from .kea_stub import stub_kea
+from .kea_stub import _res_page, stub_kea
 
 User = get_user_model()
 
@@ -70,11 +70,6 @@ def _reservation_get(hostname, **extra):
 def _subnet_list(version, cidr):
     """A ``subnet{v}-list`` payload with one subnet (so reservation_get_by_ip finds it)."""
     return {"result": 0, "arguments": {"subnets": [{"id": 1, "subnet": cidr}]}}
-
-
-def _res_page(hosts):
-    """A single exhausted ``reservation-get-page`` payload."""
-    return {"result": 0, "arguments": {"hosts": hosts, "next": {"from": 0, "source-index": 0}}}
 
 
 def _make_server(**kwargs) -> Server:
@@ -424,7 +419,7 @@ class TestReservation6BulkSyncView(_SyncViewBase):
         hosts = [{"subnet-id": 1, "duid": "00:01:aa:bb", "ip-addresses": ["2001:db8::1"], "hostname": "host-v6"}]
         with stub_kea({"reservation-get-page": _res_page(hosts)}):
             self.client.post(self._url())
-        ip = NbIP.objects.filter(address__startswith="2001:db8::1").first()
+        ip = NbIP.objects.filter(address__startswith="2001:db8::1/").first()
         self.assertIsNotNone(ip)
         self.assertEqual(ip.status, "reserved")
         self.assertIn("/128", str(ip.address))

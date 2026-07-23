@@ -144,6 +144,36 @@ class KeaHttpStub:
             return list(self._urls)
 
 
+# --- shared Kea response builders (kept next to stub_kea so their shape can't
+#     drift across the test modules that register them) ---
+
+
+def _res_page(hosts: Any, *, next_from: int = 0, next_source: int = 0) -> dict[str, Any]:
+    """A ``reservation-get-page`` payload: *hosts* plus Kea's pagination cursor.
+
+    ``next_from``/``next_source`` both 0 marks the source exhausted, so
+    ``iter_reservations`` stops after this page.
+    """
+    return {"result": 0, "arguments": {"hosts": list(hosts), "next": {"from": next_from, "source-index": next_source}}}
+
+
+def _res_get(reservation: dict[str, Any]) -> dict[str, Any]:
+    """A ``reservation-get`` payload: the host fields Kea returns directly inside ``arguments``."""
+    return {"result": 0, "arguments": dict(reservation)}
+
+
+def _subnet_get(version: int, pools: list[str] | None = None, subnet_id: int = 1) -> dict[str, Any]:
+    """A ``subnet{v}-get`` payload for the reservation-add pool-overlap probe.
+
+    *pools* is a list of pool range strings; the probe warns only when the
+    reservation IP falls inside one of them.
+    """
+    return {
+        "result": 0,
+        "arguments": {f"subnet{version}": [{"id": subnet_id, "pools": [{"pool": p} for p in (pools or [])]}]},
+    }
+
+
 @contextmanager
 def stub_kea(responses: dict[str, Any]):
     """Exercise a view against a real ``KeaClient`` with the HTTP boundary stubbed.

@@ -52,7 +52,7 @@ from ipam.models import IPAddress
 from netbox_kea import constants
 from netbox_kea.models import Server
 
-from .kea_stub import stub_kea
+from .kea_stub import _res_get, _res_page, stub_kea
 from .utils import _PLUGINS_CONFIG, User, _make_db_server
 
 # ---------------------------------------------------------------------------
@@ -120,20 +120,6 @@ _MOCK_CONFIG_V6 = [
 # ---------------------------------------------------------------------------
 # Stub response builders (real KeaClient + HTTP-boundary stub)
 # ---------------------------------------------------------------------------
-
-
-def _res_page(hosts):
-    """A ``reservation-get-page`` result: *hosts* then an exhausted cursor.
-
-    ``next.from``/``next.source-index`` both 0 mark the source exhausted, so
-    ``iter_reservations`` stops after this single page.
-    """
-    return {"result": 0, "arguments": {"hosts": list(hosts), "next": {"from": 0, "source-index": 0}}}
-
-
-def _res_get(reservation):
-    """A ``reservation-get`` result (host fields returned directly in ``arguments``)."""
-    return {"result": 0, "arguments": dict(reservation)}
 
 
 def _leases(entries):

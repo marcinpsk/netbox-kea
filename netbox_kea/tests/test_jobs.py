@@ -31,13 +31,7 @@ from netbox_kea.jobs import KeaIpamSyncJob
 from netbox_kea.kea import KeaClient, KeaException
 from netbox_kea.models import Server, SyncConfig
 
-from .kea_stub import stub_kea
-
-
-def _res_page(hosts):
-    """A single exhausted ``reservation-get-page`` payload carrying *hosts*."""
-    return {"result": 0, "arguments": {"hosts": list(hosts), "next": {"from": 0, "source-index": 0}}}
-
+from .kea_stub import _res_page, stub_kea
 
 _PLUGINS_CONFIG = {
     "netbox_kea": {
