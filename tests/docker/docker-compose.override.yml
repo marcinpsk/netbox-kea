@@ -2,10 +2,13 @@
 # Kea 3.0 removed the Control Agent: each DHCP daemon exposes its own HTTP control
 # socket, so the plugin connects to kea-dhcp4 and kea-dhcp6 directly (dual-URL).
 # Images are ISC's official open-source builds (docker.cloudsmith.io/isc/docker).
+# -X: Kea 3.2.0 refuses to start with an unsecured HTTP control socket; -X downgrades
+# that policy check to a warning. The sockets are loopback-bound and nginx terminates
+# TLS/basic-auth in front, so an unauthenticated daemon socket is acceptable here.
 services:
   kea-dhcp4: &kea
-    image: docker.cloudsmith.io/isc/docker/kea-dhcp4:3.0.3
-    command: kea-dhcp4 -c /etc/kea/kea-dhcp4.conf
+    image: docker.cloudsmith.io/isc/docker/kea-dhcp4:3.2.0
+    command: kea-dhcp4 -X -c /etc/kea/kea-dhcp4.conf
     volumes:
       - ./kea_configs/:/etc/kea/:ro
     # Host-exposed for the test-side KeaClient (netbox->kea uses the service name).
@@ -14,8 +17,8 @@ services:
       - 127.0.0.1:8001:8000
   kea-dhcp6:
     <<: *kea
-    image: docker.cloudsmith.io/isc/docker/kea-dhcp6:3.0.3
-    command: kea-dhcp6 -c /etc/kea/kea-dhcp6.conf
+    image: docker.cloudsmith.io/isc/docker/kea-dhcp6:3.2.0
+    command: kea-dhcp6 -X -c /etc/kea/kea-dhcp6.conf
     ports:
       - 127.0.0.1:8003:8000
   nginx:

@@ -45,7 +45,7 @@ from .utils import _PLUGINS_CONFIG, User, _make_db_server, _ViewTestBase
 # test needs CA-vs-service-specific responses it registers a callable
 # ``(body) -> payload`` that branches on ``body.get("service")``.
 
-_VERSION_OK = {"result": 0, "arguments": {"extended": "3.0.3"}}
+_VERSION_OK = {"result": 0, "arguments": {"extended": "3.2.0"}}
 
 
 def _ok_status(**args):
