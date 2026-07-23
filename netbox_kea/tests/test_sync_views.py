@@ -15,19 +15,27 @@ Each endpoint accepts POST with:
 
 Returns an HTMX HTML fragment (<td> content) with a link to the new/updated
 NetBox IPAddress, or an error message if something went wrong.
+
+These tests drive the **real** ``KeaClient`` and the **real** sync functions
+(``sync_lease_to_netbox`` / ``sync_reservation_to_netbox``) — they assert the
+NetBox ``IPAddress`` rows those create. Only the HTTP boundary to Kea is stubbed
+via ``kea_stub.stub_kea``:
+
+* single lease sync       → ``lease{v}-get`` (echoes the posted IP back)
+* single reservation sync → ``subnet{v}-list`` + ``reservation-get``
+* bulk reservation sync   → ``reservation-get-page``
 """
 
 from __future__ import annotations
-
-from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
 from django.urls import reverse
 from ipam.models import IPAddress as NbIP
 
-from netbox_kea.kea import KeaClient
 from netbox_kea.models import Server
+
+from .kea_stub import stub_kea
 
 User = get_user_model()
 
@@ -35,8 +43,38 @@ _PLUGINS_CONFIG = {"netbox_kea": {"kea_timeout": 30}}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Helpers
+# Helpers — echo the queried IP back so the real sync creates the matching NbIP
 # ─────────────────────────────────────────────────────────────────────────────
+
+
+def _lease_get(hostname, **extra):
+    """Build a ``lease{v}-get`` callable that echoes the queried ip-address."""
+
+    def _resp(body):
+        ip = body["arguments"]["ip-address"]
+        return {"result": 0, "arguments": {"ip-address": ip, "hostname": hostname, "subnet-id": 1, **extra}}
+
+    return _resp
+
+
+def _reservation_get(hostname, **extra):
+    """Build a ``reservation-get`` callable that echoes the queried ip-address."""
+
+    def _resp(body):
+        ip = body["arguments"]["ip-address"]
+        return {"result": 0, "arguments": {"ip-address": ip, "hostname": hostname, "subnet-id": 1, **extra}}
+
+    return _resp
+
+
+def _subnet_list(version, cidr):
+    """A ``subnet{v}-list`` payload with one subnet (so reservation_get_by_ip finds it)."""
+    return {"result": 0, "arguments": {"subnets": [{"id": 1, "subnet": cidr}]}}
+
+
+def _res_page(hosts):
+    """A single exhausted ``reservation-get-page`` payload."""
+    return {"result": 0, "arguments": {"hosts": hosts, "next": {"from": 0, "source-index": 0}}}
 
 
 def _make_server(**kwargs) -> Server:
@@ -62,6 +100,13 @@ class _SyncViewBase(TestCase):
         self.client.force_login(self.user)
         self.server = _make_server()
 
+    def _start_stub(self, responses):
+        """Enter a ``stub_kea`` context for the whole test and return the stub."""
+        cm = stub_kea(responses)
+        stub = cm.__enter__()
+        self.addCleanup(cm.__exit__, None, None, None)
+        return stub
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TestLease4SyncView
@@ -74,20 +119,13 @@ class TestLease4SyncView(_SyncViewBase):
 
     def setUp(self):
         super().setUp()
-        self._kea_patcher = patch("netbox_kea.models.KeaClient")
-        self._mock_kea = self._kea_patcher.start()
-        self._mock_kea.return_value.lease_get_by_ip.side_effect = lambda ver, ip: {
-            "ip-address": ip,
-            "hostname": "mock-host.local",
-            "hw-address": "aa:bb:cc:00:00:01",
-            "valid-lft": 86400,
-            "cltt": 1700000000,
-            "subnet-id": 1,
-        }
-
-    def tearDown(self):
-        self._kea_patcher.stop()
-        super().tearDown()
+        self._start_stub(
+            {
+                "lease4-get": _lease_get(
+                    "mock-host.local", **{"hw-address": "aa:bb:cc:00:00:01", "valid-lft": 86400, "cltt": 1700000000}
+                )
+            }
+        )
 
     def _url(self):
         return reverse("plugins:netbox_kea:server_lease4_sync", args=[self.server.pk])
@@ -153,20 +191,9 @@ class TestLease6SyncView(_SyncViewBase):
 
     def setUp(self):
         super().setUp()
-        self._kea_patcher = patch("netbox_kea.models.KeaClient")
-        self._mock_kea = self._kea_patcher.start()
-        self._mock_kea.return_value.lease_get_by_ip.side_effect = lambda ver, ip: {
-            "ip-address": ip,
-            "hostname": "mock-v6.local",
-            "duid": "01:02:03:04",
-            "valid-lft": 86400,
-            "cltt": 1700000000,
-            "subnet-id": 1,
-        }
-
-    def tearDown(self):
-        self._kea_patcher.stop()
-        super().tearDown()
+        self._start_stub(
+            {"lease6-get": _lease_get("mock-v6.local", duid="01:02:03:04", **{"valid-lft": 86400, "cltt": 1700000000})}
+        )
 
     def _url(self):
         return reverse("plugins:netbox_kea:server_lease6_sync", args=[self.server.pk])
@@ -209,18 +236,12 @@ class TestReservation4SyncView(_SyncViewBase):
 
     def setUp(self):
         super().setUp()
-        self._kea_patcher = patch("netbox_kea.models.KeaClient")
-        self._mock_kea = self._kea_patcher.start()
-        self._mock_kea.return_value.reservation_get_by_ip.side_effect = lambda ver, ip: {
-            "ip-address": ip,
-            "hostname": "mock-res.local",
-            "hw-address": "aa:bb:cc:00:00:02",
-            "subnet-id": 1,
-        }
-
-    def tearDown(self):
-        self._kea_patcher.stop()
-        super().tearDown()
+        self._start_stub(
+            {
+                "subnet4-list": _subnet_list(4, "10.0.0.0/24"),
+                "reservation-get": _reservation_get("mock-res.local", **{"hw-address": "aa:bb:cc:00:00:02"}),
+            }
+        )
 
     def _url(self):
         return reverse("plugins:netbox_kea:server_reservation4_sync", args=[self.server.pk])
@@ -263,18 +284,12 @@ class TestReservation6SyncView(_SyncViewBase):
 
     def setUp(self):
         super().setUp()
-        self._kea_patcher = patch("netbox_kea.models.KeaClient")
-        self._mock_kea = self._kea_patcher.start()
-        self._mock_kea.return_value.reservation_get_by_ip.side_effect = lambda ver, ip: {
-            "ip-address": ip,
-            "hostname": "mock-v6res.local",
-            "duid": "01:02:03:04",
-            "subnet-id": 1,
-        }
-
-    def tearDown(self):
-        self._kea_patcher.stop()
-        super().tearDown()
+        self._start_stub(
+            {
+                "subnet6-list": _subnet_list(6, "2001:db8:1::/64"),
+                "reservation-get": _reservation_get("mock-v6res.local", duid="01:02:03:04"),
+            }
+        )
 
     def _url(self):
         return reverse("plugins:netbox_kea:server_reservation6_sync", args=[self.server.pk])
@@ -310,42 +325,25 @@ class TestReservation4BulkSyncView(_SyncViewBase):
         return reverse("plugins:netbox_kea:server_reservation4_bulk_sync", args=[self.server.pk])
 
     def test_redirects_after_success(self):
-        mock_client = MagicMock(spec=KeaClient)
-        mock_client.reservation_get_page.return_value = (
-            [{"ip-address": "10.0.10.1", "hostname": "bulk-host", "subnet-id": 1}],
-            0,
-            0,
-        )
-        with patch("netbox_kea.models.KeaClient", return_value=mock_client):
+        hosts = [{"ip-address": "10.0.10.1", "hostname": "bulk-host", "subnet-id": 1}]
+        with stub_kea({"reservation-get-page": _res_page(hosts)}):
             response = self.client.post(self._url(), follow=False)
         # Must redirect back to reservations page
         self.assertIn(response.status_code, [302, 303])
 
     def test_creates_netbox_ips_for_all_reservations(self):
-
-        mock_client = MagicMock(spec=KeaClient)
-        mock_client.reservation_get_page.return_value = (
-            [
-                {"ip-address": "10.0.11.1", "hostname": "bulk-1", "subnet-id": 1},
-                {"ip-address": "10.0.11.2", "hostname": "bulk-2", "subnet-id": 1},
-            ],
-            0,
-            0,
-        )
-        with patch("netbox_kea.models.KeaClient", return_value=mock_client):
+        hosts = [
+            {"ip-address": "10.0.11.1", "hostname": "bulk-1", "subnet-id": 1},
+            {"ip-address": "10.0.11.2", "hostname": "bulk-2", "subnet-id": 1},
+        ]
+        with stub_kea({"reservation-get-page": _res_page(hosts)}):
             self.client.post(self._url())
         self.assertTrue(NbIP.objects.filter(address__startswith="10.0.11.1/").exists())
         self.assertTrue(NbIP.objects.filter(address__startswith="10.0.11.2/").exists())
 
     def test_created_ips_have_reserved_status(self):
-
-        mock_client = MagicMock(spec=KeaClient)
-        mock_client.reservation_get_page.return_value = (
-            [{"ip-address": "10.0.12.1", "hostname": "bulk-rsv", "subnet-id": 1}],
-            0,
-            0,
-        )
-        with patch("netbox_kea.models.KeaClient", return_value=mock_client):
+        hosts = [{"ip-address": "10.0.12.1", "hostname": "bulk-rsv", "subnet-id": 1}]
+        with stub_kea({"reservation-get-page": _res_page(hosts)}):
             self.client.post(self._url())
         ip = NbIP.objects.filter(address__startswith="10.0.12.1/").first()
         self.assertIsNotNone(ip)
@@ -396,19 +394,16 @@ class TestSyncViewPermissionChecks(_SyncViewBase):
         response = self.client.post(url, {"ip_address": "192.168.99.2"})
         self.assertEqual(response.status_code, 403)
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_superuser_can_still_sync(self, MockKeaClient):
+    def test_superuser_can_still_sync(self):
         # self.user is superuser — should succeed as before
-        MockKeaClient.return_value.lease_get_by_ip.side_effect = lambda ver, ip: {
-            "ip-address": ip,
-            "hostname": "mock-host.local",
-            "hw-address": "aa:bb:cc:00:00:01",
-            "valid-lft": 86400,
-            "cltt": 1700000000,
-            "subnet-id": 1,
-        }
         url = reverse("plugins:netbox_kea:server_lease4_sync", args=[self.server.pk])
-        response = self.client.post(url, {"ip_address": "192.168.99.3"})
+        stub = {
+            "lease4-get": _lease_get(
+                "mock-host.local", **{"hw-address": "aa:bb:cc:00:00:01", "valid-lft": 86400, "cltt": 1700000000}
+            )
+        }
+        with stub_kea(stub):
+            response = self.client.post(url, {"ip_address": "192.168.99.3"})
         self.assertEqual(response.status_code, 200)
 
 
@@ -424,23 +419,11 @@ class TestReservation6BulkSyncView(_SyncViewBase):
     def _url(self):
         return reverse("plugins:netbox_kea:server_reservation6_bulk_sync", args=[self.server.pk])
 
-    @patch("netbox_kea.models.KeaClient")
-    def test_post_bulk_syncs_v6_reservations(self, MockKeaClient):
+    def test_post_bulk_syncs_v6_reservations(self):
         """Bulk sync v6 reservation creates an IPAddress with /128 prefix and reserved status."""
-        mock_client = MockKeaClient.return_value
-        mock_client.reservation_get_page.return_value = (
-            [
-                {
-                    "subnet-id": 1,
-                    "duid": "00:01:aa:bb",
-                    "ip-addresses": ["2001:db8::1"],
-                    "hostname": "host-v6",
-                }
-            ],
-            0,
-            0,
-        )
-        self.client.post(self._url())
+        hosts = [{"subnet-id": 1, "duid": "00:01:aa:bb", "ip-addresses": ["2001:db8::1"], "hostname": "host-v6"}]
+        with stub_kea({"reservation-get-page": _res_page(hosts)}):
+            self.client.post(self._url())
         ip = NbIP.objects.filter(address__startswith="2001:db8::1").first()
         self.assertIsNotNone(ip)
         self.assertEqual(ip.status, "reserved")
@@ -473,13 +456,11 @@ class TestReservationBulkSyncConflictProtection(_SyncViewBase):
         from django.contrib import messages as django_messages
 
         NbIP.objects.create(address="10.0.20.5/32", status="active", description="Router loopback")
-        mock_client = MagicMock(spec=KeaClient)
-        mock_client.reservation_get_page.return_value = (
-            [{"ip-address": "10.0.20.5", "hostname": "foreign", "subnet-id": 1}],
-            0,
-            0,
-        )
-        with patch("netbox_kea.models.KeaClient", return_value=mock_client):
+        hosts = [{"ip-address": "10.0.20.5", "hostname": "foreign", "subnet-id": 1}]
+        # follow=True lands on the reservations list, which re-drains reservation-get-page
+        # and enriches with lease4-get-all per subnet.
+        stub = {"reservation-get-page": _res_page(hosts), "lease4-get-all": {"result": 0, "arguments": {"leases": []}}}
+        with stub_kea(stub):
             response = self.client.post(self._url(), follow=True)
 
         # Foreign IP left untouched.
@@ -492,16 +473,12 @@ class TestReservationBulkSyncConflictProtection(_SyncViewBase):
 
     def test_managed_ip_still_synced_alongside_conflict(self):
         NbIP.objects.create(address="10.0.20.6/32", status="active", description="Router loopback")
-        mock_client = MagicMock(spec=KeaClient)
-        mock_client.reservation_get_page.return_value = (
-            [
-                {"ip-address": "10.0.20.6", "hostname": "foreign", "subnet-id": 1},
-                {"ip-address": "10.0.20.7", "hostname": "managed", "subnet-id": 1},
-            ],
-            0,
-            0,
-        )
-        with patch("netbox_kea.models.KeaClient", return_value=mock_client):
+        hosts = [
+            {"ip-address": "10.0.20.6", "hostname": "foreign", "subnet-id": 1},
+            {"ip-address": "10.0.20.7", "hostname": "managed", "subnet-id": 1},
+        ]
+        stub = {"reservation-get-page": _res_page(hosts), "lease4-get-all": {"result": 0, "arguments": {"leases": []}}}
+        with stub_kea(stub):
             self.client.post(self._url(), follow=True)
 
         # Foreign untouched, the other reservation claimed normally.
