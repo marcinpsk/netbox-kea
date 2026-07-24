@@ -550,16 +550,32 @@ def _version_ge_43(page: Page) -> bool:
 def configure_table(page: Page, *selected_coumns: str) -> None:
     page.get_by_role("button", name=re.compile("Configure Table")).click()
 
-    # Clear all selected columns
-    remove_button = page.get_by_text("Remove")
+    # Clear all selected columns, then confirm the list actually emptied before
+    # adding (a raced Remove would otherwise leave a stale column behind).
+    remove_button = page.get_by_text("Remove", exact=True)
     selected_count = page.locator("#id_columns > option").count()
-    for i in range(selected_count):
+    for _ in range(selected_count):
         page.locator("#id_columns > option").first.click()
         remove_button.click()
+    expect(page.locator("#id_columns > option")).to_have_count(0)
 
+    # Add the requested columns. Clicking the <option> and then "Add" can race on a
+    # slow runner — the Add fires before the option selection registers, silently
+    # dropping the column (seen only on the slower v4.3 CI leg, where the header then
+    # read ["Subnet", ""] instead of ["Subnet", "Shared Network", ""]). Retry the
+    # select+Add until the column actually lands in the selected list.
+    add_button = page.get_by_text("Add", exact=True)
     for sc in selected_coumns:
-        page.locator(f'#id_available_columns > option[value="{sc}"]').click()
-        page.get_by_text("Add", exact=True).click()
+        landed = page.locator(f'#id_columns > option[value="{sc}"]')
+        for attempt in range(3):
+            page.locator(f'#id_available_columns > option[value="{sc}"]').click()
+            add_button.click()
+            try:
+                expect(landed).to_have_count(1, timeout=3000)
+                break
+            except AssertionError:
+                if attempt == 2:
+                    raise
 
     # Submit the column selection. NetBox <=4.5 labelled this button "Save"; 4.6 reworked the
     # table-config modal and renamed it "Apply" (id=apply_tableconfig). Both reload to
