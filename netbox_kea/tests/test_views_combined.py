@@ -116,3 +116,36 @@ class TestCombinedReservationsMultiPage(_ViewTestBase):
         self.assertEqual(len(kea.bodies("reservation-get-page")), 2)
         self.assertIn(b"10.0.0.1", response.content)
         self.assertIn(b"10.0.0.2", response.content)
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestCombinedReservationsWithoutAddress(_ViewTestBase):
+    """The global reservations tab hits the same address-less crash as the per-server tab (#110)."""
+
+    def _url(self, version=4):
+        return reverse(f"plugins:netbox_kea:combined_reservations{version}") + f"?server={self.server.pk}"
+
+    def test_v4_identifier_only_reservation_renders(self):
+        page = {
+            "result": 0,
+            "arguments": {
+                "hosts": [{"subnet-id": 3742, "hw-address": "aa:bb:cc:dd:ee:ff", "hostname": "printer-1"}],
+                "next": {"from": 0, "source-index": 0},
+            },
+        }
+        with stub_kea({"reservation-get-page": page, "lease4-get-all": {"result": 0, "arguments": {"leases": []}}}):
+            response = self.client.get(self._url(4))
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"printer-1", response.content)
+
+    def test_v6_prefix_only_reservation_renders(self):
+        page = {
+            "result": 0,
+            "arguments": {
+                "hosts": [{"subnet-id": 12, "duid": "00:01:00:01:12:34", "prefixes": ["2001:db8:1::/64"]}],
+                "next": {"from": 0, "source-index": 0},
+            },
+        }
+        with stub_kea({"reservation-get-page": page, "lease6-get-all": {"result": 0, "arguments": {"leases": []}}}):
+            response = self.client.get(self._url(6))
+        self.assertEqual(response.status_code, 200)

@@ -10,7 +10,7 @@ from django.db.utils import OperationalError, ProgrammingError
 from django.http import Http404, HttpResponse
 from django.http.request import HttpRequest
 from django.shortcuts import redirect, render
-from django.urls import reverse
+from django.urls import NoReverseMatch, reverse
 from netbox.views import generic
 from utilities.views import register_model_view
 
@@ -402,6 +402,7 @@ class ServerReservations4View(generic.ObjectView):
         _enrich_reservations_with_badges(reservations, server, 4, can_change=can_change)
         for r in reservations:
             r["can_change"] = can_change
+        _attach_reservation_action_urls(reservations, server.pk, 4, can_change=can_change)
 
         table = tables.ReservationTable4(reservations, user=request.user)
         table.configure(request)
@@ -477,6 +478,7 @@ class ServerReservations6View(generic.ObjectView):
         _enrich_reservations_with_badges(reservations, server, 6, can_change=can_change)
         for r in reservations:
             r["can_change"] = can_change
+        _attach_reservation_action_urls(reservations, server.pk, 6, can_change=can_change)
 
         table = tables.ReservationTable6(reservations, user=request.user)
         table.configure(request)
@@ -1198,6 +1200,55 @@ def _get_reservation_identifier(
         if reservation.get(itype):
             return itype, reservation[itype]
     return "hw-address", ""
+
+
+def _attach_reservation_action_urls(
+    reservations: list[dict[str, Any]],
+    server_pk: int,
+    version: int,
+    *,
+    can_change: bool,
+) -> None:
+    """In-place: set ``edit_url`` / ``delete_url`` on each reservation row.
+
+    These URLs are built here rather than with ``{% url %}`` in the table's actions
+    column on purpose.  Kea omits ``ip-address`` for a reservation that reserves no
+    address (an identifier-only host, or a DHCPv6 prefix-delegation-only host), which
+    normalises to ``ip_address=""``.  The address-keyed route takes ``<str:ip_address>``
+    (``[^/]+``) and cannot reverse an empty string, so the template tag raised
+    ``NoReverseMatch`` and a single such row 500'd the whole table (issue #110).  In
+    Python the guard is an ordinary conditional and a row that cannot be addressed
+    simply gets no action buttons.
+
+    Both keys are always assigned: these dicts come straight from Kea and are mutated
+    in place, so leaving them unset would let an unrelated value reach the template.
+    *server_pk* is passed by the caller rather than read from the row so the combined
+    (multi-server) view cannot mint a URL pointing at the wrong server.
+
+    The reversal is attempted rather than pre-validated: the route converters
+    (``<int:subnet_id>``, ``<str:ip_address>``) are the authority on what fits, and
+    guessing at them in Python both rejects values they accept (a decimal *string*
+    subnet id reverses fine) and misses ones they reject (a negative subnet id, an
+    address containing ``/``). A row whose values do not fit the route loses its
+    buttons instead of taking the page down with it.
+    """
+    for r in reservations:
+        r["edit_url"] = None
+        r["delete_url"] = None
+        if not can_change:
+            continue
+        ip_address = r.get("ip_address") or ""
+        if not ip_address:
+            continue
+        args = [server_pk, r.get("subnet_id", r.get("subnet-id")), ip_address]
+        try:
+            edit_url = reverse(f"plugins:netbox_kea:server_reservation{version}_edit", args=args)
+            delete_url = reverse(f"plugins:netbox_kea:server_reservation{version}_delete", args=args)
+        except NoReverseMatch:
+            logger.debug("No reservation action URL for subnet-id=%r ip=%r", args[1], ip_address)
+            continue
+        r["edit_url"] = edit_url
+        r["delete_url"] = delete_url
 
 
 def _enrich_reservations_with_badges(

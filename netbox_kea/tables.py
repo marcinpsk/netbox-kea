@@ -515,24 +515,22 @@ class LeaseDeleteTable(GenericTable):
 # Phase 2: Reservation tables
 # ─────────────────────────────────────────────────────────────────────────────
 
-RESERVATION_ACTIONS_V4 = """
-{% if record.can_change %}
+# Reservation edit/delete URLs are precomputed by the view
+# (``views.reservations._attach_reservation_action_urls``) rather than reversed here.
+# A reservation that reserves no address has no address-keyed URL, and ``{% url %}``
+# with an empty ``ip_address`` raised NoReverseMatch, taking the whole table down
+# (issue #110). ``can_change`` is already folded into the precomputed values.
+RESERVATION_ACTIONS = """
+{% if record.edit_url or record.delete_url %}
 <span class="btn-group">
-  <a href="{% url "plugins:netbox_kea:server_reservation4_edit" record.server_pk record.subnet_id record.ip_address %}"
+  {% if record.edit_url %}
+  <a href="{{ record.edit_url }}"
      class="btn btn-sm btn-warning" aria-label="Edit reservation {{ record.ip_address }}"><i class="mdi mdi-pencil" aria-hidden="true"></i></a>
-  <a href="{% url "plugins:netbox_kea:server_reservation4_delete" record.server_pk record.subnet_id record.ip_address %}"
+  {% endif %}
+  {% if record.delete_url %}
+  <a href="{{ record.delete_url }}"
      class="btn btn-sm btn-danger" aria-label="Delete reservation {{ record.ip_address }}"><i class="mdi mdi-trash-can-outline" aria-hidden="true"></i></a>
-</span>
-{% endif %}
-"""
-
-RESERVATION_ACTIONS_V6 = """
-{% if record.can_change %}
-<span class="btn-group">
-  <a href="{% url "plugins:netbox_kea:server_reservation6_edit" record.server_pk record.subnet_id record.ip_address %}"
-     class="btn btn-sm btn-warning" aria-label="Edit reservation {{ record.ip_address }}"><i class="mdi mdi-pencil" aria-hidden="true"></i></a>
-  <a href="{% url "plugins:netbox_kea:server_reservation6_delete" record.server_pk record.subnet_id record.ip_address %}"
-     class="btn btn-sm btn-danger" aria-label="Delete reservation {{ record.ip_address }}"><i class="mdi mdi-trash-can-outline" aria-hidden="true"></i></a>
+  {% endif %}
 </span>
 {% endif %}
 """
@@ -593,7 +591,7 @@ class ReservationTable4(GenericTable):
             "{% endif %}"
         ),
     )
-    actions = ActionsColumn(RESERVATION_ACTIONS_V4)
+    actions = ActionsColumn(RESERVATION_ACTIONS)
 
     class Meta(GenericTable.Meta):
         empty_text = "No reservations found."
@@ -633,7 +631,7 @@ class ReservationTable6(GenericTable):
             "{% endif %}"
         ),
     )
-    actions = ActionsColumn(RESERVATION_ACTIONS_V6)
+    actions = ActionsColumn(RESERVATION_ACTIONS)
 
     class Meta(GenericTable.Meta):
         empty_text = "No reservations found."

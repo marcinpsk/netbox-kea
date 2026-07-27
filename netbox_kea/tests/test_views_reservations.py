@@ -83,6 +83,121 @@ _EDIT6_EXISTING = {
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestReservationListWithoutAddress(_ViewTestBase):
+    """Reservations that reserve no address must not break the list (issue #110).
+
+    Kea omits ``ip-address`` for identifier-only DHCPv4 hosts (hostname / option-data /
+    client-classes only) and omits ``ip-addresses`` for prefix-delegation-only DHCPv6
+    hosts.  The actions column used to reverse an address-keyed route with an empty
+    string, which ``<str:ip_address>`` (``[^/]+``) cannot match — a single such row
+    raised ``NoReverseMatch`` and 500'd the whole tab.
+
+    The test user is a superuser, so ``can_change`` is True: the reversal lived inside
+    ``{% if record.can_change %}`` and a read-only user never reached it.
+    """
+
+    #: Identifier-only DHCPv4 host: legal in Kea, reserves a hostname but no address.
+    ADDRESSLESS_V4 = {"subnet-id": 3742, "hw-address": "aa:bb:cc:dd:ee:ff", "hostname": "printer-1"}
+    #: Prefix-delegation-only DHCPv6 host: reserves a prefix, no addresses.
+    PD_ONLY_V6 = {"subnet-id": 12, "duid": "00:01:00:01:12:34:56:78:aa:bb", "prefixes": ["2001:db8:1::/64"]}
+
+    def _url4(self):
+        return reverse("plugins:netbox_kea:server_reservations4", args=[self.server.pk])
+
+    def _url6(self):
+        return reverse("plugins:netbox_kea:server_reservations6", args=[self.server.pk])
+
+    def test_v4_reservation_without_ip_address_renders(self):
+        with stub_kea({"reservation-get-page": _res_page([self.ADDRESSLESS_V4]), "lease4-get-all": _LEASE_NOT_FOUND}):
+            response = self.client.get(self._url4())
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "printer-1")
+
+    def test_v6_reservation_with_only_prefixes_renders(self):
+        with stub_kea({"reservation-get-page": _res_page([self.PD_ONLY_V6]), "lease6-get-all": _LEASE_NOT_FOUND}):
+            response = self.client.get(self._url6())
+        self.assertEqual(response.status_code, 200)
+
+    def test_address_less_row_offers_no_edit_or_delete_action(self):
+        """No address means no address-keyed URL can be built — offer no action at all."""
+        with stub_kea({"reservation-get-page": _res_page([self.ADDRESSLESS_V4]), "lease4-get-all": _LEASE_NOT_FOUND}):
+            response = self.client.get(self._url4())
+        self.assertNotContains(response, "/reservations4/3742/")
+
+    def test_addressed_row_keeps_its_edit_and_delete_links(self):
+        """Regression guard: moving URL construction into the view must not drop the links."""
+        host = {"subnet-id": 1, "ip-address": "10.0.0.5", "hw-address": "aa:bb:cc:dd:ee:ff"}
+        with stub_kea({"reservation-get-page": _res_page([host]), "lease4-get-all": _LEASE_NOT_FOUND}):
+            response = self.client.get(self._url4())
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(
+            response,
+            reverse("plugins:netbox_kea:server_reservation4_edit", args=[self.server.pk, 1, "10.0.0.5"]),
+        )
+        self.assertContains(
+            response,
+            reverse("plugins:netbox_kea:server_reservation4_delete", args=[self.server.pk, 1, "10.0.0.5"]),
+        )
+
+    def test_mixed_rows_sort_by_ip_column(self):
+        """django-tables2 orders on ``_ip_sort_key``, which address-less rows do not have.
+
+        Driven through the real view + real table so ordering and row rendering actually
+        run; sorting the dicts by hand would not exercise the missing accessor.
+        """
+        addressed = {"subnet-id": 1, "ip-address": "10.0.0.5", "hw-address": "aa:bb:cc:dd:ee:01"}
+        hosts = [self.ADDRESSLESS_V4, addressed]
+        with stub_kea({"reservation-get-page": _res_page(hosts), "lease4-get-all": _LEASE_NOT_FOUND}):
+            response = self.client.get(self._url4(), {"sort": "ip_address"})
+        self.assertEqual(response.status_code, 200)
+        with stub_kea({"reservation-get-page": _res_page(hosts), "lease4-get-all": _LEASE_NOT_FOUND}):
+            response = self.client.get(self._url4(), {"sort": "-ip_address"})
+        self.assertEqual(response.status_code, 200)
+
+    def test_row_with_neither_address_nor_identifier_renders(self):
+        """A host with no address and no identifier still must not invent a URL."""
+        host = {"subnet-id": 7, "hostname": "ghost"}
+        with stub_kea({"reservation-get-page": _res_page([host]), "lease4-get-all": _LEASE_NOT_FOUND}):
+            response = self.client.get(self._url4())
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "ghost")
+
+    def test_string_subnet_id_still_gets_action_links(self):
+        """``<int:subnet_id>`` reverses a decimal *string* fine — don't reject one.
+
+        Pre-validating the value type in Python instead of asking the route would
+        silently drop working buttons for a payload the old template handled.
+        """
+        host = {"subnet-id": "1", "ip-address": "10.0.0.5", "hw-address": "aa:bb:cc:dd:ee:ff"}
+        with stub_kea({"reservation-get-page": _res_page([host]), "lease4-get-all": _LEASE_NOT_FOUND}):
+            response = self.client.get(self._url4())
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(
+            response,
+            reverse("plugins:netbox_kea:server_reservation4_edit", args=[self.server.pk, 1, "10.0.0.5"]),
+        )
+
+    def test_values_the_route_cannot_reverse_do_not_break_the_page(self):
+        """Anything the converters reject costs that row its buttons, not the tab.
+
+        A negative subnet id fails ``<int:subnet_id>`` (``[0-9]+``) and an address
+        containing a slash fails ``<str:ip_address>`` (``[^/]+``) — neither may raise
+        NoReverseMatch out of the table.
+        """
+        hosts = [
+            {"subnet-id": -5, "ip-address": "10.0.0.5", "hw-address": "aa:bb:cc:dd:ee:01"},
+            {"subnet-id": 1, "ip-address": "2001:db8::/64", "hw-address": "aa:bb:cc:dd:ee:02"},
+        ]
+        with stub_kea({"reservation-get-page": _res_page(hosts), "lease4-get-all": _LEASE_NOT_FOUND}):
+            response = self.client.get(self._url4())
+        self.assertEqual(response.status_code, 200)
+        # No per-row reservation action URL for either host (the page's own
+        # object-edit links are unrelated, hence matching on the row route prefix).
+        self.assertNotContains(response, f"/servers/{self.server.pk}/reservations4/1/")
+        self.assertNotContains(response, f"/servers/{self.server.pk}/reservations4/-5/")
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestReservations4V6OnlyRedirect(_ViewTestBase):
     """A v6-only server's /reservations4/ redirects to the merged tab's v6 route."""
 

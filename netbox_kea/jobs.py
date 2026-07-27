@@ -28,6 +28,7 @@ Configuration knobs (all under ``PLUGINS_CONFIG["netbox_kea"]``):
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 from typing import TYPE_CHECKING, Any
 
@@ -112,6 +113,39 @@ def _prefetch_reservation_ips(server: Server, version: int) -> frozenset[str] | 
     return frozenset(ips)
 
 
+#: Identifier keys a Kea host reservation may carry, in the order they are reported.
+_IDENTIFIER_KEYS = ("hw-address", "duid", "client-id", "circuit-id", "flex-id", "remote-id")
+
+#: How many per-row reservation sync failures to log in full per server/version
+#: before suppressing the rest.  The error count in the summary stays exact.
+_ROW_ERROR_LOG_LIMIT = 10
+
+#: How many conflicting IPs to name in the job summary and log line.  A bare count
+#: tells an operator nothing about which manually-curated IPs the sync left alone.
+_CONFLICT_SAMPLE_SIZE = 20
+
+
+def _identifier_type(reservation: dict) -> str:
+    """Return which identifier key *reservation* carries, for log lines.
+
+    Only the key name is returned — a ``flex-id`` value can hold operator-defined
+    client data and does not belong in the job log.
+    """
+    return next((key for key in _IDENTIFIER_KEYS if reservation.get(key)), "none")
+
+
+def _canonical_ip(ip_str: str) -> str:
+    """Return the canonical text form of *ip_str*, or the input when unparseable.
+
+    Conflict counts are deduplicated on this, so two spellings of the same IPv6
+    address (``2001:db8::1`` and ``2001:0db8::0001``) collapse to one entry.
+    """
+    try:
+        return str(ipaddress.ip_address(ip_str))
+    except ValueError:
+        return ip_str
+
+
 def _sync_server_leases(
     server: Server,
     version: int,
@@ -121,6 +155,7 @@ def _sync_server_leases(
     all_synced: list[dict],
     reservation_ips: frozenset[str] | None = None,
     subnet_prefix_map: dict[int, int] | None = None,
+    conflict_ips: set[str] | None = None,
 ) -> tuple[bool, frozenset[str]]:
     """Fetch all leases from *server* for *version* and upsert into NetBox IPAM.
 
@@ -183,7 +218,13 @@ def _sync_server_leases(
             stats["errors"] += 1
             had_errors = True
 
-    stats["conflicts"] = stats.get("conflicts", 0) + len(conflicts)
+    # Deduplicated across phases and versions by the caller's set; the accumulator
+    # itself stays a list because sync_lease_to_netbox appends to it.
+    if conflict_ips is not None:
+        conflict_ips.update(_canonical_ip(ip) for ip in conflicts)
+        stats["conflicts"] = len(conflict_ips)
+    else:
+        stats["conflicts"] = stats.get("conflicts", 0) + len(conflicts)
     return not truncated and not had_errors, frozenset(lease_ips)
 
 
@@ -195,8 +236,14 @@ def _sync_server_reservations(
     all_synced: list[dict],
     lease_ips: frozenset[str] | None = None,
     subnet_prefix_map: dict[int, int] | None = None,
+    conflict_ips: set[str] | None = None,
 ) -> bool:
     """Fetch all reservations from *server* for *version* and upsert into NetBox IPAM.
+
+    Reservations that reserve no address — an identifier-only DHCPv4 host, or a
+    DHCPv6 host that only delegates prefixes — are counted in ``stats["skipped"]``
+    and left out of *all_synced*.  They are legal Kea configuration with nothing to
+    write to IPAM, so treating them as errors failed the whole job (issue #110).
 
     Returns ``True`` when all reservation pages were fetched successfully,
     ``False`` when the sync was skipped (e.g. host_cmds not loaded) or failed.
@@ -208,6 +255,8 @@ def _sync_server_reservations(
 
     service = f"dhcp{version}"
     processed = 0
+    skipped = 0
+    row_errors_logged = 0
     had_errors = False
     # Foreign (manually-curated) NetBox IPs skipped to avoid overwriting them.
     conflicts: list[str] = []
@@ -215,6 +264,11 @@ def _sync_server_reservations(
     try:
         client = server.get_client(version=version)
         for reservation in iter_reservations(client, service):
+            # Mirrors the manual bulk-sync view, which already skips these rows.
+            if not reservation.get("ip-address") and not reservation.get("ip-addresses"):
+                skipped += 1
+                stats["skipped"] = stats.get("skipped", 0) + 1
+                continue
             try:
                 _ip, created, changed = sync_reservation_to_netbox(
                     reservation,
@@ -229,14 +283,34 @@ def _sync_server_reservations(
                     stats["created"] += 1
                 elif changed:
                     stats["updated"] += 1
-            except Exception:  # noqa: BLE001, PERF203
+            except Exception as exc:  # noqa: BLE001, PERF203
                 ip = reservation.get("ip-address") or (reservation.get("ip-addresses") or ["?"])[0] or "?"
-                logger.debug(
-                    "Failed to sync reservation %s from server %s",
-                    ip,
-                    server.name,
-                    exc_info=True,
-                )
+                # Warning, not debug: a per-row failure is the only thing standing
+                # between the operator and a job that fails with an opaque count.
+                # The identifier *type* is enough to locate the row — the value can
+                # be an operator-defined flex-id, so it is not logged.  Capped so a
+                # systematically broken source cannot flood the job log.
+                if row_errors_logged < _ROW_ERROR_LOG_LIMIT:
+                    row_errors_logged += 1
+                    logger.warning(
+                        "Failed to sync reservation %s (server %s, v%s, subnet-id %s, id-type %s): %s",
+                        ip,
+                        server.name,
+                        version,
+                        reservation.get("subnet-id", "?"),
+                        _identifier_type(reservation),
+                        type(exc).__name__,
+                    )
+                    logger.debug("Reservation sync traceback for %s", ip, exc_info=True)
+                elif row_errors_logged == _ROW_ERROR_LOG_LIMIT:
+                    row_errors_logged += 1
+                    logger.warning(
+                        "Server %s (v%s): further per-reservation sync failures suppressed"
+                        " (first %d logged); see the final error count.",
+                        server.name,
+                        version,
+                        _ROW_ERROR_LOG_LIMIT,
+                    )
                 stats["errors"] += 1
                 had_errors = True
     except KeaException as exc:
@@ -254,8 +328,25 @@ def _sync_server_reservations(
         logger.warning("Unexpected error fetching reservations from server %s (v%s): %s", server.name, version, exc)
         stats["errors"] += 1
         return False
+    finally:
+        # In a ``finally`` so a mid-pagination failure does not discard the rows
+        # already processed: the summary must not report zero conflicts for a page
+        # that was fetched and synced before page 2 failed.
+        if conflict_ips is not None:
+            conflict_ips.update(_canonical_ip(ip) for ip in conflicts)
+            # Keep the count consistent with the deduplicated set at every point,
+            # including when the caller aborts before its own bookkeeping runs.
+            stats["conflicts"] = len(conflict_ips)
+        else:
+            stats["conflicts"] = stats.get("conflicts", 0) + len(conflicts)
+        if skipped:
+            logger.info(
+                "Server %s (v%s): skipped %d reservation(s) with no address (nothing to sync to IPAM)",
+                server.name,
+                version,
+                skipped,
+            )
 
-    stats["conflicts"] = stats.get("conflicts", 0) + len(conflicts)
     logger.info("Server %s (v%s): synced %d reservations", server.name, version, processed)
     # Mirror the lease path: a per-row failure must not leave cleanup_safe=True,
     # or stale cleanup runs with an incomplete keep-set and may delete live IPs.
@@ -431,11 +522,22 @@ def _sync_one_server(
     sync_ip_ranges: bool,
     max_leases: int,
     stats: dict[str, int],
+    conflict_ips: set[str] | None = None,
 ) -> None:
-    """Sync a single server's leases, reservations, prefixes, and IP ranges."""
+    """Sync a single server's leases, reservations, prefixes, and IP ranges.
+
+    *conflict_ips* is an optional caller-owned set that collects the foreign NetBox
+    IPs this run refused to overwrite, so the caller can name them in the job
+    summary.  One set per server, shared by both phases and both IP versions: a
+    foreign IP that has *both* a lease and a reservation is one conflict for the
+    operator to resolve, not two.  Each phase still accumulates into its own list
+    because ``sync_{lease,reservation}_to_netbox`` append to it.
+    """
     from .sync import cleanup_stale_ips_batch
 
     all_synced: list[dict] = []
+    if conflict_ips is None:
+        conflict_ips = set()
     # Cleanup is only safe when both sources contributed, otherwise we risk
     # removing IPs that exist in the source we didn't sync.
     cleanup_safe = sync_leases and sync_reservations
@@ -483,6 +585,7 @@ def _sync_one_server(
                 all_synced=all_synced,
                 reservation_ips=pre_reservation_ips,
                 subnet_prefix_map=subnet_prefix_map,
+                conflict_ips=conflict_ips,
             )
             lease_phase_ok = sync_ok
             cleanup_safe &= sync_ok
@@ -497,6 +600,7 @@ def _sync_one_server(
                 all_synced=all_synced,
                 lease_ips=lease_ips_set if lease_phase_ok else None,
                 subnet_prefix_map=subnet_prefix_map,
+                conflict_ips=conflict_ips,
             )
 
         if sync_prefixes or sync_ip_ranges:
@@ -509,6 +613,20 @@ def _sync_one_server(
                 vrf=server.sync_vrf,
                 stats=stats,
             )
+
+    # Authoritative count: the per-phase increments above double-count an IP that is
+    # foreign to both a lease and a reservation, so the deduplicated set wins.
+    stats["conflicts"] = len(conflict_ips)
+    if conflict_ips:
+        sample = sorted(conflict_ips)[:_CONFLICT_SAMPLE_SIZE]
+        logger.warning(
+            "Server %s: %d NetBox IP(s) left untouched — not Kea-managed (description does not start"
+            " with 'Synced from Kea DHCP'); first %d: %s",
+            server.name,
+            len(conflict_ips),
+            len(sample),
+            ", ".join(sample),
+        )
 
     if all_synced and stats["errors"] == 0 and cleanup_safe:
         cleanup_stale_ips_batch(all_synced)
@@ -667,7 +785,14 @@ class KeaIpamSyncJob(JobRunner):
                 return
 
             self.logger.info(f"Starting Kea IPAM sync for {len(servers)} server(s).")
-            total: dict[str, int] = {"created": 0, "updated": 0, "errors": 0, "prefix_errors": 0, "conflicts": 0}
+            total: dict[str, int] = {
+                "created": 0,
+                "updated": 0,
+                "errors": 0,
+                "prefix_errors": 0,
+                "conflicts": 0,
+                "skipped": 0,
+            }
 
             for server in servers:
                 # In Run Now mode (server_pk provided), honour the explicit selection
@@ -689,7 +814,11 @@ class KeaIpamSyncJob(JobRunner):
                     "errors": 0,
                     "prefix_errors": 0,
                     "conflicts": 0,
+                    "skipped": 0,
                 }
+                # Foreign NetBox IPs this server refused to overwrite, deduplicated
+                # across the lease and reservation phases and both IP versions.
+                conflict_ips: set[str] = set()
 
                 try:
                     _sync_one_server(
@@ -700,6 +829,7 @@ class KeaIpamSyncJob(JobRunner):
                         effective_ip_ranges,
                         max_leases,
                         server_stats,
+                        conflict_ips=conflict_ips,
                     )
                 except Exception as exc:  # noqa: BLE001, PERF203
                     self.logger.error(f"Unhandled error syncing server {server.name}: {exc}", exc_info=True)
@@ -710,6 +840,7 @@ class KeaIpamSyncJob(JobRunner):
                     f" updated={server_stats['updated']} errors={server_stats['errors']}"
                     f" prefix_errors={server_stats['prefix_errors']}"
                     f" conflicts={server_stats['conflicts']}"
+                    f" skipped={server_stats['skipped']}"
                 )
                 for key in total:
                     total[key] += server_stats.get(key, 0)
@@ -723,6 +854,9 @@ class KeaIpamSyncJob(JobRunner):
                         "errors": server_stats["errors"],
                         "prefix_errors": server_stats["prefix_errors"],
                         "conflicts": server_stats["conflicts"],
+                        "conflict_sample": sorted(conflict_ips)[:_CONFLICT_SAMPLE_SIZE],
+                        "conflicts_truncated": max(0, len(conflict_ips) - _CONFLICT_SAMPLE_SIZE),
+                        "skipped": server_stats["skipped"],
                     }
                 )
 
@@ -730,7 +864,7 @@ class KeaIpamSyncJob(JobRunner):
                 f"Kea IPAM sync complete — servers={len(summary)}"
                 f" created={total['created']} updated={total['updated']}"
                 f" errors={total['errors']} prefix_errors={total['prefix_errors']}"
-                f" conflicts={total['conflicts']}"
+                f" conflicts={total['conflicts']} skipped={total['skipped']}"
             )
             if total["errors"] > 0 or total["prefix_errors"] > 0:
                 raise JobFailed()
