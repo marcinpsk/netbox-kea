@@ -31,7 +31,7 @@ services:
         psql -d kea -tAc "SELECT 1 FROM pg_tables WHERE tablename='schema_version'" | grep -q 1 \
           || psql -q -v ON_ERROR_STOP=1 -d kea -f /schema/dhcpdb_create.pgsql
   kea-dhcp4: &kea
-    image: docker.cloudsmith.io/isc/docker/kea-dhcp4:3.2.0
+    image: docker.cloudsmith.io/isc/docker/kea-dhcp4:${KEA_VERSION:-3.2.0}
     command: kea-dhcp4 -X -c /etc/kea/kea-dhcp4.conf
     depends_on:
       kea-db-init:
@@ -44,7 +44,7 @@ services:
       - 127.0.0.1:8001:8000
   kea-dhcp6:
     <<: *kea
-    image: docker.cloudsmith.io/isc/docker/kea-dhcp6:3.2.0
+    image: docker.cloudsmith.io/isc/docker/kea-dhcp6:${KEA_VERSION:-3.2.0}
     command: kea-dhcp6 -X -c /etc/kea/kea-dhcp6.conf
     ports:
       - 127.0.0.1:8003:8000

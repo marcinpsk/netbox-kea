@@ -11,7 +11,8 @@ chmod -R 0777 ./tests/docker/certs/
 # Reservation management needs a Kea host database, and Kea refuses a schema whose
 # version is not exactly the one it was built against, so take the schema from the
 # release tarball of the version the daemons run (see docker-compose.override.yml).
-KEA_VERSION="${KEA_VERSION:-3.2.0}"
+# Exported so docker-compose.override.yml pins the daemon images to the same version.
+export KEA_VERSION="${KEA_VERSION:-3.2.0}"
 KEA_TARBALL_SHA256="${KEA_TARBALL_SHA256:-14bf695d37b65b9b1bf550fea5d0adaf9806c50e5419ef2a176a4b8e9aade3df}"
 echo "Fetching Kea $KEA_VERSION host database schema"
 mkdir -p ./tests/docker/kea_schema/
