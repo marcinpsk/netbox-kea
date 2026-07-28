@@ -1322,6 +1322,28 @@ class TestBuildSubnetPrefixMap(SimpleTestCase):
         self.assertEqual(_build_subnet_prefix_map(None), {})
 
 
+class TestRecordConflicts(SimpleTestCase):
+    """_record_conflicts folds one phase's conflicts into the job stats."""
+
+    def test_a_set_deduplicates_across_calls_and_spellings(self):
+        from netbox_kea.jobs import _record_conflicts
+
+        stats = {"conflicts": 0}
+        seen = set()
+        _record_conflicts(stats, ["2001:db8::1", "10.0.0.1"], seen)
+        _record_conflicts(stats, ["2001:0db8::0001"], seen)
+        self.assertEqual(seen, {"2001:db8::1", "10.0.0.1"})
+        self.assertEqual(stats["conflicts"], 2)
+
+    def test_without_a_set_the_counts_accumulate(self):
+        from netbox_kea.jobs import _record_conflicts
+
+        stats = {}
+        _record_conflicts(stats, ["10.0.0.1", "10.0.0.1"], None)
+        _record_conflicts(stats, ["10.0.0.2"], None)
+        self.assertEqual(stats["conflicts"], 3)
+
+
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestSyncServerReservationsReturnValue(TestCase):
     """_sync_server_reservations must report failure when any individual row fails.

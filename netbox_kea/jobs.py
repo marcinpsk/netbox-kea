@@ -146,6 +146,20 @@ def _canonical_ip(ip_str: str) -> str:
         return ip_str
 
 
+def _record_conflicts(stats: dict[str, int], conflicts: list[str], conflict_ips: set[str] | None) -> None:
+    """Fold *conflicts* into *stats*, deduplicating through *conflict_ips* when given.
+
+    The accumulator stays a list because the sync helpers append to it; the caller's
+    set is what deduplicates across phases and versions, so the count is taken from
+    the set whenever there is one.
+    """
+    if conflict_ips is not None:
+        conflict_ips.update(_canonical_ip(ip) for ip in conflicts)
+        stats["conflicts"] = len(conflict_ips)
+    else:
+        stats["conflicts"] = stats.get("conflicts", 0) + len(conflicts)
+
+
 def _sync_server_leases(
     server: Server,
     version: int,
@@ -218,13 +232,7 @@ def _sync_server_leases(
             stats["errors"] += 1
             had_errors = True
 
-    # Deduplicated across phases and versions by the caller's set; the accumulator
-    # itself stays a list because sync_lease_to_netbox appends to it.
-    if conflict_ips is not None:
-        conflict_ips.update(_canonical_ip(ip) for ip in conflicts)
-        stats["conflicts"] = len(conflict_ips)
-    else:
-        stats["conflicts"] = stats.get("conflicts", 0) + len(conflicts)
+    _record_conflicts(stats, conflicts, conflict_ips)
     return not truncated and not had_errors, frozenset(lease_ips)
 
 
@@ -332,13 +340,7 @@ def _sync_server_reservations(
         # In a ``finally`` so a mid-pagination failure does not discard the rows
         # already processed: the summary must not report zero conflicts for a page
         # that was fetched and synced before page 2 failed.
-        if conflict_ips is not None:
-            conflict_ips.update(_canonical_ip(ip) for ip in conflicts)
-            # Keep the count consistent with the deduplicated set at every point,
-            # including when the caller aborts before its own bookkeeping runs.
-            stats["conflicts"] = len(conflict_ips)
-        else:
-            stats["conflicts"] = stats.get("conflicts", 0) + len(conflicts)
+        _record_conflicts(stats, conflicts, conflict_ips)
         if skipped:
             logger.info(
                 "Server %s (v%s): skipped %d reservation(s) with no address (nothing to sync to IPAM)",
