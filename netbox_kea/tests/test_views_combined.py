@@ -14,7 +14,7 @@ real request/response path.
 from django.test import override_settings
 from django.urls import reverse
 
-from .kea_stub import queued, stub_kea
+from .kea_stub import _res_page, queued, stub_kea
 from .utils import _PLUGINS_CONFIG, _ViewTestBase
 
 
@@ -126,26 +126,14 @@ class TestCombinedReservationsWithoutAddress(_ViewTestBase):
         return reverse(f"plugins:netbox_kea:combined_reservations{version}") + f"?server={self.server.pk}"
 
     def test_v4_identifier_only_reservation_renders(self):
-        page = {
-            "result": 0,
-            "arguments": {
-                "hosts": [{"subnet-id": 3742, "hw-address": "aa:bb:cc:dd:ee:ff", "hostname": "printer-1"}],
-                "next": {"from": 0, "source-index": 0},
-            },
-        }
+        page = _res_page([{"subnet-id": 3742, "hw-address": "aa:bb:cc:dd:ee:ff", "hostname": "printer-1"}])
         with stub_kea({"reservation-get-page": page, "lease4-get-all": {"result": 0, "arguments": {"leases": []}}}):
             response = self.client.get(self._url(4))
         self.assertEqual(response.status_code, 200)
         self.assertIn(b"printer-1", response.content)
 
     def test_v6_prefix_only_reservation_renders(self):
-        page = {
-            "result": 0,
-            "arguments": {
-                "hosts": [{"subnet-id": 12, "duid": "00:01:00:01:12:34", "prefixes": ["2001:db8:1::/64"]}],
-                "next": {"from": 0, "source-index": 0},
-            },
-        }
+        page = _res_page([{"subnet-id": 12, "duid": "00:01:00:01:12:34", "prefixes": ["2001:db8:1::/64"]}])
         with stub_kea({"reservation-get-page": page, "lease6-get-all": {"result": 0, "arguments": {"leases": []}}}):
             response = self.client.get(self._url(6))
         self.assertEqual(response.status_code, 200)
@@ -163,13 +151,9 @@ class TestCombinedReservationsShowWhatIsReserved(_ViewTestBase):
         base = reverse(f"plugins:netbox_kea:combined_reservations{version}") + f"?server={self.server.pk}"
         return base + query
 
-    @staticmethod
-    def _page(hosts):
-        return {"result": 0, "arguments": {"hosts": hosts, "next": {"from": 0, "source-index": 0}}}
-
     def _stub(self, hosts, version=4):
         return {
-            "reservation-get-page": self._page(hosts),
+            "reservation-get-page": _res_page(hosts),
             f"lease{version}-get-all": {"result": 0, "arguments": {"leases": []}},
         }
 

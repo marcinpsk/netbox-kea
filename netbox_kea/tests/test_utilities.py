@@ -7,6 +7,7 @@ from unittest import TestCase
 from unittest.mock import MagicMock, patch
 
 from django.http import HttpResponse
+from django.test import SimpleTestCase
 
 from netbox_kea import constants
 from netbox_kea.models import Server
@@ -238,7 +239,7 @@ class TestIsHexString(TestCase):
         self.assertTrue(is_hex_string("AA:BB:CC:DD:EE:FF", 6, 6))
 
 
-class TestValidateReservationIdentifierLength(TestCase):
+class TestValidateReservationIdentifierLength(SimpleTestCase):
     """The character cap must not reject an identifier its octet limit allows.
 
     A DUID may be 128 octets (RFC 8415), which is 383 characters colon-delimited —
