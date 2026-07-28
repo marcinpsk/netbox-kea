@@ -982,6 +982,7 @@ class TestBulkImportAddressLessReservations(_ViewTestBase):
         with stub_kea({}) as kea:
             response = self.client.post(self._url(), {"csv_file": upload})
         self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "parsing failed")
         self.assertEqual(kea.commands(), [])
 
     def test_import_requires_change_permission(self):
