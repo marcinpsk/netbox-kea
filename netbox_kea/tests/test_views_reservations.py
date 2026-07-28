@@ -148,6 +148,20 @@ class TestReservationListWithoutAddress(_ViewTestBase):
             reverse("plugins:netbox_kea:server_reservation4_delete", args=[self.server.pk, 1, "10.0.0.5"]),
         )
 
+    def test_address_less_row_labels_its_actions_with_the_identifier(self):
+        """The labels named the address, so an address-less row got "Edit reservation "."""
+        with stub_kea({"reservation-get-page": _res_page([self.ADDRESSLESS_V4]), "lease4-get-all": _LEASE_NOT_FOUND}):
+            response = self.client.get(self._url4())
+        self.assertContains(response, 'aria-label="Edit reservation aa:bb:cc:dd:ee:ff"')
+        self.assertContains(response, 'aria-label="Delete reservation aa:bb:cc:dd:ee:ff"')
+
+    def test_addressed_row_still_labels_its_actions_with_the_address(self):
+        host = {"subnet-id": 1, "ip-address": "10.0.0.5", "hw-address": "aa:bb:cc:dd:ee:ff"}
+        with stub_kea({"reservation-get-page": _res_page([host]), "lease4-get-all": _LEASE_NOT_FOUND}):
+            response = self.client.get(self._url4())
+        self.assertContains(response, 'aria-label="Edit reservation 10.0.0.5"')
+        self.assertContains(response, 'aria-label="Delete reservation 10.0.0.5"')
+
     def test_mixed_rows_sort_by_ip_column(self):
         """django-tables2 orders on ``_ip_sort_key``, which address-less rows do not have.
 
@@ -344,6 +358,28 @@ class TestReservationByIdentifierRoutes(_ViewTestBase):
             response = self.client.post(self._edit_url(6, 12), {**post}, QUERY_STRING=urlencode(self.QUERY_V6))
         self.assertEqual(response.status_code, 200)
         self.assertNotIn("reservation-update", kea.commands())
+
+    # ── logging ───────────────────────────────────────────────────────────
+
+    def test_v6_update_failure_logs_the_identifier(self):
+        """The v6 log calls named the (empty) address, so the message had no subject."""
+        post = {"hostname": "", "ip_addresses": "", "prefixes": "2001:db8:9::/64", **_FORMSET_MGMT}
+        with (
+            stub_kea({"reservation-get": _res_get(self.V6_HOST), "reservation-update": {"result": 1, "text": "boom"}}),
+            self.assertLogs("netbox_kea.views.reservations", level="ERROR") as logs,
+        ):
+            response = self.client.post(self._edit_url(6, 12), {**post}, QUERY_STRING=urlencode(self.QUERY_V6))
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("duid 00:01:00:01:12:34", "\n".join(logs.output))
+
+    def test_v6_fetch_failure_logs_the_identifier(self):
+        with (
+            stub_kea({"reservation-get": {"result": 1, "text": "boom"}}),
+            self.assertLogs("netbox_kea.views.reservations", level="ERROR") as logs,
+        ):
+            response = self.client.get(self._edit_url(6, 12), self.QUERY_V6)
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("duid 00:01:00:01:12:34", "\n".join(logs.output))
 
     # ── delete ────────────────────────────────────────────────────────────
 

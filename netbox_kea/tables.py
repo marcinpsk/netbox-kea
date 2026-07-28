@@ -525,11 +525,11 @@ RESERVATION_ACTIONS = """
 <span class="btn-group">
   {% if record.edit_url %}
   <a href="{{ record.edit_url }}"
-     class="btn btn-sm btn-warning" aria-label="Edit reservation {{ record.ip_address }}"><i class="mdi mdi-pencil" aria-hidden="true"></i></a>
+     class="btn btn-sm btn-warning" aria-label="Edit reservation {{ record.ip_address|default:record.identifier }}"><i class="mdi mdi-pencil" aria-hidden="true"></i></a>
   {% endif %}
   {% if record.delete_url %}
   <a href="{{ record.delete_url }}"
-     class="btn btn-sm btn-danger" aria-label="Delete reservation {{ record.ip_address }}"><i class="mdi mdi-trash-can-outline" aria-hidden="true"></i></a>
+     class="btn btn-sm btn-danger" aria-label="Delete reservation {{ record.ip_address|default:record.identifier }}"><i class="mdi mdi-trash-can-outline" aria-hidden="true"></i></a>
   {% endif %}
 </span>
 {% endif %}

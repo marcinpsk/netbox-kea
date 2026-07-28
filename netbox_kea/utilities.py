@@ -481,9 +481,10 @@ def parse_reservation_csv(content: str, version: int) -> list[dict[str, Any]]:
 
     rows: list[dict[str, Any]] = []
     for row_num, raw in enumerate(reader, start=2):  # header is row 1
-        # DictReader files cells with no header under the None key.  They carry data
-        # this parser never reads, so reject the row rather than drop them.
-        if raw.get(None):
+        # DictReader files cells with no header under the None key.  A filled one carries
+        # data this parser never reads, so reject the row; an empty one (trailing comma)
+        # loses nothing.
+        if any((v or "").strip() for v in raw.get(None) or []):
             raise ValueError(f"Row {row_num}: more values than the header has columns")
         row = {k.strip(): (v or "").strip() for k, v in raw.items() if k is not None}
 

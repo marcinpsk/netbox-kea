@@ -1156,11 +1156,11 @@ class ServerReservation6EditView(_ReservationLookupMixin, _KeaChangeMixin, gener
         try:
             reservation = self._get_reservation(server, lookup)
         except KeaException as exc:
-            logger.exception("Failed to fetch DHCPv6 reservation %s in subnet %s", ip_address, subnet_id)
+            logger.exception("Failed to fetch DHCPv6 reservation %s in subnet %s", lookup.label, subnet_id)
             messages.error(request, kea_error_hint(exc))
             return redirect(return_url)
         except (requests.RequestException, ValueError):
-            logger.exception("Failed to fetch DHCPv6 reservation %s in subnet %s", ip_address, subnet_id)
+            logger.exception("Failed to fetch DHCPv6 reservation %s in subnet %s", lookup.label, subnet_id)
             messages.error(request, "Failed to retrieve reservation: see server logs for details.")
             return redirect(return_url)
         if reservation is None:
@@ -1213,7 +1213,6 @@ class ServerReservation6EditView(_ReservationLookupMixin, _KeaChangeMixin, gener
         """Validate and submit updated DHCPv6 reservation to Kea."""
         server = self.get_object(pk=pk)
         lookup = self.get_lookup(request, subnet_id, **kwargs)
-        ip_address = lookup.ip_address
         return_url = reverse("plugins:netbox_kea:server_reservations6", args=[pk])
         # Fetch existing reservation before form construction (#51) so ip_addresses initial is
         # accurate on re-render, and to enable merge-not-replace for all reservation keys (#52).
@@ -1286,13 +1285,13 @@ class ServerReservation6EditView(_ReservationLookupMixin, _KeaChangeMixin, gener
                 )
                 return redirect(return_url)
             except KeaException as exc:
-                logger.exception("Failed to update DHCPv6 reservation for %s", ip_address)
+                logger.exception("Failed to update DHCPv6 reservation for %s", lookup.label)
                 messages.error(request, kea_error_hint(exc))
             except requests.RequestException:
-                logger.exception("Network error updating DHCPv6 reservation for %s", ip_address)
+                logger.exception("Network error updating DHCPv6 reservation for %s", lookup.label)
                 messages.error(request, "Network error communicating with Kea: see server logs.")
             except ValueError:
-                logger.exception("Invalid Kea response when updating DHCPv6 reservation for %s", ip_address)
+                logger.exception("Invalid Kea response when updating DHCPv6 reservation for %s", lookup.label)
                 messages.error(request, "Invalid response from Kea: see server logs.")
         return render(
             request,

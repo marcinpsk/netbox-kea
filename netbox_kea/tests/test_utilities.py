@@ -828,6 +828,16 @@ class TestParseReservationCsv(TestCase):
             self._parse("subnet-id,hw-address\n1,aa:bb:cc:dd:ee:ff,surplus\n")
         self.assertIn("more values", str(ctx.exception))
 
+    def test_row_with_a_trailing_comma_is_accepted(self):
+        """A trailing comma yields one empty surplus cell, which carries no data to lose."""
+        rows = self._parse("subnet-id,hw-address\n1,aa:bb:cc:dd:ee:ff,\n")
+        self.assertEqual(rows[0], {"subnet-id": 1, "hw-address": "aa:bb:cc:dd:ee:ff"})
+
+    def test_row_with_a_blank_and_a_filled_surplus_cell_is_rejected(self):
+        with self.assertRaises(ValueError) as ctx:
+            self._parse("subnet-id,hw-address\n1,aa:bb:cc:dd:ee:ff,,surplus\n")
+        self.assertIn("more values", str(ctx.exception))
+
     def test_unsupported_version_raises(self):
         """Anything but 4 or 6 used to fall through to the v6 branch."""
         with self.assertRaises(ValueError) as ctx:
