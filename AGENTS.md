@@ -305,7 +305,9 @@ resort, reserved for true external boundaries you cannot run locally.
 
 - **Commit messages**: Conventional Commits (feat, fix, docs, style, refactor, perf,
   test, build, ci, chore, revert) — enforced by a pre-commit hook.
-- **REUSE/SPDX**: every file needs licensing. Source files carry inline SPDX headers;
-  docs and generated files are annotated in `REUSE.toml`. `uv run reuse lint` must pass.
+- **REUSE/SPDX**: every file needs licensing; `uv run reuse lint` must pass. New source
+  files carry inline SPDX headers. Upstream-inherited trees (`netbox_kea/**`, `tests/**`)
+  and docs/config are bulk-annotated in `REUSE.toml` — a file covered there needs no
+  inline header, so don't flag e.g. `tests/*.py` for a missing one.
 - **Ruff**: line length 120, max complexity 15, migrations excluded, E501 ignored,
   docstrings required except in tests/migrations/`__init__.py`.
