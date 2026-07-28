@@ -1845,18 +1845,28 @@ def test_reservation4_without_address_matches_lease_by_identifier(
 ) -> None:
     """A row with no address takes its lease status from a real lease with the same MAC."""
     mac = "aa:bb:cc:00:01:04"
+    lease_ip = "192.0.2.150"
     reservation_keys.append((4, RESERVATION_SUBNET_ID, "hw-address", mac))
     _reservation_del(kea_client, 4, RESERVATION_SUBNET_ID, "hw-address", mac)
     kea_client.command(
         "lease4-add",
         service=["dhcp4"],
-        arguments={"ip-address": "192.0.2.150", "hw-address": mac, "hostname": "leased-client"},
+        arguments={"ip-address": lease_ip, "hw-address": mac, "hostname": "leased-client"},
     )
-    _add_reservation4_without_address(page, plugin_base, reservation_server.id, mac, "no-address-leased")
+    # reservation_keys only drops reservations, so the lease needs its own cleanup.
+    try:
+        _add_reservation4_without_address(page, plugin_base, reservation_server.id, mac, "no-address-leased")
 
-    row = page.locator("table.object-list > tbody > tr").filter(has_text=mac)
-    expect(row).to_have_count(1)
-    expect(row.get_by_text("Active Lease", exact=True)).to_be_visible()
+        row = page.locator("table.object-list > tbody > tr").filter(has_text=mac)
+        expect(row).to_have_count(1)
+        expect(row.get_by_text("Active Lease", exact=True)).to_be_visible()
+    finally:
+        kea_client.command(
+            "lease4-del",
+            service=["dhcp4"],
+            arguments={"ip-address": lease_ip},
+            check=(0, 3),
+        )
 
 
 def test_reservation6_prefix_only_round_trip(
