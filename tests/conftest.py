@@ -1,3 +1,5 @@
+import os
+
 import pynetbox
 import pytest
 import requests
@@ -5,7 +7,11 @@ import requests
 
 @pytest.fixture(scope="session")
 def netbox_url() -> str:
-    return "http://localhost:8000"
+    # Overridable so the harness can be published on another port when 8000 is taken.
+    # A blank NETBOX_URL means "unset", and a trailing slash would double up the / in
+    # every f-string that appends a path.
+    url = os.environ.get("NETBOX_URL", "").strip() or "http://localhost:8000"
+    return url.rstrip("/")
 
 
 @pytest.fixture(scope="session")

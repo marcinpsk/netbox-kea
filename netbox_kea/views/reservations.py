@@ -1,20 +1,22 @@
 import concurrent.futures
 import logging
+from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlencode
 
 import requests
 from django.contrib import messages
-from django.core.exceptions import ValidationError
+from django.core.exceptions import BadRequest, ValidationError
 from django.db import DatabaseError
 from django.db.utils import OperationalError, ProgrammingError
 from django.http import Http404, HttpResponse
 from django.http.request import HttpRequest
 from django.shortcuts import redirect, render
-from django.urls import reverse
+from django.urls import NoReverseMatch, reverse
 from netbox.views import generic
 from utilities.views import register_model_view
 
-from .. import forms, tables
+from .. import constants, forms, tables
 from ..kea import KeaClient, KeaException, PartialPersistError, iter_reservations
 from ..models import Server
 from ..signals import reservation_created, reservation_deleted, reservation_updated
@@ -43,11 +45,174 @@ _ALL_IDENTIFIER_KEYS: tuple[str, ...] = (
     "remote-id",
 )
 
-#: Identifier types supported for DHCPv4 reservations (preference order).
-_V4_IDENTIFIER_TYPES: list[str] = ["hw-address", "client-id", "circuit-id", "flex-id", "remote-id"]
+#: Identifier types supported per DHCP version, in preference order.  Shared with the
+#: forms and the CSV importer so all three accept the same set.
+_V4_IDENTIFIER_TYPES: tuple[str, ...] = constants.RESERVATION_IDENTIFIER_TYPES[4]
+_V6_IDENTIFIER_TYPES: tuple[str, ...] = constants.RESERVATION_IDENTIFIER_TYPES[6]
 
-#: Identifier types supported for DHCPv6 reservations (preference order).
-_V6_IDENTIFIER_TYPES: list[str] = ["duid", "hw-address", "client-id", "flex-id", "remote-id"]
+
+@dataclass(frozen=True)
+class _ReservationLookup:
+    """How to address one reservation in Kea: by IP, or by client identifier.
+
+    A host reservation that reserves no address cannot be keyed by IP — the whole
+    reason issue #110 existed — so edit and delete additionally accept an identifier
+    key.  ``KeaClient.reservation_get``/``reservation_del`` already accept either.
+    """
+
+    subnet_id: int
+    ip_address: str = ""
+    identifier_type: str = ""
+    identifier: str = ""
+
+    @property
+    def by_identifier(self) -> bool:
+        """True when this lookup keys on the client identifier rather than an address."""
+        return not self.ip_address
+
+    @property
+    def label(self) -> str:
+        """Human-readable subject for messages and confirmation pages."""
+        if self.ip_address:
+            return self.ip_address
+        return f"{self.identifier_type} {self.identifier}"
+
+    def to_kwargs(self) -> dict[str, Any]:
+        """Return the ``reservation_get`` / ``reservation_del`` keyword arguments."""
+        if self.ip_address:
+            return {"subnet_id": self.subnet_id, "ip_address": self.ip_address}
+        return {
+            "subnet_id": self.subnet_id,
+            "identifier_type": self.identifier_type,
+            "identifier": self.identifier,
+        }
+
+
+def _identifier_lookup_from_request(request: HttpRequest, subnet_id: int, version: int) -> _ReservationLookup:
+    """Build an identifier-keyed lookup from the query string, or raise ``BadRequest``.
+
+    The identifier travels as a query parameter rather than a path segment: reversing
+    then takes only integers (so the route can never fail to reverse, which is what
+    took the reservations tab down), and ``urlencode`` handles values a ``<str:>``
+    segment would mangle — Django treats ``/`` as safe when reversing, so a ``flex-id``
+    containing one would silently produce a broken URL.
+
+    Everything the view will forward to Kea is validated here so all four routes
+    behave identically on malformed input.
+    """
+    allowed = _V6_IDENTIFIER_TYPES if version == 6 else _V4_IDENTIFIER_TYPES
+    types = request.GET.getlist("identifier_type")
+    values = request.GET.getlist("identifier")
+    if len(types) != 1 or len(values) != 1:
+        raise BadRequest("Exactly one identifier_type and one identifier query parameter are required.")
+    identifier_type, identifier = types[0].strip(), values[0].strip()
+    if not identifier_type or not identifier:
+        raise BadRequest("identifier_type and identifier must not be empty.")
+    if identifier_type not in allowed:
+        raise BadRequest(f"Unsupported identifier type for DHCPv{version}.")
+    if len(identifier) > constants.max_identifier_length(identifier_type):
+        raise BadRequest("Identifier is too long.")
+    return _ReservationLookup(subnet_id=subnet_id, identifier_type=identifier_type, identifier=identifier)
+
+
+def _apply_v6_addresses_and_prefixes(reservation: dict[str, Any], cleaned_data: dict[str, Any]) -> None:
+    """Write the submitted addresses and delegated prefixes onto *reservation*.
+
+    A blank field removes the key rather than writing an empty list, so a DHCPv6
+    reservation can drop its addresses (becoming prefix-only) or its prefixes without
+    Kea being sent an empty collection.  Disabled fields resolve to their initial
+    value, so on the IP-keyed route this writes back what was reloaded from Kea.
+    """
+    addresses = [ip.strip() for ip in (cleaned_data.get("ip_addresses") or "").split(",") if ip.strip()]
+    if addresses:
+        reservation["ip-addresses"] = addresses
+    else:
+        reservation.pop("ip-addresses", None)
+    prefixes = [prefix.strip() for prefix in (cleaned_data.get("prefixes") or "").split(",") if prefix.strip()]
+    if prefixes:
+        reservation["prefixes"] = prefixes
+    else:
+        reservation.pop("prefixes", None)
+
+
+def _deleted_journal_entry(lookup: _ReservationLookup) -> dict[str, Any]:
+    """Journal payload describing which reservation was deleted.
+
+    An identifier-keyed delete has no address to record, so the identifier goes in
+    instead — otherwise the entry would not say what was removed.
+    """
+    entry: dict[str, Any] = {"subnet-id": lookup.subnet_id}
+    if lookup.ip_address:
+        entry["ip-address"] = lookup.ip_address
+    if lookup.identifier:
+        entry[lookup.identifier_type] = lookup.identifier
+    return entry
+
+
+def _send_reservation_deleted(
+    server: "Server",
+    lookup: _ReservationLookup,
+    version: int,
+    request: HttpRequest,
+) -> None:
+    """Fire ``reservation_deleted`` with the same kwargs regardless of route.
+
+    Receivers get ``ip_address``, ``identifier_type`` and ``identifier`` on every
+    delete, each ``None`` where it does not apply, rather than a payload whose shape
+    depends on which URL the operator happened to use.
+    """
+    reservation_deleted.send_robust(
+        sender=None,
+        server=server,
+        ip_address=lookup.ip_address or None,
+        identifier_type=lookup.identifier_type or None,
+        identifier=lookup.identifier or None,
+        dhcp_version=version,
+        request=request,
+    )
+
+
+class _ReservationLookupMixin:
+    """Shared addressing and field-freezing policy for the edit/delete views.
+
+    Routes differ only in how they address a reservation and which form fields that
+    makes immutable, so both are class attributes rather than branches:
+
+    - IP-keyed routes freeze the address along with the subnet and identifier, as
+      they always have.
+    - Identifier-keyed routes freeze the subnet and identifier only, leaving the
+      address editable — Kea's ``reservation-update`` replaces the whole host keyed
+      by identifier, so a reservation can gain or lose its fixed address without the
+      URL that addresses it changing.
+    """
+
+    #: 4 or 6; set by each concrete view.
+    dhcp_version: int = 4
+    #: Form fields this route fixes and the user may not change.  Empty on the delete
+    #: views, which have no form.
+    immutable_fields: frozenset[str] = frozenset()
+    #: Identifier-keyed subclasses flip this; the base routes key on the address.
+    lookup_by_identifier: bool = False
+
+    def get_lookup(self, request: HttpRequest, subnet_id: int, **kwargs) -> _ReservationLookup:
+        """Return how this route addresses the reservation."""
+        if self.lookup_by_identifier:
+            return _identifier_lookup_from_request(request, subnet_id, self.dhcp_version)
+        return _ReservationLookup(subnet_id=subnet_id, ip_address=kwargs["ip_address"])
+
+    def apply_immutable_fields(self, form) -> None:
+        """Disable the fields this route fixes.
+
+        Django resolves a disabled field to its ``initial`` value and ignores what the
+        browser submitted, which is what stops a hand-crafted POST from changing the
+        key the URL addresses.  Callers must seed ``initial`` first.
+        """
+        for name in self.immutable_fields:
+            # A stale name here would silently stop freezing a key field.
+            if name not in form.fields:
+                raise KeyError(f"{type(self).__name__}.immutable_fields names unknown form field {name!r}")
+            form.fields[name].disabled = True
+
 
 #: All known identifier keys (hyphen and underscore variants) for journal
 #: log extraction — includes normalised forms that Kea may return after
@@ -89,6 +254,26 @@ def _build_reservation_options_formset(post_data: Any) -> tuple[Any, bool]:
         fs.is_valid()  # populate errors so the template can show management-form error
         return fs, False
     return forms.ReservationOptionsFormSet(prefix="options"), True
+
+
+def _merge_reservation_option_data(reservation: dict[str, Any], options_formset: Any) -> None:
+    """Apply the submitted options formset onto *reservation* in place.
+
+    An unbound formset, or a bound one reporting no initial and no submitted forms, means the
+    options section was not part of this submission, so existing ``option-data`` is left alone.
+    """
+    option_data = [
+        {"name": f["name"], "data": f["data"], **({"always-send": True} if f.get("always_send") else {})}
+        for f in (getattr(options_formset, "cleaned_data", []) or [])
+        if f and f.get("name") and not f.get("DELETE")
+    ]
+    submitted = bool(options_formset.is_bound) and bool(
+        options_formset.total_form_count() or options_formset.initial_form_count()
+    )
+    if option_data:
+        reservation["option-data"] = option_data
+    elif submitted or not reservation.get("option-data"):
+        reservation.pop("option-data", None)
 
 
 def _add_reservation_journal(server: "Server", user: Any, action: str, reservation: dict) -> None:
@@ -164,7 +349,14 @@ def _run_reservation_success_side_effects(
         dhcp_version=dhcp_version,
         request=request,
     )
-    if sync_to_netbox and not (
+    _v4_ip = reservation.get("ip-address") or ""
+    _v6_ips = reservation.get("ip-addresses")
+    has_address = bool(_v4_ip) or bool(isinstance(_v6_ips, list) and _v6_ips)
+    if sync_to_netbox and not has_address:
+        # Checked before the permission test: there is nothing to write to IPAM, so
+        # "requires IPAM permission" would be a misleading reason to report.
+        messages.info(request, f"Reservation {action}. Nothing to sync to NetBox — it reserves no IP address.")
+    elif sync_to_netbox and not (
         request.user.has_perm("ipam.add_ipaddress") and request.user.has_perm("ipam.change_ipaddress")
     ):
         # The sync below uses force=True, overriding the foreign-IP guard and
@@ -173,8 +365,6 @@ def _run_reservation_success_side_effects(
         logger.warning("User %r ticked sync-to-NetBox without IPAM write permission — sync skipped", request.user)
         messages.warning(request, f"Reservation {action}, but it was not synced to NetBox (requires IPAM permission).")
     elif sync_to_netbox:
-        _v4_ip = reservation.get("ip-address") or ""
-        _v6_ips = reservation.get("ip-addresses")
         if isinstance(_v6_ips, list) and len(_v6_ips) > 1:
             ip_label = f"{len(_v6_ips)} addresses"
         else:
@@ -192,6 +382,50 @@ def _run_reservation_success_side_effects(
         messages.warning(request, "Change applied but may not survive a Kea restart (config-write failed).")
 
 
+#: Lease keys that carry a client identifier, per DHCP version.  A DHCPv4 lease reports
+#: ``hw-address`` and ``client-id``; a DHCPv6 lease reports ``duid`` and, when Kea could
+#: derive one, ``hw-address``.  The opaque identifiers (circuit-id, flex-id, remote-id)
+#: appear on no lease, so a reservation keyed by one has nothing to match on.
+_LEASE_IDENTIFIER_KEYS: dict[int, tuple[str, ...]] = {
+    4: ("hw-address", "client-id"),
+    6: ("duid", "hw-address"),
+}
+
+_HEX_DIGITS = frozenset("0123456789abcdef")
+
+
+def _normalise_identifier_value(value: Any) -> str:
+    """Return *value* as lower-case colon-delimited hex octets, or ``""`` if it is not hex.
+
+    Kea and the operator write the same identifier several ways ("AA-BB-CC", "aabbcc"),
+    so both sides of an identifier match go through this.
+    """
+    if not isinstance(value, str):
+        return ""
+    compact = value.replace(":", "").replace("-", "").lower()
+    if not compact or len(compact) % 2 or not set(compact) <= _HEX_DIGITS:
+        return ""
+    return ":".join(compact[i : i + 2] for i in range(0, len(compact), 2))
+
+
+def _lease_identifiers(lease: dict[str, Any], version: int) -> set[str]:
+    """Return the normalised client identifiers *lease* carries."""
+    found = {_normalise_identifier_value(lease.get(key)) for key in _LEASE_IDENTIFIER_KEYS[version]}
+    found.discard("")
+    return found
+
+
+def _reservation_lease_identifier(reservation: dict[str, Any], version: int) -> str:
+    """Return the normalised identifier this reservation can be matched to a lease by.
+
+    Empty when the reservation is keyed by something no lease reports.
+    """
+    identifier_type, identifier = _get_reservation_identifier(reservation, version)
+    if identifier_type not in _LEASE_IDENTIFIER_KEYS[version]:
+        return ""
+    return _normalise_identifier_value(identifier)
+
+
 def _enrich_reservations_with_lease_status(client: "KeaClient", reservations: list[dict], version: int) -> None:  # noqa: C901
     """Enrich each reservation dict with ``has_active_lease`` (bool | None).
 
@@ -200,6 +434,10 @@ def _enrich_reservations_with_lease_status(client: "KeaClient", reservations: li
     reservation.  Leaves ``has_active_lease`` unset (None) if the ``lease_cmds``
     hook is unavailable or an unexpected error occurs, so the template can
     distinguish "unknown" from "no lease".
+
+    A reservation that reserves no address has no IP to match a lease on, so it is
+    matched by client identifier instead — within its own subnet only, since the same
+    client holding a lease in another subnet is a different reservation's row.
 
     Args:
         client: Connected KeaClient for the server.
@@ -215,10 +453,12 @@ def _enrich_reservations_with_lease_status(client: "KeaClient", reservations: li
     unique_subnet_ids = {r.get("subnet-id") for r in reservations if isinstance(r.get("subnet-id"), (int, str))}
 
     active_lease_ips: set[str] = set()
+    # Normalised lease identifiers per subnet, for the address-less rows.
+    subnet_lease_identifiers: dict[Any, set[str]] = {}
     hook_unavailable = False
 
-    def _fetch_leases_for_subnet(sid: int) -> list[str] | None | bool:
-        """Return list of lease IPs, None if the lease_cmds hook is not loaded, or False on error."""
+    def _fetch_leases_for_subnet(sid: int) -> tuple[list[str], set[str]] | None | bool:
+        """Return (lease IPs, client identifiers), None if the lease_cmds hook is not loaded, or False on error."""
         with client.clone() as worker_client:  # requests.Session is not thread-safe
             try:
                 resp = worker_client.command(
@@ -237,8 +477,12 @@ def _enrich_reservations_with_lease_status(client: "KeaClient", reservations: li
                     leases = args.get("leases") or []
                     if not isinstance(leases, list):
                         return False  # malformed payload — indeterminate state
-                    return [lease.get("ip-address", "") for lease in leases if isinstance(lease, dict)]
-                return []
+                    valid = [lease for lease in leases if isinstance(lease, dict)]
+                    identifiers: set[str] = set()
+                    for lease in valid:
+                        identifiers |= _lease_identifiers(lease, version)
+                    return [lease.get("ip-address", "") for lease in valid], identifiers
+                return [], set()
             except KeaException as exc:
                 if exc.response.get("result") == 2:
                     return None  # hook not loaded
@@ -263,8 +507,9 @@ def _enrich_reservations_with_lease_status(client: "KeaClient", reservations: li
                 elif result is False:
                     indeterminate_subnet_ids.add(sid)
                 else:
-                    for ip in result:
-                        active_lease_ips.add(ip)
+                    ips, identifiers = result
+                    active_lease_ips.update(ips)
+                    subnet_lease_identifiers.setdefault(sid, set()).update(identifiers)
     except Exception:  # noqa: BLE001
         logger.debug("Enrichment task failed", exc_info=True)
         return
@@ -286,7 +531,12 @@ def _enrich_reservations_with_lease_status(client: "KeaClient", reservations: li
         raw_ips = r.get("ip-addresses")
         if isinstance(raw_ips, list):
             addrs.extend(raw_ips)
-        r["has_active_lease"] = any(a in active_lease_ips for a in addrs)
+        if addrs:
+            r["has_active_lease"] = any(a in active_lease_ips for a in addrs)
+            continue
+        identifier = _reservation_lease_identifier(r, version)
+        in_own_subnet = subnet_lease_identifiers.get(subnet_id_r) or frozenset()
+        r["has_active_lease"] = bool(identifier) and identifier in in_own_subnet
 
 
 def _filter_reservations(
@@ -385,6 +635,7 @@ class ServerReservations4View(generic.ObjectView):
             r["server_pk"] = server.pk
             r.setdefault("ip_address", r.get("ip-address", ""))
             r.setdefault("subnet_id", r.get("subnet-id", 0))
+            _normalise_reservation_identifier(r, 4)
             _enrich_reservation_sort_key(r)
 
         # Apply search filter before enrichment to avoid unnecessary Kea API calls.
@@ -402,6 +653,7 @@ class ServerReservations4View(generic.ObjectView):
         _enrich_reservations_with_badges(reservations, server, 4, can_change=can_change)
         for r in reservations:
             r["can_change"] = can_change
+        _attach_reservation_action_urls(reservations, server.pk, 4, can_change=can_change)
 
         table = tables.ReservationTable4(reservations, user=request.user)
         table.configure(request)
@@ -460,6 +712,8 @@ class ServerReservations6View(generic.ObjectView):
             r["ip_address"] = ip_addrs[0] if ip_addrs else ""
             r["extra_ips"] = ip_addrs[1:]
             r.setdefault("subnet_id", r.get("subnet-id", 0))
+            _normalise_reservation_identifier(r, 6)
+            _normalise_reservation_prefixes(r)
             _enrich_reservation_sort_key(r)
 
         # Apply search filter before enrichment to avoid unnecessary Kea API calls.
@@ -477,6 +731,7 @@ class ServerReservations6View(generic.ObjectView):
         _enrich_reservations_with_badges(reservations, server, 6, can_change=can_change)
         for r in reservations:
             r["can_change"] = can_change
+        _attach_reservation_action_urls(reservations, server.pk, 6, can_change=can_change)
 
         table = tables.ReservationTable6(reservations, user=request.user)
         table.configure(request)
@@ -535,9 +790,12 @@ class ServerReservation4AddView(_KeaChangeMixin, generic.ObjectView):
             cd = form.cleaned_data
             reservation = {
                 "subnet-id": cd["subnet_id"],
-                "ip-address": cd["ip_address"],
                 cd["identifier_type"]: cd["identifier"],
             }
+            # Omit the key entirely rather than sending an empty address: a host may
+            # legally reserve only a hostname, options or client classes.
+            if cd.get("ip_address"):
+                reservation["ip-address"] = cd["ip_address"]
             if cd.get("hostname"):
                 reservation["hostname"] = cd["hostname"]
             option_data = [
@@ -565,14 +823,17 @@ class ServerReservation4AddView(_KeaChangeMixin, generic.ObjectView):
                         "tab": self.tab,
                     },
                 )
-            # Advisory warning when the reservation IP is inside an existing pool (non-fatal)
-            try:
-                _warn_reservation_pool_overlap(request, client, 4, cd["subnet_id"], cd["ip_address"])
-            except Exception:  # noqa: BLE001
-                logger.debug("Pool overlap check failed for %s", cd.get("ip_address"), exc_info=True)
+            # Advisory warning when the reservation IP is inside an existing pool (non-fatal).
+            # Nothing to check when the reservation has no address.
+            if cd.get("ip_address"):
+                try:
+                    _warn_reservation_pool_overlap(request, client, 4, cd["subnet_id"], cd["ip_address"])
+                except Exception:  # noqa: BLE001
+                    logger.debug("Pool overlap check failed for %s", cd.get("ip_address"), exc_info=True)
+            subject = cd.get("ip_address") or f"{cd['identifier_type']} {cd['identifier']}"
             try:
                 client.reservation_add("dhcp4", reservation)
-                messages.success(request, f"Reservation for {cd['ip_address']} created.")
+                messages.success(request, f"Reservation for {subject} created.")
                 _run_reservation_success_side_effects(
                     request, server, reservation, 4, "created", bool(cd.get("sync_to_netbox"))
                 )
@@ -618,7 +879,7 @@ class ServerReservation6AddView(_KeaChangeMixin, generic.ObjectView):
         server = self.get_object(pk=pk)
         initial = {
             k: request.GET.get(k, "")
-            for k in ("subnet_id", "ip_addresses", "identifier_type", "identifier", "hostname")
+            for k in ("subnet_id", "ip_addresses", "prefixes", "identifier_type", "identifier", "hostname")
         }
         initial = {k: v for k, v in initial.items() if v}
         return render(
@@ -645,9 +906,11 @@ class ServerReservation6AddView(_KeaChangeMixin, generic.ObjectView):
             cd = form.cleaned_data
             reservation: dict[str, Any] = {
                 "subnet-id": cd["subnet_id"],
-                "ip-addresses": [ip.strip() for ip in cd["ip_addresses"].split(",") if ip.strip()],
                 cd["identifier_type"]: cd["identifier"],
             }
+            # Omit empty collections rather than sending them: a DHCPv6 host may
+            # reserve only delegated prefixes, or only a hostname and options.
+            _apply_v6_addresses_and_prefixes(reservation, cd)
             if cd.get("hostname"):
                 reservation["hostname"] = cd["hostname"]
             option_data = [
@@ -718,33 +981,37 @@ class ServerReservation6AddView(_KeaChangeMixin, generic.ObjectView):
         )
 
 
-class ServerReservation4EditView(_KeaChangeMixin, generic.ObjectView):
-    """Edit an existing DHCPv4 host reservation."""
+class ServerReservation4EditView(_ReservationLookupMixin, _KeaChangeMixin, generic.ObjectView):
+    """Edit an existing DHCPv4 host reservation, addressed by IP."""
 
     queryset = Server.objects.all()
     template_name = "netbox_kea/server_reservation_form.html"
     tab = _RESERVATIONS_TAB
+    dhcp_version = 4
+    immutable_fields = frozenset({"subnet_id", "ip_address", "identifier_type", "identifier"})
 
-    def _get_reservation(self, server: Server, subnet_id: int, ip_address: str) -> dict | None:
+    def _get_reservation(self, server: Server, lookup: _ReservationLookup) -> dict | None:
         client = server.get_client(version=4)
-        return client.reservation_get("dhcp4", subnet_id=subnet_id, ip_address=ip_address)
+        return client.reservation_get("dhcp4", **lookup.to_kwargs())
 
-    def get(self, request: HttpRequest, pk: int, subnet_id: int, ip_address: str) -> HttpResponse:
+    def get(self, request: HttpRequest, pk: int, subnet_id: int, **kwargs) -> HttpResponse:
         """Pre-populate form with existing reservation data."""
         server = self.get_object(pk=pk)
+        lookup = self.get_lookup(request, subnet_id, **kwargs)
+        ip_address = lookup.ip_address
         return_url = reverse("plugins:netbox_kea:server_reservations4", args=[pk])
         try:
-            reservation = self._get_reservation(server, subnet_id, ip_address)
+            reservation = self._get_reservation(server, lookup)
         except KeaException as exc:
-            logger.exception("Failed to fetch DHCPv4 reservation %s in subnet %s", ip_address, subnet_id)
+            logger.exception("Failed to fetch DHCPv4 reservation %s in subnet %s", lookup.label, subnet_id)
             messages.error(request, kea_error_hint(exc))
             return redirect(return_url)
         except (requests.RequestException, ValueError):
-            logger.exception("Failed to fetch DHCPv4 reservation %s in subnet %s", ip_address, subnet_id)
+            logger.exception("Failed to fetch DHCPv4 reservation %s in subnet %s", lookup.label, subnet_id)
             messages.error(request, "Failed to retrieve reservation: see server logs for details.")
             return redirect(return_url)
         if reservation is None:
-            raise Http404(f"Reservation {ip_address} not found in subnet {subnet_id}")
+            raise Http404(f"Reservation {lookup.label} not found in subnet {subnet_id}")
         identifier_type, identifier = _get_reservation_identifier(reservation, 4)
         initial = {
             "subnet_id": reservation.get("subnet-id", subnet_id),
@@ -770,54 +1037,57 @@ class ServerReservation4EditView(_KeaChangeMixin, generic.ObjectView):
             "return_url": return_url,
             "tab": self.tab,
         }
-        # Key fields are URL-derived — disable so browsers render them read-only.
-        for field_name in ("subnet_id", "ip_address", "identifier_type", "identifier"):
-            context["form"].fields[field_name].disabled = True
-        try:
-            lease = server.get_client(version=4).lease_get_by_ip(4, ip_address)
-            if lease and lease.get("hostname") and lease.get("hostname") != reservation.get("hostname", ""):
-                context["lease_diff"] = {"hostname": lease["hostname"]}
-        except (KeaException, requests.RequestException, ValueError):
-            logger.debug("Could not fetch lease for reservation edit diff (ip=%s)", ip_address, exc_info=True)
+        self.apply_immutable_fields(context["form"])
+        if ip_address:
+            try:
+                lease = server.get_client(version=4).lease_get_by_ip(4, ip_address)
+                if lease and lease.get("hostname") and lease.get("hostname") != reservation.get("hostname", ""):
+                    context["lease_diff"] = {"hostname": lease["hostname"]}
+            except (KeaException, requests.RequestException, ValueError):
+                logger.debug("Could not fetch lease for reservation edit diff (ip=%s)", ip_address, exc_info=True)
         return render(request, self.template_name, context)
 
-    def post(self, request: HttpRequest, pk: int, subnet_id: int, ip_address: str) -> HttpResponse:
+    def post(self, request: HttpRequest, pk: int, subnet_id: int, **kwargs) -> HttpResponse:
         """Validate and submit updated reservation to Kea."""
         server = self.get_object(pk=pk)
+        lookup = self.get_lookup(request, subnet_id, **kwargs)
+        ip_address = lookup.ip_address
         return_url = reverse("plugins:netbox_kea:server_reservations4", args=[pk])
         # Fetch existing before form construction so identifier fields can be seeded and disabled,
         # preventing browser-omitted disabled fields from failing form validation.
         try:
-            existing = self._get_reservation(server, subnet_id, ip_address)
+            existing = self._get_reservation(server, lookup)
         except (KeaException, requests.RequestException, ValueError):
-            logger.exception("Could not fetch existing DHCPv4 reservation for edit (ip=%s)", ip_address)
+            logger.exception("Could not fetch existing DHCPv4 reservation for edit (%s)", lookup.label)
             messages.error(request, "Failed to reload the existing reservation. Edit aborted.")
             return redirect(return_url)
         if existing is None:
-            messages.error(request, f"Reservation {ip_address} no longer exists in subnet {subnet_id}.")
+            messages.error(request, f"Reservation {lookup.label} no longer exists in subnet {subnet_id}.")
             return redirect(return_url)
         existing_id_type, existing_id_value = _get_reservation_identifier(existing, 4)
         form = forms.Reservation4Form(
             data=request.POST,
             initial={
                 "subnet_id": subnet_id,
-                "ip_address": ip_address,
+                "ip_address": existing.get("ip-address", ip_address),
                 "identifier_type": existing_id_type,
                 "identifier": existing_id_value,
             },
         )
-        # Mark key fields as disabled — Django uses initial values for validation and rendering.
-        form.fields["subnet_id"].disabled = True
-        form.fields["ip_address"].disabled = True
-        form.fields["identifier_type"].disabled = True
-        form.fields["identifier"].disabled = True
+        # Django takes a disabled field's value from initial, so seeding must precede this.
+        self.apply_immutable_fields(form)
         options_formset, options_valid = _build_reservation_options_formset(request.POST)
         if form.is_valid() and options_valid:
             cd = form.cleaned_data
             # Start from existing data and overwrite user-editable fields (merge not replace).
             reservation: dict[str, Any] = dict(existing)
             reservation["subnet-id"] = subnet_id
-            reservation["ip-address"] = ip_address
+            # Disabled fields resolve to their initial value, so this is the URL-derived
+            # address on the IP-keyed route and the submitted one where it is editable.
+            if cd.get("ip_address"):
+                reservation["ip-address"] = cd["ip_address"]
+            else:
+                reservation.pop("ip-address", None)
             # Replace identifier — remove all known identifier keys first.
             for _id_key in _ALL_IDENTIFIER_KEYS:
                 reservation.pop(_id_key, None)
@@ -826,19 +1096,11 @@ class ServerReservation4EditView(_KeaChangeMixin, generic.ObjectView):
                 reservation["hostname"] = cd["hostname"]
             else:
                 reservation.pop("hostname", None)
-            option_data = [
-                {"name": f["name"], "data": f["data"], **({"always-send": True} if f.get("always_send") else {})}
-                for f in (getattr(options_formset, "cleaned_data", []) or [])
-                if f and f.get("name") and not f.get("DELETE")
-            ]
-            if option_data:
-                reservation["option-data"] = option_data
-            else:
-                reservation.pop("option-data", None)
+            _merge_reservation_option_data(reservation, options_formset)
             try:
                 client = server.get_client(version=4)
                 client.reservation_update("dhcp4", reservation)
-                messages.success(request, f"Reservation for {ip_address} updated.")
+                messages.success(request, f"Reservation for {lookup.label} updated.")
                 _run_reservation_success_side_effects(
                     request, server, reservation, 4, "updated", bool(cd.get("sync_to_netbox"))
                 )
@@ -849,13 +1111,13 @@ class ServerReservation4EditView(_KeaChangeMixin, generic.ObjectView):
                 )
                 return redirect(return_url)
             except KeaException as exc:
-                logger.exception("Failed to update DHCPv4 reservation for %s", ip_address)
+                logger.exception("Failed to update DHCPv4 reservation for %s", lookup.label)
                 messages.error(request, kea_error_hint(exc))
             except requests.RequestException:
-                logger.exception("Network error updating DHCPv4 reservation for %s", ip_address)
+                logger.exception("Network error updating DHCPv4 reservation for %s", lookup.label)
                 messages.error(request, "Network error communicating with Kea: see server logs.")
             except ValueError:
-                logger.exception("Invalid Kea response when updating DHCPv4 reservation for %s", ip_address)
+                logger.exception("Invalid Kea response when updating DHCPv4 reservation for %s", lookup.label)
                 messages.error(request, "Invalid response from Kea: see server logs.")
         return render(
             request,
@@ -872,33 +1134,37 @@ class ServerReservation4EditView(_KeaChangeMixin, generic.ObjectView):
         )
 
 
-class ServerReservation6EditView(_KeaChangeMixin, generic.ObjectView):
-    """Edit an existing DHCPv6 host reservation."""
+class ServerReservation6EditView(_ReservationLookupMixin, _KeaChangeMixin, generic.ObjectView):
+    """Edit an existing DHCPv6 host reservation, addressed by IP."""
 
     queryset = Server.objects.all()
     template_name = "netbox_kea/server_reservation_form.html"
     tab = _RESERVATIONS_TAB
+    dhcp_version = 6
+    immutable_fields = frozenset({"subnet_id", "ip_addresses", "identifier_type", "identifier"})
 
-    def _get_reservation(self, server: Server, subnet_id: int, ip_address: str) -> dict | None:
+    def _get_reservation(self, server: Server, lookup: _ReservationLookup) -> dict | None:
         client = server.get_client(version=6)
-        return client.reservation_get("dhcp6", subnet_id=subnet_id, ip_address=ip_address)
+        return client.reservation_get("dhcp6", **lookup.to_kwargs())
 
-    def get(self, request: HttpRequest, pk: int, subnet_id: int, ip_address: str) -> HttpResponse:
+    def get(self, request: HttpRequest, pk: int, subnet_id: int, **kwargs) -> HttpResponse:
         """Pre-populate form with existing DHCPv6 reservation data."""
         server = self.get_object(pk=pk)
+        lookup = self.get_lookup(request, subnet_id, **kwargs)
+        ip_address = lookup.ip_address
         return_url = reverse("plugins:netbox_kea:server_reservations6", args=[pk])
         try:
-            reservation = self._get_reservation(server, subnet_id, ip_address)
+            reservation = self._get_reservation(server, lookup)
         except KeaException as exc:
-            logger.exception("Failed to fetch DHCPv6 reservation %s in subnet %s", ip_address, subnet_id)
+            logger.exception("Failed to fetch DHCPv6 reservation %s in subnet %s", lookup.label, subnet_id)
             messages.error(request, kea_error_hint(exc))
             return redirect(return_url)
         except (requests.RequestException, ValueError):
-            logger.exception("Failed to fetch DHCPv6 reservation %s in subnet %s", ip_address, subnet_id)
+            logger.exception("Failed to fetch DHCPv6 reservation %s in subnet %s", lookup.label, subnet_id)
             messages.error(request, "Failed to retrieve reservation: see server logs for details.")
             return redirect(return_url)
         if reservation is None:
-            raise Http404(f"Reservation {ip_address} not found in subnet {subnet_id}")
+            raise Http404(f"Reservation {lookup.label} not found in subnet {subnet_id}")
         identifier_type, identifier = _get_reservation_identifier(reservation, 6)
         raw_ip_list = reservation.get("ip-addresses")
         if isinstance(raw_ip_list, list):
@@ -906,10 +1172,12 @@ class ServerReservation6EditView(_KeaChangeMixin, generic.ObjectView):
         elif isinstance(raw_ip_list, str) and raw_ip_list:
             ip_list = [raw_ip_list]
         else:
-            ip_list = [ip_address]
+            # A prefix-delegation-only reservation has no addresses at all.
+            ip_list = [ip_address] if ip_address else []
         initial = {
             "subnet_id": reservation.get("subnet-id", subnet_id),
             "ip_addresses": ",".join(ip_list),
+            "prefixes": ",".join(_reservation_prefix_list(reservation)),
             "identifier_type": identifier_type,
             "identifier": identifier,
             "hostname": reservation.get("hostname", ""),
@@ -931,33 +1199,33 @@ class ServerReservation6EditView(_KeaChangeMixin, generic.ObjectView):
             "return_url": return_url,
             "tab": self.tab,
         }
-        # Key fields are URL-derived — disable so browsers render them read-only.
-        for field_name in ("subnet_id", "ip_addresses", "identifier_type", "identifier"):
-            context["form"].fields[field_name].disabled = True
-        try:
-            lease = server.get_client(version=6).lease_get_by_ip(6, ip_address)
-            if lease and lease.get("hostname") and lease.get("hostname") != reservation.get("hostname", ""):
-                context["lease_diff"] = {"hostname": lease["hostname"]}
-        except (KeaException, requests.RequestException, ValueError):
-            logger.debug("Could not fetch lease for reservation edit diff (ip=%s)", ip_address, exc_info=True)
+        self.apply_immutable_fields(context["form"])
+        if ip_address:
+            try:
+                lease = server.get_client(version=6).lease_get_by_ip(6, ip_address)
+                if lease and lease.get("hostname") and lease.get("hostname") != reservation.get("hostname", ""):
+                    context["lease_diff"] = {"hostname": lease["hostname"]}
+            except (KeaException, requests.RequestException, ValueError):
+                logger.debug("Could not fetch lease for reservation edit diff (ip=%s)", ip_address, exc_info=True)
         return render(request, self.template_name, context)
 
-    def post(self, request: HttpRequest, pk: int, subnet_id: int, ip_address: str) -> HttpResponse:
+    def post(self, request: HttpRequest, pk: int, subnet_id: int, **kwargs) -> HttpResponse:
         """Validate and submit updated DHCPv6 reservation to Kea."""
         server = self.get_object(pk=pk)
+        lookup = self.get_lookup(request, subnet_id, **kwargs)
         return_url = reverse("plugins:netbox_kea:server_reservations6", args=[pk])
         # Fetch existing reservation before form construction (#51) so ip_addresses initial is
         # accurate on re-render, and to enable merge-not-replace for all reservation keys (#52).
         try:
-            existing = self._get_reservation(server, subnet_id, ip_address)
+            existing = self._get_reservation(server, lookup)
         except (KeaException, requests.RequestException, ValueError):
-            logger.exception("Could not fetch existing DHCPv6 reservation for edit (ip=%s)", ip_address)
+            logger.exception("Could not fetch existing DHCPv6 reservation for edit (%s)", lookup.label)
             messages.error(
                 request, "Failed to reload the existing DHCPv6 reservation. Edit aborted to prevent IP loss."
             )
             return redirect(return_url)
         if existing is None:
-            messages.error(request, f"Reservation {ip_address} no longer exists in subnet {subnet_id}.")
+            messages.error(request, f"Reservation {lookup.label} no longer exists in subnet {subnet_id}.")
             return redirect(return_url)
         raw_existing_ips = existing.get("ip-addresses")
         if isinstance(raw_existing_ips, list):
@@ -966,7 +1234,10 @@ class ServerReservation6EditView(_KeaChangeMixin, generic.ObjectView):
             existing_ips = [raw_existing_ips]
         else:
             existing_ips = []
-        if not existing_ips:
+        # An IP-keyed edit that reloads no addresses means the reload lost them, and
+        # writing that back would delete the reservation's IPs.  An identifier-keyed
+        # edit of a prefix-delegation-only host legitimately has none.
+        if not existing_ips and not lookup.by_identifier:
             messages.error(
                 request, "Failed to reload the existing DHCPv6 reservation. Edit aborted to prevent IP loss."
             )
@@ -977,22 +1248,20 @@ class ServerReservation6EditView(_KeaChangeMixin, generic.ObjectView):
             initial={
                 "subnet_id": subnet_id,
                 "ip_addresses": ",".join(existing_ips),
+                "prefixes": ",".join(_reservation_prefix_list(existing)),
                 "identifier_type": existing_id_type,
                 "identifier": existing_id_value,
             },
         )
-        # Mark key fields as disabled — Django uses initial values for validation and rendering.
-        form.fields["subnet_id"].disabled = True
-        form.fields["ip_addresses"].disabled = True
-        form.fields["identifier_type"].disabled = True
-        form.fields["identifier"].disabled = True
+        # Django takes a disabled field's value from initial, so seeding must precede this.
+        self.apply_immutable_fields(form)
         options_formset, options_valid = _build_reservation_options_formset(request.POST)
         if form.is_valid() and options_valid:
             cd = form.cleaned_data
             # Start from existing data and overwrite user-editable fields (merge not replace #52).
             reservation: dict[str, Any] = dict(existing)
             reservation["subnet-id"] = subnet_id
-            reservation["ip-addresses"] = existing_ips
+            _apply_v6_addresses_and_prefixes(reservation, cd)
             # Replace identifier — remove all known identifier keys first.
             for _id_key in _ALL_IDENTIFIER_KEYS:
                 reservation.pop(_id_key, None)
@@ -1001,15 +1270,7 @@ class ServerReservation6EditView(_KeaChangeMixin, generic.ObjectView):
                 reservation["hostname"] = cd["hostname"]
             else:
                 reservation.pop("hostname", None)
-            option_data = [
-                {"name": f["name"], "data": f["data"], **({"always-send": True} if f.get("always_send") else {})}
-                for f in (getattr(options_formset, "cleaned_data", []) or [])
-                if f and f.get("name") and not f.get("DELETE")
-            ]
-            if option_data:
-                reservation["option-data"] = option_data
-            else:
-                reservation.pop("option-data", None)
+            _merge_reservation_option_data(reservation, options_formset)
             try:
                 client = server.get_client(version=6)
                 client.reservation_update("dhcp6", reservation)
@@ -1024,13 +1285,13 @@ class ServerReservation6EditView(_KeaChangeMixin, generic.ObjectView):
                 )
                 return redirect(return_url)
             except KeaException as exc:
-                logger.exception("Failed to update DHCPv6 reservation for %s", ip_address)
+                logger.exception("Failed to update DHCPv6 reservation for %s", lookup.label)
                 messages.error(request, kea_error_hint(exc))
             except requests.RequestException:
-                logger.exception("Network error updating DHCPv6 reservation for %s", ip_address)
+                logger.exception("Network error updating DHCPv6 reservation for %s", lookup.label)
                 messages.error(request, "Network error communicating with Kea: see server logs.")
             except ValueError:
-                logger.exception("Invalid Kea response when updating DHCPv6 reservation for %s", ip_address)
+                logger.exception("Invalid Kea response when updating DHCPv6 reservation for %s", lookup.label)
                 messages.error(request, "Invalid response from Kea: see server logs.")
         return render(
             request,
@@ -1047,22 +1308,25 @@ class ServerReservation6EditView(_KeaChangeMixin, generic.ObjectView):
         )
 
 
-class ServerReservation4DeleteView(_KeaChangeMixin, generic.ObjectView):
-    """Delete confirmation for a DHCPv4 host reservation."""
+class ServerReservation4DeleteView(_ReservationLookupMixin, _KeaChangeMixin, generic.ObjectView):
+    """Delete confirmation for a DHCPv4 host reservation, addressed by IP."""
 
     queryset = Server.objects.all()
     template_name = "netbox_kea/server_reservation_delete.html"
     tab = _RESERVATIONS_TAB
+    dhcp_version = 4
 
-    def get(self, request: HttpRequest, pk: int, subnet_id: int, ip_address: str) -> HttpResponse:
+    def get(self, request: HttpRequest, pk: int, subnet_id: int, **kwargs) -> HttpResponse:
         """Show deletion confirmation page."""
         server = self.get_object(pk=pk)
+        lookup = self.get_lookup(request, subnet_id, **kwargs)
         return render(
             request,
             self.template_name,
             {
                 "object": server,
-                "ip_address": ip_address,
+                "ip_address": lookup.ip_address,
+                "reservation_label": lookup.label,
                 "subnet_id": subnet_id,
                 "dhcp_version": 4,
                 "return_url": reverse("plugins:netbox_kea:server_reservations4", args=[pk]),
@@ -1070,65 +1334,52 @@ class ServerReservation4DeleteView(_KeaChangeMixin, generic.ObjectView):
             },
         )
 
-    def post(self, request: HttpRequest, pk: int, subnet_id: int, ip_address: str) -> HttpResponse:
+    def post(self, request: HttpRequest, pk: int, subnet_id: int, **kwargs) -> HttpResponse:
         """Issue reservation-del to Kea and redirect."""
         server = self.get_object(pk=pk)
+        lookup = self.get_lookup(request, subnet_id, **kwargs)
         return_url = reverse("plugins:netbox_kea:server_reservations4", args=[pk])
         try:
             client = server.get_client(version=4)
-            client.reservation_del("dhcp4", subnet_id=subnet_id, ip_address=ip_address)
-            messages.success(request, f"Reservation for {ip_address} deleted.")
-            _add_reservation_journal(
-                server, request.user, "deleted", {"ip-address": ip_address, "subnet-id": subnet_id}
-            )
-
-            reservation_deleted.send_robust(
-                sender=None,
-                server=server,
-                ip_address=ip_address,
-                dhcp_version=4,
-                request=request,
-            )
+            client.reservation_del("dhcp4", **lookup.to_kwargs())
+            messages.success(request, f"Reservation for {lookup.label} deleted.")
+            _add_reservation_journal(server, request.user, "deleted", _deleted_journal_entry(lookup))
+            _send_reservation_deleted(server, lookup, 4, request)
         except PartialPersistError:
-            _add_reservation_journal(
-                server, request.user, "deleted", {"ip-address": ip_address, "subnet-id": subnet_id}
-            )
-            reservation_deleted.send_robust(
-                sender=None,
-                server=server,
-                ip_address=ip_address,
-                dhcp_version=4,
-                request=request,
-            )
+            _add_reservation_journal(server, request.user, "deleted", _deleted_journal_entry(lookup))
+            _send_reservation_deleted(server, lookup, 4, request)
             messages.warning(request, "Change applied but may not survive a Kea restart (config-write failed).")
         except KeaException as exc:
-            logger.exception("Failed to delete DHCPv4 reservation for %s", ip_address)
+            logger.exception("Failed to delete DHCPv4 reservation for %s", lookup.label)
             messages.error(request, kea_error_hint(exc))
         except requests.RequestException:
-            logger.exception("Network error deleting DHCPv4 reservation for %s", ip_address)
+            logger.exception("Network error deleting DHCPv4 reservation for %s", lookup.label)
             messages.error(request, "Network error communicating with Kea: see server logs.")
         except ValueError:
-            logger.exception("Invalid Kea response when deleting DHCPv4 reservation for %s", ip_address)
+            logger.exception("Invalid Kea response when deleting DHCPv4 reservation for %s", lookup.label)
             messages.error(request, "Invalid response from Kea: see server logs.")
         return redirect(return_url)
 
 
-class ServerReservation6DeleteView(_KeaChangeMixin, generic.ObjectView):
-    """Delete confirmation for a DHCPv6 host reservation."""
+class ServerReservation6DeleteView(_ReservationLookupMixin, _KeaChangeMixin, generic.ObjectView):
+    """Delete confirmation for a DHCPv6 host reservation, addressed by IP."""
 
     queryset = Server.objects.all()
     template_name = "netbox_kea/server_reservation_delete.html"
     tab = _RESERVATIONS_TAB
+    dhcp_version = 6
 
-    def get(self, request: HttpRequest, pk: int, subnet_id: int, ip_address: str) -> HttpResponse:
+    def get(self, request: HttpRequest, pk: int, subnet_id: int, **kwargs) -> HttpResponse:
         """Show deletion confirmation page."""
         server = self.get_object(pk=pk)
+        lookup = self.get_lookup(request, subnet_id, **kwargs)
         return render(
             request,
             self.template_name,
             {
                 "object": server,
-                "ip_address": ip_address,
+                "ip_address": lookup.ip_address,
+                "reservation_label": lookup.label,
                 "subnet_id": subnet_id,
                 "dhcp_version": 6,
                 "return_url": reverse("plugins:netbox_kea:server_reservations6", args=[pk]),
@@ -1136,47 +1387,67 @@ class ServerReservation6DeleteView(_KeaChangeMixin, generic.ObjectView):
             },
         )
 
-    def post(self, request: HttpRequest, pk: int, subnet_id: int, ip_address: str) -> HttpResponse:
+    def post(self, request: HttpRequest, pk: int, subnet_id: int, **kwargs) -> HttpResponse:
         """Issue reservation-del to Kea and redirect."""
         server = self.get_object(pk=pk)
+        lookup = self.get_lookup(request, subnet_id, **kwargs)
         return_url = reverse("plugins:netbox_kea:server_reservations6", args=[pk])
         try:
             client = server.get_client(version=6)
-            client.reservation_del("dhcp6", subnet_id=subnet_id, ip_address=ip_address)
-            messages.success(request, f"DHCPv6 reservation for {ip_address} deleted.")
-            _add_reservation_journal(
-                server, request.user, "deleted", {"ip-address": ip_address, "subnet-id": subnet_id}
-            )
-
-            reservation_deleted.send_robust(
-                sender=None,
-                server=server,
-                ip_address=ip_address,
-                dhcp_version=6,
-                request=request,
-            )
+            client.reservation_del("dhcp6", **lookup.to_kwargs())
+            messages.success(request, f"DHCPv6 reservation for {lookup.label} deleted.")
+            _add_reservation_journal(server, request.user, "deleted", _deleted_journal_entry(lookup))
+            _send_reservation_deleted(server, lookup, 6, request)
         except PartialPersistError:
-            _add_reservation_journal(
-                server, request.user, "deleted", {"ip-address": ip_address, "subnet-id": subnet_id}
-            )
-            reservation_deleted.send_robust(
-                sender=None,
-                server=server,
-                ip_address=ip_address,
-                dhcp_version=6,
-                request=request,
-            )
+            _add_reservation_journal(server, request.user, "deleted", _deleted_journal_entry(lookup))
+            _send_reservation_deleted(server, lookup, 6, request)
             messages.warning(request, "Change applied but may not survive a Kea restart (config-write failed).")
         except KeaException as exc:
-            logger.exception("Failed to delete DHCPv6 reservation for %s", ip_address)
+            logger.exception("Failed to delete DHCPv6 reservation for %s", lookup.label)
             messages.error(request, kea_error_hint(exc))
         except requests.RequestException:
-            logger.exception("Network error deleting DHCPv6 reservation for %s", ip_address)
+            logger.exception("Network error deleting DHCPv6 reservation for %s", lookup.label)
             messages.error(request, "Network error communicating with Kea: see server logs.")
         except ValueError:
-            logger.exception("Invalid Kea response when deleting DHCPv6 reservation for %s", ip_address)
+            logger.exception("Invalid Kea response when deleting DHCPv6 reservation for %s", lookup.label)
             messages.error(request, "Invalid response from Kea: see server logs.")
         return redirect(return_url)
+
+
+# ---------------------------------------------------------------------------
+# Identifier-keyed variants
+# ---------------------------------------------------------------------------
+# A reservation that reserves no address cannot be addressed by one.  These routes
+# key on the client identifier instead, which arrives as a query parameter so the
+# URL reverses from integers alone.  The address stays editable here: Kea's
+# reservation-update replaces the whole host keyed by its identifier, so a host can
+# be given a fixed address, or have one removed, without changing its URL.
+
+
+class ServerReservation4EditByIdentifierView(ServerReservation4EditView):
+    """Edit a DHCPv4 host reservation addressed by its client identifier."""
+
+    lookup_by_identifier = True
+    immutable_fields = frozenset({"subnet_id", "identifier_type", "identifier"})
+
+
+class ServerReservation6EditByIdentifierView(ServerReservation6EditView):
+    """Edit a DHCPv6 host reservation addressed by its client identifier."""
+
+    lookup_by_identifier = True
+    immutable_fields = frozenset({"subnet_id", "identifier_type", "identifier"})
+
+
+class ServerReservation4DeleteByIdentifierView(ServerReservation4DeleteView):
+    """Delete a DHCPv4 host reservation addressed by its client identifier."""
+
+    lookup_by_identifier = True
+
+
+class ServerReservation6DeleteByIdentifierView(ServerReservation6DeleteView):
+    """Delete a DHCPv6 host reservation addressed by its client identifier."""
+
+    lookup_by_identifier = True
 
 
 def _get_reservation_identifier(
@@ -1198,6 +1469,104 @@ def _get_reservation_identifier(
         if reservation.get(itype):
             return itype, reservation[itype]
     return "hw-address", ""
+
+
+def _normalise_reservation_identifier(reservation: dict[str, Any], version: int) -> None:
+    """In-place: expose the reservation's identifier as ``identifier_type``/``identifier``.
+
+    Each table had one hard-coded identifier column — ``hw-address`` for DHCPv4,
+    ``duid`` for DHCPv6 — so a host identified any other way Kea allows (client-id,
+    circuit-id, flex-id, remote-id) rendered as a blank cell.  Both keys are empty
+    when the reservation carries no identifier at all.
+    """
+    identifier_type, identifier = _get_reservation_identifier(reservation, version)
+    reservation["identifier"] = identifier
+    reservation["identifier_type"] = identifier_type if identifier else ""
+
+
+def _reservation_prefix_list(reservation: dict[str, Any]) -> list[str]:
+    """Return a DHCPv6 reservation's delegated ``prefixes`` as a list of strings.
+
+    Mirrors the ``ip-addresses`` coercion: Kea sends a list, but a hand-written
+    configuration can carry a bare string.
+    """
+    raw = reservation.get("prefixes")
+    if isinstance(raw, list):
+        return [p for p in raw if isinstance(p, str) and p]
+    if isinstance(raw, str) and raw:
+        return [raw]
+    return []
+
+
+def _normalise_reservation_prefixes(reservation: dict[str, Any]) -> None:
+    """In-place counterpart of :func:`_reservation_prefix_list` for table rows.
+
+    A reservation that only delegates prefixes reserves nothing else, so this is the
+    only thing its row can show.
+    """
+    reservation["prefixes"] = _reservation_prefix_list(reservation)
+
+
+def _attach_reservation_action_urls(
+    reservations: list[dict[str, Any]],
+    server_pk: int,
+    version: int,
+    *,
+    can_change: bool,
+) -> None:
+    """In-place: set ``edit_url`` / ``delete_url`` on each reservation row.
+
+    These URLs are built here rather than with ``{% url %}`` in the table's actions
+    column on purpose.  Kea omits ``ip-address`` for a reservation that reserves no
+    address (an identifier-only host, or a DHCPv6 prefix-delegation-only host), which
+    normalises to ``ip_address=""``.  The address-keyed route takes ``<str:ip_address>``
+    (``[^/]+``) and cannot reverse an empty string, so the template tag raised
+    ``NoReverseMatch`` and a single such row 500'd the whole table (issue #110).  In
+    Python the guard is an ordinary conditional and a row that cannot be addressed
+    simply gets no action buttons.
+
+    Both keys are always assigned: these dicts come straight from Kea and are mutated
+    in place, so leaving them unset would let an unrelated value reach the template.
+    *server_pk* is passed by the caller rather than read from the row so the combined
+    (multi-server) view cannot mint a URL pointing at the wrong server.
+
+    The reversal is attempted rather than pre-validated: the route converters
+    (``<int:subnet_id>``, ``<str:ip_address>``) are the authority on what fits, and
+    guessing at them in Python both rejects values they accept (a decimal *string*
+    subnet id reverses fine) and misses ones they reject (a negative subnet id, an
+    address containing ``/``). A row whose values do not fit the route loses its
+    buttons instead of taking the page down with it.
+    """
+    for r in reservations:
+        r["edit_url"] = None
+        r["delete_url"] = None
+        if not can_change:
+            continue
+        subnet_id = r.get("subnet_id", r.get("subnet-id"))
+        ip_address = r.get("ip_address") or ""
+        try:
+            if ip_address:
+                args = [server_pk, subnet_id, ip_address]
+                edit_url = reverse(f"plugins:netbox_kea:server_reservation{version}_edit", args=args)
+                delete_url = reverse(f"plugins:netbox_kea:server_reservation{version}_delete", args=args)
+            else:
+                # No address to key on — address by client identifier instead.
+                identifier_type = r.get("identifier_type") or ""
+                identifier = r.get("identifier") or ""
+                if not identifier:
+                    continue
+                query = urlencode({"identifier_type": identifier_type, "identifier": identifier})
+                args = [server_pk, subnet_id]
+                edit_url = f"{reverse(f'plugins:netbox_kea:server_reservation{version}_edit_by_identifier', args=args)}?{query}"
+                delete_url = (
+                    f"{reverse(f'plugins:netbox_kea:server_reservation{version}_delete_by_identifier', args=args)}"
+                    f"?{query}"
+                )
+        except NoReverseMatch:
+            logger.debug("No reservation action URL for subnet-id=%r ip=%r", subnet_id, ip_address)
+            continue
+        r["edit_url"] = edit_url
+        r["delete_url"] = delete_url
 
 
 def _enrich_reservations_with_badges(

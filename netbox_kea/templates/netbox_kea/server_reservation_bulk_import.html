@@ -16,18 +16,31 @@
           Lines starting with <code>#</code> are treated as comments and ignored.
         </p>
 
+        {# Columns are matched by header name, in any order. #}
         {% if dhcp_version == 4 %}
         <div class="alert alert-info" role="alert">
-          <strong>v4 column order:</strong>
-          <code>ip-address, hw-address, hostname (optional), subnet-id</code><br>
-          <small>Example: <code>192.168.1.100,aa:bb:cc:dd:ee:ff,host1.example.com,1</code></small>
+          <strong>v4 columns</strong> (matched by header name, any order):<br>
+          Required: <code>subnet-id</code> and exactly one identifier column —
+          <code>hw-address</code>, <code>client-id</code>, <code>circuit-id</code>,
+          <code>flex-id</code> or <code>remote-id</code>.<br>
+          Optional: <code>ip-address</code>, <code>hostname</code>.<br>
+          <small>Example: <code>subnet-id,hw-address,ip-address,hostname</code> →
+          <code>1,aa:bb:cc:dd:ee:ff,192.168.1.100,host1.example.com</code></small><br>
+          <small>Leave <code>ip-address</code> empty to reserve only a hostname, options or client classes.</small>
         </div>
         {% else %}
         <div class="alert alert-info" role="alert">
-          <strong>v6 column order:</strong>
-          <code>ip-addresses, duid, hostname (optional), subnet-id</code><br>
-          <small>Multiple IPv6 addresses per host: separate with semicolon inside the <code>ip-addresses</code> cell.</small><br>
-          <small>Example: <code>2001:db8::100,00:01:02:03:04:05,v6host.example.com,10</code></small>
+          <strong>v6 columns</strong> (matched by header name, any order):<br>
+          Required: <code>subnet-id</code> and exactly one identifier column —
+          <code>duid</code>, <code>hw-address</code>, <code>client-id</code>,
+          <code>flex-id</code> or <code>remote-id</code>.<br>
+          Optional: <code>ip-addresses</code>, <code>prefixes</code>, <code>hostname</code>.<br>
+          <small>Both <code>ip-addresses</code> and <code>prefixes</code> take several values per host:
+          separate them with a semicolon inside the cell.</small><br>
+          <small>Example: <code>subnet-id,duid,ip-addresses,hostname</code> →
+          <code>10,00:01:02:03:04:05,2001:db8::100;2001:db8::101,v6host.example.com</code></small><br>
+          <small>A host may delegate prefixes without reserving an address — fill in
+          <code>prefixes</code> and leave <code>ip-addresses</code> empty.</small>
         </div>
         {% endif %}
 

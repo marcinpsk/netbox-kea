@@ -75,10 +75,14 @@ from .options import (  # noqa: F401
 # Reservation list/add/edit/delete views + helpers
 from .reservations import (  # noqa: F401
     ServerReservation4AddView,
+    ServerReservation4DeleteByIdentifierView,
     ServerReservation4DeleteView,
+    ServerReservation4EditByIdentifierView,
     ServerReservation4EditView,
     ServerReservation6AddView,
+    ServerReservation6DeleteByIdentifierView,
     ServerReservation6DeleteView,
+    ServerReservation6EditByIdentifierView,
     ServerReservation6EditView,
     ServerReservations4View,
     ServerReservations6View,

@@ -42,10 +42,10 @@ def test_server_api_bulk_actions(nb_api: pynetbox.api, kea_server_kwargs: dict):
     assert nb_api.plugins.kea.servers.delete(servers) is True
 
 
-def test_graphql(nb_api: pynetbox.api, nb_http: requests.Session, kea_server_kwargs: dict):
+def test_graphql(nb_api: pynetbox.api, nb_http: requests.Session, kea_server_kwargs: dict, netbox_url: str):
     server = nb_api.plugins.kea.servers.create(name="gql-test", **kea_server_kwargs)
     r = nb_http.post(
-        "http://localhost:8000/graphql/",
+        f"{netbox_url}/graphql/",
         json={
             "query": """
 {
@@ -75,7 +75,7 @@ def test_graphql(nb_api: pynetbox.api, nb_http: requests.Session, kea_server_kwa
 
     # Ensure ca_password is not a valid field
     r = nb_http.post(
-        "http://localhost:8000/graphql/",
+        f"{netbox_url}/graphql/",
         json={
             "query": """
 {
@@ -96,7 +96,7 @@ def test_graphql(nb_api: pynetbox.api, nb_http: requests.Session, kea_server_kwa
 
     for secret_field in ("dhcp4_password", "dhcp6_password"):
         r = nb_http.post(
-            "http://localhost:8000/graphql/",
+            f"{netbox_url}/graphql/",
             json={
                 "query": f"""
 {{
@@ -114,7 +114,7 @@ def test_graphql(nb_api: pynetbox.api, nb_http: requests.Session, kea_server_kwa
         assert r_json["errors"][0]["message"] == f"Cannot query field '{secret_field}' on type 'ServerType'."
 
     r = nb_http.post(
-        "http://localhost:8000/graphql/",
+        f"{netbox_url}/graphql/",
         json={
             "query": """
 {

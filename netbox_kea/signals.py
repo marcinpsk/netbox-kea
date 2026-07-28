@@ -13,7 +13,9 @@ External consumers can connect to these signals to react to DHCP changes::
     lease_added.connect(on_lease_added)
 
 All signals are fired *after* the Kea API call succeeds, so receivers can
-safely assume the change is in effect. They are *not* fired on errors.
+safely assume the change is in effect. They are *not* fired when the call fails.
+They *are* fired when the change was applied but Kea could not write it to disk
+(``config-write`` failed) — it is live now and may not survive a restart.
 
 Signals
 -------
@@ -36,7 +38,13 @@ reservation_updated
 
 reservation_deleted
     Fired when a host reservation is deleted via the plugin UI.
-    kwargs: ``server``, ``ip_address``, ``dhcp_version``, ``request``
+    kwargs: ``server``, ``ip_address``, ``identifier_type``, ``identifier``,
+    ``dhcp_version``, ``request``
+
+    A reservation can be addressed either by its IP or, when it reserves no
+    address, by its client identifier. All three keys are sent on every delete
+    regardless of which route was used, each ``None`` where it does not apply, so
+    receivers never have to handle a route-dependent payload shape.
 """
 
 from django.dispatch import Signal

@@ -21,7 +21,13 @@ from ..utilities import (
 )
 from ._base import ConditionalLoginRequiredMixin
 from .leases import _enrich_leases_with_badges
-from .reservations import _enrich_reservations_with_badges, _filter_reservations
+from .reservations import (
+    _attach_reservation_action_urls,
+    _enrich_reservations_with_badges,
+    _filter_reservations,
+    _normalise_reservation_identifier,
+    _normalise_reservation_prefixes,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -480,6 +486,9 @@ def _fetch_reservations_from_server(server: "Server", version: int) -> list[dict
         r.setdefault("ip_address", r.get("ip-address", r.get("ip-addresses", [""])[0] if r.get("ip-addresses") else ""))
         r["server_name"] = server.name
         r["server_pk"] = server.pk
+        _normalise_reservation_identifier(r, version)
+        if version == 6:
+            _normalise_reservation_prefixes(r)
         _enrich_reservation_sort_key(r)
         reservations.append(r)
     return reservations
@@ -525,6 +534,8 @@ class _CombinedReservationsView(_CombinedViewMixin):
                 can_change = server_pk in writable_pks
                 for r in server_records:
                     r["can_change"] = can_change
+                # Per-server so a row can never be given another server's URL.
+                _attach_reservation_action_urls(server_records, server_pk, self.dhcp_version, can_change=can_change)
 
         search_form = forms.ReservationSearchForm(request.GET or None)
         if search_form.is_valid():

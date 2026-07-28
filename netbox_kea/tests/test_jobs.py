@@ -31,7 +31,7 @@ from netbox_kea.jobs import KeaIpamSyncJob
 from netbox_kea.kea import KeaClient
 from netbox_kea.models import Server, SyncConfig
 
-from .kea_stub import _res_page, stub_kea
+from .kea_stub import _res_page, queued, stub_kea
 
 _PLUGINS_CONFIG = {
     "netbox_kea": {
@@ -609,6 +609,47 @@ class TestKeaIpamSyncJobRun(TestCase):
         # Conflict surfaced in the per-server summary.
         entry = next(e for e in mock_job.data["summary"] if e["name"] == "kea-conflict")
         self.assertEqual(entry["conflicts"], 1)
+
+    def test_same_foreign_ip_in_both_phases_counts_once(self):
+        """One foreign IP seen by both the lease and reservation phase is ONE conflict.
+
+        The phases each appended to their own accumulator and added ``len()`` to the
+        same per-server counter, so a host that has both a lease and a reservation was
+        reported twice — inflating a number the operator cannot reconcile against
+        anything. The summary also names the addresses so the conflict is diagnosable.
+        """
+        from ipam.models import IPAddress
+
+        self._make_db_server(name="kea-dupe", dhcp6=False)
+        IPAddress.objects.create(address="10.0.0.100/32", status="active", description="Router loopback")
+        lease_for_same_ip = {**_LEASE4, "ip-address": "10.0.0.100", "hostname": "reserved1"}
+        with _patch_kea(leases4=[lease_for_same_ip], reservations=[_RESV4]):
+            mock_job = _make_job()
+            try:
+                KeaIpamSyncJob(mock_job).run()
+            except JobFailed:
+                pass
+
+        entry = next(e for e in mock_job.data["summary"] if e["name"] == "kea-dupe")
+        self.assertEqual(entry["conflicts"], 1)
+        self.assertEqual(entry["conflict_sample"], ["10.0.0.100"])
+
+    def test_address_less_reservation_reported_as_skipped_not_failed(self):
+        """An identifier-only reservation must not fail the nightly job (#110).
+
+        ``sync_reservation_to_netbox`` raises on a reservation with no address; counting
+        that as an error made ``run()`` raise ``JobFailed`` for a perfectly legal Kea
+        configuration, with the reason visible only at debug level.
+        """
+        self._make_db_server(name="kea-skip", dhcp6=False)
+        address_less = {"hw-address": "11:22:33:44:55:66", "hostname": "printer-1", "subnet-id": 1}
+        with _patch_kea(leases4=[], reservations=[address_less]):
+            mock_job = _make_job()
+            KeaIpamSyncJob(mock_job).run()  # must NOT raise JobFailed
+
+        entry = next(e for e in mock_job.data["summary"] if e["name"] == "kea-skip")
+        self.assertEqual(entry["errors"], 0)
+        self.assertEqual(entry["skipped"], 1)
 
     def test_config_get_failure_falls_back_to_prefix_match_and_logs(self):
         """When config-get fails, leases still sync (NetBox-prefix fallback) and it's logged.
@@ -1281,6 +1322,28 @@ class TestBuildSubnetPrefixMap(SimpleTestCase):
         self.assertEqual(_build_subnet_prefix_map(None), {})
 
 
+class TestRecordConflicts(SimpleTestCase):
+    """_record_conflicts folds one phase's conflicts into the job stats."""
+
+    def test_a_set_deduplicates_across_calls_and_spellings(self):
+        from netbox_kea.jobs import _record_conflicts
+
+        stats = {"conflicts": 0}
+        seen = set()
+        _record_conflicts(stats, ["2001:db8::1", "10.0.0.1"], seen)
+        _record_conflicts(stats, ["2001:0db8::0001"], seen)
+        self.assertEqual(seen, {"2001:db8::1", "10.0.0.1"})
+        self.assertEqual(stats["conflicts"], 2)
+
+    def test_without_a_set_the_counts_accumulate(self):
+        from netbox_kea.jobs import _record_conflicts
+
+        stats = {}
+        _record_conflicts(stats, ["10.0.0.1", "10.0.0.1"], None)
+        _record_conflicts(stats, ["10.0.0.2"], None)
+        self.assertEqual(stats["conflicts"], 3)
+
+
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestSyncServerReservationsReturnValue(TestCase):
     """_sync_server_reservations must report failure when any individual row fails.
@@ -1290,21 +1353,109 @@ class TestSyncServerReservationsReturnValue(TestCase):
     live IPs whose reservation failed to sync.
     """
 
+    @staticmethod
+    def _server(name="kea-fail"):
+        server = MagicMock(spec=Server)  # mock-ok: Server container (name/pk/get_client) for a job helper
+        server.name = name
+        server.pk = 1
+        server.get_client.return_value = KeaClient(url="https://kea.example.com")
+        return server
+
+    @staticmethod
+    def _stats():
+        return {"created": 0, "updated": 0, "errors": 0, "prefix_errors": 0, "conflicts": 0, "skipped": 0}
+
     def test_returns_false_when_a_row_fails(self):
         from netbox_kea.jobs import _sync_server_reservations
 
-        server = MagicMock(spec=Server)  # mock-ok: Server container (name/pk/get_client) for a job helper
-        server.name = "kea-fail"
-        server.pk = 1
-        server.get_client.return_value = KeaClient(url="https://kea.example.com")
-        # A reservation with no ip-address makes the REAL sync_reservation_to_netbox
-        # raise ValueError, which the loop catches and counts as an error.
-        stats = {"created": 0, "updated": 0, "errors": 0, "prefix_errors": 0, "conflicts": 0}
-        with stub_kea({"reservation-get-page": _res_page([{"hostname": "bad", "subnet-id": 1}])}):
-            ok = _sync_server_reservations(server, 4, stats=stats, all_synced=[])
+        # An unparseable address makes the REAL sync_reservation_to_netbox raise,
+        # which the loop catches and counts as an error.
+        stats = self._stats()
+        bad = {"ip-address": "999.999.999.999", "hw-address": "aa:bb:cc:dd:ee:ff", "subnet-id": 1}
+        with stub_kea({"reservation-get-page": _res_page([bad])}):
+            ok = _sync_server_reservations(self._server(), 4, stats=stats, all_synced=[])
 
         self.assertFalse(ok)
         self.assertEqual(stats["errors"], 1)
+        self.assertEqual(stats["skipped"], 0)
+
+    def test_address_less_reservation_is_skipped_not_an_error(self):
+        """A host that reserves no address is legal Kea config, not a sync failure (#110).
+
+        It has nothing to write to IPAM, so it must not count as an error — errors make
+        the whole job raise JobFailed — and must not enter ``all_synced``, whose IPs form
+        the stale-cleanup keep-set.
+        """
+        from netbox_kea.jobs import _sync_server_reservations
+
+        stats = self._stats()
+        all_synced: list[dict] = []
+        host = {"hostname": "printer-1", "hw-address": "aa:bb:cc:dd:ee:ff", "subnet-id": 1}
+        with stub_kea({"reservation-get-page": _res_page([host])}):
+            ok = _sync_server_reservations(self._server(), 4, stats=stats, all_synced=all_synced)
+
+        self.assertTrue(ok)
+        self.assertEqual(stats["errors"], 0)
+        self.assertEqual(stats["skipped"], 1)
+        self.assertEqual(all_synced, [])
+
+    def test_stats_survive_a_mid_pagination_failure(self):
+        """Rows from page 1 must still be accounted for when page 2 fails.
+
+        The counters used to be published only after the loop finished, so a
+        pagination error threw away everything already processed and the summary
+        reported zero skipped for a run that had skipped rows.
+        """
+        from netbox_kea.jobs import _sync_server_reservations
+
+        page1 = {
+            "result": 0,
+            "arguments": {
+                "hosts": [{"hostname": "printer-1", "hw-address": "aa:bb:cc:dd:ee:ff", "subnet-id": 1}],
+                "next": {"from": 1, "source-index": 0},  # not exhausted → page 2 is fetched
+            },
+        }
+        stats = self._stats()
+        with stub_kea({"reservation-get-page": queued(page1, {"result": 1, "text": "backend gone"})}):
+            ok = _sync_server_reservations(self._server(), 4, stats=stats, all_synced=[])
+
+        self.assertFalse(ok)
+        self.assertEqual(stats["skipped"], 1)
+
+    def test_conflicts_stay_consistent_with_the_deduplicated_set(self):
+        """``conflicts`` must equal the size of the caller's set, not a running sum.
+
+        The caller names the addresses in the job summary from that set, so a count
+        derived any other way can disagree with the sample beside it.
+        """
+        from ipam.models import IPAddress
+
+        from netbox_kea.jobs import _sync_server_reservations
+
+        IPAddress.objects.create(address="10.0.0.100/32", status="active", description="Router loopback")
+        conflict_ips: set[str] = set()
+        stats = self._stats()
+        host = {"ip-address": "10.0.0.100", "hw-address": "11:22:33:44:55:66", "subnet-id": 1}
+        with stub_kea({"reservation-get-page": _res_page([host])}):
+            _sync_server_reservations(self._server(), 4, stats=stats, all_synced=[], conflict_ips=conflict_ips)
+
+        self.assertEqual(conflict_ips, {"10.0.0.100"})
+        self.assertEqual(stats["conflicts"], len(conflict_ips))
+
+    def test_v6_prefix_only_reservation_is_skipped(self):
+        """A PD-only DHCPv6 host reserves prefixes, not addresses — same treatment."""
+        from netbox_kea.jobs import _sync_server_reservations
+
+        stats = self._stats()
+        all_synced: list[dict] = []
+        host = {"duid": "00:01:00:01:12:34", "subnet-id": 12, "prefixes": ["2001:db8:1::/64"]}
+        with stub_kea({"reservation-get-page": _res_page([host])}):
+            ok = _sync_server_reservations(self._server(), 6, stats=stats, all_synced=all_synced)
+
+        self.assertTrue(ok)
+        self.assertEqual(stats["errors"], 0)
+        self.assertEqual(stats["skipped"], 1)
+        self.assertEqual(all_synced, [])
 
 
 class TestSyncServerPrefixesAndRanges(SimpleTestCase):
