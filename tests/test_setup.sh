@@ -8,6 +8,19 @@ openssl req -new -newkey rsa:2048 -sha256 -days 365 -nodes -x509 -keyout ./tests
 openssl req -new -newkey rsa:2048 -sha256 -days 365 -nodes -x509 -keyout ./tests/docker/certs/nginx.key -out ./tests/docker/certs/nginx.crt -addext "subjectAltName=DNS:nginx" -subj "/CN=nginx"
 chmod -R 0777 ./tests/docker/certs/
 
+# Reservation management needs a Kea host database, and Kea refuses a schema whose
+# version is not exactly the one it was built against, so take the schema from the
+# release tarball of the version the daemons run (see docker-compose.override.yml).
+KEA_VERSION="${KEA_VERSION:-3.2.0}"
+KEA_TARBALL_SHA256="${KEA_TARBALL_SHA256:-14bf695d37b65b9b1bf550fea5d0adaf9806c50e5419ef2a176a4b8e9aade3df}"
+echo "Fetching Kea $KEA_VERSION host database schema"
+mkdir -p ./tests/docker/kea_schema/
+curl -fsSL -o "/tmp/kea-$KEA_VERSION.tar.xz" \
+    "https://downloads.isc.org/isc/kea/$KEA_VERSION/kea-$KEA_VERSION.tar.xz"
+echo "$KEA_TARBALL_SHA256  /tmp/kea-$KEA_VERSION.tar.xz" | sha256sum -c -
+tar xJf "/tmp/kea-$KEA_VERSION.tar.xz" -C ./tests/docker/kea_schema/ --strip-components=6 \
+    "kea-$KEA_VERSION/src/share/database/scripts/pgsql/dhcpdb_create.pgsql"
+
 echo "Copying whl"
 WHL_FILE=$(ls ./dist/ | grep .whl)
 cp  "./dist/$WHL_FILE" ./tests/docker/

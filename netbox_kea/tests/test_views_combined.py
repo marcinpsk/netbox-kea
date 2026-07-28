@@ -149,3 +149,63 @@ class TestCombinedReservationsWithoutAddress(_ViewTestBase):
         with stub_kea({"reservation-get-page": page, "lease6-get-all": {"result": 0, "arguments": {"leases": []}}}):
             response = self.client.get(self._url(6))
         self.assertEqual(response.status_code, 200)
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestCombinedReservationsShowWhatIsReserved(_ViewTestBase):
+    """The global tab shows the identifier and prefixes an address-less host reserves.
+
+    Rendering 200 only proves the crash is gone; these assert the row actually says
+    what the reservation is, which is the point of showing it at all.
+    """
+
+    def _url(self, version=4, query=""):
+        base = reverse(f"plugins:netbox_kea:combined_reservations{version}") + f"?server={self.server.pk}"
+        return base + query
+
+    @staticmethod
+    def _page(hosts):
+        return {"result": 0, "arguments": {"hosts": hosts, "next": {"from": 0, "source-index": 0}}}
+
+    def _stub(self, hosts, version=4):
+        return {
+            "reservation-get-page": self._page(hosts),
+            f"lease{version}-get-all": {"result": 0, "arguments": {"leases": []}},
+        }
+
+    def test_v4_flex_id_row_shows_the_identifier_and_its_type(self):
+        hosts = [{"subnet-id": 1, "flex-id": "vendor-42", "hostname": "kiosk"}]
+        with stub_kea(self._stub(hosts)):
+            response = self.client.get(self._url(4))
+        body = response.content.decode()
+        self.assertIn("vendor-42", body)
+        self.assertIn("flex-id", body)
+
+    def test_v6_prefix_only_row_shows_its_prefixes_and_no_address(self):
+        hosts = [{"subnet-id": 12, "duid": "00:01:00:01:12:34", "prefixes": ["2001:db8:1::/64"]}]
+        with stub_kea(self._stub(hosts, version=6)):
+            response = self.client.get(self._url(6))
+        body = response.content.decode()
+        self.assertIn("2001:db8:1::/64", body)
+        self.assertIn("No address", body)
+
+    def test_csv_export_renders_every_row(self):
+        """Export goes through the real ?export path, so a missing accessor would raise."""
+        hosts = [
+            {"subnet-id": 1, "hw-address": "aa:bb:cc:dd:ee:01", "ip-address": "10.0.0.1"},
+            {"subnet-id": 1, "flex-id": "vendor-42", "hostname": "kiosk"},
+        ]
+        with stub_kea(self._stub(hosts)):
+            response = self.client.get(self._url(4, "&export"))
+        self.assertEqual(response.status_code, 200)
+        body = response.content.decode()
+        self.assertIn("10.0.0.1", body)
+        self.assertIn("vendor-42", body)
+        self.assertEqual(len([line for line in body.splitlines() if line.strip()]), 3)  # header + 2 rows
+
+    def test_v6_csv_export_carries_prefixes(self):
+        hosts = [{"subnet-id": 12, "duid": "00:01:00:01:12:34", "prefixes": ["2001:db8:1::/64"]}]
+        with stub_kea(self._stub(hosts, version=6)):
+            response = self.client.get(self._url(6, "&export"))
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("2001:db8:1::/64", response.content.decode())

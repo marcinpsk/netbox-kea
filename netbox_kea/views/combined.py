@@ -25,6 +25,8 @@ from .reservations import (
     _attach_reservation_action_urls,
     _enrich_reservations_with_badges,
     _filter_reservations,
+    _normalise_reservation_identifier,
+    _normalise_reservation_prefixes,
 )
 
 logger = logging.getLogger(__name__)
@@ -484,6 +486,9 @@ def _fetch_reservations_from_server(server: "Server", version: int) -> list[dict
         r.setdefault("ip_address", r.get("ip-address", r.get("ip-addresses", [""])[0] if r.get("ip-addresses") else ""))
         r["server_name"] = server.name
         r["server_pk"] = server.pk
+        _normalise_reservation_identifier(r, version)
+        if version == 6:
+            _normalise_reservation_prefixes(r)
         _enrich_reservation_sort_key(r)
         reservations.append(r)
     return reservations

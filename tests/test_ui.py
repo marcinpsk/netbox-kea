@@ -1631,3 +1631,273 @@ def test_dhcpv6_lease_long_duid(page: Page, kea: KeaClient, with_test_server_onl
 
     # The last column should not be off the page.
     expect(page.locator("table.object-list > tbody > tr > td").last).to_be_in_viewport()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Reservations that reserve no address (issue #110)
+#
+# host_cmds only writes to the host database the harness configures, so these
+# drive the plugin's own add / edit / delete pages and then read the result back
+# from the daemon: a DHCPv4 host keyed only by a client identifier, and a DHCPv6
+# host that only delegates prefixes.
+# ─────────────────────────────────────────────────────────────────────────────
+
+#: Kea subnet id 1 exists in both harness configs (192.0.2.0/24 and 2001:db8:1::/64).
+RESERVATION_SUBNET_ID = 1
+
+
+@pytest.fixture
+def reservation_server(
+    nb_api: pynetbox.api, kea_url: str, kea_dhcp6_url: str, page: Page, netbox_login: None, plugin_base: str
+):
+    """Dual-stack server the reservation tests address by primary key."""
+    server = nb_api.plugins.kea.servers.create(
+        name="reservations", ca_url=kea_url, dhcp6_url=kea_dhcp6_url, has_control_agent=False
+    )
+    try:
+        yield server
+    finally:
+        server.delete()
+
+
+@pytest.fixture
+def reservation_keys(kea_client: _DualEndpointKeaClient):
+    """Reservation keys to drop from the host database before and after the test."""
+    keys: list[tuple[Literal[4, 6], int, str, str]] = []
+    yield keys
+    for key in keys:
+        _reservation_del(kea_client, *key)
+
+
+def _reservation_key_args(subnet_id: int, identifier_type: str, identifier: str) -> dict[str, Any]:
+    return {"subnet-id": subnet_id, "identifier-type": identifier_type, "identifier": identifier}
+
+
+def _reservation_get(
+    kea: KeaClient, version: Literal[4, 6], subnet_id: int, identifier_type: str, identifier: str
+) -> dict[str, Any] | None:
+    """Read one reservation back from the daemon, or None when it holds no such host."""
+    resp = kea.command(
+        "reservation-get",
+        service=[f"dhcp{version}"],
+        arguments=_reservation_key_args(subnet_id, identifier_type, identifier),
+        check=(0, 3),
+    )
+    return resp[0].get("arguments") if resp[0]["result"] == 0 else None
+
+
+def _reservation_del(
+    kea: KeaClient, version: Literal[4, 6], subnet_id: int, identifier_type: str, identifier: str
+) -> None:
+    """Delete a reservation directly, tolerating one that is not there."""
+    kea.command(
+        "reservation-del",
+        service=[f"dhcp{version}"],
+        arguments=_reservation_key_args(subnet_id, identifier_type, identifier),
+        check=(0, 3),
+    )
+
+
+def _select_identifier_type(page: Page, label: str) -> None:
+    """Pick a value from the Tom Select-wrapped Identifier Type field."""
+    page.locator("#id_identifier_type + div.form-select").click()
+    page.locator("#id_identifier_type-ts-dropdown").get_by_role("option", name=label, exact=True).click()
+
+
+def _save_reservation_form(page: Page, version: Literal[4, 6]) -> None:
+    """Submit the reservation form; a validation error would keep us on the form."""
+    page.get_by_role("button", name="Save").click()
+    page.wait_for_url(re.compile(rf"/reservations{version}/$"))
+
+
+def _reservation_by_identifier_url(
+    plugin_base: str,
+    server_id: int,
+    version: Literal[4, 6],
+    action: str,
+    identifier_type: str,
+    identifier: str,
+) -> str:
+    return (
+        f"{plugin_base}/servers/{server_id}/reservations{version}/{RESERVATION_SUBNET_ID}/{action}-by-identifier/"
+        f"?identifier_type={quote_plus(identifier_type)}&identifier={quote_plus(identifier)}"
+    )
+
+
+def _add_reservation4_without_address(
+    page: Page,
+    plugin_base: str,
+    server_id: int,
+    identifier: str,
+    hostname: str,
+    option: tuple[str, str] | None = None,
+) -> None:
+    """Create a DHCPv4 host keyed by MAC with no fixed address, through the add form."""
+    page.goto(f"{plugin_base}/servers/{server_id}/reservations4/add/")
+    page.locator("#id_subnet_id").fill(str(RESERVATION_SUBNET_ID))
+    _select_identifier_type(page, "Hardware Address")
+    page.locator("#id_identifier").fill(identifier)
+    page.locator("#id_hostname").fill(hostname)
+    if option is not None:
+        page.locator("#id_options-0-name").fill(option[0])
+        page.locator("#id_options-0-data").fill(option[1])
+    _save_reservation_form(page, 4)
+
+
+def _add_reservation6_prefix_only(
+    page: Page, plugin_base: str, server_id: int, identifier: str, hostname: str, prefix: str
+) -> None:
+    """Create a DHCPv6 host that delegates a prefix and reserves no address."""
+    page.goto(f"{plugin_base}/servers/{server_id}/reservations6/add/")
+    page.locator("#id_subnet_id").fill(str(RESERVATION_SUBNET_ID))
+    page.locator("#id_prefixes").fill(prefix)
+    _select_identifier_type(page, "DUID")
+    page.locator("#id_identifier").fill(identifier)
+    page.locator("#id_hostname").fill(hostname)
+    _save_reservation_form(page, 6)
+
+
+def test_reservation4_add_without_address(
+    page: Page,
+    plugin_base: str,
+    kea_client: _DualEndpointKeaClient,
+    reservation_server,
+    reservation_keys: list,
+) -> None:
+    """Kea stores a DHCPv4 host with an identifier, a hostname and options but no address."""
+    mac = "aa:bb:cc:00:01:01"
+    reservation_keys.append((4, RESERVATION_SUBNET_ID, "hw-address", mac))
+    _reservation_del(kea_client, 4, RESERVATION_SUBNET_ID, "hw-address", mac)
+
+    _add_reservation4_without_address(
+        page, plugin_base, reservation_server.id, mac, "no-address-v4", ("domain-name-servers", "192.0.2.53")
+    )
+
+    stored = _reservation_get(kea_client, 4, RESERVATION_SUBNET_ID, "hw-address", mac)
+    assert stored is not None
+    assert "ip-address" not in stored
+    assert stored["hostname"] == "no-address-v4"
+    assert [(o["name"], o["data"]) for o in stored["option-data"]] == [("domain-name-servers", "192.0.2.53")]
+
+    row = page.locator("table.object-list > tbody > tr").filter(has_text=mac)
+    expect(row).to_have_count(1)
+    expect(row.get_by_text("No address", exact=True)).to_be_visible()
+
+
+def test_reservation4_edit_by_identifier_keeps_option_data(
+    page: Page,
+    plugin_base: str,
+    kea_client: _DualEndpointKeaClient,
+    reservation_server,
+    reservation_keys: list,
+) -> None:
+    """Editing the hostname by identifier leaves option-data and the missing address alone."""
+    mac = "aa:bb:cc:00:01:02"
+    reservation_keys.append((4, RESERVATION_SUBNET_ID, "hw-address", mac))
+    _reservation_del(kea_client, 4, RESERVATION_SUBNET_ID, "hw-address", mac)
+    _add_reservation4_without_address(
+        page, plugin_base, reservation_server.id, mac, "before-edit", ("boot-file-name", "http://192.0.2.1/ztp.py")
+    )
+
+    page.goto(_reservation_by_identifier_url(plugin_base, reservation_server.id, 4, "edit", "hw-address", mac))
+    # The form is populated from the daemon, and this route freezes only the key.
+    expect(page.locator("#id_hostname")).to_have_value("before-edit")
+    expect(page.locator("#id_identifier")).to_be_disabled()
+    expect(page.locator("#id_ip_address")).to_be_editable()
+    page.locator("#id_hostname").fill("after-edit")
+    _save_reservation_form(page, 4)
+
+    stored = _reservation_get(kea_client, 4, RESERVATION_SUBNET_ID, "hw-address", mac)
+    assert stored is not None
+    assert stored["hostname"] == "after-edit"
+    assert "ip-address" not in stored
+    assert [(o["name"], o["data"]) for o in stored["option-data"]] == [("boot-file-name", "http://192.0.2.1/ztp.py")]
+
+
+def test_reservation4_delete_by_identifier(
+    page: Page,
+    plugin_base: str,
+    kea_client: _DualEndpointKeaClient,
+    reservation_server,
+    reservation_keys: list,
+) -> None:
+    """A host with no address is deletable by the identifier that is the only key it has."""
+    mac = "aa:bb:cc:00:01:03"
+    reservation_keys.append((4, RESERVATION_SUBNET_ID, "hw-address", mac))
+    _reservation_del(kea_client, 4, RESERVATION_SUBNET_ID, "hw-address", mac)
+    _add_reservation4_without_address(page, plugin_base, reservation_server.id, mac, "to-be-deleted")
+    assert _reservation_get(kea_client, 4, RESERVATION_SUBNET_ID, "hw-address", mac) is not None
+
+    page.goto(_reservation_by_identifier_url(plugin_base, reservation_server.id, 4, "delete", "hw-address", mac))
+    expect(page.get_by_text(f"hw-address {mac}")).to_be_visible()
+    page.locator('form[method="post"] button.btn-danger').click()
+    page.wait_for_url(re.compile(r"/reservations4/$"))
+
+    assert _reservation_get(kea_client, 4, RESERVATION_SUBNET_ID, "hw-address", mac) is None
+
+
+def test_reservation4_without_address_matches_lease_by_identifier(
+    page: Page,
+    plugin_base: str,
+    kea_client: _DualEndpointKeaClient,
+    reservation_server,
+    reservation_keys: list,
+) -> None:
+    """A row with no address takes its lease status from a real lease with the same MAC."""
+    mac = "aa:bb:cc:00:01:04"
+    reservation_keys.append((4, RESERVATION_SUBNET_ID, "hw-address", mac))
+    _reservation_del(kea_client, 4, RESERVATION_SUBNET_ID, "hw-address", mac)
+    kea_client.command(
+        "lease4-add",
+        service=["dhcp4"],
+        arguments={"ip-address": "192.0.2.150", "hw-address": mac, "hostname": "leased-client"},
+    )
+    _add_reservation4_without_address(page, plugin_base, reservation_server.id, mac, "no-address-leased")
+
+    row = page.locator("table.object-list > tbody > tr").filter(has_text=mac)
+    expect(row).to_have_count(1)
+    expect(row.get_by_text("Active Lease", exact=True)).to_be_visible()
+
+
+def test_reservation6_prefix_only_round_trip(
+    page: Page,
+    plugin_base: str,
+    kea_client: _DualEndpointKeaClient,
+    reservation_server,
+    reservation_keys: list,
+) -> None:
+    """A DHCPv6 host that only delegates a prefix survives add, edit by identifier and delete."""
+    duid = "01:02:03:04:05:06:07:b1"
+    prefix = "2001:db8:8:b1::/64"
+    reservation_keys.append((6, RESERVATION_SUBNET_ID, "duid", duid))
+    _reservation_del(kea_client, 6, RESERVATION_SUBNET_ID, "duid", duid)
+
+    _add_reservation6_prefix_only(page, plugin_base, reservation_server.id, duid, "pd-only", prefix)
+
+    stored = _reservation_get(kea_client, 6, RESERVATION_SUBNET_ID, "duid", duid)
+    assert stored is not None
+    assert stored["prefixes"] == [prefix]
+    assert not stored.get("ip-addresses")
+    assert stored["hostname"] == "pd-only"
+
+    row = page.locator("table.object-list > tbody > tr").filter(has_text=duid)
+    expect(row).to_have_count(1)
+    expect(row.get_by_text("No address", exact=True)).to_be_visible()
+    expect(row.get_by_text(prefix, exact=True)).to_be_visible()
+
+    page.goto(_reservation_by_identifier_url(plugin_base, reservation_server.id, 6, "edit", "duid", duid))
+    expect(page.locator("#id_prefixes")).to_have_value(prefix)
+    page.locator("#id_hostname").fill("pd-only-renamed")
+    _save_reservation_form(page, 6)
+
+    stored = _reservation_get(kea_client, 6, RESERVATION_SUBNET_ID, "duid", duid)
+    assert stored is not None
+    assert stored["hostname"] == "pd-only-renamed"
+    assert stored["prefixes"] == [prefix]
+    assert not stored.get("ip-addresses")
+
+    page.goto(_reservation_by_identifier_url(plugin_base, reservation_server.id, 6, "delete", "duid", duid))
+    page.locator('form[method="post"] button.btn-danger').click()
+    page.wait_for_url(re.compile(r"/reservations6/$"))
+
+    assert _reservation_get(kea_client, 6, RESERVATION_SUBNET_ID, "duid", duid) is None

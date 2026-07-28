@@ -174,6 +174,24 @@ def _subnet_get(version: int, pools: list[str] | None = None, subnet_id: int = 1
     }
 
 
+def _leases_per_subnet(leases_by_subnet: dict[Any, list[dict[str, Any]]]):
+    """A ``lease{v}-get-all`` responder that answers only for the subnets it was asked about.
+
+    Kea scopes ``lease{v}-get-all`` to ``arguments.subnets``, so a stub returning the same
+    leases whatever was requested cannot show whether the caller keeps per-subnet state.
+    Subnets with no leases get Kea's empty-result code 3.
+    """
+
+    def _respond(body: dict[str, Any]) -> dict[str, Any]:
+        requested = body.get("arguments", {}).get("subnets") or []
+        leases = [lease for sid in requested for lease in leases_by_subnet.get(sid, [])]
+        if not leases:
+            return {"result": 3}
+        return {"result": 0, "arguments": {"leases": leases}}
+
+    return _respond
+
+
 def _subnet_list(version: int, subnets: list[dict[str, Any]]) -> dict[str, Any]:  # noqa: ARG001 - version kept for call-site symmetry with _subnet_get
     """A ``subnet{v}-list`` payload (read by ``reservation_get_by_ip`` to find candidate subnets).
 

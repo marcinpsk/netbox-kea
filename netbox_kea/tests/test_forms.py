@@ -5,6 +5,7 @@
 from django.core.exceptions import ValidationError
 from django.test import SimpleTestCase, TestCase
 
+from netbox_kea import constants
 from netbox_kea.forms import Leases4SearchForm, Leases6SearchForm, MultipleIPField, ServerForm
 
 
@@ -272,9 +273,21 @@ class TestReservationForm4(SimpleTestCase):
         self.assertFalse(form.is_valid())
         self.assertIn("subnet_id", form.errors)
 
-    def test_missing_ip_address_fails(self):
+    def test_missing_ip_address_is_allowed(self):
+        """A DHCPv4 host may reserve only a hostname, options or client classes.
+
+        Kea accepts such an identifier-only reservation and omits ``ip-address`` when
+        reporting it, so the form must not demand one.
+        """
         data = self._valid_data()
         del data["ip_address"]
+        form = self._form(data)
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.cleaned_data["ip_address"], "")
+
+    def test_invalid_ip_address_still_fails(self):
+        data = self._valid_data()
+        data["ip_address"] = "not-an-ip"
         form = self._form(data)
         self.assertFalse(form.is_valid())
         self.assertIn("ip_address", form.errors)
@@ -330,6 +343,23 @@ class TestReservationForm4(SimpleTestCase):
         self.assertFalse(form.is_valid())
         self.assertIn("identifier_type", form.errors)
 
+    def test_max_octet_client_id_is_accepted(self):
+        """A 128-octet client-id is 383 characters delimited — past the opaque 255-char cap."""
+        identifier = ":".join(["ab"] * constants.CLIENT_ID_MAX_OCTETS)
+        form = self._form(self._valid_data(identifier_type="client-id", identifier=identifier))
+        self.assertTrue(form.is_valid(), form.errors)
+
+    def test_client_id_past_its_octet_limit_is_rejected(self):
+        identifier = ":".join(["ab"] * (constants.CLIENT_ID_MAX_OCTETS + 1))
+        form = self._form(self._valid_data(identifier_type="client-id", identifier=identifier))
+        self.assertFalse(form.is_valid())
+        self.assertIn("identifier", form.errors)
+
+    def test_over_long_opaque_identifier_is_rejected(self):
+        form = self._form(self._valid_data(identifier_type="flex-id", identifier="a" * 256))
+        self.assertFalse(form.is_valid())
+        self.assertIn("identifier", form.errors)
+
 
 class TestReservationForm6(SimpleTestCase):
     """Tests for Reservation6Form (IPv6 reservation form validation)."""
@@ -380,12 +410,76 @@ class TestReservationForm6(SimpleTestCase):
         self.assertFalse(form.is_valid())
         self.assertIn("subnet_id", form.errors)
 
-    def test_missing_ip_addresses_fails(self):
+    def test_missing_ip_addresses_is_allowed(self):
+        """A DHCPv6 host may delegate only prefixes, or reserve only a hostname."""
         data = self._valid_data()
         del data["ip_addresses"]
         form = self._form(data)
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.cleaned_data["ip_addresses"], "")
+
+    def test_invalid_ip_addresses_still_fails(self):
+        data = self._valid_data()
+        data["ip_addresses"] = "2001:db8::1,not-an-ip"
+        form = self._form(data)
         self.assertFalse(form.is_valid())
         self.assertIn("ip_addresses", form.errors)
+
+    def test_delegated_prefixes_are_canonicalised_and_deduplicated(self):
+        data = self._valid_data()
+        data["prefixes"] = "2001:db8:1::/64, 2001:0db8:1::/64 ,2001:db8:2::/64"
+        form = self._form(data)
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.cleaned_data["prefixes"], "2001:db8:1::/64,2001:db8:2::/64")
+
+    def test_prefix_with_host_bits_set_fails(self):
+        """``2001:db8::1/64`` names a host inside a prefix, not the prefix itself."""
+        data = self._valid_data()
+        data["prefixes"] = "2001:db8::1/64"
+        form = self._form(data)
+        self.assertFalse(form.is_valid())
+        self.assertIn("prefixes", form.errors)
+
+    def test_ipv4_prefix_is_rejected(self):
+        data = self._valid_data()
+        data["prefixes"] = "10.0.0.0/24"
+        form = self._form(data)
+        self.assertFalse(form.is_valid())
+        self.assertIn("prefixes", form.errors)
+
+    def test_bare_address_without_length_is_rejected(self):
+        data = self._valid_data()
+        data["prefixes"] = "2001:db8:1::"
+        form = self._form(data)
+        self.assertFalse(form.is_valid())
+        self.assertIn("prefixes", form.errors)
+
+    def test_zero_length_prefix_is_rejected(self):
+        """``::/0`` is the whole address space, not a delegable prefix (length is 1–128)."""
+        data = self._valid_data()
+        data["prefixes"] = "::/0"
+        form = self._form(data)
+        self.assertFalse(form.is_valid())
+        self.assertIn("prefixes", form.errors)
+
+    def test_delegable_prefix_length_is_still_accepted(self):
+        data = self._valid_data()
+        data["prefixes"] = "2001:db8::/48"
+        form = self._form(data)
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.cleaned_data["prefixes"], "2001:db8::/48")
+
+    def test_max_octet_duid_is_accepted(self):
+        """A 128-octet DUID is 383 characters delimited — past the opaque 255-char cap."""
+        identifier = ":".join(["ab"] * constants.DUID_MAX_OCTETS)
+        form = self._form(self._valid_data(identifier=identifier))
+        self.assertTrue(form.is_valid(), form.errors)
+
+    def test_duid_past_its_octet_limit_is_rejected(self):
+        identifier = ":".join(["ab"] * (constants.DUID_MAX_OCTETS + 1))
+        form = self._form(self._valid_data(identifier=identifier))
+        self.assertFalse(form.is_valid())
+        self.assertIn("identifier", form.errors)
 
     def test_missing_identifier_type_fails(self):
         data = self._valid_data()

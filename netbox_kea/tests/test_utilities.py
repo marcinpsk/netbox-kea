@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 
 from django.http import HttpResponse
 
+from netbox_kea import constants
 from netbox_kea.models import Server
 from netbox_kea.utilities import (
     _enrich_lease,
@@ -235,6 +236,52 @@ class TestIsHexString(TestCase):
 
     def test_mixed_case_accepted(self):
         self.assertTrue(is_hex_string("AA:BB:CC:DD:EE:FF", 6, 6))
+
+
+class TestValidateReservationIdentifierLength(TestCase):
+    """The character cap must not reject an identifier its octet limit allows.
+
+    A DUID may be 128 octets (RFC 8415), which is 383 characters colon-delimited —
+    far past the 255-character cap that only exists to keep an absurd *opaque*
+    identifier (circuit-id / flex-id / remote-id) out of the Kea API.
+    """
+
+    def _hex(self, octets: int) -> str:
+        return ":".join(["ab"] * octets)
+
+    def _validate(self, identifier_type: str, value: str) -> str:
+        from netbox_kea.utilities import validate_reservation_identifier
+
+        return validate_reservation_identifier(identifier_type, value)
+
+    def test_max_octet_duid_is_accepted(self):
+        value = self._hex(constants.DUID_MAX_OCTETS)
+        self.assertGreater(len(value), constants.MAX_IDENTIFIER_LENGTH)
+        self.assertEqual(self._validate("duid", value), value)
+
+    def test_duid_past_its_octet_limit_is_rejected(self):
+        with self.assertRaises(ValueError):
+            self._validate("duid", self._hex(constants.DUID_MAX_OCTETS + 1))
+
+    def test_max_octet_client_id_is_accepted(self):
+        value = self._hex(constants.CLIENT_ID_MAX_OCTETS)
+        self.assertEqual(self._validate("client-id", value), value)
+
+    def test_client_id_past_its_octet_limit_is_rejected(self):
+        with self.assertRaises(ValueError):
+            self._validate("client-id", self._hex(constants.CLIENT_ID_MAX_OCTETS + 1))
+
+    def test_opaque_identifier_past_the_character_cap_is_rejected(self):
+        """circuit-id / flex-id / remote-id are opaque, so length is the only check."""
+        for name in ("circuit-id", "flex-id", "remote-id"):
+            with self.subTest(identifier_type=name):
+                with self.assertRaises(ValueError) as ctx:
+                    self._validate(name, "a" * (constants.MAX_IDENTIFIER_LENGTH + 1))
+                self.assertIn("too long", str(ctx.exception))
+
+    def test_opaque_identifier_at_the_character_cap_is_accepted(self):
+        value = "a" * constants.MAX_IDENTIFIER_LENGTH
+        self.assertEqual(self._validate("flex-id", value), value)
 
 
 class TestCheckDhcpEnabled(TestCase):
@@ -663,16 +710,129 @@ class TestParseReservationCsv(TestCase):
         self.assertEqual(rows[0]["duid"], "00:01:02:03:04:05")
         self.assertEqual(rows[0]["subnet-id"], 10)
 
-    # error cases
+    def test_v6_prefixes_column_is_parsed_and_canonicalised(self):
+        """Delegated prefixes are semicolon-separated and share the form's validator."""
+        csv = "subnet-id,duid,prefixes\n10,00:01:02:03:04:05,2001:0db8:1::/64 ; 2001:db8:2::/56\n"
+        rows = self._parse(csv, version=6)
+        self.assertEqual(rows[0]["prefixes"], ["2001:db8:1::/64", "2001:db8:2::/56"])
 
-    def test_missing_required_field_raises_value_error(self):
-        """Row missing a required field raises ValueError with the row number."""
-        from netbox_kea.utilities import parse_reservation_csv
-
-        csv = "ip-address,hw-address,hostname,subnet-id\n,aa:bb:cc:00:00:01,host1,1\n"
+    def test_v6_zero_length_prefix_column_is_rejected(self):
+        """``::/0`` is the whole address space; a delegated prefix length is 1–128."""
         with self.assertRaises(ValueError) as ctx:
-            parse_reservation_csv(csv, version=4)
-        self.assertIn("2", str(ctx.exception))  # row 2 (1-indexed, header = row 1)
+            self._parse("subnet-id,duid,prefixes\n10,00:01:02:03:04:05,::/0\n", version=6)
+        message = str(ctx.exception)
+        self.assertIn("Row 2", message)
+        self.assertIn("::/0", message)
+
+    # address-less reservations
+
+    def test_v4_identifier_only_row_omits_the_address(self):
+        """A v4 host may reserve only a hostname — Kea accepts it, so the importer must."""
+        rows = self._parse("subnet-id,hw-address,hostname\n1,aa:bb:cc:dd:ee:ff,host1.example.com\n")
+        self.assertNotIn("ip-address", rows[0])
+        self.assertEqual(rows[0], {"subnet-id": 1, "hw-address": "aa:bb:cc:dd:ee:ff", "hostname": "host1.example.com"})
+
+    def test_v6_prefix_delegation_only_row_omits_the_addresses(self):
+        csv = "subnet-id,duid,prefixes\n10,00:01:02:03:04:05,2001:db8:1::/64\n"
+        rows = self._parse(csv, version=6)
+        self.assertNotIn("ip-addresses", rows[0])
+        self.assertEqual(rows[0]["prefixes"], ["2001:db8:1::/64"])
+
+    def test_v4_row_with_neither_address_nor_identifier_is_rejected(self):
+        """The message must name the columns that would satisfy the row."""
+        with self.assertRaises(ValueError) as ctx:
+            self._parse("subnet-id,hostname\n1,host1.example.com\n")
+        message = str(ctx.exception)
+        self.assertIn("Row 2", message)
+        for name in ("hw-address", "client-id", "circuit-id", "flex-id", "remote-id"):
+            self.assertIn(name, message)
+
+    def test_row_without_subnet_id_is_rejected(self):
+        with self.assertRaises(ValueError) as ctx:
+            self._parse("subnet-id,hw-address\n,aa:bb:cc:dd:ee:ff\n")
+        self.assertIn("subnet-id", str(ctx.exception))
+
+    # identifier columns
+
+    def test_every_v4_identifier_type_is_accepted(self):
+        for name, value in (
+            ("hw-address", "aa:bb:cc:dd:ee:ff"),
+            ("client-id", "01:aa:bb:cc:dd:ee:ff"),
+            ("circuit-id", "0a:1b:2c"),
+            ("flex-id", "somevendor-42"),
+            ("remote-id", "01:02:03:04"),
+        ):
+            with self.subTest(identifier_type=name):
+                rows = self._parse(f"subnet-id,{name}\n1,{value}\n")
+                self.assertEqual(rows[0][name], value)
+
+    def test_v6_duid_column_is_accepted_and_circuit_id_is_not(self):
+        """Kea has no circuit-id for DHCPv6, so that column is unknown there."""
+        self.assertEqual(self._parse("subnet-id,duid\n1,00:01:02:03\n", version=6)[0]["duid"], "00:01:02:03")
+        with self.assertRaises(ValueError) as ctx:
+            self._parse("subnet-id,circuit-id\n1,0a:1b\n", version=6)
+        self.assertIn("circuit-id", str(ctx.exception))
+
+    def test_two_identifiers_are_rejected_as_ambiguous(self):
+        """The edit view writes one identifier key, so a two-identifier host cannot round-trip."""
+        csv = "subnet-id,hw-address,flex-id\n1,aa:bb:cc:dd:ee:ff,vendor-42\n"
+        with self.assertRaises(ValueError) as ctx:
+            self._parse(csv)
+        message = str(ctx.exception)
+        self.assertIn("hw-address", message)
+        self.assertIn("flex-id", message)
+
+    def test_whitespace_only_identifier_counts_as_absent(self):
+        with self.assertRaises(ValueError) as ctx:
+            self._parse("subnet-id,hw-address\n1,   \n")
+        self.assertIn("no client identifier", str(ctx.exception))
+
+    def test_identifier_syntax_is_shared_with_the_form(self):
+        """A short MAC parses in netaddr but is not a hardware address."""
+        with self.assertRaises(ValueError) as ctx:
+            self._parse("subnet-id,hw-address\n1,aa:bb:cc\n")
+        self.assertIn("hardware address", str(ctx.exception))
+
+    def test_over_long_opaque_identifier_is_rejected(self):
+        with self.assertRaises(ValueError) as ctx:
+            self._parse(f"subnet-id,flex-id\n1,{'a' * 256}\n")
+        self.assertIn("too long", str(ctx.exception))
+
+    def test_max_octet_duid_column_is_accepted(self):
+        """383 characters delimited — the importer must not be stricter than the DUID limit."""
+        duid = ":".join(["ab"] * constants.DUID_MAX_OCTETS)
+        rows = self._parse(f"subnet-id,duid\n10,{duid}\n", version=6)
+        self.assertEqual(rows[0]["duid"], duid)
+
+    def test_duid_column_past_its_octet_limit_is_rejected(self):
+        duid = ":".join(["ab"] * (constants.DUID_MAX_OCTETS + 1))
+        with self.assertRaises(ValueError) as ctx:
+            self._parse(f"subnet-id,duid\n10,{duid}\n", version=6)
+        self.assertIn("Row 2", str(ctx.exception))
+
+    # unknown input
+
+    def test_unknown_column_carrying_a_value_is_rejected(self):
+        """Silently dropping a column the operator filled in loses their intent."""
+        csv = "subnet-id,hw-address,boot-file-name\n1,aa:bb:cc:dd:ee:ff,pxelinux.0\n"
+        with self.assertRaises(ValueError) as ctx:
+            self._parse(csv)
+        self.assertIn("boot-file-name", str(ctx.exception))
+
+    def test_unknown_column_left_empty_is_ignored(self):
+        rows = self._parse("subnet-id,hw-address,boot-file-name\n1,aa:bb:cc:dd:ee:ff,\n")
+        self.assertEqual(rows[0], {"subnet-id": 1, "hw-address": "aa:bb:cc:dd:ee:ff"})
+
+    def test_row_with_more_cells_than_headers_is_rejected(self):
+        with self.assertRaises(ValueError) as ctx:
+            self._parse("subnet-id,hw-address\n1,aa:bb:cc:dd:ee:ff,surplus\n")
+        self.assertIn("more values", str(ctx.exception))
+
+    def test_unsupported_version_raises(self):
+        """Anything but 4 or 6 used to fall through to the v6 branch."""
+        with self.assertRaises(ValueError) as ctx:
+            self._parse("subnet-id,duid\n1,00:01\n", version=5)
+        self.assertIn("expected 4 or 6", str(ctx.exception))
 
 
 # ---------------------------------------------------------------------------
@@ -1129,18 +1289,25 @@ class TestParseReservationCsvValidationPaths(TestCase):
         self.assertIn("IPv4", str(ctx.exception))
 
     def test_v4_invalid_mac_raises(self):
-        """Invalid MAC address format raises ValueError."""
+        """Invalid MAC address format raises ValueError naming the offending column."""
         csv = "ip-address,hw-address,subnet-id\n10.0.0.1,zz:zz:zz:zz:zz:zz,1"
         with self.assertRaises(ValueError) as ctx:
             self._parse(csv, version=4)
-        self.assertIn("MAC", str(ctx.exception))
+        self.assertIn("hw-address", str(ctx.exception))
 
-    def test_v6_empty_ip_addresses_raises(self):
-        """ip-addresses with only semicolons/spaces raises ValueError."""
+    def test_v6_empty_ip_addresses_is_allowed(self):
+        """An empty address cell reserves no address; only the identifier is required."""
         csv = "ip-addresses,duid,subnet-id\n  ;  ,00:01:02:03:04:05,1"
+        rows = self._parse(csv, version=6)
+        self.assertNotIn("ip-addresses", rows[0])
+        self.assertEqual(rows[0]["duid"], "00:01:02:03:04:05")
+
+    def test_v6_invalid_prefix_raises(self):
+        """A prefix with host bits set names a host, not a network."""
+        csv = "subnet-id,duid,prefixes\n1,00:01:02:03:04:05,2001:db8::1/64"
         with self.assertRaises(ValueError) as ctx:
             self._parse(csv, version=6)
-        self.assertIn("ip-addresses", str(ctx.exception))
+        self.assertIn("Row 2", str(ctx.exception))
 
     def test_v6_invalid_ipv6_raises(self):
         """Non-parseable string in ip-addresses raises ValueError."""

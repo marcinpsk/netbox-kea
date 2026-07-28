@@ -34,8 +34,17 @@ NetBox plugin for the [Kea DHCP](https://www.isc.org/kea/) server. Manage your D
 **Host Reservations**
 - Full CRUD for DHCPv4 and DHCPv6 reservations via [`host_cmds`](https://kea.readthedocs.io/en/latest/arm/hooks.html#host-cmds) hook
 - Identifier types: hw-address (v4), DUID (v6), client-id, flex-id, circuit-id, remote-id
+- Reservations that reserve no address — an identifier-only host (hostname, options or
+  client classes only) and a DHCPv6 host that only delegates prefixes. Both are listed,
+  created, edited and deleted by client identifier instead of by IP, and the IPAM sync
+  reports them as *skipped*: there is no address to record in NetBox. Their **Lease**
+  column matches the client identifier against the leases of the reservation's own
+  subnet, there being no reserved address to match on
 - Per-reservation DHCP options
 - Journal entries on add/edit/delete
+- Bulk CSV import: columns are matched by header name in any order. Each row needs
+  `subnet-id` and exactly one identifier column; the address is optional, and DHCPv6
+  rows may carry a semicolon-separated `prefixes` column
 
 **Subnet Management**
 - Add, edit and delete subnets (requires [`subnet_cmds`](https://kea.readthedocs.io/en/latest/arm/hooks.html#subnet-cmds) or `config-set`)
@@ -241,6 +250,18 @@ The `Kea IPAM Sync` job runs automatically when `rqworker` is active:
 4. Cleans up stale IPs (configurable via `stale_ip_cleanup`)
 5. One server failing does not block others
 6. Summary logged per server and in total
+
+Each server's summary reports `synced`, `skipped`, `errors` and `conflicts`:
+
+- **skipped** — rows the sync deliberately did not write, chiefly reservations that
+  reserve no address. They are not errors and do not fail the job.
+- **errors** — rows that failed to sync. Any error fails the job; the per-row reason is
+  logged at warning level with the server, IP version, subnet id and identifier *type*
+  (never the identifier value, which can carry operator data).
+- **conflicts** — addresses already held in NetBox by something other than this Kea
+  server, deduplicated per server across the lease and reservation phases. Up to 20 of
+  them are named in the summary and the log, so the addresses to look at are visible
+  without trawling debug output.
 
 View job history, next scheduled time and logs under **System → Background Jobs → Kea IPAM Sync**.
 

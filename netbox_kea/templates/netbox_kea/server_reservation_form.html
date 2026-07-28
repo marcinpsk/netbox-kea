@@ -26,13 +26,17 @@
         <strong>{{ action }} DHCPv{{ dhcp_version }} Reservation</strong>
       </div>
       <div class="card-body">
+        {# Both banners promise an IPAM record, which only holds for a reservation that #}
+        {# actually reserves an address. Identifier-only and prefix-only hosts have none. #}
         {% if object.sync_enabled and object.sync_reservations_enabled %}
         <div class="alert alert-info d-flex align-items-start mb-3" role="alert">
           <i class="mdi mdi-sync me-2 mt-1" aria-hidden="true"></i>
           <div>
             <strong>Automatic IPAM sync is enabled for this server.</strong>
-            This reservation will be synced to NetBox IPAM on the next scheduled sync run
-            (not instantly). You can also use the checkbox below to sync immediately.
+            A reservation with a fixed IP address will be synced to NetBox IPAM on the next
+            scheduled sync run (not instantly). You can also use the checkbox below to sync
+            immediately. Reservations that reserve no address are skipped — there is nothing
+            to record in IPAM.
           </div>
         </div>
         {% else %}
@@ -41,6 +45,7 @@
           <div>
             <strong>Automatic IPAM sync is disabled for this server.</strong>
             Use the checkbox below to sync this reservation to NetBox IPAM immediately.
+            A reservation that reserves no address has nothing to sync.
           </div>
         </div>
         {% endif %}

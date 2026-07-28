@@ -10,12 +10,14 @@
       <div class="card-body">
         <p>
           Are you sure you want to delete the DHCPv{{ dhcp_version }} reservation for
-          <strong>{{ ip_address }}</strong> in subnet <strong>{{ subnet_id }}</strong>?
+          <strong>{{ reservation_label|default:ip_address }}</strong> in subnet <strong>{{ subnet_id }}</strong>?
         </p>
         <p class="text-danger">
           <i class="mdi mdi-alert-circle-outline"></i>
           This action <strong>cannot be undone</strong>.
         </p>
+        {# No action: posts back to this URL, keeping the identifier query string for #}
+        {# reservations addressed by client identifier rather than by IP. #}
         <form method="post">
           {% csrf_token %}
           <input type="hidden" name="confirm" value="true">

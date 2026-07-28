@@ -904,3 +904,118 @@ class TestBulkImportPerRowExceptionTypes(_ViewTestBase):
         self.assertEqual(result["skipped"], 1)
         self.assertEqual(result["errors"], 1)
         self.assertEqual(result["total"], 3)
+
+
+# ---------------------------------------------------------------------------
+# Bulk import of reservations that reserve no address
+# ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestBulkImportAddressLessReservations(_ViewTestBase):
+    """CSV import through the real view for hosts that reserve no address.
+
+    The assertions read the recorded ``reservation-add`` payload rather than the
+    parser's return value, so they cover the whole seam: upload → parse → the
+    arguments the view actually sends to Kea.
+    """
+
+    def _url(self, version=4):
+        return reverse(f"plugins:netbox_kea:server_reservation{version}_bulk_import", args=[self.server.pk])
+
+    @staticmethod
+    def _upload(content: bytes):
+        csv_file = io.BytesIO(content)
+        csv_file.name = "reservations.csv"
+        return csv_file
+
+    def test_identifier_only_v4_row_omits_ip_address(self):
+        upload = self._upload(b"subnet-id,hw-address,hostname\n1,aa:bb:cc:dd:ee:ff,host1.example.com\n")
+        with stub_kea({"reservation-add": {"result": 0}}) as kea:
+            response = self.client.post(self._url(), {"csv_file": upload})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["result"]["created"], 1)
+        sent = kea.bodies("reservation-add")[0]["arguments"]["reservation"]
+        self.assertNotIn("ip-address", sent)
+        self.assertEqual(sent, {"subnet-id": 1, "hw-address": "aa:bb:cc:dd:ee:ff", "hostname": "host1.example.com"})
+
+    def test_prefix_delegation_only_v6_row_omits_addresses_and_sends_prefixes(self):
+        upload = self._upload(b"subnet-id,duid,prefixes\n10,00:01:02:03:04:05,2001:0db8:1::/64;2001:db8:2::/56\n")
+        with stub_kea({"reservation-add": {"result": 0}}) as kea:
+            response = self.client.post(self._url(version=6), {"csv_file": upload})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["result"]["created"], 1)
+        sent = kea.bodies("reservation-add")[0]["arguments"]["reservation"]
+        self.assertNotIn("ip-addresses", sent)
+        self.assertEqual(sent["prefixes"], ["2001:db8:1::/64", "2001:db8:2::/56"])
+
+    def test_non_default_identifier_column_is_imported(self):
+        """A flex-id host imports as a flex-id host, not silently as something else."""
+        upload = self._upload(b"subnet-id,flex-id,ip-address\n1,vendor-42,10.0.0.7\n")
+        with stub_kea({"reservation-add": {"result": 0}}) as kea:
+            self.client.post(self._url(), {"csv_file": upload})
+        sent = kea.bodies("reservation-add")[0]["arguments"]["reservation"]
+        self.assertEqual(sent, {"subnet-id": 1, "flex-id": "vendor-42", "ip-address": "10.0.0.7"})
+
+    def test_invalid_prefix_issues_no_kea_command(self):
+        """Parsing fails before a client is built, so nothing reaches Kea."""
+        upload = self._upload(b"subnet-id,duid,prefixes\n10,00:01:02:03:04:05,2001:db8::1/64\n")
+        with stub_kea({}) as kea:
+            response = self.client.post(self._url(version=6), {"csv_file": upload})
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "parsing failed")
+        self.assertEqual(kea.commands(), [])
+
+    def test_row_with_two_identifiers_issues_no_kea_command(self):
+        upload = self._upload(b"subnet-id,hw-address,flex-id\n1,aa:bb:cc:dd:ee:ff,vendor-42\n")
+        with stub_kea({}) as kea:
+            response = self.client.post(self._url(), {"csv_file": upload})
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "parsing failed")
+        self.assertEqual(kea.commands(), [])
+
+    def test_one_bad_row_rejects_the_whole_file(self):
+        """The parser runs before any write, so a later bad row cannot half-import a file."""
+        upload = self._upload(
+            b"subnet-id,hw-address\n1,aa:bb:cc:dd:ee:ff\n1,not-a-mac\n",
+        )
+        with stub_kea({}) as kea:
+            response = self.client.post(self._url(), {"csv_file": upload})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(kea.commands(), [])
+
+    def test_import_requires_change_permission(self):
+        """A user who may view the server but not change it cannot import."""
+        from django.contrib.contenttypes.models import ContentType
+        from users.models import ObjectPermission
+
+        from netbox_kea.models import Server
+
+        restricted = User.objects.create_user(
+            username="noperms_import",
+            email="noperms_import@example.com",
+            password="pass",
+        )
+        perm = ObjectPermission.objects.create(name="view-server-noperms-import", actions=["view"])
+        perm.object_types.add(ContentType.objects.get_for_model(Server))
+        perm.users.add(restricted)
+        self.client.force_login(restricted)
+        upload = self._upload(b"subnet-id,hw-address\n1,aa:bb:cc:dd:ee:ff\n")
+        with stub_kea({}) as kea:
+            response = self.client.post(self._url(), {"csv_file": upload})
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(kea.commands(), [])
+
+    def test_import_hides_the_server_without_view_permission(self):
+        """No view permission must 404 rather than 403, so the server's existence stays hidden."""
+        restricted = User.objects.create_user(
+            username="noview_import",
+            email="noview_import@example.com",
+            password="pass",
+        )
+        self.client.force_login(restricted)
+        upload = self._upload(b"subnet-id,hw-address\n1,aa:bb:cc:dd:ee:ff\n")
+        with stub_kea({}) as kea:
+            response = self.client.post(self._url(), {"csv_file": upload})
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(kea.commands(), [])

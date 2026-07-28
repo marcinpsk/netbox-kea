@@ -559,12 +559,55 @@ _LEASE_STATUS_LINK_V6 = (
 )
 
 
+#: Identifier cell: the value plus the Kea key it came from.  Without the type a
+#: flex-id is indistinguishable from a hardware address.
+_IDENTIFIER_CELL = (
+    "{% if record.identifier %}"
+    '<span class="font-monospace">{{ record.identifier }}</span>'
+    '<br><span class="text-muted small">{{ record.identifier_type }}</span>'
+    "{% endif %}"
+)
+
+#: Address cell for reservations that may reserve no address at all.
+_RESERVATION_ADDRESS_CELL = (
+    "{% if record.ip_address %}"
+    "{{ record.ip_address }}"
+    "{% else %}"
+    '<span class="badge text-bg-secondary">No address</span>'
+    "{% endif %}"
+)
+
+#: DHCPv6 counterpart: the reserved addresses, or the same badge when there are none.
+_RESERVATION_ADDRESSES_CELL = (
+    "{% if value %}"
+    "{% for address in value %}{{ address }}{% if not forloop.last %}<br>{% endif %}{% endfor %}"
+    "{% else %}"
+    '<span class="badge text-bg-secondary">No address</span>'
+    "{% endif %}"
+)
+
+_RESERVATION_PREFIXES_CELL = (
+    "{% for prefix in record.prefixes %}"
+    '<span class="font-monospace">{{ prefix }}</span>{% if not forloop.last %}<br>{% endif %}'
+    "{% endfor %}"
+)
+
+
 class ReservationTable4(GenericTable):
     """Table for DHCPv4 host reservations returned from the Kea API."""
 
     subnet_id = tables.Column(verbose_name="Subnet ID", accessor="subnet-id")
     hw_address = MonospaceColumn(verbose_name="Hardware Address", accessor="hw-address")
-    ip_address = tables.Column(verbose_name="IP Address", accessor="ip-address", order_by="_ip_sort_key")
+    identifier = tables.TemplateColumn(
+        verbose_name="Identifier",
+        orderable=False,
+        template_code=_IDENTIFIER_CELL,
+    )
+    ip_address = tables.TemplateColumn(
+        verbose_name="IP Address",
+        order_by="_ip_sort_key",
+        template_code=_RESERVATION_ADDRESS_CELL,
+    )
     hostname = tables.Column(verbose_name="Hostname")
     lease_status = tables.TemplateColumn(
         verbose_name="Lease",
@@ -595,8 +638,27 @@ class ReservationTable4(GenericTable):
 
     class Meta(GenericTable.Meta):
         empty_text = "No reservations found."
-        fields = ("subnet_id", "hw_address", "ip_address", "hostname", "lease_status", "netbox_ip", "actions")
-        default_columns = ("subnet_id", "hw_address", "ip_address", "hostname", "lease_status", "netbox_ip", "actions")
+        fields = (
+            "subnet_id",
+            "hw_address",
+            "identifier",
+            "ip_address",
+            "hostname",
+            "lease_status",
+            "netbox_ip",
+            "actions",
+        )
+        # ``identifier`` replaces ``hw_address`` by default: it shows the same value
+        # for a MAC-keyed host and an actual value for every other identifier type.
+        default_columns = (
+            "subnet_id",
+            "identifier",
+            "ip_address",
+            "hostname",
+            "lease_status",
+            "netbox_ip",
+            "actions",
+        )
 
 
 class ReservationTable6(GenericTable):
@@ -604,7 +666,22 @@ class ReservationTable6(GenericTable):
 
     subnet_id = tables.Column(verbose_name="Subnet ID", accessor="subnet-id")
     duid = MonospaceColumn(verbose_name="DUID")
-    ip_addresses = tables.Column(verbose_name="IPv6 Addresses", accessor="ip-addresses")
+    identifier = tables.TemplateColumn(
+        verbose_name="Identifier",
+        orderable=False,
+        template_code=_IDENTIFIER_CELL,
+    )
+    ip_addresses = tables.TemplateColumn(
+        verbose_name="IPv6 Addresses",
+        accessor="ip-addresses",
+        order_by="_ip_sort_key",
+        template_code=_RESERVATION_ADDRESSES_CELL,
+    )
+    prefixes = tables.TemplateColumn(
+        verbose_name="Delegated Prefixes",
+        orderable=False,
+        template_code=_RESERVATION_PREFIXES_CELL,
+    )
     hostname = tables.Column(verbose_name="Hostname")
     lease_status = tables.TemplateColumn(
         verbose_name="Lease",
@@ -635,8 +712,29 @@ class ReservationTable6(GenericTable):
 
     class Meta(GenericTable.Meta):
         empty_text = "No reservations found."
-        fields = ("subnet_id", "duid", "ip_addresses", "hostname", "lease_status", "netbox_ip", "actions")
-        default_columns = ("subnet_id", "duid", "ip_addresses", "hostname", "lease_status", "netbox_ip", "actions")
+        fields = (
+            "subnet_id",
+            "duid",
+            "identifier",
+            "ip_addresses",
+            "prefixes",
+            "hostname",
+            "lease_status",
+            "netbox_ip",
+            "actions",
+        )
+        # ``identifier`` replaces ``duid`` by default for the same reason as v4, and
+        # ``prefixes`` is the only thing a prefix-delegation-only host reserves.
+        default_columns = (
+            "subnet_id",
+            "identifier",
+            "ip_addresses",
+            "prefixes",
+            "hostname",
+            "lease_status",
+            "netbox_ip",
+            "actions",
+        )
 
 
 # ─────────────────────────────────────────────────────────────────────────────

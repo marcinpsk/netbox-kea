@@ -10,7 +10,7 @@ from utilities.forms.rendering import FieldSet
 
 from . import constants
 from .models import Server
-from .utilities import is_hex_string
+from .utilities import is_hex_string, parse_delegated_prefixes, validate_reservation_identifier
 
 
 def _validate_ip(value: str, version: int) -> str:
@@ -383,21 +383,17 @@ class Lease4DeleteForm(BaseLeaseDeleteForm):
 # Phase 2: Reservation Management forms
 # ─────────────────────────────────────────────────────────────────────────────
 
-_IDENTIFIER_TYPE_CHOICES_V4 = [
-    ("hw-address", "Hardware Address"),
-    ("client-id", "Client ID"),
-    ("circuit-id", "Circuit ID"),
-    ("flex-id", "Flex ID"),
-    ("remote-id", "Remote ID"),
-]
 
-_IDENTIFIER_TYPE_CHOICES_V6 = [
-    ("duid", "DUID"),
-    ("hw-address", "Hardware Address"),
-    ("client-id", "Client ID"),
-    ("flex-id", "Flex ID"),
-    ("remote-id", "Remote ID"),
-]
+def _identifier_type_choices(version: int) -> list[tuple[str, str]]:
+    """Offer exactly the identifier types the CSV importer and the URLs accept."""
+    return [
+        (name, constants.RESERVATION_IDENTIFIER_LABELS[name])
+        for name in constants.RESERVATION_IDENTIFIER_TYPES[version]
+    ]
+
+
+_IDENTIFIER_TYPE_CHOICES_V4 = _identifier_type_choices(4)
+_IDENTIFIER_TYPE_CHOICES_V6 = _identifier_type_choices(6)
 
 
 class Reservation4Form(forms.Form):
@@ -410,7 +406,11 @@ class Reservation4Form(forms.Form):
     )
     ip_address = forms.CharField(
         label="IP Address",
-        help_text="Fixed IPv4 address to assign to this reservation.",
+        required=False,
+        help_text=(
+            "Fixed IPv4 address to assign to this reservation. Leave blank to reserve"
+            " only a hostname, options or client classes for this client."
+        ),
     )
     identifier_type = forms.ChoiceField(
         label="Identifier Type",
@@ -433,28 +433,24 @@ class Reservation4Form(forms.Form):
     )
 
     def clean_ip_address(self) -> str:
-        """Validate that the value is a valid IPv4 address."""
-        return _validate_ip(self.cleaned_data["ip_address"], version=4)
+        """Validate the value is a valid IPv4 address, or blank for no fixed address."""
+        value = (self.cleaned_data.get("ip_address") or "").strip()
+        if not value:
+            return ""
+        return _validate_ip(value, version=4)
 
     def clean(self) -> dict[str, Any] | None:
         """Cross-validate identifier value against identifier_type."""
         cleaned = super().clean()
         if not cleaned:
             return cleaned
-        id_type = cleaned.get("identifier_type")
         identifier = cleaned.get("identifier", "").strip()
         if not identifier:
             return cleaned
-        if id_type == "hw-address":
-            try:
-                EUI(identifier, version=48)
-            except (AddrFormatError, ValueError):
-                self.add_error("identifier", "Enter a valid hardware address (e.g. aa:bb:cc:dd:ee:ff).")
-        elif id_type == "client-id":
-            if not is_hex_string(identifier, constants.CLIENT_ID_MIN_OCTETS, constants.CLIENT_ID_MAX_OCTETS):
-                self.add_error(
-                    "identifier", "Enter a valid client-id as colon-separated hex octets (e.g. 01:aa:bb:cc:dd:ee:ff)."
-                )
+        try:
+            validate_reservation_identifier(cleaned.get("identifier_type", ""), identifier)
+        except ValueError as exc:
+            self.add_error("identifier", str(exc))
         return cleaned
 
 
@@ -468,7 +464,16 @@ class Reservation6Form(forms.Form):
     )
     ip_addresses = forms.CharField(
         label="IPv6 Addresses",
-        help_text="Comma-separated list of IPv6 addresses to assign.",
+        required=False,
+        help_text="Comma-separated list of IPv6 addresses to assign. Leave blank to reserve none.",
+    )
+    prefixes = forms.CharField(
+        label="Delegated Prefixes",
+        required=False,
+        help_text=(
+            "Comma-separated IPv6 prefixes to delegate (e.g. <code>2001:db8:1::/64</code>)."
+            " Leave blank to remove any that are set."
+        ),
     )
     identifier_type = forms.ChoiceField(
         label="Identifier Type",
@@ -491,8 +496,8 @@ class Reservation6Form(forms.Form):
     )
 
     def clean_ip_addresses(self) -> str:
-        """Validate that all values are valid IPv6 addresses."""
-        val = self.cleaned_data["ip_addresses"]
+        """Validate every entry is a valid IPv6 address; blank reserves no address."""
+        val = self.cleaned_data.get("ip_addresses") or ""
         cleaned: list[str] = []
         for raw in val.split(","):
             raw = raw.strip()
@@ -505,32 +510,28 @@ class Reservation6Form(forms.Form):
             if addr.version != 6:
                 raise ValidationError(f"'{raw}' is not a valid IPv6 address.")
             cleaned.append(str(addr))
-        if not cleaned:
-            raise ValidationError("Enter at least one valid IPv6 address.")
         return ",".join(cleaned)
+
+    def clean_prefixes(self) -> str:
+        """Validate the delegated-prefix list with the validator the CSV importer uses."""
+        try:
+            prefixes = parse_delegated_prefixes(self.cleaned_data.get("prefixes") or "")
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
+        return ",".join(prefixes)
 
     def clean(self) -> dict[str, Any] | None:
         """Cross-validate identifier value against identifier_type."""
         cleaned = super().clean()
         if not cleaned:
             return cleaned
-        id_type = cleaned.get("identifier_type")
         identifier = cleaned.get("identifier", "").strip()
         if not identifier:
             return cleaned
-        if id_type == "duid":
-            if not is_hex_string(identifier, constants.DUID_MIN_OCTETS, constants.DUID_MAX_OCTETS):
-                self.add_error("identifier", "Enter a valid DUID as colon-separated hex octets.")
-        elif id_type == "hw-address":
-            try:
-                EUI(identifier, version=48)
-            except (AddrFormatError, ValueError):
-                self.add_error("identifier", "Enter a valid hardware address (e.g. aa:bb:cc:dd:ee:ff).")
-        elif id_type == "client-id":
-            if not is_hex_string(identifier, constants.CLIENT_ID_MIN_OCTETS, constants.CLIENT_ID_MAX_OCTETS):
-                self.add_error(
-                    "identifier", "Enter a valid client-id as colon-separated hex octets (e.g. 01:aa:bb:cc:dd:ee:ff)."
-                )
+        try:
+            validate_reservation_identifier(cleaned.get("identifier_type", ""), identifier)
+        except ValueError as exc:
+            self.add_error("identifier", str(exc))
         return cleaned
 
 
@@ -954,15 +955,21 @@ class _BaseBulkReservationImportForm(forms.Form):
 class Reservation4BulkImportForm(_BaseBulkReservationImportForm):
     """Bulk import form for DHCPv4 reservations.
 
-    Expected columns: ``ip-address``, ``hw-address``, ``hostname`` (optional), ``subnet-id``.
+    Required columns: ``subnet-id`` plus exactly one of ``hw-address``,
+    ``client-id``, ``circuit-id``, ``flex-id``, ``remote-id``.
+    Optional: ``ip-address``, ``hostname``.  See
+    :py:func:`~netbox_kea.utilities.parse_reservation_csv`.
     """
 
 
 class Reservation6BulkImportForm(_BaseBulkReservationImportForm):
     """Bulk import form for DHCPv6 reservations.
 
-    Expected columns: ``ip-addresses``, ``duid``, ``hostname`` (optional), ``subnet-id``.
-    Separate multiple IPv6 addresses per host with a semicolon inside the ``ip-addresses`` cell.
+    Required columns: ``subnet-id`` plus exactly one of ``duid``, ``hw-address``,
+    ``client-id``, ``flex-id``, ``remote-id``.
+    Optional: ``ip-addresses``, ``prefixes``, ``hostname`` — both address and prefix
+    cells take several semicolon-separated values.  See
+    :py:func:`~netbox_kea.utilities.parse_reservation_csv`.
     """
 
 

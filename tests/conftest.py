@@ -1,3 +1,5 @@
+import os
+
 import pynetbox
 import pytest
 import requests
@@ -5,7 +7,8 @@ import requests
 
 @pytest.fixture(scope="session")
 def netbox_url() -> str:
-    return "http://localhost:8000"
+    # Overridable so the harness can be published on another port when 8000 is taken.
+    return os.environ.get("NETBOX_URL", "http://localhost:8000")
 
 
 @pytest.fixture(scope="session")
