@@ -251,7 +251,7 @@ The `Kea IPAM Sync` job runs automatically when `rqworker` is active:
 5. One server failing does not block others
 6. Summary logged per server and in total
 
-Each server's summary reports `synced`, `skipped`, `errors` and `conflicts`:
+Each server's summary reports `created`, `updated`, `errors`, `prefix_errors`, `conflicts` and `skipped`:
 
 - **skipped** — rows the sync deliberately did not write, chiefly reservations that
   reserve no address. They are not errors and do not fail the job.
