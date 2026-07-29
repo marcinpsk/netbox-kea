@@ -413,6 +413,17 @@ class TestReservationForm6(SimpleTestCase):
         self.assertFalse(form.is_valid())
         self.assertIn("subnet_cidr", form.errors)
 
+    def test_invalid_subnet_cidr_fails(self):
+        form = self._form(self._valid_data(subnet_cidr="not-a-cidr"))
+        self.assertFalse(form.is_valid())
+        self.assertIn("subnet_cidr", form.errors)
+
+    def test_host_bits_set_in_subnet_cidr_fails(self):
+        """A CIDR with host bits set (e.g. 2001:db8::1/48) is rejected (strict=True)."""
+        form = self._form(self._valid_data(subnet_cidr="2001:db8::1/48"))
+        self.assertFalse(form.is_valid())
+        self.assertIn("subnet_cidr", form.errors)
+
     def test_missing_ip_addresses_is_allowed(self):
         """A DHCPv6 host may delegate only prefixes, or reserve only a hostname."""
         data = self._valid_data()
