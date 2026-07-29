@@ -4073,6 +4073,13 @@ class TestGetSubnetCidr(TestCase):
             with self.assertRaises(KeaException):
                 self.client._get_subnet_cidr(version=4, subnet_id=42)
 
+    def test_raises_value_error_when_subnet_key_missing_from_entry(self):
+        """_get_subnet_cidr raises ValueError when the subnet entry exists but has no 'subnet' field."""
+        resp = [{"result": 0, "arguments": {"subnet4": [{"id": 1}]}}]
+        with patch.object(self.client._session, "post", return_value=_mock_http_response(resp)):
+            with self.assertRaises(ValueError):
+                self.client._get_subnet_cidr(version=4, subnet_id=1)
+
 
 # ---------------------------------------------------------------------------
 # TestSubnetGet

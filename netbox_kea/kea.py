@@ -318,15 +318,14 @@ class KeaClient:
         """Return the Kea subnet ID for the subnet whose CIDR matches *cidr* exactly.
 
         Uses ``subnet{version}-list`` to look up the ID — lighter than a full
-        ``config-get``.  Returns ``None`` if no subnet matches or if the list
-        command fails.
+        ``config-get``.
 
         Args:
             version: DHCP protocol version (``4`` or ``6``).
             cidr: Exact subnet CIDR string, e.g. ``"10.0.0.0/24"``.
 
         Returns:
-            The integer subnet ID, or ``None`` if not found.
+            The integer subnet ID, or ``None`` if no subnet matches.
 
         Raises:
             KeaException: If the ``subnet{version}-list`` command itself fails.
