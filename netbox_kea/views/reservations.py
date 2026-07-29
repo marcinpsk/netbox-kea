@@ -763,7 +763,8 @@ class ServerReservation4AddView(_KeaChangeMixin, generic.ObjectView):
         """Render add form, optionally pre-filled from query parameters."""
         server = self.get_object(pk=pk)
         initial = {
-            k: request.GET.get(k, "") for k in ("subnet_id", "ip_address", "identifier_type", "identifier", "hostname")
+            k: request.GET.get(k, "")
+            for k in ("subnet_cidr", "ip_address", "identifier_type", "identifier", "hostname")
         }
         initial = {k: v for k, v in initial.items() if v}
         return render(
@@ -788,23 +789,6 @@ class ServerReservation4AddView(_KeaChangeMixin, generic.ObjectView):
         return_url = reverse("plugins:netbox_kea:server_reservations4", args=[pk])
         if form.is_valid() and options_valid:
             cd = form.cleaned_data
-            reservation = {
-                "subnet-id": cd["subnet_id"],
-                cd["identifier_type"]: cd["identifier"],
-            }
-            # Omit the key entirely rather than sending an empty address: a host may
-            # legally reserve only a hostname, options or client classes.
-            if cd.get("ip_address"):
-                reservation["ip-address"] = cd["ip_address"]
-            if cd.get("hostname"):
-                reservation["hostname"] = cd["hostname"]
-            option_data = [
-                {"name": f["name"], "data": f["data"], **({"always-send": True} if f.get("always_send") else {})}
-                for f in (getattr(options_formset, "cleaned_data", []) or [])
-                if f and f.get("name") and not f.get("DELETE")
-            ]
-            if option_data:
-                reservation["option-data"] = option_data
             try:
                 client = server.get_client(version=4)
             except ValueError:
@@ -823,11 +807,61 @@ class ServerReservation4AddView(_KeaChangeMixin, generic.ObjectView):
                         "tab": self.tab,
                     },
                 )
+            try:
+                subnet_id = client.subnet_id_from_cidr(4, cd["subnet_cidr"])
+            except (KeaException, requests.RequestException):
+                logger.exception("Failed to look up subnet CIDR %s in Kea", cd["subnet_cidr"])
+                messages.error(request, "Network error communicating with Kea: see server logs.")
+                return render(
+                    request,
+                    self.template_name,
+                    {
+                        "object": server,
+                        "form": form,
+                        "options_formset": options_formset,
+                        "dhcp_version": 4,
+                        "action": "Add",
+                        "return_url": return_url,
+                        "tab": self.tab,
+                    },
+                )
+            if subnet_id is None:
+                form.add_error("subnet_cidr", f"No subnet matching {cd['subnet_cidr']} found in Kea.")
+                return render(
+                    request,
+                    self.template_name,
+                    {
+                        "object": server,
+                        "form": form,
+                        "options_formset": options_formset,
+                        "dhcp_version": 4,
+                        "action": "Add",
+                        "return_url": return_url,
+                        "tab": self.tab,
+                    },
+                )
+            reservation = {
+                "subnet-id": subnet_id,
+                cd["identifier_type"]: cd["identifier"],
+            }
+            # Omit the key entirely rather than sending an empty address: a host may
+            # legally reserve only a hostname, options or client classes.
+            if cd.get("ip_address"):
+                reservation["ip-address"] = cd["ip_address"]
+            if cd.get("hostname"):
+                reservation["hostname"] = cd["hostname"]
+            option_data = [
+                {"name": f["name"], "data": f["data"], **({"always-send": True} if f.get("always_send") else {})}
+                for f in (getattr(options_formset, "cleaned_data", []) or [])
+                if f and f.get("name") and not f.get("DELETE")
+            ]
+            if option_data:
+                reservation["option-data"] = option_data
             # Advisory warning when the reservation IP is inside an existing pool (non-fatal).
             # Nothing to check when the reservation has no address.
             if cd.get("ip_address"):
                 try:
-                    _warn_reservation_pool_overlap(request, client, 4, cd["subnet_id"], cd["ip_address"])
+                    _warn_reservation_pool_overlap(request, client, 4, subnet_id, cd["ip_address"])
                 except Exception:  # noqa: BLE001
                     logger.debug("Pool overlap check failed for %s", cd.get("ip_address"), exc_info=True)
             subject = cd.get("ip_address") or f"{cd['identifier_type']} {cd['identifier']}"
@@ -879,7 +913,7 @@ class ServerReservation6AddView(_KeaChangeMixin, generic.ObjectView):
         server = self.get_object(pk=pk)
         initial = {
             k: request.GET.get(k, "")
-            for k in ("subnet_id", "ip_addresses", "prefixes", "identifier_type", "identifier", "hostname")
+            for k in ("subnet_cidr", "ip_addresses", "prefixes", "identifier_type", "identifier", "hostname")
         }
         initial = {k: v for k, v in initial.items() if v}
         return render(
@@ -904,22 +938,6 @@ class ServerReservation6AddView(_KeaChangeMixin, generic.ObjectView):
         return_url = reverse("plugins:netbox_kea:server_reservations6", args=[pk])
         if form.is_valid() and options_valid:
             cd = form.cleaned_data
-            reservation: dict[str, Any] = {
-                "subnet-id": cd["subnet_id"],
-                cd["identifier_type"]: cd["identifier"],
-            }
-            # Omit empty collections rather than sending them: a DHCPv6 host may
-            # reserve only delegated prefixes, or only a hostname and options.
-            _apply_v6_addresses_and_prefixes(reservation, cd)
-            if cd.get("hostname"):
-                reservation["hostname"] = cd["hostname"]
-            option_data = [
-                {"name": f["name"], "data": f["data"], **({"always-send": True} if f.get("always_send") else {})}
-                for f in (getattr(options_formset, "cleaned_data", []) or [])
-                if f and f.get("name") and not f.get("DELETE")
-            ]
-            if option_data:
-                reservation["option-data"] = option_data
             try:
                 client = server.get_client(version=6)
             except ValueError:
@@ -938,11 +956,60 @@ class ServerReservation6AddView(_KeaChangeMixin, generic.ObjectView):
                         "tab": self.tab,
                     },
                 )
+            try:
+                subnet_id = client.subnet_id_from_cidr(6, cd["subnet_cidr"])
+            except (KeaException, requests.RequestException):
+                logger.exception("Failed to look up subnet CIDR %s in Kea", cd["subnet_cidr"])
+                messages.error(request, "Network error communicating with Kea: see server logs.")
+                return render(
+                    request,
+                    self.template_name,
+                    {
+                        "object": server,
+                        "form": form,
+                        "options_formset": options_formset,
+                        "dhcp_version": 6,
+                        "action": "Add",
+                        "return_url": return_url,
+                        "tab": self.tab,
+                    },
+                )
+            if subnet_id is None:
+                form.add_error("subnet_cidr", f"No subnet matching {cd['subnet_cidr']} found in Kea.")
+                return render(
+                    request,
+                    self.template_name,
+                    {
+                        "object": server,
+                        "form": form,
+                        "options_formset": options_formset,
+                        "dhcp_version": 6,
+                        "action": "Add",
+                        "return_url": return_url,
+                        "tab": self.tab,
+                    },
+                )
+            reservation: dict[str, Any] = {
+                "subnet-id": subnet_id,
+                cd["identifier_type"]: cd["identifier"],
+            }
+            # Omit empty collections rather than sending them: a DHCPv6 host may
+            # reserve only delegated prefixes, or only a hostname and options.
+            _apply_v6_addresses_and_prefixes(reservation, cd)
+            if cd.get("hostname"):
+                reservation["hostname"] = cd["hostname"]
+            option_data = [
+                {"name": f["name"], "data": f["data"], **({"always-send": True} if f.get("always_send") else {})}
+                for f in (getattr(options_formset, "cleaned_data", []) or [])
+                if f and f.get("name") and not f.get("DELETE")
+            ]
+            if option_data:
+                reservation["option-data"] = option_data
             # Advisory warning when any reservation IP is inside an existing pool (non-fatal)
             try:
                 for ip_str in reservation.get("ip-addresses") or []:
                     if ip_str:
-                        _warn_reservation_pool_overlap(request, client, 6, cd["subnet_id"], ip_str)
+                        _warn_reservation_pool_overlap(request, client, 6, subnet_id, ip_str)
             except Exception:  # noqa: BLE001
                 logger.debug("Pool overlap check failed for v6 reservation", exc_info=True)
             try:
@@ -988,7 +1055,7 @@ class ServerReservation4EditView(_ReservationLookupMixin, _KeaChangeMixin, gener
     template_name = "netbox_kea/server_reservation_form.html"
     tab = _RESERVATIONS_TAB
     dhcp_version = 4
-    immutable_fields = frozenset({"subnet_id", "ip_address", "identifier_type", "identifier"})
+    immutable_fields = frozenset({"subnet_cidr", "ip_address", "identifier_type", "identifier"})
 
     def _get_reservation(self, server: Server, lookup: _ReservationLookup) -> dict | None:
         client = server.get_client(version=4)
@@ -1013,8 +1080,12 @@ class ServerReservation4EditView(_ReservationLookupMixin, _KeaChangeMixin, gener
         if reservation is None:
             raise Http404(f"Reservation {lookup.label} not found in subnet {subnet_id}")
         identifier_type, identifier = _get_reservation_identifier(reservation, 4)
+        try:
+            subnet_cidr = server.get_client(version=4)._get_subnet_cidr(4, subnet_id)
+        except (KeaException, requests.RequestException, ValueError):
+            subnet_cidr = str(subnet_id)
         initial = {
-            "subnet_id": reservation.get("subnet-id", subnet_id),
+            "subnet_cidr": subnet_cidr,
             "ip_address": reservation.get("ip-address", ip_address),
             "identifier_type": identifier_type,
             "identifier": identifier,
@@ -1065,10 +1136,14 @@ class ServerReservation4EditView(_ReservationLookupMixin, _KeaChangeMixin, gener
             messages.error(request, f"Reservation {lookup.label} no longer exists in subnet {subnet_id}.")
             return redirect(return_url)
         existing_id_type, existing_id_value = _get_reservation_identifier(existing, 4)
+        try:
+            subnet_cidr = server.get_client(version=4)._get_subnet_cidr(4, subnet_id)
+        except (KeaException, requests.RequestException, ValueError):
+            subnet_cidr = str(subnet_id)
         form = forms.Reservation4Form(
             data=request.POST,
             initial={
-                "subnet_id": subnet_id,
+                "subnet_cidr": subnet_cidr,
                 "ip_address": existing.get("ip-address", ip_address),
                 "identifier_type": existing_id_type,
                 "identifier": existing_id_value,
@@ -1141,7 +1216,7 @@ class ServerReservation6EditView(_ReservationLookupMixin, _KeaChangeMixin, gener
     template_name = "netbox_kea/server_reservation_form.html"
     tab = _RESERVATIONS_TAB
     dhcp_version = 6
-    immutable_fields = frozenset({"subnet_id", "ip_addresses", "identifier_type", "identifier"})
+    immutable_fields = frozenset({"subnet_cidr", "ip_addresses", "identifier_type", "identifier"})
 
     def _get_reservation(self, server: Server, lookup: _ReservationLookup) -> dict | None:
         client = server.get_client(version=6)
@@ -1174,8 +1249,12 @@ class ServerReservation6EditView(_ReservationLookupMixin, _KeaChangeMixin, gener
         else:
             # A prefix-delegation-only reservation has no addresses at all.
             ip_list = [ip_address] if ip_address else []
+        try:
+            subnet_cidr = server.get_client(version=6)._get_subnet_cidr(6, subnet_id)
+        except (KeaException, requests.RequestException, ValueError):
+            subnet_cidr = str(subnet_id)
         initial = {
-            "subnet_id": reservation.get("subnet-id", subnet_id),
+            "subnet_cidr": subnet_cidr,
             "ip_addresses": ",".join(ip_list),
             "prefixes": ",".join(_reservation_prefix_list(reservation)),
             "identifier_type": identifier_type,
@@ -1243,10 +1322,14 @@ class ServerReservation6EditView(_ReservationLookupMixin, _KeaChangeMixin, gener
             )
             return redirect(return_url)
         existing_id_type, existing_id_value = _get_reservation_identifier(existing, 6)
+        try:
+            subnet_cidr = server.get_client(version=6)._get_subnet_cidr(6, subnet_id)
+        except (KeaException, requests.RequestException, ValueError):
+            subnet_cidr = str(subnet_id)
         form = forms.Reservation6Form(
             data=request.POST,
             initial={
-                "subnet_id": subnet_id,
+                "subnet_cidr": subnet_cidr,
                 "ip_addresses": ",".join(existing_ips),
                 "prefixes": ",".join(_reservation_prefix_list(existing)),
                 "identifier_type": existing_id_type,
@@ -1428,14 +1511,14 @@ class ServerReservation4EditByIdentifierView(ServerReservation4EditView):
     """Edit a DHCPv4 host reservation addressed by its client identifier."""
 
     lookup_by_identifier = True
-    immutable_fields = frozenset({"subnet_id", "identifier_type", "identifier"})
+    immutable_fields = frozenset({"subnet_cidr", "identifier_type", "identifier"})
 
 
 class ServerReservation6EditByIdentifierView(ServerReservation6EditView):
     """Edit a DHCPv6 host reservation addressed by its client identifier."""
 
     lookup_by_identifier = True
-    immutable_fields = frozenset({"subnet_id", "identifier_type", "identifier"})
+    immutable_fields = frozenset({"subnet_cidr", "identifier_type", "identifier"})
 
 
 class ServerReservation4DeleteByIdentifierView(ServerReservation4DeleteView):

@@ -399,10 +399,10 @@ _IDENTIFIER_TYPE_CHOICES_V6 = _identifier_type_choices(6)
 class Reservation4Form(forms.Form):
     """Form for creating or editing a DHCPv4 host reservation."""
 
-    subnet_id = forms.IntegerField(
-        label="Subnet ID",
-        min_value=1,
-        help_text="Kea subnet ID the reservation belongs to.",
+    subnet_cidr = forms.CharField(
+        label="Subnet CIDR",
+        max_length=50,
+        help_text="Subnet the reservation belongs to (e.g. <code>10.0.0.0/24</code>).",
     )
     ip_address = forms.CharField(
         label="IP Address",
@@ -432,6 +432,17 @@ class Reservation4Form(forms.Form):
         help_text="Create or update an IPAddress in NetBox with status=reserved.",
     )
 
+    def clean_subnet_cidr(self) -> str:
+        """Validate the value is a valid IPv4 subnet CIDR."""
+        import ipaddress
+
+        value = self.cleaned_data.get("subnet_cidr", "").strip()
+        try:
+            ipaddress.ip_network(value, strict=True)
+        except ValueError as exc:
+            raise forms.ValidationError(f"Invalid subnet CIDR: {exc}") from exc
+        return value
+
     def clean_ip_address(self) -> str:
         """Validate the value is a valid IPv4 address, or blank for no fixed address."""
         value = (self.cleaned_data.get("ip_address") or "").strip()
@@ -457,10 +468,10 @@ class Reservation4Form(forms.Form):
 class Reservation6Form(forms.Form):
     """Form for creating or editing a DHCPv6 host reservation."""
 
-    subnet_id = forms.IntegerField(
-        label="Subnet ID",
-        min_value=1,
-        help_text="Kea subnet ID the reservation belongs to.",
+    subnet_cidr = forms.CharField(
+        label="Subnet CIDR",
+        max_length=50,
+        help_text="Subnet the reservation belongs to (e.g. <code>2001:db8::/48</code>).",
     )
     ip_addresses = forms.CharField(
         label="IPv6 Addresses",
@@ -494,6 +505,17 @@ class Reservation6Form(forms.Form):
         required=False,
         help_text="Create or update an IPAddress in NetBox with status=reserved.",
     )
+
+    def clean_subnet_cidr(self) -> str:
+        """Validate the value is a valid IPv6 subnet CIDR."""
+        import ipaddress
+
+        value = self.cleaned_data.get("subnet_cidr", "").strip()
+        try:
+            ipaddress.ip_network(value, strict=True)
+        except ValueError as exc:
+            raise forms.ValidationError(f"Invalid subnet CIDR: {exc}") from exc
+        return value
 
     def clean_ip_addresses(self) -> str:
         """Validate every entry is a valid IPv6 address; blank reserves no address."""

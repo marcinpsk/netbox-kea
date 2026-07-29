@@ -233,7 +233,7 @@ class TestReservationForm4(SimpleTestCase):
 
     def _valid_data(self, **overrides):
         base = {
-            "subnet_id": 1,
+            "subnet_cidr": "192.168.1.0/24",
             "ip_address": "192.168.1.100",
             "identifier_type": "hw-address",
             "identifier": "aa:bb:cc:dd:ee:ff",
@@ -266,12 +266,12 @@ class TestReservationForm4(SimpleTestCase):
         self.assertFalse(form.is_valid())
         self.assertIn("ip_address", form.errors)
 
-    def test_missing_subnet_id_fails(self):
+    def test_missing_subnet_cidr_fails(self):
         data = self._valid_data()
-        del data["subnet_id"]
+        del data["subnet_cidr"]
         form = self._form(data)
         self.assertFalse(form.is_valid())
-        self.assertIn("subnet_id", form.errors)
+        self.assertIn("subnet_cidr", form.errors)
 
     def test_missing_ip_address_is_allowed(self):
         """A DHCPv4 host may reserve only a hostname, options or client classes.
@@ -330,13 +330,16 @@ class TestReservationForm4(SimpleTestCase):
         choices = [c[0] for c in Reservation4Form().fields["identifier_type"].choices]
         self.assertIn("flex-id", choices)
 
-    def test_subnet_id_zero_fails(self):
-        form = self._form(self._valid_data(subnet_id=0))
+    def test_invalid_subnet_cidr_fails(self):
+        form = self._form(self._valid_data(subnet_cidr="not-a-cidr"))
         self.assertFalse(form.is_valid())
+        self.assertIn("subnet_cidr", form.errors)
 
-    def test_subnet_id_negative_fails(self):
-        form = self._form(self._valid_data(subnet_id=-1))
+    def test_host_bits_set_in_subnet_cidr_fails(self):
+        """A CIDR with host bits set (e.g. 192.168.1.5/24) is rejected (strict=True)."""
+        form = self._form(self._valid_data(subnet_cidr="192.168.1.5/24"))
         self.assertFalse(form.is_valid())
+        self.assertIn("subnet_cidr", form.errors)
 
     def test_invalid_identifier_type_choice_fails(self):
         form = self._form(self._valid_data(identifier_type="not-a-real-type"))
@@ -371,7 +374,7 @@ class TestReservationForm6(SimpleTestCase):
 
     def _valid_data(self, **overrides):
         base = {
-            "subnet_id": 1,
+            "subnet_cidr": "2001:db8::/48",
             "ip_addresses": "2001:db8::100",
             "identifier_type": "duid",
             "identifier": "00:01:02:03:04:05:06:07",
@@ -403,12 +406,12 @@ class TestReservationForm6(SimpleTestCase):
         self.assertFalse(form.is_valid())
         self.assertIn("ip_addresses", form.errors)
 
-    def test_missing_subnet_id_fails(self):
+    def test_missing_subnet_cidr_fails(self):
         data = self._valid_data()
-        del data["subnet_id"]
+        del data["subnet_cidr"]
         form = self._form(data)
         self.assertFalse(form.is_valid())
-        self.assertIn("subnet_id", form.errors)
+        self.assertIn("subnet_cidr", form.errors)
 
     def test_missing_ip_addresses_is_allowed(self):
         """A DHCPv6 host may delegate only prefixes, or reserve only a hostname."""

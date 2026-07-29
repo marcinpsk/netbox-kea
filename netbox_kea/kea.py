@@ -314,6 +314,36 @@ class KeaClient:
         # Kea returns the host fields directly inside "arguments" (not nested under "host")
         return resp[0].get("arguments") or None
 
+    def subnet_id_from_cidr(self, version: int, cidr: str) -> int | None:
+        """Return the Kea subnet ID for the subnet whose CIDR matches *cidr* exactly.
+
+        Uses ``subnet{version}-list`` to look up the ID — lighter than a full
+        ``config-get``.  Returns ``None`` if no subnet matches or if the list
+        command fails.
+
+        Args:
+            version: DHCP protocol version (``4`` or ``6``).
+            cidr: Exact subnet CIDR string, e.g. ``"10.0.0.0/24"``.
+
+        Returns:
+            The integer subnet ID, or ``None`` if not found.
+
+        Raises:
+            KeaException: If the ``subnet{version}-list`` command itself fails.
+
+        """
+        service = f"dhcp{version}"
+        list_resp = self.command(f"subnet{version}-list", service=[service])
+        subnets: list[dict[str, Any]] = (
+            (list_resp[0].get("arguments") or {}).get("subnets", [])
+            if isinstance(list_resp, list) and list_resp and isinstance(list_resp[0], dict)
+            else []
+        )
+        for subnet in subnets:
+            if subnet.get("subnet") == cidr and "id" in subnet:
+                return int(subnet["id"])
+        return None
+
     def reservation_get_by_ip(self, version: int, ip_address: str) -> dict[str, Any] | None:
         """Fetch a reservation by IP address without requiring the subnet ID.
 
@@ -1346,7 +1376,10 @@ class KeaClient:
                 {"result": 3, "text": f"subnet{version}-get returned no subnet for id={subnet_id}", "arguments": None},
                 index=0,
             )
-        return subnets[0]["subnet"]
+        cidr = subnets[0].get("subnet")
+        if not cidr:
+            raise ValueError(f"subnet{version}-get response missing 'subnet' field for id={subnet_id}")
+        return cidr
 
     def subnet_get(self, version: int, subnet_id: int) -> dict:
         """Fetch the full subnet config dict for *subnet_id* from Kea.
