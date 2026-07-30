@@ -433,10 +433,18 @@ class Reservation4Form(forms.Form):
     )
 
     def clean_subnet_cidr(self) -> str:
-        """Validate the value is a valid IPv4 subnet CIDR."""
+        """Validate the value is a valid IPv4 subnet CIDR.
+
+        Skipped when the field is disabled: the edit views seed it from a
+        server-side CIDR lookup that falls back to the raw Kea subnet ID
+        (e.g. "1") when that lookup fails, which isn't a CIDR and would
+        otherwise fail this check even though the value is never user input.
+        """
         import ipaddress
 
         value = self.cleaned_data.get("subnet_cidr", "").strip()
+        if self.fields["subnet_cidr"].disabled:
+            return value
         try:
             ipaddress.ip_network(value, strict=True)
         except ValueError as exc:
@@ -507,10 +515,18 @@ class Reservation6Form(forms.Form):
     )
 
     def clean_subnet_cidr(self) -> str:
-        """Validate the value is a valid IPv6 subnet CIDR."""
+        """Validate the value is a valid IPv6 subnet CIDR.
+
+        Skipped when the field is disabled: the edit views seed it from a
+        server-side CIDR lookup that falls back to the raw Kea subnet ID
+        (e.g. "1") when that lookup fails, which isn't a CIDR and would
+        otherwise fail this check even though the value is never user input.
+        """
         import ipaddress
 
         value = self.cleaned_data.get("subnet_cidr", "").strip()
+        if self.fields["subnet_cidr"].disabled:
+            return value
         try:
             ipaddress.ip_network(value, strict=True)
         except ValueError as exc:

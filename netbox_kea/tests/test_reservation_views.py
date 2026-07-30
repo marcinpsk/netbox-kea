@@ -592,6 +592,23 @@ class TestServerReservation4EditView(_ReservationViewBase):
         self.assertNotIn("None", response.url)
         self.assertEqual(kea.commands().count("reservation-update"), 1)
 
+    def test_post_still_updates_when_cidr_lookup_fails(self):
+        """POST must still update the reservation when subnet4-get fails and falls back to the raw ID.
+
+        subnet_cidr is disabled on this form, so the fallback value ("1", not a CIDR)
+        must not fail clean_subnet_cidr and silently invalidate the whole submission.
+        """
+        with stub_kea(
+            {
+                "subnet4-get": {"result": 1, "text": "command not supported"},
+                "reservation-get": _res_get(_SAMPLE_RESERVATION4),
+                "reservation-update": {"result": 0},
+            }
+        ) as kea:
+            response = self.client.post(self._edit_url(), self._valid_post_data())
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(kea.commands().count("reservation-update"), 1)
+
     def test_post_invalid_rerenders_form(self):
         # All key fields (subnet_id, ip_address, identifier_type, identifier) are disabled in the
         # edit POST handler and take their values from existing.  Trigger invalidity via the options
@@ -738,6 +755,32 @@ class TestServerReservation6EditView(_ReservationViewBase):
             )
         self.assertEqual(response.status_code, 302)
         self.assertNotIn("None", response.url)
+        self.assertEqual(kea.commands().count("reservation-update"), 1)
+
+    def test_post_still_updates_when_cidr_lookup_fails(self):
+        """POST must still update the reservation when subnet6-get fails and falls back to the raw ID.
+
+        subnet_cidr is disabled on this form, so the fallback value ("1", not a CIDR)
+        must not fail clean_subnet_cidr and silently invalidate the whole submission.
+        """
+        with stub_kea(
+            {
+                "subnet6-get": {"result": 1, "text": "command not supported"},
+                "reservation-get": _res_get(_SAMPLE_RESERVATION6),
+                "reservation-update": {"result": 0},
+            }
+        ) as kea:
+            response = self.client.post(
+                self._edit_url(),
+                {
+                    "subnet_cidr": "2001:db8::/32",
+                    "ip_addresses": "2001:db8::100",
+                    "identifier_type": "duid",
+                    "identifier": "00:01:02:03:04:05",
+                    "hostname": "testhost6.example.com",
+                },
+            )
+        self.assertEqual(response.status_code, 302)
         self.assertEqual(kea.commands().count("reservation-update"), 1)
 
 

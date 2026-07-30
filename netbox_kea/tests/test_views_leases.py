@@ -33,7 +33,7 @@ from netbox_kea.kea import KeaClient
 from netbox_kea.models import Server
 from netbox_kea.views.leases import _fetch_subnet_choices, _subnet_choices_cache_key, _subnet_sort_key
 
-from .kea_stub import _subnet_list, queued, stub_kea
+from .kea_stub import _subnet_get, _subnet_list, queued, stub_kea
 from .utils import _PLUGINS_CONFIG, _make_db_server, _ViewTestBase
 
 
@@ -1419,9 +1419,6 @@ class TestLeaseSignals(_ViewTestBase):
         "valid_lft": 3600,
     }
 
-    # Pool-overlap advisory fetches the subnet; no pools → no overlap warning.
-    _SUBNET4 = {"result": 0, "arguments": {"subnet4": [{"id": 1, "subnet": "10.0.0.0/24", "pools": []}]}}
-
     def test_lease_add_fires_lease_added_signal(self):
         """_BaseLeaseAddView.post must send lease_added signal after successful add."""
         from netbox_kea import signals
@@ -1475,19 +1472,20 @@ class TestLeaseSignals(_ViewTestBase):
             received.append(kwargs)
 
         signals.reservation_created.connect(handler)
+        subnet_cidr = "10.0.0.0/24"
         try:
             url = reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk])
             with stub_kea(
                 {
-                    "subnet4-list": _subnet_list(4, [{"id": 1, "subnet": "10.0.0.0/24"}]),
-                    "subnet4-get": self._SUBNET4,
+                    "subnet4-list": _subnet_list(4, [{"id": 1, "subnet": subnet_cidr}]),
+                    "subnet4-get": _subnet_get(4, subnet_cidr=subnet_cidr),
                     "reservation-add": {"result": 0},
                 }
             ):
                 self.client.post(
                     url,
                     {
-                        "subnet_cidr": "10.0.0.0/24",
+                        "subnet_cidr": subnet_cidr,
                         "ip_address": "10.0.0.10",
                         "identifier_type": "hw-address",
                         "identifier": "aa:bb:cc:dd:ee:01",

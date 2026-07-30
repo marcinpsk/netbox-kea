@@ -341,6 +341,20 @@ class TestReservationForm4(SimpleTestCase):
         self.assertFalse(form.is_valid())
         self.assertIn("subnet_cidr", form.errors)
 
+    def test_disabled_subnet_cidr_skips_cidr_validation(self):
+        """A disabled subnet_cidr (edit views) is not re-validated as a CIDR.
+
+        The edit views seed it from a server-side lookup that falls back to the
+        raw Kea subnet ID (e.g. "1") when that lookup fails — not a valid CIDR,
+        but not user input either, so it must not fail validation.
+        """
+        from netbox_kea.forms import Reservation4Form
+
+        form = Reservation4Form(data=self._valid_data(), initial={"subnet_cidr": "1"})
+        form.fields["subnet_cidr"].disabled = True
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.cleaned_data["subnet_cidr"], "1")
+
     def test_invalid_identifier_type_choice_fails(self):
         form = self._form(self._valid_data(identifier_type="not-a-real-type"))
         self.assertFalse(form.is_valid())
@@ -423,6 +437,20 @@ class TestReservationForm6(SimpleTestCase):
         form = self._form(self._valid_data(subnet_cidr="2001:db8::1/48"))
         self.assertFalse(form.is_valid())
         self.assertIn("subnet_cidr", form.errors)
+
+    def test_disabled_subnet_cidr_skips_cidr_validation(self):
+        """A disabled subnet_cidr (edit views) is not re-validated as a CIDR.
+
+        The edit views seed it from a server-side lookup that falls back to the
+        raw Kea subnet ID (e.g. "1") when that lookup fails — not a valid CIDR,
+        but not user input either, so it must not fail validation.
+        """
+        from netbox_kea.forms import Reservation6Form
+
+        form = Reservation6Form(data=self._valid_data(), initial={"subnet_cidr": "1"})
+        form.fields["subnet_cidr"].disabled = True
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.cleaned_data["subnet_cidr"], "1")
 
     def test_missing_ip_addresses_is_allowed(self):
         """A DHCPv6 host may delegate only prefixes, or reserve only a hostname."""
