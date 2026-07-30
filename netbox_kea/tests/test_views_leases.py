@@ -33,7 +33,7 @@ from netbox_kea.kea import KeaClient
 from netbox_kea.models import Server
 from netbox_kea.views.leases import _fetch_subnet_choices, _subnet_choices_cache_key, _subnet_sort_key
 
-from .kea_stub import queued, stub_kea
+from .kea_stub import _subnet_list, queued, stub_kea
 from .utils import _PLUGINS_CONFIG, _make_db_server, _ViewTestBase
 
 
@@ -1477,11 +1477,17 @@ class TestLeaseSignals(_ViewTestBase):
         signals.reservation_created.connect(handler)
         try:
             url = reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk])
-            with stub_kea({"subnet4-get": self._SUBNET4, "reservation-add": {"result": 0}}):
+            with stub_kea(
+                {
+                    "subnet4-list": _subnet_list(4, [{"id": 1, "subnet": "10.0.0.0/24"}]),
+                    "subnet4-get": self._SUBNET4,
+                    "reservation-add": {"result": 0},
+                }
+            ):
                 self.client.post(
                     url,
                     {
-                        "subnet_id": 1,
+                        "subnet_cidr": "10.0.0.0/24",
                         "ip_address": "10.0.0.10",
                         "identifier_type": "hw-address",
                         "identifier": "aa:bb:cc:dd:ee:01",

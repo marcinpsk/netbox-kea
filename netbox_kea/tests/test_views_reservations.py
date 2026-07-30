@@ -1223,7 +1223,11 @@ class TestReservation6AddOptionDataAndSync(_ViewTestBase):
             "options-0-DELETE": "",
         }
         with stub_kea(
-            {"subnet6-get": _subnet_get(6, subnet_cidr=_SUBNET6_CIDR), "reservation-add": {"result": 0}}
+            {
+                "subnet6-list": _SUBNET6_LIST_STUB,
+                "subnet6-get": _subnet_get(6, subnet_cidr=_SUBNET6_CIDR),
+                "reservation-add": {"result": 0},
+            }
         ) as kea:
             response = self.client.post(self._url(), post_data)
         self.assertIn(response.status_code, (200, 302))
@@ -1239,6 +1243,7 @@ class TestReservation6AddOptionDataAndSync(_ViewTestBase):
         post_data = {**_VALID_RESERVATION6_POST, "sync_to_netbox": "on"}
         with stub_kea(
             {
+                "subnet6-list": _SUBNET6_LIST_STUB,
                 "subnet6-get": _subnet_get(6, subnet_cidr=_SUBNET6_CIDR),
                 "reservation-add": {"result": 0},
                 "reservation-get-page": _RES_EMPTY_PAGE,
@@ -1264,6 +1269,7 @@ class TestReservation6AddOptionDataAndSync(_ViewTestBase):
         post_data = {**_VALID_RESERVATION6_POST, "sync_to_netbox": "on"}
         with stub_kea(
             {
+                "subnet6-list": _SUBNET6_LIST_STUB,
                 "subnet6-get": _subnet_get(6, subnet_cidr=_SUBNET6_CIDR),
                 "reservation-add": {"result": 0},
                 "reservation-get-page": _RES_EMPTY_PAGE,
@@ -1735,6 +1741,7 @@ class TestReservationMutationBareExcept(_ViewTestBase):
         url = reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk])
         with stub_kea(
             {
+                "subnet4-list": _SUBNET4_LIST_STUB,
                 "subnet4-get": _subnet_get(4, subnet_cidr=_SUBNET4_CIDR),
                 "reservation-add": AttributeError("programming bug"),
             }
@@ -1747,6 +1754,7 @@ class TestReservationMutationBareExcept(_ViewTestBase):
         url = reverse("plugins:netbox_kea:server_reservation6_add", args=[self.server.pk])
         with stub_kea(
             {
+                "subnet6-list": _SUBNET6_LIST_STUB,
                 "subnet6-get": _subnet_get(6, subnet_cidr=_SUBNET6_CIDR),
                 "reservation-add": AttributeError("programming bug"),
             }

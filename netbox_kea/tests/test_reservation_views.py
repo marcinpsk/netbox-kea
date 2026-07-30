@@ -582,7 +582,7 @@ class TestServerReservation4EditView(_ReservationViewBase):
     def test_post_valid_updates_reservation_and_redirects(self):
         with stub_kea(
             {
-                "subnet4-get": _subnet_get(4),
+                "subnet4-get": _subnet_get(4, subnet_cidr=_SUBNET4_CIDR),
                 "reservation-get": _res_get(_SAMPLE_RESERVATION4),
                 "reservation-update": {"result": 0},
             }
@@ -615,7 +615,7 @@ class TestServerReservation4EditView(_ReservationViewBase):
     def test_post_kea_error_shows_error_message(self):
         with stub_kea(
             {
-                "subnet4-get": _subnet_get(4),
+                "subnet4-get": _subnet_get(4, subnet_cidr=_SUBNET4_CIDR),
                 "reservation-get": _res_get(_SAMPLE_RESERVATION4),
                 "reservation-update": {"result": 1, "text": "failed to update host"},
             }
@@ -2053,7 +2053,11 @@ class TestReservationSyncToNetBox(_ReservationViewBase):
             "hostname": "testhost.example.com",
         }
         with stub_kea(
-            {"subnet4-get": _subnet_get(4), "reservation-get": _res_get(existing), "reservation-update": {"result": 0}}
+            {
+                "subnet4-get": _subnet_get(4, subnet_cidr=_SUBNET4_CIDR),
+                "reservation-get": _res_get(existing),
+                "reservation-update": {"result": 0},
+            }
         ):
             response = self.client.post(self._edit4_url(), self._valid_post_data(sync=True))
         self.assertEqual(response.status_code, 302)
@@ -2245,7 +2249,7 @@ class TestReservationJournalEntries(_ReservationViewBase):
         before = self._journal_count()
         with stub_kea(
             {
-                "subnet4-get": _subnet_get(4),
+                "subnet4-get": _subnet_get(4, subnet_cidr=_SUBNET4_CIDR),
                 "reservation-get": _res_get(_SAMPLE_RESERVATION4),
                 "reservation-update": {"result": 0},
             }
@@ -2380,7 +2384,7 @@ class TestReservation4OptionData(_ReservationViewBase):
         post_data.update(_options_formset_data([{"name": "tftp-server-name", "data": "10.0.0.1"}]))
         with stub_kea(
             {
-                "subnet4-get": _subnet_get(4),
+                "subnet4-get": _subnet_get(4, subnet_cidr=_SUBNET4_CIDR),
                 "reservation-get": _res_get(_SAMPLE_RESERVATION4),
                 "reservation-update": {"result": 0},
             }
@@ -2499,7 +2503,11 @@ class TestV6EditPostPreservesFormIPs(_ReservationViewBase):
         """POST ignores posted ip_addresses (disabled field) and preserves existing IPs from reservation-get."""
         existing = {**_SAMPLE_RESERVATION6, "ip-addresses": ["2001:db8::100", "2001:db8::200"]}
         with stub_kea(
-            {"subnet6-get": _subnet_get(6), "reservation-get": _res_get(existing), "reservation-update": {"result": 0}}
+            {
+                "subnet6-get": _subnet_get(6, subnet_cidr=_SUBNET6_CIDR),
+                "reservation-get": _res_get(existing),
+                "reservation-update": {"result": 0},
+            }
         ) as kea:
             # Posted ip_addresses differ from existing — the disabled field must be ignored.
             response = self.client.post(self._edit_url(), self._post_data("2001:db8::dead,2001:db8::beef"))
