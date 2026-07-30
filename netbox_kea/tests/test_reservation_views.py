@@ -401,6 +401,24 @@ class TestServerReservation4AddView(_ReservationViewBase):
         self.assertEqual(added["ip-address"], "192.168.1.100")
         self.assertEqual(added["hw-address"], "aa:bb:cc:dd:ee:ff")
 
+    def test_post_kea_error_on_cidr_lookup_shows_hint(self):
+        """A KeaException from subnet4-list (e.g. subnet_cmds not loaded) must re-render with a hint."""
+        with stub_kea({"subnet4-list": {"result": 2, "text": "unknown command 'subnet4-list'"}}):
+            response = self.client.post(self._add_url(), self._valid_post_data())
+        self.assertEqual(response.status_code, 200)
+        msgs = list(get_messages(response.wsgi_request))
+        self.assertTrue(any("not supported" in str(m).lower() for m in msgs), [str(m) for m in msgs])
+
+    def test_post_network_error_on_cidr_lookup_shows_generic_message(self):
+        """A transport error from subnet4-list must re-render with a generic network-error message."""
+        import requests as req_lib
+
+        with stub_kea({"subnet4-list": req_lib.ConnectionError("timeout")}):
+            response = self.client.post(self._add_url(), self._valid_post_data())
+        self.assertEqual(response.status_code, 200)
+        msgs = list(get_messages(response.wsgi_request))
+        self.assertTrue(any("network error" in str(m).lower() for m in msgs), [str(m) for m in msgs])
+
     def test_post_invalid_rerenders_form(self):
         # Empty POST — all required fields missing; form invalid before any Kea call.
         response = self.client.post(self._add_url(), {})
@@ -503,6 +521,24 @@ class TestServerReservation6AddView(_ReservationViewBase):
         added = kea.bodies("reservation-add")[0]["arguments"]["reservation"]
         self.assertEqual(added["ip-addresses"], ["2001:db8::100"])
         self.assertEqual(added["duid"], "00:01:02:03:04:05:06:07")
+
+    def test_post_kea_error_on_cidr_lookup_shows_hint(self):
+        """A KeaException from subnet6-list (e.g. subnet_cmds not loaded) must re-render with a hint."""
+        with stub_kea({"subnet6-list": {"result": 2, "text": "unknown command 'subnet6-list'"}}):
+            response = self.client.post(self._add_url(), self._valid_post_data())
+        self.assertEqual(response.status_code, 200)
+        msgs = list(get_messages(response.wsgi_request))
+        self.assertTrue(any("not supported" in str(m).lower() for m in msgs), [str(m) for m in msgs])
+
+    def test_post_network_error_on_cidr_lookup_shows_generic_message(self):
+        """A transport error from subnet6-list must re-render with a generic network-error message."""
+        import requests as req_lib
+
+        with stub_kea({"subnet6-list": req_lib.ConnectionError("timeout")}):
+            response = self.client.post(self._add_url(), self._valid_post_data())
+        self.assertEqual(response.status_code, 200)
+        msgs = list(get_messages(response.wsgi_request))
+        self.assertTrue(any("network error" in str(m).lower() for m in msgs), [str(m) for m in msgs])
 
     def test_post_invalid_rerenders_form(self):
         response = self.client.post(self._add_url(), {})
