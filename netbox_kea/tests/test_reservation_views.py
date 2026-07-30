@@ -90,9 +90,14 @@ def _list_stub6(hosts=None):
 _RES_NOT_FOUND = {"result": 3}
 _LEASE_NOT_FOUND = {"result": 3}
 
+#: CIDRs for subnet id=1, shared by the subnet{v}-list stubs below and every subnet{v}-get
+#: stub that answers the edit views' CIDR-display lookup.
+_SUBNET4_CIDR = "192.168.1.0/24"
+_SUBNET6_CIDR = "2001:db8::/32"
+
 #: ``subnet{v}-list`` stubs — one subnet each (id=1), matching the CIDRs used in add-view POST data.
-_SUBNET4_LIST_STUB = _subnet_list(4, [{"id": 1, "subnet": "192.168.1.0/24"}])
-_SUBNET6_LIST_STUB = _subnet_list(6, [{"id": 1, "subnet": "2001:db8::/32"}])
+_SUBNET4_LIST_STUB = _subnet_list(4, [{"id": 1, "subnet": _SUBNET4_CIDR}])
+_SUBNET6_LIST_STUB = _subnet_list(6, [{"id": 1, "subnet": _SUBNET6_CIDR}])
 
 # Pool add/del and subnet add/del mutate Kea config, so they persist:
 # config-get → config-test → config-write. list-commands selects the pool command.
@@ -543,15 +548,36 @@ class TestServerReservation4EditView(_ReservationViewBase):
         }
 
     def test_get_prepopulates_form_with_reservation_data(self):
-        with stub_kea({"reservation-get": _res_get(_SAMPLE_RESERVATION4), "lease4-get": _LEASE_NOT_FOUND}):
+        with stub_kea(
+            {
+                "subnet4-get": _subnet_get(4, subnet_cidr=_SUBNET4_CIDR),
+                "reservation-get": _res_get(_SAMPLE_RESERVATION4),
+                "lease4-get": _LEASE_NOT_FOUND,
+            }
+        ):
             response = self.client.get(self._edit_url())
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, self._IP)
+        # The CIDR resolved from subnet4-get, not the raw Kea subnet ID, is what's displayed.
+        self.assertEqual(response.context["form"].initial["subnet_cidr"], _SUBNET4_CIDR)
 
     def test_get_404_when_reservation_not_found(self):
         with stub_kea({"reservation-get": _RES_NOT_FOUND}):
             response = self.client.get(self._edit_url())
         self.assertEqual(response.status_code, 404)
+
+    def test_get_falls_back_to_raw_subnet_id_when_cidr_lookup_fails(self):
+        """GET must still render, showing the raw subnet ID, when subnet4-get itself fails."""
+        with stub_kea(
+            {
+                "subnet4-get": {"result": 1, "text": "command not supported"},
+                "reservation-get": _res_get(_SAMPLE_RESERVATION4),
+                "lease4-get": _LEASE_NOT_FOUND,
+            }
+        ):
+            response = self.client.get(self._edit_url())
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["form"].initial["subnet_cidr"], str(self._SUBNET_ID))
 
     def test_post_valid_updates_reservation_and_redirects(self):
         with stub_kea(
@@ -602,6 +628,7 @@ class TestServerReservation4EditView(_ReservationViewBase):
         # _SAMPLE_RESERVATION4 hostname is "testhost.example.com"; the active lease differs.
         with stub_kea(
             {
+                "subnet4-get": _subnet_get(4, subnet_cidr=_SUBNET4_CIDR),
                 "reservation-get": _res_get(_SAMPLE_RESERVATION4),
                 "lease4-get": {
                     "result": 0,
@@ -618,6 +645,7 @@ class TestServerReservation4EditView(_ReservationViewBase):
         """GET must not include lease_diff when lease hostname matches reservation."""
         with stub_kea(
             {
+                "subnet4-get": _subnet_get(4, subnet_cidr=_SUBNET4_CIDR),
                 "reservation-get": _res_get(_SAMPLE_RESERVATION4),
                 "lease4-get": {"result": 0, "arguments": {"ip-address": self._IP, "hostname": "testhost.example.com"}},
             }
@@ -630,7 +658,11 @@ class TestServerReservation4EditView(_ReservationViewBase):
         """GET must not crash or add lease_diff when the lease fetch raises KeaException."""
         # lease4-get result 1 → real KeaClient raises KeaException → the diff branch is skipped.
         with stub_kea(
-            {"reservation-get": _res_get(_SAMPLE_RESERVATION4), "lease4-get": {"result": 1, "text": "error"}}
+            {
+                "subnet4-get": _subnet_get(4, subnet_cidr=_SUBNET4_CIDR),
+                "reservation-get": _res_get(_SAMPLE_RESERVATION4),
+                "lease4-get": {"result": 1, "text": "error"},
+            }
         ):
             response = self.client.get(self._edit_url())
         self.assertEqual(response.status_code, 200)
@@ -656,19 +688,40 @@ class TestServerReservation6EditView(_ReservationViewBase):
         )
 
     def test_get_prepopulates_form_with_reservation_data(self):
-        with stub_kea({"reservation-get": _res_get(_SAMPLE_RESERVATION6), "lease6-get": _LEASE_NOT_FOUND}):
+        with stub_kea(
+            {
+                "subnet6-get": _subnet_get(6, subnet_cidr=_SUBNET6_CIDR),
+                "reservation-get": _res_get(_SAMPLE_RESERVATION6),
+                "lease6-get": _LEASE_NOT_FOUND,
+            }
+        ):
             response = self.client.get(self._edit_url())
         self.assertEqual(response.status_code, 200)
+        # The CIDR resolved from subnet6-get, not the raw Kea subnet ID, is what's displayed.
+        self.assertEqual(response.context["form"].initial["subnet_cidr"], _SUBNET6_CIDR)
 
     def test_get_404_when_reservation_not_found(self):
         with stub_kea({"reservation-get": _RES_NOT_FOUND}):
             response = self.client.get(self._edit_url())
         self.assertEqual(response.status_code, 404)
 
+    def test_get_falls_back_to_raw_subnet_id_when_cidr_lookup_fails(self):
+        """GET must still render, showing the raw subnet ID, when subnet6-get itself fails."""
+        with stub_kea(
+            {
+                "subnet6-get": {"result": 1, "text": "command not supported"},
+                "reservation-get": _res_get(_SAMPLE_RESERVATION6),
+                "lease6-get": _LEASE_NOT_FOUND,
+            }
+        ):
+            response = self.client.get(self._edit_url())
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["form"].initial["subnet_cidr"], str(self._SUBNET_ID))
+
     def test_post_valid_updates_reservation_and_redirects(self):
         with stub_kea(
             {
-                "subnet6-get": _subnet_get(6),
+                "subnet6-get": _subnet_get(6, subnet_cidr=_SUBNET6_CIDR),
                 "reservation-get": _res_get(_SAMPLE_RESERVATION6),
                 "reservation-update": {"result": 0},
             }
@@ -847,14 +900,26 @@ class TestReservation4EditGetPrefill(_ReservationViewBase):
 
     def test_edit_get_returns_200_and_shows_ip(self):
         """reservation-get must return the reservation dict so the form is pre-filled."""
-        with stub_kea({"reservation-get": _res_get(_SAMPLE_RESERVATION4), "lease4-get": _LEASE_NOT_FOUND}):
+        with stub_kea(
+            {
+                "subnet4-get": _subnet_get(4, subnet_cidr=_SUBNET4_CIDR),
+                "reservation-get": _res_get(_SAMPLE_RESERVATION4),
+                "lease4-get": _LEASE_NOT_FOUND,
+            }
+        ):
             response = self.client.get(self._edit_url())
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, self._IP)
 
     def test_edit_get_shows_hostname_in_form(self):
         """Form must be pre-filled with hostname from the existing reservation."""
-        with stub_kea({"reservation-get": _res_get(_SAMPLE_RESERVATION4), "lease4-get": _LEASE_NOT_FOUND}):
+        with stub_kea(
+            {
+                "subnet4-get": _subnet_get(4, subnet_cidr=_SUBNET4_CIDR),
+                "reservation-get": _res_get(_SAMPLE_RESERVATION4),
+                "lease4-get": _LEASE_NOT_FOUND,
+            }
+        ):
             response = self.client.get(self._edit_url())
         self.assertContains(response, "testhost.example.com")
 
@@ -2079,6 +2144,7 @@ class TestServerReservation6EditLeaseDiff(_ReservationViewBase):
         """GET must add lease_diff to context when DHCPv6 active lease hostname differs."""
         with stub_kea(
             {
+                "subnet6-get": _subnet_get(6, subnet_cidr=_SUBNET6_CIDR),
                 "reservation-get": _res_get(self._reservation()),
                 "lease6-get": {
                     "result": 0,
@@ -2094,7 +2160,13 @@ class TestServerReservation6EditLeaseDiff(_ReservationViewBase):
     def test_get_no_lease_diff_when_lease_fetch_raises(self):
         """GET must not crash when DHCPv6 lease fetch raises KeaException."""
         # lease6-get result 1 → real KeaClient raises KeaException → the diff branch is skipped.
-        with stub_kea({"reservation-get": _res_get(self._reservation()), "lease6-get": {"result": 1, "text": "err"}}):
+        with stub_kea(
+            {
+                "subnet6-get": _subnet_get(6, subnet_cidr=_SUBNET6_CIDR),
+                "reservation-get": _res_get(self._reservation()),
+                "lease6-get": {"result": 1, "text": "err"},
+            }
+        ):
             response = self.client.get(self._edit_url())
         self.assertEqual(response.status_code, 200)
         self.assertNotIn("lease_diff", response.context)
@@ -2103,6 +2175,7 @@ class TestServerReservation6EditLeaseDiff(_ReservationViewBase):
         """GET must not add lease_diff when lease hostname matches the reservation hostname."""
         with stub_kea(
             {
+                "subnet6-get": _subnet_get(6, subnet_cidr=_SUBNET6_CIDR),
                 "reservation-get": _res_get(self._reservation()),
                 "lease6-get": {"result": 0, "arguments": {"ip-address": self._IP, "hostname": "testhost6.example.com"}},
             }
@@ -2286,7 +2359,13 @@ class TestReservation4OptionData(_ReservationViewBase):
             **_SAMPLE_RESERVATION4,
             "option-data": [{"name": "boot-file-name", "data": "http://10.0.0.1/ztp.py"}],
         }
-        with stub_kea({"reservation-get": _res_get(existing), "lease4-get": _LEASE_NOT_FOUND}):
+        with stub_kea(
+            {
+                "subnet4-get": _subnet_get(4, subnet_cidr=_SUBNET4_CIDR),
+                "reservation-get": _res_get(existing),
+                "lease4-get": _LEASE_NOT_FOUND,
+            }
+        ):
             response = self.client.get(self._edit_url())
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "boot-file-name")
@@ -2690,7 +2769,13 @@ class TestReservation4EditOptionDataNotList(_ReservationViewBase):
     def test_option_data_as_string_handled_gracefully(self):
         """When option-data is a string instead of list, view must not crash."""
         reservation = dict(_SAMPLE_RESERVATION4, **{"option-data": "not-a-list"})
-        with stub_kea({"reservation-get": _res_get(reservation), "lease4-get": _LEASE_NOT_FOUND}):
+        with stub_kea(
+            {
+                "subnet4-get": _subnet_get(4, subnet_cidr=_SUBNET4_CIDR),
+                "reservation-get": _res_get(reservation),
+                "lease4-get": _LEASE_NOT_FOUND,
+            }
+        ):
             response = self.client.get(self._edit_url())
         self.assertEqual(response.status_code, 200)
         # options_formset should have no initial data since string was rejected
@@ -2700,7 +2785,13 @@ class TestReservation4EditOptionDataNotList(_ReservationViewBase):
     def test_option_data_as_dict_handled_gracefully(self):
         """When option-data is a dict instead of list, view must not crash."""
         reservation = dict(_SAMPLE_RESERVATION4, **{"option-data": {"name": "routers", "data": "10.0.0.1"}})
-        with stub_kea({"reservation-get": _res_get(reservation), "lease4-get": _LEASE_NOT_FOUND}):
+        with stub_kea(
+            {
+                "subnet4-get": _subnet_get(4, subnet_cidr=_SUBNET4_CIDR),
+                "reservation-get": _res_get(reservation),
+                "lease4-get": _LEASE_NOT_FOUND,
+            }
+        ):
             response = self.client.get(self._edit_url())
         self.assertEqual(response.status_code, 200)
         formset = response.context["options_formset"]
@@ -2723,7 +2814,13 @@ class TestReservation6EditOptionDataNotList(_ReservationViewBase):
     def test_option_data_as_int_handled_gracefully(self):
         """When option-data is an int instead of list, view must not crash."""
         reservation = dict(_SAMPLE_RESERVATION6, **{"option-data": 42})
-        with stub_kea({"reservation-get": _res_get(reservation), "lease6-get": _LEASE_NOT_FOUND}):
+        with stub_kea(
+            {
+                "subnet6-get": _subnet_get(6, subnet_cidr=_SUBNET6_CIDR),
+                "reservation-get": _res_get(reservation),
+                "lease6-get": _LEASE_NOT_FOUND,
+            }
+        ):
             response = self.client.get(self._edit_url())
         self.assertEqual(response.status_code, 200)
         formset = response.context["options_formset"]

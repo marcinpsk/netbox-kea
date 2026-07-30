@@ -809,7 +809,23 @@ class ServerReservation4AddView(_KeaChangeMixin, generic.ObjectView):
                 )
             try:
                 subnet_id = client.subnet_id_from_cidr(4, cd["subnet_cidr"])
-            except (KeaException, requests.RequestException):
+            except KeaException as exc:
+                logger.exception("Failed to look up subnet CIDR %s in Kea", cd["subnet_cidr"])
+                messages.error(request, kea_error_hint(exc))
+                return render(
+                    request,
+                    self.template_name,
+                    {
+                        "object": server,
+                        "form": form,
+                        "options_formset": options_formset,
+                        "dhcp_version": 4,
+                        "action": "Add",
+                        "return_url": return_url,
+                        "tab": self.tab,
+                    },
+                )
+            except (requests.RequestException, ValueError):
                 logger.exception("Failed to look up subnet CIDR %s in Kea", cd["subnet_cidr"])
                 messages.error(request, "Network error communicating with Kea: see server logs.")
                 return render(
@@ -958,7 +974,23 @@ class ServerReservation6AddView(_KeaChangeMixin, generic.ObjectView):
                 )
             try:
                 subnet_id = client.subnet_id_from_cidr(6, cd["subnet_cidr"])
-            except (KeaException, requests.RequestException):
+            except KeaException as exc:
+                logger.exception("Failed to look up subnet CIDR %s in Kea", cd["subnet_cidr"])
+                messages.error(request, kea_error_hint(exc))
+                return render(
+                    request,
+                    self.template_name,
+                    {
+                        "object": server,
+                        "form": form,
+                        "options_formset": options_formset,
+                        "dhcp_version": 6,
+                        "action": "Add",
+                        "return_url": return_url,
+                        "tab": self.tab,
+                    },
+                )
+            except (requests.RequestException, ValueError):
                 logger.exception("Failed to look up subnet CIDR %s in Kea", cd["subnet_cidr"])
                 messages.error(request, "Network error communicating with Kea: see server logs.")
                 return render(

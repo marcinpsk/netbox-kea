@@ -3917,7 +3917,11 @@ class TestReservationGetByIp(TestCase):
 
 
 class TestSubnetIdFromCidr(TestCase):
-    """Tests for KeaClient.subnet_id_from_cidr()."""
+    """Tests for KeaClient.subnet_id_from_cidr().
+
+    Patches ``requests.Session.post`` at the class level (not ``self.client._session.post``)
+    so the stub also covers any session ``KeaClient.clone()`` creates.
+    """
 
     def setUp(self):
         self.client = KeaClient(url="http://kea:8000")
@@ -3930,70 +3934,50 @@ class TestSubnetIdFromCidr(TestCase):
     ]
     _LIST6_RESP = [{"result": 0, "arguments": {"subnets": [{"id": 5, "subnet": "2001:db8::/48"}]}}]
 
-    def test_returns_id_for_matching_cidr(self):
+    @patch("requests.Session.post")
+    def test_returns_id_for_matching_cidr(self, mock_post):
         """Returns the integer ID when the CIDR matches exactly."""
-        with patch.object(
-            self.client._session,
-            "post",
-            return_value=_mock_http_response(self._LIST4_RESP),
-        ):
-            result = self.client.subnet_id_from_cidr(4, "10.0.0.0/24")
+        mock_post.return_value = _mock_http_response(self._LIST4_RESP)
+        result = self.client.subnet_id_from_cidr(4, "10.0.0.0/24")
         self.assertEqual(result, 7)
 
-    def test_returns_none_when_cidr_not_found(self):
+    @patch("requests.Session.post")
+    def test_returns_none_when_cidr_not_found(self, mock_post):
         """Returns None when no subnet matches the given CIDR."""
-        with patch.object(
-            self.client._session,
-            "post",
-            return_value=_mock_http_response(self._LIST4_RESP),
-        ):
-            result = self.client.subnet_id_from_cidr(4, "192.168.0.0/24")
+        mock_post.return_value = _mock_http_response(self._LIST4_RESP)
+        result = self.client.subnet_id_from_cidr(4, "192.168.0.0/24")
         self.assertIsNone(result)
 
-    def test_exact_cidr_match_not_substring(self):
+    @patch("requests.Session.post")
+    def test_exact_cidr_match_not_substring(self, mock_post):
         """Does not return a match for a CIDR that is a substring of another."""
-        with patch.object(
-            self.client._session,
-            "post",
-            return_value=_mock_http_response(self._LIST4_RESP),
-        ):
-            result = self.client.subnet_id_from_cidr(4, "10.0.0.0")
+        mock_post.return_value = _mock_http_response(self._LIST4_RESP)
+        result = self.client.subnet_id_from_cidr(4, "10.0.0.0")
         self.assertIsNone(result)
 
-    def test_works_for_ipv6(self):
+    @patch("requests.Session.post")
+    def test_works_for_ipv6(self, mock_post):
         """Returns the correct ID for an IPv6 subnet CIDR."""
-        with patch.object(
-            self.client._session,
-            "post",
-            return_value=_mock_http_response(self._LIST6_RESP),
-        ):
-            result = self.client.subnet_id_from_cidr(6, "2001:db8::/48")
+        mock_post.return_value = _mock_http_response(self._LIST6_RESP)
+        result = self.client.subnet_id_from_cidr(6, "2001:db8::/48")
         self.assertEqual(result, 5)
 
-    def test_calls_subnet_list_with_correct_service(self):
+    @patch("requests.Session.post")
+    def test_calls_subnet_list_with_correct_service(self, mock_post):
         """Calls subnet4-list with service=dhcp4 (subnet6-list with dhcp6 for v6)."""
-        with patch.object(
-            self.client._session,
-            "post",
-            return_value=_mock_http_response(self._LIST4_RESP),
-        ) as mock_post:
-            self.client.subnet_id_from_cidr(4, "10.0.0.0/24")
+        mock_post.return_value = _mock_http_response(self._LIST4_RESP)
+        self.client.subnet_id_from_cidr(4, "10.0.0.0/24")
         body = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1]["json"]
         self.assertEqual(body["command"], "subnet4-list")
         self.assertEqual(body["service"], ["dhcp4"])
 
-    def test_propagates_kea_exception(self):
+    @patch("requests.Session.post")
+    def test_propagates_kea_exception(self, mock_post):
         """Propagates KeaException when subnet4-list itself fails."""
         error_resp = [{"result": 1, "text": "command not supported"}]
-        with patch.object(
-            self.client._session,
-            "post",
-            return_value=_mock_http_response(error_resp),
-        ):
-            from netbox_kea.kea import KeaException
-
-            with self.assertRaises(KeaException):
-                self.client.subnet_id_from_cidr(4, "10.0.0.0/24")
+        mock_post.return_value = _mock_http_response(error_resp)
+        with self.assertRaises(KeaException):
+            self.client.subnet_id_from_cidr(4, "10.0.0.0/24")
 
 
 # ---------------------------------------------------------------------------
