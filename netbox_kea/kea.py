@@ -325,22 +325,30 @@ class KeaClient:
             cidr: Exact subnet CIDR string, e.g. ``"10.0.0.0/24"``.
 
         Returns:
-            The integer subnet ID, or ``None`` if no subnet matches.
+            The integer subnet ID, or ``None`` if no subnet matches or Kea has none configured.
 
         Raises:
             KeaException: If the ``subnet{version}-list`` command itself fails.
+            RuntimeError: If the response doesn't have the expected shape.
 
         """
         service = f"dhcp{version}"
-        list_resp = self.command(f"subnet{version}-list", service=[service])
-        subnets: list[dict[str, Any]] = (
-            (list_resp[0].get("arguments") or {}).get("subnets", [])
-            if isinstance(list_resp, list) and list_resp and isinstance(list_resp[0], dict)
-            else []
-        )
-        for subnet in subnets:
+        list_resp = self.command(f"subnet{version}-list", service=[service], check=(0, 3))
+        if not list_resp or not isinstance(list_resp[0], dict):
+            raise RuntimeError(f"subnet{version}-list returned malformed response: {list_resp!r}")
+        if list_resp[0].get("result") == 3:
+            return None
+        arguments = list_resp[0].get("arguments")
+        if not isinstance(arguments, dict) or not isinstance(arguments.get("subnets"), list):
+            raise RuntimeError(f"subnet{version}-list returned malformed arguments: {list_resp[0]!r}")
+        for subnet in arguments["subnets"]:
+            if not isinstance(subnet, dict):
+                raise RuntimeError(f"subnet{version}-list returned a non-dict subnet entry: {subnet!r}")
             if subnet.get("subnet") == cidr and "id" in subnet:
-                return int(subnet["id"])
+                subnet_id = subnet["id"]
+                if not isinstance(subnet_id, int):
+                    raise RuntimeError(f"subnet{version}-list returned a non-integer id: {subnet_id!r}")
+                return subnet_id
         return None
 
     def reservation_get_by_ip(self, version: int, ip_address: str) -> dict[str, Any] | None:
@@ -1360,6 +1368,8 @@ class KeaClient:
 
         Raises:
             KeaException: If the subnet is not found or Kea returns an error.
+            ValueError: If the response is malformed, or ``subnet`` isn't a CIDR of
+                the requested family.
 
         """
         service = f"dhcp{version}"
@@ -1369,15 +1379,29 @@ class KeaClient:
             service=[service],
             arguments={"id": subnet_id},
         )
-        subnets = (resp[0].get("arguments") or {}).get(subnet_key, [])
+        if not resp or not isinstance(resp[0], dict):
+            raise ValueError(f"subnet{version}-get returned malformed response: {resp!r}")
+        arguments = resp[0].get("arguments")
+        if not isinstance(arguments, dict):
+            raise ValueError(f"subnet{version}-get returned malformed arguments: {resp[0]!r}")
+        subnets = arguments.get(subnet_key, [])
+        if not isinstance(subnets, list):
+            raise ValueError(f"subnet{version}-get returned a non-list {subnet_key!r}: {subnets!r}")
         if not subnets:
             raise KeaException(
                 {"result": 3, "text": f"subnet{version}-get returned no subnet for id={subnet_id}", "arguments": None},
                 index=0,
             )
+        if not isinstance(subnets[0], dict):
+            raise ValueError(f"subnet{version}-get returned a non-dict subnet entry: {subnets[0]!r}")
         cidr = subnets[0].get("subnet")
         if not cidr:
             raise ValueError(f"subnet{version}-get response missing 'subnet' field for id={subnet_id}")
+        network_cls = ipaddress.IPv4Network if version == 4 else ipaddress.IPv6Network
+        try:
+            network_cls(cidr, strict=True)
+        except ValueError as exc:
+            raise ValueError(f"subnet{version}-get returned a CIDR not matching IPv{version}: {cidr!r}") from exc
         return cidr
 
     def subnet_get(self, version: int, subnet_id: int) -> dict:
