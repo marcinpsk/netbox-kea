@@ -446,9 +446,9 @@ class Reservation4Form(forms.Form):
         if self.fields["subnet_cidr"].disabled:
             return value
         try:
-            ipaddress.ip_network(value, strict=True)
+            ipaddress.IPv4Network(value, strict=True)
         except ValueError as exc:
-            raise forms.ValidationError(f"Invalid subnet CIDR: {exc}") from exc
+            raise forms.ValidationError("Enter a valid IPv4 subnet CIDR (e.g. 10.0.0.0/24).") from exc
         return value
 
     def clean_ip_address(self) -> str:
@@ -528,9 +528,9 @@ class Reservation6Form(forms.Form):
         if self.fields["subnet_cidr"].disabled:
             return value
         try:
-            ipaddress.ip_network(value, strict=True)
+            ipaddress.IPv6Network(value, strict=True)
         except ValueError as exc:
-            raise forms.ValidationError(f"Invalid subnet CIDR: {exc}") from exc
+            raise forms.ValidationError("Enter a valid IPv6 subnet CIDR (e.g. 2001:db8::/48).") from exc
         return value
 
     def clean_ip_addresses(self) -> str:

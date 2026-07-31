@@ -341,6 +341,12 @@ class TestReservationForm4(SimpleTestCase):
         self.assertFalse(form.is_valid())
         self.assertIn("subnet_cidr", form.errors)
 
+    def test_ipv6_subnet_cidr_rejected_in_v4_form(self):
+        """A well-formed IPv6 CIDR must still be rejected by the IPv4 reservation form."""
+        form = self._form(self._valid_data(subnet_cidr="2001:db8::/48"))
+        self.assertFalse(form.is_valid())
+        self.assertIn("subnet_cidr", form.errors)
+
     def test_disabled_subnet_cidr_skips_cidr_validation(self):
         """A disabled subnet_cidr (edit views) is not re-validated as a CIDR.
 
@@ -435,6 +441,12 @@ class TestReservationForm6(SimpleTestCase):
     def test_host_bits_set_in_subnet_cidr_fails(self):
         """A CIDR with host bits set (e.g. 2001:db8::1/48) is rejected (strict=True)."""
         form = self._form(self._valid_data(subnet_cidr="2001:db8::1/48"))
+        self.assertFalse(form.is_valid())
+        self.assertIn("subnet_cidr", form.errors)
+
+    def test_ipv4_subnet_cidr_rejected_in_v6_form(self):
+        """A well-formed IPv4 CIDR must still be rejected by the IPv6 reservation form."""
+        form = self._form(self._valid_data(subnet_cidr="192.168.1.0/24"))
         self.assertFalse(form.is_valid())
         self.assertIn("subnet_cidr", form.errors)
 
