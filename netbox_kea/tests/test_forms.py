@@ -346,8 +346,14 @@ class TestReservationForm4(SimpleTestCase):
         form = self._form(self._valid_data(subnet_cidr="2001:db8::/48"))
         self.assertFalse(form.is_valid())
         self.assertIn("subnet_cidr", form.errors)
-        # The message must be the generic IPv4 hint, not the raw ipaddress parser text.
-        self.assertIn("Enter a valid IPv4 subnet CIDR", str(form.errors["subnet_cidr"]))
+        # Must not leak the raw ipaddress parser text (e.g. "Expected 4 octets in ...").
+        self.assertEqual(form.errors["subnet_cidr"], ["Enter a valid IPv4 subnet CIDR (e.g. 10.0.0.0/24)."])
+
+    def test_bare_address_without_prefix_fails(self):
+        """A bare IP address (no /prefix) must be rejected, not silently treated as /32."""
+        form = self._form(self._valid_data(subnet_cidr="192.168.1.5"))
+        self.assertFalse(form.is_valid())
+        self.assertIn("subnet_cidr", form.errors)
 
     def test_disabled_subnet_cidr_skips_cidr_validation(self):
         """A disabled subnet_cidr (edit views) is not re-validated as a CIDR.
@@ -451,8 +457,14 @@ class TestReservationForm6(SimpleTestCase):
         form = self._form(self._valid_data(subnet_cidr="192.168.1.0/24"))
         self.assertFalse(form.is_valid())
         self.assertIn("subnet_cidr", form.errors)
-        # The message must be the generic IPv6 hint, not the raw ipaddress parser text.
-        self.assertIn("Enter a valid IPv6 subnet CIDR", str(form.errors["subnet_cidr"]))
+        # Must not leak the raw ipaddress parser text (e.g. "At least 3 parts expected...").
+        self.assertEqual(form.errors["subnet_cidr"], ["Enter a valid IPv6 subnet CIDR (e.g. 2001:db8::/48)."])
+
+    def test_bare_address_without_prefix_fails(self):
+        """A bare IPv6 address (no /prefix) must be rejected, not silently treated as /128."""
+        form = self._form(self._valid_data(subnet_cidr="2001:db8::5"))
+        self.assertFalse(form.is_valid())
+        self.assertIn("subnet_cidr", form.errors)
 
     def test_disabled_subnet_cidr_skips_cidr_validation(self):
         """A disabled subnet_cidr (edit views) is not re-validated as a CIDR.
