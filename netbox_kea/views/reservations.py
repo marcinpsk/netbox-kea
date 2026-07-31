@@ -825,7 +825,7 @@ class ServerReservation4AddView(_KeaChangeMixin, generic.ObjectView):
                         "tab": self.tab,
                     },
                 )
-            except (requests.RequestException, ValueError):
+            except (requests.RequestException, ValueError, RuntimeError):
                 logger.exception("Failed to look up subnet CIDR %s in Kea", cd["subnet_cidr"])
                 messages.error(request, "Network error communicating with Kea: see server logs.")
                 return render(
@@ -990,7 +990,7 @@ class ServerReservation6AddView(_KeaChangeMixin, generic.ObjectView):
                         "tab": self.tab,
                     },
                 )
-            except (requests.RequestException, ValueError):
+            except (requests.RequestException, ValueError, RuntimeError):
                 logger.exception("Failed to look up subnet CIDR %s in Kea", cd["subnet_cidr"])
                 messages.error(request, "Network error communicating with Kea: see server logs.")
                 return render(

@@ -419,6 +419,14 @@ class TestServerReservation4AddView(_ReservationViewBase):
         msgs = list(get_messages(response.wsgi_request))
         self.assertTrue(any("network error" in str(m).lower() for m in msgs), [str(m) for m in msgs])
 
+    def test_post_malformed_cidr_lookup_shows_generic_message(self):
+        """A malformed subnet4-list response raises RuntimeError, which must re-render, not 500."""
+        with stub_kea({"subnet4-list": {"result": 0, "arguments": {"subnets": "not-a-list"}}}):
+            response = self.client.post(self._add_url(), self._valid_post_data())
+        self.assertEqual(response.status_code, 200)
+        msgs = list(get_messages(response.wsgi_request))
+        self.assertTrue(any("network error" in str(m).lower() for m in msgs), [str(m) for m in msgs])
+
     def test_post_invalid_rerenders_form(self):
         # Empty POST — all required fields missing; form invalid before any Kea call.
         response = self.client.post(self._add_url(), {})
@@ -535,6 +543,14 @@ class TestServerReservation6AddView(_ReservationViewBase):
         import requests as req_lib
 
         with stub_kea({"subnet6-list": req_lib.ConnectionError("timeout")}):
+            response = self.client.post(self._add_url(), self._valid_post_data())
+        self.assertEqual(response.status_code, 200)
+        msgs = list(get_messages(response.wsgi_request))
+        self.assertTrue(any("network error" in str(m).lower() for m in msgs), [str(m) for m in msgs])
+
+    def test_post_malformed_cidr_lookup_shows_generic_message(self):
+        """A malformed subnet6-list response raises RuntimeError, which must re-render, not 500."""
+        with stub_kea({"subnet6-list": {"result": 0, "arguments": {"subnets": "not-a-list"}}}):
             response = self.client.post(self._add_url(), self._valid_post_data())
         self.assertEqual(response.status_code, 200)
         msgs = list(get_messages(response.wsgi_request))
