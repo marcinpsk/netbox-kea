@@ -621,23 +621,21 @@ class TestKeaErrorHint(TestCase):
         self.assertIsInstance(hint, str)
         self.assertTrue(len(hint) > 0)
 
-    def test_result_1_ipv4_subnet_mismatch_surfaces_kea_text(self):
-        """host_cmds' IPv4 out-of-subnet text is surfaced with a CIDR-range hint appended."""
+    def test_result_1_ipv4_subnet_mismatch_returns_specific_hint(self):
+        """host_cmds' IPv4 out-of-subnet error returns a specific, actionable hint."""
         from netbox_kea.utilities import kea_error_hint
 
         text = "specified reservation '10.0.0.5' is not matching the IPv4 subnet prefix '192.168.1.0/24'"
         hint = kea_error_hint(self._make_exc(1, text=text))
-        self.assertIn(text, hint)
-        self.assertIn("CIDR range", hint)
+        self.assertEqual(hint, "The reserved IP address is outside the subnet's CIDR range.")
 
-    def test_result_1_ipv6_subnet_mismatch_surfaces_kea_text(self):
-        """host_cmds' IPv6 out-of-subnet text is surfaced with a CIDR-range hint appended."""
+    def test_result_1_ipv6_subnet_mismatch_returns_specific_hint(self):
+        """host_cmds' IPv6 out-of-subnet error returns a specific, actionable hint."""
         from netbox_kea.utilities import kea_error_hint
 
         text = "specified reservation '2001:db8:9::1' is not matching the IPv6 subnet prefix '2001:db8:1::/64'"
         hint = kea_error_hint(self._make_exc(1, text=text))
-        self.assertIn(text, hint)
-        self.assertIn("CIDR range", hint)
+        self.assertEqual(hint, "The reserved IP address is outside the subnet's CIDR range.")
 
     def test_result_1_other_errors_still_use_generic_message(self):
         """A result=1 error unrelated to subnet mismatch keeps the generic hint (no Kea text leaked)."""

@@ -355,17 +355,15 @@ def kea_error_hint(exc: Any) -> str:
     if result == 0:
         return "Operation reported success."
     if result == 1:
-        # host_cmds' reservationAddHandler raises this exact text (see
+        # host_cmds' reservationAddHandler raises this text (see
         # HostCmdsImpl::validateHostForSubnet4/6 in Kea's host_cmds hook) when the
-        # reserved address falls outside the subnet's CIDR range. The address and
-        # subnet in the message are what the user just submitted, not server internals,
-        # so it's safe to surface — unlike the generic str(exc) case this hint avoids.
+        # reserved address falls outside the subnet's CIDR range.
         text = getattr(exc, "response", {}).get("text", "") or ""
         if (
             "is not matching the ipv4 subnet prefix" in text.lower()
             or "is not matching the ipv6 subnet prefix" in text.lower()
         ):
-            return f"{text} — the reserved address must fall inside the subnet's CIDR range."
+            return "The reserved IP address is outside the subnet's CIDR range."
         return "Kea reported an error. Check the server logs for details."
     return f"Kea returned an unexpected result code ({result}). Check the server logs for details."
 
