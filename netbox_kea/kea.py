@@ -1367,9 +1367,12 @@ class KeaClient:
             Subnet CIDR string.
 
         Raises:
-            KeaException: If the subnet is not found or Kea returns an error.
-            ValueError: If the response is malformed, or ``subnet`` isn't a CIDR of
-                the requested family.
+            KeaException: If the subnet is genuinely not found (empty ``subnet{v}``
+                list — Kea has no subnet with this id).
+            RuntimeError: If the response itself is malformed (missing/wrong-typed
+                ``arguments``, ``subnet{v}``, subnet entry, or ``subnet`` field).
+            ValueError: If ``subnet`` is a string but not a CIDR of the requested
+                family.
 
         """
         service = f"dhcp{version}"
@@ -1380,23 +1383,23 @@ class KeaClient:
             arguments={"id": subnet_id},
         )
         if not resp or not isinstance(resp[0], dict):
-            raise ValueError(f"subnet{version}-get returned malformed response: {resp!r}")
+            raise RuntimeError(f"subnet{version}-get returned malformed response: {resp!r}")
         arguments = resp[0].get("arguments")
         if not isinstance(arguments, dict):
-            raise ValueError(f"subnet{version}-get returned malformed arguments: {resp[0]!r}")
+            raise RuntimeError(f"subnet{version}-get returned malformed arguments: {resp[0]!r}")
         subnets = arguments.get(subnet_key, [])
         if not isinstance(subnets, list):
-            raise ValueError(f"subnet{version}-get returned a non-list {subnet_key!r}: {subnets!r}")
+            raise RuntimeError(f"subnet{version}-get returned a non-list {subnet_key!r}: {subnets!r}")
         if not subnets:
             raise KeaException(
                 {"result": 3, "text": f"subnet{version}-get returned no subnet for id={subnet_id}", "arguments": None},
                 index=0,
             )
         if not isinstance(subnets[0], dict):
-            raise ValueError(f"subnet{version}-get returned a non-dict subnet entry: {subnets[0]!r}")
+            raise RuntimeError(f"subnet{version}-get returned a non-dict subnet entry: {subnets[0]!r}")
         cidr = subnets[0].get("subnet")
-        if not cidr:
-            raise ValueError(f"subnet{version}-get response missing 'subnet' field for id={subnet_id}")
+        if not isinstance(cidr, str) or not cidr:
+            raise RuntimeError(f"subnet{version}-get response missing 'subnet' field for id={subnet_id}")
         network_cls = ipaddress.IPv4Network if version == 4 else ipaddress.IPv6Network
         try:
             network_cls(cidr, strict=True)

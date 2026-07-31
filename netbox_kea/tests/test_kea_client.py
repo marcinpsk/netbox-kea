@@ -4100,38 +4100,45 @@ class TestGetSubnetCidr(TestCase):
             with self.assertRaises(KeaException):
                 self.client._get_subnet_cidr(version=4, subnet_id=42)
 
-    def test_raises_value_error_when_subnet_key_missing_from_entry(self):
-        """_get_subnet_cidr raises ValueError when the subnet entry exists but has no 'subnet' field."""
+    def test_raises_runtime_error_when_subnet_key_missing_from_entry(self):
+        """_get_subnet_cidr raises RuntimeError when the subnet entry exists but has no 'subnet' field."""
         resp = [{"result": 0, "arguments": {"subnet4": [{"id": 1}]}}]
         with patch.object(self.client._session, "post", return_value=_mock_http_response(resp)):
-            with self.assertRaises(ValueError):
+            with self.assertRaises(RuntimeError):
                 self.client._get_subnet_cidr(version=4, subnet_id=1)
 
-    def test_raises_value_error_on_empty_response_list(self):
+    def test_raises_runtime_error_when_subnet_value_is_not_a_string(self):
+        """_get_subnet_cidr raises RuntimeError when the 'subnet' field is present but not a string."""
+        resp = [{"result": 0, "arguments": {"subnet4": [{"id": 1, "subnet": 12345}]}}]
+        with patch.object(self.client._session, "post", return_value=_mock_http_response(resp)):
+            with self.assertRaises(RuntimeError):
+                self.client._get_subnet_cidr(version=4, subnet_id=1)
+
+    def test_raises_runtime_error_on_empty_response_list(self):
         """An empty response list is not a valid subnet4-get envelope."""
         with patch.object(self.client._session, "post", return_value=_mock_http_response([])):
-            with self.assertRaises(ValueError):
+            with self.assertRaises(RuntimeError):
                 self.client._get_subnet_cidr(version=4, subnet_id=1)
 
-    def test_raises_value_error_when_arguments_not_dict(self):
+    def test_raises_runtime_error_when_arguments_not_dict(self):
         """arguments must be a dict."""
         resp = [{"result": 0, "arguments": "not-a-dict"}]
         with patch.object(self.client._session, "post", return_value=_mock_http_response(resp)):
-            with self.assertRaises(ValueError):
+            with self.assertRaises(RuntimeError):
                 self.client._get_subnet_cidr(version=4, subnet_id=1)
 
-    def test_raises_value_error_when_subnet_list_not_list(self):
+    def test_raises_runtime_error_when_subnet_list_not_list(self):
         """arguments.subnet4 must be a list."""
         resp = [{"result": 0, "arguments": {"subnet4": "not-a-list"}}]
         with patch.object(self.client._session, "post", return_value=_mock_http_response(resp)):
-            with self.assertRaises(ValueError):
+            with self.assertRaises(RuntimeError):
                 self.client._get_subnet_cidr(version=4, subnet_id=1)
 
-    def test_raises_value_error_when_subnet_entry_not_dict(self):
+    def test_raises_runtime_error_when_subnet_entry_not_dict(self):
         """Each subnet entry must be a dict."""
         resp = [{"result": 0, "arguments": {"subnet4": ["not-a-dict"]}}]
         with patch.object(self.client._session, "post", return_value=_mock_http_response(resp)):
-            with self.assertRaises(ValueError):
+            with self.assertRaises(RuntimeError):
                 self.client._get_subnet_cidr(version=4, subnet_id=1)
 
     def test_raises_value_error_when_cidr_is_wrong_family(self):

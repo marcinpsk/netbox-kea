@@ -1114,7 +1114,7 @@ class ServerReservation4EditView(_ReservationLookupMixin, _KeaChangeMixin, gener
         identifier_type, identifier = _get_reservation_identifier(reservation, 4)
         try:
             subnet_cidr = server.get_client(version=4)._get_subnet_cidr(4, subnet_id)
-        except (KeaException, requests.RequestException, ValueError):
+        except (KeaException, requests.RequestException, ValueError, RuntimeError):
             subnet_cidr = str(subnet_id)
         initial = {
             "subnet_cidr": subnet_cidr,
@@ -1170,7 +1170,7 @@ class ServerReservation4EditView(_ReservationLookupMixin, _KeaChangeMixin, gener
         existing_id_type, existing_id_value = _get_reservation_identifier(existing, 4)
         try:
             subnet_cidr = server.get_client(version=4)._get_subnet_cidr(4, subnet_id)
-        except (KeaException, requests.RequestException, ValueError):
+        except (KeaException, requests.RequestException, ValueError, RuntimeError):
             subnet_cidr = str(subnet_id)
         form = forms.Reservation4Form(
             data=request.POST,
@@ -1283,7 +1283,7 @@ class ServerReservation6EditView(_ReservationLookupMixin, _KeaChangeMixin, gener
             ip_list = [ip_address] if ip_address else []
         try:
             subnet_cidr = server.get_client(version=6)._get_subnet_cidr(6, subnet_id)
-        except (KeaException, requests.RequestException, ValueError):
+        except (KeaException, requests.RequestException, ValueError, RuntimeError):
             subnet_cidr = str(subnet_id)
         initial = {
             "subnet_cidr": subnet_cidr,
@@ -1356,7 +1356,7 @@ class ServerReservation6EditView(_ReservationLookupMixin, _KeaChangeMixin, gener
         existing_id_type, existing_id_value = _get_reservation_identifier(existing, 6)
         try:
             subnet_cidr = server.get_client(version=6)._get_subnet_cidr(6, subnet_id)
-        except (KeaException, requests.RequestException, ValueError):
+        except (KeaException, requests.RequestException, ValueError, RuntimeError):
             subnet_cidr = str(subnet_id)
         form = forms.Reservation6Form(
             data=request.POST,
