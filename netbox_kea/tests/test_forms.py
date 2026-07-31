@@ -355,6 +355,16 @@ class TestReservationForm4(SimpleTestCase):
         self.assertFalse(form.is_valid())
         self.assertIn("subnet_cidr", form.errors)
 
+    def test_netmask_form_is_canonicalized_to_prefix_length(self):
+        """A dotted-decimal netmask CIDR is canonicalized so it matches Kea's own reporting.
+
+        subnet_id_from_cidr() matches Kea's subnet4-list entries by exact string, and
+        Kea always reports subnets with a prefix-length suffix, never a netmask.
+        """
+        form = self._form(self._valid_data(subnet_cidr="10.0.0.0/255.255.255.0"))
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.cleaned_data["subnet_cidr"], "10.0.0.0/24")
+
     def test_disabled_subnet_cidr_skips_cidr_validation(self):
         """A disabled subnet_cidr (edit views) is not re-validated as a CIDR.
 
@@ -465,6 +475,16 @@ class TestReservationForm6(SimpleTestCase):
         form = self._form(self._valid_data(subnet_cidr="2001:db8::5"))
         self.assertFalse(form.is_valid())
         self.assertIn("subnet_cidr", form.errors)
+
+    def test_expanded_notation_is_canonicalized_to_compressed_form(self):
+        """A fully-expanded IPv6 CIDR is canonicalized so it matches Kea's own reporting.
+
+        subnet_id_from_cidr() matches Kea's subnet6-list entries by exact string, and
+        Kea always reports subnets in compressed form.
+        """
+        form = self._form(self._valid_data(subnet_cidr="2001:0db8:0000:0000:0000:0000:0000:0000/32"))
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.cleaned_data["subnet_cidr"], "2001:db8::/32")
 
     def test_disabled_subnet_cidr_skips_cidr_validation(self):
         """A disabled subnet_cidr (edit views) is not re-validated as a CIDR.

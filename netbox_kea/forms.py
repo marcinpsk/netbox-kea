@@ -448,10 +448,13 @@ class Reservation4Form(forms.Form):
         if "/" not in value:
             raise forms.ValidationError("Enter a valid IPv4 subnet CIDR (e.g. 10.0.0.0/24).")
         try:
-            ipaddress.IPv4Network(value, strict=True)
+            network = ipaddress.IPv4Network(value, strict=True)
         except ValueError as exc:
             raise forms.ValidationError("Enter a valid IPv4 subnet CIDR (e.g. 10.0.0.0/24).") from exc
-        return value
+        # Kea reports subnets in canonical form; subnet_id_from_cidr() matches by
+        # exact string, so a non-canonical but valid input (e.g. a netmask like
+        # "/255.255.255.0" instead of "/24") would otherwise never match.
+        return str(network)
 
     def clean_ip_address(self) -> str:
         """Validate the value is a valid IPv4 address, or blank for no fixed address."""
@@ -532,10 +535,13 @@ class Reservation6Form(forms.Form):
         if "/" not in value:
             raise forms.ValidationError("Enter a valid IPv6 subnet CIDR (e.g. 2001:db8::/48).")
         try:
-            ipaddress.IPv6Network(value, strict=True)
+            network = ipaddress.IPv6Network(value, strict=True)
         except ValueError as exc:
             raise forms.ValidationError("Enter a valid IPv6 subnet CIDR (e.g. 2001:db8::/48).") from exc
-        return value
+        # Kea reports subnets in canonical (compressed) form; subnet_id_from_cidr()
+        # matches by exact string, so a valid but expanded address (e.g.
+        # "2001:0db8:0000:.../32") would otherwise never match.
+        return str(network)
 
     def clean_ip_addresses(self) -> str:
         """Validate every entry is a valid IPv6 address; blank reserves no address."""
