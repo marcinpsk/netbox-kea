@@ -1115,6 +1115,7 @@ class ServerReservation4EditView(_ReservationLookupMixin, _KeaChangeMixin, gener
         try:
             subnet_cidr = server.get_client(version=4)._get_subnet_cidr(4, subnet_id)
         except (KeaException, requests.RequestException, ValueError, RuntimeError):
+            logger.debug("Could not resolve subnet CIDR for id=%s; falling back to raw id", subnet_id, exc_info=True)
             subnet_cidr = str(subnet_id)
         initial = {
             "subnet_cidr": subnet_cidr,
@@ -1171,6 +1172,7 @@ class ServerReservation4EditView(_ReservationLookupMixin, _KeaChangeMixin, gener
         try:
             subnet_cidr = server.get_client(version=4)._get_subnet_cidr(4, subnet_id)
         except (KeaException, requests.RequestException, ValueError, RuntimeError):
+            logger.debug("Could not resolve subnet CIDR for id=%s; falling back to raw id", subnet_id, exc_info=True)
             subnet_cidr = str(subnet_id)
         form = forms.Reservation4Form(
             data=request.POST,
@@ -1284,6 +1286,7 @@ class ServerReservation6EditView(_ReservationLookupMixin, _KeaChangeMixin, gener
         try:
             subnet_cidr = server.get_client(version=6)._get_subnet_cidr(6, subnet_id)
         except (KeaException, requests.RequestException, ValueError, RuntimeError):
+            logger.debug("Could not resolve subnet CIDR for id=%s; falling back to raw id", subnet_id, exc_info=True)
             subnet_cidr = str(subnet_id)
         initial = {
             "subnet_cidr": subnet_cidr,
@@ -1357,6 +1360,7 @@ class ServerReservation6EditView(_ReservationLookupMixin, _KeaChangeMixin, gener
         try:
             subnet_cidr = server.get_client(version=6)._get_subnet_cidr(6, subnet_id)
         except (KeaException, requests.RequestException, ValueError, RuntimeError):
+            logger.debug("Could not resolve subnet CIDR for id=%s; falling back to raw id", subnet_id, exc_info=True)
             subnet_cidr = str(subnet_id)
         form = forms.Reservation6Form(
             data=request.POST,
