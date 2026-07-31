@@ -1190,6 +1190,10 @@ class KeaClient:
 
         Raises:
             KeaException: If Kea returns a non-zero result code for either command.
+            RuntimeError: If the delta-add path's ``_get_subnet_cidr`` lookup gets a
+                malformed ``subnet{version}-get`` response.
+            ValueError: If the delta-add path's ``_get_subnet_cidr`` lookup returns a
+                CIDR that doesn't match *version*'s address family.
 
         """
         service = f"dhcp{version}"
@@ -1224,6 +1228,10 @@ class KeaClient:
 
         Raises:
             KeaException: If Kea returns a non-zero result code for either command.
+            RuntimeError: If the delta-del path's ``_get_subnet_cidr`` lookup gets a
+                malformed ``subnet{version}-get`` response.
+            ValueError: If the delta-del path's ``_get_subnet_cidr`` lookup returns a
+                CIDR that doesn't match *version*'s address family.
 
         """
         service = f"dhcp{version}"
