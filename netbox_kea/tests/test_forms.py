@@ -346,6 +346,8 @@ class TestReservationForm4(SimpleTestCase):
         form = self._form(self._valid_data(subnet_cidr="2001:db8::/48"))
         self.assertFalse(form.is_valid())
         self.assertIn("subnet_cidr", form.errors)
+        # The message must be the generic IPv4 hint, not the raw ipaddress parser text.
+        self.assertIn("Enter a valid IPv4 subnet CIDR", str(form.errors["subnet_cidr"]))
 
     def test_disabled_subnet_cidr_skips_cidr_validation(self):
         """A disabled subnet_cidr (edit views) is not re-validated as a CIDR.
@@ -449,6 +451,8 @@ class TestReservationForm6(SimpleTestCase):
         form = self._form(self._valid_data(subnet_cidr="192.168.1.0/24"))
         self.assertFalse(form.is_valid())
         self.assertIn("subnet_cidr", form.errors)
+        # The message must be the generic IPv6 hint, not the raw ipaddress parser text.
+        self.assertIn("Enter a valid IPv6 subnet CIDR", str(form.errors["subnet_cidr"]))
 
     def test_disabled_subnet_cidr_skips_cidr_validation(self):
         """A disabled subnet_cidr (edit views) is not re-validated as a CIDR.
