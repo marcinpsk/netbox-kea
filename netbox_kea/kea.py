@@ -1375,10 +1375,10 @@ class KeaClient:
             Subnet CIDR string.
 
         Raises:
-            KeaException: If the subnet is genuinely not found (empty ``subnet{v}``
-                list — Kea has no subnet with this id).
+            KeaException: If Kea reports the subnet as not found (result code 3).
             RuntimeError: If the response itself is malformed (missing/wrong-typed
-                ``arguments``, ``subnet{v}``, subnet entry, or ``subnet`` field).
+                ``arguments``, ``subnet{v}``, subnet entry, or ``subnet`` field —
+                including an empty ``subnet{v}`` list despite a result-0 response).
             ValueError: If ``subnet`` is a string but not a CIDR of the requested
                 family.
 
@@ -1389,20 +1389,20 @@ class KeaClient:
             f"subnet{version}-get",
             service=[service],
             arguments={"id": subnet_id},
+            check=(0, 3),
         )
         if not resp or not isinstance(resp[0], dict):
             raise RuntimeError(f"subnet{version}-get returned malformed response: {resp!r}")
+        if resp[0].get("result") == 3:
+            raise KeaException(resp[0], index=0)
         arguments = resp[0].get("arguments")
         if not isinstance(arguments, dict):
             raise RuntimeError(f"subnet{version}-get returned malformed arguments: {resp[0]!r}")
-        subnets = arguments.get(subnet_key, [])
+        subnets = arguments.get(subnet_key)
         if not isinstance(subnets, list):
             raise RuntimeError(f"subnet{version}-get returned a non-list {subnet_key!r}: {subnets!r}")
         if not subnets:
-            raise KeaException(
-                {"result": 3, "text": f"subnet{version}-get returned no subnet for id={subnet_id}", "arguments": None},
-                index=0,
-            )
+            raise RuntimeError(f"subnet{version}-get returned an empty {subnet_key!r} despite result=0: {resp[0]!r}")
         if not isinstance(subnets[0], dict):
             raise RuntimeError(f"subnet{version}-get returned a non-dict subnet entry: {subnets[0]!r}")
         cidr = subnets[0].get("subnet")

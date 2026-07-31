@@ -4086,18 +4086,25 @@ class TestGetSubnetCidr(TestCase):
             cidr = self.client._get_subnet_cidr(version=4, subnet_id=1)
         self.assertEqual(cidr, "10.0.0.0/24")
 
-    def test_raises_kea_exception_when_subnet_not_in_response(self):
-        """_get_subnet_cidr raises KeaException when subnet4-get returns empty subnets list."""
-        resp = [{"result": 0, "arguments": {"subnet4": []}}]
+    def test_raises_kea_exception_when_result_is_3(self):
+        """_get_subnet_cidr raises KeaException when Kea reports the subnet as not found (result 3)."""
+        resp = [{"result": 3, "text": "subnet not found"}]
         with patch.object(self.client._session, "post", return_value=_mock_http_response(resp)):
             with self.assertRaises(KeaException):
                 self.client._get_subnet_cidr(version=4, subnet_id=999)
 
-    def test_raises_kea_exception_when_arguments_missing(self):
-        """_get_subnet_cidr raises KeaException when arguments key is absent."""
+    def test_raises_runtime_error_when_subnet_not_in_response(self):
+        """An empty subnet4 list despite result=0 is a malformed response, not a genuine not-found."""
+        resp = [{"result": 0, "arguments": {"subnet4": []}}]
+        with patch.object(self.client._session, "post", return_value=_mock_http_response(resp)):
+            with self.assertRaises(RuntimeError):
+                self.client._get_subnet_cidr(version=4, subnet_id=999)
+
+    def test_raises_runtime_error_when_subnet_key_missing_from_arguments(self):
+        """_get_subnet_cidr raises RuntimeError when the subnet4 key is absent from arguments."""
         resp = [{"result": 0, "arguments": {}}]
         with patch.object(self.client._session, "post", return_value=_mock_http_response(resp)):
-            with self.assertRaises(KeaException):
+            with self.assertRaises(RuntimeError):
                 self.client._get_subnet_cidr(version=4, subnet_id=42)
 
     def test_raises_runtime_error_when_subnet_key_missing_from_entry(self):
