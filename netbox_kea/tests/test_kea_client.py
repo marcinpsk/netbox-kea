@@ -4086,12 +4086,26 @@ class TestGetSubnetCidr(TestCase):
             cidr = self.client.get_subnet_cidr(version=4, subnet_id=1)
         self.assertEqual(cidr, "10.0.0.0/24")
 
+    def test_returns_cidr_for_known_subnet_v6(self):
+        """get_subnet_cidr returns the CIDR string from the subnet6-get response."""
+        resp = [{"result": 0, "arguments": {"subnet6": [{"id": 1, "subnet": "2001:db8::/48"}]}}]
+        with patch.object(self.client._session, "post", return_value=_mock_http_response(resp)):
+            cidr = self.client.get_subnet_cidr(version=6, subnet_id=1)
+        self.assertEqual(cidr, "2001:db8::/48")
+
     def test_raises_kea_exception_when_result_is_3(self):
         """get_subnet_cidr raises KeaException when Kea reports the subnet as not found (result 3)."""
         resp = [{"result": 3, "text": "subnet not found"}]
         with patch.object(self.client._session, "post", return_value=_mock_http_response(resp)):
             with self.assertRaises(KeaException):
                 self.client.get_subnet_cidr(version=4, subnet_id=999)
+
+    def test_raises_kea_exception_when_result_is_3_v6(self):
+        """get_subnet_cidr raises KeaException for a DHCPv6 not-found response (result 3)."""
+        resp = [{"result": 3, "text": "subnet not found"}]
+        with patch.object(self.client._session, "post", return_value=_mock_http_response(resp)):
+            with self.assertRaises(KeaException):
+                self.client.get_subnet_cidr(version=6, subnet_id=999)
 
     def test_raises_runtime_error_when_subnet_not_in_response(self):
         """An empty subnet4 list despite result=0 is a malformed response, not a genuine not-found."""
@@ -4100,12 +4114,26 @@ class TestGetSubnetCidr(TestCase):
             with self.assertRaises(RuntimeError):
                 self.client.get_subnet_cidr(version=4, subnet_id=999)
 
+    def test_raises_runtime_error_when_subnet_not_in_response_v6(self):
+        """An empty subnet6 list despite result=0 is a malformed response, not a genuine not-found."""
+        resp = [{"result": 0, "arguments": {"subnet6": []}}]
+        with patch.object(self.client._session, "post", return_value=_mock_http_response(resp)):
+            with self.assertRaises(RuntimeError):
+                self.client.get_subnet_cidr(version=6, subnet_id=999)
+
     def test_raises_runtime_error_when_subnet_key_missing_from_arguments(self):
         """get_subnet_cidr raises RuntimeError when the subnet4 key is absent from arguments."""
         resp = [{"result": 0, "arguments": {}}]
         with patch.object(self.client._session, "post", return_value=_mock_http_response(resp)):
             with self.assertRaises(RuntimeError):
                 self.client.get_subnet_cidr(version=4, subnet_id=42)
+
+    def test_raises_runtime_error_when_subnet_key_missing_from_arguments_v6(self):
+        """get_subnet_cidr raises RuntimeError when the subnet6 key is absent from arguments."""
+        resp = [{"result": 0, "arguments": {}}]
+        with patch.object(self.client._session, "post", return_value=_mock_http_response(resp)):
+            with self.assertRaises(RuntimeError):
+                self.client.get_subnet_cidr(version=6, subnet_id=42)
 
     def test_raises_runtime_error_when_subnet_key_missing_from_entry(self):
         """get_subnet_cidr raises RuntimeError when the subnet entry exists but has no 'subnet' field."""
@@ -4114,6 +4142,13 @@ class TestGetSubnetCidr(TestCase):
             with self.assertRaises(RuntimeError):
                 self.client.get_subnet_cidr(version=4, subnet_id=1)
 
+    def test_raises_runtime_error_when_subnet_key_missing_from_entry_v6(self):
+        """get_subnet_cidr raises RuntimeError when the DHCPv6 subnet entry has no 'subnet' field."""
+        resp = [{"result": 0, "arguments": {"subnet6": [{"id": 1}]}}]
+        with patch.object(self.client._session, "post", return_value=_mock_http_response(resp)):
+            with self.assertRaises(RuntimeError):
+                self.client.get_subnet_cidr(version=6, subnet_id=1)
+
     def test_raises_runtime_error_when_subnet_value_is_not_a_string(self):
         """get_subnet_cidr raises RuntimeError when the 'subnet' field is present but not a string."""
         resp = [{"result": 0, "arguments": {"subnet4": [{"id": 1, "subnet": 12345}]}}]
@@ -4121,11 +4156,24 @@ class TestGetSubnetCidr(TestCase):
             with self.assertRaises(RuntimeError):
                 self.client.get_subnet_cidr(version=4, subnet_id=1)
 
+    def test_raises_runtime_error_when_subnet_value_is_not_a_string_v6(self):
+        """get_subnet_cidr raises RuntimeError when the DHCPv6 'subnet' field is present but not a string."""
+        resp = [{"result": 0, "arguments": {"subnet6": [{"id": 1, "subnet": 12345}]}}]
+        with patch.object(self.client._session, "post", return_value=_mock_http_response(resp)):
+            with self.assertRaises(RuntimeError):
+                self.client.get_subnet_cidr(version=6, subnet_id=1)
+
     def test_raises_runtime_error_on_empty_response_list(self):
         """An empty response list is not a valid subnet4-get envelope."""
         with patch.object(self.client._session, "post", return_value=_mock_http_response([])):
             with self.assertRaises(RuntimeError):
                 self.client.get_subnet_cidr(version=4, subnet_id=1)
+
+    def test_raises_runtime_error_on_empty_response_list_v6(self):
+        """An empty response list is not a valid subnet6-get envelope."""
+        with patch.object(self.client._session, "post", return_value=_mock_http_response([])):
+            with self.assertRaises(RuntimeError):
+                self.client.get_subnet_cidr(version=6, subnet_id=1)
 
     def test_raises_runtime_error_when_arguments_not_dict(self):
         """arguments must be a dict."""
@@ -4134,6 +4182,13 @@ class TestGetSubnetCidr(TestCase):
             with self.assertRaises(RuntimeError):
                 self.client.get_subnet_cidr(version=4, subnet_id=1)
 
+    def test_raises_runtime_error_when_arguments_not_dict_v6(self):
+        """arguments must be a dict, for DHCPv6 too."""
+        resp = [{"result": 0, "arguments": "not-a-dict"}]
+        with patch.object(self.client._session, "post", return_value=_mock_http_response(resp)):
+            with self.assertRaises(RuntimeError):
+                self.client.get_subnet_cidr(version=6, subnet_id=1)
+
     def test_raises_runtime_error_when_subnet_list_not_list(self):
         """arguments.subnet4 must be a list."""
         resp = [{"result": 0, "arguments": {"subnet4": "not-a-list"}}]
@@ -4141,12 +4196,26 @@ class TestGetSubnetCidr(TestCase):
             with self.assertRaises(RuntimeError):
                 self.client.get_subnet_cidr(version=4, subnet_id=1)
 
+    def test_raises_runtime_error_when_subnet_list_not_list_v6(self):
+        """arguments.subnet6 must be a list."""
+        resp = [{"result": 0, "arguments": {"subnet6": "not-a-list"}}]
+        with patch.object(self.client._session, "post", return_value=_mock_http_response(resp)):
+            with self.assertRaises(RuntimeError):
+                self.client.get_subnet_cidr(version=6, subnet_id=1)
+
     def test_raises_runtime_error_when_subnet_entry_not_dict(self):
         """Each subnet entry must be a dict."""
         resp = [{"result": 0, "arguments": {"subnet4": ["not-a-dict"]}}]
         with patch.object(self.client._session, "post", return_value=_mock_http_response(resp)):
             with self.assertRaises(RuntimeError):
                 self.client.get_subnet_cidr(version=4, subnet_id=1)
+
+    def test_raises_runtime_error_when_subnet_entry_not_dict_v6(self):
+        """Each DHCPv6 subnet entry must be a dict."""
+        resp = [{"result": 0, "arguments": {"subnet6": ["not-a-dict"]}}]
+        with patch.object(self.client._session, "post", return_value=_mock_http_response(resp)):
+            with self.assertRaises(RuntimeError):
+                self.client.get_subnet_cidr(version=6, subnet_id=1)
 
     def test_raises_value_error_when_cidr_is_wrong_family(self):
         """A subnet4-get response carrying an IPv6 CIDR is a malformed/mismatched response."""
