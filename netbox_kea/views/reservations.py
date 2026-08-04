@@ -27,6 +27,7 @@ from ..utilities import (
     kea_error_hint,
 )
 from ._base import _KeaChangeMixin
+from .leases import _fetch_subnet_choices
 from .subnets import _warn_reservation_pool_overlap
 
 logger = logging.getLogger(__name__)
@@ -766,6 +767,15 @@ class ServerReservation4AddView(_KeaChangeMixin, generic.ObjectView):
             k: request.GET.get(k, "")
             for k in ("subnet_cidr", "ip_address", "identifier_type", "identifier", "hostname")
         }
+        # Legacy prefill links (e.g. the lease list's "+ Reserve") pass the raw subnet
+        # id; resolve it against the already-cached subnet list instead of a fresh
+        # Kea round-trip.
+        if not initial.get("subnet_cidr") and request.GET.get("subnet_id", "").isdigit():
+            subnet_id = int(request.GET["subnet_id"])
+            for cidr, sid in _fetch_subnet_choices(server, 4):
+                if sid == subnet_id:
+                    initial["subnet_cidr"] = cidr
+                    break
         initial = {k: v for k, v in initial.items() if v}
         return render(
             request,
@@ -931,6 +941,15 @@ class ServerReservation6AddView(_KeaChangeMixin, generic.ObjectView):
             k: request.GET.get(k, "")
             for k in ("subnet_cidr", "ip_addresses", "prefixes", "identifier_type", "identifier", "hostname")
         }
+        # Legacy prefill links (e.g. the lease list's "+ Reserve") pass the raw subnet
+        # id; resolve it against the already-cached subnet list instead of a fresh
+        # Kea round-trip.
+        if not initial.get("subnet_cidr") and request.GET.get("subnet_id", "").isdigit():
+            subnet_id = int(request.GET["subnet_id"])
+            for cidr, sid in _fetch_subnet_choices(server, 6):
+                if sid == subnet_id:
+                    initial["subnet_cidr"] = cidr
+                    break
         initial = {k: v for k, v in initial.items() if v}
         return render(
             request,

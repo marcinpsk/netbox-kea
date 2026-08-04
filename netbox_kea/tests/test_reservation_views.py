@@ -1094,6 +1094,29 @@ class TestLeaseReserveBadge(_ReservationViewBase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Reserve")
 
+    def test_reserve_link_prefills_subnet_cidr_on_add_form(self):
+        """The lease page's '+ Reserve' link carries subnet_id=; the add form it points to
+        must resolve that into subnet_cidr, not leave the field blank."""
+        with stub_kea(
+            {
+                "config-get": self._CONFIG4,
+                "lease4-get": {"result": 0, "arguments": {**self._LEASE}},
+                "reservation-get": {"result": 3},
+            }
+        ):
+            response = self._htmx_get({"by": "ip", "q": "192.168.1.200"})
+        self.assertEqual(response.status_code, 200)
+        row = next(r for r in response.context["table"].data if r.get("ip_address") == "192.168.1.200")
+        create_url = row.get("create_reservation_url")
+        self.assertIsNotNone(create_url)
+        self.assertIn("subnet_id=1", create_url)
+        self.assertNotIn("subnet_cidr=", create_url)
+
+        with stub_kea({"config-get": self._CONFIG4}):
+            add_response = self.client.get(create_url)
+        self.assertEqual(add_response.status_code, 200)
+        self.assertEqual(add_response.context["form"].initial.get("subnet_cidr"), "192.168.1.0/24")
+
     def test_reserved_badge_shown_when_reservation_exists(self):
         """A lease WITH a matching reservation must show 'Reserved' link, not '+ Reserve'."""
         reservation = dict(_SAMPLE_RESERVATION4)
