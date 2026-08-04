@@ -634,7 +634,6 @@ class TestServerReservation4EditView(_ReservationViewBase):
     def test_post_valid_updates_reservation_and_redirects(self):
         with stub_kea(
             {
-                "subnet4-get": _subnet_get(4, subnet_cidr=_SUBNET4_CIDR),
                 "reservation-get": _res_get(_SAMPLE_RESERVATION4),
                 "reservation-update": {"result": 0},
             }
@@ -643,25 +642,11 @@ class TestServerReservation4EditView(_ReservationViewBase):
         self.assertEqual(response.status_code, 302)
         self.assertNotIn("None", response.url)
         self.assertEqual(kea.commands().count("reservation-update"), 1)
+        # subnet_cidr is disabled and never reaches the Kea payload, so a successful
+        # edit must not pay for a subnet4-get lookup whose result is thrown away.
+        self.assertNotIn("subnet4-get", kea.commands())
 
-    def test_post_still_updates_when_cidr_lookup_fails(self):
-        """POST must still update the reservation when subnet4-get fails and falls back to the raw ID.
-
-        subnet_cidr is disabled on this form, so the fallback value ("1", not a CIDR)
-        must not fail clean_subnet_cidr and silently invalidate the whole submission.
-        """
-        with stub_kea(
-            {
-                "subnet4-get": {"result": 1, "text": "command not supported"},
-                "reservation-get": _res_get(_SAMPLE_RESERVATION4),
-                "reservation-update": {"result": 0},
-            }
-        ) as kea:
-            response = self.client.post(self._edit_url(), self._valid_post_data())
-        self.assertEqual(response.status_code, 302)
-        self.assertEqual(kea.commands().count("reservation-update"), 1)
-
-    def test_post_invalid_rerenders_form(self):
+    def test_post_invalid_rerenders_form_with_resolved_cidr(self):
         # All key fields (subnet_id, ip_address, identifier_type, identifier) are disabled in the
         # edit POST handler and take their values from existing.  Trigger invalidity via the options
         # formset: submit a row with data but no name (name is required).  The update never fires.
@@ -676,10 +661,41 @@ class TestServerReservation4EditView(_ReservationViewBase):
                 "options-0-data": "192.168.1.1",
             }
         )
-        with stub_kea({"subnet4-get": _subnet_get(4), "reservation-get": _res_get(_SAMPLE_RESERVATION4)}) as kea:
+        with stub_kea(
+            {
+                "subnet4-get": _subnet_get(4, subnet_cidr=_SUBNET4_CIDR),
+                "reservation-get": _res_get(_SAMPLE_RESERVATION4),
+            }
+        ) as kea:
             response = self.client.post(self._edit_url(), data)
         self.assertEqual(response.status_code, 200)
         self.assertNotIn("reservation-update", kea.commands())
+        # The re-rendered form must show the real CIDR, not the raw-id placeholder
+        # used while validating.
+        self.assertEqual(response.context["form"].initial["subnet_cidr"], _SUBNET4_CIDR)
+
+    def test_post_rerenders_with_raw_id_when_cidr_lookup_fails(self):
+        """When the CIDR lookup itself fails on the re-render path, fall back to the raw id."""
+        data = self._valid_post_data()
+        data.update(
+            {
+                "options-TOTAL_FORMS": "1",
+                "options-INITIAL_FORMS": "0",
+                "options-MIN_NUM_FORMS": "0",
+                "options-MAX_NUM_FORMS": "1000",
+                "options-0-name": "",
+                "options-0-data": "192.168.1.1",
+            }
+        )
+        with stub_kea(
+            {
+                "subnet4-get": {"result": 1, "text": "command not supported"},
+                "reservation-get": _res_get(_SAMPLE_RESERVATION4),
+            }
+        ):
+            response = self.client.post(self._edit_url(), data)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["form"].initial["subnet_cidr"], str(self._SUBNET_ID))
 
     def test_post_kea_error_shows_error_message(self):
         with stub_kea(
@@ -790,7 +806,6 @@ class TestServerReservation6EditView(_ReservationViewBase):
     def test_post_valid_updates_reservation_and_redirects(self):
         with stub_kea(
             {
-                "subnet6-get": _subnet_get(6, subnet_cidr=_SUBNET6_CIDR),
                 "reservation-get": _res_get(_SAMPLE_RESERVATION6),
                 "reservation-update": {"result": 0},
             }
@@ -808,18 +823,16 @@ class TestServerReservation6EditView(_ReservationViewBase):
         self.assertEqual(response.status_code, 302)
         self.assertNotIn("None", response.url)
         self.assertEqual(kea.commands().count("reservation-update"), 1)
+        # subnet_cidr is disabled and never reaches the Kea payload, so a successful
+        # edit must not pay for a subnet6-get lookup whose result is thrown away.
+        self.assertNotIn("subnet6-get", kea.commands())
 
-    def test_post_still_updates_when_cidr_lookup_fails(self):
-        """POST must still update the reservation when subnet6-get fails and falls back to the raw ID.
-
-        subnet_cidr is disabled on this form, so the fallback value ("1", not a CIDR)
-        must not fail clean_subnet_cidr and silently invalidate the whole submission.
-        """
+    def test_post_invalid_rerenders_form_with_resolved_cidr(self):
+        """A validation failure on the options formset must re-render with the real CIDR."""
         with stub_kea(
             {
-                "subnet6-get": {"result": 1, "text": "command not supported"},
+                "subnet6-get": _subnet_get(6, subnet_cidr=_SUBNET6_CIDR),
                 "reservation-get": _res_get(_SAMPLE_RESERVATION6),
-                "reservation-update": {"result": 0},
             }
         ) as kea:
             response = self.client.post(
@@ -830,10 +843,44 @@ class TestServerReservation6EditView(_ReservationViewBase):
                     "identifier_type": "duid",
                     "identifier": "00:01:02:03:04:05",
                     "hostname": "testhost6.example.com",
+                    "options-TOTAL_FORMS": "1",
+                    "options-INITIAL_FORMS": "0",
+                    "options-MIN_NUM_FORMS": "0",
+                    "options-MAX_NUM_FORMS": "1000",
+                    "options-0-name": "",
+                    "options-0-data": "2001:db8::1",
                 },
             )
-        self.assertEqual(response.status_code, 302)
-        self.assertEqual(kea.commands().count("reservation-update"), 1)
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("reservation-update", kea.commands())
+        self.assertEqual(response.context["form"].initial["subnet_cidr"], _SUBNET6_CIDR)
+
+    def test_post_rerenders_with_raw_id_when_cidr_lookup_fails(self):
+        """When the CIDR lookup itself fails on the re-render path, fall back to the raw id."""
+        with stub_kea(
+            {
+                "subnet6-get": {"result": 1, "text": "command not supported"},
+                "reservation-get": _res_get(_SAMPLE_RESERVATION6),
+            }
+        ):
+            response = self.client.post(
+                self._edit_url(),
+                {
+                    "subnet_cidr": "2001:db8::/32",
+                    "ip_addresses": "2001:db8::100",
+                    "identifier_type": "duid",
+                    "identifier": "00:01:02:03:04:05",
+                    "hostname": "testhost6.example.com",
+                    "options-TOTAL_FORMS": "1",
+                    "options-INITIAL_FORMS": "0",
+                    "options-MIN_NUM_FORMS": "0",
+                    "options-MAX_NUM_FORMS": "1000",
+                    "options-0-name": "",
+                    "options-0-data": "2001:db8::1",
+                },
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["form"].initial["subnet_cidr"], str(self._SUBNET_ID))
 
 
 # ─────────────────────────────────────────────────────────────────────────────

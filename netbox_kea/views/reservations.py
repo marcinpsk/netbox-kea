@@ -1188,22 +1188,24 @@ class ServerReservation4EditView(_ReservationLookupMixin, _KeaChangeMixin, gener
             messages.error(request, f"Reservation {lookup.label} no longer exists in subnet {subnet_id}.")
             return redirect(return_url)
         existing_id_type, existing_id_value = _get_reservation_identifier(existing, 4)
-        try:
-            subnet_cidr = server.get_client(version=4).get_subnet_cidr(4, subnet_id)
-        except (KeaException, requests.RequestException, ValueError, RuntimeError):
-            logger.debug("Could not resolve subnet CIDR for id=%s; falling back to raw id", subnet_id, exc_info=True)
-            subnet_cidr = str(subnet_id)
-        form = forms.Reservation4Form(
-            data=request.POST,
-            initial={
-                "subnet_cidr": subnet_cidr,
-                "ip_address": existing.get("ip-address", ip_address),
-                "identifier_type": existing_id_type,
-                "identifier": existing_id_value,
-            },
-        )
-        # Django takes a disabled field's value from initial, so seeding must precede this.
-        self.apply_immutable_fields(form)
+
+        def _build_form(subnet_cidr: str) -> forms.Reservation4Form:
+            form = forms.Reservation4Form(
+                data=request.POST,
+                initial={
+                    "subnet_cidr": subnet_cidr,
+                    "ip_address": existing.get("ip-address", ip_address),
+                    "identifier_type": existing_id_type,
+                    "identifier": existing_id_value,
+                },
+            )
+            # Django takes a disabled field's value from initial, so seeding must precede this.
+            self.apply_immutable_fields(form)
+            return form
+
+        # subnet_cidr is disabled, so validation never uses this value — a real Kea
+        # lookup is only worth its cost if the form ends up re-rendered below.
+        form = _build_form(str(subnet_id))
         options_formset, options_valid = _build_reservation_options_formset(request.POST)
         if form.is_valid() and options_valid:
             cd = form.cleaned_data
@@ -1247,6 +1249,13 @@ class ServerReservation4EditView(_ReservationLookupMixin, _KeaChangeMixin, gener
             except ValueError:
                 logger.exception("Invalid Kea response when updating DHCPv4 reservation for %s", lookup.label)
                 messages.error(request, "Invalid response from Kea: see server logs.")
+        # Re-rendering: replace the placeholder with the real CIDR the user should see.
+        try:
+            subnet_cidr = server.get_client(version=4).get_subnet_cidr(4, subnet_id)
+        except (KeaException, requests.RequestException, ValueError, RuntimeError):
+            logger.debug("Could not resolve subnet CIDR for id=%s; falling back to raw id", subnet_id, exc_info=True)
+            subnet_cidr = str(subnet_id)
+        form = _build_form(subnet_cidr)
         return render(
             request,
             self.template_name,
@@ -1376,23 +1385,25 @@ class ServerReservation6EditView(_ReservationLookupMixin, _KeaChangeMixin, gener
             )
             return redirect(return_url)
         existing_id_type, existing_id_value = _get_reservation_identifier(existing, 6)
-        try:
-            subnet_cidr = server.get_client(version=6).get_subnet_cidr(6, subnet_id)
-        except (KeaException, requests.RequestException, ValueError, RuntimeError):
-            logger.debug("Could not resolve subnet CIDR for id=%s; falling back to raw id", subnet_id, exc_info=True)
-            subnet_cidr = str(subnet_id)
-        form = forms.Reservation6Form(
-            data=request.POST,
-            initial={
-                "subnet_cidr": subnet_cidr,
-                "ip_addresses": ",".join(existing_ips),
-                "prefixes": ",".join(_reservation_prefix_list(existing)),
-                "identifier_type": existing_id_type,
-                "identifier": existing_id_value,
-            },
-        )
-        # Django takes a disabled field's value from initial, so seeding must precede this.
-        self.apply_immutable_fields(form)
+
+        def _build_form(subnet_cidr: str) -> forms.Reservation6Form:
+            form = forms.Reservation6Form(
+                data=request.POST,
+                initial={
+                    "subnet_cidr": subnet_cidr,
+                    "ip_addresses": ",".join(existing_ips),
+                    "prefixes": ",".join(_reservation_prefix_list(existing)),
+                    "identifier_type": existing_id_type,
+                    "identifier": existing_id_value,
+                },
+            )
+            # Django takes a disabled field's value from initial, so seeding must precede this.
+            self.apply_immutable_fields(form)
+            return form
+
+        # subnet_cidr is disabled, so validation never uses this value — a real Kea
+        # lookup is only worth its cost if the form ends up re-rendered below.
+        form = _build_form(str(subnet_id))
         options_formset, options_valid = _build_reservation_options_formset(request.POST)
         if form.is_valid() and options_valid:
             cd = form.cleaned_data
@@ -1431,6 +1442,13 @@ class ServerReservation6EditView(_ReservationLookupMixin, _KeaChangeMixin, gener
             except ValueError:
                 logger.exception("Invalid Kea response when updating DHCPv6 reservation for %s", lookup.label)
                 messages.error(request, "Invalid response from Kea: see server logs.")
+        # Re-rendering: replace the placeholder with the real CIDR the user should see.
+        try:
+            subnet_cidr = server.get_client(version=6).get_subnet_cidr(6, subnet_id)
+        except (KeaException, requests.RequestException, ValueError, RuntimeError):
+            logger.debug("Could not resolve subnet CIDR for id=%s; falling back to raw id", subnet_id, exc_info=True)
+            subnet_cidr = str(subnet_id)
+        form = _build_form(subnet_cidr)
         return render(
             request,
             self.template_name,
