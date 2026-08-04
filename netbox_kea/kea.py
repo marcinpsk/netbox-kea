@@ -1193,9 +1193,9 @@ class KeaClient:
 
         Raises:
             KeaException: If Kea returns a non-zero result code for either command.
-            RuntimeError: If the delta-add path's ``_get_subnet_cidr`` lookup gets a
+            RuntimeError: If the delta-add path's ``get_subnet_cidr`` lookup gets a
                 malformed ``subnet{version}-get`` response.
-            ValueError: If the delta-add path's ``_get_subnet_cidr`` lookup returns a
+            ValueError: If the delta-add path's ``get_subnet_cidr`` lookup returns a
                 CIDR that doesn't match *version*'s address family.
 
         """
@@ -1209,7 +1209,7 @@ class KeaClient:
                 arguments={subnet_key: [{"id": subnet_id, "pools": [{"pool": pool}]}]},
             )
         else:
-            subnet_cidr = self._get_subnet_cidr(version, subnet_id)
+            subnet_cidr = self.get_subnet_cidr(version, subnet_id)
             self.command(
                 f"subnet{version}-delta-add",
                 service=[service],
@@ -1231,9 +1231,9 @@ class KeaClient:
 
         Raises:
             KeaException: If Kea returns a non-zero result code for either command.
-            RuntimeError: If the delta-del path's ``_get_subnet_cidr`` lookup gets a
+            RuntimeError: If the delta-del path's ``get_subnet_cidr`` lookup gets a
                 malformed ``subnet{version}-get`` response.
-            ValueError: If the delta-del path's ``_get_subnet_cidr`` lookup returns a
+            ValueError: If the delta-del path's ``get_subnet_cidr`` lookup returns a
                 CIDR that doesn't match *version*'s address family.
 
         """
@@ -1247,7 +1247,7 @@ class KeaClient:
                 arguments={subnet_key: [{"id": subnet_id, "pools": [{"pool": pool}]}]},
             )
         else:
-            subnet_cidr = self._get_subnet_cidr(version, subnet_id)
+            subnet_cidr = self.get_subnet_cidr(version, subnet_id)
             self.command(
                 f"subnet{version}-delta-del",
                 service=[service],
@@ -1367,7 +1367,7 @@ class KeaClient:
             )
             raise PartialPersistError(service, exc) from exc
 
-    def _get_subnet_cidr(self, version: int, subnet_id: int) -> str:
+    def get_subnet_cidr(self, version: int, subnet_id: int) -> str:
         """Fetch the CIDR string for *subnet_id* from Kea (e.g. ``"10.0.0.0/24"``).
 
         Args:
@@ -1421,7 +1421,7 @@ class KeaClient:
     def subnet_get(self, version: int, subnet_id: int) -> dict:
         """Fetch the full subnet config dict for *subnet_id* from Kea.
 
-        Unlike :meth:`_get_subnet_cidr`, this method returns the complete
+        Unlike :meth:`get_subnet_cidr`, this method returns the complete
         subnet object (id, subnet, pools, option-data, relay, allocator, ...)
         enabling a read-modify-write cycle without losing live-only fields.
 

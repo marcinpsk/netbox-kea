@@ -1132,7 +1132,7 @@ class ServerReservation4EditView(_ReservationLookupMixin, _KeaChangeMixin, gener
             raise Http404(f"Reservation {lookup.label} not found in subnet {subnet_id}")
         identifier_type, identifier = _get_reservation_identifier(reservation, 4)
         try:
-            subnet_cidr = server.get_client(version=4)._get_subnet_cidr(4, subnet_id)
+            subnet_cidr = server.get_client(version=4).get_subnet_cidr(4, subnet_id)
         except (KeaException, requests.RequestException, ValueError, RuntimeError):
             logger.debug("Could not resolve subnet CIDR for id=%s; falling back to raw id", subnet_id, exc_info=True)
             subnet_cidr = str(subnet_id)
@@ -1189,7 +1189,7 @@ class ServerReservation4EditView(_ReservationLookupMixin, _KeaChangeMixin, gener
             return redirect(return_url)
         existing_id_type, existing_id_value = _get_reservation_identifier(existing, 4)
         try:
-            subnet_cidr = server.get_client(version=4)._get_subnet_cidr(4, subnet_id)
+            subnet_cidr = server.get_client(version=4).get_subnet_cidr(4, subnet_id)
         except (KeaException, requests.RequestException, ValueError, RuntimeError):
             logger.debug("Could not resolve subnet CIDR for id=%s; falling back to raw id", subnet_id, exc_info=True)
             subnet_cidr = str(subnet_id)
@@ -1303,7 +1303,7 @@ class ServerReservation6EditView(_ReservationLookupMixin, _KeaChangeMixin, gener
             # A prefix-delegation-only reservation has no addresses at all.
             ip_list = [ip_address] if ip_address else []
         try:
-            subnet_cidr = server.get_client(version=6)._get_subnet_cidr(6, subnet_id)
+            subnet_cidr = server.get_client(version=6).get_subnet_cidr(6, subnet_id)
         except (KeaException, requests.RequestException, ValueError, RuntimeError):
             logger.debug("Could not resolve subnet CIDR for id=%s; falling back to raw id", subnet_id, exc_info=True)
             subnet_cidr = str(subnet_id)
@@ -1377,7 +1377,7 @@ class ServerReservation6EditView(_ReservationLookupMixin, _KeaChangeMixin, gener
             return redirect(return_url)
         existing_id_type, existing_id_value = _get_reservation_identifier(existing, 6)
         try:
-            subnet_cidr = server.get_client(version=6)._get_subnet_cidr(6, subnet_id)
+            subnet_cidr = server.get_client(version=6).get_subnet_cidr(6, subnet_id)
         except (KeaException, requests.RequestException, ValueError, RuntimeError):
             logger.debug("Could not resolve subnet CIDR for id=%s; falling back to raw id", subnet_id, exc_info=True)
             subnet_cidr = str(subnet_id)

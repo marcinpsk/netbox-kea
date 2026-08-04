@@ -169,7 +169,7 @@ def _subnet_get(
 
     *pools* is a list of pool range strings; the probe warns only when the
     reservation IP falls inside one of them. *subnet_cidr*, when given, is the
-    ``subnet`` field ``KeaClient._get_subnet_cidr`` reads to display the CIDR on the
+    ``subnet`` field ``KeaClient.get_subnet_cidr`` reads to display the CIDR on the
     reservation edit views — omit it only for callers that never reach that lookup.
     """
     subnet: dict[str, Any] = {"id": subnet_id, "pools": [{"pool": p} for p in (pools or [])]}
