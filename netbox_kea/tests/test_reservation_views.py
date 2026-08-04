@@ -1094,12 +1094,17 @@ class TestReservation4AddPrefill(_ReservationViewBase):
             + "?subnet_id=1&ip_address=10.0.0.5&identifier_type=hw-address"
             "&identifier=aa:bb:cc:dd:ee:ff&hostname=myhost"
         )
-        response = self.client.get(url)
+        config4 = {"result": 0, "arguments": {"Dhcp4": {"subnet4": [{"id": 1, "subnet": "10.0.0.0/24"}]}}}
+        with stub_kea({"config-get": config4}):
+            response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         # IP and MAC must appear in the rendered form
         self.assertContains(response, "10.0.0.5")
         self.assertContains(response, "aa:bb:cc:dd:ee:ff")
         self.assertContains(response, "myhost")
+        # A legacy ?subnet_id= link (e.g. the lease list's "+ Reserve") must resolve
+        # to the real CIDR, not leave subnet_cidr blank.
+        self.assertEqual(response.context["form"].initial.get("subnet_cidr"), "10.0.0.0/24")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
