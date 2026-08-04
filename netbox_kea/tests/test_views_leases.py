@@ -31,7 +31,7 @@ from ipam.models import IPAddress as NbIP
 
 from netbox_kea.kea import KeaClient
 from netbox_kea.models import Server
-from netbox_kea.views.leases import _fetch_subnet_choices, _subnet_choices_cache_key, _subnet_sort_key
+from netbox_kea.views.leases import _subnet_choices_cache_key, _subnet_sort_key, fetch_subnet_choices
 
 from .kea_stub import _subnet_get, _subnet_list, queued, stub_kea
 from .utils import _PLUGINS_CONFIG, _make_db_server, _ViewTestBase
@@ -3881,7 +3881,7 @@ class TestGetLeasesPageSubnetEdgeCases(_ViewTestBase):
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestFetchSubnetChoices(TestCase):
-    """_fetch_subnet_choices(): network-order sorting + 5-minute caching.
+    """fetch_subnet_choices(): network-order sorting + 5-minute caching.
 
     Uses a real Server, the real Django cache, and the **real** ``KeaClient`` with
     only the HTTP boundary stubbed via ``kea_stub.stub_kea`` — the real
@@ -3923,7 +3923,7 @@ class TestFetchSubnetChoices(TestCase):
 
     def test_choices_sorted_by_network_not_lexicographically(self):
         with stub_kea({"config-get": self._CONFIG}) as kea:
-            choices = _fetch_subnet_choices(self.server, 4)
+            choices = fetch_subnet_choices(self.server, 4)
         # The helper must request the protocol-specific client (dual-URL servers
         # route v4/v6 to different endpoints) → config-get went to the dhcp4 service.
         self.assertEqual(kea.bodies("config-get")[0]["service"], ["dhcp4"])
@@ -3955,7 +3955,7 @@ class TestFetchSubnetChoices(TestCase):
             }
         ]
         with stub_kea({"config-get": config6}) as kea:
-            choices = _fetch_subnet_choices(self.server, 6)
+            choices = fetch_subnet_choices(self.server, 6)
         self.assertEqual(kea.bodies("config-get")[0]["service"], ["dhcp6"])
         self.assertEqual(choices, [("2001:db8:1::/64", 11), ("2001:db8:2::/64", 12)])
 
@@ -3979,7 +3979,7 @@ class TestFetchSubnetChoices(TestCase):
             }
         ]
         with stub_kea({"config-get": bad_config}):
-            choices = _fetch_subnet_choices(self.server, 4)
+            choices = fetch_subnet_choices(self.server, 4)
         # Only the valid string CIDR survives; the call returns cleanly.
         self.assertEqual(choices, [("10.0.1.0/24", 1)])
 
@@ -3987,19 +3987,19 @@ class TestFetchSubnetChoices(TestCase):
         """Non-list subnet4 / shared-networks containers degrade to empty, not TypeError/500."""
         bad_config = [{"result": 0, "arguments": {"Dhcp4": {"subnet4": 1, "shared-networks": 1}}}]
         with stub_kea({"config-get": bad_config}):
-            choices = _fetch_subnet_choices(self.server, 4)
+            choices = fetch_subnet_choices(self.server, 4)
         self.assertEqual(choices, [])
 
     def test_non_dict_dhcp_conf_returns_empty(self):
         """A non-dict ``Dhcp4`` payload degrades to no choices (not an AttributeError)."""
         with stub_kea({"config-get": [{"result": 0, "arguments": {"Dhcp4": "not-a-dict"}}]}):
-            self.assertEqual(_fetch_subnet_choices(self.server, 4), [])
+            self.assertEqual(fetch_subnet_choices(self.server, 4), [])
 
     def test_non_dict_subnet_entry_is_skipped(self):
         """Non-dict entries inside subnet4 are skipped; valid dict entries still parse."""
         config = [{"result": 0, "arguments": {"Dhcp4": {"subnet4": [1, {"id": 2, "subnet": "10.0.0.0/24"}]}}}]
         with stub_kea({"config-get": config}):
-            self.assertEqual(_fetch_subnet_choices(self.server, 4), [("10.0.0.0/24", 2)])
+            self.assertEqual(fetch_subnet_choices(self.server, 4), [("10.0.0.0/24", 2)])
 
     def test_subnet_sort_key_handles_non_string_and_unparseable(self):
         """_subnet_sort_key buckets non-string and unparseable CIDRs apart from real networks."""
@@ -4009,8 +4009,8 @@ class TestFetchSubnetChoices(TestCase):
 
     def test_result_is_cached_second_call_skips_kea(self):
         with stub_kea({"config-get": self._CONFIG}) as kea:
-            first = _fetch_subnet_choices(self.server, 4)
-            second = _fetch_subnet_choices(self.server, 4)
+            first = fetch_subnet_choices(self.server, 4)
+            second = fetch_subnet_choices(self.server, 4)
         self.assertEqual(first, second)
         # config-get hit Kea exactly once; the second render is served from cache.
         self.assertEqual(kea.commands().count("config-get"), 1)
@@ -4019,11 +4019,11 @@ class TestFetchSubnetChoices(TestCase):
 
     def test_transient_error_returns_empty_and_is_not_cached(self):
         with stub_kea({"config-get": RuntimeError("kea unreachable")}):
-            self.assertEqual(_fetch_subnet_choices(self.server, 4), [])
+            self.assertEqual(fetch_subnet_choices(self.server, 4), [])
 
         # A failed fetch must not be cached, so the next render retries and succeeds.
         with stub_kea({"config-get": self._CONFIG}) as kea:
-            choices = _fetch_subnet_choices(self.server, 4)
+            choices = fetch_subnet_choices(self.server, 4)
         self.assertTrue(choices)
         self.assertEqual(kea.commands().count("config-get"), 1)
 
@@ -4039,7 +4039,7 @@ class TestLeaseSearchSubnetCombobox(_ViewTestBase):
     def _url(self):
         return reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
 
-    @patch("netbox_kea.views.leases._fetch_subnet_choices")
+    @patch("netbox_kea.views.leases.fetch_subnet_choices")
     def test_datalists_and_toggle_script_rendered(self, mock_choices):
         mock_choices.return_value = [("10.0.1.0/24", 2), ("10.0.2.0/24", 3)]
         body = self.client.get(self._url()).content.decode()
@@ -4052,7 +4052,7 @@ class TestLeaseSearchSubnetCombobox(_ViewTestBase):
         self.assertIn("syncSubnetCombobox", body)
         self.assertIn('getElementById("id_by")', body)
 
-    @patch("netbox_kea.views.leases._fetch_subnet_choices")
+    @patch("netbox_kea.views.leases.fetch_subnet_choices")
     def test_no_separate_subnet_select_field(self, mock_choices):
         mock_choices.return_value = [("10.0.1.0/24", 2)]
         body = self.client.get(self._url()).content.decode()
@@ -4060,7 +4060,7 @@ class TestLeaseSearchSubnetCombobox(_ViewTestBase):
         self.assertNotIn('name="subnet"', body)
         self.assertNotIn("Select a subnet", body)
 
-    @patch("netbox_kea.views.leases._fetch_subnet_choices")
+    @patch("netbox_kea.views.leases.fetch_subnet_choices")
     def test_no_datalists_when_no_subnets(self, mock_choices):
         mock_choices.return_value = []
         body = self.client.get(self._url()).content.decode()

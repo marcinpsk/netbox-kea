@@ -27,7 +27,7 @@ from ..utilities import (
     kea_error_hint,
 )
 from ._base import _KeaChangeMixin
-from .leases import _fetch_subnet_choices
+from .leases import fetch_subnet_choices
 from .subnets import _warn_reservation_pool_overlap
 
 logger = logging.getLogger(__name__)
@@ -772,7 +772,7 @@ class ServerReservation4AddView(_KeaChangeMixin, generic.ObjectView):
         # Kea round-trip.
         if not initial.get("subnet_cidr") and request.GET.get("subnet_id", "").isdigit():
             subnet_id = int(request.GET["subnet_id"])
-            for cidr, sid in _fetch_subnet_choices(server, 4):
+            for cidr, sid in fetch_subnet_choices(server, 4):
                 if sid == subnet_id:
                     initial["subnet_cidr"] = cidr
                     break
@@ -946,7 +946,7 @@ class ServerReservation6AddView(_KeaChangeMixin, generic.ObjectView):
         # Kea round-trip.
         if not initial.get("subnet_cidr") and request.GET.get("subnet_id", "").isdigit():
             subnet_id = int(request.GET["subnet_id"])
-            for cidr, sid in _fetch_subnet_choices(server, 6):
+            for cidr, sid in fetch_subnet_choices(server, 6):
                 if sid == subnet_id:
                     initial["subnet_cidr"] = cidr
                     break

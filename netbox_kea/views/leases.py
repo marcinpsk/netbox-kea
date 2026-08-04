@@ -84,7 +84,7 @@ def _subnet_sort_key(choice: tuple[str, int | None]) -> tuple[int, Any]:
         return (1, cidr)
 
 
-def _fetch_subnet_choices(server: Server, version: int) -> list[tuple[str, int | None]]:
+def fetch_subnet_choices(server: Server, version: int) -> list[tuple[str, int | None]]:
     """Return ``[(cidr, subnet_id), ...]`` for the server's configured subnets.
 
     Used to populate the lease-search Subnet / Subnet-ID combobox (an editable
@@ -240,7 +240,7 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
 
     def _make_search_form(self, server: Server, data: Any | None = None):
         """Build the lease-search form with the subnet quick-select choices populated."""
-        subnet_choices = _fetch_subnet_choices(server, self.dhcp_version)
+        subnet_choices = fetch_subnet_choices(server, self.dhcp_version)
         if data is None:
             return self.form(subnet_choices=subnet_choices)
         return self.form(data, subnet_choices=subnet_choices)
