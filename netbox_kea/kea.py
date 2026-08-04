@@ -326,6 +326,9 @@ class KeaClient:
 
         Returns:
             The integer subnet ID, or ``None`` if no subnet matches or Kea has none configured.
+            Returns the first exact string match; if two subnets ever carried the
+            same prefix the pick would be arbitrary — Kea's own config doesn't allow
+            duplicate subnet CIDRs within a version, so this shouldn't occur.
 
         Raises:
             KeaException: If the ``subnet{version}-list`` command itself fails.
