@@ -347,7 +347,9 @@ class KeaClient:
         for subnet in arguments["subnets"]:
             if not isinstance(subnet, dict):
                 raise RuntimeError(f"subnet{version}-list returned a non-dict subnet entry: {subnet!r}")
-            if subnet.get("subnet") == cidr and "id" in subnet:
+            if subnet.get("subnet") == cidr:
+                if "id" not in subnet:
+                    raise RuntimeError(f"subnet{version}-list matched {cidr!r} but the entry has no id: {subnet!r}")
                 subnet_id = subnet["id"]
                 if not isinstance(subnet_id, int):
                     raise RuntimeError(f"subnet{version}-list returned a non-integer id: {subnet_id!r}")

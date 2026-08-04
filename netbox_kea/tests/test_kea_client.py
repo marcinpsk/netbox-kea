@@ -4022,6 +4022,14 @@ class TestSubnetIdFromCidr(TestCase):
         with self.assertRaises(RuntimeError):
             self.client.subnet_id_from_cidr(4, "10.0.0.0/24")
 
+    @patch("requests.Session.post")
+    def test_raises_runtime_error_when_matching_subnet_has_no_id(self, mock_post):
+        """A matching subnet missing the id key entirely must raise, not be skipped as a non-match."""
+        resp = [{"result": 0, "arguments": {"subnets": [{"subnet": "10.0.0.0/24"}]}}]
+        mock_post.return_value = _mock_http_response(resp)
+        with self.assertRaises(RuntimeError):
+            self.client.subnet_id_from_cidr(4, "10.0.0.0/24")
+
 
 # ---------------------------------------------------------------------------
 # TestPersistConfig — additional exception-type coverage
