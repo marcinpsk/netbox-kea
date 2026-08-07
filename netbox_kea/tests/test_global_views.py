@@ -245,6 +245,13 @@ class TestCombinedServerStatusBadge(_CombinedViewBase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Offline")
 
+    def test_invalid_ca_path_returns_200_with_offline_text(self):
+        """An invalid CA bundle path should show Offline instead of returning 500."""
+        with stub_kea({"version-get": OSError("invalid CA bundle path")}):
+            response = self.client.get(self._url(self.v4_server))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Offline")
+
     def test_requires_auth(self):
         """Unauthenticated request must redirect to login."""
         self.client.logout()
