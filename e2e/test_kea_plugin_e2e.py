@@ -55,6 +55,25 @@ def _assert_no_none_pk(page: Page) -> None:
     assert not re.search(r"/None(?:[/?#]|$)", page.url), f"URL contains /None — pk=None bug triggered at {page.url}"
 
 
+def _subnet_cidr_for_id(page: Page, subnet_id: int) -> str:
+    """Return the subnet CIDR for *subnet_id*, read from the reservation add form's datalist.
+
+    The reservation form takes a CIDR, but the edit/delete routes are still keyed by
+    subnet id. Reading the mapping off the page keeps the test independent of whatever
+    subnets the live Kea happens to be configured with.
+    """
+    cidr = page.evaluate(
+        """(id) => {
+            const opts = [...document.querySelectorAll('#kea-reservation-subnet-cidrs option')];
+            const match = opts.find((o) => o.textContent.trim() === `id ${id}`);
+            return match ? match.value : '';
+        }""",
+        subnet_id,
+    )
+    assert cidr, f"Subnet id {subnet_id} is not offered on the reservation add form"
+    return cidr
+
+
 def _assert_no_http_errors(errors: list, *, allow_404: bool = False) -> None:
     """Fail if any tracked HTTP errors exceed the allowed threshold."""
     filtered = [e for e in errors if not (allow_404 and e[0] == 404)]
@@ -649,7 +668,7 @@ class TestBadgeEnrichmentLiveKea:
         """Create a DHCPv4 reservation via the add-reservation form."""
         page.goto(f"{plugin_base}/servers/{server_id}/reservations4/add/")
         page.wait_for_load_state("networkidle")
-        page.get_by_label("Subnet ID", exact=True).fill(str(subnet_id))
+        page.get_by_label("Subnet CIDR", exact=True).fill(_subnet_cidr_for_id(page, subnet_id))
         page.get_by_label("IP Address", exact=True).fill(ip)
         page.get_by_label("Hardware Address", exact=True).fill(mac)
         page.locator('[name="_create"], [type="submit"]').first.click(force=True)
@@ -954,7 +973,7 @@ class TestReservationCRUDLiveKea:
         We set it via JavaScript on the underlying ``<select>`` then dispatch
         a 'change' event so the Tom Select widget syncs its display.
         """
-        page.locator("#id_subnet_id").fill(str(subnet_id))
+        page.locator("#id_subnet_cidr").fill(_subnet_cidr_for_id(page, subnet_id))
         page.locator("#id_ip_address").fill(ip)
         # Tom Select wraps identifier_type — set via JS
         page.evaluate(
@@ -1004,7 +1023,7 @@ class TestReservationCRUDLiveKea:
             self._TEST_MAC,
             hostname=self._TEST_HOSTNAME,
         )
-        self._submit_form_by_field(page, "id_subnet_id")
+        self._submit_form_by_field(page, "id_subnet_cidr")
         _check_no_django_error(page)
         _assert_no_http_errors(track_http_errors)
 

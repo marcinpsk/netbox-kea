@@ -4039,7 +4039,7 @@ class TestLeaseSearchSubnetCombobox(_ViewTestBase):
     def _url(self):
         return reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
 
-    @patch("netbox_kea.views.leases.fetch_subnet_choices")
+    @patch("netbox_kea.views.leases.fetch_subnet_choices", autospec=True)
     def test_datalists_and_toggle_script_rendered(self, mock_choices):
         mock_choices.return_value = [("10.0.1.0/24", 2), ("10.0.2.0/24", 3)]
         body = self.client.get(self._url()).content.decode()
@@ -4052,7 +4052,7 @@ class TestLeaseSearchSubnetCombobox(_ViewTestBase):
         self.assertIn("syncSubnetCombobox", body)
         self.assertIn('getElementById("id_by")', body)
 
-    @patch("netbox_kea.views.leases.fetch_subnet_choices")
+    @patch("netbox_kea.views.leases.fetch_subnet_choices", autospec=True)
     def test_no_separate_subnet_select_field(self, mock_choices):
         mock_choices.return_value = [("10.0.1.0/24", 2)]
         body = self.client.get(self._url()).content.decode()
@@ -4060,7 +4060,7 @@ class TestLeaseSearchSubnetCombobox(_ViewTestBase):
         self.assertNotIn('name="subnet"', body)
         self.assertNotIn("Select a subnet", body)
 
-    @patch("netbox_kea.views.leases.fetch_subnet_choices")
+    @patch("netbox_kea.views.leases.fetch_subnet_choices", autospec=True)
     def test_no_datalists_when_no_subnets(self, mock_choices):
         mock_choices.return_value = []
         body = self.client.get(self._url()).content.decode()
