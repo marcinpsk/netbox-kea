@@ -178,6 +178,17 @@ def _subnet_get(
     return {"result": 0, "arguments": {f"subnet{version}": [subnet]}}
 
 
+def _config_get(version: int, subnets: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    """A ``config-get`` payload for the subnet suggestions on the reservation add form.
+
+    ``fetch_subnet_choices()`` reads the configured subnets from here to populate the
+    Subnet CIDR ``<datalist>``, so every add-view render needs this stubbed. Pass
+    *subnets* as ``[{"id": 1, "subnet": "10.0.0.0/24"}, ...]``; the default empty list
+    renders an empty datalist, which is all a test needs unless it asserts on the options.
+    """
+    return {"result": 0, "arguments": {f"Dhcp{version}": {f"subnet{version}": subnets or []}}}
+
+
 def _leases_per_subnet(leases_by_subnet: dict[Any, list[dict[str, Any]]]):
     """A ``lease{v}-get-all`` responder that answers only for the subnets it was asked about.
 

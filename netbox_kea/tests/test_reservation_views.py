@@ -22,11 +22,12 @@ from django.test import SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
 from ipam.models import IPAddress as NbIP
 
+from netbox_kea.constants import RESERVATION_SUBNET_DATALIST_ID
 from netbox_kea.kea import KeaClient
 from netbox_kea.models import Server
 from netbox_kea.views import _filter_reservations
 
-from .kea_stub import _res_get, _res_page, _subnet_get, _subnet_list, queued, stub_kea
+from .kea_stub import _config_get, _res_get, _res_page, _subnet_get, _subnet_list, queued, stub_kea
 from .utils import _PLUGINS_CONFIG, User, _make_db_server
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -403,7 +404,9 @@ class TestServerReservation4AddView(_ReservationViewBase):
 
     def test_post_kea_error_on_cidr_lookup_shows_hint(self):
         """A KeaException from subnet4-list (e.g. subnet_cmds not loaded) must re-render with a hint."""
-        with stub_kea({"subnet4-list": {"result": 2, "text": "unknown command 'subnet4-list'"}}):
+        with stub_kea(
+            {"config-get": _config_get(4), "subnet4-list": {"result": 2, "text": "unknown command 'subnet4-list'"}}
+        ):
             response = self.client.post(self._add_url(), self._valid_post_data())
         self.assertEqual(response.status_code, 200)
         msgs = list(get_messages(response.wsgi_request))
@@ -413,19 +416,25 @@ class TestServerReservation4AddView(_ReservationViewBase):
         """A transport error from subnet4-list must re-render with a generic network-error message."""
         import requests as req_lib
 
-        with stub_kea({"subnet4-list": req_lib.ConnectionError("timeout")}):
+        with stub_kea({"config-get": _config_get(4), "subnet4-list": req_lib.ConnectionError("timeout")}):
             response = self.client.post(self._add_url(), self._valid_post_data())
         self.assertEqual(response.status_code, 200)
         msgs = list(get_messages(response.wsgi_request))
         self.assertTrue(any("network error" in str(m).lower() for m in msgs), [str(m) for m in msgs])
 
-    def test_post_malformed_cidr_lookup_shows_generic_message(self):
-        """A malformed subnet4-list response raises RuntimeError, which must re-render, not 500."""
-        with stub_kea({"subnet4-list": {"result": 0, "arguments": {"subnets": "not-a-list"}}}):
+    def test_post_malformed_cidr_lookup_shows_invalid_response_message(self):
+        """A malformed subnet4-list response raises RuntimeError, which must re-render, not 500.
+
+        A malformed payload is not a transport failure, so it must not claim a network error.
+        """
+        with stub_kea(
+            {"config-get": _config_get(4), "subnet4-list": {"result": 0, "arguments": {"subnets": "not-a-list"}}}
+        ):
             response = self.client.post(self._add_url(), self._valid_post_data())
         self.assertEqual(response.status_code, 200)
-        msgs = list(get_messages(response.wsgi_request))
-        self.assertTrue(any("network error" in str(m).lower() for m in msgs), [str(m) for m in msgs])
+        msgs = [str(m).lower() for m in get_messages(response.wsgi_request)]
+        self.assertTrue(any("invalid response from kea" in m for m in msgs), msgs)
+        self.assertFalse(any("network error" in m for m in msgs), msgs)
 
     def test_post_invalid_rerenders_form(self):
         # Empty POST — all required fields missing; form invalid before any Kea call.
@@ -448,6 +457,7 @@ class TestServerReservation4AddView(_ReservationViewBase):
         # reservation-add result 1 → real KeaClient raises KeaException → view re-renders.
         with stub_kea(
             {
+                "config-get": _config_get(4),
                 "subnet4-list": _SUBNET4_LIST_STUB,
                 "subnet4-get": _subnet_get(4),
                 "reservation-add": {"result": 1, "text": "failed to add host: conflicts with existing reservation"},
@@ -532,7 +542,9 @@ class TestServerReservation6AddView(_ReservationViewBase):
 
     def test_post_kea_error_on_cidr_lookup_shows_hint(self):
         """A KeaException from subnet6-list (e.g. subnet_cmds not loaded) must re-render with a hint."""
-        with stub_kea({"subnet6-list": {"result": 2, "text": "unknown command 'subnet6-list'"}}):
+        with stub_kea(
+            {"config-get": _config_get(6), "subnet6-list": {"result": 2, "text": "unknown command 'subnet6-list'"}}
+        ):
             response = self.client.post(self._add_url(), self._valid_post_data())
         self.assertEqual(response.status_code, 200)
         msgs = list(get_messages(response.wsgi_request))
@@ -542,19 +554,25 @@ class TestServerReservation6AddView(_ReservationViewBase):
         """A transport error from subnet6-list must re-render with a generic network-error message."""
         import requests as req_lib
 
-        with stub_kea({"subnet6-list": req_lib.ConnectionError("timeout")}):
+        with stub_kea({"config-get": _config_get(6), "subnet6-list": req_lib.ConnectionError("timeout")}):
             response = self.client.post(self._add_url(), self._valid_post_data())
         self.assertEqual(response.status_code, 200)
         msgs = list(get_messages(response.wsgi_request))
         self.assertTrue(any("network error" in str(m).lower() for m in msgs), [str(m) for m in msgs])
 
-    def test_post_malformed_cidr_lookup_shows_generic_message(self):
-        """A malformed subnet6-list response raises RuntimeError, which must re-render, not 500."""
-        with stub_kea({"subnet6-list": {"result": 0, "arguments": {"subnets": "not-a-list"}}}):
+    def test_post_malformed_cidr_lookup_shows_invalid_response_message(self):
+        """A malformed subnet6-list response raises RuntimeError, which must re-render, not 500.
+
+        A malformed payload is not a transport failure, so it must not claim a network error.
+        """
+        with stub_kea(
+            {"config-get": _config_get(6), "subnet6-list": {"result": 0, "arguments": {"subnets": "not-a-list"}}}
+        ):
             response = self.client.post(self._add_url(), self._valid_post_data())
         self.assertEqual(response.status_code, 200)
-        msgs = list(get_messages(response.wsgi_request))
-        self.assertTrue(any("network error" in str(m).lower() for m in msgs), [str(m) for m in msgs])
+        msgs = [str(m).lower() for m in get_messages(response.wsgi_request)]
+        self.assertTrue(any("invalid response from kea" in m for m in msgs), msgs)
+        self.assertFalse(any("network error" in m for m in msgs), msgs)
 
     def test_post_invalid_rerenders_form(self):
         response = self.client.post(self._add_url(), {})
@@ -563,6 +581,7 @@ class TestServerReservation6AddView(_ReservationViewBase):
     def test_post_kea_error_shows_error_message(self):
         with stub_kea(
             {
+                "config-get": _config_get(6),
                 "subnet6-list": _SUBNET6_LIST_STUB,
                 "subnet6-get": _subnet_get(6),
                 "reservation-add": {"result": 1, "text": "failed to add host"},
@@ -673,6 +692,8 @@ class TestServerReservation4EditView(_ReservationViewBase):
         # The re-rendered form must show the real CIDR, not the raw-id placeholder
         # used while validating.
         self.assertEqual(response.context["form"].initial["subnet_cidr"], _SUBNET4_CIDR)
+        # BoundField.initial is cached during validation, so only a rebuilt form reaches the widget.
+        self.assertEqual(response.context["form"]["subnet_cidr"].value(), _SUBNET4_CIDR)
 
     def test_post_rerenders_with_raw_id_when_cidr_lookup_fails(self):
         """When the CIDR lookup itself fails on the re-render path, fall back to the raw id."""
@@ -696,6 +717,8 @@ class TestServerReservation4EditView(_ReservationViewBase):
             response = self.client.post(self._edit_url(), data)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context["form"].initial["subnet_cidr"], str(self._SUBNET_ID))
+        # BoundField.initial is cached during validation, so only a rebuilt form reaches the widget.
+        self.assertEqual(response.context["form"]["subnet_cidr"].value(), str(self._SUBNET_ID))
 
     def test_post_kea_error_shows_error_message(self):
         with stub_kea(
@@ -854,6 +877,8 @@ class TestServerReservation6EditView(_ReservationViewBase):
         self.assertEqual(response.status_code, 200)
         self.assertNotIn("reservation-update", kea.commands())
         self.assertEqual(response.context["form"].initial["subnet_cidr"], _SUBNET6_CIDR)
+        # BoundField.initial is cached during validation, so only a rebuilt form reaches the widget.
+        self.assertEqual(response.context["form"]["subnet_cidr"].value(), _SUBNET6_CIDR)
 
     def test_post_rerenders_with_raw_id_when_cidr_lookup_fails(self):
         """When the CIDR lookup itself fails on the re-render path, fall back to the raw id."""
@@ -881,6 +906,8 @@ class TestServerReservation6EditView(_ReservationViewBase):
             )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context["form"].initial["subnet_cidr"], str(self._SUBNET_ID))
+        # BoundField.initial is cached during validation, so only a rebuilt form reaches the widget.
+        self.assertEqual(response.context["form"]["subnet_cidr"].value(), str(self._SUBNET_ID))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1082,10 +1109,36 @@ class TestReservation4AddPrefill(_ReservationViewBase):
     """GET /reservations4/add/?ip_address=...&identifier=... must pre-fill the form."""
 
     def test_add_get_no_params_renders_empty_form(self):
-        # GET add renders the form only — no Kea traffic.
+        # config-get is the only command the add form issues; it feeds the subnet datalist.
         url = reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk])
-        response = self.client.get(url)
+        with stub_kea({"config-get": _config_get(4)}) as kea:
+            response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
+        self.assertEqual(kea.commands(), ["config-get"])
+
+    def test_add_get_renders_subnet_datalist(self):
+        """The Subnet CIDR field must offer the server's configured subnets."""
+        for version, subnets in (
+            (4, [{"id": 1, "subnet": "10.0.0.0/24"}, {"id": 2, "subnet": "10.1.0.0/24"}]),
+            (6, [{"id": 5, "subnet": "2001:db8::/48"}]),
+        ):
+            with self.subTest(version=version):
+                url = reverse(f"plugins:netbox_kea:server_reservation{version}_add", args=[self.server.pk])
+                with stub_kea({"config-get": _config_get(version, subnets)}):
+                    response = self.client.get(url)
+                body = response.content.decode()
+                self.assertIn(f'<datalist id="{RESERVATION_SUBNET_DATALIST_ID}">', body)
+                # The input must point at the datalist, else the browser shows no suggestions.
+                self.assertIn(f'list="{RESERVATION_SUBNET_DATALIST_ID}"', body)
+                for subnet in subnets:
+                    self.assertIn(f'value="{subnet["subnet"]}"', body)
+
+    def test_add_get_omits_datalist_when_no_subnets(self):
+        """With no subnets configured the datalist is left out rather than rendered empty."""
+        url = reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk])
+        with stub_kea({"config-get": _config_get(4)}):
+            response = self.client.get(url)
+        self.assertNotIn(f'<datalist id="{RESERVATION_SUBNET_DATALIST_ID}">', response.content.decode())
 
     def test_add_get_with_ip_and_mac_prefills_form(self):
         """Query params must pre-fill the form fields."""
@@ -1105,6 +1158,18 @@ class TestReservation4AddPrefill(_ReservationViewBase):
         # A legacy ?subnet_id= link (e.g. the lease list's "+ Reserve") must resolve
         # to the real CIDR, not leave subnet_cidr blank.
         self.assertEqual(response.context["form"].initial.get("subnet_cidr"), "10.0.0.0/24")
+
+    def test_add_get_with_non_ascii_digit_subnet_id_does_not_crash(self):
+        """str.isdigit() accepts digits int() cannot parse (e.g. "²"), which must not 500."""
+        for version, param in ((4, "ip_address"), (6, "ip_addresses")):
+            with self.subTest(version=version):
+                url = (
+                    reverse(f"plugins:netbox_kea:server_reservation{version}_add", args=[self.server.pk])
+                    + f"?subnet_id=%C2%B2&{param}=10.0.0.5"
+                )
+                response = self.client.get(url)
+                self.assertEqual(response.status_code, 200)
+                self.assertIsNone(response.context["form"].initial.get("subnet_cidr"))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2439,6 +2504,7 @@ class TestReservationJournalEntries(_ReservationViewBase):
         before = self._journal_count()
         with stub_kea(
             {
+                "config-get": _config_get(4),
                 "subnet4-list": _SUBNET4_LIST_STUB,
                 "subnet4-get": _subnet_get(4),
                 "reservation-add": {"result": 1, "text": "error"},
@@ -2837,10 +2903,12 @@ class TestReservation4AddInvalidOptionsFormset(_ReservationViewBase):
             "options-0-name": "routers",
             "options-0-data": "",  # required field — empty triggers validation error
         }
-        # Empty stub: any Kea command would raise AssertionError, proving no traffic occurred.
-        with stub_kea({}):
+        # Only the add form's subnet suggestions may reach Kea: any other command would
+        # raise AssertionError, proving the reservation was never submitted.
+        with stub_kea({"config-get": _config_get(4)}) as kea:
             response = self.client.post(self._add_url(), data)
         self.assertEqual(response.status_code, 200)
+        self.assertNotIn("reservation-add", kea.commands())
 
     def test_partial_options_submission_without_management_form(self):
         """Partial options submission (options-* keys but no TOTAL_FORMS) re-renders form."""
@@ -2854,9 +2922,10 @@ class TestReservation4AddInvalidOptionsFormset(_ReservationViewBase):
             "options-0-name": "routers",
             "options-0-data": "10.0.0.1",
         }
-        with stub_kea({}):
+        with stub_kea({"config-get": _config_get(4)}) as kea:
             response = self.client.post(self._add_url(), data)
         self.assertEqual(response.status_code, 200)
+        self.assertNotIn("reservation-add", kea.commands())
 
 
 # ─────────────────────────────────────────────────────────────────────────────

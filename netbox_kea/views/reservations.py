@@ -753,12 +753,91 @@ class ServerReservations6View(generic.ObjectView):
         }
 
 
-class ServerReservation4AddView(_KeaChangeMixin, generic.ObjectView):
+def _legacy_subnet_cidr(subnet_choices: list[tuple[str, int | None]], raw_subnet_id: str) -> str:
+    """Resolve a legacy ``?subnet_id=`` prefill parameter to its subnet CIDR.
+
+    Returns ``""`` when the value is not a plain ASCII integer or no subnet matches.
+    ``str.isdigit()`` alone accepts Unicode digits ``int()`` cannot parse (e.g. ``"²"``).
+    """
+    if not (raw_subnet_id.isascii() and raw_subnet_id.isdigit()):
+        return ""
+    subnet_id = int(raw_subnet_id)
+    for cidr, sid in subnet_choices:
+        if sid == subnet_id:
+            return cidr
+    return ""
+
+
+class _ReservationFormViewMixin:
+    """Shared template, tab and context for the reservation add/edit form views."""
+
+    template_name = "netbox_kea/server_reservation_form.html"
+    tab = _RESERVATIONS_TAB
+    dhcp_version: int
+    form_action: str
+
+    def form_context(
+        self, server: Server, form: Any, options_formset: Any, return_url: str, subnet_choices: Any = None
+    ) -> dict[str, Any]:
+        """Build the context the reservation form template expects."""
+        return {
+            "object": server,
+            "form": form,
+            "options_formset": options_formset,
+            "dhcp_version": self.dhcp_version,
+            "action": self.form_action,
+            "return_url": return_url,
+            "tab": self.tab,
+            "subnet_choices": subnet_choices,
+            "subnet_datalist_id": constants.RESERVATION_SUBNET_DATALIST_ID,
+        }
+
+    def render_form(
+        self,
+        request: HttpRequest,
+        server: Server,
+        form: Any,
+        options_formset: Any,
+        return_url: str,
+        subnet_choices: Any = None,
+    ) -> HttpResponse:
+        """Render the reservation form template with the shared context."""
+        return render(
+            request, self.template_name, self.form_context(server, form, options_formset, return_url, subnet_choices)
+        )
+
+    def resolve_subnet_id(self, request: HttpRequest, client: KeaClient, form: Any, subnet_cidr: str) -> int | None:
+        """Resolve *subnet_cidr* to its Kea subnet id.
+
+        Returns ``None`` when the lookup fails or matches nothing, after recording the
+        reason as a message (lookup failure) or a field error (no match). The caller
+        re-renders the form in both cases.
+        """
+        try:
+            subnet_id = client.subnet_id_from_cidr(self.dhcp_version, subnet_cidr)
+        except KeaException as exc:
+            logger.exception("Failed to look up subnet CIDR %s in Kea", subnet_cidr)
+            messages.error(request, kea_error_hint(exc))
+            return None
+        except requests.RequestException:
+            logger.exception("Network error looking up subnet CIDR %s in Kea", subnet_cidr)
+            messages.error(request, "Network error communicating with Kea: see server logs.")
+            return None
+        except (ValueError, RuntimeError):
+            logger.exception("Malformed Kea response looking up subnet CIDR %s", subnet_cidr)
+            messages.error(request, "Invalid response from Kea: see server logs.")
+            return None
+        if subnet_id is None:
+            form.add_error("subnet_cidr", f"No subnet matching {subnet_cidr} found in Kea.")
+        return subnet_id
+
+
+class ServerReservation4AddView(_ReservationFormViewMixin, _KeaChangeMixin, generic.ObjectView):
     """Add a DHCPv4 host reservation."""
 
     queryset = Server.objects.all()
-    template_name = "netbox_kea/server_reservation_form.html"
-    tab = _RESERVATIONS_TAB
+    dhcp_version = 4
+    form_action = "Add"
 
     def get(self, request: HttpRequest, pk: int) -> HttpResponse:
         """Render add form, optionally pre-filled from query parameters."""
@@ -767,28 +846,18 @@ class ServerReservation4AddView(_KeaChangeMixin, generic.ObjectView):
             k: request.GET.get(k, "")
             for k in ("subnet_cidr", "ip_address", "identifier_type", "identifier", "hostname")
         }
-        # Legacy prefill links (e.g. the lease list's "+ Reserve") pass the raw subnet
-        # id; resolve it against the already-cached subnet list instead of a fresh
-        # Kea round-trip.
-        if not initial.get("subnet_cidr") and request.GET.get("subnet_id", "").isdigit():
-            subnet_id = int(request.GET["subnet_id"])
-            for cidr, sid in fetch_subnet_choices(server, 4):
-                if sid == subnet_id:
-                    initial["subnet_cidr"] = cidr
-                    break
+        subnet_choices = fetch_subnet_choices(server, 4)
+        if not initial.get("subnet_cidr"):
+            # Legacy prefill links pass the raw subnet id; map it to the CIDR.
+            initial["subnet_cidr"] = _legacy_subnet_cidr(subnet_choices, request.GET.get("subnet_id", ""))
         initial = {k: v for k, v in initial.items() if v}
-        return render(
+        return self.render_form(
             request,
-            self.template_name,
-            {
-                "object": server,
-                "form": forms.Reservation4Form(initial=initial),
-                "options_formset": forms.ReservationOptionsFormSet(prefix="options"),
-                "dhcp_version": 4,
-                "action": "Add",
-                "return_url": reverse("plugins:netbox_kea:server_reservations4", args=[pk]),
-                "tab": self.tab,
-            },
+            server,
+            forms.Reservation4Form(initial=initial),
+            forms.ReservationOptionsFormSet(prefix="options"),
+            reverse("plugins:netbox_kea:server_reservations4", args=[pk]),
+            subnet_choices,
         )
 
     def post(self, request: HttpRequest, pk: int) -> HttpResponse:
@@ -799,73 +868,21 @@ class ServerReservation4AddView(_KeaChangeMixin, generic.ObjectView):
         return_url = reverse("plugins:netbox_kea:server_reservations4", args=[pk])
         if form.is_valid() and options_valid:
             cd = form.cleaned_data
+
+            def _rerender() -> HttpResponse:
+                return self.render_form(
+                    request, server, form, options_formset, return_url, fetch_subnet_choices(server, 4)
+                )
+
             try:
                 client = server.get_client(version=4)
             except ValueError:
                 logger.exception("Failed to create DHCPv4 client for server %s", server.pk)
                 messages.error(request, "Failed to connect to Kea: see server logs.")
-                return render(
-                    request,
-                    self.template_name,
-                    {
-                        "object": server,
-                        "form": form,
-                        "options_formset": options_formset,
-                        "dhcp_version": 4,
-                        "action": "Add",
-                        "return_url": return_url,
-                        "tab": self.tab,
-                    },
-                )
-            try:
-                subnet_id = client.subnet_id_from_cidr(4, cd["subnet_cidr"])
-            except KeaException as exc:
-                logger.exception("Failed to look up subnet CIDR %s in Kea", cd["subnet_cidr"])
-                messages.error(request, kea_error_hint(exc))
-                return render(
-                    request,
-                    self.template_name,
-                    {
-                        "object": server,
-                        "form": form,
-                        "options_formset": options_formset,
-                        "dhcp_version": 4,
-                        "action": "Add",
-                        "return_url": return_url,
-                        "tab": self.tab,
-                    },
-                )
-            except (requests.RequestException, ValueError, RuntimeError):
-                logger.exception("Failed to look up subnet CIDR %s in Kea", cd["subnet_cidr"])
-                messages.error(request, "Network error communicating with Kea: see server logs.")
-                return render(
-                    request,
-                    self.template_name,
-                    {
-                        "object": server,
-                        "form": form,
-                        "options_formset": options_formset,
-                        "dhcp_version": 4,
-                        "action": "Add",
-                        "return_url": return_url,
-                        "tab": self.tab,
-                    },
-                )
+                return _rerender()
+            subnet_id = self.resolve_subnet_id(request, client, form, cd["subnet_cidr"])
             if subnet_id is None:
-                form.add_error("subnet_cidr", f"No subnet matching {cd['subnet_cidr']} found in Kea.")
-                return render(
-                    request,
-                    self.template_name,
-                    {
-                        "object": server,
-                        "form": form,
-                        "options_formset": options_formset,
-                        "dhcp_version": 4,
-                        "action": "Add",
-                        "return_url": return_url,
-                        "tab": self.tab,
-                    },
-                )
+                return _rerender()
             reservation = {
                 "subnet-id": subnet_id,
                 cd["identifier_type"]: cd["identifier"],
@@ -912,27 +929,15 @@ class ServerReservation4AddView(_KeaChangeMixin, generic.ObjectView):
             except ValueError:
                 logger.exception("Failed to create DHCPv4 reservation for %s (parse error)", cd.get("ip_address"))
                 messages.error(request, "Failed to create reservation: invalid response from Kea.")
-        return render(
-            request,
-            self.template_name,
-            {
-                "object": server,
-                "form": form,
-                "options_formset": options_formset,
-                "dhcp_version": 4,
-                "action": "Add",
-                "return_url": return_url,
-                "tab": self.tab,
-            },
-        )
+        return self.render_form(request, server, form, options_formset, return_url, fetch_subnet_choices(server, 4))
 
 
-class ServerReservation6AddView(_KeaChangeMixin, generic.ObjectView):
+class ServerReservation6AddView(_ReservationFormViewMixin, _KeaChangeMixin, generic.ObjectView):
     """Add a DHCPv6 host reservation."""
 
     queryset = Server.objects.all()
-    template_name = "netbox_kea/server_reservation_form.html"
-    tab = _RESERVATIONS_TAB
+    dhcp_version = 6
+    form_action = "Add"
 
     def get(self, request: HttpRequest, pk: int) -> HttpResponse:
         """Render add form, optionally pre-filled from query parameters."""
@@ -941,28 +946,18 @@ class ServerReservation6AddView(_KeaChangeMixin, generic.ObjectView):
             k: request.GET.get(k, "")
             for k in ("subnet_cidr", "ip_addresses", "prefixes", "identifier_type", "identifier", "hostname")
         }
-        # Legacy prefill links (e.g. the lease list's "+ Reserve") pass the raw subnet
-        # id; resolve it against the already-cached subnet list instead of a fresh
-        # Kea round-trip.
-        if not initial.get("subnet_cidr") and request.GET.get("subnet_id", "").isdigit():
-            subnet_id = int(request.GET["subnet_id"])
-            for cidr, sid in fetch_subnet_choices(server, 6):
-                if sid == subnet_id:
-                    initial["subnet_cidr"] = cidr
-                    break
+        subnet_choices = fetch_subnet_choices(server, 6)
+        if not initial.get("subnet_cidr"):
+            # Legacy prefill links pass the raw subnet id; map it to the CIDR.
+            initial["subnet_cidr"] = _legacy_subnet_cidr(subnet_choices, request.GET.get("subnet_id", ""))
         initial = {k: v for k, v in initial.items() if v}
-        return render(
+        return self.render_form(
             request,
-            self.template_name,
-            {
-                "object": server,
-                "form": forms.Reservation6Form(initial=initial),
-                "options_formset": forms.ReservationOptionsFormSet(prefix="options"),
-                "dhcp_version": 6,
-                "action": "Add",
-                "return_url": reverse("plugins:netbox_kea:server_reservations6", args=[pk]),
-                "tab": self.tab,
-            },
+            server,
+            forms.Reservation6Form(initial=initial),
+            forms.ReservationOptionsFormSet(prefix="options"),
+            reverse("plugins:netbox_kea:server_reservations6", args=[pk]),
+            subnet_choices,
         )
 
     def post(self, request: HttpRequest, pk: int) -> HttpResponse:
@@ -973,73 +968,21 @@ class ServerReservation6AddView(_KeaChangeMixin, generic.ObjectView):
         return_url = reverse("plugins:netbox_kea:server_reservations6", args=[pk])
         if form.is_valid() and options_valid:
             cd = form.cleaned_data
+
+            def _rerender() -> HttpResponse:
+                return self.render_form(
+                    request, server, form, options_formset, return_url, fetch_subnet_choices(server, 6)
+                )
+
             try:
                 client = server.get_client(version=6)
             except ValueError:
                 logger.exception("Failed to create DHCPv6 client for server %s", server.pk)
                 messages.error(request, "Failed to connect to Kea: see server logs.")
-                return render(
-                    request,
-                    self.template_name,
-                    {
-                        "object": server,
-                        "form": form,
-                        "options_formset": options_formset,
-                        "dhcp_version": 6,
-                        "action": "Add",
-                        "return_url": return_url,
-                        "tab": self.tab,
-                    },
-                )
-            try:
-                subnet_id = client.subnet_id_from_cidr(6, cd["subnet_cidr"])
-            except KeaException as exc:
-                logger.exception("Failed to look up subnet CIDR %s in Kea", cd["subnet_cidr"])
-                messages.error(request, kea_error_hint(exc))
-                return render(
-                    request,
-                    self.template_name,
-                    {
-                        "object": server,
-                        "form": form,
-                        "options_formset": options_formset,
-                        "dhcp_version": 6,
-                        "action": "Add",
-                        "return_url": return_url,
-                        "tab": self.tab,
-                    },
-                )
-            except (requests.RequestException, ValueError, RuntimeError):
-                logger.exception("Failed to look up subnet CIDR %s in Kea", cd["subnet_cidr"])
-                messages.error(request, "Network error communicating with Kea: see server logs.")
-                return render(
-                    request,
-                    self.template_name,
-                    {
-                        "object": server,
-                        "form": form,
-                        "options_formset": options_formset,
-                        "dhcp_version": 6,
-                        "action": "Add",
-                        "return_url": return_url,
-                        "tab": self.tab,
-                    },
-                )
+                return _rerender()
+            subnet_id = self.resolve_subnet_id(request, client, form, cd["subnet_cidr"])
             if subnet_id is None:
-                form.add_error("subnet_cidr", f"No subnet matching {cd['subnet_cidr']} found in Kea.")
-                return render(
-                    request,
-                    self.template_name,
-                    {
-                        "object": server,
-                        "form": form,
-                        "options_formset": options_formset,
-                        "dhcp_version": 6,
-                        "action": "Add",
-                        "return_url": return_url,
-                        "tab": self.tab,
-                    },
-                )
+                return _rerender()
             reservation: dict[str, Any] = {
                 "subnet-id": subnet_id,
                 cd["identifier_type"]: cd["identifier"],
@@ -1084,28 +1027,17 @@ class ServerReservation6AddView(_KeaChangeMixin, generic.ObjectView):
             except ValueError:
                 logger.exception("Failed to create DHCPv6 reservation for %s (parse error)", cd.get("ip_addresses"))
                 messages.error(request, "Failed to create reservation: invalid response from Kea.")
-        return render(
-            request,
-            self.template_name,
-            {
-                "object": server,
-                "form": form,
-                "options_formset": options_formset,
-                "dhcp_version": 6,
-                "action": "Add",
-                "return_url": return_url,
-                "tab": self.tab,
-            },
-        )
+        return self.render_form(request, server, form, options_formset, return_url, fetch_subnet_choices(server, 6))
 
 
-class ServerReservation4EditView(_ReservationLookupMixin, _KeaChangeMixin, generic.ObjectView):
+class ServerReservation4EditView(
+    _ReservationFormViewMixin, _ReservationLookupMixin, _KeaChangeMixin, generic.ObjectView
+):
     """Edit an existing DHCPv4 host reservation, addressed by IP."""
 
     queryset = Server.objects.all()
-    template_name = "netbox_kea/server_reservation_form.html"
-    tab = _RESERVATIONS_TAB
     dhcp_version = 4
+    form_action = "Edit"
     immutable_fields = frozenset({"subnet_cidr", "ip_address", "identifier_type", "identifier"})
 
     def _get_reservation(self, server: Server, lookup: _ReservationLookup) -> dict | None:
@@ -1151,15 +1083,12 @@ class ServerReservation4EditView(_ReservationLookupMixin, _KeaChangeMixin, gener
             for o in existing_options
             if isinstance(o, dict)
         ]
-        context: dict[str, Any] = {
-            "object": server,
-            "form": forms.Reservation4Form(initial=initial),
-            "options_formset": forms.ReservationOptionsFormSet(initial=options_initial, prefix="options"),
-            "dhcp_version": 4,
-            "action": "Edit",
-            "return_url": return_url,
-            "tab": self.tab,
-        }
+        context = self.form_context(
+            server,
+            forms.Reservation4Form(initial=initial),
+            forms.ReservationOptionsFormSet(initial=options_initial, prefix="options"),
+            return_url,
+        )
         self.apply_immutable_fields(context["form"])
         if ip_address:
             try:
@@ -1204,7 +1133,9 @@ class ServerReservation4EditView(_ReservationLookupMixin, _KeaChangeMixin, gener
             return form
 
         # subnet_cidr is disabled, so validation never uses this value — a real Kea
-        # lookup is only worth its cost if the form ends up re-rendered below.
+        # lookup is only worth its cost if the form ends up re-rendered below. The form
+        # must then be rebuilt: BoundField.initial is a cached_property that validation
+        # already read, so mutating form.initial afterwards does not reach the widget.
         form = _build_form(str(subnet_id))
         options_formset, options_valid = _build_reservation_options_formset(request.POST)
         if form.is_valid() and options_valid:
@@ -1256,28 +1187,17 @@ class ServerReservation4EditView(_ReservationLookupMixin, _KeaChangeMixin, gener
             logger.debug("Could not resolve subnet CIDR for id=%s; falling back to raw id", subnet_id, exc_info=True)
             subnet_cidr = str(subnet_id)
         form = _build_form(subnet_cidr)
-        return render(
-            request,
-            self.template_name,
-            {
-                "object": server,
-                "form": form,
-                "options_formset": options_formset,
-                "dhcp_version": 4,
-                "action": "Edit",
-                "return_url": return_url,
-                "tab": self.tab,
-            },
-        )
+        return self.render_form(request, server, form, options_formset, return_url)
 
 
-class ServerReservation6EditView(_ReservationLookupMixin, _KeaChangeMixin, generic.ObjectView):
+class ServerReservation6EditView(
+    _ReservationFormViewMixin, _ReservationLookupMixin, _KeaChangeMixin, generic.ObjectView
+):
     """Edit an existing DHCPv6 host reservation, addressed by IP."""
 
     queryset = Server.objects.all()
-    template_name = "netbox_kea/server_reservation_form.html"
-    tab = _RESERVATIONS_TAB
     dhcp_version = 6
+    form_action = "Edit"
     immutable_fields = frozenset({"subnet_cidr", "ip_addresses", "identifier_type", "identifier"})
 
     def _get_reservation(self, server: Server, lookup: _ReservationLookup) -> dict | None:
@@ -1332,15 +1252,12 @@ class ServerReservation6EditView(_ReservationLookupMixin, _KeaChangeMixin, gener
             for o in existing_options
             if isinstance(o, dict)
         ]
-        context: dict[str, Any] = {
-            "object": server,
-            "form": forms.Reservation6Form(initial=initial),
-            "options_formset": forms.ReservationOptionsFormSet(initial=options_initial, prefix="options"),
-            "dhcp_version": 6,
-            "action": "Edit",
-            "return_url": return_url,
-            "tab": self.tab,
-        }
+        context = self.form_context(
+            server,
+            forms.Reservation6Form(initial=initial),
+            forms.ReservationOptionsFormSet(initial=options_initial, prefix="options"),
+            return_url,
+        )
         self.apply_immutable_fields(context["form"])
         if ip_address:
             try:
@@ -1402,7 +1319,9 @@ class ServerReservation6EditView(_ReservationLookupMixin, _KeaChangeMixin, gener
             return form
 
         # subnet_cidr is disabled, so validation never uses this value — a real Kea
-        # lookup is only worth its cost if the form ends up re-rendered below.
+        # lookup is only worth its cost if the form ends up re-rendered below. The form
+        # must then be rebuilt: BoundField.initial is a cached_property that validation
+        # already read, so mutating form.initial afterwards does not reach the widget.
         form = _build_form(str(subnet_id))
         options_formset, options_valid = _build_reservation_options_formset(request.POST)
         if form.is_valid() and options_valid:
@@ -1449,19 +1368,7 @@ class ServerReservation6EditView(_ReservationLookupMixin, _KeaChangeMixin, gener
             logger.debug("Could not resolve subnet CIDR for id=%s; falling back to raw id", subnet_id, exc_info=True)
             subnet_cidr = str(subnet_id)
         form = _build_form(subnet_cidr)
-        return render(
-            request,
-            self.template_name,
-            {
-                "object": server,
-                "form": form,
-                "options_formset": options_formset,
-                "dhcp_version": 6,
-                "action": "Edit",
-                "return_url": return_url,
-                "tab": self.tab,
-            },
-        )
+        return self.render_form(request, server, form, options_formset, return_url)
 
 
 class ServerReservation4DeleteView(_ReservationLookupMixin, _KeaChangeMixin, generic.ObjectView):
