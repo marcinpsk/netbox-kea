@@ -233,7 +233,7 @@ class TestReservationForm4(SimpleTestCase):
 
     def _valid_data(self, **overrides):
         base = {
-            "subnet_id": 1,
+            "subnet_cidr": "192.168.1.0/24",
             "ip_address": "192.168.1.100",
             "identifier_type": "hw-address",
             "identifier": "aa:bb:cc:dd:ee:ff",
@@ -266,12 +266,12 @@ class TestReservationForm4(SimpleTestCase):
         self.assertFalse(form.is_valid())
         self.assertIn("ip_address", form.errors)
 
-    def test_missing_subnet_id_fails(self):
+    def test_missing_subnet_cidr_fails(self):
         data = self._valid_data()
-        del data["subnet_id"]
+        del data["subnet_cidr"]
         form = self._form(data)
         self.assertFalse(form.is_valid())
-        self.assertIn("subnet_id", form.errors)
+        self.assertIn("subnet_cidr", form.errors)
 
     def test_missing_ip_address_is_allowed(self):
         """A DHCPv4 host may reserve only a hostname, options or client classes.
@@ -330,13 +330,54 @@ class TestReservationForm4(SimpleTestCase):
         choices = [c[0] for c in Reservation4Form().fields["identifier_type"].choices]
         self.assertIn("flex-id", choices)
 
-    def test_subnet_id_zero_fails(self):
-        form = self._form(self._valid_data(subnet_id=0))
+    def test_invalid_subnet_cidr_fails(self):
+        form = self._form(self._valid_data(subnet_cidr="not-a-cidr"))
         self.assertFalse(form.is_valid())
+        self.assertIn("subnet_cidr", form.errors)
 
-    def test_subnet_id_negative_fails(self):
-        form = self._form(self._valid_data(subnet_id=-1))
+    def test_host_bits_set_in_subnet_cidr_fails(self):
+        """A CIDR with host bits set (e.g. 192.168.1.5/24) is rejected (strict=True)."""
+        form = self._form(self._valid_data(subnet_cidr="192.168.1.5/24"))
         self.assertFalse(form.is_valid())
+        self.assertIn("subnet_cidr", form.errors)
+
+    def test_ipv6_subnet_cidr_rejected_in_v4_form(self):
+        """A well-formed IPv6 CIDR must still be rejected by the IPv4 reservation form."""
+        form = self._form(self._valid_data(subnet_cidr="2001:db8::/48"))
+        self.assertFalse(form.is_valid())
+        self.assertIn("subnet_cidr", form.errors)
+        # Must not leak the raw ipaddress parser text (e.g. "Expected 4 octets in ...").
+        self.assertEqual(form.errors["subnet_cidr"], ["Enter a valid IPv4 subnet CIDR (e.g. 10.0.0.0/24)."])
+
+    def test_bare_address_without_prefix_fails(self):
+        """A bare IP address (no /prefix) must be rejected, not silently treated as /32."""
+        form = self._form(self._valid_data(subnet_cidr="192.168.1.5"))
+        self.assertFalse(form.is_valid())
+        self.assertIn("subnet_cidr", form.errors)
+
+    def test_netmask_form_is_canonicalized_to_prefix_length(self):
+        """A dotted-decimal netmask CIDR is canonicalized so it matches Kea's own reporting.
+
+        subnet_id_from_cidr() matches Kea's subnet4-list entries by exact string, and
+        Kea always reports subnets with a prefix-length suffix, never a netmask.
+        """
+        form = self._form(self._valid_data(subnet_cidr="10.0.0.0/255.255.255.0"))
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.cleaned_data["subnet_cidr"], "10.0.0.0/24")
+
+    def test_disabled_subnet_cidr_skips_cidr_validation(self):
+        """A disabled subnet_cidr (edit views) is not re-validated as a CIDR.
+
+        The edit views seed it from a server-side lookup that falls back to the
+        raw Kea subnet ID (e.g. "1") when that lookup fails — not a valid CIDR,
+        but not user input either, so it must not fail validation.
+        """
+        from netbox_kea.forms import Reservation4Form
+
+        form = Reservation4Form(data=self._valid_data(), initial={"subnet_cidr": "1"})
+        form.fields["subnet_cidr"].disabled = True
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.cleaned_data["subnet_cidr"], "1")
 
     def test_invalid_identifier_type_choice_fails(self):
         form = self._form(self._valid_data(identifier_type="not-a-real-type"))
@@ -371,7 +412,7 @@ class TestReservationForm6(SimpleTestCase):
 
     def _valid_data(self, **overrides):
         base = {
-            "subnet_id": 1,
+            "subnet_cidr": "2001:db8::/48",
             "ip_addresses": "2001:db8::100",
             "identifier_type": "duid",
             "identifier": "00:01:02:03:04:05:06:07",
@@ -403,12 +444,61 @@ class TestReservationForm6(SimpleTestCase):
         self.assertFalse(form.is_valid())
         self.assertIn("ip_addresses", form.errors)
 
-    def test_missing_subnet_id_fails(self):
+    def test_missing_subnet_cidr_fails(self):
         data = self._valid_data()
-        del data["subnet_id"]
+        del data["subnet_cidr"]
         form = self._form(data)
         self.assertFalse(form.is_valid())
-        self.assertIn("subnet_id", form.errors)
+        self.assertIn("subnet_cidr", form.errors)
+
+    def test_invalid_subnet_cidr_fails(self):
+        form = self._form(self._valid_data(subnet_cidr="not-a-cidr"))
+        self.assertFalse(form.is_valid())
+        self.assertIn("subnet_cidr", form.errors)
+
+    def test_host_bits_set_in_subnet_cidr_fails(self):
+        """A CIDR with host bits set (e.g. 2001:db8::1/48) is rejected (strict=True)."""
+        form = self._form(self._valid_data(subnet_cidr="2001:db8::1/48"))
+        self.assertFalse(form.is_valid())
+        self.assertIn("subnet_cidr", form.errors)
+
+    def test_ipv4_subnet_cidr_rejected_in_v6_form(self):
+        """A well-formed IPv4 CIDR must still be rejected by the IPv6 reservation form."""
+        form = self._form(self._valid_data(subnet_cidr="192.168.1.0/24"))
+        self.assertFalse(form.is_valid())
+        self.assertIn("subnet_cidr", form.errors)
+        # Must not leak the raw ipaddress parser text (e.g. "At least 3 parts expected...").
+        self.assertEqual(form.errors["subnet_cidr"], ["Enter a valid IPv6 subnet CIDR (e.g. 2001:db8::/48)."])
+
+    def test_bare_address_without_prefix_fails(self):
+        """A bare IPv6 address (no /prefix) must be rejected, not silently treated as /128."""
+        form = self._form(self._valid_data(subnet_cidr="2001:db8::5"))
+        self.assertFalse(form.is_valid())
+        self.assertIn("subnet_cidr", form.errors)
+
+    def test_expanded_notation_is_canonicalized_to_compressed_form(self):
+        """A fully-expanded IPv6 CIDR is canonicalized so it matches Kea's own reporting.
+
+        subnet_id_from_cidr() matches Kea's subnet6-list entries by exact string, and
+        Kea always reports subnets in compressed form.
+        """
+        form = self._form(self._valid_data(subnet_cidr="2001:0db8:0000:0000:0000:0000:0000:0000/32"))
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.cleaned_data["subnet_cidr"], "2001:db8::/32")
+
+    def test_disabled_subnet_cidr_skips_cidr_validation(self):
+        """A disabled subnet_cidr (edit views) is not re-validated as a CIDR.
+
+        The edit views seed it from a server-side lookup that falls back to the
+        raw Kea subnet ID (e.g. "1") when that lookup fails — not a valid CIDR,
+        but not user input either, so it must not fail validation.
+        """
+        from netbox_kea.forms import Reservation6Form
+
+        form = Reservation6Form(data=self._valid_data(), initial={"subnet_cidr": "1"})
+        form.fields["subnet_cidr"].disabled = True
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.cleaned_data["subnet_cidr"], "1")
 
     def test_missing_ip_addresses_is_allowed(self):
         """A DHCPv6 host may delegate only prefixes, or reserve only a hostname."""

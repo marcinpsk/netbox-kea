@@ -32,7 +32,7 @@ NetBox plugin for the [Kea DHCP](https://www.isc.org/kea/) server. Manage your D
 ### Additions in this fork
 
 **Host Reservations**
-- Full CRUD for DHCPv4 and DHCPv6 reservations via [`host_cmds`](https://kea.readthedocs.io/en/latest/arm/hooks.html#host-cmds) hook
+- Full CRUD for DHCPv4 and DHCPv6 reservations via [`host_cmds`](https://kea.readthedocs.io/en/latest/arm/hooks.html#host-cmds) and [`subnet_cmds`](https://kea.readthedocs.io/en/latest/arm/hooks.html#subnet-cmds) hooks
 - Identifier types: hw-address (v4), DUID (v6), client-id, flex-id, circuit-id, remote-id
 - Reservations that reserve no address — an identifier-only host (hostname, options or
   client classes only) and a DHCPv6 host that only delegates prefixes. Both are listed,
@@ -87,10 +87,10 @@ NetBox plugin for the [Kea DHCP](https://www.isc.org/kea/) server. Manage your D
 - NetBox 4.3 – 4.6
 - Kea 3.0+ (recommended) — the plugin connects directly to each daemon's built-in HTTP control socket (`kea-dhcp4` / `kea-dhcp6`). The [Kea Control Agent](https://kea.readthedocs.io/en/latest/arm/agent.html) was deprecated in Kea 2.7 and removed in 3.0; on Kea < 3.0, point the server URL at the Control Agent instead.
 - [`lease_cmds`](https://kea.readthedocs.io/en/latest/arm/hooks.html#lease-cmds-lease-commands-for-easier-lease-management) hook library (for lease search and management)
-- [`host_cmds`](https://kea.readthedocs.io/en/latest/arm/hooks.html#host-cmds) hook library (optional, for reservation management)
-- [`subnet_cmds`](https://kea.readthedocs.io/en/latest/arm/hooks.html#subnet-cmds) hook library (optional, for subnet add/edit/delete)
+- [`host_cmds`](https://kea.readthedocs.io/en/latest/arm/hooks.html#host-cmds) hook library (optional, for reservation management — also requires `subnet_cmds` to resolve a reservation's subnet from its CIDR)
+- [`subnet_cmds`](https://kea.readthedocs.io/en/latest/arm/hooks.html#subnet-cmds) hook library (optional, for subnet add/edit/delete and reservation management)
 
-The plugin degrades gracefully when optional hooks are absent — tabs for unavailable features are hidden automatically.
+The plugin degrades gracefully when optional hooks are absent — tabs for unavailable features are hidden automatically. The reservations tab is the exception: with `host_cmds` loaded but not `subnet_cmds`, the tab still renders but adding a reservation fails, since resolving the subnet CIDR requires `subnet_cmds`.
 
 ---
 

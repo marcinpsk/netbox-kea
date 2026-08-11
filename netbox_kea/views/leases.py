@@ -84,14 +84,19 @@ def _subnet_sort_key(choice: tuple[str, int | None]) -> tuple[int, Any]:
         return (1, cidr)
 
 
-def _fetch_subnet_choices(server: Server, version: int) -> list[tuple[str, int | None]]:
+def fetch_subnet_choices(server: Server, version: int) -> list[tuple[str, int | None]]:
     """Return ``[(cidr, subnet_id), ...]`` for the server's configured subnets.
 
-    Used to populate the lease-search Subnet / Subnet-ID combobox (an editable
-    ``<datalist>`` on the Search field). The CIDR drives a ``by=subnet`` search
-    and the id drives a ``by=subnet_id`` search, so both are returned. Pulls the
-    subnet list from ``config-get`` — including shared-network subnets — and
-    degrades to an empty list on any error so the search form still renders.
+    Two consumers share this return shape, so change it against both:
+
+    * the lease-search Subnet / Subnet-ID combobox (an editable ``<datalist>`` on
+      the Search field), where the CIDR drives a ``by=subnet`` search and the id
+      drives a ``by=subnet_id`` search, so both are returned;
+    * the reservation add form (``views.reservations``), where the CIDR populates
+      the Subnet CIDR datalist and the id resolves a legacy ``?subnet_id=`` prefill.
+
+    Pulls the subnet list from ``config-get`` — including shared-network subnets —
+    and degrades to an empty list on any error so the calling form still renders.
     Successful results (including a legitimately empty list) are cached for
     ``_SUBNET_CHOICES_TTL`` seconds per server+version; transient errors are not
     cached so the next render retries.
@@ -240,7 +245,7 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
 
     def _make_search_form(self, server: Server, data: Any | None = None):
         """Build the lease-search form with the subnet quick-select choices populated."""
-        subnet_choices = _fetch_subnet_choices(server, self.dhcp_version)
+        subnet_choices = fetch_subnet_choices(server, self.dhcp_version)
         if data is None:
             return self.form(subnet_choices=subnet_choices)
         return self.form(data, subnet_choices=subnet_choices)

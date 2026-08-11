@@ -399,10 +399,11 @@ _IDENTIFIER_TYPE_CHOICES_V6 = _identifier_type_choices(6)
 class Reservation4Form(forms.Form):
     """Form for creating or editing a DHCPv4 host reservation."""
 
-    subnet_id = forms.IntegerField(
-        label="Subnet ID",
-        min_value=1,
-        help_text="Kea subnet ID the reservation belongs to.",
+    subnet_cidr = forms.CharField(
+        label="Subnet CIDR",
+        max_length=50,
+        help_text="Subnet the reservation belongs to (e.g. <code>10.0.0.0/24</code>).",
+        widget=forms.TextInput(attrs={"list": constants.RESERVATION_SUBNET_DATALIST_ID}),
     )
     ip_address = forms.CharField(
         label="IP Address",
@@ -432,6 +433,30 @@ class Reservation4Form(forms.Form):
         help_text="Create or update an IPAddress in NetBox with status=reserved.",
     )
 
+    def clean_subnet_cidr(self) -> str:
+        """Validate the value is a valid IPv4 subnet CIDR.
+
+        Skipped when the field is disabled: the edit views seed it from a
+        server-side CIDR lookup that falls back to the raw Kea subnet ID
+        (e.g. "1") when that lookup fails, which isn't a CIDR and would
+        otherwise fail this check even though the value is never user input.
+        """
+        import ipaddress
+
+        value = self.cleaned_data.get("subnet_cidr", "").strip()
+        if self.fields["subnet_cidr"].disabled:
+            return value
+        if "/" not in value:
+            raise forms.ValidationError("Enter a valid IPv4 subnet CIDR (e.g. 10.0.0.0/24).")
+        try:
+            network = ipaddress.IPv4Network(value, strict=True)
+        except ValueError as exc:
+            raise forms.ValidationError("Enter a valid IPv4 subnet CIDR (e.g. 10.0.0.0/24).") from exc
+        # Kea reports subnets in canonical form; subnet_id_from_cidr() matches by
+        # exact string, so a non-canonical but valid input (e.g. a netmask like
+        # "/255.255.255.0" instead of "/24") would otherwise never match.
+        return str(network)
+
     def clean_ip_address(self) -> str:
         """Validate the value is a valid IPv4 address, or blank for no fixed address."""
         value = (self.cleaned_data.get("ip_address") or "").strip()
@@ -457,10 +482,11 @@ class Reservation4Form(forms.Form):
 class Reservation6Form(forms.Form):
     """Form for creating or editing a DHCPv6 host reservation."""
 
-    subnet_id = forms.IntegerField(
-        label="Subnet ID",
-        min_value=1,
-        help_text="Kea subnet ID the reservation belongs to.",
+    subnet_cidr = forms.CharField(
+        label="Subnet CIDR",
+        max_length=50,
+        help_text="Subnet the reservation belongs to (e.g. <code>2001:db8::/48</code>).",
+        widget=forms.TextInput(attrs={"list": constants.RESERVATION_SUBNET_DATALIST_ID}),
     )
     ip_addresses = forms.CharField(
         label="IPv6 Addresses",
@@ -494,6 +520,30 @@ class Reservation6Form(forms.Form):
         required=False,
         help_text="Create or update an IPAddress in NetBox with status=reserved.",
     )
+
+    def clean_subnet_cidr(self) -> str:
+        """Validate the value is a valid IPv6 subnet CIDR.
+
+        Skipped when the field is disabled: the edit views seed it from a
+        server-side CIDR lookup that falls back to the raw Kea subnet ID
+        (e.g. "1") when that lookup fails, which isn't a CIDR and would
+        otherwise fail this check even though the value is never user input.
+        """
+        import ipaddress
+
+        value = self.cleaned_data.get("subnet_cidr", "").strip()
+        if self.fields["subnet_cidr"].disabled:
+            return value
+        if "/" not in value:
+            raise forms.ValidationError("Enter a valid IPv6 subnet CIDR (e.g. 2001:db8::/48).")
+        try:
+            network = ipaddress.IPv6Network(value, strict=True)
+        except ValueError as exc:
+            raise forms.ValidationError("Enter a valid IPv6 subnet CIDR (e.g. 2001:db8::/48).") from exc
+        # Kea reports subnets in canonical (compressed) form; subnet_id_from_cidr()
+        # matches by exact string, so a valid but expanded address (e.g.
+        # "2001:0db8:0000:.../32") would otherwise never match.
+        return str(network)
 
     def clean_ip_addresses(self) -> str:
         """Validate every entry is a valid IPv6 address; blank reserves no address."""

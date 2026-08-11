@@ -314,6 +314,49 @@ class KeaClient:
         # Kea returns the host fields directly inside "arguments" (not nested under "host")
         return resp[0].get("arguments") or None
 
+    def subnet_id_from_cidr(self, version: int, cidr: str) -> int | None:
+        """Return the Kea subnet ID for the subnet whose CIDR matches *cidr* exactly.
+
+        Uses ``subnet{version}-list`` to look up the ID — lighter than a full
+        ``config-get``.
+
+        Args:
+            version: DHCP protocol version (``4`` or ``6``).
+            cidr: Exact subnet CIDR string, e.g. ``"10.0.0.0/24"``.
+
+        Returns:
+            The integer subnet ID, or ``None`` if no subnet matches or Kea has none configured.
+            Returns the first exact string match; if two subnets ever carried the
+            same prefix the pick would be arbitrary — Kea's own config doesn't allow
+            duplicate subnet CIDRs within a version, so this shouldn't occur.
+
+        Raises:
+            KeaException: If the ``subnet{version}-list`` command itself fails.
+            RuntimeError: If the response doesn't have the expected shape.
+
+        """
+        service = f"dhcp{version}"
+        list_resp = self.command(f"subnet{version}-list", service=[service], check=(0, 3))
+        if not list_resp or not isinstance(list_resp[0], dict):
+            raise RuntimeError(f"subnet{version}-list returned malformed response: {list_resp!r}")
+        if list_resp[0].get("result") == 3:
+            return None
+        arguments = list_resp[0].get("arguments")
+        if not isinstance(arguments, dict) or not isinstance(arguments.get("subnets"), list):
+            raise RuntimeError(f"subnet{version}-list returned malformed arguments: {list_resp[0]!r}")
+        for subnet in arguments["subnets"]:
+            if not isinstance(subnet, dict):
+                raise RuntimeError(f"subnet{version}-list returned a non-dict subnet entry: {subnet!r}")
+            if subnet.get("subnet") == cidr:
+                if "id" not in subnet:
+                    raise RuntimeError(f"subnet{version}-list matched {cidr!r} but the entry has no id: {subnet!r}")
+                subnet_id = subnet["id"]
+                # bool is an int subclass, so `True` would otherwise pass as a subnet id.
+                if isinstance(subnet_id, bool) or not isinstance(subnet_id, int):
+                    raise RuntimeError(f"subnet{version}-list returned a non-integer id: {subnet_id!r}")
+                return subnet_id
+        return None
+
     def reservation_get_by_ip(self, version: int, ip_address: str) -> dict[str, Any] | None:
         """Fetch a reservation by IP address without requiring the subnet ID.
 
@@ -1153,6 +1196,10 @@ class KeaClient:
 
         Raises:
             KeaException: If Kea returns a non-zero result code for either command.
+            RuntimeError: If the delta-add path's ``get_subnet_cidr`` lookup gets a
+                malformed ``subnet{version}-get`` response.
+            ValueError: If the delta-add path's ``get_subnet_cidr`` lookup returns a
+                CIDR that doesn't match *version*'s address family.
 
         """
         service = f"dhcp{version}"
@@ -1165,7 +1212,7 @@ class KeaClient:
                 arguments={subnet_key: [{"id": subnet_id, "pools": [{"pool": pool}]}]},
             )
         else:
-            subnet_cidr = self._get_subnet_cidr(version, subnet_id)
+            subnet_cidr = self.get_subnet_cidr(version, subnet_id)
             self.command(
                 f"subnet{version}-delta-add",
                 service=[service],
@@ -1187,6 +1234,10 @@ class KeaClient:
 
         Raises:
             KeaException: If Kea returns a non-zero result code for either command.
+            RuntimeError: If the delta-del path's ``get_subnet_cidr`` lookup gets a
+                malformed ``subnet{version}-get`` response.
+            ValueError: If the delta-del path's ``get_subnet_cidr`` lookup returns a
+                CIDR that doesn't match *version*'s address family.
 
         """
         service = f"dhcp{version}"
@@ -1199,7 +1250,7 @@ class KeaClient:
                 arguments={subnet_key: [{"id": subnet_id, "pools": [{"pool": pool}]}]},
             )
         else:
-            subnet_cidr = self._get_subnet_cidr(version, subnet_id)
+            subnet_cidr = self.get_subnet_cidr(version, subnet_id)
             self.command(
                 f"subnet{version}-delta-del",
                 service=[service],
@@ -1319,7 +1370,7 @@ class KeaClient:
             )
             raise PartialPersistError(service, exc) from exc
 
-    def _get_subnet_cidr(self, version: int, subnet_id: int) -> str:
+    def get_subnet_cidr(self, version: int, subnet_id: int) -> str:
         """Fetch the CIDR string for *subnet_id* from Kea (e.g. ``"10.0.0.0/24"``).
 
         Args:
@@ -1330,7 +1381,12 @@ class KeaClient:
             Subnet CIDR string.
 
         Raises:
-            KeaException: If the subnet is not found or Kea returns an error.
+            KeaException: If Kea reports the subnet as not found (result code 3).
+            RuntimeError: If the response itself is malformed (missing/wrong-typed
+                ``arguments``, ``subnet{v}``, subnet entry, or ``subnet`` field —
+                including an empty ``subnet{v}`` list despite a result-0 response).
+            ValueError: If ``subnet`` is a string but not a CIDR of the requested
+                family.
 
         """
         service = f"dhcp{version}"
@@ -1339,19 +1395,36 @@ class KeaClient:
             f"subnet{version}-get",
             service=[service],
             arguments={"id": subnet_id},
+            check=(0, 3),
         )
-        subnets = (resp[0].get("arguments") or {}).get(subnet_key, [])
+        if not resp or not isinstance(resp[0], dict):
+            raise RuntimeError(f"subnet{version}-get returned malformed response: {resp!r}")
+        if resp[0].get("result") == 3:
+            raise KeaException(resp[0], index=0)
+        arguments = resp[0].get("arguments")
+        if not isinstance(arguments, dict):
+            raise RuntimeError(f"subnet{version}-get returned malformed arguments: {resp[0]!r}")
+        subnets = arguments.get(subnet_key)
+        if not isinstance(subnets, list):
+            raise RuntimeError(f"subnet{version}-get returned a non-list {subnet_key!r}: {subnets!r}")
         if not subnets:
-            raise KeaException(
-                {"result": 3, "text": f"subnet{version}-get returned no subnet for id={subnet_id}", "arguments": None},
-                index=0,
-            )
-        return subnets[0]["subnet"]
+            raise RuntimeError(f"subnet{version}-get returned an empty {subnet_key!r} despite result=0: {resp[0]!r}")
+        if not isinstance(subnets[0], dict):
+            raise RuntimeError(f"subnet{version}-get returned a non-dict subnet entry: {subnets[0]!r}")
+        cidr = subnets[0].get("subnet")
+        if not isinstance(cidr, str) or not cidr:
+            raise RuntimeError(f"subnet{version}-get response missing 'subnet' field for id={subnet_id}")
+        network_cls = ipaddress.IPv4Network if version == 4 else ipaddress.IPv6Network
+        try:
+            network_cls(cidr, strict=True)
+        except ValueError as exc:
+            raise ValueError(f"subnet{version}-get returned a CIDR not matching IPv{version}: {cidr!r}") from exc
+        return cidr
 
     def subnet_get(self, version: int, subnet_id: int) -> dict:
         """Fetch the full subnet config dict for *subnet_id* from Kea.
 
-        Unlike :meth:`_get_subnet_cidr`, this method returns the complete
+        Unlike :meth:`get_subnet_cidr`, this method returns the complete
         subnet object (id, subnet, pools, option-data, relay, allocator, ...)
         enabling a read-modify-write cycle without losing live-only fields.
 
@@ -1522,8 +1595,18 @@ class AmbiguousConfigSetError(PartialPersistError):
 
 
 def check_response(resp: list[KeaResponse], ok_codes: Sequence[int]) -> None:
-    """Raise a KeaException for any non 0 responses."""
+    """Raise a KeaException for any non 0 responses.
+
+    Raises:
+        RuntimeError: If an entry is not a dict or has no ``result``. Reading
+            ``kr["result"]`` unguarded would raise TypeError/KeyError instead,
+            which no caller catches, so a malformed payload became an HTTP 500.
+        KeaException: If a result code is not in *ok_codes*.
+
+    """
     for idx, kr in enumerate(resp):
+        if not isinstance(kr, dict) or "result" not in kr:
+            raise RuntimeError(f"Kea returned a malformed response entry at index {idx}: {kr!r}")
         if kr["result"] not in ok_codes:
             raise KeaException(kr, index=idx)
 

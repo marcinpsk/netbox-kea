@@ -1644,6 +1644,8 @@ def test_dhcpv6_lease_long_duid(page: Page, kea: KeaClient, with_test_server_onl
 
 #: Kea subnet id 1 exists in both harness configs (192.0.2.0/24 and 2001:db8:1::/64).
 RESERVATION_SUBNET_ID = 1
+RESERVATION_SUBNET_CIDR_V4 = "192.0.2.0/24"
+RESERVATION_SUBNET_CIDR_V6 = "2001:db8:1::/64"
 
 
 @pytest.fixture
@@ -1734,7 +1736,7 @@ def _add_reservation4_without_address(
 ) -> None:
     """Create a DHCPv4 host keyed by MAC with no fixed address, through the add form."""
     page.goto(f"{plugin_base}/servers/{server_id}/reservations4/add/")
-    page.locator("#id_subnet_id").fill(str(RESERVATION_SUBNET_ID))
+    page.locator("#id_subnet_cidr").fill(RESERVATION_SUBNET_CIDR_V4)
     _select_identifier_type(page, "Hardware Address")
     page.locator("#id_identifier").fill(identifier)
     page.locator("#id_hostname").fill(hostname)
@@ -1749,7 +1751,7 @@ def _add_reservation6_prefix_only(
 ) -> None:
     """Create a DHCPv6 host that delegates a prefix and reserves no address."""
     page.goto(f"{plugin_base}/servers/{server_id}/reservations6/add/")
-    page.locator("#id_subnet_id").fill(str(RESERVATION_SUBNET_ID))
+    page.locator("#id_subnet_cidr").fill(RESERVATION_SUBNET_CIDR_V6)
     page.locator("#id_prefixes").fill(prefix)
     _select_identifier_type(page, "DUID")
     page.locator("#id_identifier").fill(identifier)
