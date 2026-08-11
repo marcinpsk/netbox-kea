@@ -125,7 +125,7 @@ class ServerReservation4SyncView(_BaseSyncView):
             client = server.get_client(version=4)
             reservation = client.reservation_get_by_ip(4, ip_str)
             return reservation if reservation else None
-        except (KeaException, requests.RequestException, ValueError):
+        except (KeaException, requests.RequestException, ValueError, RuntimeError):
             logger.warning("Could not fetch live reservation4 data for %s", ip_str, exc_info=True)
             return None
 
@@ -144,7 +144,7 @@ class ServerReservation6SyncView(_BaseSyncView):
             client = server.get_client(version=6)
             reservation = client.reservation_get_by_ip(6, ip_str)
             return reservation if reservation else None
-        except (KeaException, requests.RequestException, ValueError):
+        except (KeaException, requests.RequestException, ValueError, RuntimeError):
             logger.warning("Could not fetch live reservation6 data for %s", ip_str, exc_info=True)
             return None
 

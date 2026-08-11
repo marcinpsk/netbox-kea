@@ -90,7 +90,7 @@ NetBox plugin for the [Kea DHCP](https://www.isc.org/kea/) server. Manage your D
 - [`host_cmds`](https://kea.readthedocs.io/en/latest/arm/hooks.html#host-cmds) hook library (optional, for reservation management — also requires `subnet_cmds` to resolve a reservation's subnet from its CIDR)
 - [`subnet_cmds`](https://kea.readthedocs.io/en/latest/arm/hooks.html#subnet-cmds) hook library (optional, for subnet add/edit/delete and reservation management)
 
-The plugin degrades gracefully when optional hooks are absent — tabs for unavailable features are hidden automatically. The reservations tab is the exception: with `host_cmds` loaded but not `subnet_cmds`, the tab still renders but adding a reservation fails, since resolving the subnet CIDR requires `subnet_cmds`.
+The plugin degrades gracefully when optional hooks are absent — tabs for unavailable features are hidden automatically. The reservations tab is the exception: with `host_cmds` loaded but not `subnet_cmds`, the tab still renders but adding a reservation fails, since resolving the subnet CIDR requires `subnet_cmds`. The add form says so in a banner rather than failing only on save.
 
 ---
 

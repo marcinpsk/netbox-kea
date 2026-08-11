@@ -4065,6 +4065,82 @@ class TestSubnetIdFromCidr(TestCase):
 
 
 # ---------------------------------------------------------------------------
+# TestListSubnets
+# ---------------------------------------------------------------------------
+
+
+class TestListSubnets(TestCase):
+    """KeaClient.list_subnets(): the one source both the form suggestions and the resolver read."""
+
+    def setUp(self):
+        self.client = KeaClient(url="http://kea:8000")
+
+    @patch("requests.Session.post")
+    def test_returns_cidr_id_pairs_in_kea_order(self, mock_post):
+        resp = [
+            {
+                "result": 0,
+                "arguments": {"subnets": [{"id": 8, "subnet": "10.1.0.0/24"}, {"id": 7, "subnet": "10.0.0.0/24"}]},
+            }
+        ]
+        mock_post.return_value = _mock_http_response(resp)
+        self.assertEqual(self.client.list_subnets(4), [("10.1.0.0/24", 8), ("10.0.0.0/24", 7)])
+
+    @patch("requests.Session.post")
+    def test_calls_subnet_list_on_the_matching_service(self, mock_post):
+        mock_post.return_value = _mock_http_response(
+            [{"result": 0, "arguments": {"subnets": [{"id": 5, "subnet": "2001:db8::/48"}]}}]
+        )
+        self.assertEqual(self.client.list_subnets(6), [("2001:db8::/48", 5)])
+        body = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1]["json"]
+        self.assertEqual(body["command"], "subnet6-list")
+        self.assertEqual(body["service"], ["dhcp6"])
+
+    @patch("requests.Session.post")
+    def test_returns_empty_when_kea_has_no_subnets(self, mock_post):
+        """result=3 means no subnets configured, which is not an error."""
+        mock_post.return_value = _mock_http_response([{"result": 3}])
+        self.assertEqual(self.client.list_subnets(4), [])
+
+    @patch("requests.Session.post")
+    def test_raises_kea_exception_when_subnet_cmds_is_missing(self, mock_post):
+        """Result 2 must stay a KeaException so callers can tell a missing hook from an empty list."""
+        mock_post.return_value = _mock_http_response([{"result": 2, "text": "unknown command 'subnet4-list'"}])
+        with self.assertRaises(KeaException) as ctx:
+            self.client.list_subnets(4)
+        self.assertEqual(ctx.exception.response.get("result"), 2)
+
+    @patch("requests.Session.post")
+    def test_raises_runtime_error_when_an_entry_has_no_cidr(self, mock_post):
+        """An entry with no CIDR cannot be offered as a suggestion, so it is malformed, not skipped."""
+        resp = [{"result": 0, "arguments": {"subnets": [{"id": 7}]}}]
+        mock_post.return_value = _mock_http_response(resp)
+        with self.assertRaises(RuntimeError):
+            self.client.list_subnets(4)
+
+    @patch("requests.Session.post")
+    def test_raises_runtime_error_when_a_non_matching_entry_has_no_id(self, mock_post):
+        """Every listed subnet needs an id: the form would otherwise suggest an unresolvable CIDR."""
+        resp = [
+            {
+                "result": 0,
+                "arguments": {"subnets": [{"subnet": "10.9.0.0/24"}, {"id": 7, "subnet": "10.0.0.0/24"}]},
+            }
+        ]
+        mock_post.return_value = _mock_http_response(resp)
+        with self.assertRaises(RuntimeError):
+            self.client.list_subnets(4)
+
+    @patch("requests.Session.post")
+    def test_raises_runtime_error_when_id_is_boolean(self, mock_post):
+        """bool is an int subclass, so `True` must be rejected explicitly."""
+        resp = [{"result": 0, "arguments": {"subnets": [{"id": True, "subnet": "10.0.0.0/24"}]}}]
+        mock_post.return_value = _mock_http_response(resp)
+        with self.assertRaises(RuntimeError):
+            self.client.list_subnets(4)
+
+
+# ---------------------------------------------------------------------------
 # TestPersistConfig — additional exception-type coverage
 # ---------------------------------------------------------------------------
 

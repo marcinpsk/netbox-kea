@@ -31,7 +31,8 @@ from ipam.models import IPAddress as NbIP
 
 from netbox_kea.kea import KeaClient
 from netbox_kea.models import Server
-from netbox_kea.views.leases import _subnet_choices_cache_key, _subnet_sort_key, fetch_subnet_choices
+from netbox_kea.utilities import subnet_sort_key
+from netbox_kea.views.leases import _subnet_choices_cache_key, fetch_subnet_choices
 
 from .kea_stub import _subnet_get, _subnet_list, queued, stub_kea
 from .utils import _PLUGINS_CONFIG, _make_db_server, _ViewTestBase
@@ -4002,10 +4003,10 @@ class TestFetchSubnetChoices(TestCase):
             self.assertEqual(fetch_subnet_choices(self.server, 4), [("10.0.0.0/24", 2)])
 
     def test_subnet_sort_key_handles_non_string_and_unparseable(self):
-        """_subnet_sort_key buckets non-string and unparseable CIDRs apart from real networks."""
-        self.assertEqual(_subnet_sort_key((12345, 1)), (1, "12345"))  # non-string CIDR
-        self.assertEqual(_subnet_sort_key(("not-a-cidr", 2)), (1, "not-a-cidr"))  # unparseable string
-        self.assertEqual(_subnet_sort_key(("10.0.0.0/24", 3))[0], 0)  # real network sorts first
+        """subnet_sort_key buckets non-string and unparseable CIDRs apart from real networks."""
+        self.assertEqual(subnet_sort_key((12345, 1)), (1, "12345"))  # non-string CIDR
+        self.assertEqual(subnet_sort_key(("not-a-cidr", 2)), (1, "not-a-cidr"))  # unparseable string
+        self.assertEqual(subnet_sort_key(("10.0.0.0/24", 3))[0], 0)  # real network sorts first
 
     def test_result_is_cached_second_call_skips_kea(self):
         with stub_kea({"config-get": self._CONFIG}) as kea:

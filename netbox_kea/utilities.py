@@ -11,7 +11,7 @@ from django.http import HttpResponse
 from django.shortcuts import redirect
 from django_tables2 import Table
 from django_tables2.export import TableExport
-from netaddr import EUI, AddrFormatError
+from netaddr import EUI, AddrFormatError, IPNetwork
 from utilities.views import ViewTab
 
 from . import constants
@@ -27,6 +27,23 @@ def format_duration(s: int | None) -> str | None:
     hours, rest = divmod(s, 3600)
     minutes, seconds = divmod(rest, 60)
     return f"{hours:02}:{minutes:02}:{seconds:02}"
+
+
+def subnet_sort_key(choice: tuple[str, Any]) -> tuple[int, Any]:
+    """Sort key that orders ``(cidr, ...)`` subnet choices by network (address then prefix).
+
+    Shared by the lease-search and reservation-form subnet datalists so both list the
+    same subnets in the same order. Falls back to the CIDR string for anything netaddr
+    can't parse, kept in a separate bucket so the two key types are never compared
+    against each other.
+    """
+    cidr = choice[0]
+    if not isinstance(cidr, str):
+        return (1, str(cidr))
+    try:
+        return (0, IPNetwork(cidr))
+    except (AddrFormatError, ValueError, TypeError):
+        return (1, cidr)
 
 
 def _enrich_reservation_sort_key(reservation: dict[str, Any]) -> dict[str, Any]:

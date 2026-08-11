@@ -17,7 +17,7 @@ from django.http.request import HttpRequest
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.views import View
-from netaddr import AddrFormatError, IPAddress, IPNetwork
+from netaddr import IPAddress, IPNetwork
 from netbox.tables import BaseTable
 from netbox.views import generic
 from utilities.exceptions import AbortRequest
@@ -35,6 +35,7 @@ from ..utilities import (
     export_table,
     format_leases,
     kea_error_hint,
+    subnet_sort_key,
 )
 from ._base import ConditionalLoginRequiredMixin, _KeaChangeMixin, _strip_empty_params
 
@@ -67,21 +68,6 @@ _SUBNET_CHOICES_TTL = 300  # seconds (5 minutes)
 
 def _subnet_choices_cache_key(server: Server, version: int) -> str:
     return f"netbox_kea:lease_subnet_choices:{server.pk}:{version}"
-
-
-def _subnet_sort_key(choice: tuple[str, int | None]) -> tuple[int, Any]:
-    """Sort key that orders subnet choices by network (address then prefix).
-
-    Falls back to the CIDR string for anything netaddr can't parse, kept in a
-    separate bucket so the two key types are never compared against each other.
-    """
-    cidr = choice[0]
-    if not isinstance(cidr, str):
-        return (1, str(cidr))
-    try:
-        return (0, IPNetwork(cidr))
-    except (AddrFormatError, ValueError, TypeError):
-        return (1, cidr)
 
 
 def fetch_subnet_choices(server: Server, version: int) -> list[tuple[str, int | None]]:
@@ -146,7 +132,7 @@ def fetch_subnet_choices(server: Server, version: int) -> list[tuple[str, int | 
     for sn in shared_networks:
         if isinstance(sn, dict):
             _collect(sn.get(f"subnet{version}"))
-    choices.sort(key=_subnet_sort_key)
+    choices.sort(key=subnet_sort_key)
     cache.set(cache_key, choices, _SUBNET_CHOICES_TTL)
     return choices
 

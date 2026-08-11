@@ -26,6 +26,16 @@
         <strong>{{ action }} DHCPv{{ dhcp_version }} Reservation</strong>
       </div>
       <div class="card-body">
+        {% if not subnet_cmds_available %}
+        <div class="alert alert-warning d-flex align-items-start mb-3" role="alert">
+          <i class="mdi mdi-alert-circle-outline me-2 mt-1" aria-hidden="true"></i>
+          <div>
+            <strong>The subnet_cmds hook library is not loaded on this Kea server.</strong>
+            Subnet suggestions are unavailable, and saving will fail because the Subnet CIDR
+            cannot be resolved to a Kea subnet ID. Load <code>subnet_cmds</code> on the server.
+          </div>
+        </div>
+        {% endif %}
         {# Both banners promise an IPAM record, which only holds for a reservation that #}
         {# actually reserves an address. Identifier-only and prefix-only hosts have none. #}
         {% if object.sync_enabled and object.sync_reservations_enabled %}
