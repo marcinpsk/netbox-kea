@@ -96,17 +96,17 @@ class TabVisibilityTest(TestCase):
 
     def test_tab_hidden_when_plugin_unavailable(self):
         server = _make_db_server(sync_dhcp_plugin_enabled=True)
-        with patch.object(dps.dhcp_plugin, "is_available", return_value=False):
+        with patch.object(dps.dhcp_plugin, "is_available", return_value=False, autospec=True):
             self.assertFalse(dps._tab_enabled(server))
 
     def test_tab_hidden_when_not_opted_in(self):
         server = _make_db_server(sync_dhcp_plugin_enabled=False)
-        with patch.object(dps.dhcp_plugin, "is_available", return_value=True):
+        with patch.object(dps.dhcp_plugin, "is_available", return_value=True, autospec=True):
             self.assertFalse(dps._tab_enabled(server))
 
     def test_tab_shown_when_available_and_opted_in(self):
         server = _make_db_server(sync_dhcp_plugin_enabled=True)
-        with patch.object(dps.dhcp_plugin, "is_available", return_value=True):
+        with patch.object(dps.dhcp_plugin, "is_available", return_value=True, autospec=True):
             self.assertTrue(dps._tab_enabled(server))
 
 
@@ -124,14 +124,14 @@ class SyncNowGuardTest(TestCase):
         self.url = reverse("plugins:netbox_kea:server_dhcp_plugin_sync", args=[self.server.pk])
 
     def test_refuses_when_plugin_unavailable(self):
-        with patch.object(dps.dhcp_plugin, "is_available", return_value=False):
+        with patch.object(dps.dhcp_plugin, "is_available", return_value=False, autospec=True):
             resp = self.client.post(self.url, follow=True)
         self.assertContains(resp, "not installed")
 
     def test_refuses_when_not_opted_in(self):
         self.server.sync_dhcp_plugin_enabled = False
         self.server.save(update_fields=["sync_dhcp_plugin_enabled"])
-        with patch.object(dps.dhcp_plugin, "is_available", return_value=True):
+        with patch.object(dps.dhcp_plugin, "is_available", return_value=True, autospec=True):
             resp = self.client.post(self.url, follow=True)
         self.assertContains(resp, "Enable &#x27;Sync to DHCP plugin&#x27;")
 
@@ -174,7 +174,7 @@ class SyncNowEndToEndTest(TestCase):
             }
         }
         fake = _FakeKeaClient(conf)
-        with patch("netbox_kea.models.Server.get_client", return_value=fake):
+        with patch("netbox_kea.models.Server.get_client", return_value=fake, autospec=True):
             resp = self.client.post(self.url, follow=True)
 
         self.assertContains(resp, "1 subnets created")
@@ -196,7 +196,7 @@ class SyncNowEndToEndTest(TestCase):
             4: [{"subnet-id": 1, "hw-address": "aa:bb:cc:dd:ee:89", "ip-address": "10.89.0.50", "hostname": "db-res"}]
         }
         fake = _FakeKeaClient(conf, hosts)
-        with patch("netbox_kea.models.Server.get_client", return_value=fake):
+        with patch("netbox_kea.models.Server.get_client", return_value=fake, autospec=True):
             resp = self.client.post(self.url, follow=True)
 
         self.assertContains(resp, "1 reservations created")
@@ -209,14 +209,14 @@ class SyncNowEndToEndTest(TestCase):
         # Finding 4: host_cmds absent → the import must say reservations couldn't be read.
         conf = {4: {"subnet4": [{"id": 1, "subnet": "10.90.0.0/24"}]}}
         fake = _FakeKeaClient(conf, reservations_available=False)
-        with patch("netbox_kea.models.Server.get_client", return_value=fake):
+        with patch("netbox_kea.models.Server.get_client", return_value=fake, autospec=True):
             resp = self.client.post(self.url, follow=True)
         self.assertContains(resp, "could not be read")
 
     def test_drift_view_renders_imported_status(self):
         conf = {4: {"subnet4": [{"id": 1, "subnet": "10.88.0.0/24"}]}}
         fake = _FakeKeaClient(conf)
-        with patch("netbox_kea.models.Server.get_client", return_value=fake):
+        with patch("netbox_kea.models.Server.get_client", return_value=fake, autospec=True):
             self.client.post(self.url, follow=True)
             tab_url = reverse("plugins:netbox_kea:server_dhcp_plugin", args=[self.server.pk])
             resp = self.client.get(tab_url)
@@ -244,7 +244,7 @@ class FetchConfigIntentTest(TestCase):
         self.server = _make_db_server(dhcp4=True, dhcp6=False)
 
     def test_malformed_config_get_is_logged_and_skipped(self):
-        with patch("netbox_kea.models.Server.get_client", return_value=_MalformedConfigClient()):
+        with patch("netbox_kea.models.Server.get_client", return_value=_MalformedConfigClient(), autospec=True):
             with self.assertLogs("netbox_kea.views.dhcp_plugin_sync", level="WARNING") as cm:
                 result = dps._fetch_config_intent(self.server, 4)
         # Malformed shape → RuntimeError raised in _extract_dhcp_conf, caught here as a
@@ -271,8 +271,10 @@ class SyncNowErrorHandlingTest(TestCase):
         # A KeaException (or its PartialPersistError subclass) is handled by the
         # dedicated contract branch, logged distinctly, and shown as a generic error.
         with (
-            patch.object(dps.dhcp_plugin, "is_available", return_value=True),
-            patch.object(dps, "run_dhcp_plugin_import", side_effect=KeaException({"result": 1, "text": "boom"})),
+            patch.object(dps.dhcp_plugin, "is_available", return_value=True, autospec=True),
+            patch.object(
+                dps, "run_dhcp_plugin_import", side_effect=KeaException({"result": 1, "text": "boom"}), autospec=True
+            ),
         ):
             with self.assertLogs("netbox_kea.views.dhcp_plugin_sync", level="ERROR") as cm:
                 resp = self.client.post(self.url, follow=True)
@@ -283,8 +285,8 @@ class SyncNowErrorHandlingTest(TestCase):
         # A non-contract error (e.g. a DB error) still hits the fallback: logged,
         # never surfaced as a 500 traceback.
         with (
-            patch.object(dps.dhcp_plugin, "is_available", return_value=True),
-            patch.object(dps, "run_dhcp_plugin_import", side_effect=RuntimeError("db gone")),
+            patch.object(dps.dhcp_plugin, "is_available", return_value=True, autospec=True),
+            patch.object(dps, "run_dhcp_plugin_import", side_effect=RuntimeError("db gone"), autospec=True),
         ):
             resp = self.client.post(self.url, follow=True)
         self.assertEqual(resp.status_code, 200)

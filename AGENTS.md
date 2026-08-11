@@ -224,8 +224,9 @@ resort, reserved for true external boundaries you cannot run locally.
   Patching a real boundary (`requests.Session.post`, `django_rq`) is not flagged.
   Use `spec=`/`autospec=True` or a `# mock-ok` justification for the rare legitimate
   boundary (job-runner stand-in, error injection the real transport can't produce, an
-  unreachable defensive guard). `mock_discipline_baseline.txt` grandfathers the
-  usages that predate the check; shrink it, do not regenerate it to silence a failure.
+  unreachable defensive guard). `mock_discipline_baseline.txt` is **empty** and must stay
+  that way: it grandfathers accepted violations per (file, function), so regenerating it
+  to silence a failure defeats the gate. Fix the call site instead.
 - **Standard NetBox model coverage via mixins.** For the `Server` model (a
   `NetBoxModel` with standard generic views + `NetBoxModelViewSet`), use NetBox's
   `ViewTestCases` / `APIViewTestCases` (see `test_server_generic.py`). Wire plugin

@@ -91,7 +91,9 @@ class TestSyncViewEdgeCases(_ViewTestBase):
         # Real lease fetch succeeds; the NetBox-side _sync raises (injected error).
         with (
             stub_kea({"lease4-get": _lease4("10.0.0.1")}),
-            patch("netbox_kea.views.ServerLease4SyncView._sync", side_effect=ValueError("ip parse error")),
+            patch(
+                "netbox_kea.views.ServerLease4SyncView._sync", side_effect=ValueError("ip parse error"), autospec=True
+            ),
         ):
             response = self.client.post(self._url(), {"ip_address": "10.0.0.1"})
         self.assertEqual(response.status_code, 500)
@@ -182,14 +184,14 @@ class TestBulkReservationSyncEdgeCases(_ViewTestBase):
     def _url(self):
         return reverse("plugins:netbox_kea:server_reservation4_bulk_sync", args=[self.server.pk])
 
-    @patch("netbox_kea.sync.sync_reservation_to_netbox")
+    @patch("netbox_kea.sync.sync_reservation_to_netbox", autospec=True)
     def test_reservation_without_ip_is_skipped(self, mock_sync):
         """Reservations without ip-address/ip-addresses are skipped (real fetch, no sync)."""
         with stub_kea({"reservation-get-page": _res_page([{"hw-address": "aa:bb:cc:dd:ee:ff"}])}):
             self.client.post(self._url())
         mock_sync.assert_not_called()
 
-    @patch("netbox_kea.sync.sync_reservation_to_netbox")
+    @patch("netbox_kea.sync.sync_reservation_to_netbox", autospec=True)
     def test_sync_creates_and_updates(self, mock_sync):
         """Created and updated counters incremented correctly."""
         hosts = [
@@ -203,7 +205,7 @@ class TestBulkReservationSyncEdgeCases(_ViewTestBase):
         self.assertIn("Bulk sync complete: 1 created, 1 updated.", msgs)
         self.assertEqual(mock_sync.call_count, 2)
 
-    @patch("netbox_kea.sync.sync_reservation_to_netbox")
+    @patch("netbox_kea.sync.sync_reservation_to_netbox", autospec=True)
     def test_sync_exception_counted_as_error(self, mock_sync):
         """Sync exception increments errors, warning shown."""
         hosts = [{"ip-address": "10.0.0.1"}, {"ip-address": "10.0.0.2"}]
@@ -274,13 +276,13 @@ class TestReservation4SyncViewFetchLiveData(_ViewTestBase):
         }
         with (
             stub_kea(stub) as kea,
-            patch("netbox_kea.views.ServerReservation4SyncView._sync") as mock_sync,
+            patch("netbox_kea.views.ServerReservation4SyncView._sync", autospec=True) as mock_sync,
         ):
             mock_sync.return_value = (MagicMock(spec=NbIP), True, True)
             self.client.post(self._url(), {"ip_address": "10.0.0.5", "hostname": "fallback"})
 
         mock_sync.assert_called_once()
-        data = mock_sync.call_args[0][0]
+        data = mock_sync.call_args.args[1]
         self.assertEqual(data["hostname"], "livehost")
         # reservation_get_by_ip(4, "10.0.0.5") → reservation-get scoped to the matching subnet + IP.
         self.assertEqual(kea.bodies("reservation-get")[0]["arguments"], {"subnet-id": 1, "ip-address": "10.0.0.5"})
@@ -291,7 +293,7 @@ class TestReservation4SyncViewFetchLiveData(_ViewTestBase):
             "subnet4-list": _subnet_list(4, [{"id": 1, "subnet": "10.0.0.0/24"}]),
             "reservation-get": {"result": 3},
         }
-        with stub_kea(stub), patch("netbox_kea.views.ServerReservation4SyncView._sync") as mock_sync:
+        with stub_kea(stub), patch("netbox_kea.views.ServerReservation4SyncView._sync", autospec=True) as mock_sync:
             response = self.client.post(self._url(), {"ip_address": "10.0.0.5", "hostname": "fallback"})
         self.assertEqual(response.status_code, 400)
         mock_sync.assert_not_called()
@@ -300,7 +302,7 @@ class TestReservation4SyncViewFetchLiveData(_ViewTestBase):
         """When the subnet-list call fails (KeaException), response is 400 (no sync)."""
         with (
             stub_kea({"subnet4-list": {"result": 1, "text": "not found"}}),
-            patch("netbox_kea.views.ServerReservation4SyncView._sync") as mock_sync,
+            patch("netbox_kea.views.ServerReservation4SyncView._sync", autospec=True) as mock_sync,
         ):
             response = self.client.post(self._url(), {"ip_address": "10.0.0.5", "hostname": "fallback"})
         self.assertEqual(response.status_code, 400)
@@ -325,7 +327,7 @@ class TestReservation6SyncViewFetchLiveData(_ViewTestBase):
         """When the subnet-list call raises a transport error, response is 400 (no sync)."""
         with (
             stub_kea({"subnet6-list": requests.RequestException("timeout")}),
-            patch("netbox_kea.views.ServerReservation6SyncView._sync") as mock_sync,
+            patch("netbox_kea.views.ServerReservation6SyncView._sync", autospec=True) as mock_sync,
         ):
             response = self.client.post(self._url(), {"ip_address": "2001:db8::1", "hostname": "fallback6"})
         self.assertEqual(response.status_code, 400)
@@ -360,7 +362,7 @@ class TestFetchLiveDataNoSyntheticFallback(_ViewTestBase):
         url = reverse("plugins:netbox_kea:server_lease4_sync", args=[self.server.pk])
         with (
             stub_kea({"lease4-get": _lease4("10.0.0.1")}),
-            patch("netbox_kea.views.ServerLease4SyncView._sync") as mock_sync,
+            patch("netbox_kea.views.ServerLease4SyncView._sync", autospec=True) as mock_sync,
         ):
             mock_sync.return_value = (MagicMock(spec=NbIP), True, True)
             response = self.client.post(url, {"ip_address": "10.0.0.1"})
@@ -484,8 +486,8 @@ class TestBulkSyncBatchCleanup(_ViewTestBase):
     def _url(self):
         return reverse("plugins:netbox_kea:server_reservation4_bulk_sync", args=[self.server.pk])
 
-    @patch("netbox_kea.sync.cleanup_stale_ips_batch", return_value=0)
-    @patch("netbox_kea.sync.sync_reservation_to_netbox")
+    @patch("netbox_kea.sync.cleanup_stale_ips_batch", return_value=0, autospec=True)
+    @patch("netbox_kea.sync.sync_reservation_to_netbox", autospec=True)
     def test_bulk_sync_calls_sync_with_cleanup_false(self, mock_sync, mock_batch):
         """Each record is synced with cleanup=False; batch cleanup runs after."""
         hosts = [
@@ -503,8 +505,8 @@ class TestBulkSyncBatchCleanup(_ViewTestBase):
         synced_records = mock_batch.call_args[0][0]
         self.assertEqual(len(synced_records), 2)
 
-    @patch("netbox_kea.sync.cleanup_stale_ips_batch", return_value=3)
-    @patch("netbox_kea.sync.sync_reservation_to_netbox")
+    @patch("netbox_kea.sync.cleanup_stale_ips_batch", return_value=3, autospec=True)
+    @patch("netbox_kea.sync.sync_reservation_to_netbox", autospec=True)
     def test_stale_cleaned_count_appears_in_message(self, mock_sync, mock_batch):
         """When batch cleanup removes IPs, the count appears in the success message."""
         hosts = [{"ip-address": "10.0.0.1", "hostname": "h.example.com"}]
@@ -513,8 +515,8 @@ class TestBulkSyncBatchCleanup(_ViewTestBase):
             response = self.client.post(self._url())
         self.assertTrue(any("3 stale cleaned" in m for m in _messages(response)))
 
-    @patch("netbox_kea.sync.cleanup_stale_ips_batch", return_value=0)
-    @patch("netbox_kea.sync.sync_reservation_to_netbox")
+    @patch("netbox_kea.sync.cleanup_stale_ips_batch", return_value=0, autospec=True)
+    @patch("netbox_kea.sync.sync_reservation_to_netbox", autospec=True)
     def test_batch_cleanup_skipped_when_errors(self, mock_sync, mock_batch):
         """When sync errors occur, batch cleanup is skipped entirely (incomplete keep-set)."""
         hosts = [{"ip-address": "10.0.0.1", "hostname": "h1"}, {"ip-address": "10.0.0.2", "hostname": "h2"}]
@@ -539,7 +541,7 @@ class TestBaseSyncViewDBError(_ViewTestBase):
     def _post_with_sync_error(self, ip, exc):
         with (
             stub_kea({"lease4-get": _lease4(ip)}),
-            patch("netbox_kea.views.ServerLease4SyncView._sync", side_effect=exc),
+            patch("netbox_kea.views.ServerLease4SyncView._sync", side_effect=exc, autospec=True),
         ):
             return self.client.post(self._url(), {"ip_address": ip})
 
@@ -701,7 +703,9 @@ class TestReservation6SyncDBError(_ViewTestBase):
         }
         with (
             stub_kea(stub),
-            patch("netbox_kea.views.ServerReservation6SyncView._sync", side_effect=IntegrityError("dup")),
+            patch(
+                "netbox_kea.views.ServerReservation6SyncView._sync", side_effect=IntegrityError("dup"), autospec=True
+            ),
         ):
             response = self.client.post(self._url(), {"ip_address": "2001:db8::1"})
         self.assertEqual(response.status_code, 500)
@@ -726,7 +730,9 @@ class TestSyncViewOperationalError(_ViewTestBase):
 
         with (
             stub_kea({"lease4-get": _lease4("10.0.0.10")}),
-            patch("netbox_kea.views.ServerLease4SyncView._sync", side_effect=OperationalError("conn lost")),
+            patch(
+                "netbox_kea.views.ServerLease4SyncView._sync", side_effect=OperationalError("conn lost"), autospec=True
+            ),
         ):
             response = self.client.post(self._url(), {"ip_address": "10.0.0.10"})
         self.assertEqual(response.status_code, 500)
@@ -800,7 +806,7 @@ class TestBulkSyncPerRowErrorIsolation(_ViewTestBase):
     def _url(self):
         return reverse("plugins:netbox_kea:server_reservation4_bulk_sync", args=[self.server.pk])
 
-    @patch("netbox_kea.sync.sync_reservation_to_netbox")
+    @patch("netbox_kea.sync.sync_reservation_to_netbox", autospec=True)
     def test_middle_row_fails_others_succeed(self, mock_sync):
         """Row 1 succeeds, row 2 raises IntegrityError, row 3 succeeds."""
         from django.db import IntegrityError
@@ -822,7 +828,7 @@ class TestBulkSyncPerRowErrorIsolation(_ViewTestBase):
         self.assertTrue(any("1 created" in m and "1 updated" in m and "1 errors" in m for m in msgs))
         self.assertEqual(mock_sync.call_count, 3)
 
-    @patch("netbox_kea.sync.sync_reservation_to_netbox")
+    @patch("netbox_kea.sync.sync_reservation_to_netbox", autospec=True)
     def test_validation_error_counted_as_error(self, mock_sync):
         """ValidationError from sync is counted as an error."""
         from django.core.exceptions import ValidationError
@@ -835,7 +841,7 @@ class TestBulkSyncPerRowErrorIsolation(_ViewTestBase):
         self.assertTrue(any("1 errors" in m for m in msgs))
         self.assertFalse(any("invalid prefix" in m for m in msgs))
 
-    @patch("netbox_kea.sync.sync_reservation_to_netbox")
+    @patch("netbox_kea.sync.sync_reservation_to_netbox", autospec=True)
     def test_reservations_with_ip_addresses_field_processed(self, mock_sync):
         """v6-style reservations with ip-addresses list (not ip-address) are processed."""
         hosts = [{"ip-addresses": ["2001:db8::1"], "duid": "00:01:02:03"}]

@@ -1208,7 +1208,7 @@ class TestLeaseAddSyncToNetBox(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("sync_to_netbox", response.content.decode())
 
-    @patch("netbox_kea.views.leases.sync_lease_to_netbox")
+    @patch("netbox_kea.views.leases.sync_lease_to_netbox", autospec=True)
     def test_post_lease4_add_with_sync_calls_sync_lease(self, mock_sync):
         """POST with sync_to_netbox=on calls sync_lease_to_netbox() with the lease dict."""
         mock_sync.return_value = (MagicMock(spec=NbIP), True, False)
@@ -1219,7 +1219,7 @@ class TestLeaseAddSyncToNetBox(_ViewTestBase):
         lease = mock_sync.call_args[0][0]
         self.assertEqual(lease["ip-address"], "10.0.0.200")
 
-    @patch("netbox_kea.views.leases.sync_lease_to_netbox")
+    @patch("netbox_kea.views.leases.sync_lease_to_netbox", autospec=True)
     def test_post_lease4_add_without_sync_does_not_call_sync(self, mock_sync):
         """POST without sync_to_netbox does NOT call sync_lease_to_netbox()."""
         with stub_kea({"lease4-add": {"result": 0}}):
@@ -1227,7 +1227,7 @@ class TestLeaseAddSyncToNetBox(_ViewTestBase):
         self.assertEqual(response.status_code, 302)
         mock_sync.assert_not_called()
 
-    @patch("netbox_kea.views.leases.sync_lease_to_netbox")
+    @patch("netbox_kea.views.leases.sync_lease_to_netbox", autospec=True)
     def test_post_lease4_add_sync_failure_does_not_prevent_kea_success(self, mock_sync):
         """Sync failure is a warning; the lease creation still succeeds (302 redirect)."""
         mock_sync.side_effect = ValueError("NetBox unreachable")
@@ -1236,7 +1236,7 @@ class TestLeaseAddSyncToNetBox(_ViewTestBase):
         self.assertEqual(response.status_code, 302)
         self.assertEqual(kea.commands().count("lease4-add"), 1)
 
-    @patch("netbox_kea.views.leases.sync_lease_to_netbox")
+    @patch("netbox_kea.views.leases.sync_lease_to_netbox", autospec=True)
     def test_post_lease4_add_sync_skipped_without_ipam_permission(self, mock_sync):
         """A user with server-change but no IPAM write permission must not trigger the IPAM sync."""
         from django.contrib.auth import get_user_model
@@ -1590,8 +1590,12 @@ class TestEnrichLeasesWithBadgesCanChange(_ViewTestBase):
         server = self.server
         lease = {"ip_address": "10.0.0.1", "hw_address": "aa:bb:cc:dd:ee:ff"}
         with (
-            patch("netbox_kea.views.leases._fetch_reservation_by_ip_for_leases", return_value=({}, False, set())),
-            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
+            patch(
+                "netbox_kea.views.leases._fetch_reservation_by_ip_for_leases",
+                return_value=({}, False, set()),
+                autospec=True,
+            ),
+            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}, autospec=True),
             stub_kea({"reservation-get": {"result": 3}}),
         ):
             _enrich_leases_with_badges([lease], server, 4, can_delete=False, can_change=False)
@@ -1605,8 +1609,12 @@ class TestEnrichLeasesWithBadgesCanChange(_ViewTestBase):
         server = self.server
         lease = {"ip_address": "10.0.0.1", "hw_address": "aa:bb:cc:dd:ee:ff"}
         with (
-            patch("netbox_kea.views.leases._fetch_reservation_by_ip_for_leases", return_value=({}, False, set())),
-            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
+            patch(
+                "netbox_kea.views.leases._fetch_reservation_by_ip_for_leases",
+                return_value=({}, False, set()),
+                autospec=True,
+            ),
+            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}, autospec=True),
             stub_kea({"reservation-get": {"result": 3}}),
         ):
             _enrich_leases_with_badges([lease], server, 4, can_delete=False, can_change=True)
@@ -1634,8 +1642,9 @@ class TestEnrichLeasesReservationFlags(_ViewTestBase):
             patch(
                 "netbox_kea.views.leases._fetch_reservation_by_ip_for_leases",
                 return_value=({"10.0.0.5": rsv}, True, set()),
+                autospec=True,
             ),
-            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
+            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}, autospec=True),
             stub_kea({"reservation-get": {"result": 3}}),
         ):
             _enrich_leases_with_badges([lease], server, 4, can_delete=False, can_change=False)
@@ -1648,8 +1657,12 @@ class TestEnrichLeasesReservationFlags(_ViewTestBase):
         server = self.server
         lease = {"ip_address": "10.0.0.99", "hw_address": "bb:bb:bb:bb:bb:bb"}
         with (
-            patch("netbox_kea.views.leases._fetch_reservation_by_ip_for_leases", return_value=({}, True, set())),
-            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
+            patch(
+                "netbox_kea.views.leases._fetch_reservation_by_ip_for_leases",
+                return_value=({}, True, set()),
+                autospec=True,
+            ),
+            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}, autospec=True),
             stub_kea({"reservation-get": {"result": 3}}),
         ):
             _enrich_leases_with_badges([lease], server, 4, can_delete=False, can_change=False)
@@ -1666,8 +1679,9 @@ class TestEnrichLeasesReservationFlags(_ViewTestBase):
             patch(
                 "netbox_kea.views.leases._fetch_reservation_by_ip_for_leases",
                 return_value=({"10.0.0.5": rsv}, True, set()),
+                autospec=True,
             ),
-            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
+            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}, autospec=True),
             stub_kea({"reservation-get": {"result": 3}}),
         ):
             _enrich_leases_with_badges([lease], server, 4, can_delete=False, can_change=False)
@@ -1687,8 +1701,9 @@ class TestEnrichLeasesReservationFlags(_ViewTestBase):
             patch(
                 "netbox_kea.views.leases._fetch_reservation_by_ip_for_leases",
                 return_value=({"10.0.0.5": rsv}, True, set()),
+                autospec=True,
             ),
-            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
+            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}, autospec=True),
             stub_kea({"reservation-get": {"result": 3}}),
         ):
             _enrich_leases_with_badges([lease], server, 4, can_delete=False, can_change=True)
@@ -1702,8 +1717,12 @@ class TestEnrichLeasesReservationFlags(_ViewTestBase):
         server = self.server
         lease = {"ip_address": "10.0.0.99", "hw_address": "cc:cc:cc:cc:cc:cc"}
         with (
-            patch("netbox_kea.views.leases._fetch_reservation_by_ip_for_leases", return_value=({}, True, set())),
-            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
+            patch(
+                "netbox_kea.views.leases._fetch_reservation_by_ip_for_leases",
+                return_value=({}, True, set()),
+                autospec=True,
+            ),
+            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}, autospec=True),
             stub_kea({"reservation-get": {"result": 3}}),
         ):
             _enrich_leases_with_badges([lease], server, 4, can_delete=False, can_change=False)
@@ -1716,9 +1735,15 @@ class TestEnrichLeasesReservationFlags(_ViewTestBase):
         server = self.server
         lease = {"ip_address": "10.0.0.99", "hw_address": "cc:cc:cc:cc:cc:cc", "subnet_id": 1}
         with (
-            patch("netbox_kea.views.leases._fetch_reservation_by_ip_for_leases", return_value=({}, True, set())),
-            patch("netbox_kea.views.leases._fetch_reservation_by_mac_for_leases", return_value=({}, set())),
-            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
+            patch(
+                "netbox_kea.views.leases._fetch_reservation_by_ip_for_leases",
+                return_value=({}, True, set()),
+                autospec=True,
+            ),
+            patch(
+                "netbox_kea.views.leases._fetch_reservation_by_mac_for_leases", return_value=({}, set()), autospec=True
+            ),
+            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}, autospec=True),
             stub_kea({"reservation-get": {"result": 3}}),
         ):
             _enrich_leases_with_badges([lease], server, 4, can_delete=False, can_change=True)
@@ -1757,6 +1782,7 @@ class TestEnrichLeasesExceptionPaths(_ViewTestBase):
             patch(
                 "netbox_kea.views.leases._fetch_reservation_by_ip_for_leases",
                 side_effect=KeaException({"result": 1, "text": "error"}, index=0),
+                autospec=True,
             ),
         ):
             response = self.client.get(self._url() + "?by=ip&q=10.0.0.1", HTTP_HX_REQUEST="true")
@@ -1769,6 +1795,7 @@ class TestEnrichLeasesExceptionPaths(_ViewTestBase):
             patch(
                 "netbox_kea.views.leases._fetch_reservation_by_ip_for_leases",
                 side_effect=RuntimeError("unexpected error"),
+                autospec=True,
             ),
         ):
             response = self.client.get(self._url() + "?by=ip&q=10.0.0.1", HTTP_HX_REQUEST="true")
@@ -2195,6 +2222,7 @@ class TestEnrichLeasesExceptionPaths2(_ViewTestBase):
             patch(
                 "netbox_kea.views.leases._fetch_reservation_by_ip_for_leases",
                 side_effect=KeaException({"result": 2, "text": "hook not loaded"}, index=0),
+                autospec=True,
             ),
         ):
             response = self.client.get(self._url())
@@ -2209,6 +2237,7 @@ class TestEnrichLeasesExceptionPaths2(_ViewTestBase):
             patch(
                 "netbox_kea.views.leases._fetch_reservation_by_ip_for_leases",
                 side_effect=KeaException({"result": 1, "text": "other error"}, index=0),
+                autospec=True,
             ),
         ):
             response = self.client.get(self._url())
@@ -2221,6 +2250,7 @@ class TestEnrichLeasesExceptionPaths2(_ViewTestBase):
             patch(
                 "netbox_kea.views.leases._fetch_reservation_by_ip_for_leases",
                 side_effect=RuntimeError("unexpected crash"),
+                autospec=True,
             ),
         ):
             response = self.client.get(self._url())
@@ -2244,7 +2274,7 @@ class TestLeaseBulkImportEdgeCases(_ViewTestBase):
         response = self.client.post(self._url(), {})
         self.assertEqual(response.status_code, 200)
 
-    @patch("netbox_kea.views.sync_views.parse_lease_csv")
+    @patch("netbox_kea.views.sync_views.parse_lease_csv", autospec=True)
     def test_parse_error_shows_form_error(self, mock_parse):
         """Lines 4617-4619: ValueError from parse_lease_csv adds generic form error (no raw exception text)."""
         import io
@@ -2518,7 +2548,7 @@ class TestFetchOneEmptyLease(_ViewTestBase):
 class TestCombinedLeasesTruncated(_ViewTestBase):
     """Line 4228: _fetch_all_leases_from_server returns was_truncated=True → server name added."""
 
-    @patch("netbox_kea.views.combined._fetch_all_leases_from_server")
+    @patch("netbox_kea.views.combined._fetch_all_leases_from_server", autospec=True)
     def test_truncated_server_name_in_context(self, mock_fetch_all):
         """was_truncated=True → server.name appended to truncated_servers."""
         from netbox_kea.utilities import format_leases
@@ -2621,7 +2651,7 @@ class TestLeaseExportAllExceptNarrowing(_ViewTestBase):
 class TestEnrichLeasesFailedIpsSeeding(_ViewTestBase):
     """On enrichment error, all lease IPs are marked as indeterminate (failed_ips)."""
 
-    @patch("netbox_kea.views.leases._fetch_reservation_by_ip_for_leases")
+    @patch("netbox_kea.views.leases._fetch_reservation_by_ip_for_leases", autospec=True)
     def test_reservation_enrichment_exception_does_not_show_not_reserved(self, mock_fetch_reservations):
         """When reservation lookup raises an unexpected Exception, leases must not
         incorrectly appear as 'not reserved' (no create-reservation link shown)."""
@@ -2879,7 +2909,7 @@ class TestLeaseAddValueError(_ViewTestBase):
 class TestLeaseJournalExceptionNarrowing(_ViewTestBase):
     """_add_lease_journal except must only catch DB errors, not all exceptions."""
 
-    @patch("netbox_kea.views.leases._add_lease_journal")
+    @patch("netbox_kea.views.leases._add_lease_journal", autospec=True)
     def test_database_error_does_not_fail_request(self, mock_journal):
         """DatabaseError from _add_lease_journal must be caught; lease add still redirects."""
         from django.db import DatabaseError
@@ -2890,7 +2920,7 @@ class TestLeaseJournalExceptionNarrowing(_ViewTestBase):
             response = self.client.post(url, {"ip_address": "10.0.0.55"})
         self.assertIn(response.status_code, [200, 302])
 
-    @patch("netbox_kea.views.leases._add_lease_journal")
+    @patch("netbox_kea.views.leases._add_lease_journal", autospec=True)
     def test_operational_error_does_not_fail_request(self, mock_journal):
         """OperationalError from _add_lease_journal must be caught; lease add still redirects."""
         from django.db import OperationalError
@@ -3089,7 +3119,7 @@ class TestLeaseAddSideEffectErrors(_ViewTestBase):
     def _valid_form(self):
         return {"ip_address": "10.0.0.1", "subnet_id": "1", "hw_address": "aa:bb:cc:00:00:01", "valid_lft": "3600"}
 
-    @patch("netbox_kea.views.leases._add_lease_journal")
+    @patch("netbox_kea.views.leases._add_lease_journal", autospec=True)
     def test_journal_db_error_still_succeeds(self, mock_journal):
         """DatabaseError in journal entry creation still redirects successfully."""
         from django.db import DatabaseError
@@ -3118,12 +3148,17 @@ class TestPendingIpChangeDetection(_ViewTestBase):
         lease = {"ip_address": "10.0.0.10", "hw_address": "aa:bb:cc:dd:ee:01", "subnet_id": 1}
         mac_rsv = {"subnet-id": 1, "ip-address": "10.0.0.20", "hw-address": "aa:bb:cc:dd:ee:01"}
         with (
-            patch("netbox_kea.views.leases._fetch_reservation_by_ip_for_leases", return_value=({}, True, set())),
+            patch(
+                "netbox_kea.views.leases._fetch_reservation_by_ip_for_leases",
+                return_value=({}, True, set()),
+                autospec=True,
+            ),
             patch(
                 "netbox_kea.views.leases._fetch_reservation_by_mac_for_leases",
                 return_value=({("aa:bb:cc:dd:ee:01", 1): mac_rsv}, set()),
+                autospec=True,
             ),
-            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
+            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}, autospec=True),
             stub_kea({"reservation-get": {"result": 3}}),
         ):
             _enrich_leases_with_badges([lease], server, 4, can_delete=False, can_change=True)
@@ -3137,9 +3172,15 @@ class TestPendingIpChangeDetection(_ViewTestBase):
         server = self.server
         lease = {"ip_address": "10.0.0.10", "hw_address": "aa:bb:cc:dd:ee:01", "subnet_id": 1}
         with (
-            patch("netbox_kea.views.leases._fetch_reservation_by_ip_for_leases", return_value=({}, True, set())),
-            patch("netbox_kea.views.leases._fetch_reservation_by_mac_for_leases", return_value=({}, set())),
-            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
+            patch(
+                "netbox_kea.views.leases._fetch_reservation_by_ip_for_leases",
+                return_value=({}, True, set()),
+                autospec=True,
+            ),
+            patch(
+                "netbox_kea.views.leases._fetch_reservation_by_mac_for_leases", return_value=({}, set()), autospec=True
+            ),
+            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}, autospec=True),
             stub_kea({"reservation-get": {"result": 3}}),
         ):
             _enrich_leases_with_badges([lease], server, 4, can_delete=False, can_change=True)
@@ -3154,12 +3195,17 @@ class TestPendingIpChangeDetection(_ViewTestBase):
         lease = {"ip_address": "10.0.0.10", "hw_address": "aa:bb:cc:dd:ee:01", "subnet_id": 1}
         mac_rsv = {"subnet-id": 1, "ip-address": "10.0.0.20", "hw-address": "aa:bb:cc:dd:ee:01"}
         with (
-            patch("netbox_kea.views.leases._fetch_reservation_by_ip_for_leases", return_value=({}, True, set())),
+            patch(
+                "netbox_kea.views.leases._fetch_reservation_by_ip_for_leases",
+                return_value=({}, True, set()),
+                autospec=True,
+            ),
             patch(
                 "netbox_kea.views.leases._fetch_reservation_by_mac_for_leases",
                 return_value=({("aa:bb:cc:dd:ee:01", 1): mac_rsv}, set()),
+                autospec=True,
             ),
-            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
+            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}, autospec=True),
             stub_kea({"reservation-get": {"result": 3}}),
         ):
             _enrich_leases_with_badges([lease], server, 4, can_delete=False, can_change=True)
@@ -3173,12 +3219,17 @@ class TestPendingIpChangeDetection(_ViewTestBase):
         lease = {"ip_address": "10.0.0.10", "hw_address": "aa:bb:cc:dd:ee:01", "subnet_id": 1}
         mac_rsv = {"subnet-id": 1, "ip-address": "10.0.0.20", "hw-address": "aa:bb:cc:dd:ee:01"}
         with (
-            patch("netbox_kea.views.leases._fetch_reservation_by_ip_for_leases", return_value=({}, True, set())),
+            patch(
+                "netbox_kea.views.leases._fetch_reservation_by_ip_for_leases",
+                return_value=({}, True, set()),
+                autospec=True,
+            ),
             patch(
                 "netbox_kea.views.leases._fetch_reservation_by_mac_for_leases",
                 return_value=({("aa:bb:cc:dd:ee:01", 1): mac_rsv}, set()),
+                autospec=True,
             ),
-            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
+            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}, autospec=True),
             stub_kea({"reservation-get": {"result": 3}}),
         ):
             _enrich_leases_with_badges([lease], server, 4, can_delete=False, can_change=True)
@@ -3192,12 +3243,17 @@ class TestPendingIpChangeDetection(_ViewTestBase):
         lease = {"ip_address": "10.0.0.10", "hw_address": "aa:bb:cc:dd:ee:01", "subnet_id": 1}
         mac_rsv = {"subnet-id": 1, "ip-address": "10.0.0.20", "hw-address": "aa:bb:cc:dd:ee:01"}
         with (
-            patch("netbox_kea.views.leases._fetch_reservation_by_ip_for_leases", return_value=({}, True, set())),
+            patch(
+                "netbox_kea.views.leases._fetch_reservation_by_ip_for_leases",
+                return_value=({}, True, set()),
+                autospec=True,
+            ),
             patch(
                 "netbox_kea.views.leases._fetch_reservation_by_mac_for_leases",
                 return_value=({("aa:bb:cc:dd:ee:01", 1): mac_rsv}, set()),
+                autospec=True,
             ),
-            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
+            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}, autospec=True),
             stub_kea({"reservation-get": {"result": 3}}),
         ):
             _enrich_leases_with_badges([lease], server, 4, can_delete=False, can_change=True)
@@ -3212,12 +3268,17 @@ class TestPendingIpChangeDetection(_ViewTestBase):
         lease = {"ip_address": "10.0.0.10", "hw_address": "aa:bb:cc:dd:ee:01", "subnet_id": 1}
         mac_rsv = {"subnet-id": 1, "ip-address": "10.0.0.20", "hw-address": "aa:bb:cc:dd:ee:01"}
         with (
-            patch("netbox_kea.views.leases._fetch_reservation_by_ip_for_leases", return_value=({}, True, set())),
+            patch(
+                "netbox_kea.views.leases._fetch_reservation_by_ip_for_leases",
+                return_value=({}, True, set()),
+                autospec=True,
+            ),
             patch(
                 "netbox_kea.views.leases._fetch_reservation_by_mac_for_leases",
                 return_value=({("aa:bb:cc:dd:ee:01", 1): mac_rsv}, set()),
+                autospec=True,
             ),
-            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
+            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}, autospec=True),
             stub_kea({"reservation-get": {"result": 3}}),
         ):
             _enrich_leases_with_badges([lease], server, 4, can_delete=False, can_change=False)
@@ -3237,9 +3298,12 @@ class TestPendingIpChangeDetection(_ViewTestBase):
             patch(
                 "netbox_kea.views.leases._fetch_reservation_by_ip_for_leases",
                 return_value=({"10.0.0.5": ip_rsv}, True, set()),
+                autospec=True,
             ),
-            patch("netbox_kea.views.leases._fetch_reservation_by_mac_for_leases", return_value=({}, set())),
-            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
+            patch(
+                "netbox_kea.views.leases._fetch_reservation_by_mac_for_leases", return_value=({}, set()), autospec=True
+            ),
+            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}, autospec=True),
             stub_kea({"reservation-get": {"result": 3}}),
         ):
             _enrich_leases_with_badges([lease], server, 4, can_delete=False, can_change=True)
@@ -3256,9 +3320,10 @@ class TestPendingIpChangeDetection(_ViewTestBase):
             patch(
                 "netbox_kea.views.leases._fetch_reservation_by_ip_for_leases",
                 return_value=({}, False, set()),
+                autospec=True,
             ),
-            patch("netbox_kea.views.leases._fetch_reservation_by_mac_for_leases") as mock_mac_fetch,
-            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
+            patch("netbox_kea.views.leases._fetch_reservation_by_mac_for_leases", autospec=True) as mock_mac_fetch,
+            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}, autospec=True),
             stub_kea({}),
         ):
             _enrich_leases_with_badges([lease], server, 4, can_delete=False, can_change=True)
@@ -3271,9 +3336,17 @@ class TestPendingIpChangeDetection(_ViewTestBase):
         server = self.server
         lease = {"ip_address": "10.0.0.10", "hw_address": "aa:bb:cc:dd:ee:01", "subnet_id": 1}
         with (
-            patch("netbox_kea.views.leases._fetch_reservation_by_ip_for_leases", return_value=({}, True, set())),
-            patch("netbox_kea.views.leases._fetch_reservation_by_mac_for_leases", side_effect=RuntimeError("boom")),
-            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
+            patch(
+                "netbox_kea.views.leases._fetch_reservation_by_ip_for_leases",
+                return_value=({}, True, set()),
+                autospec=True,
+            ),
+            patch(
+                "netbox_kea.views.leases._fetch_reservation_by_mac_for_leases",
+                side_effect=RuntimeError("boom"),
+                autospec=True,
+            ),
+            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}, autospec=True),
             stub_kea({"reservation-get": {"result": 3}}),
         ):
             _enrich_leases_with_badges([lease], server, 4, can_delete=False, can_change=True)
@@ -3309,7 +3382,7 @@ class TestPendingIpChangeBadgeRendering(_ViewTestBase):
             }
         )
 
-    @patch("netbox_kea.views.leases._fetch_reservation_by_mac_for_leases")
+    @patch("netbox_kea.views.leases._fetch_reservation_by_mac_for_leases", autospec=True)
     def test_pending_ip_badge_renders_in_response(self, mock_mac_fetch):
         """The lease table must show a 'Pending' badge with the reserved IP when pending change detected."""
         mock_mac_fetch.return_value = ({("aa:bb:cc:dd:ee:01", 7): self._MAC_RSV}, set())
@@ -3320,7 +3393,7 @@ class TestPendingIpChangeBadgeRendering(_ViewTestBase):
         self.assertContains(response, "Pending")
         self.assertContains(response, "10.0.0.20")
 
-    @patch("netbox_kea.views.leases._fetch_reservation_by_mac_for_leases")
+    @patch("netbox_kea.views.leases._fetch_reservation_by_mac_for_leases", autospec=True)
     def test_pending_ip_badge_does_not_show_sync_button(self, mock_mac_fetch):
         """When pending IP change detected, the Sync button must NOT appear."""
         mock_mac_fetch.return_value = ({("aa:bb:cc:dd:ee:01", 7): self._MAC_RSV}, set())
@@ -3597,7 +3670,7 @@ class TestGetLeasesPageMalformedResponse(_ViewTestBase):
         # A non-dict entry can't survive the real command's result-code check
         # (check_response would TypeError first), so this defensive guard is only
         # reachable by returning it straight from command() — mock that one method.
-        with patch.object(KeaClient, "command", return_value=["not-a-dict"]):
+        with patch.object(KeaClient, "command", return_value=["not-a-dict"], autospec=True):
             response = self._htmx_get(self._url(), {"by": "subnet", "q": "10.0.0.0/24"})
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "error")
@@ -3747,7 +3820,7 @@ class TestLeaseDeletePartialFailure(_ViewTestBase):
         has_error = any("see server logs" in t for t in msg_texts)
         self.assertTrue(has_error, f"Expected transport error message, got: {msg_texts}")
 
-    @patch("netbox_kea.views.leases._add_lease_journal")
+    @patch("netbox_kea.views.leases._add_lease_journal", autospec=True)
     def test_journal_database_error_still_completes(self, mock_journal):
         """DatabaseError from journal creation must not prevent deletion from completing."""
         from django.db import DatabaseError

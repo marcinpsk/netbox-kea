@@ -139,7 +139,7 @@ class TestServerAddView(_ViewTestBase):
         from django.core.exceptions import ValidationError
 
         url = reverse("plugins:netbox_kea:server_add")
-        with patch.object(Server, "clean", side_effect=ValidationError("unreachable")):
+        with patch.object(Server, "clean", side_effect=ValidationError("unreachable"), autospec=True):
             response = self.client.post(
                 url,
                 {

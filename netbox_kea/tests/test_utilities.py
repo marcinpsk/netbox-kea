@@ -297,28 +297,28 @@ class TestCheckDhcpEnabled(TestCase):
 
     def test_version4_enabled_returns_none(self):
         server = self._make_server(dhcp4=True)
-        with patch("netbox_kea.utilities.redirect") as mock_redirect:
+        with patch("netbox_kea.utilities.redirect", autospec=True) as mock_redirect:
             result = check_dhcp_enabled(server, 4)
         self.assertIsNone(result)
         mock_redirect.assert_not_called()
 
     def test_version6_enabled_returns_none(self):
         server = self._make_server(dhcp6=True)
-        with patch("netbox_kea.utilities.redirect") as mock_redirect:
+        with patch("netbox_kea.utilities.redirect", autospec=True) as mock_redirect:
             result = check_dhcp_enabled(server, 6)
         self.assertIsNone(result)
         mock_redirect.assert_not_called()
 
     def test_version4_disabled_returns_redirect(self):
         server = self._make_server(dhcp4=False)
-        with patch("netbox_kea.utilities.redirect", return_value="<redirect>") as mock_redirect:
+        with patch("netbox_kea.utilities.redirect", return_value="<redirect>", autospec=True) as mock_redirect:
             result = check_dhcp_enabled(server, 4)
         self.assertEqual(result, "<redirect>")
         mock_redirect.assert_called_once_with("/plugins/kea/servers/1/")
 
     def test_version6_disabled_returns_redirect(self):
         server = self._make_server(dhcp6=False)
-        with patch("netbox_kea.utilities.redirect", return_value="<redirect>") as mock_redirect:
+        with patch("netbox_kea.utilities.redirect", return_value="<redirect>", autospec=True) as mock_redirect:
             result = check_dhcp_enabled(server, 6)
         self.assertEqual(result, "<redirect>")
         mock_redirect.assert_called_once_with("/plugins/kea/servers/1/")
@@ -1026,7 +1026,7 @@ class TestExportTable(TestCase):
             table.available_columns = []
         return export_table(table, filename, use_selected_columns=use_selected_columns)
 
-    @patch("netbox_kea.utilities.TableExport")
+    @patch("netbox_kea.utilities.TableExport", autospec=True)
     def test_returns_http_response(self, MockExport):
         """export_table returns the HttpResponse from TableExport.response()."""
         from django.http import HttpResponse
@@ -1040,7 +1040,7 @@ class TestExportTable(TestCase):
         self.assertIsNotNone(result)
         mock_exp.response.assert_called_once_with(filename="test.csv")
 
-    @patch("netbox_kea.utilities.TableExport")
+    @patch("netbox_kea.utilities.TableExport", autospec=True)
     def test_pk_and_actions_always_excluded(self, MockExport):
         """pk and actions columns are always excluded regardless of use_selected_columns."""
         mock_exp = MagicMock()  # mock-ok: TableExport instance (external lib, patched)
@@ -1054,7 +1054,7 @@ class TestExportTable(TestCase):
         self.assertIn("pk", exclude_columns)
         self.assertIn("actions", exclude_columns)
 
-    @patch("netbox_kea.utilities.TableExport")
+    @patch("netbox_kea.utilities.TableExport", autospec=True)
     def test_use_selected_columns_adds_available_columns(self, MockExport):
         """When use_selected_columns=True, all available_columns names are also excluded."""
         mock_exp = MagicMock()  # mock-ok: TableExport instance (external lib, patched)
@@ -1074,7 +1074,7 @@ class TestExportTable(TestCase):
         self.assertIn("ip_address", exclude_columns)
         self.assertIn("hostname", exclude_columns)
 
-    @patch("netbox_kea.utilities.TableExport")
+    @patch("netbox_kea.utilities.TableExport", autospec=True)
     def test_use_selected_columns_false_leaves_available_columns_in(self, MockExport):
         """When use_selected_columns=False (default), available_columns are NOT excluded."""
         mock_exp = MagicMock()  # mock-ok: TableExport instance (external lib, patched)

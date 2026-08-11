@@ -844,7 +844,11 @@ class TestReservation4AddExceptions(_ViewTestBase):
         """
         post_data = {**_VALID_RESERVATION4_POST, "sync_to_netbox": "on"}
         with (
-            patch("netbox_kea.views.reservations.sync_reservation_to_netbox", side_effect=ValueError("sync fail")),
+            patch(
+                "netbox_kea.views.reservations.sync_reservation_to_netbox",
+                side_effect=ValueError("sync fail"),
+                autospec=True,
+            ),
             stub_kea(
                 {
                     "subnet4-list": _SUBNET4_LIST_STUB,
@@ -1025,7 +1029,11 @@ class TestReservation4EditExceptions(_ViewTestBase):
         """Successful update where sync raises must show a warning."""
         post_data = {**_VALID_RESERVATION4_EDIT_POST, "sync_to_netbox": "on"}
         with (
-            patch("netbox_kea.views.reservations.sync_reservation_to_netbox", side_effect=ValueError("oops")),
+            patch(
+                "netbox_kea.views.reservations.sync_reservation_to_netbox",
+                side_effect=ValueError("oops"),
+                autospec=True,
+            ),
             stub_kea(
                 {
                     "subnet4-get": _subnet_get(4, subnet_cidr=_SUBNET4_CIDR),
@@ -1262,7 +1270,7 @@ class TestReservation6AddOptionDataAndSync(_ViewTestBase):
             f"Expected sync success message, got: {[m.message for m in msgs]}",
         )
 
-    @patch("netbox_kea.views.reservations.sync_reservation_to_netbox")
+    @patch("netbox_kea.views.reservations.sync_reservation_to_netbox", autospec=True)
     def test_post_sync_exception_shows_warning(self, mock_sync):
         """sync raises exception → warning message queued (reservation still created)."""
         mock_sync.side_effect = ValueError("sync failed")
@@ -1443,7 +1451,7 @@ class TestReservation6EditOptionDataAndSync(_ViewTestBase):
             f"Expected INFO message on sync success, got: {[(m.level, m.message) for m in msgs]}",
         )
 
-    @patch("netbox_kea.views.reservations.sync_reservation_to_netbox")
+    @patch("netbox_kea.views.reservations.sync_reservation_to_netbox", autospec=True)
     def test_post_sync_exception(self, mock_sync):
         """sync exception → warning message queued (reservation still updated)."""
         mock_sync.side_effect = ValueError("sync fail")
@@ -1522,6 +1530,7 @@ class TestEnrichReservationsLeaseStatusCoverage(_ViewTestBase):
             patch(
                 "netbox_kea.views.reservations.concurrent.futures.as_completed",
                 side_effect=RuntimeError("as_completed failed"),
+                autospec=True,
             ) as mock_as_completed,
             stub_kea({"lease4-get-all": {"result": 3}}),
         ):
