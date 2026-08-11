@@ -28,7 +28,7 @@ from netbox_kea.models import Server
 from netbox_kea.views import _filter_reservations
 
 from .kea_stub import _config_get, _res_get, _res_page, _subnet_get, _subnet_list, queued, stub_kea
-from .utils import _PLUGINS_CONFIG, User, _make_db_server
+from .utils import _PLUGINS_CONFIG, User, _drop_subnet_choices_cache, _make_db_server
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Sample reservation fixtures
@@ -204,6 +204,7 @@ class _ReservationViewBase(TestCase):
         )
         self.client.force_login(self.user)
         self.server = _make_db_server()
+        _drop_subnet_choices_cache(self, self.server)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

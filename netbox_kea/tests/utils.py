@@ -42,6 +42,26 @@ def _make_db_server(**kwargs) -> Server:
     return Server.objects.create(**defaults)
 
 
+def _drop_subnet_choices_cache(test_case, server) -> None:
+    """Delete *server*'s cached subnet choices when the test ends.
+
+    Every view that renders the lease search or the reservation add form calls
+    ``fetch_subnet_choices()``, which writes into the *shared* cache backend. Each
+    test builds its own Server, so the keys never collide between tests, but they
+    would otherwise linger there for the whole TTL. Mirrors
+    ``TestFetchSubnetChoices._clear_cache``.
+    """
+    from django.core.cache import cache
+
+    from netbox_kea.views.leases import _subnet_choices_cache_key
+
+    def _drop():
+        for version in (4, 6):
+            cache.delete(_subnet_choices_cache_key(server, version))
+
+    test_case.addCleanup(_drop)
+
+
 def _kea_command_side_effect(cmd, service=None, arguments=None, check=None):
     """Return a plausible Kea API response for each command type."""
     if cmd == "status-get":
@@ -73,6 +93,7 @@ class _ViewTestBase(TestCase):
         )
         self.client.force_login(self.user)
         self.server = _make_db_server()
+        _drop_subnet_choices_cache(self, self.server)
 
     def _assert_no_none_pk_redirect(self, response):
         """Assert that a redirect URL never contains the string ``None`` as a pk."""

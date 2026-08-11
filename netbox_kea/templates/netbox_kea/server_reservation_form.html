@@ -54,7 +54,7 @@
           {% render_form form %}
           {% if subnet_choices %}
           {# Suggests the server's configured subnets on the Subnet CIDR field. Free typing #}
-          {# stays allowed — a <datalist> only suggests, it never constrains. #}
+          {# stays allowed: a datalist only suggests, it never constrains. #}
           <datalist id="{{ subnet_datalist_id }}">
             {% for cidr, sid in subnet_choices %}
             <option value="{{ cidr }}">{% if sid is not None %}id {{ sid }}{% endif %}</option>
