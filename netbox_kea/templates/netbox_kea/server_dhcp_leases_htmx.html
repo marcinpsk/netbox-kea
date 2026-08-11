@@ -20,11 +20,12 @@
           <div class="alert alert-danger" role="alert">{{ e }}</div>
         {% endfor %}
         {% if not form.subnet_cmds_available %}
-        <div class="alert alert-warning py-2 px-3 mb-3 small" role="alert">
-          <i class="mdi mdi-alert-circle-outline" aria-hidden="true"></i>
-          The <strong>subnet_cmds</strong> hook library is not loaded on this Kea server, so the
-          Search field cannot offer the configured subnets. Searching still works: type a subnet
-          CIDR or ID by hand.
+        <div class="alert alert-warning d-flex align-items-start py-2 px-3 mb-3 small" role="alert">
+          <i class="mdi mdi-alert-circle-outline me-2" aria-hidden="true"></i>
+          <div>
+            The <code>subnet_cmds</code> hook library is not loaded on this Kea server, so the Search
+            field cannot offer the configured subnets. Searching still works: type a subnet CIDR or ID.
+          </div>
         </div>
         {% endif %}
         {% render_form form %}

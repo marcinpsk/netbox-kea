@@ -1287,8 +1287,6 @@ class TestLeaseReserveBadge(_ReservationViewBase):
         "valid-lft": 3600,
         "state": 0,
     }
-    # The lease-search page fetches the subnet quick-select via config-get first.
-    _CONFIG4 = {"result": 0, "arguments": {"Dhcp4": {"subnet4": [{"id": 1, "subnet": "192.168.1.0/24"}]}}}
 
     def _htmx_get(self, data):
         url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
@@ -1299,7 +1297,7 @@ class TestLeaseReserveBadge(_ReservationViewBase):
         # reservation-get result 3 → no reservation → the row offers "+ Reserve".
         with stub_kea(
             {
-                "config-get": self._CONFIG4,
+                "subnet4-list": _SUBNET4_LIST_STUB,
                 "lease4-get": {"result": 0, "arguments": {**self._LEASE}},
                 "reservation-get": {"result": 3},
             }
@@ -1316,7 +1314,7 @@ class TestLeaseReserveBadge(_ReservationViewBase):
         ``config-get``, the add form from ``subnet_cmds``. Both must know the same id."""
         with stub_kea(
             {
-                "config-get": self._CONFIG4,
+                "subnet4-list": _SUBNET4_LIST_STUB,
                 "lease4-get": {"result": 0, "arguments": {**self._LEASE}},
                 "reservation-get": {"result": 3},
             }
@@ -1340,7 +1338,7 @@ class TestLeaseReserveBadge(_ReservationViewBase):
         reservation["ip-address"] = "192.168.1.200"
         with stub_kea(
             {
-                "config-get": self._CONFIG4,
+                "subnet4-list": _SUBNET4_LIST_STUB,
                 "lease4-get": {"result": 0, "arguments": {**self._LEASE}},
                 "reservation-get": {"result": 0, "arguments": reservation},
             }
@@ -2364,7 +2362,7 @@ class TestReservationSyncToNetBox(_ReservationViewBase):
         self.assertEqual(response.status_code, 302)
         self.assertFalse(self._synced_ip_exists())
 
-    @patch("netbox_kea.views.reservations.sync_reservation_to_netbox")
+    @patch("netbox_kea.views.reservations.sync_reservation_to_netbox", autospec=True)
     def test_post_add_sync_failure_still_redirects(self, mock_sync):
         """Sync failure is a warning; the Kea reservation creation still succeeds.
 
@@ -2750,7 +2748,7 @@ class TestSyncReservationCleanupFalse(_ReservationViewBase):
     def _add4_url(self):
         return reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk])
 
-    @patch("netbox_kea.views.reservations.sync_reservation_to_netbox")
+    @patch("netbox_kea.views.reservations.sync_reservation_to_netbox", autospec=True)
     def test_add_post_sync_calls_with_cleanup_false(self, mock_sync):
         """POSTing reservation add with sync_to_netbox=on passes cleanup=False.
 
@@ -2942,7 +2940,7 @@ class TestReservationSyncExceptionOnSuccess(_ReservationViewBase):
             "sync_to_netbox": "on",
         }
 
-    @patch("netbox_kea.views.reservations.sync_reservation_to_netbox")
+    @patch("netbox_kea.views.reservations.sync_reservation_to_netbox", autospec=True)
     def test_sync_failure_shows_warning_but_reservation_saved(self, mock_sync):
         """If sync_reservation_to_netbox raises, reservation add still redirects with warning.
 
@@ -3290,7 +3288,7 @@ class TestRunReservationSuccessSideEffectsSyncFail(_ReservationViewBase):
             "sync_to_netbox": "on",
         }
 
-    @patch("netbox_kea.views.reservations.sync_reservation_to_netbox")
+    @patch("netbox_kea.views.reservations.sync_reservation_to_netbox", autospec=True)
     def test_sync_db_error_shows_warning_reservation_still_created(self, mock_sync):
         """Reservation created in Kea; sync raises DatabaseError → warning shown, no 500.
 
@@ -3310,7 +3308,7 @@ class TestRunReservationSuccessSideEffectsSyncFail(_ReservationViewBase):
         self.assertTrue(any("sync failed" in m.lower() for m in msgs))
         self.assertFalse(any("db constraint violation" in m for m in msgs))
 
-    @patch("netbox_kea.views.reservations.sync_reservation_to_netbox")
+    @patch("netbox_kea.views.reservations.sync_reservation_to_netbox", autospec=True)
     def test_sync_validation_error_shows_warning(self, mock_sync):
         """sync raises ValidationError → warning shown, reservation still created."""
         from django.core.exceptions import ValidationError
