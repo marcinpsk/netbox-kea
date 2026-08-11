@@ -59,13 +59,6 @@ def _is_valid_lease_entry(entry: dict) -> bool:
     return True
 
 
-# The quick-select subnet list rarely changes, but ``config-get`` returns the
-# *entire* Kea server config (potentially large). Cache the derived choices so
-# the initial page render fetches once and subsequent HTMX paginations reuse the
-# cached list instead of re-hitting Kea on every page flip.
-_SUBNET_CHOICES_TTL = 300  # seconds (5 minutes)
-
-
 def _subnet_choices_cache_key(server: Server, version: int) -> str:
     return f"netbox_kea:lease_subnet_choices:{server.pk}:{version}"
 
@@ -73,19 +66,21 @@ def _subnet_choices_cache_key(server: Server, version: int) -> str:
 def fetch_subnet_choices(server: Server, version: int) -> list[tuple[str, int | None]]:
     """Return ``[(cidr, subnet_id), ...]`` for the server's configured subnets.
 
-    Two consumers share this return shape, so change it against both:
+    Feeds the lease-search Subnet / Subnet-ID combobox (an editable ``<datalist>`` on the
+    Search field): the CIDR drives a ``by=subnet`` search and the id a ``by=subnet_id``
+    search, so both are returned and the id may be missing.
 
-    * the lease-search Subnet / Subnet-ID combobox (an editable ``<datalist>`` on
-      the Search field), where the CIDR drives a ``by=subnet`` search and the id
-      drives a ``by=subnet_id`` search, so both are returned;
-    * the reservation add form (``views.reservations``), where the CIDR populates
-      the Subnet CIDR datalist and the id resolves a legacy ``?subnet_id=`` prefill.
+    Pulls the subnet list from ``config-get`` — including shared-network subnets — and
+    degrades to an empty list on any error so the search form still renders. ``config-get``
+    needs no hook library, which is why this datalist keeps working on a server without
+    ``subnet_cmds``. The reservation form deliberately does *not* share this list: its
+    suggestions must agree with the ``subnet_cmds`` lookup its POST performs, so it has
+    its own fetch in ``views.reservations``.
 
-    Pulls the subnet list from ``config-get`` — including shared-network subnets —
-    and degrades to an empty list on any error so the calling form still renders.
-    Successful results (including a legitimately empty list) are cached for
-    ``_SUBNET_CHOICES_TTL`` seconds per server+version; transient errors are not
-    cached so the next render retries.
+    ``config-get`` returns the *entire* server config, so successful results (including a
+    legitimately empty list) are cached for ``constants.SUBNET_CHOICES_TTL`` seconds per
+    server+version and HTMX paginations reuse them. Transient errors are not cached, so
+    the next render retries.
     """
     cache_key = _subnet_choices_cache_key(server, version)
     cached = cache.get(cache_key)
@@ -133,7 +128,7 @@ def fetch_subnet_choices(server: Server, version: int) -> list[tuple[str, int | 
         if isinstance(sn, dict):
             _collect(sn.get(f"subnet{version}"))
     choices.sort(key=subnet_sort_key)
-    cache.set(cache_key, choices, _SUBNET_CHOICES_TTL)
+    cache.set(cache_key, choices, constants.SUBNET_CHOICES_TTL)
     return choices
 
 

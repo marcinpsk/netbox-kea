@@ -754,16 +754,11 @@ class ServerReservations6View(generic.ObjectView):
         }
 
 
-#: The subnet list changes rarely, but the reservation add form fetches it on every GET
-#: and again on every re-render after a validation error. Cache it per server+version.
-_SUBNET_CHOICES_TTL = 300  # seconds (5 minutes)
-
-
-def _subnet_choices_cache_key(server: Server, version: int) -> str:
+def _reservation_choices_cache_key(server: Server, version: int) -> str:
     return f"netbox_kea:reservation_subnet_choices:{server.pk}:{version}"
 
 
-def fetch_subnet_choices(server: Server, version: int) -> tuple[list[tuple[str, int]], bool]:
+def fetch_reservation_subnet_choices(server: Server, version: int) -> tuple[list[tuple[str, int]], bool]:
     """Return ``(choices, subnet_cmds_available)`` for the reservation form's Subnet CIDR field.
 
     Reads the subnet list through ``subnet_cmds``, the same source
@@ -776,7 +771,7 @@ def fetch_subnet_choices(server: Server, version: int) -> tuple[list[tuple[str, 
     the form warns about that. Any other failure degrades to no suggestions, which
     still leaves the field usable by typing.
     """
-    cache_key = _subnet_choices_cache_key(server, version)
+    cache_key = _reservation_choices_cache_key(server, version)
     cached = cache.get(cache_key)
     if cached is not None:
         return cached
@@ -793,7 +788,7 @@ def fetch_subnet_choices(server: Server, version: int) -> tuple[list[tuple[str, 
         return [], True
     choices.sort(key=subnet_sort_key)
     result = (choices, True)
-    cache.set(cache_key, result, _SUBNET_CHOICES_TTL)
+    cache.set(cache_key, result, constants.SUBNET_CHOICES_TTL)
     return result
 
 
@@ -864,7 +859,7 @@ class _ReservationFormViewMixin:
         self, request: HttpRequest, server: Server, form: Any, options_formset: Any, return_url: str
     ) -> HttpResponse:
         """Render the add form with the server's subnet suggestions attached."""
-        subnet_choices, subnet_cmds_available = fetch_subnet_choices(server, self.dhcp_version)
+        subnet_choices, subnet_cmds_available = fetch_reservation_subnet_choices(server, self.dhcp_version)
         return self.render_form(
             request, server, form, options_formset, return_url, subnet_choices, subnet_cmds_available
         )
@@ -909,7 +904,7 @@ class ServerReservation4AddView(_ReservationFormViewMixin, _KeaChangeMixin, gene
             k: request.GET.get(k, "")
             for k in ("subnet_cidr", "ip_address", "identifier_type", "identifier", "hostname")
         }
-        subnet_choices, subnet_cmds_available = fetch_subnet_choices(server, self.dhcp_version)
+        subnet_choices, subnet_cmds_available = fetch_reservation_subnet_choices(server, self.dhcp_version)
         if not initial.get("subnet_cidr"):
             # Legacy prefill links pass the raw subnet id; map it to the CIDR.
             initial["subnet_cidr"] = _legacy_subnet_cidr(subnet_choices, request.GET.get("subnet_id", ""))
@@ -1008,7 +1003,7 @@ class ServerReservation6AddView(_ReservationFormViewMixin, _KeaChangeMixin, gene
             k: request.GET.get(k, "")
             for k in ("subnet_cidr", "ip_addresses", "prefixes", "identifier_type", "identifier", "hostname")
         }
-        subnet_choices, subnet_cmds_available = fetch_subnet_choices(server, self.dhcp_version)
+        subnet_choices, subnet_cmds_available = fetch_reservation_subnet_choices(server, self.dhcp_version)
         if not initial.get("subnet_cidr"):
             # Legacy prefill links pass the raw subnet id; map it to the CIDR.
             initial["subnet_cidr"] = _legacy_subnet_cidr(subnet_choices, request.GET.get("subnet_id", ""))

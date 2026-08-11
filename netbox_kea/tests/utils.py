@@ -53,13 +53,13 @@ def _drop_subnet_choices_cache(test_case, server) -> None:
     """
     from django.core.cache import cache
 
-    from netbox_kea.views.leases import _subnet_choices_cache_key as _lease_key
-    from netbox_kea.views.reservations import _subnet_choices_cache_key as _reservation_key
+    from netbox_kea.views.leases import _subnet_choices_cache_key
+    from netbox_kea.views.reservations import _reservation_choices_cache_key
 
     def _drop():
         for version in (4, 6):
-            cache.delete(_lease_key(server, version))
-            cache.delete(_reservation_key(server, version))
+            cache.delete(_subnet_choices_cache_key(server, version))
+            cache.delete(_reservation_choices_cache_key(server, version))
 
     test_case.addCleanup(_drop)
 
