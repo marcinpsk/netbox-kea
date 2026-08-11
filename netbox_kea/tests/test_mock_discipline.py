@@ -3,8 +3,9 @@
 """The mock-discipline guard runs as part of the suite, plus self-tests of the analyzer.
 
 See ``netbox_kea/tests/mock_discipline.py`` for the policy: spec-less MagicMock/Mock used as
-object stand-ins are flagged; bound (``spec=``/``wraps=``), inline-``# mock-ok``-marked, or
-baseline-grandfathered usages are allowed.
+object stand-ins are flagged, as is patching our own code without ``autospec=``; bound
+(``spec=``/``wraps=``/``autospec=``), inline-``# mock-ok``-marked, or baseline-grandfathered
+usages are allowed.
 """
 
 from __future__ import annotations
@@ -176,6 +177,91 @@ def test_baseline_budget_allows_grandfathered_but_not_excess(tmp_path):
     assert unapproved(root=pkg, baseline={"test_thing.py::test_x": 2}) == []
 
 
+# ── unspecced patches of first-party code ────────────────────────────────────────────
+
+
+_PATCH_IMPORT = "from unittest.mock import patch\n"
+
+
+def test_flags_unspecced_patch_of_first_party_target():
+    """``patch("netbox_kea...")`` yields the same fabricating MagicMock as ``MagicMock()``."""
+    src = _PATCH_IMPORT + '\n@patch("netbox_kea.views.leases.fetch_subnet_choices")\ndef test_x(m):\n    pass\n'
+    hits = scan_source(src, "t.py")
+    assert len(hits) == 1
+    assert hits[0].kind == "patch"
+    assert hits[0].qualname == "test_x"
+
+
+def test_accepts_autospecced_patch():
+    src = (
+        _PATCH_IMPORT
+        + '\n@patch("netbox_kea.views.leases.fetch_subnet_choices", autospec=True)\ndef test_x(m):\n    pass\n'
+    )
+    assert scan_source(src, "t.py") == []
+
+
+def test_accepts_patch_given_a_ready_made_replacement():
+    """``new=``/``new_callable=`` and the positional form all supply a real object."""
+    for call in (
+        'patch("netbox_kea.x.y", new=object())',
+        'patch("netbox_kea.x.y", new_callable=lambda: object())',
+        'patch("netbox_kea.x.y", object())',
+    ):
+        assert scan_source(f"{_PATCH_IMPORT}\ndef test_x():\n    with {call}:\n        pass\n", "t.py") == [], call
+
+
+def test_ignores_patches_of_real_external_boundaries():
+    """Stubbing the HTTP boundary is the endorsed pattern, not a discipline violation."""
+    src = _PATCH_IMPORT + '\n@patch("requests.Session.post")\ndef test_x(m):\n    pass\n'
+    assert scan_source(src, "t.py") == []
+
+
+def test_flags_patch_object_on_an_imported_first_party_name():
+    src = "from unittest.mock import patch\nfrom netbox_kea.models import Server\n\ndef test_x():\n    with patch.object(Server, 'get_client'):\n        pass\n"
+    hits = scan_source(src, "t.py")
+    assert [h.kind for h in hits] == ["patch"]
+
+
+def test_flags_patch_object_through_a_relative_import():
+    """Test modules import their own package relatively; those targets are ours too."""
+    src = "from unittest.mock import patch\nfrom ..models import Server\n\ndef test_x():\n    with patch.object(Server, 'get_client'):\n        pass\n"
+    assert [h.kind for h in scan_source(src, "t.py")] == ["patch"]
+
+
+def test_ignores_patch_object_on_a_non_first_party_name():
+    src = "from unittest.mock import patch\nimport requests\n\ndef test_x():\n    with patch.object(requests.Session, 'post'):\n        pass\n"
+    assert scan_source(src, "t.py") == []
+
+
+def test_ignores_patch_dict():
+    """``patch.dict`` swaps dictionary contents; no mock object is created."""
+    src = "from unittest.mock import patch\nfrom netbox_kea import constants\n\ndef test_x():\n    with patch.dict(constants.THING, {}):\n        pass\n"
+    assert scan_source(src, "t.py") == []
+
+
+def test_patch_marker_opt_out_is_honoured():
+    src = (
+        _PATCH_IMPORT
+        + "\n# mock-ok: the real job enqueues to a live queue\n"
+        + '@patch("netbox_kea.jobs.KeaIpamSyncJob")\ndef test_x(m):\n    pass\n'
+    )
+    assert scan_source(src, "t.py") == []
+
+
+def test_patch_and_mock_violations_share_one_baseline_budget(tmp_path):
+    """Both shapes count against the same per-site allowance."""
+    src = (
+        "from unittest.mock import MagicMock, patch\n\n"
+        "def test_x():\n"
+        "    row = MagicMock()\n"
+        '    with patch("netbox_kea.x.y"):\n'
+        "        pass\n"
+    )
+    hits = scan_source(src, "t.py")
+    assert sorted(h.kind for h in hits) == ["mock", "patch"]
+    assert _counts_by_site(hits) == {"t.py::test_x": 2}
+
+
 def test_scan_tree_skips_the_guard_and_its_test():
     """The guard never reports its own files (which mention mock class names)."""
     files = {v.path for v in scan_tree()}
@@ -188,6 +274,11 @@ def test_violation_str_format():
     v = Violation("sub/test_x.py", 12, "TestC.test_y", "MagicMock")
     assert str(v) == "sub/test_x.py:12: unapproved MagicMock() in TestC.test_y()"
     assert v.site == "sub/test_x.py::TestC.test_y"
+
+
+def test_patch_violation_str_names_the_target():
+    v = Violation("sub/test_x.py", 12, "TestC.test_y", "'netbox_kea.x.y'", kind="patch")
+    assert str(v) == "sub/test_x.py:12: unspecced patch of first-party 'netbox_kea.x.y' in TestC.test_y()"
 
 
 def test_comment_lines_handles_unparsable_source():

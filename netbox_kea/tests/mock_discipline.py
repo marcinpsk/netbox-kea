@@ -9,17 +9,28 @@ mock. Mocks are a last resort reserved for true external boundaries you cannot r
 (third-party network calls, paid/destructive/nondeterministic side effects), and even there
 a ``spec=``-bounded mock or a real fake (a recorded HTTP fixture) beats a bare one.
 
-This scanner is deliberately a bit too aggressive: it flags every instantiation of a
-fabricating mock class, then lets you carve out the legitimate cases three ways —
+Two shapes are flagged, because they produce the same object:
+
+  * **Instantiation** — ``MagicMock()``, ``Mock()``, ``AsyncMock()`` and friends.
+  * **Patching our own code** — ``patch("netbox_kea.x.y")`` or ``patch.object(Server, "z")``
+    without ``autospec=``. ``patch`` hands back a plain ``MagicMock``, so the same
+    fabrication applies and the test also survives a signature change in the real function.
+    Only ``netbox_kea`` targets count: patching ``requests.Session.post`` is the endorsed
+    way to stub the one boundary the suite cannot run.
+
+This scanner is deliberately a bit too aggressive: it flags every such call, then lets you
+carve out the legitimate cases three ways —
 
   1. **Bound it.** ``MagicMock(spec=KeaClient)`` / ``spec_set=`` / ``create_autospec`` /
      ``wraps=real_obj`` restrict (or delegate) attribute access to a real interface, so the
-     fabrication footgun is gone. These are never flagged.
+     fabrication footgun is gone. For ``patch`` that is ``autospec=True``, or ``new=`` /
+     ``new_callable=`` when you supply the replacement yourself. These are never flagged.
   2. **Mark it.** An inline ``# mock-ok: <reason>`` comment on the statement records a
      reviewed, deliberate boundary mock. Preferred for new code — it documents *why*.
-  3. **Grandfather it.** ``netbox_kea/tests/mock_discipline_baseline.txt`` records the count
-     of currently-accepted spec-less mocks per (file, function). New ones beyond the recorded
-     count fail the guard. Regenerate after an intentional change with::
+  3. **Grandfather it.** ``netbox_kea/tests/mock_discipline_baseline.txt`` records how many
+     unbounded calls are currently accepted per (file, function), counting both shapes
+     together. New ones beyond the recorded count fail the guard. Regenerate after an
+     intentional change with::
 
          python3 netbox_kea/tests/mock_discipline.py --update-baseline
 
@@ -53,6 +64,10 @@ _FABRICATING_MOCKS = {"MagicMock", "NonCallableMagicMock", "Mock", "NonCallableM
 INCLUDE_ASYNCMOCK = True
 # Keyword args that bound a mock to a real interface (or delegate to a real object).
 _BOUNDING_KWARGS = {"spec", "spec_set", "autospec", "wraps"}
+# The same for patch(), which additionally accepts a ready-made replacement object.
+_PATCH_BOUNDING_KWARGS = _BOUNDING_KWARGS | {"new", "new_callable"}
+# Import prefix that marks a patch target as our own code rather than a real boundary.
+_FIRST_PARTY = "netbox_kea"
 # Inline opt-out marker (in a comment): `# mock-ok` or `# mock-ok: reason`.
 _MARKER = "mock-ok"
 # Files the scanner never inspects (itself + its own test).
@@ -65,12 +80,13 @@ def _targets() -> set[str]:
 
 @dataclass(frozen=True)
 class Violation:
-    """One flagged mock instantiation."""
+    """One flagged mock instantiation or unspecced first-party patch."""
 
     path: str  # posix relpath from tests/
     lineno: int
     qualname: str  # enclosing function/class path, or "<module>"
-    mock: str  # the mock class name
+    mock: str  # the mock class name, or the patch target for kind="patch"
+    kind: str = "mock"  # "mock" (a fabricating class) or "patch" (an unspecced patch)
 
     @property
     def site(self) -> str:
@@ -78,6 +94,8 @@ class Violation:
         return f"{self.path}::{self.qualname}"
 
     def __str__(self) -> str:
+        if self.kind == "patch":
+            return f"{self.path}:{self.lineno}: unspecced patch of first-party {self.mock} in {self.qualname}()"
         return f"{self.path}:{self.lineno}: unapproved {self.mock}() in {self.qualname}()"
 
 
@@ -103,13 +121,34 @@ def _mock_import_aliases(tree: ast.AST) -> dict[str, str]:
     return aliases
 
 
+def _first_party_names(tree: ast.AST) -> set[str]:
+    """Local names bound to something imported from this plugin.
+
+    Lets ``patch.object(Server, "get_client")`` be recognised as patching our own code,
+    the same as the dotted-string form ``patch("netbox_kea.models.Server.get_client")``.
+    Relative imports count: every test module lives inside the package.
+    """
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            if node.level > 0 or module.split(".")[0] == _FIRST_PARTY:
+                names.update(alias.asname or alias.name for alias in node.names)
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.split(".")[0] == _FIRST_PARTY:
+                    names.add((alias.asname or alias.name).split(".")[0])
+    return names
+
+
 class _Scanner(ast.NodeVisitor):
     """Collect fabricating-mock instantiations that are neither bounded nor marked."""
 
-    def __init__(self, rel: str, comments: dict[int, str], aliases: dict[str, str]):
+    def __init__(self, rel: str, comments: dict[int, str], aliases: dict[str, str], first_party: set[str]):
         self._rel = rel
         self._comments = comments
         self._aliases = aliases
+        self._first_party = first_party
         self._scope: list[str] = []
         self.hits: list[Violation] = []
 
@@ -134,7 +173,50 @@ class _Scanner(ast.NodeVisitor):
         name = self._mock_class(node.func)
         if name and not self._is_bounded(node) and not self._is_marked(node):
             self.hits.append(Violation(self._rel, node.lineno, self._qual(), name))
+        target = self._unspecced_first_party_patch(node)
+        if target and not self._is_marked(node):
+            self.hits.append(Violation(self._rel, node.lineno, self._qual(), target, kind="patch"))
         self.generic_visit(node)
+
+    def _unspecced_first_party_patch(self, node: ast.Call) -> str | None:
+        """Return the patched first-party target, or None if this call is fine.
+
+        ``patch("netbox_kea.x.y")`` hands the caller a plain ``MagicMock``: it accepts any
+        signature and fabricates any attribute, so the test keeps passing after the real
+        function changes shape. ``autospec=True`` (or ``spec``/``new``/``new_callable``/
+        ``wraps``) binds the replacement to the real object instead. Only first-party
+        targets are flagged — patching ``requests.Session.post`` is the endorsed way to
+        stub the one boundary the suite cannot run.
+        """
+        func = node.func
+        if isinstance(func, ast.Attribute) and func.attr == "object":
+            # patch.object(target, "attribute"[, new]) — a third positional is `new`.
+            if not self._is_patch(func.value) or len(node.args) >= 3 or self._is_patch_bounded(node):
+                return None
+            root = node.args[0] if node.args else None
+            while isinstance(root, ast.Attribute):
+                root = root.value
+            if isinstance(root, ast.Name) and root.id in self._first_party:
+                return ast.unparse(node.args[0])
+            return None
+        # patch("dotted.target"[, new]) — a second positional is `new`.
+        if not self._is_patch(func) or len(node.args) >= 2 or self._is_patch_bounded(node):
+            return None
+        target = node.args[0] if node.args else None
+        if isinstance(target, ast.Constant) and isinstance(target.value, str):
+            if target.value.split(".")[0] == _FIRST_PARTY:
+                return repr(target.value)
+        return None
+
+    def _is_patch(self, func: ast.expr) -> bool:
+        """True for ``patch``, an aliased import of it, or ``<module>.patch``."""
+        if isinstance(func, ast.Attribute):
+            return func.attr == "patch"
+        return isinstance(func, ast.Name) and self._aliases.get(func.id) == "patch"
+
+    @staticmethod
+    def _is_patch_bounded(node: ast.Call) -> bool:
+        return any(kw.arg in _PATCH_BOUNDING_KWARGS for kw in node.keywords)
 
     def _mock_class(self, func: ast.expr) -> str | None:
         targets = _targets()
@@ -168,7 +250,7 @@ class _Scanner(ast.NodeVisitor):
 def scan_source(src: str, rel: str = "<source>") -> list[Violation]:
     """Scan one module's source text and return its mock-discipline violations."""
     tree = ast.parse(src, filename=rel)
-    scanner = _Scanner(rel, _comment_lines(src), _mock_import_aliases(tree))
+    scanner = _Scanner(rel, _comment_lines(src), _mock_import_aliases(tree), _first_party_names(tree))
     scanner.visit(tree)
     return scanner.hits
 
