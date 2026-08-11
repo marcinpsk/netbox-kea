@@ -5267,6 +5267,29 @@ class TestReservationGetByIpMalformedSubnets(TestCase):
             result = self.client.reservation_get_by_ip(4, "10.0.0.5")
         self.assertIsNone(result)
 
+    def test_non_integer_id_is_skipped_and_the_scan_continues(self):
+        """A present but unusable id must be skipped like a missing one, not sent to Kea.
+
+        Both entries contain the address. Sending ``"subnet-id": "99"`` makes Kea reject
+        the command, which raises and aborts the scan before the valid subnet is tried.
+        """
+        for bad_id in ("99", True, None, 1.5):
+            with self.subTest(bad_id=bad_id):
+                subnets = [
+                    {"subnet": "10.0.0.0/25", "id": bad_id},  # contains .5, unusable id
+                    {"subnet": "10.0.0.0/24", "id": 1},  # contains .5, valid
+                ]
+                with patch.object(
+                    self.client._session,
+                    "post",
+                    side_effect=_side_effects(self._subnet_list_resp(subnets), self._RESERVATION_FOUND),
+                ) as mock_post:
+                    result = self.client.reservation_get_by_ip(4, "10.0.0.5")
+                self.assertIsNotNone(result)
+                # The reservation-get must carry the valid id, never the unusable one.
+                second = mock_post.call_args_list[1].kwargs["json"]
+                self.assertEqual(second["arguments"]["subnet-id"], 1)
+
 
 class TestNetworkUpdateClearInterface(TestCase):
     """network_update with interface='' removes the interface key (line 563)."""

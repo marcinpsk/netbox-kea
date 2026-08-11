@@ -48,6 +48,11 @@ def subnet_sort_key(choice: tuple[str, Any]) -> tuple[int, Any]:
 
 
 def _subnet_choices_cache_key(server: Server, version: int) -> str:
+    """Cache key for one server's subnet list, scoped per DHCP version.
+
+    A dual-stack server routes v4 and v6 to different daemons with different subnets,
+    so the version must be part of the key.
+    """
     return f"netbox_kea:subnet_choices:{server.pk}:{version}"
 
 

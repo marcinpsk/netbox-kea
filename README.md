@@ -92,7 +92,7 @@ NetBox plugin for the [Kea DHCP](https://www.isc.org/kea/) server. Manage your D
 
 The plugin degrades gracefully when optional hooks are absent — tabs for unavailable features are hidden automatically. Two pages offer the server's configured subnets as suggestions and read them through `subnet_cmds`; without that hook each says so in a banner rather than silently offering nothing:
 
-- **Lease search** keeps working — the subnet quick-select is empty, so type a subnet CIDR or ID.
+- **Lease search** keeps working: the Search field offers no subnet suggestions, so type a subnet CIDR or ID.
 - **Add reservation** cannot save, because resolving the entered CIDR to a Kea subnet ID needs `subnet_cmds`. Load the hook first.
 
 ---

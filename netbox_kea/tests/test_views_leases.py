@@ -165,7 +165,7 @@ class TestReservedBadgeOnLeases(_ViewTestBase):
         "subnet-id": 1,
         "hostname": "testhost",
     }
-    # The lease-search page fetches the subnet quick-select via config-get first.
+    # The lease-search page fetches the subnet suggestions via subnet{v}-list first.
     _SUBNETS4 = _subnet_list(4, [{"id": 1, "subnet": "192.168.1.0/24"}])
 
     def _htmx_get(self, url, data):
@@ -241,7 +241,7 @@ class TestLeaseSearchPaths(_ViewTestBase):
     De-mocked: exercises the real ``KeaClient`` so the actual request payload built
     by ``KeaClient.command()`` — command name, ``arguments``, and ``service`` — is
     asserted, not a ``MagicMock`` call-arg. Only the HTTP boundary
-    (``requests.Session.post``) is stubbed. A search issues ``config-get`` (subnet
+    (``requests.Session.post``) is stubbed. A search issues ``subnet{v}-list`` (subnet
     quick-select) → ``lease{v}-get…`` → per-lease ``reservation-get`` enrichment.
     """
 
@@ -254,7 +254,7 @@ class TestLeaseSearchPaths(_ViewTestBase):
         "valid-lft": 3600,
         "cltt": 1_700_000_000,
     }
-    # The lease-search page fetches the subnet quick-select via config-get first.
+    # The lease-search page fetches the subnet suggestions via subnet{v}-list first.
     _SUBNETS4 = _subnet_list(4, [{"id": 1, "subnet": "10.0.0.0/24"}])
     _SUBNETS6 = _subnet_list(6, [{"id": 1, "subnet": "2001:db8::/64"}])
     # Reservation enrichment runs for every returned lease; "not found" (result 3)
@@ -969,7 +969,7 @@ class TestLeaseStateFilter(_ViewTestBase):
     def _url4(self):
         return reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
 
-    # Subnet quick-select fetched via config-get; reservation enrichment finds none.
+    # Subnet suggestions fetched via subnet4-list; reservation enrichment finds none.
     _SUBNETS4 = _subnet_list(4, [{"id": 1, "subnet": "10.0.0.0/24"}])
 
     def test_state_column_rendered_in_table(self):

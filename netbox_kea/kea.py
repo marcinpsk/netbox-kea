@@ -431,9 +431,13 @@ class KeaClient:
                 continue
             if target not in network:
                 continue
-            if "id" not in subnet:
+            subnet_id = subnet.get("id")
+            # An unusable id must be skipped, not sent: Kea rejects the command, which
+            # would abort the scan before a later valid subnet is tried. bool is an int
+            # subclass, so `True` needs its own check.
+            if isinstance(subnet_id, bool) or not isinstance(subnet_id, int):
                 continue
-            reservation = self.reservation_get(service, subnet["id"], ip_address=ip_address)
+            reservation = self.reservation_get(service, subnet_id, ip_address=ip_address)
             if reservation is not None:
                 return reservation
         return None

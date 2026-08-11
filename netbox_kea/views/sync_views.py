@@ -88,7 +88,7 @@ class ServerLease4SyncView(_BaseSyncView):
             lease = client.lease_get_by_ip(4, ip_str)
             return lease if lease else None
         except (KeaException, requests.RequestException, ValueError):
-            logger.warning("Failed to fetch live lease4 data for %s", ip_str, exc_info=True)
+            logger.exception("Failed to fetch live lease4 data for %s", ip_str)
             return None
 
     def _sync(self, data: dict):
@@ -107,7 +107,7 @@ class ServerLease6SyncView(_BaseSyncView):
             lease = client.lease_get_by_ip(6, ip_str)
             return lease if lease else None
         except (KeaException, requests.RequestException, ValueError):
-            logger.warning("Failed to fetch live lease6 data for %s", ip_str, exc_info=True)
+            logger.exception("Failed to fetch live lease6 data for %s", ip_str)
             return None
 
     def _sync(self, data: dict):
@@ -126,7 +126,7 @@ class ServerReservation4SyncView(_BaseSyncView):
             reservation = client.reservation_get_by_ip(4, ip_str)
             return reservation if reservation else None
         except (KeaException, requests.RequestException, ValueError, RuntimeError):
-            logger.warning("Could not fetch live reservation4 data for %s", ip_str, exc_info=True)
+            logger.exception("Could not fetch live reservation4 data for %s", ip_str)
             return None
 
     def _sync(self, data: dict):
@@ -145,7 +145,7 @@ class ServerReservation6SyncView(_BaseSyncView):
             reservation = client.reservation_get_by_ip(6, ip_str)
             return reservation if reservation else None
         except (KeaException, requests.RequestException, ValueError, RuntimeError):
-            logger.warning("Could not fetch live reservation6 data for %s", ip_str, exc_info=True)
+            logger.exception("Could not fetch live reservation6 data for %s", ip_str)
             return None
 
     def _sync(self, data: dict):

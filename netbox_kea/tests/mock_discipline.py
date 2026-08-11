@@ -121,6 +121,13 @@ def _mock_import_aliases(tree: ast.AST) -> dict[str, str]:
     return aliases
 
 
+def _is_mock_default(node: ast.expr) -> bool:
+    """True for the ``DEFAULT`` sentinel, written bare or as ``<module>.DEFAULT``."""
+    if isinstance(node, ast.Attribute):
+        return node.attr == "DEFAULT"
+    return isinstance(node, ast.Name) and node.id == "DEFAULT"
+
+
 def _first_party_names(tree: ast.AST) -> set[str]:
     """Local names bound to something imported from this plugin.
 
@@ -216,7 +223,15 @@ class _Scanner(ast.NodeVisitor):
 
     @staticmethod
     def _is_patch_bounded(node: ast.Call) -> bool:
-        return any(kw.arg in _PATCH_BOUNDING_KWARGS for kw in node.keywords)
+        for kw in node.keywords:
+            if kw.arg not in _PATCH_BOUNDING_KWARGS:
+                continue
+            # `new=DEFAULT` is what patch() uses to mean "not given", so it builds the
+            # same unspecced MagicMock as omitting it. It binds nothing.
+            if kw.arg == "new" and _is_mock_default(kw.value):
+                continue
+            return True
+        return False
 
     def _mock_class(self, func: ast.expr) -> str | None:
         targets = _targets()

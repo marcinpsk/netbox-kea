@@ -1310,8 +1310,8 @@ class TestLeaseReserveBadge(_ReservationViewBase):
         """The lease page's '+ Reserve' link carries subnet_id=; the add form it points to
         must resolve that into subnet_cidr, not leave the field blank.
 
-        The two pages read different Kea sources: the lease page numbers subnets from
-        ``config-get``, the add form from ``subnet_cmds``. Both must know the same id."""
+        Both pages read the subnet list through ``subnet_cmds``, so the id the lease page
+        puts in the link is one the add form can resolve back to a CIDR."""
         with stub_kea(
             {
                 "subnet4-list": _SUBNET4_LIST_STUB,
