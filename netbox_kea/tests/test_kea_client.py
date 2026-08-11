@@ -291,6 +291,16 @@ class TestCheckResponse(TestCase):
     def test_empty_response_list_passes(self):
         check_response([], (0,))  # no items to check — passes trivially
 
+    def test_non_dict_entry_raises_runtime_error(self):
+        """A non-dict entry must raise RuntimeError, not TypeError, so callers' handlers catch it."""
+        with self.assertRaises(RuntimeError):
+            check_response(["not-a-dict"], (0,))
+
+    def test_entry_without_result_raises_runtime_error(self):
+        """An entry missing 'result' must raise RuntimeError, not KeyError."""
+        with self.assertRaises(RuntimeError):
+            check_response([{"text": "no result key"}], (0,))
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Phase 2: Reservation Management — helper method tests
@@ -3994,6 +4004,29 @@ class TestSubnetIdFromCidr(TestCase):
             self.client.subnet_id_from_cidr(4, "10.0.0.0/24")
 
     @patch("requests.Session.post")
+    def test_raises_runtime_error_when_response_entry_not_dict(self, mock_post):
+        """A non-dict envelope entry must surface as RuntimeError, not TypeError."""
+        mock_post.return_value = _mock_http_response(["not-a-dict"])
+        with self.assertRaises(RuntimeError):
+            self.client.subnet_id_from_cidr(4, "10.0.0.0/24")
+
+    @patch("requests.Session.post")
+    def test_raises_runtime_error_when_response_entry_has_no_result(self, mock_post):
+        """An envelope entry without 'result' must surface as RuntimeError, not KeyError."""
+        mock_post.return_value = _mock_http_response([{"arguments": {"subnets": []}}])
+        with self.assertRaises(RuntimeError):
+            self.client.subnet_id_from_cidr(4, "10.0.0.0/24")
+
+    @patch("requests.Session.post")
+    def test_raises_runtime_error_when_id_is_boolean(self, mock_post):
+        """``True`` is an int subclass; a boolean id is a malformed response, not a subnet id."""
+        mock_post.return_value = _mock_http_response(
+            [{"result": 0, "arguments": {"subnets": [{"id": True, "subnet": "10.0.0.0/24"}]}}]
+        )
+        with self.assertRaises(RuntimeError):
+            self.client.subnet_id_from_cidr(4, "10.0.0.0/24")
+
+    @patch("requests.Session.post")
     def test_raises_runtime_error_when_arguments_not_dict(self, mock_post):
         """arguments must be a dict."""
         mock_post.return_value = _mock_http_response([{"result": 0, "arguments": "not-a-dict"}])
@@ -4182,6 +4215,19 @@ class TestGetSubnetCidr(TestCase):
         with patch.object(self.client._session, "post", return_value=_mock_http_response([])):
             with self.assertRaises(RuntimeError):
                 self.client.get_subnet_cidr(version=6, subnet_id=1)
+
+    def test_raises_runtime_error_when_response_entry_not_dict(self):
+        """A non-dict envelope entry must surface as RuntimeError, not TypeError."""
+        with patch.object(self.client._session, "post", return_value=_mock_http_response(["not-a-dict"])):
+            with self.assertRaises(RuntimeError):
+                self.client.get_subnet_cidr(version=4, subnet_id=1)
+
+    def test_raises_runtime_error_when_response_entry_has_no_result(self):
+        """An envelope entry without 'result' must surface as RuntimeError, not KeyError."""
+        resp = [{"arguments": {"subnet4": [{"id": 1, "subnet": "10.0.0.0/24"}]}}]
+        with patch.object(self.client._session, "post", return_value=_mock_http_response(resp)):
+            with self.assertRaises(RuntimeError):
+                self.client.get_subnet_cidr(version=4, subnet_id=1)
 
     def test_raises_runtime_error_when_arguments_not_dict(self):
         """arguments must be a dict."""

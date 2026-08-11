@@ -351,7 +351,8 @@ class KeaClient:
                 if "id" not in subnet:
                     raise RuntimeError(f"subnet{version}-list matched {cidr!r} but the entry has no id: {subnet!r}")
                 subnet_id = subnet["id"]
-                if not isinstance(subnet_id, int):
+                # bool is an int subclass, so `True` would otherwise pass as a subnet id.
+                if isinstance(subnet_id, bool) or not isinstance(subnet_id, int):
                     raise RuntimeError(f"subnet{version}-list returned a non-integer id: {subnet_id!r}")
                 return subnet_id
         return None
@@ -1594,8 +1595,18 @@ class AmbiguousConfigSetError(PartialPersistError):
 
 
 def check_response(resp: list[KeaResponse], ok_codes: Sequence[int]) -> None:
-    """Raise a KeaException for any non 0 responses."""
+    """Raise a KeaException for any non 0 responses.
+
+    Raises:
+        RuntimeError: If an entry is not a dict or has no ``result``. Reading
+            ``kr["result"]`` unguarded would raise TypeError/KeyError instead,
+            which no caller catches, so a malformed payload became an HTTP 500.
+        KeaException: If a result code is not in *ok_codes*.
+
+    """
     for idx, kr in enumerate(resp):
+        if not isinstance(kr, dict) or "result" not in kr:
+            raise RuntimeError(f"Kea returned a malformed response entry at index {idx}: {kr!r}")
         if kr["result"] not in ok_codes:
             raise KeaException(kr, index=idx)
 
