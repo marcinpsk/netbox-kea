@@ -52,6 +52,15 @@
         <form method="post" id="reservation-form">
           {% csrf_token %}
           {% render_form form %}
+          {% if subnet_choices %}
+          {# Suggests the server's configured subnets on the Subnet CIDR field. Free typing #}
+          {# stays allowed — a <datalist> only suggests, it never constrains. #}
+          <datalist id="{{ subnet_datalist_id }}">
+            {% for cidr, sid in subnet_choices %}
+            <option value="{{ cidr }}">{% if sid is not None %}id {{ sid }}{% endif %}</option>
+            {% endfor %}
+          </datalist>
+          {% endif %}
 
           {# Advisory NetBox IPAM conflict check (Add mode only) — populated on IP blur. #}
           <div id="netbox-ip-check"></div>

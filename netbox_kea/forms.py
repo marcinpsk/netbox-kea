@@ -403,6 +403,7 @@ class Reservation4Form(forms.Form):
         label="Subnet CIDR",
         max_length=50,
         help_text="Subnet the reservation belongs to (e.g. <code>10.0.0.0/24</code>).",
+        widget=forms.TextInput(attrs={"list": constants.RESERVATION_SUBNET_DATALIST_ID}),
     )
     ip_address = forms.CharField(
         label="IP Address",
@@ -485,6 +486,7 @@ class Reservation6Form(forms.Form):
         label="Subnet CIDR",
         max_length=50,
         help_text="Subnet the reservation belongs to (e.g. <code>2001:db8::/48</code>).",
+        widget=forms.TextInput(attrs={"list": constants.RESERVATION_SUBNET_DATALIST_ID}),
     )
     ip_addresses = forms.CharField(
         label="IPv6 Addresses",

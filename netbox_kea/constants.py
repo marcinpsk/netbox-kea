@@ -8,6 +8,10 @@ BY_CLIENT_ID = "client_id"
 
 HEX_STRING_REGEX = r"^([0-9A-Fa-f]{2}[:-]?)*([0-9A-Fa-f]{2})$"
 
+# id of the <datalist> that suggests subnet CIDRs on the reservation add form.
+# Shared by the form widget's `list` attribute and the template that emits the element.
+RESERVATION_SUBNET_DATALIST_ID = "kea-reservation-subnet-cidrs"
+
 # kea/src/lib/dhcp
 # RFC8415 section 11.1
 DUID_MAX_OCTETS = 128
