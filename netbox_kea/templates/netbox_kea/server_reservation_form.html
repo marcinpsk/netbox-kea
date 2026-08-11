@@ -30,9 +30,9 @@
         <div class="alert alert-warning d-flex align-items-start mb-3" role="alert">
           <i class="mdi mdi-alert-circle-outline me-2 mt-1" aria-hidden="true"></i>
           <div>
-            <strong>The subnet_cmds hook library is not loaded on this Kea server.</strong>
-            Subnet suggestions are unavailable, and saving will fail because the Subnet CIDR
-            cannot be resolved to a Kea subnet ID. Load <code>subnet_cmds</code> on the server.
+            <strong>The <code>subnet_cmds</code> hook library is not loaded on this Kea server.</strong>
+            The Subnet CIDR field cannot offer the configured subnets, and saving will fail:
+            resolving a CIDR to its Kea subnet ID needs this hook. Load it on the server first.
           </div>
         </div>
         {% endif %}
@@ -67,7 +67,7 @@
           {# stays allowed: a datalist only suggests, it never constrains. #}
           <datalist id="{{ subnet_datalist_id }}">
             {% for cidr, sid in subnet_choices %}
-            <option value="{{ cidr }}">{% if sid is not None %}id {{ sid }}{% endif %}</option>
+            <option value="{{ cidr }}">id {{ sid }}</option>
             {% endfor %}
           </datalist>
           {% endif %}

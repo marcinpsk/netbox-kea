@@ -8,7 +8,6 @@ from urllib.parse import urlencode as _urlencode
 
 import requests
 from django.contrib import messages
-from django.core.cache import cache
 from django.core.exceptions import ValidationError
 from django.db import DatabaseError
 from django.db.utils import OperationalError, ProgrammingError
@@ -33,9 +32,9 @@ from ..utilities import (
     OptionalViewTab,
     check_dhcp_enabled,
     export_table,
+    fetch_subnet_choices,
     format_leases,
     kea_error_hint,
-    subnet_sort_key,
 )
 from ._base import ConditionalLoginRequiredMixin, _KeaChangeMixin, _strip_empty_params
 
@@ -57,79 +56,6 @@ def _is_valid_lease_entry(entry: dict) -> bool:
         logger.warning("Skipping lease entry with invalid ip-address: %r", addr)
         return False
     return True
-
-
-def _subnet_choices_cache_key(server: Server, version: int) -> str:
-    return f"netbox_kea:lease_subnet_choices:{server.pk}:{version}"
-
-
-def fetch_subnet_choices(server: Server, version: int) -> list[tuple[str, int | None]]:
-    """Return ``[(cidr, subnet_id), ...]`` for the server's configured subnets.
-
-    Feeds the lease-search Subnet / Subnet-ID combobox (an editable ``<datalist>`` on the
-    Search field): the CIDR drives a ``by=subnet`` search and the id a ``by=subnet_id``
-    search, so both are returned and the id may be missing.
-
-    Pulls the subnet list from ``config-get`` — including shared-network subnets — and
-    degrades to an empty list on any error so the search form still renders. ``config-get``
-    needs no hook library, which is why this datalist keeps working on a server without
-    ``subnet_cmds``. The reservation form deliberately does *not* share this list: its
-    suggestions must agree with the ``subnet_cmds`` lookup its POST performs, so it has
-    its own fetch in ``views.reservations``.
-
-    ``config-get`` returns the *entire* server config, so successful results (including a
-    legitimately empty list) are cached for ``constants.SUBNET_CHOICES_TTL`` seconds per
-    server+version and HTMX paginations reuse them. Transient errors are not cached, so
-    the next render retries.
-    """
-    cache_key = _subnet_choices_cache_key(server, version)
-    cached = cache.get(cache_key)
-    if cached is not None:
-        return cached
-
-    try:
-        client = server.get_client(version=version)
-        resp = client.command("config-get", service=[f"dhcp{version}"])
-    except (KeaException, requests.RequestException, ValueError, RuntimeError):
-        # Best-effort: the subnet quick-select is a convenience, so any failure to
-        # fetch the subnet list must never break the lease search/export page.
-        logger.debug("Could not fetch subnet choices for dhcp%s on server %s", version, server.pk, exc_info=True)
-        return []
-    args = resp[0].get("arguments") if isinstance(resp, list) and resp and isinstance(resp[0], dict) else None
-    if not isinstance(args, dict):
-        return []
-    dhcp_conf = args.get(f"Dhcp{version}", {})
-    if not isinstance(dhcp_conf, dict):
-        return []
-
-    choices: list[tuple[str, int | None]] = []
-
-    def _collect(subnets: Any) -> None:
-        # A malformed payload (e.g. ``"subnet4": 1``) is non-iterable; iterating it
-        # would raise TypeError outside the fetch try → 500. Degrade to empty instead.
-        if not isinstance(subnets, list):
-            return
-        for s in subnets:
-            if not isinstance(s, dict):
-                continue
-            cidr = s.get("subnet")
-            # Only accept string CIDRs; a non-string value would make the later
-            # choices.sort() raise TypeError (500) instead of degrading gracefully.
-            if not isinstance(cidr, str) or not cidr:
-                continue
-            sid = s.get("id")
-            choices.append((cidr, sid if isinstance(sid, int) else None))
-
-    _collect(dhcp_conf.get(f"subnet{version}"))
-    shared_networks = dhcp_conf.get("shared-networks")
-    if not isinstance(shared_networks, list):
-        shared_networks = []
-    for sn in shared_networks:
-        if isinstance(sn, dict):
-            _collect(sn.get(f"subnet{version}"))
-    choices.sort(key=subnet_sort_key)
-    cache.set(cache_key, choices, constants.SUBNET_CHOICES_TTL)
-    return choices
 
 
 def _run_lease_sync_to_netbox(request: HttpRequest, lease: dict, ip_address: str) -> None:
@@ -226,10 +152,11 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
 
     def _make_search_form(self, server: Server, data: Any | None = None):
         """Build the lease-search form with the subnet quick-select choices populated."""
-        subnet_choices = fetch_subnet_choices(server, self.dhcp_version)
+        subnet_choices, subnet_cmds_available = fetch_subnet_choices(server, self.dhcp_version)
+        kwargs = {"subnet_choices": subnet_choices, "subnet_cmds_available": subnet_cmds_available}
         if data is None:
-            return self.form(subnet_choices=subnet_choices)
-        return self.form(data, subnet_choices=subnet_choices)
+            return self.form(**kwargs)
+        return self.form(data, **kwargs)
 
     def get_leases_page(
         self, client: KeaClient, subnet: IPNetwork | None, page: str | None, per_page: int
