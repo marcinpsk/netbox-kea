@@ -201,13 +201,38 @@ def test_accepts_autospecced_patch():
 
 
 def test_accepts_patch_given_a_ready_made_replacement():
-    """``new=``/``new_callable=`` and the positional form all supply a real object."""
+    """``new=``, a non-mock factory, and positional ``new`` avoid the default mock."""
     for call in (
         'patch("netbox_kea.x.y", new=object())',
         'patch("netbox_kea.x.y", new_callable=lambda: object())',
         'patch("netbox_kea.x.y", object())',
     ):
         assert scan_source(f"{_PATCH_IMPORT}\ndef test_x():\n    with {call}:\n        pass\n", "t.py") == [], call
+
+
+def test_flags_patch_with_unbounded_mock_new_callable():
+    """A fabricating mock class still needs a spec when patch uses it as a factory."""
+    for mock_class in ("MagicMock", "NonCallableMagicMock", "Mock", "NonCallableMock", "AsyncMock"):
+        src = (
+            f"from unittest.mock import {mock_class}, patch\n\n"
+            "def test_x():\n"
+            f'    with patch("netbox_kea.x.y", new_callable={mock_class}):\n'
+            "        pass\n"
+        )
+        assert [hit.kind for hit in scan_source(src, "t.py")] == ["patch"], mock_class
+
+
+def test_accepts_patch_with_spec_bounded_mock_new_callable():
+    """A spec passed through patch bounds the mock produced by new_callable."""
+    src = (
+        "from unittest.mock import MagicMock, patch\n\n"
+        "class Thing:\n"
+        "    pass\n\n"
+        "def test_x():\n"
+        '    with patch("netbox_kea.x.y", new_callable=MagicMock, spec=Thing):\n'
+        "        pass\n"
+    )
+    assert scan_source(src, "t.py") == []
 
 
 def test_flags_patch_with_new_set_to_the_default_sentinel():
@@ -377,6 +402,58 @@ def test_flags_patch_through_mock_module_aliases():
     for import_statement, patch_name in cases:
         src = import_statement + f'\ndef test_x():\n    with {patch_name}("netbox_kea.x.y"):\n        pass\n'
         assert [hit.kind for hit in scan_source(src, "t.py")] == ["patch"], patch_name
+
+
+def test_ignores_direct_patch_alias_rebound_in_function():
+    """A function-local binding hides the patch imported by the module."""
+    src = (
+        "from unittest.mock import patch\n"
+        "import tool\n\n"
+        "def test_x():\n"
+        "    patch = tool.patch\n"
+        '    patch("netbox_kea.x.y")\n'
+    )
+    assert scan_source(src, "t.py") == []
+
+
+def test_ignores_mock_module_alias_rebound_in_function():
+    """A function-local binding hides the mock module imported by the module."""
+    src = (
+        "import unittest.mock as mock\n"
+        "import tool\n\n"
+        "def test_x():\n"
+        "    mock = tool\n"
+        '    mock.patch("netbox_kea.x.y")\n'
+    )
+    assert scan_source(src, "t.py") == []
+
+
+def test_limits_local_patch_import_to_its_scope():
+    """A direct patch import does not leak into a sibling function."""
+    src = (
+        "import tool\n\n"
+        "def test_first():\n"
+        "    from unittest.mock import patch\n"
+        '    patch("netbox_kea.x.y")\n\n'
+        "def test_second():\n"
+        "    patch = tool.patch\n"
+        '    patch("netbox_kea.x.y")\n'
+    )
+    assert [hit.qualname for hit in scan_source(src, "t.py")] == ["test_first"]
+
+
+def test_limits_local_mock_module_import_to_its_scope():
+    """A mock module import does not leak into a sibling function."""
+    src = (
+        "import tool\n\n"
+        "def test_first():\n"
+        "    import unittest.mock as mock\n"
+        '    mock.patch("netbox_kea.x.y")\n\n'
+        "def test_second():\n"
+        "    mock = tool\n"
+        '    mock.patch("netbox_kea.x.y")\n'
+    )
+    assert [hit.qualname for hit in scan_source(src, "t.py")] == ["test_first"]
 
 
 def test_ignores_patch_object_on_a_non_first_party_name():

@@ -23,8 +23,9 @@ carve out the legitimate cases three ways —
 
   1. **Bound it.** ``MagicMock(spec=KeaClient)`` / ``spec_set=`` / ``create_autospec`` /
      ``wraps=real_obj`` restrict (or delegate) attribute access to a real interface, so the
-     fabrication footgun is gone. For ``patch`` that is ``autospec=True``, or ``new=`` /
-     ``new_callable=`` when you supply the replacement yourself. These are never flagged.
+     fabrication footgun is gone. For ``patch`` that is ``autospec=True``, a ready-made
+     ``new=``, a non-mock ``new_callable=``, or a mock factory with a spec. These are never
+     flagged.
   2. **Mark it.** An inline ``# mock-ok: <reason>`` comment on the statement records a
      reviewed, deliberate boundary mock. Preferred for new code — it documents *why*.
   3. **Grandfather it.** ``netbox_kea/tests/mock_discipline_baseline.txt`` records how many
@@ -65,7 +66,10 @@ INCLUDE_ASYNCMOCK = True
 # Keyword args that bound a mock to a real interface (or delegate to a real object).
 _BOUNDING_KWARGS = {"spec", "spec_set", "autospec", "wraps"}
 # The same for patch(), which additionally accepts a ready-made replacement object.
-_PATCH_BOUNDING_KWARGS = _BOUNDING_KWARGS | {"new", "new_callable"}
+_PATCH_BOUNDING_KWARGS = _BOUNDING_KWARGS | {"new"}
+# Canonical values stored in the lexical binding table for module imports.
+_MOCK_MODULE = "unittest.mock"
+_UNITTEST_MODULE = "unittest"
 # Import prefix that marks a patch target as our own code rather than a real boundary.
 _FIRST_PARTY = "netbox_kea"
 # Inline opt-out marker (in a comment): `# mock-ok` or `# mock-ok: reason`.
@@ -111,52 +115,34 @@ def _comment_lines(src: str) -> dict[int, str]:
     return comments
 
 
-def _mock_import_aliases(tree: ast.AST) -> dict[str, str]:
-    """Local-name → canonical-class for ``from unittest.mock import MagicMock [as MM]``."""
-    aliases: dict[str, str] = {}
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.module == "unittest.mock":
-            for alias in node.names:
-                aliases[alias.asname or alias.name] = alias.name
-    return aliases
-
-
-def _mock_module_aliases(tree: ast.AST) -> set[str]:
-    """Expressions bound to the ``unittest.mock`` module."""
-    aliases: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                if alias.name == "unittest.mock":
-                    aliases.add(alias.asname or alias.name)
-                elif alias.name == "unittest":
-                    aliases.add(f"{alias.asname or alias.name}.mock")
-        elif isinstance(node, ast.ImportFrom) and node.module == "unittest":
-            aliases.update(alias.asname or alias.name for alias in node.names if alias.name == "mock")
-    return aliases
-
-
-class _MockDefaultBindingCollector(ast.NodeVisitor):
-    """Record bindings without leaking names across lexical scopes."""
+class _MockBindingCollector(ast.NodeVisitor):
+    """Record mock imports and shadowing assignments in each lexical scope."""
 
     def __init__(self, module: ast.AST) -> None:
-        self.bindings: dict[ast.AST, dict[str, list[tuple[int, bool]]]] = {}
+        self.bindings: dict[ast.AST, dict[str, list[tuple[int, str | None]]]] = {}
         self._scopes: list[ast.AST] = [module]
 
-    def _bind(self, name: str, lineno: int, is_default: bool = False) -> None:
-        self.bindings.setdefault(self._scopes[-1], {}).setdefault(name, []).append((lineno, is_default))
+    def _bind(self, name: str, lineno: int, canonical: str | None = None) -> None:
+        self.bindings.setdefault(self._scopes[-1], {}).setdefault(name, []).append((lineno, canonical))
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         for alias in node.names:
-            self._bind(
-                alias.asname or alias.name,
-                node.lineno,
-                node.module == "unittest.mock" and alias.name == "DEFAULT",
-            )
+            canonical = None
+            if node.module == "unittest.mock":
+                canonical = alias.name
+            elif node.module == "unittest" and alias.name == "mock":
+                canonical = _MOCK_MODULE
+            self._bind(alias.asname or alias.name, node.lineno, canonical)
 
     def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
-            self._bind(alias.asname or alias.name.split(".")[0], node.lineno)
+            name = alias.asname or alias.name.split(".")[0]
+            canonical = None
+            if alias.name == "unittest.mock":
+                canonical = _MOCK_MODULE if alias.asname else _UNITTEST_MODULE
+            elif alias.name == "unittest":
+                canonical = _UNITTEST_MODULE
+            self._bind(name, node.lineno, canonical)
 
     def visit_Name(self, node: ast.Name) -> None:
         if isinstance(node.ctx, ast.Store):
@@ -190,9 +176,9 @@ class _MockDefaultBindingCollector(ast.NodeVisitor):
         self.generic_visit(node)
 
 
-def _mock_default_bindings(tree: ast.AST) -> dict[ast.AST, dict[str, list[tuple[int, bool]]]]:
-    """Collect name bindings that can resolve to, or shadow, ``unittest.mock.DEFAULT``."""
-    collector = _MockDefaultBindingCollector(tree)
+def _mock_bindings(tree: ast.AST) -> dict[ast.AST, dict[str, list[tuple[int, str | None]]]]:
+    """Collect mock imports and shadowing bindings without leaking between scopes."""
+    collector = _MockBindingCollector(tree)
     collector.visit(tree)
     return collector.bindings
 
@@ -224,17 +210,13 @@ class _Scanner(ast.NodeVisitor):
         self,
         rel: str,
         comments: dict[int, str],
-        aliases: dict[str, str],
-        mock_modules: set[str],
-        default_bindings: dict[ast.AST, dict[str, list[tuple[int, bool]]]],
+        bindings: dict[ast.AST, dict[str, list[tuple[int, str | None]]]],
         module: ast.AST,
         first_party: set[str],
     ):
         self._rel = rel
         self._comments = comments
-        self._aliases = aliases
-        self._mock_modules = mock_modules
-        self._default_bindings = default_bindings
+        self._bindings = bindings
         self._first_party = first_party
         self._scope: list[str] = []
         self._binding_scopes: list[ast.AST] = [module]
@@ -294,10 +276,11 @@ class _Scanner(ast.NodeVisitor):
 
         ``patch("netbox_kea.x.y")`` hands the caller a plain ``MagicMock``: it accepts any
         signature and fabricates any attribute, so the test keeps passing after the real
-        function changes shape. ``autospec=True`` (or ``spec``/``new``/``new_callable``/
-        ``wraps``) binds the replacement to the real object instead. Only first-party
-        targets are flagged — patching ``requests.Session.post`` is the endorsed way to
-        stub the one boundary the suite cannot run.
+        function changes shape. ``autospec=True`` (or ``spec``/``new``/``wraps``) binds
+        the replacement to the real object instead. A non-mock ``new_callable`` is also
+        accepted. Only first-party targets are flagged: patching
+        ``requests.Session.post`` is the endorsed way to stub the one boundary the suite
+        cannot run.
         """
         func = node.func
         if isinstance(func, ast.Attribute) and func.attr == "object":
@@ -322,8 +305,8 @@ class _Scanner(ast.NodeVisitor):
     def _is_patch(self, func: ast.expr) -> bool:
         """True for ``patch``, an aliased import of it, or ``<module>.patch``."""
         if isinstance(func, ast.Attribute):
-            return func.attr == "patch" and ast.unparse(func.value) in self._mock_modules
-        return isinstance(func, ast.Name) and self._aliases.get(func.id) == "patch"
+            return func.attr == "patch" and self._canonical_binding(func.value) == _MOCK_MODULE
+        return self._canonical_binding(func) == "patch"
 
     def _is_patch_bounded(self, node: ast.Call, new_position: int) -> bool:
         replacement = next((kw.value for kw in node.keywords if kw.arg == "new"), None)
@@ -339,37 +322,51 @@ class _Scanner(ast.NodeVisitor):
             if isinstance(kw.value, ast.Constant) and kw.value.value is None:
                 continue
             return True
-        return False
+
+        factory = next((kw.value for kw in node.keywords if kw.arg == "new_callable"), None)
+        if factory is None or (isinstance(factory, ast.Constant) and factory.value is None):
+            return False
+        return self._mock_class(factory) is None
+
+    def _canonical_binding(self, node: ast.expr) -> str | None:
+        """Resolve a mock import at this source location through the lexical scopes."""
+        if isinstance(node, ast.Attribute) and node.attr == "mock":
+            if self._canonical_binding(node.value) == _UNITTEST_MODULE:
+                return _MOCK_MODULE
+            return None
+        if not isinstance(node, ast.Name):
+            return None
+
+        inside_function = False
+        for scope in reversed(self._binding_scopes):
+            if isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                inside_function = True
+            elif inside_function and isinstance(scope, ast.ClassDef):
+                # Method bodies do not close over their class namespace.
+                continue
+            events = self._bindings.get(scope, {}).get(node.id, [])
+            prior = [event for event in events if event[0] <= node.lineno]
+            if prior:
+                return prior[-1][1]
+            if events and isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                return None
+        return None
 
     def _is_mock_default(self, node: ast.expr) -> bool:
         """True only for ``unittest.mock.DEFAULT``, including imported aliases."""
-        if isinstance(node, ast.Name):
-            inside_function = False
-            for scope in reversed(self._binding_scopes):
-                if isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    inside_function = True
-                elif inside_function and isinstance(scope, ast.ClassDef):
-                    # Method bodies do not close over their class namespace.
-                    continue
-                events = self._default_bindings.get(scope, {}).get(node.id, [])
-                prior = [event for event in events if event[0] <= node.lineno]
-                if prior:
-                    return prior[-1][1]
-                if events and isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    return False
-            return False
         if isinstance(node, ast.Attribute) and node.attr == "DEFAULT":
-            return ast.unparse(node.value) in self._mock_modules
-        return False
+            return self._canonical_binding(node.value) == _MOCK_MODULE
+        return self._canonical_binding(node) == "DEFAULT"
 
     def _mock_class(self, func: ast.expr) -> str | None:
         targets = _targets()
         if isinstance(func, ast.Attribute) and func.attr in targets:
-            return func.attr  # e.g. mock.MagicMock(...), unittest.mock.MagicMock(...)
-        if isinstance(func, ast.Name):
-            canonical = self._aliases.get(func.id)
-            if canonical in targets:
-                return canonical  # imported (possibly aliased) name
+            if self._canonical_binding(func.value) == _MOCK_MODULE:
+                return func.attr  # e.g. mock.MagicMock(...), unittest.mock.MagicMock(...)
+            return None
+        canonical = self._canonical_binding(func)
+        if canonical in targets:
+            return canonical  # imported (possibly aliased) name
         return None
 
     @staticmethod
@@ -397,9 +394,7 @@ def scan_source(src: str, rel: str = "<source>") -> list[Violation]:
     scanner = _Scanner(
         rel,
         _comment_lines(src),
-        _mock_import_aliases(tree),
-        _mock_module_aliases(tree),
-        _mock_default_bindings(tree),
+        _mock_bindings(tree),
         tree,
         _first_party_names(tree),
     )
