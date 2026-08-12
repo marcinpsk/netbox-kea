@@ -246,8 +246,27 @@ class _Scanner(ast.NodeVisitor):
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         self._scope.append(node.name)
+
+        header_expressions = [*node.decorator_list, *node.args.defaults]
+        header_expressions.extend(default for default in node.args.kw_defaults if default is not None)
+        header_expressions.extend(
+            arg.annotation
+            for arg in (*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs)
+            if arg.annotation is not None
+        )
+        if node.args.vararg and node.args.vararg.annotation:
+            header_expressions.append(node.args.vararg.annotation)
+        if node.args.kwarg and node.args.kwarg.annotation:
+            header_expressions.append(node.args.kwarg.annotation)
+        if node.returns:
+            header_expressions.append(node.returns)
+        header_expressions.extend(getattr(node, "type_params", ()))
+        for expression in header_expressions:
+            self.visit(expression)
+
         self._binding_scopes.append(node)
-        self.generic_visit(node)
+        for statement in node.body:
+            self.visit(statement)
         self._binding_scopes.pop()
         self._scope.pop()
 
@@ -303,7 +322,7 @@ class _Scanner(ast.NodeVisitor):
     def _is_patch(self, func: ast.expr) -> bool:
         """True for ``patch``, an aliased import of it, or ``<module>.patch``."""
         if isinstance(func, ast.Attribute):
-            return func.attr == "patch"
+            return func.attr == "patch" and ast.unparse(func.value) in self._mock_modules
         return isinstance(func, ast.Name) and self._aliases.get(func.id) == "patch"
 
     def _is_patch_bounded(self, node: ast.Call, new_position: int) -> bool:

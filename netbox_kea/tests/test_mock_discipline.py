@@ -282,6 +282,27 @@ def test_accepts_imported_default_shadowed_at_function_scope():
     assert scan_source(src, "t.py") == []
 
 
+def test_function_local_default_does_not_shadow_decorator_expression():
+    """A decorator resolves DEFAULT before the function-local scope exists."""
+    src = (
+        "from unittest.mock import DEFAULT, patch\n\n"
+        '@patch("netbox_kea.x.y", new=DEFAULT)\n'
+        "def test_x():\n"
+        "    DEFAULT = object()\n"
+    )
+    assert [hit.kind for hit in scan_source(src, "t.py")] == ["patch"]
+
+
+def test_function_local_default_does_not_shadow_default_expression():
+    """A parameter default resolves DEFAULT in the enclosing scope."""
+    src = (
+        "from unittest.mock import DEFAULT, patch\n\n"
+        'def test_x(value=patch("netbox_kea.x.y", new=DEFAULT)):\n'
+        "    DEFAULT = object()\n"
+    )
+    assert [hit.kind for hit in scan_source(src, "t.py")] == ["patch"]
+
+
 def test_class_binding_does_not_shadow_imported_default_inside_method():
     """A method resolves bare names outside its class namespace."""
     src = (
@@ -332,6 +353,30 @@ def test_flags_patch_object_through_a_relative_import():
     """Test modules import their own package relatively; those targets are ours too."""
     src = "from unittest.mock import patch\nfrom ..models import Server\n\ndef test_x():\n    with patch.object(Server, 'get_client'):\n        pass\n"
     assert [h.kind for h in scan_source(src, "t.py")] == ["patch"]
+
+
+def test_ignores_unrelated_attribute_patch_calls():
+    """An unrelated object named patch is not unittest.mock.patch."""
+    src = (
+        "import tool\n"
+        "from netbox_kea.models import Server\n\n"
+        "def test_x():\n"
+        '    tool.patch("netbox_kea.x.y")\n'
+        '    tool.patch.object(Server, "get_client")\n'
+    )
+    assert scan_source(src, "t.py") == []
+
+
+def test_flags_patch_through_mock_module_aliases():
+    """Supported spellings of the unittest.mock module remain recognized."""
+    cases = (
+        ("import unittest.mock as mock\n", "mock.patch"),
+        ("import unittest as ut\n", "ut.mock.patch"),
+        ("from unittest import mock as m\n", "m.patch"),
+    )
+    for import_statement, patch_name in cases:
+        src = import_statement + f'\ndef test_x():\n    with {patch_name}("netbox_kea.x.y"):\n        pass\n'
+        assert [hit.kind for hit in scan_source(src, "t.py")] == ["patch"], patch_name
 
 
 def test_ignores_patch_object_on_a_non_first_party_name():
