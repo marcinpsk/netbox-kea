@@ -226,6 +226,39 @@ def test_flags_patch_with_new_set_to_the_default_sentinel():
         assert [h.kind for h in scan_source(src, "t.py")] == ["patch"], call
 
 
+def test_flags_positional_default_sentinel_and_renamed_import():
+    """Every spelling of unittest.mock.DEFAULT still asks patch() to create its default mock."""
+    for call in (
+        'patch("netbox_kea.x.y", DEFAULT_SENTINEL)',
+        'patch.object(Server, "get_client", DEFAULT_SENTINEL)',
+    ):
+        src = (
+            "from unittest.mock import DEFAULT as DEFAULT_SENTINEL, patch\n"
+            "from netbox_kea.models import Server\n\n"
+            f"def test_x():\n    with {call}:\n        pass\n"
+        )
+        assert [h.kind for h in scan_source(src, "t.py")] == ["patch"], call
+
+
+def test_flags_patch_with_none_spec():
+    """An explicit None spec is patch()'s default and does not constrain its generated mock."""
+    src = _PATCH_IMPORT + '\ndef test_x():\n    with patch("netbox_kea.x.y", spec=None):\n        pass\n'
+    assert [h.kind for h in scan_source(src, "t.py")] == ["patch"]
+
+
+def test_accepts_unrelated_values_named_default_as_replacements():
+    """Only unittest.mock.DEFAULT asks patch() to generate a mock."""
+    for replacement in ("DEFAULT", "settings.DEFAULT"):
+        src = (
+            "from unittest.mock import patch\n\n"
+            "DEFAULT = object()\n"
+            "class settings:\n"
+            "    DEFAULT = object()\n\n"
+            f'def test_x():\n    with patch("netbox_kea.x.y", new={replacement}):\n        pass\n'
+        )
+        assert scan_source(src, "t.py") == [], replacement
+
+
 def test_accepts_patch_with_a_real_new_value():
     """A genuine `new=` still binds, so it must not be caught by the DEFAULT check."""
     src = (

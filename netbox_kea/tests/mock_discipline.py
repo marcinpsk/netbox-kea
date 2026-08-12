@@ -115,17 +115,23 @@ def _mock_import_aliases(tree: ast.AST) -> dict[str, str]:
     """Local-name → canonical-class for ``from unittest.mock import MagicMock [as MM]``."""
     aliases: dict[str, str] = {}
     for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and (node.module or "").split(".")[-1] == "mock":
+        if isinstance(node, ast.ImportFrom) and node.module == "unittest.mock":
             for alias in node.names:
                 aliases[alias.asname or alias.name] = alias.name
     return aliases
 
 
-def _is_mock_default(node: ast.expr) -> bool:
-    """True for the ``DEFAULT`` sentinel, written bare or as ``<module>.DEFAULT``."""
-    if isinstance(node, ast.Attribute):
-        return node.attr == "DEFAULT"
-    return isinstance(node, ast.Name) and node.id == "DEFAULT"
+def _mock_module_aliases(tree: ast.AST) -> set[str]:
+    """Expressions bound to the ``unittest.mock`` module."""
+    aliases: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "unittest.mock":
+                    aliases.add(alias.asname or alias.name)
+        elif isinstance(node, ast.ImportFrom) and node.module == "unittest":
+            aliases.update(alias.asname or alias.name for alias in node.names if alias.name == "mock")
+    return aliases
 
 
 def _first_party_names(tree: ast.AST) -> set[str]:
@@ -151,10 +157,18 @@ def _first_party_names(tree: ast.AST) -> set[str]:
 class _Scanner(ast.NodeVisitor):
     """Collect fabricating-mock instantiations that are neither bounded nor marked."""
 
-    def __init__(self, rel: str, comments: dict[int, str], aliases: dict[str, str], first_party: set[str]):
+    def __init__(
+        self,
+        rel: str,
+        comments: dict[int, str],
+        aliases: dict[str, str],
+        mock_modules: set[str],
+        first_party: set[str],
+    ):
         self._rel = rel
         self._comments = comments
         self._aliases = aliases
+        self._mock_modules = mock_modules
         self._first_party = first_party
         self._scope: list[str] = []
         self.hits: list[Violation] = []
@@ -198,7 +212,7 @@ class _Scanner(ast.NodeVisitor):
         func = node.func
         if isinstance(func, ast.Attribute) and func.attr == "object":
             # patch.object(target, "attribute"[, new]) — a third positional is `new`.
-            if not self._is_patch(func.value) or len(node.args) >= 3 or self._is_patch_bounded(node):
+            if not self._is_patch(func.value) or self._is_patch_bounded(node, new_position=2):
                 return None
             root = node.args[0] if node.args else None
             while isinstance(root, ast.Attribute):
@@ -207,7 +221,7 @@ class _Scanner(ast.NodeVisitor):
                 return ast.unparse(node.args[0])
             return None
         # patch("dotted.target"[, new]) — a second positional is `new`.
-        if not self._is_patch(func) or len(node.args) >= 2 or self._is_patch_bounded(node):
+        if not self._is_patch(func) or self._is_patch_bounded(node, new_position=1):
             return None
         target = node.args[0] if node.args else None
         if isinstance(target, ast.Constant) and isinstance(target.value, str):
@@ -221,16 +235,28 @@ class _Scanner(ast.NodeVisitor):
             return func.attr == "patch"
         return isinstance(func, ast.Name) and self._aliases.get(func.id) == "patch"
 
-    @staticmethod
-    def _is_patch_bounded(node: ast.Call) -> bool:
+    def _is_patch_bounded(self, node: ast.Call, new_position: int) -> bool:
+        replacement = next((kw.value for kw in node.keywords if kw.arg == "new"), None)
+        if replacement is None and len(node.args) > new_position:
+            replacement = node.args[new_position]
+        if replacement is not None and not self._is_mock_default(replacement):
+            return True
+
         for kw in node.keywords:
-            if kw.arg not in _PATCH_BOUNDING_KWARGS:
+            if kw.arg not in _PATCH_BOUNDING_KWARGS or kw.arg == "new":
                 continue
-            # `new=DEFAULT` is what patch() uses to mean "not given", so it builds the
-            # same unspecced MagicMock as omitting it. It binds nothing.
-            if kw.arg == "new" and _is_mock_default(kw.value):
+            # None is the default for these parameters and does not constrain the mock.
+            if isinstance(kw.value, ast.Constant) and kw.value.value is None:
                 continue
             return True
+        return False
+
+    def _is_mock_default(self, node: ast.expr) -> bool:
+        """True only for ``unittest.mock.DEFAULT``, including imported aliases."""
+        if isinstance(node, ast.Name):
+            return self._aliases.get(node.id) == "DEFAULT"
+        if isinstance(node, ast.Attribute) and node.attr == "DEFAULT":
+            return ast.unparse(node.value) in self._mock_modules
         return False
 
     def _mock_class(self, func: ast.expr) -> str | None:
@@ -265,7 +291,13 @@ class _Scanner(ast.NodeVisitor):
 def scan_source(src: str, rel: str = "<source>") -> list[Violation]:
     """Scan one module's source text and return its mock-discipline violations."""
     tree = ast.parse(src, filename=rel)
-    scanner = _Scanner(rel, _comment_lines(src), _mock_import_aliases(tree), _first_party_names(tree))
+    scanner = _Scanner(
+        rel,
+        _comment_lines(src),
+        _mock_import_aliases(tree),
+        _mock_module_aliases(tree),
+        _first_party_names(tree),
+    )
     scanner.visit(tree)
     return scanner.hits
 
