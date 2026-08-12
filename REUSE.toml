@@ -38,6 +38,7 @@ path = [
     ".pre-commit-config.yaml",
     "CHANGELOG.md",
     "AGENTS.md",
+    "docs/agents/**",
     ".github/workflows/codeql.yml",
     ".envrc.example",
     ".devcontainer/**",
