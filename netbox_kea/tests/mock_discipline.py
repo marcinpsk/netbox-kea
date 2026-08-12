@@ -129,9 +129,72 @@ def _mock_module_aliases(tree: ast.AST) -> set[str]:
             for alias in node.names:
                 if alias.name == "unittest.mock":
                     aliases.add(alias.asname or alias.name)
+                elif alias.name == "unittest":
+                    aliases.add(f"{alias.asname or alias.name}.mock")
         elif isinstance(node, ast.ImportFrom) and node.module == "unittest":
             aliases.update(alias.asname or alias.name for alias in node.names if alias.name == "mock")
     return aliases
+
+
+class _MockDefaultBindingCollector(ast.NodeVisitor):
+    """Record bindings without leaking names across lexical scopes."""
+
+    def __init__(self, module: ast.AST) -> None:
+        self.bindings: dict[ast.AST, dict[str, list[tuple[int, bool]]]] = {}
+        self._scopes: list[ast.AST] = [module]
+
+    def _bind(self, name: str, lineno: int, is_default: bool = False) -> None:
+        self.bindings.setdefault(self._scopes[-1], {}).setdefault(name, []).append((lineno, is_default))
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        for alias in node.names:
+            self._bind(
+                alias.asname or alias.name,
+                node.lineno,
+                node.module == "unittest.mock" and alias.name == "DEFAULT",
+            )
+
+    def visit_Import(self, node: ast.Import) -> None:
+        for alias in node.names:
+            self._bind(alias.asname or alias.name.split(".")[0], node.lineno)
+
+    def visit_Name(self, node: ast.Name) -> None:
+        if isinstance(node.ctx, ast.Store):
+            self._bind(node.id, node.lineno)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self._bind(node.name, node.lineno)
+        self._scopes.append(node)
+        for arg in (*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs):
+            self._bind(arg.arg, node.lineno)
+        if node.args.vararg:
+            self._bind(node.args.vararg.arg, node.lineno)
+        if node.args.kwarg:
+            self._bind(node.args.kwarg.arg, node.lineno)
+        for statement in node.body:
+            self.visit(statement)
+        self._scopes.pop()
+
+    visit_AsyncFunctionDef = visit_FunctionDef  # type: ignore[assignment]
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        self._bind(node.name, node.lineno)
+        self._scopes.append(node)
+        for statement in node.body:
+            self.visit(statement)
+        self._scopes.pop()
+
+    def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
+        if node.name:
+            self._bind(node.name, node.lineno)
+        self.generic_visit(node)
+
+
+def _mock_default_bindings(tree: ast.AST) -> dict[ast.AST, dict[str, list[tuple[int, bool]]]]:
+    """Collect name bindings that can resolve to, or shadow, ``unittest.mock.DEFAULT``."""
+    collector = _MockDefaultBindingCollector(tree)
+    collector.visit(tree)
+    return collector.bindings
 
 
 def _first_party_names(tree: ast.AST) -> set[str]:
@@ -163,14 +226,18 @@ class _Scanner(ast.NodeVisitor):
         comments: dict[int, str],
         aliases: dict[str, str],
         mock_modules: set[str],
+        default_bindings: dict[ast.AST, dict[str, list[tuple[int, bool]]]],
+        module: ast.AST,
         first_party: set[str],
     ):
         self._rel = rel
         self._comments = comments
         self._aliases = aliases
         self._mock_modules = mock_modules
+        self._default_bindings = default_bindings
         self._first_party = first_party
         self._scope: list[str] = []
+        self._binding_scopes: list[ast.AST] = [module]
         self.hits: list[Violation] = []
 
     # ── scope tracking ────────────────────────────────────────────────────────
@@ -179,14 +246,18 @@ class _Scanner(ast.NodeVisitor):
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         self._scope.append(node.name)
+        self._binding_scopes.append(node)
         self.generic_visit(node)
+        self._binding_scopes.pop()
         self._scope.pop()
 
     visit_AsyncFunctionDef = visit_FunctionDef  # type: ignore[assignment]
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         self._scope.append(node.name)
+        self._binding_scopes.append(node)
         self.generic_visit(node)
+        self._binding_scopes.pop()
         self._scope.pop()
 
     # ── the check ─────────────────────────────────────────────────────────────
@@ -254,7 +325,20 @@ class _Scanner(ast.NodeVisitor):
     def _is_mock_default(self, node: ast.expr) -> bool:
         """True only for ``unittest.mock.DEFAULT``, including imported aliases."""
         if isinstance(node, ast.Name):
-            return self._aliases.get(node.id) == "DEFAULT"
+            inside_function = False
+            for scope in reversed(self._binding_scopes):
+                if isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    inside_function = True
+                elif inside_function and isinstance(scope, ast.ClassDef):
+                    # Method bodies do not close over their class namespace.
+                    continue
+                events = self._default_bindings.get(scope, {}).get(node.id, [])
+                prior = [event for event in events if event[0] <= node.lineno]
+                if prior:
+                    return prior[-1][1]
+                if events and isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    return False
+            return False
         if isinstance(node, ast.Attribute) and node.attr == "DEFAULT":
             return ast.unparse(node.value) in self._mock_modules
         return False
@@ -296,6 +380,8 @@ def scan_source(src: str, rel: str = "<source>") -> list[Violation]:
         _comment_lines(src),
         _mock_import_aliases(tree),
         _mock_module_aliases(tree),
+        _mock_default_bindings(tree),
+        tree,
         _first_party_names(tree),
     )
     scanner.visit(tree)

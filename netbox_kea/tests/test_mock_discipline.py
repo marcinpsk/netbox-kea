@@ -259,6 +259,53 @@ def test_accepts_unrelated_values_named_default_as_replacements():
         assert scan_source(src, "t.py") == [], replacement
 
 
+def test_accepts_imported_default_shadowed_at_module_scope():
+    """A module binding named DEFAULT replaces the imported sentinel."""
+    src = (
+        "from unittest.mock import DEFAULT, patch\n\n"
+        "DEFAULT = object()\n"
+        'with patch("netbox_kea.x.y", new=DEFAULT):\n'
+        "    pass\n"
+    )
+    assert scan_source(src, "t.py") == []
+
+
+def test_accepts_imported_default_shadowed_at_function_scope():
+    """A function-local DEFAULT hides the sentinel imported by the module."""
+    src = (
+        "from unittest.mock import DEFAULT, patch\n\n"
+        "def test_x():\n"
+        "    DEFAULT = object()\n"
+        '    with patch("netbox_kea.x.y", new=DEFAULT):\n'
+        "        pass\n"
+    )
+    assert scan_source(src, "t.py") == []
+
+
+def test_class_binding_does_not_shadow_imported_default_inside_method():
+    """A method resolves bare names outside its class namespace."""
+    src = (
+        "from unittest.mock import DEFAULT, patch\n\n"
+        "class TestThing:\n"
+        "    DEFAULT = object()\n\n"
+        "    def test_x(self):\n"
+        '        with patch("netbox_kea.x.y", new=DEFAULT):\n'
+        "            pass\n"
+    )
+    assert [hit.kind for hit in scan_source(src, "t.py")] == ["patch"]
+
+
+def test_flags_default_through_unittest_package_alias():
+    """An alias of the unittest package still exposes the real mock.DEFAULT sentinel."""
+    src = (
+        "import unittest as ut\n"
+        "from unittest import mock\n"
+        "from unittest.mock import patch\n\n"
+        'def test_x():\n    with patch("netbox_kea.x.y", new=ut.mock.DEFAULT):\n        pass\n'
+    )
+    assert [hit.kind for hit in scan_source(src, "t.py")] == ["patch"]
+
+
 def test_accepts_patch_with_a_real_new_value():
     """A genuine `new=` still binds, so it must not be caught by the DEFAULT check."""
     src = (

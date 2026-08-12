@@ -4083,8 +4083,10 @@ class TestListSubnets(TestCase):
                 "arguments": {"subnets": [{"id": 8, "subnet": "10.1.0.0/24"}, {"id": 7, "subnet": "10.0.0.0/24"}]},
             }
         ]
-        with stub_kea({"subnet4-list": resp}):
+        with stub_kea({"subnet4-list": resp}) as kea:
             self.assertEqual(self.client.list_subnets(4), [("10.1.0.0/24", 8), ("10.0.0.0/24", 7)])
+        body = kea.bodies("subnet4-list")[0]
+        self.assertEqual(body["service"], ["dhcp4"])
 
     def test_calls_subnet_list_on_the_matching_service(self):
         resp = [{"result": 0, "arguments": {"subnets": [{"id": 5, "subnet": "2001:db8::/48"}]}}]
