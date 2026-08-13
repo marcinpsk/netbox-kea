@@ -5,7 +5,7 @@ Issues and specs for this repo live as GitHub issues. Use the `gh` CLI for all o
 ## Conventions
 
 - **Create an issue**: `gh issue create --title "..." --body "..."`. Use a heredoc for multi-line bodies.
-- **Read an issue**: `gh issue view <number> --comments`, filtering comments by `jq` and also fetching labels.
+- **Read an issue**: `gh issue view <number> --json number,title,body,labels,comments --jq '{number, title, body, labels: [.labels[].name], comments: [.comments[].body]}'`.
 - **List issues**: `gh issue list --state open --json number,title,body,labels,comments --jq '[.[] | {number, title, body, labels: [.labels[].name], comments: [.comments[].body]}]'` with appropriate `--label` and `--state` filters.
 - **Comment on an issue**: `gh issue comment <number> --body "..."`
 - **Apply or remove labels**: `gh issue edit <number> --add-label "..."` or `--remove-label "..."`
@@ -20,7 +20,24 @@ Infer the repository from `git remote -v`. The `gh` CLI does this automatically 
 Pull requests use the same labels and states as issues:
 
 - **Read a pull request**: Run `gh pr view <number> --comments` and `gh pr diff <number>`.
-- **List external pull requests**: Run `gh pr list --state open --json number,title,body,labels,author,authorAssociation,comments`. Keep only `CONTRIBUTOR`, `FIRST_TIME_CONTRIBUTOR`, or `NONE` author associations.
+- **List external pull requests**: Use the following workflow. It filters external authors, then fetches complete details and comments for each pull request.
+
+  ```bash
+  repo="$(gh repo view --json nameWithOwner --jq .nameWithOwner)"
+  gh search prs --repo "$repo" --state open --limit 100 \
+    --json number,authorAssociation \
+    --jq '.[] | select(
+      .authorAssociation == "CONTRIBUTOR" or
+      .authorAssociation == "FIRST_TIMER" or
+      .authorAssociation == "FIRST_TIME_CONTRIBUTOR" or
+      .authorAssociation == "NONE"
+    ) | .number' |
+  while read -r number; do
+    gh pr view "$number" --repo "$repo" \
+      --json number,title,body,labels,author,comments \
+      --jq '{number, title, body, author: .author.login, labels: [.labels[].name], comments: [.comments[].body]}'
+  done
+  ```
 - **Comment, label, or close**: Use `gh pr comment`, `gh pr edit`, or `gh pr close`.
 
 GitHub shares one number space across issues and pull requests. Resolve a bare `#42` with `gh pr view 42`, then fall back to `gh issue view 42`.
@@ -34,7 +51,8 @@ When a skill says to publish to the issue tracker, create a GitHub issue.
 When a skill says to fetch the relevant ticket, run:
 
 ```bash
-gh issue view <number> --comments
+gh issue view <number> --json number,title,body,labels,comments \
+  --jq '{number, title, body, labels: [.labels[].name], comments: [.comments[].body]}'
 ```
 
 ## Wayfinding operations
