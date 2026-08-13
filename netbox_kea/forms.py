@@ -287,13 +287,22 @@ class BaseLeasesSarchForm(forms.Form):
 
         page = cleaned_data["page"]
         if page:
-            if by != "":
-                raise ValidationError({"page": "page is only supported with all-leases search."})
-            try:
-                page_ip = IPAddress(page, version=ip_version)
-                cleaned_data["page"] = str(page_ip)
-            except AddrFormatError as e:
-                raise ValidationError({"page": "Invalid IP."}) from e
+            if by == "":
+                try:
+                    page_ip = IPAddress(page, version=ip_version)
+                    cleaned_data["page"] = str(page_ip)
+                except AddrFormatError as e:
+                    raise ValidationError({"page": "Invalid IP."}) from e
+            elif by in (constants.BY_SUBNET, constants.BY_SUBNET_ID):
+                try:
+                    page_number = int(page)
+                except (TypeError, ValueError) as e:
+                    raise ValidationError({"page": "Subnet page must be a positive integer."}) from e
+                if page_number < 1:
+                    raise ValidationError({"page": "Subnet page must be a positive integer."})
+                cleaned_data["page"] = page_number
+            else:
+                raise ValidationError({"page": "page is only supported with subnet or all-leases search."})
 
         return cleaned_data
 

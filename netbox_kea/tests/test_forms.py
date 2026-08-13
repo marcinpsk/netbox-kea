@@ -90,10 +90,20 @@ class TestLeases4SearchFormValidation(SimpleTestCase):
         form = Leases4SearchForm(data={"by": "ip", "q": ""})
         self.assertFalse(form.is_valid())
 
-    def test_page_requires_all_leases_search(self):
+    def test_page_requires_subnet_or_all_leases_search(self):
         form = Leases4SearchForm(data={"by": "ip", "q": "192.168.1.1", "page": "192.168.1.2"})
         self.assertFalse(form.is_valid())
-        self.assertIn("page", form.errors)
+        self.assertEqual(form.errors["page"], ["page is only supported with subnet or all-leases search."])
+
+    def test_valid_numeric_page_with_subnet_search(self):
+        form = self._form("subnet", "192.168.1.0/24", page="2")
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.cleaned_data["page"], 2)
+
+    def test_subnet_page_must_be_a_positive_integer(self):
+        form = self._form("subnet_id", "42", page="192.168.1.2")
+        self.assertFalse(form.is_valid())
+        self.assertEqual(form.errors["page"], ["Subnet page must be a positive integer."])
 
     def test_valid_page_with_all_leases_search(self):
         form = Leases4SearchForm(data={"by": "", "q": "", "page": "192.168.1.5"})
@@ -144,6 +154,11 @@ class TestLeases6SearchFormValidation(SimpleTestCase):
     def test_valid_subnet_id(self):
         form = self._form("subnet_id", "10")
         self.assertTrue(form.is_valid(), form.errors)
+
+    def test_valid_numeric_page_with_subnet_id_search(self):
+        form = self._form("subnet_id", "10", page="3")
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.cleaned_data["page"], 3)
 
 
 class TestMultipleIPField(SimpleTestCase):

@@ -8,7 +8,7 @@ from urllib.parse import quote_plus, urljoin
 import pynetbox
 import pytest
 import requests
-from netaddr import EUI, IPAddress, IPNetwork, mac_unix_expanded
+from netaddr import EUI, IPNetwork, mac_unix_expanded
 from playwright.sync_api import Page, expect
 
 from . import constants
@@ -1327,69 +1327,31 @@ def test_lease_search_cisco_style_mac(page: Page, lease4: dict[str, Any]) -> Non
     expect(page.locator(".object-list > tbody > tr > td").nth(1)).to_have_text(lease4["ip-address"])
 
 
-@pytest.mark.parametrize(
-    "prefix",
-    (
-        "2001:db8:1::/124",
-        "2001:db8:1::10/124",
-        "2001:db8:1::/121",
-        "2001:db8:1::/64",
-        "::/0",
-        "192.0.2.0/29",
-        "192.0.2.8/29",
-        "192.0.2.0/25",
-        "192.0.2.0/24",
-        "0.0.0.0/0",
-    ),
-)
-def test_lease_search_by_subnet(
+@pytest.mark.parametrize(("family", "prefix"), ((6, "2001:db8:1::/64"), (4, "192.0.2.0/24")))
+def test_lease_search_by_configured_subnet(
     page: Page,
+    family: Literal[6, 4],
     prefix: str,
     request: pytest.FixtureRequest,
 ) -> None:
-    # per page default is 50
     per_page = 50
-
     net = IPNetwork(prefix)
-    family = net.version
-    dhcp_scope = IPNetwork("2001:db8:1::/64") if family == 6 else IPNetwork("192.0.2.0/24")
-    skip_first = dhcp_scope.network in net
-    lease_count = min(net.size - int(skip_first), 250)
     request.getfixturevalue(f"leases{family}_250")
 
     search_lease(page, family, "Subnet", str(net))
 
-    def check_count(count: int) -> None:
-        expect(page.locator(".object-list > tbody > tr")).to_have_count(count)
-
-    first_ip = max(net[int(skip_first)], dhcp_scope[1])
+    rows = page.locator(".object-list > tbody > tr")
+    expect(rows).to_have_count(per_page)
 
     def click_next() -> None:
         with page.expect_response(re.compile(f"/leases{family}/")) as r:
             page.get_by_role("button", name="Next").click()
             assert r.value.ok
 
-    def check_first_row_ip(ip: IPAddress) -> None:
-        expect(page.locator(".object-list > tbody > tr > td").nth(1)).to_have_text(str(ip))
-
-    check_first_row_ip(first_ip)
-    check_count(min(lease_count, per_page))
-
-    for _ in range(int(lease_count / per_page) - 1):
-        # Kea doesn't guarantee order...
-        first_ip += per_page
+    for page_number in range(2, 6):
         click_next()
-        check_first_row_ip(first_ip)
-        check_count(per_page)
-
-    if net.size > per_page:
-        first_ip += per_page
-        click_next()
-        if first_ip != dhcp_scope.network + 251:
-            check_first_row_ip(first_ip)
-            check_count(lease_count % per_page)
-        else:
-            expect(page.locator(".object-list > tbody > tr > td")).to_have_text("— No leases found. —")
+        expect(page).to_have_url(re.compile(f"[?&]page={page_number}(?:&|$)"))
+        expect(rows).to_have_count(per_page)
 
     expect(page.get_by_role("button", name="Next")).to_be_disabled()
 

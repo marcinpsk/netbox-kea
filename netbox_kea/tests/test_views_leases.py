@@ -374,6 +374,40 @@ class TestLeaseSearchPaths(_ViewTestBase):
         self.assertEqual(body["arguments"]["subnets"], [1])
         self.assertEqual(body["service"], ["dhcp4"])
 
+    def test_search_by_subnet_id_paginates_locally_and_enriches_only_visible_page(self):
+        """Expose rows after the first table page without repeating their enrichment."""
+        leases = [
+            {
+                **self._LEASE4,
+                "ip-address": f"10.0.0.{index}",
+                "hw-address": f"aa:bb:cc:dd:ee:{index:02x}",
+            }
+            for index in range(1, 57)
+        ]
+        with stub_kea(
+            {
+                "subnet4-list": self._SUBNETS4,
+                "lease4-get-all": self._multi(leases),
+                "reservation-get": self._NO_RESERVATION,
+            }
+        ) as kea:
+            response = self._htmx_get(
+                self._url4(),
+                {"by": "subnet_id", "q": "1", "page": "2", "per_page": "50"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        table = response.context["table"]
+        self.assertTrue(hasattr(table, "page"), table.__dict__)
+        self.assertEqual(table.page.number, 2)
+        self.assertEqual(table.paginator.per_page, 50)
+        rows = list(table.paginated_rows)
+        self.assertEqual([row.record["ip_address"] for row in rows], [f"10.0.0.{index}" for index in range(51, 57)])
+        self.assertTrue(response.context["paginate"])
+        self.assertIsNone(response.context["next_page"])
+        # Enrichment performs one IP lookup and one MAC fallback per visible row.
+        self.assertEqual(len(kea.bodies("reservation-get")), 12)
+
     @override_settings(PLUGINS_CONFIG={"netbox_kea": {"kea_timeout": 30, "lease_query_max_unpaged_leases": 1000}})
     def test_search_by_subnet_id_and_state_filters_in_kea(self):
         lease = dict(self._LEASE4, state=1)

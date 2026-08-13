@@ -301,6 +301,7 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
             q = form.cleaned_data["q"]
             state_filter: int | None = form.cleaned_data.get("state")
             client = instance.get_client(version=self.dhcp_version)
+            is_subnet_search = by in (constants.BY_SUBNET, constants.BY_SUBNET_ID)
             if by == "":
                 leases, next_page = self.get_leases_page(
                     client,
@@ -309,9 +310,9 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
                 )
                 paginate = True
             else:
-                paginate = False
+                paginate = is_subnet_search
                 next_page = None
-                state_in_kea = state_filter if by in (constants.BY_SUBNET, constants.BY_SUBNET_ID) else None
+                state_in_kea = state_filter if is_subnet_search else None
                 leases = self.get_leases(
                     client,
                     str(q.cidr) if by == constants.BY_SUBNET else q,
@@ -320,7 +321,7 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
                 )
 
             # Apply optional state filter (client-side, after fetch).
-            if state_filter is not None and by not in (constants.BY_SUBNET, constants.BY_SUBNET_ID):
+            if state_filter is not None and not is_subnet_search:
                 leases = [ls for ls in leases if ls.get("state") == state_filter]
 
             can_delete = request.user.has_perm(
@@ -332,13 +333,20 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
                 obj=instance,
             )
 
-            # Enrich leases with reservation badges + NetBox IPAM status.
-            # Extracted helper so combined views get the same treatment.
-            _enrich_leases_with_badges(
-                leases, instance, self.dhcp_version, can_delete=can_delete, can_change=can_change
-            )
-
             table = self.get_table(leases, request)
+            visible_leases = leases
+            if is_subnet_search:
+                visible_leases = [row.record for row in table.paginated_rows]
+                next_page = table.page.next_page_number() if table.page.has_next() else None
+
+            # Enrich only the visible table page with reservation badges and NetBox IPAM status.
+            _enrich_leases_with_badges(
+                visible_leases,
+                instance,
+                self.dhcp_version,
+                can_delete=can_delete,
+                can_change=can_change,
+            )
 
             if not can_delete:
                 table.columns.hide("pk")
