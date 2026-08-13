@@ -281,9 +281,13 @@ def _network(value: str, family: Family) -> IPNetwork:
 
 
 def _cache_key(server: Server, family: Family) -> str:
+    return f"netbox_kea:subnet_catalogue:v1:{_require_persisted_server(server)}:{family}"
+
+
+def _require_persisted_server(server: Server) -> int:
     if server.pk is None:
         raise ValueError("The Subnet Catalogue requires a persisted Server.")
-    return f"netbox_kea:subnet_catalogue:v1:{server.pk}:{family}"
+    return server.pk
 
 
 def _invalidate(server: Server, family: Family) -> None:
@@ -862,6 +866,34 @@ def _observations_disagree(
     )
 
 
+def _disagreement_is_only_collisions(
+    identity: _IdentityObservation,
+    configuration: _ConfigurationObservation,
+) -> bool:
+    quarantined_ids = identity.quarantined_ids | configuration.quarantined_ids
+    quarantined_networks = identity.quarantined_networks | configuration.quarantined_networks
+    if not quarantined_ids and not quarantined_networks:
+        return False
+    identity_by_pair = {
+        (fact.identity.subnet_id, fact.identity.network): fact
+        for fact in identity.facts
+        if not _is_quarantined(fact.identity, quarantined_ids, quarantined_networks)
+    }
+    configuration_by_pair = {
+        (fact.identity.subnet_id, fact.identity.network): fact
+        for fact in configuration.facts
+        if not _is_quarantined(fact.identity, quarantined_ids, quarantined_networks)
+    }
+    if identity_by_pair.keys() != configuration_by_pair.keys():
+        return False
+    return not any(
+        identity_fact.membership_complete
+        and configuration_by_pair[pair].membership_complete
+        and identity_fact.shared_network_name != configuration_by_pair[pair].shared_network_name
+        for pair, identity_fact in identity_by_pair.items()
+    )
+
+
 def _observe_once(client: KeaClient, family: Family) -> tuple[_IdentityObservation, _ConfigurationObservation]:
     return _read_identity(client, family), _read_configuration(client, family)
 
@@ -889,6 +921,8 @@ def _observe(server: Server, family: Family) -> tuple[_IdentityObservation, _Con
         return identity, configuration, None
     if first_hash and configuration.configuration_hash and first_hash != configuration.configuration_hash:
         return identity, configuration, "configuration-changed-during-retry"
+    if _disagreement_is_only_collisions(identity, configuration):
+        return identity, configuration, "catalogue-identity-collision"
     return identity, configuration, "identity-configuration-disagreement"
 
 
@@ -930,23 +964,38 @@ def _reconcile(
     disagreement_code: str | None,
 ) -> CatalogueSnapshot:
     diagnostics = list(identity.diagnostics) + list(configuration.diagnostics)
-    conflicting_ids, conflicting_networks = _cross_source_conflicts(identity, configuration)
+    cross_source_ids, cross_source_networks = _cross_source_conflicts(identity, configuration)
+    conflicting_ids = set(cross_source_ids)
+    conflicting_networks = set(cross_source_networks)
+    within_source_collision = bool(
+        identity.quarantined_ids
+        or configuration.quarantined_ids
+        or identity.quarantined_networks
+        or configuration.quarantined_networks
+    )
     conflicting_ids.update(identity.quarantined_ids)
     conflicting_ids.update(configuration.quarantined_ids)
     conflicting_networks.update(identity.quarantined_networks)
     conflicting_networks.update(configuration.quarantined_networks)
 
-    if disagreement_code is not None or conflicting_ids or conflicting_networks:
-        disagreement_code = disagreement_code or "identity-configuration-disagreement"
-        message = (
-            "Kea configuration changed during the fresh catalogue retry."
-            if disagreement_code == "configuration-changed-during-retry"
-            else "Kea subnet identity and configuration facts disagree after a fresh retry."
-        )
+    if disagreement_code is None and (cross_source_ids or cross_source_networks):
+        disagreement_code = "identity-configuration-disagreement"
+    if disagreement_code is None and within_source_collision:
+        disagreement_code = "catalogue-identity-collision"
+    if disagreement_code is not None:
+        messages = {
+            "configuration-changed-during-retry": "Kea configuration changed during the fresh catalogue retry.",
+            "catalogue-identity-collision": (
+                "Kea returned duplicate subnet IDs or CIDRs within one catalogue source; all participants were omitted."
+            ),
+            "identity-configuration-disagreement": (
+                "Kea subnet identity and configuration facts disagree after a fresh retry."
+            ),
+        }
         diagnostics.append(
             _diagnostic(
                 disagreement_code,
-                message,
+                messages[disagreement_code],
                 "reconciliation",
             )
         )
@@ -980,7 +1029,7 @@ def _reconcile(
                     shared_network=_membership(shared_network_name),
                 )
             )
-        elif not configuration.available or not configuration.complete:
+        elif not configuration.available or not configuration.complete or not consistent:
             subnets.append(
                 VerifiedSubnet(
                     identity=identity_fact.identity,
@@ -1049,6 +1098,7 @@ def _snapshot_class(
 
 
 def _read_live(server: Server, family: Family) -> CatalogueSnapshot:
+    _require_persisted_server(server)
     identity, configuration, disagreement_code = _observe(server, family)
     return _reconcile(server, family, identity, configuration, disagreement_code)
 

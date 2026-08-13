@@ -108,6 +108,8 @@ class TestSubnetCatalogue(TestCase):
             display(self.server, 5)
         with self.assertRaisesMessage(ValueError, "requires a persisted Server"):
             display(Server(), 4)
+        with self.assertRaisesMessage(ValueError, "requires a persisted Server"):
+            for_synchronization(Server(), 4)
 
     def test_display_reports_malformed_source_envelopes(self):
         cases = (
@@ -359,6 +361,18 @@ class TestSubnetCatalogue(TestCase):
         self.assertFalse(snapshot.subnets)
         self.assertIn("identity-configuration-disagreement", {diagnostic.code for diagnostic in snapshot.diagnostics})
 
+    def test_identity_missing_from_complete_configuration_remains_visible(self):
+        identities = _identity(4, [{"id": 1, "subnet": "198.18.1.0/24"}])
+        configuration = _config(4, [], config_hash="stable")
+
+        with stub_kea({"subnet4-list": identities, "config-get": configuration}):
+            snapshot = display(self.server, 4)
+
+        self.assertIsInstance(snapshot, IncompleteCatalogueSnapshot)
+        self.assertEqual(snapshot.subnet_choices, (("198.18.1.0/24", 1),))
+        self.assertIsNone(snapshot.subnets[0].configuration)
+        self.assertIn("identity-configuration-disagreement", {diagnostic.code for diagnostic in snapshot.diagnostics})
+
     def test_identity_collision_quarantines_participants_but_keeps_unrelated_subnet(self):
         identities = _identity(
             4,
@@ -381,7 +395,10 @@ class TestSubnetCatalogue(TestCase):
 
         self.assertIsInstance(snapshot, IncompleteCatalogueSnapshot)
         self.assertEqual(snapshot.subnet_choices, (("198.18.3.0/24", 2),))
-        self.assertIn("identity-collision", {diagnostic.code for diagnostic in snapshot.diagnostics})
+        diagnostic_codes = {diagnostic.code for diagnostic in snapshot.diagnostics}
+        self.assertIn("identity-collision", diagnostic_codes)
+        self.assertIn("catalogue-identity-collision", diagnostic_codes)
+        self.assertNotIn("identity-configuration-disagreement", diagnostic_codes)
 
     def test_invalid_pool_is_omitted_without_discarding_subnet(self):
         identities = _identity(4, [{"id": 1, "subnet": "198.18.1.0/24"}])

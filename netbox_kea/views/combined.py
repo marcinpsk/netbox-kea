@@ -233,6 +233,7 @@ def _filter_subnets(subnets: list[dict[str, Any]], q: str, subnet_id: int | None
 
 
 def _option_payload(option: SubnetOption) -> dict[str, Any]:
+    """Serialize a catalogue option for existing option display formatting."""
     return {
         "data": option.data,
         **{
@@ -255,6 +256,7 @@ def _catalogue_subnet_row(
     server: Server,
     version: int,
 ) -> dict[str, Any]:
+    """Build one combined-table row from a typed catalogue subnet."""
     from ..utilities import format_option_data
 
     identity = subnet.identity if isinstance(subnet, VerifiedSubnet) else subnet.candidate_identity
