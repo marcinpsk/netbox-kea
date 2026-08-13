@@ -2029,7 +2029,8 @@ class TestFetchLeasesFromServer(_ViewTestBase):
         from netbox_kea.views import _fetch_leases_from_server
 
         if resp is None:
-            resp = [{"result": 0, "arguments": {"leases": [{"ip-address": "10.0.0.1", "valid-lft": 3600, "state": 0}]}}]
+            address = "10.0.0.1" if version == 4 else "2001:db8::1"
+            resp = [{"result": 0, "arguments": {"leases": [{"ip-address": address, "valid-lft": 3600, "state": 0}]}}]
         payload = resp[0] if isinstance(resp, list) else resp
         # _fetch_leases_from_server picks the command from `by`; register every
         # lease-get variant to the same payload so whichever it issues is covered.
@@ -2068,9 +2069,9 @@ class TestFetchLeasesFromServer(_ViewTestBase):
         leases = self._call(constants.BY_DUID, q="00:01:00:01:12:34", version=6)
         self.assertIsInstance(leases, list)
 
-    def test_unknown_by_returns_empty(self):
-        leases = self._call("unknown_by", q="x")
-        self.assertEqual(leases, [])
+    def test_unknown_by_is_rejected(self):
+        with self.assertRaises(ValueError):
+            self._call("unknown_by", q="x")
 
     def test_result_3_returns_empty(self):
         from netbox_kea import constants
@@ -3541,12 +3542,13 @@ class TestGetLeasesPageDefensiveChecks(_ViewTestBase):
             response = self.client.get(self._url(), {"by": "subnet", "q": "10.0.0.0/24"}, HTTP_HX_REQUEST="true")
         self.assertEqual(response.status_code, 200)
 
-    def test_filtered_out_items_on_partial_page_returns_empty(self):
-        """Items without ip-address are filtered; partial page returns empty gracefully."""
+    def test_malformed_item_on_partial_page_renders_error(self):
+        """A lease without an IP address makes the page indeterminate."""
         page = {"result": 0, "arguments": {"leases": [{"no-ip": "bad"}], "count": 1}}
         with stub_kea({"subnet4-list": self._SUBNETS4, "lease4-get-page": page}):
             response = self.client.get(self._url(), {"by": "subnet", "q": "10.0.0.0/24"}, HTTP_HX_REQUEST="true")
         self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "error")
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
@@ -3571,8 +3573,8 @@ class TestExportAllDefensiveChecks(_ViewTestBase):
         self.assertEqual(response.status_code, 302)
 
     def test_full_page_all_filtered_aborts_export(self):
-        """When a full page has all entries filtered out, export aborts with error."""
-        # export_all uses per_page=1000; a full page of invalid items aborts the export.
+        """When a full page has invalid entries, export aborts with an error."""
+        # export_all uses per_page=1000. One invalid item makes the page indeterminate.
         page = {"result": 0, "arguments": {"leases": [{"no-ip": f"bad-{i}"} for i in range(1000)], "count": 1000}}
         with stub_kea({"lease4-get-page": page}):
             response = self.client.get(self._url(), {"export_all": "1"})
@@ -3666,7 +3668,7 @@ class TestGetLeasesPageMalformedResponse(_ViewTestBase):
 
     def test_full_page_all_filtered_renders_error(self):
         """Full page (count==per_page) but all entries invalid must trigger RuntimeError."""
-        # Entries that are not valid dicts (filtered out by _is_valid_lease_entry).
+        # Entries that are not lease objects make the response indeterminate.
         per_page = 50
         page = {"result": 0, "arguments": {"leases": ["not-a-dict"] * per_page, "count": per_page}}
         with stub_kea({"subnet4-list": self._SUBNETS4, "lease4-get-page": page}):
@@ -3728,8 +3730,8 @@ class TestGetLeasesSingleResultValidation(_ViewTestBase):
         _assert_rendered_error_template(self, response)
 
     def test_multiple_result_all_non_dict_renders_error(self):
-        """Multiple-result with all non-dict entries filtered out must trigger RuntimeError."""
-        # by=hw returns multiple mode; all entries are non-dict.
+        """Multiple-result with non-dict entries must trigger RuntimeError."""
+        # by=hw returns multiple mode. Each entry must be a lease object.
         resp = {"result": 0, "arguments": {"leases": ["bad", 123, None], "count": 3}}
         with stub_kea({"subnet4-list": self._SUBNETS4, "lease4-get-by-hw-address": resp}):
             response = self._htmx_get(self._url(), {"by": "hw", "q": "aa:bb:cc:dd:ee:ff"})

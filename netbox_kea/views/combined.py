@@ -10,7 +10,7 @@ from django.shortcuts import render
 from django.urls import reverse
 from django.views import View
 
-from .. import constants, forms, tables
+from .. import forms, tables
 from ..kea import KeaException, iter_reservations
 from ..models import Server
 from ..subnet_catalogue import ConfiguredSubnet, Diagnostic, SubnetOption, VerifiedSubnet, display
@@ -47,57 +47,9 @@ def _require_first_entry(resp: Any, what: str) -> dict[str, Any]:
 
 
 def _fetch_leases_from_server(server: Server, q: Any, by: str, version: int) -> list[dict[str, Any]]:
-    """Fetch leases matching *q*/*by* from a single server and tag with server info.
-
-    Mirrors the logic in ``BaseServerLeasesView.get_leases`` but is a plain
-    function so it can be submitted to ``ThreadPoolExecutor`` directly.
-    Returns an empty list when the server reports no matching leases (result=3).
-    Raises any other exception so the caller can display a per-server error.
-    """
+    """Fetch leases matching *q*/*by* from one server and tag them with server details."""
     client = server.get_client(version=version)
-
-    arguments: dict[str, Any]
-    command_suffix = ""
-    multiple = True
-
-    if by == constants.BY_IP:
-        arguments = {"ip-address": q}
-        multiple = False
-    elif by == constants.BY_HW_ADDRESS:
-        arguments = {"hw-address": q}
-        command_suffix = "-by-hw-address"
-    elif by == constants.BY_HOSTNAME:
-        arguments = {"hostname": q}
-        command_suffix = "-by-hostname"
-    elif by == constants.BY_CLIENT_ID:
-        arguments = {"client-id": q}
-        command_suffix = "-by-client-id"
-    elif by == constants.BY_SUBNET_ID:
-        command_suffix = "-all"
-        arguments = {"subnets": [int(q)]}
-    elif by == constants.BY_DUID:
-        command_suffix = "-by-duid"
-        arguments = {"duid": q}
-    else:
-        return []
-
-    resp = client.command(
-        f"lease{version}-get{command_suffix}",
-        service=[f"dhcp{version}"],
-        arguments=arguments,
-        check=(0, 3),
-    )
-
-    entry = _require_first_entry(resp, f"lease{version}-get{command_suffix}")
-    if entry["result"] == 3:
-        return []
-
-    args = entry["arguments"]
-    if args is None:
-        raise RuntimeError(f"Unexpected None arguments from lease{version}-get{command_suffix}")
-
-    raw = args["leases"] if multiple else [args]
-    leases = format_leases(raw)
+    leases = format_leases(client.lease_search(version, by, q))
     for lease in leases:
         lease["server_name"] = server.name
         lease["server_pk"] = server.pk
@@ -107,10 +59,10 @@ def _fetch_leases_from_server(server: Server, q: Any, by: str, version: int) -> 
 def _fetch_all_leases_from_server(
     server: "Server", version: int, max_leases: int = 1000
 ) -> tuple[list[dict[str, Any]], bool]:
-    """Enumerate all leases on *server* via ``lease{v}-get-page``.
+    """Enumerate all leases on *server* through the Kea client.
 
-    Paginates from the start address until all leases are fetched or *max_leases*
-    is reached.  Leases are tagged with ``server_name`` and ``server_pk``.
+    Fetches leases until the collection is complete or *max_leases* is reached.
+    Leases are tagged with ``server_name`` and ``server_pk``.
 
     Args:
         server: The Kea server to query.
@@ -124,40 +76,13 @@ def _fetch_all_leases_from_server(
 
     """
     client = server.get_client(version=version)
-    start_ip = "0.0.0.0" if version == 4 else "::"  # noqa: S104  lease-page pagination cursor, not a socket bind
-    per_page = 250
-
-    all_leases: list[dict[str, Any]] = []
-    cursor = start_ip
-    truncated = False
-
-    while True:
-        resp = client.command(
-            f"lease{version}-get-page",
-            service=[f"dhcp{version}"],
-            arguments={"from": cursor, "limit": per_page},
-            check=(0, 3),
-        )
-        entry = _require_first_entry(resp, f"lease{version}-get-page")
-        if entry["result"] == 3:
-            break
-        args = entry["arguments"]
-        if args is None:
-            raise RuntimeError(f"Unexpected None arguments from lease{version}-get-page")
-        raw_leases = args["leases"]
-        all_leases += format_leases(raw_leases)
-        if len(all_leases) >= max_leases:
-            truncated = True
-            all_leases = all_leases[:max_leases]
-            break
-        if args["count"] < per_page:
-            break
-        cursor = raw_leases[-1]["ip-address"]
+    collection = client.lease_get_all(version, max_leases=max_leases)
+    all_leases = format_leases(collection.leases)
 
     for lease in all_leases:
         lease["server_name"] = server.name
         lease["server_pk"] = server.pk
-    return all_leases, truncated
+    return all_leases, collection.truncated
 
 
 class _CombinedViewMixin(ConditionalLoginRequiredMixin, View):

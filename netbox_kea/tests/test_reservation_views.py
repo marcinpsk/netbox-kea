@@ -768,6 +768,19 @@ class TestServerReservation4EditView(_ReservationViewBase):
         self.assertEqual(response.status_code, 200)
         self.assertNotIn("lease_diff", response.context)
 
+    def test_get_no_lease_diff_when_lease_response_is_malformed(self):
+        """GET must not crash when the lease response is malformed."""
+        with stub_kea(
+            {
+                "subnet4-get": _subnet_get(4, subnet_cidr=_SUBNET4_CIDR),
+                "reservation-get": _res_get(_SAMPLE_RESERVATION4),
+                "lease4-get": {"result": 0, "arguments": None},
+            }
+        ):
+            response = self.client.get(self._edit_url())
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("lease_diff", response.context)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TestServerReservation6EditView
@@ -2508,6 +2521,19 @@ class TestServerReservation6EditLeaseDiff(_ReservationViewBase):
         self.assertEqual(response.status_code, 200)
         self.assertNotIn("lease_diff", response.context)
 
+    def test_get_no_lease_diff_when_lease_response_is_malformed(self):
+        """GET must not crash when the DHCPv6 lease response is malformed."""
+        with stub_kea(
+            {
+                "subnet6-get": _subnet_get(6, subnet_cidr=_SUBNET6_CIDR),
+                "reservation-get": _res_get(self._reservation()),
+                "lease6-get": {"result": 0, "arguments": None},
+            }
+        ):
+            response = self.client.get(self._edit_url())
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("lease_diff", response.context)
+
     def test_get_no_lease_diff_when_hostname_matches(self):
         """GET must not add lease_diff when lease hostname matches the reservation hostname."""
         with stub_kea(
@@ -2899,14 +2925,13 @@ class TestEnrichReservationsLeaseStatusErrors(_ReservationViewBase):
         for row in response.context["table"].data:
             self.assertIsNone(row.get("has_active_lease"))
 
-    def test_non_dict_lease_entries_are_skipped(self):
-        """When lease entries contain non-dict items, they are skipped without crashing."""
-        # Mix of valid dict and non-dict entries; the valid one matches the reservation IP.
+    def test_non_dict_lease_entries_set_indeterminate(self):
+        """One malformed lease makes the subnet's lease state indeterminate."""
         with self._stub({"result": 0, "arguments": {"leases": ["not-a-dict", 42, {"ip-address": "192.168.1.100"}]}}):
             response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
         for row in response.context["table"].data:
-            self.assertTrue(row.get("has_active_lease"))
+            self.assertIsNone(row.get("has_active_lease"))
 
     def test_kea_exception_result_not_2_sets_indeterminate(self):
         """KeaException with result!=2 (not hook-unavailable) leaves has_active_lease=None."""

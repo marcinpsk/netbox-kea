@@ -185,7 +185,9 @@ def _sync_server_leases(
 
     try:
         client = server.get_client(version=version)
-        raw_leases, truncated = client.lease_get_all(version=version, max_leases=max_leases or None)
+        collection = client.lease_get_all(version=version, max_leases=max_leases or None)
+        raw_leases = collection.leases
+        truncated = collection.truncated
     except Exception as exc:  # noqa: BLE001
         logger.warning("Failed to fetch leases from server %s (v%s): %s", server.name, version, exc)
         stats["errors"] += 1

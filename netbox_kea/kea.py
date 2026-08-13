@@ -2,10 +2,12 @@ import copy
 import ipaddress
 import logging
 from collections.abc import Iterator, Sequence
-from typing import Any, TypedDict
+from typing import Any, NamedTuple, TypedDict
 
 import requests
 from requests.models import HTTPBasicAuth
+
+from . import constants
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +18,67 @@ class KeaResponse(TypedDict):
     result: int
     arguments: dict[str, Any] | None
     text: str | None
+
+
+class LeasePage(NamedTuple):
+    """One validated Kea lease page and its next cursor."""
+
+    leases: list[dict[str, Any]]
+    next_cursor: str | None
+
+
+class LeaseCollection(NamedTuple):
+    """A bounded validated lease collection."""
+
+    leases: list[dict[str, Any]]
+    truncated: bool
+
+
+def _lease_page_start(
+    version: int,
+    cursor: str | None,
+    subnet: ipaddress.IPv4Network | ipaddress.IPv6Network | None,
+) -> str:
+    if cursor is not None:
+        try:
+            parsed_cursor = ipaddress.ip_address(cursor)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Invalid DHCPv{version} lease cursor.") from exc
+        if parsed_cursor.version != version:
+            raise ValueError(f"Lease cursor family IPv{parsed_cursor.version} does not match DHCPv{version}.")
+        return str(parsed_cursor)
+    if subnet is None:
+        return "0.0.0.0" if version == 4 else "::"  # noqa: S104  Kea pagination cursor
+    if int(subnet.network_address) == 0:
+        return str(subnet.network_address)
+    return str(subnet.network_address - 1)
+
+
+def _lease_address_values(leases: list[Any], command: str) -> list[str]:
+    values: list[str] = []
+    for index, lease in enumerate(leases):
+        raw_address = lease.get("ip-address") if isinstance(lease, dict) else None
+        if not isinstance(raw_address, str) or not raw_address:
+            raise RuntimeError(f"{command} returned an invalid ip-address at lease index {index}.")
+        values.append(raw_address)
+    return values
+
+
+def _validated_lease_addresses(
+    leases: list[Any],
+    version: int,
+    command: str,
+) -> list[ipaddress.IPv4Address | ipaddress.IPv6Address]:
+    addresses: list[ipaddress.IPv4Address | ipaddress.IPv6Address] = []
+    for index, raw_address in enumerate(_lease_address_values(leases, command)):
+        try:
+            address = ipaddress.ip_address(raw_address)
+        except ValueError as exc:
+            raise RuntimeError(f"{command} returned an invalid ip-address at lease index {index}.") from exc
+        if address.version != version:
+            raise RuntimeError(f"{command} returned a lease for the wrong address family at index {index}.")
+        addresses.append(address)
+    return addresses
 
 
 class KeaClient:
@@ -1084,7 +1147,7 @@ class KeaClient:
         )
 
     def lease_get_by_ip(self, version: int, ip_address: str) -> dict | None:
-        """Fetch a single lease by IP address.
+        """Fetch a single lease through the canonical lease-search interface.
 
         Args:
             version: DHCP version (4 or 6).
@@ -1096,28 +1159,134 @@ class KeaClient:
 
         Raises:
             KeaException: If Kea returns any error other than "not found" (result != 0/3).
+            RuntimeError: If Kea returns a malformed lease response.
 
         """
-        service = f"dhcp{version}"
-        resp = self.command(
-            f"lease{version}-get",
-            service=[service],
-            arguments={"ip-address": ip_address},
+        leases = self.lease_search(version, constants.BY_IP, ip_address)
+        return leases[0] if leases else None
+
+    def lease_search(self, version: int, selector: str, value: Any) -> list[dict[str, Any]]:
+        """Return raw leases that match one supported selector."""
+        selector_specs = {
+            constants.BY_IP: ("", "ip-address", False, {4, 6}),
+            constants.BY_HW_ADDRESS: ("-by-hw-address", "hw-address", True, {4}),
+            constants.BY_HOSTNAME: ("-by-hostname", "hostname", True, {4, 6}),
+            constants.BY_CLIENT_ID: ("-by-client-id", "client-id", True, {4}),
+            constants.BY_SUBNET_ID: ("-all", "subnets", True, {4, 6}),
+            constants.BY_DUID: ("-by-duid", "duid", True, {6}),
+        }
+        if version not in (4, 6):
+            raise ValueError(f"version must be 4 or 6, got {version!r}")
+        spec = selector_specs.get(selector)
+        if spec is None or version not in spec[3]:
+            raise ValueError(f"Lease selector {selector!r} is not supported for DHCPv{version}.")
+
+        command_suffix, argument_name, multiple, _supported_versions = spec
+        if selector == constants.BY_SUBNET_ID:
+            if isinstance(value, bool):
+                raise ValueError("subnet_id must be a positive integer.")
+            try:
+                subnet_id = int(value)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("subnet_id must be a positive integer.") from exc
+            if subnet_id < 1:
+                raise ValueError("subnet_id must be a positive integer.")
+            arguments = {argument_name: [subnet_id]}
+        else:
+            if not isinstance(value, str) or not value:
+                raise ValueError(f"{selector} must be a non-empty string.")
+            arguments = {argument_name: value}
+
+        command = f"lease{version}-get{command_suffix}"
+        response = self.command(
+            command,
+            service=[f"dhcp{version}"],
+            arguments=arguments,
             check=(0, 3),
         )
-        if resp[0]["result"] == 3:
-            return None
-        args = resp[0].get("arguments")
-        if not isinstance(args, dict):
-            raise ValueError(
-                f"lease{version}-get returned result=0 but arguments is {type(args).__name__}, expected dict"
-            )
-        return args
+        if not response or not isinstance(response[0], dict):
+            raise RuntimeError(f"{command} returned a malformed response.")
+        if response[0].get("result") == 3:
+            return []
+        response_arguments = response[0].get("arguments")
+        if not isinstance(response_arguments, dict):
+            raise RuntimeError(f"{command} returned malformed arguments.")
+        raw_leases = response_arguments.get("leases") if multiple else [response_arguments]
+        if not isinstance(raw_leases, list):
+            raise RuntimeError(f"{command} returned a malformed leases collection.")
+        _validated_lease_addresses(raw_leases, version, command)
+        return raw_leases
 
-    def lease_get_all(
-        self, version: int, *, per_page: int = 250, max_leases: int | None = None
-    ) -> tuple[list[dict], bool]:
-        """Paginate through **all** leases on the daemon and return them as a flat list.
+    def lease_get_page(
+        self,
+        version: int,
+        *,
+        limit: int,
+        cursor: str | None = None,
+        subnet: ipaddress.IPv4Network | ipaddress.IPv6Network | None = None,
+    ) -> LeasePage:
+        """Return one validated lease page, optionally bounded by a Subnet."""
+        if version not in (4, 6):
+            raise ValueError(f"version must be 4 or 6, got {version!r}")
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+            raise ValueError(f"limit must be a positive integer, got {limit!r}")
+        if subnet is not None and subnet.version != version:
+            raise ValueError(f"Subnet family IPv{subnet.version} does not match DHCPv{version}.")
+
+        page = self._request_lease_page(
+            version,
+            limit=limit,
+            cursor=_lease_page_start(version, cursor, subnet),
+        )
+        lease_addresses = _validated_lease_addresses(page.leases, version, f"lease{version}-get-page")
+
+        leases = page.leases
+        next_cursor = page.next_cursor
+        if subnet is not None:
+            for index, address in enumerate(lease_addresses):
+                if address not in subnet:
+                    leases = leases[:index]
+                    next_cursor = None
+                    break
+        return LeasePage(leases=leases, next_cursor=next_cursor)
+
+    def _request_lease_page(self, version: int, *, limit: int, cursor: str) -> LeasePage:
+        """Request one structurally valid lease page from Kea."""
+        command = f"lease{version}-get-page"
+        response = self.command(
+            command,
+            service=[f"dhcp{version}"],
+            arguments={"from": cursor, "limit": limit},
+            check=(0, 3),
+        )
+        if not response or not isinstance(response[0], dict):
+            raise RuntimeError(f"{command} returned a malformed response.")
+        if response[0].get("result") == 3:
+            return LeasePage(leases=[], next_cursor=None)
+        arguments = response[0].get("arguments")
+        if not isinstance(arguments, dict):
+            raise RuntimeError(f"{command} returned malformed arguments.")
+        leases = arguments.get("leases")
+        if not isinstance(leases, list):
+            raise RuntimeError(f"{command} returned a malformed leases collection.")
+        count = arguments.get("count")
+        if isinstance(count, bool) or not isinstance(count, int) or count < 0 or count > limit or count != len(leases):
+            raise RuntimeError(f"{command} returned an invalid count.")
+
+        lease_address_values = _lease_address_values(leases, command)
+        next_cursor = None
+        if count == limit and lease_address_values:
+            try:
+                last_address = ipaddress.ip_address(lease_address_values[-1])
+            except ValueError as exc:
+                raise RuntimeError(f"{command} returned an invalid final ip-address.") from exc
+            if last_address.version != version:
+                raise RuntimeError(f"{command} returned a final lease for the wrong address family.")
+            next_cursor = str(last_address)
+        return LeasePage(leases=leases, next_cursor=next_cursor)
+
+    def lease_get_all(self, version: int, *, per_page: int = 250, max_leases: int | None = None) -> LeaseCollection:
+        """Return a bounded collection of all leases on the daemon.
 
         Uses ``lease{v}-get-page`` under the hood so it works with very large
         lease tables without loading everything into RAM at once.
@@ -1126,13 +1295,11 @@ class KeaClient:
             version: DHCP version (4 or 6).
             per_page: Number of leases to fetch per API call (default 250).
             max_leases: Optional cap on the total number of leases returned.
-                When the cap is hit the second element of the return tuple is
-                ``True`` (truncated).  ``None`` means no cap.
+                ``None`` means no cap.
 
         Returns:
-            ``(leases, truncated)`` where *leases* is a list of raw Kea lease
-            dicts and *truncated* is ``True`` when *max_leases* was hit before
-            all leases were fetched.
+            A validated LeaseCollection. Its ``truncated`` field is true only
+            when the cap omitted leases or a full page indicates more can exist.
 
         Raises:
             KeaException: On a non-0/3 result code.
@@ -1140,60 +1307,34 @@ class KeaClient:
             ValueError: If *per_page* is less than 1 or *max_leases* is less than 1.
 
         """
-        if per_page < 1:
+        if version not in (4, 6):
+            raise ValueError(f"version must be 4 or 6, got {version!r}")
+        if isinstance(per_page, bool) or not isinstance(per_page, int) or per_page < 1:
             raise ValueError(f"per_page must be >= 1, got {per_page!r}")
-        if max_leases is not None and max_leases < 1:
+        if max_leases is not None and (
+            isinstance(max_leases, bool) or not isinstance(max_leases, int) or max_leases < 1
+        ):
             raise ValueError(f"max_leases must be >= 1 (or None for no cap), got {max_leases!r}")
-        service = f"dhcp{version}"
-        cursor = "0.0.0.0" if version == 4 else "::"  # noqa: S104  lease-page pagination cursor, not a socket bind
-        all_leases: list[dict] = []
-        truncated = False
+        cursor: str | None = None
+        all_leases: list[dict[str, Any]] = []
 
         while True:
-            resp = self.command(
-                f"lease{version}-get-page",
-                service=[service],
-                arguments={"from": cursor, "limit": per_page},
-                check=(0, 3),
+            page = self._request_lease_page(
+                version,
+                limit=per_page,
+                cursor=_lease_page_start(version, cursor, None),
             )
-            if not resp or not isinstance(resp[0], dict):
-                raise RuntimeError(
-                    f"lease{version}-get-page returned malformed response: "
-                    f"expected non-empty list of dicts, got {resp!r:.200}"
-                )
-            if resp[0]["result"] == 3:
-                break  # no more leases
-            args = resp[0].get("arguments")
-            if not isinstance(args, dict):
-                raise RuntimeError(
-                    f"lease{version}-get-page returned result=0 but arguments is {type(args).__name__!r}, expected dict"
-                )
-            page = args.get("leases")
-            if not isinstance(page, list):
-                raise RuntimeError(
-                    f"lease{version}-get-page arguments.leases is {type(page).__name__!r}, expected list"
-                )
-            for idx, lease in enumerate(page):
-                ip_addr = lease.get("ip-address") if isinstance(lease, dict) else None
-                if not isinstance(ip_addr, str) or not ip_addr:
-                    raise RuntimeError(
-                        f"lease{version}-get-page returned an invalid lease at index {idx}: missing 'ip-address'"
-                    )
-            all_leases.extend(page)
-            if not page:
-                break
+            all_leases.extend(page.leases)
             if max_leases is not None and len(all_leases) >= max_leases:
+                truncated = len(all_leases) > max_leases
+                if not truncated and page.next_cursor is not None:
+                    overflow_page = self._request_lease_page(version, limit=1, cursor=page.next_cursor)
+                    truncated = bool(overflow_page.leases)
                 all_leases = all_leases[:max_leases]
-                truncated = True
-                break
-            count = args.get("count")
-            if not isinstance(count, int):
-                raise RuntimeError(f"lease{version}-get-page arguments.count is {type(count).__name__!r}, expected int")
-            if count < per_page:
-                break  # last page
-            cursor = page[-1]["ip-address"]
-
-        return all_leases, truncated
+                return LeaseCollection(leases=all_leases, truncated=truncated)
+            if page.next_cursor is None:
+                return LeaseCollection(leases=all_leases, truncated=False)
+            cursor = page.next_cursor
 
     def dhcp_disable(self, service: str, max_period: int | None = None) -> None:
         """Temporarily disable DHCP processing on *service*.

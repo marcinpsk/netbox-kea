@@ -1,9 +1,9 @@
 # SPDX-FileCopyrightText: 2025 Marcin Zieba <marcinpsk@gmail.com>
 # SPDX-License-Identifier: Apache-2.0
-"""Direct unit tests for api/views.py — no database required.
+"""Direct unit tests for api/views.py: no database required.
 
-Covers all paths in _lease_search, _fetch_leases, _reservation_search, and
-_fetch_reservations.  The TestCase-based api test files cover the same happy
+Covers all paths in _lease_search, _reservation_search, and _fetch_reservations.
+The TestCase-based API test files cover the same happy
 paths via a real DB + HTTP stack; these SimpleTestCase tests provide fast,
 DB-free coverage for every branch.
 
@@ -78,14 +78,14 @@ class TestLeaseActionDispatch(SimpleTestCase):
 
     def test_leases4_dispatches_with_version_4(self):
         view, _ = _make_view()
-        with stub_kea({"lease4-get": [{"result": 0, "arguments": None}]}) as kea:
+        with stub_kea({"lease4-get": [{"result": 3, "text": "not found"}]}) as kea:
             response = view.leases4(_make_request({"ip_address": "10.0.0.1"}), pk=1)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(kea.bodies("lease4-get")[0]["service"], ["dhcp4"])
 
     def test_leases6_dispatches_with_version_6(self):
         view, _ = _make_view()
-        with stub_kea({"lease6-get": [{"result": 0, "arguments": None}]}) as kea:
+        with stub_kea({"lease6-get": [{"result": 3, "text": "not found"}]}) as kea:
             response = view.leases6(_make_request({"ip_address": "2001:db8::1"}), pk=1)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(kea.bodies("lease6-get")[0]["service"], ["dhcp6"])
@@ -156,13 +156,13 @@ class TestLeaseSearchErrors(SimpleTestCase):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# _fetch_leases — all dispatch branches
+# _lease_search client dispatch branches
 # ─────────────────────────────────────────────────────────────────────────────
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestFetchLeasesIpAddress(SimpleTestCase):
-    """ip_address branch in _fetch_leases (lease{v}-get)."""
+    """ip_address branch in _lease_search."""
 
     def test_result3_returns_empty(self):
         view, _ = _make_view()
@@ -171,12 +171,12 @@ class TestFetchLeasesIpAddress(SimpleTestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["count"], 0)
 
-    def test_null_arguments_returns_empty(self):
+    def test_null_arguments_returns_internal_error(self):
         view, _ = _make_view()
         with stub_kea({"lease4-get": [{"result": 0, "arguments": None}]}):
             response = view._lease_search(_make_request({"ip_address": "10.0.0.1"}), version=4)
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.data["count"], 0)
+        self.assertEqual(response.status_code, status.HTTP_500_INTERNAL_SERVER_ERROR)
+        self.assertIn("internal error", response.data["detail"].lower())
 
     def test_lease_returned_in_results(self):
         lease = {"ip-address": "10.0.0.1", "subnet-id": 1}
@@ -189,7 +189,7 @@ class TestFetchLeasesIpAddress(SimpleTestCase):
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestFetchLeasesHwAddress(SimpleTestCase):
-    """hw_address branch in _fetch_leases (lease{v}-get-by-hw-address)."""
+    """hw_address branch in _lease_search."""
 
     def test_result3_returns_empty(self):
         view, _ = _make_view()
@@ -209,7 +209,7 @@ class TestFetchLeasesHwAddress(SimpleTestCase):
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestFetchLeasesDuid(SimpleTestCase):
-    """duid branch in _fetch_leases (lease6-get-by-duid)."""
+    """duid branch in _lease_search."""
 
     def test_result3_returns_empty(self):
         view, _ = _make_view()
@@ -226,19 +226,19 @@ class TestFetchLeasesDuid(SimpleTestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["count"], 1)
 
-    def test_duid_on_v4_falls_through_to_empty(self):
-        """duid provided on v4 skips the duid branch; no other param matches → empty (no Kea call)."""
+    def test_duid_on_v4_returns_bad_request(self):
+        """DHCPv4 rejects the DHCPv6-only selector without a Kea request."""
         view, _ = _make_view()
         with stub_kea({}) as kea:
             response = view._lease_search(_make_request({"duid": "00:01:02:03"}), version=4)
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.data["count"], 0)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("DHCPv6", response.data["detail"])
         self.assertEqual(kea.commands(), [])
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestFetchLeasesHostname(SimpleTestCase):
-    """hostname branch in _fetch_leases (lease{v}-get-by-hostname)."""
+    """hostname branch in _lease_search."""
 
     def test_result3_returns_empty(self):
         view, _ = _make_view()
@@ -258,7 +258,7 @@ class TestFetchLeasesHostname(SimpleTestCase):
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestFetchLeasesSubnetId(SimpleTestCase):
-    """subnet_id branch in _fetch_leases (lease{v}-get-all)."""
+    """subnet_id branch in _lease_search."""
 
     def test_result3_returns_empty(self):
         view, _ = _make_view()

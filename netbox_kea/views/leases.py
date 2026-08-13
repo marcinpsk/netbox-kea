@@ -16,7 +16,7 @@ from django.http.request import HttpRequest
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.views import View
-from netaddr import IPAddress, IPNetwork
+from netaddr import IPNetwork
 from netbox.tables import BaseTable
 from netbox.views import generic
 from utilities.exceptions import AbortRequest
@@ -41,21 +41,6 @@ from ._base import ConditionalLoginRequiredMixin, _KeaChangeMixin, _strip_empty_
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T", bound=BaseTable)
-
-
-def _is_valid_lease_entry(entry: dict) -> bool:
-    """Return True if *entry* is a dict with a valid IP in ``ip-address``."""
-    if not isinstance(entry, dict):
-        return False
-    addr = entry.get("ip-address")
-    if not isinstance(addr, str):
-        return False
-    try:
-        ipaddress.ip_address(addr)
-    except ValueError:
-        logger.warning("Skipping lease entry with invalid ip-address: %r", addr)
-        return False
-    return True
 
 
 def _run_lease_sync_to_netbox(request: HttpRequest, lease: dict, ip_address: str) -> None:
@@ -161,131 +146,23 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
     def get_leases_page(
         self, client: KeaClient, subnet: IPNetwork | None, page: str | None, per_page: int
     ) -> tuple[list[dict[str, Any]], str | None]:
-        """Fetch one page of leases and return ``(leases, next_cursor)``.
-
-        When *subnet* is ``None`` (all-leases mode), returns leases from the beginning of
-        the address space without subnet filtering.  Otherwise filters results to *subnet*.
-        """
-        if page:
-            frm = page
-        elif subnet is None:
-            frm = "0.0.0.0" if self.dhcp_version == 4 else "::"  # noqa: S104  lease-page start cursor, not a socket bind
-        elif int(subnet.network) == 0:
-            frm = str(subnet.network)
-        else:
-            frm = str(subnet.network - 1)
-
-        resp = client.command(
-            f"lease{self.dhcp_version}-get-page",
-            service=[f"dhcp{self.dhcp_version}"],
-            arguments={"from": frm, "limit": per_page},
-            check=(0, 3),
+        """Fetch and format one validated lease page."""
+        network = ipaddress.ip_network(str(subnet.cidr)) if subnet is not None else None
+        result = client.lease_get_page(
+            self.dhcp_version,
+            limit=per_page,
+            cursor=page or None,
+            subnet=network,
         )
-
-        if not resp or not isinstance(resp[0], dict):
-            raise RuntimeError("Unexpected response shape from lease-get-page")
-
-        if resp[0]["result"] == 3:
-            return [], None
-
-        args = resp[0].get("arguments")
-        if not isinstance(args, dict):
-            raise RuntimeError("Unexpected None arguments from lease-get-page")
-
-        original_leases = args.get("leases")
-        if not isinstance(original_leases, list):
-            raise RuntimeError("Unexpected leases payload from lease-get-page")
-        raw_leases = [entry for entry in original_leases if _is_valid_lease_entry(entry)]
-
-        count = args.get("count")
-        if not isinstance(count, int):
-            raise RuntimeError("Missing or non-int count in lease-get-page response")
-
-        if count == per_page and not raw_leases:
-            logger.warning(
-                "lease-get-page returned %d items but none had a valid ip-address; aborting pagination",
-                len(original_leases),
-            )
-            raise RuntimeError("Unexpected empty leases after filtering on full page")
-
-        # Derive cursor from original Kea response to avoid rewinding on filtered entries
-        if count == per_page and original_leases:
-            last = original_leases[-1]
-            if not _is_valid_lease_entry(last):
-                raise RuntimeError("Pagination aborted: last lease entry on full page is malformed")
-            next_cursor = str(last["ip-address"])
-        else:
-            next_cursor = None
-        if subnet is not None:
-            for i, lease in enumerate(raw_leases):
-                lease_ip = IPAddress(lease["ip-address"])
-                if lease_ip not in subnet:
-                    raw_leases = raw_leases[:i]
-                    next_cursor = None
-                    break
-
-        subnet_leases = format_leases(raw_leases)
-
-        return subnet_leases, next_cursor
+        return format_leases(result.leases), result.next_cursor
 
     def get_leases(self, client: KeaClient, q: Any, by: str) -> list[dict[str, Any]]:
-        """Query Kea for leases matching *q* by search attribute *by*."""
-        arguments: dict[str, Any]
-        command = ""
-        multiple = True
-
-        if by == constants.BY_IP:
-            arguments = {"ip-address": q}
-            multiple = False
-        elif by == constants.BY_HW_ADDRESS:
-            arguments = {"hw-address": q}
-            command = "-by-hw-address"
-        elif by == constants.BY_HOSTNAME:
-            arguments = {"hostname": q}
-            command = "-by-hostname"
-        elif by == constants.BY_CLIENT_ID:
-            arguments = {"client-id": q}
-            command = "-by-client-id"
-        elif by == constants.BY_SUBNET_ID:
-            command = "-all"
-            arguments = {"subnets": [int(q)]}
-        elif by == constants.BY_DUID:
-            command = "-by-duid"
-            arguments = {"duid": q}
-        else:
-            # We should never get here because the
-            # form should of been validated.
-            raise AbortRequest(f"Invalid search by (this shouldn't happen): {by}")
-        resp = client.command(
-            f"lease{self.dhcp_version}-get{command}",
-            service=[f"dhcp{self.dhcp_version}"],
-            arguments=arguments,
-            check=(0, 3),
-        )
-
-        if not resp or not isinstance(resp[0], dict):
-            raise RuntimeError(f"Unexpected response shape from lease{self.dhcp_version}-get{command}")
-
-        if resp[0]["result"] == 3:
-            return []
-
-        args = resp[0].get("arguments")
-        if not isinstance(args, dict):
-            raise RuntimeError(f"Unexpected None arguments from lease{self.dhcp_version}-get{command}")
-        if multiple is True:
-            raw_leases = args.get("leases")
-            if not isinstance(raw_leases, list):
-                raise RuntimeError(f"Unexpected leases payload from lease{self.dhcp_version}-get{command}")
-            if not raw_leases:
-                return []
-            filtered_leases = [entry for entry in raw_leases if isinstance(entry, dict)]
-            filtered_leases = [entry for entry in filtered_leases if _is_valid_lease_entry(entry)]
-            if not filtered_leases:
-                raise RuntimeError(f"No valid lease dicts in lease{self.dhcp_version}-get{command} response")
-            return format_leases(filtered_leases)
-        if "ip-address" not in args:
-            raise RuntimeError(f"Single-result lease{self.dhcp_version}-get{command} response missing 'ip-address'")
-        return format_leases([args])
+        """Query and format leases matching *q* by search attribute *by*."""
+        try:
+            leases = client.lease_search(self.dhcp_version, by, q)
+        except ValueError as exc:
+            raise AbortRequest(f"Invalid lease search: {exc}") from exc
+        return format_leases(leases)
 
     def get_extra_context(self, request: HttpRequest, instance: Server) -> dict[str, Any]:
         """Return an empty table, the search form, and the add-lease URL for the initial (non-HTMX) page load."""
@@ -368,72 +245,18 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
     def get_export_all(self, request: HttpRequest, **kwargs) -> HttpResponse:
         """Export every lease on the server (no search filter) as a CSV download.
 
-        Paginates through ``lease{v}-get-page`` from the beginning until all
-        leases have been fetched, then streams them as a CSV file.
+        Fetches a complete collection through the Kea client, then streams the
+        leases as a CSV file.
         Requires the ``lease_cmds`` hook to be loaded on the Kea server.
         """
         instance = self.get_object(**kwargs)
 
-        start_ip = "0.0.0.0" if self.dhcp_version == 4 else "::"  # noqa: S104  lease-page start cursor, not a socket bind
         per_page = 1000
 
-        all_leases: list[dict[str, Any]] = []
-        cursor = start_ip
         try:
             client = instance.get_client(version=self.dhcp_version)
-            while True:
-                resp = client.command(
-                    f"lease{self.dhcp_version}-get-page",
-                    service=[f"dhcp{self.dhcp_version}"],
-                    arguments={"from": cursor, "limit": per_page},
-                    check=(0, 3),
-                )
-                if not resp or not isinstance(resp[0], dict):
-                    raise RuntimeError("Unexpected response shape from lease-get-page (export)")
-                if resp[0]["result"] == 3:
-                    break
-
-                args = resp[0].get("arguments")
-                if not isinstance(args, dict):
-                    logger.error("lease-get-page returned non-dict arguments on server %s", instance.pk)
-                    messages.error(request, "Failed to fetch leases for export: unexpected Kea response.")
-                    return redirect(request.path)
-
-                original_leases = args.get("leases")
-                if not isinstance(original_leases, list):
-                    logger.error("lease-get-page returned non-list leases on server %s", instance.pk)
-                    messages.error(request, "Failed to fetch leases for export: unexpected Kea response.")
-                    return redirect(request.path)
-                raw_leases = [entry for entry in original_leases if _is_valid_lease_entry(entry)]
-
-                count = args.get("count")
-                if not isinstance(count, int):
-                    logger.error("lease-get-page returned non-int count on server %s; aborting export", instance.pk)
-                    messages.error(request, "Failed to fetch leases for export: unexpected Kea response.")
-                    return redirect(request.path)
-
-                all_leases += format_leases(raw_leases)
-
-                if not raw_leases:
-                    if count >= per_page:
-                        logger.error(
-                            "lease-get-page returned %d items but none had a valid ip-address on server %s; aborting export",
-                            len(original_leases),
-                            instance.pk,
-                        )
-                        messages.error(request, "Failed to fetch leases for export: unexpected Kea response.")
-                        return redirect(request.path)
-                    break
-
-                if count < per_page:
-                    break
-                # Derive cursor from original Kea response to avoid rewinding on filtered entries
-                last = original_leases[-1]
-                if not _is_valid_lease_entry(last):
-                    raise RuntimeError(
-                        f"Export aborted: last lease entry on full page is malformed for server {instance.pk}"
-                    )
-                cursor = str(last["ip-address"])
+            collection = client.lease_get_all(self.dhcp_version, per_page=per_page)
+            all_leases = format_leases(collection.leases)
         except KeaException as exc:
             logger.exception("Failed to fetch all leases for export on server %s", instance.pk)
             messages.error(request, kea_error_hint(exc))
@@ -758,34 +581,18 @@ class _BaseLeaseEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin, View):
 
         try:
             client = server.get_client(version=self.dhcp_version)
-            resp = client.command(
-                f"lease{self.dhcp_version}-get",
-                service=[f"dhcp{self.dhcp_version}"],
-                arguments={"ip-address": ip_address},
-                check=(0, 3),
-            )
+            lease = client.lease_get_by_ip(self.dhcp_version, ip_address)
         except KeaException as exc:
             logger.exception("Failed to fetch lease %s on server %s", ip_address, pk)
             messages.error(request, kea_error_hint(exc))
             return redirect(self._leases_url(server))
-        except (requests.RequestException, ValueError):
+        except (requests.RequestException, RuntimeError, ValueError):
             logger.exception("Failed to fetch lease %s on server %s", ip_address, pk)
             messages.error(request, "Failed to fetch lease: see server logs for details.")
             return redirect(self._leases_url(server))
 
-        if not resp or not isinstance(resp[0], dict):
-            logger.warning("Unexpected response shape fetching lease %s on server %s: %r", ip_address, pk, resp)
-            messages.error(request, "Unexpected response from Kea: see server logs for details.")
-            return redirect(self._leases_url(server))
-
-        if resp[0]["result"] == 3:
+        if lease is None:
             messages.warning(request, f"Lease {ip_address} not found.")
-            return redirect(self._leases_url(server))
-
-        lease = resp[0].get("arguments")
-        if not isinstance(lease, dict):
-            logger.warning("Unexpected arguments in lease response for %s on server %s: %r", ip_address, pk, resp[0])
-            messages.error(request, "Unexpected response from Kea: see server logs for details.")
             return redirect(self._leases_url(server))
         initial = {
             "hostname": lease.get("hostname", ""),

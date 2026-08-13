@@ -172,6 +172,12 @@ class TestLease4API(_APITestBase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("subnet_id", response.json()["detail"])
 
+    def test_duid_returns_400(self):
+        """DHCPv4 rejects the DHCPv6-only DUID selector."""
+        response = self.api_client.get(self._url(), {"duid": "00:01:02:03"})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("DHCPv6", response.json()["detail"])
+
     def test_nonexistent_server_returns_404(self):
         """Non-existent server PK returns HTTP 404."""
         url = reverse("plugins-api:netbox_kea-api:server-leases4", args=[99999])
@@ -257,6 +263,12 @@ class TestLease6API(_APITestBase):
         response = self.api_client.get(self._url(), {"subnet_id": "not-a-number"})
         self.assertEqual(response.status_code, 400)
         self.assertIn("subnet_id", response.json()["detail"])
+
+    def test_hardware_address_returns_400(self):
+        """DHCPv6 rejects the DHCPv4-only hardware-address selector."""
+        response = self.api_client.get(self._url(), {"hw_address": "aa:bb:cc:dd:ee:ff"})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("DHCPv4", response.json()["detail"])
 
     def test_nonexistent_server_returns_404(self):
         """Non-existent server PK returns HTTP 404."""

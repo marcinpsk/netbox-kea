@@ -430,14 +430,14 @@ def _reservation_lease_identifier(reservation: dict[str, Any], version: int) -> 
 def _enrich_reservations_with_lease_status(client: "KeaClient", reservations: list[dict], version: int) -> None:  # noqa: C901
     """Enrich each reservation dict with ``has_active_lease`` (bool | None).
 
-    Queries ``lease4-get-all`` / ``lease6-get-all`` per unique subnet to find
-    active leases.  Sets ``r["has_active_lease"] = True/False`` for each
+    Queries active leases per unique subnet through the Kea client. Sets
+    ``r["has_active_lease"] = True/False`` for each
     reservation.  Leaves ``has_active_lease`` unset (None) if the ``lease_cmds``
     hook is unavailable or an unexpected error occurs, so the template can
     distinguish "unknown" from "no lease".
 
     A reservation that reserves no address has no IP to match a lease on, so it is
-    matched by client identifier instead — within its own subnet only, since the same
+    matched by client identifier instead, within its own subnet only, since the same
     client holding a lease in another subnet is a different reservation's row.
 
     Args:
@@ -449,8 +449,6 @@ def _enrich_reservations_with_lease_status(client: "KeaClient", reservations: li
     if not reservations:
         return
 
-    service = f"dhcp{version}"
-    lease_cmd = f"lease{version}-get-all"
     unique_subnet_ids = {r.get("subnet-id") for r in reservations if isinstance(r.get("subnet-id"), (int, str))}
 
     active_lease_ips: set[str] = set()
@@ -462,34 +460,17 @@ def _enrich_reservations_with_lease_status(client: "KeaClient", reservations: li
         """Return (lease IPs, client identifiers), None if the lease_cmds hook is not loaded, or False on error."""
         with client.clone() as worker_client:  # requests.Session is not thread-safe
             try:
-                resp = worker_client.command(
-                    lease_cmd,
-                    service=[service],
-                    arguments={"subnets": [sid]},
-                    check=(0, 3),
-                )
-                if not resp or not isinstance(resp[0], dict):
-                    return False  # malformed envelope — indeterminate state
-                if resp[0].get("result") != 3:
-                    raw_args = resp[0].get("arguments")
-                    if not isinstance(raw_args, dict):
-                        return False  # malformed payload — indeterminate state
-                    args = raw_args
-                    leases = args.get("leases") or []
-                    if not isinstance(leases, list):
-                        return False  # malformed payload — indeterminate state
-                    valid = [lease for lease in leases if isinstance(lease, dict)]
-                    identifiers: set[str] = set()
-                    for lease in valid:
-                        identifiers |= _lease_identifiers(lease, version)
-                    return [lease.get("ip-address", "") for lease in valid], identifiers
-                return [], set()
+                leases = worker_client.lease_search(version, constants.BY_SUBNET_ID, sid)
+                identifiers: set[str] = set()
+                for lease in leases:
+                    identifiers |= _lease_identifiers(lease, version)
+                return [lease["ip-address"] for lease in leases], identifiers
             except KeaException as exc:
                 if exc.response.get("result") == 2:
                     return None  # hook not loaded
                 logger.debug("lease fetch failed for subnet %s (KeaException result != 2): %s", sid, exc)
                 return False  # error sentinel — state is indeterminate
-            except (requests.RequestException, ValueError):  # noqa: BLE001
+            except (requests.RequestException, RuntimeError, ValueError):
                 logger.debug("lease fetch failed for subnet %s (unexpected error)", sid)
                 return False  # error sentinel
 
@@ -1112,7 +1093,7 @@ class ServerReservation4EditView(
                 lease = server.get_client(version=4).lease_get_by_ip(4, ip_address)
                 if lease and lease.get("hostname") and lease.get("hostname") != reservation.get("hostname", ""):
                     context["lease_diff"] = {"hostname": lease["hostname"]}
-            except (KeaException, requests.RequestException, ValueError):
+            except (KeaException, requests.RequestException, RuntimeError, ValueError):
                 logger.debug("Could not fetch lease for reservation edit diff (ip=%s)", ip_address, exc_info=True)
         return render(request, self.template_name, context)
 
@@ -1281,7 +1262,7 @@ class ServerReservation6EditView(
                 lease = server.get_client(version=6).lease_get_by_ip(6, ip_address)
                 if lease and lease.get("hostname") and lease.get("hostname") != reservation.get("hostname", ""):
                     context["lease_diff"] = {"hostname": lease["hostname"]}
-            except (KeaException, requests.RequestException, ValueError):
+            except (KeaException, requests.RequestException, RuntimeError, ValueError):
                 logger.debug("Could not fetch lease for reservation edit diff (ip=%s)", ip_address, exc_info=True)
         return render(request, self.template_name, context)
 

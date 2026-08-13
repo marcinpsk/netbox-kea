@@ -152,6 +152,13 @@ class TestLease4SyncView(_SyncViewBase):
         response = self.client.post(self._url(), {"hostname": "no-ip"})
         self.assertEqual(response.status_code, 400)
 
+    def test_malformed_lease_response_returns_400(self):
+        """A malformed Kea response does not escape the live-data boundary."""
+        with stub_kea({"lease4-get": {"result": 0, "arguments": None}}):
+            response = self.client.post(self._url(), {"ip_address": "192.168.10.5"})
+        self.assertEqual(response.status_code, 400)
+        self.assertContains(response, "Could not fetch live data", status_code=400)
+
     def test_idempotent_second_post_does_not_create_duplicate(self):
 
         self.client.post(self._url(), {"ip_address": "192.168.10.20", "hostname": "idem-host"})
@@ -213,6 +220,13 @@ class TestLease6SyncView(_SyncViewBase):
         )
         ip = NbIP.objects.filter(address__startswith="2001:db8::3/").first()
         self.assertEqual(ip.status, "dhcp")
+
+    def test_malformed_lease_response_returns_400(self):
+        """A malformed DHCPv6 lease response does not escape the live-data boundary."""
+        with stub_kea({"lease6-get": {"result": 0, "arguments": None}}):
+            response = self.client.post(self._url(), {"ip_address": "2001:db8::4"})
+        self.assertEqual(response.status_code, 400)
+        self.assertContains(response, "Could not fetch live data", status_code=400)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

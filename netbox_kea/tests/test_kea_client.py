@@ -5,6 +5,7 @@
 These tests mock all HTTP calls and require no running services.
 """
 
+import ipaddress
 from unittest import TestCase
 from unittest.mock import MagicMock, patch
 
@@ -16,6 +17,8 @@ from netbox_kea.kea import (
     KeaConfigPersistError,
     KeaConfigTestError,
     KeaException,
+    LeaseCollection,
+    LeasePage,
     PartialPersistError,
     check_response,
     iter_reservations,
@@ -3807,6 +3810,98 @@ class TestLeaseGetByIp(TestCase):
         self.assertIsNone(result)
 
 
+class TestLeaseSearch(TestCase):
+    """Tests for KeaClient.lease_search()."""
+
+    def setUp(self):
+        self.client = KeaClient(url="http://kea:8000")
+
+    @patch("requests.Session.post")
+    def test_rejects_selector_that_the_address_family_does_not_support(self, mock_post):
+        with self.assertRaisesRegex(ValueError, "duid.*DHCPv4"):
+            self.client.lease_search(version=4, selector="duid", value="01:02:03:04")
+
+        mock_post.assert_not_called()
+
+    def test_hardware_address_search_returns_matching_leases(self):
+        lease = {"ip-address": "198.18.0.10", "hw-address": "aa:bb:cc:dd:ee:ff"}
+        with stub_kea(
+            {
+                "lease4-get-by-hw-address": {
+                    "result": 0,
+                    "arguments": {"leases": [lease]},
+                }
+            }
+        ) as kea:
+            result = self.client.lease_search(
+                version=4,
+                selector="hw",
+                value="aa:bb:cc:dd:ee:ff",
+            )
+
+        self.assertEqual(result, [lease])
+        self.assertEqual(
+            kea.bodies("lease4-get-by-hw-address")[0]["arguments"],
+            {"hw-address": "aa:bb:cc:dd:ee:ff"},
+        )
+
+    def test_supported_selectors_map_to_one_canonical_kea_command(self):
+        cases = (
+            (4, "ip", "198.18.0.10", "lease4-get", {"ip-address": "198.18.0.10"}, False),
+            (
+                4,
+                "hostname",
+                "host.example.invalid",
+                "lease4-get-by-hostname",
+                {"hostname": "host.example.invalid"},
+                True,
+            ),
+            (4, "client_id", "01:aa:bb", "lease4-get-by-client-id", {"client-id": "01:aa:bb"}, True),
+            (4, "subnet_id", 12, "lease4-get-all", {"subnets": [12]}, True),
+            (6, "ip", "2001:db8::10", "lease6-get", {"ip-address": "2001:db8::10"}, False),
+            (
+                6,
+                "hostname",
+                "host.example.invalid",
+                "lease6-get-by-hostname",
+                {"hostname": "host.example.invalid"},
+                True,
+            ),
+            (6, "duid", "00:01:02:03", "lease6-get-by-duid", {"duid": "00:01:02:03"}, True),
+            (6, "subnet_id", "13", "lease6-get-all", {"subnets": [13]}, True),
+        )
+
+        for version, selector, value, command, arguments, multiple in cases:
+            lease = {"ip-address": "198.18.0.10" if version == 4 else "2001:db8::10"}
+            response_arguments = {"leases": [lease]} if multiple else lease
+            with (
+                self.subTest(version=version, selector=selector),
+                stub_kea({command: {"result": 0, "arguments": response_arguments}}) as kea,
+            ):
+                result = self.client.lease_search(version, selector, value)
+
+            self.assertEqual(result, [lease])
+            self.assertEqual(kea.bodies(command)[0]["arguments"], arguments)
+
+    def test_not_found_returns_empty_collection(self):
+        with stub_kea({"lease6-get-by-hostname": {"result": 3, "text": "not found"}}):
+            result = self.client.lease_search(6, "hostname", "missing.example.invalid")
+
+        self.assertEqual(result, [])
+
+    def test_malformed_lease_collection_is_rejected(self):
+        with stub_kea(
+            {
+                "lease4-get-by-hostname": {
+                    "result": 0,
+                    "arguments": {"leases": "not-a-list"},
+                }
+            }
+        ):
+            with self.assertRaisesRegex(RuntimeError, "malformed leases collection"):
+                self.client.lease_search(4, "hostname", "host.example.invalid")
+
+
 # ---------------------------------------------------------------------------
 # TestReservationGetByIp
 # ---------------------------------------------------------------------------
@@ -5010,6 +5105,71 @@ class TestConfigGetShapeGuard(TestCase):
             self.client.option_def_del(version=4, code=200, space="dhcp4")
 
 
+class TestLeaseGetPage(TestCase):
+    """Tests for KeaClient.lease_get_page()."""
+
+    def setUp(self):
+        self.client = KeaClient(url="http://kea:8000")
+
+    def test_subnet_page_starts_before_network_and_stops_at_boundary(self):
+        inside = {"ip-address": "198.18.1.10"}
+        outside = {"ip-address": "198.18.2.10"}
+        with stub_kea(
+            {
+                "lease4-get-page": {
+                    "result": 0,
+                    "arguments": {"leases": [inside, outside], "count": 2},
+                }
+            }
+        ) as kea:
+            result = self.client.lease_get_page(
+                version=4,
+                limit=10,
+                subnet=ipaddress.ip_network("198.18.1.0/24"),
+            )
+
+        self.assertEqual(result, LeasePage(leases=[inside], next_cursor=None))
+        self.assertEqual(kea.bodies("lease4-get-page")[0]["arguments"]["from"], "198.18.0.255")
+
+    def test_full_page_returns_last_address_as_next_cursor(self):
+        leases = [{"ip-address": "2001:db8::10"}, {"ip-address": "2001:db8::20"}]
+        with stub_kea(
+            {
+                "lease6-get-page": {
+                    "result": 0,
+                    "arguments": {"leases": leases, "count": 2},
+                }
+            }
+        ):
+            result = self.client.lease_get_page(version=6, limit=2)
+
+        self.assertEqual(result, LeasePage(leases=leases, next_cursor="2001:db8::20"))
+
+    def test_rejects_subnet_from_another_address_family_without_request(self):
+        with patch("requests.Session.post") as mock_post:
+            with self.assertRaisesRegex(ValueError, "IPv6.*DHCPv4"):
+                self.client.lease_get_page(
+                    version=4,
+                    limit=10,
+                    subnet=ipaddress.ip_network("2001:db8::/64"),
+                )
+
+        mock_post.assert_not_called()
+
+    def test_rejects_count_that_does_not_match_the_lease_collection(self):
+        """Kea defines count as the number of leases in the returned page."""
+        with stub_kea(
+            {
+                "lease4-get-page": {
+                    "result": 0,
+                    "arguments": {"leases": [{"ip-address": "198.18.0.10"}], "count": 0},
+                }
+            }
+        ):
+            with self.assertRaisesRegex(RuntimeError, "count"):
+                self.client.lease_get_page(version=4, limit=10)
+
+
 class TestLeaseGetAllPagination(TestCase):
     """Tests for KeaClient.lease_get_all() pagination and edge-case handling."""
 
@@ -5028,10 +5188,9 @@ class TestLeaseGetAllPagination(TestCase):
 
     @patch("requests.Session.post")
     def test_empty_page_breaks_loop(self, mock_post):
-        """An empty page list causes the loop to break instead of advancing cursor."""
-        # First call: empty page with count=250 (would normally continue)
+        """An empty successful page causes the loop to stop."""
         mock_post.side_effect = [
-            self._page_response(leases=[], count=250),
+            self._page_response(leases=[], count=0),
         ]
         leases, truncated = self.client.lease_get_all(version=4)
         self.assertEqual(leases, [])
@@ -5074,6 +5233,45 @@ class TestLeaseGetAllPagination(TestCase):
         result, truncated = self.client.lease_get_all(version=4, per_page=10, max_leases=3)
         self.assertEqual(len(result), 3)
         self.assertTrue(truncated)
+
+    @patch("requests.Session.post")
+    def test_exact_max_leases_on_final_page_is_not_truncated(self, mock_post):
+        """An exact result limit is complete when Kea marks the page as final."""
+        leases = [{"ip-address": f"10.0.0.{i}"} for i in range(1, 4)]
+        mock_post.return_value = self._page_response(leases=leases, count=3)
+
+        collection = self.client.lease_get_all(version=4, per_page=10, max_leases=3)
+
+        self.assertEqual(collection, LeaseCollection(leases=leases, truncated=False))
+
+    @patch("requests.Session.post")
+    def test_exact_max_leases_on_full_final_page_is_not_truncated(self, mock_post):
+        """An exact full-page limit probes for overflow before reporting truncation."""
+        leases = [{"ip-address": "10.0.0.1"}, {"ip-address": "10.0.0.2"}]
+        mock_post.side_effect = [
+            self._page_response(leases=leases, count=2),
+            self._no_leases_response(),
+        ]
+
+        collection = self.client.lease_get_all(version=4, per_page=2, max_leases=2)
+
+        self.assertEqual(collection, LeaseCollection(leases=leases, truncated=False))
+        self.assertEqual(mock_post.call_count, 2)
+
+    @patch("requests.Session.post")
+    def test_exact_max_leases_on_full_page_reports_confirmed_overflow(self, mock_post):
+        """A probe that finds another lease confirms the collection is truncated."""
+        leases = [{"ip-address": "10.0.0.1"}, {"ip-address": "10.0.0.2"}]
+        mock_post.side_effect = [
+            self._page_response(leases=leases, count=2),
+            self._page_response(leases=[{"ip-address": "10.0.0.3"}], count=1),
+        ]
+
+        collection = self.client.lease_get_all(version=4, per_page=2, max_leases=2)
+
+        self.assertEqual(collection, LeaseCollection(leases=leases, truncated=True))
+        probe_payload = mock_post.call_args_list[1].kwargs["json"]
+        self.assertEqual(probe_payload["arguments"], {"from": "10.0.0.2", "limit": 1})
 
     @patch("requests.Session.post")
     def test_multi_page_aggregates_leases(self, mock_post):
@@ -5385,16 +5583,16 @@ class TestLeaseUpdateGuards(TestCase):
 
 
 class TestLeaseGetByIpNonDictArguments(TestCase):
-    """lease_get_by_ip raises ValueError when result=0 but arguments is not a dict (line 991)."""
+    """lease_get_by_ip uses the canonical lease-search response validation."""
 
     def setUp(self):
         self.client = KeaClient(url="http://kea:8000")
 
-    def test_non_dict_arguments_raises_value_error(self):
-        """result=0 with non-dict (e.g. None) arguments raises ValueError."""
+    def test_non_dict_arguments_raises_runtime_error(self):
+        """A result with null arguments is a malformed Kea response."""
         resp = [{"result": 0, "arguments": None}]
         with patch.object(self.client._session, "post", return_value=_mock_http_response(resp)):
-            with self.assertRaises(ValueError):
+            with self.assertRaises(RuntimeError):
                 self.client.lease_get_by_ip(version=4, ip_address="10.0.0.1")
 
 

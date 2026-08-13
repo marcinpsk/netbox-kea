@@ -6,7 +6,7 @@ from rest_framework import status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
-from .. import filtersets, models
+from .. import constants, filtersets, models
 from ..kea import KeaClient, KeaException, iter_reservations
 from ..utilities import format_leases
 from .serializers import ServerSerializer
@@ -71,15 +71,31 @@ class ServerViewSet(NetBoxModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        if duid and version != 6:
+            return Response({"detail": "duid is only supported for DHCPv6."}, status=status.HTTP_400_BAD_REQUEST)
+        if hw_address and version != 4:
+            return Response({"detail": "hw_address is only supported for DHCPv4."}, status=status.HTTP_400_BAD_REQUEST)
+
         if subnet_id is not None:
             try:
-                int(subnet_id)
+                parsed_subnet_id = int(subnet_id)
             except ValueError:
                 return Response({"detail": "subnet_id must be an integer."}, status=status.HTTP_400_BAD_REQUEST)
+            if parsed_subnet_id < 1:
+                return Response({"detail": "subnet_id must be positive."}, status=status.HTTP_400_BAD_REQUEST)
+
+        queries = (
+            (constants.BY_IP, ip_address),
+            (constants.BY_HW_ADDRESS, hw_address),
+            (constants.BY_DUID, duid),
+            (constants.BY_HOSTNAME, hostname),
+            (constants.BY_SUBNET_ID, subnet_id),
+        )
+        selector, value = next((query for query in queries if query[1]), (None, None))
 
         try:
             client = server.get_client(version=version)
-            leases = self._fetch_leases(client, version, ip_address, hw_address, hostname, subnet_id, duid)
+            leases = client.lease_search(version, selector, value)
         except (requests.ConnectionError, requests.Timeout):
             logger.exception("Kea connection error on server %s", server.name)
             return Response({"detail": "Could not connect to Kea server."}, status=status.HTTP_502_BAD_GATEWAY)
@@ -95,77 +111,6 @@ class ServerViewSet(NetBoxModelViewSet):
 
         enriched = format_leases(leases)
         return Response({"count": len(enriched), "results": enriched})
-
-    def _fetch_leases(
-        self,
-        client: KeaClient,
-        version: int,
-        ip_address: str | None,
-        hw_address: str | None,
-        hostname: str | None,
-        subnet_id: str | None,
-        duid: str | None,
-    ) -> list[dict]:
-        """Call the appropriate Kea lease command and return raw lease dicts."""
-        service = f"dhcp{version}"
-
-        if ip_address:
-            resp = client.command(
-                f"lease{version}-get",
-                service=[service],
-                arguments={"ip-address": ip_address},
-                check=(0, 3),
-            )
-            if resp[0]["result"] == 3:
-                return []
-            args = resp[0].get("arguments")
-            return [args] if args else []
-
-        if hw_address:
-            resp = client.command(
-                f"lease{version}-get-by-hw-address",
-                service=[service],
-                arguments={"hw-address": hw_address},
-                check=(0, 3),
-            )
-            if resp[0]["result"] == 3:
-                return []
-            return (resp[0].get("arguments") or {}).get("leases", [])
-
-        if duid and version == 6:
-            resp = client.command(
-                "lease6-get-by-duid",
-                service=[service],
-                arguments={"duid": duid},
-                check=(0, 3),
-            )
-            if resp[0]["result"] == 3:
-                return []
-            return (resp[0].get("arguments") or {}).get("leases", [])
-
-        if hostname:
-            resp = client.command(
-                f"lease{version}-get-by-hostname",
-                service=[service],
-                arguments={"hostname": hostname},
-                check=(0, 3),
-            )
-            if resp[0]["result"] == 3:
-                return []
-            return (resp[0].get("arguments") or {}).get("leases", [])
-
-        if subnet_id:
-            resp = client.command(
-                f"lease{version}-get-all",
-                service=[service],
-                arguments={"subnets": [int(subnet_id)]},
-                check=(0, 3),
-            )
-            if resp[0]["result"] == 3:
-                return []
-            return (resp[0].get("arguments") or {}).get("leases", [])
-
-        return []
 
     # ─────────────────────────────────────────────────────────────────────
     # Reservation search actions
