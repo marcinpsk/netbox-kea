@@ -125,6 +125,22 @@ def _validated_lease_addresses(
     return addresses
 
 
+def _configured_subnet_network(subnet: Any, version: int) -> ipaddress.IPv4Network | ipaddress.IPv6Network:
+    """Return one validated configured Subnet network for the requested family."""
+    if not isinstance(subnet, dict):
+        raise RuntimeError("config-get returned a malformed Subnet entry.")
+    raw_cidr = subnet.get("subnet")
+    if not isinstance(raw_cidr, str):
+        raise RuntimeError("config-get returned a Subnet without a valid CIDR.")
+    try:
+        candidate = ipaddress.ip_network(raw_cidr, strict=True)
+    except ValueError as exc:
+        raise RuntimeError("config-get returned a Subnet without a valid CIDR.") from exc
+    if candidate.version != version:
+        raise RuntimeError(f"config-get returned an IPv{candidate.version} Subnet in Dhcp{version}.")
+    return candidate
+
+
 class KeaClient:
     """HTTP client for the Kea Control API."""
 
@@ -546,12 +562,9 @@ class KeaClient:
                 raise RuntimeError("config-get returned a malformed shared-network entry.")
             subnet_collections.append(shared_network.get(subnet_key, []))
 
-        target_cidr = str(network)
         for subnets in subnet_collections:
             for subnet in subnets:
-                if not isinstance(subnet, dict):
-                    raise RuntimeError("config-get returned a malformed Subnet entry.")
-                if subnet.get("subnet") != target_cidr:
+                if _configured_subnet_network(subnet, version) != network:
                     continue
                 subnet_id = subnet.get("id")
                 if isinstance(subnet_id, bool) or not isinstance(subnet_id, int) or subnet_id < 1:

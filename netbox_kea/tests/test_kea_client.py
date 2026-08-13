@@ -4020,6 +4020,47 @@ class TestLeaseSearch(TestCase):
         self.assertEqual(result, [])
         self.assertEqual(kea.commands(), ["config-get", "stat-lease4-get", "lease4-get-all"])
 
+    def test_subnet_cidr_matches_equivalent_configured_network_text(self):
+        lease = {"ip-address": "2001:db8::10", "state": 0}
+        with stub_kea(
+            {
+                "config-get": {
+                    "result": 0,
+                    "arguments": {
+                        "Dhcp6": {"subnet6": [{"id": 21, "subnet": "2001:0db8:0:0::/64"}]},
+                    },
+                },
+                "stat-lease6-get": self._subnet_stats(6, 21, assigned=1),
+                "lease6-get-all": {"result": 0, "arguments": {"leases": [lease]}},
+            }
+        ) as kea:
+            result = self.client.lease_search(6, "subnet", "2001:db8::/64")
+
+        self.assertEqual(result, [lease])
+        self.assertEqual(kea.commands(), ["config-get", "stat-lease6-get", "lease6-get-all"])
+
+    def test_malformed_configured_subnet_network_is_rejected(self):
+        cases = (
+            (None, "valid CIDR"),
+            ("not-a-network", "valid CIDR"),
+            ("198.18.0.0/24", "IPv4 Subnet in Dhcp6"),
+        )
+
+        for configured_cidr, message in cases:
+            with (
+                self.subTest(configured_cidr=configured_cidr),
+                stub_kea(
+                    {
+                        "config-get": {
+                            "result": 0,
+                            "arguments": {"Dhcp6": {"subnet6": [{"id": 21, "subnet": configured_cidr}]}},
+                        }
+                    }
+                ),
+                self.assertRaisesRegex(RuntimeError, message),
+            ):
+                self.client.configured_subnet_id_from_cidr(6, "2001:db8::/64")
+
     def test_explicitly_disabled_guard_skips_statistics(self):
         client = KeaClient(url="http://kea:8000", max_unpaged_leases=None)
         lease = {"ip-address": "198.18.0.10", "state": 0}

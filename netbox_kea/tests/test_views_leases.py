@@ -3782,16 +3782,7 @@ class TestGetLeasesPageMalformedResponse(_ViewTestBase):
 
     def test_non_dict_first_element_renders_error(self):
         """When resp[0] is not a dict, the HTMX handler catches RuntimeError."""
-
-        # A non-dict entry can't survive the real command's result-code check
-        # (check_response would TypeError first), so this defensive guard is only
-        # reachable by returning it straight from command() — mock that one method.
-        def command_response(_client, command, *_args, **_kwargs):
-            if command == "subnet4-list":
-                return [{"result": 3}]
-            return ["not-a-dict"]
-
-        with patch.object(KeaClient, "command", side_effect=command_response, autospec=True):
+        with stub_kea({"subnet4-list": self._SUBNETS4, "lease4-get-page": lambda _body: ["not-a-dict"]}):
             response = self._htmx_get(self._url(), {"by": ""})
         self.assertEqual(response.status_code, 200)
         _assert_rendered_error_template(self, response)
