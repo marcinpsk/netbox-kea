@@ -28,7 +28,8 @@ from netbox_kea.models import Server
 
 from .kea_stub import _res_page, queued, stub_kea
 
-_PLUGINS_CONFIG = {"netbox_kea": {"kea_timeout": 30}}
+_PLUGINS_CONFIG = {"netbox_kea": {"kea_timeout": 30, "lease_query_max_unpaged_leases": 0}}
+_GUARDED_PLUGINS_CONFIG = {"netbox_kea": {"kea_timeout": 30, "lease_query_max_unpaged_leases": 100}}
 
 # A Kea error response (result 1) → the real KeaClient turns this into a KeaException.
 _KEA_ERR_RESP = {"result": 1, "text": "command failed"}
@@ -274,6 +275,83 @@ class TestFetchLeasesSubnetId(SimpleTestCase):
             response = view._lease_search(_make_request({"subnet_id": "1"}), version=4)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["count"], 1)
+
+    @override_settings(PLUGINS_CONFIG=_GUARDED_PLUGINS_CONFIG)
+    def test_declined_state_uses_guarded_subnet_state_query(self):
+        lease = {"ip-address": "198.18.0.1", "subnet-id": 1, "state": 1}
+        stats = {
+            "result": 0,
+            "arguments": {
+                "result-set": {
+                    "columns": ["subnet-id", "assigned-addresses", "declined-addresses"],
+                    "rows": [[1, 501, 1]],
+                }
+            },
+        }
+        view, _ = _make_view()
+        with stub_kea(
+            {
+                "stat-lease4-get": stats,
+                "lease4-get-by-state": {"result": 0, "arguments": {"leases": [lease]}},
+            }
+        ) as kea:
+            response = view._lease_search(_make_request({"subnet_id": "1", "state": "1"}), version=4)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(
+            kea.bodies("lease4-get-by-state")[0]["arguments"],
+            {"subnet-id": 1, "state": 1},
+        )
+
+    @override_settings(PLUGINS_CONFIG=_GUARDED_PLUGINS_CONFIG)
+    def test_large_unqualified_subnet_query_is_rejected(self):
+        stats = {
+            "result": 0,
+            "arguments": {
+                "result-set": {
+                    "columns": ["subnet-id", "assigned-addresses", "declined-addresses"],
+                    "rows": [[1, 101, 0]],
+                }
+            },
+        }
+        view, _ = _make_view()
+        with stub_kea({"stat-lease4-get": stats}) as kea:
+            response = view._lease_search(_make_request({"subnet_id": "1"}), version=4)
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("Active or Declined", response.data["detail"])
+        self.assertEqual(kea.commands(), ["stat-lease4-get"])
+
+    def test_state_requires_subnet_id(self):
+        view, _ = _make_view()
+        with stub_kea({}) as kea:
+            response = view._lease_search(_make_request({"hostname": "host1", "state": "1"}), version=4)
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("subnet_id", response.data["detail"])
+        self.assertEqual(kea.commands(), [])
+
+    def test_state_rejects_an_earlier_selected_filter(self):
+        view, _ = _make_view()
+        with stub_kea({}) as kea:
+            response = view._lease_search(
+                _make_request({"ip_address": "198.18.0.1", "subnet_id": "1", "state": "1"}),
+                version=4,
+            )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("selected filter", response.data["detail"])
+        self.assertEqual(kea.commands(), [])
+
+    def test_expired_state_is_not_safe_for_subnet_query(self):
+        view, _ = _make_view()
+        with stub_kea({}) as kea:
+            response = view._lease_search(_make_request({"subnet_id": "1", "state": "2"}), version=4)
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("Active or Declined", response.data["detail"])
+        self.assertEqual(kea.commands(), [])
 
 
 # ─────────────────────────────────────────────────────────────────────────────

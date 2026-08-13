@@ -350,6 +350,19 @@ class TestLeaseSearchPaths(_ViewTestBase):
         with stub_kea(
             {
                 "subnet4-list": self._SUBNETS4,
+                "config-get": {
+                    "result": 0,
+                    "arguments": {"Dhcp4": {"subnet4": [{"id": 1, "subnet": "10.0.0.0/24"}]}},
+                },
+                "stat-lease4-get": {
+                    "result": 0,
+                    "arguments": {
+                        "result-set": {
+                            "columns": ["subnet-id", "assigned-addresses", "declined-addresses"],
+                            "rows": [[1, 1, 0]],
+                        }
+                    },
+                },
                 "lease4-get-all": self._multi([dict(self._LEASE4)]),
                 "reservation-get": self._NO_RESERVATION,
             }
@@ -360,6 +373,60 @@ class TestLeaseSearchPaths(_ViewTestBase):
         body = kea.bodies("lease4-get-all")[0]
         self.assertEqual(body["arguments"]["subnets"], [1])
         self.assertEqual(body["service"], ["dhcp4"])
+
+    @override_settings(PLUGINS_CONFIG={"netbox_kea": {"kea_timeout": 30, "lease_query_max_unpaged_leases": 1000}})
+    def test_search_by_subnet_id_and_state_filters_in_kea(self):
+        lease = dict(self._LEASE4, state=1)
+        with stub_kea(
+            {
+                "subnet4-list": self._SUBNETS4,
+                "config-get": {
+                    "result": 0,
+                    "arguments": {"Dhcp4": {"subnet4": [{"id": 1, "subnet": "10.0.0.0/24"}]}},
+                },
+                "stat-lease4-get": {
+                    "result": 0,
+                    "arguments": {
+                        "result-set": {
+                            "columns": ["subnet-id", "assigned-addresses", "declined-addresses"],
+                            "rows": [[1, 2001, 1]],
+                        }
+                    },
+                },
+                "lease4-get-by-state": self._multi([lease]),
+                "reservation-get": self._NO_RESERVATION,
+            }
+        ) as kea:
+            response = self._htmx_get(self._url4(), {"by": "subnet_id", "q": "1", "state": "1"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("lease4-get-all", kea.commands())
+        self.assertEqual(
+            kea.bodies("lease4-get-by-state")[0]["arguments"],
+            {"subnet-id": 1, "state": 1},
+        )
+
+    @override_settings(PLUGINS_CONFIG={"netbox_kea": {"kea_timeout": 30, "lease_query_max_unpaged_leases": 100}})
+    def test_large_subnet_search_prompts_for_a_state_without_get_all(self):
+        with stub_kea(
+            {
+                "subnet4-list": self._SUBNETS4,
+                "stat-lease4-get": {
+                    "result": 0,
+                    "arguments": {
+                        "result-set": {
+                            "columns": ["subnet-id", "assigned-addresses", "declined-addresses"],
+                            "rows": [[1, 101, 0]],
+                        }
+                    },
+                },
+            }
+        ) as kea:
+            response = self._htmx_get(self._url4(), {"by": "subnet_id", "q": "1"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Select the Active or Declined state")
+        self.assertNotIn("lease4-get-all", kea.commands())
 
     def test_search_by_ip_returns_200(self):
         """BY_IP must call lease4-get with ip-address argument and return 200."""
@@ -452,9 +519,10 @@ class TestLeaseExport(_ViewTestBase):
         self.assertEqual(response.status_code, 302)
         self._assert_no_none_pk_redirect(response)
 
-    def test_export_by_subnet_paginates_all_leases(self):
-        """?export=all&by=subnet must paginate until next_cursor is None."""
-        page1_leases = [
+    @override_settings(PLUGINS_CONFIG={"netbox_kea": {"kea_timeout": 30, "lease_query_max_unpaged_leases": 100}})
+    def test_export_by_subnet_uses_the_guarded_subnet_query(self):
+        """A Subnet export must not rely on global lease-page ordering."""
+        leases = [
             {
                 "ip-address": f"10.0.0.{i}",
                 "hw-address": "aa:bb:cc:dd:ee:ff",
@@ -465,25 +533,33 @@ class TestLeaseExport(_ViewTestBase):
             }
             for i in range(1, 4)
         ]
-        # Page 1 returns 3 leases (count == per_page 3 → more data); page 2 returns
-        # result=3 (end). FIFO queue on lease4-get-page drives the pagination loop.
         with stub_kea(
             {
                 "subnet4-list": self._SUBNETS4,
-                "lease4-get-page": queued(
-                    {"result": 0, "arguments": {"leases": page1_leases, "count": 3}},
-                    {"result": 3, "arguments": None},
-                ),
+                "config-get": {
+                    "result": 0,
+                    "arguments": {"Dhcp4": {"subnet4": [{"id": 1, "subnet": "10.0.0.0/24"}]}},
+                },
+                "stat-lease4-get": {
+                    "result": 0,
+                    "arguments": {
+                        "result-set": {
+                            "columns": ["subnet-id", "assigned-addresses", "declined-addresses"],
+                            "rows": [[1, 3, 0]],
+                        }
+                    },
+                },
+                "lease4-get-all": {"result": 0, "arguments": {"leases": leases}},
             }
         ) as kea:
-            # Pass per_page=3 so that count(3) == per_page(3) triggers the next-page fetch.
             response = self.client.get(
                 self._url(),
-                {"export": "all", "by": "subnet", "q": "10.0.0.0/24", "per_page": "3"},
+                {"export": "all", "by": "subnet", "q": "10.0.0.0/24"},
             )
         self.assertEqual(response.status_code, 200)
         self.assertIn("text/csv", response.get("Content-Type", ""))
-        self.assertGreaterEqual(kea.commands().count("lease4-get-page"), 2)
+        self.assertIn("lease4-get-all", kea.commands())
+        self.assertNotIn("lease4-get-page", kea.commands())
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -765,14 +841,14 @@ class TestLeaseExportAll(_ViewTestBase):
         # view sees a full page and issues a second request; page 2 returns result=3.
         page1 = [
             {
-                "ip-address": f"10.0.0.{i}",
+                "ip-address": f"198.18.{i // 256}.{i % 256}",
                 "hw-address": "aa:bb:cc:dd:ee:ff",
                 "hostname": f"h{i}",
                 "subnet-id": 1,
                 "valid-lft": 3600,
                 "cltt": 1_700_000_000,
             }
-            for i in range(1, 3)
+            for i in range(1000)
         ]
         with stub_kea(
             {
@@ -1064,11 +1140,20 @@ class TestLeaseStateFilter(_ViewTestBase):
         self.assertContains(response, "declined-host")
         self.assertContains(response, "expired-host")
 
-    def test_state_filter_applied_on_paginated_subnet_search(self):
-        """State filter also applies to paginated subnet-based search."""
+    def test_state_filter_is_sent_with_the_subnet_query(self):
+        """A Subnet state filter must run in Kea before it builds the response."""
+        declined = next(lease for lease in _PAGE_LEASES_RESP[0]["arguments"]["leases"] if lease["state"] == 1)
         with stub_kea(
-            {"subnet4-list": self._SUBNETS4, "lease4-get-page": _PAGE_LEASES_RESP[0], "reservation-get": {"result": 3}}
-        ):
+            {
+                "subnet4-list": self._SUBNETS4,
+                "config-get": {
+                    "result": 0,
+                    "arguments": {"Dhcp4": {"subnet4": [{"id": 1, "subnet": "10.0.0.0/24"}]}},
+                },
+                "lease4-get-by-state": {"result": 0, "arguments": {"leases": [declined]}},
+                "reservation-get": {"result": 3},
+            }
+        ) as kea:
             response = self._htmx_get(
                 self._url4(),
                 {"by": "subnet", "q": "10.0.0.0/24", "state": "1"},
@@ -1076,6 +1161,10 @@ class TestLeaseStateFilter(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         self.assertNotContains(response, "page-active")
         self.assertContains(response, "page-declined")
+        self.assertEqual(
+            kea.bodies("lease4-get-by-state")[0]["arguments"],
+            {"subnet-id": 1, "state": 1},
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -2095,6 +2184,39 @@ class TestFetchLeasesFromServer(_ViewTestBase):
         leases = self._call(constants.BY_SUBNET_ID, q="1", resp=resp)
         self.assertIsInstance(leases, list)
 
+    @override_settings(PLUGINS_CONFIG={"netbox_kea": {"kea_timeout": 30, "lease_query_max_unpaged_leases": 100}})
+    def test_subnet_state_is_applied_by_kea(self):
+        from netbox_kea import constants
+        from netbox_kea.views import _fetch_leases_from_server
+
+        stats = {
+            "result": 0,
+            "arguments": {
+                "result-set": {
+                    "columns": ["subnet-id", "assigned-addresses", "declined-addresses"],
+                    "rows": [[1, 501, 1]],
+                }
+            },
+        }
+        response = {
+            "result": 0,
+            "arguments": {"leases": [{"ip-address": "198.18.0.1", "valid-lft": 3600, "state": 1}]},
+        }
+        with stub_kea({"stat-lease4-get": stats, "lease4-get-by-state": response}) as kea:
+            leases = _fetch_leases_from_server(
+                self.server,
+                1,
+                constants.BY_SUBNET_ID,
+                4,
+                state=1,
+            )
+
+        self.assertEqual(len(leases), 1)
+        self.assertEqual(
+            kea.bodies("lease4-get-by-state")[0]["arguments"],
+            {"subnet-id": 1, "state": 1},
+        )
+
 
 # ---------------------------------------------------------------------------
 # _fetch_all_leases_from_server — pagination edge cases
@@ -2336,69 +2458,12 @@ class TestLeaseBulkImportEdgeCases(_ViewTestBase):
         )
 
 
-# ---------------------------------------------------------------------------
-# get_leases_page — edge cases (lines 464, 480, 487-489)
-# ---------------------------------------------------------------------------
-
-
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
-class TestGetLeasesPageEdgeCases(_ViewTestBase):
-    """Edge cases in BaseServerLeasesView.get_leases_page()."""
-
-    _SUBNETS4 = _subnet_list(4, [{"id": 1, "subnet": "10.0.0.0/24"}])
-
-    def _url(self):
-        return reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
-
-    def test_zero_network_uses_network_as_start(self):
-        """Line 464: subnet.network == 0 → frm = str(subnet.network) = '0.0.0.0'."""
-        # 0.0.0.0/8: int(network) == 0 → line 464 fires
-        with stub_kea(
-            {"subnet4-list": self._SUBNETS4, "lease4-get-page": {"result": 0, "arguments": {"count": 0, "leases": []}}}
-        ):
-            response = self.client.get(
-                self._url(),
-                {"by": "subnet", "q": "0.0.0.0/8"},
-                HTTP_HX_REQUEST="true",
-            )
-        self.assertEqual(response.status_code, 200)
-
-    def test_null_args_raises_runtime_error(self):
-        """Line 480: lease-get-page returns arguments=None → RuntimeError (caught by HTMX handler)."""
-        with stub_kea({"subnet4-list": self._SUBNETS4, "lease4-get-page": {"result": 0, "arguments": None}}):
-            response = self.client.get(
-                self._url(),
-                {"by": "subnet", "q": "10.0.0.0/24"},
-                HTTP_HX_REQUEST="true",
-            )
-        # RuntimeError is caught by outer except → HTMX error partial
-        self.assertEqual(response.status_code, 200)
-
-    def test_lease_outside_subnet_truncates_list(self):
-        """Lines 487-489: lease IP not in queried subnet → raw_leases truncated."""
-        per_page = 25
-        # Return per_page leases where the only one is OUTSIDE the queried subnet.
-        page = {
-            "result": 0,
-            "arguments": {"count": per_page, "leases": [{"ip-address": "10.0.1.1", "valid-lft": 3600, "state": 0}]},
-        }
-        with stub_kea({"subnet4-list": self._SUBNETS4, "lease4-get-page": page}):
-            response = self.client.get(
-                self._url(),
-                {"by": "subnet", "q": "10.0.0.0/24"},
-                HTTP_HX_REQUEST="true",
-            )
-        self.assertEqual(response.status_code, 200)
-
-
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestGetLeasesPageAllLeasesMode(_ViewTestBase):
     """All-leases browse mode (``by=""``) starts pagination at the address-space root.
 
-    Covers ``BaseServerLeasesView.get_leases_page()`` when *subnet* is ``None``: the
-    lease-page ``from`` cursor must be ``"0.0.0.0"`` for DHCPv4 and ``"::"`` for
-    DHCPv6. The existing get_leases_page tests all pass ``by=subnet``, so the
-    ``subnet is None`` branch was otherwise unexercised.
+    The lease-page ``from`` cursor must be ``"0.0.0.0"`` for DHCPv4 and ``"::"``
+    for DHCPv6.
     """
 
     _SUBNETS4 = _subnet_list(4, [])
@@ -2427,7 +2492,7 @@ class TestGetLeasesPageAllLeasesMode(_ViewTestBase):
 
 
 # ---------------------------------------------------------------------------
-# get_leases — AbortRequest and null args (lines 522, 535)
+# get_leases validation and null arguments
 # ---------------------------------------------------------------------------
 
 
@@ -2438,15 +2503,13 @@ class TestGetLeasesCoverage(_ViewTestBase):
     def _url(self):
         return reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
 
-    def test_invalid_by_raises_abort_request(self):
-        """Line 522: invalid 'by' value → AbortRequest raised (before the client is used)."""
-        from utilities.exceptions import AbortRequest
-
+    def test_invalid_by_raises_value_error(self):
+        """An invalid search selector must fail before a Kea request."""
         from netbox_kea.views import ServerLeases4View
 
         view = ServerLeases4View()
         client = KeaClient(url="https://kea.example.com")
-        with self.assertRaises(AbortRequest):
+        with self.assertRaises(ValueError):
             view.get_leases(client, "test_query", "not_a_valid_by")
 
     def test_null_args_from_lease_get_raises_runtime_error(self):
@@ -2717,36 +2780,26 @@ class TestLeaseExportStateFilter(_ViewTestBase):
 
     def test_state_filter_applied_to_export(self):
         """Exported CSV must contain only leases matching the requested state."""
-        # Return two leases: one with state=0 (default/active), one with state=1 (declined)
-        leases = [
-            {
-                "ip-address": "10.0.0.1",
-                "hw-address": "aa:bb:cc:00:00:01",
-                "subnet-id": 1,
-                "cltt": 1700000000,
-                "valid-lft": 86400,
-                "hostname": "",
-                "state": 0,
-            },
-            {
-                "ip-address": "10.0.0.2",
-                "hw-address": "aa:bb:cc:00:00:02",
-                "subnet-id": 1,
-                "cltt": 1700000000,
-                "valid-lft": 86400,
-                "hostname": "",
-                "state": 1,
-            },
-        ]
+        declined = {
+            "ip-address": "10.0.0.2",
+            "hw-address": "aa:bb:cc:00:00:02",
+            "subnet-id": 1,
+            "cltt": 1700000000,
+            "valid-lft": 86400,
+            "hostname": "",
+            "state": 1,
+        }
         subnets = _subnet_list(4, [{"id": 1, "subnet": "10.0.0.0/24"}])
-        # Page 1 returns both leases; page 2 signals end-of-data (result 3) so the
-        # export pagination loop terminates regardless of the server's per-page size.
-        pages = [
-            {"result": 0, "arguments": {"leases": leases, "count": 2}},
-            {"result": 3, "arguments": None},
-        ]
-        # Request export with state=1 (declined only)
-        with stub_kea({"subnet4-list": subnets, "lease4-get-page": queued(*pages)}):
+        with stub_kea(
+            {
+                "subnet4-list": subnets,
+                "config-get": {
+                    "result": 0,
+                    "arguments": {"Dhcp4": {"subnet4": [{"id": 1, "subnet": "10.0.0.0/24"}]}},
+                },
+                "lease4-get-by-state": {"result": 0, "arguments": {"leases": [declined]}},
+            }
+        ):
             response = self.client.get(
                 self._url(),
                 {
@@ -2778,12 +2831,12 @@ class TestHtmxHandlerExceptNarrowing(_ViewTestBase):
         """An AttributeError inside the HTMX handler must propagate (not be caught silently)."""
         subnets = _subnet_list(4, [])
         # The HTMX handler narrows its except clauses, so an AttributeError propagates.
-        with stub_kea({"subnet4-list": subnets, "lease4-get-page": AttributeError("stub programming bug")}):
+        with stub_kea({"subnet4-list": subnets, "lease4-get-all": AttributeError("stub programming bug")}):
             with self.assertRaises(AttributeError):
                 self.client.get(
                     self._url(),
                     HTTP_HX_REQUEST="true",
-                    data={"by": "subnet", "q": "10.0.0.0/24"},
+                    data={"by": "subnet_id", "q": "1"},
                 )
 
 
@@ -2842,18 +2895,18 @@ class TestLeaseExportTransportErrors(_ViewTestBase):
     def test_request_exception_redirects_with_error(self):
         import requests as _requests
 
-        with stub_kea({"subnet4-list": self._SUBNETS4, "lease4-get-page": _requests.ConnectionError("down")}):
+        with stub_kea({"subnet4-list": self._SUBNETS4, "lease4-get-all": _requests.ConnectionError("down")}):
             response = self.client.get(
                 self._url(),
-                {"export": "1", "by": "subnet", "q": "10.0.0.0/24"},
+                {"export": "1", "by": "subnet_id", "q": "1"},
             )
         self.assertIn(response.status_code, [200, 302])
 
     def test_value_error_redirects_with_error(self):
-        with stub_kea({"subnet4-list": self._SUBNETS4, "lease4-get-page": ValueError("bad JSON")}):
+        with stub_kea({"subnet4-list": self._SUBNETS4, "lease4-get-all": ValueError("bad JSON")}):
             response = self.client.get(
                 self._url(),
-                {"export": "1", "by": "subnet", "q": "10.0.0.0/24"},
+                {"export": "1", "by": "subnet_id", "q": "1"},
             )
         self.assertIn(response.status_code, [200, 302])
 
@@ -2984,8 +3037,8 @@ class TestLeaseExportClientError(_ViewTestBase):
     def test_runtime_error_during_fetch_redirects(self):
         """RuntimeError during lease fetch in export redirects with error."""
         subnets = _subnet_list(4, [])
-        with stub_kea({"subnet4-list": subnets, "lease4-get-page": RuntimeError("unexpected")}):
-            response = self.client.get(self._url(), {"export": "form", "by": "subnet", "q": "10.0.0.0/24"})
+        with stub_kea({"subnet4-list": subnets, "lease4-get-all": RuntimeError("unexpected")}):
+            response = self.client.get(self._url(), {"export": "form", "by": "subnet_id", "q": "1"})
         self.assertIn(response.status_code, [200, 302])
 
 
@@ -3005,21 +3058,21 @@ class TestLeaseHtmxErrorHandler(_ViewTestBase):
 
     def test_kea_exception_renders_htmx_error(self):
         """KeaException in HTMX handler renders error template."""
-        # result=1 on lease4-get-page makes the real client raise KeaException.
-        with stub_kea({"subnet4-list": self._SUBNETS4, "lease4-get-page": {"result": 1, "text": "err"}}):
+        # result=1 on lease4-get-all makes the real client raise KeaException.
+        with stub_kea({"subnet4-list": self._SUBNETS4, "lease4-get-all": {"result": 1, "text": "err"}}):
             response = self.client.get(
                 self._url(),
-                {"by": "subnet", "q": "10.0.0.0/24"},
+                {"by": "subnet_id", "q": "1"},
                 HTTP_HX_REQUEST="true",
             )
         self.assertEqual(response.status_code, 200)
 
     def test_request_exception_renders_htmx_error(self):
         """requests.RequestException in HTMX handler renders error template."""
-        with stub_kea({"subnet4-list": self._SUBNETS4, "lease4-get-page": requests.ConnectionError("down")}):
+        with stub_kea({"subnet4-list": self._SUBNETS4, "lease4-get-all": requests.ConnectionError("down")}):
             response = self.client.get(
                 self._url(),
-                {"by": "subnet", "q": "10.0.0.0/24"},
+                {"by": "subnet_id", "q": "1"},
                 HTTP_HX_REQUEST="true",
             )
         self.assertEqual(response.status_code, 200)
@@ -3532,21 +3585,21 @@ class TestGetLeasesPageDefensiveChecks(_ViewTestBase):
         """When Kea returns leases as non-list, the view catches the RuntimeError."""
         page = {"result": 0, "arguments": {"leases": "not-a-list", "count": 0}}
         with stub_kea({"subnet4-list": self._SUBNETS4, "lease4-get-page": page}):
-            response = self.client.get(self._url(), {"by": "subnet", "q": "10.0.0.0/24"}, HTTP_HX_REQUEST="true")
+            response = self.client.get(self._url(), {"by": ""}, HTTP_HX_REQUEST="true")
         self.assertEqual(response.status_code, 200)
 
     def test_non_int_count_raises_runtime_error(self):
         """When Kea returns count as non-int, the view catches the RuntimeError."""
         page = {"result": 0, "arguments": {"leases": [], "count": "bad"}}
         with stub_kea({"subnet4-list": self._SUBNETS4, "lease4-get-page": page}):
-            response = self.client.get(self._url(), {"by": "subnet", "q": "10.0.0.0/24"}, HTTP_HX_REQUEST="true")
+            response = self.client.get(self._url(), {"by": ""}, HTTP_HX_REQUEST="true")
         self.assertEqual(response.status_code, 200)
 
     def test_malformed_item_on_partial_page_renders_error(self):
         """A lease without an IP address makes the page indeterminate."""
         page = {"result": 0, "arguments": {"leases": [{"no-ip": "bad"}], "count": 1}}
         with stub_kea({"subnet4-list": self._SUBNETS4, "lease4-get-page": page}):
-            response = self.client.get(self._url(), {"by": "subnet", "q": "10.0.0.0/24"}, HTTP_HX_REQUEST="true")
+            response = self.client.get(self._url(), {"by": ""}, HTTP_HX_REQUEST="true")
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "error")
 
@@ -3637,9 +3690,8 @@ class TestMacMatchedSubnetIdValidation(TestCase):
 class TestGetLeasesPageMalformedResponse(_ViewTestBase):
     """get_leases_page() must raise RuntimeError on malformed Kea responses.
 
-    These paths are exercised via HTMX GET with by=subnet which calls
-    get_leases_page() internally. The view's top-level except catches
-    RuntimeError and renders the HTMX error template (200, not 500).
+    These paths use the global paged search. The view catches RuntimeError and
+    renders the HTMX error template (200, not 500).
     """
 
     def _htmx_get(self, url, data):
@@ -3654,7 +3706,7 @@ class TestGetLeasesPageMalformedResponse(_ViewTestBase):
         """When Kea returns non-list 'leases', the HTMX handler catches RuntimeError."""
         page = {"result": 0, "arguments": {"leases": "not-a-list", "count": 1}}
         with stub_kea({"subnet4-list": self._SUBNETS4, "lease4-get-page": page}):
-            response = self._htmx_get(self._url(), {"by": "subnet", "q": "10.0.0.0/24"})
+            response = self._htmx_get(self._url(), {"by": ""})
         self.assertEqual(response.status_code, 200)
         _assert_rendered_error_template(self, response)
 
@@ -3662,7 +3714,7 @@ class TestGetLeasesPageMalformedResponse(_ViewTestBase):
         """When Kea returns non-int 'count', the HTMX handler catches RuntimeError."""
         page = {"result": 0, "arguments": {"leases": [], "count": "not-an-int"}}
         with stub_kea({"subnet4-list": self._SUBNETS4, "lease4-get-page": page}):
-            response = self._htmx_get(self._url(), {"by": "subnet", "q": "10.0.0.0/24"})
+            response = self._htmx_get(self._url(), {"by": ""})
         self.assertEqual(response.status_code, 200)
         _assert_rendered_error_template(self, response)
 
@@ -3674,7 +3726,7 @@ class TestGetLeasesPageMalformedResponse(_ViewTestBase):
         with stub_kea({"subnet4-list": self._SUBNETS4, "lease4-get-page": page}):
             response = self._htmx_get(
                 self._url(),
-                {"by": "subnet", "q": "10.0.0.0/24", "per_page": str(per_page)},
+                {"by": "", "per_page": str(per_page)},
             )
         self.assertEqual(response.status_code, 200)
         _assert_rendered_error_template(self, response)
@@ -3682,7 +3734,7 @@ class TestGetLeasesPageMalformedResponse(_ViewTestBase):
     def test_none_arguments_renders_error(self):
         """When resp[0]['arguments'] is None, the HTMX handler catches RuntimeError."""
         with stub_kea({"subnet4-list": self._SUBNETS4, "lease4-get-page": {"result": 0, "arguments": None}}):
-            response = self._htmx_get(self._url(), {"by": "subnet", "q": "10.0.0.0/24"})
+            response = self._htmx_get(self._url(), {"by": ""})
         self.assertEqual(response.status_code, 200)
         _assert_rendered_error_template(self, response)
 
@@ -3690,17 +3742,23 @@ class TestGetLeasesPageMalformedResponse(_ViewTestBase):
         """When Kea returns an empty list, get_leases_page raises RuntimeError."""
         # A real command returning [] passes the result-code check but fails the resp guard.
         with stub_kea({"subnet4-list": self._SUBNETS4, "lease4-get-page": lambda body: []}):
-            response = self._htmx_get(self._url(), {"by": "subnet", "q": "10.0.0.0/24"})
+            response = self._htmx_get(self._url(), {"by": ""})
         self.assertEqual(response.status_code, 200)
         _assert_rendered_error_template(self, response)
 
     def test_non_dict_first_element_renders_error(self):
         """When resp[0] is not a dict, the HTMX handler catches RuntimeError."""
+
         # A non-dict entry can't survive the real command's result-code check
         # (check_response would TypeError first), so this defensive guard is only
         # reachable by returning it straight from command() — mock that one method.
-        with patch.object(KeaClient, "command", return_value=["not-a-dict"], autospec=True):
-            response = self._htmx_get(self._url(), {"by": "subnet", "q": "10.0.0.0/24"})
+        def command_response(_client, command, *_args, **_kwargs):
+            if command == "subnet4-list":
+                return [{"result": 3}]
+            return ["not-a-dict"]
+
+        with patch.object(KeaClient, "command", side_effect=command_response, autospec=True):
+            response = self._htmx_get(self._url(), {"by": ""})
         self.assertEqual(response.status_code, 200)
         _assert_rendered_error_template(self, response)
 
@@ -3794,11 +3852,10 @@ class TestExportErrorPaths(_ViewTestBase):
         self.assertEqual(response.status_code, 302)
 
     def test_export_subnet_runtime_error_redirects(self):
-        """RuntimeError during paginated subnet export must redirect with error message."""
-        # Malformed response for get_leases_page (non-list leases).
+        """RuntimeError during a Subnet export must redirect with an error message."""
         page = {"result": 0, "arguments": {"leases": "not-a-list", "count": 1}}
-        with stub_kea({"subnet4-list": self._SUBNETS4, "lease4-get-page": page}):
-            response = self.client.get(self._url(), {"export": "all", "by": "subnet", "q": "10.0.0.0/24"})
+        with stub_kea({"subnet4-list": self._SUBNETS4, "lease4-get-all": page}):
+            response = self.client.get(self._url(), {"export": "all", "by": "subnet_id", "q": "1"})
         self.assertEqual(response.status_code, 302)
 
 
@@ -3929,8 +3986,8 @@ class TestFetchOneMacValueError(_ViewTestBase):
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
-class TestGetLeasesPageSubnetEdgeCases(_ViewTestBase):
-    """Additional edge-case tests for get_leases_page() cursor and filtering logic."""
+class TestGetLeasesPageGlobalEdgeCases(_ViewTestBase):
+    """Additional edge-case tests for global lease-page results."""
 
     def _htmx_get(self, url, data):
         return self.client.get(url, data=data, HTTP_HX_REQUEST="true")
@@ -3943,14 +4000,14 @@ class TestGetLeasesPageSubnetEdgeCases(_ViewTestBase):
     def test_result_3_returns_empty_table(self):
         """result=3 (no leases) must render an empty table, not an error."""
         with stub_kea({"subnet4-list": self._SUBNETS4, "lease4-get-page": {"result": 3, "arguments": None}}):
-            response = self._htmx_get(self._url(), {"by": "subnet", "q": "10.0.0.0/24"})
+            response = self._htmx_get(self._url(), {"by": ""})
         self.assertEqual(response.status_code, 200)
         _assert_no_error_template(self, response)
         self.assertContains(response, "No leases found.")
         self.assertEqual(len(response.context["table"].rows), 0)
 
-    def test_leases_outside_subnet_are_truncated(self):
-        """Leases with IPs outside the queried subnet must be excluded."""
+    def test_global_page_preserves_all_returned_leases(self):
+        """The client must not infer a Subnet boundary from backend result order."""
         page = {
             "result": 0,
             "arguments": {
@@ -3976,10 +4033,10 @@ class TestGetLeasesPageSubnetEdgeCases(_ViewTestBase):
             },
         }
         with stub_kea({"subnet4-list": self._SUBNETS4, "lease4-get-page": page, "reservation-get": {"result": 3}}):
-            response = self._htmx_get(self._url(), {"by": "subnet", "q": "10.0.0.0/24"})
+            response = self._htmx_get(self._url(), {"by": ""})
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "10.0.0.5")
-        self.assertNotContains(response, "10.0.1.5")
+        self.assertContains(response, "10.0.1.5")
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)

@@ -59,7 +59,7 @@ from .utils import _PLUGINS_CONFIG, _make_db_server, _ViewTestBase
 #
 # Command chains issued by the reservation views:
 #   list GET:  ``reservation-get-page`` (drained via ``iter_reservations``) then, if
-#              any reservations are found, ``lease{v}-get-all`` per unique subnet
+#              any reservations are found, ``lease{v}-get-by-state`` per unique subnet
 #              (lease-status enrichment; NetBox IPAM badges hit the DB, not Kea).
 #   add POST:  ``subnet{v}-list`` (CIDR→ID lookup) + ``subnet{v}-get`` (pool-overlap, non-fatal) + ``reservation-add``.
 #   edit GET:  ``reservation-get`` (prefill) + ``subnet{v}-get`` (CIDR display) + ``lease{v}-get`` (hostname diff).
@@ -77,7 +77,7 @@ _RES_NOT_FOUND = {"result": 3}
 _LEASE_NOT_FOUND = {"result": 3}
 
 #: Commands the reservation list issues, for POSTs that redirect back to it.
-_RES_LIST_STUB = {"reservation-get-page": _RES_EMPTY_PAGE, "lease4-get-all": _LEASE_NOT_FOUND}
+_RES_LIST_STUB = {"reservation-get-page": _RES_EMPTY_PAGE, "lease4-get-by-state": _LEASE_NOT_FOUND}
 
 #: Existing-reservation payloads used to seed the edit POST reload.
 _EDIT4_EXISTING = {"hw-address": "aa:bb:cc:dd:ee:ff", "ip-address": "10.0.0.55", "subnet-id": 1}
@@ -114,19 +114,23 @@ class TestReservationListWithoutAddress(_ViewTestBase):
         return reverse("plugins:netbox_kea:server_reservations6", args=[self.server.pk])
 
     def test_v4_reservation_without_ip_address_renders(self):
-        with stub_kea({"reservation-get-page": _res_page([self.ADDRESSLESS_V4]), "lease4-get-all": _LEASE_NOT_FOUND}):
+        with stub_kea(
+            {"reservation-get-page": _res_page([self.ADDRESSLESS_V4]), "lease4-get-by-state": _LEASE_NOT_FOUND}
+        ):
             response = self.client.get(self._url4())
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "printer-1")
 
     def test_v6_reservation_with_only_prefixes_renders(self):
-        with stub_kea({"reservation-get-page": _res_page([self.PD_ONLY_V6]), "lease6-get-all": _LEASE_NOT_FOUND}):
+        with stub_kea({"reservation-get-page": _res_page([self.PD_ONLY_V6]), "lease6-get-by-state": _LEASE_NOT_FOUND}):
             response = self.client.get(self._url6())
         self.assertEqual(response.status_code, 200)
 
     def test_address_less_row_is_actionable_by_identifier(self):
         """No address to key on, so the actions address the row by its identifier."""
-        with stub_kea({"reservation-get-page": _res_page([self.ADDRESSLESS_V4]), "lease4-get-all": _LEASE_NOT_FOUND}):
+        with stub_kea(
+            {"reservation-get-page": _res_page([self.ADDRESSLESS_V4]), "lease4-get-by-state": _LEASE_NOT_FOUND}
+        ):
             response = self.client.get(self._url4())
         self.assertContains(response, "/reservations4/3742/edit-by-identifier/")
         self.assertContains(response, "identifier_type=hw-address")
@@ -136,7 +140,7 @@ class TestReservationListWithoutAddress(_ViewTestBase):
     def test_addressed_row_keeps_its_edit_and_delete_links(self):
         """Regression guard: moving URL construction into the view must not drop the links."""
         host = {"subnet-id": 1, "ip-address": "10.0.0.5", "hw-address": "aa:bb:cc:dd:ee:ff"}
-        with stub_kea({"reservation-get-page": _res_page([host]), "lease4-get-all": _LEASE_NOT_FOUND}):
+        with stub_kea({"reservation-get-page": _res_page([host]), "lease4-get-by-state": _LEASE_NOT_FOUND}):
             response = self.client.get(self._url4())
         self.assertEqual(response.status_code, 200)
         self.assertContains(
@@ -150,14 +154,16 @@ class TestReservationListWithoutAddress(_ViewTestBase):
 
     def test_address_less_row_labels_its_actions_with_the_identifier(self):
         """The labels named the address, so an address-less row got "Edit reservation "."""
-        with stub_kea({"reservation-get-page": _res_page([self.ADDRESSLESS_V4]), "lease4-get-all": _LEASE_NOT_FOUND}):
+        with stub_kea(
+            {"reservation-get-page": _res_page([self.ADDRESSLESS_V4]), "lease4-get-by-state": _LEASE_NOT_FOUND}
+        ):
             response = self.client.get(self._url4())
         self.assertContains(response, 'aria-label="Edit reservation aa:bb:cc:dd:ee:ff"')
         self.assertContains(response, 'aria-label="Delete reservation aa:bb:cc:dd:ee:ff"')
 
     def test_addressed_row_still_labels_its_actions_with_the_address(self):
         host = {"subnet-id": 1, "ip-address": "10.0.0.5", "hw-address": "aa:bb:cc:dd:ee:ff"}
-        with stub_kea({"reservation-get-page": _res_page([host]), "lease4-get-all": _LEASE_NOT_FOUND}):
+        with stub_kea({"reservation-get-page": _res_page([host]), "lease4-get-by-state": _LEASE_NOT_FOUND}):
             response = self.client.get(self._url4())
         self.assertContains(response, 'aria-label="Edit reservation 10.0.0.5"')
         self.assertContains(response, 'aria-label="Delete reservation 10.0.0.5"')
@@ -170,17 +176,17 @@ class TestReservationListWithoutAddress(_ViewTestBase):
         """
         addressed = {"subnet-id": 1, "ip-address": "10.0.0.5", "hw-address": "aa:bb:cc:dd:ee:01"}
         hosts = [self.ADDRESSLESS_V4, addressed]
-        with stub_kea({"reservation-get-page": _res_page(hosts), "lease4-get-all": _LEASE_NOT_FOUND}):
+        with stub_kea({"reservation-get-page": _res_page(hosts), "lease4-get-by-state": _LEASE_NOT_FOUND}):
             response = self.client.get(self._url4(), {"sort": "ip_address"})
         self.assertEqual(response.status_code, 200)
-        with stub_kea({"reservation-get-page": _res_page(hosts), "lease4-get-all": _LEASE_NOT_FOUND}):
+        with stub_kea({"reservation-get-page": _res_page(hosts), "lease4-get-by-state": _LEASE_NOT_FOUND}):
             response = self.client.get(self._url4(), {"sort": "-ip_address"})
         self.assertEqual(response.status_code, 200)
 
     def test_row_with_neither_address_nor_identifier_renders(self):
         """A host with no address and no identifier still must not invent a URL."""
         host = {"subnet-id": 7, "hostname": "ghost"}
-        with stub_kea({"reservation-get-page": _res_page([host]), "lease4-get-all": _LEASE_NOT_FOUND}):
+        with stub_kea({"reservation-get-page": _res_page([host]), "lease4-get-by-state": _LEASE_NOT_FOUND}):
             response = self.client.get(self._url4())
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "ghost")
@@ -192,7 +198,7 @@ class TestReservationListWithoutAddress(_ViewTestBase):
         silently drop working buttons for a payload the old template handled.
         """
         host = {"subnet-id": "1", "ip-address": "10.0.0.5", "hw-address": "aa:bb:cc:dd:ee:ff"}
-        with stub_kea({"reservation-get-page": _res_page([host]), "lease4-get-all": _LEASE_NOT_FOUND}):
+        with stub_kea({"reservation-get-page": _res_page([host]), "lease4-get-by-state": _LEASE_NOT_FOUND}):
             response = self.client.get(self._url4())
         self.assertEqual(response.status_code, 200)
         self.assertContains(
@@ -211,7 +217,7 @@ class TestReservationListWithoutAddress(_ViewTestBase):
             {"subnet-id": -5, "ip-address": "10.0.0.5", "hw-address": "aa:bb:cc:dd:ee:01"},
             {"subnet-id": 1, "ip-address": "2001:db8::/64", "hw-address": "aa:bb:cc:dd:ee:02"},
         ]
-        with stub_kea({"reservation-get-page": _res_page(hosts), "lease4-get-all": _LEASE_NOT_FOUND}):
+        with stub_kea({"reservation-get-page": _res_page(hosts), "lease4-get-by-state": _LEASE_NOT_FOUND}):
             response = self.client.get(self._url4())
         self.assertEqual(response.status_code, 200)
         # No per-row reservation action URL for either host (the page's own
@@ -486,7 +492,7 @@ class TestReservationByIdentifierRoutes(_ViewTestBase):
         """
         duid = ":".join(["ab"] * constants.DUID_MAX_OCTETS)
         host = {"subnet-id": 12, "duid": duid, "prefixes": ["2001:db8:1::/64"]}
-        with stub_kea({"reservation-get-page": _res_page([host]), "lease6-get-all": _LEASE_NOT_FOUND}):
+        with stub_kea({"reservation-get-page": _res_page([host]), "lease6-get-by-state": _LEASE_NOT_FOUND}):
             listing = self.client.get(reverse("plugins:netbox_kea:server_reservations6", args=[self.server.pk]))
         self.assertEqual(listing.status_code, 200)
         edit_url = listing.context["table"].data.data[0]["edit_url"]
@@ -543,7 +549,7 @@ class TestReservationListShowsWhatIsReserved(_ViewTestBase):
 
     def test_v4_non_mac_identifier_is_shown_with_its_type(self):
         host = {"subnet-id": 1, "client-id": "01:aa:bb:cc:dd:ee:ff", "hostname": "kiosk"}
-        with stub_kea({"reservation-get-page": _res_page([host]), "lease4-get-all": _LEASE_NOT_FOUND}):
+        with stub_kea({"reservation-get-page": _res_page([host]), "lease4-get-by-state": _LEASE_NOT_FOUND}):
             response = self.client.get(self._url(4))
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "01:aa:bb:cc:dd:ee:ff")
@@ -551,7 +557,7 @@ class TestReservationListShowsWhatIsReserved(_ViewTestBase):
 
     def test_v6_non_duid_identifier_is_shown_with_its_type(self):
         host = {"subnet-id": 1, "flex-id": "hostname-router-1", "ip-addresses": ["2001:db8::5"]}
-        with stub_kea({"reservation-get-page": _res_page([host]), "lease6-get-all": _LEASE_NOT_FOUND}):
+        with stub_kea({"reservation-get-page": _res_page([host]), "lease6-get-by-state": _LEASE_NOT_FOUND}):
             response = self.client.get(self._url(6))
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "hostname-router-1")
@@ -563,7 +569,7 @@ class TestReservationListShowsWhatIsReserved(_ViewTestBase):
             "duid": "00:01:00:01:12:34",
             "prefixes": ["2001:db8:1::/64", "2001:db8:2::/64"],
         }
-        with stub_kea({"reservation-get-page": _res_page([host]), "lease6-get-all": _LEASE_NOT_FOUND}):
+        with stub_kea({"reservation-get-page": _res_page([host]), "lease6-get-by-state": _LEASE_NOT_FOUND}):
             response = self.client.get(self._url(6))
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "2001:db8:1::/64")
@@ -571,13 +577,13 @@ class TestReservationListShowsWhatIsReserved(_ViewTestBase):
 
     def test_address_less_row_says_so(self):
         host = {"subnet-id": 1, "hw-address": "aa:bb:cc:dd:ee:ff", "hostname": "printer-1"}
-        with stub_kea({"reservation-get-page": _res_page([host]), "lease4-get-all": _LEASE_NOT_FOUND}):
+        with stub_kea({"reservation-get-page": _res_page([host]), "lease4-get-by-state": _LEASE_NOT_FOUND}):
             response = self.client.get(self._url(4))
         self.assertContains(response, "No address")
 
     def test_v6_prefix_only_row_says_it_has_no_address(self):
         host = {"subnet-id": 12, "duid": "00:01:00:01:12:34", "prefixes": ["2001:db8:1::/64"]}
-        with stub_kea({"reservation-get-page": _res_page([host]), "lease6-get-all": _LEASE_NOT_FOUND}):
+        with stub_kea({"reservation-get-page": _res_page([host]), "lease6-get-by-state": _LEASE_NOT_FOUND}):
             response = self.client.get(self._url(6))
         self.assertContains(response, "No address")
 
@@ -1194,17 +1200,19 @@ class TestReservationListEnrichmentExceptions(_ViewTestBase):
         with stub_kea({"reservation-get-page": _RES_EMPTY_PAGE}) as kea:
             response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
-        self.assertNotIn("lease4-get-all", kea.commands())
+        self.assertNotIn("lease4-get-by-state", kea.commands())
 
     def test_thread_pool_generic_exception_returns_early(self):
         """A generic error in the lease-enrichment worker causes enrichment to return early."""
         host = {"subnet-id": 1, "ip-address": "10.0.0.5", "hw-address": "aa:bb:cc:dd:ee:ff"}
-        # lease4-get-all raises an unexpected error in the worker thread; the enrichment
+        # lease4-get-by-state raises an unexpected error in the worker thread; the enrichment
         # outer except swallows it so the list still renders.
-        with stub_kea({"reservation-get-page": _res_page([host]), "lease4-get-all": RuntimeError("unexpected")}) as kea:
+        with stub_kea(
+            {"reservation-get-page": _res_page([host]), "lease4-get-by-state": RuntimeError("unexpected")}
+        ) as kea:
             response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
-        self.assertIn("lease4-get-all", kea.commands())
+        self.assertIn("lease4-get-by-state", kea.commands())
 
 
 # ---------------------------------------------------------------------------
@@ -1489,23 +1497,23 @@ class TestEnrichReservationsLeaseStatusCoverage(_ViewTestBase):
     """
 
     def test_result3_returns_empty_list(self):
-        """lease-get-all result=3 → subnet confirmed empty → has_active_lease set False."""
+        """lease-get-by-state result=3 means the Subnet has no active lease."""
         from netbox_kea.views import _enrich_reservations_with_lease_status
 
         reservations = [{"ip-address": "10.0.0.1", "subnet-id": 42}]
-        with stub_kea({"lease4-get-all": {"result": 3}}):
-            client = KeaClient(url="https://kea.example.com")
+        with stub_kea({"lease4-get-by-state": {"result": 3}}):
+            client = KeaClient(url="https://kea.example.com", max_unpaged_leases=None)
             _enrich_reservations_with_lease_status(client, reservations, 4)
         # result=3 means empty — confirmed no active lease, so has_active_lease is set False
         self.assertFalse(reservations[0].get("has_active_lease", True))
 
     def test_kea_exception_non_result2_returns_empty(self):
-        """A lease-get-all result != 2/3 → subnet treated as indeterminate → has_active_lease unset."""
+        """A lease-get-by-state result other than 2 or 3 leaves the Subnet indeterminate."""
         from netbox_kea.views import _enrich_reservations_with_lease_status
 
         reservations = [{"ip-address": "10.0.0.1", "subnet-id": 42}]
-        with stub_kea({"lease4-get-all": {"result": 1, "text": "error"}}):
-            client = KeaClient(url="https://kea.example.com")
+        with stub_kea({"lease4-get-by-state": {"result": 1, "text": "error"}}):
+            client = KeaClient(url="https://kea.example.com", max_unpaged_leases=None)
             _enrich_reservations_with_lease_status(client, reservations, 4)
         # result != 2 → subnet indeterminate → has_active_lease must remain unset
         self.assertNotIn("has_active_lease", reservations[0])
@@ -1516,7 +1524,7 @@ class TestEnrichReservationsLeaseStatusCoverage(_ViewTestBase):
 
         reservations = [{"ip-address": "10.0.0.1"}]  # no subnet-id
         with stub_kea({}) as kea:
-            client = KeaClient(url="https://kea.example.com")
+            client = KeaClient(url="https://kea.example.com", max_unpaged_leases=None)
             _enrich_reservations_with_lease_status(client, reservations, 4)
         # No valid subnet-ids → no Kea traffic at all.
         self.assertEqual(kea.commands(), [])
@@ -1532,9 +1540,9 @@ class TestEnrichReservationsLeaseStatusCoverage(_ViewTestBase):
                 side_effect=RuntimeError("as_completed failed"),
                 autospec=True,
             ) as mock_as_completed,
-            stub_kea({"lease4-get-all": {"result": 3}}),
+            stub_kea({"lease4-get-by-state": {"result": 3}}),
         ):
-            client = KeaClient(url="https://kea.example.com")
+            client = KeaClient(url="https://kea.example.com", max_unpaged_leases=None)
             _enrich_reservations_with_lease_status(client, reservations, 4)
         # as_completed must have been reached (executor submitted tasks)
         mock_as_completed.assert_called_once()
@@ -1563,8 +1571,8 @@ class TestAddressLessReservationLeaseStatus(_ViewTestBase):
     def _enrich(self, reservations, leases_by_subnet, version=4):
         from netbox_kea.views import _enrich_reservations_with_lease_status
 
-        with stub_kea({f"lease{version}-get-all": _leases_per_subnet(leases_by_subnet)}):
-            client = KeaClient(url="https://kea.example.com")
+        with stub_kea({f"lease{version}-get-by-state": _leases_per_subnet(leases_by_subnet)}):
+            client = KeaClient(url="https://kea.example.com", max_unpaged_leases=None)
             _enrich_reservations_with_lease_status(client, reservations, version)
         return reservations
 
@@ -1578,7 +1586,7 @@ class TestAddressLessReservationLeaseStatus(_ViewTestBase):
         with stub_kea(
             {
                 "reservation-get-page": _res_page([self.ADDRESSLESS_V4]),
-                "lease4-get-all": _leases_per_subnet({42: [lease]}),
+                "lease4-get-by-state": _leases_per_subnet({42: [lease]}),
             }
         ):
             response = self.client.get(reverse("plugins:netbox_kea:server_reservations4", args=[self.server.pk]))
@@ -1640,10 +1648,10 @@ class TestAddressLessReservationLeaseStatus(_ViewTestBase):
     def test_indeterminate_subnet_leaves_the_flag_unset(self):
         """An address-less row must not report "No Lease" when the subnet could not be read."""
         reservations = [dict(self.ADDRESSLESS_V4)]
-        with stub_kea({"lease4-get-all": {"result": 1, "text": "error"}}):
+        with stub_kea({"lease4-get-by-state": {"result": 1, "text": "error"}}):
             from netbox_kea.views import _enrich_reservations_with_lease_status
 
-            client = KeaClient(url="https://kea.example.com")
+            client = KeaClient(url="https://kea.example.com", max_unpaged_leases=None)
             _enrich_reservations_with_lease_status(client, reservations, 4)
         self.assertNotIn("has_active_lease", reservations[0])
 

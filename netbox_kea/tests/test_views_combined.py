@@ -173,8 +173,8 @@ class TestCombinedReservationsMultiPage(_ViewTestBase):
         }
         stub = {
             "reservation-get-page": queued(page1, page2),
-            # active-lease badge enrichment queries lease4-get-all per unique subnet
-            "lease4-get-all": {"result": 0, "arguments": {"leases": []}},
+            # active-lease badge enrichment queries lease4-get-by-state per unique subnet
+            "lease4-get-by-state": {"result": 0, "arguments": {"leases": []}},
         }
         with stub_kea(stub) as kea:
             response = self.client.get(self._url())
@@ -193,14 +193,18 @@ class TestCombinedReservationsWithoutAddress(_ViewTestBase):
 
     def test_v4_identifier_only_reservation_renders(self):
         page = _res_page([{"subnet-id": 3742, "hw-address": "aa:bb:cc:dd:ee:ff", "hostname": "printer-1"}])
-        with stub_kea({"reservation-get-page": page, "lease4-get-all": {"result": 0, "arguments": {"leases": []}}}):
+        with stub_kea(
+            {"reservation-get-page": page, "lease4-get-by-state": {"result": 0, "arguments": {"leases": []}}}
+        ):
             response = self.client.get(self._url(4))
         self.assertEqual(response.status_code, 200)
         self.assertIn(b"printer-1", response.content)
 
     def test_v6_prefix_only_reservation_renders(self):
         page = _res_page([{"subnet-id": 12, "duid": "00:01:00:01:12:34", "prefixes": ["2001:db8:1::/64"]}])
-        with stub_kea({"reservation-get-page": page, "lease6-get-all": {"result": 0, "arguments": {"leases": []}}}):
+        with stub_kea(
+            {"reservation-get-page": page, "lease6-get-by-state": {"result": 0, "arguments": {"leases": []}}}
+        ):
             response = self.client.get(self._url(6))
         self.assertEqual(response.status_code, 200)
 
@@ -220,7 +224,7 @@ class TestCombinedReservationsShowWhatIsReserved(_ViewTestBase):
     def _stub(self, hosts, version=4):
         return {
             "reservation-get-page": _res_page(hosts),
-            f"lease{version}-get-all": {"result": 0, "arguments": {"leases": []}},
+            f"lease{version}-get-by-state": {"result": 0, "arguments": {"leases": []}},
         }
 
     def test_v4_flex_id_row_shows_the_identifier_and_its_type(self):

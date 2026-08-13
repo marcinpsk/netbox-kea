@@ -10,8 +10,8 @@ from django.shortcuts import render
 from django.urls import reverse
 from django.views import View
 
-from .. import forms, tables
-from ..kea import KeaException, iter_reservations
+from .. import constants, forms, tables
+from ..kea import KeaException, LeaseQueryGuardError, iter_reservations, lease_query_guard_message
 from ..models import Server
 from ..subnet_catalogue import ConfiguredSubnet, Diagnostic, SubnetOption, VerifiedSubnet, display
 from ..utilities import (
@@ -46,10 +46,18 @@ def _require_first_entry(resp: Any, what: str) -> dict[str, Any]:
     return resp[0]
 
 
-def _fetch_leases_from_server(server: Server, q: Any, by: str, version: int) -> list[dict[str, Any]]:
+def _fetch_leases_from_server(
+    server: Server,
+    q: Any,
+    by: str,
+    version: int,
+    *,
+    state: int | None = None,
+) -> list[dict[str, Any]]:
     """Fetch leases matching *q*/*by* from one server and tag them with server details."""
     client = server.get_client(version=version)
-    leases = format_leases(client.lease_search(version, by, q))
+    value = str(q.cidr) if by == constants.BY_SUBNET else q
+    leases = format_leases(client.lease_search(version, by, value, state=state))
     for lease in leases:
         lease["server_name"] = server.name
         lease["server_pk"] = server.pk
@@ -584,14 +592,25 @@ class _CombinedLeasesView(_CombinedViewMixin):
         truncated_servers: list[str] = []
 
         if q and by:
+            state_in_kea = state_filter if by in (constants.BY_SUBNET, constants.BY_SUBNET_ID) else None
             with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
                 future_to_server = {
-                    executor.submit(_fetch_leases_from_server, s, q, by, self.dhcp_version): s for s in servers
+                    executor.submit(
+                        _fetch_leases_from_server,
+                        s,
+                        q,
+                        by,
+                        self.dhcp_version,
+                        state=state_in_kea,
+                    ): s
+                    for s in servers
                 }
                 for future in concurrent.futures.as_completed(future_to_server):
                     server = future_to_server[future]
                     try:
                         all_leases.extend(future.result())
+                    except LeaseQueryGuardError as exc:  # noqa: PERF203
+                        errors.append((server.name, lease_query_guard_message(exc, state_filter)))
                     except Exception:  # noqa: BLE001, PERF203
                         logger.exception("Failed to query server %s", server.name)
                         errors.append((server.name, "Failed to query server"))
@@ -612,7 +631,7 @@ class _CombinedLeasesView(_CombinedViewMixin):
                         logger.exception("Failed to query server %s", server.name)
                         errors.append((server.name, "Failed to query server"))
 
-        if state_filter is not None:
+        if state_filter is not None and by not in (constants.BY_SUBNET, constants.BY_SUBNET_ID):
             all_leases = [ls for ls in all_leases if ls.get("state") == state_filter]
 
         # Enrich in the main thread so Django ORM queries see the test transaction.

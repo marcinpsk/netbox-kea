@@ -40,7 +40,7 @@ _LEASE6_RESPONSE = [
 
 User = get_user_model()
 
-_PLUGINS_CONFIG = {"netbox_kea": {"kea_timeout": 30}}
+_PLUGINS_CONFIG = {"netbox_kea": {"kea_timeout": 30, "lease_query_max_unpaged_leases": 0}}
 
 _LEASE4_RESPONSE = [
     {

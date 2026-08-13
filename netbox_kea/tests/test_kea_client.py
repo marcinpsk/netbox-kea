@@ -5,7 +5,6 @@
 These tests mock all HTTP calls and require no running services.
 """
 
-import ipaddress
 from unittest import TestCase
 from unittest.mock import MagicMock, patch
 
@@ -19,6 +18,9 @@ from netbox_kea.kea import (
     KeaException,
     LeaseCollection,
     LeasePage,
+    LeaseQueryNotMeasurable,
+    LeaseQueryPreflightUnavailable,
+    LeaseQueryTooBroad,
     PartialPersistError,
     check_response,
     iter_reservations,
@@ -3816,6 +3818,16 @@ class TestLeaseSearch(TestCase):
     def setUp(self):
         self.client = KeaClient(url="http://kea:8000")
 
+    @staticmethod
+    def _subnet_stats(version, subnet_id, *, assigned=1, declined=0, assigned_pds=0):
+        if version == 4:
+            columns = ["subnet-id", "assigned-addresses", "declined-addresses"]
+            row = [subnet_id, assigned, declined]
+        else:
+            columns = ["subnet-id", "assigned-nas", "declined-addresses", "assigned-pds"]
+            row = [subnet_id, assigned, declined, assigned_pds]
+        return {"result": 0, "arguments": {"result-set": {"columns": columns, "rows": [row]}}}
+
     @patch("requests.Session.post")
     def test_rejects_selector_that_the_address_family_does_not_support(self, mock_post):
         with self.assertRaisesRegex(ValueError, "duid.*DHCPv4"):
@@ -3874,9 +3886,12 @@ class TestLeaseSearch(TestCase):
         for version, selector, value, command, arguments, multiple in cases:
             lease = {"ip-address": "198.18.0.10" if version == 4 else "2001:db8::10"}
             response_arguments = {"leases": [lease]} if multiple else lease
+            responses = {command: {"result": 0, "arguments": response_arguments}}
+            if selector == "subnet_id":
+                responses[f"stat-lease{version}-get"] = self._subnet_stats(version, int(value))
             with (
                 self.subTest(version=version, selector=selector),
-                stub_kea({command: {"result": 0, "arguments": response_arguments}}) as kea,
+                stub_kea(responses) as kea,
             ):
                 result = self.client.lease_search(version, selector, value)
 
@@ -3900,6 +3915,119 @@ class TestLeaseSearch(TestCase):
         ):
             with self.assertRaisesRegex(RuntimeError, "malformed leases collection"):
                 self.client.lease_search(4, "hostname", "host.example.invalid")
+
+    def test_large_subnet_is_rejected_before_get_all(self):
+        client = KeaClient(url="http://kea:8000", max_unpaged_leases=100)
+        stats = {
+            "result": 0,
+            "arguments": {
+                "result-set": {
+                    "columns": [
+                        "subnet-id",
+                        "total-addresses",
+                        "cumulative-assigned-addresses",
+                        "assigned-addresses",
+                        "declined-addresses",
+                    ],
+                    "rows": [[12, 256, 101, 101, 0]],
+                }
+            },
+        }
+        with stub_kea({"stat-lease4-get": stats}) as kea:
+            with self.assertRaisesRegex(LeaseQueryTooBroad, "101.*100"):
+                client.lease_search(4, "subnet_id", 12)
+
+        self.assertEqual(kea.commands(), ["stat-lease4-get"])
+
+    def test_state_qualifier_uses_the_subnet_scoped_state_command(self):
+        client = KeaClient(url="http://kea:8000", max_unpaged_leases=100)
+        lease = {"ip-address": "198.18.0.10", "state": 1}
+        with stub_kea(
+            {
+                "stat-lease4-get": self._subnet_stats(4, 12, assigned=201, declined=1),
+                "lease4-get-by-state": {"result": 0, "arguments": {"leases": [lease]}},
+            }
+        ) as kea:
+            result = client.lease_search(4, "subnet_id", 12, state=1)
+
+        self.assertEqual(result, [lease])
+        self.assertEqual(kea.commands(), ["stat-lease4-get", "lease4-get-by-state"])
+        self.assertEqual(
+            kea.bodies("lease4-get-by-state")[0]["arguments"],
+            {"subnet-id": 12, "state": 1},
+        )
+
+    def test_unmeasured_subnet_state_is_rejected_before_any_request(self):
+        with stub_kea({}) as kea:
+            with self.assertRaisesRegex(LeaseQueryNotMeasurable, "state 2"):
+                self.client.lease_search(4, "subnet_id", 12, state=2)
+
+        self.assertEqual(kea.commands(), [])
+
+    def test_missing_statistics_hook_fails_closed(self):
+        with stub_kea({"stat-lease4-get": {"result": 2, "text": "unknown command"}}) as kea:
+            with self.assertRaises(LeaseQueryPreflightUnavailable):
+                self.client.lease_search(4, "subnet_id", 12)
+
+        self.assertEqual(kea.commands(), ["stat-lease4-get"])
+
+    def test_v6_delegated_prefixes_contribute_to_the_guard(self):
+        client = KeaClient(url="http://kea:8000", max_unpaged_leases=100)
+        with stub_kea({"stat-lease6-get": self._subnet_stats(6, 12, assigned=0, declined=0, assigned_pds=101)}) as kea:
+            with self.assertRaisesRegex(LeaseQueryTooBroad, "101.*100"):
+                client.lease_search(6, "subnet_id", 12, state=0)
+
+        self.assertEqual(kea.commands(), ["stat-lease6-get"])
+
+    def test_subnet_cidr_resolves_to_id_before_guarded_query(self):
+        lease = {"ip-address": "198.18.0.10", "state": 0}
+        with stub_kea(
+            {
+                "config-get": {
+                    "result": 0,
+                    "arguments": {"Dhcp4": {"subnet4": [{"id": 12, "subnet": "198.18.0.0/24"}]}},
+                },
+                "stat-lease4-get": self._subnet_stats(4, 12, assigned=1),
+                "lease4-get-by-state": {"result": 0, "arguments": {"leases": [lease]}},
+            }
+        ) as kea:
+            result = self.client.lease_search(4, "subnet", "198.18.0.0/24", state=0)
+
+        self.assertEqual(result, [lease])
+        self.assertEqual(
+            kea.commands(),
+            ["config-get", "stat-lease4-get", "lease4-get-by-state"],
+        )
+
+    def test_subnet_cidr_resolves_a_shared_network_member(self):
+        with stub_kea(
+            {
+                "config-get": {
+                    "result": 0,
+                    "arguments": {
+                        "Dhcp4": {
+                            "subnet4": [],
+                            "shared-networks": [{"name": "access", "subnet4": [{"id": 12, "subnet": "198.18.0.0/24"}]}],
+                        }
+                    },
+                },
+                "stat-lease4-get": self._subnet_stats(4, 12, assigned=0),
+                "lease4-get-all": {"result": 3},
+            }
+        ) as kea:
+            result = self.client.lease_search(4, "subnet", "198.18.0.0/24")
+
+        self.assertEqual(result, [])
+        self.assertEqual(kea.commands(), ["config-get", "stat-lease4-get", "lease4-get-all"])
+
+    def test_explicitly_disabled_guard_skips_statistics(self):
+        client = KeaClient(url="http://kea:8000", max_unpaged_leases=None)
+        lease = {"ip-address": "198.18.0.10", "state": 0}
+        with stub_kea({"lease4-get-all": {"result": 0, "arguments": {"leases": [lease]}}}) as kea:
+            result = client.lease_search(4, "subnet_id", 12)
+
+        self.assertEqual(result, [lease])
+        self.assertEqual(kea.commands(), ["lease4-get-all"])
 
 
 # ---------------------------------------------------------------------------
@@ -5111,24 +5239,24 @@ class TestLeaseGetPage(TestCase):
     def setUp(self):
         self.client = KeaClient(url="http://kea:8000")
 
-    def test_subnet_page_starts_before_network_and_stops_at_boundary(self):
-        inside = {"ip-address": "198.18.1.10"}
-        outside = {"ip-address": "198.18.2.10"}
+    def test_explicit_cursor_is_sent_without_assuming_backend_order(self):
+        first = {"ip-address": "198.18.1.10"}
+        second = {"ip-address": "198.18.2.10"}
         with stub_kea(
             {
                 "lease4-get-page": {
                     "result": 0,
-                    "arguments": {"leases": [inside, outside], "count": 2},
+                    "arguments": {"leases": [first, second], "count": 2},
                 }
             }
         ) as kea:
             result = self.client.lease_get_page(
                 version=4,
                 limit=10,
-                subnet=ipaddress.ip_network("198.18.1.0/24"),
+                cursor="198.18.0.255",
             )
 
-        self.assertEqual(result, LeasePage(leases=[inside], next_cursor=None))
+        self.assertEqual(result, LeasePage(leases=[first, second], next_cursor=None))
         self.assertEqual(kea.bodies("lease4-get-page")[0]["arguments"]["from"], "198.18.0.255")
 
     def test_full_page_returns_last_address_as_next_cursor(self):
@@ -5145,13 +5273,13 @@ class TestLeaseGetPage(TestCase):
 
         self.assertEqual(result, LeasePage(leases=leases, next_cursor="2001:db8::20"))
 
-    def test_rejects_subnet_from_another_address_family_without_request(self):
+    def test_rejects_cursor_from_another_address_family_without_request(self):
         with patch("requests.Session.post") as mock_post:
             with self.assertRaisesRegex(ValueError, "IPv6.*DHCPv4"):
                 self.client.lease_get_page(
                     version=4,
                     limit=10,
-                    subnet=ipaddress.ip_network("2001:db8::/64"),
+                    cursor="2001:db8::1",
                 )
 
         mock_post.assert_not_called()

@@ -34,11 +34,59 @@ class LeaseCollection(NamedTuple):
     truncated: bool
 
 
-def _lease_page_start(
-    version: int,
-    cursor: str | None,
-    subnet: ipaddress.IPv4Network | ipaddress.IPv6Network | None,
-) -> str:
+class LeaseQueryGuardError(Exception):
+    """Base class for a lease query rejected before an unbounded Kea response."""
+
+
+class LeaseQueryTooBroad(LeaseQueryGuardError):
+    """Raised before an unbounded Kea lease query exceeds the local row limit."""
+
+    def __init__(self, observed_leases: int, max_leases: int) -> None:
+        self.observed_leases = observed_leases
+        self.max_leases = max_leases
+        super().__init__(f"The Subnet has at least {observed_leases} leases; the unpaged query limit is {max_leases}.")
+
+
+class LeaseQueryNotMeasurable(LeaseQueryGuardError):
+    """Raised when Kea cannot count a requested Subnet lease category."""
+
+    def __init__(self, state: int) -> None:
+        self.state = state
+        super().__init__(f"Kea cannot measure Subnet lease state {state} before an unpaged query.")
+
+
+class LeaseQueryPreflightUnavailable(LeaseQueryGuardError):
+    """Raised when Kea cannot provide the statistics required for a safe query."""
+
+
+def lease_query_guard_message(exc: LeaseQueryGuardError, state: int | None) -> str:
+    """Return safe, actionable guidance for one rejected lease query."""
+    if isinstance(exc, LeaseQueryNotMeasurable):
+        return "Kea cannot safely measure this lease state. Use an exact IP or client identifier search."
+    if isinstance(exc, LeaseQueryPreflightUnavailable):
+        return "Kea cannot verify this Subnet query safely. Load the stat_cmds hook or disable the guard explicitly."
+    if isinstance(exc, LeaseQueryTooBroad) and state is None:
+        return (
+            f"This Subnet has at least {exc.observed_leases} leases. "
+            "Select the Active or Declined state to narrow the query."
+        )
+    if isinstance(exc, LeaseQueryTooBroad):
+        return (
+            f"The selected state has at least {exc.observed_leases} leases. "
+            "Use an exact IP or client identifier search."
+        )
+    return "Kea rejected this unsafe lease query. Use a more specific search."
+
+
+class _SubnetLeaseCounts(NamedTuple):
+    """Lease categories that ``stat_cmds`` can count for one Subnet."""
+
+    covered: int
+    active: int
+    declined: int
+
+
+def _lease_page_start(version: int, cursor: str | None) -> str:
     if cursor is not None:
         try:
             parsed_cursor = ipaddress.ip_address(cursor)
@@ -47,11 +95,7 @@ def _lease_page_start(
         if parsed_cursor.version != version:
             raise ValueError(f"Lease cursor family IPv{parsed_cursor.version} does not match DHCPv{version}.")
         return str(parsed_cursor)
-    if subnet is None:
-        return "0.0.0.0" if version == 4 else "::"  # noqa: S104  Kea pagination cursor
-    if int(subnet.network_address) == 0:
-        return str(subnet.network_address)
-    return str(subnet.network_address - 1)
+    return "0.0.0.0" if version == 4 else "::"  # noqa: S104  Kea pagination cursor
 
 
 def _lease_address_values(leases: list[Any], command: str) -> list[str]:
@@ -95,6 +139,7 @@ class KeaClient:
         timeout: int = 30,
         persist_config: bool = True,
         send_service: bool = True,
+        max_unpaged_leases: int | None = 1000,
     ):
         """Initialise a Kea HTTP client session.
 
@@ -116,6 +161,8 @@ class KeaClient:
                 daemon: Kea 3.2.0+ rejects a ``service`` that does not match the
                 daemon, and ISC recommends omitting it for direct connections
                 (3.0.x silently ignored it).
+            max_unpaged_leases: Reject an unpaged Subnet query when Kea reports
+                more than this many covered leases. ``None`` disables the guard.
 
         Raises:
             ValueError: If only one of client_cert/client_key is provided.
@@ -123,11 +170,16 @@ class KeaClient:
         """
         if (client_cert is not None and client_key is None) or (client_cert is None and client_key is not None):
             raise ValueError("Key and Cert must be used together.")
+        if max_unpaged_leases is not None and (
+            isinstance(max_unpaged_leases, bool) or not isinstance(max_unpaged_leases, int) or max_unpaged_leases < 1
+        ):
+            raise ValueError("max_unpaged_leases must be a positive integer or None.")
 
         self.url = url
         self.timeout = timeout
         self.persist_config = persist_config
         self.send_service = send_service
+        self.max_unpaged_leases = max_unpaged_leases
 
         self._session = requests.Session()
         if verify is not None:
@@ -198,6 +250,7 @@ class KeaClient:
         new._session.cert = self._session.cert
         new.persist_config = self.persist_config
         new.send_service = self.send_service
+        new.max_unpaged_leases = self.max_unpaged_leases
         return new
 
     def close(self) -> None:
@@ -460,6 +513,49 @@ class KeaClient:
         """
         for subnet_cidr, subnet_id in self.list_subnets(version):
             if subnet_cidr == cidr:
+                return subnet_id
+        return None
+
+    def configured_subnet_id_from_cidr(self, version: int, cidr: str) -> int | None:
+        """Resolve a CIDR from the running config without requiring ``subnet_cmds``."""
+        if version not in (4, 6):
+            raise ValueError(f"version must be 4 or 6, got {version!r}")
+        try:
+            network = ipaddress.ip_network(cidr, strict=True)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"subnet must be a valid IPv{version} CIDR.") from exc
+        if network.version != version:
+            raise ValueError(f"Subnet family IPv{network.version} does not match DHCPv{version}.")
+
+        response = self.command("config-get", service=[f"dhcp{version}"])
+        if not response or not isinstance(response[0], dict):
+            raise RuntimeError("config-get returned a malformed response.")
+        arguments = response[0].get("arguments")
+        dhcp_config = arguments.get(f"Dhcp{version}") if isinstance(arguments, dict) else None
+        if not isinstance(dhcp_config, dict):
+            raise RuntimeError(f"config-get returned malformed Dhcp{version} configuration.")
+
+        subnet_key = f"subnet{version}"
+        top_level = dhcp_config.get(subnet_key, [])
+        shared_networks = dhcp_config.get("shared-networks", [])
+        if not isinstance(top_level, list) or not isinstance(shared_networks, list):
+            raise RuntimeError("config-get returned malformed Subnet collections.")
+        subnet_collections = [top_level]
+        for shared_network in shared_networks:
+            if not isinstance(shared_network, dict) or not isinstance(shared_network.get(subnet_key, []), list):
+                raise RuntimeError("config-get returned a malformed shared-network entry.")
+            subnet_collections.append(shared_network.get(subnet_key, []))
+
+        target_cidr = str(network)
+        for subnets in subnet_collections:
+            for subnet in subnets:
+                if not isinstance(subnet, dict):
+                    raise RuntimeError("config-get returned a malformed Subnet entry.")
+                if subnet.get("subnet") != target_cidr:
+                    continue
+                subnet_id = subnet.get("id")
+                if isinstance(subnet_id, bool) or not isinstance(subnet_id, int) or subnet_id < 1:
+                    raise RuntimeError("config-get returned a Subnet without a valid ID.")
                 return subnet_id
         return None
 
@@ -1165,13 +1261,21 @@ class KeaClient:
         leases = self.lease_search(version, constants.BY_IP, ip_address)
         return leases[0] if leases else None
 
-    def lease_search(self, version: int, selector: str, value: Any) -> list[dict[str, Any]]:
+    def lease_search(
+        self,
+        version: int,
+        selector: str,
+        value: Any,
+        *,
+        state: int | None = None,
+    ) -> list[dict[str, Any]]:
         """Return raw leases that match one supported selector."""
         selector_specs = {
             constants.BY_IP: ("", "ip-address", False, {4, 6}),
             constants.BY_HW_ADDRESS: ("-by-hw-address", "hw-address", True, {4}),
             constants.BY_HOSTNAME: ("-by-hostname", "hostname", True, {4, 6}),
             constants.BY_CLIENT_ID: ("-by-client-id", "client-id", True, {4}),
+            constants.BY_SUBNET: ("-all", "subnets", True, {4, 6}),
             constants.BY_SUBNET_ID: ("-all", "subnets", True, {4, 6}),
             constants.BY_DUID: ("-by-duid", "duid", True, {6}),
         }
@@ -1182,17 +1286,18 @@ class KeaClient:
             raise ValueError(f"Lease selector {selector!r} is not supported for DHCPv{version}.")
 
         command_suffix, argument_name, multiple, _supported_versions = spec
-        if selector == constants.BY_SUBNET_ID:
-            if isinstance(value, bool):
-                raise ValueError("subnet_id must be a positive integer.")
-            try:
-                subnet_id = int(value)
-            except (TypeError, ValueError) as exc:
-                raise ValueError("subnet_id must be a positive integer.") from exc
-            if subnet_id < 1:
-                raise ValueError("subnet_id must be a positive integer.")
-            arguments = {argument_name: [subnet_id]}
+        if selector in (constants.BY_SUBNET, constants.BY_SUBNET_ID):
+            if selector == constants.BY_SUBNET:
+                if not isinstance(value, str) or not value:
+                    raise ValueError("subnet must be a non-empty CIDR string.")
+                subnet_id = self.configured_subnet_id_from_cidr(version, value)
+                if subnet_id is None:
+                    return []
+                value = subnet_id
+            command_suffix, arguments = self._subnet_lease_search_spec(version, value, state)
         else:
+            if state is not None:
+                raise ValueError("state can only be combined with a Subnet ID search.")
             if not isinstance(value, str) or not value:
                 raise ValueError(f"{selector} must be a non-empty string.")
             arguments = {argument_name: value}
@@ -1217,38 +1322,108 @@ class KeaClient:
         _validated_lease_addresses(raw_leases, version, command)
         return raw_leases
 
+    def _subnet_lease_search_spec(self, version: int, value: Any, state: int | None) -> tuple[str, dict[str, Any]]:
+        """Validate and guard one Subnet lease query before selecting its command."""
+        if isinstance(value, bool):
+            raise ValueError("subnet_id must be a positive integer.")
+        try:
+            subnet_id = int(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("subnet_id must be a positive integer.") from exc
+        if subnet_id < 1:
+            raise ValueError("subnet_id must be a positive integer.")
+        if state is not None and (isinstance(state, bool) or state not in (0, 1)):
+            raise LeaseQueryNotMeasurable(state)
+        if self.max_unpaged_leases is None:
+            if state is None:
+                return "-all", {"subnets": [subnet_id]}
+            return "-by-state", {"subnet-id": subnet_id, "state": state}
+
+        try:
+            counts = self._subnet_lease_counts(version, subnet_id)
+        except KeaException as exc:
+            if exc.response.get("result") == 2:
+                raise LeaseQueryPreflightUnavailable from exc
+            raise
+        if state is None:
+            observed_leases = counts.covered
+            command_suffix = "-all"
+            arguments = {"subnets": [subnet_id]}
+        else:
+            observed_leases = counts.active if state == 0 else counts.declined
+            command_suffix = "-by-state"
+            arguments = {"subnet-id": subnet_id, "state": state}
+        if observed_leases > self.max_unpaged_leases:
+            raise LeaseQueryTooBroad(observed_leases, self.max_unpaged_leases)
+        return command_suffix, arguments
+
+    def _subnet_lease_counts(self, version: int, subnet_id: int) -> _SubnetLeaseCounts:
+        """Return the covered per-Subnet lease counts from ``stat_cmds``."""
+        command = f"stat-lease{version}-get"
+        response = self.command(
+            command,
+            service=[f"dhcp{version}"],
+            arguments={"subnet-id": subnet_id},
+        )
+        if not response or not isinstance(response[0], dict):
+            raise RuntimeError(f"{command} returned a malformed response.")
+        arguments = response[0].get("arguments")
+        result_set = arguments.get("result-set") if isinstance(arguments, dict) else None
+        columns = result_set.get("columns") if isinstance(result_set, dict) else None
+        rows = result_set.get("rows") if isinstance(result_set, dict) else None
+        if not isinstance(columns, list) or not isinstance(rows, list):
+            raise RuntimeError(f"{command} returned malformed statistics.")
+
+        count_columns = (
+            ["assigned-addresses", "declined-addresses"]
+            if version == 4
+            else ["assigned-nas", "declined-addresses", "assigned-pds"]
+        )
+        try:
+            subnet_index = columns.index("subnet-id")
+            count_indexes = [columns.index(name) for name in count_columns]
+        except ValueError as exc:
+            raise RuntimeError(f"{command} omitted required statistics columns.") from exc
+
+        for row in rows:
+            if not isinstance(row, (list, tuple)) or len(row) <= max(subnet_index, *count_indexes):
+                raise RuntimeError(f"{command} returned a malformed statistics row.")
+            if row[subnet_index] != subnet_id:
+                continue
+            values = [row[index] for index in count_indexes]
+            if any(isinstance(count, bool) or not isinstance(count, int) or count < 0 for count in values):
+                raise RuntimeError(f"{command} returned an invalid lease count.")
+            assigned, declined, *assigned_pds = values
+            if assigned < declined:
+                raise RuntimeError(f"{command} returned inconsistent lease counts.")
+            delegated = assigned_pds[0] if assigned_pds else 0
+            return _SubnetLeaseCounts(
+                covered=assigned + delegated,
+                active=assigned - declined + delegated,
+                declined=declined,
+            )
+        raise RuntimeError(f"{command} did not return statistics for Subnet {subnet_id}.")
+
     def lease_get_page(
         self,
         version: int,
         *,
         limit: int,
         cursor: str | None = None,
-        subnet: ipaddress.IPv4Network | ipaddress.IPv6Network | None = None,
     ) -> LeasePage:
-        """Return one validated lease page, optionally bounded by a Subnet."""
+        """Return one validated global lease page."""
         if version not in (4, 6):
             raise ValueError(f"version must be 4 or 6, got {version!r}")
         if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
             raise ValueError(f"limit must be a positive integer, got {limit!r}")
-        if subnet is not None and subnet.version != version:
-            raise ValueError(f"Subnet family IPv{subnet.version} does not match DHCPv{version}.")
 
         page = self._request_lease_page(
             version,
             limit=limit,
-            cursor=_lease_page_start(version, cursor, subnet),
+            cursor=_lease_page_start(version, cursor),
         )
-        lease_addresses = _validated_lease_addresses(page.leases, version, f"lease{version}-get-page")
-
-        leases = page.leases
-        next_cursor = page.next_cursor
-        if subnet is not None:
-            for index, address in enumerate(lease_addresses):
-                if address not in subnet:
-                    leases = leases[:index]
-                    next_cursor = None
-                    break
-        return LeasePage(leases=leases, next_cursor=next_cursor)
+        _validated_lease_addresses(page.leases, version, f"lease{version}-get-page")
+        return page
 
     def _request_lease_page(self, version: int, *, limit: int, cursor: str) -> LeasePage:
         """Request one structurally valid lease page from Kea."""
@@ -1322,7 +1497,7 @@ class KeaClient:
             page = self._request_lease_page(
                 version,
                 limit=per_page,
-                cursor=_lease_page_start(version, cursor, None),
+                cursor=_lease_page_start(version, cursor),
             )
             all_leases.extend(page.leases)
             if max_leases is not None and len(all_leases) >= max_leases:
@@ -1652,28 +1827,16 @@ class KeaClient:
         detect whether the command was actually processed by Kea.
 
         """
-        service = f"dhcp{version}"
-        dhcp_key = f"Dhcp{version}"
-        subnet_key = f"subnet{version}"
         try:
-            resp = self.command("config-get", service=[service])
-            raw_args = resp[0].get("arguments") if resp and isinstance(resp[0], dict) else None
-            conf = raw_args.get(dhcp_key, {}) if isinstance(raw_args, dict) else {}
-            for s in conf.get(subnet_key, []):
-                if s.get("subnet") == cidr:
-                    return s.get("id")  # None if id absent — callers treat None as "not found"
-            for sn in conf.get("shared-networks", []):
-                for s in sn.get(subnet_key, []):
-                    if s.get("subnet") == cidr:
-                        return s.get("id")  # None if id absent — callers treat None as "not found"
-        except (KeaException, requests.RequestException, ValueError):
+            return self.configured_subnet_id_from_cidr(version, cidr)
+        except (KeaException, requests.RequestException, RuntimeError, ValueError):
             logger.debug(
                 "_find_subnet_id_by_cidr: config-get failed for cidr=%s version=%s",
                 cidr,
                 version,
                 exc_info=True,
             )
-        return None
+            return None
 
 
 class KeaException(Exception):

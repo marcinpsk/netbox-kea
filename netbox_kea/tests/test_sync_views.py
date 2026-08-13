@@ -39,7 +39,7 @@ from .kea_stub import _res_page, _subnet_list, stub_kea
 
 User = get_user_model()
 
-_PLUGINS_CONFIG = {"netbox_kea": {"kea_timeout": 30}}
+_PLUGINS_CONFIG = {"netbox_kea": {"kea_timeout": 30, "lease_query_max_unpaged_leases": 0}}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -462,8 +462,11 @@ class TestReservationBulkSyncConflictProtection(_SyncViewBase):
         NbIP.objects.create(address="10.0.20.5/32", status="active", description="Router loopback")
         hosts = [{"ip-address": "10.0.20.5", "hostname": "foreign", "subnet-id": 1}]
         # follow=True lands on the reservations list, which re-drains reservation-get-page
-        # and enriches with lease4-get-all per subnet.
-        stub = {"reservation-get-page": _res_page(hosts), "lease4-get-all": {"result": 0, "arguments": {"leases": []}}}
+        # and enriches with lease4-get-by-state per subnet.
+        stub = {
+            "reservation-get-page": _res_page(hosts),
+            "lease4-get-by-state": {"result": 0, "arguments": {"leases": []}},
+        }
         with stub_kea(stub):
             response = self.client.post(self._url(), follow=True)
 
@@ -481,7 +484,10 @@ class TestReservationBulkSyncConflictProtection(_SyncViewBase):
             {"ip-address": "10.0.20.6", "hostname": "foreign", "subnet-id": 1},
             {"ip-address": "10.0.20.7", "hostname": "managed", "subnet-id": 1},
         ]
-        stub = {"reservation-get-page": _res_page(hosts), "lease4-get-all": {"result": 0, "arguments": {"leases": []}}}
+        stub = {
+            "reservation-get-page": _res_page(hosts),
+            "lease4-get-by-state": {"result": 0, "arguments": {"leases": []}},
+        }
         with stub_kea(stub):
             self.client.post(self._url(), follow=True)
 

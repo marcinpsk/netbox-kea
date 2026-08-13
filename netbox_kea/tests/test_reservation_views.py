@@ -56,7 +56,7 @@ _SAMPLE_RESERVATION6 = {
 # boundary is stubbed via ``kea_stub.stub_kea`` so the actual request payloads are
 # exercised. Command chains issued by the views:
 #   list GET:  ``reservation-get-page`` (drained via ``iter_reservations``) then, if
-#              any reservations are found, ``lease{v}-get-all`` per unique subnet
+#              any reservations are found, ``lease{v}-get-by-state`` per unique subnet
 #              (lease-status enrichment; NetBox IPAM badges hit the DB, not Kea).
 #   add GET:   ``subnet{v}-list`` (Subnet CIDR suggestions; cached per server+version).
 #   add POST:  ``subnet{v}-list`` (CIDR→ID lookup) + ``subnet{v}-get`` (pool-overlap probe,
@@ -69,7 +69,7 @@ _SAMPLE_RESERVATION6 = {
 
 #: ``reservation-get-page`` with no hosts (source exhausted → empty reservation list).
 _RES_EMPTY_PAGE = {"result": 3}
-#: ``lease{v}-get-all`` with no active leases in the subnet (result 3 = empty).
+#: ``lease{v}-get-by-state`` with no active leases in the subnet (result 3 = empty).
 _LEASE_NONE4 = {"result": 3}
 _LEASE_NONE6 = {"result": 3}
 
@@ -78,14 +78,14 @@ def _list_stub4(hosts=None):
     """``stub_kea`` for the DHCPv4 reservations list view: get-page drain + lease enrichment."""
     if hosts is None:
         hosts = [dict(_SAMPLE_RESERVATION4)]
-    return stub_kea({"reservation-get-page": _res_page(hosts), "lease4-get-all": _LEASE_NONE4})
+    return stub_kea({"reservation-get-page": _res_page(hosts), "lease4-get-by-state": _LEASE_NONE4})
 
 
 def _list_stub6(hosts=None):
     """``stub_kea`` for the DHCPv6 reservations list view: get-page drain + lease enrichment."""
     if hosts is None:
         hosts = [dict(_SAMPLE_RESERVATION6)]
-    return stub_kea({"reservation-get-page": _res_page(hosts), "lease6-get-all": _LEASE_NONE6})
+    return stub_kea({"reservation-get-page": _res_page(hosts), "lease6-get-by-state": _LEASE_NONE6})
 
 
 #: ``reservation-get`` / ``lease{v}-get`` with result 3 = no such record.
@@ -281,7 +281,7 @@ class TestServerReservations4View(_ReservationViewBase):
         with stub_kea(
             {
                 "reservation-get-page": queued(_res_page(page1, next_from=100), _res_page(page2)),
-                "lease4-get-all": _LEASE_NONE4,
+                "lease4-get-by-state": _LEASE_NONE4,
             }
         ) as kea:
             response = self.client.get(url)
@@ -344,7 +344,7 @@ class TestServerReservations6View(_ReservationViewBase):
         with stub_kea(
             {
                 "reservation-get-page": queued(_res_page(page1, next_from=100), _res_page(page2)),
-                "lease6-get-all": _LEASE_NONE6,
+                "lease6-get-by-state": _LEASE_NONE6,
             }
         ) as kea:
             response = self.client.get(url)
@@ -1009,7 +1009,7 @@ class TestServerReservation6DeleteView(_ReservationViewBase):
 class TestActiveLeaseStatusOnReservations(_ReservationViewBase):
     """Reservation list must show an 'Active Lease' badge when a live lease exists.
 
-    Lease availability is checked via ``lease4-get-all`` (requires ``lease_cmds``
+    Lease availability is checked via ``lease4-get-by-state`` (requires ``lease_cmds``
     hook).  When the command is unavailable the column must stay blank gracefully.
     """
 
@@ -1022,16 +1022,22 @@ class TestActiveLeaseStatusOnReservations(_ReservationViewBase):
     }
 
     def _stub(self, lease_all):
-        """Reservations-list stub: one reservation + a given ``lease4-get-all`` response."""
-        return stub_kea({"reservation-get-page": _res_page([dict(_SAMPLE_RESERVATION4)]), "lease4-get-all": lease_all})
+        """Reservations-list stub: one reservation + a given ``lease4-get-by-state`` response."""
+        return stub_kea(
+            {"reservation-get-page": _res_page([dict(_SAMPLE_RESERVATION4)]), "lease4-get-by-state": lease_all}
+        )
 
     def test_active_lease_badge_shown(self):
         """When a matching lease exists the 'Active Lease' badge must be rendered."""
         url = reverse("plugins:netbox_kea:server_reservations4", args=[self.server.pk])
-        with self._stub({"result": 0, "arguments": {"leases": [self._LEASE4], "count": 1}}):
+        with self._stub({"result": 0, "arguments": {"leases": [self._LEASE4], "count": 1}}) as kea:
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Active Lease")
+        self.assertEqual(
+            kea.bodies("lease4-get-by-state")[0]["arguments"],
+            {"subnet-id": 1, "state": 0},
+        )
 
     def test_no_active_lease_badge_shown_when_no_lease(self):
         """When no lease exists for the reservation IP 'No Lease' must be rendered."""
@@ -1043,10 +1049,10 @@ class TestActiveLeaseStatusOnReservations(_ReservationViewBase):
 
     def test_no_crash_when_lease_cmds_unavailable(self):
         """When lease_cmds hook is missing the reservation page must still load."""
-        # lease4-get-all unknown → result 2 → real KeaClient raises KeaException →
+        # lease4-get-by-state unknown → result 2 → real KeaClient raises KeaException →
         # enrichment leaves has_active_lease unset, so no badge is rendered.
         url = reverse("plugins:netbox_kea:server_reservations4", args=[self.server.pk])
-        with self._stub({"result": 2, "text": "unknown command 'lease4-get-all'"}):
+        with self._stub({"result": 2, "text": "unknown command 'lease4-get-by-state'"}):
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         # No "Active Lease" or "No Lease" badge when hook unavailable
@@ -1374,7 +1380,7 @@ _SAMPLE_RESERVATION4_WITH_IP = {
 }
 
 
-@override_settings(PLUGINS_CONFIG={"netbox_kea": {"kea_timeout": 30}})
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestActiveLeaseBadgeLink(TestCase):
     """'Active Lease' badge must be a hyperlink to the per-server lease search."""
 
@@ -1391,11 +1397,11 @@ class TestActiveLeaseBadgeLink(TestCase):
         return reverse("plugins:netbox_kea:server_reservations4", args=[self.server.pk])
 
     def _stub(self, leases):
-        """Reservations-list stub: one reservation + a ``lease4-get-all`` leases payload."""
+        """Reservations-list stub: one reservation + a ``lease4-get-by-state`` leases payload."""
         return stub_kea(
             {
                 "reservation-get-page": _res_page([dict(_SAMPLE_RESERVATION4_WITH_IP)]),
-                "lease4-get-all": {"result": 0, "arguments": {"leases": leases}},
+                "lease4-get-by-state": {"result": 0, "arguments": {"leases": leases}},
             }
         )
 
@@ -1439,7 +1445,7 @@ _SAMPLE_RESERVATION6_MULTI_IP = {
 }
 
 
-@override_settings(PLUGINS_CONFIG={"netbox_kea": {"kea_timeout": 30}})
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestActiveLeaseSyncButton(TestCase):
     """When active lease present and IP not yet in NetBox, show Sync button in lease_status cell."""
 
@@ -1460,7 +1466,7 @@ class TestActiveLeaseSyncButton(TestCase):
         return stub_kea(
             {
                 "reservation-get-page": _res_page([dict(_SAMPLE_RESERVATION4_FOR_SYNC)]),
-                "lease4-get-all": {"result": 0, "arguments": {"leases": [{"ip-address": "10.60.0.5"}]}},
+                "lease4-get-by-state": {"result": 0, "arguments": {"leases": [{"ip-address": "10.60.0.5"}]}},
             }
         )
 
@@ -1505,12 +1511,12 @@ class TestMultiIPv6ReservationBadgeEnrichment(TestCase):
         return reverse("plugins:netbox_kea:server_reservations6", args=[self.server.pk])
 
     def _stub(self, reservation):
-        """Reservations6-list stub: one reservation; lease6-get-all absent (hook not loaded)."""
+        """Reservations6-list stub: one reservation; lease6-get-by-state absent (hook not loaded)."""
         return stub_kea(
             {
                 "reservation-get-page": _res_page([dict(reservation)]),
-                # lease6-get-all unknown → KeaException → lease enrichment cleanly skipped.
-                "lease6-get-all": {"result": 2, "text": "unknown command 'lease6-get-all'"},
+                # lease6-get-by-state unknown → KeaException → lease enrichment cleanly skipped.
+                "lease6-get-by-state": {"result": 2, "text": "unknown command 'lease6-get-by-state'"},
             }
         )
 
@@ -2076,7 +2082,7 @@ class TestReservationSearch4View(_ReservationViewBase):
         return stub_kea(
             {
                 "reservation-get-page": _res_page([dict(_SAMPLE_RESERVATION4), dict(_EXTRA_RESERVATION4)]),
-                "lease4-get-all": _LEASE_NONE4,
+                "lease4-get-by-state": _LEASE_NONE4,
             }
         )
 
@@ -2143,7 +2149,7 @@ class TestReservationSearch6View(_ReservationViewBase):
         return stub_kea(
             {
                 "reservation-get-page": _res_page([dict(_SAMPLE_RESERVATION6), dict(_EXTRA_RESERVATION6)]),
-                "lease6-get-all": _LEASE_NONE6,
+                "lease6-get-by-state": _LEASE_NONE6,
             }
         )
 
@@ -2901,14 +2907,16 @@ class TestEnrichReservationsLeaseStatusErrors(_ReservationViewBase):
     """Error paths in _enrich_reservations_with_lease_status for malformed responses."""
 
     def _stub(self, lease_all):
-        """Reservations4-list stub: one reservation + a given (malformed) lease4-get-all response."""
-        return stub_kea({"reservation-get-page": _res_page([dict(_SAMPLE_RESERVATION4)]), "lease4-get-all": lease_all})
+        """Reservations4-list stub: one reservation + a given (malformed) lease4-get-by-state response."""
+        return stub_kea(
+            {"reservation-get-page": _res_page([dict(_SAMPLE_RESERVATION4)]), "lease4-get-by-state": lease_all}
+        )
 
     def _url(self):
         return reverse("plugins:netbox_kea:server_reservations4", args=[self.server.pk])
 
     def test_malformed_args_not_dict_sets_indeterminate(self):
-        """When lease-get-all returns args that is not a dict, has_active_lease stays None."""
+        """When lease-get-by-state returns args that is not a dict, has_active_lease stays None."""
         # arguments is a string instead of a dict → indeterminate.
         with self._stub({"result": 0, "arguments": "not-a-dict"}):
             response = self.client.get(self._url())
@@ -2918,7 +2926,7 @@ class TestEnrichReservationsLeaseStatusErrors(_ReservationViewBase):
             self.assertIsNone(row.get("has_active_lease"))
 
     def test_malformed_leases_not_list_sets_indeterminate(self):
-        """When lease-get-all returns leases as a string instead of list, has_active_lease stays None."""
+        """When lease-get-by-state returns leases as a string instead of list, has_active_lease stays None."""
         with self._stub({"result": 0, "arguments": {"leases": "not-a-list"}}):
             response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
@@ -2935,7 +2943,7 @@ class TestEnrichReservationsLeaseStatusErrors(_ReservationViewBase):
 
     def test_kea_exception_result_not_2_sets_indeterminate(self):
         """KeaException with result!=2 (not hook-unavailable) leaves has_active_lease=None."""
-        # lease4-get-all result 1 → KeaException with result != 2 → indeterminate.
+        # lease4-get-by-state result 1 → KeaException with result != 2 → indeterminate.
         with self._stub({"result": 1, "text": "internal error"}):
             response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
@@ -3206,15 +3214,15 @@ class TestEnrichReservationsWithLeaseStatus(SimpleTestCase):
 
     Drives the real ``_enrich_reservations_with_lease_status`` against a real
     ``KeaClient`` with only the HTTP boundary stubbed — the helper ``clone()``s the
-    client and issues ``lease{v}-get-all`` from worker threads, which the class-level
+    client and issues ``lease{v}-get-by-state`` from worker threads, which the class-level
     ``requests.Session.post`` patch also covers. No database is required.
     """
 
-    def _enrich(self, reservations, version, responses):
+    def _enrich(self, reservations, version, responses, *, max_unpaged_leases=None):
         """Run the enrichment against a real KeaClient + HTTP stub; return the stub."""
         from netbox_kea.views.reservations import _enrich_reservations_with_lease_status
 
-        client = KeaClient(url="http://kea.test/")
+        client = KeaClient(url="http://kea.test/", max_unpaged_leases=max_unpaged_leases)
         with stub_kea(responses) as kea:
             _enrich_reservations_with_lease_status(client, reservations, version=version)
         return kea
@@ -3222,26 +3230,28 @@ class TestEnrichReservationsWithLeaseStatus(SimpleTestCase):
     def test_malformed_arguments_not_dict_sets_indeterminate(self):
         """When Kea returns arguments as a string (not dict), has_active_lease stays unset."""
         reservations = [{"subnet-id": 1, "ip-address": "10.0.0.1"}]
-        kea = self._enrich(reservations, 4, {"lease4-get-all": {"result": 0, "arguments": "bad-string"}})
+        kea = self._enrich(reservations, 4, {"lease4-get-by-state": {"result": 0, "arguments": "bad-string"}})
         # indeterminate — has_active_lease should not be set
         self.assertNotIn("has_active_lease", reservations[0])
         # the worker cloned the client and issued the lease query
-        self.assertIn("lease4-get-all", kea.commands())
+        self.assertIn("lease4-get-by-state", kea.commands())
 
     def test_malformed_leases_not_list_sets_indeterminate(self):
         """When arguments.leases is not a list, has_active_lease stays unset."""
         reservations = [{"subnet-id": 1, "ip-address": "10.0.0.1"}]
-        kea = self._enrich(reservations, 4, {"lease4-get-all": {"result": 0, "arguments": {"leases": "not-a-list"}}})
+        kea = self._enrich(
+            reservations, 4, {"lease4-get-by-state": {"result": 0, "arguments": {"leases": "not-a-list"}}}
+        )
         self.assertNotIn("has_active_lease", reservations[0])
-        self.assertIn("lease4-get-all", kea.commands())
+        self.assertIn("lease4-get-by-state", kea.commands())
 
     def test_kea_exception_non_result_2_sets_indeterminate(self):
         """KeaException with result!=2 (not hook-missing) marks subnet as indeterminate."""
-        # lease4-get-all result 1 → real KeaException with result != 2.
+        # lease4-get-by-state result 1 → real KeaException with result != 2.
         reservations = [{"subnet-id": 1, "ip-address": "10.0.0.1"}]
-        kea = self._enrich(reservations, 4, {"lease4-get-all": {"result": 1, "text": "internal error"}})
+        kea = self._enrich(reservations, 4, {"lease4-get-by-state": {"result": 1, "text": "internal error"}})
         self.assertNotIn("has_active_lease", reservations[0])
-        self.assertIn("lease4-get-all", kea.commands())
+        self.assertIn("lease4-get-by-state", kea.commands())
 
     def test_requests_exception_sets_indeterminate(self):
         """requests.RequestException in worker thread marks subnet as indeterminate."""
@@ -3249,9 +3259,30 @@ class TestEnrichReservationsWithLeaseStatus(SimpleTestCase):
 
         # The stub raises a ConnectionError at the HTTP boundary.
         reservations = [{"subnet-id": 1, "ip-address": "10.0.0.1"}]
-        kea = self._enrich(reservations, 4, {"lease4-get-all": req_lib.ConnectionError("timeout")})
+        kea = self._enrich(reservations, 4, {"lease4-get-by-state": req_lib.ConnectionError("timeout")})
         self.assertNotIn("has_active_lease", reservations[0])
-        self.assertIn("lease4-get-all", kea.commands())
+        self.assertIn("lease4-get-by-state", kea.commands())
+
+    def test_large_active_subnet_is_indeterminate_without_fetching_leases(self):
+        reservations = [{"subnet-id": 1, "ip-address": "198.18.0.1"}]
+        stats = {
+            "result": 0,
+            "arguments": {
+                "result-set": {
+                    "columns": ["subnet-id", "assigned-addresses", "declined-addresses"],
+                    "rows": [[1, 2, 0]],
+                }
+            },
+        }
+        kea = self._enrich(
+            reservations,
+            4,
+            {"stat-lease4-get": stats},
+            max_unpaged_leases=1,
+        )
+
+        self.assertNotIn("has_active_lease", reservations[0])
+        self.assertEqual(kea.commands(), ["stat-lease4-get"])
 
     def test_empty_reservations_returns_early(self):
         """Empty reservations list returns immediately without any API calls."""
@@ -3268,15 +3299,15 @@ class TestEnrichReservationsWithLeaseStatus(SimpleTestCase):
         """When Kea returns result=3 (empty), has_active_lease should be False."""
         reservations = [{"subnet-id": 1, "ip-address": "10.0.0.1"}]
         kea = self._enrich(
-            reservations, 4, {"lease4-get-all": {"result": 3, "text": "no leases found", "arguments": {}}}
+            reservations, 4, {"lease4-get-by-state": {"result": 3, "text": "no leases found", "arguments": {}}}
         )
         self.assertFalse(reservations[0]["has_active_lease"])
-        self.assertIn("lease4-get-all", kea.commands())
+        self.assertIn("lease4-get-by-state", kea.commands())
 
     def test_arguments_none_sets_no_active_lease(self):
         """When Kea returns arguments=null, has_active_lease should be left unset (indeterminate state)."""
         reservations = [{"subnet-id": 1, "ip-address": "10.0.0.1"}]
-        self._enrich(reservations, 4, {"lease4-get-all": {"result": 0, "arguments": None}})
+        self._enrich(reservations, 4, {"lease4-get-by-state": {"result": 0, "arguments": None}})
         self.assertNotIn("has_active_lease", reservations[0])
 
     def test_v6_enrichment_checks_ip_addresses_list(self):
@@ -3285,10 +3316,10 @@ class TestEnrichReservationsWithLeaseStatus(SimpleTestCase):
         kea = self._enrich(
             reservations,
             6,
-            {"lease6-get-all": {"result": 0, "arguments": {"leases": [{"ip-address": "2001:db8::100"}]}}},
+            {"lease6-get-by-state": {"result": 0, "arguments": {"leases": [{"ip-address": "2001:db8::100"}]}}},
         )
         self.assertTrue(reservations[0]["has_active_lease"])
-        self.assertIn("lease6-get-all", kea.commands())
+        self.assertIn("lease6-get-by-state", kea.commands())
 
 
 # ─────────────────────────────────────────────────────────────────────────────

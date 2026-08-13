@@ -73,6 +73,8 @@ def _dual_url_stub():
             "reservation-get-page": {"result": 3},
             "lease4-get-all": {"result": 0, "arguments": {"leases": []}},
             "lease6-get-all": {"result": 0, "arguments": {"leases": []}},
+            "lease4-get-by-state": {"result": 0, "arguments": {"leases": []}},
+            "lease6-get-by-state": {"result": 0, "arguments": {"leases": []}},
         }
     )
 

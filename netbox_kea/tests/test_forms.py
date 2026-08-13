@@ -90,18 +90,18 @@ class TestLeases4SearchFormValidation(SimpleTestCase):
         form = Leases4SearchForm(data={"by": "ip", "q": ""})
         self.assertFalse(form.is_valid())
 
-    def test_page_requires_subnet_by(self):
+    def test_page_requires_all_leases_search(self):
         form = Leases4SearchForm(data={"by": "ip", "q": "192.168.1.1", "page": "192.168.1.2"})
         self.assertFalse(form.is_valid())
         self.assertIn("page", form.errors)
 
-    def test_valid_page_with_subnet(self):
-        form = Leases4SearchForm(data={"by": "subnet", "q": "192.168.1.0/24", "page": "192.168.1.5"})
+    def test_valid_page_with_all_leases_search(self):
+        form = Leases4SearchForm(data={"by": "", "q": "", "page": "192.168.1.5"})
         self.assertTrue(form.is_valid(), form.errors)
         self.assertEqual(form.cleaned_data["page"], "192.168.1.5")
 
-    def test_page_not_in_subnet_fails(self):
-        form = Leases4SearchForm(data={"by": "subnet", "q": "192.168.1.0/24", "page": "10.0.0.1"})
+    def test_invalid_page_address_fails(self):
+        form = Leases4SearchForm(data={"by": "", "q": "", "page": "not-an-address"})
         self.assertFalse(form.is_valid())
         self.assertIn("page", form.errors)
 
@@ -1089,3 +1089,8 @@ class TestLeasesSearchFormSubnetCombobox(SimpleTestCase):
         form = Leases4SearchForm(data={"by": "subnet_id", "q": "3"})
         self.assertTrue(form.is_valid(), form.errors)
         self.assertEqual(form.cleaned_data["q"], 3)
+
+    def test_subnet_search_rejects_a_page_cursor(self):
+        form = Leases4SearchForm(data={"by": "subnet", "q": "192.168.1.0/24", "page": "192.168.1.10"})
+        self.assertFalse(form.is_valid())
+        self.assertIn("page", form.errors)

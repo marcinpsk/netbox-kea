@@ -179,15 +179,16 @@ def _subnet_get(
 
 
 def _leases_per_subnet(leases_by_subnet: dict[Any, list[dict[str, Any]]]):
-    """A ``lease{v}-get-all`` responder that answers only for the subnets it was asked about.
+    """A Subnet lease responder that answers only for the Subnet it was asked about.
 
-    Kea scopes ``lease{v}-get-all`` to ``arguments.subnets``, so a stub returning the same
-    leases whatever was requested cannot show whether the caller keeps per-subnet state.
+    Kea scopes ``get-all`` with ``subnets`` and ``get-by-state`` with ``subnet-id``.
+    A stub that always returns the same leases cannot show whether the caller keeps per-Subnet state.
     Subnets with no leases get Kea's empty-result code 3.
     """
 
     def _respond(body: dict[str, Any]) -> dict[str, Any]:
-        requested = body.get("arguments", {}).get("subnets") or []
+        arguments = body.get("arguments", {})
+        requested = arguments.get("subnets") or [arguments.get("subnet-id")]
         leases = [lease for sid in requested for lease in leases_by_subnet.get(sid, [])]
         if not leases:
             return {"result": 3}

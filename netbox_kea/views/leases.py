@@ -1,5 +1,4 @@
 import concurrent.futures
-import ipaddress
 import logging
 import uuid
 from abc import ABCMeta
@@ -16,15 +15,19 @@ from django.http.request import HttpRequest
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.views import View
-from netaddr import IPNetwork
 from netbox.tables import BaseTable
 from netbox.views import generic
-from utilities.exceptions import AbortRequest
 from utilities.paginator import EnhancedPaginator, get_paginate_count
 from utilities.views import GetReturnURLMixin, register_model_view
 
 from .. import constants, forms, tables
-from ..kea import KeaClient, KeaException, iter_reservations
+from ..kea import (
+    KeaClient,
+    KeaException,
+    LeaseQueryGuardError,
+    iter_reservations,
+    lease_query_guard_message,
+)
 from ..models import Server
 from ..signals import lease_added, leases_deleted
 from ..sync import sync_lease_to_netbox
@@ -144,24 +147,26 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
         return self.form(data, **kwargs)
 
     def get_leases_page(
-        self, client: KeaClient, subnet: IPNetwork | None, page: str | None, per_page: int
+        self, client: KeaClient, page: str | None, per_page: int
     ) -> tuple[list[dict[str, Any]], str | None]:
         """Fetch and format one validated lease page."""
-        network = ipaddress.ip_network(str(subnet.cidr)) if subnet is not None else None
         result = client.lease_get_page(
             self.dhcp_version,
             limit=per_page,
             cursor=page or None,
-            subnet=network,
         )
         return format_leases(result.leases), result.next_cursor
 
-    def get_leases(self, client: KeaClient, q: Any, by: str) -> list[dict[str, Any]]:
+    def get_leases(
+        self,
+        client: KeaClient,
+        q: Any,
+        by: str,
+        *,
+        state: int | None = None,
+    ) -> list[dict[str, Any]]:
         """Query and format leases matching *q* by search attribute *by*."""
-        try:
-            leases = client.lease_search(self.dhcp_version, by, q)
-        except ValueError as exc:
-            raise AbortRequest(f"Invalid lease search: {exc}") from exc
+        leases = client.lease_search(self.dhcp_version, by, q, state=state)
         return format_leases(leases)
 
     def get_extra_context(self, request: HttpRequest, instance: Server) -> dict[str, Any]:
@@ -210,19 +215,11 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
             messages.error(request, "Failed to connect to Kea: see server logs.")
             return redirect(request.path)
         try:
-            if by == constants.BY_SUBNET:
-                leases = []
-                page: str | None = ""  # start from the beginning
-                while page is not None:
-                    page_leases, page = self.get_leases_page(
-                        client,
-                        q,
-                        page,
-                        per_page=get_paginate_count(request),
-                    )
-                    leases += page_leases
-            else:
-                leases = self.get_leases(client, q, by)
+            state_in_kea = state_filter if by in (constants.BY_SUBNET, constants.BY_SUBNET_ID) else None
+            leases = self.get_leases(client, str(q.cidr) if by == constants.BY_SUBNET else q, by, state=state_in_kea)
+        except LeaseQueryGuardError as exc:
+            messages.warning(request, lease_query_guard_message(exc, state_filter))
+            return redirect(request.path)
         except KeaException as exc:
             logger.exception("Failed to fetch leases for export on server %s", instance.pk)
             messages.error(request, kea_error_hint(exc))
@@ -236,7 +233,7 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
             messages.error(request, "Failed to fetch leases for export; see server logs.")
             return redirect(request.path)
 
-        if state_filter is not None:
+        if state_filter is not None and by not in (constants.BY_SUBNET, constants.BY_SUBNET_ID):
             leases = [ls for ls in leases if ls.get("state") == state_filter]
 
         table = self.get_table(leases, request)
@@ -304,18 +301,9 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
             q = form.cleaned_data["q"]
             state_filter: int | None = form.cleaned_data.get("state")
             client = instance.get_client(version=self.dhcp_version)
-            if by == "subnet":
+            if by == "":
                 leases, next_page = self.get_leases_page(
                     client,
-                    q,
-                    form.cleaned_data["page"],
-                    per_page=get_paginate_count(request),
-                )
-                paginate = True
-            elif by == "":
-                leases, next_page = self.get_leases_page(
-                    client,
-                    None,
                     form.cleaned_data["page"],
                     per_page=get_paginate_count(request),
                 )
@@ -323,10 +311,16 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
             else:
                 paginate = False
                 next_page = None
-                leases = self.get_leases(client, q, by)
+                state_in_kea = state_filter if by in (constants.BY_SUBNET, constants.BY_SUBNET_ID) else None
+                leases = self.get_leases(
+                    client,
+                    str(q.cidr) if by == constants.BY_SUBNET else q,
+                    by,
+                    state=state_in_kea,
+                )
 
             # Apply optional state filter (client-side, after fetch).
-            if state_filter is not None:
+            if state_filter is not None and by not in (constants.BY_SUBNET, constants.BY_SUBNET_ID):
                 leases = [ls for ls in leases if ls.get("state") == state_filter]
 
             can_delete = request.user.has_perm(
@@ -378,6 +372,20 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
             # that so the address bar always shows the clean URL.
             response["HX-Push-Url"] = stripped_return_url
             return response
+        except LeaseQueryGuardError as exc:
+            logger.info("Rejected unsafe Subnet lease query on server %s: %s", instance.pk, exc)
+            form.add_error("state", lease_query_guard_message(exc, form.cleaned_data.get("state")))
+            table = self.get_table([], request)
+            return render(
+                request,
+                "netbox_kea/server_dhcp_leases_htmx.html",
+                {
+                    "is_embedded": False,
+                    "form": form,
+                    "table": table,
+                    "paginate": False,
+                },
+            )
         except (KeaException, requests.RequestException, RuntimeError, ValueError):
             error_id = str(uuid.uuid4())
             logger.exception("HTMX leases handler error [%s]", error_id)

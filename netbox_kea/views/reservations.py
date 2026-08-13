@@ -17,7 +17,7 @@ from netbox.views import generic
 from utilities.views import register_model_view
 
 from .. import constants, forms, tables
-from ..kea import KeaClient, KeaException, PartialPersistError, iter_reservations
+from ..kea import KeaClient, KeaException, LeaseQueryGuardError, PartialPersistError, iter_reservations
 from ..models import Server
 from ..signals import reservation_created, reservation_deleted, reservation_updated
 from ..sync import sync_reservation_to_netbox
@@ -460,7 +460,7 @@ def _enrich_reservations_with_lease_status(client: "KeaClient", reservations: li
         """Return (lease IPs, client identifiers), None if the lease_cmds hook is not loaded, or False on error."""
         with client.clone() as worker_client:  # requests.Session is not thread-safe
             try:
-                leases = worker_client.lease_search(version, constants.BY_SUBNET_ID, sid)
+                leases = worker_client.lease_search(version, constants.BY_SUBNET_ID, sid, state=0)
                 identifiers: set[str] = set()
                 for lease in leases:
                     identifiers |= _lease_identifiers(lease, version)
@@ -470,6 +470,9 @@ def _enrich_reservations_with_lease_status(client: "KeaClient", reservations: li
                     return None  # hook not loaded
                 logger.debug("lease fetch failed for subnet %s (KeaException result != 2): %s", sid, exc)
                 return False  # error sentinel — state is indeterminate
+            except LeaseQueryGuardError:
+                logger.info("Skipped unsafe lease enrichment query for Subnet %s", sid)
+                return False
             except (requests.RequestException, RuntimeError, ValueError):
                 logger.debug("lease fetch failed for subnet %s (unexpected error)", sid)
                 return False  # error sentinel

@@ -31,6 +31,31 @@ def _get_kea_timeout(default: int = 30) -> int:
         return default
 
 
+def _get_max_unpaged_leases(default: int = 1000) -> int | None:
+    """Return the Subnet lease-query guard limit, or ``None`` when disabled."""
+    plugins_config = getattr(settings, "PLUGINS_CONFIG", {})
+    if not isinstance(plugins_config, dict):
+        return default
+    plugin_config = plugins_config.get("netbox_kea") or {}
+    if not isinstance(plugin_config, dict):
+        return default
+    raw = plugin_config.get("lease_query_max_unpaged_leases", default)
+    if isinstance(raw, bool):
+        return default
+    if isinstance(raw, int):
+        value = raw
+    elif isinstance(raw, str):
+        try:
+            value = int(raw)
+        except ValueError:
+            return default
+    else:
+        return default
+    if value == 0:
+        return None
+    return value if value > 0 else default
+
+
 class Server(JobsMixin, NetBoxModel):
     """A Kea DHCP server instance managed through the Kea Control API."""
 
@@ -242,6 +267,7 @@ class Server(JobsMixin, NetBoxModel):
             timeout=_get_kea_timeout(),
             persist_config=self.persist_config,
             send_service=self.has_control_agent,
+            max_unpaged_leases=_get_max_unpaged_leases(),
         )
 
     def clean(self) -> None:

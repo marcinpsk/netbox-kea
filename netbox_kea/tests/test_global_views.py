@@ -30,7 +30,7 @@ run concurrently) are:
 * dashboard: none — the overview never calls Kea.
 * status badge: ``version-get`` per enabled protocol (Online iff it doesn't raise).
 * reservations: ``reservation-get-page`` (drained via ``iter_reservations``) then,
-  when any reservations are found, ``lease{v}-get-all`` per unique subnet for the
+  when any reservations are found, ``lease{v}-get-by-state`` per unique subnet for the
   active-lease badge (NetBox IPAM badges hit the DB, not Kea).
 * leases (q + by): ``lease{v}-get`` (by IP) or ``lease{v}-get-by-<field>`` then,
   per lease, ``reservation-get`` (by IP, then by MAC) for the reservation badge.
@@ -355,7 +355,7 @@ class TestCombinedReservations4View(_CombinedViewBase):
     def test_queries_all_v4_servers(self):
         """Without a server filter, every dhcp4-enabled server is queried."""
         with stub_kea(
-            {"reservation-get-page": _res_page([dict(_MOCK_RESERVATION_V4)]), "lease4-get-all": _LEASE_NONE}
+            {"reservation-get-page": _res_page([dict(_MOCK_RESERVATION_V4)]), "lease4-get-by-state": _LEASE_NONE}
         ) as kea:
             url = reverse("plugins:netbox_kea:combined_reservations4")
             self.client.get(url)
@@ -371,7 +371,9 @@ class TestCombinedReservations4View(_CombinedViewBase):
 
     def test_results_include_server_name(self):
         """Each row in the merged table must carry the originating server name."""
-        with stub_kea({"reservation-get-page": _res_page([dict(_MOCK_RESERVATION_V4)]), "lease4-get-all": _LEASE_NONE}):
+        with stub_kea(
+            {"reservation-get-page": _res_page([dict(_MOCK_RESERVATION_V4)]), "lease4-get-by-state": _LEASE_NONE}
+        ):
             url = reverse("plugins:netbox_kea:combined_reservations4") + f"?server={self.v4_server.pk}"
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
@@ -401,7 +403,9 @@ class TestCombinedReservations4View(_CombinedViewBase):
 
     def test_export_returns_csv(self):
         """?export=table returns a CSV download of the v4 reservations table."""
-        with stub_kea({"reservation-get-page": _res_page([dict(_MOCK_RESERVATION_V4)]), "lease4-get-all": _LEASE_NONE}):
+        with stub_kea(
+            {"reservation-get-page": _res_page([dict(_MOCK_RESERVATION_V4)]), "lease4-get-by-state": _LEASE_NONE}
+        ):
             url = reverse("plugins:netbox_kea:combined_reservations4") + f"?server={self.v4_server.pk}&export=table"
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
@@ -420,7 +424,9 @@ class TestCombinedReservations4View(_CombinedViewBase):
         rec_nomatch = dict(_MOCK_RESERVATION_V4)
         rec_nomatch["hostname"] = "other-host"
         rec_nomatch["ip-address"] = "10.0.0.200"
-        with stub_kea({"reservation-get-page": _res_page([rec_match, rec_nomatch]), "lease4-get-all": _LEASE_NONE}):
+        with stub_kea(
+            {"reservation-get-page": _res_page([rec_match, rec_nomatch]), "lease4-get-by-state": _LEASE_NONE}
+        ):
             url = reverse("plugins:netbox_kea:combined_reservations4") + f"?server={self.v4_server.pk}&q=host-v4"
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
@@ -433,7 +439,7 @@ class TestCombinedReservations4View(_CombinedViewBase):
         rec2 = dict(_MOCK_RESERVATION_V4)
         rec2["ip-address"] = "10.0.0.200"
         rec2["hostname"] = "other"
-        with stub_kea({"reservation-get-page": _res_page([rec, rec2]), "lease4-get-all": _LEASE_NONE}):
+        with stub_kea({"reservation-get-page": _res_page([rec, rec2]), "lease4-get-by-state": _LEASE_NONE}):
             url = reverse("plugins:netbox_kea:combined_reservations4") + f"?server={self.v4_server.pk}&q=10.0.0.100"
             response = self.client.get(url)
         self.assertContains(response, "10.0.0.100")
@@ -445,7 +451,7 @@ class TestCombinedReservations4View(_CombinedViewBase):
         rec2 = dict(_MOCK_RESERVATION_V4)
         rec2["subnet-id"] = 2
         rec2["ip-address"] = "10.0.0.200"
-        with stub_kea({"reservation-get-page": _res_page([rec1, rec2]), "lease4-get-all": _LEASE_NONE}):
+        with stub_kea({"reservation-get-page": _res_page([rec1, rec2]), "lease4-get-by-state": _LEASE_NONE}):
             url = reverse("plugins:netbox_kea:combined_reservations4") + f"?server={self.v4_server.pk}&subnet_id=2"
             response = self.client.get(url)
         self.assertNotContains(response, "10.0.0.100")
@@ -453,7 +459,9 @@ class TestCombinedReservations4View(_CombinedViewBase):
 
     def test_search_no_match_returns_empty_table(self):
         """?q=zzz with no matching records renders an empty table (no 500)."""
-        with stub_kea({"reservation-get-page": _res_page([dict(_MOCK_RESERVATION_V4)]), "lease4-get-all": _LEASE_NONE}):
+        with stub_kea(
+            {"reservation-get-page": _res_page([dict(_MOCK_RESERVATION_V4)]), "lease4-get-by-state": _LEASE_NONE}
+        ):
             url = reverse("plugins:netbox_kea:combined_reservations4") + f"?server={self.v4_server.pk}&q=zzz-no-match"
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
@@ -483,7 +491,7 @@ class TestCombinedReservations6View(_CombinedViewBase):
 
     def test_queries_all_v6_servers(self):
         with stub_kea(
-            {"reservation-get-page": _res_page([dict(_MOCK_RESERVATION_V6)]), "lease6-get-all": _LEASE_NONE}
+            {"reservation-get-page": _res_page([dict(_MOCK_RESERVATION_V6)]), "lease6-get-by-state": _LEASE_NONE}
         ) as kea:
             url = reverse("plugins:netbox_kea:combined_reservations6")
             self.client.get(url)
@@ -503,7 +511,9 @@ class TestCombinedReservations6View(_CombinedViewBase):
 
     def test_export_returns_csv(self):
         """?export=table returns a CSV download of the v6 reservations table."""
-        with stub_kea({"reservation-get-page": _res_page([dict(_MOCK_RESERVATION_V6)]), "lease6-get-all": _LEASE_NONE}):
+        with stub_kea(
+            {"reservation-get-page": _res_page([dict(_MOCK_RESERVATION_V6)]), "lease6-get-by-state": _LEASE_NONE}
+        ):
             url = reverse("plugins:netbox_kea:combined_reservations6") + f"?server={self.v6_server.pk}&export=table"
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
@@ -525,7 +535,9 @@ class TestCombinedReservations6View(_CombinedViewBase):
             "ip-addresses": ["2001:db8::2"],
             "hostname": "other-v6",
         }
-        with stub_kea({"reservation-get-page": _res_page([rec_match, rec_nomatch]), "lease6-get-all": _LEASE_NONE}):
+        with stub_kea(
+            {"reservation-get-page": _res_page([rec_match, rec_nomatch]), "lease6-get-by-state": _LEASE_NONE}
+        ):
             url = reverse("plugins:netbox_kea:combined_reservations6") + f"?server={self.v6_server.pk}&q=host-v6"
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
@@ -541,7 +553,7 @@ class TestCombinedReservations6View(_CombinedViewBase):
             "ip-addresses": ["2001:db8::99"],
             "hostname": "other",
         }
-        with stub_kea({"reservation-get-page": _res_page([rec, rec2]), "lease6-get-all": _LEASE_NONE}):
+        with stub_kea({"reservation-get-page": _res_page([rec, rec2]), "lease6-get-by-state": _LEASE_NONE}):
             url = reverse("plugins:netbox_kea:combined_reservations6") + f"?server={self.v6_server.pk}&q=00:01:aa:bb"
             response = self.client.get(url)
         self.assertContains(response, "00:01:aa:bb")
@@ -974,7 +986,7 @@ class TestCombinedReservations4Enrichment(_CombinedViewBase):
         with stub_kea(
             {
                 "reservation-get-page": _res_page([dict(_MOCK_RESERVATION_ENRICHED)]),
-                "lease4-get-all": _leases([{"ip-address": "10.20.0.5"}]),
+                "lease4-get-by-state": _leases([{"ip-address": "10.20.0.5"}]),
             }
         ):
             response = self.client.get(self._url())
@@ -984,7 +996,7 @@ class TestCombinedReservations4Enrichment(_CombinedViewBase):
     def test_no_lease_badge_when_no_active_lease(self):
         """A reservation without active lease must show 'No Lease' badge."""
         with stub_kea(
-            {"reservation-get-page": _res_page([dict(_MOCK_RESERVATION_ENRICHED)]), "lease4-get-all": _leases([])}
+            {"reservation-get-page": _res_page([dict(_MOCK_RESERVATION_ENRICHED)]), "lease4-get-by-state": _leases([])}
         ):
             response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
@@ -1001,7 +1013,7 @@ class TestCombinedReservations4Enrichment(_CombinedViewBase):
         """Reservation IP in NetBox IPAM → 'Synced' link in combined table."""
         IPAddress.objects.create(address="10.20.0.5/32")
         with stub_kea(
-            {"reservation-get-page": _res_page([dict(_MOCK_RESERVATION_ENRICHED)]), "lease4-get-all": _leases([])}
+            {"reservation-get-page": _res_page([dict(_MOCK_RESERVATION_ENRICHED)]), "lease4-get-by-state": _leases([])}
         ):
             response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
@@ -1010,7 +1022,7 @@ class TestCombinedReservations4Enrichment(_CombinedViewBase):
     def test_edit_action_links_use_server_pk(self):
         """Each combined reservation row must have an edit link pointing to the correct server."""
         with stub_kea(
-            {"reservation-get-page": _res_page([dict(_MOCK_RESERVATION_ENRICHED)]), "lease4-get-all": _leases([])}
+            {"reservation-get-page": _res_page([dict(_MOCK_RESERVATION_ENRICHED)]), "lease4-get-by-state": _leases([])}
         ):
             response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
@@ -1095,7 +1107,7 @@ class TestCombinedReservations6Enrichment(_CombinedViewBase):
         with stub_kea(
             {
                 "reservation-get-page": _res_page([dict(_MOCK_RESERVATION_V6_ENRICHED)]),
-                "lease6-get-all": _leases([{"ip-address": "2001:db8::5"}]),
+                "lease6-get-by-state": _leases([{"ip-address": "2001:db8::5"}]),
             }
         ):
             response = self.client.get(self._url())
@@ -1107,7 +1119,7 @@ class TestCombinedReservations6Enrichment(_CombinedViewBase):
         with stub_kea(
             {
                 "reservation-get-page": _res_page([dict(_MOCK_RESERVATION_V6_ENRICHED)]),
-                "lease6-get-all": _leases([]),
+                "lease6-get-by-state": _leases([]),
             }
         ):
             response = self.client.get(self._url())
@@ -1119,7 +1131,7 @@ class TestCombinedReservations6Enrichment(_CombinedViewBase):
         with stub_kea(
             {
                 "reservation-get-page": _res_page([dict(_MOCK_RESERVATION_V6_ENRICHED)]),
-                "lease6-get-all": _leases([]),
+                "lease6-get-by-state": _leases([]),
             }
         ):
             response = self.client.get(self._url())

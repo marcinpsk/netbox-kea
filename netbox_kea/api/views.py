@@ -7,11 +7,26 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 
 from .. import constants, filtersets, models
-from ..kea import KeaClient, KeaException, iter_reservations
+from ..kea import KeaClient, KeaException, LeaseQueryGuardError, iter_reservations, lease_query_guard_message
 from ..utilities import format_leases
 from .serializers import ServerSerializer
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_subnet_lease_state(raw_state, selector) -> tuple[int | None, str | None]:
+    """Return a safe Subnet lease state and an optional parameter error."""
+    if raw_state in (None, ""):
+        return None, None
+    if selector != constants.BY_SUBNET_ID:
+        return None, "state requires subnet_id as the selected filter."
+    try:
+        state = int(raw_state)
+    except (TypeError, ValueError):
+        return None, "A Subnet query supports only the Active or Declined state."
+    if state not in (0, 1):
+        return None, "A Subnet query supports only the Active or Declined state."
+    return state, None
 
 
 class ServerViewSet(NetBoxModelViewSet):
@@ -34,6 +49,7 @@ class ServerViewSet(NetBoxModelViewSet):
         - ``hw_address``: lookup by MAC address (requires lease_cmds hook)
         - ``hostname``: lookup by hostname (requires lease_cmds hook)
         - ``subnet_id``: lookup all leases in a subnet (requires lease_cmds hook)
+        - ``state``: narrow a subnet lookup to Active (0) or Declined (1)
         """
         return self._lease_search(request, version=4)
 
@@ -46,6 +62,7 @@ class ServerViewSet(NetBoxModelViewSet):
         - ``duid``: lookup by DUID (requires lease_cmds hook)
         - ``hostname``: lookup by hostname (requires lease_cmds hook)
         - ``subnet_id``: lookup all leases in a subnet (requires lease_cmds hook)
+        - ``state``: narrow a subnet lookup to Active (0) or Declined (1)
         """
         return self._lease_search(request, version=6)
 
@@ -58,6 +75,7 @@ class ServerViewSet(NetBoxModelViewSet):
         hw_address = params.get("hw_address")
         hostname = params.get("hostname")
         subnet_id = params.get("subnet_id")
+        raw_state = params.get("state")
         duid = params.get("duid")  # v6 only
 
         if not any([ip_address, hw_address, hostname, subnet_id, duid]):
@@ -92,10 +110,19 @@ class ServerViewSet(NetBoxModelViewSet):
             (constants.BY_SUBNET_ID, subnet_id),
         )
         selector, value = next((query for query in queries if query[1]), (None, None))
+        lease_state, state_error = _parse_subnet_lease_state(raw_state, selector)
+        if state_error is not None:
+            return Response({"detail": state_error}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
             client = server.get_client(version=version)
-            leases = client.lease_search(version, selector, value)
+            leases = client.lease_search(version, selector, value, state=lease_state)
+        except LeaseQueryGuardError as exc:
+            logger.info("Rejected unsafe Subnet lease API query on server %s", server.name)
+            return Response(
+                {"detail": lease_query_guard_message(exc, lease_state)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         except (requests.ConnectionError, requests.Timeout):
             logger.exception("Kea connection error on server %s", server.name)
             return Response({"detail": "Could not connect to Kea server."}, status=status.HTTP_502_BAD_GATEWAY)

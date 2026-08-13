@@ -13,7 +13,7 @@ from django.test import SimpleTestCase, TestCase, override_settings
 from netbox.models import NetBoxModel
 
 from netbox_kea.kea import KeaClient
-from netbox_kea.models import Server, SyncConfig, _get_kea_timeout
+from netbox_kea.models import Server, SyncConfig, _get_kea_timeout, _get_max_unpaged_leases
 from netbox_kea.tests.kea_stub import stub_kea
 from netbox_kea.tests.utils import _make_db_server
 
@@ -120,6 +120,16 @@ class TestServerGetClient(SimpleTestCase):
         server = _make_server()
         client = server.get_client()
         self.assertEqual(client.timeout, 5)
+
+    @override_settings(PLUGINS_CONFIG={"netbox_kea": {"lease_query_max_unpaged_leases": 250}})
+    def test_get_client_uses_configured_unpaged_lease_limit(self):
+        client = _make_server().get_client()
+        self.assertEqual(client.max_unpaged_leases, 250)
+
+    @override_settings(PLUGINS_CONFIG={"netbox_kea": {"lease_query_max_unpaged_leases": 0}})
+    def test_get_client_can_explicitly_disable_unpaged_lease_guard(self):
+        client = _make_server().get_client()
+        self.assertIsNone(client.max_unpaged_leases)
 
     @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
     def test_v4_uses_dhcp4_credentials_when_set(self):
@@ -733,3 +743,27 @@ class TestGetKeaTimeout(SimpleTestCase):
     def test_custom_default(self):
         with self.settings(PLUGINS_CONFIG={}):
             self.assertEqual(_get_kea_timeout(default=60), 60)
+
+
+class TestGetMaxUnpagedLeases(SimpleTestCase):
+    """Tests for the unpaged Subnet lease-query safety setting."""
+
+    @override_settings(PLUGINS_CONFIG={"netbox_kea": {"lease_query_max_unpaged_leases": "250"}})
+    def test_accepts_a_numeric_string(self):
+        self.assertEqual(_get_max_unpaged_leases(), 250)
+
+    @override_settings(PLUGINS_CONFIG={"netbox_kea": {"lease_query_max_unpaged_leases": 0}})
+    def test_zero_disables_the_guard(self):
+        self.assertIsNone(_get_max_unpaged_leases())
+
+    @override_settings(PLUGINS_CONFIG={"netbox_kea": {"lease_query_max_unpaged_leases": -1}})
+    def test_negative_value_uses_the_default(self):
+        self.assertEqual(_get_max_unpaged_leases(), 1000)
+
+    @override_settings(PLUGINS_CONFIG={"netbox_kea": {"lease_query_max_unpaged_leases": True}})
+    def test_boolean_uses_the_default(self):
+        self.assertEqual(_get_max_unpaged_leases(), 1000)
+
+    @override_settings(PLUGINS_CONFIG={"netbox_kea": {"lease_query_max_unpaged_leases": 2.5}})
+    def test_fractional_value_uses_the_default(self):
+        self.assertEqual(_get_max_unpaged_leases(), 1000)
