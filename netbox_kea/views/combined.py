@@ -1,5 +1,4 @@
 import concurrent.futures
-import ipaddress
 import logging
 from typing import Any
 from urllib.parse import urlencode as _urlencode
@@ -14,6 +13,7 @@ from django.views import View
 from .. import constants, forms, tables
 from ..kea import KeaException, iter_reservations
 from ..models import Server
+from ..subnet_catalogue import ConfiguredSubnet, SubnetOption, VerifiedSubnet, display
 from ..utilities import (
     _enrich_reservation_sort_key,
     export_table,
@@ -232,50 +232,64 @@ def _filter_subnets(subnets: list[dict[str, Any]], q: str, subnet_id: int | None
     return result
 
 
-def _fetch_subnets_from_server(server: "Server", version: int) -> list[dict[str, Any]]:
-    """Fetch all subnets from a single server's config-get response and tag with server info."""
+def _option_payload(option: SubnetOption) -> dict[str, Any]:
+    return {
+        "data": option.data,
+        **{
+            key: value
+            for key, value in (
+                ("code", option.code),
+                ("name", option.name),
+                ("space", option.space),
+                ("csv-format", option.csv_format),
+                ("always-send", option.always_send),
+                ("never-send", option.never_send),
+            )
+            if value is not None
+        },
+    }
+
+
+def _catalogue_subnet_row(
+    subnet: VerifiedSubnet | ConfiguredSubnet,
+    server: Server,
+    version: int,
+) -> dict[str, Any]:
     from ..utilities import format_option_data
 
-    client = server.get_client(version=version)
-    config = client.command("config-get", service=[f"dhcp{version}"])
-    entry = _require_first_entry(config, f"config-get for dhcp{version}")
-    if entry["arguments"] is None:
-        raise RuntimeError(f"Unexpected None arguments from config-get for dhcp{version}")
-    dhcp_key = f"Dhcp{version}"
-    subnet_key = f"subnet{version}"
-    args = entry["arguments"].get(dhcp_key, {})
+    identity = subnet.identity if isinstance(subnet, VerifiedSubnet) else subnet.candidate_identity
+    configuration = subnet.configuration
+    row = {
+        "id": identity.subnet_id,
+        "subnet": identity.cidr,
+        "_subnet_sort_key": int(identity.network.network_address),
+        "dhcp_version": version,
+        "server_pk": server.pk,
+        "server_name": server.name,
+        "identity_verified": isinstance(subnet, VerifiedSubnet),
+        "options": format_option_data(
+            [_option_payload(option) for option in configuration.options] if configuration else [],
+            version=version,
+        ),
+        "pools": [pool.range for pool in configuration.pools] if configuration else [],
+    }
+    if subnet.shared_network is not None:
+        row["shared_network"] = subnet.shared_network.name
+    return row
+
+
+def _fetch_subnets_from_server(server: "Server", version: int) -> list[dict[str, Any]]:
+    """Fetch safe Subnet Catalogue facts for one server and tag them for the combined table."""
+    snapshot = display(server, version)
+    if snapshot.unavailable:
+        raise RuntimeError(f"Subnet Catalogue is unavailable for DHCPv{version}")
     result = [
-        {
-            "id": s["id"],
-            "subnet": s["subnet"],
-            "_subnet_sort_key": int(ipaddress.ip_network(s["subnet"], strict=False).network_address),
-            "dhcp_version": version,
-            "server_pk": server.pk,
-            "server_name": server.name,
-            "options": format_option_data(s.get("option-data", []), version=version),
-            "pools": [p.get("pool", "") for p in s.get("pools", []) if p.get("pool")],
-        }
-        for s in args.get(subnet_key, [])
-        if "id" in s and "subnet" in s
+        _catalogue_subnet_row(subnet, server, version) for subnet in (*snapshot.subnets, *snapshot.configured_subnets)
     ]
-    for sn in args.get("shared-networks", []):
-        result.extend(
-            {
-                "id": s["id"],
-                "subnet": s["subnet"],
-                "_subnet_sort_key": int(ipaddress.ip_network(s["subnet"], strict=False).network_address),
-                "shared_network": sn["name"],
-                "dhcp_version": version,
-                "server_pk": server.pk,
-                "server_name": server.name,
-                "options": format_option_data(s.get("option-data", []), version=version),
-                "pools": [p.get("pool", "") for p in s.get("pools", []) if p.get("pool")],
-            }
-            for s in sn.get(subnet_key, [])
-            if "id" in s and "subnet" in s
-        )
+
     # Enrich with utilisation stats when stat_cmds hook is available.
     try:
+        client = server.get_client(version=version)
         stat_resp = client.command(
             f"stat-lease{version}-get",
             service=[f"dhcp{version}"],
@@ -322,7 +336,10 @@ class _CombinedSubnetsView(_CombinedViewMixin):
             .values_list("pk", flat=True)
         )
         for subnet in all_subnets:
-            subnet.setdefault("can_change", subnet.get("server_pk") in writable_pks)
+            subnet.setdefault(
+                "can_change",
+                bool(subnet.get("identity_verified")) and subnet.get("server_pk") in writable_pks,
+            )
 
         table_cls = tables.GlobalSubnetTable4 if self.dhcp_version == 4 else tables.GlobalSubnetTable6
 

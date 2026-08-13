@@ -36,7 +36,7 @@ run concurrently) are:
   per lease, ``reservation-get`` (by IP, then by MAC) for the reservation badge.
 * leases (state only, no q): ``lease{v}-get-page`` (enumerate) + the same badge
   enrichment on the survivors.
-* subnets: ``config-get`` + ``stat-lease{v}-get`` (stats are best-effort).
+* subnets: ``subnet{v}-list`` + ``config-get`` + ``stat-lease{v}-get`` (stats are best-effort).
 * shared networks: ``config-get``.
 
 A transport failure is modelled by registering a ``requests.ConnectionError``
@@ -53,7 +53,7 @@ from netbox_kea import constants
 from netbox_kea.models import Server
 
 from .kea_stub import _res_get, _res_page, stub_kea
-from .utils import _PLUGINS_CONFIG, User, _make_db_server
+from .utils import _PLUGINS_CONFIG, User, _drop_subnet_choices_cache, _make_db_server
 
 # ---------------------------------------------------------------------------
 # Kea response fixtures
@@ -116,6 +116,16 @@ _MOCK_CONFIG_V6 = [
     }
 ]
 
+_MOCK_SUBNET_LIST_V4 = {
+    "result": 0,
+    "arguments": {"subnets": [{"id": 1, "subnet": "10.0.0.0/24", "shared-network-name": None}]},
+}
+
+_MOCK_SUBNET_LIST_V6 = {
+    "result": 0,
+    "arguments": {"subnets": [{"id": 1, "subnet": "2001:db8::/32", "shared-network-name": None}]},
+}
+
 
 # ---------------------------------------------------------------------------
 # Stub response builders (real KeaClient + HTTP-boundary stub)
@@ -143,6 +153,21 @@ _LEASE_NONE = {"result": 3}
 _STAT_EMPTY = {"result": 0, "arguments": {}}
 
 
+def _subnet_responses(version, *, config=None, subnets=None, stat=_STAT_EMPTY):
+    """Return both Catalogue source responses and the optional utilization response."""
+    if version == 4:
+        config = _MOCK_CONFIG_V4 if config is None else config
+        subnets = _MOCK_SUBNET_LIST_V4 if subnets is None else subnets
+    else:
+        config = _MOCK_CONFIG_V6 if config is None else config
+        subnets = _MOCK_SUBNET_LIST_V6 if subnets is None else subnets
+    return {
+        f"subnet{version}-list": subnets,
+        "config-get": config,
+        f"stat-lease{version}-get": stat,
+    }
+
+
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class _CombinedViewBase(TestCase):
     """Create superuser + one v4-only, one v6-only, one dual-stack server."""
@@ -157,6 +182,8 @@ class _CombinedViewBase(TestCase):
         self.v4_server = _make_db_server(name="v4-server", dhcp4=True, dhcp6=False, has_control_agent=False)
         self.v6_server = _make_db_server(name="v6-server", dhcp4=False, dhcp6=True, has_control_agent=False)
         self.dual_server = _make_db_server(name="dual-server", dhcp4=True, dhcp6=True, has_control_agent=False)
+        for server in (self.v4_server, self.v6_server, self.dual_server):
+            _drop_subnet_choices_cache(self, server)
 
 
 # ---------------------------------------------------------------------------
@@ -644,7 +671,7 @@ class TestCombinedSubnets4View(_CombinedViewBase):
     """GET /plugins/kea/combined/subnets4/ — DHCPv4 subnets across all servers."""
 
     def test_get_returns_200(self):
-        with stub_kea({"config-get": _MOCK_CONFIG_V4, "stat-lease4-get": _STAT_EMPTY}):
+        with stub_kea(_subnet_responses(4)):
             url = reverse("plugins:netbox_kea:combined_subnets4")
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
@@ -658,41 +685,46 @@ class TestCombinedSubnets4View(_CombinedViewBase):
 
     def test_queries_all_v4_servers(self):
         """Without a filter, every dhcp4-enabled server is queried for config-get."""
-        with stub_kea({"config-get": _MOCK_CONFIG_V4, "stat-lease4-get": _STAT_EMPTY}) as kea:
+        with stub_kea(_subnet_responses(4)) as kea:
             url = reverse("plugins:netbox_kea:combined_subnets4")
             self.client.get(url)
         # v4_server + dual_server → at least 2 config-get calls
         self.assertGreaterEqual(kea.commands().count("config-get"), 2)
 
     def test_server_filter_limits_queried_servers(self):
-        with stub_kea({"config-get": _MOCK_CONFIG_V4, "stat-lease4-get": _STAT_EMPTY}) as kea:
+        with stub_kea(_subnet_responses(4)) as kea:
             url = reverse("plugins:netbox_kea:combined_subnets4") + f"?server={self.v4_server.pk}"
             self.client.get(url)
-        # 1 server → config-get (subnets) then stat-lease4-get (utilisation).
-        self.assertEqual(kea.commands(), ["config-get", "stat-lease4-get"])
+        # One server reads both Catalogue sources, then fetches utilization.
+        self.assertEqual(kea.commands(), ["subnet4-list", "config-get", "stat-lease4-get"])
 
     def test_unreachable_server_returns_200_with_warning(self):
-        with stub_kea({"config-get": requests.ConnectionError("refused")}):
+        with stub_kea(
+            {
+                "subnet4-list": requests.ConnectionError("refused"),
+                "config-get": requests.ConnectionError("refused"),
+            }
+        ):
             url = reverse("plugins:netbox_kea:combined_subnets4")
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
 
     def test_results_include_server_name(self):
-        with stub_kea({"config-get": _MOCK_CONFIG_V4, "stat-lease4-get": _STAT_EMPTY}):
+        with stub_kea(_subnet_responses(4)):
             url = reverse("plugins:netbox_kea:combined_subnets4") + f"?server={self.v4_server.pk}"
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "v4-server")
 
     def test_context_active_tab(self):
-        with stub_kea({"config-get": _MOCK_CONFIG_V4, "stat-lease4-get": _STAT_EMPTY}):
+        with stub_kea(_subnet_responses(4)):
             url = reverse("plugins:netbox_kea:combined_subnets4")
             response = self.client.get(url)
         self.assertEqual(response.context["active_tab"], "subnets4")
 
     def test_export_returns_csv(self):
         """?export=table returns a CSV download of the subnet table."""
-        with stub_kea({"config-get": _MOCK_CONFIG_V4, "stat-lease4-get": _STAT_EMPTY}):
+        with stub_kea(_subnet_responses(4)):
             url = reverse("plugins:netbox_kea:combined_subnets4") + f"?server={self.v4_server.pk}&export=table"
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
@@ -700,7 +732,7 @@ class TestCombinedSubnets4View(_CombinedViewBase):
 
     def test_search_form_in_context(self):
         """Response context must contain search_form."""
-        with stub_kea({"config-get": _MOCK_CONFIG_V4, "stat-lease4-get": _STAT_EMPTY}):
+        with stub_kea(_subnet_responses(4)):
             url = reverse("plugins:netbox_kea:combined_subnets4")
             response = self.client.get(url)
         self.assertIn("search_form", response.context)
@@ -721,7 +753,16 @@ class TestCombinedSubnets4View(_CombinedViewBase):
                 },
             }
         ]
-        with stub_kea({"config-get": config_with_two_subnets, "stat-lease4-get": _STAT_EMPTY}):
+        subnet_list = {
+            "result": 0,
+            "arguments": {
+                "subnets": [
+                    {"id": 1, "subnet": "10.0.1.0/24"},
+                    {"id": 2, "subnet": "192.168.0.0/24"},
+                ]
+            },
+        }
+        with stub_kea(_subnet_responses(4, config=config_with_two_subnets, subnets=subnet_list)):
             url = reverse("plugins:netbox_kea:combined_subnets4") + f"?server={self.v4_server.pk}&q=10.0"
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
@@ -744,7 +785,16 @@ class TestCombinedSubnets4View(_CombinedViewBase):
                 },
             }
         ]
-        with stub_kea({"config-get": config_with_two_subnets, "stat-lease4-get": _STAT_EMPTY}):
+        subnet_list = {
+            "result": 0,
+            "arguments": {
+                "subnets": [
+                    {"id": 1, "subnet": "10.0.1.0/24"},
+                    {"id": 2, "subnet": "192.168.0.0/24"},
+                ]
+            },
+        }
+        with stub_kea(_subnet_responses(4, config=config_with_two_subnets, subnets=subnet_list)):
             url = reverse("plugins:netbox_kea:combined_subnets4") + f"?server={self.v4_server.pk}&subnet_id=2"
             response = self.client.get(url)
         self.assertNotContains(response, "10.0.1.0/24")
@@ -752,10 +802,34 @@ class TestCombinedSubnets4View(_CombinedViewBase):
 
     def test_search_no_match_returns_empty_table(self):
         """?q=zzz with no matching subnets renders 200 with empty table."""
-        with stub_kea({"config-get": _MOCK_CONFIG_V4, "stat-lease4-get": _STAT_EMPTY}):
+        with stub_kea(_subnet_responses(4)):
             url = reverse("plugins:netbox_kea:combined_subnets4") + f"?server={self.v4_server.pk}&q=zzz-no-match"
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
+
+    def test_configuration_only_subnet_does_not_offer_mutation_actions(self):
+        """Configuration facts remain visible but cannot authorize an edit."""
+        config = [
+            {
+                "result": 0,
+                "arguments": {
+                    "Dhcp4": {
+                        "subnet4": [{"id": 7, "subnet": "198.18.7.0/24"}],
+                        "shared-networks": [],
+                    }
+                },
+            }
+        ]
+        subnets = {"result": 2, "text": "unknown command"}
+        with stub_kea(_subnet_responses(4, config=config, subnets=subnets)):
+            url = reverse("plugins:netbox_kea:combined_subnets4") + f"?server={self.v4_server.pk}"
+            response = self.client.get(url)
+        edit_url = reverse(
+            "plugins:netbox_kea:server_subnet4_edit",
+            args=[self.v4_server.pk, 7],
+        )
+        self.assertContains(response, "198.18.7.0/24")
+        self.assertNotContains(response, edit_url)
 
 
 # ---------------------------------------------------------------------------
@@ -768,7 +842,7 @@ class TestCombinedSubnets6View(_CombinedViewBase):
     """GET /plugins/kea/combined/subnets6/ — DHCPv6 subnets across all servers."""
 
     def test_get_returns_200(self):
-        with stub_kea({"config-get": _MOCK_CONFIG_V6, "stat-lease6-get": _STAT_EMPTY}):
+        with stub_kea(_subnet_responses(6)):
             url = reverse("plugins:netbox_kea:combined_subnets6")
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
@@ -781,20 +855,25 @@ class TestCombinedSubnets6View(_CombinedViewBase):
         self.assertIn("login", response.url)
 
     def test_queries_all_v6_servers(self):
-        with stub_kea({"config-get": _MOCK_CONFIG_V6, "stat-lease6-get": _STAT_EMPTY}) as kea:
+        with stub_kea(_subnet_responses(6)) as kea:
             url = reverse("plugins:netbox_kea:combined_subnets6")
             self.client.get(url)
         self.assertGreaterEqual(kea.commands().count("config-get"), 2)
 
     def test_unreachable_server_returns_200_with_warning(self):
-        with stub_kea({"config-get": requests.ConnectionError("refused")}):
+        with stub_kea(
+            {
+                "subnet6-list": requests.ConnectionError("refused"),
+                "config-get": requests.ConnectionError("refused"),
+            }
+        ):
             url = reverse("plugins:netbox_kea:combined_subnets6")
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
 
     def test_export_returns_csv(self):
         """?export=table returns a CSV download of the v6 subnet table."""
-        with stub_kea({"config-get": _MOCK_CONFIG_V6, "stat-lease6-get": _STAT_EMPTY}):
+        with stub_kea(_subnet_responses(6)):
             url = reverse("plugins:netbox_kea:combined_subnets6") + f"?server={self.v6_server.pk}&export=table"
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
@@ -802,7 +881,7 @@ class TestCombinedSubnets6View(_CombinedViewBase):
 
     def test_search_form_in_context(self):
         """Response context must contain search_form."""
-        with stub_kea({"config-get": _MOCK_CONFIG_V6, "stat-lease6-get": _STAT_EMPTY}):
+        with stub_kea(_subnet_responses(6)):
             url = reverse("plugins:netbox_kea:combined_subnets6")
             response = self.client.get(url)
         self.assertIn("search_form", response.context)
@@ -823,7 +902,16 @@ class TestCombinedSubnets6View(_CombinedViewBase):
                 },
             }
         ]
-        with stub_kea({"config-get": config_with_two_subnets, "stat-lease6-get": _STAT_EMPTY}):
+        subnet_list = {
+            "result": 0,
+            "arguments": {
+                "subnets": [
+                    {"id": 1, "subnet": "2001:db8::/32"},
+                    {"id": 2, "subnet": "fd00::/8"},
+                ]
+            },
+        }
+        with stub_kea(_subnet_responses(6, config=config_with_two_subnets, subnets=subnet_list)):
             url = reverse("plugins:netbox_kea:combined_subnets6") + f"?server={self.v6_server.pk}&q=2001:db8"
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)

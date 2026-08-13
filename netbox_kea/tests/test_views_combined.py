@@ -67,12 +67,17 @@ class TestCombinedResponseShapeGuards(_ViewTestBase):
             with self.assertRaises(RuntimeError):
                 _fetch_all_leases_from_server(self.server, 4)
 
-    def test_subnets_empty_response_raises_runtime_error(self):
+    def test_subnets_empty_config_response_preserves_confirmed_empty_identity(self):
         from netbox_kea.views import _fetch_subnets_from_server
 
-        with stub_kea({"config-get": []}):
-            with self.assertRaises(RuntimeError):
-                _fetch_subnets_from_server(self.server, 4)
+        with stub_kea(
+            {
+                "subnet4-list": {"result": 3, "text": "no subnets"},
+                "config-get": [],
+                "stat-lease4-get": {"result": 2, "text": "unknown command"},
+            }
+        ):
+            self.assertEqual(_fetch_subnets_from_server(self.server, 4), [])
 
     def test_shared_networks_empty_response_raises_runtime_error(self):
         from netbox_kea.views import _fetch_shared_networks_from_server

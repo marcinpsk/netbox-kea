@@ -1545,10 +1545,16 @@ class TestFetchSubnetsFromServer(_ViewTestBase):
         with stub_kea(responses):
             return _fetch_subnets_from_server(self.server, version=4)
 
-    def test_null_arguments_raises(self):
-        """Null config-get arguments raises RuntimeError."""
-        with self.assertRaises(RuntimeError):
-            self._run({"config-get": {"result": 0, "arguments": None}})
+    def test_null_arguments_preserves_confirmed_empty_identity(self):
+        """Malformed config does not override a complete identity observation with no Subnets."""
+        result = self._run(
+            {
+                "subnet4-list": {"result": 3, "text": "no subnets"},
+                "config-get": {"result": 0, "arguments": None},
+                "stat-lease4-get": _STAT_ABSENT4,
+            }
+        )
+        self.assertEqual(result, [])
 
     def test_subnets_in_shared_network_included(self):
         """Subnets nested inside shared-networks are included."""
@@ -1562,7 +1568,16 @@ class TestFetchSubnetsFromServer(_ViewTestBase):
             },
         }
         # stat-lease4-get result 2 → KeaException, exactly as a missing stat_cmds hook behaves.
-        result = self._run({"config-get": config, "stat-lease4-get": _STAT_ABSENT4})
+        result = self._run(
+            {
+                "subnet4-list": {
+                    "result": 0,
+                    "arguments": {"subnets": [{"id": 10, "subnet": "192.168.0.0/24", "shared-network-name": "prod"}]},
+                },
+                "config-get": config,
+                "stat-lease4-get": _STAT_ABSENT4,
+            }
+        )
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]["subnet"], "192.168.0.0/24")
 
@@ -1572,7 +1587,16 @@ class TestFetchSubnetsFromServer(_ViewTestBase):
             "result": 0,
             "arguments": {"Dhcp4": {"subnet4": [{"id": 1, "subnet": "10.0.0.0/24"}], "shared-networks": []}},
         }
-        result = self._run({"config-get": config_resp, "stat-lease4-get": _STAT_ABSENT4})
+        result = self._run(
+            {
+                "subnet4-list": {
+                    "result": 0,
+                    "arguments": {"subnets": [{"id": 1, "subnet": "10.0.0.0/24"}]},
+                },
+                "config-get": config_resp,
+                "stat-lease4-get": _STAT_ABSENT4,
+            }
+        )
         self.assertEqual(len(result), 1)
 
     def test_stat_cmds_success_updates_subnet(self):
@@ -1590,11 +1614,57 @@ class TestFetchSubnetsFromServer(_ViewTestBase):
                 }
             },
         }
-        result = self._run({"config-get": config_resp, "stat-lease4-get": stat_resp})
+        result = self._run(
+            {
+                "subnet4-list": {
+                    "result": 0,
+                    "arguments": {"subnets": [{"id": 1, "subnet": "10.0.0.0/24"}]},
+                },
+                "config-get": config_resp,
+                "stat-lease4-get": stat_resp,
+            }
+        )
         self.assertEqual(len(result), 1)
         # stat data was merged into the subnet dict
         self.assertEqual(result[0].get("total"), 100)
         self.assertEqual(result[0].get("assigned"), 25)
+
+    def test_configuration_only_snapshot_remains_visible(self):
+        """A missing subnet_cmds hook does not hide validated configuration facts."""
+        config = {
+            "result": 0,
+            "arguments": {
+                "Dhcp4": {
+                    "subnet4": [{"id": 7, "subnet": "198.18.7.0/24", "pools": []}],
+                    "shared-networks": [],
+                }
+            },
+        }
+        result = self._run(
+            {
+                "subnet4-list": {"result": 2, "text": "unknown command"},
+                "config-get": config,
+                "stat-lease4-get": _STAT_ABSENT4,
+            }
+        )
+        self.assertEqual([(row["id"], row["subnet"]) for row in result], [(7, "198.18.7.0/24")])
+        self.assertFalse(result[0]["identity_verified"])
+
+    def test_identity_only_snapshot_remains_visible(self):
+        """A config-get failure does not hide verified Subnet identity."""
+        result = self._run(
+            {
+                "subnet4-list": {
+                    "result": 0,
+                    "arguments": {"subnets": [{"id": 8, "subnet": "198.18.8.0/24"}]},
+                },
+                "config-get": requests.ConnectionError("down"),
+                "stat-lease4-get": _STAT_ABSENT4,
+            }
+        )
+        self.assertEqual([(row["id"], row["subnet"]) for row in result], [(8, "198.18.8.0/24")])
+        self.assertTrue(result[0]["identity_verified"])
+        self.assertEqual(result[0]["pools"], [])
 
 
 # ---------------------------------------------------------------------------
