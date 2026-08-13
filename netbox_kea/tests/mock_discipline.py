@@ -318,8 +318,8 @@ class _Scanner(ast.NodeVisitor):
         for kw in node.keywords:
             if kw.arg not in _PATCH_BOUNDING_KWARGS or kw.arg == "new":
                 continue
-            # None is the default for these parameters and does not constrain the mock.
-            if isinstance(kw.value, ast.Constant) and kw.value.value is None:
+            # None is the default. False explicitly disables spec arguments.
+            if isinstance(kw.value, ast.Constant) and (kw.value.value is None or kw.value.value is False):
                 continue
             return True
 

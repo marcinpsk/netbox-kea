@@ -271,6 +271,24 @@ def test_flags_patch_with_none_spec():
     assert [h.kind for h in scan_source(src, "t.py")] == ["patch"]
 
 
+def test_flags_patch_with_false_spec_arguments():
+    """False disables patch spec arguments and still creates an unrestricted mock."""
+    for argument in ("autospec", "spec", "spec_set"):
+        src = _PATCH_IMPORT + f'\ndef test_x():\n    with patch("netbox_kea.x.y", {argument}=False):\n        pass\n'
+        assert [h.kind for h in scan_source(src, "t.py")] == ["patch"], argument
+
+
+def test_accepts_patch_with_falsy_non_boolean_spec_arguments():
+    """Falsy spec values other than False still constrain the generated mock."""
+    for argument in ("autospec", "spec", "spec_set"):
+        for value in ("0", '""'):
+            src = (
+                _PATCH_IMPORT
+                + f'\ndef test_x():\n    with patch("netbox_kea.x.y", {argument}={value}):\n        pass\n'
+            )
+            assert scan_source(src, "t.py") == [], (argument, value)
+
+
 def test_accepts_unrelated_values_named_default_as_replacements():
     """Only unittest.mock.DEFAULT asks patch() to generate a mock."""
     for replacement in ("DEFAULT", "settings.DEFAULT"):
