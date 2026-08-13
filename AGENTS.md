@@ -41,13 +41,20 @@ PostgreSQL (array/JSON fields, etc.); SQLite is not used. They do **not** need t
 Kea/integration Docker stack: every Kea HTTP call is stubbed at the transport
 boundary (see "Testing philosophy" below).
 
+Use a task-specific PostgreSQL database and a dedicated Redis host. Each xdist
+worker gets a private PostgreSQL database and private Redis task and cache
+databases. The supported maximum is eight workers. Omit `-n`, or set it to zero,
+for a serial run.
+
 ```bash
-uv run pytest                                              # run all unit tests
-uv run pytest netbox_kea/tests/test_views_leases.py -v     # single file
-uv run pytest netbox_kea/tests/test_jobs.py::TestClass::test_method -v  # single test
+TEST_DB_NAME=test_<unique-task> TEST_REDIS_HOST=<dedicated-redis> \
+  uv run --native-tls pytest -n 8 --maxschedchunk=1
+TEST_DB_NAME=test_<unique-task> TEST_REDIS_HOST=<dedicated-redis> \
+  uv run --native-tls pytest netbox_kea/tests/test_views_leases.py -v
 ```
 
-`pythonpath` is set to `/opt/netbox/netbox` and `DJANGO_SETTINGS_MODULE=netbox.settings`
+`pythonpath` is set to `/opt/netbox/netbox` and
+`DJANGO_SETTINGS_MODULE=netbox_kea.tests.isolated_settings`
 — unit tests require a NetBox installation at that path (present in the devcontainer).
 
 ### Integration tests (`tests/`, Docker required)
@@ -69,7 +76,7 @@ integration tests.
 
 ### CI
 
-- **Unit-test job**: pinned to NetBox **v4.6.4** (matches the devcontainer). Keep
+- **Unit-test job**: pinned to NetBox **v4.6.7** (matches the devcontainer). Keep
   this in lockstep with `netbox_kea/tests/query_counts.json` (see "Query-count
   baselines") — bump the pin and re-record the baselines together.
 - **Compatibility matrix**: runs the integration suite (`test_setup.sh`) against
@@ -239,7 +246,7 @@ resort, reserved for true external boundaries you cannot run locally.
 - **Query-count baselines.** The list-view mixins assert an exact SQL query count
   against `netbox_kea/tests/query_counts.json` to catch N+1 drift. Record/update with
   `UPDATE_QUERY_COUNTS=1 uv run pytest ...` (serially), then commit the file. The
-  counts are tied to the NetBox version the unit-test CI pins (v4.6.4) — bump the pin
+  counts are tied to the NetBox version the unit-test CI pins (v4.6.7) — bump the pin
   and re-record together.
 - **When fixing a bug, write the failing (red) test first**, confirm it fails against
   the unfixed code, then fix until green.
