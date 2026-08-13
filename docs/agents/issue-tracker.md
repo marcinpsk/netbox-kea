@@ -38,6 +38,7 @@ Pull requests use the same labels and states as issues:
       --jq '{number, title, body, author: .author.login, labels: [.labels[].name], comments: [.comments[].body]}'
   done
   ```
+
 - **Comment, label, or close**: Use `gh pr comment`, `gh pr edit`, or `gh pr close`.
 
 GitHub shares one number space across issues and pull requests. Resolve a bare `#42` with `gh pr view 42`, then fall back to `gh issue view 42`.
