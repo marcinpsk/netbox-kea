@@ -18,12 +18,14 @@ from netbox_kea.kea import (
     KeaException,
     LeaseCollection,
     LeasePage,
+    LeaseQueryGuardError,
     LeaseQueryNotMeasurable,
     LeaseQueryPreflightUnavailable,
     LeaseQueryTooBroad,
     PartialPersistError,
     check_response,
     iter_reservations,
+    lease_query_guard_message,
 )
 from netbox_kea.tests.kea_stub import stub_kea
 
@@ -3812,6 +3814,23 @@ class TestLeaseGetByIp(TestCase):
         self.assertIsNone(result)
 
 
+class TestLeaseQueryGuardMessage(TestCase):
+    """Tests for safe user guidance from rejected lease queries."""
+
+    def test_each_guard_failure_has_actionable_guidance(self):
+        cases = (
+            (LeaseQueryNotMeasurable(2), 2, "cannot safely measure"),
+            (LeaseQueryPreflightUnavailable(), None, "stat_cmds"),
+            (LeaseQueryTooBroad(101, 100), None, "Select the Active or Declined state"),
+            (LeaseQueryTooBroad(101, 100), 0, "exact IP or client identifier"),
+            (LeaseQueryGuardError(), None, "more specific search"),
+        )
+
+        for error, state, expected in cases:
+            with self.subTest(error=type(error).__name__, state=state):
+                self.assertIn(expected, lease_query_guard_message(error, state))
+
+
 class TestLeaseSearch(TestCase):
     """Tests for KeaClient.lease_search()."""
 
@@ -3834,6 +3853,22 @@ class TestLeaseSearch(TestCase):
             self.client.lease_search(version=4, selector="duid", value="01:02:03:04")
 
         mock_post.assert_not_called()
+
+    def test_rejects_invalid_query_parameters_before_any_request(self):
+        cases = (
+            (5, "ip", "198.18.0.10", None, "version must be 4 or 6"),
+            (4, "subnet", "", None, "non-empty CIDR"),
+            (4, "hostname", "host.example.invalid", 0, "state can only"),
+            (4, "hostname", "", None, "non-empty string"),
+            (4, "subnet_id", True, None, "positive integer"),
+            (4, "subnet_id", object(), None, "positive integer"),
+        )
+
+        for version, selector, value, state, message in cases:
+            with self.subTest(version=version, selector=selector, value=value, state=state), stub_kea({}) as kea:
+                with self.assertRaisesRegex((ValueError, LeaseQueryNotMeasurable), message):
+                    self.client.lease_search(version, selector, value, state=state)
+            self.assertEqual(kea.commands(), [])
 
     def test_hardware_address_search_returns_matching_leases(self):
         lease = {"ip-address": "198.18.0.10", "hw-address": "aa:bb:cc:dd:ee:ff"}
@@ -3971,6 +4006,43 @@ class TestLeaseSearch(TestCase):
 
         self.assertEqual(kea.commands(), ["stat-lease4-get"])
 
+    def test_non_hook_statistics_error_propagates(self):
+        with stub_kea({"stat-lease4-get": {"result": 1, "text": "database failure"}}):
+            with self.assertRaises(KeaException):
+                self.client.lease_search(4, "subnet_id", 12)
+
+    def test_malformed_statistics_are_rejected(self):
+        columns = ["subnet-id", "assigned-addresses", "declined-addresses"]
+        cases = (
+            ([], "malformed response"),
+            ({"result": 0, "arguments": {}}, "malformed statistics"),
+            (
+                {"result": 0, "arguments": {"result-set": {"columns": ["subnet-id"], "rows": [[12]]}}},
+                "omitted required statistics columns",
+            ),
+            (
+                {"result": 0, "arguments": {"result-set": {"columns": columns, "rows": [[]]}}},
+                "malformed statistics row",
+            ),
+            (
+                {"result": 0, "arguments": {"result-set": {"columns": columns, "rows": [[13, 1, 0]]}}},
+                "did not return statistics",
+            ),
+            (
+                {"result": 0, "arguments": {"result-set": {"columns": columns, "rows": [[12, True, 0]]}}},
+                "invalid lease count",
+            ),
+            (
+                {"result": 0, "arguments": {"result-set": {"columns": columns, "rows": [[12, 0, 1]]}}},
+                "inconsistent lease counts",
+            ),
+        )
+
+        for response, message in cases:
+            with self.subTest(message=message), stub_kea({"stat-lease4-get": response}):
+                with self.assertRaisesRegex(RuntimeError, message):
+                    self.client.lease_search(4, "subnet_id", 12)
+
     def test_v6_delegated_prefixes_contribute_to_the_guard(self):
         client = KeaClient(url="http://kea:8000", max_unpaged_leases=100)
         with stub_kea({"stat-lease6-get": self._subnet_stats(6, 12, assigned=0, declined=0, assigned_pds=101)}) as kea:
@@ -4041,19 +4113,20 @@ class TestLeaseSearch(TestCase):
 
     def test_malformed_configured_subnet_network_is_rejected(self):
         cases = (
-            (None, "valid CIDR"),
-            ("not-a-network", "valid CIDR"),
-            ("198.18.0.0/24", "IPv4 Subnet in Dhcp6"),
+            ("not-a-subnet-entry", "malformed Subnet entry"),
+            ({"id": 21, "subnet": None}, "valid CIDR"),
+            ({"id": 21, "subnet": "not-a-network"}, "valid CIDR"),
+            ({"id": 21, "subnet": "198.18.0.0/24"}, "IPv4 Subnet in Dhcp6"),
         )
 
-        for configured_cidr, message in cases:
+        for configured_subnet, message in cases:
             with (
-                self.subTest(configured_cidr=configured_cidr),
+                self.subTest(configured_subnet=configured_subnet),
                 stub_kea(
                     {
                         "config-get": {
                             "result": 0,
-                            "arguments": {"Dhcp6": {"subnet6": [{"id": 21, "subnet": configured_cidr}]}},
+                            "arguments": {"Dhcp6": {"subnet6": [configured_subnet]}},
                         }
                     }
                 ),
@@ -5324,6 +5397,61 @@ class TestLeaseGetPage(TestCase):
                 )
 
         mock_post.assert_not_called()
+
+    def test_rejects_invalid_page_parameters_without_request(self):
+        cases = (
+            ((5,), {"limit": 10}, "version must be 4 or 6"),
+            ((4,), {"limit": False}, "positive integer"),
+            ((4,), {"limit": 10, "cursor": "not-an-address"}, "Invalid DHCPv4 lease cursor"),
+        )
+
+        for args, kwargs, message in cases:
+            with self.subTest(args=args, kwargs=kwargs), stub_kea({}) as kea:
+                with self.assertRaisesRegex(ValueError, message):
+                    self.client.lease_get_page(*args, **kwargs)
+            self.assertEqual(kea.commands(), [])
+
+    def test_rejects_invalid_addresses_in_a_partial_page(self):
+        cases = (
+            ("not-an-address", "invalid ip-address"),
+            ("2001:db8::1", "wrong address family"),
+        )
+
+        for address, message in cases:
+            with (
+                self.subTest(address=address),
+                stub_kea(
+                    {
+                        "lease4-get-page": {
+                            "result": 0,
+                            "arguments": {"leases": [{"ip-address": address}], "count": 1},
+                        }
+                    }
+                ),
+                self.assertRaisesRegex(RuntimeError, message),
+            ):
+                self.client.lease_get_page(version=4, limit=2)
+
+    def test_rejects_invalid_final_address_in_a_full_page(self):
+        cases = (
+            ("not-an-address", "invalid final ip-address"),
+            ("2001:db8::1", "final lease for the wrong address family"),
+        )
+
+        for address, message in cases:
+            with (
+                self.subTest(address=address),
+                stub_kea(
+                    {
+                        "lease4-get-page": {
+                            "result": 0,
+                            "arguments": {"leases": [{"ip-address": address}], "count": 1},
+                        }
+                    }
+                ),
+                self.assertRaisesRegex(RuntimeError, message),
+            ):
+                self.client.lease_get_page(version=4, limit=1)
 
     def test_rejects_count_that_does_not_match_the_lease_collection(self):
         """Kea defines count as the number of leases in the returned page."""
