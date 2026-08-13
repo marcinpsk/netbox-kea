@@ -24,10 +24,10 @@ from ..sync import sync_reservation_to_netbox
 from ..utilities import (
     OptionalViewTab,
     _enrich_reservation_sort_key,
+    fetch_subnet_choices,
     kea_error_hint,
 )
 from ._base import _KeaChangeMixin
-from .leases import fetch_subnet_choices
 from .subnets import _warn_reservation_pool_overlap
 
 logger = logging.getLogger(__name__)
@@ -753,7 +753,7 @@ class ServerReservations6View(generic.ObjectView):
         }
 
 
-def _legacy_subnet_cidr(subnet_choices: list[tuple[str, int | None]], raw_subnet_id: str) -> str:
+def _legacy_subnet_cidr(subnet_choices: list[tuple[str, int]], raw_subnet_id: str) -> str:
     """Resolve a legacy ``?subnet_id=`` prefill parameter to its subnet CIDR.
 
     Returns ``""`` when the value is not a plain ASCII integer or no subnet matches.
@@ -777,7 +777,13 @@ class _ReservationFormViewMixin:
     form_action: str
 
     def form_context(
-        self, server: Server, form: Any, options_formset: Any, return_url: str, subnet_choices: Any = None
+        self,
+        server: Server,
+        form: Any,
+        options_formset: Any,
+        return_url: str,
+        subnet_choices: Any = None,
+        subnet_cmds_available: bool = True,
     ) -> dict[str, Any]:
         """Build the context the reservation form template expects."""
         return {
@@ -789,6 +795,7 @@ class _ReservationFormViewMixin:
             "return_url": return_url,
             "tab": self.tab,
             "subnet_choices": subnet_choices,
+            "subnet_cmds_available": subnet_cmds_available,
             "subnet_datalist_id": constants.RESERVATION_SUBNET_DATALIST_ID,
         }
 
@@ -800,10 +807,22 @@ class _ReservationFormViewMixin:
         options_formset: Any,
         return_url: str,
         subnet_choices: Any = None,
+        subnet_cmds_available: bool = True,
     ) -> HttpResponse:
         """Render the reservation form template with the shared context."""
         return render(
-            request, self.template_name, self.form_context(server, form, options_formset, return_url, subnet_choices)
+            request,
+            self.template_name,
+            self.form_context(server, form, options_formset, return_url, subnet_choices, subnet_cmds_available),
+        )
+
+    def render_add_form(
+        self, request: HttpRequest, server: Server, form: Any, options_formset: Any, return_url: str
+    ) -> HttpResponse:
+        """Render the add form with the server's subnet suggestions attached."""
+        subnet_choices, subnet_cmds_available = fetch_subnet_choices(server, self.dhcp_version)
+        return self.render_form(
+            request, server, form, options_formset, return_url, subnet_choices, subnet_cmds_available
         )
 
     def resolve_subnet_id(self, request: HttpRequest, client: KeaClient, form: Any, subnet_cidr: str) -> int | None:
@@ -846,7 +865,7 @@ class ServerReservation4AddView(_ReservationFormViewMixin, _KeaChangeMixin, gene
             k: request.GET.get(k, "")
             for k in ("subnet_cidr", "ip_address", "identifier_type", "identifier", "hostname")
         }
-        subnet_choices = fetch_subnet_choices(server, 4)
+        subnet_choices, subnet_cmds_available = fetch_subnet_choices(server, self.dhcp_version)
         if not initial.get("subnet_cidr"):
             # Legacy prefill links pass the raw subnet id; map it to the CIDR.
             initial["subnet_cidr"] = _legacy_subnet_cidr(subnet_choices, request.GET.get("subnet_id", ""))
@@ -858,6 +877,7 @@ class ServerReservation4AddView(_ReservationFormViewMixin, _KeaChangeMixin, gene
             forms.ReservationOptionsFormSet(prefix="options"),
             reverse("plugins:netbox_kea:server_reservations4", args=[pk]),
             subnet_choices,
+            subnet_cmds_available,
         )
 
     def post(self, request: HttpRequest, pk: int) -> HttpResponse:
@@ -870,9 +890,7 @@ class ServerReservation4AddView(_ReservationFormViewMixin, _KeaChangeMixin, gene
             cd = form.cleaned_data
 
             def _rerender() -> HttpResponse:
-                return self.render_form(
-                    request, server, form, options_formset, return_url, fetch_subnet_choices(server, 4)
-                )
+                return self.render_add_form(request, server, form, options_formset, return_url)
 
             try:
                 client = server.get_client(version=4)
@@ -929,7 +947,7 @@ class ServerReservation4AddView(_ReservationFormViewMixin, _KeaChangeMixin, gene
             except ValueError:
                 logger.exception("Failed to create DHCPv4 reservation for %s (parse error)", cd.get("ip_address"))
                 messages.error(request, "Failed to create reservation: invalid response from Kea.")
-        return self.render_form(request, server, form, options_formset, return_url, fetch_subnet_choices(server, 4))
+        return self.render_add_form(request, server, form, options_formset, return_url)
 
 
 class ServerReservation6AddView(_ReservationFormViewMixin, _KeaChangeMixin, generic.ObjectView):
@@ -946,7 +964,7 @@ class ServerReservation6AddView(_ReservationFormViewMixin, _KeaChangeMixin, gene
             k: request.GET.get(k, "")
             for k in ("subnet_cidr", "ip_addresses", "prefixes", "identifier_type", "identifier", "hostname")
         }
-        subnet_choices = fetch_subnet_choices(server, 6)
+        subnet_choices, subnet_cmds_available = fetch_subnet_choices(server, self.dhcp_version)
         if not initial.get("subnet_cidr"):
             # Legacy prefill links pass the raw subnet id; map it to the CIDR.
             initial["subnet_cidr"] = _legacy_subnet_cidr(subnet_choices, request.GET.get("subnet_id", ""))
@@ -958,6 +976,7 @@ class ServerReservation6AddView(_ReservationFormViewMixin, _KeaChangeMixin, gene
             forms.ReservationOptionsFormSet(prefix="options"),
             reverse("plugins:netbox_kea:server_reservations6", args=[pk]),
             subnet_choices,
+            subnet_cmds_available,
         )
 
     def post(self, request: HttpRequest, pk: int) -> HttpResponse:
@@ -970,9 +989,7 @@ class ServerReservation6AddView(_ReservationFormViewMixin, _KeaChangeMixin, gene
             cd = form.cleaned_data
 
             def _rerender() -> HttpResponse:
-                return self.render_form(
-                    request, server, form, options_formset, return_url, fetch_subnet_choices(server, 6)
-                )
+                return self.render_add_form(request, server, form, options_formset, return_url)
 
             try:
                 client = server.get_client(version=6)
@@ -1027,7 +1044,7 @@ class ServerReservation6AddView(_ReservationFormViewMixin, _KeaChangeMixin, gene
             except ValueError:
                 logger.exception("Failed to create DHCPv6 reservation for %s (parse error)", cd.get("ip_addresses"))
                 messages.error(request, "Failed to create reservation: invalid response from Kea.")
-        return self.render_form(request, server, form, options_formset, return_url, fetch_subnet_choices(server, 6))
+        return self.render_add_form(request, server, form, options_formset, return_url)
 
 
 class ServerReservation4EditView(

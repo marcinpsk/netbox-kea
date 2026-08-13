@@ -325,7 +325,7 @@ class TestServerCleanFieldValidation(SimpleTestCase):
         self.assertIn("ca_file_path", ctx.exception.message_dict)
 
     @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
-    @patch("netbox_kea.models.os.path.isfile", return_value=False)
+    @patch("netbox_kea.models.os.path.isfile", return_value=False, autospec=True)
     def test_nonexistent_cert_path_raises(self, _mock_isfile):
         server = _make_server(client_cert_path="/missing.pem", client_key_path="/key.pem")
         with self.assertRaises(ValidationError) as ctx:
@@ -333,7 +333,7 @@ class TestServerCleanFieldValidation(SimpleTestCase):
         self.assertIn("client_cert_path", ctx.exception.message_dict)
 
     @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
-    @patch("netbox_kea.models.os.path.isfile", side_effect=lambda p: p != "/missing-key.pem")
+    @patch("netbox_kea.models.os.path.isfile", side_effect=lambda p: p != "/missing-key.pem", autospec=True)
     def test_nonexistent_key_path_raises(self, _mock_isfile):
         server = _make_server(client_cert_path="/cert.pem", client_key_path="/missing-key.pem")
         with self.assertRaises(ValidationError) as ctx:

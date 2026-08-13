@@ -218,9 +218,15 @@ resort, reserved for true external boundaries you cannot run locally.
   at the boundary). Patching is at the class level so it also covers `clone()`.
 - **Mock-discipline gate.** `netbox_kea/tests/mock_discipline.py` (+
   `test_mock_discipline.py`, a pre-commit hook) flags new spec-less
-  `MagicMock`/`Mock`. Use `spec=` or a `# mock-ok` justification for the rare
-  legitimate boundary (job-runner stand-in, error injection the real transport can't
-  produce, an unreachable defensive guard).
+  `MagicMock`/`Mock`, and new `patch("netbox_kea…")` / `patch.object(<our class>, …)`
+  without `autospec=` — `patch` returns the same fabricating `MagicMock`, and an
+  unspecced one also survives a signature change in the function it replaces.
+  Patching a real boundary (`requests.Session.post`, `django_rq`) is not flagged.
+  Use `spec=`/`autospec=True` or a `# mock-ok` justification for the rare legitimate
+  boundary (job-runner stand-in, error injection the real transport can't produce, an
+  unreachable defensive guard). `mock_discipline_baseline.txt` is **empty** and must stay
+  that way: it grandfathers accepted violations per (file, function), so regenerating it
+  to silence a failure defeats the gate. Fix the call site instead.
 - **Standard NetBox model coverage via mixins.** For the `Server` model (a
   `NetBoxModel` with standard generic views + `NetBoxModelViewSet`), use NetBox's
   `ViewTestCases` / `APIViewTestCases` (see `test_server_generic.py`). Wire plugin

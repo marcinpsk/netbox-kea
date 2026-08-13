@@ -178,17 +178,6 @@ def _subnet_get(
     return {"result": 0, "arguments": {f"subnet{version}": [subnet]}}
 
 
-def _config_get(version: int, subnets: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    """A ``config-get`` payload for the subnet suggestions on the reservation add form.
-
-    ``fetch_subnet_choices()`` reads the configured subnets from here to populate the
-    Subnet CIDR ``<datalist>``, so every add-view render needs this stubbed. Pass
-    *subnets* as ``[{"id": 1, "subnet": "10.0.0.0/24"}, ...]``; the default empty list
-    renders an empty datalist, which is all a test needs unless it asserts on the options.
-    """
-    return {"result": 0, "arguments": {f"Dhcp{version}": {f"subnet{version}": subnets or []}}}
-
-
 def _leases_per_subnet(leases_by_subnet: dict[Any, list[dict[str, Any]]]):
     """A ``lease{v}-get-all`` responder that answers only for the subnets it was asked about.
 
@@ -208,9 +197,12 @@ def _leases_per_subnet(leases_by_subnet: dict[Any, list[dict[str, Any]]]):
 
 
 def _subnet_list(version: int, subnets: list[dict[str, Any]]) -> dict[str, Any]:  # noqa: ARG001 - version kept for call-site symmetry with _subnet_get
-    """A ``subnet{v}-list`` payload (read by ``reservation_get_by_ip`` to find candidate subnets).
+    """A ``subnet{v}-list`` payload, the ``subnet_cmds`` source every subnet lookup reads.
 
-    *subnets* is the list of subnet dicts (each ``{"id": …, "subnet": <cidr>}``) Kea reports.
+    Needed by ``reservation_get_by_ip`` (candidate subnets for an IP) and by every
+    reservation add-form render (the Subnet CIDR ``<datalist>`` and the CIDR the POST
+    resolves against). *subnets* is the list of subnet dicts (each
+    ``{"id": …, "subnet": <cidr>}``) Kea reports.
     """
     return {"result": 0, "arguments": {"subnets": list(subnets)}}
 

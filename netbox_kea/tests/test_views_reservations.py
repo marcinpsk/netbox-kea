@@ -50,7 +50,7 @@ from netbox_kea.kea import KeaClient
 from netbox_kea.signals import reservation_deleted
 from netbox_kea.views import _get_reservation_identifier as _extract_identifier
 
-from .kea_stub import _config_get, _leases_per_subnet, _res_get, _res_page, _subnet_get, _subnet_list, stub_kea
+from .kea_stub import _leases_per_subnet, _res_get, _res_page, _subnet_get, _subnet_list, stub_kea
 from .utils import _PLUGINS_CONFIG, _make_db_server, _ViewTestBase
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -796,7 +796,6 @@ class TestReservation4AddExceptions(_ViewTestBase):
         """A reservation-add error must re-render the form with an error message."""
         with stub_kea(
             {
-                "config-get": _config_get(4),
                 "subnet4-list": _SUBNET4_LIST_STUB,
                 "subnet4-get": _subnet_get(4, subnet_cidr=_SUBNET4_CIDR),
                 "reservation-add": {"result": 1, "text": "already exists"},
@@ -811,7 +810,6 @@ class TestReservation4AddExceptions(_ViewTestBase):
         """A reservation-add result=1 must re-render the form with an error message."""
         with stub_kea(
             {
-                "config-get": _config_get(4),
                 "subnet4-list": _SUBNET4_LIST_STUB,
                 "subnet4-get": _subnet_get(4, subnet_cidr=_SUBNET4_CIDR),
                 "reservation-add": {"result": 1, "text": "server error"},
@@ -846,7 +844,11 @@ class TestReservation4AddExceptions(_ViewTestBase):
         """
         post_data = {**_VALID_RESERVATION4_POST, "sync_to_netbox": "on"}
         with (
-            patch("netbox_kea.views.reservations.sync_reservation_to_netbox", side_effect=ValueError("sync fail")),
+            patch(
+                "netbox_kea.views.reservations.sync_reservation_to_netbox",
+                side_effect=ValueError("sync fail"),
+                autospec=True,
+            ),
             stub_kea(
                 {
                     "subnet4-list": _SUBNET4_LIST_STUB,
@@ -863,7 +865,7 @@ class TestReservation4AddExceptions(_ViewTestBase):
     def test_unknown_cidr_rerenders_form_with_error(self):
         """Submitting a subnet CIDR not known to Kea must re-render the form with a field error."""
         post_data = {**_VALID_RESERVATION4_POST, "subnet_cidr": "10.99.99.0/24"}
-        with stub_kea({"config-get": _config_get(4), "subnet4-list": _SUBNET4_LIST_STUB}):
+        with stub_kea({"subnet4-list": _SUBNET4_LIST_STUB}):
             response = self.client.post(self._url(), post_data)
         self.assertEqual(response.status_code, 200)
         form = response.context["form"]
@@ -901,7 +903,6 @@ class TestReservation6AddExceptions(_ViewTestBase):
         sentinel = "kea-detail-should-not-leak"
         with stub_kea(
             {
-                "config-get": _config_get(6),
                 "subnet6-list": _SUBNET6_LIST_STUB,
                 "subnet6-get": _subnet_get(6, subnet_cidr=_SUBNET6_CIDR),
                 "reservation-add": {"result": 1, "text": sentinel},
@@ -928,7 +929,7 @@ class TestReservation6AddExceptions(_ViewTestBase):
     def test_unknown_cidr_rerenders_form_with_error(self):
         """Submitting a subnet CIDR not known to Kea must re-render the form with a field error."""
         post_data = {**_VALID_RESERVATION6_POST, "subnet_cidr": "2001:db8:ffff::/48"}
-        with stub_kea({"config-get": _config_get(6), "subnet6-list": _SUBNET6_LIST_STUB}):
+        with stub_kea({"subnet6-list": _SUBNET6_LIST_STUB}):
             response = self.client.post(self._url(), post_data)
         self.assertEqual(response.status_code, 200)
         form = response.context["form"]
@@ -1028,7 +1029,11 @@ class TestReservation4EditExceptions(_ViewTestBase):
         """Successful update where sync raises must show a warning."""
         post_data = {**_VALID_RESERVATION4_EDIT_POST, "sync_to_netbox": "on"}
         with (
-            patch("netbox_kea.views.reservations.sync_reservation_to_netbox", side_effect=ValueError("oops")),
+            patch(
+                "netbox_kea.views.reservations.sync_reservation_to_netbox",
+                side_effect=ValueError("oops"),
+                autospec=True,
+            ),
             stub_kea(
                 {
                     "subnet4-get": _subnet_get(4, subnet_cidr=_SUBNET4_CIDR),
@@ -1265,7 +1270,7 @@ class TestReservation6AddOptionDataAndSync(_ViewTestBase):
             f"Expected sync success message, got: {[m.message for m in msgs]}",
         )
 
-    @patch("netbox_kea.views.reservations.sync_reservation_to_netbox")
+    @patch("netbox_kea.views.reservations.sync_reservation_to_netbox", autospec=True)
     def test_post_sync_exception_shows_warning(self, mock_sync):
         """sync raises exception → warning message queued (reservation still created)."""
         mock_sync.side_effect = ValueError("sync failed")
@@ -1446,7 +1451,7 @@ class TestReservation6EditOptionDataAndSync(_ViewTestBase):
             f"Expected INFO message on sync success, got: {[(m.level, m.message) for m in msgs]}",
         )
 
-    @patch("netbox_kea.views.reservations.sync_reservation_to_netbox")
+    @patch("netbox_kea.views.reservations.sync_reservation_to_netbox", autospec=True)
     def test_post_sync_exception(self, mock_sync):
         """sync exception → warning message queued (reservation still updated)."""
         mock_sync.side_effect = ValueError("sync fail")
@@ -1525,6 +1530,7 @@ class TestEnrichReservationsLeaseStatusCoverage(_ViewTestBase):
             patch(
                 "netbox_kea.views.reservations.concurrent.futures.as_completed",
                 side_effect=RuntimeError("as_completed failed"),
+                autospec=True,
             ) as mock_as_completed,
             stub_kea({"lease4-get-all": {"result": 3}}),
         ):

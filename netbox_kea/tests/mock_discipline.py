@@ -9,17 +9,29 @@ mock. Mocks are a last resort reserved for true external boundaries you cannot r
 (third-party network calls, paid/destructive/nondeterministic side effects), and even there
 a ``spec=``-bounded mock or a real fake (a recorded HTTP fixture) beats a bare one.
 
-This scanner is deliberately a bit too aggressive: it flags every instantiation of a
-fabricating mock class, then lets you carve out the legitimate cases three ways —
+Two shapes are flagged, because they produce the same object:
+
+  * **Instantiation** — ``MagicMock()``, ``Mock()``, ``AsyncMock()`` and friends.
+  * **Patching our own code** — ``patch("netbox_kea.x.y")`` or ``patch.object(Server, "z")``
+    without ``autospec=``. ``patch`` hands back a plain ``MagicMock``, so the same
+    fabrication applies and the test also survives a signature change in the real function.
+    Only ``netbox_kea`` targets count: patching ``requests.Session.post`` is the endorsed
+    way to stub the one boundary the suite cannot run.
+
+This scanner is deliberately a bit too aggressive: it flags every such call, then lets you
+carve out the legitimate cases three ways —
 
   1. **Bound it.** ``MagicMock(spec=KeaClient)`` / ``spec_set=`` / ``create_autospec`` /
      ``wraps=real_obj`` restrict (or delegate) attribute access to a real interface, so the
-     fabrication footgun is gone. These are never flagged.
+     fabrication footgun is gone. For ``patch`` that is ``autospec=True``, a ready-made
+     ``new=``, a non-mock ``new_callable=``, or a mock factory with a spec. These are never
+     flagged.
   2. **Mark it.** An inline ``# mock-ok: <reason>`` comment on the statement records a
      reviewed, deliberate boundary mock. Preferred for new code — it documents *why*.
-  3. **Grandfather it.** ``netbox_kea/tests/mock_discipline_baseline.txt`` records the count
-     of currently-accepted spec-less mocks per (file, function). New ones beyond the recorded
-     count fail the guard. Regenerate after an intentional change with::
+  3. **Grandfather it.** ``netbox_kea/tests/mock_discipline_baseline.txt`` records how many
+     unbounded calls are currently accepted per (file, function), counting both shapes
+     together. New ones beyond the recorded count fail the guard. Regenerate after an
+     intentional change with::
 
          python3 netbox_kea/tests/mock_discipline.py --update-baseline
 
@@ -53,6 +65,13 @@ _FABRICATING_MOCKS = {"MagicMock", "NonCallableMagicMock", "Mock", "NonCallableM
 INCLUDE_ASYNCMOCK = True
 # Keyword args that bound a mock to a real interface (or delegate to a real object).
 _BOUNDING_KWARGS = {"spec", "spec_set", "autospec", "wraps"}
+# The same for patch(), which additionally accepts a ready-made replacement object.
+_PATCH_BOUNDING_KWARGS = _BOUNDING_KWARGS | {"new"}
+# Canonical values stored in the lexical binding table for module imports.
+_MOCK_MODULE = "unittest.mock"
+_UNITTEST_MODULE = "unittest"
+# Import prefix that marks a patch target as our own code rather than a real boundary.
+_FIRST_PARTY = "netbox_kea"
 # Inline opt-out marker (in a comment): `# mock-ok` or `# mock-ok: reason`.
 _MARKER = "mock-ok"
 # Files the scanner never inspects (itself + its own test).
@@ -65,12 +84,13 @@ def _targets() -> set[str]:
 
 @dataclass(frozen=True)
 class Violation:
-    """One flagged mock instantiation."""
+    """One flagged mock instantiation or unspecced first-party patch."""
 
     path: str  # posix relpath from tests/
     lineno: int
     qualname: str  # enclosing function/class path, or "<module>"
-    mock: str  # the mock class name
+    mock: str  # the mock class name, or the patch target for kind="patch"
+    kind: str = "mock"  # "mock" (a fabricating class) or "patch" (an unspecced patch)
 
     @property
     def site(self) -> str:
@@ -78,6 +98,8 @@ class Violation:
         return f"{self.path}::{self.qualname}"
 
     def __str__(self) -> str:
+        if self.kind == "patch":
+            return f"{self.path}:{self.lineno}: unspecced patch of first-party {self.mock} in {self.qualname}()"
         return f"{self.path}:{self.lineno}: unapproved {self.mock}() in {self.qualname}()"
 
 
@@ -93,24 +115,111 @@ def _comment_lines(src: str) -> dict[int, str]:
     return comments
 
 
-def _mock_import_aliases(tree: ast.AST) -> dict[str, str]:
-    """Local-name → canonical-class for ``from unittest.mock import MagicMock [as MM]``."""
-    aliases: dict[str, str] = {}
+class _MockBindingCollector(ast.NodeVisitor):
+    """Record mock imports and shadowing assignments in each lexical scope."""
+
+    def __init__(self, module: ast.AST) -> None:
+        self.bindings: dict[ast.AST, dict[str, list[tuple[int, str | None]]]] = {}
+        self._scopes: list[ast.AST] = [module]
+
+    def _bind(self, name: str, lineno: int, canonical: str | None = None) -> None:
+        self.bindings.setdefault(self._scopes[-1], {}).setdefault(name, []).append((lineno, canonical))
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        for alias in node.names:
+            canonical = None
+            if node.module == "unittest.mock":
+                canonical = alias.name
+            elif node.module == "unittest" and alias.name == "mock":
+                canonical = _MOCK_MODULE
+            self._bind(alias.asname or alias.name, node.lineno, canonical)
+
+    def visit_Import(self, node: ast.Import) -> None:
+        for alias in node.names:
+            name = alias.asname or alias.name.split(".")[0]
+            canonical = None
+            if alias.name == "unittest.mock":
+                canonical = _MOCK_MODULE if alias.asname else _UNITTEST_MODULE
+            elif alias.name == "unittest":
+                canonical = _UNITTEST_MODULE
+            self._bind(name, node.lineno, canonical)
+
+    def visit_Name(self, node: ast.Name) -> None:
+        if isinstance(node.ctx, ast.Store):
+            self._bind(node.id, node.lineno)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self._bind(node.name, node.lineno)
+        self._scopes.append(node)
+        for arg in (*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs):
+            self._bind(arg.arg, node.lineno)
+        if node.args.vararg:
+            self._bind(node.args.vararg.arg, node.lineno)
+        if node.args.kwarg:
+            self._bind(node.args.kwarg.arg, node.lineno)
+        for statement in node.body:
+            self.visit(statement)
+        self._scopes.pop()
+
+    visit_AsyncFunctionDef = visit_FunctionDef  # type: ignore[assignment]
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        self._bind(node.name, node.lineno)
+        self._scopes.append(node)
+        for statement in node.body:
+            self.visit(statement)
+        self._scopes.pop()
+
+    def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
+        if node.name:
+            self._bind(node.name, node.lineno)
+        self.generic_visit(node)
+
+
+def _mock_bindings(tree: ast.AST) -> dict[ast.AST, dict[str, list[tuple[int, str | None]]]]:
+    """Collect mock imports and shadowing bindings without leaking between scopes."""
+    collector = _MockBindingCollector(tree)
+    collector.visit(tree)
+    return collector.bindings
+
+
+def _first_party_names(tree: ast.AST) -> set[str]:
+    """Local names bound to something imported from this plugin.
+
+    Lets ``patch.object(Server, "get_client")`` be recognised as patching our own code,
+    the same as the dotted-string form ``patch("netbox_kea.models.Server.get_client")``.
+    Relative imports count: every test module lives inside the package.
+    """
+    names: set[str] = set()
     for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and (node.module or "").split(".")[-1] == "mock":
+        if isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            if node.level > 0 or module.split(".")[0] == _FIRST_PARTY:
+                names.update(alias.asname or alias.name for alias in node.names)
+        elif isinstance(node, ast.Import):
             for alias in node.names:
-                aliases[alias.asname or alias.name] = alias.name
-    return aliases
+                if alias.name.split(".")[0] == _FIRST_PARTY:
+                    names.add((alias.asname or alias.name).split(".")[0])
+    return names
 
 
 class _Scanner(ast.NodeVisitor):
     """Collect fabricating-mock instantiations that are neither bounded nor marked."""
 
-    def __init__(self, rel: str, comments: dict[int, str], aliases: dict[str, str]):
+    def __init__(
+        self,
+        rel: str,
+        comments: dict[int, str],
+        bindings: dict[ast.AST, dict[str, list[tuple[int, str | None]]]],
+        module: ast.AST,
+        first_party: set[str],
+    ):
         self._rel = rel
         self._comments = comments
-        self._aliases = aliases
+        self._bindings = bindings
+        self._first_party = first_party
         self._scope: list[str] = []
+        self._binding_scopes: list[ast.AST] = [module]
         self.hits: list[Violation] = []
 
     # ── scope tracking ────────────────────────────────────────────────────────
@@ -119,14 +228,37 @@ class _Scanner(ast.NodeVisitor):
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         self._scope.append(node.name)
-        self.generic_visit(node)
+
+        header_expressions = [*node.decorator_list, *node.args.defaults]
+        header_expressions.extend(default for default in node.args.kw_defaults if default is not None)
+        header_expressions.extend(
+            arg.annotation
+            for arg in (*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs)
+            if arg.annotation is not None
+        )
+        if node.args.vararg and node.args.vararg.annotation:
+            header_expressions.append(node.args.vararg.annotation)
+        if node.args.kwarg and node.args.kwarg.annotation:
+            header_expressions.append(node.args.kwarg.annotation)
+        if node.returns:
+            header_expressions.append(node.returns)
+        header_expressions.extend(getattr(node, "type_params", ()))
+        for expression in header_expressions:
+            self.visit(expression)
+
+        self._binding_scopes.append(node)
+        for statement in node.body:
+            self.visit(statement)
+        self._binding_scopes.pop()
         self._scope.pop()
 
     visit_AsyncFunctionDef = visit_FunctionDef  # type: ignore[assignment]
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         self._scope.append(node.name)
+        self._binding_scopes.append(node)
         self.generic_visit(node)
+        self._binding_scopes.pop()
         self._scope.pop()
 
     # ── the check ─────────────────────────────────────────────────────────────
@@ -134,16 +266,107 @@ class _Scanner(ast.NodeVisitor):
         name = self._mock_class(node.func)
         if name and not self._is_bounded(node) and not self._is_marked(node):
             self.hits.append(Violation(self._rel, node.lineno, self._qual(), name))
+        target = self._unspecced_first_party_patch(node)
+        if target and not self._is_marked(node):
+            self.hits.append(Violation(self._rel, node.lineno, self._qual(), target, kind="patch"))
         self.generic_visit(node)
+
+    def _unspecced_first_party_patch(self, node: ast.Call) -> str | None:
+        """Return the patched first-party target, or None if this call is fine.
+
+        ``patch("netbox_kea.x.y")`` hands the caller a plain ``MagicMock``: it accepts any
+        signature and fabricates any attribute, so the test keeps passing after the real
+        function changes shape. ``autospec=True`` (or ``spec``/``new``/``wraps``) binds
+        the replacement to the real object instead. A non-mock ``new_callable`` is also
+        accepted. Only first-party targets are flagged: patching
+        ``requests.Session.post`` is the endorsed way to stub the one boundary the suite
+        cannot run.
+        """
+        func = node.func
+        if isinstance(func, ast.Attribute) and func.attr == "object":
+            # patch.object(target, "attribute"[, new]) — a third positional is `new`.
+            if not self._is_patch(func.value) or self._is_patch_bounded(node, new_position=2):
+                return None
+            root = node.args[0] if node.args else None
+            while isinstance(root, ast.Attribute):
+                root = root.value
+            if isinstance(root, ast.Name) and root.id in self._first_party:
+                return ast.unparse(node.args[0])
+            return None
+        # patch("dotted.target"[, new]) — a second positional is `new`.
+        if not self._is_patch(func) or self._is_patch_bounded(node, new_position=1):
+            return None
+        target = node.args[0] if node.args else None
+        if isinstance(target, ast.Constant) and isinstance(target.value, str):
+            if target.value.split(".")[0] == _FIRST_PARTY:
+                return repr(target.value)
+        return None
+
+    def _is_patch(self, func: ast.expr) -> bool:
+        """True for ``patch``, an aliased import of it, or ``<module>.patch``."""
+        if isinstance(func, ast.Attribute):
+            return func.attr == "patch" and self._canonical_binding(func.value) == _MOCK_MODULE
+        return self._canonical_binding(func) == "patch"
+
+    def _is_patch_bounded(self, node: ast.Call, new_position: int) -> bool:
+        replacement = next((kw.value for kw in node.keywords if kw.arg == "new"), None)
+        if replacement is None and len(node.args) > new_position:
+            replacement = node.args[new_position]
+        if replacement is not None and not self._is_mock_default(replacement):
+            return True
+
+        for kw in node.keywords:
+            if kw.arg not in _PATCH_BOUNDING_KWARGS or kw.arg == "new":
+                continue
+            # None is the default. False explicitly disables spec arguments.
+            if isinstance(kw.value, ast.Constant) and (kw.value.value is None or kw.value.value is False):
+                continue
+            return True
+
+        factory = next((kw.value for kw in node.keywords if kw.arg == "new_callable"), None)
+        if factory is None or (isinstance(factory, ast.Constant) and factory.value is None):
+            return False
+        return self._mock_class(factory) is None
+
+    def _canonical_binding(self, node: ast.expr) -> str | None:
+        """Resolve a mock import at this source location through the lexical scopes."""
+        if isinstance(node, ast.Attribute) and node.attr == "mock":
+            if self._canonical_binding(node.value) == _UNITTEST_MODULE:
+                return _MOCK_MODULE
+            return None
+        if not isinstance(node, ast.Name):
+            return None
+
+        inside_function = False
+        for scope in reversed(self._binding_scopes):
+            if isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                inside_function = True
+            elif inside_function and isinstance(scope, ast.ClassDef):
+                # Method bodies do not close over their class namespace.
+                continue
+            events = self._bindings.get(scope, {}).get(node.id, [])
+            prior = [event for event in events if event[0] <= node.lineno]
+            if prior:
+                return prior[-1][1]
+            if events and isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                return None
+        return None
+
+    def _is_mock_default(self, node: ast.expr) -> bool:
+        """True only for ``unittest.mock.DEFAULT``, including imported aliases."""
+        if isinstance(node, ast.Attribute) and node.attr == "DEFAULT":
+            return self._canonical_binding(node.value) == _MOCK_MODULE
+        return self._canonical_binding(node) == "DEFAULT"
 
     def _mock_class(self, func: ast.expr) -> str | None:
         targets = _targets()
         if isinstance(func, ast.Attribute) and func.attr in targets:
-            return func.attr  # e.g. mock.MagicMock(...), unittest.mock.MagicMock(...)
-        if isinstance(func, ast.Name):
-            canonical = self._aliases.get(func.id)
-            if canonical in targets:
-                return canonical  # imported (possibly aliased) name
+            if self._canonical_binding(func.value) == _MOCK_MODULE:
+                return func.attr  # e.g. mock.MagicMock(...), unittest.mock.MagicMock(...)
+            return None
+        canonical = self._canonical_binding(func)
+        if canonical in targets:
+            return canonical  # imported (possibly aliased) name
         return None
 
     @staticmethod
@@ -168,7 +391,13 @@ class _Scanner(ast.NodeVisitor):
 def scan_source(src: str, rel: str = "<source>") -> list[Violation]:
     """Scan one module's source text and return its mock-discipline violations."""
     tree = ast.parse(src, filename=rel)
-    scanner = _Scanner(rel, _comment_lines(src), _mock_import_aliases(tree))
+    scanner = _Scanner(
+        rel,
+        _comment_lines(src),
+        _mock_bindings(tree),
+        tree,
+        _first_party_names(tree),
+    )
     scanner.visit(tree)
     return scanner.hits
 

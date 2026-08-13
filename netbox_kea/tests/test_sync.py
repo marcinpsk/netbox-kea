@@ -2100,8 +2100,10 @@ class TestCleanupBatchProtectedIdsComputedOnce(TestCase):
         # The plugin boundary isn't installed in CI, so stand it in: force "available"
         # and count how often the referenced-IP set is resolved across the batch.
         with (
-            patch("netbox_kea.integrations.dhcp_plugin.is_available", return_value=True),
-            patch("netbox_kea.integrations.dhcp_plugin.sys4_referenced_ip_ids", return_value=set()) as spy,
+            patch("netbox_kea.integrations.dhcp_plugin.is_available", return_value=True, autospec=True),
+            patch(
+                "netbox_kea.integrations.dhcp_plugin.sys4_referenced_ip_ids", return_value=set(), autospec=True
+            ) as spy,
         ):
             cleanup_stale_ips_batch(records)
 
@@ -2118,8 +2120,10 @@ class TestCleanupBatchProtectedIdsComputedOnce(TestCase):
         records = [{"hostname": "", "ip-address": "10.40.0.200"}, {"ip-address": "10.40.0.201"}]
 
         with (
-            patch("netbox_kea.integrations.dhcp_plugin.is_available", return_value=True),
-            patch("netbox_kea.integrations.dhcp_plugin.sys4_referenced_ip_ids", return_value=set()) as spy,
+            patch("netbox_kea.integrations.dhcp_plugin.is_available", return_value=True, autospec=True),
+            patch(
+                "netbox_kea.integrations.dhcp_plugin.sys4_referenced_ip_ids", return_value=set(), autospec=True
+            ) as spy,
         ):
             result = cleanup_stale_ips_batch(records)
 

@@ -212,15 +212,24 @@ class BaseLeasesSarchForm(forms.Form):
     # Visual order: Search value, State, Attribute selector.
     field_order = ["q", "state", "by"]
 
-    def __init__(self, *args, subnet_choices: list[tuple[str, int | None]] | None = None, **kwargs) -> None:
+    def __init__(
+        self,
+        *args,
+        subnet_choices: list[tuple[str, int]] | None = None,
+        subnet_cmds_available: bool = True,
+        **kwargs,
+    ) -> None:
         """Stash the configured-subnet list so the template can build the Search combobox.
 
         The choices drive an editable ``<datalist>`` on the Search field (``q``)
         that the template wires up only when the selected attribute is *Subnet*
         or *Subnet ID* — there is no separate subnet selector field.
+        ``subnet_cmds_available`` is False when the hook that supplies those choices is
+        not loaded, which the template reports instead of showing an empty combobox.
         """
         super().__init__(*args, **kwargs)
-        self.subnet_choices: list[tuple[str, int | None]] = subnet_choices or []
+        self.subnet_choices: list[tuple[str, int]] = subnet_choices or []
+        self.subnet_cmds_available = subnet_cmds_available
 
     def clean(self) -> dict[str, Any] | None:
         """Validate and normalise search fields according to the selected search type."""

@@ -31,7 +31,7 @@ from ipam.models import IPAddress as NbIP
 
 from netbox_kea.kea import KeaClient
 from netbox_kea.models import Server
-from netbox_kea.views.leases import _subnet_choices_cache_key, _subnet_sort_key, fetch_subnet_choices
+from netbox_kea.utilities import _subnet_choices_cache_key, fetch_subnet_choices, subnet_sort_key
 
 from .kea_stub import _subnet_get, _subnet_list, queued, stub_kea
 from .utils import _PLUGINS_CONFIG, _make_db_server, _ViewTestBase
@@ -165,8 +165,8 @@ class TestReservedBadgeOnLeases(_ViewTestBase):
         "subnet-id": 1,
         "hostname": "testhost",
     }
-    # The lease-search page fetches the subnet quick-select via config-get first.
-    _CONFIG4 = {"result": 0, "arguments": {"Dhcp4": {"subnet4": [{"id": 1, "subnet": "192.168.1.0/24"}]}}}
+    # The lease-search page fetches the subnet suggestions via subnet{v}-list first.
+    _SUBNETS4 = _subnet_list(4, [{"id": 1, "subnet": "192.168.1.0/24"}])
 
     def _htmx_get(self, url, data):
         """Issue an HTMX GET request (adds HX-Request header)."""
@@ -177,7 +177,7 @@ class TestReservedBadgeOnLeases(_ViewTestBase):
         url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
         with stub_kea(
             {
-                "config-get": self._CONFIG4,
+                "subnet4-list": self._SUBNETS4,
                 "lease4-get": {"result": 0, "arguments": {"ip-address": "192.168.1.100", **self._LEASE4}},
                 "reservation-get": {"result": 0, "arguments": self._RESERVATION4},
             }
@@ -192,7 +192,7 @@ class TestReservedBadgeOnLeases(_ViewTestBase):
         url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
         with stub_kea(
             {
-                "config-get": self._CONFIG4,
+                "subnet4-list": self._SUBNETS4,
                 "lease4-get": {"result": 0, "arguments": {"ip-address": "192.168.1.100", **self._LEASE4}},
                 "reservation-get": {"result": 3},  # not found
             }
@@ -212,7 +212,7 @@ class TestReservedBadgeOnLeases(_ViewTestBase):
         url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
         with stub_kea(
             {
-                "config-get": self._CONFIG4,
+                "subnet4-list": self._SUBNETS4,
                 "lease4-get": {"result": 0, "arguments": {"ip-address": "192.168.1.100", **self._LEASE4}},
                 # host_cmds not loaded — result=2 (unknown command) makes reservation_get raise KeaException.
                 "reservation-get": {"result": 2, "text": "unknown command 'reservation-get'"},
@@ -241,7 +241,7 @@ class TestLeaseSearchPaths(_ViewTestBase):
     De-mocked: exercises the real ``KeaClient`` so the actual request payload built
     by ``KeaClient.command()`` — command name, ``arguments``, and ``service`` — is
     asserted, not a ``MagicMock`` call-arg. Only the HTTP boundary
-    (``requests.Session.post``) is stubbed. A search issues ``config-get`` (subnet
+    (``requests.Session.post``) is stubbed. A search issues ``subnet{v}-list`` (subnet
     quick-select) → ``lease{v}-get…`` → per-lease ``reservation-get`` enrichment.
     """
 
@@ -254,9 +254,9 @@ class TestLeaseSearchPaths(_ViewTestBase):
         "valid-lft": 3600,
         "cltt": 1_700_000_000,
     }
-    # The lease-search page fetches the subnet quick-select via config-get first.
-    _CONFIG4 = {"result": 0, "arguments": {"Dhcp4": {"subnet4": [{"id": 1, "subnet": "10.0.0.0/24"}]}}}
-    _CONFIG6 = {"result": 0, "arguments": {"Dhcp6": {"subnet6": [{"id": 1, "subnet": "2001:db8::/64"}]}}}
+    # The lease-search page fetches the subnet suggestions via subnet{v}-list first.
+    _SUBNETS4 = _subnet_list(4, [{"id": 1, "subnet": "10.0.0.0/24"}])
+    _SUBNETS6 = _subnet_list(6, [{"id": 1, "subnet": "2001:db8::/64"}])
     # Reservation enrichment runs for every returned lease; "not found" (result 3)
     # means no reservation, which is all these lease-command tests care about.
     _NO_RESERVATION = {"result": 3}
@@ -282,7 +282,7 @@ class TestLeaseSearchPaths(_ViewTestBase):
         """BY_HW_ADDRESS must call lease4-get-by-hw-address with hw-address argument."""
         with stub_kea(
             {
-                "config-get": self._CONFIG4,
+                "subnet4-list": self._SUBNETS4,
                 "lease4-get-by-hw-address": self._multi([dict(self._LEASE4)]),
                 "reservation-get": self._NO_RESERVATION,
             }
@@ -298,7 +298,7 @@ class TestLeaseSearchPaths(_ViewTestBase):
         """BY_HOSTNAME must call lease4-get-by-hostname with hostname argument."""
         with stub_kea(
             {
-                "config-get": self._CONFIG4,
+                "subnet4-list": self._SUBNETS4,
                 "lease4-get-by-hostname": self._multi([dict(self._LEASE4)]),
                 "reservation-get": self._NO_RESERVATION,
             }
@@ -314,7 +314,7 @@ class TestLeaseSearchPaths(_ViewTestBase):
         """BY_CLIENT_ID must call lease4-get-by-client-id with client-id argument."""
         with stub_kea(
             {
-                "config-get": self._CONFIG4,
+                "subnet4-list": self._SUBNETS4,
                 "lease4-get-by-client-id": self._multi([dict(self._LEASE4)]),
                 "reservation-get": self._NO_RESERVATION,
             }
@@ -330,7 +330,7 @@ class TestLeaseSearchPaths(_ViewTestBase):
         """BY_SUBNET_ID must call lease4-get-all with subnets=[<id>]."""
         with stub_kea(
             {
-                "config-get": self._CONFIG4,
+                "subnet4-list": self._SUBNETS4,
                 "lease4-get-all": self._multi([dict(self._LEASE4)]),
                 "reservation-get": self._NO_RESERVATION,
             }
@@ -346,7 +346,7 @@ class TestLeaseSearchPaths(_ViewTestBase):
         """BY_IP must call lease4-get with ip-address argument and return 200."""
         with stub_kea(
             {
-                "config-get": self._CONFIG4,
+                "subnet4-list": self._SUBNETS4,
                 "lease4-get": self._single(self._LEASE4),
                 "reservation-get": self._NO_RESERVATION,
             }
@@ -363,7 +363,7 @@ class TestLeaseSearchPaths(_ViewTestBase):
         # Empty result short-circuits enrichment, so no reservation-get is issued.
         with stub_kea(
             {
-                "config-get": self._CONFIG4,
+                "subnet4-list": self._SUBNETS4,
                 "lease4-get": {"result": 3, "arguments": None},
             }
         ) as kea:
@@ -377,7 +377,7 @@ class TestLeaseSearchPaths(_ViewTestBase):
         url = reverse("plugins:netbox_kea:server_leases6", args=[server6.pk])
         with stub_kea(
             {
-                "config-get": self._CONFIG6,
+                "subnet6-list": self._SUBNETS6,
                 "lease6-get-by-duid": self._multi([]),
             }
         ) as kea:
@@ -407,21 +407,21 @@ class TestLeaseExport(_ViewTestBase):
         "cltt": 1_700_000_000,
     }
     # The export path builds the search form, which fetches the subnet quick-select.
-    _CONFIG4 = {"result": 0, "arguments": {"Dhcp4": {"subnet4": [{"id": 1, "subnet": "10.0.0.0/24"}]}}}
+    _SUBNETS4 = _subnet_list(4, [{"id": 1, "subnet": "10.0.0.0/24"}])
 
     def _url(self):
         return reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
 
     def test_export_all_returns_csv_content_type(self):
         """?export=all must respond with text/csv Content-Type."""
-        with stub_kea({"config-get": self._CONFIG4, "lease4-get": {"result": 0, "arguments": dict(self._LEASE4)}}):
+        with stub_kea({"subnet4-list": self._SUBNETS4, "lease4-get": {"result": 0, "arguments": dict(self._LEASE4)}}):
             response = self.client.get(self._url(), {"export": "all", "by": "ip", "q": "10.0.0.5"})
         self.assertEqual(response.status_code, 200)
         self.assertIn("text/csv", response.get("Content-Type", ""))
 
     def test_export_table_returns_csv(self):
         """?export=table must also return text/csv (selected columns)."""
-        with stub_kea({"config-get": self._CONFIG4, "lease4-get": {"result": 0, "arguments": dict(self._LEASE4)}}):
+        with stub_kea({"subnet4-list": self._SUBNETS4, "lease4-get": {"result": 0, "arguments": dict(self._LEASE4)}}):
             response = self.client.get(self._url(), {"export": "table", "by": "ip", "q": "10.0.0.5"})
         self.assertEqual(response.status_code, 200)
         self.assertIn("text/csv", response.get("Content-Type", ""))
@@ -450,7 +450,7 @@ class TestLeaseExport(_ViewTestBase):
         # result=3 (end). FIFO queue on lease4-get-page drives the pagination loop.
         with stub_kea(
             {
-                "config-get": self._CONFIG4,
+                "subnet4-list": self._SUBNETS4,
                 "lease4-get-page": queued(
                     {"result": 0, "arguments": {"leases": page1_leases, "count": 3}},
                     {"result": 3, "arguments": None},
@@ -542,7 +542,7 @@ class TestEnrichLeasesErrorPaths(_ViewTestBase):
         "valid-lft": 3600,
         "cltt": 1_700_000_000,
     }
-    _CONFIG4 = {"result": 0, "arguments": {"Dhcp4": {"subnet4": [{"id": 1, "subnet": "10.0.0.0/24"}]}}}
+    _SUBNETS4 = _subnet_list(4, [{"id": 1, "subnet": "10.0.0.0/24"}])
 
     def _htmx_get(self, url, data):
         return self.client.get(url, data=data, HTTP_HX_REQUEST="true")
@@ -554,7 +554,7 @@ class TestEnrichLeasesErrorPaths(_ViewTestBase):
         url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
         with stub_kea(
             {
-                "config-get": self._CONFIG4,
+                "subnet4-list": self._SUBNETS4,
                 "lease4-get": {"result": 0, "arguments": dict(self._LEASE4)},
                 "reservation-get": {"result": 1, "text": "server error"},
             }
@@ -567,7 +567,7 @@ class TestEnrichLeasesErrorPaths(_ViewTestBase):
         url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
         with stub_kea(
             {
-                "config-get": self._CONFIG4,
+                "subnet4-list": self._SUBNETS4,
                 "lease4-get": {"result": 0, "arguments": dict(self._LEASE4)},
                 "reservation-get": RuntimeError("socket closed"),
             }
@@ -581,7 +581,7 @@ class TestEnrichLeasesErrorPaths(_ViewTestBase):
         url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
         with stub_kea(
             {
-                "config-get": self._CONFIG4,
+                "subnet4-list": self._SUBNETS4,
                 "lease4-get": {"result": 0, "arguments": dict(self._LEASE4)},
                 "reservation-get": {"result": 3},  # no reservation
             }
@@ -597,7 +597,7 @@ class TestEnrichLeasesErrorPaths(_ViewTestBase):
         url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
         with stub_kea(
             {
-                "config-get": self._CONFIG4,
+                "subnet4-list": self._SUBNETS4,
                 "lease4-get": {"result": 0, "arguments": dict(self._LEASE4)},
                 "reservation-get": {"result": 3},  # no reservation
             }
@@ -629,7 +629,7 @@ class TestStaleMacBadgeEnrichment(_ViewTestBase):
         "hw-address": "aa:bb:cc:dd:ee:99",  # different MAC → stale
         "subnet-id": 7,
     }
-    _CONFIG4 = {"result": 0, "arguments": {"Dhcp4": {"subnet4": [{"id": 7, "subnet": "10.0.0.0/24"}]}}}
+    _SUBNETS4 = _subnet_list(4, [{"id": 7, "subnet": "10.0.0.0/24"}])
 
     def _htmx_get(self, url, data):
         return self.client.get(url, data=data, HTTP_HX_REQUEST="true")
@@ -638,7 +638,7 @@ class TestStaleMacBadgeEnrichment(_ViewTestBase):
         """stub_kea responses for a single IP-matched lease with *reservation*."""
         return stub_kea(
             {
-                "config-get": self._CONFIG4,
+                "subnet4-list": self._SUBNETS4,
                 "lease4-get": {"result": 0, "arguments": dict(self._LEASE4)},
                 "reservation-get": {"result": 0, "arguments": reservation},
             }
@@ -969,14 +969,14 @@ class TestLeaseStateFilter(_ViewTestBase):
     def _url4(self):
         return reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
 
-    # Subnet quick-select fetched via config-get; reservation enrichment finds none.
-    _CONFIG4 = {"result": 0, "arguments": {"Dhcp4": {"subnet4": [{"id": 1, "subnet": "10.0.0.0/24"}]}}}
+    # Subnet suggestions fetched via subnet4-list; reservation enrichment finds none.
+    _SUBNETS4 = _subnet_list(4, [{"id": 1, "subnet": "10.0.0.0/24"}])
 
     def test_state_column_rendered_in_table(self):
         """Lease table includes a state_label column header."""
         with stub_kea(
             {
-                "config-get": self._CONFIG4,
+                "subnet4-list": self._SUBNETS4,
                 "lease4-get-by-hw-address": _STATE_LEASES_RESP[0],
                 "reservation-get": {"result": 3},
             }
@@ -991,7 +991,7 @@ class TestLeaseStateFilter(_ViewTestBase):
         active_lease = _STATE_LEASES_RESP[0]["arguments"]["leases"][0]
         with stub_kea(
             {
-                "config-get": self._CONFIG4,
+                "subnet4-list": self._SUBNETS4,
                 "lease4-get-by-hw-address": {"result": 0, "arguments": {"leases": [active_lease]}},
                 "reservation-get": {"result": 3},
             }
@@ -1005,7 +1005,7 @@ class TestLeaseStateFilter(_ViewTestBase):
         declined_lease = _STATE_LEASES_RESP[0]["arguments"]["leases"][1]
         with stub_kea(
             {
-                "config-get": self._CONFIG4,
+                "subnet4-list": self._SUBNETS4,
                 "lease4-get-by-hw-address": {"result": 0, "arguments": {"leases": [declined_lease]}},
                 "reservation-get": {"result": 3},
             }
@@ -1018,7 +1018,7 @@ class TestLeaseStateFilter(_ViewTestBase):
         """State filter=1 (Declined) excludes Active leases from search results."""
         with stub_kea(
             {
-                "config-get": self._CONFIG4,
+                "subnet4-list": self._SUBNETS4,
                 "lease4-get-by-hostname": _STATE_LEASES_RESP[0],
                 "reservation-get": {"result": 3},
             }
@@ -1034,7 +1034,7 @@ class TestLeaseStateFilter(_ViewTestBase):
         """Empty state filter (Any) returns all leases."""
         with stub_kea(
             {
-                "config-get": self._CONFIG4,
+                "subnet4-list": self._SUBNETS4,
                 "lease4-get-by-hostname": _STATE_LEASES_RESP[0],
                 "reservation-get": {"result": 3},
             }
@@ -1048,7 +1048,7 @@ class TestLeaseStateFilter(_ViewTestBase):
     def test_state_filter_applied_on_paginated_subnet_search(self):
         """State filter also applies to paginated subnet-based search."""
         with stub_kea(
-            {"config-get": self._CONFIG4, "lease4-get-page": _PAGE_LEASES_RESP[0], "reservation-get": {"result": 3}}
+            {"subnet4-list": self._SUBNETS4, "lease4-get-page": _PAGE_LEASES_RESP[0], "reservation-get": {"result": 3}}
         ):
             response = self._htmx_get(
                 self._url4(),
@@ -1200,7 +1200,7 @@ class TestLeaseAddSyncToNetBox(_ViewTestBase):
         return data
 
     # A followed redirect lands on the leases page, which fetches the subnet quick-select.
-    _CONFIG4 = {"result": 0, "arguments": {"Dhcp4": {"subnet4": []}}}
+    _SUBNETS4 = _subnet_list(4, [])
 
     def test_lease4_add_form_has_sync_to_netbox_field(self):
         """GET lease4 add page renders a sync_to_netbox checkbox."""
@@ -1208,7 +1208,7 @@ class TestLeaseAddSyncToNetBox(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("sync_to_netbox", response.content.decode())
 
-    @patch("netbox_kea.views.leases.sync_lease_to_netbox")
+    @patch("netbox_kea.views.leases.sync_lease_to_netbox", autospec=True)
     def test_post_lease4_add_with_sync_calls_sync_lease(self, mock_sync):
         """POST with sync_to_netbox=on calls sync_lease_to_netbox() with the lease dict."""
         mock_sync.return_value = (MagicMock(spec=NbIP), True, False)
@@ -1219,7 +1219,7 @@ class TestLeaseAddSyncToNetBox(_ViewTestBase):
         lease = mock_sync.call_args[0][0]
         self.assertEqual(lease["ip-address"], "10.0.0.200")
 
-    @patch("netbox_kea.views.leases.sync_lease_to_netbox")
+    @patch("netbox_kea.views.leases.sync_lease_to_netbox", autospec=True)
     def test_post_lease4_add_without_sync_does_not_call_sync(self, mock_sync):
         """POST without sync_to_netbox does NOT call sync_lease_to_netbox()."""
         with stub_kea({"lease4-add": {"result": 0}}):
@@ -1227,7 +1227,7 @@ class TestLeaseAddSyncToNetBox(_ViewTestBase):
         self.assertEqual(response.status_code, 302)
         mock_sync.assert_not_called()
 
-    @patch("netbox_kea.views.leases.sync_lease_to_netbox")
+    @patch("netbox_kea.views.leases.sync_lease_to_netbox", autospec=True)
     def test_post_lease4_add_sync_failure_does_not_prevent_kea_success(self, mock_sync):
         """Sync failure is a warning; the lease creation still succeeds (302 redirect)."""
         mock_sync.side_effect = ValueError("NetBox unreachable")
@@ -1236,7 +1236,7 @@ class TestLeaseAddSyncToNetBox(_ViewTestBase):
         self.assertEqual(response.status_code, 302)
         self.assertEqual(kea.commands().count("lease4-add"), 1)
 
-    @patch("netbox_kea.views.leases.sync_lease_to_netbox")
+    @patch("netbox_kea.views.leases.sync_lease_to_netbox", autospec=True)
     def test_post_lease4_add_sync_skipped_without_ipam_permission(self, mock_sync):
         """A user with server-change but no IPAM write permission must not trigger the IPAM sync."""
         from django.contrib.auth import get_user_model
@@ -1263,7 +1263,7 @@ class TestLeaseAddSyncToNetBox(_ViewTestBase):
 
         # self.client is the superuser (has IPAM perms) → reaches the real sync.
         IPAddress.objects.create(address="10.0.0.200/24", status="active", description="Router loopback")
-        with stub_kea({"lease4-add": {"result": 0}, "config-get": self._CONFIG4}):
+        with stub_kea({"lease4-add": {"result": 0}, "subnet4-list": self._SUBNETS4}):
             response = self.client.post(self._url(version=4), self._post4(sync=True), follow=True)
         self.assertEqual(response.status_code, 200)
         msgs = [m.message for m in response.context["messages"]]
@@ -1281,7 +1281,7 @@ class TestLeaseAddSyncToNetBox(_ViewTestBase):
         from ipam.models import IPAddress
 
         # No pre-existing row → the real sync creates it, no conflict → success message.
-        with stub_kea({"lease4-add": {"result": 0}, "config-get": self._CONFIG4}):
+        with stub_kea({"lease4-add": {"result": 0}, "subnet4-list": self._SUBNETS4}):
             response = self.client.post(self._url(version=4), self._post4(sync=True), follow=True)
         self.assertEqual(response.status_code, 200)
         msgs = [m.message for m in response.context["messages"]]
@@ -1590,8 +1590,12 @@ class TestEnrichLeasesWithBadgesCanChange(_ViewTestBase):
         server = self.server
         lease = {"ip_address": "10.0.0.1", "hw_address": "aa:bb:cc:dd:ee:ff"}
         with (
-            patch("netbox_kea.views.leases._fetch_reservation_by_ip_for_leases", return_value=({}, False, set())),
-            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
+            patch(
+                "netbox_kea.views.leases._fetch_reservation_by_ip_for_leases",
+                return_value=({}, False, set()),
+                autospec=True,
+            ),
+            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}, autospec=True),
             stub_kea({"reservation-get": {"result": 3}}),
         ):
             _enrich_leases_with_badges([lease], server, 4, can_delete=False, can_change=False)
@@ -1605,8 +1609,12 @@ class TestEnrichLeasesWithBadgesCanChange(_ViewTestBase):
         server = self.server
         lease = {"ip_address": "10.0.0.1", "hw_address": "aa:bb:cc:dd:ee:ff"}
         with (
-            patch("netbox_kea.views.leases._fetch_reservation_by_ip_for_leases", return_value=({}, False, set())),
-            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
+            patch(
+                "netbox_kea.views.leases._fetch_reservation_by_ip_for_leases",
+                return_value=({}, False, set()),
+                autospec=True,
+            ),
+            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}, autospec=True),
             stub_kea({"reservation-get": {"result": 3}}),
         ):
             _enrich_leases_with_badges([lease], server, 4, can_delete=False, can_change=True)
@@ -1634,8 +1642,9 @@ class TestEnrichLeasesReservationFlags(_ViewTestBase):
             patch(
                 "netbox_kea.views.leases._fetch_reservation_by_ip_for_leases",
                 return_value=({"10.0.0.5": rsv}, True, set()),
+                autospec=True,
             ),
-            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
+            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}, autospec=True),
             stub_kea({"reservation-get": {"result": 3}}),
         ):
             _enrich_leases_with_badges([lease], server, 4, can_delete=False, can_change=False)
@@ -1648,8 +1657,12 @@ class TestEnrichLeasesReservationFlags(_ViewTestBase):
         server = self.server
         lease = {"ip_address": "10.0.0.99", "hw_address": "bb:bb:bb:bb:bb:bb"}
         with (
-            patch("netbox_kea.views.leases._fetch_reservation_by_ip_for_leases", return_value=({}, True, set())),
-            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
+            patch(
+                "netbox_kea.views.leases._fetch_reservation_by_ip_for_leases",
+                return_value=({}, True, set()),
+                autospec=True,
+            ),
+            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}, autospec=True),
             stub_kea({"reservation-get": {"result": 3}}),
         ):
             _enrich_leases_with_badges([lease], server, 4, can_delete=False, can_change=False)
@@ -1666,8 +1679,9 @@ class TestEnrichLeasesReservationFlags(_ViewTestBase):
             patch(
                 "netbox_kea.views.leases._fetch_reservation_by_ip_for_leases",
                 return_value=({"10.0.0.5": rsv}, True, set()),
+                autospec=True,
             ),
-            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
+            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}, autospec=True),
             stub_kea({"reservation-get": {"result": 3}}),
         ):
             _enrich_leases_with_badges([lease], server, 4, can_delete=False, can_change=False)
@@ -1687,8 +1701,9 @@ class TestEnrichLeasesReservationFlags(_ViewTestBase):
             patch(
                 "netbox_kea.views.leases._fetch_reservation_by_ip_for_leases",
                 return_value=({"10.0.0.5": rsv}, True, set()),
+                autospec=True,
             ),
-            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
+            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}, autospec=True),
             stub_kea({"reservation-get": {"result": 3}}),
         ):
             _enrich_leases_with_badges([lease], server, 4, can_delete=False, can_change=True)
@@ -1702,8 +1717,12 @@ class TestEnrichLeasesReservationFlags(_ViewTestBase):
         server = self.server
         lease = {"ip_address": "10.0.0.99", "hw_address": "cc:cc:cc:cc:cc:cc"}
         with (
-            patch("netbox_kea.views.leases._fetch_reservation_by_ip_for_leases", return_value=({}, True, set())),
-            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
+            patch(
+                "netbox_kea.views.leases._fetch_reservation_by_ip_for_leases",
+                return_value=({}, True, set()),
+                autospec=True,
+            ),
+            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}, autospec=True),
             stub_kea({"reservation-get": {"result": 3}}),
         ):
             _enrich_leases_with_badges([lease], server, 4, can_delete=False, can_change=False)
@@ -1716,9 +1735,15 @@ class TestEnrichLeasesReservationFlags(_ViewTestBase):
         server = self.server
         lease = {"ip_address": "10.0.0.99", "hw_address": "cc:cc:cc:cc:cc:cc", "subnet_id": 1}
         with (
-            patch("netbox_kea.views.leases._fetch_reservation_by_ip_for_leases", return_value=({}, True, set())),
-            patch("netbox_kea.views.leases._fetch_reservation_by_mac_for_leases", return_value=({}, set())),
-            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
+            patch(
+                "netbox_kea.views.leases._fetch_reservation_by_ip_for_leases",
+                return_value=({}, True, set()),
+                autospec=True,
+            ),
+            patch(
+                "netbox_kea.views.leases._fetch_reservation_by_mac_for_leases", return_value=({}, set()), autospec=True
+            ),
+            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}, autospec=True),
             stub_kea({"reservation-get": {"result": 3}}),
         ):
             _enrich_leases_with_badges([lease], server, 4, can_delete=False, can_change=True)
@@ -1734,7 +1759,7 @@ class TestEnrichLeasesReservationFlags(_ViewTestBase):
 class TestEnrichLeasesExceptionPaths(_ViewTestBase):
     """_enrich_leases_with_badges exception branches (KeaException result≠2 and generic)."""
 
-    _CONFIG4 = {"result": 0, "arguments": {"Dhcp4": {"subnet4": [{"id": 1, "subnet": "10.0.0.0/24"}]}}}
+    _SUBNETS4 = _subnet_list(4, [{"id": 1, "subnet": "10.0.0.0/24"}])
     _LEASE4 = {
         "ip-address": "10.0.0.1",
         "hw-address": "aa:bb:cc:dd:ee:ff",
@@ -1753,10 +1778,11 @@ class TestEnrichLeasesExceptionPaths(_ViewTestBase):
         # Real lease search returns one lease; force the reservation fetch to raise so the
         # enrichment outer handler is exercised. (failed_ips then short-circuits the MAC pass.)
         with (
-            stub_kea({"config-get": self._CONFIG4, "lease4-get": {"result": 0, "arguments": dict(self._LEASE4)}}),
+            stub_kea({"subnet4-list": self._SUBNETS4, "lease4-get": {"result": 0, "arguments": dict(self._LEASE4)}}),
             patch(
                 "netbox_kea.views.leases._fetch_reservation_by_ip_for_leases",
                 side_effect=KeaException({"result": 1, "text": "error"}, index=0),
+                autospec=True,
             ),
         ):
             response = self.client.get(self._url() + "?by=ip&q=10.0.0.1", HTTP_HX_REQUEST="true")
@@ -1765,10 +1791,11 @@ class TestEnrichLeasesExceptionPaths(_ViewTestBase):
     def test_generic_exception_in_enrichment_swallowed(self):
         """Generic exception in enrichment is swallowed and view returns 200."""
         with (
-            stub_kea({"config-get": self._CONFIG4, "lease4-get": {"result": 0, "arguments": dict(self._LEASE4)}}),
+            stub_kea({"subnet4-list": self._SUBNETS4, "lease4-get": {"result": 0, "arguments": dict(self._LEASE4)}}),
             patch(
                 "netbox_kea.views.leases._fetch_reservation_by_ip_for_leases",
                 side_effect=RuntimeError("unexpected error"),
+                autospec=True,
             ),
         ):
             response = self.client.get(self._url() + "?by=ip&q=10.0.0.1", HTTP_HX_REQUEST="true")
@@ -1852,14 +1879,14 @@ class TestJournalHelperEdgeCases(_ViewTestBase):
 class TestHTMXExceptionHandler(_ViewTestBase):
     """Lines 731-736: exception during HTMX partial rendering returns error partial."""
 
-    _CONFIG4 = {"result": 0, "arguments": {"Dhcp4": {"subnet4": [{"id": 1, "subnet": "10.0.0.0/24"}]}}}
+    _SUBNETS4 = _subnet_list(4, [{"id": 1, "subnet": "10.0.0.0/24"}])
 
     def _url(self):
         return reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
 
     def test_htmx_exception_returns_error_partial(self):
         # A RuntimeError from the lease fetch must be caught and rendered as the HTMX error partial.
-        with stub_kea({"config-get": self._CONFIG4, "lease4-get": RuntimeError("boom")}):
+        with stub_kea({"subnet4-list": self._SUBNETS4, "lease4-get": RuntimeError("boom")}):
             response = self.client.get(
                 self._url() + "?q=10.0.0.1&by=ip",
                 HTTP_HX_REQUEST="true",
@@ -2195,6 +2222,7 @@ class TestEnrichLeasesExceptionPaths2(_ViewTestBase):
             patch(
                 "netbox_kea.views.leases._fetch_reservation_by_ip_for_leases",
                 side_effect=KeaException({"result": 2, "text": "hook not loaded"}, index=0),
+                autospec=True,
             ),
         ):
             response = self.client.get(self._url())
@@ -2209,6 +2237,7 @@ class TestEnrichLeasesExceptionPaths2(_ViewTestBase):
             patch(
                 "netbox_kea.views.leases._fetch_reservation_by_ip_for_leases",
                 side_effect=KeaException({"result": 1, "text": "other error"}, index=0),
+                autospec=True,
             ),
         ):
             response = self.client.get(self._url())
@@ -2221,6 +2250,7 @@ class TestEnrichLeasesExceptionPaths2(_ViewTestBase):
             patch(
                 "netbox_kea.views.leases._fetch_reservation_by_ip_for_leases",
                 side_effect=RuntimeError("unexpected crash"),
+                autospec=True,
             ),
         ):
             response = self.client.get(self._url())
@@ -2244,7 +2274,7 @@ class TestLeaseBulkImportEdgeCases(_ViewTestBase):
         response = self.client.post(self._url(), {})
         self.assertEqual(response.status_code, 200)
 
-    @patch("netbox_kea.views.sync_views.parse_lease_csv")
+    @patch("netbox_kea.views.sync_views.parse_lease_csv", autospec=True)
     def test_parse_error_shows_form_error(self, mock_parse):
         """Lines 4617-4619: ValueError from parse_lease_csv adds generic form error (no raw exception text)."""
         import io
@@ -2287,7 +2317,7 @@ class TestLeaseBulkImportEdgeCases(_ViewTestBase):
 class TestGetLeasesPageEdgeCases(_ViewTestBase):
     """Edge cases in BaseServerLeasesView.get_leases_page()."""
 
-    _CONFIG4 = {"result": 0, "arguments": {"Dhcp4": {"subnet4": [{"id": 1, "subnet": "10.0.0.0/24"}]}}}
+    _SUBNETS4 = _subnet_list(4, [{"id": 1, "subnet": "10.0.0.0/24"}])
 
     def _url(self):
         return reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
@@ -2296,7 +2326,7 @@ class TestGetLeasesPageEdgeCases(_ViewTestBase):
         """Line 464: subnet.network == 0 → frm = str(subnet.network) = '0.0.0.0'."""
         # 0.0.0.0/8: int(network) == 0 → line 464 fires
         with stub_kea(
-            {"config-get": self._CONFIG4, "lease4-get-page": {"result": 0, "arguments": {"count": 0, "leases": []}}}
+            {"subnet4-list": self._SUBNETS4, "lease4-get-page": {"result": 0, "arguments": {"count": 0, "leases": []}}}
         ):
             response = self.client.get(
                 self._url(),
@@ -2307,7 +2337,7 @@ class TestGetLeasesPageEdgeCases(_ViewTestBase):
 
     def test_null_args_raises_runtime_error(self):
         """Line 480: lease-get-page returns arguments=None → RuntimeError (caught by HTMX handler)."""
-        with stub_kea({"config-get": self._CONFIG4, "lease4-get-page": {"result": 0, "arguments": None}}):
+        with stub_kea({"subnet4-list": self._SUBNETS4, "lease4-get-page": {"result": 0, "arguments": None}}):
             response = self.client.get(
                 self._url(),
                 {"by": "subnet", "q": "10.0.0.0/24"},
@@ -2324,7 +2354,7 @@ class TestGetLeasesPageEdgeCases(_ViewTestBase):
             "result": 0,
             "arguments": {"count": per_page, "leases": [{"ip-address": "10.0.1.1", "valid-lft": 3600, "state": 0}]},
         }
-        with stub_kea({"config-get": self._CONFIG4, "lease4-get-page": page}):
+        with stub_kea({"subnet4-list": self._SUBNETS4, "lease4-get-page": page}):
             response = self.client.get(
                 self._url(),
                 {"by": "subnet", "q": "10.0.0.0/24"},
@@ -2343,8 +2373,8 @@ class TestGetLeasesPageAllLeasesMode(_ViewTestBase):
     ``subnet is None`` branch was otherwise unexercised.
     """
 
-    _CONFIG4 = {"result": 0, "arguments": {"Dhcp4": {"subnet4": []}}}
-    _CONFIG6 = {"result": 0, "arguments": {"Dhcp6": {"subnet6": []}}}
+    _SUBNETS4 = _subnet_list(4, [])
+    _SUBNETS6 = _subnet_list(6, [])
     _EMPTY_PAGE = {"result": 0, "arguments": {"count": 0, "leases": []}}
 
     def _url4(self):
@@ -2355,14 +2385,14 @@ class TestGetLeasesPageAllLeasesMode(_ViewTestBase):
 
     def test_all_leases_v4_starts_from_zero_address(self):
         """``by=""`` on the v4 view must call lease4-get-page with ``from="0.0.0.0"``."""
-        with stub_kea({"config-get": self._CONFIG4, "lease4-get-page": self._EMPTY_PAGE}) as kea:
+        with stub_kea({"subnet4-list": self._SUBNETS4, "lease4-get-page": self._EMPTY_PAGE}) as kea:
             response = self.client.get(self._url4(), {"by": ""}, HTTP_HX_REQUEST="true")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(kea.bodies("lease4-get-page")[0]["arguments"]["from"], "0.0.0.0")
 
     def test_all_leases_v6_starts_from_unspecified_address(self):
         """``by=""`` on the v6 view must call lease6-get-page with ``from="::"``."""
-        with stub_kea({"config-get": self._CONFIG6, "lease6-get-page": self._EMPTY_PAGE}) as kea:
+        with stub_kea({"subnet6-list": self._SUBNETS6, "lease6-get-page": self._EMPTY_PAGE}) as kea:
             response = self.client.get(self._url6(), {"by": ""}, HTTP_HX_REQUEST="true")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(kea.bodies("lease6-get-page")[0]["arguments"]["from"], "::")
@@ -2393,8 +2423,8 @@ class TestGetLeasesCoverage(_ViewTestBase):
 
     def test_null_args_from_lease_get_raises_runtime_error(self):
         """Line 535: lease-get returns arguments=None → RuntimeError (caught by HTMX handler)."""
-        config = {"result": 0, "arguments": {"Dhcp4": {"subnet4": []}}}
-        with stub_kea({"config-get": config, "lease4-get": {"result": 0, "arguments": None}}):
+        subnets = _subnet_list(4, [])
+        with stub_kea({"subnet4-list": subnets, "lease4-get": {"result": 0, "arguments": None}}):
             response = self.client.get(
                 self._url(),
                 {"by": "ip", "q": "10.0.0.1"},
@@ -2442,9 +2472,9 @@ class TestHTMXInvalidFormCoverage(_ViewTestBase):
     def test_htmx_invalid_form_returns_partial(self):
         """form.is_valid()==False for HTMX → renders server_dhcp_leases_htmx.html."""
         url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
-        config = {"result": 0, "arguments": {"Dhcp4": {"subnet4": []}}}
+        subnets = _subnet_list(4, [])
         # 'by' has an invalid choice value → form.is_valid() returns False (no lease fetch).
-        with stub_kea({"config-get": config}):
+        with stub_kea({"subnet4-list": subnets}):
             response = self.client.get(
                 url,
                 {"by": "INVALID_CHOICE", "q": "test"},
@@ -2496,7 +2526,7 @@ class TestFetchOneEmptyLease(_ViewTestBase):
 
     def test_lease_without_subnet_id_skips_reservation_lookup(self):
         """Lease without subnet-id → _fetch_one returns (ip, None, True) without API call."""
-        config = {"result": 0, "arguments": {"Dhcp4": {"subnet4": []}}}
+        subnets = _subnet_list(4, [])
         # A lease with ip-address but NO subnet-id → enrichment issues no reservation-get
         # (an empty registry for reservation-get would raise if it were called).
         lease = {
@@ -2504,7 +2534,7 @@ class TestFetchOneEmptyLease(_ViewTestBase):
             "arguments": {"ip-address": "10.0.0.1", "valid-lft": 3600, "state": 0, "hostname": "testhost"},
         }
         url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
-        with stub_kea({"config-get": config, "lease4-get": lease}):
+        with stub_kea({"subnet4-list": subnets, "lease4-get": lease}):
             response = self.client.get(url, {"by": "ip", "q": "10.0.0.1"}, HTTP_HX_REQUEST="true")
         self.assertEqual(response.status_code, 200)
 
@@ -2518,7 +2548,7 @@ class TestFetchOneEmptyLease(_ViewTestBase):
 class TestCombinedLeasesTruncated(_ViewTestBase):
     """Line 4228: _fetch_all_leases_from_server returns was_truncated=True → server name added."""
 
-    @patch("netbox_kea.views.combined._fetch_all_leases_from_server")
+    @patch("netbox_kea.views.combined._fetch_all_leases_from_server", autospec=True)
     def test_truncated_server_name_in_context(self, mock_fetch_all):
         """was_truncated=True → server.name appended to truncated_servers."""
         from netbox_kea.utilities import format_leases
@@ -2551,13 +2581,13 @@ class TestLeasePartialDelete(_ViewTestBase):
         return reverse("plugins:netbox_kea:server_leases4_delete", args=[self.server.pk])
 
     # A followed redirect lands on the leases page, which fetches the subnet quick-select.
-    _CONFIG4 = {"result": 0, "arguments": {"Dhcp4": {"subnet4": []}}}
+    _SUBNETS4 = _subnet_list(4, [])
 
     def test_continues_after_first_delete_error(self):
         """When the first IP fails, the second IP is still deleted."""
         # First lease4-del fails (result 1 → KeaException), second succeeds.
         with stub_kea(
-            {"lease4-del": queued({"result": 1, "text": "not found"}, {"result": 0}), "config-get": self._CONFIG4}
+            {"lease4-del": queued({"result": 1, "text": "not found"}, {"result": 0}), "subnet4-list": self._SUBNETS4}
         ) as kea:
             response = self.client.post(
                 self._url(),
@@ -2569,7 +2599,7 @@ class TestLeasePartialDelete(_ViewTestBase):
 
     def test_success_message_shows_count_of_deleted(self):
         """Success message reflects only the successfully deleted count."""
-        with stub_kea({"lease4-del": {"result": 0}, "config-get": self._CONFIG4}):
+        with stub_kea({"lease4-del": {"result": 0}, "subnet4-list": self._SUBNETS4}):
             response = self.client.post(
                 self._url(),
                 {"lease_ips": ["10.0.0.1", "10.0.0.2"], "_confirm": "1", "pk": ["10.0.0.1", "10.0.0.2"]},
@@ -2581,7 +2611,7 @@ class TestLeasePartialDelete(_ViewTestBase):
     def test_partial_failure_shows_warning(self):
         """When some IPs fail, a warning message about partial failure is shown."""
         with stub_kea(
-            {"lease4-del": queued({"result": 1, "text": "not found"}, {"result": 0}), "config-get": self._CONFIG4}
+            {"lease4-del": queued({"result": 1, "text": "not found"}, {"result": 0}), "subnet4-list": self._SUBNETS4}
         ):
             response = self.client.post(
                 self._url(),
@@ -2621,11 +2651,11 @@ class TestLeaseExportAllExceptNarrowing(_ViewTestBase):
 class TestEnrichLeasesFailedIpsSeeding(_ViewTestBase):
     """On enrichment error, all lease IPs are marked as indeterminate (failed_ips)."""
 
-    @patch("netbox_kea.views.leases._fetch_reservation_by_ip_for_leases")
+    @patch("netbox_kea.views.leases._fetch_reservation_by_ip_for_leases", autospec=True)
     def test_reservation_enrichment_exception_does_not_show_not_reserved(self, mock_fetch_reservations):
         """When reservation lookup raises an unexpected Exception, leases must not
         incorrectly appear as 'not reserved' (no create-reservation link shown)."""
-        config = {"result": 0, "arguments": {"Dhcp4": {"subnet4": [{"id": 1, "subnet": "10.0.0.0/24"}]}}}
+        subnets = _subnet_list(4, [{"id": 1, "subnet": "10.0.0.0/24"}])
         raw_leases = [
             {
                 "ip-address": "10.0.0.1",
@@ -2641,7 +2671,7 @@ class TestEnrichLeasesFailedIpsSeeding(_ViewTestBase):
 
         url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
         # by=subnet_id → lease4-get-all with subnets=[1]; q="1" is a valid integer subnet ID.
-        with stub_kea({"config-get": config, "lease4-get-all": {"result": 0, "arguments": {"leases": raw_leases}}}):
+        with stub_kea({"subnet4-list": subnets, "lease4-get-all": {"result": 0, "arguments": {"leases": raw_leases}}}):
             response = self.client.get(url, HTTP_HX_REQUEST="true", data={"by": "subnet_id", "q": "1"})
 
         self.assertEqual(response.status_code, 200)
@@ -2680,7 +2710,7 @@ class TestLeaseExportStateFilter(_ViewTestBase):
                 "state": 1,
             },
         ]
-        config = {"result": 0, "arguments": {"Dhcp4": {"subnet4": [{"id": 1, "subnet": "10.0.0.0/24"}]}}}
+        subnets = _subnet_list(4, [{"id": 1, "subnet": "10.0.0.0/24"}])
         # Page 1 returns both leases; page 2 signals end-of-data (result 3) so the
         # export pagination loop terminates regardless of the server's per-page size.
         pages = [
@@ -2688,7 +2718,7 @@ class TestLeaseExportStateFilter(_ViewTestBase):
             {"result": 3, "arguments": None},
         ]
         # Request export with state=1 (declined only)
-        with stub_kea({"config-get": config, "lease4-get-page": queued(*pages)}):
+        with stub_kea({"subnet4-list": subnets, "lease4-get-page": queued(*pages)}):
             response = self.client.get(
                 self._url(),
                 {
@@ -2718,9 +2748,9 @@ class TestHtmxHandlerExceptNarrowing(_ViewTestBase):
 
     def test_attribute_error_not_swallowed_by_htmx_handler(self):
         """An AttributeError inside the HTMX handler must propagate (not be caught silently)."""
-        config = {"result": 0, "arguments": {"Dhcp4": {"subnet4": []}}}
+        subnets = _subnet_list(4, [])
         # The HTMX handler narrows its except clauses, so an AttributeError propagates.
-        with stub_kea({"config-get": config, "lease4-get-page": AttributeError("stub programming bug")}):
+        with stub_kea({"subnet4-list": subnets, "lease4-get-page": AttributeError("stub programming bug")}):
             with self.assertRaises(AttributeError):
                 self.client.get(
                     self._url(),
@@ -2736,7 +2766,7 @@ class TestLeaseDeleteLoopTransportErrors(_ViewTestBase):
     def _url(self):
         return reverse("plugins:netbox_kea:server_leases4_delete", args=[self.server.pk])
 
-    _CONFIG4 = {"result": 0, "arguments": {"Dhcp4": {"subnet4": []}}}
+    _SUBNETS4 = _subnet_list(4, [])
 
     def test_request_exception_continues_loop(self):
         import requests as _requests
@@ -2747,7 +2777,7 @@ class TestLeaseDeleteLoopTransportErrors(_ViewTestBase):
                 return _requests.ConnectionError("down")
             return {"result": 0}
 
-        with stub_kea({"lease4-del": del_resp, "config-get": self._CONFIG4}) as kea:
+        with stub_kea({"lease4-del": del_resp, "subnet4-list": self._SUBNETS4}) as kea:
             response = self.client.post(
                 self._url(),
                 {"pk": ["10.0.0.1", "10.0.0.2"], "_confirm": "1"},
@@ -2762,7 +2792,7 @@ class TestLeaseDeleteLoopTransportErrors(_ViewTestBase):
                 return ValueError("bad JSON")
             return {"result": 0}
 
-        with stub_kea({"lease4-del": del_resp, "config-get": self._CONFIG4}) as kea:
+        with stub_kea({"lease4-del": del_resp, "subnet4-list": self._SUBNETS4}) as kea:
             response = self.client.post(
                 self._url(),
                 {"pk": ["10.0.0.1", "10.0.0.2"], "_confirm": "1"},
@@ -2779,12 +2809,12 @@ class TestLeaseExportTransportErrors(_ViewTestBase):
     def _url(self):
         return reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
 
-    _CONFIG4 = {"result": 0, "arguments": {"Dhcp4": {"subnet4": []}}}
+    _SUBNETS4 = _subnet_list(4, [])
 
     def test_request_exception_redirects_with_error(self):
         import requests as _requests
 
-        with stub_kea({"config-get": self._CONFIG4, "lease4-get-page": _requests.ConnectionError("down")}):
+        with stub_kea({"subnet4-list": self._SUBNETS4, "lease4-get-page": _requests.ConnectionError("down")}):
             response = self.client.get(
                 self._url(),
                 {"export": "1", "by": "subnet", "q": "10.0.0.0/24"},
@@ -2792,7 +2822,7 @@ class TestLeaseExportTransportErrors(_ViewTestBase):
         self.assertIn(response.status_code, [200, 302])
 
     def test_value_error_redirects_with_error(self):
-        with stub_kea({"config-get": self._CONFIG4, "lease4-get-page": ValueError("bad JSON")}):
+        with stub_kea({"subnet4-list": self._SUBNETS4, "lease4-get-page": ValueError("bad JSON")}):
             response = self.client.get(
                 self._url(),
                 {"export": "1", "by": "subnet", "q": "10.0.0.0/24"},
@@ -2879,7 +2909,7 @@ class TestLeaseAddValueError(_ViewTestBase):
 class TestLeaseJournalExceptionNarrowing(_ViewTestBase):
     """_add_lease_journal except must only catch DB errors, not all exceptions."""
 
-    @patch("netbox_kea.views.leases._add_lease_journal")
+    @patch("netbox_kea.views.leases._add_lease_journal", autospec=True)
     def test_database_error_does_not_fail_request(self, mock_journal):
         """DatabaseError from _add_lease_journal must be caught; lease add still redirects."""
         from django.db import DatabaseError
@@ -2890,7 +2920,7 @@ class TestLeaseJournalExceptionNarrowing(_ViewTestBase):
             response = self.client.post(url, {"ip_address": "10.0.0.55"})
         self.assertIn(response.status_code, [200, 302])
 
-    @patch("netbox_kea.views.leases._add_lease_journal")
+    @patch("netbox_kea.views.leases._add_lease_journal", autospec=True)
     def test_operational_error_does_not_fail_request(self, mock_journal):
         """OperationalError from _add_lease_journal must be caught; lease add still redirects."""
         from django.db import OperationalError
@@ -2919,14 +2949,14 @@ class TestLeaseExportClientError(_ViewTestBase):
         # A cert without a key makes the real KeaClient constructor raise ValueError.
         bad = _make_db_server(name="badtls-export", client_cert_path="/x/cert.pem")
         url = reverse("plugins:netbox_kea:server_leases4", args=[bad.pk])
-        with stub_kea({"config-get": {"result": 0, "arguments": {"Dhcp4": {"subnet4": []}}}}):
+        with stub_kea({"subnet4-list": _subnet_list(4, [])}):
             response = self.client.get(url, {"export": "form", "by": "subnet", "q": "10.0.0.0/24"})
         self.assertIn(response.status_code, [200, 302])
 
     def test_runtime_error_during_fetch_redirects(self):
         """RuntimeError during lease fetch in export redirects with error."""
-        config = {"result": 0, "arguments": {"Dhcp4": {"subnet4": []}}}
-        with stub_kea({"config-get": config, "lease4-get-page": RuntimeError("unexpected")}):
+        subnets = _subnet_list(4, [])
+        with stub_kea({"subnet4-list": subnets, "lease4-get-page": RuntimeError("unexpected")}):
             response = self.client.get(self._url(), {"export": "form", "by": "subnet", "q": "10.0.0.0/24"})
         self.assertIn(response.status_code, [200, 302])
 
@@ -2943,12 +2973,12 @@ class TestLeaseHtmxErrorHandler(_ViewTestBase):
     def _url(self):
         return reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
 
-    _CONFIG4 = {"result": 0, "arguments": {"Dhcp4": {"subnet4": []}}}
+    _SUBNETS4 = _subnet_list(4, [])
 
     def test_kea_exception_renders_htmx_error(self):
         """KeaException in HTMX handler renders error template."""
         # result=1 on lease4-get-page makes the real client raise KeaException.
-        with stub_kea({"config-get": self._CONFIG4, "lease4-get-page": {"result": 1, "text": "err"}}):
+        with stub_kea({"subnet4-list": self._SUBNETS4, "lease4-get-page": {"result": 1, "text": "err"}}):
             response = self.client.get(
                 self._url(),
                 {"by": "subnet", "q": "10.0.0.0/24"},
@@ -2958,7 +2988,7 @@ class TestLeaseHtmxErrorHandler(_ViewTestBase):
 
     def test_request_exception_renders_htmx_error(self):
         """requests.RequestException in HTMX handler renders error template."""
-        with stub_kea({"config-get": self._CONFIG4, "lease4-get-page": requests.ConnectionError("down")}):
+        with stub_kea({"subnet4-list": self._SUBNETS4, "lease4-get-page": requests.ConnectionError("down")}):
             response = self.client.get(
                 self._url(),
                 {"by": "subnet", "q": "10.0.0.0/24"},
@@ -2979,11 +3009,11 @@ class TestLeaseEditGetValidation(_ViewTestBase):
     def _url(self, ip="10.0.0.1"):
         return reverse("plugins:netbox_kea:server_lease4_edit", args=[self.server.pk, ip])
 
-    _CONFIG4 = {"result": 0, "arguments": {"Dhcp4": {"subnet4": []}}}
+    _SUBNETS4 = _subnet_list(4, [])
 
     def test_lease_not_found_result3_redirects(self):
         """result=3 from Kea (lease not found) shows warning and redirects."""
-        with stub_kea({"lease4-get": {"result": 3, "text": "not found"}, "config-get": self._CONFIG4}):
+        with stub_kea({"lease4-get": {"result": 3, "text": "not found"}, "subnet4-list": self._SUBNETS4}):
             response = self.client.get(self._url(), follow=True)
         self.assertEqual(response.status_code, 200)
 
@@ -2991,13 +3021,13 @@ class TestLeaseEditGetValidation(_ViewTestBase):
         """An empty (shapeless) response list redirects with error."""
         # A real command returning [] passes the result-code check but fails the
         # view's resp[0] shape guard → redirect.
-        with stub_kea({"lease4-get": lambda body: [], "config-get": self._CONFIG4}):
+        with stub_kea({"lease4-get": lambda body: [], "subnet4-list": self._SUBNETS4}):
             response = self.client.get(self._url(), follow=True)
         self.assertEqual(response.status_code, 200)
 
     def test_bad_arguments_redirects(self):
         """Non-dict arguments in response redirects with error."""
-        with stub_kea({"lease4-get": {"result": 0, "arguments": "not a dict"}, "config-get": self._CONFIG4}):
+        with stub_kea({"lease4-get": {"result": 0, "arguments": "not a dict"}, "subnet4-list": self._SUBNETS4}):
             response = self.client.get(self._url(), follow=True)
         self.assertEqual(response.status_code, 200)
 
@@ -3006,7 +3036,7 @@ class TestLeaseEditGetValidation(_ViewTestBase):
         # A cert without a key makes the real KeaClient constructor raise ValueError.
         bad = _make_db_server(name="badtls-edit", client_cert_path="/x/cert.pem")
         url = reverse("plugins:netbox_kea:server_lease4_edit", args=[bad.pk, "10.0.0.1"])
-        with stub_kea({"config-get": self._CONFIG4}):
+        with stub_kea({"subnet4-list": self._SUBNETS4}):
             response = self.client.get(url, follow=True)
         self.assertEqual(response.status_code, 200)
 
@@ -3023,18 +3053,18 @@ class TestLeaseUpdatePostErrors(_ViewTestBase):
     def _url(self, ip="10.0.0.1"):
         return reverse("plugins:netbox_kea:server_lease4_edit", args=[self.server.pk, ip])
 
-    _CONFIG4 = {"result": 0, "arguments": {"Dhcp4": {"subnet4": []}}}
+    _SUBNETS4 = _subnet_list(4, [])
 
     def test_request_exception_redirects(self):
         """RequestException from lease_update redirects with error."""
         # lease_update's first command is lease4-get; raising there surfaces the transport error.
-        with stub_kea({"lease4-get": requests.ConnectionError("down"), "config-get": self._CONFIG4}):
+        with stub_kea({"lease4-get": requests.ConnectionError("down"), "subnet4-list": self._SUBNETS4}):
             response = self.client.post(self._url(), {"hostname": "test", "valid_lft": "3600"}, follow=True)
         self.assertEqual(response.status_code, 200)
 
     def test_value_error_redirects(self):
         """ValueError from lease_update redirects with error."""
-        with stub_kea({"lease4-get": ValueError("bad JSON"), "config-get": self._CONFIG4}):
+        with stub_kea({"lease4-get": ValueError("bad JSON"), "subnet4-list": self._SUBNETS4}):
             response = self.client.post(self._url(), {"hostname": "test", "valid_lft": "3600"}, follow=True)
         self.assertEqual(response.status_code, 200)
 
@@ -3089,14 +3119,14 @@ class TestLeaseAddSideEffectErrors(_ViewTestBase):
     def _valid_form(self):
         return {"ip_address": "10.0.0.1", "subnet_id": "1", "hw_address": "aa:bb:cc:00:00:01", "valid_lft": "3600"}
 
-    @patch("netbox_kea.views.leases._add_lease_journal")
+    @patch("netbox_kea.views.leases._add_lease_journal", autospec=True)
     def test_journal_db_error_still_succeeds(self, mock_journal):
         """DatabaseError in journal entry creation still redirects successfully."""
         from django.db import DatabaseError
 
         mock_journal.side_effect = DatabaseError("DB error")
-        config = {"result": 0, "arguments": {"Dhcp4": {"subnet4": []}}}
-        with stub_kea({"lease4-add": {"result": 0}, "config-get": config}):
+        subnets = _subnet_list(4, [])
+        with stub_kea({"lease4-add": {"result": 0}, "subnet4-list": subnets}):
             response = self.client.post(self._url(), self._valid_form(), follow=True)
         self.assertEqual(response.status_code, 200)
 
@@ -3118,12 +3148,17 @@ class TestPendingIpChangeDetection(_ViewTestBase):
         lease = {"ip_address": "10.0.0.10", "hw_address": "aa:bb:cc:dd:ee:01", "subnet_id": 1}
         mac_rsv = {"subnet-id": 1, "ip-address": "10.0.0.20", "hw-address": "aa:bb:cc:dd:ee:01"}
         with (
-            patch("netbox_kea.views.leases._fetch_reservation_by_ip_for_leases", return_value=({}, True, set())),
+            patch(
+                "netbox_kea.views.leases._fetch_reservation_by_ip_for_leases",
+                return_value=({}, True, set()),
+                autospec=True,
+            ),
             patch(
                 "netbox_kea.views.leases._fetch_reservation_by_mac_for_leases",
                 return_value=({("aa:bb:cc:dd:ee:01", 1): mac_rsv}, set()),
+                autospec=True,
             ),
-            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
+            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}, autospec=True),
             stub_kea({"reservation-get": {"result": 3}}),
         ):
             _enrich_leases_with_badges([lease], server, 4, can_delete=False, can_change=True)
@@ -3137,9 +3172,15 @@ class TestPendingIpChangeDetection(_ViewTestBase):
         server = self.server
         lease = {"ip_address": "10.0.0.10", "hw_address": "aa:bb:cc:dd:ee:01", "subnet_id": 1}
         with (
-            patch("netbox_kea.views.leases._fetch_reservation_by_ip_for_leases", return_value=({}, True, set())),
-            patch("netbox_kea.views.leases._fetch_reservation_by_mac_for_leases", return_value=({}, set())),
-            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
+            patch(
+                "netbox_kea.views.leases._fetch_reservation_by_ip_for_leases",
+                return_value=({}, True, set()),
+                autospec=True,
+            ),
+            patch(
+                "netbox_kea.views.leases._fetch_reservation_by_mac_for_leases", return_value=({}, set()), autospec=True
+            ),
+            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}, autospec=True),
             stub_kea({"reservation-get": {"result": 3}}),
         ):
             _enrich_leases_with_badges([lease], server, 4, can_delete=False, can_change=True)
@@ -3154,12 +3195,17 @@ class TestPendingIpChangeDetection(_ViewTestBase):
         lease = {"ip_address": "10.0.0.10", "hw_address": "aa:bb:cc:dd:ee:01", "subnet_id": 1}
         mac_rsv = {"subnet-id": 1, "ip-address": "10.0.0.20", "hw-address": "aa:bb:cc:dd:ee:01"}
         with (
-            patch("netbox_kea.views.leases._fetch_reservation_by_ip_for_leases", return_value=({}, True, set())),
+            patch(
+                "netbox_kea.views.leases._fetch_reservation_by_ip_for_leases",
+                return_value=({}, True, set()),
+                autospec=True,
+            ),
             patch(
                 "netbox_kea.views.leases._fetch_reservation_by_mac_for_leases",
                 return_value=({("aa:bb:cc:dd:ee:01", 1): mac_rsv}, set()),
+                autospec=True,
             ),
-            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
+            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}, autospec=True),
             stub_kea({"reservation-get": {"result": 3}}),
         ):
             _enrich_leases_with_badges([lease], server, 4, can_delete=False, can_change=True)
@@ -3173,12 +3219,17 @@ class TestPendingIpChangeDetection(_ViewTestBase):
         lease = {"ip_address": "10.0.0.10", "hw_address": "aa:bb:cc:dd:ee:01", "subnet_id": 1}
         mac_rsv = {"subnet-id": 1, "ip-address": "10.0.0.20", "hw-address": "aa:bb:cc:dd:ee:01"}
         with (
-            patch("netbox_kea.views.leases._fetch_reservation_by_ip_for_leases", return_value=({}, True, set())),
+            patch(
+                "netbox_kea.views.leases._fetch_reservation_by_ip_for_leases",
+                return_value=({}, True, set()),
+                autospec=True,
+            ),
             patch(
                 "netbox_kea.views.leases._fetch_reservation_by_mac_for_leases",
                 return_value=({("aa:bb:cc:dd:ee:01", 1): mac_rsv}, set()),
+                autospec=True,
             ),
-            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
+            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}, autospec=True),
             stub_kea({"reservation-get": {"result": 3}}),
         ):
             _enrich_leases_with_badges([lease], server, 4, can_delete=False, can_change=True)
@@ -3192,12 +3243,17 @@ class TestPendingIpChangeDetection(_ViewTestBase):
         lease = {"ip_address": "10.0.0.10", "hw_address": "aa:bb:cc:dd:ee:01", "subnet_id": 1}
         mac_rsv = {"subnet-id": 1, "ip-address": "10.0.0.20", "hw-address": "aa:bb:cc:dd:ee:01"}
         with (
-            patch("netbox_kea.views.leases._fetch_reservation_by_ip_for_leases", return_value=({}, True, set())),
+            patch(
+                "netbox_kea.views.leases._fetch_reservation_by_ip_for_leases",
+                return_value=({}, True, set()),
+                autospec=True,
+            ),
             patch(
                 "netbox_kea.views.leases._fetch_reservation_by_mac_for_leases",
                 return_value=({("aa:bb:cc:dd:ee:01", 1): mac_rsv}, set()),
+                autospec=True,
             ),
-            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
+            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}, autospec=True),
             stub_kea({"reservation-get": {"result": 3}}),
         ):
             _enrich_leases_with_badges([lease], server, 4, can_delete=False, can_change=True)
@@ -3212,12 +3268,17 @@ class TestPendingIpChangeDetection(_ViewTestBase):
         lease = {"ip_address": "10.0.0.10", "hw_address": "aa:bb:cc:dd:ee:01", "subnet_id": 1}
         mac_rsv = {"subnet-id": 1, "ip-address": "10.0.0.20", "hw-address": "aa:bb:cc:dd:ee:01"}
         with (
-            patch("netbox_kea.views.leases._fetch_reservation_by_ip_for_leases", return_value=({}, True, set())),
+            patch(
+                "netbox_kea.views.leases._fetch_reservation_by_ip_for_leases",
+                return_value=({}, True, set()),
+                autospec=True,
+            ),
             patch(
                 "netbox_kea.views.leases._fetch_reservation_by_mac_for_leases",
                 return_value=({("aa:bb:cc:dd:ee:01", 1): mac_rsv}, set()),
+                autospec=True,
             ),
-            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
+            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}, autospec=True),
             stub_kea({"reservation-get": {"result": 3}}),
         ):
             _enrich_leases_with_badges([lease], server, 4, can_delete=False, can_change=False)
@@ -3237,9 +3298,12 @@ class TestPendingIpChangeDetection(_ViewTestBase):
             patch(
                 "netbox_kea.views.leases._fetch_reservation_by_ip_for_leases",
                 return_value=({"10.0.0.5": ip_rsv}, True, set()),
+                autospec=True,
             ),
-            patch("netbox_kea.views.leases._fetch_reservation_by_mac_for_leases", return_value=({}, set())),
-            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
+            patch(
+                "netbox_kea.views.leases._fetch_reservation_by_mac_for_leases", return_value=({}, set()), autospec=True
+            ),
+            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}, autospec=True),
             stub_kea({"reservation-get": {"result": 3}}),
         ):
             _enrich_leases_with_badges([lease], server, 4, can_delete=False, can_change=True)
@@ -3256,9 +3320,10 @@ class TestPendingIpChangeDetection(_ViewTestBase):
             patch(
                 "netbox_kea.views.leases._fetch_reservation_by_ip_for_leases",
                 return_value=({}, False, set()),
+                autospec=True,
             ),
-            patch("netbox_kea.views.leases._fetch_reservation_by_mac_for_leases") as mock_mac_fetch,
-            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
+            patch("netbox_kea.views.leases._fetch_reservation_by_mac_for_leases", autospec=True) as mock_mac_fetch,
+            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}, autospec=True),
             stub_kea({}),
         ):
             _enrich_leases_with_badges([lease], server, 4, can_delete=False, can_change=True)
@@ -3271,9 +3336,17 @@ class TestPendingIpChangeDetection(_ViewTestBase):
         server = self.server
         lease = {"ip_address": "10.0.0.10", "hw_address": "aa:bb:cc:dd:ee:01", "subnet_id": 1}
         with (
-            patch("netbox_kea.views.leases._fetch_reservation_by_ip_for_leases", return_value=({}, True, set())),
-            patch("netbox_kea.views.leases._fetch_reservation_by_mac_for_leases", side_effect=RuntimeError("boom")),
-            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}),
+            patch(
+                "netbox_kea.views.leases._fetch_reservation_by_ip_for_leases",
+                return_value=({}, True, set()),
+                autospec=True,
+            ),
+            patch(
+                "netbox_kea.views.leases._fetch_reservation_by_mac_for_leases",
+                side_effect=RuntimeError("boom"),
+                autospec=True,
+            ),
+            patch("netbox_kea.sync.bulk_fetch_netbox_ips", return_value={}, autospec=True),
             stub_kea({"reservation-get": {"result": 3}}),
         ):
             _enrich_leases_with_badges([lease], server, 4, can_delete=False, can_change=True)
@@ -3296,20 +3369,20 @@ class TestPendingIpChangeBadgeRendering(_ViewTestBase):
     def _htmx_get(self, url, data):
         return self.client.get(url, data=data, HTTP_HX_REQUEST="true")
 
-    _CONFIG4 = {"result": 0, "arguments": {"Dhcp4": {"subnet4": [{"id": 7, "subnet": "10.0.0.0/24"}]}}}
+    _SUBNETS4 = _subnet_list(4, [{"id": 7, "subnet": "10.0.0.0/24"}])
     _MAC_RSV = {"subnet-id": 7, "ip-address": "10.0.0.20", "hw-address": "aa:bb:cc:dd:ee:01"}
 
     def _stub(self):
         """Real lease search + IP reservation lookup that finds nothing (result 3)."""
         return stub_kea(
             {
-                "config-get": self._CONFIG4,
+                "subnet4-list": self._SUBNETS4,
                 "lease4-get": {"result": 0, "arguments": dict(self._LEASE4)},
                 "reservation-get": {"result": 3},  # no IP-based match
             }
         )
 
-    @patch("netbox_kea.views.leases._fetch_reservation_by_mac_for_leases")
+    @patch("netbox_kea.views.leases._fetch_reservation_by_mac_for_leases", autospec=True)
     def test_pending_ip_badge_renders_in_response(self, mock_mac_fetch):
         """The lease table must show a 'Pending' badge with the reserved IP when pending change detected."""
         mock_mac_fetch.return_value = ({("aa:bb:cc:dd:ee:01", 7): self._MAC_RSV}, set())
@@ -3320,7 +3393,7 @@ class TestPendingIpChangeBadgeRendering(_ViewTestBase):
         self.assertContains(response, "Pending")
         self.assertContains(response, "10.0.0.20")
 
-    @patch("netbox_kea.views.leases._fetch_reservation_by_mac_for_leases")
+    @patch("netbox_kea.views.leases._fetch_reservation_by_mac_for_leases", autospec=True)
     def test_pending_ip_badge_does_not_show_sync_button(self, mock_mac_fetch):
         """When pending IP change detected, the Sync button must NOT appear."""
         mock_mac_fetch.return_value = ({("aa:bb:cc:dd:ee:01", 7): self._MAC_RSV}, set())
@@ -3422,7 +3495,7 @@ class TestFetchReservationByMac(_ViewTestBase):
 class TestGetLeasesPageDefensiveChecks(_ViewTestBase):
     """Cover the isinstance guards and RuntimeError paths in get_leases_page()."""
 
-    _CONFIG4 = {"result": 0, "arguments": {"Dhcp4": {"subnet4": []}}}
+    _SUBNETS4 = _subnet_list(4, [])
 
     def _url(self):
         return reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
@@ -3430,21 +3503,21 @@ class TestGetLeasesPageDefensiveChecks(_ViewTestBase):
     def test_non_list_leases_raises_runtime_error(self):
         """When Kea returns leases as non-list, the view catches the RuntimeError."""
         page = {"result": 0, "arguments": {"leases": "not-a-list", "count": 0}}
-        with stub_kea({"config-get": self._CONFIG4, "lease4-get-page": page}):
+        with stub_kea({"subnet4-list": self._SUBNETS4, "lease4-get-page": page}):
             response = self.client.get(self._url(), {"by": "subnet", "q": "10.0.0.0/24"}, HTTP_HX_REQUEST="true")
         self.assertEqual(response.status_code, 200)
 
     def test_non_int_count_raises_runtime_error(self):
         """When Kea returns count as non-int, the view catches the RuntimeError."""
         page = {"result": 0, "arguments": {"leases": [], "count": "bad"}}
-        with stub_kea({"config-get": self._CONFIG4, "lease4-get-page": page}):
+        with stub_kea({"subnet4-list": self._SUBNETS4, "lease4-get-page": page}):
             response = self.client.get(self._url(), {"by": "subnet", "q": "10.0.0.0/24"}, HTTP_HX_REQUEST="true")
         self.assertEqual(response.status_code, 200)
 
     def test_filtered_out_items_on_partial_page_returns_empty(self):
         """Items without ip-address are filtered; partial page returns empty gracefully."""
         page = {"result": 0, "arguments": {"leases": [{"no-ip": "bad"}], "count": 1}}
-        with stub_kea({"config-get": self._CONFIG4, "lease4-get-page": page}):
+        with stub_kea({"subnet4-list": self._SUBNETS4, "lease4-get-page": page}):
             response = self.client.get(self._url(), {"by": "subnet", "q": "10.0.0.0/24"}, HTTP_HX_REQUEST="true")
         self.assertEqual(response.status_code, 200)
 
@@ -3546,12 +3619,12 @@ class TestGetLeasesPageMalformedResponse(_ViewTestBase):
     def _url(self):
         return reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
 
-    _CONFIG4 = {"result": 0, "arguments": {"Dhcp4": {"subnet4": []}}}
+    _SUBNETS4 = _subnet_list(4, [])
 
     def test_non_list_leases_payload_renders_error(self):
         """When Kea returns non-list 'leases', the HTMX handler catches RuntimeError."""
         page = {"result": 0, "arguments": {"leases": "not-a-list", "count": 1}}
-        with stub_kea({"config-get": self._CONFIG4, "lease4-get-page": page}):
+        with stub_kea({"subnet4-list": self._SUBNETS4, "lease4-get-page": page}):
             response = self._htmx_get(self._url(), {"by": "subnet", "q": "10.0.0.0/24"})
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "error")
@@ -3559,7 +3632,7 @@ class TestGetLeasesPageMalformedResponse(_ViewTestBase):
     def test_non_int_count_renders_error(self):
         """When Kea returns non-int 'count', the HTMX handler catches RuntimeError."""
         page = {"result": 0, "arguments": {"leases": [], "count": "not-an-int"}}
-        with stub_kea({"config-get": self._CONFIG4, "lease4-get-page": page}):
+        with stub_kea({"subnet4-list": self._SUBNETS4, "lease4-get-page": page}):
             response = self._htmx_get(self._url(), {"by": "subnet", "q": "10.0.0.0/24"})
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "error")
@@ -3569,7 +3642,7 @@ class TestGetLeasesPageMalformedResponse(_ViewTestBase):
         # Entries that are not valid dicts (filtered out by _is_valid_lease_entry).
         per_page = 50
         page = {"result": 0, "arguments": {"leases": ["not-a-dict"] * per_page, "count": per_page}}
-        with stub_kea({"config-get": self._CONFIG4, "lease4-get-page": page}):
+        with stub_kea({"subnet4-list": self._SUBNETS4, "lease4-get-page": page}):
             response = self._htmx_get(
                 self._url(),
                 {"by": "subnet", "q": "10.0.0.0/24", "per_page": str(per_page)},
@@ -3579,7 +3652,7 @@ class TestGetLeasesPageMalformedResponse(_ViewTestBase):
 
     def test_none_arguments_renders_error(self):
         """When resp[0]['arguments'] is None, the HTMX handler catches RuntimeError."""
-        with stub_kea({"config-get": self._CONFIG4, "lease4-get-page": {"result": 0, "arguments": None}}):
+        with stub_kea({"subnet4-list": self._SUBNETS4, "lease4-get-page": {"result": 0, "arguments": None}}):
             response = self._htmx_get(self._url(), {"by": "subnet", "q": "10.0.0.0/24"})
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "error")
@@ -3587,7 +3660,7 @@ class TestGetLeasesPageMalformedResponse(_ViewTestBase):
     def test_empty_response_list_renders_error(self):
         """When Kea returns an empty list, get_leases_page raises RuntimeError."""
         # A real command returning [] passes the result-code check but fails the resp guard.
-        with stub_kea({"config-get": self._CONFIG4, "lease4-get-page": lambda body: []}):
+        with stub_kea({"subnet4-list": self._SUBNETS4, "lease4-get-page": lambda body: []}):
             response = self._htmx_get(self._url(), {"by": "subnet", "q": "10.0.0.0/24"})
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "error")
@@ -3597,7 +3670,7 @@ class TestGetLeasesPageMalformedResponse(_ViewTestBase):
         # A non-dict entry can't survive the real command's result-code check
         # (check_response would TypeError first), so this defensive guard is only
         # reachable by returning it straight from command() — mock that one method.
-        with patch.object(KeaClient, "command", return_value=["not-a-dict"]):
+        with patch.object(KeaClient, "command", return_value=["not-a-dict"], autospec=True):
             response = self._htmx_get(self._url(), {"by": "subnet", "q": "10.0.0.0/24"})
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "error")
@@ -3616,13 +3689,13 @@ class TestGetLeasesSingleResultValidation(_ViewTestBase):
     def _url(self):
         return reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
 
-    _CONFIG4 = {"result": 0, "arguments": {"Dhcp4": {"subnet4": []}}}
+    _SUBNETS4 = _subnet_list(4, [])
 
     def test_single_result_missing_ip_address_renders_error(self):
         """Single-result response without 'ip-address' key must trigger RuntimeError."""
         # Single result mode (by ip), but response args lack 'ip-address'.
         resp = {"result": 0, "arguments": {"hw-address": "aa:bb:cc:dd:ee:ff", "subnet-id": 1}}
-        with stub_kea({"config-get": self._CONFIG4, "lease4-get": resp}):
+        with stub_kea({"subnet4-list": self._SUBNETS4, "lease4-get": resp}):
             response = self._htmx_get(self._url(), {"by": "ip", "q": "10.0.0.5"})
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "error")
@@ -3631,7 +3704,7 @@ class TestGetLeasesSingleResultValidation(_ViewTestBase):
         """Multiple-result with all non-dict entries filtered out must trigger RuntimeError."""
         # by=hw returns multiple mode; all entries are non-dict.
         resp = {"result": 0, "arguments": {"leases": ["bad", 123, None], "count": 3}}
-        with stub_kea({"config-get": self._CONFIG4, "lease4-get-by-hw-address": resp}):
+        with stub_kea({"subnet4-list": self._SUBNETS4, "lease4-get-by-hw-address": resp}):
             response = self._htmx_get(self._url(), {"by": "hw", "q": "aa:bb:cc:dd:ee:ff"})
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "error")
@@ -3639,7 +3712,7 @@ class TestGetLeasesSingleResultValidation(_ViewTestBase):
     def test_multiple_result_none_arguments_renders_error(self):
         """Multiple-result with None arguments must trigger RuntimeError."""
         resp = {"result": 0, "arguments": None}
-        with stub_kea({"config-get": self._CONFIG4, "lease4-get-by-hw-address": resp}):
+        with stub_kea({"subnet4-list": self._SUBNETS4, "lease4-get-by-hw-address": resp}):
             response = self._htmx_get(self._url(), {"by": "hw", "q": "aa:bb:cc:dd:ee:ff"})
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "error")
@@ -3647,7 +3720,7 @@ class TestGetLeasesSingleResultValidation(_ViewTestBase):
     def test_multiple_result_non_list_leases_renders_error(self):
         """Multiple-result with non-list leases must trigger RuntimeError."""
         resp = {"result": 0, "arguments": {"leases": "not-a-list"}}
-        with stub_kea({"config-get": self._CONFIG4, "lease4-get-by-hw-address": resp}):
+        with stub_kea({"subnet4-list": self._SUBNETS4, "lease4-get-by-hw-address": resp}):
             response = self._htmx_get(self._url(), {"by": "hw", "q": "aa:bb:cc:dd:ee:ff"})
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "error")
@@ -3660,11 +3733,11 @@ class TestExportErrorPaths(_ViewTestBase):
     def _url(self):
         return reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
 
-    _CONFIG4 = {"result": 0, "arguments": {"Dhcp4": {"subnet4": []}}}
+    _SUBNETS4 = _subnet_list(4, [])
 
     def test_export_request_exception_redirects(self):
         """RequestException during export fetch must redirect with error message."""
-        with stub_kea({"config-get": self._CONFIG4, "lease4-get": requests.RequestException("connection refused")}):
+        with stub_kea({"subnet4-list": self._SUBNETS4, "lease4-get": requests.RequestException("connection refused")}):
             response = self.client.get(self._url(), {"export": "all", "by": "ip", "q": "10.0.0.5"})
         self.assertEqual(response.status_code, 302)
 
@@ -3672,13 +3745,13 @@ class TestExportErrorPaths(_ViewTestBase):
         """RuntimeError during export fetch must redirect with error message."""
         # Single-result response lacking 'ip-address' → get_leases() raises RuntimeError.
         resp = {"result": 0, "arguments": {"hw-address": "aa:bb:cc:dd:ee:ff"}}
-        with stub_kea({"config-get": self._CONFIG4, "lease4-get": resp}):
+        with stub_kea({"subnet4-list": self._SUBNETS4, "lease4-get": resp}):
             response = self.client.get(self._url(), {"export": "all", "by": "ip", "q": "10.0.0.5"})
         self.assertEqual(response.status_code, 302)
 
     def test_export_kea_exception_redirects(self):
         """KeaException during export fetch must redirect with error hint."""
-        with stub_kea({"config-get": self._CONFIG4, "lease4-get": {"result": 1, "text": "internal error"}}):
+        with stub_kea({"subnet4-list": self._SUBNETS4, "lease4-get": {"result": 1, "text": "internal error"}}):
             response = self.client.get(self._url(), {"export": "all", "by": "ip", "q": "10.0.0.5"})
         self.assertEqual(response.status_code, 302)
 
@@ -3687,7 +3760,7 @@ class TestExportErrorPaths(_ViewTestBase):
         # A cert without a key makes the real KeaClient constructor raise ValueError.
         bad = _make_db_server(name="badtls-export2", client_cert_path="/x/cert.pem")
         url = reverse("plugins:netbox_kea:server_leases4", args=[bad.pk])
-        with stub_kea({"config-get": self._CONFIG4}):
+        with stub_kea({"subnet4-list": self._SUBNETS4}):
             response = self.client.get(url, {"export": "all", "by": "ip", "q": "10.0.0.5"})
         self.assertEqual(response.status_code, 302)
 
@@ -3695,7 +3768,7 @@ class TestExportErrorPaths(_ViewTestBase):
         """RuntimeError during paginated subnet export must redirect with error message."""
         # Malformed response for get_leases_page (non-list leases).
         page = {"result": 0, "arguments": {"leases": "not-a-list", "count": 1}}
-        with stub_kea({"config-get": self._CONFIG4, "lease4-get-page": page}):
+        with stub_kea({"subnet4-list": self._SUBNETS4, "lease4-get-page": page}):
             response = self.client.get(self._url(), {"export": "all", "by": "subnet", "q": "10.0.0.0/24"})
         self.assertEqual(response.status_code, 302)
 
@@ -3747,7 +3820,7 @@ class TestLeaseDeletePartialFailure(_ViewTestBase):
         has_error = any("see server logs" in t for t in msg_texts)
         self.assertTrue(has_error, f"Expected transport error message, got: {msg_texts}")
 
-    @patch("netbox_kea.views.leases._add_lease_journal")
+    @patch("netbox_kea.views.leases._add_lease_journal", autospec=True)
     def test_journal_database_error_still_completes(self, mock_journal):
         """DatabaseError from journal creation must not prevent deletion from completing."""
         from django.db import DatabaseError
@@ -3791,7 +3864,7 @@ class TestFetchOneMacValueError(_ViewTestBase):
     def _htmx_get(self, url, data):
         return self.client.get(url, data=data, HTTP_HX_REQUEST="true")
 
-    _CONFIG4 = {"result": 0, "arguments": {"Dhcp4": {"subnet4": []}}}
+    _SUBNETS4 = _subnet_list(4, [])
 
     def test_non_numeric_subnet_id_does_not_crash(self):
         """Lease with non-numeric subnet-id must not crash during MAC reservation lookup."""
@@ -3806,7 +3879,7 @@ class TestFetchOneMacValueError(_ViewTestBase):
             "cltt": 1_700_000_000,
         }
         url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
-        with stub_kea({"config-get": self._CONFIG4, "lease4-get": {"result": 0, "arguments": lease}}):
+        with stub_kea({"subnet4-list": self._SUBNETS4, "lease4-get": {"result": 0, "arguments": lease}}):
             response = self._htmx_get(url, {"by": "ip", "q": "10.0.0.5"})
         # Must render OK, not 500
         self.assertEqual(response.status_code, 200)
@@ -3821,7 +3894,7 @@ class TestFetchOneMacValueError(_ViewTestBase):
             "cltt": 1_700_000_000,
         }
         url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
-        with stub_kea({"config-get": self._CONFIG4, "lease4-get": {"result": 0, "arguments": lease}}):
+        with stub_kea({"subnet4-list": self._SUBNETS4, "lease4-get": {"result": 0, "arguments": lease}}):
             response = self._htmx_get(url, {"by": "ip", "q": "10.0.0.6"})
         self.assertEqual(response.status_code, 200)
 
@@ -3836,11 +3909,11 @@ class TestGetLeasesPageSubnetEdgeCases(_ViewTestBase):
     def _url(self):
         return reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
 
-    _CONFIG4 = {"result": 0, "arguments": {"Dhcp4": {"subnet4": []}}}
+    _SUBNETS4 = _subnet_list(4, [])
 
     def test_result_3_returns_empty_table(self):
         """result=3 (no leases) must render an empty table, not an error."""
-        with stub_kea({"config-get": self._CONFIG4, "lease4-get-page": {"result": 3, "arguments": None}}):
+        with stub_kea({"subnet4-list": self._SUBNETS4, "lease4-get-page": {"result": 3, "arguments": None}}):
             response = self._htmx_get(self._url(), {"by": "subnet", "q": "10.0.0.0/24"})
         self.assertEqual(response.status_code, 200)
         # Should NOT contain the error template content
@@ -3872,7 +3945,7 @@ class TestGetLeasesPageSubnetEdgeCases(_ViewTestBase):
                 "count": 2,
             },
         }
-        with stub_kea({"config-get": self._CONFIG4, "lease4-get-page": page, "reservation-get": {"result": 3}}):
+        with stub_kea({"subnet4-list": self._SUBNETS4, "lease4-get-page": page, "reservation-get": {"result": 3}}):
             response = self._htmx_get(self._url(), {"by": "subnet", "q": "10.0.0.0/24"})
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "10.0.0.5")
@@ -3881,33 +3954,25 @@ class TestGetLeasesPageSubnetEdgeCases(_ViewTestBase):
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestFetchSubnetChoices(TestCase):
-    """fetch_subnet_choices(): network-order sorting + 5-minute caching.
+    """fetch_subnet_choices(): network-order sorting, caching, and hook reporting.
 
-    Uses a real Server, the real Django cache, and the **real** ``KeaClient`` with
-    only the HTTP boundary stubbed via ``kea_stub.stub_kea`` — the real
-    ``config-get`` request payload and response parsing are exercised.
+    Uses a real Server, the real Django cache, and the **real** ``KeaClient`` with only
+    the HTTP boundary stubbed via ``kea_stub.stub_kea`` — the real ``subnet{v}-list``
+    request payload and response parsing are exercised. Per-entry validation of that
+    payload belongs to ``KeaClient.list_subnets`` and is covered in ``test_kea_client``.
     """
 
-    # subnet4 ids/CIDRs are intentionally out of order, and chosen so that
-    # network order (10.0.1 < 10.0.2 < 10.0.10) differs from lexicographic label
-    # order (".10." sorts before ".2.").  Includes a shared-network subnet.
-    _CONFIG = [
-        {
-            "result": 0,
-            "arguments": {
-                "Dhcp4": {
-                    "subnet4": [
-                        {"id": 3, "subnet": "10.0.2.0/24"},
-                        {"id": 1, "subnet": "10.0.10.0/24"},
-                        {"id": 2, "subnet": "10.0.1.0/24"},
-                    ],
-                    "shared-networks": [
-                        {"name": "sn-a", "subnet4": [{"id": 4, "subnet": "192.168.0.0/16"}]},
-                    ],
-                }
-            },
-        }
-    ]
+    # ids/CIDRs are intentionally out of order, and chosen so that network order
+    # (10.0.1 < 10.0.2 < 10.0.10) differs from lexicographic label order (".10." before ".2.").
+    _LIST4 = _subnet_list(
+        4,
+        [
+            {"id": 3, "subnet": "10.0.2.0/24"},
+            {"id": 1, "subnet": "10.0.10.0/24"},
+            {"id": 2, "subnet": "10.0.1.0/24"},
+        ],
+    )
+    _HOOK_MISSING4 = {"result": 2, "text": "unknown command 'subnet4-list'"}
 
     def setUp(self):
         self.server = _make_db_server()
@@ -3922,110 +3987,82 @@ class TestFetchSubnetChoices(TestCase):
             cache.delete(_subnet_choices_cache_key(self.server, v))
 
     def test_choices_sorted_by_network_not_lexicographically(self):
-        with stub_kea({"config-get": self._CONFIG}) as kea:
-            choices = fetch_subnet_choices(self.server, 4)
-        # The helper must request the protocol-specific client (dual-URL servers
-        # route v4/v6 to different endpoints) → config-get went to the dhcp4 service.
-        self.assertEqual(kea.bodies("config-get")[0]["service"], ["dhcp4"])
-        self.assertEqual(
-            [c[0] for c in choices],
-            ["10.0.1.0/24", "10.0.2.0/24", "10.0.10.0/24", "192.168.0.0/16"],
-        )
+        with stub_kea({"subnet4-list": self._LIST4}) as kea:
+            choices, available = fetch_subnet_choices(self.server, 4)
+        # The helper must request the protocol-specific client (dual-URL servers route
+        # v4/v6 to different endpoints) → subnet4-list went to the dhcp4 service.
+        self.assertEqual(kea.bodies("subnet4-list")[0]["service"], ["dhcp4"])
+        self.assertTrue(available)
+        self.assertEqual([c[0] for c in choices], ["10.0.1.0/24", "10.0.2.0/24", "10.0.10.0/24"])
         # Each choice carries (cidr, subnet_id) so the template can build both the
         # Subnet (CIDR) and Subnet-ID comboboxes.
         self.assertEqual(choices[0], ("10.0.1.0/24", 2))
 
-    def test_v6_shared_network_subnet6_is_parsed(self):
-        """Dhcp6/subnet6 and shared-networks[].subnet6 parse via version-aware keys.
-
-        Locks the v6 contract so a cross-protocol regression (e.g. reading
-        ``subnet4`` for a v6 request) is caught.
-        """
-        config6 = [
-            {
-                "result": 0,
-                "arguments": {
-                    "Dhcp6": {
-                        "subnet6": [{"id": 11, "subnet": "2001:db8:1::/64"}],
-                        "shared-networks": [
-                            {"name": "sn6", "subnet6": [{"id": 12, "subnet": "2001:db8:2::/64"}]},
-                        ],
-                    }
-                },
-            }
-        ]
-        with stub_kea({"config-get": config6}) as kea:
-            choices = fetch_subnet_choices(self.server, 6)
-        self.assertEqual(kea.bodies("config-get")[0]["service"], ["dhcp6"])
+    def test_v6_uses_the_v6_command_and_service(self):
+        """Locks the v6 contract so a cross-protocol regression is caught."""
+        listing = _subnet_list(6, [{"id": 12, "subnet": "2001:db8:2::/64"}, {"id": 11, "subnet": "2001:db8:1::/64"}])
+        with stub_kea({"subnet6-list": listing}) as kea:
+            choices, available = fetch_subnet_choices(self.server, 6)
+        self.assertEqual(kea.bodies("subnet6-list")[0]["service"], ["dhcp6"])
+        self.assertTrue(available)
         self.assertEqual(choices, [("2001:db8:1::/64", 11), ("2001:db8:2::/64", 12)])
 
-    def test_non_string_subnet_values_do_not_500(self):
-        """Malformed subnet entries (non-string CIDR) are skipped, not fed to sort() → no TypeError/500."""
-        bad_config = [
-            {
-                "result": 0,
-                "arguments": {
-                    "Dhcp4": {
-                        "subnet4": [
-                            {"id": 1, "subnet": "10.0.1.0/24"},
-                            {"id": 2, "subnet": 12345},  # int, not str
-                            {"id": 3, "subnet": ["10.0.3.0/24"]},  # list, not str
-                            {"id": 4, "subnet": None},  # None
-                            {"id": 5},  # missing subnet
-                        ],
-                        "shared-networks": [],
-                    }
-                },
-            }
-        ]
-        with stub_kea({"config-get": bad_config}):
-            choices = fetch_subnet_choices(self.server, 4)
-        # Only the valid string CIDR survives; the call returns cleanly.
-        self.assertEqual(choices, [("10.0.1.0/24", 1)])
+    def test_shared_network_subnets_are_included(self):
+        """Kea lists a shared network's subnets in the same collection as standalone ones.
 
-    def test_non_list_subnet_containers_do_not_500(self):
-        """Non-list subnet4 / shared-networks containers degrade to empty, not TypeError/500."""
-        bad_config = [{"result": 0, "arguments": {"Dhcp4": {"subnet4": 1, "shared-networks": 1}}}]
-        with stub_kea({"config-get": bad_config}):
-            choices = fetch_subnet_choices(self.server, 4)
-        self.assertEqual(choices, [])
+        Confirmed against a live Kea 3.x server whose only subnets sit inside a shared
+        network: ``subnet4-list`` returned all of them. The stub encodes that contract.
+        """
+        listing = _subnet_list(4, [{"id": 1, "subnet": "10.0.0.0/24"}, {"id": 4, "subnet": "192.168.0.0/16"}])
+        with stub_kea({"subnet4-list": listing}):
+            choices, _ = fetch_subnet_choices(self.server, 4)
+        self.assertEqual([c[0] for c in choices], ["10.0.0.0/24", "192.168.0.0/16"])
 
-    def test_non_dict_dhcp_conf_returns_empty(self):
-        """A non-dict ``Dhcp4`` payload degrades to no choices (not an AttributeError)."""
-        with stub_kea({"config-get": [{"result": 0, "arguments": {"Dhcp4": "not-a-dict"}}]}):
-            self.assertEqual(fetch_subnet_choices(self.server, 4), [])
+    def test_no_subnets_configured_is_not_a_missing_hook(self):
+        """Kea answers result 3 when it has no subnets; the hook is still loaded."""
+        with stub_kea({"subnet4-list": {"result": 3, "text": "no subnets"}}):
+            self.assertEqual(fetch_subnet_choices(self.server, 4), ([], True))
 
-    def test_non_dict_subnet_entry_is_skipped(self):
-        """Non-dict entries inside subnet4 are skipped; valid dict entries still parse."""
-        config = [{"result": 0, "arguments": {"Dhcp4": {"subnet4": [1, {"id": 2, "subnet": "10.0.0.0/24"}]}}}]
-        with stub_kea({"config-get": config}):
-            self.assertEqual(fetch_subnet_choices(self.server, 4), [("10.0.0.0/24", 2)])
+    def test_missing_hook_is_reported_and_not_cached(self):
+        """Result 2 means subnet_cmds is absent — reported so the page can say so."""
+        with stub_kea({"subnet4-list": self._HOOK_MISSING4}):
+            self.assertEqual(fetch_subnet_choices(self.server, 4), ([], False))
 
-    def test_subnet_sort_key_handles_non_string_and_unparseable(self):
-        """_subnet_sort_key buckets non-string and unparseable CIDRs apart from real networks."""
-        self.assertEqual(_subnet_sort_key((12345, 1)), (1, "12345"))  # non-string CIDR
-        self.assertEqual(_subnet_sort_key(("not-a-cidr", 2)), (1, "not-a-cidr"))  # unparseable string
-        self.assertEqual(_subnet_sort_key(("10.0.0.0/24", 3))[0], 0)  # real network sorts first
+        # Not cached: loading the hook must take effect on the next render, not after the TTL.
+        with stub_kea({"subnet4-list": self._LIST4}) as kea:
+            choices, available = fetch_subnet_choices(self.server, 4)
+        self.assertTrue(available)
+        self.assertTrue(choices)
+        self.assertEqual(kea.commands().count("subnet4-list"), 1)
+
+    def test_malformed_response_degrades_without_blaming_the_hook(self):
+        """A malformed payload leaves the field usable and must not claim the hook is missing."""
+        with stub_kea({"subnet4-list": {"result": 0, "arguments": {"subnets": "not-a-list"}}}):
+            self.assertEqual(fetch_subnet_choices(self.server, 4), ([], True))
 
     def test_result_is_cached_second_call_skips_kea(self):
-        with stub_kea({"config-get": self._CONFIG}) as kea:
+        with stub_kea({"subnet4-list": self._LIST4}) as kea:
             first = fetch_subnet_choices(self.server, 4)
             second = fetch_subnet_choices(self.server, 4)
         self.assertEqual(first, second)
-        # config-get hit Kea exactly once; the second render is served from cache.
-        self.assertEqual(kea.commands().count("config-get"), 1)
-        # The single request used the protocol-specific dhcp4 service.
-        self.assertEqual(kea.bodies("config-get")[0]["service"], ["dhcp4"])
+        # subnet4-list hit Kea exactly once; the second render is served from cache.
+        self.assertEqual(kea.commands().count("subnet4-list"), 1)
 
     def test_transient_error_returns_empty_and_is_not_cached(self):
-        with stub_kea({"config-get": RuntimeError("kea unreachable")}):
-            self.assertEqual(fetch_subnet_choices(self.server, 4), [])
+        with stub_kea({"subnet4-list": RuntimeError("kea unreachable")}):
+            self.assertEqual(fetch_subnet_choices(self.server, 4), ([], True))
 
         # A failed fetch must not be cached, so the next render retries and succeeds.
-        with stub_kea({"config-get": self._CONFIG}) as kea:
-            choices = fetch_subnet_choices(self.server, 4)
+        with stub_kea({"subnet4-list": self._LIST4}) as kea:
+            choices, _ = fetch_subnet_choices(self.server, 4)
         self.assertTrue(choices)
-        self.assertEqual(kea.commands().count("config-get"), 1)
+        self.assertEqual(kea.commands().count("subnet4-list"), 1)
+
+    def test_subnet_sort_key_handles_non_string_and_unparseable(self):
+        """subnet_sort_key buckets non-string and unparseable CIDRs apart from real networks."""
+        self.assertEqual(subnet_sort_key((12345, 1)), (1, "12345"))  # non-string CIDR
+        self.assertEqual(subnet_sort_key(("not-a-cidr", 2)), (1, "not-a-cidr"))  # unparseable string
+        self.assertEqual(subnet_sort_key(("10.0.0.0/24", 3))[0], 0)  # real network sorts first
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
@@ -4039,10 +4076,10 @@ class TestLeaseSearchSubnetCombobox(_ViewTestBase):
     def _url(self):
         return reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
 
-    @patch("netbox_kea.views.leases.fetch_subnet_choices", autospec=True)
-    def test_datalists_and_toggle_script_rendered(self, mock_choices):
-        mock_choices.return_value = [("10.0.1.0/24", 2), ("10.0.2.0/24", 3)]
-        body = self.client.get(self._url()).content.decode()
+    def test_datalists_and_toggle_script_rendered(self):
+        listing = _subnet_list(4, [{"id": 2, "subnet": "10.0.1.0/24"}, {"id": 3, "subnet": "10.0.2.0/24"}])
+        with stub_kea({"subnet4-list": listing}):
+            body = self.client.get(self._url()).content.decode()
         # Both comboboxes present with the right values.
         self.assertIn('id="kea-lease-subnet-cidrs"', body)
         self.assertIn('id="kea-lease-subnet-ids"', body)
@@ -4052,17 +4089,36 @@ class TestLeaseSearchSubnetCombobox(_ViewTestBase):
         self.assertIn("syncSubnetCombobox", body)
         self.assertIn('getElementById("id_by")', body)
 
-    @patch("netbox_kea.views.leases.fetch_subnet_choices", autospec=True)
-    def test_no_separate_subnet_select_field(self, mock_choices):
-        mock_choices.return_value = [("10.0.1.0/24", 2)]
-        body = self.client.get(self._url()).content.decode()
+    def test_suggestions_come_from_the_subnet_cmds_hook(self):
+        """The lease and reservation datalists must describe the same set of subnets."""
+        listing = _subnet_list(4, [{"id": 2, "subnet": "10.0.1.0/24"}])
+        with stub_kea({"subnet4-list": listing}) as kea:
+            body = self.client.get(self._url()).content.decode()
+        self.assertIn('value="10.0.1.0/24"', body)
+        self.assertNotIn("config-get", kea.commands())
+
+    def test_no_separate_subnet_select_field(self):
+        listing = _subnet_list(4, [{"id": 2, "subnet": "10.0.1.0/24"}])
+        with stub_kea({"subnet4-list": listing}):
+            body = self.client.get(self._url()).content.decode()
         # The old standalone subnet quick-select is gone.
         self.assertNotIn('name="subnet"', body)
         self.assertNotIn("Select a subnet", body)
 
-    @patch("netbox_kea.views.leases.fetch_subnet_choices", autospec=True)
-    def test_no_datalists_when_no_subnets(self, mock_choices):
-        mock_choices.return_value = []
-        body = self.client.get(self._url()).content.decode()
+    def test_no_datalists_when_no_subnets(self):
+        with stub_kea({"subnet4-list": {"result": 3, "text": "no subnets"}}):
+            body = self.client.get(self._url()).content.decode()
         self.assertNotIn("kea-lease-subnet-cidrs", body)
         self.assertNotIn("syncSubnetCombobox", body)
+        # An empty subnet list is not a missing hook — no warning.
+        self.assertNotIn("hook library is not loaded", body)
+
+    def test_missing_hook_explains_why_suggestions_are_gone(self):
+        """Without subnet_cmds the search still works, so say that rather than fail silently."""
+        with stub_kea({"subnet4-list": {"result": 2, "text": "unknown command 'subnet4-list'"}}):
+            response = self.client.get(self._url())
+        body = response.content.decode()
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("subnet_cmds", body)
+        self.assertIn("hook library is not loaded", body)
+        self.assertNotIn("kea-lease-subnet-cidrs", body)

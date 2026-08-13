@@ -7,14 +7,17 @@ from collections.abc import Callable
 from datetime import datetime
 from typing import Any, Literal
 
+import requests
+from django.core.cache import cache
 from django.http import HttpResponse
 from django.shortcuts import redirect
 from django_tables2 import Table
 from django_tables2.export import TableExport
-from netaddr import EUI, AddrFormatError
+from netaddr import EUI, AddrFormatError, IPNetwork
 from utilities.views import ViewTab
 
 from . import constants
+from .kea import KeaException
 from .models import Server
 
 logger = logging.getLogger(__name__)
@@ -27,6 +30,73 @@ def format_duration(s: int | None) -> str | None:
     hours, rest = divmod(s, 3600)
     minutes, seconds = divmod(rest, 60)
     return f"{hours:02}:{minutes:02}:{seconds:02}"
+
+
+def subnet_sort_key(choice: tuple[str, Any]) -> tuple[int, Any]:
+    """Sort key that orders ``(cidr, ...)`` subnet choices by network (address then prefix).
+
+    Falls back to the CIDR string for anything netaddr can't parse, kept in a separate
+    bucket so the two key types are never compared against each other.
+    """
+    cidr = choice[0]
+    if not isinstance(cidr, str):
+        return (1, str(cidr))
+    try:
+        return (0, IPNetwork(cidr))
+    except (AddrFormatError, ValueError, TypeError):
+        return (1, cidr)
+
+
+def _subnet_choices_cache_key(server: Server, version: int) -> str:
+    """Cache key for one server's subnet list, scoped per DHCP version.
+
+    A dual-stack server routes v4 and v6 to different daemons with different subnets,
+    so the version must be part of the key.
+    """
+    return f"netbox_kea:subnet_choices:{server.pk}:{version}"
+
+
+def fetch_subnet_choices(server: Server, version: int) -> tuple[list[tuple[str, int]], bool]:
+    """Return ``(choices, subnet_cmds_available)`` for the server's subnet datalists.
+
+    ``choices`` is ``[(cidr, subnet_id), ...]`` in network order. Both datalists that
+    offer subnets read it, so both describe the same set:
+
+    * the lease-search Search combobox, where the CIDR drives a ``by=subnet`` search
+      and the id a ``by=subnet_id`` search, so both halves are needed;
+    * the reservation add form's Subnet CIDR field, whose POST resolves the submitted
+      CIDR back to an id through the same ``subnet_cmds`` source, so the form cannot
+      suggest a subnet that saving would then fail to resolve.
+
+    ``subnet_cmds_available`` is False only when Kea reports ``subnet{v}-list``
+    unsupported, which is what the two templates warn about. Any other failure degrades
+    to no suggestions and leaves the field usable by typing, because a suggestion list is
+    a convenience and must never break the page.
+
+    Successful results (including a legitimately empty list) are cached for
+    ``constants.SUBNET_CHOICES_TTL`` seconds per server+version, so HTMX paginations and
+    form re-renders reuse them. Failures are not cached, so loading the hook takes effect
+    on the next render instead of after the TTL.
+    """
+    cache_key = _subnet_choices_cache_key(server, version)
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    try:
+        choices = server.get_client(version=version).list_subnets(version)
+    except KeaException as exc:
+        if exc.response.get("result") == 2:
+            return [], False
+        logger.debug("Could not list dhcp%s subnets on server %s", version, server.pk, exc_info=True)
+        return [], True
+    except (requests.RequestException, ValueError, RuntimeError):
+        logger.debug("Could not list dhcp%s subnets on server %s", version, server.pk, exc_info=True)
+        return [], True
+    choices.sort(key=subnet_sort_key)
+    result = (choices, True)
+    cache.set(cache_key, result, constants.SUBNET_CHOICES_TTL)
+    return result
 
 
 def _enrich_reservation_sort_key(reservation: dict[str, Any]) -> dict[str, Any]:

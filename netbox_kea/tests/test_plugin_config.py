@@ -118,7 +118,7 @@ class TestHealGhostScheduledJobs(TestCase):
         mock_row.job_id = None
 
         with (
-            patch.object(KeaIpamSyncJob, "get_jobs") as mock_get_jobs,
+            patch.object(KeaIpamSyncJob, "get_jobs", autospec=True) as mock_get_jobs,
             patch("django_rq.get_connection", return_value=MagicMock()),  # mock-ok: redis connection (external)
         ):
             mock_qs = MagicMock()  # mock-ok: queryset stand-in for ghost-job scan
@@ -174,7 +174,7 @@ class TestHealGhostScheduledJobs(TestCase):
 
     def test_db_unavailable_does_not_raise(self):
         # Simulate DB failure by patching get_jobs(); RQ is never reached.
-        with patch("netbox_kea.jobs.KeaIpamSyncJob.get_jobs", side_effect=Exception("DB down")):
+        with patch("netbox_kea.jobs.KeaIpamSyncJob.get_jobs", side_effect=Exception("DB down"), autospec=True):
             KeaIpamSyncJob._heal_ghost_scheduled_jobs()
 
     def test_redis_unavailable_does_not_raise(self):
@@ -258,7 +258,7 @@ class TestEnqueueOnceWiring(SimpleTestCase):
 
         # Patch the heal on our class and JobRunner.enqueue_once (the super impl).
         with (
-            patch.object(KeaIpamSyncJob, "_heal_ghost_scheduled_jobs") as mock_heal,
+            patch.object(KeaIpamSyncJob, "_heal_ghost_scheduled_jobs", autospec=True) as mock_heal,
             patch("netbox.jobs.JobRunner.enqueue_once", return_value=sentinel) as mock_super,
         ):
             manager.attach_mock(mock_heal, "heal")

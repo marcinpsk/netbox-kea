@@ -70,7 +70,7 @@ class TestSyncJobsView(TestCase):
 
     def test_post_saves_new_interval(self):
         url = reverse("plugins:netbox_kea:sync_jobs")
-        with patch("netbox_kea.views.sync_jobs.KeaIpamSyncJob"):
+        with patch("netbox_kea.views.sync_jobs.KeaIpamSyncJob", autospec=True):
             response = self.client.post(url, {"interval_minutes": 10, "sync_enabled": True}, follow=True)
         self.assertEqual(response.status_code, 200)
         cfg = SyncConfig.get()
@@ -97,7 +97,7 @@ class TestSyncJobsView(TestCase):
         from django.db import DatabaseError
 
         url = reverse("plugins:netbox_kea:sync_jobs")
-        with patch("netbox_kea.views.sync_jobs.SyncConfig") as MockConfig:
+        with patch("netbox_kea.views.sync_jobs.SyncConfig", autospec=True) as MockConfig:
             MockConfig.get.side_effect = DatabaseError("db is broken")
             response = self.client.post(url, {"interval_minutes": 10, "sync_enabled": True}, follow=True)
         self.assertContains(response, "internal error")
@@ -151,7 +151,7 @@ class TestServerSyncNowView(TestCase):
 
     def test_post_enqueues_job_and_redirects(self):
         url = reverse("plugins:netbox_kea:server_sync_now", args=[self.server.pk])
-        with patch("netbox_kea.views.sync_jobs.KeaIpamSyncJob") as MockJob:
+        with patch("netbox_kea.views.sync_jobs.KeaIpamSyncJob", autospec=True) as MockJob:
             response = self.client.post(url)
         MockJob.enqueue.assert_called_once_with(instance=self.server, server_pk=self.server.pk)
         self.assertRedirects(
@@ -169,7 +169,7 @@ class TestServerSyncNowView(TestCase):
 
     def test_post_enqueue_exception_shows_error_message(self):
         url = reverse("plugins:netbox_kea:server_sync_now", args=[self.server.pk])
-        with patch("netbox_kea.views.sync_jobs.KeaIpamSyncJob") as MockJob:
+        with patch("netbox_kea.views.sync_jobs.KeaIpamSyncJob", autospec=True) as MockJob:
             MockJob.enqueue.side_effect = RuntimeError("queue full")
             response = self.client.post(url, follow=True)
         self.assertContains(response, "internal error")
@@ -246,7 +246,7 @@ class TestSyncJobsViewAllowedServerPks(TestCase):
     def test_post_context_also_includes_allowed_server_pks(self):
         su = User.objects.create_superuser("su_post", "sup@a.com", "pass")
         self.client.force_login(su)
-        with patch("netbox_kea.views.sync_jobs.KeaIpamSyncJob"):
+        with patch("netbox_kea.views.sync_jobs.KeaIpamSyncJob", autospec=True):
             response = self.client.post(
                 reverse("plugins:netbox_kea:sync_jobs"),
                 {"interval_minutes": 5, "sync_enabled": True},
@@ -271,7 +271,7 @@ class TestServerSyncToggleViewErrorHandling(TestCase):
 
         url = reverse("plugins:netbox_kea:server_sync_toggle", args=[self.server.pk])
         with patch.object(self.server.__class__, "save", side_effect=DatabaseError("disk full")):
-            with patch("netbox_kea.views.sync_jobs.get_object_or_404", return_value=self.server):
+            with patch("netbox_kea.views.sync_jobs.get_object_or_404", return_value=self.server, autospec=True):
                 response = self.client.post(url, follow=True)
         self.assertContains(response, "internal error")
         self.assertRedirects(

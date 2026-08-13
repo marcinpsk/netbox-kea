@@ -46,14 +46,13 @@ def _drop_subnet_choices_cache(test_case, server) -> None:
     """Delete *server*'s cached subnet choices when the test ends.
 
     Every view that renders the lease search or the reservation add form calls
-    ``fetch_subnet_choices()``, which writes into the *shared* cache backend. Each
-    test builds its own Server, so the keys never collide between tests, but they
-    would otherwise linger there for the whole TTL. Mirrors
-    ``TestFetchSubnetChoices._clear_cache``.
+    ``fetch_subnet_choices()``, which writes into the *shared* cache backend. Each test
+    builds its own Server, so the keys never collide between tests, but they would
+    otherwise linger there for the whole TTL. Mirrors ``TestFetchSubnetChoices._clear_cache``.
     """
     from django.core.cache import cache
 
-    from netbox_kea.views.leases import _subnet_choices_cache_key
+    from netbox_kea.utilities import _subnet_choices_cache_key
 
     def _drop():
         for version in (4, 6):

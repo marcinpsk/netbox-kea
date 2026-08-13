@@ -19,6 +19,15 @@
         {% for e in form.errors.page %}
           <div class="alert alert-danger" role="alert">{{ e }}</div>
         {% endfor %}
+        {% if not form.subnet_cmds_available %}
+        <div class="alert alert-warning d-flex align-items-start py-2 px-3 mb-3 small" role="alert">
+          <i class="mdi mdi-alert-circle-outline me-2" aria-hidden="true"></i>
+          <div>
+            The <code>subnet_cmds</code> hook library is not loaded on this Kea server, so the Search
+            field cannot offer the configured subnets. Searching still works: type a subnet CIDR or ID.
+          </div>
+        </div>
+        {% endif %}
         {% render_form form %}
         {% if form.subnet_choices %}
         {% comment %}
@@ -28,12 +37,12 @@
         {% endcomment %}
         <datalist id="kea-lease-subnet-cidrs">
           {% for cidr, sid in form.subnet_choices %}
-          <option value="{{ cidr }}">{% if sid is not None %}id {{ sid }}{% endif %}</option>
+          <option value="{{ cidr }}">id {{ sid }}</option>
           {% endfor %}
         </datalist>
         <datalist id="kea-lease-subnet-ids">
           {% for cidr, sid in form.subnet_choices %}
-          {% if sid is not None %}<option value="{{ sid }}">{{ cidr }}</option>{% endif %}
+          <option value="{{ sid }}">{{ cidr }}</option>
           {% endfor %}
         </datalist>
         <script>

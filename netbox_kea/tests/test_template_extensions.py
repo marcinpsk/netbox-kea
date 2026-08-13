@@ -97,7 +97,7 @@ class TestIPAddressKeaPanelServerFiltering(TestCase):
         self.v6_only = _make_server("kea-v6", dhcp4=False, dhcp6=True)
         self.dual = _make_server("kea-dual", dhcp4=True, dhcp6=True)
 
-    @patch.object(IPAddressKeaPanel, "render", return_value="")
+    @patch.object(IPAddressKeaPanel, "render", return_value="", autospec=True)
     def test_v4_ip_only_shows_dhcp4_servers(self, mock_render):
         """An IPv4 address shows only servers with dhcp4=True."""
         nb_ip = _make_nb_ip("10.0.0.1")
@@ -109,7 +109,7 @@ class TestIPAddressKeaPanelServerFiltering(TestCase):
         self.assertIn("kea-dual", server_names)
         self.assertNotIn("kea-v6", server_names)
 
-    @patch.object(IPAddressKeaPanel, "render", return_value="")
+    @patch.object(IPAddressKeaPanel, "render", return_value="", autospec=True)
     def test_v6_ip_only_shows_dhcp6_servers(self, mock_render):
         """An IPv6 address shows only servers with dhcp6=True."""
         nb_ip = _make_nb_ip("2001:db8::1")
@@ -121,7 +121,7 @@ class TestIPAddressKeaPanelServerFiltering(TestCase):
         self.assertIn("kea-dual", server_names)
         self.assertNotIn("kea-v4", server_names)
 
-    @patch.object(IPAddressKeaPanel, "render", return_value="")
+    @patch.object(IPAddressKeaPanel, "render", return_value="", autospec=True)
     def test_no_matching_servers_passes_empty_list(self, mock_render):
         """When no servers match the version, server_links is empty."""
         # Remove all v6-capable servers
@@ -133,7 +133,7 @@ class TestIPAddressKeaPanelServerFiltering(TestCase):
         extra = mock_render.call_args[1]["extra_context"]
         self.assertEqual(extra["server_links"], [])
 
-    @patch.object(IPAddressKeaPanel, "render", return_value="")
+    @patch.object(IPAddressKeaPanel, "render", return_value="", autospec=True)
     def test_version_in_context_matches_ip_family(self, mock_render):
         """The 'version' key passed to render matches the IP address family."""
         for ip, expected_version in [("10.0.0.1", 4), ("2001:db8::1", 6)]:
@@ -159,7 +159,7 @@ class TestIPAddressKeaPanelUrls(TestCase):
         _make_server("kea-v4", dhcp4=True, dhcp6=False)
         _make_server("kea-v6", dhcp4=False, dhcp6=True)
 
-    @patch.object(IPAddressKeaPanel, "render", return_value="")
+    @patch.object(IPAddressKeaPanel, "render", return_value="", autospec=True)
     def test_v4_link_contains_ip_address_param(self, mock_render):
         """v4 links use query param `ip_address=<ip>`."""
         nb_ip = _make_nb_ip("192.168.1.50", dns_name="srv.example.com")
@@ -171,7 +171,7 @@ class TestIPAddressKeaPanelUrls(TestCase):
         self.assertEqual(qs["ip_address"], ["192.168.1.50"])
         self.assertEqual(qs["hostname"], ["srv.example.com"])
 
-    @patch.object(IPAddressKeaPanel, "render", return_value="")
+    @patch.object(IPAddressKeaPanel, "render", return_value="", autospec=True)
     def test_v6_link_contains_ip_addresses_param(self, mock_render):
         """v6 links use query param `ip_addresses=<ip>` (plural)."""
         nb_ip = _make_nb_ip("2001:db8::1", dns_name="v6host.example.com")

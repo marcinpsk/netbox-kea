@@ -20,6 +20,7 @@ from netbox_kea.kea import (
     check_response,
     iter_reservations,
 )
+from netbox_kea.tests.kea_stub import stub_kea
 
 
 def _mock_http_response(json_data, status_code=200):
@@ -4065,6 +4066,75 @@ class TestSubnetIdFromCidr(TestCase):
 
 
 # ---------------------------------------------------------------------------
+# TestListSubnets
+# ---------------------------------------------------------------------------
+
+
+class TestListSubnets(TestCase):
+    """KeaClient.list_subnets(): the one source both the form suggestions and the resolver read."""
+
+    def setUp(self):
+        self.client = KeaClient(url="http://kea:8000")
+
+    def test_returns_cidr_id_pairs_in_kea_order(self):
+        resp = [
+            {
+                "result": 0,
+                "arguments": {"subnets": [{"id": 8, "subnet": "10.1.0.0/24"}, {"id": 7, "subnet": "10.0.0.0/24"}]},
+            }
+        ]
+        with stub_kea({"subnet4-list": resp}) as kea:
+            self.assertEqual(self.client.list_subnets(4), [("10.1.0.0/24", 8), ("10.0.0.0/24", 7)])
+        body = kea.bodies("subnet4-list")[0]
+        self.assertEqual(body["service"], ["dhcp4"])
+
+    def test_calls_subnet_list_on_the_matching_service(self):
+        resp = [{"result": 0, "arguments": {"subnets": [{"id": 5, "subnet": "2001:db8::/48"}]}}]
+        with stub_kea({"subnet6-list": resp}) as kea:
+            self.assertEqual(self.client.list_subnets(6), [("2001:db8::/48", 5)])
+        body = kea.bodies("subnet6-list")[0]
+        self.assertEqual(body["command"], "subnet6-list")
+        self.assertEqual(body["service"], ["dhcp6"])
+
+    def test_returns_empty_when_kea_has_no_subnets(self):
+        """result=3 means no subnets configured, which is not an error."""
+        with stub_kea({"subnet4-list": [{"result": 3}]}):
+            self.assertEqual(self.client.list_subnets(4), [])
+
+    def test_raises_kea_exception_when_subnet_cmds_is_missing(self):
+        """Result 2 must stay a KeaException so callers can tell a missing hook from an empty list."""
+        with (
+            stub_kea({"subnet4-list": [{"result": 2, "text": "unknown command 'subnet4-list'"}]}),
+            self.assertRaises(KeaException) as ctx,
+        ):
+            self.client.list_subnets(4)
+        self.assertEqual(ctx.exception.response.get("result"), 2)
+
+    def test_raises_runtime_error_when_an_entry_has_no_cidr(self):
+        """An entry with no CIDR cannot be offered as a suggestion, so it is malformed, not skipped."""
+        resp = [{"result": 0, "arguments": {"subnets": [{"id": 7}]}}]
+        with stub_kea({"subnet4-list": resp}), self.assertRaises(RuntimeError):
+            self.client.list_subnets(4)
+
+    def test_raises_runtime_error_when_a_non_matching_entry_has_no_id(self):
+        """Every listed subnet needs an id: the form would otherwise suggest an unresolvable CIDR."""
+        resp = [
+            {
+                "result": 0,
+                "arguments": {"subnets": [{"subnet": "10.9.0.0/24"}, {"id": 7, "subnet": "10.0.0.0/24"}]},
+            }
+        ]
+        with stub_kea({"subnet4-list": resp}), self.assertRaises(RuntimeError):
+            self.client.list_subnets(4)
+
+    def test_raises_runtime_error_when_id_is_boolean(self):
+        """bool is an int subclass, so `True` must be rejected explicitly."""
+        resp = [{"result": 0, "arguments": {"subnets": [{"id": True, "subnet": "10.0.0.0/24"}]}}]
+        with stub_kea({"subnet4-list": resp}), self.assertRaises(RuntimeError):
+            self.client.list_subnets(4)
+
+
+# ---------------------------------------------------------------------------
 # TestPersistConfig — additional exception-type coverage
 # ---------------------------------------------------------------------------
 
@@ -5190,6 +5260,29 @@ class TestReservationGetByIpMalformedSubnets(TestCase):
         ):
             result = self.client.reservation_get_by_ip(4, "10.0.0.5")
         self.assertIsNone(result)
+
+    def test_non_integer_id_is_skipped_and_the_scan_continues(self):
+        """A present but unusable id must be skipped like a missing one, not sent to Kea.
+
+        Both entries contain the address. Sending ``"subnet-id": "99"`` makes Kea reject
+        the command, which raises and aborts the scan before the valid subnet is tried.
+        """
+        for bad_id in ("99", True, None, 1.5):
+            with self.subTest(bad_id=bad_id):
+                subnets = [
+                    {"subnet": "10.0.0.0/25", "id": bad_id},  # contains .5, unusable id
+                    {"subnet": "10.0.0.0/24", "id": 1},  # contains .5, valid
+                ]
+                with patch.object(
+                    self.client._session,
+                    "post",
+                    side_effect=_side_effects(self._subnet_list_resp(subnets), self._RESERVATION_FOUND),
+                ) as mock_post:
+                    result = self.client.reservation_get_by_ip(4, "10.0.0.5")
+                self.assertIsNotNone(result)
+                # The reservation-get must carry the valid id, never the unusable one.
+                second = mock_post.call_args_list[1].kwargs["json"]
+                self.assertEqual(second["arguments"]["subnet-id"], 1)
 
 
 class TestNetworkUpdateClearInterface(TestCase):
