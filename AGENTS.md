@@ -48,9 +48,9 @@ for a serial run.
 
 ```bash
 TEST_DB_NAME=test_<unique-task> TEST_REDIS_HOST=<dedicated-redis> \
-  uv run --native-tls pytest -n 8 --maxschedchunk=1
+  uv run --native-tls pytest --reuse-db -n 8 --maxschedchunk=1
 TEST_DB_NAME=test_<unique-task> TEST_REDIS_HOST=<dedicated-redis> \
-  uv run --native-tls pytest netbox_kea/tests/test_views_leases.py -v
+  uv run --native-tls pytest --reuse-db netbox_kea/tests/test_views_leases.py -v
 ```
 
 `pythonpath` is set to `/opt/netbox/netbox` and

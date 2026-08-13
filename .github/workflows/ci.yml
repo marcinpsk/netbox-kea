@@ -112,6 +112,7 @@ jobs:
             --override-ini="pythonpath=${{ github.workspace }}/netbox/netbox" \
             -n 4 \
             --dist loadscope \
+            --reuse-db \
             --cov=netbox_kea \
             --cov-report=xml:${{ github.workspace }}/coverage.xml \
             --no-header -q
