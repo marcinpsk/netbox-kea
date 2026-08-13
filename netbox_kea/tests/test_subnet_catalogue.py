@@ -3,6 +3,7 @@ import ipaddress
 import requests
 from django.test import TestCase, override_settings
 
+from netbox_kea.models import Server
 from netbox_kea.subnet_catalogue import (
     CatalogueUnavailable,
     CompleteCatalogueSnapshot,
@@ -102,6 +103,159 @@ class TestSubnetCatalogue(TestCase):
         self.assertEqual(standalone.configuration.settings.valid_lifetime, 3600)
         self.assertEqual(standalone.configuration.settings.ddns_qualifying_suffix, "example.invalid")
 
+    def test_public_operations_reject_invalid_scope(self):
+        with self.assertRaisesMessage(ValueError, "family must be 4 or 6"):
+            display(self.server, 5)
+        with self.assertRaisesMessage(ValueError, "requires a persisted Server"):
+            display(Server(), 4)
+
+    def test_display_reports_malformed_source_envelopes(self):
+        cases = (
+            (
+                {"subnet4-list": {"result": 1, "text": "failed"}, "config-get": _config(4, [])},
+                {"identity-unavailable"},
+            ),
+            (
+                {"subnet4-list": [], "config-get": []},
+                {"malformed-identity-response", "malformed-configuration-response"},
+            ),
+            (
+                {
+                    "subnet4-list": {"result": 0, "arguments": {"subnets": "not-a-list"}},
+                    "config-get": {"result": 0, "arguments": {"Other": {}}},
+                },
+                {"malformed-identity-response", "malformed-configuration-response"},
+            ),
+        )
+
+        for responses, expected_codes in cases:
+            with self.subTest(expected_codes=expected_codes), stub_kea(responses):
+                snapshot = display(self.server, 4)
+            self.assertTrue(expected_codes.issubset({diagnostic.code for diagnostic in snapshot.diagnostics}))
+
+    def test_display_omits_malformed_identities_but_keeps_valid_subnet(self):
+        identities = _identity(
+            4,
+            [
+                "not-an-object",
+                {"id": True, "subnet": "198.18.2.0/24"},
+                {"id": 2, "subnet": "198.18.2.1/24"},
+                {"id": 1, "subnet": "198.18.1.0/24", "shared-network-name": []},
+            ],
+        )
+        configuration = _config(4, [{"id": 1, "subnet": "198.18.1.0/24", "pools": []}])
+
+        with stub_kea({"subnet4-list": identities, "config-get": configuration}):
+            snapshot = display(self.server, 4)
+
+        self.assertEqual(snapshot.subnet_choices, (("198.18.1.0/24", 1),))
+        self.assertIsNone(snapshot.subnets[0].shared_network)
+        self.assertTrue(
+            {
+                "invalid-subnet",
+                "invalid-subnet-id",
+                "invalid-subnet-cidr",
+                "invalid-shared-network-membership",
+            }.issubset({diagnostic.code for diagnostic in snapshot.diagnostics})
+        )
+
+    def test_display_omits_invalid_nested_configuration_facts(self):
+        identities = _identity(
+            4,
+            [
+                {"id": 1, "subnet": "198.18.1.0/24"},
+                {"id": 2, "subnet": "198.18.2.0/24"},
+            ],
+        )
+        configuration = _config(
+            4,
+            [
+                {
+                    "id": 1,
+                    "subnet": "198.18.1.0/24",
+                    "pools": [
+                        {},
+                        {"pool": "198.18.3.0/24"},
+                        {"pool": "2001:db8::1-2001:db8::2"},
+                        {"pool": "198.18.2.1-198.18.2.2"},
+                        {"pool": "198.18.1.10-198.18.1.20"},
+                    ],
+                    "option-data": [
+                        "not-an-object",
+                        {"code": True, "data": "invalid"},
+                        {"name": "", "data": "invalid"},
+                        {},
+                        {"name": "routers", "space": "", "data": "invalid"},
+                        {"name": "routers", "data": []},
+                        {"name": "routers", "data": "198.18.1.1", "csv-format": "yes"},
+                        {"name": "routers", "data": "198.18.1.1"},
+                    ],
+                    "valid-lifetime": -1,
+                    "allocator": "",
+                    "relay": {"ip-addresses": ["invalid", "2001:db8::1", "198.18.1.1"]},
+                    "client-classes": "not-a-list",
+                    "require-client-classes": ["known-client"],
+                },
+                {
+                    "id": 2,
+                    "subnet": "198.18.2.0/24",
+                    "pools": "not-a-list",
+                    "option-data": "not-a-list",
+                    "relay": [],
+                },
+                "not-a-subnet",
+            ],
+            shared_networks=[
+                "not-a-network",
+                {"name": "broken", "subnet4": "not-a-list"},
+            ],
+        )
+
+        with stub_kea({"subnet4-list": identities, "config-get": configuration}):
+            snapshot = display(self.server, 4)
+
+        first = snapshot.find_by_id(1)
+        self.assertEqual(first.configuration.pools[0].range, "198.18.1.10-198.18.1.20")
+        self.assertEqual(first.configuration.options[0].name, "routers")
+        self.assertIsNone(first.configuration.settings.valid_lifetime)
+        self.assertIsNone(first.configuration.settings.allocator)
+        self.assertEqual(first.configuration.settings.relay_addresses, (ipaddress.ip_address("198.18.1.1"),))
+        self.assertEqual(first.configuration.settings.require_client_classes, ("known-client",))
+        self.assertEqual(snapshot.find_by_id(2).configuration.pools, ())
+        self.assertTrue(
+            {
+                "invalid-pool",
+                "invalid-pool-collection",
+                "invalid-option",
+                "invalid-option-collection",
+                "invalid-setting",
+                "invalid-subnet",
+                "invalid-shared-network",
+                "invalid-subnet-collection",
+            }.issubset({diagnostic.code for diagnostic in snapshot.diagnostics})
+        )
+
+    def test_display_reports_invalid_top_level_configuration_collections(self):
+        configuration = {
+            "result": 0,
+            "arguments": {"Dhcp4": {"subnet4": {}, "shared-networks": {}}},
+        }
+
+        with stub_kea(
+            {
+                "subnet4-list": {"result": 3, "text": "no subnets"},
+                "config-get": configuration,
+            }
+        ):
+            snapshot = display(self.server, 4)
+
+        self.assertFalse(snapshot.subnets)
+        self.assertFalse(snapshot.unavailable)
+        self.assertEqual(
+            {diagnostic.code for diagnostic in snapshot.diagnostics},
+            {"invalid-subnet-collection", "invalid-shared-network-collection"},
+        )
+
     def test_display_returns_identity_only_snapshot_when_config_fails(self):
         identities = _identity(4, [{"id": 1, "subnet": "198.18.1.0/24"}])
 
@@ -154,6 +308,45 @@ class TestSubnetCatalogue(TestCase):
         self.assertIsInstance(snapshot, CompleteCatalogueSnapshot)
         self.assertEqual(snapshot.subnet_choices, (("198.18.2.0/24", 1),))
         self.assertEqual(kea.commands(), ["subnet4-list", "config-get", "subnet4-list", "config-get"])
+
+    def test_display_reports_configuration_change_during_retry(self):
+        identities = _identity(4, [{"id": 1, "subnet": "198.18.1.0/24"}])
+        first_config = _config(4, [{"id": 1, "subnet": "198.18.2.0/24"}], config_hash="hash-a")
+        second_config = _config(4, [{"id": 1, "subnet": "198.18.2.0/24"}], config_hash="hash-b")
+
+        with stub_kea(
+            {
+                "subnet4-list": identities,
+                "config-get": queued(first_config, second_config),
+            }
+        ):
+            snapshot = display(self.server, 4)
+
+        self.assertFalse(snapshot.consistent)
+        self.assertIn("configuration-changed-during-retry", {item.code for item in snapshot.diagnostics})
+
+    def test_shared_network_membership_disagreement_quarantines_subnet(self):
+        identities = _identity(
+            4,
+            [{"id": 1, "subnet": "198.18.1.0/24", "shared-network-name": "access-a"}],
+        )
+        configuration = _config(
+            4,
+            [],
+            shared_networks=[
+                {
+                    "name": "access-b",
+                    "subnet4": [{"id": 1, "subnet": "198.18.1.0/24"}],
+                }
+            ],
+        )
+
+        with stub_kea({"subnet4-list": identities, "config-get": configuration}):
+            snapshot = display(self.server, 4)
+
+        self.assertFalse(snapshot.subnets)
+        self.assertFalse(snapshot.consistent)
+        self.assertIn("identity-configuration-disagreement", {item.code for item in snapshot.diagnostics})
 
     def test_persistent_disagreement_is_incomplete_and_not_authoritative(self):
         identities = _identity(4, [{"id": 1, "subnet": "198.18.1.0/24"}])
@@ -259,6 +452,28 @@ class TestSubnetCatalogue(TestCase):
             with self.assertRaises(CatalogueUnavailable):
                 for_synchronization(self.server, 4)
 
+    def test_for_synchronization_returns_complete_live_snapshot(self):
+        identities = _identity(4, [{"id": 1, "subnet": "198.18.1.0/24"}])
+        configuration = _config(4, [{"id": 1, "subnet": "198.18.1.0/24", "pools": []}])
+
+        with stub_kea({"subnet4-list": identities, "config-get": configuration}):
+            snapshot = for_synchronization(self.server, 4)
+
+        self.assertIsInstance(snapshot, CompleteCatalogueSnapshot)
+        self.assertEqual(snapshot.subnet_choices, (("198.18.1.0/24", 1),))
+
+    def test_display_reports_client_construction_failure(self):
+        self.server.client_cert_path = "/tmp/netbox-kea-client.crt"
+        self.server.client_key_path = ""
+
+        snapshot = display(self.server, 4)
+
+        self.assertTrue(snapshot.unavailable)
+        self.assertEqual(
+            {item.code for item in snapshot.diagnostics},
+            {"identity-unavailable", "configuration-unavailable"},
+        )
+
     def test_mutation_scope_resolves_exact_identity_and_prepares_next_id(self):
         identities = _identity(
             4,
@@ -284,6 +499,40 @@ class TestSubnetCatalogue(TestCase):
 
         self.assertEqual(prepared.subnet_id, 10)
         self.assertEqual(prepared.cidr, "198.18.10.0/24")
+
+    def test_mutation_scope_validates_lookup_and_explicit_creation_identity(self):
+        identities = _identity(4, [{"id": 1, "subnet": "198.18.1.0/24"}])
+        configuration = _config(4, [{"id": 1, "subnet": "198.18.1.0/24", "pools": []}])
+        unopened_scope = mutation(self.server, 4)
+        with self.assertRaisesMessage(RuntimeError, "must be entered"):
+            unopened_scope.find_by_id(1)
+
+        with stub_kea({"subnet4-list": identities, "config-get": configuration}):
+            with mutation(self.server, 4) as scope:
+                self.assertIsNone(scope.find_by_cidr("198.18.2.0/24"))
+                with self.assertRaisesMessage(ValueError, "non-empty string"):
+                    scope.prepare_creation("")
+                with self.assertRaisesMessage(ValueError, "must be an integer"):
+                    scope.prepare_creation("198.18.2.0/24", True)
+                with self.assertRaisesMessage(ValueError, "must be between"):
+                    scope.prepare_creation("198.18.2.0/24", 0)
+                with self.assertRaisesMessage(SubnetIdentityConflict, "Subnet ID 1"):
+                    scope.prepare_creation("198.18.2.0/24", 1)
+
+    def test_incomplete_mutation_scope_cannot_confirm_absence_or_prepare_creation(self):
+        configuration = _config(4, [{"id": 1, "subnet": "198.18.1.0/24", "pools": []}])
+
+        with stub_kea(
+            {
+                "subnet4-list": {"result": 1, "text": "failed"},
+                "config-get": configuration,
+            }
+        ):
+            with mutation(self.server, 4) as scope:
+                with self.assertRaises(CatalogueUnavailable):
+                    scope.find_by_id(99)
+                with self.assertRaises(CatalogueUnavailable):
+                    scope.prepare_creation("198.18.2.0/24")
 
     def test_mutation_creation_rejects_existing_identity(self):
         identities = _identity(4, [{"id": 1, "subnet": "198.18.1.0/24"}])

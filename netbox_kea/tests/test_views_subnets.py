@@ -1585,7 +1585,29 @@ class TestFetchSubnetsFromServer(_ViewTestBase):
         """A stat_cmds failure (missing hook) is swallowed; subnets are still returned."""
         config_resp = {
             "result": 0,
-            "arguments": {"Dhcp4": {"subnet4": [{"id": 1, "subnet": "10.0.0.0/24"}], "shared-networks": []}},
+            "arguments": {
+                "Dhcp4": {
+                    "subnet4": [
+                        {
+                            "id": 1,
+                            "subnet": "10.0.0.0/24",
+                            "pools": [{"pool": "10.0.0.10-10.0.0.20"}],
+                            "option-data": [
+                                {
+                                    "code": 6,
+                                    "name": "domain-name-servers",
+                                    "space": "dhcp4",
+                                    "data": "10.0.0.53",
+                                    "csv-format": True,
+                                    "always-send": False,
+                                    "never-send": False,
+                                }
+                            ],
+                        }
+                    ],
+                    "shared-networks": [],
+                }
+            },
         }
         result = self._run(
             {
@@ -1598,6 +1620,8 @@ class TestFetchSubnetsFromServer(_ViewTestBase):
             }
         )
         self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["pools"], ["10.0.0.10-10.0.0.20"])
+        self.assertEqual(result[0]["options"], {"dns_servers": "10.0.0.53"})
 
     def test_stat_cmds_success_updates_subnet(self):
         """Valid stat-lease4-get data is merged into the subnet dict."""
