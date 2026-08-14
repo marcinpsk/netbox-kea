@@ -504,15 +504,18 @@ def _prefixes(raw: dict[str, Any], family: Family) -> tuple[ipaddress.IPv6Networ
         raise MalformedReservation("invalid-prefixes", "Delegated prefixes must be a list.", "prefixes")
     parsed: list[ipaddress.IPv6Network] = []
     for index, value in enumerate(values):
+        field = f"prefixes[{index}]"
+        if not isinstance(value, str):
+            raise MalformedReservation("invalid-prefix", "The Reservation contains an invalid delegated prefix.", field)
         try:
             prefix = ipaddress.IPv6Network(value, strict=True)
         except (TypeError, ValueError) as exc:
             raise MalformedReservation(
-                "invalid-prefix", "The Reservation contains an invalid delegated prefix.", f"prefixes[{index}]"
+                "invalid-prefix", "The Reservation contains an invalid delegated prefix.", field
             ) from exc
         if prefix in parsed:
             raise MalformedReservation(
-                "invalid-prefix", "The Reservation contains a duplicate delegated prefix.", f"prefixes[{index}]"
+                "invalid-prefix", "The Reservation contains a duplicate delegated prefix.", field
             )
         parsed.append(prefix)
     return tuple(parsed)
@@ -571,9 +574,17 @@ def _parse_record_at(
     family: Family,
     catalogue: CatalogueSnapshot,
     index: int,
+    expected_hostname: str | None = None,
 ) -> tuple[Reservation | None, ReservationDiagnostic | None]:
     try:
-        return _parse_reservation(raw, family, catalogue), None
+        reservation = _parse_reservation(raw, family, catalogue)
+        if expected_hostname is not None and reservation.hostname != expected_hostname:
+            raise MalformedReservation(
+                "target-mismatch",
+                "Kea returned a Reservation that does not match the requested hostname.",
+                "hostname",
+            )
+        return reservation, None
     except MalformedReservation as exc:
         suffix = f".{exc.field}" if exc.field else ""
         return None, ReservationDiagnostic(
@@ -588,6 +599,8 @@ def _parse_reservation_page(
     family: int,
     catalogue: CatalogueSnapshot,
     next_cursor: str | None,
+    *,
+    expected_hostname: str | None = None,
 ) -> ReservationSnapshot:
     """Build one typed Snapshot and quarantine malformed records individually."""
     parsed_family = _family(family)
@@ -596,7 +609,7 @@ def _parse_reservation_page(
     records: list[Reservation] = []
     diagnostics: list[ReservationDiagnostic] = []
     for index, raw in enumerate(hosts):
-        record, diagnostic = _parse_record_at(raw, parsed_family, catalogue, index)
+        record, diagnostic = _parse_record_at(raw, parsed_family, catalogue, index, expected_hostname)
         if record is not None:
             records.append(record)
         if diagnostic is not None:

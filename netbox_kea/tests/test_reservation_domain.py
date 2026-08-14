@@ -355,6 +355,26 @@ class TestReservationPage(SimpleTestCase):
         self.assertEqual(snapshot.diagnostics[0].code, "invalid-identifier")
         self.assertEqual(snapshot.diagnostics[0].source_position, "hosts[1].flex-id")
 
+    def test_quarantines_non_string_delegated_prefixes(self):
+        hosts = [
+            {"subnet-id": 10, "duid": "00:01:02:03", "prefixes": ["2001:db8:100::/56"]},
+            {"subnet-id": 10, "duid": "00:01:02:04", "prefixes": [42]},
+            {"subnet-id": 10, "duid": "00:01:02:05", "prefixes": [True]},
+        ]
+
+        with stub_kea({"reservation-get-page": _res_page(hosts)}):
+            snapshot = self.client.reservation_page(6, _catalogue(6, 10, "2001:db8::/64"))
+
+        self.assertEqual(len(snapshot.records), 1)
+        self.assertEqual(snapshot.records[0].identity, ReservationIdentity("duid", "00:01:02:03"))
+        self.assertEqual(
+            [(diagnostic.code, diagnostic.source_position) for diagnostic in snapshot.diagnostics],
+            [
+                ("invalid-prefix", "hosts[1].prefixes[0]"),
+                ("invalid-prefix", "hosts[2].prefixes[0]"),
+            ],
+        )
+
     def test_quarantines_ipv4_collection_and_prefix_fields(self):
         hosts = [
             {"subnet-id": 10, "hw-address": "aa:bb:cc:dd:ee:01", "ip-addresses": []},
@@ -523,6 +543,45 @@ class TestReservationHostname(SimpleTestCase):
             kea.bodies("reservation-get-by-hostname")[0]["arguments"],
             {"hostname": "host.example.invalid"},
         )
+
+    def test_quarantines_results_that_do_not_match_the_requested_hostname(self):
+        client = KeaClient(url="http://kea.example.invalid", send_service=False)
+        response = {
+            "result": 0,
+            "arguments": {
+                "hosts": [
+                    {
+                        "subnet-id": 10,
+                        "duid": "00:01:02:03",
+                        "hostname": "host.example.invalid",
+                    },
+                    {
+                        "subnet-id": 10,
+                        "duid": "00:01:02:04",
+                        "hostname": "different.example.invalid",
+                    },
+                    {"subnet-id": 10, "duid": "00:01:02:05"},
+                ]
+            },
+        }
+
+        with stub_kea({"reservation-get-by-hostname": response}):
+            snapshot = client.reservations_by_hostname(
+                6,
+                _catalogue(6, 10, "2001:db8::/64"),
+                "host.example.invalid",
+            )
+
+        self.assertEqual(len(snapshot.records), 1)
+        self.assertEqual(snapshot.records[0].identity, ReservationIdentity("duid", "00:01:02:03"))
+        self.assertEqual(
+            [(diagnostic.code, diagnostic.source_position) for diagnostic in snapshot.diagnostics],
+            [
+                ("target-mismatch", "hosts[1].hostname"),
+                ("target-mismatch", "hosts[2].hostname"),
+            ],
+        )
+        self.assertFalse(snapshot.complete)
 
 
 class TestReservationIteration(SimpleTestCase):

@@ -666,7 +666,13 @@ class KeaClient:
         arguments = response[0].get("arguments")
         if not isinstance(arguments, dict):
             raise RuntimeError("reservation-get-by-hostname returned malformed arguments.")
-        return _parse_reservation_page(arguments.get("hosts"), version, catalogue, None)
+        return _parse_reservation_page(
+            arguments.get("hosts"),
+            version,
+            catalogue,
+            None,
+            expected_hostname=hostname,
+        )
 
     def reservation_snapshot(
         self,

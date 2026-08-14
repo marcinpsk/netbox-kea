@@ -504,7 +504,12 @@ class TestReservation6API(_APITestBase):
                         "duid": "00-01-02-03",
                         "ip-addresses": ["2001:db8::20"],
                         "hostname": "host.example.invalid",
-                    }
+                    },
+                    {
+                        "subnet-id": 10,
+                        "duid": "00-01-02-04",
+                        "hostname": "different.example.invalid",
+                    },
                 ]
             },
         }
@@ -515,7 +520,17 @@ class TestReservation6API(_APITestBase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["count"], 1)
         self.assertEqual(response.json()["results"][0]["identity"], {"type": "duid", "value": "00:01:02:03"})
-        self.assertTrue(response.json()["complete"])
+        self.assertEqual(
+            response.json()["diagnostics"],
+            [
+                {
+                    "code": "target-mismatch",
+                    "message": "Kea returned a Reservation that does not match the requested hostname.",
+                    "source_position": "hosts[1].hostname",
+                }
+            ],
+        )
+        self.assertFalse(response.json()["complete"])
         self.assertEqual(kea.commands(), ["subnet6-list", "config-get", "reservation-get-by-hostname"])
 
     def test_uses_dhcp6_service(self):
