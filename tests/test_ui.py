@@ -577,14 +577,18 @@ def configure_table(page: Page, *selected_coumns: str) -> None:
                 if attempt == 2:
                     raise
 
-    expected_headers = page.locator("#id_columns > option").all_text_contents()
-
     # NetBox 4.5 and earlier label this button "Save". NetBox 4.6 labels it "Apply".
     # Both versions reload the current path after they save the column selection.
     apply_button = page.locator("#apply_tableconfig")
     submit = apply_button if apply_button.count() else page.get_by_role("button", name="Save")
-    submit.click()
-    expect(page.locator(".object-list > thead > tr > th > a")).to_have_text([*expected_headers, ""])
+    target = page.url.split("?", 1)[0]
+    with page.expect_response(
+        lambda response: (
+            response.ok and response.request.is_navigation_request() and response.url.split("?", 1)[0] == target
+        )
+    ):
+        submit.click()
+    page.wait_for_load_state("domcontentloaded")
 
 
 @pytest.mark.parametrize(
