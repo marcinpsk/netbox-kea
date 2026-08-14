@@ -23,6 +23,7 @@ Pull requests use the same labels and states as issues:
 - **List external pull requests**: Use the following workflow. It filters external authors, then fetches complete details and comments for each pull request.
 
   ```bash
+  set -euo pipefail
   repo="$(gh repo view --json nameWithOwner --jq .nameWithOwner)"
   gh search prs --repo "$repo" --state open --limit 100 \
     --json number,authorAssociation \

@@ -343,7 +343,7 @@ uv run pytest -q
 
 # Run integration tests (requires Docker — see tests/test_setup.sh)
 ./tests/test_setup.sh
-uv run pytest tests/ --tracing=retain-on-failure -v --cov=netbox_kea --cov-report=xml
+uv run pytest -p no:django tests/ --tracing=retain-on-failure -v --cov=netbox_kea --cov-report=xml
 ```
 
 See [CHANGELOG](CHANGELOG.md) for version history.

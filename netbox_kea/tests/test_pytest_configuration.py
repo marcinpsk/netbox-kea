@@ -9,16 +9,40 @@ import sys
 import tempfile
 from pathlib import Path
 
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_documented_unit_test_targets_are_shell_safe():
+    """Keep task-specific test targets usable when copied into a shell."""
+    agents = (REPOSITORY_ROOT / "AGENTS.md").read_text()
+
+    assert "TEST_DB_NAME=test_netbox_kea_review TEST_REDIS_HOST=netbox-kea-review-redis" in agents
+    assert "<unique-task>" not in agents
+    assert "<dedicated-redis>" not in agents
+
+
+def test_documented_integration_commands_disable_pytest_django():
+    """Keep integration commands independent from the unit-test Django settings."""
+    for relative_path in ("AGENTS.md", "README.md"):
+        contents = (REPOSITORY_ROOT / relative_path).read_text()
+        assert "pytest -p no:django tests/" in contents, relative_path
+
+
+def test_documented_pull_request_pipeline_fails_closed():
+    """Make the PR triage pipeline propagate failures from every stage."""
+    issue_tracker = (REPOSITORY_ROOT / "docs/agents/issue-tracker.md").read_text()
+
+    assert "set -euo pipefail\n  repo=" in issue_tracker
+
 
 def test_pytest_configuration_works_with_django_plugin_disabled():
     """Keep unit-only pytest options out of the integration test command."""
-    repository_root = Path(__file__).resolve().parents[2]
-    with tempfile.TemporaryDirectory(dir=repository_root) as temporary_directory:
+    with tempfile.TemporaryDirectory(dir=REPOSITORY_ROOT) as temporary_directory:
         placeholder_test = Path(temporary_directory) / "test_placeholder.py"
         placeholder_test.write_text("def test_placeholder():\n    pass\n")
         result = subprocess.run(
             [sys.executable, "-m", "pytest", str(placeholder_test), "--collect-only", "-q", "-p", "no:django"],
-            cwd=repository_root,
+            cwd=REPOSITORY_ROOT,
             capture_output=True,
             check=False,
             text=True,

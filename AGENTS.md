@@ -47,9 +47,9 @@ databases. The supported maximum is eight workers. Omit `-n`, or set it to zero,
 for a serial run.
 
 ```bash
-TEST_DB_NAME=test_<unique-task> TEST_REDIS_HOST=<dedicated-redis> \
+TEST_DB_NAME=test_netbox_kea_review TEST_REDIS_HOST=netbox-kea-review-redis \
   uv run --native-tls pytest --reuse-db -n 8 --maxschedchunk=1
-TEST_DB_NAME=test_<unique-task> TEST_REDIS_HOST=<dedicated-redis> \
+TEST_DB_NAME=test_netbox_kea_review TEST_REDIS_HOST=netbox-kea-review-redis \
   uv run --native-tls pytest --reuse-db netbox_kea/tests/test_views_leases.py -v
 ```
 
@@ -61,7 +61,7 @@ TEST_DB_NAME=test_<unique-task> TEST_REDIS_HOST=<dedicated-redis> \
 
 ```bash
 ./tests/test_setup.sh   # generates TLS certs, builds a wheel, starts the compose stack
-uv run pytest tests/ --tracing=retain-on-failure -v --cov=netbox_kea --cov-report=xml
+uv run --native-tls pytest -p no:django tests/ --tracing=retain-on-failure -v --cov=netbox_kea --cov-report=xml
 ```
 
 The compose stack runs: NetBox, netbox-worker, postgres, redis, nginx (basic-auth
