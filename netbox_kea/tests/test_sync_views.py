@@ -70,6 +70,10 @@ def _catalogue_responses(version: int, cidr: str) -> dict:
     subnet = {"id": 1, "subnet": cidr}
     return {
         f"subnet{version}-list": _subnet_list(version, [subnet]),
+        "list-commands": {
+            "result": 0,
+            "arguments": ["reservation-get", "reservation-add", "reservation-update", "reservation-del"],
+        },
         "config-get": {
             "result": 0,
             "arguments": {f"Dhcp{version}": {f"subnet{version}": [subnet], "shared-networks": []}},

@@ -64,6 +64,10 @@ def _dual_url_stub():
     return stub_kea(
         {
             "config-get": _config_get,
+            "list-commands": {
+                "result": 0,
+                "arguments": ["reservation-get", "reservation-add", "reservation-update", "reservation-del"],
+            },
             "subnet4-list": _subnet_list(4, []),
             "subnet6-list": _subnet_list(6, []),
             "stat-lease4-get": {"result": 2, "text": "unknown command"},

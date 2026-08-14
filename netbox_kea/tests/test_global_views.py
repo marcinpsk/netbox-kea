@@ -29,9 +29,9 @@ run concurrently) are:
 
 * dashboard: none — the overview never calls Kea.
 * status badge: ``version-get`` per enabled protocol (Online iff it doesn't raise).
-* reservations: ``reservation-get-page`` (drained into a typed Snapshot) then,
-  when any reservations are found, ``lease{v}-get-by-state`` per unique subnet for the
-  active-lease badge (NetBox IPAM badges hit the DB, not Kea).
+* reservations: one bounded ``reservation-get-page`` call then, when records exist,
+  ``lease{v}-get-by-state`` per unique subnet for the active-lease badge and
+  ``list-commands`` plus ``config-get`` to confirm mutation capabilities.
 * leases (q + by): ``lease{v}-get`` (by IP) or ``lease{v}-get-by-<field>`` then,
   per lease, ``reservation-get`` (by IP, then by MAC) for the reservation badge.
 * leases (state only, no q): ``lease{v}-get-page`` (enumerate) + the same badge
@@ -164,6 +164,10 @@ _RES_NOT_FOUND = {"result": 3}
 _LEASE_NONE = {"result": 3}
 #: ``stat-lease{v}-get`` with no result-set (utilisation stats absent, non-fatal).
 _STAT_EMPTY = {"result": 0, "arguments": {}}
+_HOST_COMMANDS = {
+    "result": 0,
+    "arguments": ["reservation-get", "reservation-add", "reservation-update", "reservation-del"],
+}
 
 
 def _subnet_responses(version, *, config=None, subnets=None, stat=_STAT_EMPTY):
@@ -183,7 +187,7 @@ def _subnet_responses(version, *, config=None, subnets=None, stat=_STAT_EMPTY):
 
 def _reservation_stub(version, responses):
     """Stub a Reservation request with the required Subnet catalogue sources."""
-    return stub_kea({**_subnet_responses(version), **responses})
+    return stub_kea({**_subnet_responses(version), "list-commands": _HOST_COMMANDS, **responses})
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
