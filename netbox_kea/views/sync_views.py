@@ -349,17 +349,6 @@ class _BaseBulkReservationImportView(_KeaChangeMixin, ConditionalLoginRequiredMi
             "failure": None,
         }
 
-    def _family_diagnostics(self, proposals) -> list[ReservationTransferDiagnostic]:
-        return [
-            ReservationTransferDiagnostic(
-                code="wrong-family",
-                message=f"This page imports only DHCPv{self.dhcp_version} Reservations.",
-                source_position=f"reservations[{index}].family",
-            )
-            for index, proposal in enumerate(proposals)
-            if proposal.family != self.dhcp_version
-        ]
-
     def _resolve_reservations(self, proposals, capabilities, mutation_scope):
         diagnostics = []
         reservations = []
@@ -437,12 +426,16 @@ class _BaseBulkReservationImportView(_KeaChangeMixin, ConditionalLoginRequiredMi
             return self._render(request, instance, form, None)
 
         try:
-            parsed = parse_reservation_document(form.cleaned_data["document"], form.cleaned_data["format"])
+            parsed = parse_reservation_document(
+                form.cleaned_data["document"],
+                form.cleaned_data["format"],
+                expected_family=self.dhcp_version,
+            )
         except ReservationTransferError:
             logger.exception("Reservation transfer document parsing failed")
             form.add_error("document", "The document does not use valid syntax for the selected format.")
             return self._render(request, instance, form, None)
-        diagnostics = [*parsed.diagnostics, *self._family_diagnostics(parsed.proposals)]
+        diagnostics = [*parsed.diagnostics]
         if diagnostics:
             return self._render(request, instance, form, self._diagnostic_result(diagnostics))
 

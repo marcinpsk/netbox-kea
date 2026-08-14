@@ -161,6 +161,41 @@ class IPv6Reservation:
 
 Reservation = IPv4Reservation | IPv6Reservation
 
+
+def reservation_record_data(reservation: Reservation, *, include_subnet_id: bool = True) -> dict[str, Any]:
+    """Return the normalized public data for one Reservation."""
+    if isinstance(reservation.scope, InSubnetReservationScope):
+        subnet = {"cidr": reservation.scope.subnet.cidr}
+        if include_subnet_id:
+            subnet = {"id": reservation.scope.subnet.subnet_id, **subnet}
+        scope: dict[str, Any] = {"type": "in-subnet", "subnet": subnet}
+    else:
+        scope = {"type": "global"}
+    return {
+        "family": reservation.family,
+        "scope": scope,
+        "identity": {
+            "type": reservation.identity.identifier_type,
+            "value": reservation.identity.value,
+        },
+        "addresses": [str(address) for address in reservation.addresses],
+        "delegated_prefixes": [str(prefix) for prefix in reservation.delegated_prefixes],
+        "hostname": reservation.hostname,
+        "options": [
+            {
+                "code": option.code,
+                "name": option.name,
+                "space": option.space,
+                "data": option.data,
+                "csv_format": option.csv_format,
+                "always_send": option.always_send,
+                "never_send": option.never_send,
+            }
+            for option in reservation.options
+        ],
+    }
+
+
 T = TypeVar("T")
 
 

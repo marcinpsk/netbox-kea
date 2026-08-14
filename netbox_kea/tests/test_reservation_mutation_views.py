@@ -1,7 +1,10 @@
 # SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
 # SPDX-License-Identifier: Apache-2.0
 
+import json
+
 import requests
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.urls import reverse
 
 from .kea_stub import _res_get, queued, stub_kea
@@ -612,6 +615,102 @@ reservations:
         self.assertContains(response, "reservations[0].addresses[0]")
         self.assertContains(response, "reservations[0].hostname")
         self.assertEqual(kea.commands(), [])
+
+    def test_validation_reports_wrong_family_with_other_document_errors(self):
+        document = """version: 1
+reservations:
+  - family: 6
+    scope: {type: in-subnet, subnet: {cidr: 2001:db8::/64}}
+    identity: {type: duid, value: "00:01:02:03"}
+    addresses: []
+    delegated_prefixes: []
+    hostname: ""
+    options: []
+  - family: 4
+    scope: {type: in-subnet, subnet: {cidr: 198.18.0.0/24}}
+    identity: {type: hw-address, value: "aa:bb:cc:dd:ee:01"}
+    addresses: []
+    delegated_prefixes: []
+    hostname: 42
+    options: []
+"""
+
+        with stub_kea({}) as kea:
+            response = self.client.post(self._url(), {"format": "yaml", "document": document})
+
+        self.assertEqual(response.status_code, 200)
+        diagnostics = response.context["result"]["diagnostics"]
+        self.assertEqual(
+            {(diagnostic.code, diagnostic.source_position) for diagnostic in diagnostics},
+            {
+                ("wrong-family", "reservations[0].family"),
+                ("invalid-hostname", "reservations[1].hostname"),
+            },
+        )
+        self.assertEqual(kea.commands(), [])
+
+    def test_json_upload_uses_typed_creation_side_effects_without_ipam_sync(self):
+        from extras.models import JournalEntry
+        from ipam.models import IPAddress
+
+        option = {
+            "code": None,
+            "name": "domain-name",
+            "space": None,
+            "data": "example.invalid",
+            "csv_format": False,
+            "always_send": True,
+            "never_send": False,
+        }
+        document = {
+            "version": 1,
+            "reservations": [
+                {
+                    "family": 4,
+                    "scope": {"type": "in-subnet", "subnet": {"cidr": "198.18.0.0/24"}},
+                    "identity": {"type": "hw-address", "value": "aa:bb:cc:dd:ee:01"},
+                    "addresses": ["198.18.0.20"],
+                    "delegated_prefixes": [],
+                    "hostname": "upload.example.invalid",
+                    "options": [option],
+                }
+            ],
+        }
+        raw = {
+            "subnet-id": 20,
+            "hw-address": "aa:bb:cc:dd:ee:01",
+            "ip-address": "198.18.0.20",
+            "hostname": "upload.example.invalid",
+            "option-data": [
+                {
+                    "name": "domain-name",
+                    "data": "example.invalid",
+                    "csv-format": False,
+                    "always-send": True,
+                    "never-send": False,
+                }
+            ],
+        }
+        responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
+        responses.update({"reservation-add": {"result": 0}, "reservation-get": _res_get(raw)})
+        upload = SimpleUploadedFile(
+            "reservations.json",
+            json.dumps(document).encode(),
+            content_type="application/json",
+        )
+
+        with stub_kea(responses) as kea:
+            response = self.client.post(self._url(), {"format": "json", "document_file": upload})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["result"]["created"], 1)
+        created = kea.bodies("reservation-add")[0]["arguments"]["reservation"]
+        self.assertEqual(created, raw)
+        self.assertEqual(
+            JournalEntry.objects.get(assigned_object_id=self.server.pk).comments,
+            "Reservation created: hw-address aa:bb:cc:dd:ee:01; 198.18.0.20",
+        )
+        self.assertFalse(IPAddress.objects.filter(address="198.18.0.20/24").exists())
 
     def test_import_stops_after_first_kea_failure_and_emits_only_confirmed_signal(self):
         document = """version: 1

@@ -10,18 +10,25 @@ import yaml
 from .dhcp_options import DHCPOption, parse_dhcp_option
 from .reservations import (
     Family,
-    GlobalReservationScope,
     InSubnetReservationScope,
     IPv4Reservation,
     IPv6Reservation,
     Reservation,
     ReservationIdentity,
     reservation_identifier_types,
+    reservation_record_data,
 )
 from .subnet_catalogue import SubnetIdentity
 
 TransferFormat = Literal["yaml", "json"]
 IPAddress = ipaddress.IPv4Address | ipaddress.IPv6Address
+_DOCUMENT_FIELDS = frozenset({"version", "reservations"})
+_RECORD_FIELDS = frozenset({"family", "scope", "identity", "addresses", "delegated_prefixes", "hostname", "options"})
+_SCOPE_FIELDS = frozenset({"type", "subnet"})
+_GLOBAL_SCOPE_FIELDS = frozenset({"type"})
+_SUBNET_FIELDS = frozenset({"cidr"})
+_IDENTITY_FIELDS = frozenset({"type", "value"})
+_OPTION_FIELDS = frozenset({"code", "name", "space", "data", "csv_format", "always_send", "never_send"})
 
 
 class ReservationTransferError(ValueError):
@@ -81,47 +88,12 @@ def resolve_import_proposal(proposal: ReservationImportProposal, subnet: SubnetI
     )
 
 
-def _option_document(option: DHCPOption) -> dict[str, Any]:
-    return {
-        key: value
-        for key, value in (
-            ("code", option.code),
-            ("name", option.name),
-            ("space", option.space),
-            ("data", option.data),
-            ("csv_format", option.csv_format),
-            ("always_send", option.always_send),
-            ("never_send", option.never_send),
-        )
-        if value is not None
-    }
-
-
-def _reservation_document(reservation: Reservation) -> dict[str, Any]:
-    if isinstance(reservation.scope, GlobalReservationScope):
-        scope: dict[str, Any] = {"type": "global"}
-    else:
-        scope = {
-            "type": "in-subnet",
-            "subnet": {"cidr": str(reservation.scope.subnet.network)},
-        }
-    return {
-        "family": reservation.family,
-        "scope": scope,
-        "identity": {
-            "type": reservation.identity.identifier_type,
-            "value": reservation.identity.value,
-        },
-        "addresses": [str(address) for address in reservation.addresses],
-        "delegated_prefixes": [str(prefix) for prefix in reservation.delegated_prefixes],
-        "hostname": reservation.hostname,
-        "options": [_option_document(option) for option in reservation.options],
-    }
-
-
 def export_reservation_document(records: tuple[Reservation, ...], format_name: str) -> str:
     """Export normalized Reservation records in one explicit format."""
-    document = {"version": 1, "reservations": [_reservation_document(record) for record in records]}
+    document = {
+        "version": 1,
+        "reservations": [reservation_record_data(record, include_subnet_id=False) for record in records],
+    }
     if format_name == "json":
         return json.dumps(document, indent=2) + "\n"
     if format_name == "yaml":
@@ -144,6 +116,28 @@ def _diagnostic(code: str, message: str, position: str) -> ReservationTransferDi
     return ReservationTransferDiagnostic(code=code, message=message, source_position=position)
 
 
+def _report_unknown_fields(
+    value: dict[Any, Any],
+    allowed: frozenset[str],
+    position: str,
+    diagnostics: list[ReservationTransferDiagnostic],
+) -> None:
+    for field in value:
+        if isinstance(field, str) and field in allowed:
+            continue
+        if isinstance(field, str):
+            field_position = f"{position}.{field}" if position else field
+        else:
+            field_position = f"{position or '$'}[{field!r}]"
+        diagnostics.append(
+            _diagnostic(
+                "unknown-field",
+                "The field is not part of the Reservation Transfer Document schema.",
+                field_position,
+            )
+        )
+
+
 def _parse_family(value: Any, position: str, diagnostics: list[ReservationTransferDiagnostic]) -> Family | None:
     if isinstance(value, bool) or value not in (4, 6):
         diagnostics.append(_diagnostic("invalid-family", "Family must be 4 or 6.", position))
@@ -161,6 +155,12 @@ def _parse_scope(
         diagnostics.append(_diagnostic("invalid-scope", "Scope must be an object.", position))
         return None
     scope_type = value.get("type")
+    _report_unknown_fields(
+        value,
+        _GLOBAL_SCOPE_FIELDS if scope_type == "global" else _SCOPE_FIELDS,
+        position,
+        diagnostics,
+    )
     if scope_type == "global":
         diagnostics.append(
             _diagnostic(
@@ -174,7 +174,14 @@ def _parse_scope(
         diagnostics.append(_diagnostic("invalid-scope", "Scope type must be in-subnet or global.", f"{position}.type"))
         return None
     subnet = value.get("subnet")
+    if isinstance(subnet, dict):
+        _report_unknown_fields(subnet, _SUBNET_FIELDS, f"{position}.subnet", diagnostics)
     cidr = subnet.get("cidr") if isinstance(subnet, dict) else None
+    if not isinstance(cidr, str):
+        diagnostics.append(
+            _diagnostic("invalid-subnet", "The subnet CIDR must be a canonical network.", f"{position}.subnet.cidr")
+        )
+        return None
     try:
         network = ipaddress.ip_network(cidr, strict=True)
     except (TypeError, ValueError):
@@ -199,6 +206,7 @@ def _parse_identity(
     if not isinstance(value, dict):
         diagnostics.append(_diagnostic("invalid-identity", "Identity must be an object.", position))
         return None
+    _report_unknown_fields(value, _IDENTITY_FIELDS, position, diagnostics)
     try:
         identity = ReservationIdentity(value.get("type"), value.get("value"))
     except (TypeError, ValueError):
@@ -225,6 +233,9 @@ def _parse_addresses(
     subnet = ipaddress.ip_network(subnet_cidr) if subnet_cidr is not None else None
     parsed: list[IPAddress] = []
     for index, raw in enumerate(value):
+        if not isinstance(raw, str):
+            diagnostics.append(_diagnostic("invalid-address", "The address is invalid.", f"{position}[{index}]"))
+            continue
         try:
             address = ipaddress.ip_address(raw)
         except (TypeError, ValueError):
@@ -265,6 +276,11 @@ def _parse_prefixes(
         return None
     parsed: list[ipaddress.IPv6Network] = []
     for index, raw in enumerate(value):
+        if not isinstance(raw, str):
+            diagnostics.append(
+                _diagnostic("invalid-prefix", "The delegated prefix is invalid.", f"{position}[{index}]")
+            )
+            continue
         try:
             prefix = ipaddress.IPv6Network(raw, strict=True)
         except (TypeError, ValueError):
@@ -290,8 +306,11 @@ def _parse_options(
         diagnostics.append(_diagnostic("invalid-options", "Options must be a list.", position))
         return None
     parsed: list[DHCPOption] = []
+    seen: set[tuple[str | None, int | str | None]] = set()
     for index, raw in enumerate(value):
+        option_position = f"{position}[{index}]"
         if isinstance(raw, dict):
+            _report_unknown_fields(raw, _OPTION_FIELDS, option_position, diagnostics)
             raw = {
                 "code": raw.get("code"),
                 "name": raw.get("name"),
@@ -302,9 +321,15 @@ def _parse_options(
                 "never-send": raw.get("never_send"),
             }
         try:
-            parsed.append(parse_dhcp_option(raw))
+            option = parse_dhcp_option(raw)
         except ValueError:
-            diagnostics.append(_diagnostic("invalid-option", "The DHCP Option is invalid.", f"{position}[{index}]"))
+            diagnostics.append(_diagnostic("invalid-option", "The DHCP Option is invalid.", option_position))
+            continue
+        if option.match_key in seen:
+            diagnostics.append(_diagnostic("duplicate-option", "The DHCP Option is duplicated.", option_position))
+        else:
+            seen.add(option.match_key)
+        parsed.append(option)
     return tuple(parsed)
 
 
@@ -312,12 +337,22 @@ def _parse_record(
     raw: Any,
     index: int,
     diagnostics: list[ReservationTransferDiagnostic],
-) -> ReservationImportProposal | None:
+    expected_family: int | None,
+) -> tuple[ReservationImportProposal | None, tuple[Family, str, str, str] | None]:
     base = f"reservations[{index}]"
     if not isinstance(raw, dict):
         diagnostics.append(_diagnostic("invalid-record", "A Reservation must be an object.", base))
-        return None
+        return None, None
+    _report_unknown_fields(raw, _RECORD_FIELDS, base, diagnostics)
     family = _parse_family(raw.get("family"), f"{base}.family", diagnostics)
+    if family is not None and expected_family is not None and family != expected_family:
+        diagnostics.append(
+            _diagnostic(
+                "wrong-family",
+                f"This import accepts only DHCPv{expected_family} Reservations.",
+                f"{base}.family",
+            )
+        )
     subnet_cidr = _parse_scope(raw.get("scope"), family, f"{base}.scope", diagnostics)
     identity = _parse_identity(raw.get("identity"), family, f"{base}.identity", diagnostics)
     addresses = _parse_addresses(raw.get("addresses"), family, subnet_cidr, f"{base}.addresses", diagnostics)
@@ -327,20 +362,33 @@ def _parse_record(
         diagnostics.append(_diagnostic("invalid-hostname", "Hostname must be a string.", f"{base}.hostname"))
         hostname = None
     options = _parse_options(raw.get("options"), f"{base}.options", diagnostics)
+    duplicate_key = (
+        (family, subnet_cidr, identity.identifier_type, identity.value)
+        if family is not None and subnet_cidr is not None and identity is not None
+        else None
+    )
     if None in (family, subnet_cidr, identity, addresses, prefixes, hostname, options):
-        return None
-    return ReservationImportProposal(
-        family=family,
-        subnet_cidr=subnet_cidr,
-        identity=identity,
-        addresses=addresses,
-        delegated_prefixes=prefixes,
-        hostname=hostname,
-        options=options,
+        return None, duplicate_key
+    return (
+        ReservationImportProposal(
+            family=family,
+            subnet_cidr=subnet_cidr,
+            identity=identity,
+            addresses=addresses,
+            delegated_prefixes=prefixes,
+            hostname=hostname,
+            options=options,
+        ),
+        duplicate_key,
     )
 
 
-def parse_reservation_document(document: str, format_name: str) -> ReservationTransferResult:
+def parse_reservation_document(
+    document: str,
+    format_name: str,
+    *,
+    expected_family: int | None = None,
+) -> ReservationTransferResult:
     """Validate a complete transfer document before returning any proposal."""
     raw = _load_document(document, format_name)
     diagnostics: list[ReservationTransferDiagnostic] = []
@@ -348,26 +396,21 @@ def parse_reservation_document(document: str, format_name: str) -> ReservationTr
         return ReservationTransferResult(
             (), (_diagnostic("invalid-document", "Document root must be an object.", "$"),)
         )
+    _report_unknown_fields(raw, _DOCUMENT_FIELDS, "", diagnostics)
     if raw.get("version") != 1:
         diagnostics.append(_diagnostic("invalid-version", "Document version must be 1.", "version"))
     records = raw.get("reservations")
     if not isinstance(records, list):
         diagnostics.append(_diagnostic("invalid-reservations", "Reservations must be a list.", "reservations"))
         return ReservationTransferResult((), tuple(diagnostics))
-    indexed_proposals = [
-        (index, proposal)
-        for index, entry in enumerate(records)
-        if (proposal := _parse_record(entry, index, diagnostics)) is not None
+    parsed_records = [
+        (index, *_parse_record(entry, index, diagnostics, expected_family)) for index, entry in enumerate(records)
     ]
     seen: dict[tuple[Family, str, str, str], int] = {}
-    for index, proposal in indexed_proposals:
-        key = (
-            proposal.family,
-            proposal.subnet_cidr,
-            proposal.identity.identifier_type,
-            proposal.identity.value,
-        )
-        if key in seen:
+    for index, _proposal, duplicate_key in parsed_records:
+        if duplicate_key is None:
+            continue
+        if duplicate_key in seen:
             diagnostics.append(
                 _diagnostic(
                     "duplicate-reservation",
@@ -376,7 +419,10 @@ def parse_reservation_document(document: str, format_name: str) -> ReservationTr
                 )
             )
         else:
-            seen[key] = index
+            seen[duplicate_key] = index
     if diagnostics:
         return ReservationTransferResult((), tuple(diagnostics))
-    return ReservationTransferResult(tuple(proposal for _, proposal in indexed_proposals), ())
+    return ReservationTransferResult(
+        tuple(proposal for _, proposal, _ in parsed_records if proposal is not None),
+        (),
+    )

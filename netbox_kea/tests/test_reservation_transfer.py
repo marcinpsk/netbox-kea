@@ -105,6 +105,36 @@ reservations:
         self.assertIn("reservations[2].identity", positions)
         self.assertEqual(parsed.proposals, ())
 
+    def test_reports_a_duplicate_when_the_same_record_has_another_field_error(self):
+        document = """version: 1
+reservations:
+  - family: 4
+    scope: {type: in-subnet, subnet: {cidr: 198.18.0.0/24}}
+    identity: {type: flex-id, value: duplicate-key}
+    addresses: []
+    delegated_prefixes: []
+    hostname: ""
+    options: []
+  - family: 4
+    scope: {type: in-subnet, subnet: {cidr: 198.18.0.0/24}}
+    identity: {type: flex-id, value: duplicate-key}
+    addresses: []
+    delegated_prefixes: []
+    hostname: 42
+    options: []
+"""
+
+        parsed = parse_reservation_document(document, "yaml")
+
+        self.assertEqual(
+            {(diagnostic.code, diagnostic.source_position) for diagnostic in parsed.diagnostics},
+            {
+                ("invalid-hostname", "reservations[1].hostname"),
+                ("duplicate-reservation", "reservations[1].identity"),
+            },
+        )
+        self.assertEqual(parsed.proposals, ())
+
     def test_reports_an_out_of_subnet_address_before_returning_any_proposal(self):
         document = """version: 1
 reservations:
@@ -251,6 +281,152 @@ reservations:
                 "invalid-prefix",
                 "duplicate-prefix",
             }.issubset(codes)
+        )
+
+    def test_reports_unknown_fields_at_each_document_boundary(self):
+        document = {
+            "version": 1,
+            "metadata": {},
+            "reservations": [
+                {
+                    "family": 4,
+                    "scope": {
+                        "type": "in-subnet",
+                        "subnet": {"cidr": "198.18.0.0/24", "id": 20},
+                        "subnet_id": 20,
+                    },
+                    "identity": {
+                        "type": "hw-address",
+                        "value": "aa:bb:cc:dd:ee:01",
+                        "label": "primary",
+                    },
+                    "addresses": [],
+                    "delegated_prefixes": [],
+                    "hostname": "",
+                    "options": [{"name": "domain-name", "data": "example.invalid", "always_sned": True}],
+                    "comment": "ignored",
+                }
+            ],
+        }
+
+        result = parse_reservation_document(json.dumps(document), "json")
+
+        self.assertEqual(
+            {(diagnostic.code, diagnostic.source_position) for diagnostic in result.diagnostics},
+            {
+                ("unknown-field", "metadata"),
+                ("unknown-field", "reservations[0].comment"),
+                ("unknown-field", "reservations[0].scope.subnet_id"),
+                ("unknown-field", "reservations[0].scope.subnet.id"),
+                ("unknown-field", "reservations[0].identity.label"),
+                ("unknown-field", "reservations[0].options[0].always_sned"),
+            },
+        )
+        self.assertEqual(result.proposals, ())
+
+    def test_reports_duplicate_dhcp_options(self):
+        document = {
+            "version": 1,
+            "reservations": [
+                {
+                    "family": 4,
+                    "scope": {"type": "in-subnet", "subnet": {"cidr": "198.18.0.0/24"}},
+                    "identity": {"type": "hw-address", "value": "aa:bb:cc:dd:ee:01"},
+                    "addresses": [],
+                    "delegated_prefixes": [],
+                    "hostname": "",
+                    "options": [
+                        {"name": "domain-name", "data": "first.example.invalid"},
+                        {"name": "domain-name", "data": "second.example.invalid"},
+                    ],
+                }
+            ],
+        }
+
+        result = parse_reservation_document(json.dumps(document), "json")
+
+        self.assertEqual(
+            [(diagnostic.code, diagnostic.source_position) for diagnostic in result.diagnostics],
+            [("duplicate-option", "reservations[0].options[1]")],
+        )
+        self.assertEqual(result.proposals, ())
+
+    def test_rejects_non_string_network_values_from_json(self):
+        records = [
+            {
+                "family": 4,
+                "scope": {"type": "in-subnet", "subnet": {"cidr": 42}},
+                "identity": {"type": "hw-address", "value": "aa:bb:cc:dd:ee:01"},
+                "addresses": [],
+                "delegated_prefixes": [],
+                "hostname": "",
+                "options": [],
+            },
+            {
+                "family": 4,
+                "scope": {"type": "in-subnet", "subnet": {"cidr": "0.0.0.0/24"}},
+                "identity": {"type": "hw-address", "value": "aa:bb:cc:dd:ee:02"},
+                "addresses": [42],
+                "delegated_prefixes": [],
+                "hostname": "",
+                "options": [],
+            },
+            {
+                "family": 6,
+                "scope": {"type": "in-subnet", "subnet": {"cidr": "2001:db8::/64"}},
+                "identity": {"type": "duid", "value": "00:01:02:03"},
+                "addresses": [],
+                "delegated_prefixes": [42],
+                "hostname": "",
+                "options": [],
+            },
+        ]
+
+        result = parse_reservation_document(json.dumps({"version": 1, "reservations": records}), "json")
+
+        self.assertEqual(
+            {(diagnostic.code, diagnostic.source_position) for diagnostic in result.diagnostics},
+            {
+                ("invalid-subnet", "reservations[0].scope.subnet.cidr"),
+                ("invalid-address", "reservations[1].addresses[0]"),
+                ("invalid-prefix", "reservations[2].delegated_prefixes[0]"),
+            },
+        )
+        self.assertEqual(result.proposals, ())
+
+    def test_export_uses_the_complete_normalized_option_shape(self):
+        reservation = IPv4Reservation(
+            scope=InSubnetReservationScope(SubnetIdentity(20, ip_network("198.18.0.0/24"))),
+            identity=ReservationIdentity("flex-id", "option-shape"),
+            addresses=(),
+            options=(
+                DHCPOption(
+                    code=None,
+                    name="domain-name",
+                    space=None,
+                    data="example.invalid",
+                    csv_format=None,
+                    always_send=None,
+                    never_send=None,
+                ),
+            ),
+        )
+
+        exported = json.loads(export_reservation_document((reservation,), "json"))
+
+        self.assertEqual(
+            exported["reservations"][0]["options"],
+            [
+                {
+                    "code": None,
+                    "name": "domain-name",
+                    "space": None,
+                    "data": "example.invalid",
+                    "csv_format": None,
+                    "always_send": None,
+                    "never_send": None,
+                }
+            ],
         )
 
     def test_resolves_a_valid_ipv6_proposal_and_rejects_a_different_subnet(self):
