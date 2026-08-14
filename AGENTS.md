@@ -246,7 +246,7 @@ resort, reserved for true external boundaries you cannot run locally.
 - **Query-count baselines.** The list-view mixins assert an exact SQL query count
   against `netbox_kea/tests/query_counts.json` to catch N+1 drift. Record/update with
   `UPDATE_QUERY_COUNTS=1 uv run pytest ...` (serially), then commit the file. The
-  counts are tied to the NetBox version the unit-test CI pins (v4.6.7) — bump the pin
+  counts are tied to the NetBox version the unit-test CI pins (v4.6.7). Bump the pin
   and re-record together.
 - **When fixing a bug, write the failing (red) test first**, confirm it fails against
   the unfixed code, then fix until green.
