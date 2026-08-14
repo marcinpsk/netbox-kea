@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import tempfile
@@ -54,11 +55,14 @@ def test_documented_pull_request_pipeline_fetches_all_review_surfaces():
 def test_serial_django_suite_is_rejected():
     """Reject serial unit runs before they can clear the manual environment's cache."""
     probe = REPOSITORY_ROOT / "netbox_kea" / "tests" / "test_parallel_test_setup.py"
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = os.pathsep.join(str(Path(entry or Path.cwd()).resolve()) for entry in sys.path)
     result = subprocess.run(
         [sys.executable, "-m", "pytest", str(probe), "--collect-only", "-q", "-p", "no:django"],
         cwd=REPOSITORY_ROOT,
         capture_output=True,
         check=False,
+        env=environment,
         text=True,
         timeout=30,
     )
