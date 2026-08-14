@@ -246,7 +246,8 @@ resort, reserved for true external boundaries you cannot run locally.
   those stay `stub_kea`-driven.
 - **Query-count baselines.** The list-view mixins assert an exact SQL query count
   against `netbox_kea/tests/query_counts.json` to catch N+1 drift. Record/update with
-  `UPDATE_QUERY_COUNTS=1 uv run pytest -n 1 ...`, then commit the file. One xdist
+  `TEST_DB_NAME=test_netbox_kea_review TEST_REDIS_HOST=netbox-kea-review-redis \
+  UPDATE_QUERY_COUNTS=1 uv run pytest -n 1 ...`, then commit the file. One xdist
   worker prevents concurrent writes and keeps Redis isolated. The
   counts are tied to the NetBox version the unit-test CI pins (v4.6.7). Bump the pin
   and re-record together.
