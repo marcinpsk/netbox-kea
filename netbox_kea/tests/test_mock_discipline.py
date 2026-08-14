@@ -547,30 +547,21 @@ def test_save_and_load_baseline_roundtrip(tmp_path):
     assert load_baseline(path) == counts
 
 
-def test_main_update_baseline_writes_and_reports(capsys):
-    """`--update-baseline` rescans, rewrites the baseline, and reports the count (exit 0).
-
-    The real baseline is currently empty and the tree is clean, so this regenerates it
-    byte-identically; snapshot/restore guards against any future non-empty state.
-    """
-    backup = md._BASELINE_PATH.read_text()
-    try:
-        rc = md._main(["--update-baseline"])
-    finally:
-        md._BASELINE_PATH.write_text(backup)
+def test_main_update_baseline_writes_and_reports(capsys, tmp_path):
+    """`--update-baseline` scans an isolated tree and reports the count (exit 0)."""
+    baseline_path = tmp_path / "baseline.txt"
+    rc = md._main(["--update-baseline"], root=tmp_path, baseline_path=baseline_path)
     assert rc == 0
+    assert load_baseline(baseline_path) == {}
     assert "baseline updated" in capsys.readouterr().out
 
 
-def test_main_reports_and_exits_nonzero_on_violation(capsys):
+def test_main_reports_and_exits_nonzero_on_violation(capsys, tmp_path):
     """`_main([])` prints each unapproved mock and returns 1 when the tree has one."""
-    bad_file = md.TESTS_ROOT / "_tmp_mockcheck_cov.py"
+    bad_file = tmp_path / "_tmp_mockcheck_cov.py"
     bad_file.write_text("from unittest.mock import MagicMock\n\ndef test_x():\n    return MagicMock()\n")
-    try:
-        rc = md._main([])
-        out = capsys.readouterr().out
-    finally:
-        bad_file.unlink()
+    rc = md._main([], root=tmp_path, baseline_path=tmp_path / "baseline.txt")
+    out = capsys.readouterr().out
     assert rc == 1
     assert "_tmp_mockcheck_cov.py" in out
     assert "unapproved mock" in out
