@@ -331,7 +331,10 @@ class _CombinedSubnetsView(_CombinedViewMixin):
                 try:
                     subnets, diagnostics = future.result()
                     all_subnets.extend(subnets)
-                    errors.extend((server.name, diagnostic.message) for diagnostic in diagnostics)
+                    errors.extend(
+                        (server.name, message)
+                        for message in dict.fromkeys(diagnostic.message for diagnostic in diagnostics)
+                    )
                 except Exception:  # noqa: BLE001, PERF203
                     logger.exception("Failed to query server %s", server.name)
                     errors.append((server.name, "Failed to query server"))
