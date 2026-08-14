@@ -148,6 +148,14 @@ class KeaHttpStub:
 #     drift across the test modules that register them) ---
 
 
+def _reservation_mutation_commands() -> dict[str, Any]:
+    """A ``list-commands`` payload that confirms every Reservation mutation command."""
+    return {
+        "result": 0,
+        "arguments": ["reservation-get", "reservation-add", "reservation-update", "reservation-del"],
+    }
+
+
 def _res_page(hosts: Any, *, next_from: int = 0, next_source: int = 0) -> dict[str, Any]:
     """A ``reservation-get-page`` payload: *hosts* plus Kea's pagination cursor.
 

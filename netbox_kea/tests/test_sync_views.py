@@ -35,7 +35,7 @@ from ipam.models import IPAddress as NbIP
 
 from netbox_kea.models import Server
 
-from .kea_stub import _res_page, _subnet_list, stub_kea
+from .kea_stub import _res_page, _reservation_mutation_commands, _subnet_list, stub_kea
 
 User = get_user_model()
 
@@ -70,10 +70,6 @@ def _catalogue_responses(version: int, cidr: str) -> dict:
     subnet = {"id": 1, "subnet": cidr}
     return {
         f"subnet{version}-list": _subnet_list(version, [subnet]),
-        "list-commands": {
-            "result": 0,
-            "arguments": ["reservation-get", "reservation-add", "reservation-update", "reservation-del"],
-        },
         "config-get": {
             "result": 0,
             "arguments": {f"Dhcp{version}": {f"subnet{version}": [subnet], "shared-networks": []}},
@@ -535,6 +531,7 @@ class TestReservationBulkSyncConflictProtection(_SyncViewBase):
         # and enriches with lease4-get-by-state per subnet.
         stub = {
             **_catalogue_responses(4, "10.0.0.0/8"),
+            "list-commands": _reservation_mutation_commands(),
             "reservation-get-page": _res_page(hosts),
             "lease4-get-by-state": {"result": 0, "arguments": {"leases": []}},
         }
@@ -567,6 +564,7 @@ class TestReservationBulkSyncConflictProtection(_SyncViewBase):
         ]
         stub = {
             **_catalogue_responses(4, "10.0.0.0/8"),
+            "list-commands": _reservation_mutation_commands(),
             "reservation-get-page": _res_page(hosts),
             "lease4-get-by-state": {"result": 0, "arguments": {"leases": []}},
         }

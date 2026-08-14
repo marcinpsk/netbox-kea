@@ -5,7 +5,7 @@ import yaml
 from django.test import override_settings
 from django.urls import reverse
 
-from .kea_stub import _res_get, _res_page, queued, stub_kea
+from .kea_stub import _res_get, _res_page, _reservation_mutation_commands, queued, stub_kea
 from .utils import _PLUGINS_CONFIG, _ViewTestBase
 
 
@@ -14,10 +14,7 @@ def _catalogue_responses(version: int, subnet_id: int, cidr: str) -> dict:
     subnet = {"id": subnet_id, "subnet": cidr}
     return {
         f"subnet{version}-list": {"result": 0, "arguments": {"subnets": [subnet]}},
-        "list-commands": {
-            "result": 0,
-            "arguments": ["reservation-get", "reservation-add", "reservation-update", "reservation-del"],
-        },
+        "list-commands": _reservation_mutation_commands(),
         "config-get": {
             "result": 0,
             "arguments": {f"Dhcp{version}": {subnet_key: [subnet]}, "hash": "reservation-ui-catalogue"},
@@ -151,10 +148,7 @@ class TestPerServerReservationSnapshots(_ViewTestBase):
                         }
                     ]
                 ),
-                "list-commands": {
-                    "result": 0,
-                    "arguments": ["reservation-get", "reservation-add", "reservation-update", "reservation-del"],
-                },
+                "list-commands": _reservation_mutation_commands(),
             }
         )
 
@@ -397,10 +391,7 @@ class TestCombinedReservationSnapshots(_ViewTestBase):
                     ]
                 ),
                 "lease4-get-by-state": {"result": 0, "arguments": {"leases": []}},
-                "list-commands": {
-                    "result": 0,
-                    "arguments": ["reservation-get", "reservation-add", "reservation-update", "reservation-del"],
-                },
+                "list-commands": _reservation_mutation_commands(),
             }
         )
         url = reverse("plugins:netbox_kea:combined_reservations4")

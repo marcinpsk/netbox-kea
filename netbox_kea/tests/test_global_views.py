@@ -52,7 +52,7 @@ from ipam.models import IPAddress
 from netbox_kea import constants
 from netbox_kea.models import Server
 
-from .kea_stub import _res_get, _res_page, stub_kea
+from .kea_stub import _res_get, _res_page, _reservation_mutation_commands, stub_kea
 from .utils import _PLUGINS_CONFIG, User, _drop_subnet_choices_cache, _make_db_server
 
 # ---------------------------------------------------------------------------
@@ -164,10 +164,6 @@ _RES_NOT_FOUND = {"result": 3}
 _LEASE_NONE = {"result": 3}
 #: ``stat-lease{v}-get`` with no result-set (utilisation stats absent, non-fatal).
 _STAT_EMPTY = {"result": 0, "arguments": {}}
-_HOST_COMMANDS = {
-    "result": 0,
-    "arguments": ["reservation-get", "reservation-add", "reservation-update", "reservation-del"],
-}
 
 
 def _subnet_responses(version, *, config=None, subnets=None, stat=_STAT_EMPTY):
@@ -187,7 +183,7 @@ def _subnet_responses(version, *, config=None, subnets=None, stat=_STAT_EMPTY):
 
 def _reservation_stub(version, responses):
     """Stub a Reservation request with the required Subnet catalogue sources."""
-    return stub_kea({**_subnet_responses(version), "list-commands": _HOST_COMMANDS, **responses})
+    return stub_kea({**_subnet_responses(version), "list-commands": _reservation_mutation_commands(), **responses})
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
