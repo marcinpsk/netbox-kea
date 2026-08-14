@@ -18,6 +18,7 @@ from ..reservations import (
     ReservationIdentity,
     ReservationScope,
     ReservationSnapshot,
+    reservation_query_mode,
 )
 from ..subnet_catalogue import display as subnet_catalogue
 from ..utilities import format_leases
@@ -246,36 +247,25 @@ class ServerViewSet(NetBoxModelViewSet):
         server = self.get_object()
         params = request.query_params
 
-        ip_address = params.get("ip_address")
         hostname = params.get("hostname")
 
-        selector_count = sum(
-            (
-                bool(ip_address),
-                bool(params.get("identifier_type") or params.get("identifier")),
-                bool(hostname),
-                bool(params.get("page") or params.get("limit") or params.get("cursor")),
-            )
-        )
-        if selector_count != 1:
+        try:
+            query_mode = reservation_query_mode(params.keys())
+        except ValueError:
             return Response(
                 {"detail": "Select exactly one Reservation query: page, identity, scoped address, or hostname."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        page_selector = bool(params.get("page") or params.get("limit") or params.get("cursor"))
-        if page_selector:
+        if query_mode == "page":
             return self._reservation_page_response(server, params, version)
-        if params.get("identifier_type") or params.get("identifier"):
+        if query_mode == "identity":
             return self._reservation_identity_response(server, params, version)
-        if ip_address:
+        if query_mode == "address":
             return self._reservation_address_response(server, params, version)
-        if hostname:
+        if query_mode == "hostname":
             return self._reservation_hostname_response(server, hostname, version)
-        return Response(
-            {"detail": "Select exactly one Reservation query: page, identity, scoped address, or hostname."},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
+        raise AssertionError(f"Unsupported Reservation query mode {query_mode!r}")
 
     def _reservation_page_response(self, server, params, version: int) -> Response:
         """Return one validated and normalized bounded Reservation page."""
@@ -321,17 +311,23 @@ class ServerViewSet(NetBoxModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
         try:
-            catalogue = subnet_catalogue(server, version)
-            if params.get("scope") == "global":
-                scope: ReservationScope = GlobalReservationScope()
-            elif params.get("scope") == "in-subnet":
+            scope_name = params.get("scope")
+            if scope_name == "global":
+                if "subnet_id" in params:
+                    raise ValueError("A Global Reservation query cannot select a Subnet.")
+                subnet_id = None
+            elif scope_name == "in-subnet":
                 subnet_id = int(params.get("subnet_id", ""))
+            else:
+                raise ValueError("scope must be global or in-subnet.")
+            catalogue = subnet_catalogue(server, version)
+            if subnet_id is None:
+                scope: ReservationScope = GlobalReservationScope()
+            else:
                 subnet = catalogue.find_by_id(subnet_id)
                 if subnet is None:
                     raise ValueError("The Reservation Subnet is not verified.")
                 scope = InSubnetReservationScope(subnet.identity)
-            else:
-                raise ValueError("scope must be global or in-subnet.")
             identity = ReservationIdentity(identifier_type, identifier)
             client = server.get_client(version=version)
             reservation = client.reservation_by_identity(version, catalogue, scope, identity)

@@ -129,6 +129,20 @@ class TestReservation4API(_APITestBase):
         self.assertIn("exactly one", response.json()["detail"])
         self.assertEqual(kea.commands(), [])
 
+    def test_query_modes_reject_parameters_from_another_mode(self):
+        cases = (
+            {"page": "1", "subnet_id": "20"},
+            {"hostname": "host.example.invalid", "scope": "global"},
+        )
+
+        for params in cases:
+            with self.subTest(params=params), stub_kea({}) as kea:
+                response = self.api_client.get(self._url(), params)
+
+            self.assertEqual(response.status_code, 400)
+            self.assertIn("exactly one", response.json()["detail"])
+            self.assertEqual(kea.commands(), [])
+
     def test_server_not_found_returns_404(self):
         """Non-existent server PK returns HTTP 404."""
         response = self.api_client.get(self._url(pk=99999), {"page": "1"})
@@ -301,6 +315,21 @@ class TestReservation4API(_APITestBase):
         record = response.json()["results"][0]
         self.assertEqual(record["scope"], {"type": "global"})
         self.assertEqual(record["options"][0]["name"], "domain-name")
+
+    def test_global_identity_rejects_a_subnet_id(self):
+        params = {
+            "scope": "global",
+            "subnet_id": "20",
+            "identifier_type": "flex-id",
+            "identifier": "global-client",
+        }
+
+        with stub_kea({}) as kea:
+            response = self.api_client.get(self._url(), params)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Invalid Reservation identity", response.json()["detail"])
+        self.assertEqual(kea.commands(), [])
 
     def test_identity_maps_malformed_connection_kea_and_runtime_errors(self):
         cases = (

@@ -4,6 +4,7 @@ import hashlib
 import ipaddress
 import json
 import re
+from collections.abc import Collection
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Generic, Literal, TypeVar, cast
 
@@ -16,6 +17,7 @@ Family = Literal[4, 6]
 IPAddress = ipaddress.IPv4Address | ipaddress.IPv6Address
 IPNetwork = ipaddress.IPv4Network | ipaddress.IPv6Network
 IdentifierType = Literal["hw-address", "duid", "circuit-id", "client-id", "flex-id"]
+ReservationQueryMode = Literal["page", "identity", "address", "hostname"]
 
 _IDENTIFIERS: dict[Family, tuple[IdentifierType, ...]] = {
     4: ("hw-address", "duid", "circuit-id", "client-id", "flex-id"),
@@ -30,6 +32,31 @@ _IDENTIFIER_LABELS: dict[IdentifierType, str] = {
 }
 _HEX_IDENTIFIERS = frozenset({"hw-address", "duid", "client-id"})
 _MAX_OPAQUE_IDENTIFIER_LENGTH = 255
+_QUERY_PARAMETERS_BY_MODE: dict[ReservationQueryMode, frozenset[str]] = {
+    "page": frozenset({"page", "limit", "cursor"}),
+    "identity": frozenset({"scope", "subnet_id", "identifier_type", "identifier"}),
+    "address": frozenset({"subnet_id", "ip_address"}),
+    "hostname": frozenset({"hostname"}),
+}
+_QUERY_SELECTORS_BY_MODE: dict[ReservationQueryMode, frozenset[str]] = {
+    "page": frozenset({"page", "limit", "cursor"}),
+    "identity": frozenset({"scope", "identifier_type", "identifier"}),
+    "address": frozenset({"ip_address"}),
+    "hostname": frozenset({"hostname"}),
+}
+_QUERY_PARAMETERS = frozenset().union(*_QUERY_PARAMETERS_BY_MODE.values())
+
+
+def reservation_query_mode(parameter_names: Collection[str]) -> ReservationQueryMode:
+    """Select one REST Reservation query mode from its supplied parameters."""
+    provided = set(parameter_names) & _QUERY_PARAMETERS
+    selected = tuple(mode for mode, selectors in _QUERY_SELECTORS_BY_MODE.items() if not provided.isdisjoint(selectors))
+    if len(selected) != 1:
+        raise ValueError("Select exactly one Reservation query.")
+    mode = selected[0]
+    if not provided <= _QUERY_PARAMETERS_BY_MODE[mode]:
+        raise ValueError("Select exactly one Reservation query.")
+    return mode
 
 
 def reservation_identifier_types(family: int) -> tuple[IdentifierType, ...]:
@@ -378,6 +405,20 @@ def _identity(raw: dict[str, Any], family: Family) -> ReservationIdentity:
             "Relay remote ID is not a native Reservation Identity. Configure the Kea Flex ID hook instead.",
             "remote-id",
         )
+    invalid_family_identifier = next(
+        (
+            identifier_type
+            for identifier_type in _IDENTIFIER_LABELS
+            if identifier_type in raw and identifier_type not in reservation_identifier_types(family)
+        ),
+        None,
+    )
+    if invalid_family_identifier is not None:
+        raise MalformedReservation(
+            "invalid-family-identifier",
+            f"The Reservation contains an identifier that is not valid for DHCPv{family}.",
+            invalid_family_identifier,
+        )
     identifiers = [
         (identifier_type, raw[identifier_type])
         for identifier_type in reservation_identifier_types(family)
@@ -393,7 +434,14 @@ def _identity(raw: dict[str, Any], family: Family) -> ReservationIdentity:
         raise MalformedReservation("invalid-identifier", "The Reservation identifier is invalid.", identifier_type)
     else:
         normalized = value
-    return ReservationIdentity(identifier_type=identifier_type, value=normalized)
+    try:
+        return ReservationIdentity(identifier_type=identifier_type, value=normalized)
+    except ValueError as exc:
+        raise MalformedReservation(
+            "invalid-identifier",
+            "The Reservation identifier is invalid.",
+            identifier_type,
+        ) from exc
 
 
 def _scope(raw: dict[str, Any], catalogue: CatalogueSnapshot) -> ReservationScope:
@@ -429,19 +477,18 @@ def _addresses(raw: dict[str, Any], family: Family) -> tuple[IPAddress, ...]:
             raise MalformedReservation("invalid-addresses", "Reservation addresses must be a list.", "ip-addresses")
     parsed: list[IPAddress] = []
     for index, value in enumerate(values):
+        field = "ip-address" if family == 4 else f"ip-addresses[{index}]"
         if not isinstance(value, str):
-            raise MalformedReservation(
-                "invalid-address", "The Reservation contains an invalid address.", f"ip-addresses[{index}]"
-            )
+            raise MalformedReservation("invalid-address", "The Reservation contains an invalid address.", field)
         try:
             address = ipaddress.ip_address(value)
         except (TypeError, ValueError) as exc:
             raise MalformedReservation(
-                "invalid-address", "The Reservation contains an invalid address.", f"ip-addresses[{index}]"
+                "invalid-address", "The Reservation contains an invalid address.", field
             ) from exc
         if address.version != family or address in parsed:
             raise MalformedReservation(
-                "invalid-address", "The Reservation contains an invalid or duplicate address.", f"ip-addresses[{index}]"
+                "invalid-address", "The Reservation contains an invalid or duplicate address.", field
             )
         parsed.append(address)
     return tuple(parsed)
@@ -477,6 +524,15 @@ def _parse_reservation(raw: Any, family: Family, catalogue: CatalogueSnapshot) -
     identity = _identity(raw, family)
     scope = _scope(raw, catalogue)
     addresses = _addresses(raw, family)
+    if isinstance(scope, InSubnetReservationScope):
+        for index, address in enumerate(addresses):
+            if address not in scope.subnet.network:
+                field = "ip-address" if family == 4 else f"ip-addresses[{index}]"
+                raise MalformedReservation(
+                    "invalid-address",
+                    "The Reservation contains an address outside its verified In-Subnet Scope.",
+                    field,
+                )
     prefixes = _prefixes(raw, family)
     hostname = raw.get("hostname", "")
     if not isinstance(hostname, str):

@@ -318,6 +318,43 @@ class TestReservationPage(SimpleTestCase):
         self.assertEqual(len(snapshot.diagnostics), len(hosts))
         self.assertIn("unverified-scope", {diagnostic.code for diagnostic in snapshot.diagnostics})
 
+    def test_quarantines_an_identifier_from_the_other_family(self):
+        hosts = [
+            {
+                "subnet-id": 10,
+                "duid": "00:01:02:03",
+                "ip-addresses": ["2001:db8::20"],
+            },
+            {
+                "subnet-id": 10,
+                "duid": "00:01:02:04",
+                "client-id": "01:02",
+                "ip-addresses": ["2001:db8::21"],
+            },
+        ]
+
+        with stub_kea({"reservation-get-page": _res_page(hosts)}):
+            snapshot = self.client.reservation_page(6, _catalogue(6, 10, "2001:db8::/64"))
+
+        self.assertEqual(len(snapshot.records), 1)
+        self.assertEqual(snapshot.records[0].identity, ReservationIdentity("duid", "00:01:02:03"))
+        self.assertEqual(snapshot.diagnostics[0].code, "invalid-family-identifier")
+        self.assertEqual(snapshot.diagnostics[0].source_position, "hosts[1].client-id")
+
+    def test_quarantines_an_oversized_opaque_identifier(self):
+        hosts = [
+            {"subnet-id": 10, "duid": "00:01:02:03"},
+            {"subnet-id": 10, "flex-id": "x" * 256},
+        ]
+
+        with stub_kea({"reservation-get-page": _res_page(hosts)}):
+            snapshot = self.client.reservation_page(6, _catalogue(6, 10, "2001:db8::/64"))
+
+        self.assertEqual(len(snapshot.records), 1)
+        self.assertEqual(snapshot.records[0].identity, ReservationIdentity("duid", "00:01:02:03"))
+        self.assertEqual(snapshot.diagnostics[0].code, "invalid-identifier")
+        self.assertEqual(snapshot.diagnostics[0].source_position, "hosts[1].flex-id")
+
     def test_quarantines_ipv4_collection_and_prefix_fields(self):
         hosts = [
             {"subnet-id": 10, "hw-address": "aa:bb:cc:dd:ee:01", "ip-addresses": []},
@@ -332,6 +369,28 @@ class TestReservationPage(SimpleTestCase):
 
         self.assertEqual(snapshot.records, ())
         self.assertEqual({item.code for item in snapshot.diagnostics}, {"invalid-addresses", "invalid-prefixes"})
+
+    def test_quarantines_an_address_outside_the_verified_scope(self):
+        hosts = [
+            {
+                "subnet-id": 10,
+                "hw-address": "aa:bb:cc:dd:ee:01",
+                "ip-address": "198.18.0.20",
+            },
+            {
+                "subnet-id": 10,
+                "hw-address": "aa:bb:cc:dd:ee:02",
+                "ip-address": "198.18.1.20",
+            },
+        ]
+
+        with stub_kea({"reservation-get-page": _res_page(hosts)}):
+            snapshot = self.client.reservation_page(4, _catalogue(4, 10, "198.18.0.0/24"))
+
+        self.assertEqual(len(snapshot.records), 1)
+        self.assertEqual(snapshot.records[0].identity, ReservationIdentity("hw-address", "aa:bb:cc:dd:ee:01"))
+        self.assertEqual(snapshot.diagnostics[0].code, "invalid-address")
+        self.assertEqual(snapshot.diagnostics[0].source_position, "hosts[1].ip-address")
 
 
 class TestReservationExactIdentity(SimpleTestCase):
