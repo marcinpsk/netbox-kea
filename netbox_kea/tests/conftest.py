@@ -25,6 +25,14 @@ from netbox_kea.tests.parallel import isolated_test_database_name
 logger = logging.getLogger(__name__)
 
 
+def pytest_sessionstart(session) -> None:
+    """Require xdist before tests can touch shared NetBox services."""
+    config = session.config
+    if hasattr(config, "workerinput") or getattr(config.option, "numprocesses", None):
+        return
+    raise pytest.UsageError("The netbox_kea Django suite requires pytest-xdist with -n 1 or greater.")
+
+
 def _test_database_name() -> str:
     """Return the caller-selected database name for this pytest worker."""
     name = os.environ.get("TEST_DB_NAME", "test_netbox_kea")

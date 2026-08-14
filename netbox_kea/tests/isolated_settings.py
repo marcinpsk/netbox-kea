@@ -14,7 +14,13 @@ _test_database_name = os.environ["TEST_DB_NAME"]
 if not _test_database_name.startswith("test_"):
     raise ValueError("TEST_DB_NAME must start with 'test_'.")
 
-_tasks_redis_database, _cache_redis_database = isolated_redis_databases(os.environ.get("PYTEST_XDIST_WORKER"))
+_worker_id = os.environ.get("PYTEST_XDIST_WORKER")
+if _worker_id is None:
+    # The xdist controller loads Django settings but does not run tests.
+    # pytest_sessionstart rejects a serial session before test collection.
+    _tasks_redis_database, _cache_redis_database = 0, 1
+else:
+    _tasks_redis_database, _cache_redis_database = isolated_redis_databases(_worker_id)
 os.environ["REDIS_HOST"] = _test_redis_host
 os.environ["REDIS_CACHE_HOST"] = _test_redis_host
 os.environ["REDIS_DATABASE"] = str(_tasks_redis_database)

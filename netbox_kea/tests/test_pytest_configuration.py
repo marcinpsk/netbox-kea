@@ -35,6 +35,38 @@ def test_documented_pull_request_pipeline_fails_closed():
     assert "set -euo pipefail\n  repo=" in issue_tracker
 
 
+def test_context_uses_the_canonical_server_term():
+    """Keep the Server definition consistent with its avoided terminology."""
+    context = (REPOSITORY_ROOT / "CONTEXT.md").read_text()
+
+    assert "A configured Kea server that provides DHCPv4, DHCPv6, or both." in context
+    assert "A configured Kea endpoint" not in context
+
+
+def test_documented_pull_request_pipeline_fetches_all_review_surfaces():
+    """Fetch review bodies and paginated inline comments during PR triage."""
+    issue_tracker = (REPOSITORY_ROOT / "docs/agents/issue-tracker.md").read_text()
+
+    assert "--json number,title,body,labels,author,comments,reviews" in issue_tracker
+    assert 'gh api --paginate "repos/$repo/pulls/$number/comments"' in issue_tracker
+
+
+def test_serial_django_suite_is_rejected():
+    """Reject serial unit runs before they can clear the manual environment's cache."""
+    probe = REPOSITORY_ROOT / "netbox_kea" / "tests" / "test_parallel_test_setup.py"
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", str(probe), "--collect-only", "-q", "-p", "no:django"],
+        cwd=REPOSITORY_ROOT,
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 4
+    assert "requires pytest-xdist" in result.stdout + result.stderr
+
+
 def test_pytest_configuration_works_with_django_plugin_disabled():
     """Keep unit-only pytest options out of the integration test command."""
     with tempfile.TemporaryDirectory(dir=REPOSITORY_ROOT) as temporary_directory:

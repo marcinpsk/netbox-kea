@@ -548,12 +548,20 @@ def test_save_and_load_baseline_roundtrip(tmp_path):
 
 
 def test_main_update_baseline_writes_and_reports(capsys, tmp_path):
-    """`--update-baseline` scans an isolated tree and reports the count (exit 0)."""
+    """`--update-baseline` writes a baseline that a later scan honors."""
+    bad_file = tmp_path / "_tmp_mockcheck_cov.py"
+    bad_file.write_text("from unittest.mock import MagicMock\n\ndef test_x():\n    return MagicMock()\n")
     baseline_path = tmp_path / "baseline.txt"
+
     rc = md._main(["--update-baseline"], root=tmp_path, baseline_path=baseline_path)
     assert rc == 0
-    assert load_baseline(baseline_path) == {}
+    assert baseline_path.is_file()
+    assert load_baseline(baseline_path) == {"_tmp_mockcheck_cov.py::test_x": 1}
     assert "baseline updated" in capsys.readouterr().out
+
+    rc = md._main([], root=tmp_path, baseline_path=baseline_path)
+    assert rc == 0
+    assert "0 unapproved mock(s)" in capsys.readouterr().out
 
 
 def test_main_reports_and_exits_nonzero_on_violation(capsys, tmp_path):

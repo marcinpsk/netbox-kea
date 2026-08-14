@@ -22,10 +22,11 @@ def test_xdist_worker_gets_private_postgresql_and_redis_databases():
     assert isolated_redis_databases("gw3") == (3, 11)
 
 
-def test_serial_run_keeps_default_database_targets():
-    """Keep the caller's targets when pytest does not use xdist."""
+def test_serial_run_has_no_redis_database_targets():
+    """Reject Redis targets without an xdist worker identity."""
     assert isolated_test_database_name("test_netbox_kea", None) == "test_netbox_kea"
-    assert isolated_redis_databases(None) == (0, 1)
+    with pytest.raises(ValueError, match="requires an xdist worker ID"):
+        isolated_redis_databases(None)
 
 
 def test_database_name_stays_within_postgresql_limit():

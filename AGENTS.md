@@ -43,14 +43,15 @@ boundary (see "Testing philosophy" below).
 
 Use a task-specific PostgreSQL database and a dedicated Redis host. Each xdist
 worker gets a private PostgreSQL database and private Redis task and cache
-databases. The supported maximum is eight workers. Omit `-n`, or set it to zero,
-for a serial run.
+databases. The supported maximum is eight workers. Always use xdist, including
+for focused tests. A serial run can clear Redis database 1, which the shared
+manual verification environment uses as its default cache.
 
 ```bash
 TEST_DB_NAME=test_netbox_kea_review TEST_REDIS_HOST=netbox-kea-review-redis \
   uv run --native-tls pytest --reuse-db -n 8 --maxschedchunk=1
 TEST_DB_NAME=test_netbox_kea_review TEST_REDIS_HOST=netbox-kea-review-redis \
-  uv run --native-tls pytest --reuse-db netbox_kea/tests/test_views_leases.py -v
+  uv run --native-tls pytest --reuse-db -n 8 --maxschedchunk=1 netbox_kea/tests/test_views_leases.py -v
 ```
 
 `pythonpath` is set to `/opt/netbox/netbox` and
@@ -245,7 +246,8 @@ resort, reserved for true external boundaries you cannot run locally.
   those stay `stub_kea`-driven.
 - **Query-count baselines.** The list-view mixins assert an exact SQL query count
   against `netbox_kea/tests/query_counts.json` to catch N+1 drift. Record/update with
-  `UPDATE_QUERY_COUNTS=1 uv run pytest ...` (serially), then commit the file. The
+  `UPDATE_QUERY_COUNTS=1 uv run pytest -n 1 ...`, then commit the file. One xdist
+  worker prevents concurrent writes and keeps Redis isolated. The
   counts are tied to the NetBox version the unit-test CI pins (v4.6.7). Bump the pin
   and re-record together.
 - **When fixing a bug, write the failing (red) test first**, confirm it fails against

@@ -18,7 +18,7 @@ def isolated_test_database_name(base_name: str, worker_id: str | None) -> str:
 def isolated_redis_databases(worker_id: str | None) -> tuple[int, int]:
     """Return private task and cache Redis databases for one pytest worker."""
     if worker_id is None:
-        return 0, 1
+        raise ValueError("Redis database isolation requires an xdist worker ID.")
 
     match = _WORKER_ID_PATTERN.fullmatch(worker_id)
     if match is None:

@@ -10,7 +10,7 @@ This context manages Kea DHCP configuration and mirrors selected live Kea state 
 ## Language
 
 **Server**:
-A configured Kea endpoint that provides DHCPv4, DHCPv6, or both.
+A configured Kea server that provides DHCPv4, DHCPv6, or both.
 _Avoid_: Kea instance, endpoint
 
 **Subnet**:

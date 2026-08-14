@@ -35,8 +35,10 @@ Pull requests use the same labels and states as issues:
     ) | .number' |
   while read -r number; do
     gh pr view "$number" --repo "$repo" \
-      --json number,title,body,labels,author,comments \
-      --jq '{number, title, body, author: .author.login, labels: [.labels[].name], comments: [.comments[].body]}'
+      --json number,title,body,labels,author,comments,reviews \
+      --jq '{number, title, body, author: .author.login, labels: [.labels[].name], comments: [.comments[] | {author: .author.login, body}], reviews: [.reviews[] | {author: .author.login, state, body}]}'
+    gh api --paginate "repos/$repo/pulls/$number/comments" \
+      --jq '.[] | {author: .user.login, path, line, body}'
   done
   ```
 
