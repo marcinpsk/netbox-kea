@@ -77,7 +77,10 @@ class TestCombinedResponseShapeGuards(_ViewTestBase):
                 "stat-lease4-get": {"result": 2, "text": "unknown command"},
             }
         ):
-            self.assertEqual(_fetch_subnets_from_server(self.server, 4), [])
+            subnets, diagnostics = _fetch_subnets_from_server(self.server, 4)
+
+        self.assertEqual(subnets, [])
+        self.assertTrue(diagnostics)
 
     def test_shared_networks_empty_response_raises_runtime_error(self):
         from netbox_kea.views import _fetch_shared_networks_from_server
@@ -85,6 +88,34 @@ class TestCombinedResponseShapeGuards(_ViewTestBase):
         with stub_kea({"config-get": []}):
             with self.assertRaises(RuntimeError):
                 _fetch_shared_networks_from_server(self.server, 4)
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestCombinedSubnetDiagnostics(_ViewTestBase):
+    def test_incomplete_catalogue_explains_omitted_facts(self):
+        responses = {
+            "subnet4-list": {
+                "result": 0,
+                "arguments": {"subnets": [{"id": 1, "subnet": "198.18.0.0/24"}]},
+            },
+            "config-get": {
+                "result": 0,
+                "arguments": {
+                    "Dhcp4": {
+                        "subnet4": [{"id": 1, "subnet": "198.18.0.0/24", "pools": "not-a-list"}],
+                    }
+                },
+            },
+            "stat-lease4-get": {"result": 2, "text": "unknown command"},
+        }
+        url = reverse("plugins:netbox_kea:combined_subnets4") + f"?server={self.server.pk}"
+
+        with stub_kea(responses):
+            response = self.client.get(url)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "198.18.0.0/24")
+        self.assertContains(response, "Kea returned a non-list Pool collection.")
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)

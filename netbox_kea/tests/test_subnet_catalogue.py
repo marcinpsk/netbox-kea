@@ -133,7 +133,7 @@ class TestSubnetCatalogue(TestCase):
         for responses, expected_codes in cases:
             with self.subTest(expected_codes=expected_codes), stub_kea(responses):
                 snapshot = display(self.server, 4)
-            self.assertTrue(expected_codes.issubset({diagnostic.code for diagnostic in snapshot.diagnostics}))
+                self.assertTrue(expected_codes.issubset({diagnostic.code for diagnostic in snapshot.diagnostics}))
 
     def test_display_omits_malformed_identities_but_keeps_valid_subnet(self):
         identities = _identity(

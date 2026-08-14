@@ -13,7 +13,7 @@ from django.views import View
 from .. import constants, forms, tables
 from ..kea import KeaException, iter_reservations
 from ..models import Server
-from ..subnet_catalogue import ConfiguredSubnet, SubnetOption, VerifiedSubnet, display
+from ..subnet_catalogue import ConfiguredSubnet, Diagnostic, SubnetOption, VerifiedSubnet, display
 from ..utilities import (
     _enrich_reservation_sort_key,
     export_table,
@@ -280,7 +280,10 @@ def _catalogue_subnet_row(
     return row
 
 
-def _fetch_subnets_from_server(server: "Server", version: int) -> list[dict[str, Any]]:
+def _fetch_subnets_from_server(
+    server: "Server",
+    version: int,
+) -> tuple[list[dict[str, Any]], tuple[Diagnostic, ...]]:
     """Fetch safe Subnet Catalogue facts for one server and tag them for the combined table."""
     snapshot = display(server, version)
     if snapshot.unavailable:
@@ -304,7 +307,7 @@ def _fetch_subnets_from_server(server: "Server", version: int) -> list[dict[str,
                 s.update(stats[s["id"]])
     except (KeaException, requests.RequestException, KeyError, ValueError, TypeError, RuntimeError):
         logger.debug("stat_cmds hook unavailable or failed", exc_info=True)
-    return result
+    return result, snapshot.diagnostics
 
 
 class _CombinedSubnetsView(_CombinedViewMixin):
@@ -326,7 +329,9 @@ class _CombinedSubnetsView(_CombinedViewMixin):
             for future in concurrent.futures.as_completed(future_to_server):
                 server = future_to_server[future]
                 try:
-                    all_subnets.extend(future.result())
+                    subnets, diagnostics = future.result()
+                    all_subnets.extend(subnets)
+                    errors.extend((server.name, diagnostic.message) for diagnostic in diagnostics)
                 except Exception:  # noqa: BLE001, PERF203
                     logger.exception("Failed to query server %s", server.name)
                     errors.append((server.name, "Failed to query server"))

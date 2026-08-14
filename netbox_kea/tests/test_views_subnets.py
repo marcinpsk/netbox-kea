@@ -1543,7 +1543,8 @@ class TestFetchSubnetsFromServer(_ViewTestBase):
         from netbox_kea.views import _fetch_subnets_from_server
 
         with stub_kea(responses):
-            return _fetch_subnets_from_server(self.server, version=4)
+            subnets, _diagnostics = _fetch_subnets_from_server(self.server, version=4)
+        return subnets
 
     def test_null_arguments_preserves_confirmed_empty_identity(self):
         """Malformed config does not override a complete identity observation with no Subnets."""
