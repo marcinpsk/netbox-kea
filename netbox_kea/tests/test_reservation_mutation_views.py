@@ -31,6 +31,8 @@ def _mutation_responses(version: int, subnet_id: int, cidr: str, identifiers: li
             "arguments": {"subnets": [{"id": subnet_id, "subnet": cidr}]},
         },
         "config-get": _live_config(version, subnet_id, cidr, identifiers),
+        "config-test": {"result": 0},
+        "config-write": {"result": 0},
     }
 
 
@@ -66,6 +68,19 @@ class TestReservationMutationViews(_ViewTestBase):
         self.assertContains(response, "Mutation is unavailable")
         self.assertContains(response, "disabled")
 
+    def test_add_form_warns_when_configuration_persistence_is_disabled(self):
+        self.server.persist_config = False
+        self.server.save(update_fields=("persist_config",))
+        responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
+
+        with stub_kea(responses):
+            response = self.client.get(
+                reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk]),
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Configuration persistence is disabled.")
+
     def test_create_uses_the_typed_operation_and_emits_one_typed_signal(self):
         responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
         raw = {
@@ -86,9 +101,13 @@ class TestReservationMutationViews(_ViewTestBase):
         def receiver(sender, **kwargs):
             received.append(kwargs)
 
+        def failing_receiver(sender, **kwargs):
+            raise RuntimeError("optional signal receiver failed")
+
         from netbox_kea.signals import reservation_created
 
         reservation_created.connect(receiver)
+        reservation_created.connect(failing_receiver)
         try:
             with stub_kea(responses) as kea:
                 response = self.client.post(
@@ -103,10 +122,14 @@ class TestReservationMutationViews(_ViewTestBase):
                 )
         finally:
             reservation_created.disconnect(receiver)
+            reservation_created.disconnect(failing_receiver)
 
         self.assertEqual(response.status_code, 302)
         self.assertEqual(kea.commands().count("reservation-add"), 1)
         self.assertEqual(len(received), 1)
+        self.assertEqual(received[0]["server"], self.server)
+        self.assertIs(received[0]["request"], response.wsgi_request)
+        self.assertEqual(received[0]["dhcp_version"], 4)
         self.assertIsNone(received[0]["before"])
         self.assertEqual(received[0]["after"].identity.value, "aa:bb:cc:dd:ee:ff")
         from extras.models import JournalEntry
@@ -114,6 +137,59 @@ class TestReservationMutationViews(_ViewTestBase):
         journal = JournalEntry.objects.get(assigned_object_id=self.server.pk)
         self.assertIn("Reservation created", journal.comments)
         self.assertIn("aa:bb:cc:dd:ee:ff", journal.comments)
+
+    def test_create_reports_failed_persistence_after_confirmed_application(self):
+        from django.contrib.messages import get_messages
+        from extras.models import JournalEntry
+
+        responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
+        raw = {
+            "subnet-id": 20,
+            "hw-address": "aa:bb:cc:dd:ee:ff",
+            "ip-address": "198.18.0.20",
+        }
+        responses.update(
+            {
+                "subnet4-get": {"result": 3},
+                "reservation-add": {"result": 0},
+                "reservation-get": _res_get(raw),
+                "config-test": {"result": 0},
+                "config-write": {"result": 1, "text": "write failed"},
+            }
+        )
+        received = []
+
+        def receiver(sender, **kwargs):
+            received.append(kwargs)
+
+        from netbox_kea.signals import reservation_created
+
+        reservation_created.connect(receiver)
+        try:
+            with stub_kea(responses) as kea:
+                response = self.client.post(
+                    reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk]),
+                    {
+                        "subnet_cidr": "198.18.0.0/24",
+                        "ip_address": "198.18.0.20",
+                        "identifier_type": "hw-address",
+                        "identifier": "aa:bb:cc:dd:ee:ff",
+                    },
+                )
+        finally:
+            reservation_created.disconnect(receiver)
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(kea.commands().count("reservation-add"), 1)
+        self.assertEqual(kea.commands().count("config-write"), 1)
+        self.assertIn(
+            "Kea applied the change, but could not persist it to disk.",
+            [str(message) for message in get_messages(response.wsgi_request)],
+        )
+        self.assertEqual(len(received), 1)
+        self.assertIsNone(received[0]["before"])
+        self.assertIsNotNone(received[0]["after"])
+        self.assertTrue(JournalEntry.objects.filter(assigned_object_id=self.server.pk).exists())
 
     def test_create_skips_immediate_ipam_sync_without_ipam_write_permission(self):
         from django.contrib.auth import get_user_model
@@ -341,6 +417,10 @@ class TestReservationMutationViews(_ViewTestBase):
 
         self.assertEqual(response.status_code, 302)
         self.assertEqual(len(received), 1)
+        self.assertEqual(received[0]["server"], self.server)
+        self.assertIs(received[0]["request"], response.wsgi_request)
+        self.assertEqual(received[0]["dhcp_version"], 6)
+        self.assertIsNotNone(received[0]["before"])
         self.assertEqual([str(address) for address in received[0]["after"].addresses], intended["ip-addresses"])
 
     def test_edit_preserves_unexposed_dhcp_option_metadata(self):
@@ -440,17 +520,34 @@ class TestReservationMutationViews(_ViewTestBase):
         self.assertEqual(confirmation.status_code, 200)
         self.assertContains(confirmation, "hw-address aa:bb:cc:dd:ee:ff")
 
-        with stub_kea(
-            {
-                **responses,
-                "reservation-get": queued(_res_get(raw), _res_get(raw), {"result": 3}),
-                "reservation-del": {"result": 0},
-            }
-        ) as kea:
-            response = self.client.post(f"{url}?{query}")
+        received = []
+
+        def receiver(sender, **kwargs):
+            received.append(kwargs)
+
+        from netbox_kea.signals import reservation_deleted
+
+        reservation_deleted.connect(receiver)
+        try:
+            with stub_kea(
+                {
+                    **responses,
+                    "reservation-get": queued(_res_get(raw), _res_get(raw), {"result": 3}),
+                    "reservation-del": {"result": 0},
+                }
+            ) as kea:
+                response = self.client.post(f"{url}?{query}")
+        finally:
+            reservation_deleted.disconnect(receiver)
 
         self.assertEqual(response.status_code, 302)
         self.assertEqual(kea.commands().count("reservation-del"), 1)
+        self.assertEqual(len(received), 1)
+        self.assertEqual(received[0]["server"], self.server)
+        self.assertIs(received[0]["request"], response.wsgi_request)
+        self.assertEqual(received[0]["dhcp_version"], 4)
+        self.assertIsNotNone(received[0]["before"])
+        self.assertIsNone(received[0]["after"])
 
     def test_delete_confirmation_redirects_when_kea_is_unreachable(self):
         responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])

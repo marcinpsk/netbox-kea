@@ -50,6 +50,14 @@ def _catalogue(family: int, subnet_id: int, cidr: str) -> CatalogueSnapshot:
     )
 
 
+def _persistence_responses(version: int) -> dict:
+    return {
+        "config-get": {"result": 0, "arguments": {f"Dhcp{version}": {}, "hash": "reservation-test"}},
+        "config-test": {"result": 0},
+        "config-write": {"result": 0},
+    }
+
+
 class TestReservationIdentity(SimpleTestCase):
     def test_normalizes_hex_identifiers_to_lowercase_colon_notation(self):
         self.assertEqual(ReservationIdentity("hw-address", "AA-BB-CC-DD-EE-FF").value, "aa:bb:cc:dd:ee:ff")
@@ -678,7 +686,13 @@ class TestReservationMutation(SimpleTestCase):
                 }
             ],
         }
-        with stub_kea({"reservation-add": {"result": 0}, "reservation-get": _res_get(raw)}) as kea:
+        with stub_kea(
+            {
+                **_persistence_responses(4),
+                "reservation-add": {"result": 0},
+                "reservation-get": _res_get(raw),
+            }
+        ) as kea:
             result = self.client.reservation_create(self.reservation, self.catalogue)
 
         self.assertIsNone(result.previous)
@@ -687,6 +701,7 @@ class TestReservationMutation(SimpleTestCase):
         self.assertEqual(result.persistence, "persisted")
         self.assertEqual(result.verification, "verified")
         self.assertEqual(kea.bodies("reservation-add")[0]["arguments"]["reservation"], raw)
+        self.assertEqual(kea.commands().count("config-write"), 1)
 
     def test_update_preserves_unknown_fields_and_applies_explicit_clear_and_set(self):
         current_raw = {
@@ -723,6 +738,7 @@ class TestReservationMutation(SimpleTestCase):
 
         with stub_kea(
             {
+                **_persistence_responses(4),
                 "reservation-get": queued(_res_get(current_raw), _res_get(intended_raw)),
                 "reservation-update": {"result": 0},
             }
@@ -743,6 +759,52 @@ class TestReservationMutation(SimpleTestCase):
         self.assertEqual(result.previous, self.reservation)
         self.assertEqual(result.intended.addresses, (ip_address("198.18.0.21"),))
         self.assertEqual(result.verification, "verified")
+
+    def test_create_reports_failed_persistence_without_losing_applied_state(self):
+        raw = {
+            "subnet-id": 20,
+            "hw-address": "aa:bb:cc:dd:ee:ff",
+            "ip-address": "198.18.0.20",
+            "hostname": "old.example.invalid",
+            "option-data": [
+                {
+                    "code": 6,
+                    "name": "domain-name-servers",
+                    "space": "dhcp4",
+                    "data": "198.18.0.53",
+                    "csv-format": True,
+                    "always-send": False,
+                    "never-send": False,
+                }
+            ],
+        }
+        with stub_kea(
+            {
+                **_persistence_responses(4),
+                "reservation-add": {"result": 0},
+                "reservation-get": _res_get(raw),
+                "config-write": {"result": 1, "text": "write failed"},
+            }
+        ):
+            result = self.client.reservation_create(self.reservation, self.catalogue)
+
+        self.assertEqual(result.application, "applied")
+        self.assertEqual(result.persistence, "failed")
+        self.assertEqual(result.verification, "verified")
+
+    def test_create_reports_verification_failure_without_losing_applied_state(self):
+        with stub_kea(
+            {
+                **_persistence_responses(4),
+                "reservation-add": {"result": 0},
+                "reservation-get": {"result": 3},
+            }
+        ):
+            result = self.client.reservation_create(self.reservation, self.catalogue)
+
+        self.assertEqual(result.application, "applied")
+        self.assertEqual(result.persistence, "persisted")
+        self.assertEqual(result.verification, "failed")
 
     def test_update_rejects_a_stale_managed_fingerprint_before_writing(self):
         changed_raw = {
@@ -782,6 +844,7 @@ class TestReservationMutation(SimpleTestCase):
         }
         with stub_kea(
             {
+                **_persistence_responses(4),
                 "reservation-get": queued(_res_get(raw), {"result": 3}),
                 "reservation-del": {"result": 0},
             }
@@ -799,6 +862,31 @@ class TestReservationMutation(SimpleTestCase):
                 "identifier": "aa:bb:cc:dd:ee:ff",
             },
         )
+
+    def test_create_reports_when_persistence_is_not_requested(self):
+        client = KeaClient(url="http://kea.example.invalid", send_service=False, persist_config=False)
+        raw = {
+            "subnet-id": 20,
+            "hw-address": "aa:bb:cc:dd:ee:ff",
+            "ip-address": "198.18.0.20",
+            "hostname": "old.example.invalid",
+            "option-data": [
+                {
+                    "code": 6,
+                    "name": "domain-name-servers",
+                    "space": "dhcp4",
+                    "data": "198.18.0.53",
+                    "csv-format": True,
+                    "always-send": False,
+                    "never-send": False,
+                }
+            ],
+        }
+        with stub_kea({"reservation-add": {"result": 0}, "reservation-get": _res_get(raw)}) as kea:
+            result = client.reservation_create(self.reservation, self.catalogue)
+
+        self.assertEqual(result.persistence, "not-requested")
+        self.assertNotIn("config-write", kea.commands())
 
 
 class TestReservationCapabilities(SimpleTestCase):

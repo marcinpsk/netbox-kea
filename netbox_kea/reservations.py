@@ -183,6 +183,7 @@ class ClearValue:
 
 FieldChange = Unchanged | SetValue[T] | ClearValue
 UNCHANGED = Unchanged()
+ReservationPersistence = Literal["persisted", "failed", "not-requested"]
 
 
 @dataclass(frozen=True)
@@ -202,7 +203,7 @@ class ReservationMutationResult:
     previous: Reservation | None
     intended: Reservation | None
     application: Literal["applied"]
-    persistence: Literal["persisted"]
+    persistence: ReservationPersistence
     verification: Literal["verified", "failed"]
 
 

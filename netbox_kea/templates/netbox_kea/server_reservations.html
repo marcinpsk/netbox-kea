@@ -2,6 +2,7 @@
 {% load render_table from django_tables2 %}
 
 {% block content %}
+{% include "netbox_kea/includes/persist_config_warning.html" %}
 {% if object.dhcp4 and object.dhcp6 %}
 <ul class="nav nav-pills justify-content-center mb-3">
   <li class="nav-item">
