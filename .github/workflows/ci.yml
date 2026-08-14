@@ -222,6 +222,8 @@ jobs:
           pytest ${{ github.workspace }}/netbox_kea/tests/test_integration_dhcp_plugin.py \
             --override-ini="DJANGO_SETTINGS_MODULE=netbox_kea.tests.isolated_settings" \
             --override-ini="pythonpath=${{ github.workspace }}/netbox/netbox" \
+            -n 1 \
+            --maxschedchunk=1 \
             --reuse-db \
             --no-header -q
 

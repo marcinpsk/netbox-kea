@@ -152,6 +152,15 @@ def test_serial_django_suite_is_rejected():
     assert "requires pytest-xdist" in result.stdout + result.stderr
 
 
+def test_dhcp_plugin_ci_uses_xdist():
+    """Keep the DHCP plugin job on an isolated xdist worker."""
+    workflow = (REPOSITORY_ROOT / ".github" / "workflows" / "ci.yml").read_text()
+    command = workflow.split("- name: Run DHCP plugin adapter tests", 1)[1].split("\n\n", 1)[0]
+
+    assert "-n 1" in command
+    assert "--maxschedchunk=1" in command
+
+
 def test_pytest_configuration_works_with_django_plugin_disabled():
     """Keep unit-only pytest options out of the integration test command."""
     with tempfile.TemporaryDirectory(dir=REPOSITORY_ROOT) as temporary_directory:
