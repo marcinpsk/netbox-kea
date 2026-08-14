@@ -292,7 +292,7 @@ class BaseLeasesSarchForm(forms.Form):
                 try:
                     page_ip = IPAddress(page, version=ip_version)
                     cleaned_data["page"] = str(page_ip)
-                except AddrFormatError as e:
+                except (AddrFormatError, TypeError, ValueError) as e:
                     raise ValidationError({"page": "Invalid IP."}) from e
             elif by in (constants.BY_SUBNET, constants.BY_SUBNET_ID):
                 try:

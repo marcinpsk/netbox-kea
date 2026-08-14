@@ -1341,6 +1341,7 @@ def test_lease_search_by_configured_subnet(
     request.getfixturevalue(f"leases{family}_250")
 
     search_lease(page, family, "Subnet", str(net))
+    page.goto(f"{page.url}?q={quote_plus(str(net))}&by=subnet&per_page={per_page}")
 
     rows = page.locator(".object-list > tbody > tr")
     expect(rows).to_have_count(per_page)

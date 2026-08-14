@@ -141,7 +141,11 @@ class LeaseQueryNotMeasurable(LeaseQueryGuardError):
 
 
 class LeaseQueryPreflightUnavailable(LeaseQueryGuardError):
-    """Raised when Kea cannot provide the statistics required for a safe query."""
+    """Raised when Kea cannot provide a capability required for a safe query."""
+
+    def __init__(self, reason: Literal["statistics", "state-command"] = "statistics") -> None:
+        self.reason = reason
+        super().__init__(reason)
 
 
 def lease_query_guard_message(exc: LeaseQueryGuardError, state: int | None) -> str:
@@ -149,6 +153,11 @@ def lease_query_guard_message(exc: LeaseQueryGuardError, state: int | None) -> s
     if isinstance(exc, LeaseQueryNotMeasurable):
         return "Kea cannot safely measure this lease state. Use an exact IP or client identifier search."
     if isinstance(exc, LeaseQueryPreflightUnavailable):
+        if exc.reason == "state-command":
+            return (
+                "State-filtered Subnet searches require Kea 3.1.5 or newer. "
+                "Upgrade Kea or use an exact IP or client identifier search."
+            )
         return "Kea cannot verify this Subnet query safely. Load the stat_cmds hook or disable the guard explicitly."
     if isinstance(exc, LeaseQueryTooBroad) and state is None:
         return (
@@ -1668,12 +1677,11 @@ class KeaClient:
                 raise ValueError(f"{selector} must be a non-empty string.")
             arguments = {argument_name: value}
 
-        command = f"lease{version}-get{command_suffix}"
-        response = self.command(
-            command,
-            service=[f"dhcp{version}"],
-            arguments=arguments,
-            check=(0, 3),
+        command, response, fallback_state = self._lease_search_response(
+            version,
+            command_suffix,
+            arguments,
+            state,
         )
         if not response or not isinstance(response[0], dict):
             raise RuntimeError(f"{command} returned a malformed response.")
@@ -1686,7 +1694,44 @@ class KeaClient:
         if not isinstance(raw_leases, list):
             raise RuntimeError(f"{command} returned a malformed leases collection.")
         _validated_lease_addresses(raw_leases, version, command)
+        if fallback_state is not None:
+            if any(
+                isinstance(lease.get("state"), bool) or not isinstance(lease.get("state"), int) for lease in raw_leases
+            ):
+                raise RuntimeError(f"{command} returned a lease with an invalid state.")
+            raw_leases = [lease for lease in raw_leases if lease["state"] == fallback_state]
         return raw_leases
+
+    def _lease_search_response(
+        self,
+        version: int,
+        command_suffix: str,
+        arguments: dict[str, Any],
+        state: int | None,
+    ) -> tuple[str, list[KeaResponse], int | None]:
+        """Run one lease query with the explicit unguarded compatibility fallback."""
+        command = f"lease{version}-get{command_suffix}"
+        try:
+            response = self.command(
+                command,
+                service=[f"dhcp{version}"],
+                arguments=arguments,
+                check=(0, 3),
+            )
+        except KeaException as exc:
+            if command_suffix != "-by-state" or exc.response.get("result") != 2:
+                raise
+            if self.max_unpaged_leases is not None:
+                raise LeaseQueryPreflightUnavailable("state-command") from exc
+            command = f"lease{version}-get-all"
+            response = self.command(
+                command,
+                service=[f"dhcp{version}"],
+                arguments={"subnets": [arguments["subnet-id"]]},
+                check=(0, 3),
+            )
+            return command, response, state
+        return command, response, None
 
     def _subnet_lease_search_spec(self, version: int, value: Any, state: int | None) -> tuple[str, dict[str, Any]]:
         """Validate and guard one Subnet lease query before selecting its command."""

@@ -115,6 +115,11 @@ class TestLeases4SearchFormValidation(SimpleTestCase):
         self.assertFalse(form.is_valid())
         self.assertEqual(form.errors["page"], ["Subnet page must be a positive integer."])
 
+    def test_subnet_page_rejects_zero(self):
+        form = self._form("subnet_id", "42", page="0")
+        self.assertFalse(form.is_valid())
+        self.assertEqual(form.errors["page"], ["Subnet page must be a positive integer."])
+
     def test_valid_page_with_all_leases_search(self):
         form = Leases4SearchForm(data={"by": "", "q": "", "page": "192.168.1.5"})
         self.assertTrue(form.is_valid(), form.errors)
@@ -124,6 +129,11 @@ class TestLeases4SearchFormValidation(SimpleTestCase):
         form = Leases4SearchForm(data={"by": "", "q": "", "page": "not-an-address"})
         self.assertFalse(form.is_valid())
         self.assertIn("page", form.errors)
+
+    def test_page_address_with_prefix_fails(self):
+        form = Leases4SearchForm(data={"by": "", "q": "", "page": "192.0.2.1/24"})
+        self.assertFalse(form.is_valid())
+        self.assertEqual(form.errors["page"], ["Invalid IP."])
 
     def test_ipv6_address_fails_for_v4_form(self):
         form = self._form("ip", "2001:db8::1")
