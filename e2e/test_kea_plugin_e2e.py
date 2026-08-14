@@ -18,6 +18,7 @@ import ipaddress
 import re
 import subprocess
 from typing import TYPE_CHECKING
+from urllib.parse import urlencode
 
 import pytest
 from playwright.sync_api import Page, expect
@@ -658,27 +659,8 @@ class TestCombinedViewsLiveKea:
 class TestBadgeEnrichmentLiveKea:
     """Badge enrichment rendering against live Kea servers.
 
-    These tests create a real reservation via the plugin UI so badge assertions
-    are always deterministic, then clean up afterwards.
+    These tests inspect live Reservation and lease data through the plugin UI.
     """
-
-    def _create_reservation(
-        self, page: Page, plugin_base: str, server_id: int, subnet_id: int, ip: str, mac: str
-    ) -> None:
-        """Create a DHCPv4 reservation via the add-reservation form."""
-        page.goto(f"{plugin_base}/servers/{server_id}/reservations4/add/")
-        page.wait_for_load_state("networkidle")
-        page.get_by_label("Subnet CIDR", exact=True).fill(_subnet_cidr_for_id(page, subnet_id))
-        page.get_by_label("IP Address", exact=True).fill(ip)
-        page.get_by_label("Hardware Address", exact=True).fill(mac)
-        page.locator('[name="_create"], [type="submit"]').first.click(force=True)
-        page.wait_for_load_state("networkidle")
-
-    def _delete_reservation(self, page: Page, plugin_base: str, server_id: int, subnet_id: int, ip: str) -> None:
-        """Delete a DHCPv4 reservation via the delete confirmation form."""
-        page.goto(f"{plugin_base}/servers/{server_id}/reservations4/{subnet_id}/{ip}/delete/")
-        page.wait_for_load_state("networkidle")
-        _submit_and_wait_nav(page, "document.querySelector('form[method=\"post\"]').submit()")
 
     def test_reserved_badge_appears_on_leases4_for_known_reservation(
         self,
@@ -936,7 +918,7 @@ class TestReservationCRUDLiveKea:
     """End-to-end create → verify → edit → delete reservation cycle via the UI."""
 
     # Deterministic test data — unlikely to clash with real production entries
-    _TEST_IP = "10.63.125.222"
+    _TEST_IP = "192.0.2.222"
     _TEST_MAC = "e2:e2:e2:e2:e2:01"
     _TEST_HOSTNAME = "e2e-crud-test"
     _TEST_HOSTNAME_EDITED = "e2e-crud-edited"
@@ -945,11 +927,13 @@ class TestReservationCRUDLiveKea:
     def _reservation_add_url(self, plugin_base: str, server_id: int) -> str:
         return f"{plugin_base}/servers/{server_id}/reservations4/add/"
 
-    def _reservation_edit_url(self, plugin_base: str, server_id: int, subnet_id: int, ip: str) -> str:
-        return f"{plugin_base}/servers/{server_id}/reservations4/{subnet_id}/{ip}/edit/"
+    def _reservation_edit_url(self, plugin_base: str, server_id: int, subnet_id: int, identifier: str) -> str:
+        query = urlencode({"identifier_type": "hw-address", "identifier": identifier})
+        return f"{plugin_base}/servers/{server_id}/reservations4/{subnet_id}/edit/?{query}"
 
-    def _reservation_delete_url(self, plugin_base: str, server_id: int, subnet_id: int, ip: str) -> str:
-        return f"{plugin_base}/servers/{server_id}/reservations4/{subnet_id}/{ip}/delete/"
+    def _reservation_delete_url(self, plugin_base: str, server_id: int, subnet_id: int, identifier: str) -> str:
+        query = urlencode({"identifier_type": "hw-address", "identifier": identifier})
+        return f"{plugin_base}/servers/{server_id}/reservations4/{subnet_id}/delete/?{query}"
 
     def _reservation_list_url(self, plugin_base: str, server_id: int) -> str:
         return f"{plugin_base}/servers/{server_id}/reservations4/"
@@ -1001,9 +985,14 @@ class TestReservationCRUDLiveKea:
         server_id = live_kea_server["id"]
 
         # ---- 0. PRE-CLEAN — remove any leftover from a previous interrupted run ----
-        page.goto(self._reservation_delete_url(plugin_base, server_id, self._SUBNET_ID, self._TEST_IP))
+        page.goto(self._reservation_list_url(plugin_base, server_id))
         page.wait_for_load_state("networkidle")
-        if "/delete/" in page.url:
+        stale_row = page.locator("tr", has_text=self._TEST_IP)
+        if stale_row.count():
+            delete_url = stale_row.first.locator('a[href*="/delete/"]').get_attribute("href")
+            assert delete_url
+            page.goto(delete_url)
+            page.wait_for_load_state("networkidle")
             _submit_and_wait_nav(
                 page,
                 "document.querySelectorAll('form[method=\"post\"]')"
@@ -1034,7 +1023,7 @@ class TestReservationCRUDLiveKea:
         expect(page.get_by_text(self._TEST_IP)).to_be_visible()
 
         # ---- 3. EDIT ----
-        page.goto(self._reservation_edit_url(plugin_base, server_id, self._SUBNET_ID, self._TEST_IP))
+        page.goto(self._reservation_edit_url(plugin_base, server_id, self._SUBNET_ID, self._TEST_MAC))
         page.wait_for_load_state("networkidle")
         _check_no_django_error(page)
         _dismiss_debug_toolbar(page)
@@ -1051,7 +1040,7 @@ class TestReservationCRUDLiveKea:
         expect(page.get_by_text(self._TEST_HOSTNAME_EDITED)).to_be_visible()
 
         # ---- 5. DELETE ----
-        page.goto(self._reservation_delete_url(plugin_base, server_id, self._SUBNET_ID, self._TEST_IP))
+        page.goto(self._reservation_delete_url(plugin_base, server_id, self._SUBNET_ID, self._TEST_MAC))
         page.wait_for_load_state("networkidle")
         _check_no_django_error(page)
         # The delete confirmation form has only one unique element — submit it directly

@@ -154,11 +154,11 @@ def live_kea_server(api_session: requests.Session, netbox_url: str, live_kea_con
     _SERVER_NAME = "e2e-live-kea"
     _SERVER_PAYLOAD = {
         "name": _SERVER_NAME,
-        "server_url": KEA_V4_URL,
+        "ca_url": KEA_V4_URL,
         "dhcp4_url": KEA_V4_URL,
         "dhcp6_url": KEA_V6_URL,
-        "username": KEA_API_USERNAME,
-        "password": KEA_API_PASSWORD,
+        "ca_username": KEA_API_USERNAME,
+        "ca_password": KEA_API_PASSWORD,
         "has_control_agent": False,
         "dhcp4": True,
         "dhcp6": True,

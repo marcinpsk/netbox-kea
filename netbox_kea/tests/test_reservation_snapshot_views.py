@@ -126,6 +126,90 @@ class TestPerServerReservationSnapshots(_ViewTestBase):
         row = response.context["table"].data.data[0]
         self.assertTrue(row["has_active_lease"])
 
+    def test_hides_sync_controls_without_ipam_write_permissions(self):
+        from django.contrib.auth import get_user_model
+        from django.contrib.contenttypes.models import ContentType
+        from users.models import ObjectPermission
+
+        limited = get_user_model().objects.create_user(username="reservation_editor")
+        permission = ObjectPermission.objects.create(
+            name="change-server-without-ipam-write",
+            actions=["view", "change"],
+        )
+        permission.object_types.add(ContentType.objects.get_for_model(type(self.server)))
+        permission.users.add(limited)
+        self.client.force_login(limited)
+
+        responses = _catalogue_responses(4, 20, "198.18.0.0/24")
+        responses.update(
+            {
+                "reservation-get-page": _res_page(
+                    [
+                        {
+                            "subnet-id": 20,
+                            "hw-address": "aa:bb:cc:dd:ee:ff",
+                            "ip-address": "198.18.0.20",
+                        }
+                    ]
+                ),
+                "lease4-get-by-state": {"result": 0, "arguments": {"leases": []}},
+            }
+        )
+
+        with stub_kea(responses):
+            response = self.client.get(self._url())
+
+        self.assertEqual(response.status_code, 200)
+        row = response.context["table"].data.data[0]
+        self.assertIsNone(row["sync_url"])
+        self.assertIsNone(response.context["bulk_sync_url"])
+
+    def test_shows_sync_controls_without_server_change_permission(self):
+        from django.contrib.auth import get_user_model
+        from django.contrib.contenttypes.models import ContentType
+        from ipam.models import IPAddress
+        from users.models import ObjectPermission
+
+        limited = get_user_model().objects.create_user(username="reservation_sync_operator")
+        server_permission = ObjectPermission.objects.create(name="view-server-for-reservation-sync", actions=["view"])
+        server_permission.object_types.add(ContentType.objects.get_for_model(type(self.server)))
+        server_permission.users.add(limited)
+        ipam_permission = ObjectPermission.objects.create(
+            name="write-ip-addresses-for-reservation-sync",
+            actions=["add", "change"],
+        )
+        ipam_permission.object_types.add(ContentType.objects.get_for_model(IPAddress))
+        ipam_permission.users.add(limited)
+        self.client.force_login(limited)
+
+        responses = _catalogue_responses(4, 20, "198.18.0.0/24")
+        responses.update(
+            {
+                "reservation-get-page": _res_page(
+                    [
+                        {
+                            "subnet-id": 20,
+                            "hw-address": "aa:bb:cc:dd:ee:ff",
+                            "ip-address": "198.18.0.20",
+                        }
+                    ]
+                ),
+                "lease4-get-by-state": {"result": 0, "arguments": {"leases": []}},
+            }
+        )
+
+        with stub_kea(responses):
+            response = self.client.get(self._url())
+
+        self.assertEqual(response.status_code, 200)
+        row = response.context["table"].data.data[0]
+        self.assertIsNotNone(row["sync_url"])
+        self.assertIsNone(row["edit_url"])
+        self.assertIsNone(row["delete_url"])
+        self.assertIsNotNone(response.context["bulk_sync_url"])
+        self.assertIsNone(response.context["add_url"])
+        self.assertIsNone(response.context["import_url"])
+
     def test_exports_the_complete_current_snapshot_as_yaml(self):
         responses = _catalogue_responses(4, 20, "198.18.0.0/24")
         responses["reservation-get-page"] = _res_page(

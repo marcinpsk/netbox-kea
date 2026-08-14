@@ -542,7 +542,14 @@ class _ReservationDeleteView(_ReservationMutationView):
     def get(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
         server = self.get_object(pk=pk)
         identity = _identity_from_request(request, self.dhcp_version)
-        reservation, _catalogue = _load_target(server, self.dhcp_version, subnet_id, identity)
+        try:
+            reservation, _catalogue = _load_target(server, self.dhcp_version, subnet_id, identity)
+        except Http404:
+            raise
+        except (KeaException, requests.RequestException, RuntimeError, ValueError):
+            logger.exception("Could not load the Reservation delete target")
+            messages.error(request, "The Reservation could not be loaded. See server logs.")
+            return redirect(reverse(f"plugins:netbox_kea:server_reservations{self.dhcp_version}", args=[server.pk]))
         return render(
             request,
             self.template_name,

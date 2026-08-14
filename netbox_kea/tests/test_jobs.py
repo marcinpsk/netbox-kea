@@ -23,6 +23,7 @@ import ipaddress
 from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 
+import requests
 from core.exceptions import JobFailed
 from django.test import SimpleTestCase, TestCase, override_settings
 from django.utils import timezone
@@ -34,7 +35,7 @@ from netbox_kea.kea import KeaClient
 from netbox_kea.models import Server, SyncConfig
 from netbox_kea.subnet_catalogue import CompleteCatalogueSnapshot, SubnetIdentity, VerifiedSubnet
 
-from .kea_stub import _res_page, stub_kea
+from .kea_stub import _res_page, queued, stub_kea
 
 _PLUGINS_CONFIG = {
     "netbox_kea": {
@@ -590,6 +591,47 @@ class TestKeaIpamSyncJobRun(TestCase):
 
         self.assertTrue(IPAddress.objects.filter(address__startswith="10.0.0.100/").exists())
         self.assertTrue(IPAddress.objects.filter(address__startswith="10.0.0.101/").exists())
+
+    @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG_CLEANUP)
+    def test_reservation_pagination_preserves_valid_rows_before_a_later_failure(self):
+        """A later page failure keeps earlier rows and suppresses stale cleanup."""
+        from ipam.models import IPAddress
+
+        self._make_db_server(dhcp6=False)
+        first_page = [
+            {
+                "subnet-id": 1,
+                "hw-address": f"02:00:00:00:00:{index:02x}",
+                "ip-address": f"198.18.0.{index + 1}",
+                "hostname": "partial-snapshot.example.invalid",
+            }
+            for index in range(100)
+        ]
+        stale = IPAddress.objects.create(
+            address="198.18.0.200/32",
+            status="reserved",
+            dns_name="partial-snapshot.example.invalid",
+            description="Synced from Kea DHCP (reserved)",
+        )
+
+        with _patch_kea(
+            leases4=[],
+            reservations=first_page,
+            responses={
+                "reservation-get-page": queued(
+                    _res_page(first_page, next_from=100, next_source=1),
+                    requests.ConnectionError("later page unavailable"),
+                )
+            },
+        ):
+            with self.assertLogs("netbox_kea.jobs", level="WARNING") as logs:
+                self._run()
+
+        self.assertTrue(IPAddress.objects.filter(address__startswith="198.18.0.1/").exists())
+        self.assertTrue(IPAddress.objects.filter(address__startswith="198.18.0.100/").exists())
+        self.assertTrue(IPAddress.objects.filter(pk=stale.pk).exists())
+        self.assertTrue(any("Reservation Snapshot diagnostic" in message for message in logs.output))
+        self.assertFalse(any("malformed Reservation" in message for message in logs.output))
 
     # ── max_leases config validation ──────────────────────────────────────
 

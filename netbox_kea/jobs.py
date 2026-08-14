@@ -236,7 +236,7 @@ def _sync_server_reservations(
     if snapshot.diagnostics:
         stats["errors"] += len(snapshot.diagnostics)
         logger.warning(
-            "Server %s (v%s): quarantined %d malformed Reservation record(s)",
+            "Server %s (v%s): reported %d Reservation Snapshot diagnostic(s)",
             server.name,
             snapshot.family,
             len(snapshot.diagnostics),

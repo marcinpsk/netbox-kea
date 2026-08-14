@@ -667,27 +667,50 @@ class KeaClient:
         page_size: int = 100,
     ) -> ReservationSnapshot:
         """Traverse bounded pages and return one non-atomic Reservation Snapshot."""
+        if version not in (4, 6):
+            raise ValueError(f"version must be 4 or 6, got {version!r}")
         records: list[Reservation] = []
         diagnostics: list[ReservationDiagnostic] = []
         cursor = None
         seen_cursors: set[str] = set()
+        pages_fetched = 0
         while True:
-            page = self.reservation_page(
-                version,
-                catalogue,
-                cursor=cursor,
-                limit=page_size,
-            )
+            try:
+                page = self.reservation_page(
+                    version,
+                    catalogue,
+                    cursor=cursor,
+                    limit=page_size,
+                )
+            except (KeaException, requests.RequestException, RuntimeError, ValueError):
+                if pages_fetched == 0:
+                    raise
+                diagnostics.append(
+                    ReservationDiagnostic(
+                        code="page-fetch-failed",
+                        message="Reservation page traversal did not complete.",
+                        source_position=f"pages[{pages_fetched}]",
+                    )
+                )
+                break
+            pages_fetched += 1
             records.extend(page.records)
             diagnostics.extend(page.diagnostics)
             if page.next_cursor is None:
                 break
             if page.next_cursor == cursor or page.next_cursor in seen_cursors:
-                raise RuntimeError("Reservation page cursor did not advance.")
+                diagnostics.append(
+                    ReservationDiagnostic(
+                        code="pagination-stalled",
+                        message="Reservation page traversal did not complete because its cursor did not advance.",
+                        source_position=f"pages[{pages_fetched - 1}].next",
+                    )
+                )
+                break
             seen_cursors.add(page.next_cursor)
             cursor = page.next_cursor
         return ReservationSnapshot(
-            family=page.family,
+            family=cast(Family, version),
             records=tuple(records),
             diagnostics=tuple(diagnostics),
             complete=not diagnostics,

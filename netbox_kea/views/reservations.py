@@ -248,7 +248,7 @@ def _enrich_reservations_with_badges(
     reservations: list[dict[str, Any]],
     server: Server,
     version: int,
-    can_change: bool = False,
+    can_sync: bool = False,
 ) -> None:
     """Add active-lease and aggregate NetBox synchronization state to typed rows."""
     from ..sync import bulk_fetch_netbox_ips, is_kea_managed_ip, reservation_synchronization_state
@@ -290,7 +290,7 @@ def _enrich_reservations_with_badges(
         row["netbox_ip_url"] = matched[0].get_absolute_url() if matched else None
         row["sync_url"] = None
         if (
-            can_change
+            can_sync
             and isinstance(reservation.scope, InSubnetReservationScope)
             and reservation.addresses
             and state.label in ("Not Synchronized", "Partially Synchronized")
@@ -339,7 +339,8 @@ def _reservation_list_context(
             scope=search_form.cleaned_data.get("scope", ""),
         )
     can_change = Server.objects.restrict(request.user, "change").filter(pk=server.pk).exists()
-    _enrich_reservations_with_badges(reservations, server, version, can_change=can_change)
+    can_sync = request.user.has_perm("ipam.add_ipaddress") and request.user.has_perm("ipam.change_ipaddress")
+    _enrich_reservations_with_badges(reservations, server, version, can_sync=can_sync)
     for reservation in reservations:
         reservation["can_change"] = can_change and reservation["scope_kind"] == "in-subnet"
     _attach_reservation_action_urls(reservations, server.pk, version, can_change=can_change)
@@ -359,7 +360,7 @@ def _reservation_list_context(
         if can_change
         else None,
         "bulk_sync_url": reverse(f"plugins:netbox_kea:server_reservation{version}_bulk_sync", args=[server.pk])
-        if can_change
+        if can_sync
         else None,
         "import_url": reverse(f"plugins:netbox_kea:server_reservation{version}_bulk_import", args=[server.pk])
         if can_change

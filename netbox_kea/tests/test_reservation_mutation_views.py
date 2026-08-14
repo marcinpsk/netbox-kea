@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
 # SPDX-License-Identifier: Apache-2.0
 
+import requests
 from django.urls import reverse
 
 from .kea_stub import _res_get, queued, stub_kea
@@ -450,6 +451,32 @@ class TestReservationMutationViews(_ViewTestBase):
 
         self.assertEqual(response.status_code, 302)
         self.assertEqual(kea.commands().count("reservation-del"), 1)
+
+    def test_delete_confirmation_redirects_when_kea_is_unreachable(self):
+        responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
+        responses["subnet4-list"] = requests.ConnectionError("Kea unavailable")
+        url = reverse("plugins:netbox_kea:server_reservation4_delete", args=[self.server.pk, 20])
+        query = "identifier_type=hw-address&identifier=aa%3Abb%3Acc%3Add%3Aee%3Aff"
+
+        with stub_kea(responses):
+            response = self.client.get(f"{url}?{query}")
+
+        self.assertRedirects(
+            response,
+            reverse("plugins:netbox_kea:server_reservations4", args=[self.server.pk]),
+            fetch_redirect_response=False,
+        )
+
+    def test_delete_confirmation_returns_not_found_for_an_unknown_identity(self):
+        responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
+        responses["reservation-get"] = {"result": 3}
+        url = reverse("plugins:netbox_kea:server_reservation4_delete", args=[self.server.pk, 20])
+        query = "identifier_type=hw-address&identifier=aa%3Abb%3Acc%3Add%3Aee%3Aff"
+
+        with stub_kea(responses):
+            response = self.client.get(f"{url}?{query}")
+
+        self.assertEqual(response.status_code, 404)
 
     def test_delete_fails_closed_when_mutation_capabilities_are_incomplete(self):
         responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
