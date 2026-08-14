@@ -2,10 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Direct unit tests for api/views.py: no database required.
 
-Covers all paths in _lease_search, _reservation_search, and _fetch_reservations.
-The TestCase-based API test files cover the same happy
-paths via a real DB + HTTP stack; these SimpleTestCase tests provide fast,
-DB-free coverage for every branch.
+Covers all paths in _lease_search. The TestCase-based API tests cover the
+normalized Reservation API through its real request surface.
 
 The view methods are called directly (DRF's get_object/permission hooks are the
 only mocks — they are framework plumbing, not Kea). ``get_object`` returns a
@@ -26,7 +24,7 @@ from rest_framework import status
 from netbox_kea.api.views import ServerViewSet
 from netbox_kea.models import Server
 
-from .kea_stub import _res_page, queued, stub_kea
+from .kea_stub import stub_kea
 
 _PLUGINS_CONFIG = {"netbox_kea": {"kea_timeout": 30, "lease_query_max_unpaged_leases": 0}}
 _GUARDED_PLUGINS_CONFIG = {"netbox_kea": {"kea_timeout": 30, "lease_query_max_unpaged_leases": 100}}
@@ -351,195 +349,4 @@ class TestFetchLeasesSubnetId(SimpleTestCase):
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("Active or Declined", response.data["detail"])
-        self.assertEqual(kea.commands(), [])
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# reservations4 / reservations6 action dispatch
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
-class TestReservationActionDispatch(SimpleTestCase):
-    """reservations4() and reservations6() dispatch with correct version."""
-
-    def test_reservations4_dispatches_with_version_4(self):
-        view, _ = _make_view()
-        reservation = {"result": 0, "arguments": {"ip-address": "10.0.0.50", "subnet-id": 1}}
-        with stub_kea({"reservation-get": reservation}) as kea:
-            response = view.reservations4(_make_request({"ip_address": "10.0.0.50", "subnet_id": "1"}), pk=1)
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(kea.bodies("reservation-get")[0]["service"], ["dhcp4"])
-
-    def test_reservations6_dispatches_with_version_6(self):
-        view, _ = _make_view()
-        reservation = {"result": 0, "arguments": {"ip-addresses": ["2001:db8::50"], "subnet-id": 10}}
-        with stub_kea({"reservation-get": reservation}) as kea:
-            response = view.reservations6(_make_request({"ip_address": "2001:db8::50", "subnet_id": "10"}), pk=1)
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(kea.bodies("reservation-get")[0]["service"], ["dhcp6"])
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# _reservation_search — parameter validation and error handling
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
-class TestReservationSearchValidation(SimpleTestCase):
-    """Parameter validation paths in _reservation_search (no Kea traffic)."""
-
-    def test_no_params_returns_400(self):
-        view, _ = _make_view()
-        with stub_kea({}) as kea:
-            response = view._reservation_search(_make_request({}), version=4)
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("required", response.data["detail"])
-        self.assertEqual(kea.commands(), [])
-
-    def test_no_params_v6_includes_duid_in_message(self):
-        view, _ = _make_view()
-        with stub_kea({}):
-            response = view._reservation_search(_make_request({}), version=6)
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("duid", response.data["detail"])
-
-    def test_invalid_subnet_id_returns_400(self):
-        view, _ = _make_view()
-        with stub_kea({}):
-            response = view._reservation_search(_make_request({"subnet_id": "not-a-number"}), version=4)
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("subnet_id", response.data["detail"])
-
-
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
-class TestReservationSearchErrors(SimpleTestCase):
-    """Error handling paths in _reservation_search (real client, boundary-injected errors)."""
-
-    def test_connection_error_returns_502(self):
-        view, _ = _make_view()
-        with stub_kea({"reservation-get-page": rq.ConnectionError("refused")}):
-            response = view._reservation_search(_make_request({"subnet_id": "1"}), version=4)
-        self.assertEqual(response.status_code, status.HTTP_502_BAD_GATEWAY)
-
-    def test_kea_exception_returns_502(self):
-        view, _ = _make_view()
-        with stub_kea({"reservation-get-page": _KEA_ERR_RESP}):
-            response = view._reservation_search(_make_request({"subnet_id": "1"}), version=4)
-        self.assertEqual(response.status_code, status.HTTP_502_BAD_GATEWAY)
-
-    def test_value_error_returns_500(self):
-        view, _ = _make_view(client_cert_path="/nonexistent-cert.pem")
-        with stub_kea({}):
-            response = view._reservation_search(_make_request({"subnet_id": "1"}), version=4)
-        self.assertEqual(response.status_code, status.HTTP_500_INTERNAL_SERVER_ERROR)
-        self.assertIn("configuration error", response.data["detail"].lower())
-
-    def test_generic_exception_returns_500(self):
-        view, _ = _make_view()
-        with stub_kea({"reservation-get-page": RuntimeError("unexpected")}):
-            response = view._reservation_search(_make_request({"subnet_id": "1"}), version=4)
-        self.assertEqual(response.status_code, status.HTTP_500_INTERNAL_SERVER_ERROR)
-        self.assertIn("internal error", response.data["detail"].lower())
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# _fetch_reservations — all dispatch branches
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
-class TestFetchReservationsIpAndSubnet(SimpleTestCase):
-    """ip_address + subnet_id branch in _fetch_reservations (reservation-get)."""
-
-    def test_found_returns_one_reservation(self):
-        view, _ = _make_view()
-        reservation = {"result": 0, "arguments": {"ip-address": "10.0.0.50", "subnet-id": 1}}
-        with stub_kea({"reservation-get": reservation}):
-            response = view._reservation_search(_make_request({"ip_address": "10.0.0.50", "subnet_id": "1"}), version=4)
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.data["count"], 1)
-
-    def test_not_found_returns_empty(self):
-        view, _ = _make_view()
-        with stub_kea({"reservation-get": {"result": 3}}):
-            response = view._reservation_search(_make_request({"ip_address": "10.0.0.99", "subnet_id": "1"}), version=4)
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.data["count"], 0)
-
-
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
-class TestFetchReservationsHwAndSubnet(SimpleTestCase):
-    """hw_address + subnet_id branch in _fetch_reservations (reservation-get)."""
-
-    def test_found_returns_one_reservation(self):
-        view, _ = _make_view()
-        reservation = {"result": 0, "arguments": {"ip-address": "10.0.0.50", "hw-address": "aa:bb:cc:dd:ee:ff"}}
-        with stub_kea({"reservation-get": reservation}):
-            response = view._reservation_search(
-                _make_request({"hw_address": "aa:bb:cc:dd:ee:ff", "subnet_id": "1"}), version=4
-            )
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.data["count"], 1)
-
-
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
-class TestFetchReservationsDuidAndSubnet(SimpleTestCase):
-    """duid + subnet_id + version=6 branch in _fetch_reservations (reservation-get)."""
-
-    def test_found_returns_one_reservation(self):
-        view, _ = _make_view()
-        reservation = {"result": 0, "arguments": {"ip-addresses": ["2001:db8::50"], "duid": "00:01:02:03"}}
-        with stub_kea({"reservation-get": reservation}):
-            response = view._reservation_search(_make_request({"duid": "00:01:02:03", "subnet_id": "10"}), version=6)
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.data["count"], 1)
-
-
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
-class TestFetchReservationsSubnetOnly(SimpleTestCase):
-    """subnet_id-only pagination branch in _fetch_reservations (reservation-get-page)."""
-
-    def test_single_page_returns_all_hosts(self):
-        view, _ = _make_view()
-        host = {"ip-address": "10.0.0.50", "subnet-id": 1}
-        with stub_kea({"reservation-get-page": _res_page([host])}):
-            response = view._reservation_search(_make_request({"subnet_id": "1"}), version=4)
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.data["count"], 1)
-
-    def test_multi_page_collects_all_hosts(self):
-        view, _ = _make_view()
-        host1 = {"ip-address": "10.0.0.1", "subnet-id": 1}
-        host2 = {"ip-address": "10.0.0.2", "subnet-id": 1}
-        pages = queued(
-            _res_page([host1], next_from=1, next_source=1),  # not exhausted
-            _res_page([host2]),  # exhausted
-        )
-        with stub_kea({"reservation-get-page": pages}):
-            response = view._reservation_search(_make_request({"subnet_id": "1"}), version=4)
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.data["count"], 2)
-
-    def test_filters_by_subnet_id(self):
-        view, _ = _make_view()
-        host_in = {"ip-address": "10.0.0.1", "subnet-id": 1}
-        host_out = {"ip-address": "10.0.0.2", "subnet-id": 2}
-        with stub_kea({"reservation-get-page": _res_page([host_in, host_out])}):
-            response = view._reservation_search(_make_request({"subnet_id": "1"}), version=4)
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.data["count"], 1)
-
-
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
-class TestFetchReservationsNoMatch(SimpleTestCase):
-    """Fallthrough return [] when no branch matches."""
-
-    def test_duid_without_subnet_on_v4_returns_empty(self):
-        """duid only on v4 (no subnet_id) — none of the 4 branches fires → empty list, no Kea call."""
-        view, _ = _make_view()
-        with stub_kea({}) as kea:
-            response = view._reservation_search(_make_request({"duid": "00:01:02:03"}), version=4)
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.data["count"], 0)
         self.assertEqual(kea.commands(), [])

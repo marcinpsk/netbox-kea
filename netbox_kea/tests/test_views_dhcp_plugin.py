@@ -28,11 +28,11 @@ _PLUGINS_CONFIG = {"netbox_kea": {"kea_timeout": 30}}
 
 
 class _FakeKeaClient(KeaClient):
-    """Stand-in for KeaClient that answers ``config-get`` and ``reservation-get-page``.
+    """Stand-in that answers the typed Snapshot's real Kea client calls.
 
     Subclasses the real client (and skips its session setup) so the genuine
-    ``reservation_get_page``/``iter_reservations`` pagination logic runs against the
-    faked ``command`` — only the Kea HTTP boundary is replaced, never the ORM.
+    Subnet Catalogue and Reservation Snapshot logic run against the faked
+    ``command``. Only the Kea HTTP boundary is replaced, never the ORM.
     """
 
     def __init__(
@@ -49,6 +49,16 @@ class _FakeKeaClient(KeaClient):
         version = 6 if service and service[0] == "dhcp6" else 4
         if command == "config-get":
             return [{"result": 0, "arguments": {f"Dhcp{version}": self._conf.get(version, {})}}]
+        if command == f"subnet{version}-list":
+            subnet_key = f"subnet{version}"
+            conf = self._conf.get(version, {})
+            subnets = list(conf.get(subnet_key, []))
+            for shared_network in conf.get("shared-networks", []):
+                subnets.extend(
+                    {**subnet, "shared-network-name": shared_network["name"]}
+                    for subnet in shared_network.get(subnet_key, [])
+                )
+            return [{"result": 0, "arguments": {"subnets": subnets}}]
         if command == "reservation-get-page":
             if not self._reservations_available:
                 # Simulate host_cmds not loaded (Kea result code 2).
@@ -207,7 +217,7 @@ class SyncNowEndToEndTest(TestCase):
         self.assertTrue(HostReservation.objects.filter(subnet=subnet, hostname="db-res").exists())
 
     def test_post_warns_when_reservations_unreadable(self):
-        # Finding 4: host_cmds absent → the import must say reservations couldn't be read.
+        # host_cmds absent means that the typed Snapshot cannot be read.
         conf = {4: {"subnet4": [{"id": 1, "subnet": "10.90.0.0/24"}]}}
         fake = _FakeKeaClient(conf, reservations_available=False)
         with patch("netbox_kea.models.Server.get_client", return_value=fake, autospec=True):

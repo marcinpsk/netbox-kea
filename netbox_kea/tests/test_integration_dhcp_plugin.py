@@ -2,14 +2,15 @@
 # SPDX-License-Identifier: Apache-2.0
 """Integration tests for the optional netbox_dhcp adapter (real DB + real plugin).
 
-Gated on the plugin being installed: netbox-kea's own CI matrix does not install
-``netbox_dhcp``, so these run only where it is present (e.g. the dev container).
-Only the Kea HTTP boundary is bypassed — we feed a ``config-get``-shaped dict
-directly; the ORM, IPAM/DCIM models, and the ``netbox_dhcp`` models are all real.
+Gated on the plugin being installed. A dedicated CI job installs the exact
+supported ``netbox_dhcp`` release. Other environments can skip this module.
+Only the Kea HTTP boundary is bypassed. The ORM, IPAM/DCIM models, and the
+``netbox_dhcp`` models are real.
 """
 
 from __future__ import annotations
 
+import ipaddress
 import unittest
 from unittest.mock import patch
 
@@ -17,8 +18,11 @@ from django.apps import apps
 from django.test import TestCase, override_settings, tag
 from django.utils import timezone
 
+from netbox_kea.kea import KeaClient
 from netbox_kea.mappers.kea_to_dhcp import parse_dhcp_config
+from netbox_kea.subnet_catalogue import CompleteCatalogueSnapshot, SubnetIdentity, VerifiedSubnet
 
+from .kea_stub import _res_page, stub_kea
 from .utils import _make_db_server
 
 DHCP_PLUGIN = "netbox_dhcp"
@@ -53,6 +57,46 @@ def _conf_v6():
     }
 
 
+def _reservation_snapshot(conf: dict, version: int, hosts: list[dict] | None = None):
+    """Build the real typed Snapshot used by the optional adapter."""
+    subnet_key = f"subnet{version}"
+    entries = list(conf.get(subnet_key, []))
+    for shared_network in conf.get("shared-networks", []):
+        entries.extend(shared_network.get(subnet_key, []))
+    verified = tuple(
+        VerifiedSubnet(
+            identity=SubnetIdentity(
+                subnet_id=int(entry["id"]),
+                network=ipaddress.ip_network(entry["subnet"]),
+            ),
+            configuration=None,
+            shared_network=None,
+        )
+        for entry in entries
+        if isinstance(entry, dict) and entry.get("id") is not None and entry.get("subnet")
+    )
+    catalogue = CompleteCatalogueSnapshot(
+        server_id=1,
+        family=version,
+        observed_at=timezone.now(),
+        subnets=verified,
+        configured_subnets=(),
+        diagnostics=(),
+        identity_complete=True,
+        configuration_complete=True,
+        consistent=True,
+        configuration_hash=None,
+    )
+    if hosts is None:
+        hosts = []
+        for entry in entries:
+            for reservation in entry.get("reservations", []):
+                hosts.append({"subnet-id": int(entry["id"]), **reservation})
+    client = KeaClient(url="http://kea.example.invalid", send_service=False)
+    with stub_kea({"reservation-get-page": _res_page(hosts)}):
+        return client.reservation_page(version, catalogue)
+
+
 @tag("dhcp_plugin")
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class DhcpPluginAdapterTest(TestCase):
@@ -82,7 +126,10 @@ class DhcpPluginAdapterTest(TestCase):
         Pool = apps.get_model(DHCP_PLUGIN, "Pool")
         HostReservation = apps.get_model(DHCP_PLUGIN, "HostReservation")
 
-        summary = self.adapter.import_server_config(self.server, parse_dhcp_config(_conf_v4(), 4))
+        conf = _conf_v4()
+        summary = self.adapter.import_server_config(
+            self.server, parse_dhcp_config(conf, 4), _reservation_snapshot(conf, 4)
+        )
 
         self.assertEqual(summary.errors, 0, summary.warnings)
         self.assertEqual(summary.subnets_created, 1)
@@ -114,7 +161,10 @@ class DhcpPluginAdapterTest(TestCase):
         Subnet = apps.get_model(DHCP_PLUGIN, "Subnet")
         HostReservation = apps.get_model(DHCP_PLUGIN, "HostReservation")
 
-        summary = self.adapter.import_server_config(self.server, parse_dhcp_config(_conf_v6(), 6))
+        conf = _conf_v6()
+        summary = self.adapter.import_server_config(
+            self.server, parse_dhcp_config(conf, 6), _reservation_snapshot(conf, 6)
+        )
         self.assertEqual(summary.errors, 0, summary.warnings)
 
         subnet = Subnet.objects.get(prefix__prefix="2001:db8:99::/64")
@@ -128,8 +178,10 @@ class DhcpPluginAdapterTest(TestCase):
     def test_dualstack_v4_and_v6_subnet_id_1_both_import_without_collision(self):
         from netbox_kea.models import KeaDhcpLink
 
-        self.adapter.import_server_config(self.server, parse_dhcp_config(_conf_v4(), 4))
-        self.adapter.import_server_config(self.server, parse_dhcp_config(_conf_v6(), 6))
+        conf4 = _conf_v4()
+        conf6 = _conf_v6()
+        self.adapter.import_server_config(self.server, parse_dhcp_config(conf4, 4), _reservation_snapshot(conf4, 4))
+        self.adapter.import_server_config(self.server, parse_dhcp_config(conf6, 6), _reservation_snapshot(conf6, 6))
 
         link4 = KeaDhcpLink.objects.get(server=self.server, family=4, kea_subnet_id=1)
         link6 = KeaDhcpLink.objects.get(server=self.server, family=6, kea_subnet_id=1)
@@ -147,8 +199,10 @@ class DhcpPluginAdapterTest(TestCase):
         Pool = apps.get_model(DHCP_PLUGIN, "Pool")
         HostReservation = apps.get_model(DHCP_PLUGIN, "HostReservation")
 
-        self.adapter.import_server_config(self.server, parse_dhcp_config(_conf_v4(), 4))
-        second = self.adapter.import_server_config(self.server, parse_dhcp_config(_conf_v4(), 4))
+        conf = _conf_v4()
+        snapshot = _reservation_snapshot(conf, 4)
+        self.adapter.import_server_config(self.server, parse_dhcp_config(conf, 4), snapshot)
+        second = self.adapter.import_server_config(self.server, parse_dhcp_config(conf, 4), snapshot)
 
         self.assertEqual(second.subnets_created, 0)
         self.assertEqual(second.pools_created, 0)
@@ -216,7 +270,9 @@ class DhcpPluginAdapterTest(TestCase):
             return real(res, *args, **kwargs)
 
         with patch.object(self.adapter, "_ensure_reservation_addresses", side_effect=flaky):
-            summary = self.adapter.import_server_config(self.server, parse_dhcp_config(conf, 4))
+            summary = self.adapter.import_server_config(
+                self.server, parse_dhcp_config(conf, 4), _reservation_snapshot(conf, 4)
+            )
 
         self.assertGreaterEqual(summary.errors, 1)
         self.assertEqual(summary.reservations_created, 1)
@@ -268,7 +324,9 @@ class DhcpPluginAdapterTest(TestCase):
                 }
             ]
         }
-        self.adapter.import_server_config(self.server, parse_dhcp_config(with_addrs, 6))
+        self.adapter.import_server_config(
+            self.server, parse_dhcp_config(with_addrs, 6), _reservation_snapshot(with_addrs, 6)
+        )
         res = HostReservation.objects.get(hostname="v6r")
         self.assertEqual(res.ipv6_addresses.count(), 2)
 
@@ -281,7 +339,9 @@ class DhcpPluginAdapterTest(TestCase):
                 }
             ]
         }
-        self.adapter.import_server_config(self.server, parse_dhcp_config(without_addrs, 6))
+        self.adapter.import_server_config(
+            self.server, parse_dhcp_config(without_addrs, 6), _reservation_snapshot(without_addrs, 6)
+        )
         res.refresh_from_db()
         self.assertEqual(res.ipv6_addresses.count(), 0)
 
@@ -622,8 +682,8 @@ class DhcpPluginClientClassImportTest(TestCase):
 
 @tag("dhcp_plugin")
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
-class DhcpPluginPageReservationImportTest(TestCase):
-    """DB-backed reservations (reservation-get-page) import into the right subnet/server."""
+class DhcpPluginReservationSnapshotImportTest(TestCase):
+    """Typed Reservation Snapshots import into the matching plugin scope."""
 
     @classmethod
     def setUpClass(cls):
@@ -634,15 +694,8 @@ class DhcpPluginPageReservationImportTest(TestCase):
     def setUp(self):
         self.server = _make_db_server(name=f"kea-pageres-{timezone.now().timestamp()}")
         from netbox_kea.integrations import dhcp_plugin
-        from netbox_kea.mappers.kea_to_dhcp import parse_reservations_page
 
         self.adapter = dhcp_plugin
-        self._parse_page = parse_reservations_page
-
-    def _intent(self, conf, hosts):
-        intent = parse_dhcp_config(conf, 4)
-        intent.page_reservations = self._parse_page(hosts, 4)
-        return intent
 
     def test_db_reservation_imported_into_linked_subnet(self):
         from ipam.models import IPAddress
@@ -653,7 +706,9 @@ class DhcpPluginPageReservationImportTest(TestCase):
         # Subnet is in config-get; the reservation is ONLY in the hosts DB (subnet-id 7).
         conf = {"subnet4": [{"id": 7, "subnet": "10.40.0.0/24"}]}
         hosts = [{"subnet-id": 7, "hw-address": "aa:bb:cc:dd:ee:40", "ip-address": "10.40.0.50", "hostname": "db-host"}]
-        summary = self.adapter.import_server_config(self.server, self._intent(conf, hosts))
+        summary = self.adapter.import_server_config(
+            self.server, parse_dhcp_config(conf, 4), _reservation_snapshot(conf, 4, hosts)
+        )
 
         self.assertEqual(summary.errors, 0, summary.warnings)
         self.assertEqual(summary.reservations_created, 1, summary.warnings)
@@ -671,44 +726,50 @@ class DhcpPluginPageReservationImportTest(TestCase):
         hosts = [
             {"subnet-id": 0, "hw-address": "aa:bb:cc:dd:ee:00", "ip-address": "10.0.0.9", "hostname": "global-host"}
         ]
-        summary = self.adapter.import_server_config(self.server, self._intent(conf, hosts))
+        summary = self.adapter.import_server_config(
+            self.server, parse_dhcp_config(conf, 4), _reservation_snapshot(conf, 4, hosts)
+        )
 
         self.assertEqual(summary.errors, 0, summary.warnings)
         res = HostReservation.objects.get(hostname="global-host")
-        self.assertIsNone(res.subnet)  # global → attached to the DHCPServer, not a subnet
+        self.assertIsNone(res.subnet)
         self.assertEqual(res.dhcp_server, DHCPServer.objects.get(name=self.server.name))
+        self.assertIsNone(res.ipv4_address)
 
-    def test_unknown_subnet_id_skipped_with_warning(self):
+    def test_unverified_subnet_id_is_quarantined_before_adapter(self):
         HostReservation = apps.get_model(DHCP_PLUGIN, "HostReservation")
         conf = {"subnet4": []}  # subnet-id 99 was never imported
         hosts = [{"subnet-id": 99, "hw-address": "aa:bb:cc:dd:ee:99", "ip-address": "10.99.0.5"}]
-        summary = self.adapter.import_server_config(self.server, self._intent(conf, hosts))
+        summary = self.adapter.import_server_config(
+            self.server, parse_dhcp_config(conf, 4), _reservation_snapshot(conf, 4, hosts)
+        )
 
         self.assertEqual(summary.reservations_created, 0)
+        self.assertEqual(summary.reservations_quarantined, 1)
         self.assertFalse(HostReservation.objects.exists())
-        self.assertTrue(any("unknown subnet-id 99" in w for w in summary.warnings), summary.warnings)
+        self.assertTrue(any("cannot verify" in warning for warning in summary.warnings), summary.warnings)
 
     def test_reimport_is_idempotent(self):
         HostReservation = apps.get_model(DHCP_PLUGIN, "HostReservation")
         conf = {"subnet4": [{"id": 7, "subnet": "10.41.0.0/24"}]}
         hosts = [{"subnet-id": 7, "hw-address": "aa:bb:cc:dd:ee:41", "ip-address": "10.41.0.50"}]
 
-        self.adapter.import_server_config(self.server, self._intent(conf, hosts))
-        second = self.adapter.import_server_config(self.server, self._intent(conf, hosts))
+        snapshot = _reservation_snapshot(conf, 4, hosts)
+        self.adapter.import_server_config(self.server, parse_dhcp_config(conf, 4), snapshot)
+        second = self.adapter.import_server_config(self.server, parse_dhcp_config(conf, 4), snapshot)
         self.assertEqual(second.reservations_created, 0)
         self.assertEqual(HostReservation.objects.count(), 1)
 
-    def test_global_v6_reservation_gets_host_mask(self):
-        # Finding 3: a global (subnet-less) IPv6 reservation must get a /128, not /32.
+    def test_global_v6_reservation_does_not_invent_ipam_scope(self):
         from ipam.models import IPAddress
 
         intent = parse_dhcp_config({"subnet6": []}, 6)
         hosts = [{"subnet-id": 0, "duid": "01:02:03:0a", "ip-addresses": ["2001:db8:aa::5"], "hostname": "g6"}]
-        intent.page_reservations = self._parse_page(hosts, 6)
-        summary = self.adapter.import_server_config(self.server, intent)
+        snapshot = _reservation_snapshot({"subnet6": []}, 6, hosts)
+        summary = self.adapter.import_server_config(self.server, intent, snapshot)
 
         self.assertEqual(summary.errors, 0, summary.warnings)
-        self.assertTrue(IPAddress.objects.filter(address="2001:db8:aa::5/128").exists())
+        self.assertFalse(IPAddress.objects.filter(address__startswith="2001:db8:aa::5/").exists())
 
 
 @tag("dhcp_plugin")
@@ -743,7 +804,7 @@ class DhcpPluginStaleCleanupGuardTest(TestCase):
                 }
             ]
         }
-        dhcp_plugin.import_server_config(self.server, parse_dhcp_config(conf, 4))
+        dhcp_plugin.import_server_config(self.server, parse_dhcp_config(conf, 4), _reservation_snapshot(conf, 4))
         referenced = IPAddress.objects.get(address="10.77.0.50/24")
 
         # An unreferenced, same-hostname Kea-synced IP (the kind cleanup is meant to remove).

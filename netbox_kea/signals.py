@@ -30,21 +30,21 @@ leases_deleted
 
 reservation_created
     Fired when a host reservation is created via the plugin UI.
-    kwargs: ``server``, ``reservation`` (dict), ``dhcp_version``, ``request``
+    kwargs: ``server``, ``before`` (None), ``after`` (Reservation),
+    ``dhcp_version``, ``request``
 
 reservation_updated
     Fired when a host reservation is updated via the plugin UI.
-    kwargs: ``server``, ``reservation`` (dict), ``dhcp_version``, ``request``
+    kwargs: ``server``, ``before`` (Reservation), ``after`` (Reservation),
+    ``dhcp_version``, ``request``
 
 reservation_deleted
     Fired when a host reservation is deleted via the plugin UI.
-    kwargs: ``server``, ``ip_address``, ``identifier_type``, ``identifier``,
+    kwargs: ``server``, ``before`` (Reservation), ``after`` (None),
     ``dhcp_version``, ``request``
 
-    A reservation can be addressed either by its IP or, when it reserves no
-    address, by its client identifier. All three keys are sent on every delete
-    regardless of which route was used, each ``None`` where it does not apply, so
-    receivers never have to handle a route-dependent payload shape.
+The ``before`` and ``after`` values use the immutable typed Reservation domain.
+They do not depend on the route or Kea's raw response shape.
 """
 
 from django.dispatch import Signal

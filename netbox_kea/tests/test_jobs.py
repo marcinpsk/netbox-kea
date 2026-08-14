@@ -6,7 +6,7 @@ Design principle
 ----------------
 ``TestKeaIpamSyncJobRun`` and ``TestKeaIpamSyncJobKillSwitches`` use the *real*
 Django ORM and the real ``sync_*`` helpers.  Only the three Kea HTTP methods
-(``command``, ``lease_get_all``, ``reservation_get_page``) are patched — those
+(``command``, ``lease_get_all``, ``reservation-get-page``) are stubbed at the transport boundary. These
 are the true external boundary (a third-party network service we cannot run in
 unit tests).  Asserting against real ``IPAddress`` rows means a
 ``MagicMock``-green test cannot mask a broken production code path.
@@ -19,19 +19,22 @@ appropriate seam.
 
 from __future__ import annotations
 
+import ipaddress
 from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 
 from core.exceptions import JobFailed
 from django.test import SimpleTestCase, TestCase, override_settings
+from django.utils import timezone
 from ipam.models import IPAddress as NbIP
 from ipam.models import IPRange, Prefix
 
 from netbox_kea.jobs import KeaIpamSyncJob
 from netbox_kea.kea import KeaClient
 from netbox_kea.models import Server, SyncConfig
+from netbox_kea.subnet_catalogue import CompleteCatalogueSnapshot, SubnetIdentity, VerifiedSubnet
 
-from .kea_stub import _res_page, queued, stub_kea
+from .kea_stub import _res_page, stub_kea
 
 _PLUGINS_CONFIG = {
     "netbox_kea": {
@@ -112,6 +115,61 @@ def _empty_config(body: dict) -> dict:
     return {"result": 0, "arguments": {root: {subnets: [], "shared-networks": []}}}
 
 
+def _reservation_family(host: dict) -> int:
+    addresses = host.get("ip-addresses") or [host.get("ip-address", "")]
+    return (
+        6
+        if "ip-addresses" in host or host.get("prefixes") or any(":" in address for address in addresses if address)
+        else 4
+    )
+
+
+def _reservation_subnets(reservations: list[dict], version: int) -> list[dict]:
+    subnets: dict[int, str] = {}
+    for host in reservations:
+        if _reservation_family(host) != version or not host.get("subnet-id"):
+            continue
+        addresses = host.get("ip-addresses") or [host.get("ip-address", "")]
+        address = next((value for value in addresses if value), None)
+        if address:
+            prefix_length = 64 if version == 6 else 24
+            try:
+                network = str(ipaddress.ip_network(f"{address}/{prefix_length}", strict=False))
+            except ValueError:
+                continue
+        else:
+            network = "2001:db8::/64" if version == 6 else "198.18.0.0/24"
+        subnets[int(host["subnet-id"])] = network
+    return [{"id": subnet_id, "subnet": network} for subnet_id, network in sorted(subnets.items())]
+
+
+def _catalogue_snapshot(reservations: list[dict], version: int):
+    entries = _reservation_subnets(reservations, version)
+    catalogue = CompleteCatalogueSnapshot(
+        server_id=1,
+        family=version,
+        observed_at=timezone.now(),
+        subnets=tuple(
+            VerifiedSubnet(
+                identity=SubnetIdentity(entry["id"], ipaddress.ip_network(entry["subnet"])),
+                configuration=None,
+                shared_network=None,
+            )
+            for entry in entries
+        ),
+        configured_subnets=(),
+        diagnostics=(),
+        identity_complete=True,
+        configuration_complete=True,
+        consistent=True,
+        configuration_hash=None,
+    )
+    hosts = [host for host in reservations if _reservation_family(host) == version]
+    client = KeaClient(url="http://kea.example.invalid", send_service=False)
+    with stub_kea({"reservation-get-page": _res_page(hosts)}):
+        return client.reservation_page(version, catalogue)
+
+
 @contextmanager
 def _patch_kea(
     *,
@@ -124,7 +182,7 @@ def _patch_kea(
 
     Registers the commands ``KeaIpamSyncJob`` issues — ``config-get``,
     ``lease{4,6}-get-page`` and ``reservation-get-page`` — so the real
-    ``lease_get_all`` / ``reservation_get_page`` pagination and ``command()``
+    ``lease_get_all`` / Reservation Snapshot pagination and ``command()``
     response parsing actually execute. A broken parser can no longer stay green
     behind a method-level ``MagicMock``, and truncation is driven by the real
     ``max_leases`` cap rather than a faked flag.
@@ -133,11 +191,35 @@ def _patch_kea(
     ``config-get`` carrying a subnet, a ``reservation-get-page`` returning a Kea
     error code, or an exception instance raised at the HTTP boundary.
     """
+    reservation_rows = list(reservations or [])
+
+    def config_get(body: dict) -> dict:
+        service = (body.get("service") or ["dhcp4"])[0]
+        version = 6 if service == "dhcp6" else 4
+        root = f"Dhcp{version}"
+        subnet_key = f"subnet{version}"
+        return {
+            "result": 0,
+            "arguments": {root: {subnet_key: _reservation_subnets(reservation_rows, version), "shared-networks": []}},
+        }
+
+    def subnet_list(body: dict) -> dict:
+        version = 6 if body.get("command") == "subnet6-list" else 4
+        subnets = _reservation_subnets(reservation_rows, version)
+        return {"result": 0, "arguments": {"subnets": subnets}} if subnets else {"result": 3}
+
+    def reservation_page(body: dict) -> dict:
+        version = 6 if (body.get("service") or ["dhcp4"])[0] == "dhcp6" else 4
+        hosts = [host for host in reservation_rows if _reservation_family(host) == version]
+        return _res_page(hosts)
+
     registry: dict = {
-        "config-get": _empty_config,
+        "config-get": config_get,
+        "subnet4-list": subnet_list,
+        "subnet6-list": subnet_list,
         "lease4-get-page": _lease_page(leases4),
         "lease6-get-page": _lease_page(leases6),
-        "reservation-get-page": _res_page(list(reservations or [])),
+        "reservation-get-page": reservation_page,
     }
     if responses:
         registry.update(responses)
@@ -150,7 +232,7 @@ class TestKeaIpamSyncJobRun(TestCase):
     """Integration tests for KeaIpamSyncJob.run() against the real ORM.
 
     Only the three Kea HTTP methods are mocked (``command``, ``lease_get_all``,
-    ``reservation_get_page``).  Everything else — ``sync_lease_to_netbox``,
+    Reservation Snapshot command). Everything else, including ``sync_lease_to_netbox``,
     ``sync_reservation_to_netbox``, ``cleanup_stale_ips_batch``, ORM queries —
     executes against the real test database.
 
@@ -499,7 +581,11 @@ class TestKeaIpamSyncJobRun(TestCase):
                 return _res_page([resv1], next_from=1)
             return _res_page([resv2])
 
-        with _patch_kea(leases4=[], responses={"reservation-get-page": _paged}):
+        with _patch_kea(
+            leases4=[],
+            reservations=[resv1, resv2],
+            responses={"reservation-get-page": _paged},
+        ):
             self._run()
 
         self.assertTrue(IPAddress.objects.filter(address__startswith="10.0.0.100/").exists())
@@ -552,7 +638,7 @@ class TestKeaIpamSyncJobRun(TestCase):
         ):
             with self.assertLogs("netbox_kea.jobs", level="WARNING") as cm:
                 self._run_raises()
-        self.assertTrue(any("Failed to fetch reservations" in msg for msg in cm.output))
+        self.assertTrue(any("Reservation Snapshot failed" in msg for msg in cm.output))
 
     # ── per-reservation sync exception ───────────────────────────────────
 
@@ -718,7 +804,7 @@ class TestKeaIpamSyncJobRun(TestCase):
         ):
             with self.assertLogs("netbox_kea.jobs", level="WARNING") as cm:
                 self._run_raises()
-        self.assertTrue(any("Unexpected error fetching reservations" in msg for msg in cm.output))
+        self.assertTrue(any("Reservation Snapshot failed" in msg for msg in cm.output))
 
     # ── unhandled exception in _sync_one_server ────────────────────────
 
@@ -1410,12 +1496,11 @@ class TestSyncServerReservationsReturnValue(TestCase):
     def test_returns_false_when_a_row_fails(self):
         from netbox_kea.jobs import _sync_server_reservations
 
-        # An unparseable address makes the REAL sync_reservation_to_netbox raise,
-        # which the loop catches and counts as an error.
+        # The typed Snapshot quarantines the malformed record before synchronization.
         stats = self._stats()
         bad = {"ip-address": "999.999.999.999", "hw-address": "aa:bb:cc:dd:ee:ff", "subnet-id": 1}
-        with stub_kea({"reservation-get-page": _res_page([bad])}):
-            ok = _sync_server_reservations(self._server(), 4, stats=stats, all_synced=[])
+        snapshot = _catalogue_snapshot([bad], 4)
+        ok = _sync_server_reservations(self._server(), snapshot, stats=stats, all_synced=[])
 
         self.assertFalse(ok)
         self.assertEqual(stats["errors"], 1)
@@ -1431,38 +1516,15 @@ class TestSyncServerReservationsReturnValue(TestCase):
         from netbox_kea.jobs import _sync_server_reservations
 
         stats = self._stats()
-        all_synced: list[dict] = []
+        all_synced: list = []
         host = {"hostname": "printer-1", "hw-address": "aa:bb:cc:dd:ee:ff", "subnet-id": 1}
-        with stub_kea({"reservation-get-page": _res_page([host])}):
-            ok = _sync_server_reservations(self._server(), 4, stats=stats, all_synced=all_synced)
+        snapshot = _catalogue_snapshot([host], 4)
+        ok = _sync_server_reservations(self._server(), snapshot, stats=stats, all_synced=all_synced)
 
         self.assertTrue(ok)
         self.assertEqual(stats["errors"], 0)
         self.assertEqual(stats["skipped"], 1)
         self.assertEqual(all_synced, [])
-
-    def test_stats_survive_a_mid_pagination_failure(self):
-        """Rows from page 1 must still be accounted for when page 2 fails.
-
-        The counters used to be published only after the loop finished, so a
-        pagination error threw away everything already processed and the summary
-        reported zero skipped for a run that had skipped rows.
-        """
-        from netbox_kea.jobs import _sync_server_reservations
-
-        page1 = {
-            "result": 0,
-            "arguments": {
-                "hosts": [{"hostname": "printer-1", "hw-address": "aa:bb:cc:dd:ee:ff", "subnet-id": 1}],
-                "next": {"from": 1, "source-index": 0},  # not exhausted → page 2 is fetched
-            },
-        }
-        stats = self._stats()
-        with stub_kea({"reservation-get-page": queued(page1, {"result": 1, "text": "backend gone"})}):
-            ok = _sync_server_reservations(self._server(), 4, stats=stats, all_synced=[])
-
-        self.assertFalse(ok)
-        self.assertEqual(stats["skipped"], 1)
 
     def test_conflicts_stay_consistent_with_the_deduplicated_set(self):
         """``conflicts`` must equal the size of the caller's set, not a running sum.
@@ -1478,8 +1540,8 @@ class TestSyncServerReservationsReturnValue(TestCase):
         conflict_ips: set[str] = set()
         stats = self._stats()
         host = {"ip-address": "10.0.0.100", "hw-address": "11:22:33:44:55:66", "subnet-id": 1}
-        with stub_kea({"reservation-get-page": _res_page([host])}):
-            _sync_server_reservations(self._server(), 4, stats=stats, all_synced=[], conflict_ips=conflict_ips)
+        snapshot = _catalogue_snapshot([host], 4)
+        _sync_server_reservations(self._server(), snapshot, stats=stats, all_synced=[], conflict_ips=conflict_ips)
 
         self.assertEqual(conflict_ips, {"10.0.0.100"})
         self.assertEqual(stats["conflicts"], len(conflict_ips))
@@ -1489,10 +1551,10 @@ class TestSyncServerReservationsReturnValue(TestCase):
         from netbox_kea.jobs import _sync_server_reservations
 
         stats = self._stats()
-        all_synced: list[dict] = []
+        all_synced: list = []
         host = {"duid": "00:01:00:01:12:34", "subnet-id": 12, "prefixes": ["2001:db8:1::/64"]}
-        with stub_kea({"reservation-get-page": _res_page([host])}):
-            ok = _sync_server_reservations(self._server(), 6, stats=stats, all_synced=all_synced)
+        snapshot = _catalogue_snapshot([host], 6)
+        ok = _sync_server_reservations(self._server(), snapshot, stats=stats, all_synced=all_synced)
 
         self.assertTrue(ok)
         self.assertEqual(stats["errors"], 0)
@@ -1703,79 +1765,40 @@ class TestAllSyncTypesDisabled(SimpleTestCase):
 
 
 # ---------------------------------------------------------------------------
-# Tests for _prefetch_reservation_ips edge cases
-# ---------------------------------------------------------------------------
-
-
-class TestPrefetchReservationIpsEdgeCases(SimpleTestCase):
-    """Edge-case tests for _prefetch_reservation_ips (lines 90, 95-96 in jobs.py)."""
-
-    def _make_server(self):
-        server = MagicMock(spec=Server)
-        server.name = "kea1"
-        return server
-
-    def test_non_dict_page_item_is_skipped(self):
-        """Non-dict items in the reservation page are silently skipped (line 90)."""
-        from netbox_kea.jobs import _prefetch_reservation_ips
-
-        server = self._make_server()
-        server.get_client.return_value = KeaClient(url="https://kea.example.com")
-        page = ["not-a-dict", {"ip-address": "10.0.0.1"}]
-        with stub_kea({"reservation-get-page": _res_page(page)}):
-            result = _prefetch_reservation_ips(server, version=4)
-
-        self.assertIsNotNone(result)
-        self.assertIn("10.0.0.1", result)
-        self.assertEqual(len(result), 1)
-
-    def test_ipv6_ip_addresses_list_collected(self):
-        """Reservation with ip-addresses list → all addresses added to result set (lines 95-96)."""
-        from netbox_kea.jobs import _prefetch_reservation_ips
-
-        server = self._make_server()
-        server.get_client.return_value = KeaClient(url="https://kea.example.com")
-        page = [{"ip-addresses": ["2001:db8::1", "2001:db8::2"]}]
-        with stub_kea({"reservation-get-page": _res_page(page)}):
-            result = _prefetch_reservation_ips(server, version=6)
-
-        self.assertIsNotNone(result)
-        self.assertIn("2001:db8::1", result)
-        self.assertIn("2001:db8::2", result)
-
-
-# ---------------------------------------------------------------------------
 # Tests for reservation updated path in _sync_server_reservations
 # ---------------------------------------------------------------------------
 
 
-class TestSyncServerReservationsUpdated(SimpleTestCase):
-    """Tests that an updated reservation (changed=True, created=False) increments stats['updated']."""
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestSyncServerReservationsUpdated(TestCase):
+    """An existing managed address contributes to the updated count."""
 
     def _make_server(self):
         server = MagicMock(spec=Server)
         server.name = "kea1"
         return server
 
-    @patch(
-        "netbox_kea.sync.sync_reservation_to_netbox", return_value=(MagicMock(spec=NbIP), False, True), autospec=True
-    )
-    def test_reservation_updated_increments_stats(self, mock_sync_resv):
-        """changed=True in sync_reservation_to_netbox → stats['updated'] += 1 (line 233)."""
+    def test_reservation_updated_increments_stats(self):
         from netbox_kea.jobs import _sync_server_reservations
 
         server = self._make_server()
         server.pk = 1
-        server.get_client.return_value = KeaClient(url="https://kea.example.com")
+        NbIP.objects.create(
+            address="10.0.0.100/24",
+            status="reserved",
+            dns_name="old-name",
+            description="Synced from Kea DHCP reservation",
+        )
 
         stats = {"created": 0, "updated": 0, "errors": 0, "prefix_errors": 0}
         all_synced: list = []
-        with stub_kea({"reservation-get-page": _res_page([_RESV4])}):
-            result = _sync_server_reservations(server, version=4, stats=stats, all_synced=all_synced)
+        snapshot = _catalogue_snapshot([_RESV4], 4)
+        result = _sync_server_reservations(server, snapshot, stats=stats, all_synced=all_synced)
 
         self.assertTrue(result)
         self.assertEqual(stats["updated"], 1)
         self.assertEqual(stats["created"], 0)
+        self.assertEqual(NbIP.objects.get(address="10.0.0.100/24").dns_name, "reserved1")
 
 
 # ---------------------------------------------------------------------------

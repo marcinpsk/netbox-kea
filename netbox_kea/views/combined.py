@@ -11,11 +11,12 @@ from django.urls import reverse
 from django.views import View
 
 from .. import constants, forms, tables
-from ..kea import KeaException, LeaseQueryGuardError, iter_reservations, lease_query_guard_message
+from ..dhcp_options import DHCPOption
+from ..kea import KeaException, LeaseQueryGuardError, lease_query_guard_message
 from ..models import Server
-from ..subnet_catalogue import ConfiguredSubnet, Diagnostic, SubnetOption, VerifiedSubnet, display
+from ..reservation_transfer import export_reservation_document
+from ..subnet_catalogue import ConfiguredSubnet, Diagnostic, VerifiedSubnet, display
 from ..utilities import (
-    _enrich_reservation_sort_key,
     export_table,
     format_leases,
 )
@@ -24,9 +25,10 @@ from .leases import _enrich_leases_with_badges
 from .reservations import (
     _attach_reservation_action_urls,
     _enrich_reservations_with_badges,
+    _fetch_reservation_page,
+    _fetch_reservation_snapshot,
     _filter_reservations,
-    _normalise_reservation_identifier,
-    _normalise_reservation_prefixes,
+    _reservation_table_record,
 )
 
 logger = logging.getLogger(__name__)
@@ -165,7 +167,7 @@ def _filter_subnets(subnets: list[dict[str, Any]], q: str, subnet_id: int | None
     return result
 
 
-def _option_payload(option: SubnetOption) -> dict[str, Any]:
+def _option_payload(option: DHCPOption) -> dict[str, Any]:
     """Serialize a catalogue option for existing option display formatting."""
     return {
         "data": option.data,
@@ -433,26 +435,17 @@ class CombinedSharedNetworks6View(_CombinedSharedNetworksView):
     active_tab = "shared_networks6"
 
 
-def _fetch_reservations_from_server(server: "Server", version: int) -> list[dict[str, Any]]:
-    """Fetch all reservations from a single server and tag with server info.
-
-    Paginates automatically using the ``from`` / ``source-index`` tokens returned
-    by Kea until the source is exhausted (returned page smaller than the limit).
-    """
-    service = f"dhcp{version}"
-    client = server.get_client(version=version)
-    reservations: list[dict[str, Any]] = []
-    for r in iter_reservations(client, service):
-        r.setdefault("subnet_id", r.get("subnet-id", 0))
-        r.setdefault("ip_address", r.get("ip-address", r.get("ip-addresses", [""])[0] if r.get("ip-addresses") else ""))
-        r["server_name"] = server.name
-        r["server_pk"] = server.pk
-        _normalise_reservation_identifier(r, version)
-        if version == 6:
-            _normalise_reservation_prefixes(r)
-        _enrich_reservation_sort_key(r)
-        reservations.append(r)
-    return reservations
+def _fetch_reservations_from_server(
+    server: "Server",
+    version: int,
+    cursor: str | None = None,
+    *,
+    full_snapshot: bool = False,
+):
+    """Fetch one bounded page, or a complete typed Snapshot for transfer."""
+    if full_snapshot:
+        return _fetch_reservation_snapshot(server, version)
+    return _fetch_reservation_page(server, version, cursor)
 
 
 class _CombinedReservationsView(_CombinedViewMixin):
@@ -468,18 +461,56 @@ class _CombinedReservationsView(_CombinedViewMixin):
 
         all_records: list[dict[str, Any]] = []
         errors: list[tuple[str, str]] = []
+        diagnostics = []
+        snapshots = {}
+        is_export = "export" in request.GET
+        export_format = request.GET.get("export")
+        if is_export and export_format not in ("yaml", "json"):
+            return HttpResponse("Reservation export format must be YAML or JSON.", status=400)
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
             future_to_server = {
-                executor.submit(_fetch_reservations_from_server, s, self.dhcp_version): s for s in servers
+                executor.submit(
+                    _fetch_reservations_from_server,
+                    server,
+                    self.dhcp_version,
+                    None if is_export else request.GET.get(f"reservation_cursor_{server.pk}"),
+                    full_snapshot=is_export,
+                ): server
+                for server in servers
+                if is_export or request.GET.get(f"reservation_cursor_{server.pk}") != "done"
             }
             for future in concurrent.futures.as_completed(future_to_server):
                 server = future_to_server[future]
                 try:
-                    all_records.extend(future.result())
+                    snapshot = future.result()
+                    snapshots[server.pk] = snapshot
+                    all_records.extend(_reservation_table_record(record, server) for record in snapshot.records)
+                    diagnostics.extend((server.name, diagnostic) for diagnostic in snapshot.diagnostics)
                 except Exception:  # noqa: BLE001, PERF203
                     logger.exception("Failed to query server %s", server.name)
                     errors.append((server.name, "Failed to query server"))
+
+        if is_export:
+            if errors or diagnostics:
+                return HttpResponse(
+                    "The combined Reservation Snapshot is incomplete and cannot be exported.", status=409
+                )
+            records = tuple(
+                record
+                for server in servers
+                if (snapshot := snapshots.get(server.pk)) is not None
+                for record in snapshot.records
+            )
+            content = export_reservation_document(records, export_format)
+            response = HttpResponse(
+                content,
+                content_type="application/json" if export_format == "json" else "application/yaml",
+            )
+            response["Content-Disposition"] = (
+                f'attachment; filename="kea-dhcpv{self.dhcp_version}-reservations.{export_format}"'
+            )
+            return response
 
         # Enrich in the main thread so Django ORM queries see the test transaction.
         server_map = {s.pk: s for s in servers}
@@ -505,20 +536,35 @@ class _CombinedReservationsView(_CombinedViewMixin):
                 q=search_form.cleaned_data.get("q", ""),
                 subnet_id=search_form.cleaned_data.get("subnet_id"),
                 version=self.dhcp_version,
+                scope=search_form.cleaned_data.get("scope", ""),
             )
 
         table_cls = tables.GlobalReservationTable4 if self.dhcp_version == 4 else tables.GlobalReservationTable6
         table = table_cls(all_records, user=request.user)
         table.configure(request)
 
-        if "export" in request.GET:
-            return export_table(table, filename=f"kea-dhcpv{self.dhcp_version}-reservations.csv")
+        next_query = request.GET.copy()
+        next_query.pop("page", None)
+        has_next = False
+        for server in servers:
+            snapshot = snapshots.get(server.pk)
+            cursor_key = f"reservation_cursor_{server.pk}"
+            if snapshot is None:
+                continue
+            if snapshot.next_cursor is None:
+                next_query[cursor_key] = "done"
+            else:
+                next_query[cursor_key] = snapshot.next_cursor
+                has_next = True
 
         ctx.update(
             {
                 "table": table,
                 "search_form": search_form,
                 "errors": errors,
+                "reservation_diagnostics": diagnostics,
+                "snapshot_complete": not errors and all(snapshot.complete for snapshot in snapshots.values()),
+                "next_page_url": f"{request.path}?{next_query.urlencode()}" if has_next else None,
                 "dhcp_version": self.dhcp_version,
                 "page_title": f"DHCPv{self.dhcp_version} Reservations",
             }

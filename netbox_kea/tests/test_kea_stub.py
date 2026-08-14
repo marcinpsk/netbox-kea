@@ -91,7 +91,7 @@ def test_shared_response_builders_shape():
         "arguments": {"subnet4": [{"id": 7, "pools": [{"pool": "10.0.0.10-10.0.0.20"}]}]},
     }
     assert _subnet_get(6)["arguments"]["subnet6"][0]["pools"] == []
-    # _subnet_list: the candidate-subnet list reservation_get_by_ip scans.
+    # _subnet_list: the Subnet catalogue list response.
     subnets = [{"id": 1, "subnet": "10.0.0.0/24"}]
     assert _subnet_list(4, subnets) == {"result": 0, "arguments": {"subnets": subnets}}
     assert _subnet_list(6, []) == {"result": 0, "arguments": {"subnets": []}}

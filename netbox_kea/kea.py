@@ -1,15 +1,100 @@
+import base64
 import copy
 import ipaddress
+import json
 import logging
-from collections.abc import Iterator, Sequence
-from typing import Any, NamedTuple, TypedDict
+from collections.abc import Sequence
+from typing import Any, Literal, NamedTuple, TypedDict, cast
 
 import requests
 from requests.models import HTTPBasicAuth
 
 from . import constants
+from .dhcp_options import DHCPOption
+from .reservations import (
+    Family,
+    GlobalReservationScope,
+    IdentifierType,
+    InSubnetReservationScope,
+    MalformedReservation,
+    Reservation,
+    ReservationCapabilities,
+    ReservationChange,
+    ReservationConflict,
+    ReservationDiagnostic,
+    ReservationIdentity,
+    ReservationMutationResult,
+    ReservationScope,
+    ReservationSnapshot,
+    _exact_reservation,
+    _option_data,
+    _parse_reservation_page,
+    _reservation_to_raw,
+    apply_reservation_change,
+    reservation_fingerprint,
+    reservation_identifier_types,
+)
 
 logger = logging.getLogger(__name__)
+
+_MANAGED_OPTION_KEYS = frozenset({"code", "name", "space", "data", "csv-format", "always-send", "never-send"})
+
+
+def _encode_reservation_cursor(source_index: int, from_index: int) -> str | None:
+    """Encode Kea's two-part Reservation cursor as one opaque token."""
+    if source_index == 0 and from_index == 0:
+        return None
+    payload = json.dumps([source_index, from_index], separators=(",", ":")).encode()
+    return base64.urlsafe_b64encode(payload).decode().rstrip("=")
+
+
+def _decode_reservation_cursor(cursor: str | None) -> tuple[int, int]:
+    """Decode one opaque Reservation cursor into Kea's source and offset."""
+    if cursor is None:
+        return 0, 0
+    if not isinstance(cursor, str) or not cursor:
+        raise ValueError("Reservation cursor must be a non-empty string.")
+    try:
+        padding = "=" * (-len(cursor) % 4)
+        decoded = json.loads(base64.b64decode(cursor + padding, altchars=b"-_", validate=True))
+    except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("Invalid Reservation cursor.") from exc
+    if (
+        not isinstance(decoded, list)
+        or len(decoded) != 2
+        or any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in decoded)
+    ):
+        raise ValueError("Invalid Reservation cursor.")
+    return decoded[0], decoded[1]
+
+
+def _reservation_scope_subnet_id(scope: ReservationScope) -> int:
+    """Return the Kea subnet ID for one explicit Reservation Scope."""
+    if isinstance(scope, GlobalReservationScope):
+        return 0
+    if isinstance(scope, InSubnetReservationScope):
+        return scope.subnet.subnet_id
+    raise ValueError("Unsupported Reservation Scope.")
+
+
+def _merge_reservation_options(
+    raw_options: list[dict[str, Any]],
+    current_options: tuple[DHCPOption, ...],
+    intended_options: tuple[DHCPOption, ...],
+) -> list[dict[str, Any]]:
+    """Overlay managed option facts while preserving matching Kea extension fields."""
+    remaining = list(zip(current_options, raw_options, strict=True))
+    merged_options: list[dict[str, Any]] = []
+    for intended_option in intended_options:
+        raw_option = None
+        for index, (current_option, candidate) in enumerate(remaining):
+            if current_option.match_key == intended_option.match_key:
+                _, raw_option = remaining.pop(index)
+                break
+        merged_option = {key: value for key, value in (raw_option or {}).items() if key not in _MANAGED_OPTION_KEYS}
+        merged_option.update(_option_data(intended_option))
+        merged_options.append(merged_option)
+    return merged_options
 
 
 class KeaResponse(TypedDict):
@@ -292,9 +377,71 @@ class KeaClient:
         resp = self.command("list-commands", service=[service])
         if not resp or not isinstance(resp[0], dict):
             raise RuntimeError(f"list-commands returned malformed response: {resp!r}")
-        return set(resp[0].get("arguments") or [])
+        arguments = resp[0].get("arguments")
+        if not isinstance(arguments, list) or any(not isinstance(command, str) for command in arguments):
+            raise RuntimeError(f"list-commands returned malformed arguments: {resp[0]!r}")
+        return set(arguments)
 
-    def reservation_get_page(
+    def reservation_capabilities(self, version: int) -> ReservationCapabilities:
+        """Read live identifier configuration and host command availability."""
+        if version not in (4, 6):
+            raise ValueError(f"version must be 4 or 6, got {version!r}")
+        service = f"dhcp{version}"
+        commands = self.get_available_commands(service)
+        response = self.command("config-get", service=[service])
+        if not response or not isinstance(response[0], dict):
+            raise RuntimeError("config-get returned a malformed response.")
+        arguments = response[0].get("arguments")
+        dhcp = arguments.get(f"Dhcp{version}") if isinstance(arguments, dict) else None
+        if not isinstance(dhcp, dict):
+            raise RuntimeError("config-get returned malformed DHCP configuration.")
+        configured = dhcp.get("host-reservation-identifiers")
+        if configured is None:
+            configured = ["hw-address", "duid", "circuit-id", "client-id"] if version == 4 else ["duid", "hw-address"]
+        if not isinstance(configured, list) or any(not isinstance(identifier, str) for identifier in configured):
+            raise RuntimeError("config-get returned malformed host-reservation-identifiers.")
+
+        supported = reservation_identifier_types(version)
+        hooks = dhcp.get("hooks-libraries", [])
+        if not isinstance(hooks, list):
+            raise RuntimeError("config-get returned malformed hooks-libraries.")
+        flex_hook = any(
+            isinstance(hook, dict) and isinstance(hook.get("library"), str) and "libdhcp_flex_id" in hook["library"]
+            for hook in hooks
+        )
+        available: tuple[IdentifierType, ...] = tuple(
+            cast(IdentifierType, identifier)
+            for identifier in configured
+            if identifier in supported and (identifier != "flex-id" or flex_hook)
+        )
+        unavailable = tuple(
+            (
+                cast(IdentifierType, identifier),
+                "The Flex ID hook is not configured."
+                if identifier == "flex-id" and identifier in configured
+                else "This identifier is not enabled in host-reservation-identifiers.",
+            )
+            for identifier in supported
+            if identifier not in available
+        )
+        required_commands = {"reservation-get", "reservation-add", "reservation-update", "reservation-del"}
+        missing_commands = required_commands - commands
+        mutation_available = bool(available) and not missing_commands
+        if missing_commands:
+            explanation = "The host_cmds hook does not provide all required Reservation commands."
+        elif not available:
+            explanation = "No supported Reservation identifier is enabled."
+        else:
+            explanation = ""
+        return ReservationCapabilities(
+            family=cast(Family, version),
+            identifiers=available,
+            mutation_available=mutation_available,
+            explanation=explanation,
+            unavailable_identifiers=unavailable,
+        )
+
+    def _reservation_raw_page(
         self,
         service: str,
         source_index: int = 0,
@@ -326,132 +473,357 @@ class KeaClient:
             arguments={"source-index": source_index, "from": from_index, "limit": limit},
             check=(0, 3),
         )
-        if resp[0]["result"] == 3:
+        if not resp or not isinstance(resp[0], dict):
+            raise RuntimeError("reservation-get-page returned a malformed response.")
+        if resp[0].get("result") == 3:
             return [], 0, 0
-        args = resp[0].get("arguments") or {}
-        hosts: list[dict[str, Any]] = args.get("hosts", [])
-        next_obj = args.get("next") or {}
-        return hosts, next_obj.get("from", 0), next_obj.get("source-index", 0)
+        args = resp[0].get("arguments")
+        if not isinstance(args, dict) or not isinstance(args.get("hosts"), list):
+            raise RuntimeError("reservation-get-page returned malformed arguments.")
+        next_obj = args.get("next")
+        if not isinstance(next_obj, dict):
+            raise RuntimeError("reservation-get-page returned a malformed next cursor.")
+        next_from = next_obj.get("from")
+        next_source = next_obj.get("source-index")
+        if any(
+            isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in (next_from, next_source)
+        ):
+            raise RuntimeError("reservation-get-page returned a malformed next cursor.")
+        return cast(list[dict[str, Any]], args["hosts"]), cast(int, next_from), cast(int, next_source)
 
-    def reservation_add(self, service: str, reservation: dict[str, Any]) -> None:
-        """Add a host reservation to Kea.
-
-        Args:
-            service: Target service (``"dhcp4"`` or ``"dhcp6"``).
-            reservation: Reservation dict matching the Kea ``reservation-add`` schema.
-
-        Raises:
-            KeaException: If Kea returns a non-zero result code.
-
-        """
-        self.command(
-            "reservation-add",
-            service=[service],
-            arguments={"reservation": reservation},
-        )
-
-    def reservation_update(self, service: str, reservation: dict[str, Any]) -> None:
-        """Update an existing host reservation in Kea.
-
-        Args:
-            service: Target service (``"dhcp4"`` or ``"dhcp6"``).
-            reservation: Updated reservation dict.
-
-        Raises:
-            KeaException: If Kea returns a non-zero result code.
-
-        """
-        self.command(
-            "reservation-update",
-            service=[service],
-            arguments={"reservation": reservation},
-        )
-
-    def reservation_del(
+    def reservation_page(
         self,
-        service: str,
-        subnet_id: int,
-        ip_address: str | None = None,
-        identifier_type: str | None = None,
-        identifier: str | None = None,
-    ) -> None:
-        """Delete a host reservation from Kea.
+        version: int,
+        catalogue,
+        *,
+        cursor: str | None = None,
+        limit: int = 100,
+    ) -> ReservationSnapshot:
+        """Return one bounded, typed Reservation Snapshot."""
+        if version not in (4, 6):
+            raise ValueError(f"version must be 4 or 6, got {version!r}")
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+            raise ValueError("limit must be a positive integer.")
+        source_index, from_index = _decode_reservation_cursor(cursor)
+        hosts: list[dict[str, Any]] = []
+        next_source, next_from = source_index, from_index
+        seen_cursors = {(next_source, next_from)}
+        while len(hosts) < limit:
+            remaining = limit - len(hosts)
+            page, candidate_from, candidate_source = self._reservation_raw_page(
+                f"dhcp{version}",
+                source_index=next_source,
+                from_index=next_from,
+                limit=remaining,
+            )
+            if len(page) > remaining:
+                raise RuntimeError("reservation-get-page exceeded the requested page limit.")
+            hosts.extend(page)
+            candidate = (candidate_source, candidate_from)
+            if candidate == (0, 0):
+                next_cursor = None
+                break
+            if candidate in seen_cursors:
+                raise RuntimeError("Reservation page cursor did not advance.")
+            next_source, next_from = candidate
+            if len(hosts) == limit:
+                next_cursor = _encode_reservation_cursor(next_source, next_from)
+                break
+            seen_cursors.add(candidate)
+        return _parse_reservation_page(hosts, version, catalogue, next_cursor)
 
-        Args:
-            service: Target service (``"dhcp4"`` or ``"dhcp6"``).
-            subnet_id: Subnet ID the reservation belongs to.
-            ip_address: IP address to identify the reservation. Mutually exclusive with
-                *identifier_type* / *identifier*.
-            identifier_type: Identifier type (e.g. ``"hw-address"``). Requires *identifier*.
-            identifier: Identifier value. Requires *identifier_type*.
-
-        Raises:
-            ValueError: If neither *ip_address* nor *identifier_type* is provided.
-            KeaException: If Kea returns a non-zero result code.
-
-        """
-        if ip_address is not None and identifier_type is not None:
-            raise ValueError("ip_address and identifier_type are mutually exclusive; provide exactly one.")
-        if ip_address is None and identifier_type is None:
-            raise ValueError("Either ip_address or identifier_type+identifier must be provided.")
-        if (identifier_type is None) != (identifier is None):
-            raise ValueError("identifier_type and identifier must both be provided together.")
-        args: dict[str, Any] = {"subnet-id": subnet_id}
-        if ip_address is not None:
-            args["ip-address"] = ip_address
-        else:
-            args["identifier-type"] = identifier_type
-            args["identifier"] = identifier
-        self.command("reservation-del", service=[service], arguments=args)
-
-    def reservation_get(
+    def reservation_by_identity(
         self,
-        service: str,
-        subnet_id: int,
-        ip_address: str | None = None,
-        identifier_type: str | None = None,
-        identifier: str | None = None,
-    ) -> dict[str, Any] | None:
-        """Fetch a single host reservation from Kea.
-
-        Args:
-            service: Target service (``"dhcp4"`` or ``"dhcp6"``).
-            subnet_id: Subnet ID to look in.
-            ip_address: Lookup by IP address.
-            identifier_type: Lookup by identifier type (e.g. ``"hw-address"``).
-            identifier: Identifier value.
-
-        Returns:
-            The reservation dict, or ``None`` if not found (result code 3).
-
-        Raises:
-            KeaException: If Kea returns result code 1 (error).
-
-        """
-        if ip_address is not None and identifier_type is not None:
-            raise ValueError("ip_address and identifier_type are mutually exclusive; provide exactly one.")
-        if ip_address is None and identifier_type is None:
-            raise ValueError("Either ip_address or identifier_type+identifier must be provided.")
-        if (identifier_type is None) != (identifier is None):
-            raise ValueError("identifier_type and identifier must both be provided together.")
-        args: dict[str, Any] = {"subnet-id": subnet_id}
-        if ip_address is not None:
-            args["ip-address"] = ip_address
-        else:
-            args["identifier-type"] = identifier_type
-            args["identifier"] = identifier
-        resp = self.command("reservation-get", service=[service], arguments=args, check=(0, 3))
-        if resp[0]["result"] == 3:
+        version: int,
+        catalogue,
+        scope: ReservationScope,
+        identity: ReservationIdentity,
+    ) -> Reservation | None:
+        """Return one exact typed Reservation Identity target."""
+        if version not in (4, 6):
+            raise ValueError(f"version must be 4 or 6, got {version!r}")
+        if identity.identifier_type not in reservation_identifier_types(version):
+            raise ValueError(f"{identity.identifier_type} is not supported for DHCPv{version} Reservations.")
+        raw = self._reservation_raw_by_identity(version, scope, identity)
+        if raw is None:
             return None
-        # Kea returns the host fields directly inside "arguments" (not nested under "host")
-        return resp[0].get("arguments") or None
+        reservation = _exact_reservation(raw, version, catalogue)
+        if reservation.scope != scope or reservation.identity != identity:
+            raise MalformedReservation(
+                "target-mismatch",
+                "Kea returned a Reservation that does not match the exact target.",
+            )
+        return reservation
+
+    def _reservation_raw_by_identity(
+        self,
+        version: int,
+        scope: ReservationScope,
+        identity: ReservationIdentity,
+    ) -> dict[str, Any] | None:
+        """Fetch one exact raw Reservation for private read-modify-write use."""
+        subnet_id = _reservation_scope_subnet_id(scope)
+        response = self.command(
+            "reservation-get",
+            service=[f"dhcp{version}"],
+            arguments={
+                "subnet-id": subnet_id,
+                "identifier-type": identity.identifier_type,
+                "identifier": identity.value,
+            },
+            check=(0, 3),
+        )
+        if not response or not isinstance(response[0], dict):
+            raise RuntimeError("reservation-get returned a malformed response.")
+        if response[0].get("result") == 3:
+            return None
+        raw = response[0].get("arguments")
+        if not isinstance(raw, dict):
+            raise RuntimeError("reservation-get returned malformed arguments.")
+        return raw
+
+    def _reservation_raw_by_address(
+        self,
+        version: int,
+        scope: InSubnetReservationScope,
+        address: str,
+    ) -> dict[str, Any] | None:
+        """Fetch one scoped raw Reservation by allocation address."""
+        response = self.command(
+            "reservation-get",
+            service=[f"dhcp{version}"],
+            arguments={"subnet-id": scope.subnet.subnet_id, "ip-address": address},
+            check=(0, 3),
+        )
+        if not response or not isinstance(response[0], dict):
+            raise RuntimeError("reservation-get returned a malformed response.")
+        if response[0].get("result") == 3:
+            return None
+        raw = response[0].get("arguments")
+        if not isinstance(raw, dict):
+            raise RuntimeError("reservation-get returned malformed arguments.")
+        return raw
+
+    def reservation_by_address(
+        self,
+        version: int,
+        catalogue,
+        scope: ReservationScope,
+        address: str,
+    ) -> Reservation | None:
+        """Resolve one scoped allocation address to its canonical Reservation."""
+        if version not in (4, 6):
+            raise ValueError(f"version must be 4 or 6, got {version!r}")
+        if not isinstance(scope, InSubnetReservationScope):
+            raise ValueError("Reservation address discovery requires an In-Subnet Scope.")
+        try:
+            parsed_address = ipaddress.ip_address(address)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Invalid DHCPv{version} Reservation address.") from exc
+        if parsed_address.version != version or parsed_address not in scope.subnet.network:
+            raise ValueError("The Reservation address must belong to its In-Subnet Scope.")
+        raw = self._reservation_raw_by_address(version, scope, str(parsed_address))
+        if raw is None:
+            return None
+        reservation = _exact_reservation(raw, version, catalogue)
+        if reservation.scope != scope or parsed_address not in reservation.addresses:
+            raise MalformedReservation(
+                "target-mismatch",
+                "Kea returned a Reservation that does not match the scoped address target.",
+            )
+        return reservation
+
+    def reservations_by_hostname(
+        self,
+        version: int,
+        catalogue,
+        hostname: str,
+    ) -> ReservationSnapshot:
+        """Return the typed Reservations that match one exact hostname."""
+        if version not in (4, 6):
+            raise ValueError(f"version must be 4 or 6, got {version!r}")
+        if not isinstance(hostname, str) or not hostname:
+            raise ValueError("hostname must be a non-empty string.")
+        response = self.command(
+            "reservation-get-by-hostname",
+            service=[f"dhcp{version}"],
+            arguments={"hostname": hostname},
+            check=(0, 3),
+        )
+        if not response or not isinstance(response[0], dict):
+            raise RuntimeError("reservation-get-by-hostname returned a malformed response.")
+        if response[0].get("result") == 3:
+            return _parse_reservation_page([], version, catalogue, None)
+        arguments = response[0].get("arguments")
+        if not isinstance(arguments, dict):
+            raise RuntimeError("reservation-get-by-hostname returned malformed arguments.")
+        return _parse_reservation_page(arguments.get("hosts"), version, catalogue, None)
+
+    def reservation_snapshot(
+        self,
+        version: int,
+        catalogue,
+        *,
+        page_size: int = 100,
+    ) -> ReservationSnapshot:
+        """Traverse bounded pages and return one non-atomic Reservation Snapshot."""
+        records: list[Reservation] = []
+        diagnostics: list[ReservationDiagnostic] = []
+        cursor = None
+        seen_cursors: set[str] = set()
+        while True:
+            page = self.reservation_page(
+                version,
+                catalogue,
+                cursor=cursor,
+                limit=page_size,
+            )
+            records.extend(page.records)
+            diagnostics.extend(page.diagnostics)
+            if page.next_cursor is None:
+                break
+            if page.next_cursor == cursor or page.next_cursor in seen_cursors:
+                raise RuntimeError("Reservation page cursor did not advance.")
+            seen_cursors.add(page.next_cursor)
+            cursor = page.next_cursor
+        return ReservationSnapshot(
+            family=page.family,
+            records=tuple(records),
+            diagnostics=tuple(diagnostics),
+            complete=not diagnostics,
+            next_cursor=None,
+        )
+
+    def _reservation_mutation_command(self, command: str, version: int, arguments: dict[str, Any]) -> None:
+        """Apply one Reservation command and validate its success envelope."""
+        response = self.command(command, service=[f"dhcp{version}"], arguments=arguments)
+        if not response or not isinstance(response[0], dict) or response[0].get("result") != 0:
+            raise RuntimeError(f"{command} returned a malformed success response.")
+
+    def _verify_reservation(
+        self,
+        intended: Reservation | None,
+        target: Reservation,
+        catalogue,
+    ) -> Literal["verified", "failed"]:
+        """Refetch one mutation target and compare its managed typed facts."""
+        try:
+            observed = self.reservation_by_identity(
+                target.family,
+                catalogue,
+                target.scope,
+                target.identity,
+            )
+        except (KeaException, MalformedReservation, requests.RequestException, RuntimeError, ValueError):
+            logger.warning("Could not verify a confirmed Reservation mutation", exc_info=True)
+            return "failed"
+        return "verified" if observed == intended else "failed"
+
+    def reservation_create(self, reservation: Reservation, catalogue) -> ReservationMutationResult:
+        """Create one typed In-Subnet Reservation and verify the result."""
+        if isinstance(reservation.scope, GlobalReservationScope):
+            raise ValueError("Creating Global Reservations is not supported.")
+        raw = _reservation_to_raw(reservation)
+        self._reservation_mutation_command(
+            "reservation-add",
+            reservation.family,
+            {"reservation": raw},
+        )
+        return ReservationMutationResult(
+            previous=None,
+            intended=reservation,
+            application="applied",
+            persistence="persisted",
+            verification=self._verify_reservation(reservation, reservation, catalogue),
+        )
+
+    def reservation_change(
+        self,
+        target: Reservation,
+        expected_fingerprint: str,
+        change: ReservationChange,
+        catalogue,
+    ) -> ReservationMutationResult:
+        """Update mutable managed facts and preserve the latest unknown Kea fields."""
+        if isinstance(target.scope, GlobalReservationScope):
+            raise ValueError("Updating Global Reservations is not supported.")
+        raw = self._reservation_raw_by_identity(target.family, target.scope, target.identity)
+        if raw is None:
+            raise ReservationConflict("The Reservation no longer exists.")
+        current = _exact_reservation(raw, target.family, catalogue)
+        if current.scope != target.scope or current.identity != target.identity:
+            raise MalformedReservation("target-mismatch", "Kea returned a different Reservation target.")
+        if reservation_fingerprint(current) != expected_fingerprint:
+            raise ReservationConflict("The Reservation changed after the edit form was opened.")
+        intended = apply_reservation_change(current, change)
+        raw_options = raw.get("option-data", [])
+        if not isinstance(raw_options, list) or any(not isinstance(option, dict) for option in raw_options):
+            raise MalformedReservation("invalid-options", "The Reservation contains invalid DHCP Options.")
+        serialized = _reservation_to_raw(intended)
+        if intended.options:
+            serialized["option-data"] = _merge_reservation_options(raw_options, current.options, intended.options)
+        merged = dict(raw)
+        for key in (
+            "subnet-id",
+            "hw-address",
+            "duid",
+            "circuit-id",
+            "client-id",
+            "flex-id",
+            "remote-id",
+            "ip-address",
+            "ip-addresses",
+            "prefixes",
+            "hostname",
+            "option-data",
+        ):
+            merged.pop(key, None)
+        merged.update(serialized)
+        self._reservation_mutation_command(
+            "reservation-update",
+            target.family,
+            {"reservation": merged},
+        )
+        return ReservationMutationResult(
+            previous=current,
+            intended=intended,
+            application="applied",
+            persistence="persisted",
+            verification=self._verify_reservation(intended, target, catalogue),
+        )
+
+    def reservation_delete(self, target: Reservation, catalogue) -> ReservationMutationResult:
+        """Delete one typed In-Subnet Reservation by Scope and Identity."""
+        if isinstance(target.scope, GlobalReservationScope):
+            raise ValueError("Deleting Global Reservations is not supported.")
+        raw = self._reservation_raw_by_identity(target.family, target.scope, target.identity)
+        if raw is None:
+            raise ReservationConflict("The Reservation no longer exists.")
+        current = _exact_reservation(raw, target.family, catalogue)
+        if current.scope != target.scope or current.identity != target.identity:
+            raise MalformedReservation("target-mismatch", "Kea returned a different Reservation target.")
+        self._reservation_mutation_command(
+            "reservation-del",
+            target.family,
+            {
+                "subnet-id": target.scope.subnet.subnet_id,
+                "identifier-type": target.identity.identifier_type,
+                "identifier": target.identity.value,
+            },
+        )
+        return ReservationMutationResult(
+            previous=current,
+            intended=None,
+            application="applied",
+            persistence="persisted",
+            verification=self._verify_reservation(None, target, catalogue),
+        )
 
     def _subnet_list_entries(self, version: int) -> list[Any]:
         """Return the raw ``subnet{version}-list`` entries, or ``[]`` when Kea has no subnets.
 
         The single place that issues the command and validates its envelope. Each
-        caller then applies its own per-entry policy: :meth:`list_subnets` rejects a
-        malformed entry, :meth:`reservation_get_by_ip` skips it.
+        Each caller applies its own per-entry validation policy.
 
         Requires the ``subnet_cmds`` hook library.
 
@@ -570,48 +942,6 @@ class KeaClient:
                 if isinstance(subnet_id, bool) or not isinstance(subnet_id, int) or subnet_id < 1:
                     raise RuntimeError("config-get returned a Subnet without a valid ID.")
                 return subnet_id
-        return None
-
-    def reservation_get_by_ip(self, version: int, ip_address: str) -> dict[str, Any] | None:
-        """Fetch a reservation by IP address without requiring the subnet ID.
-
-        Lists all subnets for *version*, filters those whose CIDR contains *ip_address*,
-        then calls ``reservation-get`` for each candidate until a match is found.
-
-        Args:
-            version: DHCP protocol version (``4`` or ``6``).
-            ip_address: IP address to look up.
-
-        Returns:
-            The reservation dict, or ``None`` if not found.
-
-        Raises:
-            KeaException: If the subnet list call itself fails.
-            RuntimeError: If the ``subnet{version}-list`` envelope is malformed.
-
-        """
-        service = f"dhcp{version}"
-        target = ipaddress.ip_address(ip_address)
-        # Unlike list_subnets(), a malformed entry is skipped rather than fatal: one bad
-        # subnet must not stop the scan from reaching the subnet that holds the address.
-        for subnet in self._subnet_list_entries(version):
-            if not isinstance(subnet, dict):
-                continue
-            try:
-                network = ipaddress.ip_network(subnet["subnet"], strict=False)
-            except (KeyError, TypeError, ValueError):
-                continue
-            if target not in network:
-                continue
-            subnet_id = subnet.get("id")
-            # An unusable id must be skipped, not sent: Kea rejects the command, which
-            # would abort the scan before a later valid subnet is tried. bool is an int
-            # subclass, so `True` needs its own check.
-            if isinstance(subnet_id, bool) or not isinstance(subnet_id, int):
-                continue
-            reservation = self.reservation_get(service, subnet_id, ip_address=ip_address)
-            if reservation is not None:
-                return reservation
         return None
 
     def subnet_add(  # noqa: C901
@@ -1971,43 +2301,3 @@ def check_response(resp: list[KeaResponse], ok_codes: Sequence[int]) -> None:
             raise RuntimeError(f"Kea returned a malformed response entry at index {idx}: {kr!r}")
         if kr["result"] not in ok_codes:
             raise KeaException(kr, index=idx)
-
-
-def iter_reservations(client: "KeaClient", service: str, limit: int = 100) -> Iterator[dict[str, Any]]:
-    """Yield every host reservation for *service*, paging through ``reservation-get-page``.
-
-    The single home for the ``(from, source-index)`` cursor loop so callers never
-    re-implement it.  Defined as a function (not a method) so it drives whatever
-    ``client.reservation_get_page`` is in play — including the mocks the test suite
-    configures on the client.  Propagates :class:`KeaException` on a Kea error (e.g.
-    ``host_cmds`` not loaded), exactly as ``reservation_get_page`` does; callers wrap
-    the iteration in a ``try``/``except``.
-
-    Args:
-        client: A :class:`KeaClient` (or compatible) exposing ``reservation_get_page``.
-        service: Target service (``"dhcp4"`` or ``"dhcp6"``).
-        limit: Page size requested from Kea.
-
-    Yields:
-        Each host-reservation dict, across all sources/pages.
-
-    """
-    from_index = 0
-    source_index = 0
-    while True:
-        page, next_from, next_source = client.reservation_get_page(
-            service, source_index=source_index, from_index=from_index, limit=limit
-        )
-        yield from page
-        # Stop when Kea's cursor resets, or an empty page (guards against a loop).
-        if not page or (next_from == 0 and next_source == 0):
-            break
-        # Guard against a stalled cursor: a non-empty page whose cursor did not
-        # advance would otherwise loop forever and hang the worker.
-        if next_from == from_index and next_source == source_index:
-            raise RuntimeError(
-                f"reservation-get-page cursor did not advance for {service}: "
-                f"source-index={next_source}, from={next_from}"
-            )
-        from_index = next_from
-        source_index = next_source

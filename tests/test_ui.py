@@ -1,4 +1,5 @@
 import csv
+import json
 import re
 from collections.abc import Sequence
 from datetime import datetime, timezone
@@ -8,6 +9,7 @@ from urllib.parse import quote_plus, urljoin
 import pynetbox
 import pytest
 import requests
+import yaml
 from netaddr import EUI, IPNetwork, mac_unix_expanded
 from playwright.sync_api import Page, expect
 
@@ -1679,7 +1681,7 @@ def _save_reservation_form(page: Page, version: Literal[4, 6]) -> None:
     page.wait_for_url(re.compile(rf"/reservations{version}/$"))
 
 
-def _reservation_by_identifier_url(
+def _reservation_identity_url(
     plugin_base: str,
     server_id: int,
     version: Literal[4, 6],
@@ -1688,7 +1690,7 @@ def _reservation_by_identifier_url(
     identifier: str,
 ) -> str:
     return (
-        f"{plugin_base}/servers/{server_id}/reservations{version}/{RESERVATION_SUBNET_ID}/{action}-by-identifier/"
+        f"{plugin_base}/servers/{server_id}/reservations{version}/{RESERVATION_SUBNET_ID}/{action}/"
         f"?identifier_type={quote_plus(identifier_type)}&identifier={quote_plus(identifier)}"
     )
 
@@ -1768,7 +1770,7 @@ def test_reservation4_edit_by_identifier_keeps_option_data(
         page, plugin_base, reservation_server.id, mac, "before-edit", ("boot-file-name", "http://192.0.2.1/ztp.py")
     )
 
-    page.goto(_reservation_by_identifier_url(plugin_base, reservation_server.id, 4, "edit", "hw-address", mac))
+    page.goto(_reservation_identity_url(plugin_base, reservation_server.id, 4, "edit", "hw-address", mac))
     # The form is populated from the daemon, and this route freezes only the key.
     expect(page.locator("#id_hostname")).to_have_value("before-edit")
     expect(page.locator("#id_identifier")).to_be_disabled()
@@ -1797,7 +1799,7 @@ def test_reservation4_delete_by_identifier(
     _add_reservation4_without_address(page, plugin_base, reservation_server.id, mac, "to-be-deleted")
     assert _reservation_get(kea_client, 4, RESERVATION_SUBNET_ID, "hw-address", mac) is not None
 
-    page.goto(_reservation_by_identifier_url(plugin_base, reservation_server.id, 4, "delete", "hw-address", mac))
+    page.goto(_reservation_identity_url(plugin_base, reservation_server.id, 4, "delete", "hw-address", mac))
     expect(page.get_by_text(f"hw-address {mac}")).to_be_visible()
     page.locator('form[method="post"] button.btn-danger').click()
     page.wait_for_url(re.compile(r"/reservations4/$"))
@@ -1864,7 +1866,7 @@ def test_reservation6_prefix_only_round_trip(
     expect(row.get_by_text("No address", exact=True)).to_be_visible()
     expect(row.get_by_text(prefix, exact=True)).to_be_visible()
 
-    page.goto(_reservation_by_identifier_url(plugin_base, reservation_server.id, 6, "edit", "duid", duid))
+    page.goto(_reservation_identity_url(plugin_base, reservation_server.id, 6, "edit", "duid", duid))
     expect(page.locator("#id_prefixes")).to_have_value(prefix)
     page.locator("#id_hostname").fill("pd-only-renamed")
     _save_reservation_form(page, 6)
@@ -1875,8 +1877,138 @@ def test_reservation6_prefix_only_round_trip(
     assert stored["prefixes"] == [prefix]
     assert not stored.get("ip-addresses")
 
-    page.goto(_reservation_by_identifier_url(plugin_base, reservation_server.id, 6, "delete", "duid", duid))
+    page.goto(_reservation_identity_url(plugin_base, reservation_server.id, 6, "delete", "duid", duid))
     page.locator('form[method="post"] button.btn-danger').click()
     page.wait_for_url(re.compile(r"/reservations6/$"))
 
     assert _reservation_get(kea_client, 6, RESERVATION_SUBNET_ID, "duid", duid) is None
+
+
+def test_reservation_add_form_explains_relay_remote_id_flex_id(
+    page: Page,
+    plugin_base: str,
+    reservation_server,
+) -> None:
+    """The live add form excludes remote ID and links to the Kea Flex ID guidance."""
+    page.goto(f"{plugin_base}/servers/{reservation_server.id}/reservations4/add/")
+
+    expect(page.get_by_text("Relay remote ID is not a native Reservation Identity.", exact=True)).to_be_visible()
+    expect(page.get_by_role("link", name="Flexible Identifiers for Host Reservations")).to_have_attribute(
+        "href", re.compile(r"kea\.readthedocs\.io/.+flex-id")
+    )
+    expect(page.locator('#id_identifier_type option[value="remote-id"]')).to_have_count(0)
+
+
+def test_global_reservation_is_visible_and_read_only(
+    page: Page,
+    plugin_base: str,
+    kea_client: _DualEndpointKeaClient,
+    reservation_server,
+    reservation_keys: list,
+) -> None:
+    """A live Global Reservation has a scope and state, but no mutation action."""
+    mac = "aa:bb:cc:00:02:02"
+    reservation_keys.append((4, 0, "hw-address", mac))
+    _reservation_del(kea_client, 4, 0, "hw-address", mac)
+    kea_client.command(
+        "reservation-add",
+        service=["dhcp4"],
+        arguments={
+            "reservation": {
+                "subnet-id": 0,
+                "hw-address": mac,
+                "hostname": "global-read-only",
+            }
+        },
+    )
+
+    page.goto(f"{plugin_base}/servers/{reservation_server.id}/reservations4/")
+    row = page.locator("table.object-list > tbody > tr").filter(has_text=mac)
+
+    expect(row).to_have_count(1)
+    expect(row.get_by_text("Global", exact=True)).to_be_visible()
+    expect(row.get_by_text("Not Applicable", exact=True)).to_be_visible()
+    expect(row.locator('a[aria-label^="Edit reservation"]')).to_have_count(0)
+    expect(row.locator('a[aria-label^="Delete reservation"]')).to_have_count(0)
+    expect(row.get_by_role("button", name="Sync all")).to_have_count(0)
+
+
+@pytest.mark.parametrize(
+    ("version", "format_name", "identifier_type", "identifier", "addresses", "prefixes"),
+    (
+        (4, "yaml", "hw-address", "aa:bb:cc:00:02:01", ["192.0.2.211"], []),
+        (
+            6,
+            "json",
+            "duid",
+            "01:02:03:04:05:06:08:c1",
+            ["2001:db8:1::211", "2001:db8:1::212"],
+            ["2001:db8:8:c1::/64"],
+        ),
+    ),
+)
+def test_reservation_document_import_and_export_round_trip(
+    page: Page,
+    plugin_base: str,
+    kea_client: _DualEndpointKeaClient,
+    reservation_server,
+    reservation_keys: list,
+    version: Literal[4, 6],
+    format_name: Literal["yaml", "json"],
+    identifier_type: str,
+    identifier: str,
+    addresses: list[str],
+    prefixes: list[str],
+) -> None:
+    """The browser imports and exports the normalized YAML or JSON Reservation document."""
+    reservation_keys.append((version, RESERVATION_SUBNET_ID, identifier_type, identifier))
+    _reservation_del(kea_client, version, RESERVATION_SUBNET_ID, identifier_type, identifier)
+    document = {
+        "version": 1,
+        "reservations": [
+            {
+                "family": version,
+                "scope": {
+                    "type": "in-subnet",
+                    "subnet": {"cidr": RESERVATION_SUBNET_CIDR_V4 if version == 4 else RESERVATION_SUBNET_CIDR_V6},
+                },
+                "identity": {"type": identifier_type, "value": identifier},
+                "addresses": addresses,
+                "delegated_prefixes": prefixes,
+                "hostname": f"transfer-{version}-{format_name}",
+                "options": [],
+            }
+        ],
+    }
+    encoded = yaml.safe_dump(document, sort_keys=False) if format_name == "yaml" else json.dumps(document)
+
+    page.goto(f"{plugin_base}/servers/{reservation_server.id}/reservations{version}/import/")
+    page.locator("#id_format").select_option(format_name)
+    if format_name == "yaml":
+        page.locator("#id_document").fill(encoded)
+    else:
+        page.locator("#id_document_file").set_input_files(
+            {"name": "reservations.json", "mimeType": "application/json", "buffer": encoded.encode()}
+        )
+    page.get_by_role("button", name="Validate and import").click()
+
+    expect(page.get_by_text("All Reservations were created.", exact=True)).to_be_visible()
+    stored = _reservation_get(kea_client, version, RESERVATION_SUBNET_ID, identifier_type, identifier)
+    assert stored is not None
+    if version == 4:
+        assert stored.get("ip-address") == addresses[0]
+    else:
+        assert stored.get("ip-addresses") == addresses
+        assert stored.get("prefixes") == prefixes
+
+    page.get_by_role("link", name="Cancel").click()
+    page.get_by_role("button", name="Export").click()
+    label = "Complete Snapshot (YAML)" if format_name == "yaml" else "Complete Snapshot (JSON)"
+    with page.expect_download() as download:
+        page.get_by_role("link", name=label, exact=True).click()
+    with open(download.value.path()) as exported_file:
+        exported = yaml.safe_load(exported_file) if format_name == "yaml" else json.load(exported_file)
+    exported_record = next(record for record in exported["reservations"] if record["identity"]["value"] == identifier)
+    assert exported_record["identity"] == {"type": identifier_type, "value": identifier}
+    assert exported_record["addresses"] == addresses
+    assert exported_record["delegated_prefixes"] == prefixes

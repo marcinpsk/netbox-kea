@@ -7,6 +7,16 @@ from django.test import SimpleTestCase, TestCase
 
 from netbox_kea import constants
 from netbox_kea.forms import Leases4SearchForm, Leases6SearchForm, MultipleIPField, ServerForm
+from netbox_kea.reservations import ReservationCapabilities, reservation_identifier_types
+
+
+def _reservation_capabilities(family):
+    return ReservationCapabilities(
+        family=family,
+        identifiers=reservation_identifier_types(family),
+        mutation_available=True,
+        explanation="",
+    )
 
 
 class TestLeases4SearchFormValidation(SimpleTestCase):
@@ -244,7 +254,7 @@ class TestReservationForm4(SimpleTestCase):
     def _form(self, data):
         from netbox_kea.forms import Reservation4Form  # deferred: class not yet defined
 
-        return Reservation4Form(data=data)
+        return Reservation4Form(data=data, capabilities=_reservation_capabilities(4))
 
     def _valid_data(self, **overrides):
         base = {
@@ -260,6 +270,13 @@ class TestReservationForm4(SimpleTestCase):
     def test_valid_form_with_hw_address_identifier(self):
         form = self._form(self._valid_data())
         self.assertTrue(form.is_valid(), form.errors)
+
+    def test_mutation_fails_closed_without_live_capabilities(self):
+        from netbox_kea.forms import Reservation4Form
+
+        form = Reservation4Form(data=self._valid_data())
+        self.assertFalse(form.is_valid())
+        self.assertIn("Reservation mutation capabilities are unavailable", form.non_field_errors()[0])
 
     def test_valid_form_with_client_id_identifier(self):
         form = self._form(self._valid_data(identifier_type="client-id", identifier="01aabbccddeeff"))
@@ -389,7 +406,11 @@ class TestReservationForm4(SimpleTestCase):
         """
         from netbox_kea.forms import Reservation4Form
 
-        form = Reservation4Form(data=self._valid_data(), initial={"subnet_cidr": "1"})
+        form = Reservation4Form(
+            data=self._valid_data(),
+            initial={"subnet_cidr": "1"},
+            capabilities=_reservation_capabilities(4),
+        )
         form.fields["subnet_cidr"].disabled = True
         self.assertTrue(form.is_valid(), form.errors)
         self.assertEqual(form.cleaned_data["subnet_cidr"], "1")
@@ -411,7 +432,12 @@ class TestReservationForm4(SimpleTestCase):
         self.assertFalse(form.is_valid())
         self.assertIn("identifier", form.errors)
 
-    def test_over_long_opaque_identifier_is_rejected(self):
+    def test_opaque_identifier_is_preserved_exactly(self):
+        form = self._form(self._valid_data(identifier_type="flex-id", identifier="a" * 255))
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.cleaned_data["identifier"], "a" * 255)
+
+    def test_opaque_identifier_past_the_length_limit_is_rejected(self):
         form = self._form(self._valid_data(identifier_type="flex-id", identifier="a" * 256))
         self.assertFalse(form.is_valid())
         self.assertIn("identifier", form.errors)
@@ -423,7 +449,7 @@ class TestReservationForm6(SimpleTestCase):
     def _form(self, data):
         from netbox_kea.forms import Reservation6Form  # deferred: class not yet defined
 
-        return Reservation6Form(data=data)
+        return Reservation6Form(data=data, capabilities=_reservation_capabilities(6))
 
     def _valid_data(self, **overrides):
         base = {
@@ -439,6 +465,13 @@ class TestReservationForm6(SimpleTestCase):
     def test_valid_form_with_duid_identifier(self):
         form = self._form(self._valid_data())
         self.assertTrue(form.is_valid(), form.errors)
+
+    def test_mutation_fails_closed_without_live_capabilities(self):
+        from netbox_kea.forms import Reservation6Form
+
+        form = Reservation6Form(data=self._valid_data())
+        self.assertFalse(form.is_valid())
+        self.assertIn("Reservation mutation capabilities are unavailable", form.non_field_errors()[0])
 
     def test_valid_form_with_hw_address_identifier(self):
         form = self._form(self._valid_data(identifier_type="hw-address", identifier="aa:bb:cc:dd:ee:ff"))
@@ -510,7 +543,11 @@ class TestReservationForm6(SimpleTestCase):
         """
         from netbox_kea.forms import Reservation6Form
 
-        form = Reservation6Form(data=self._valid_data(), initial={"subnet_cidr": "1"})
+        form = Reservation6Form(
+            data=self._valid_data(),
+            initial={"subnet_cidr": "1"},
+            capabilities=_reservation_capabilities(6),
+        )
         form.fields["subnet_cidr"].disabled = True
         self.assertTrue(form.is_valid(), form.errors)
         self.assertEqual(form.cleaned_data["subnet_cidr"], "1")
@@ -612,11 +649,11 @@ class TestReservationForm6(SimpleTestCase):
         choices = [c[0] for c in Reservation6Form().fields["identifier_type"].choices]
         self.assertIn("hw-address", choices)
 
-    def test_identifier_type_choices_include_client_id(self):
+    def test_identifier_type_choices_exclude_client_id(self):
         from netbox_kea.forms import Reservation6Form
 
         choices = [c[0] for c in Reservation6Form().fields["identifier_type"].choices]
-        self.assertIn("client-id", choices)
+        self.assertNotIn("client-id", choices)
 
     def test_identifier_type_choices_include_flex_id(self):
         from netbox_kea.forms import Reservation6Form

@@ -13,6 +13,7 @@ from django.core.cache import cache
 from django.utils import timezone
 
 from . import constants
+from .dhcp_options import DHCPOption, parse_dhcp_option
 from .kea import KeaClient, KeaException
 from .models import Server
 from .utilities import kea_error_hint
@@ -107,19 +108,6 @@ class Pool:
 
 
 @dataclass(frozen=True)
-class SubnetOption:
-    """One validated option declared locally on a Subnet."""
-
-    code: int | None
-    name: str | None
-    space: str | None
-    data: str
-    csv_format: bool | None
-    always_send: bool | None
-    never_send: bool | None
-
-
-@dataclass(frozen=True)
 class SubnetSettings:
     """Effective typed DHCP settings that the repository currently consumes."""
 
@@ -146,7 +134,7 @@ class SubnetConfiguration:
     """Validated full configuration facts for one Subnet."""
 
     pools: tuple[Pool, ...]
-    options: tuple[SubnetOption, ...]
+    options: tuple[DHCPOption, ...]
     settings: SubnetSettings
 
 
@@ -689,7 +677,7 @@ def _parse_pool(value: Any, subnet: IPNetwork) -> Pool:
     return Pool(start=start, end=end)
 
 
-def _parse_options(entries: Any, path: str, diagnostics: list[Diagnostic]) -> tuple[SubnetOption, ...]:
+def _parse_options(entries: Any, path: str, diagnostics: list[Diagnostic]) -> tuple[DHCPOption, ...]:
     if not isinstance(entries, list):
         diagnostics.append(
             _diagnostic(
@@ -697,48 +685,18 @@ def _parse_options(entries: Any, path: str, diagnostics: list[Diagnostic]) -> tu
             )
         )
         return ()
-    options: list[SubnetOption] = []
+    options: list[DHCPOption] = []
     for index, entry in enumerate(entries):
         option_path = f"{path}.option-data[{index}]"
-        option = _parse_option(entry)
-        if option is None:
+        try:
+            option = parse_dhcp_option(entry)
+        except ValueError:
             diagnostics.append(
                 _diagnostic("invalid-option", "Kea returned an invalid Subnet option.", "configuration", option_path)
             )
             continue
         options.append(option)
     return tuple(options)
-
-
-def _parse_option(entry: Any) -> SubnetOption | None:
-    if not isinstance(entry, dict):
-        return None
-    code = entry.get("code")
-    if code is not None and (isinstance(code, bool) or not isinstance(code, int) or not 0 <= code <= 65_535):
-        return None
-    name = entry.get("name")
-    if name is not None and (not isinstance(name, str) or not name):
-        return None
-    if code is None and name is None:
-        return None
-    space = entry.get("space")
-    if space is not None and (not isinstance(space, str) or not space):
-        return None
-    data = entry.get("data", "")
-    if not isinstance(data, str):
-        return None
-    flags = [entry.get("csv-format"), entry.get("always-send"), entry.get("never-send")]
-    if any(flag is not None and not isinstance(flag, bool) for flag in flags):
-        return None
-    return SubnetOption(
-        code=code,
-        name=name,
-        space=space,
-        data=data,
-        csv_format=flags[0],
-        always_send=flags[1],
-        never_send=flags[2],
-    )
 
 
 def _parse_settings(

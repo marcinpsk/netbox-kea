@@ -151,8 +151,7 @@ class KeaHttpStub:
 def _res_page(hosts: Any, *, next_from: int = 0, next_source: int = 0) -> dict[str, Any]:
     """A ``reservation-get-page`` payload: *hosts* plus Kea's pagination cursor.
 
-    ``next_from``/``next_source`` both 0 marks the source exhausted, so
-    ``iter_reservations`` stops after this page.
+    ``next_from`` and ``next_source`` both 0 mark the Snapshot source exhausted.
     """
     return {"result": 0, "arguments": {"hosts": list(hosts), "next": {"from": next_from, "source-index": next_source}}}
 
@@ -200,9 +199,8 @@ def _leases_per_subnet(leases_by_subnet: dict[Any, list[dict[str, Any]]]):
 def _subnet_list(version: int, subnets: list[dict[str, Any]]) -> dict[str, Any]:  # noqa: ARG001 - version kept for call-site symmetry with _subnet_get
     """A ``subnet{v}-list`` payload, the ``subnet_cmds`` source every subnet lookup reads.
 
-    Needed by ``reservation_get_by_ip`` (candidate subnets for an IP) and by every
-    reservation add-form render (the Subnet CIDR ``<datalist>`` and the CIDR the POST
-    resolves against). *subnets* is the list of subnet dicts (each
+    Used by Subnet catalogue and Reservation form tests. *subnets* is the list of
+    subnet dicts (each
     ``{"id": …, "subnet": <cidr>}``) Kea reports.
     """
     return {"result": 0, "arguments": {"subnets": list(subnets)}}

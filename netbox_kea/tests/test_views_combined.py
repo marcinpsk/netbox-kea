@@ -14,7 +14,7 @@ real request/response path.
 from django.test import override_settings
 from django.urls import reverse
 
-from .kea_stub import _res_page, queued, stub_kea
+from .kea_stub import _res_page, stub_kea
 from .utils import _PLUGINS_CONFIG, _ViewTestBase
 
 
@@ -149,42 +149,6 @@ class TestCombinedSubnetDiagnostics(_ViewTestBase):
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
-class TestCombinedReservationsMultiPage(_ViewTestBase):
-    """Combined reservations must follow reservation-get-page across multiple pages."""
-
-    def _url(self):
-        return reverse("plugins:netbox_kea:combined_reservations4") + f"?server={self.server.pk}"
-
-    def test_multi_page_pagination_followed(self):
-        """from/source-index advance across pages until the cursor is exhausted."""
-        page1 = {
-            "result": 0,
-            "arguments": {
-                "hosts": [{"subnet-id": 1, "ip-address": "10.0.0.1", "hw-address": "aa:bb:cc:dd:ee:01"}],
-                "next": {"from": 1, "source-index": 1},  # not exhausted
-            },
-        }
-        page2 = {
-            "result": 0,
-            "arguments": {
-                "hosts": [{"subnet-id": 1, "ip-address": "10.0.0.2", "hw-address": "aa:bb:cc:dd:ee:02"}],
-                "next": {"from": 0, "source-index": 0},  # exhausted
-            },
-        }
-        stub = {
-            "reservation-get-page": queued(page1, page2),
-            # active-lease badge enrichment queries lease4-get-by-state per unique subnet
-            "lease4-get-by-state": {"result": 0, "arguments": {"leases": []}},
-        }
-        with stub_kea(stub) as kea:
-            response = self.client.get(self._url())
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(len(kea.bodies("reservation-get-page")), 2)
-        self.assertIn(b"10.0.0.1", response.content)
-        self.assertIn(b"10.0.0.2", response.content)
-
-
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestCombinedReservationsWithoutAddress(_ViewTestBase):
     """The global reservations tab hits the same address-less crash as the per-server tab (#110)."""
 
@@ -193,8 +157,14 @@ class TestCombinedReservationsWithoutAddress(_ViewTestBase):
 
     def test_v4_identifier_only_reservation_renders(self):
         page = _res_page([{"subnet-id": 3742, "hw-address": "aa:bb:cc:dd:ee:ff", "hostname": "printer-1"}])
+        subnet = {"id": 3742, "subnet": "198.18.0.0/24"}
         with stub_kea(
-            {"reservation-get-page": page, "lease4-get-by-state": {"result": 0, "arguments": {"leases": []}}}
+            {
+                "subnet4-list": {"result": 0, "arguments": {"subnets": [subnet]}},
+                "config-get": {"result": 0, "arguments": {"Dhcp4": {"subnet4": [subnet]}}},
+                "reservation-get-page": page,
+                "lease4-get-by-state": {"result": 0, "arguments": {"leases": []}},
+            }
         ):
             response = self.client.get(self._url(4))
         self.assertEqual(response.status_code, 200)
@@ -202,8 +172,14 @@ class TestCombinedReservationsWithoutAddress(_ViewTestBase):
 
     def test_v6_prefix_only_reservation_renders(self):
         page = _res_page([{"subnet-id": 12, "duid": "00:01:00:01:12:34", "prefixes": ["2001:db8:1::/64"]}])
+        subnet = {"id": 12, "subnet": "2001:db8::/48"}
         with stub_kea(
-            {"reservation-get-page": page, "lease6-get-by-state": {"result": 0, "arguments": {"leases": []}}}
+            {
+                "subnet6-list": {"result": 0, "arguments": {"subnets": [subnet]}},
+                "config-get": {"result": 0, "arguments": {"Dhcp6": {"subnet6": [subnet]}}},
+                "reservation-get-page": page,
+                "lease6-get-by-state": {"result": 0, "arguments": {"leases": []}},
+            }
         ):
             response = self.client.get(self._url(6))
         self.assertEqual(response.status_code, 200)
@@ -222,7 +198,12 @@ class TestCombinedReservationsShowWhatIsReserved(_ViewTestBase):
         return base + query
 
     def _stub(self, hosts, version=4):
+        subnet_id = hosts[0]["subnet-id"]
+        cidr = "198.18.0.0/24" if version == 4 else "2001:db8::/48"
+        subnet = {"id": subnet_id, "subnet": cidr}
         return {
+            f"subnet{version}-list": {"result": 0, "arguments": {"subnets": [subnet]}},
+            "config-get": {"result": 0, "arguments": {f"Dhcp{version}": {f"subnet{version}": [subnet]}}},
             "reservation-get-page": _res_page(hosts),
             f"lease{version}-get-by-state": {"result": 0, "arguments": {"leases": []}},
         }
@@ -242,24 +223,3 @@ class TestCombinedReservationsShowWhatIsReserved(_ViewTestBase):
         body = response.content.decode()
         self.assertIn("2001:db8:1::/64", body)
         self.assertIn("No address", body)
-
-    def test_csv_export_renders_every_row(self):
-        """Export goes through the real ?export path, so a missing accessor would raise."""
-        hosts = [
-            {"subnet-id": 1, "hw-address": "aa:bb:cc:dd:ee:01", "ip-address": "10.0.0.1"},
-            {"subnet-id": 1, "flex-id": "vendor-42", "hostname": "kiosk"},
-        ]
-        with stub_kea(self._stub(hosts)):
-            response = self.client.get(self._url(4, "&export"))
-        self.assertEqual(response.status_code, 200)
-        body = response.content.decode()
-        self.assertIn("10.0.0.1", body)
-        self.assertIn("vendor-42", body)
-        self.assertEqual(len([line for line in body.splitlines() if line.strip()]), 3)  # header + 2 rows
-
-    def test_v6_csv_export_carries_prefixes(self):
-        hosts = [{"subnet-id": 12, "duid": "00:01:00:01:12:34", "prefixes": ["2001:db8:1::/64"]}]
-        with stub_kea(self._stub(hosts, version=6)):
-            response = self.client.get(self._url(6, "&export"))
-        self.assertEqual(response.status_code, 200)
-        self.assertIn("2001:db8:1::/64", response.content.decode())

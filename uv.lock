@@ -869,6 +869,7 @@ version = "1.9.0"
 source = { editable = "." }
 dependencies = [
     { name = "netaddr" },
+    { name = "pyyaml" },
     { name = "requests" },
 ]
 
@@ -893,6 +894,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "netaddr", specifier = ">=0.8,<2.0.0" },
+    { name = "pyyaml", specifier = ">=6.0,<7.0" },
     { name = "requests", specifier = ">=2.27.0,<3.0.0" },
 ]
 

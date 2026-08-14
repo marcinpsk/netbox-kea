@@ -127,6 +127,104 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           fail_ci_if_error: false
 
+  dhcp-plugin-test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16@sha256:adac386a3163424d8397b51b950187eaa661013020a1b9e0d5437a9752040f80
+        env:
+          POSTGRES_USER: netbox
+          POSTGRES_PASSWORD: netbox
+          POSTGRES_DB: netbox
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+      redis:
+        image: redis:7@sha256:d7fcf65186e011faaa401b5e6edf5147e9dd01353984c795e515f6fee7dfbe6e
+        ports:
+          - 6379:6379
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Checkout NetBox
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          repository: netbox-community/netbox
+          ref: v4.6.7
+          path: netbox
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9  # v9.0.0
+        with:
+          enable-cache: true
+
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies with the supported DHCP plugin
+        run: |
+          uv export --native-tls --frozen --only-group dev --no-emit-project --format requirements-txt | \
+            uv pip install --native-tls --system -r /dev/stdin
+          uv pip install --native-tls --system -r netbox/requirements.txt
+          uv pip install --native-tls --system -e . "netbox-plugin-dhcp==0.1.10"
+
+      - name: Set up NetBox configuration
+        working-directory: netbox/netbox
+        run: |
+          cat > netbox/configuration.py << 'EOF'
+          import os
+
+          ALLOWED_HOSTS = ['*']
+          DATABASE = {
+              'NAME': 'netbox',
+              'USER': 'netbox',
+              'PASSWORD': 'netbox',
+              'HOST': 'localhost',
+              'PORT': '',
+              'CONN_MAX_AGE': 300,
+              'ENGINE': 'django.db.backends.postgresql'
+          }
+          REDIS = {
+              'tasks': {
+                  'HOST': os.environ.get('REDIS_HOST', 'localhost'),
+                  'PORT': 6379,
+                  'DATABASE': int(os.environ.get('REDIS_DATABASE', '0')),
+              },
+              'caching': {
+                  'HOST': os.environ.get('REDIS_CACHE_HOST', 'localhost'),
+                  'PORT': 6379,
+                  'DATABASE': int(os.environ.get('REDIS_CACHE_DATABASE', '1')),
+              },
+          }
+          SECRET_KEY = 'ci-test-secret-key-not-for-production-1234567890123456'
+          API_TOKEN_PEPPERS = {0: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'}
+          PLUGINS = ['netbox_kea', 'netbox_dhcp']
+          PLUGINS_CONFIG = {'netbox_kea': {'kea_timeout': 30}}
+          EOF
+
+      - name: Run DHCP plugin adapter tests
+        working-directory: netbox/netbox
+        env:
+          TEST_DB_NAME: test_netbox_kea_dhcp_plugin_ci
+          TEST_REDIS_HOST: localhost
+        run: |
+          pytest ${{ github.workspace }}/netbox_kea/tests/test_integration_dhcp_plugin.py \
+            --override-ini="DJANGO_SETTINGS_MODULE=netbox_kea.tests.isolated_settings" \
+            --override-ini="pythonpath=${{ github.workspace }}/netbox/netbox" \
+            --reuse-db \
+            --no-header -q
+
   lint:
     runs-on: ubuntu-latest
     steps:

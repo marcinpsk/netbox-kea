@@ -90,29 +90,14 @@ urlpatterns = (
         name="server_reservation4_add",
     ),
     path(
-        "servers/<int:pk>/reservations4/<int:subnet_id>/<str:ip_address>/edit/",
+        "servers/<int:pk>/reservations4/<int:subnet_id>/edit/",
         views.ServerReservation4EditView.as_view(),
         name="server_reservation4_edit",
     ),
     path(
-        "servers/<int:pk>/reservations4/<int:subnet_id>/<str:ip_address>/delete/",
+        "servers/<int:pk>/reservations4/<int:subnet_id>/delete/",
         views.ServerReservation4DeleteView.as_view(),
         name="server_reservation4_delete",
-    ),
-    # Identifier-keyed variants, for reservations that reserve no address and
-    # therefore cannot be addressed by one.  The identifier travels in the query
-    # string (?identifier_type=&identifier=) so these reverse from integers alone —
-    # no reservation value can make the URL fail to reverse — and urlencode handles
-    # identifiers a <str:> segment would mangle (Django treats '/' as safe).
-    path(
-        "servers/<int:pk>/reservations4/<int:subnet_id>/edit-by-identifier/",
-        views.ServerReservation4EditByIdentifierView.as_view(),
-        name="server_reservation4_edit_by_identifier",
-    ),
-    path(
-        "servers/<int:pk>/reservations4/<int:subnet_id>/delete-by-identifier/",
-        views.ServerReservation4DeleteByIdentifierView.as_view(),
-        name="server_reservation4_delete_by_identifier",
     ),
     path(
         "servers/<int:pk>/reservations6/add/",
@@ -120,24 +105,14 @@ urlpatterns = (
         name="server_reservation6_add",
     ),
     path(
-        "servers/<int:pk>/reservations6/<int:subnet_id>/<str:ip_address>/edit/",
+        "servers/<int:pk>/reservations6/<int:subnet_id>/edit/",
         views.ServerReservation6EditView.as_view(),
         name="server_reservation6_edit",
     ),
     path(
-        "servers/<int:pk>/reservations6/<int:subnet_id>/<str:ip_address>/delete/",
+        "servers/<int:pk>/reservations6/<int:subnet_id>/delete/",
         views.ServerReservation6DeleteView.as_view(),
         name="server_reservation6_delete",
-    ),
-    path(
-        "servers/<int:pk>/reservations6/<int:subnet_id>/edit-by-identifier/",
-        views.ServerReservation6EditByIdentifierView.as_view(),
-        name="server_reservation6_edit_by_identifier",
-    ),
-    path(
-        "servers/<int:pk>/reservations6/<int:subnet_id>/delete-by-identifier/",
-        views.ServerReservation6DeleteByIdentifierView.as_view(),
-        name="server_reservation6_delete_by_identifier",
     ),
     path(
         "servers/<int:pk>/leases4/sync/",
@@ -150,12 +125,12 @@ urlpatterns = (
         name="server_lease6_sync",
     ),
     path(
-        "servers/<int:pk>/reservations4/sync/",
+        "servers/<int:pk>/reservations4/<int:subnet_id>/sync/",
         views.ServerReservation4SyncView.as_view(),
         name="server_reservation4_sync",
     ),
     path(
-        "servers/<int:pk>/reservations6/sync/",
+        "servers/<int:pk>/reservations6/<int:subnet_id>/sync/",
         views.ServerReservation6SyncView.as_view(),
         name="server_reservation6_sync",
     ),

@@ -26,6 +26,35 @@
         <strong>{{ action }} DHCPv{{ dhcp_version }} Reservation</strong>
       </div>
       <div class="card-body">
+        {% if not mutation_available %}
+        <div class="alert alert-warning d-flex align-items-start mb-3" role="alert">
+          <i class="mdi mdi-lock-alert-outline me-2 mt-1" aria-hidden="true"></i>
+          <div>
+            <strong>Mutation is unavailable.</strong>
+            NetBox Kea could not verify the live Reservation identifiers and required host commands.
+            Existing Reservations remain available in the read-only list.
+          </div>
+        </div>
+        {% elif reservation_capabilities.unavailable_identifiers %}
+        <div class="alert alert-secondary d-flex align-items-start mb-3" role="status">
+          <i class="mdi mdi-information-outline me-2 mt-1" aria-hidden="true"></i>
+          <div>
+            The identifier list reflects the live <code>host-reservation-identifiers</code> configuration.
+            Unavailable identifiers are disabled.
+          </div>
+        </div>
+        {% endif %}
+        <div class="alert alert-info d-flex align-items-start mb-3" role="note">
+          <i class="mdi mdi-help-circle-outline me-2 mt-1" aria-hidden="true"></i>
+          <div>
+            <p class="mb-1">Relay remote ID is not a native Reservation Identity.</p>
+            Configure Kea to derive <code>flex-id</code> from relay remote ID instead.
+            See
+            <a href="{{ flex_id_documentation_url }}" target="_blank" rel="noopener">
+              Flexible Identifiers for Host Reservations
+            </a>.
+          </div>
+        </div>
         {% if not subnet_cmds_available %}
         <div class="alert alert-warning d-flex align-items-start mb-3" role="alert">
           <i class="mdi mdi-alert-circle-outline me-2 mt-1" aria-hidden="true"></i>
@@ -139,7 +168,7 @@
 
           <div class="text-end mt-3">
             <a href="{{ return_url }}" class="btn btn-secondary me-2">Cancel</a>
-            <button type="submit" class="btn btn-primary">
+            <button type="submit" class="btn btn-primary"{% if not mutation_available %} disabled aria-disabled="true"{% endif %}>
               <i class="mdi mdi-content-save" aria-hidden="true"></i> Save
             </button>
           </div>
