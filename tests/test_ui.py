@@ -581,14 +581,9 @@ def configure_table(page: Page, *selected_coumns: str) -> None:
     # Both versions reload the current path after they save the column selection.
     apply_button = page.locator("#apply_tableconfig")
     submit = apply_button if apply_button.count() else page.get_by_role("button", name="Save")
-    target = page.url.split("?", 1)[0]
-    with page.expect_response(
-        lambda response: (
-            response.ok and response.request.is_navigation_request() and response.url.split("?", 1)[0] == target
-        )
-    ):
+    with page.expect_navigation(wait_until="domcontentloaded") as navigation:
         submit.click()
-    page.wait_for_load_state("domcontentloaded")
+    assert navigation.value.ok
 
 
 @pytest.mark.parametrize(
