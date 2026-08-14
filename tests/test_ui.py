@@ -1907,7 +1907,7 @@ def test_global_reservation_is_visible_and_read_only(
     reservation_server,
     reservation_keys: list,
 ) -> None:
-    """A live Global Reservation has a scope and state, but no mutation action."""
+    """Per-server and combined views keep a live Global Reservation read-only."""
     mac = "aa:bb:cc:00:02:02"
     reservation_keys.append((4, 0, "hw-address", mac))
     _reservation_del(kea_client, 4, 0, "hw-address", mac)
@@ -1923,15 +1923,20 @@ def test_global_reservation_is_visible_and_read_only(
         },
     )
 
-    page.goto(f"{plugin_base}/servers/{reservation_server.id}/reservations4/")
-    row = page.locator("table.object-list > tbody > tr").filter(has_text=mac)
+    urls = (
+        f"{plugin_base}/servers/{reservation_server.id}/reservations4/",
+        f"{plugin_base}/combined/reservations4/?server={reservation_server.id}",
+    )
+    for url in urls:
+        page.goto(url)
+        row = page.locator("table.object-list > tbody > tr").filter(has_text=mac)
 
-    expect(row).to_have_count(1)
-    expect(row.get_by_text("Global", exact=True)).to_be_visible()
-    expect(row.get_by_text("Not Applicable", exact=True)).to_be_visible()
-    expect(row.locator('a[aria-label^="Edit reservation"]')).to_have_count(0)
-    expect(row.locator('a[aria-label^="Delete reservation"]')).to_have_count(0)
-    expect(row.get_by_role("button", name="Sync all")).to_have_count(0)
+        expect(row).to_have_count(1)
+        expect(row.get_by_text("Global", exact=True)).to_be_visible()
+        expect(row.get_by_text("Not Applicable", exact=True)).to_be_visible()
+        expect(row.locator('a[aria-label^="Edit reservation"]')).to_have_count(0)
+        expect(row.locator('a[aria-label^="Delete reservation"]')).to_have_count(0)
+        expect(row.get_by_role("button", name="Sync all")).to_have_count(0)
 
 
 @pytest.mark.parametrize(

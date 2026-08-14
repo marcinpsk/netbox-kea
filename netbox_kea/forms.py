@@ -1004,7 +1004,9 @@ class ReservationSearchForm(forms.Form):
         required=False,
         label="Search",
         widget=forms.TextInput(attrs={"placeholder": "IP, hostname, or identifier"}),
-        help_text="Case-insensitive search across IP address, hostname, and hardware address / DUID.",
+        help_text=(
+            "Case-insensitive search across addresses, hostname, Reservation Identity, and DHCP Option name or data."
+        ),
     )
     subnet_id = forms.IntegerField(
         required=False,

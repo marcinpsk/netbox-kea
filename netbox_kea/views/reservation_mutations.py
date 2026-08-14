@@ -38,7 +38,7 @@ from ..subnet_catalogue import MutationScope
 from ..sync import sync_reservation_to_netbox
 from ..utilities import fetch_subnet_choices, kea_error_hint
 from ._base import _KeaChangeMixin
-from .reservations import _RESERVATIONS_TAB, _build_reservation_options_formset
+from .reservations import _RESERVATIONS_TAB, _build_reservation_options_formset, _configured_capabilities
 from .subnets import _warn_reservation_pool_overlap
 
 logger = logging.getLogger(__name__)
@@ -47,15 +47,6 @@ _FINGERPRINT_SALT = "netbox_kea.reservation-managed-facts"
 FLEX_ID_DOCUMENTATION_URL = (
     "https://kea.readthedocs.io/en/latest/arm/hooks.html#flex-id-flexible-identifiers-for-host-reservations"
 )
-
-
-def _configured_capabilities(server: Server, version: Literal[4, 6]) -> ReservationCapabilities | None:
-    try:
-        client = server.get_client(version=version)
-        return client.reservation_capabilities(version)
-    except (KeaException, requests.RequestException, RuntimeError, ValueError):
-        logger.exception("Could not read DHCPv%s Reservation capabilities from %s", version, server.name)
-        return None
 
 
 def _options_from_formset(

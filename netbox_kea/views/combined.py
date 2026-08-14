@@ -1,6 +1,6 @@
 import concurrent.futures
 import logging
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlencode as _urlencode
 
 import requests
@@ -24,6 +24,7 @@ from ._base import ConditionalLoginRequiredMixin
 from .leases import _enrich_leases_with_badges
 from .reservations import (
     _attach_reservation_action_urls,
+    _configured_capabilities,
     _enrich_reservations_with_badges,
     _fetch_reservation_page,
     _fetch_reservation_snapshot,
@@ -452,7 +453,7 @@ class _CombinedReservationsView(_CombinedViewMixin):
     """Base view: fetch reservations from all selected servers concurrently."""
 
     template_name = "netbox_kea/combined_reservations.html"
-    dhcp_version: int = 4
+    dhcp_version: Literal[4, 6] = 4
 
     def get(self, request: HttpRequest) -> HttpResponse:
         """Merge reservation lists from all queried servers into one table."""
@@ -519,15 +520,30 @@ class _CombinedReservationsView(_CombinedViewMixin):
             .filter(pk__in=list(server_map.keys()))
             .values_list("pk", flat=True)
         )
+        mutation_unavailable_servers: list[tuple[str, str]] = []
         for server_pk, server in server_map.items():
             server_records = [r for r in all_records if r.get("server_pk") == server_pk]
             if server_records:
                 _enrich_reservations_with_badges(server_records, server, self.dhcp_version)
                 can_change = server_pk in writable_pks
+                capabilities = _configured_capabilities(server, self.dhcp_version) if can_change else None
+                can_mutate = bool(can_change and capabilities and capabilities.mutation_available)
+                if can_change and not can_mutate:
+                    reason = (
+                        capabilities.explanation
+                        if capabilities is not None and capabilities.explanation
+                        else "Live Reservation mutation capabilities could not be confirmed."
+                    )
+                    mutation_unavailable_servers.append((server.name, reason))
                 for r in server_records:
-                    r["can_change"] = can_change
+                    r["can_change"] = can_mutate
                 # Per-server so a row can never be given another server's URL.
-                _attach_reservation_action_urls(server_records, server_pk, self.dhcp_version, can_change=can_change)
+                _attach_reservation_action_urls(
+                    server_records,
+                    server_pk,
+                    self.dhcp_version,
+                    can_change=can_mutate,
+                )
 
         search_form = forms.ReservationSearchForm(request.GET or None)
         if search_form.is_valid():
@@ -562,6 +578,7 @@ class _CombinedReservationsView(_CombinedViewMixin):
                 "table": table,
                 "search_form": search_form,
                 "errors": errors,
+                "mutation_unavailable_servers": mutation_unavailable_servers,
                 "reservation_diagnostics": diagnostics,
                 "snapshot_complete": not errors and all(snapshot.complete for snapshot in snapshots.values()),
                 "next_page_url": f"{request.path}?{next_query.urlencode()}" if has_next else None,

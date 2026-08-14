@@ -14,6 +14,10 @@ def _catalogue_responses(version: int, subnet_id: int, cidr: str) -> dict:
     subnet = {"id": subnet_id, "subnet": cidr}
     return {
         f"subnet{version}-list": {"result": 0, "arguments": {"subnets": [subnet]}},
+        "list-commands": {
+            "result": 0,
+            "arguments": ["reservation-get", "reservation-add", "reservation-update", "reservation-del"],
+        },
         "config-get": {
             "result": 0,
             "arguments": {f"Dhcp{version}": {subnet_key: [subnet]}, "hash": "reservation-ui-catalogue"},
@@ -91,6 +95,79 @@ class TestPerServerReservationSnapshots(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "global.example.invalid")
         self.assertNotContains(response, "local.example.invalid")
+
+    def test_capability_failure_preserves_records_and_hides_mutation_controls(self):
+        responses = _catalogue_responses(4, 20, "198.18.0.0/24")
+        responses.update(
+            {
+                "reservation-get-page": _res_page(
+                    [
+                        {
+                            "subnet-id": 20,
+                            "hw-address": "aa:bb:cc:dd:ee:ff",
+                            "hostname": "read-only.example.invalid",
+                        }
+                    ]
+                ),
+                "lease4-get-by-state": {"result": 0, "arguments": {"leases": []}},
+                "list-commands": RuntimeError("capability discovery failed"),
+            }
+        )
+
+        with stub_kea(responses) as kea:
+            response = self.client.get(self._url())
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "read-only.example.invalid")
+        self.assertContains(response, "Reservation mutation controls are unavailable")
+        row = response.context["table"].data.data[0]
+        self.assertIsNone(row["edit_url"])
+        self.assertIsNone(row["delete_url"])
+        self.assertIsNone(response.context["add_url"])
+        self.assertIsNone(response.context["import_url"])
+        self.assertEqual(kea.commands().count("reservation-get-page"), 1)
+        self.assertEqual(kea.commands().count("list-commands"), 1)
+
+    def test_renders_every_exposed_dhcp_option_fact(self):
+        responses = _catalogue_responses(4, 20, "198.18.0.0/24")
+        responses.update(
+            {
+                "reservation-get-page": _res_page(
+                    [
+                        {
+                            "subnet-id": 0,
+                            "flex-id": "option-display",
+                            "option-data": [
+                                {
+                                    "code": 222,
+                                    "name": "vendor-option",
+                                    "space": "vendor-space",
+                                    "data": "0a:0b",
+                                    "csv-format": False,
+                                    "always-send": True,
+                                    "never-send": False,
+                                }
+                            ],
+                        }
+                    ]
+                ),
+                "list-commands": {
+                    "result": 0,
+                    "arguments": ["reservation-get", "reservation-add", "reservation-update", "reservation-del"],
+                },
+            }
+        )
+
+        with stub_kea(responses):
+            response = self.client.get(self._url())
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "vendor-space")
+        self.assertContains(response, "vendor-option")
+        self.assertContains(response, "Code 222")
+        self.assertContains(response, "CSV format: No")
+        self.assertContains(response, "Always send: Yes")
+        self.assertContains(response, "Never send: No")
 
     def test_active_lease_matches_by_identity_when_the_reserved_address_differs(self):
         responses = _catalogue_responses(4, 20, "198.18.0.0/24")
@@ -273,6 +350,69 @@ class TestCombinedReservationSnapshots(_ViewTestBase):
         self.assertContains(response, "2001:db8:100::/56")
         self.assertContains(response, "Next page")
         self.assertEqual(len(kea.bodies("reservation-get-page")), 1)
+
+    def test_capability_failure_preserves_combined_records_without_mutation_controls(self):
+        responses = _catalogue_responses(4, 20, "198.18.0.0/24")
+        responses.update(
+            {
+                "reservation-get-page": _res_page(
+                    [
+                        {
+                            "subnet-id": 20,
+                            "hw-address": "aa:bb:cc:dd:ee:ff",
+                            "hostname": "combined-read-only.example.invalid",
+                        }
+                    ]
+                ),
+                "lease4-get-by-state": {"result": 0, "arguments": {"leases": []}},
+                "list-commands": RuntimeError("capability discovery failed"),
+            }
+        )
+        url = reverse("plugins:netbox_kea:combined_reservations4")
+
+        with stub_kea(responses) as kea:
+            response = self.client.get(url, {"server": self.server.pk})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "combined-read-only.example.invalid")
+        self.assertContains(response, "Mutation controls are unavailable for some servers")
+        row = response.context["table"].data.data[0]
+        self.assertIsNone(row["edit_url"])
+        self.assertIsNone(row["delete_url"])
+        self.assertEqual(kea.commands().count("reservation-get-page"), 1)
+        self.assertEqual(kea.commands().count("list-commands"), 1)
+
+    def test_scope_only_filter_can_be_cleared_without_losing_server_selection(self):
+        responses = _catalogue_responses(4, 20, "198.18.0.0/24")
+        responses.update(
+            {
+                "reservation-get-page": _res_page(
+                    [
+                        {"subnet-id": 0, "flex-id": "global-class", "hostname": "global.example.invalid"},
+                        {
+                            "subnet-id": 20,
+                            "hw-address": "aa:bb:cc:dd:ee:ff",
+                            "hostname": "local.example.invalid",
+                        },
+                    ]
+                ),
+                "lease4-get-by-state": {"result": 0, "arguments": {"leases": []}},
+                "list-commands": {
+                    "result": 0,
+                    "arguments": ["reservation-get", "reservation-add", "reservation-update", "reservation-del"],
+                },
+            }
+        )
+        url = reverse("plugins:netbox_kea:combined_reservations4")
+
+        with stub_kea(responses):
+            response = self.client.get(url, {"server": self.server.pk, "scope": "global"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "global.example.invalid")
+        self.assertNotContains(response, "local.example.invalid")
+        self.assertContains(response, "Clear")
+        self.assertContains(response, f"?server={self.server.pk}")
 
     def test_combined_export_uses_the_normalized_json_schema(self):
         responses = _catalogue_responses(4, 20, "198.18.0.0/24")

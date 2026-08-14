@@ -32,7 +32,7 @@
         <button type="submit" class="btn btn-primary btn-sm">
           <i class="mdi mdi-magnify"></i> Filter
         </button>
-        {% if request.GET.q or request.GET.subnet_id %}
+        {% if request.GET.q or request.GET.subnet_id or request.GET.scope %}
         <a href="{{ request.path }}{% if server_qs %}?{{ server_qs }}{% endif %}"
            class="btn btn-outline-secondary btn-sm">
           <i class="mdi mdi-close"></i> Clear
@@ -58,6 +58,18 @@
   <ul class="mb-0 mt-1">
     {% for name, msg in errors %}
     <li><strong>{{ name }}</strong>: {{ msg }}</li>
+    {% endfor %}
+  </ul>
+</div>
+{% endif %}
+
+{% if mutation_unavailable_servers %}
+<div class="alert alert-warning mt-3" role="alert">
+  <strong>Mutation controls are unavailable for some servers.</strong>
+  Existing Reservations remain visible for read-only use.
+  <ul class="mb-0 mt-1">
+    {% for name, reason in mutation_unavailable_servers %}
+    <li><strong>{{ name }}</strong>: {{ reason }}</li>
     {% endfor %}
   </ul>
 </div>

@@ -603,7 +603,29 @@ _RESERVATION_SCOPE_CELL = (
 
 _RESERVATION_OPTIONS_CELL = (
     "{% for option in record.options %}"
-    '<span class="font-monospace">{{ option.name|default:option.code }}</span>: {{ option.data }}'
+    "{% if option.space %}"
+    '<span class="font-monospace text-muted">{{ option.space }}</span> / '
+    "{% endif %}"
+    "{% if option.name %}"
+    '<span class="font-monospace">{{ option.name }}</span>'
+    '{% if option.code is not None %} <span class="text-muted">(Code {{ option.code }})</span>{% endif %}'
+    "{% else %}"
+    '<span class="font-monospace">Code {{ option.code }}</span>'
+    "{% endif %}"
+    ": {{ option.data }}"
+    "{% if option.csv_format is not None or option.always_send is not None or option.never_send is not None %}"
+    '<br><span class="text-muted small">'
+    "{% if option.csv_format is not None %}"
+    "<span class=\"me-2\">CSV format: {{ option.csv_format|yesno:'Yes,No' }}</span>"
+    "{% endif %}"
+    "{% if option.always_send is not None %}"
+    "<span class=\"me-2\">Always send: {{ option.always_send|yesno:'Yes,No' }}</span>"
+    "{% endif %}"
+    "{% if option.never_send is not None %}"
+    "<span>Never send: {{ option.never_send|yesno:'Yes,No' }}</span>"
+    "{% endif %}"
+    "</span>"
+    "{% endif %}"
     "{% if not forloop.last %}<br>{% endif %}"
     "{% empty %}"
     '<span class="text-muted">None</span>'

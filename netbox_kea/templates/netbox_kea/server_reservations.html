@@ -21,6 +21,13 @@
       Reservation management requires the <code>host_cmds</code> hook.
     </div>
     {% endif %}
+    {% if mutation_unavailable %}
+    <div class="alert alert-warning" role="alert">
+      <i class="mdi mdi-alert-circle-outline" aria-hidden="true"></i>
+      <strong>Reservation mutation controls are unavailable.</strong>
+      {{ mutation_unavailable_reason }} Existing Reservations remain visible for read-only use.
+    </div>
+    {% endif %}
   </div>
 </div>
 
@@ -118,7 +125,7 @@
       <i class="mdi mdi-plus-thick" aria-hidden="true"></i>
       Add DHCPv{{ dhcp_version }} Reservation
     </a>
-    {% elif not hook_available %}
+    {% elif not hook_available or mutation_unavailable %}
     <button type="button" class="btn btn-primary btn-sm" disabled aria-disabled="true">
       <i class="mdi mdi-plus-thick" aria-hidden="true"></i>
       Add DHCPv{{ dhcp_version }} Reservation

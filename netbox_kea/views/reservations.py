@@ -26,6 +26,7 @@ from ..reservation_transfer import export_reservation_document
 from ..reservations import (
     InSubnetReservationScope,
     Reservation,
+    ReservationCapabilities,
     ReservationIdentity,
     ReservationSnapshot,
     ReservationSynchronizationState,
@@ -210,6 +211,16 @@ def _fetch_reservation_snapshot(server: Server, version: int) -> ReservationSnap
     return client.reservation_snapshot(version, catalogue, page_size=_RESERVATION_PAGE_SIZE)
 
 
+def _configured_capabilities(server: Server, version: Literal[4, 6]) -> ReservationCapabilities | None:
+    """Return confirmed live mutation capabilities without affecting read-only display."""
+    try:
+        client = server.get_client(version=version)
+        return client.reservation_capabilities(version)
+    except (KeaException, requests.RequestException, RuntimeError, ValueError):
+        logger.exception("Could not read DHCPv%s Reservation capabilities from %s", version, server.name)
+        return None
+
+
 def _next_reservation_page_url(request: HttpRequest, cursor: str | None) -> str | None:
     if cursor is None:
         return None
@@ -339,11 +350,21 @@ def _reservation_list_context(
             scope=search_form.cleaned_data.get("scope", ""),
         )
     can_change = Server.objects.restrict(request.user, "change").filter(pk=server.pk).exists()
+    capabilities = _configured_capabilities(server, version) if can_change else None
+    can_mutate = bool(can_change and capabilities and capabilities.mutation_available)
+    mutation_unavailable = can_change and not can_mutate
+    mutation_unavailable_reason = ""
+    if mutation_unavailable:
+        mutation_unavailable_reason = (
+            capabilities.explanation
+            if capabilities is not None and capabilities.explanation
+            else "Live Reservation mutation capabilities could not be confirmed."
+        )
     can_sync = request.user.has_perm("ipam.add_ipaddress") and request.user.has_perm("ipam.change_ipaddress")
     _enrich_reservations_with_badges(reservations, server, version, can_sync=can_sync)
     for reservation in reservations:
-        reservation["can_change"] = can_change and reservation["scope_kind"] == "in-subnet"
-    _attach_reservation_action_urls(reservations, server.pk, version, can_change=can_change)
+        reservation["can_change"] = can_mutate and reservation["scope_kind"] == "in-subnet"
+    _attach_reservation_action_urls(reservations, server.pk, version, can_change=can_mutate)
 
     table_class = tables.ReservationTable4 if version == 4 else tables.ReservationTable6
     table = table_class(reservations, user=request.user)
@@ -356,14 +377,16 @@ def _reservation_list_context(
         "snapshot_complete": snapshot.complete,
         "reservation_diagnostics": snapshot.diagnostics,
         "next_page_url": _next_reservation_page_url(request, snapshot.next_cursor),
+        "mutation_unavailable": mutation_unavailable,
+        "mutation_unavailable_reason": mutation_unavailable_reason,
         "add_url": reverse(f"plugins:netbox_kea:server_reservation{version}_add", args=[server.pk])
-        if can_change
+        if can_mutate
         else None,
         "bulk_sync_url": reverse(f"plugins:netbox_kea:server_reservation{version}_bulk_sync", args=[server.pk])
         if can_sync
         else None,
         "import_url": reverse(f"plugins:netbox_kea:server_reservation{version}_bulk_import", args=[server.pk])
-        if can_change
+        if can_mutate
         else None,
     }
 

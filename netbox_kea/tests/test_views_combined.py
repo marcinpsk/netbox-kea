@@ -17,6 +17,11 @@ from django.urls import reverse
 from .kea_stub import _res_page, stub_kea
 from .utils import _PLUGINS_CONFIG, _ViewTestBase
 
+_HOST_COMMANDS = {
+    "result": 0,
+    "arguments": ["reservation-get", "reservation-add", "reservation-update", "reservation-del"],
+}
+
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestFetchSharedNetworksFromServer(_ViewTestBase):
@@ -162,6 +167,7 @@ class TestCombinedReservationsWithoutAddress(_ViewTestBase):
             {
                 "subnet4-list": {"result": 0, "arguments": {"subnets": [subnet]}},
                 "config-get": {"result": 0, "arguments": {"Dhcp4": {"subnet4": [subnet]}}},
+                "list-commands": _HOST_COMMANDS,
                 "reservation-get-page": page,
                 "lease4-get-by-state": {"result": 0, "arguments": {"leases": []}},
             }
@@ -177,6 +183,7 @@ class TestCombinedReservationsWithoutAddress(_ViewTestBase):
             {
                 "subnet6-list": {"result": 0, "arguments": {"subnets": [subnet]}},
                 "config-get": {"result": 0, "arguments": {"Dhcp6": {"subnet6": [subnet]}}},
+                "list-commands": _HOST_COMMANDS,
                 "reservation-get-page": page,
                 "lease6-get-by-state": {"result": 0, "arguments": {"leases": []}},
             }
@@ -204,6 +211,7 @@ class TestCombinedReservationsShowWhatIsReserved(_ViewTestBase):
         return {
             f"subnet{version}-list": {"result": 0, "arguments": {"subnets": [subnet]}},
             "config-get": {"result": 0, "arguments": {f"Dhcp{version}": {f"subnet{version}": [subnet]}}},
+            "list-commands": _HOST_COMMANDS,
             "reservation-get-page": _res_page(hosts),
             f"lease{version}-get-by-state": {"result": 0, "arguments": {"leases": []}},
         }
