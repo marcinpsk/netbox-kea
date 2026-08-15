@@ -43,17 +43,15 @@ boundary (see "Testing philosophy" below).
 
 Use a task-specific PostgreSQL database and a dedicated Redis host. Each xdist
 worker gets a private PostgreSQL database and private Redis task and cache
-databases. Eight workers is the supported maximum. `-n auto` is capped there by
-`pytest_xdist_auto_num_workers` in `netbox_kea/tests/conftest.py`, so it is safe on
-any machine. Always use xdist, including for focused tests. A serial run can clear
-Redis database 1, which the shared manual verification environment uses as its
-default cache.
+databases. The supported maximum is eight workers. Always use xdist, including
+for focused tests. A serial run can clear Redis database 1, which the shared
+manual verification environment uses as its default cache.
 
 ```bash
 TEST_DB_NAME=test_netbox_kea_review TEST_REDIS_HOST=netbox-kea-review-redis \
-  uv run --native-tls pytest --reuse-db -n auto --maxschedchunk=1
+  uv run --native-tls pytest --reuse-db -n 8 --maxschedchunk=1
 TEST_DB_NAME=test_netbox_kea_review TEST_REDIS_HOST=netbox-kea-review-redis \
-  uv run --native-tls pytest --reuse-db -n auto --maxschedchunk=1 netbox_kea/tests/test_views_leases.py -v
+  uv run --native-tls pytest --reuse-db -n 8 --maxschedchunk=1 netbox_kea/tests/test_views_leases.py -v
 ```
 
 `pythonpath` is set to `/opt/netbox/netbox` and
@@ -79,10 +77,9 @@ integration tests.
 
 ### CI
 
-- **Unit-test job**: pinned to the exact NetBox patch release named by
-  `QUERY_COUNT_NETBOX_VERSION` in `netbox_kea/tests/conftest.py`, because
-  `netbox_kea/tests/query_counts.json` describes that release only (see "Query-count
-  baselines"). Bump the constant, the CI `ref`, and the baselines in one change.
+- **Unit-test job**: pinned to NetBox **v4.6.7** (matches the devcontainer). Keep
+  this in lockstep with `netbox_kea/tests/query_counts.json` (see "Query-count
+  baselines") — bump the pin and re-record the baselines together.
 - **Compatibility matrix**: runs the integration suite (`test_setup.sh`) against
   NetBox v4.3 (floor), v4.6 (ceiling), and the dev snapshot (allowed to fail).
 - Playwright traces on failure are uploaded as artifacts.
@@ -250,13 +247,10 @@ resort, reserved for true external boundaries you cannot run locally.
 - **Query-count baselines.** The list-view mixins assert an exact SQL query count
   against `netbox_kea/tests/query_counts.json` to catch N+1 drift. Record/update with
   `TEST_DB_NAME=test_netbox_kea_review TEST_REDIS_HOST=netbox-kea-review-redis \
-  UPDATE_QUERY_COUNTS=1 uv run --native-tls pytest -n 1 ...`, then commit the file. One xdist
-  worker prevents concurrent writes and keeps Redis isolated. A count is a fact about
-  one NetBox release, not about the plugin alone: NetBox re-records its own baselines on
-  patch releases. `QUERY_COUNT_NETBOX_VERSION` in `netbox_kea/tests/conftest.py` names
-  the release the file describes, the unit-test CI job pins that same release, and the
-  assertions are skipped with a warning on any other release. To move to a new NetBox,
-  bump the constant, bump the CI `ref`, and re-record in one change.
+  UPDATE_QUERY_COUNTS=1 uv run pytest -n 1 ...`, then commit the file. One xdist
+  worker prevents concurrent writes and keeps Redis isolated. The
+  counts are tied to the NetBox version the unit-test CI pins (v4.6.7). Bump the pin
+  and re-record together.
 - **When fixing a bug, write the failing (red) test first**, confirm it fails against
   the unfixed code, then fix until green.
 

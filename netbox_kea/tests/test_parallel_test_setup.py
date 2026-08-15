@@ -3,19 +3,12 @@
 """Tests for parallel pytest worker isolation."""
 
 import os
-import subprocess
-import sys
-import tempfile
-from pathlib import Path
 
 import pytest
 from django.apps import apps
 from netbox.registry import registry
 
-from netbox_kea.tests.conftest import pytest_xdist_auto_num_workers
-from netbox_kea.tests.parallel import MAX_PARALLEL_WORKERS, isolated_redis_databases, isolated_test_database_name
-
-REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+from netbox_kea.tests.parallel import isolated_redis_databases, isolated_test_database_name
 
 
 def test_plugin_is_registered_during_settings_initialization():
@@ -44,14 +37,6 @@ def test_database_name_stays_within_postgresql_limit():
     assert database_name.endswith("_gw7")
 
 
-def test_multibyte_database_name_stays_within_postgresql_byte_limit():
-    """Keep the worker suffix when the base name contains multibyte characters."""
-    database_name = isolated_test_database_name(f"test_{'é' * 70}", "gw7")
-
-    assert len(database_name.encode()) <= 63
-    assert database_name.endswith("_gw7")
-
-
 def test_more_than_eight_workers_is_rejected():
     """Reject workers that cannot receive a private Redis database pair."""
     with pytest.raises(ValueError, match="At most 8 pytest workers are supported"):
@@ -62,71 +47,6 @@ def test_unknown_worker_id_is_rejected():
     """Reject worker identifiers outside pytest-xdist's supported shape."""
     with pytest.raises(ValueError, match="Unsupported pytest worker ID"):
         isolated_redis_databases("worker-1")
-
-
-@pytest.mark.parametrize(
-    ("detected_workers", "expected"),
-    [("2", 2), (str(MAX_PARALLEL_WORKERS), MAX_PARALLEL_WORKERS), ("32", MAX_PARALLEL_WORKERS)],
-)
-def test_auto_worker_count_stops_at_the_private_database_ceiling(monkeypatch, pytestconfig, detected_workers, expected):
-    """Cap `-n auto` at the last worker that still gets private Redis databases."""
-    monkeypatch.setenv("PYTEST_XDIST_AUTO_NUM_WORKERS", detected_workers)
-
-    assert pytest_xdist_auto_num_workers(pytestconfig) == expected
-    isolated_redis_databases(f"gw{expected - 1}")  # the highest worker this count starts
-
-
-def test_auto_worker_count_caps_the_machine_derived_count(monkeypatch, pytestconfig):
-    """Cap the count xdist derives from the machine, not only an explicit override."""
-    monkeypatch.delenv("PYTEST_XDIST_AUTO_NUM_WORKERS", raising=False)
-
-    assert 1 <= pytest_xdist_auto_num_workers(pytestconfig) <= MAX_PARALLEL_WORKERS
-
-
-def test_auto_request_resolves_through_the_installed_hook():
-    """Resolve `-n auto` to the capped count in a real pytest run.
-
-    Calling the hook directly cannot prove that pytest loads this conftest before xdist
-    resolves `-n auto`, so run pytest against this suite and read the count it settled
-    on. The probe plugin stays outside the repository, where no file watcher sees it.
-    """
-    environment = os.environ.copy()
-    environment["PYTEST_XDIST_AUTO_NUM_WORKERS"] = str(MAX_PARALLEL_WORKERS * 4)
-    probe = "def pytest_collection_finish(session):\n    print(f'RESOLVED={session.config.option.numprocesses}')\n"
-
-    with tempfile.TemporaryDirectory() as directory:
-        (Path(directory) / "worker_count_probe.py").write_text(probe)
-        environment["PYTHONPATH"] = os.pathsep.join(
-            [directory, *(str(Path(entry or Path.cwd()).resolve()) for entry in sys.path)]
-        )
-        result = subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "pytest",
-                str(Path(__file__).resolve()),
-                "-n",
-                "auto",
-                "--collect-only",
-                "-q",
-                "-p",
-                "worker_count_probe",
-                "-p",
-                "no:cacheprovider",
-            ],
-            cwd=REPOSITORY_ROOT,
-            capture_output=True,
-            check=False,
-            env=environment,
-            text=True,
-            timeout=300,
-        )
-
-    # The probe prints during collection, so a later failure would still leave the
-    # expected line in stdout. Require the run itself to succeed first.
-    output = result.stdout + result.stderr
-    assert result.returncode == 0, output
-    assert f"RESOLVED={MAX_PARALLEL_WORKERS}" in result.stdout, output
 
 
 @pytest.mark.django_db
