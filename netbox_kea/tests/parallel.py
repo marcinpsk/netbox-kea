@@ -12,9 +12,7 @@ _WORKER_ID_PATTERN = re.compile(r"gw(?P<number>\d+)")
 def isolated_test_database_name(base_name: str, worker_id: str | None) -> str:
     """Return a PostgreSQL-safe database name for one pytest worker."""
     suffix = f"_{worker_id}" if worker_id else ""
-    available_bytes = _POSTGRES_NAME_LIMIT - len(suffix.encode())
-    base_prefix = base_name.encode()[:available_bytes].decode(errors="ignore")
-    return f"{base_prefix}{suffix}"
+    return f"{base_name[: _POSTGRES_NAME_LIMIT - len(suffix)]}{suffix}"
 
 
 def isolated_redis_databases(worker_id: str | None) -> tuple[int, int]:
