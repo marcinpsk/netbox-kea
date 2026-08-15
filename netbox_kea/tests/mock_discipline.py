@@ -470,13 +470,18 @@ def unapproved(root: Path = TESTS_ROOT, baseline: dict[str, int] | None = None) 
     return sorted(extra, key=lambda v: (v.path, v.lineno))
 
 
-def _main(argv: list[str]) -> int:
+def _main(
+    argv: list[str],
+    *,
+    root: Path = TESTS_ROOT,
+    baseline_path: Path = _BASELINE_PATH,
+) -> int:
     if "--update-baseline" in argv:
-        counts = _counts_by_site(scan_tree())
-        save_baseline(counts)
+        counts = _counts_by_site(scan_tree(root))
+        save_baseline(counts, baseline_path)
         print(f"baseline updated: {sum(counts.values())} mock(s) grandfathered across {len(counts)} site(s)")
         return 0
-    bad = unapproved()
+    bad = unapproved(root, baseline=load_baseline(baseline_path))
     for v in bad:
         print(str(v))
     print(f"\n{len(bad)} unapproved mock(s)")

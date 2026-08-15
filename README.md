@@ -338,12 +338,13 @@ uv run pre-commit install
 # Build wheel (required before integration tests)
 uv build
 
-# Run unit tests (no Docker required)
-uv run pytest -q
+# Run unit tests inside the devcontainer with a dedicated test Redis host
+TEST_DB_NAME=test_netbox_kea_review TEST_REDIS_HOST=netbox-kea-review-redis \
+  uv run --native-tls pytest --reuse-db -n 8 --maxschedchunk=1 -q
 
 # Run integration tests (requires Docker — see tests/test_setup.sh)
 ./tests/test_setup.sh
-uv run pytest tests/ --tracing=retain-on-failure -v --cov=netbox_kea --cov-report=xml
+uv run --native-tls pytest -p no:django tests/ --tracing=retain-on-failure -v --cov=netbox_kea --cov-report=xml
 ```
 
 See [CHANGELOG](CHANGELOG.md) for version history.

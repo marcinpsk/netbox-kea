@@ -41,20 +41,28 @@ PostgreSQL (array/JSON fields, etc.); SQLite is not used. They do **not** need t
 Kea/integration Docker stack: every Kea HTTP call is stubbed at the transport
 boundary (see "Testing philosophy" below).
 
+Use a task-specific PostgreSQL database and a dedicated Redis host. Each xdist
+worker gets a private PostgreSQL database and private Redis task and cache
+databases. The supported maximum is eight workers. Always use xdist, including
+for focused tests. A serial run can clear Redis database 1, which the shared
+manual verification environment uses as its default cache.
+
 ```bash
-uv run pytest                                              # run all unit tests
-uv run pytest netbox_kea/tests/test_views_leases.py -v     # single file
-uv run pytest netbox_kea/tests/test_jobs.py::TestClass::test_method -v  # single test
+TEST_DB_NAME=test_netbox_kea_review TEST_REDIS_HOST=netbox-kea-review-redis \
+  uv run --native-tls pytest --reuse-db -n 8 --maxschedchunk=1
+TEST_DB_NAME=test_netbox_kea_review TEST_REDIS_HOST=netbox-kea-review-redis \
+  uv run --native-tls pytest --reuse-db -n 8 --maxschedchunk=1 netbox_kea/tests/test_views_leases.py -v
 ```
 
-`pythonpath` is set to `/opt/netbox/netbox` and `DJANGO_SETTINGS_MODULE=netbox.settings`
+`pythonpath` is set to `/opt/netbox/netbox` and
+`DJANGO_SETTINGS_MODULE=netbox_kea.tests.isolated_settings`
 — unit tests require a NetBox installation at that path (present in the devcontainer).
 
 ### Integration tests (`tests/`, Docker required)
 
 ```bash
 ./tests/test_setup.sh   # generates TLS certs, builds a wheel, starts the compose stack
-uv run pytest tests/ --tracing=retain-on-failure -v --cov=netbox_kea --cov-report=xml
+uv run --native-tls pytest -p no:django tests/ --tracing=retain-on-failure -v --cov=netbox_kea --cov-report=xml
 ```
 
 The compose stack runs: NetBox, netbox-worker, postgres, redis, nginx (basic-auth
@@ -69,7 +77,7 @@ integration tests.
 
 ### CI
 
-- **Unit-test job**: pinned to NetBox **v4.6.4** (matches the devcontainer). Keep
+- **Unit-test job**: pinned to NetBox **v4.6.7** (matches the devcontainer). Keep
   this in lockstep with `netbox_kea/tests/query_counts.json` (see "Query-count
   baselines") — bump the pin and re-record the baselines together.
 - **Compatibility matrix**: runs the integration suite (`test_setup.sh`) against
@@ -238,8 +246,10 @@ resort, reserved for true external boundaries you cannot run locally.
   those stay `stub_kea`-driven.
 - **Query-count baselines.** The list-view mixins assert an exact SQL query count
   against `netbox_kea/tests/query_counts.json` to catch N+1 drift. Record/update with
-  `UPDATE_QUERY_COUNTS=1 uv run pytest ...` (serially), then commit the file. The
-  counts are tied to the NetBox version the unit-test CI pins (v4.6.4) — bump the pin
+  `TEST_DB_NAME=test_netbox_kea_review TEST_REDIS_HOST=netbox-kea-review-redis \
+  UPDATE_QUERY_COUNTS=1 uv run pytest -n 1 ...`, then commit the file. One xdist
+  worker prevents concurrent writes and keeps Redis isolated. The
+  counts are tied to the NetBox version the unit-test CI pins (v4.6.7). Bump the pin
   and re-record together.
 - **When fixing a bug, write the failing (red) test first**, confirm it fails against
   the unfixed code, then fix until green.

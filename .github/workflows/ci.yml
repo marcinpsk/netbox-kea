@@ -46,7 +46,7 @@ jobs:
           # Pinned to an exact 4.6.x patch so the committed query-count baselines
           # (netbox_kea/tests/query_counts.json) stay stable — a floating tag would
           # drift the counts on NetBox patch releases. Bump + re-record together.
-          ref: v4.6.4
+          ref: v4.6.7
           path: netbox
           persist-credentials: false
 
@@ -71,6 +71,8 @@ jobs:
         working-directory: netbox/netbox
         run: |
           cat > netbox/configuration.py << 'EOF'
+          import os
+
           ALLOWED_HOSTS = ['*']
           DATABASE = {
               'NAME': 'netbox',
@@ -82,8 +84,16 @@ jobs:
               'ENGINE': 'django.db.backends.postgresql'
           }
           REDIS = {
-              'tasks': {'HOST': 'localhost', 'PORT': 6379, 'DATABASE': 0},
-              'caching': {'HOST': 'localhost', 'PORT': 6379, 'DATABASE': 1}
+              'tasks': {
+                  'HOST': os.environ.get('REDIS_HOST', 'localhost'),
+                  'PORT': 6379,
+                  'DATABASE': int(os.environ.get('REDIS_DATABASE', '0')),
+              },
+              'caching': {
+                  'HOST': os.environ.get('REDIS_CACHE_HOST', 'localhost'),
+                  'PORT': 6379,
+                  'DATABASE': int(os.environ.get('REDIS_CACHE_DATABASE', '1')),
+              },
           }
           SECRET_KEY = 'ci-test-secret-key-not-for-production-1234567890123456'
           API_TOKEN_PEPPERS = {0: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'}
@@ -93,10 +103,16 @@ jobs:
 
       - name: Run unit tests with coverage
         working-directory: netbox/netbox
+        env:
+          TEST_DB_NAME: test_netbox_kea_ci
+          TEST_REDIS_HOST: localhost
         run: |
           pytest ${{ github.workspace }}/netbox_kea/tests/ \
-            --override-ini="DJANGO_SETTINGS_MODULE=netbox.settings" \
+            --override-ini="DJANGO_SETTINGS_MODULE=netbox_kea.tests.isolated_settings" \
             --override-ini="pythonpath=${{ github.workspace }}/netbox/netbox" \
+            -n 4 \
+            --dist loadscope \
+            --reuse-db \
             --cov=netbox_kea \
             --cov-report=xml:${{ github.workspace }}/coverage.xml \
             --no-header -q

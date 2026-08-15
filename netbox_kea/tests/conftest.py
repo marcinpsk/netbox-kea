@@ -16,10 +16,29 @@ harmless no-op.
 """
 
 import logging
+import os
 
 import pytest
 
+from netbox_kea.tests.parallel import isolated_test_database_name
+
 logger = logging.getLogger(__name__)
+
+
+def pytest_sessionstart(session) -> None:
+    """Require xdist before tests can touch shared NetBox services."""
+    config = session.config
+    if hasattr(config, "workerinput") or getattr(config.option, "numprocesses", None):
+        return
+    raise pytest.UsageError("The netbox_kea Django suite requires pytest-xdist with -n 1 or greater.")
+
+
+def _test_database_name() -> str:
+    """Return the caller-selected database name for this pytest worker."""
+    name = os.environ.get("TEST_DB_NAME", "test_netbox_kea")
+    if not name.startswith("test_"):
+        raise RuntimeError("TEST_DB_NAME must start with test_.")
+    return isolated_test_database_name(name, os.environ.get("PYTEST_XDIST_WORKER"))
 
 
 def _prepopulate_url_resolver() -> None:
@@ -56,7 +75,7 @@ def django_db_setup(request, django_test_environment, django_db_blocker):
     from django.conf import settings
     from django.test.utils import setup_databases, teardown_databases
 
-    settings.DATABASES["default"].setdefault("TEST", {})["NAME"] = "test_netbox_kea"
+    settings.DATABASES["default"].setdefault("TEST", {})["NAME"] = _test_database_name()
 
     keepdb = request.config.getvalue("reuse_db") and not request.config.getvalue("create_db")
     verbosity = request.config.option.verbose
