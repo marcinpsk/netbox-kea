@@ -1,10 +1,12 @@
 import ipaddress
+from unittest.mock import patch
 
 import requests
 from django.test import TestCase, override_settings
 
 from netbox_kea.models import Server
 from netbox_kea.subnet_catalogue import (
+    MAX_SUBNET_ID,
     CatalogueUnavailable,
     CompleteCatalogueSnapshot,
     ConfigurationOnlyCatalogueSnapshot,
@@ -16,14 +18,14 @@ from netbox_kea.subnet_catalogue import (
     for_synchronization,
     mutation,
 )
-from netbox_kea.tests.kea_stub import queued, stub_kea
+from netbox_kea.tests.kea_stub import _subnet_list, queued, stub_kea
 from netbox_kea.tests.utils import _PLUGINS_CONFIG, _drop_subnet_choices_cache, _make_db_server
 
 
 def _identity(version, subnets, *, result=0):
     if result != 0:
         return {"result": result, "text": "subnet command unavailable"}
-    return {"result": 0, "arguments": {"subnets": list(subnets)}}
+    return _subnet_list(version, subnets)
 
 
 def _config(version, subnets, *, shared_networks=None, config_hash="hash-a", result=0):
@@ -668,14 +670,47 @@ class TestSubnetCatalogue(TestCase):
                 with self.assertRaises(SubnetIdentityConflict):
                     scope.prepare_creation("198.18.1.0/24")
 
-    def test_mutation_creation_fails_when_subnet_id_range_is_exhausted(self):
-        identities = _identity(4, [{"id": 4_294_967_294, "subnet": "198.18.1.0/24"}])
-        configuration = _config(4, [{"id": 4_294_967_294, "subnet": "198.18.1.0/24", "pools": []}])
+    def test_mutation_creation_reuses_a_free_id_when_the_range_above_is_full(self):
+        subnets = [{"id": 1, "subnet": "198.18.1.0/24"}, {"id": MAX_SUBNET_ID, "subnet": "198.18.9.0/24"}]
+        identities = _identity(4, subnets)
+        configuration = _config(4, [{**subnet, "pools": []} for subnet in subnets])
 
         with stub_kea({"subnet4-list": identities, "config-get": configuration}):
             with mutation(self.server, 4) as scope:
+                prepared = scope.prepare_creation("198.18.2.0/24")
+
+        self.assertEqual(prepared.subnet_id, 2)
+
+    def test_mutation_creation_fails_when_subnet_id_range_is_exhausted(self):
+        subnets = [{"id": 1, "subnet": "198.18.1.0/24"}, {"id": 2, "subnet": "198.18.2.0/24"}]
+        identities = _identity(4, subnets)
+        configuration = _config(4, [{**subnet, "pools": []} for subnet in subnets])
+
+        # mock-ok: the real range is 4 billion IDs wide, so narrowing it is the only way
+        # to hold every ID and reach the guard.
+        with (
+            patch("netbox_kea.subnet_catalogue.MAX_SUBNET_ID", 2),
+            stub_kea({"subnet4-list": identities, "config-get": configuration}),
+        ):
+            with mutation(self.server, 4) as scope:
                 with self.assertRaises(SubnetIdExhausted):
-                    scope.prepare_creation("198.18.2.0/24")
+                    scope.prepare_creation("198.18.3.0/24")
+
+    def test_mutation_scope_rejects_use_after_it_exits(self):
+        identities = _identity(4, [{"id": 1, "subnet": "198.18.1.0/24"}])
+        configuration = _config(4, [{"id": 1, "subnet": "198.18.1.0/24", "pools": []}])
+
+        with stub_kea({"subnet4-list": identities, "config-get": configuration}):
+            with mutation(self.server, 4) as scope:
+                self.assertEqual(scope.find_by_id(1).cidr, "198.18.1.0/24")
+
+            for use in (
+                lambda: scope.find_by_id(1),
+                lambda: scope.find_by_cidr("198.18.1.0/24"),
+                lambda: scope.prepare_creation("198.18.2.0/24"),
+            ):
+                with self.assertRaisesMessage(RuntimeError, "must be entered"):
+                    use()
 
     def test_mutation_scope_invalidates_display_cache_on_entry_and_exit(self):
         identities = _identity(4, [{"id": 1, "subnet": "198.18.1.0/24"}])

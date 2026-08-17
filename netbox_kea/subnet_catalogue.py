@@ -1129,6 +1129,23 @@ def for_synchronization(server: Server, family: int) -> CompleteCatalogueSnapsho
     return snapshot
 
 
+def _allocate_subnet_id(used_ids: set[int]) -> int:
+    """Return a free Kea subnet ID, preferring one above every ID already in use.
+
+    A reused ID makes the DHCP-plugin importer repoint the Subnet its ``KeaDhcpLink``
+    still names at a different network, so IDs above the range in use are handed out
+    first. Reuse is the fallback, because one Subnet holding ``MAX_SUBNET_ID`` must not
+    report the whole range as exhausted.
+    """
+    above = max(used_ids, default=0) + 1
+    if above <= MAX_SUBNET_ID:
+        return above
+    free = next((candidate for candidate in range(MIN_SUBNET_ID, MAX_SUBNET_ID + 1) if candidate not in used_ids), None)
+    if free is None:
+        raise SubnetIdExhausted("The Kea subnet ID range is exhausted.")
+    return free
+
+
 class MutationScope(AbstractContextManager["MutationScope"]):
     """One live Subnet identity scope for exact lookup and creation preparation."""
 
@@ -1143,6 +1160,9 @@ class MutationScope(AbstractContextManager["MutationScope"]):
         return self
 
     def __exit__(self, exc_type, exc_value, traceback) -> None:
+        # Identity facts stop being live confirmation here, so drop them: a caller that
+        # keeps the scope must not decide a mutation on pre-mutation observations.
+        self.snapshot = None
         _invalidate(self.server, self.family)
 
     def find_by_id(self, subnet_id: int) -> VerifiedSubnet | None:
@@ -1173,9 +1193,7 @@ class MutationScope(AbstractContextManager["MutationScope"]):
 
         used_ids = {subnet.subnet_id for subnet in snapshot.subnets}
         if subnet_id is None:
-            subnet_id = max(used_ids, default=0) + 1
-            if subnet_id > MAX_SUBNET_ID:
-                raise SubnetIdExhausted("The Kea subnet ID range is exhausted.")
+            subnet_id = _allocate_subnet_id(used_ids)
         elif isinstance(subnet_id, bool) or not isinstance(subnet_id, int):
             raise ValueError("subnet_id must be an integer.")
         elif not MIN_SUBNET_ID <= subnet_id <= MAX_SUBNET_ID:
