@@ -22,7 +22,7 @@ from django.urls import reverse
 from netbox_kea.models import Server
 
 from .kea_stub import _reservation_mutation_commands, _subnet_list, stub_kea
-from .utils import _PLUGINS_CONFIG, User
+from .utils import _PLUGINS_CONFIG, User, _drop_subnet_choices_cache
 
 # Distinct URLs so we can tell which one was selected.
 _SERVER_URL = "https://kea-default.example.com"
@@ -96,6 +96,10 @@ class _DualURLBase(TestCase):
         )
         self.client.force_login(self.user)
         self.server = _make_dual_url_server()
+        # These views write the Subnet Catalogue and subnet-choices caches. The
+        # database rolls back per test and the cache backend does not, so a reused
+        # test server ID would serve this snapshot to a later test.
+        _drop_subnet_choices_cache(self, self.server)
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
