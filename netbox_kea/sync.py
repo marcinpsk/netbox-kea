@@ -651,9 +651,16 @@ def sync_reservation_to_netbox(
     """
     from ipam.models import IPAddress as NbIP
 
-    initial_state = reservation_synchronization_state(reservation)
-    if initial_state.label == "Not Applicable":
-        return ReservationSyncResult(state=initial_state, primary=None, created=0, changed=0)
+    # Both Not Applicable cases follow from the scope and the address tuple alone, so
+    # test them directly: a state read here would run an IPAM query that is discarded
+    # for every other Reservation, on top of the single state read at the end.
+    if isinstance(reservation.scope, GlobalReservationScope) or not reservation.addresses:
+        return ReservationSyncResult(
+            state=reservation_synchronization_state(reservation),
+            primary=None,
+            created=0,
+            changed=0,
+        )
     if not isinstance(reservation.scope, InSubnetReservationScope):
         raise ValueError("Reservation synchronization requires an In-Subnet Scope.")
 

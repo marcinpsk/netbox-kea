@@ -2,16 +2,20 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from ipaddress import ip_address, ip_network
+from unittest.mock import patch
 
+from django.db import DatabaseError
 from django.test import TestCase
 from ipam.models import IPAddress
 
+from netbox_kea import sync as sync_module
 from netbox_kea.reservations import (
     GlobalReservationScope,
     InSubnetReservationScope,
     IPv4Reservation,
     IPv6Reservation,
     ReservationIdentity,
+    ReservationSynchronizationState,
 )
 from netbox_kea.subnet_catalogue import SubnetIdentity
 from netbox_kea.sync import reservation_synchronization_state, sync_reservation_to_netbox
@@ -73,3 +77,55 @@ class TestTypedReservationSynchronization(TestCase):
         self.assertEqual(addressless_result.state.label, "Not Applicable")
         self.assertIn("allocation address", addressless_result.state.reason)
         self.assertFalse(IPAddress.objects.exists())
+
+    def test_reports_unknown_when_the_ipam_read_fails(self):
+        reservation = IPv4Reservation(
+            scope=InSubnetReservationScope(SubnetIdentity(20, ip_network("198.18.0.0/24"))),
+            identity=ReservationIdentity("hw-address", "aa:bb:cc:dd:ee:ff"),
+            addresses=(ip_address("198.18.0.20"),),
+        )
+
+        def failing_bulk_fetch(addresses):
+            raise DatabaseError("read failed")
+
+        with patch.object(sync_module, "bulk_fetch_netbox_ips", failing_bulk_fetch):
+            state = reservation_synchronization_state(reservation)
+
+        self.assertEqual(state.label, "Unknown")
+        self.assertEqual(state.code, "unknown")
+        self.assertEqual((state.synchronized, state.total), (0, 1))
+        self.assertEqual(state.reason, "NetBox IPAM state could not be read.")
+
+    def test_synchronization_reads_the_ipam_state_once(self):
+        reservation = IPv4Reservation(
+            scope=InSubnetReservationScope(SubnetIdentity(20, ip_network("198.18.0.0/24"))),
+            identity=ReservationIdentity("hw-address", "aa:bb:cc:dd:ee:ff"),
+            addresses=(ip_address("198.18.0.20"),),
+        )
+        reads: list[tuple[str, ...]] = []
+        real_bulk_fetch = sync_module.bulk_fetch_netbox_ips
+
+        def recording_bulk_fetch(addresses):
+            reads.append(tuple(addresses))
+            return real_bulk_fetch(addresses)
+
+        with patch.object(sync_module, "bulk_fetch_netbox_ips", recording_bulk_fetch):
+            result = sync_reservation_to_netbox(reservation, cleanup=False)
+
+        self.assertEqual(result.state.label, "Synchronized")
+        # Only the state read at the end may hit IPAM. A Not Applicable pre-check that
+        # called reservation_synchronization_state() added a second, discarded read.
+        self.assertEqual(reads, [("198.18.0.20",)])
+
+    def test_state_codes_stay_stable_for_every_label(self):
+        cases = (
+            (ReservationSynchronizationState.from_counts(2, 2), "synchronized"),
+            (ReservationSynchronizationState.from_counts(1, 2), "partially-synchronized"),
+            (ReservationSynchronizationState.from_counts(0, 2), "not-synchronized"),
+            (ReservationSynchronizationState.not_applicable("no address"), "not-applicable"),
+            (ReservationSynchronizationState.unknown(1, "unreadable"), "unknown"),
+        )
+
+        for state, expected_code in cases:
+            with self.subTest(label=state.label):
+                self.assertEqual(state.code, expected_code)

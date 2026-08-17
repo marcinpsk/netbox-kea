@@ -1,15 +1,15 @@
-{% if state.label == "Synchronized" %}
+{% if state.code == "synchronized" %}
 <span class="badge text-bg-success" title="{{ state.synchronized }} of {{ state.total }} addresses synchronized">
-  <i class="mdi mdi-check-circle-outline" aria-hidden="true"></i> Synchronized {{ state.synchronized }}/{{ state.total }}
+  <i class="mdi mdi-check-circle-outline" aria-hidden="true"></i> {{ state.label }} {{ state.synchronized }}/{{ state.total }}
 </span>
-{% elif state.label == "Partially Synchronized" %}
+{% elif state.code == "partially-synchronized" %}
 <span class="badge text-bg-warning" title="{{ state.synchronized }} of {{ state.total }} addresses synchronized">
-  Partially Synchronized {{ state.synchronized }}/{{ state.total }}
+  {{ state.label }} {{ state.synchronized }}/{{ state.total }}
 </span>
-{% elif state.label == "Not Synchronized" %}
-<span class="badge text-bg-secondary">Not Synchronized 0/{{ state.total }}</span>
-{% elif state.label == "Not Applicable" %}
-<span class="badge text-bg-secondary" title="{{ state.reason }}">Not Applicable</span>
+{% elif state.code == "not-synchronized" %}
+<span class="badge text-bg-secondary">{{ state.label }} 0/{{ state.total }}</span>
+{% elif state.code == "not-applicable" %}
+<span class="badge text-bg-secondary" title="{{ state.reason }}">{{ state.label }}</span>
 {% else %}
 <span class="badge text-bg-warning" title="{{ state.reason }}">Unknown</span>
 {% endif %}

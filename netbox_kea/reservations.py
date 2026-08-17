@@ -277,6 +277,17 @@ class ReservationSnapshot:
     next_cursor: str | None
 
 
+#: Display label to stable machine key. Templates and Python branch on the key, so
+#: renaming a label can never silently change which branch a state matches.
+_SYNCHRONIZATION_STATE_CODES = {
+    "Not Applicable": "not-applicable",
+    "Not Synchronized": "not-synchronized",
+    "Partially Synchronized": "partially-synchronized",
+    "Synchronized": "synchronized",
+    "Unknown": "unknown",
+}
+
+
 @dataclass(frozen=True)
 class ReservationSynchronizationState:
     """One aggregate synchronization state for all allocation addresses."""
@@ -291,6 +302,11 @@ class ReservationSynchronizationState:
     synchronized: int
     total: int
     reason: str = ""
+
+    @property
+    def code(self) -> str:
+        """Return the stable machine key to compare against, never the display text."""
+        return _SYNCHRONIZATION_STATE_CODES[self.label]
 
     @classmethod
     def from_counts(cls, synchronized: int, total: int) -> ReservationSynchronizationState:
