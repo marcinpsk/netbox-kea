@@ -568,6 +568,19 @@ _IDENTIFIER_CELL = (
     "{% endif %}"
 )
 
+#: A reservation row carries one ``identifier`` plus its ``identifier_type``, so the
+#: protocol-specific columns must stay empty for every other identifier type.
+_HW_ADDRESS_CELL = (
+    '{% if record.identifier_type == "hw-address" %}'
+    '<span class="font-monospace">{{ record.identifier }}</span>'
+    "{% endif %}"
+)
+_DUID_CELL = (
+    '{% if record.identifier_type == "duid" %}'
+    '<span class="font-monospace text-break">{{ record.identifier }}</span>'
+    "{% endif %}"
+)
+
 #: Address cell for reservations that may reserve no address at all.
 _RESERVATION_ADDRESS_CELL = (
     "{% if record.ip_address %}"
@@ -660,7 +673,11 @@ class ReservationTable4(GenericTable):
 
     scope = tables.TemplateColumn(verbose_name="Scope", orderable=False, template_code=_RESERVATION_SCOPE_CELL)
     subnet_id = tables.Column(verbose_name="Subnet ID")
-    hw_address = MonospaceColumn(verbose_name="Hardware Address", accessor="identifier")
+    hw_address = tables.TemplateColumn(
+        verbose_name="Hardware Address",
+        order_by="identifier",
+        template_code=_HW_ADDRESS_CELL,
+    )
     identifier = tables.TemplateColumn(
         verbose_name="Identifier",
         orderable=False,
@@ -720,7 +737,11 @@ class ReservationTable6(GenericTable):
 
     scope = tables.TemplateColumn(verbose_name="Scope", orderable=False, template_code=_RESERVATION_SCOPE_CELL)
     subnet_id = tables.Column(verbose_name="Subnet ID")
-    duid = MonospaceColumn(verbose_name="DUID", accessor="identifier")
+    duid = tables.TemplateColumn(
+        verbose_name="DUID",
+        order_by="identifier",
+        template_code=_DUID_CELL,
+    )
     identifier = tables.TemplateColumn(
         verbose_name="Identifier",
         orderable=False,
