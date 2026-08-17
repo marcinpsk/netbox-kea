@@ -35,7 +35,7 @@ from ipam.models import IPAddress as NbIP
 
 from netbox_kea.models import Server
 
-from .kea_stub import _res_page, _reservation_mutation_commands, _subnet_list, stub_kea
+from .kea_stub import _catalogue_responses, _res_page, _reservation_mutation_commands, stub_kea
 
 User = get_user_model()
 
@@ -63,17 +63,6 @@ def _reservation_get(hostname, address, *, version=4, **extra):
     return {
         "result": 0,
         "arguments": {**address_fields, "hostname": hostname, "subnet-id": 1, **extra},
-    }
-
-
-def _catalogue_responses(version: int, cidr: str) -> dict:
-    subnet = {"id": 1, "subnet": cidr}
-    return {
-        f"subnet{version}-list": _subnet_list(version, [subnet]),
-        "config-get": {
-            "result": 0,
-            "arguments": {f"Dhcp{version}": {f"subnet{version}": [subnet], "shared-networks": []}},
-        },
     }
 
 
@@ -252,7 +241,7 @@ class TestReservation4SyncView(_SyncViewBase):
         super().setUp()
         self._start_stub(
             {
-                **_catalogue_responses(4, "10.0.0.0/24"),
+                **_catalogue_responses(4, 1, "10.0.0.0/24"),
                 "reservation-get": _reservation_get(
                     "mock-res.local",
                     "10.0.0.50",
@@ -304,7 +293,7 @@ class TestReservation6SyncView(_SyncViewBase):
         super().setUp()
         self._start_stub(
             {
-                **_catalogue_responses(6, "2001:db8:1::/64"),
+                **_catalogue_responses(6, 1, "2001:db8:1::/64"),
                 "reservation-get": _reservation_get(
                     "mock-v6res.local",
                     "2001:db8:1::50",
@@ -354,7 +343,7 @@ class TestReservation4BulkSyncView(_SyncViewBase):
                 "hw-address": "aa:bb:cc:00:10:01",
             }
         ]
-        with stub_kea({**_catalogue_responses(4, "10.0.0.0/8"), "reservation-get-page": _res_page(hosts)}):
+        with stub_kea({**_catalogue_responses(4, 1, "10.0.0.0/8"), "reservation-get-page": _res_page(hosts)}):
             response = self.client.post(self._url(), follow=False)
         # Must redirect back to reservations page
         self.assertIn(response.status_code, [302, 303])
@@ -374,7 +363,7 @@ class TestReservation4BulkSyncView(_SyncViewBase):
                 "hw-address": "aa:bb:cc:00:11:02",
             },
         ]
-        with stub_kea({**_catalogue_responses(4, "10.0.0.0/8"), "reservation-get-page": _res_page(hosts)}):
+        with stub_kea({**_catalogue_responses(4, 1, "10.0.0.0/8"), "reservation-get-page": _res_page(hosts)}):
             self.client.post(self._url())
         self.assertTrue(NbIP.objects.filter(address__startswith="10.0.11.1/").exists())
         self.assertTrue(NbIP.objects.filter(address__startswith="10.0.11.2/").exists())
@@ -388,7 +377,7 @@ class TestReservation4BulkSyncView(_SyncViewBase):
                 "hw-address": "aa:bb:cc:00:12:01",
             }
         ]
-        with stub_kea({**_catalogue_responses(4, "10.0.0.0/8"), "reservation-get-page": _res_page(hosts)}):
+        with stub_kea({**_catalogue_responses(4, 1, "10.0.0.0/8"), "reservation-get-page": _res_page(hosts)}):
             self.client.post(self._url())
         ip = NbIP.objects.filter(address__startswith="10.0.12.1/").first()
         self.assertIsNotNone(ip)
@@ -399,7 +388,7 @@ class TestReservation4BulkSyncView(_SyncViewBase):
             "result": 0,
             "arguments": {"hosts": None, "next": {"from": 0, "source-index": 0}},
         }
-        with stub_kea({**_catalogue_responses(4, "10.0.0.0/8"), "reservation-get-page": malformed_page}):
+        with stub_kea({**_catalogue_responses(4, 1, "10.0.0.0/8"), "reservation-get-page": malformed_page}):
             response = self.client.post(self._url())
 
         self.assertEqual(response.status_code, 302)
@@ -485,7 +474,7 @@ class TestReservation6BulkSyncView(_SyncViewBase):
                 "hostname": "host-v6",
             }
         ]
-        with stub_kea({**_catalogue_responses(6, "2001:db8::/32"), "reservation-get-page": _res_page(hosts)}):
+        with stub_kea({**_catalogue_responses(6, 1, "2001:db8::/32"), "reservation-get-page": _res_page(hosts)}):
             self.client.post(self._url())
         ip = NbIP.objects.filter(address__startswith="2001:db8::1/").first()
         self.assertIsNotNone(ip)
@@ -530,7 +519,7 @@ class TestReservationBulkSyncConflictProtection(_SyncViewBase):
         # follow=True lands on the reservations list, which re-drains reservation-get-page
         # and enriches with lease4-get-by-state per subnet.
         stub = {
-            **_catalogue_responses(4, "10.0.0.0/8"),
+            **_catalogue_responses(4, 1, "10.0.0.0/8"),
             "list-commands": _reservation_mutation_commands(),
             "reservation-get-page": _res_page(hosts),
             "lease4-get-by-state": {"result": 0, "arguments": {"leases": []}},
@@ -563,7 +552,7 @@ class TestReservationBulkSyncConflictProtection(_SyncViewBase):
             },
         ]
         stub = {
-            **_catalogue_responses(4, "10.0.0.0/8"),
+            **_catalogue_responses(4, 1, "10.0.0.0/8"),
             "list-commands": _reservation_mutation_commands(),
             "reservation-get-page": _res_page(hosts),
             "lease4-get-by-state": {"result": 0, "arguments": {"leases": []}},

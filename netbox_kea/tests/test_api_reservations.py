@@ -19,7 +19,7 @@ from rest_framework.test import APIClient
 
 from netbox_kea.models import Server
 
-from .kea_stub import _res_get, _res_page, stub_kea
+from .kea_stub import _catalogue_responses, _res_get, _res_page, stub_kea
 
 User = get_user_model()
 
@@ -27,18 +27,6 @@ _PLUGINS_CONFIG = {"netbox_kea": {"kea_timeout": 30}}
 
 # Not found — reservation-get result=3
 _RESERVATION_NOT_FOUND = [{"result": 3, "text": "Host not found."}]
-
-
-def _catalogue_responses(version: int, subnet_id: int, cidr: str) -> dict:
-    subnet_key = f"subnet{version}"
-    subnet = {"id": subnet_id, "subnet": cidr}
-    return {
-        f"subnet{version}-list": {"result": 0, "arguments": {"subnets": [subnet]}},
-        "config-get": {
-            "result": 0,
-            "arguments": {f"Dhcp{version}": {subnet_key: [subnet]}, "hash": "reservation-api-catalogue"},
-        },
-    }
 
 
 def _make_server(**kwargs):

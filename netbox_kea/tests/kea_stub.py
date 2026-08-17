@@ -214,6 +214,34 @@ def _subnet_list(version: int, subnets: list[dict[str, Any]]) -> dict[str, Any]:
     return {"result": 0, "arguments": {"subnets": list(subnets)}}
 
 
+def _catalogue_responses(
+    version: int,
+    subnet_id: int,
+    cidr: str,
+    *,
+    config_hash: str = "shared-catalogue",
+) -> dict[str, Any]:
+    """Every response one Subnet Catalogue read of a single subnet needs.
+
+    Registers ``list-commands`` too, because the Reservation pages probe mutation
+    capabilities from the same server. A registered response is only ever returned
+    when the code under test actually issues that command, so the extra entry cannot
+    change what :meth:`KeaHttpStub.commands` records.
+    """
+    subnet = {"id": subnet_id, "subnet": cidr}
+    return {
+        f"subnet{version}-list": _subnet_list(version, [subnet]),
+        "list-commands": _reservation_mutation_commands(),
+        "config-get": {
+            "result": 0,
+            "arguments": {
+                f"Dhcp{version}": {f"subnet{version}": [subnet], "shared-networks": []},
+                "hash": config_hash,
+            },
+        },
+    }
+
+
 @contextmanager
 def stub_kea(responses: dict[str, Any]):
     """Exercise a view against a real ``KeaClient`` with the HTTP boundary stubbed.

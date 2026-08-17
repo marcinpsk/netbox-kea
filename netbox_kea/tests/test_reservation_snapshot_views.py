@@ -5,21 +5,8 @@ import yaml
 from django.test import override_settings
 from django.urls import reverse
 
-from .kea_stub import _res_get, _res_page, _reservation_mutation_commands, queued, stub_kea
+from .kea_stub import _catalogue_responses, _res_get, _res_page, _reservation_mutation_commands, queued, stub_kea
 from .utils import _PLUGINS_CONFIG, _ViewTestBase
-
-
-def _catalogue_responses(version: int, subnet_id: int, cidr: str) -> dict:
-    subnet_key = f"subnet{version}"
-    subnet = {"id": subnet_id, "subnet": cidr}
-    return {
-        f"subnet{version}-list": {"result": 0, "arguments": {"subnets": [subnet]}},
-        "list-commands": _reservation_mutation_commands(),
-        "config-get": {
-            "result": 0,
-            "arguments": {f"Dhcp{version}": {subnet_key: [subnet]}, "hash": "reservation-ui-catalogue"},
-        },
-    }
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
