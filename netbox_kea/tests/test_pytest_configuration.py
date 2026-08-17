@@ -5,12 +5,33 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _pytest_worker_settings(text: str) -> list[dict[str, str]]:
+    """Return the xdist settings of every pytest command in *text*, one entry per command.
+
+    Shell line continuations are joined first, so a command spread over several lines is
+    one entry. Values are whole tokens, because a substring test accepts ``-n 10`` for
+    ``-n 1`` and ``--maxschedchunk=10`` for ``--maxschedchunk=1``.
+    """
+    settings = []
+    for command in re.findall(r"\bpytest\b.*", text.replace("\\\n", " ")):
+        tokens = command.split()
+        entry: dict[str, str] = {}
+        for index, token in enumerate(tokens):
+            if token == "-n" and index + 1 < len(tokens):
+                entry["workers"] = tokens[index + 1]
+            elif token.startswith("--maxschedchunk="):
+                entry["maxschedchunk"] = token.split("=", 1)[1]
+        settings.append(entry)
+    return settings
 
 
 def test_documented_unit_test_targets_are_shell_safe():
@@ -26,13 +47,39 @@ def test_documented_unit_test_targets_are_shell_safe():
     assert "<dedicated-redis>" not in agents
 
 
-def test_ci_and_documented_commands_request_auto_workers():
-    """Keep every entry point on `-n auto` so the conftest cap is the only ceiling."""
-    workflow = (REPOSITORY_ROOT / ".github/workflows/ci.yml").read_text()
+def test_worker_settings_are_read_as_whole_tokens():
+    """Reject the near misses a substring test accepts: `-n 10` is not `-n 1`."""
+    text = "pytest netbox_kea/tests/ \\\n  -n 10 --maxschedchunk=10 -q\npytest tests/ -n auto --maxschedchunk=1\n"
 
-    assert "-n auto \\" in workflow
+    assert _pytest_worker_settings(text) == [
+        {"workers": "10", "maxschedchunk": "10"},
+        {"workers": "auto", "maxschedchunk": "1"},
+    ]
+
+
+def test_ci_and_documented_commands_request_auto_workers():
+    """Keep every entry point on `-n auto` so the conftest cap is the only ceiling.
+
+    One worker stays allowed, because the query-count baseline must be recorded serially
+    and a single-module job gains nothing from repeating the database setup.
+    """
+    workflow_workers = [
+        entry["workers"]
+        for entry in _pytest_worker_settings((REPOSITORY_ROOT / ".github/workflows/ci.yml").read_text())
+        if "workers" in entry
+    ]
+
+    assert "auto" in workflow_workers, workflow_workers
+    assert set(workflow_workers) <= {"auto", "1"}, workflow_workers
+
     for relative_path in ("AGENTS.md", "README.md"):
-        assert "-n auto --maxschedchunk=1" in (REPOSITORY_ROOT / relative_path).read_text(), relative_path
+        settings = _pytest_worker_settings((REPOSITORY_ROOT / relative_path).read_text())
+        workers = [entry["workers"] for entry in settings if "workers" in entry]
+        chunks = {entry["maxschedchunk"] for entry in settings if "maxschedchunk" in entry}
+
+        assert "auto" in workers, (relative_path, workers)
+        assert set(workers) <= {"auto", "1"}, (relative_path, workers)
+        assert chunks == {"1"}, (relative_path, chunks)
 
 
 def test_documented_integration_commands_disable_pytest_django():
