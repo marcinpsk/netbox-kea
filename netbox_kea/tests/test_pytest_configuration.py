@@ -26,6 +26,15 @@ def test_documented_unit_test_targets_are_shell_safe():
     assert "<dedicated-redis>" not in agents
 
 
+def test_ci_and_documented_commands_request_auto_workers():
+    """Keep every entry point on `-n auto` so the conftest cap is the only ceiling."""
+    workflow = (REPOSITORY_ROOT / ".github/workflows/ci.yml").read_text()
+
+    assert "-n auto \\" in workflow
+    for relative_path in ("AGENTS.md", "README.md"):
+        assert "-n auto --maxschedchunk=1" in (REPOSITORY_ROOT / relative_path).read_text(), relative_path
+
+
 def test_documented_integration_commands_disable_pytest_django():
     """Keep integration commands independent from the unit-test Django settings."""
     for relative_path in ("AGENTS.md", "README.md"):

@@ -20,9 +20,22 @@ import os
 
 import pytest
 
-from netbox_kea.tests.parallel import isolated_test_database_name
+from netbox_kea.tests.parallel import MAX_PARALLEL_WORKERS, isolated_test_database_name
 
 logger = logging.getLogger(__name__)
+
+
+def pytest_xdist_auto_num_workers(config) -> int:
+    """Cap ``-n auto`` at the last worker that still gets private Redis databases.
+
+    Without the cap, ``-n auto`` on a machine with more cores than
+    ``MAX_PARALLEL_WORKERS`` starts workers that ``isolated_redis_databases`` rejects,
+    and every one of them dies during startup. xdist keeps its own core detection, so
+    ``auto`` and ``logical`` stay its decision.
+    """
+    from xdist.plugin import pytest_xdist_auto_num_workers as detected_num_workers
+
+    return min(detected_num_workers(config), MAX_PARALLEL_WORKERS)
 
 
 def pytest_sessionstart(session) -> None:
