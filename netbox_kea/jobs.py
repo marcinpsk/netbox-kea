@@ -60,8 +60,19 @@ def _get_plugin_config() -> dict[str, Any]:
     return config
 
 
+class _SnapshotSkipped:
+    """Sentinel type for a Reservation Snapshot that Kea cannot serve at all."""
+
+    __slots__ = ()
+
+
+#: Kea reports result 2 when host_cmds is not loaded. Reservations are then not a
+#: feature of this server, so the phase is skipped instead of counted as an error.
+SNAPSHOT_SKIPPED = _SnapshotSkipped()
+
+
 def _fetch_reservation_snapshot(server: Server, version: int):
-    """Return one full typed Reservation Snapshot, or None after a safe failure."""
+    """Return a typed Reservation Snapshot, SNAPSHOT_SKIPPED, or None after a failure."""
     from .kea import KeaException
     from .subnet_catalogue import for_synchronization
 
@@ -72,8 +83,8 @@ def _fetch_reservation_snapshot(server: Server, version: int):
     except KeaException as exc:
         if exc.response.get("result") == 2:
             logger.warning("Server %s (v%s): host_cmds is unavailable; Reservation sync skipped", server.name, version)
-        else:
-            logger.warning("Server %s (v%s): Reservation Snapshot failed: %s", server.name, version, exc)
+            return SNAPSHOT_SKIPPED
+        logger.warning("Server %s (v%s): Reservation Snapshot failed: %s", server.name, version, exc)
         return None
     except Exception as exc:  # noqa: BLE001
         logger.warning("Server %s (v%s): Reservation Snapshot failed: %s", server.name, version, exc)
@@ -82,7 +93,7 @@ def _fetch_reservation_snapshot(server: Server, version: int):
 
 def _reservation_snapshot_ips(snapshot) -> frozenset[str] | None:
     """Return all Snapshot addresses only when the traversal and every record are complete."""
-    if snapshot is None or not snapshot.complete:
+    if snapshot is None or snapshot is SNAPSHOT_SKIPPED or not snapshot.complete:
         return None
     return frozenset(str(address) for reservation in snapshot.records for address in reservation.addresses)
 
@@ -219,7 +230,7 @@ def _sync_server_reservations(
     Returns ``True`` when all reservation pages were fetched successfully,
     ``False`` when the sync was skipped (e.g. host_cmds not loaded) or failed.
     A ``False`` return means *all_synced* may be incomplete and cleanup must be
-    skipped.
+    skipped.  Only a genuine failure counts an error; ``SNAPSHOT_SKIPPED`` does not.
     """
     from .sync import sync_reservation_to_netbox
 
@@ -230,6 +241,8 @@ def _sync_server_reservations(
     # Foreign (manually-curated) NetBox IPs skipped to avoid overwriting them.
     conflicts: list[str] = []
 
+    if snapshot is SNAPSHOT_SKIPPED:
+        return False
     if snapshot is None:
         stats["errors"] += 1
         return False

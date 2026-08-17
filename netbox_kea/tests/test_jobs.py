@@ -497,6 +497,46 @@ class TestKeaIpamSyncJobRun(TestCase):
                 self._run()
         self.assertTrue(any("host_cmds" in msg for msg in cm.output))
 
+    def test_absent_host_cmds_is_skipped_not_counted_as_an_error(self):
+        """A server without host_cmds has no reservations to sync, so the job must not fail.
+
+        ``_fetch_reservation_snapshot`` returned ``None`` for both a missing hook and a
+        genuine failure, so the skip incremented ``stats["errors"]`` and every sync run
+        against such a server ended in ``JobFailed``.
+        """
+        self._make_db_server()
+        with _patch_kea(
+            leases4=[_LEASE4],
+            responses={"reservation-get-page": {"result": 2, "text": "unknown command"}},
+        ):
+            with self.assertLogs("netbox_kea.jobs", level="WARNING"):
+                # Must not raise JobFailed: nothing failed, the feature is absent.
+                KeaIpamSyncJob(_make_job()).run()
+
+    def test_absent_host_cmds_reports_zero_errors_in_the_summary(self):
+        self._make_db_server()
+        with _patch_kea(
+            leases4=[_LEASE4],
+            responses={"reservation-get-page": {"result": 2, "text": "unknown command"}},
+        ):
+            with self.assertLogs("netbox_kea.jobs", level="WARNING"):
+                job = self._run()
+
+        self.assertEqual([entry["errors"] for entry in job.data["summary"]], [0])
+
+    def test_a_failed_reservation_read_is_still_counted_as_an_error(self):
+        """Only the missing-hook case is a skip; a real read failure must still fail the job."""
+        # DHCPv4 only, so the count is exactly one failed reservation read.
+        self._make_db_server(dhcp6=False)
+        with _patch_kea(
+            leases4=[_LEASE4],
+            responses={"reservation-get-page": {"result": 1, "text": "internal error"}},
+        ):
+            with self.assertLogs("netbox_kea.jobs", level="WARNING"):
+                job = self._run()
+
+        self.assertEqual([entry["errors"] for entry in job.data["summary"]], [1])
+
     @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG_CLEANUP)
     def test_cleanup_skipped_when_host_cmds_absent(self):
         """Reservation phase skipped (host_cmds absent) → cleanup_safe=False → stale IP preserved."""
