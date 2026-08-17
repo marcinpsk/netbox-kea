@@ -625,8 +625,8 @@ def sync_reservation_to_netbox(
     reservation hostname.
 
     For DHCPv6 reservations with multiple ``ip-addresses``, all addresses are
-    synced.  The first address is returned as the primary ``(ip_object, created)``
-    result.
+    synced.  The result carries the first synchronized address as ``primary``, the
+    aggregate ``state``, and the ``created``/``changed`` counts.
 
     Args:
         reservation: Typed Reservation domain value.

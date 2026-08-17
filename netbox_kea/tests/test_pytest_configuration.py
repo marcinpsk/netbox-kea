@@ -153,12 +153,11 @@ def test_serial_django_suite_is_rejected():
 
 
 def test_dhcp_plugin_ci_uses_xdist():
-    """Keep the DHCP plugin job on an isolated xdist worker."""
+    """Keep the DHCP plugin job on exactly one xdist worker, not merely on a count."""
     workflow = (REPOSITORY_ROOT / ".github" / "workflows" / "ci.yml").read_text()
     command = workflow.split("- name: Run DHCP plugin adapter tests", 1)[1].split("\n\n", 1)[0]
 
-    assert "-n 1" in command
-    assert "--maxschedchunk=1" in command
+    assert _pytest_worker_settings(command) == [{"workers": "1", "maxschedchunk": "1"}]
 
 
 def test_pytest_configuration_works_with_django_plugin_disabled():
