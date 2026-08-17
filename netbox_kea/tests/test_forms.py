@@ -3,6 +3,7 @@
 """Unit tests for netbox_kea.forms — validation logic for all form classes."""
 
 from django.core.exceptions import ValidationError
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import SimpleTestCase, TestCase
 
 from netbox_kea import constants
@@ -10,12 +11,19 @@ from netbox_kea.forms import Leases4SearchForm, Leases6SearchForm, MultipleIPFie
 from netbox_kea.reservations import ReservationCapabilities, reservation_identifier_types
 
 
-def _reservation_capabilities(family):
+def _reservation_capabilities(family, identifiers=None):
+    """Live capabilities for *family*; pass *identifiers* to restrict what Kea enables."""
+    enabled = reservation_identifier_types(family) if identifiers is None else tuple(identifiers)
     return ReservationCapabilities(
         family=family,
-        identifiers=reservation_identifier_types(family),
+        identifiers=enabled,
         mutation_available=True,
         explanation="",
+        unavailable_identifiers=tuple(
+            (identifier, "Not enabled in the live Kea configuration.")
+            for identifier in reservation_identifier_types(family)
+            if identifier not in enabled
+        ),
     )
 
 
@@ -1156,3 +1164,110 @@ class TestLeasesSearchFormSubnetCombobox(SimpleTestCase):
         form = Leases4SearchForm(data={"by": "subnet", "q": "192.168.1.0/24", "page": "192.168.1.10"})
         self.assertFalse(form.is_valid())
         self.assertIn("page", form.errors)
+
+
+class TestReservationIdentifierCapabilities(SimpleTestCase):
+    """The identifier the operator picked must be one the live Kea config enables."""
+
+    def test_v4_rejects_an_identifier_the_live_configuration_disables(self):
+        from netbox_kea.forms import Reservation4Form
+
+        form = Reservation4Form(
+            data={
+                "subnet_cidr": "192.168.1.0/24",
+                "ip_address": "192.168.1.100",
+                "identifier_type": "client-id",
+                "identifier": "01aabbccddeeff",
+            },
+            capabilities=_reservation_capabilities(4, identifiers=("hw-address",)),
+        )
+
+        self.assertFalse(form.is_valid())
+        self.assertIn(
+            "This identifier is not enabled in the live Kea configuration.",
+            form.errors["identifier_type"],
+        )
+
+    def test_v4_accepts_an_identifier_the_live_configuration_enables(self):
+        from netbox_kea.forms import Reservation4Form
+
+        form = Reservation4Form(
+            data={
+                "subnet_cidr": "192.168.1.0/24",
+                "ip_address": "192.168.1.100",
+                "identifier_type": "hw-address",
+                "identifier": "aa:bb:cc:dd:ee:ff",
+            },
+            capabilities=_reservation_capabilities(4, identifiers=("hw-address",)),
+        )
+
+        self.assertTrue(form.is_valid(), form.errors)
+
+    def test_v6_rejects_an_identifier_the_live_configuration_disables(self):
+        from netbox_kea.forms import Reservation6Form
+
+        form = Reservation6Form(
+            data={
+                "subnet_cidr": "2001:db8::/64",
+                "ip_addresses": "2001:db8::100",
+                "identifier_type": "hw-address",
+                "identifier": "aa:bb:cc:dd:ee:ff",
+            },
+            capabilities=_reservation_capabilities(6, identifiers=("duid",)),
+        )
+
+        self.assertFalse(form.is_valid())
+        self.assertIn(
+            "This identifier is not enabled in the live Kea configuration.",
+            form.errors["identifier_type"],
+        )
+
+
+class TestBulkReservationImportForm(SimpleTestCase):
+    """Exactly one document source, with a message that names the actual problem."""
+
+    def _form(self, **kwargs):
+        from netbox_kea.forms import Reservation4ImportForm
+
+        return Reservation4ImportForm(**kwargs)
+
+    def test_rejects_both_sources_at_once(self):
+        upload = SimpleUploadedFile("r.yaml", b"reservations: []", content_type="application/yaml")
+        form = self._form(data={"document": "reservations: []", "format": "yaml"}, files={"document_file": upload})
+
+        self.assertFalse(form.is_valid())
+        self.assertIn(
+            "Paste a document or upload a document file, but do not use both.",
+            form.non_field_errors(),
+        )
+
+    def test_rejects_neither_source_without_claiming_both_were_used(self):
+        form = self._form(data={"format": "yaml"})
+
+        self.assertFalse(form.is_valid())
+        # The empty form is a distinct problem: "do not use both" described it wrongly.
+        self.assertIn("Paste a document or upload a document file.", form.non_field_errors())
+        self.assertNotIn(
+            "Paste a document or upload a document file, but do not use both.",
+            form.non_field_errors(),
+        )
+
+    def test_accepts_a_pasted_document(self):
+        form = self._form(data={"document": "reservations: []", "format": "yaml"})
+
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.cleaned_data["document"], "reservations: []")
+
+    def test_decodes_an_uploaded_document_as_utf8(self):
+        upload = SimpleUploadedFile("r.yaml", "reservations: []\n# café\n".encode(), content_type="application/yaml")
+        form = self._form(data={"format": "yaml"}, files={"document_file": upload})
+
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertIn("café", form.cleaned_data["document"])
+
+    def test_rejects_an_upload_that_is_not_utf8(self):
+        upload = SimpleUploadedFile("r.yaml", b"reservations: []\n# \xff\xfe", content_type="application/yaml")
+        form = self._form(data={"format": "yaml"}, files={"document_file": upload})
+
+        self.assertFalse(form.is_valid())
+        self.assertIn("The document file must use UTF-8 encoding.", form.non_field_errors())

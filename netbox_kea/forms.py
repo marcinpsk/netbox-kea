@@ -426,6 +426,7 @@ class ReservationIdentifierSelect(forms.Select):
 
 
 def _configure_identifier_capabilities(form: forms.Form, capabilities: Any, version: int) -> None:
+    """Disable identifier choices the live Kea configuration cannot use."""
     unavailable = (
         dict(capabilities.unavailable_identifiers)
         if capabilities is not None
@@ -1092,8 +1093,10 @@ class _BaseBulkReservationImportForm(forms.Form):
         cleaned_data = super().clean()
         document = cleaned_data.get("document")
         document_file = cleaned_data.get("document_file")
-        if bool(document) == bool(document_file):
+        if document and document_file:
             raise forms.ValidationError("Paste a document or upload a document file, but do not use both.")
+        if not document and not document_file:
+            raise forms.ValidationError("Paste a document or upload a document file.")
         if document_file is not None:
             try:
                 document = document_file.read().decode("utf-8-sig")
