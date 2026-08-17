@@ -92,3 +92,43 @@ def django_db_setup(request, django_test_environment, django_db_blocker):
     if not keepdb:
         with django_db_blocker.unblock():
             teardown_databases(db_cfg, verbosity=verbosity)
+
+
+#: The plugin's own cache key prefixes. Both are keyed on a Server ID.
+_PLUGIN_CACHE_PATTERNS = ("netbox_kea:subnet_catalogue:*", "netbox_kea:subnet_choices:*")
+
+
+def _drop_plugin_cache_entries() -> None:
+    """Delete every cache entry the plugin owns, for any Server ID.
+
+    Scoped to the plugin's prefixes so NetBox's own cached state is untouched. Uses
+    ``delete_pattern`` from django_redis, which NetBox requires; a backend without it
+    fails loudly here rather than silently skipping the cleanup and letting the
+    cross-test leak return.
+    """
+    from django.core.cache import cache
+
+    if not hasattr(cache, "delete_pattern"):
+        raise RuntimeError(
+            "The cache backend has no delete_pattern(); netbox_kea test cache hygiene "
+            f"needs it to clear {_PLUGIN_CACHE_PATTERNS}."
+        )
+    for pattern in _PLUGIN_CACHE_PATTERNS:
+        cache.delete_pattern(pattern)
+
+
+@pytest.fixture(autouse=True)
+def _plugin_cache_hygiene():
+    """Clear the plugin's cache entries around every test.
+
+    The database rolls back per test and the cache backend does not, while test Server
+    IDs are reused across tests, so an entry written under one test's Server ID would
+    otherwise be served to a later test that stubbed different Kea responses. That
+    produced intermittent failures on a different test each parallel run.
+
+    Autouse so no test base has to opt in: the leak came back each time a new base
+    created a Server and forgot to clear the cache itself.
+    """
+    _drop_plugin_cache_entries()
+    yield
+    _drop_plugin_cache_entries()
