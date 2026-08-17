@@ -367,7 +367,15 @@ def _parse_record(
         if family is not None and subnet_cidr is not None and identity is not None
         else None
     )
-    if None in (family, subnet_cidr, identity, addresses, prefixes, hostname, options):
+    if (
+        family is None
+        or subnet_cidr is None
+        or identity is None
+        or addresses is None
+        or prefixes is None
+        or hostname is None
+        or options is None
+    ):
         return None, duplicate_key
     return (
         ReservationImportProposal(
