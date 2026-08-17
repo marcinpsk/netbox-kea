@@ -98,6 +98,25 @@ def _fetch_reservation_snapshot(server: Server, version: int):
         return None
 
 
+def _summary_problems(summary) -> list[str]:
+    """Return one note per non-zero problem count in *summary*.
+
+    Every note is reported together: an if/elif chain hid the later counts whenever
+    an earlier one was set, so one import could look cleaner than it was.
+    """
+    problems = []
+    if summary.reservations_unread:
+        problems.append(
+            "The Reservation Snapshot could not be read in full. "
+            "Check that the host_cmds hook is loaded. Reservation counts may be incomplete."
+        )
+    if summary.reservations_quarantined:
+        problems.append(f"{summary.reservations_quarantined} malformed reservation(s) were quarantined.")
+    if summary.errors:
+        problems.append(f"{summary.errors} errors occurred. See the logs.")
+    return problems
+
+
 def run_dhcp_plugin_import(server: Server) -> list[tuple[int, object]]:
     """Import every enabled version's live Kea config into the DHCP plugin.
 
@@ -268,19 +287,9 @@ class ServerDhcpPluginSyncNowView(View):
                 )
             if notes:
                 text += f" ({'; '.join(notes)})"
-            if summary.reservations_unread:
-                messages.warning(
-                    request,
-                    f"{text}. The Reservation Snapshot could not be read. "
-                    "Check that the host_cmds hook is loaded. Reservation counts may be incomplete.",
-                )
-            elif summary.reservations_quarantined:
-                messages.warning(
-                    request,
-                    f"{text}. {summary.reservations_quarantined} malformed reservation(s) were quarantined.",
-                )
-            elif summary.errors:
-                messages.warning(request, f"{text}. {summary.errors} errors occurred. See the logs.")
+            problems = _summary_problems(summary)
+            if problems:
+                messages.warning(request, f"{text}. {' '.join(problems)}")
             else:
                 messages.success(request, text + ".")
         return redirect

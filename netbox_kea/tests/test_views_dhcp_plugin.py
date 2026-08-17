@@ -321,3 +321,43 @@ class SyncNowErrorHandlingTest(TestCase):
             resp = self.client.post(self.url, follow=True)
         self.assertEqual(resp.status_code, 200)
         self.assertContains(resp, "An internal error occurred")
+
+
+class SummaryProblemsTest(SimpleTestCase):
+    """Every non-zero problem count must be reported, not only the first one.
+
+    The view used an ``if/elif/elif`` chain, so an unread Snapshot hid the
+    quarantine and error counts and the operator saw an incomplete picture.
+    """
+
+    def _summary(self, **counts):
+        from netbox_kea.integrations.dhcp_plugin import ImportSummary
+
+        summary = ImportSummary()
+        for name, value in counts.items():
+            setattr(summary, name, value)
+        return summary
+
+    def test_no_problems_yields_no_notes(self):
+        self.assertEqual(dps._summary_problems(self._summary()), [])
+
+    def test_every_non_zero_count_is_reported_together(self):
+        problems = dps._summary_problems(self._summary(reservations_unread=True, reservations_quarantined=2, errors=3))
+
+        self.assertEqual(len(problems), 3)
+        joined = " ".join(problems)
+        self.assertIn("host_cmds", joined)
+        self.assertIn("2 malformed reservation(s) were quarantined.", joined)
+        self.assertIn("3 errors occurred.", joined)
+
+    def test_quarantine_count_is_reported_alongside_an_unread_snapshot(self):
+        problems = dps._summary_problems(self._summary(reservations_unread=True, reservations_quarantined=5))
+
+        self.assertEqual(len(problems), 2)
+        self.assertIn("5 malformed reservation(s) were quarantined.", " ".join(problems))
+
+    def test_error_count_is_reported_alongside_quarantined_reservations(self):
+        problems = dps._summary_problems(self._summary(reservations_quarantined=1, errors=4))
+
+        self.assertEqual(len(problems), 2)
+        self.assertIn("4 errors occurred.", " ".join(problems))
