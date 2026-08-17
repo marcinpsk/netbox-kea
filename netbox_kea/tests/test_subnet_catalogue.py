@@ -170,7 +170,7 @@ class TestSubnetCatalogue(TestCase):
         self.assertEqual(settings.interface_id, "eth0-v6")
         self.assertEqual(settings.relay_addresses, (ipaddress.ip_address("2001:db8::1"),))
 
-    def test_dhcpv6_relay_drops_addresses_from_the_wrong_family(self):
+    def _dhcpv6_relay_snapshot(self, relay_addresses):
         identities = _identity(6, [{"id": 1, "subnet": "2001:db8:1::/64", "shared-network-name": None}])
         configuration = _config(
             6,
@@ -178,20 +178,38 @@ class TestSubnetCatalogue(TestCase):
                 {
                     "id": 1,
                     "subnet": "2001:db8:1::/64",
-                    "pools": [{"pool": "198.18.1.0/24"}],
+                    # Valid IPv6 pool: the relay must be the only invalid input, so the
+                    # snapshot class below can only be explained by the relay.
+                    "pools": [{"pool": "2001:db8:1::/80"}],
                     "option-data": [],
-                    "relay": {"ip-addresses": ["198.18.1.1", "2001:db8::1"]},
+                    "relay": {"ip-addresses": relay_addresses},
                 }
             ],
         )
-
         with stub_kea({"subnet6-list": identities, "config-get": configuration}):
-            snapshot = display(self.server, 6)
+            return display(self.server, 6)
 
+    def test_dhcpv6_relay_drops_addresses_from_the_wrong_family(self):
+        snapshot = self._dhcpv6_relay_snapshot(["198.18.1.1", "2001:db8::1"])
+
+        # An omitted invalid setting must not leave the catalogue authoritative, or
+        # synchronization would treat the surviving configuration as complete.
+        self.assertIsInstance(snapshot, IncompleteCatalogueSnapshot)
+        self.assertIn("invalid-setting", {diagnostic.code for diagnostic in snapshot.diagnostics})
         subnet = snapshot.find_by_id(1)
         self.assertEqual(subnet.configuration.settings.relay_addresses, (ipaddress.ip_address("2001:db8::1"),))
-        self.assertEqual(subnet.configuration.pools, ())
-        self.assertTrue({"invalid-pool", "invalid-setting"}.issubset({d.code for d in snapshot.diagnostics}))
+        # The valid pool survives, so the diagnostic above is the relay's alone.
+        self.assertEqual(subnet.configuration.pools[0].start, ipaddress.ip_address("2001:db8:1::"))
+
+    def test_dhcpv6_relay_of_the_right_family_keeps_the_catalogue_complete(self):
+        snapshot = self._dhcpv6_relay_snapshot(["2001:db8::1"])
+
+        self.assertIsInstance(snapshot, CompleteCatalogueSnapshot)
+        self.assertEqual(snapshot.diagnostics, ())
+        self.assertEqual(
+            snapshot.find_by_id(1).configuration.settings.relay_addresses,
+            (ipaddress.ip_address("2001:db8::1"),),
+        )
 
     def test_public_operations_reject_invalid_scope(self):
         with self.assertRaisesMessage(ValueError, "family must be 4 or 6"):
