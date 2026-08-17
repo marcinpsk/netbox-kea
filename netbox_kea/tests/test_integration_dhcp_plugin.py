@@ -761,6 +761,52 @@ class DhcpPluginReservationSnapshotImportTest(TestCase):
         self.assertEqual(second.reservations_created, 0)
         self.assertEqual(HostReservation.objects.count(), 1)
 
+    def test_global_hardware_reservation_keeps_its_identity_across_reimports(self):
+        """A Global Scope skips the IPAM sync, which must not cost the reservation its MAC."""
+        from dcim.models import MACAddress
+
+        HostReservation = apps.get_model(DHCP_PLUGIN, "HostReservation")
+
+        conf = {"subnet4": []}
+        hosts = [{"subnet-id": 0, "hw-address": "aa:bb:cc:dd:ee:11", "ip-address": "10.11.0.9", "hostname": "g-hw"}]
+        intent = parse_dhcp_config(conf, 4)
+        snapshot = _reservation_snapshot(conf, 4, hosts)
+
+        first = self.adapter.import_server_config(self.server, intent, snapshot)
+        second = self.adapter.import_server_config(self.server, intent, snapshot)
+
+        self.assertEqual(first.errors, 0, first.warnings)
+        self.assertEqual(second.errors, 0, second.warnings)
+        self.assertEqual(second.reservations_created, 0)
+        self.assertEqual(HostReservation.objects.count(), 1)
+        self.assertEqual(
+            HostReservation.objects.get().hw_address,
+            MACAddress.objects.get(mac_address="aa:bb:cc:dd:ee:11"),
+        )
+
+    def test_addressless_hardware_reservation_keeps_its_identity_across_reimports(self):
+        """An identifier-only host reserves no address, so the IPAM sync skips it too."""
+        from dcim.models import MACAddress
+
+        HostReservation = apps.get_model(DHCP_PLUGIN, "HostReservation")
+
+        conf = {"subnet4": [{"id": 12, "subnet": "10.12.0.0/24"}]}
+        hosts = [{"subnet-id": 12, "hw-address": "aa:bb:cc:dd:ee:12", "hostname": "id-only"}]
+        intent = parse_dhcp_config(conf, 4)
+        snapshot = _reservation_snapshot(conf, 4, hosts)
+
+        first = self.adapter.import_server_config(self.server, intent, snapshot)
+        second = self.adapter.import_server_config(self.server, intent, snapshot)
+
+        self.assertEqual(first.errors, 0, first.warnings)
+        self.assertEqual(second.errors, 0, second.warnings)
+        self.assertEqual(second.reservations_created, 0)
+        self.assertEqual(HostReservation.objects.count(), 1)
+        self.assertEqual(
+            HostReservation.objects.get().hw_address,
+            MACAddress.objects.get(mac_address="aa:bb:cc:dd:ee:12"),
+        )
+
     def test_global_v6_reservation_does_not_invent_ipam_scope(self):
         from ipam.models import IPAddress
 

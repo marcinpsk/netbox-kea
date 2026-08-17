@@ -144,7 +144,7 @@ def _reservation_subnets(reservations: list[dict], version: int) -> list[dict]:
     return [{"id": subnet_id, "subnet": network} for subnet_id, network in sorted(subnets.items())]
 
 
-def _catalogue_snapshot(reservations: list[dict], version: int):
+def _reservation_snapshot(reservations: list[dict], version: int):
     entries = _reservation_subnets(reservations, version)
     catalogue = CompleteCatalogueSnapshot(
         server_id=1,
@@ -1581,7 +1581,7 @@ class TestSyncServerReservationsReturnValue(TestCase):
         # The typed Snapshot quarantines the malformed record before synchronization.
         stats = self._stats()
         bad = {"ip-address": "999.999.999.999", "hw-address": "aa:bb:cc:dd:ee:ff", "subnet-id": 1}
-        snapshot = _catalogue_snapshot([bad], 4)
+        snapshot = _reservation_snapshot([bad], 4)
         ok = _sync_server_reservations(self._server(), snapshot, stats=stats, all_synced=[])
 
         self.assertFalse(ok)
@@ -1600,7 +1600,7 @@ class TestSyncServerReservationsReturnValue(TestCase):
         stats = self._stats()
         all_synced: list = []
         host = {"hostname": "printer-1", "hw-address": "aa:bb:cc:dd:ee:ff", "subnet-id": 1}
-        snapshot = _catalogue_snapshot([host], 4)
+        snapshot = _reservation_snapshot([host], 4)
         ok = _sync_server_reservations(self._server(), snapshot, stats=stats, all_synced=all_synced)
 
         self.assertTrue(ok)
@@ -1622,7 +1622,7 @@ class TestSyncServerReservationsReturnValue(TestCase):
         conflict_ips: set[str] = set()
         stats = self._stats()
         host = {"ip-address": "10.0.0.100", "hw-address": "11:22:33:44:55:66", "subnet-id": 1}
-        snapshot = _catalogue_snapshot([host], 4)
+        snapshot = _reservation_snapshot([host], 4)
         _sync_server_reservations(self._server(), snapshot, stats=stats, all_synced=[], conflict_ips=conflict_ips)
 
         self.assertEqual(conflict_ips, {"10.0.0.100"})
@@ -1635,7 +1635,7 @@ class TestSyncServerReservationsReturnValue(TestCase):
         stats = self._stats()
         all_synced: list = []
         host = {"duid": "00:01:00:01:12:34", "subnet-id": 12, "prefixes": ["2001:db8:1::/64"]}
-        snapshot = _catalogue_snapshot([host], 6)
+        snapshot = _reservation_snapshot([host], 6)
         ok = _sync_server_reservations(self._server(), snapshot, stats=stats, all_synced=all_synced)
 
         self.assertTrue(ok)
@@ -1874,7 +1874,7 @@ class TestSyncServerReservationsUpdated(TestCase):
 
         stats = {"created": 0, "updated": 0, "errors": 0, "prefix_errors": 0}
         all_synced: list = []
-        snapshot = _catalogue_snapshot([_RESV4], 4)
+        snapshot = _reservation_snapshot([_RESV4], 4)
         result = _sync_server_reservations(server, snapshot, stats=stats, all_synced=all_synced)
 
         self.assertTrue(result)

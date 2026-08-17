@@ -343,26 +343,26 @@ def _cleanup_stale_ips(
     return count
 
 
-def _sync_mac_address(hw_address: str, hostname: str = "") -> None:
-    """Create or update a NetBox ``MACAddress`` entry for *hw_address*.
+def _sync_mac_address(hw_address: str, hostname: str = ""):
+    """Create or update a NetBox ``MACAddress`` entry for *hw_address* and return it.
 
     When *hostname* is provided the ``description`` field is annotated with
     a ``dhcp_hostname: {hostname}`` token (smart append/replace that preserves
     any existing manual description text when the MAC has an assigned interface).
 
-    Silently skipped on NetBox versions older than 4.1 where the
-    ``dcim.MACAddress`` model does not exist.  All other errors are caught and
-    logged at DEBUG level so MAC sync failures never surface to the user.
+    Returns ``None`` when no row can exist: NetBox older than 4.1 has no
+    ``dcim.MACAddress`` model, and a malformed address or a database error is caught
+    and logged at DEBUG level so MAC sync failures never surface to the user.
     """
     try:
         from dcim.models import MACAddress
     except ImportError:
-        return  # NetBox < 4.1 — MACAddress model not available
+        return None  # NetBox < 4.1 — MACAddress model not available
     try:
         from netaddr import EUI, AddrFormatError, mac_unix_expanded
     except ImportError:
         logger.debug("netaddr not available — skipping MAC sync for %s", hw_address)
-        return
+        return None
     try:
         from django.db.utils import IntegrityError, OperationalError, ProgrammingError
 
@@ -370,12 +370,14 @@ def _sync_mac_address(hw_address: str, hostname: str = "") -> None:
         mac_obj, _ = MACAddress.objects.get_or_create(mac_address=mac_str)
         if hostname and _update_mac_description(mac_obj, hostname):
             mac_obj.save()
+        return mac_obj
     except (ProgrammingError, OperationalError, IntegrityError):
         logger.debug("DB error while syncing MAC address %s to NetBox DCIM", hw_address, exc_info=True)
     except AddrFormatError:
         logger.debug("Invalid MAC address format %r — skipping DCIM MAC sync", hw_address, exc_info=True)
     except Exception:  # noqa: BLE001 — unexpected errors from MACAddress model
         logger.debug("Failed to sync MAC address %s to NetBox DCIM", hw_address, exc_info=True)
+    return None
 
 
 _KEA_DESC_PREFIX = "Synced from Kea DHCP"

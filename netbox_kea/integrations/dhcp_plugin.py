@@ -172,24 +172,23 @@ def _ensure_reservation_addresses(reservation: Reservation):
             ipv4_ip = ip_obj
 
     identity = reservation.identity
-    mac_obj = _resolve_mac(identity.value) if identity.identifier_type == "hw-address" else None
+    is_hardware = identity.identifier_type == "hw-address"
+    mac_obj = _resolve_mac(identity.value, reservation.hostname) if is_hardware else None
     return ipv4_ip, ipv6_ips, mac_obj
 
 
-def _resolve_mac(hw_address: str | None):
-    """Return the ``dcim.MACAddress`` row for *hw_address* (created by the sync helper)."""
+def _resolve_mac(hw_address: str | None, hostname: str = ""):
+    """Return the ``dcim.MACAddress`` row for *hw_address*, creating it when absent.
+
+    ``sync_reservation_to_netbox`` also creates this row, but it returns Not Applicable
+    first for a Global or addressless Reservation. Only reading here would then leave
+    the imported reservation with no identifier, so it could never match itself again.
+    """
     if not hw_address:
         return None
-    try:
-        from dcim.models import MACAddress
-        from netaddr import EUI, AddrFormatError, mac_unix_expanded
-    except ImportError:
-        return None
-    try:
-        mac_str = str(EUI(hw_address, dialect=mac_unix_expanded))
-    except AddrFormatError:
-        return None
-    return MACAddress.objects.filter(mac_address=mac_str).first()
+    from ..sync import _sync_mac_address
+
+    return _sync_mac_address(hw_address, hostname)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
