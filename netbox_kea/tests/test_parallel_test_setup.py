@@ -114,7 +114,11 @@ def test_auto_request_resolves_through_the_installed_hook():
             timeout=300,
         )
 
-    assert f"RESOLVED={MAX_PARALLEL_WORKERS}" in result.stdout, result.stdout + result.stderr
+    # The probe prints during collection, so a later failure would still leave the
+    # expected line in stdout. Require the run itself to succeed first.
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    assert f"RESOLVED={MAX_PARALLEL_WORKERS}" in result.stdout, output
 
 
 @pytest.mark.django_db
