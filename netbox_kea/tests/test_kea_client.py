@@ -3620,6 +3620,31 @@ class TestLeaseSearch(TestCase):
 
         self.assertEqual(kea.commands(), ["stat-lease4-get"])
 
+    def test_unmeasured_subnet_fails_closed_instead_of_counting_zero(self):
+        """Refuse the unpaged query when Kea reports no statistics for the Subnet.
+
+        An empty statistics answer says the Subnet was not measured, not that it holds no
+        leases, so reading it as zero would send exactly the unbounded query the guard
+        exists to stop.
+        """
+        columns = ["subnet-id", "assigned-addresses", "declined-addresses"]
+        cases = (
+            ("empty result", {"result": 3, "text": "no statistics"}),
+            (
+                "another Subnet only",
+                {"result": 0, "arguments": {"result-set": {"columns": columns, "rows": [[13, 1, 0]]}}},
+            ),
+        )
+
+        for label, response in cases:
+            with self.subTest(response=label), stub_kea({"stat-lease4-get": response}) as kea:
+                with self.assertRaises(LeaseQueryPreflightUnavailable) as ctx:
+                    self.client.lease_search(4, "subnet_id", 12)
+
+                self.assertEqual(ctx.exception.reason, "statistics")
+                self.assertIn("stat_cmds", lease_query_guard_message(ctx.exception, None))
+                self.assertEqual(kea.commands(), ["stat-lease4-get"])
+
     def test_missing_state_command_fails_closed_when_guard_is_enabled(self):
         client = KeaClient(url="http://kea:8000", max_unpaged_leases=100)
         with stub_kea(
@@ -3679,10 +3704,6 @@ class TestLeaseSearch(TestCase):
             (
                 {"result": 0, "arguments": {"result-set": {"columns": columns, "rows": [[]]}}},
                 "malformed statistics row",
-            ),
-            (
-                {"result": 0, "arguments": {"result-set": {"columns": columns, "rows": [[13, 1, 0]]}}},
-                "did not return statistics",
             ),
             (
                 {"result": 0, "arguments": {"result-set": {"columns": columns, "rows": [[12, True, 0]]}}},

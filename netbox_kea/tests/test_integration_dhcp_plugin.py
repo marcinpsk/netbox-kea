@@ -917,3 +917,31 @@ class ImportSummaryCompletenessTest(SimpleTestCase):
 
         self.assertFalse(summary.reservations_unread)
         self.assertEqual(summary.reservations_quarantined, 0)
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class SkippedReservationCompletenessTest(TestCase):
+    """A record the importer drops must leave the counts marked incomplete.
+
+    Needs the real ``KeaDhcpLink`` table to resolve the Subnet, but never reaches the
+    per-record upsert, so it runs without ``netbox_dhcp`` installed.
+    """
+
+    def setUp(self):
+        self.server = _make_db_server()
+
+    def test_record_for_an_unlinked_subnet_id_reports_the_counts_as_unread(self):
+        from netbox_kea.integrations.dhcp_plugin import ImportSummary, import_reservation_snapshot
+
+        conf = {"subnet4": [{"id": 7, "subnet": "198.18.7.0/24"}]}
+        hosts = [{"subnet-id": 7, "hw-address": "aa:bb:cc:00:00:07", "ip-address": "198.18.7.10"}]
+        snapshot = _reservation_snapshot(conf, 4, hosts)
+        summary = ImportSummary()
+
+        # No KeaDhcpLink exists for subnet-id 7, so the record cannot be imported.
+        import_reservation_snapshot(self.server, None, snapshot, None, summary)
+
+        self.assertTrue(snapshot.complete)
+        self.assertEqual(summary.reservations_created, 0)
+        self.assertTrue(summary.reservations_unread)
+        self.assertIn("reservation for unknown subnet-id 7 skipped", summary.warnings)

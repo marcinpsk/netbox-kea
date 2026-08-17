@@ -17,6 +17,7 @@ from __future__ import annotations
 import importlib.util
 import logging
 from dataclasses import dataclass
+from functools import cached_property
 from typing import TYPE_CHECKING
 
 from .reservations import (
@@ -38,10 +39,19 @@ logger = logging.getLogger(__name__)
 class ReservationSyncResult:
     """Aggregate result for one typed Reservation synchronization."""
 
-    state: ReservationSynchronizationState
+    reservation: Reservation
     primary: NbIPAddress | None
     created: int
     changed: int
+
+    @cached_property
+    def state(self) -> ReservationSynchronizationState:
+        """Read the synchronization state on first access.
+
+        Reading it costs one IPAM query for the addresses just written, and a bulk
+        synchronization uses only the counts, so it stays unread there.
+        """
+        return reservation_synchronization_state(self.reservation)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -654,11 +664,10 @@ def sync_reservation_to_netbox(
     from ipam.models import IPAddress as NbIP
 
     # Both Not Applicable cases follow from the scope and the address tuple alone, so
-    # test them directly: a state read here would run an IPAM query that is discarded
-    # for every other Reservation, on top of the single state read at the end.
+    # test them directly instead of reading a state the caller may never look at.
     if isinstance(reservation.scope, GlobalReservationScope) or not reservation.addresses:
         return ReservationSyncResult(
-            state=reservation_synchronization_state(reservation),
+            reservation=reservation,
             primary=None,
             created=0,
             changed=0,
@@ -733,7 +742,7 @@ def sync_reservation_to_netbox(
         _sync_mac_address(reservation.identity.value, hostname)
 
     return ReservationSyncResult(
-        state=reservation_synchronization_state(reservation),
+        reservation=reservation,
         primary=primary_obj,
         created=created_count,
         changed=changed_count,

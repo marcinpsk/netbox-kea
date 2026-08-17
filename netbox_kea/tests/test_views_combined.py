@@ -232,6 +232,39 @@ class TestCombinedReservationsShowWhatIsReserved(_ViewTestBase):
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestCombinedReservationSyncControl(_ViewTestBase):
+    """The combined tab must offer the same Reservation synchronization as one server.
+
+    The table cell renders the Sync all button only from ``sync_url``, which the
+    enrichment sets only for a caller that passes ``can_sync``. The combined view left
+    it out, so the button never rendered there.
+    """
+
+    def _url(self, version=4):
+        return reverse(f"plugins:netbox_kea:combined_reservations{version}") + f"?server={self.server.pk}"
+
+    def test_unsynchronized_row_offers_the_sync_control(self):
+        hosts = [{"subnet-id": 1, "hw-address": "aa:bb:cc:00:00:01", "ip-address": "198.18.0.10"}]
+        subnet = {"id": 1, "subnet": "198.18.0.0/24"}
+        stub = {
+            "subnet4-list": {"result": 0, "arguments": {"subnets": [subnet]}},
+            "config-get": {"result": 0, "arguments": {"Dhcp4": {"subnet4": [subnet]}}},
+            "list-commands": _reservation_mutation_commands(),
+            "reservation-get-page": _res_page(hosts),
+            "lease4-get-by-state": {"result": 0, "arguments": {"leases": []}},
+        }
+
+        with stub_kea(stub):
+            response = self.client.get(self._url(4))
+
+        body = response.content.decode()
+        sync_url = reverse("plugins:netbox_kea:server_reservation4_sync", args=[self.server.pk, 1])
+        self.assertIn("Not Synchronized", body)
+        self.assertIn(sync_url, body)
+        self.assertIn("Sync all", body)
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestCombinedReservationCursorPagination(_ViewTestBase):
     """The Next page link must carry the encoded per-server cursor, not just exist."""
 

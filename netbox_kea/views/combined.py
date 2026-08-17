@@ -521,10 +521,11 @@ class _CombinedReservationsView(_CombinedViewMixin):
             .values_list("pk", flat=True)
         )
         mutation_unavailable_servers: list[tuple[str, str]] = []
+        can_sync = request.user.has_perm("ipam.add_ipaddress") and request.user.has_perm("ipam.change_ipaddress")
         for server_pk, server in server_map.items():
             server_records = [r for r in all_records if r.get("server_pk") == server_pk]
             if server_records:
-                _enrich_reservations_with_badges(server_records, server, self.dhcp_version)
+                _enrich_reservations_with_badges(server_records, server, self.dhcp_version, can_sync=can_sync)
                 can_change = server_pk in writable_pks
                 capabilities = _configured_capabilities(server, self.dhcp_version) if can_change else None
                 can_mutate = bool(can_change and capabilities and capabilities.mutation_available)

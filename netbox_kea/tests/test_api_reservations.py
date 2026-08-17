@@ -131,9 +131,9 @@ class TestReservation4API(_APITestBase):
             with self.subTest(params=params), stub_kea({}) as kea:
                 response = self.api_client.get(self._url(), params)
 
-            self.assertEqual(response.status_code, 400)
-            self.assertIn("exactly one", response.json()["detail"])
-            self.assertEqual(kea.commands(), [])
+                self.assertEqual(response.status_code, 400)
+                self.assertIn("exactly one", response.json()["detail"])
+                self.assertEqual(kea.commands(), [])
 
     def test_server_not_found_returns_404(self):
         """Non-existent server PK returns HTTP 404."""

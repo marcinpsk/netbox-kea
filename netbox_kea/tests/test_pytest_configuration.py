@@ -157,7 +157,7 @@ def test_dhcp_plugin_ci_uses_xdist():
     workflow = (REPOSITORY_ROOT / ".github" / "workflows" / "ci.yml").read_text()
     command = workflow.split("- name: Run DHCP plugin adapter tests", 1)[1].split("\n\n", 1)[0]
 
-    assert _pytest_worker_settings(command) == [{"workers": "1", "maxschedchunk": "1"}]
+    assert [_xdist_settings(entry) for entry in _pytest_commands(command)] == [{"workers": "1", "maxschedchunk": "1"}]
 
 
 def test_pytest_configuration_works_with_django_plugin_disabled():

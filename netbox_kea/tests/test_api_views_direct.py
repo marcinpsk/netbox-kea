@@ -321,6 +321,32 @@ class TestFetchLeasesSubnetId(SimpleTestCase):
         self.assertIn("Active or Declined", response.data["detail"])
         self.assertEqual(kea.commands(), ["stat-lease4-get"])
 
+    @override_settings(PLUGINS_CONFIG=_GUARDED_PLUGINS_CONFIG)
+    def test_unmeasurable_subnet_query_fails_closed(self):
+        """Reject the query when Kea cannot measure the Subnet, before any lease request."""
+        view, _ = _make_view()
+        with stub_kea({"stat-lease4-get": {"result": 3, "text": "no statistics"}}) as kea:
+            response = view._lease_search(_make_request({"subnet_id": "1"}), version=4)
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("stat_cmds", response.data["detail"])
+        self.assertEqual(kea.commands(), ["stat-lease4-get"])
+
+    def test_disabled_guard_queries_leases_without_measuring(self):
+        """Send no statistics request when the guard is off, so the query stays unbounded.
+
+        `_PLUGINS_CONFIG` sets `lease_query_max_unpaged_leases` to 0, which disables the
+        guard. Nothing else covers that documented setting end to end.
+        """
+        lease = {"ip-address": "10.0.0.5", "hw-address": "aa:bb:cc:dd:ee:ff", "state": 0}
+        view, _ = _make_view()
+        with stub_kea({"lease4-get-all": {"result": 0, "arguments": {"leases": [lease]}}}) as kea:
+            response = view._lease_search(_make_request({"subnet_id": "1"}), version=4)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(kea.commands(), ["lease4-get-all"])
+
     def test_state_requires_subnet_id(self):
         view, _ = _make_view()
         with stub_kea({}) as kea:

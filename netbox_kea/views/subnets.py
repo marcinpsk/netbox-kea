@@ -277,7 +277,7 @@ def _warn_pool_reservation_overlap(
                 "Kea allows this. Reservations take priority over pool allocation.",
             )
     except Exception:  # noqa: BLE001
-        logger.debug("Failed to check pool/reservation overlap for subnet %s", subnet_id)
+        logger.exception("Failed to check pool/reservation overlap for subnet %s", subnet_id)
 
 
 def _warn_reservation_pool_overlap(
@@ -328,7 +328,7 @@ def _warn_reservation_pool_overlap(
                 )
                 break
     except Exception:  # noqa: BLE001
-        logger.debug("Failed to check reservation/pool overlap for %s in subnet %s", ip_str, subnet_id)
+        logger.exception("Failed to check reservation/pool overlap for %s in subnet %s", ip_str, subnet_id)
 
 
 class _BasePoolAddView(_KeaChangeMixin, generic.ObjectView):

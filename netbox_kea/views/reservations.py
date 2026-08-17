@@ -289,7 +289,6 @@ def _enrich_reservations_with_badges(
         else:
             state = reservation_synchronization_state(reservation, synchronized)
         row["sync_state"] = state
-        row["sync_state_label"] = state.label
         row["sync_synchronized"] = state.synchronized
         row["sync_total"] = state.total
         row["sync_reason"] = state.reason
@@ -304,7 +303,7 @@ def _enrich_reservations_with_badges(
             can_sync
             and isinstance(reservation.scope, InSubnetReservationScope)
             and reservation.addresses
-            and state.label in ("Not Synchronized", "Partially Synchronized")
+            and state.code in ("not-synchronized", "partially-synchronized")
         ):
             query = urlencode(
                 {

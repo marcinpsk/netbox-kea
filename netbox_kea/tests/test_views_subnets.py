@@ -2212,6 +2212,23 @@ class TestPoolAddPostErrors(_ViewTestBase):
             response = self.client.post(self._url(), {"pool": "10.0.0.10-10.0.0.20"}, follow=True)
         self.assertEqual(response.status_code, 200)
 
+    def test_failed_overlap_probe_logs_its_traceback(self):
+        """Record why the overlap warning was skipped, and keep the pool add working.
+
+        The probe swallows every exception to stay non-blocking, so without the traceback
+        an operator cannot tell a Kea read failure from a genuinely empty overlap.
+        """
+        malformed_probe = {"result": 0, "arguments": {"hosts": None, "next": {"from": 0, "source-index": 0}}}
+
+        with self._pool_add_stub(**{"reservation-get-page": malformed_probe}):
+            with self.assertLogs("netbox_kea.views.subnets", level="ERROR") as logs:
+                response = self.client.post(self._url(), {"pool": "10.0.0.10-10.0.0.20"}, follow=True)
+
+        self.assertEqual(response.status_code, 200)
+        overlap_records = [record for record in logs.records if "overlap" in record.getMessage()]
+        self.assertTrue(overlap_records)
+        self.assertIsNotNone(overlap_records[0].exc_info)
+
     def test_kea_exception_shows_error(self):
         """A KeaException (subnet4-pool-add result 1) from pool_add shows a Kea error, no 500."""
         with self._pool_add_stub(**{"subnet4-pool-add": {"result": 1, "text": "pool overlap"}}):

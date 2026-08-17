@@ -33,7 +33,7 @@ from ipam.models import IPRange, Prefix
 from netbox_kea.jobs import KeaIpamSyncJob
 from netbox_kea.kea import KeaClient
 from netbox_kea.models import Server, SyncConfig
-from netbox_kea.subnet_catalogue import CompleteCatalogueSnapshot, SubnetIdentity, VerifiedSubnet
+from netbox_kea.subnet_catalogue import IdentityOnlyCatalogueSnapshot, SubnetIdentity, VerifiedSubnet
 
 from .kea_stub import _res_page, queued, stub_kea
 
@@ -130,6 +130,7 @@ def _reservation_subnets(reservations: list[dict], version: int) -> list[dict]:
     for host in reservations:
         if _reservation_family(host) != version or not host.get("subnet-id"):
             continue
+        default_network = "2001:db8::/64" if version == 6 else "198.18.0.0/24"
         addresses = host.get("ip-addresses") or [host.get("ip-address", "")]
         address = next((value for value in addresses if value), None)
         if address:
@@ -137,16 +138,20 @@ def _reservation_subnets(reservations: list[dict], version: int) -> list[dict]:
             try:
                 network = str(ipaddress.ip_network(f"{address}/{prefix_length}", strict=False))
             except ValueError:
-                continue
+                # Keep the Subnet verified so a malformed address is quarantined as an
+                # invalid address, not as a Reservation in an unverified Scope.
+                network = default_network
         else:
-            network = "2001:db8::/64" if version == 6 else "198.18.0.0/24"
+            network = default_network
         subnets[int(host["subnet-id"])] = network
     return [{"id": subnet_id, "subnet": network} for subnet_id, network in sorted(subnets.items())]
 
 
 def _reservation_snapshot(reservations: list[dict], version: int):
     entries = _reservation_subnets(reservations, version)
-    catalogue = CompleteCatalogueSnapshot(
+    # Identity-only: these Subnets carry no configuration, which is exactly what a
+    # Reservation Scope needs to be verified.
+    catalogue = IdentityOnlyCatalogueSnapshot(
         server_id=1,
         family=version,
         observed_at=timezone.now(),
@@ -161,7 +166,7 @@ def _reservation_snapshot(reservations: list[dict], version: int):
         configured_subnets=(),
         diagnostics=(),
         identity_complete=True,
-        configuration_complete=True,
+        configuration_complete=False,
         consistent=True,
         configuration_hash=None,
     )

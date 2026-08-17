@@ -781,11 +781,14 @@ def import_reservation_snapshot(
             subnet_id = reservation.scope.subnet.subnet_id
             subnet_obj = _linked_subnet(server, reservation.family, subnet_id)
             if subnet_obj is None:
+                # A skipped record leaves the counts below short of the record set.
+                summary.reservations_unread = True
                 summary.warn(f"reservation for unknown subnet-id {subnet_id} skipped")
                 continue
         elif isinstance(reservation.scope, GlobalReservationScope):
             subnet_obj = None
         else:
+            summary.reservations_unread = True
             summary.warn("reservation has an unsupported scope and was skipped")
             continue
         _upsert_reservation(reservation, subnet_obj, dhcp_server, custom_defs, summary)

@@ -628,6 +628,22 @@ class TestReservationIteration(SimpleTestCase):
             with self.assertRaisesRegex(RuntimeError, "did not advance"):
                 client.reservation_snapshot(4, _catalogue(4, 20, "198.18.0.0/24"), page_size=2)
 
+    def test_bounds_empty_pages_whose_cursor_keeps_advancing(self):
+        """Stop a backend that answers empty pages forever with a new cursor each time.
+
+        Only a non-empty page moves the traversal towards its limit, and the repeated
+        cursor check never fires while the cursor keeps changing, so the request loop
+        needs its own bound.
+        """
+        advancing = queued(*(_res_page([], next_from=index, next_source=1) for index in range(2, 12)))
+        client = KeaClient(url="http://kea.example.invalid", send_service=False)
+
+        with stub_kea({"reservation-get-page": advancing}) as kea:
+            with self.assertRaisesRegex(RuntimeError, "only empty pages"):
+                client.reservation_page(4, _catalogue(4, 20, "198.18.0.0/24"), limit=2)
+
+        self.assertEqual(len(kea.bodies("reservation-get-page")), 9)
+
     def test_preserves_records_and_reports_a_cursor_cycle_across_pages(self):
         pages = queued(
             _res_page([{"subnet-id": 20, "hw-address": "aa:bb:cc:dd:ee:01"}], next_from=1, next_source=1),

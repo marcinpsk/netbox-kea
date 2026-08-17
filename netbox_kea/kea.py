@@ -40,6 +40,10 @@ logger = logging.getLogger(__name__)
 
 _MANAGED_OPTION_KEYS = frozenset({"code", "name", "space", "data", "csv-format", "always-send", "never-send"})
 
+# One exhausted host backend can legitimately answer with an empty page before the
+# cursor moves to the next source index, so allow a few before giving up.
+_MAX_EMPTY_RESERVATION_PAGES = 8
+
 
 def _encode_reservation_cursor(source_index: int, from_index: int) -> str | None:
     """Encode Kea's two-part Reservation cursor as one opaque token."""
@@ -518,6 +522,7 @@ class KeaClient:
         hosts: list[dict[str, Any]] = []
         next_source, next_from = source_index, from_index
         seen_cursors = {(next_source, next_from)}
+        empty_pages = 0
         while len(hosts) < limit:
             remaining = limit - len(hosts)
             page, candidate_from, candidate_source = self._reservation_raw_page(
@@ -529,6 +534,12 @@ class KeaClient:
             if len(page) > remaining:
                 raise RuntimeError("reservation-get-page exceeded the requested page limit.")
             hosts.extend(page)
+            if not page:
+                # Only a non-empty page moves this loop towards its limit. A backend that
+                # keeps advancing the cursor over empty pages would never end it.
+                empty_pages += 1
+                if empty_pages > _MAX_EMPTY_RESERVATION_PAGES:
+                    raise RuntimeError("reservation-get-page returned only empty pages.")
             candidate = (candidate_source, candidate_from)
             if candidate == (0, 0):
                 next_cursor = None
@@ -986,9 +997,12 @@ class KeaClient:
             raise RuntimeError("config-get returned malformed Subnet collections.")
         subnet_collections = [top_level]
         for shared_network in shared_networks:
-            if not isinstance(shared_network, dict) or not isinstance(shared_network.get(subnet_key, []), list):
+            if not isinstance(shared_network, dict):
                 raise RuntimeError("config-get returned a malformed shared-network entry.")
-            subnet_collections.append(shared_network.get(subnet_key, []))
+            shared_subnets = shared_network.get(subnet_key, [])
+            if not isinstance(shared_subnets, list):
+                raise RuntimeError("config-get returned a malformed shared-network entry.")
+            subnet_collections.append(shared_subnets)
 
         for subnets in subnet_collections:
             for subnet in subnets:
@@ -1793,15 +1807,25 @@ class KeaClient:
         return command_suffix, arguments
 
     def _subnet_lease_counts(self, version: int, subnet_id: int) -> _SubnetLeaseCounts:
-        """Return the covered per-Subnet lease counts from ``stat_cmds``."""
+        """Return the covered per-Subnet lease counts from ``stat_cmds``.
+
+        Raises:
+            LeaseQueryPreflightUnavailable: If Kea reports no statistics for the Subnet.
+                The guard cannot size the query then, so the caller must fail closed
+                rather than treat an unmeasured Subnet as an empty one.
+
+        """
         command = f"stat-lease{version}-get"
         response = self.command(
             command,
             service=[f"dhcp{version}"],
             arguments={"subnet-id": subnet_id},
+            check=(0, 3),
         )
         if not response or not isinstance(response[0], dict):
             raise RuntimeError(f"{command} returned a malformed response.")
+        if response[0].get("result") == 3:
+            raise LeaseQueryPreflightUnavailable
         arguments = response[0].get("arguments")
         result_set = arguments.get("result-set") if isinstance(arguments, dict) else None
         columns = result_set.get("columns") if isinstance(result_set, dict) else None
@@ -1837,7 +1861,9 @@ class KeaClient:
                 active=assigned - declined + delegated,
                 declined=declined,
             )
-        raise RuntimeError(f"{command} did not return statistics for Subnet {subnet_id}.")
+        # Kea knows no statistics for this Subnet, so the guard has nothing to size the
+        # query with. Report it as unavailable instead of reading it as zero leases.
+        raise LeaseQueryPreflightUnavailable
 
     def lease_get_page(
         self,

@@ -116,6 +116,31 @@ class TestParseDhcpConfigOptions(SimpleTestCase):
         )
         self.assertEqual(opt.match_key, ("dhcp4", 3))
 
+    def test_discarded_option_entry_is_logged(self):
+        """Leave a record of an entry the mapper drops.
+
+        `upsert_options` only warns about options it receives, so a discarded entry would
+        otherwise disappear and an operator could not explain the missing option.
+        """
+        conf = {
+            "subnet4": [
+                {
+                    "id": 1,
+                    "subnet": "10.0.0.0/24",
+                    "option-data": [
+                        {"code": 3, "name": "routers", "data": "10.0.0.1", "space": "dhcp4"},
+                        {"code": "not-a-code", "data": "10.0.0.2", "space": "dhcp4"},
+                    ],
+                }
+            ]
+        }
+
+        with self.assertLogs("netbox_kea.mappers.kea_to_dhcp", level="DEBUG") as logs:
+            options = parse_dhcp_config(conf, 4).subnets[0].options
+
+        self.assertEqual([option.code for option in options], [3])
+        self.assertIn("Discarded an invalid option-data entry", "\n".join(logs.output))
+
     def test_option_match_key_falls_back_to_name_without_code(self):
         conf = {
             "subnet4": [

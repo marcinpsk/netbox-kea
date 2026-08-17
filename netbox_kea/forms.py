@@ -1071,6 +1071,10 @@ class DHCPDisableForm(forms.Form):
 class _BaseBulkReservationImportForm(forms.Form):
     """Accept one explicit YAML or JSON Reservation document."""
 
+    # Django's DATA_UPLOAD_MAX_MEMORY_SIZE does not cover file uploads, so bound the
+    # document here: ``clean`` reads all of it into memory before the parser runs.
+    MAX_DOCUMENT_BYTES = 8 * 1024 * 1024
+
     format = forms.ChoiceField(
         choices=(("yaml", "YAML"), ("json", "JSON")),
         initial="yaml",
@@ -1098,6 +1102,10 @@ class _BaseBulkReservationImportForm(forms.Form):
         if not document and not document_file:
             raise forms.ValidationError("Paste a document or upload a document file.")
         if document_file is not None:
+            if document_file.size > self.MAX_DOCUMENT_BYTES:
+                raise forms.ValidationError(
+                    f"The document file must not exceed {self.MAX_DOCUMENT_BYTES // (1024 * 1024)} MB."
+                )
             try:
                 document = document_file.read().decode("utf-8-sig")
             except UnicodeDecodeError as exc:

@@ -29,6 +29,8 @@ via ``kea_stub.stub_kea``:
 from __future__ import annotations
 
 from django.contrib.auth import get_user_model
+from django.core.exceptions import ValidationError
+from django.db.models.signals import pre_save
 from django.test import TestCase, override_settings
 from django.urls import reverse
 from ipam.models import IPAddress as NbIP
@@ -275,13 +277,33 @@ class TestReservation4SyncView(_SyncViewBase):
         ip = NbIP.objects.filter(address__startswith="10.0.0.50/").first()
         self.assertEqual(ip.dns_name, "mock-res.local")
 
-    def test_response_contains_ip_link(self):
+    def test_response_contains_the_synchronization_badge(self):
         response = self.client.post(self._url())
         self.assertContains(response, "Synchronized 1/1")
 
     def test_returns_400_when_identity_missing(self):
         response = self.client.post(self._url(include_identity=False))
         self.assertEqual(response.status_code, 400)
+
+    def test_validation_error_from_an_ipam_receiver_is_handled(self):
+        """Keep a Django `ValidationError` raised during the IPAM write off the response.
+
+        `dns_name` is written from the Kea hostname, and netbox-dns validates it on
+        IPAddress save. Django's ValidationError is neither a ValueError nor a
+        DatabaseError, so it escaped this handler while both sibling handlers caught it.
+        """
+
+        def reject(sender, **kwargs):  # noqa: ARG001
+            raise ValidationError("dns_name is not valid for the configured zone.")
+
+        pre_save.connect(reject, sender=NbIP)
+        self.addCleanup(pre_save.disconnect, reject, sender=NbIP)
+
+        with self.assertLogs("netbox_kea.views.sync_views", level="ERROR"):
+            response = self.client.post(self._url())
+
+        self.assertContains(response, "Reservation synchronization failed", status_code=500)
+        self.assertEqual(NbIP.objects.count(), 0)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -393,10 +415,14 @@ class TestReservation4BulkSyncView(_SyncViewBase):
             "arguments": {"hosts": None, "next": {"from": 0, "source-index": 0}},
         }
         with stub_kea({**_catalogue_responses(4, 1, "10.0.0.0/8"), "reservation-get-page": malformed_page}):
-            response = self.client.post(self._url())
+            response = self.client.post(self._url(), follow=True)
 
-        self.assertEqual(response.status_code, 302)
-        self.assertEqual(response.url, reverse("plugins:netbox_kea:server_reservations4", args=[self.server.pk]))
+        self.assertRedirects(
+            response,
+            reverse("plugins:netbox_kea:server_reservations4", args=[self.server.pk]),
+        )
+        self.assertContains(response, "Failed to fetch reservations")
+        self.assertEqual(NbIP.objects.count(), 0)
 
     def test_returns_404_for_nonexistent_server(self):
         url = reverse("plugins:netbox_kea:server_reservation4_bulk_sync", args=[99999])
@@ -469,7 +495,7 @@ class TestReservation6BulkSyncView(_SyncViewBase):
         return reverse("plugins:netbox_kea:server_reservation6_bulk_sync", args=[self.server.pk])
 
     def test_post_bulk_syncs_v6_reservations(self):
-        """Bulk sync v6 reservation creates an IPAddress with /128 prefix and reserved status."""
+        """Bulk sync v6 reservation creates a reserved IPAddress masked by its catalogue Subnet."""
         hosts = [
             {
                 "subnet-id": 1,

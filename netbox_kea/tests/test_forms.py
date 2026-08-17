@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Unit tests for netbox_kea.forms — validation logic for all form classes."""
 
+import re
+
 from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import SimpleTestCase, TestCase
@@ -1222,6 +1224,24 @@ class TestReservationIdentifierCapabilities(SimpleTestCase):
             form.errors["identifier_type"],
         )
 
+    def test_disabled_identifier_option_is_rendered_disabled_with_its_reason(self):
+        """Render the unavailable choice as disabled, not only reject it on submit.
+
+        Server-side rejection is covered above. Nothing exercised
+        `ReservationIdentifierSelect.create_option`, so a regression that stopped
+        disabling the option would offer a choice Kea cannot accept.
+        """
+        from netbox_kea.forms import Reservation4Form
+
+        form = Reservation4Form(capabilities=_reservation_capabilities(4, identifiers=("hw-address",)))
+        markup = str(form["identifier_type"])
+
+        disabled = re.findall(r'<option value="([^"]+)"[^>]*\bdisabled\b', markup)
+
+        self.assertNotIn("hw-address", disabled)
+        self.assertIn("client-id", disabled)
+        self.assertIn('title="Not enabled in the live Kea configuration."', markup)
+
 
 class TestBulkReservationImportForm(SimpleTestCase):
     """Exactly one document source, with a message that names the actual problem."""
@@ -1271,3 +1291,28 @@ class TestBulkReservationImportForm(SimpleTestCase):
 
         self.assertFalse(form.is_valid())
         self.assertIn("The document file must use UTF-8 encoding.", form.non_field_errors())
+
+    def test_rejects_an_oversized_upload_before_reading_it(self):
+        """Reject the upload on its declared size, so `clean` never buffers the content.
+
+        Django's DATA_UPLOAD_MAX_MEMORY_SIZE does not apply to file uploads, so without
+        this limit one request can allocate the whole file.
+        """
+        from netbox_kea.forms import _BaseBulkReservationImportForm
+
+        limit = _BaseBulkReservationImportForm.MAX_DOCUMENT_BYTES
+        oversized = SimpleUploadedFile("r.yaml", b"a" * (limit + 1), content_type="application/yaml")
+        form = self._form(data={"format": "yaml"}, files={"document_file": oversized})
+
+        self.assertFalse(form.is_valid())
+        self.assertIn(f"The document file must not exceed {limit // (1024 * 1024)} MB.", form.non_field_errors())
+
+    def test_accepts_an_upload_at_the_size_limit(self):
+        from netbox_kea.forms import _BaseBulkReservationImportForm
+
+        limit = _BaseBulkReservationImportForm.MAX_DOCUMENT_BYTES
+        document = b"reservations: []\n" + b"#" * (limit - len(b"reservations: []\n"))
+        upload = SimpleUploadedFile("r.yaml", document, content_type="application/yaml")
+        form = self._form(data={"format": "yaml"}, files={"document_file": upload})
+
+        self.assertTrue(form.is_valid(), form.errors)

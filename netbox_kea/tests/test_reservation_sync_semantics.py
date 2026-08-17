@@ -4,8 +4,9 @@
 from ipaddress import ip_address, ip_network
 from unittest.mock import patch
 
-from django.db import DatabaseError
+from django.db import DatabaseError, connection
 from django.test import TestCase
+from django.test.utils import CaptureQueriesContext
 from ipam.models import IPAddress
 
 from netbox_kea import sync as sync_module
@@ -38,6 +39,31 @@ class TestTypedReservationSynchronization(TestCase):
         self.assertEqual(result.created, 2)
         stored = [str(address) for address in IPAddress.objects.order_by("pk").values_list("address", flat=True)]
         self.assertEqual(stored, ["2001:db8::20/64", "2001:db8::21/64"])
+
+    def test_state_is_read_only_when_a_caller_asks_for_it(self):
+        """Charge the synchronization-state query to the caller that reads it.
+
+        A bulk synchronization uses only the counts, so reading the state for every
+        record would add one IPAM query per record for a value nobody consumes.
+        """
+        reservation = IPv6Reservation(
+            scope=InSubnetReservationScope(SubnetIdentity(30, ip_network("2001:db8::/64"))),
+            identity=ReservationIdentity("duid", "00:01:02:03"),
+            addresses=(ip_address("2001:db8::20"),),
+            delegated_prefixes=(),
+        )
+
+        result = sync_reservation_to_netbox(reservation, cleanup=False)
+        self.assertEqual(result.created, 1)
+
+        # An eagerly computed state would already be in hand, costing nothing to read.
+        with CaptureQueriesContext(connection) as first_read:
+            self.assertEqual(result.state.label, "Synchronized")
+        self.assertGreater(len(first_read.captured_queries), 0)
+
+        with CaptureQueriesContext(connection) as second_read:
+            self.assertEqual(result.state.label, "Synchronized")
+        self.assertEqual(second_read.captured_queries, [])
 
     def test_reports_partial_state_for_one_of_two_managed_addresses(self):
         reservation = IPv6Reservation(
@@ -111,9 +137,10 @@ class TestTypedReservationSynchronization(TestCase):
 
         with patch.object(sync_module, "bulk_fetch_netbox_ips", recording_bulk_fetch):
             result = sync_reservation_to_netbox(reservation, cleanup=False)
+            # Read the state inside the patch: it is computed on access, not during sync.
+            self.assertEqual(result.state.label, "Synchronized")
 
-        self.assertEqual(result.state.label, "Synchronized")
-        # Only the state read at the end may hit IPAM. A Not Applicable pre-check that
+        # Reading the state costs exactly one IPAM read. A Not Applicable pre-check that
         # called reservation_synchronization_state() added a second, discarded read.
         self.assertEqual(reads, [("198.18.0.20",)])
 

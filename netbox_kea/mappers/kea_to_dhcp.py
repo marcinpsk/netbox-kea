@@ -22,9 +22,12 @@ DHCPv6 uses ``subnet6``.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 
 from ..dhcp_options import DHCPOption, parse_dhcp_option
+
+logger = logging.getLogger(__name__)
 
 # Scalar Kea config keys that map onto netbox_dhcp tuning fields (lifetimes, timers,
 # lease/DDNS/BOOTP/network settings, and server-level globals).  ``config-get``
@@ -178,6 +181,8 @@ def _optional_dhcp_option(raw) -> DHCPOption | None:
     try:
         return parse_dhcp_option(raw)
     except ValueError:
+        # The importer reports nothing for a dropped entry, so leave the only record of it.
+        logger.debug("Discarded an invalid option-data entry: %r", raw, exc_info=True)
         return None
 
 

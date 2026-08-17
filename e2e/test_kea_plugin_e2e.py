@@ -918,11 +918,21 @@ class TestReservationCRUDLiveKea:
     """End-to-end create → verify → edit → delete reservation cycle via the UI."""
 
     # Deterministic test data — unlikely to clash with real production entries
-    _TEST_IP = "192.0.2.222"
     _TEST_MAC = "e2:e2:e2:e2:e2:01"
     _TEST_HOSTNAME = "e2e-crud-test"
     _TEST_HOSTNAME_EDITED = "e2e-crud-edited"
     _SUBNET_ID = 1
+    # Host offset inside the selected Subnet. High enough to sit outside the pools a
+    # live Kea normally allocates from, so the reservation does not clash with a lease.
+    _TEST_HOST_OFFSET = -34
+
+    def _test_ip(self, cidr: str) -> str:
+        """Return the reservation address to use inside *cidr*.
+
+        The address must belong to the Subnet the live Kea exposes for ``_SUBNET_ID``, so
+        derive it instead of pinning one range.
+        """
+        return str(ipaddress.ip_network(cidr)[self._TEST_HOST_OFFSET])
 
     def _reservation_add_url(self, plugin_base: str, server_id: int) -> str:
         return f"{plugin_base}/servers/{server_id}/reservations4/add/"
@@ -945,7 +955,7 @@ class TestReservationCRUDLiveKea:
     def _fill_reservation_form(
         self,
         page: Page,
-        subnet_id: int,
+        cidr: str,
         ip: str,
         mac: str,
         hostname: str = "",
@@ -957,7 +967,7 @@ class TestReservationCRUDLiveKea:
         We set it via JavaScript on the underlying ``<select>`` then dispatch
         a 'change' event so the Tom Select widget syncs its display.
         """
-        page.locator("#id_subnet_cidr").fill(_subnet_cidr_for_id(page, subnet_id))
+        page.locator("#id_subnet_cidr").fill(cidr)
         page.locator("#id_ip_address").fill(ip)
         # Tom Select wraps identifier_type — set via JS
         page.evaluate(
@@ -985,9 +995,10 @@ class TestReservationCRUDLiveKea:
         server_id = live_kea_server["id"]
 
         # ---- 0. PRE-CLEAN — remove any leftover from a previous interrupted run ----
+        # Match on the identifier: the address is only known once the add form is open.
         page.goto(self._reservation_list_url(plugin_base, server_id))
         page.wait_for_load_state("networkidle")
-        stale_row = page.locator("tr", has_text=self._TEST_IP)
+        stale_row = page.locator("tr", has_text=self._TEST_MAC)
         if stale_row.count():
             delete_url = stale_row.first.locator('a[href*="/delete/"]').get_attribute("href")
             assert delete_url
@@ -1005,10 +1016,12 @@ class TestReservationCRUDLiveKea:
         _check_no_django_error(page)
         _dismiss_debug_toolbar(page)
 
+        cidr = _subnet_cidr_for_id(page, self._SUBNET_ID)
+        test_ip = self._test_ip(cidr)
         self._fill_reservation_form(
             page,
-            self._SUBNET_ID,
-            self._TEST_IP,
+            cidr,
+            test_ip,
             self._TEST_MAC,
             hostname=self._TEST_HOSTNAME,
         )
@@ -1020,7 +1033,7 @@ class TestReservationCRUDLiveKea:
         page.goto(self._reservation_list_url(plugin_base, server_id))
         page.wait_for_load_state("networkidle")
         _check_no_django_error(page)
-        expect(page.get_by_text(self._TEST_IP)).to_be_visible()
+        expect(page.get_by_text(test_ip)).to_be_visible()
 
         # ---- 3. EDIT ----
         page.goto(self._reservation_edit_url(plugin_base, server_id, self._SUBNET_ID, self._TEST_MAC))
@@ -1036,7 +1049,7 @@ class TestReservationCRUDLiveKea:
         # ---- 4. VERIFY EDIT — reload list and confirm hostname changed ----
         page.goto(self._reservation_list_url(plugin_base, server_id))
         page.wait_for_load_state("networkidle")
-        expect(page.get_by_text(self._TEST_IP)).to_be_visible()
+        expect(page.get_by_text(test_ip)).to_be_visible()
         expect(page.get_by_text(self._TEST_HOSTNAME_EDITED)).to_be_visible()
 
         # ---- 5. DELETE ----
@@ -1056,7 +1069,7 @@ class TestReservationCRUDLiveKea:
         page.goto(self._reservation_list_url(plugin_base, server_id))
         page.wait_for_load_state("networkidle")
         _check_no_django_error(page)
-        assert self._TEST_IP not in page.content(), f"Reservation {self._TEST_IP} still visible after delete"
+        assert test_ip not in page.content(), f"Reservation {test_ip} still visible after delete"
 
     def test_add_reservation_form_loads(
         self,
