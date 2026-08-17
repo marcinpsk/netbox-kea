@@ -103,6 +103,96 @@ class TestSubnetCatalogue(TestCase):
         self.assertEqual(standalone.configuration.settings.valid_lifetime, 3600)
         self.assertEqual(standalone.configuration.settings.ddns_qualifying_suffix, "example.invalid")
 
+    def test_display_reconciles_typed_dhcpv6_configuration(self):
+        identities = _identity(
+            6,
+            [
+                {"id": 2, "subnet": "2001:db8:2::/64", "shared-network-name": None},
+                {"id": 1, "subnet": "2001:db8:1::/64", "shared-network-name": "access"},
+            ],
+        )
+        configuration = _config(
+            6,
+            [
+                {
+                    "id": 2,
+                    "subnet": "2001:db8:2::/64",
+                    "pools": [{"pool": "2001:db8:2::/80"}],
+                    "option-data": [{"name": "dns-servers", "code": 23, "data": "2001:db8::53"}],
+                    "preferred-lifetime": 1800,
+                    "min-preferred-lifetime": 900,
+                    "max-preferred-lifetime": 2700,
+                    "pd-allocator": "iterative",
+                    "interface-id": "eth0-v6",
+                    "relay": {"ip-addresses": ["2001:db8::1"]},
+                }
+            ],
+            shared_networks=[
+                {
+                    "name": "access",
+                    "subnet6": [
+                        {
+                            "id": 1,
+                            "subnet": "2001:db8:1::/64",
+                            "pools": [{"pool": "2001:db8:1::10 - 2001:db8:1::20"}],
+                            "option-data": [],
+                        }
+                    ],
+                }
+            ],
+        )
+
+        with stub_kea({"subnet6-list": identities, "config-get": configuration}) as kea:
+            snapshot = display(self.server, 6)
+
+        self.assertIsInstance(snapshot, CompleteCatalogueSnapshot)
+        self.assertEqual(kea.commands(), ["subnet6-list", "config-get"])
+        self.assertEqual(snapshot.subnet_choices, (("2001:db8:1::/64", 1), ("2001:db8:2::/64", 2)))
+
+        shared = snapshot.find_by_id(1)
+        self.assertEqual(shared.shared_network.name, "access")
+        self.assertEqual(shared.configuration.pools[0].start, ipaddress.ip_address("2001:db8:1::10"))
+        self.assertEqual(shared.configuration.pools[0].end, ipaddress.ip_address("2001:db8:1::20"))
+
+        standalone = snapshot.find_by_cidr("2001:db8:2::/64")
+        self.assertIsNone(standalone.shared_network)
+        self.assertEqual(standalone.configuration.pools[0].start, ipaddress.ip_address("2001:db8:2::"))
+        self.assertEqual(
+            standalone.configuration.pools[0].end,
+            ipaddress.ip_address("2001:db8:2::ffff:ffff:ffff"),
+        )
+        self.assertEqual(standalone.configuration.options[0].name, "dns-servers")
+        settings = standalone.configuration.settings
+        self.assertEqual(settings.preferred_lifetime, 1800)
+        self.assertEqual(settings.min_preferred_lifetime, 900)
+        self.assertEqual(settings.max_preferred_lifetime, 2700)
+        self.assertEqual(settings.pd_allocator, "iterative")
+        self.assertEqual(settings.interface_id, "eth0-v6")
+        self.assertEqual(settings.relay_addresses, (ipaddress.ip_address("2001:db8::1"),))
+
+    def test_dhcpv6_relay_drops_addresses_from_the_wrong_family(self):
+        identities = _identity(6, [{"id": 1, "subnet": "2001:db8:1::/64", "shared-network-name": None}])
+        configuration = _config(
+            6,
+            [
+                {
+                    "id": 1,
+                    "subnet": "2001:db8:1::/64",
+                    "pools": [{"pool": "198.18.1.0/24"}],
+                    "option-data": [],
+                    "relay": {"ip-addresses": ["198.18.1.1", "2001:db8::1"]},
+                }
+            ],
+        )
+
+        with stub_kea({"subnet6-list": identities, "config-get": configuration}):
+            snapshot = display(self.server, 6)
+
+        subnet = snapshot.find_by_id(1)
+        self.assertEqual(subnet.configuration.settings.relay_addresses, (ipaddress.ip_address("2001:db8::1"),))
+        self.assertEqual(subnet.configuration.pools, ())
+        self.assertTrue({"invalid-pool", "invalid-setting"}.issubset({d.code for d in snapshot.diagnostics}))
+
     def test_public_operations_reject_invalid_scope(self):
         with self.assertRaisesMessage(ValueError, "family must be 4 or 6"):
             display(self.server, 5)
