@@ -1341,7 +1341,11 @@ def test_lease_search_by_configured_subnet(
     request.getfixturevalue(f"leases{family}_250")
 
     search_lease(page, family, "Subnet", str(net))
-    page.goto(f"{page.url}?q={quote_plus(str(net))}&by=subnet&per_page={per_page}")
+    # The search form submits with GET, so the filter is already in the query string.
+    # Assert it before appending, so a lost subnet filter fails here instead of
+    # silently paging an unfiltered result set.
+    expect(page).to_have_url(re.compile(rf"q={re.escape(quote_plus(str(net)))}&by=subnet"))
+    page.goto(f"{page.url}&per_page={per_page}")
 
     rows = page.locator(".object-list > tbody > tr")
     expect(rows).to_have_count(per_page)
