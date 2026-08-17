@@ -7,7 +7,7 @@ import requests
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.urls import reverse
 
-from .kea_stub import _res_get, queued, stub_kea
+from .kea_stub import _res_get, _res_page, queued, stub_kea
 from .utils import _ViewTestBase
 
 
@@ -69,7 +69,26 @@ class TestReservationMutationViews(_ViewTestBase):
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Mutation is unavailable")
-        self.assertContains(response, "disabled")
+        # Assert the save control itself: a bare "disabled" also matches CSS class
+        # names and unrelated markup, so it passed even with the button enabled.
+        self.assertContains(
+            response,
+            '<button type="submit" class="btn btn-primary" disabled aria-disabled="true">',
+        )
+
+    def test_live_capabilities_leave_the_save_control_enabled(self):
+        responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
+        url = reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk])
+
+        with stub_kea(responses):
+            response = self.client.get(url)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, '<button type="submit" class="btn btn-primary">')
+        self.assertNotContains(
+            response,
+            '<button type="submit" class="btn btn-primary" disabled aria-disabled="true">',
+        )
 
     def test_add_form_warns_when_configuration_persistence_is_disabled(self):
         self.server.persist_config = False
@@ -771,3 +790,92 @@ reservations:
         self.assertEqual(response.context["result"]["not_attempted"], 1)
         self.assertEqual(kea.commands().count("reservation-add"), 2)
         self.assertEqual(len(received), 1)
+
+
+class TestMutationCapabilityGate(_ViewTestBase):
+    """A direct POST must never reach Kea when no mutation capability is confirmed.
+
+    Add and Edit fail closed in ``Reservation4Form.clean`` / ``Reservation6Form.clean``
+    (forms.py:523 / :641) and Delete in its own handler, because it has no form. These
+    assert the outcome that matters at every entry point: no ``reservation-*`` mutation
+    command is issued and the operator sees the capability message, so a replayed or
+    hand-built POST cannot slip past the disabled save control.
+    """
+
+    #: ``list-commands`` without any ``reservation-*`` entry: host_cmds is not loaded.
+    NO_MUTATION_COMMANDS = {"result": 0, "arguments": ["config-get", "subnet4-list"]}
+
+    def _responses_without_mutation(self, subnet_id=20, cidr="198.18.0.0/24"):
+        responses = _mutation_responses(4, subnet_id, cidr, ["hw-address"])
+        responses["list-commands"] = self.NO_MUTATION_COMMANDS
+        # The rejection redirects to the reservation list, which renders on follow.
+        responses["reservation-get-page"] = _res_page([])
+        responses["lease4-get-by-state"] = {"result": 0, "arguments": {"leases": []}}
+        return responses
+
+    def _add_payload(self):
+        return {
+            "subnet_cidr": "198.18.0.0/24",
+            "ip_address": "198.18.0.20",
+            "identifier_type": "hw-address",
+            "identifier": "aa:bb:cc:dd:ee:ff",
+            "hostname": "host.example.invalid",
+        }
+
+    def test_add_post_is_rejected_without_mutation_capabilities(self):
+        url = reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk])
+
+        with stub_kea(self._responses_without_mutation()) as kea:
+            response = self.client.post(url, self._add_payload(), follow=True)
+
+        self.assertNotIn("reservation-add", kea.commands())
+        self.assertContains(response, "Reservation mutation capabilities are unavailable.")
+
+    def test_add_post_is_rejected_when_the_capability_read_fails(self):
+        url = reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk])
+        responses = self._responses_without_mutation()
+        responses["list-commands"] = RuntimeError("capability read failed")
+
+        with stub_kea(responses) as kea:
+            response = self.client.post(url, self._add_payload(), follow=True)
+
+        self.assertNotIn("reservation-add", kea.commands())
+        self.assertContains(response, "Reservation mutation capabilities are unavailable.")
+
+    def test_edit_post_is_rejected_without_mutation_capabilities(self):
+        url = reverse("plugins:netbox_kea:server_reservation4_edit", args=[self.server.pk, 20])
+        query = "identifier_type=hw-address&identifier=aa%3Abb%3Acc%3Add%3Aee%3Aff"
+        original = {
+            "subnet-id": 20,
+            "hw-address": "aa:bb:cc:dd:ee:ff",
+            "ip-address": "198.18.0.20",
+            "hostname": "old.example.invalid",
+        }
+        responses = {**self._responses_without_mutation(), "reservation-get": _res_get(original)}
+
+        with stub_kea(responses) as kea:
+            response = self.client.post(
+                f"{url}?{query}",
+                {
+                    "subnet_cidr": "198.18.0.0/24",
+                    "ip_address": "198.18.0.20",
+                    "identifier_type": "hw-address",
+                    "identifier": "aa:bb:cc:dd:ee:ff",
+                    "hostname": "new.example.invalid",
+                    "managed_fingerprint": "stale",
+                },
+                follow=True,
+            )
+
+        self.assertNotIn("reservation-update", kea.commands())
+        self.assertContains(response, "Reservation mutation capabilities are unavailable.")
+
+    def test_delete_post_stays_rejected_without_mutation_capabilities(self):
+        url = reverse("plugins:netbox_kea:server_reservation4_delete", args=[self.server.pk, 20])
+        query = "identifier_type=hw-address&identifier=aa%3Abb%3Acc%3Add%3Aee%3Aff"
+
+        with stub_kea(self._responses_without_mutation()) as kea:
+            response = self.client.post(f"{url}?{query}", follow=True)
+
+        self.assertNotIn("reservation-del", kea.commands())
+        self.assertContains(response, "Reservation mutation capabilities are unavailable.")

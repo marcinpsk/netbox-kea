@@ -4955,7 +4955,7 @@ class TestLeaseGetPage(TestCase):
             with self.subTest(args=args, kwargs=kwargs), stub_kea({}) as kea:
                 with self.assertRaisesRegex(ValueError, message):
                     self.client.lease_get_page(*args, **kwargs)
-            self.assertEqual(kea.commands(), [])
+                self.assertEqual(kea.commands(), [])
 
     def test_rejects_invalid_addresses_in_a_partial_page(self):
         cases = (
