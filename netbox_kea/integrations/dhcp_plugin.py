@@ -751,9 +751,10 @@ def _upsert_reservation(reservation, subnet_obj, dhcp_server, custom_defs, summa
             summary.reservations_created += 1
         else:
             summary.reservations_updated += 1
-    except Exception as exc:  # noqa: BLE001
+    except Exception:  # noqa: BLE001
         summary.errors += 1
-        summary.warn(f"reservation {reservation.identity.value} in {scope}: {exc}")
+        logger.exception("Could not import reservation %s in %s", reservation.identity.value, scope)
+        summary.warn(f"reservation {reservation.identity.value} in {scope} could not be imported. See server logs.")
         return
     upsert_options(obj, reservation.options, reservation.family, dhcp_server, custom_defs, summary)
 
@@ -769,6 +770,10 @@ def import_reservation_snapshot(
     if snapshot is None:
         summary.reservations_unread = True
         return
+    if not snapshot.complete:
+        # A truncated traversal (page-fetch-failed, pagination-stalled) imports only
+        # part of the record set, so the counts below are not a full picture either.
+        summary.reservations_unread = True
     summary.reservations_quarantined += len(snapshot.diagnostics)
     for diagnostic in snapshot.diagnostics:
         summary.warn(f"reservation {diagnostic.source_position}: {diagnostic.message}")

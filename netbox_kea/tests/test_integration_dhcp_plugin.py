@@ -15,11 +15,12 @@ import unittest
 from unittest.mock import patch
 
 from django.apps import apps
-from django.test import TestCase, override_settings, tag
+from django.test import SimpleTestCase, TestCase, override_settings, tag
 from django.utils import timezone
 
 from netbox_kea.kea import KeaClient
 from netbox_kea.mappers.kea_to_dhcp import parse_dhcp_config
+from netbox_kea.reservations import ReservationDiagnostic, ReservationSnapshot
 from netbox_kea.subnet_catalogue import CompleteCatalogueSnapshot, SubnetIdentity, VerifiedSubnet
 
 from .kea_stub import _res_page, stub_kea
@@ -822,3 +823,51 @@ class DhcpPluginStaleCleanupGuardTest(TestCase):
         self.assertFalse(IPAddress.objects.filter(pk=unreferenced.pk).exists())
         self.assertTrue(IPAddress.objects.filter(pk=referenced.pk).exists())
         self.assertIn(referenced.pk, dhcp_plugin.sys4_referenced_ip_ids())
+
+
+class ImportSummaryCompletenessTest(SimpleTestCase):
+    """``reservations_unread`` must follow the Snapshot's own completeness flag.
+
+    Needs no ``netbox_dhcp`` model: an incomplete Snapshot with no records never
+    reaches the per-record upsert, so this runs in the ordinary unit-test job.
+    """
+
+    def _snapshot(self, *, complete):
+        diagnostics = (
+            ()
+            if complete
+            else (
+                ReservationDiagnostic(
+                    code="page-fetch-failed",
+                    message="Reservation page traversal did not complete.",
+                    source_position="pages[1]",
+                ),
+            )
+        )
+        return ReservationSnapshot(family=4, records=(), diagnostics=diagnostics, complete=complete, next_cursor=None)
+
+    def _import(self, snapshot):
+        from netbox_kea.integrations.dhcp_plugin import ImportSummary, import_reservation_snapshot
+
+        summary = ImportSummary()
+        import_reservation_snapshot(None, None, snapshot, None, summary)
+        return summary
+
+    def test_absent_snapshot_reports_the_counts_as_unread(self):
+        summary = self._import(None)
+
+        self.assertTrue(summary.reservations_unread)
+
+    def test_incomplete_snapshot_reports_the_counts_as_unread(self):
+        # A truncated traversal imports only part of the record set, so the counts
+        # are no more complete than for a Snapshot that could not be read at all.
+        summary = self._import(self._snapshot(complete=False))
+
+        self.assertTrue(summary.reservations_unread)
+        self.assertEqual(summary.reservations_quarantined, 1)
+
+    def test_complete_snapshot_reports_the_counts_as_read(self):
+        summary = self._import(self._snapshot(complete=True))
+
+        self.assertFalse(summary.reservations_unread)
+        self.assertEqual(summary.reservations_quarantined, 0)
