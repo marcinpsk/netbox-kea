@@ -17,12 +17,66 @@ harmless no-op.
 
 import logging
 import os
+import warnings
+from contextlib import ExitStack, contextmanager
+from unittest.mock import patch
 
 import pytest
 
 from netbox_kea.tests.parallel import MAX_PARALLEL_WORKERS, isolated_test_database_name
 
 logger = logging.getLogger(__name__)
+
+#: NetBox release that ``netbox_kea/tests/query_counts.json`` was recorded against.
+QUERY_COUNT_NETBOX_VERSION = "4.6.8"
+
+#: Where NetBox binds the context manager the baselines are asserted through.
+QUERY_COUNT_ASSERTION_SITES = ("utilities.testing.api", "utilities.testing.views")
+
+
+def running_netbox_version() -> str:
+    """Return the running NetBox release without any packaging suffix."""
+    from netbox.settings import VERSION
+
+    return VERSION.split("-", 1)[0]
+
+
+def query_counts_are_comparable(running_version: str, *, update_mode: bool) -> bool:
+    """Say whether the committed baselines describe *running_version*.
+
+    Update mode always compares, so a re-record on a new release still writes the file
+    instead of quietly recording nothing.
+    """
+    return update_mode or running_version == QUERY_COUNT_NETBOX_VERSION
+
+
+@contextmanager
+def _skip_query_count_assertion(test_case, name):  # noqa: ARG001 - matches the NetBox signature
+    yield
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _query_counts_only_on_the_recorded_netbox():
+    """Drop the query-count assertions on any NetBox release but the recorded one.
+
+    A count that differs on another release is a NetBox change, not a plugin
+    regression, so failing there reports the wrong thing. Warn instead, so a skipped
+    run never reads as a passing one.
+    """
+    running = running_netbox_version()
+    if query_counts_are_comparable(running, update_mode=bool(os.environ.get("UPDATE_QUERY_COUNTS"))):
+        yield
+        return
+
+    warnings.warn(
+        f"Query-count baselines were recorded on NetBox {QUERY_COUNT_NETBOX_VERSION}; "
+        f"this run is on {running}, so the query-count assertions are skipped.",
+        stacklevel=1,
+    )
+    with ExitStack() as sites:
+        for module in QUERY_COUNT_ASSERTION_SITES:
+            sites.enter_context(patch(f"{module}.assert_expected_query_count", _skip_query_count_assertion))
+        yield
 
 
 def pytest_xdist_auto_num_workers(config) -> int:
