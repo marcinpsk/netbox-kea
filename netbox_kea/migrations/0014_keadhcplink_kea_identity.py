@@ -14,7 +14,7 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name='keadhcplink',
             name='kea_identity',
-            field=models.CharField(blank=True, max_length=300, null=True),
+            field=models.CharField(blank=True, max_length=393, null=True),
         ),
         migrations.AddConstraint(
             model_name='keadhcplink',

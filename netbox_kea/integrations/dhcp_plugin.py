@@ -708,8 +708,8 @@ def upsert_pools(subnet_obj, intent: SubnetIntent, server, summary: ImportSummar
 def _reservation_link_identity(reservation: Reservation) -> str:
     """Return the Kea identity a Global Reservation link is keyed on.
 
-    An identifier value is capped at 255 characters and the longest type name adds 11,
-    so the result always fits ``KeaDhcpLink.kea_identity``.
+    ``KeaDhcpLink.kea_identity`` is sized from ``MAX_IDENTITY_LENGTH``, so every
+    identity the Reservation domain accepts fits.
     """
     identity = reservation.identity
     return f"{identity.identifier_type}:{identity.value}"

@@ -6,6 +6,7 @@ from django.test import SimpleTestCase
 from netbox_kea.dhcp_options import DHCPOption, parse_dhcp_options
 from netbox_kea.kea import KeaClient
 from netbox_kea.reservations import (
+    MAX_IDENTITY_LENGTH,
     ClearValue,
     GlobalReservationScope,
     InSubnetReservationScope,
@@ -62,6 +63,24 @@ def _persistence_responses(version: int) -> dict:
 
 
 class TestReservationIdentity(SimpleTestCase):
+    def test_the_identity_length_bound_covers_every_identifier_type(self):
+        """KeaDhcpLink sizes its identity column from this bound, so it must hold."""
+        longest = {
+            "hw-address": "ab" * 6,
+            "duid": "ab" * 128,
+            "client-id": "ab" * 128,
+            "circuit-id": "c" * 255,
+            "flex-id": "f" * 255,
+        }
+
+        for identifier_type, value in longest.items():
+            with self.subTest(identifier_type=identifier_type):
+                identity = ReservationIdentity(identifier_type, value)
+                self.assertLessEqual(len(f"{identity.identifier_type}:{identity.value}"), MAX_IDENTITY_LENGTH)
+
+        widest = ReservationIdentity("client-id", longest["client-id"])
+        self.assertEqual(len(f"{widest.identifier_type}:{widest.value}"), MAX_IDENTITY_LENGTH)
+
     def test_normalizes_hex_identifiers_to_lowercase_colon_notation(self):
         self.assertEqual(ReservationIdentity("hw-address", "AA-BB-CC-DD-EE-FF").value, "aa:bb:cc:dd:ee:ff")
         self.assertEqual(ReservationIdentity("duid", "00010203").value, "00:01:02:03")

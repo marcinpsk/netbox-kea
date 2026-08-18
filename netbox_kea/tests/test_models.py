@@ -17,6 +17,7 @@ from netbox.models import NetBoxModel
 
 from netbox_kea.kea import KeaClient
 from netbox_kea.models import KeaDhcpLink, Server, SyncConfig, _get_kea_timeout, _get_max_unpaged_leases
+from netbox_kea.reservations import MAX_IDENTITY_LENGTH
 from netbox_kea.tests.kea_stub import stub_kea
 from netbox_kea.tests.utils import _make_db_server
 
@@ -809,6 +810,23 @@ class TestKeaDhcpLinkIdentity(TestCase):
     def test_neither_identity_kind_is_rejected(self):
         with self.assertRaises(IntegrityError), transaction.atomic():
             self._link().save()
+
+    def test_the_longest_reservation_identity_is_stored(self):
+        """Kea accepts a 128-octet Client ID, so the column must hold the identity it forms."""
+        from netbox_kea.integrations.dhcp_plugin import _reservation_link_identity
+        from netbox_kea.reservations import GlobalReservationScope, IPv4Reservation, ReservationIdentity
+
+        reservation = IPv4Reservation(
+            scope=GlobalReservationScope(),
+            identity=ReservationIdentity("client-id", "ab" * 128),
+            addresses=(),
+        )
+        identity = _reservation_link_identity(reservation)
+        self.assertEqual(len(identity), MAX_IDENTITY_LENGTH)
+
+        self._link(kea_identity=identity).save()
+
+        self.assertEqual(KeaDhcpLink.objects.get().kea_identity, identity)
 
 
 class TestMigrationState(TestCase):

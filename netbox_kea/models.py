@@ -15,6 +15,7 @@ from netbox.models import NetBoxModel
 from netbox.models.features import JobsMixin
 
 from .kea import KeaClient, KeaException
+from .reservations import MAX_IDENTITY_LENGTH
 
 logger = logging.getLogger(__name__)
 
@@ -494,7 +495,7 @@ class KeaDhcpLink(models.Model):
         help_text="Kea subnet-id for subnet links; null for objects without a Kea subnet-id.",
     )
     kea_identity = models.CharField(
-        max_length=300,
+        max_length=MAX_IDENTITY_LENGTH,
         null=True,
         blank=True,
         help_text=(

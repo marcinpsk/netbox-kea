@@ -30,7 +30,12 @@ _IDENTIFIER_LABELS: dict[IdentifierType, str] = {
     "circuit-id": "Circuit ID",
     "flex-id": "Flex ID",
 }
-_HEX_IDENTIFIERS = frozenset({"hw-address", "duid", "client-id"})
+_HEX_IDENTIFIER_OCTETS: dict[IdentifierType, tuple[int, int]] = {
+    "hw-address": (6, 6),
+    "duid": (1, 128),
+    "client-id": (2, 128),
+}
+_HEX_IDENTIFIERS = frozenset(_HEX_IDENTIFIER_OCTETS)
 _MAX_OPAQUE_IDENTIFIER_LENGTH = 255
 _QUERY_PARAMETERS_BY_MODE: dict[ReservationQueryMode, frozenset[str]] = {
     "page": frozenset({"page", "limit", "cursor"}),
@@ -45,6 +50,17 @@ _QUERY_SELECTORS_BY_MODE: dict[ReservationQueryMode, frozenset[str]] = {
     "hostname": frozenset({"hostname"}),
 }
 _QUERY_PARAMETERS = frozenset().union(*_QUERY_PARAMETERS_BY_MODE.values())
+
+
+def _max_identifier_length(identifier_type: IdentifierType) -> int:
+    """Return the longest normalized value one identifier type can hold."""
+    octets = _HEX_IDENTIFIER_OCTETS.get(identifier_type)
+    # Normalized hex is colon-separated octet pairs: three characters per octet, less one.
+    return octets[1] * 3 - 1 if octets else _MAX_OPAQUE_IDENTIFIER_LENGTH
+
+
+#: Longest ``identifier-type:value`` string any Reservation Identity can produce.
+MAX_IDENTITY_LENGTH = max(len(name) + 1 + _max_identifier_length(name) for name in _IDENTIFIER_LABELS)
 
 
 def reservation_query_mode(parameter_names: Collection[str]) -> ReservationQueryMode:
@@ -443,8 +459,7 @@ def _normalize_hex(value: Any, identifier_type: IdentifierType) -> str:
     if not compact or len(compact) % 2 or re.fullmatch(r"[0-9A-Fa-f]+", compact) is None:
         raise MalformedReservation("invalid-identifier", "The Reservation identifier is invalid.", identifier_type)
     octets = len(compact) // 2
-    bounds = {"hw-address": (6, 6), "duid": (1, 128), "client-id": (2, 128)}
-    minimum, maximum = bounds[identifier_type]
+    minimum, maximum = _HEX_IDENTIFIER_OCTETS[identifier_type]
     if not minimum <= octets <= maximum:
         raise MalformedReservation("invalid-identifier", "The Reservation identifier is invalid.", identifier_type)
     return ":".join(compact[index : index + 2].lower() for index in range(0, len(compact), 2))
