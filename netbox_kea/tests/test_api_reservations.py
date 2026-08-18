@@ -219,10 +219,8 @@ class TestReservation4API(_APITestBase):
 
     def test_kea_connection_error_returns_502(self):
         """When Kea is unreachable, returns HTTP 502."""
-        import requests as rq
-
         responses = _catalogue_responses(4, 20, "198.18.0.0/24")
-        responses["reservation-get"] = rq.ConnectionError("refused")
+        responses["reservation-get"] = requests.ConnectionError("refused")
         with stub_kea(responses):
             response = self.api_client.get(self._url(), {"ip_address": "198.18.0.20", "subnet_id": "20"})
         self.assertEqual(response.status_code, 502)

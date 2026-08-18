@@ -84,6 +84,7 @@ class ImportSummary:
     client_classes_created: int = 0
     client_classes_updated: int = 0
     shared_networks_deferred: int = 0
+    foreign_addresses_skipped: int = 0
     # True when the DB-backed host reservations could not be read (e.g. host_cmds
     # hook not loaded), so the reservation counts above may be incomplete.
     reservations_unread: bool = False
@@ -147,18 +148,29 @@ def _ensure_ip_range(pool_str: str, subnet_cidr: str, vrf):
     return range_obj
 
 
-def _ensure_reservation_addresses(reservation: Reservation):
+def _ensure_reservation_addresses(reservation: Reservation, summary: ImportSummary):
     """Ensure the reservation's IPAM rows exist (status=reserved) and return them.
 
     Reuses :func:`sync_reservation_to_netbox` so the DHCP-plugin reservation shares
     the very same ``ipam.IPAddress`` rows the reservation-sync owns (decision: one
     row per address).  ``cleanup=False`` keeps the import from deleting unrelated IPs.
 
+    This import is unattended, so it never forces: a manually curated NetBox IP keeps
+    its own fields and is still linked to the imported reservation.  Only the explicit
+    per-row Sync claims such an address.
+
     Returns ``(ipv4_ip, ipv6_ips, mac_obj)``.
     """
     from ..sync import get_netbox_ip, sync_reservation_to_netbox
 
-    sync_reservation_to_netbox(reservation, cleanup=False, force=True)
+    conflicts: list[str] = []
+    sync_reservation_to_netbox(reservation, cleanup=False, conflicts=conflicts)
+    if conflicts:
+        summary.foreign_addresses_skipped += len(conflicts)
+        summary.warn(
+            f"reservation {reservation.identity.value}: manually curated NetBox IP(s) "
+            f"{', '.join(conflicts)} left unchanged"
+        )
 
     ipv4_ip = None
     ipv6_ips = []
@@ -786,7 +798,7 @@ def _upsert_reservation(reservation, subnet_obj, server, dhcp_server, custom_def
 
     try:
         # Inside the try so a resolver failure is counted per-reservation, not fatal.
-        ipv4_ip, ipv6_ips, mac_obj = _ensure_reservation_addresses(reservation)
+        ipv4_ip, ipv6_ips, mac_obj = _ensure_reservation_addresses(reservation, summary)
         linked = None if subnet_obj is not None else _linked_reservation(server, reservation)
         if linked is not None:
             obj = linked

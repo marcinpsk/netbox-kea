@@ -21,7 +21,7 @@ from django.utils import timezone
 from netbox_kea.kea import KeaClient
 from netbox_kea.mappers.kea_to_dhcp import parse_dhcp_config
 from netbox_kea.reservations import ReservationDiagnostic, ReservationSnapshot
-from netbox_kea.subnet_catalogue import CompleteCatalogueSnapshot, SubnetIdentity, VerifiedSubnet
+from netbox_kea.subnet_catalogue import IdentityOnlyCatalogueSnapshot, SubnetIdentity, VerifiedSubnet
 
 from .kea_stub import _res_page, stub_kea
 from .utils import _make_db_server
@@ -76,7 +76,9 @@ def _reservation_snapshot(conf: dict, version: int, hosts: list[dict] | None = N
         for entry in entries
         if isinstance(entry, dict) and entry.get("id") is not None and entry.get("subnet")
     )
-    catalogue = CompleteCatalogueSnapshot(
+    # Identity-only: every VerifiedSubnet here carries configuration=None, which the
+    # real builder only produces when no configuration source was read.
+    catalogue = IdentityOnlyCatalogueSnapshot(
         server_id=1,
         family=version,
         observed_at=timezone.now(),
@@ -84,7 +86,7 @@ def _reservation_snapshot(conf: dict, version: int, hosts: list[dict] | None = N
         configured_subnets=(),
         diagnostics=(),
         identity_complete=True,
-        configuration_complete=True,
+        configuration_complete=False,
         consistent=True,
         configuration_hash=None,
     )
@@ -95,7 +97,8 @@ def _reservation_snapshot(conf: dict, version: int, hosts: list[dict] | None = N
                 hosts.append({"subnet-id": int(entry["id"]), **reservation})
     client = KeaClient(url="http://kea.example.invalid", send_service=False)
     with stub_kea({"reservation-get-page": _res_page(hosts)}):
-        return client.reservation_page(version, catalogue)
+        # Bound the page to the fixture so a larger fixture cannot silently truncate.
+        return client.reservation_page(version, catalogue, limit=max(len(hosts), 1))
 
 
 @tag("dhcp_plugin")
@@ -736,6 +739,34 @@ class DhcpPluginReservationSnapshotImportTest(TestCase):
         self.assertIsNone(res.subnet)
         self.assertEqual(res.dhcp_server, DHCPServer.objects.get(name=self.server.name))
         self.assertIsNone(res.ipv4_address)
+
+    def test_manually_curated_address_is_left_unchanged_but_still_linked(self):
+        """The unattended import never claims a foreign IPAM row, and still points at it."""
+        from ipam.models import IPAddress
+
+        HostReservation = apps.get_model(DHCP_PLUGIN, "HostReservation")
+        curated = IPAddress.objects.create(
+            address="10.42.0.50/24",
+            status="active",
+            description="Held for the core switch by NetOps",
+        )
+        conf = {"subnet4": [{"id": 7, "subnet": "10.42.0.0/24"}]}
+        hosts = [{"subnet-id": 7, "hw-address": "aa:bb:cc:dd:ee:42", "ip-address": "10.42.0.50", "hostname": "curated"}]
+
+        summary = self.adapter.import_server_config(
+            self.server, parse_dhcp_config(conf, 4), _reservation_snapshot(conf, 4, hosts)
+        )
+
+        curated.refresh_from_db()
+        self.assertEqual(curated.description, "Held for the core switch by NetOps")
+        self.assertEqual(curated.status, "active")
+        self.assertEqual(curated.dns_name, "")
+        self.assertEqual(summary.foreign_addresses_skipped, 1)
+        self.assertTrue(
+            any("10.42.0.50" in warning and "left unchanged" in warning for warning in summary.warnings),
+            summary.warnings,
+        )
+        self.assertEqual(HostReservation.objects.get(hostname="curated").ipv4_address, curated)
 
     def test_unverified_subnet_id_is_quarantined_before_adapter(self):
         HostReservation = apps.get_model(DHCP_PLUGIN, "HostReservation")

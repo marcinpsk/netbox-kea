@@ -475,6 +475,9 @@ class KeaDhcpLink(models.Model):
     ``HostReservation``'s family from its Subnet, so a Global row carries no family of
     its own.  ``kea_identity`` holds that missing half of the identity here, which keeps
     the DHCPv4 and DHCPv6 Reservations of one identifier on separate rows.
+
+    Exactly one identity kind is set per row, so the two partial unique constraints
+    together cover every link and no row can escape both.
     """
 
     server = models.ForeignKey(
@@ -526,6 +529,11 @@ class KeaDhcpLink(models.Model):
                 fields=["server", "family", "kea_identity"],
                 name="keadhcplink_unique_reservation_identity",
                 condition=models.Q(kea_identity__isnull=False),
+            ),
+            models.CheckConstraint(
+                condition=models.Q(kea_subnet_id__isnull=False, kea_identity__isnull=True)
+                | models.Q(kea_subnet_id__isnull=True, kea_identity__isnull=False),
+                name="keadhcplink_one_identity_kind",
             ),
         ]
 

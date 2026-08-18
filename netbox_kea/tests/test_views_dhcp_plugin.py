@@ -354,3 +354,9 @@ class SummaryProblemsTest(SimpleTestCase):
 
         self.assertEqual(len(problems), 2)
         self.assertIn("4 errors occurred.", " ".join(problems))
+
+    def test_skipped_foreign_addresses_are_reported(self):
+        problems = dps._summary_problems(self._summary(foreign_addresses_skipped=3))
+
+        self.assertEqual(len(problems), 1)
+        self.assertIn("3 manually curated NetBox IP(s) were left unchanged.", problems[0])

@@ -8,12 +8,15 @@ All Kea HTTP calls are mocked; these tests require no running services.
 from unittest.mock import patch
 
 import requests
+from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import ValidationError
+from django.core.management import call_command
+from django.db import IntegrityError, transaction
 from django.test import SimpleTestCase, TestCase, override_settings
 from netbox.models import NetBoxModel
 
 from netbox_kea.kea import KeaClient
-from netbox_kea.models import Server, SyncConfig, _get_kea_timeout, _get_max_unpaged_leases
+from netbox_kea.models import KeaDhcpLink, Server, SyncConfig, _get_kea_timeout, _get_max_unpaged_leases
 from netbox_kea.tests.kea_stub import stub_kea
 from netbox_kea.tests.utils import _make_db_server
 
@@ -767,3 +770,52 @@ class TestGetMaxUnpagedLeases(SimpleTestCase):
     @override_settings(PLUGINS_CONFIG={"netbox_kea": {"lease_query_max_unpaged_leases": 2.5}})
     def test_fractional_value_uses_the_default(self):
         self.assertEqual(_get_max_unpaged_leases(), 1000)
+
+
+class TestKeaDhcpLinkIdentity(TestCase):
+    """A link row carries exactly one Kea identity kind.
+
+    Both partial unique constraints are conditional, so a row with neither
+    identity would escape both and duplicate freely.
+    """
+
+    def setUp(self):
+        self.server = _make_db_server(name="kea-link-identity")
+        self.object_type = ContentType.objects.get_for_model(Server)
+
+    def _link(self, **identity) -> KeaDhcpLink:
+        return KeaDhcpLink(
+            server=self.server,
+            family=4,
+            object_type=self.object_type,
+            object_id=self.server.pk,
+            **identity,
+        )
+
+    def test_subnet_identity_alone_is_stored(self):
+        self._link(kea_subnet_id=7).save()
+
+        self.assertEqual(KeaDhcpLink.objects.get().kea_subnet_id, 7)
+
+    def test_reservation_identity_alone_is_stored(self):
+        self._link(kea_identity="hw-address:aa:bb:cc:dd:ee:ff").save()
+
+        self.assertEqual(KeaDhcpLink.objects.get().kea_identity, "hw-address:aa:bb:cc:dd:ee:ff")
+
+    def test_both_identity_kinds_are_rejected(self):
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            self._link(kea_subnet_id=7, kea_identity="hw-address:aa:bb:cc:dd:ee:ff").save()
+
+    def test_neither_identity_kind_is_rejected(self):
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            self._link().save()
+
+
+class TestMigrationState(TestCase):
+    """The recorded migrations describe the current netbox_kea models."""
+
+    def test_models_have_no_unmigrated_changes(self):
+        try:
+            call_command("makemigrations", "netbox_kea", "--check", "--dry-run", "--no-input", verbosity=0)
+        except SystemExit:
+            self.fail("netbox_kea models changed with no matching migration. Run makemigrations.")
