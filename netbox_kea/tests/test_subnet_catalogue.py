@@ -379,6 +379,48 @@ class TestSubnetCatalogue(TestCase):
         self.assertIsNone(snapshot.subnets[0].configuration)
         self.assertIn("configuration-unavailable", {diagnostic.code for diagnostic in snapshot.diagnostics})
 
+    def test_current_additional_classes_key_is_read(self):
+        """Read `evaluate-additional-classes`, the name Kea 3.0 renamed the old key to.
+
+        Kea 3.2 answers a configuration that still uses `require-client-classes` with
+        "The parameter 'require-client-classes' is deprecated. Use
+        'evaluate-additional-classes' instead", and refuses a configuration that sets
+        both, so `config-get` returns exactly one of the two names.
+        """
+        identities = _identity(4, [{"id": 1, "subnet": "198.18.1.0/24"}])
+        configuration = _config(
+            4,
+            [
+                {
+                    "id": 1,
+                    "subnet": "198.18.1.0/24",
+                    "pools": [],
+                    "evaluate-additional-classes": ["additional-client"],
+                }
+            ],
+        )
+
+        with stub_kea({"subnet4-list": identities, "config-get": configuration}):
+            snapshot = display(self.server, 4)
+
+        self.assertEqual(
+            snapshot.find_by_id(1).configuration.settings.require_client_classes,
+            ("additional-client",),
+        )
+
+    def test_failed_configuration_read_keeps_the_kea_hint(self):
+        """Name the Kea result in the diagnostic, so the operator can act on it."""
+        identities = _identity(4, [{"id": 1, "subnet": "198.18.1.0/24"}])
+
+        with stub_kea({"subnet4-list": identities, "config-get": {"result": 2, "text": "unknown command"}}):
+            snapshot = display(self.server, 4)
+
+        unavailable = [
+            diagnostic for diagnostic in snapshot.diagnostics if diagnostic.code == "configuration-unavailable"
+        ]
+        self.assertEqual(len(unavailable), 1, snapshot.diagnostics)
+        self.assertIn("hook library", unavailable[0].message)
+
     def test_complete_empty_identity_observation_confirms_safe_absence(self):
         with stub_kea(
             {

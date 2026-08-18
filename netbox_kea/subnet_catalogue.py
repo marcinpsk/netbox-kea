@@ -15,6 +15,7 @@ from django.utils import timezone
 from . import constants
 from .kea import KeaClient, KeaException
 from .models import Server
+from .utilities import kea_error_hint
 
 logger = logging.getLogger(__name__)
 
@@ -459,7 +460,13 @@ def _quarantine_collisions(
 def _read_configuration(client: KeaClient, family: Family) -> _ConfigurationObservation:
     try:
         response = client.command("config-get", service=[f"dhcp{family}"])
-    except (KeaException, requests.RequestException, ValueError, RuntimeError):
+    except KeaException as exc:
+        logger.warning("Subnet configuration read failed for DHCPv%s", family, exc_info=True)
+        return _unavailable_configuration(
+            "configuration-unavailable",
+            f"Kea Subnet configuration facts are unavailable. {kea_error_hint(exc)}",
+        )
+    except (requests.RequestException, ValueError, RuntimeError):
         logger.warning("Subnet configuration read failed for DHCPv%s", family, exc_info=True)
         return _unavailable_configuration(
             "configuration-unavailable",
@@ -746,7 +753,7 @@ def _parse_settings(
         interface_id=_optional_string(entry, "interface-id", path, diagnostics),
         relay_addresses=_relay_addresses(entry.get("relay"), family, path, diagnostics),
         client_classes=_string_tuple(entry, "client-classes", path, diagnostics),
-        require_client_classes=_string_tuple(entry, "require-client-classes", path, diagnostics),
+        require_client_classes=_additional_classes(entry, path, diagnostics),
     )
 
 
@@ -825,6 +832,22 @@ def _relay_addresses(
             continue
         addresses.append(parsed)
     return tuple(addresses)
+
+
+def _additional_classes(
+    entry: dict[str, Any],
+    path: str,
+    diagnostics: list[Diagnostic],
+) -> tuple[str, ...]:
+    """Read the additional-class list, preferring the current Kea key.
+
+    Kea 3.0 renamed ``require-client-classes`` to ``evaluate-additional-classes`` and
+    refuses a configuration that sets both, so ``config-get`` returns exactly one of
+    them. Kea before 3.0 returns only the old name.
+    """
+    if "evaluate-additional-classes" in entry:
+        return _string_tuple(entry, "evaluate-additional-classes", path, diagnostics)
+    return _string_tuple(entry, "require-client-classes", path, diagnostics)
 
 
 def _string_tuple(
