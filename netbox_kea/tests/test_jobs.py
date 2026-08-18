@@ -173,7 +173,8 @@ def _reservation_snapshot(reservations: list[dict], version: int):
     hosts = [host for host in reservations if _reservation_family(host) == version]
     client = KeaClient(url="http://kea.example.invalid", send_service=False)
     with stub_kea({"reservation-get-page": _res_page(hosts)}):
-        return client.reservation_page(version, catalogue)
+        # Bound the page to the fixture so a larger fixture cannot silently truncate.
+        return client.reservation_page(version, catalogue, limit=max(len(hosts), 1))
 
 
 @contextmanager
