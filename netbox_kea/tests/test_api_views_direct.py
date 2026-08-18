@@ -289,6 +289,9 @@ class TestFetchLeasesSubnetId(SimpleTestCase):
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["count"], 1)
+        # lease4-get-by-state answers on its own, so name the order: without this the
+        # test still passes when the guard stops measuring the Subnet first.
+        self.assertEqual(kea.commands(), ["stat-lease4-get", "lease4-get-by-state"])
         self.assertEqual(
             kea.bodies("lease4-get-by-state")[0]["arguments"],
             {"subnet-id": 1, "state": 1},
