@@ -25,13 +25,14 @@ Pull requests use the same labels and states as issues:
   ```bash
   set -euo pipefail
   repo="$(gh repo view --json nameWithOwner --jq .nameWithOwner)"
-  gh search prs --repo "$repo" --state open --limit 100 \
-    --json number,authorAssociation \
+  # --paginate walks every page: a search --limit caps the scan and can hide a
+  # pull request once the repository passes that many open ones.
+  gh api --paginate "repos/$repo/pulls?state=open&per_page=100" \
     --jq '.[] | select(
-      .authorAssociation == "CONTRIBUTOR" or
-      .authorAssociation == "FIRST_TIMER" or
-      .authorAssociation == "FIRST_TIME_CONTRIBUTOR" or
-      .authorAssociation == "NONE"
+      .author_association == "CONTRIBUTOR" or
+      .author_association == "FIRST_TIMER" or
+      .author_association == "FIRST_TIME_CONTRIBUTOR" or
+      .author_association == "NONE"
     ) | .number' |
   while read -r number; do
     gh pr view "$number" --repo "$repo" \
