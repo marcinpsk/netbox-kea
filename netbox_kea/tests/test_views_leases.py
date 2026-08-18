@@ -411,9 +411,28 @@ class TestLeaseSearchPaths(_ViewTestBase):
         self.assertEqual([row.record["ip_address"] for row in rows], [f"10.0.0.{index}" for index in range(51, 57)])
         self.assertTrue(response.context["paginate"])
         self.assertIsNone(response.context["next_page"])
-        # Each visible row probes its address, two scoped identities, and two
-        # Global identities. Rows outside this page are not enriched.
-        self.assertEqual(len(kea.bodies("reservation-get")), 30)
+        # Each visible row probes its own address and its own hardware address in both
+        # Scopes. The Client ID is shared by every row, so it is probed once per Scope.
+        # Rows outside this page are not enriched.
+        self.assertEqual(len(kea.bodies("reservation-get")), 6 + 6 + 6 + 1 + 1)
+
+    def test_one_device_with_several_leases_is_probed_once_per_identity(self):
+        """Identity lookups repeat across rows, so resolve each one once for the page."""
+        leases = [{**self._LEASE4, "ip-address": f"10.0.0.{index}"} for index in range(1, 6)]
+        with _reservation_stub(
+            4,
+            {
+                "subnet4-list": self._SUBNETS4,
+                "lease4-get-all": self._multi(leases),
+                "reservation-get": self._NO_RESERVATION,
+            },
+        ) as kea:
+            response = self._htmx_get(self._url4(), {"by": "subnet_id", "q": "1"})
+
+        self.assertEqual(response.status_code, 200)
+        # One address probe per lease, then one probe per Identity in each of the two
+        # Scopes: every lease carries the same hardware address and Client ID.
+        self.assertEqual(len(kea.bodies("reservation-get")), 5 + 4)
 
     @override_settings(PLUGINS_CONFIG={"netbox_kea": {"kea_timeout": 30, "lease_query_max_unpaged_leases": 1000}})
     def test_search_by_subnet_id_and_state_filters_in_kea(self):

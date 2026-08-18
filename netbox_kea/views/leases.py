@@ -1,7 +1,10 @@
 import concurrent.futures
 import logging
+import threading
 import uuid
 from abc import ABCMeta
+from collections.abc import Callable
+from functools import partial
 from typing import Any, Generic, TypeVar
 from urllib.parse import urlencode as _urlencode
 
@@ -885,7 +888,29 @@ def _lease_reservation_identities(lease: dict[str, Any], version: int) -> tuple[
     return tuple(identities)
 
 
-def _reservation_for_lease_worker(client, version, catalogue, lease):
+class _IdentityLookups:
+    """Resolve each ``(Scope, Identity)`` Reservation lookup once for a whole lease page.
+
+    Leases that share a device repeat the same identities, and Kea answers each of
+    those queries identically for the life of one page.
+    """
+
+    def __init__(self) -> None:
+        self._registry = threading.Lock()
+        self._locks: dict[Any, threading.Lock] = {}
+        self._results: dict[Any, Reservation | None] = {}
+
+    def resolve(self, key: Any, lookup: Callable[[], Reservation | None]) -> Reservation | None:
+        """Return the memoized result for *key*, calling *lookup* at most once."""
+        with self._registry:
+            entry = self._locks.setdefault(key, threading.Lock())
+        with entry:
+            if key not in self._results:
+                self._results[key] = lookup()
+            return self._results[key]
+
+
+def _reservation_for_lease_worker(client, version, catalogue, lease, lookups: _IdentityLookups):
     """Resolve one lease to a typed Reservation in a thread-local client."""
     ip = lease.get("ip_address", "")
     subnet_id = lease.get("subnet_id")
@@ -901,19 +926,14 @@ def _reservation_for_lease_worker(client, version, catalogue, lease):
             reservation = worker_client.reservation_by_address(version, catalogue, scope, ip)
             if reservation is not None:
                 return ip, reservation, True
-            for identity in identities:
-                reservation = worker_client.reservation_by_identity(version, catalogue, scope, identity)
-                if reservation is not None:
-                    return ip, reservation, True
-            for identity in identities:
-                reservation = worker_client.reservation_by_identity(
-                    version,
-                    catalogue,
-                    GlobalReservationScope(),
-                    identity,
-                )
-                if reservation is not None:
-                    return ip, reservation, True
+            for identity_scope in (scope, GlobalReservationScope()):
+                for identity in identities:
+                    reservation = lookups.resolve(
+                        (identity_scope, identity),
+                        partial(worker_client.reservation_by_identity, version, catalogue, identity_scope, identity),
+                    )
+                    if reservation is not None:
+                        return ip, reservation, True
             return ip, None, True
         except KeaException as exc:
             if exc.response.get("result") == 2:
@@ -938,8 +958,10 @@ def _fetch_reservations_for_leases(
     failed_ips: set[str] = set()
     host_cmds_available = True
     with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(leases), 10)) as executor:
+        lookups = _IdentityLookups()
         futures = [
-            executor.submit(_reservation_for_lease_worker, client, version, catalogue, lease) for lease in leases
+            executor.submit(_reservation_for_lease_worker, client, version, catalogue, lease, lookups)
+            for lease in leases
         ]
         for future in concurrent.futures.as_completed(futures):
             ip, reservation, lookup_state = future.result()
