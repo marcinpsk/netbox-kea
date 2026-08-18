@@ -126,6 +126,19 @@ _MOCK_SUBNET_LIST_V6 = {
     "arguments": {"subnets": [{"id": 1, "subnet": "2001:db8::/32", "shared-network-name": None}]},
 }
 
+#: The two Subnets the filter tests search over. Both Catalogue sources read this one
+#: list, so identity and configuration cannot drift apart when a test edits it.
+_MOCK_TWO_SUBNETS_V4 = [{"id": 1, "subnet": "10.0.1.0/24"}, {"id": 2, "subnet": "192.168.0.0/24"}]
+
+_MOCK_CONFIG_TWO_V4 = [
+    {
+        "result": 0,
+        "arguments": {"Dhcp4": {"subnet4": _MOCK_TWO_SUBNETS_V4, "shared-networks": []}},
+    }
+]
+
+_MOCK_SUBNET_LIST_TWO_V4 = {"result": 0, "arguments": {"subnets": _MOCK_TWO_SUBNETS_V4}}
+
 
 # ---------------------------------------------------------------------------
 # Stub response builders (real KeaClient + HTTP-boundary stub)
@@ -739,30 +752,7 @@ class TestCombinedSubnets4View(_CombinedViewBase):
 
     def test_search_by_cidr_filters_results(self):
         """?q=10.0 returns subnets whose CIDR contains '10.0', excludes others."""
-        config_with_two_subnets = [
-            {
-                "result": 0,
-                "arguments": {
-                    "Dhcp4": {
-                        "subnet4": [
-                            {"id": 1, "subnet": "10.0.1.0/24"},
-                            {"id": 2, "subnet": "192.168.0.0/24"},
-                        ],
-                        "shared-networks": [],
-                    }
-                },
-            }
-        ]
-        subnet_list = {
-            "result": 0,
-            "arguments": {
-                "subnets": [
-                    {"id": 1, "subnet": "10.0.1.0/24"},
-                    {"id": 2, "subnet": "192.168.0.0/24"},
-                ]
-            },
-        }
-        with stub_kea(_subnet_responses(4, config=config_with_two_subnets, subnets=subnet_list)):
+        with stub_kea(_subnet_responses(4, config=_MOCK_CONFIG_TWO_V4, subnets=_MOCK_SUBNET_LIST_TWO_V4)):
             url = reverse("plugins:netbox_kea:combined_subnets4") + f"?server={self.v4_server.pk}&q=10.0"
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
@@ -771,30 +761,7 @@ class TestCombinedSubnets4View(_CombinedViewBase):
 
     def test_search_by_subnet_id_filters_results(self):
         """?subnet_id=2 returns only the subnet with id=2."""
-        config_with_two_subnets = [
-            {
-                "result": 0,
-                "arguments": {
-                    "Dhcp4": {
-                        "subnet4": [
-                            {"id": 1, "subnet": "10.0.1.0/24"},
-                            {"id": 2, "subnet": "192.168.0.0/24"},
-                        ],
-                        "shared-networks": [],
-                    }
-                },
-            }
-        ]
-        subnet_list = {
-            "result": 0,
-            "arguments": {
-                "subnets": [
-                    {"id": 1, "subnet": "10.0.1.0/24"},
-                    {"id": 2, "subnet": "192.168.0.0/24"},
-                ]
-            },
-        }
-        with stub_kea(_subnet_responses(4, config=config_with_two_subnets, subnets=subnet_list)):
+        with stub_kea(_subnet_responses(4, config=_MOCK_CONFIG_TWO_V4, subnets=_MOCK_SUBNET_LIST_TWO_V4)):
             url = reverse("plugins:netbox_kea:combined_subnets4") + f"?server={self.v4_server.pk}&subnet_id=2"
             response = self.client.get(url)
         self.assertNotContains(response, "10.0.1.0/24")
