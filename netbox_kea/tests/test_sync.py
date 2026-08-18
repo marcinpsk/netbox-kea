@@ -6,47 +6,9 @@ runs in a transaction that is rolled back afterwards.
 
 from __future__ import annotations
 
-import ipaddress
-
 from django.test import TestCase, override_settings
 
-from netbox_kea.reservations import (
-    InSubnetReservationScope,
-    IPv4Reservation,
-    IPv6Reservation,
-    ReservationIdentity,
-)
-from netbox_kea.subnet_catalogue import SubnetIdentity
-
-
-def _typed_reservation(raw: dict, *, prefix_length: int | None = None):
-    """Convert an old wire fixture at the test boundary into the domain value."""
-    address_values = raw.get("ip-addresses") or ([raw["ip-address"]] if raw.get("ip-address") else [])
-    family = 6 if "ip-addresses" in raw or any(":" in address for address in address_values) else 4
-    addresses = tuple(ipaddress.ip_address(address) for address in address_values)
-    identity_type = next(
-        (key for key in ("hw-address", "duid", "circuit-id", "client-id", "flex-id") if raw.get(key)),
-        "duid" if family == 6 else "flex-id",
-    )
-    identity_value = raw.get(identity_type) or ("00:01" if family == 6 else "test-reservation")
-    if addresses:
-        default_prefix = 64 if family == 6 else 24
-        network = ipaddress.ip_network(f"{addresses[0]}/{prefix_length or default_prefix}", strict=False)
-    else:
-        network = ipaddress.ip_network("2001:db8::/64" if family == 6 else "198.18.0.0/24")
-    scope = InSubnetReservationScope(SubnetIdentity(subnet_id=int(raw.get("subnet-id", 1)), network=network))
-    common = {
-        "scope": scope,
-        "identity": ReservationIdentity(identity_type, identity_value),
-        "addresses": addresses,
-        "hostname": raw.get("hostname", ""),
-    }
-    if family == 4:
-        return IPv4Reservation(**common)
-    return IPv6Reservation(
-        **common,
-        delegated_prefixes=tuple(ipaddress.IPv6Network(prefix) for prefix in raw.get("prefixes", [])),
-    )
+from .kea_stub import _typed_reservation
 
 
 def _sync_reservation(raw: dict, **kwargs):

@@ -16,6 +16,7 @@ threads used by the reservation/lease-enrichment views.
 
 from __future__ import annotations
 
+import ipaddress
 import threading
 from collections import deque
 from contextlib import contextmanager
@@ -23,6 +24,15 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import requests
+
+from netbox_kea.reservations import (
+    InSubnetReservationScope,
+    IPv4Reservation,
+    IPv6Reservation,
+    Reservation,
+    ReservationIdentity,
+)
+from netbox_kea.subnet_catalogue import SubnetIdentity
 
 
 def _http_response(payload: Any, status: int = 200) -> MagicMock:
@@ -146,6 +156,48 @@ class KeaHttpStub:
 
 # --- shared Kea response builders (kept next to stub_kea so their shape can't
 #     drift across the test modules that register them) ---
+
+
+def _reservation_family(host: dict[str, Any]) -> int:
+    """Return the DHCP family one legacy wire reservation fixture describes.
+
+    Delegated prefixes are DHCPv6 only, so a prefix-only fixture is v6 even when it
+    carries no address at all.
+    """
+    addresses = host.get("ip-addresses") or [host.get("ip-address", "")]
+    if "ip-addresses" in host or host.get("prefixes"):
+        return 6
+    return 6 if any(":" in address for address in addresses if address) else 4
+
+
+def _typed_reservation(raw: dict[str, Any], *, prefix_length: int | None = None) -> Reservation:
+    """Convert one legacy wire reservation fixture into the domain value."""
+    family = _reservation_family(raw)
+    address_values = raw.get("ip-addresses") or ([raw["ip-address"]] if raw.get("ip-address") else [])
+    addresses = tuple(ipaddress.ip_address(address) for address in address_values)
+    identity_type = next(
+        (key for key in ("hw-address", "duid", "circuit-id", "client-id", "flex-id") if raw.get(key)),
+        "duid" if family == 6 else "flex-id",
+    )
+    identity_value = raw.get(identity_type) or ("00:01" if family == 6 else "test-reservation")
+    if addresses:
+        default_prefix = 64 if family == 6 else 24
+        network = ipaddress.ip_network(f"{addresses[0]}/{prefix_length or default_prefix}", strict=False)
+    else:
+        network = ipaddress.ip_network("2001:db8::/64" if family == 6 else "198.18.0.0/24")
+    scope = InSubnetReservationScope(SubnetIdentity(subnet_id=int(raw.get("subnet-id", 1)), network=network))
+    common = {
+        "scope": scope,
+        "identity": ReservationIdentity(identity_type, identity_value),
+        "addresses": addresses,
+        "hostname": raw.get("hostname", ""),
+    }
+    if family == 4:
+        return IPv4Reservation(**common)
+    return IPv6Reservation(
+        **common,
+        delegated_prefixes=tuple(ipaddress.IPv6Network(prefix) for prefix in raw.get("prefixes", [])),
+    )
 
 
 def _reservation_mutation_commands() -> dict[str, Any]:

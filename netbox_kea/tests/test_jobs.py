@@ -35,7 +35,7 @@ from netbox_kea.kea import KeaClient
 from netbox_kea.models import Server, SyncConfig
 from netbox_kea.subnet_catalogue import IdentityOnlyCatalogueSnapshot, SubnetIdentity, VerifiedSubnet
 
-from .kea_stub import _res_page, queued, stub_kea
+from .kea_stub import _res_page, _reservation_family, queued, stub_kea
 
 _PLUGINS_CONFIG = {
     "netbox_kea": {
@@ -114,15 +114,6 @@ def _empty_config(body: dict) -> dict:
     svc = (body.get("service") or ["dhcp4"])[0]
     root, subnets = ("Dhcp6", "subnet6") if svc == "dhcp6" else ("Dhcp4", "subnet4")
     return {"result": 0, "arguments": {root: {subnets: [], "shared-networks": []}}}
-
-
-def _reservation_family(host: dict) -> int:
-    addresses = host.get("ip-addresses") or [host.get("ip-address", "")]
-    return (
-        6
-        if "ip-addresses" in host or host.get("prefixes") or any(":" in address for address in addresses if address)
-        else 4
-    )
 
 
 def _reservation_subnets(reservations: list[dict], version: int) -> list[dict]:
