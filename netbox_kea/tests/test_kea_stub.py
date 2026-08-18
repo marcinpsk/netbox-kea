@@ -99,14 +99,19 @@ def test_shared_response_builders_shape():
 
 def test_catalogue_responses_shape():
     """Lock the shared catalogue factory that replaced three drifting local copies."""
-    from netbox_kea.tests.kea_stub import _catalogue_responses, _reservation_mutation_commands, _subnet_list
+    from netbox_kea.tests.kea_stub import _catalogue_responses, _subnet_list
 
     responses = _catalogue_responses(4, 20, "198.18.0.0/24")
 
     subnet = {"id": 20, "subnet": "198.18.0.0/24"}
     assert set(responses) == {"subnet4-list", "config-get", "list-commands"}
     assert responses["subnet4-list"] == _subnet_list(4, [subnet])
-    assert responses["list-commands"] == _reservation_mutation_commands()
+    # Pinned literally: comparing against the builder that produced it holds however the
+    # command list drifts, and this payload gates mutation-capability probing everywhere.
+    assert responses["list-commands"] == {
+        "result": 0,
+        "arguments": ["reservation-get", "reservation-add", "reservation-update", "reservation-del"],
+    }
     assert responses["config-get"] == {
         "result": 0,
         "arguments": {
