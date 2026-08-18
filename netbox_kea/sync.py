@@ -23,8 +23,6 @@ from typing import TYPE_CHECKING
 from .reservations import (
     GlobalReservationScope,
     InSubnetReservationScope,
-    IPv4Reservation,
-    IPv6Reservation,
     Reservation,
     ReservationSynchronizationState,
 )
@@ -778,10 +776,7 @@ def cleanup_stale_ips_batch(synced_records: list[dict | Reservation]) -> int:
     # is cleaned independently (prevents wrong family filter).
     hostname_ips: dict[tuple[str, int], set[str]] = {}
     for record in synced_records:
-        if isinstance(record, (IPv4Reservation, IPv6Reservation)):
-            hostname = record.hostname
-            ips = {str(address) for address in record.addresses}
-        else:
+        if isinstance(record, dict):
             hostname = record.get("hostname", "")
             ips = set()
             if "ip-address" in record and record["ip-address"]:
@@ -789,6 +784,13 @@ def cleanup_stale_ips_batch(synced_records: list[dict | Reservation]) -> int:
             for addr in record.get("ip-addresses", []):
                 if addr:
                     ips.add(addr)
+        elif isinstance(record, Reservation):
+            hostname = record.hostname
+            ips = {str(address) for address in record.addresses}
+        else:
+            raise TypeError(
+                f"cleanup_stale_ips_batch accepts a raw lease dict or a Reservation, not {type(record).__name__}"
+            )
         if not hostname:
             continue
         for ip in ips:

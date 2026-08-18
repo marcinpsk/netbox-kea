@@ -1311,6 +1311,33 @@ class TestCleanupStaleIpsBatch(TestCase):
         self.assertEqual(cleanup_stale_ips_batch([]), 0)
 
     @override_settings(PLUGINS_CONFIG=_STALE_PLUGINS_CONFIG)
+    def test_typed_reservation_keeps_its_own_address(self):
+        """A Reservation is read through its attributes, not through dict access."""
+        from ipam.models import IPAddress as NbIP
+
+        from netbox_kea.sync import cleanup_stale_ips_batch
+
+        NbIP.objects.create(
+            address="10.80.0.99/32", status="dhcp", dns_name="typed.example.com", description=self._KEA_DESC
+        )
+        reservation = _typed_reservation(
+            {"ip-address": "10.80.0.1", "hostname": "typed.example.com", "hw-address": "aa:bb:cc:dd:ee:80"}
+        )
+
+        cleaned = cleanup_stale_ips_batch([reservation])
+
+        self.assertEqual(cleaned, 1)
+        self.assertFalse(NbIP.objects.filter(address__startswith="10.80.0.99/").exists())
+
+    @override_settings(PLUGINS_CONFIG=_STALE_PLUGINS_CONFIG)
+    def test_unsupported_record_type_is_rejected(self):
+        """Neither a raw lease dict nor a Reservation: fail loudly instead of guessing."""
+        from netbox_kea.sync import cleanup_stale_ips_batch
+
+        with self.assertRaisesRegex(TypeError, "raw lease dict or a Reservation"):
+            cleanup_stale_ips_batch([object()])
+
+    @override_settings(PLUGINS_CONFIG=_STALE_PLUGINS_CONFIG)
     def test_batch_groups_by_address_family(self):
         """Mixed v4/v6 records for same hostname clean both families independently."""
         from ipam.models import IPAddress as NbIP
