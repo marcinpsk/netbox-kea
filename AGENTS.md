@@ -77,9 +77,10 @@ integration tests.
 
 ### CI
 
-- **Unit-test job**: pinned to NetBox **v4.6.7** (matches the devcontainer). Keep
-  this in lockstep with `netbox_kea/tests/query_counts.json` (see "Query-count
-  baselines") — bump the pin and re-record the baselines together.
+- **Unit-test job**: pinned to the exact NetBox patch release named by
+  `QUERY_COUNT_NETBOX_VERSION` in `netbox_kea/tests/conftest.py`, because
+  `netbox_kea/tests/query_counts.json` describes that release only (see "Query-count
+  baselines"). Bump the constant, the CI `ref`, and the baselines in one change.
 - **Compatibility matrix**: runs the integration suite (`test_setup.sh`) against
   NetBox v4.3 (floor), v4.6 (ceiling), and the dev snapshot (allowed to fail).
 - Playwright traces on failure are uploaded as artifacts.

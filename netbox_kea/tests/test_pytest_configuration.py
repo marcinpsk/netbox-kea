@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -90,6 +91,15 @@ def test_pytest_configuration_works_with_django_plugin_disabled():
         )
 
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_the_pinned_netbox_release_is_documented_only_by_its_constant():
+    """Name the release in one place. A copy in the docs goes stale on the next bump."""
+    agents = (REPOSITORY_ROOT / "AGENTS.md").read_text()
+
+    assert "QUERY_COUNT_NETBOX_VERSION" in agents
+    pinned = re.search(r"NetBox \*{0,2}v?\d+\.\d+\.\d+", agents)
+    assert pinned is None, f"AGENTS.md names a NetBox patch release directly: {pinned.group(0)!r}"
 
 
 def test_ci_pins_the_netbox_release_the_query_counts_describe():
