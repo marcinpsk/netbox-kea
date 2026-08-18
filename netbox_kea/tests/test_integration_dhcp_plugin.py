@@ -924,6 +924,28 @@ class DhcpPluginReservationSnapshotImportTest(TestCase):
         self.assertEqual(summary.errors, 0, summary.warnings)
         self.assertFalse(IPAddress.objects.filter(address__startswith="2001:db8:aa::5/").exists())
 
+    def test_reservation_whose_mac_row_cannot_be_written_is_skipped(self):
+        """Importing it would store a row with no identifier, which no later run can match."""
+        from django.db.utils import OperationalError
+
+        HostReservation = apps.get_model(DHCP_PLUGIN, "HostReservation")
+        conf = {"subnet4": [{"id": 7, "subnet": "10.43.0.0/24"}]}
+        hosts = [{"subnet-id": 7, "hw-address": "aa:bb:cc:dd:ee:43", "ip-address": "10.43.0.50"}]
+        intent = parse_dhcp_config(conf, 4)
+        snapshot = _reservation_snapshot(conf, 4, hosts)
+
+        with patch("dcim.models.MACAddress.objects.get_or_create", side_effect=OperationalError("no MAC row")):
+            first = self.adapter.import_server_config(self.server, intent, snapshot)
+            second = self.adapter.import_server_config(self.server, intent, snapshot)
+
+        self.assertEqual(HostReservation.objects.count(), 0)
+        self.assertEqual(first.reservations_created, 0)
+        self.assertTrue(first.reservations_unread)
+        self.assertTrue(
+            any("hardware address could not be resolved" in warning for warning in second.warnings),
+            second.warnings,
+        )
+
 
 @tag("dhcp_plugin")
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
