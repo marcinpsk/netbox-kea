@@ -302,14 +302,28 @@ def _catalogue_responses(
     when the code under test actually issues that command, so the extra entry cannot
     change what :meth:`KeaHttpStub.commands` records.
     """
-    subnet = {"id": subnet_id, "subnet": cidr}
+    return _catalogue_responses_for_subnets(version, [{"id": subnet_id, "subnet": cidr}], config_hash=config_hash)
+
+
+def _catalogue_responses_for_subnets(
+    version: int,
+    subnets: list[dict[str, Any]],
+    *,
+    config_hash: str = "shared-catalogue",
+) -> dict[str, Any]:
+    """The same Catalogue responses for an explicit *subnets* list.
+
+    Callers that already carry their own ``subnet{v}-list`` reach the Catalogue shape
+    through this entry point, so it stays defined once.
+    """
+    subnets = list(subnets)
     return {
-        f"subnet{version}-list": _subnet_list(version, [subnet]),
+        f"subnet{version}-list": _subnet_list(version, subnets),
         "list-commands": _reservation_mutation_commands(),
         "config-get": {
             "result": 0,
             "arguments": {
-                f"Dhcp{version}": {f"subnet{version}": [subnet], "shared-networks": []},
+                f"Dhcp{version}": {f"subnet{version}": subnets, "shared-networks": []},
                 "hash": config_hash,
             },
         },

@@ -34,7 +34,14 @@ from netbox_kea.kea import KeaClient
 from netbox_kea.models import Server
 from netbox_kea.utilities import _subnet_choices_cache_key, fetch_subnet_choices, subnet_sort_key
 
-from .kea_stub import _subnet_list, _subnet_stats, queued, stub_kea
+from .kea_stub import (
+    _catalogue_responses,
+    _catalogue_responses_for_subnets,
+    _subnet_list,
+    _subnet_stats,
+    queued,
+    stub_kea,
+)
 from .utils import _PLUGINS_CONFIG, _make_db_server, _ViewTestBase
 
 #: The HTMX error template renders a uuid4 reference ID, so a test that stops at the
@@ -57,16 +64,15 @@ def _assert_no_error_template(test, response):
 
 
 def _reservation_stub(version: int, responses: dict):
-    """Add the matching configuration source required by typed Reservation scope."""
-    subnet_key = f"subnet{version}"
+    """Add the matching configuration source required by typed Reservation scope.
+
+    The Catalogue response shape has one definition in ``kea_stub``; this only points it
+    at the subnets the caller declared, then lets the caller's own entries win.
+    """
     list_response = responses.get(f"subnet{version}-list")
     arguments = list_response.get("arguments", {}) if isinstance(list_response, dict) else {}
     subnets = arguments.get("subnets", []) if isinstance(arguments, dict) else []
-    config_response = {
-        "result": 0,
-        "arguments": {f"Dhcp{version}": {subnet_key: subnets, "shared-networks": []}},
-    }
-    return stub_kea({"config-get": config_response, **responses})
+    return stub_kea({**_catalogue_responses_for_subnets(version, subnets), **responses})
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
@@ -362,11 +368,7 @@ class TestLeaseSearchPaths(_ViewTestBase):
         """BY_SUBNET_ID must call lease4-get-all with subnets=[<id>]."""
         with stub_kea(
             {
-                "subnet4-list": self._SUBNETS4,
-                "config-get": {
-                    "result": 0,
-                    "arguments": {"Dhcp4": {"subnet4": [{"id": 1, "subnet": "10.0.0.0/24"}]}},
-                },
+                **_catalogue_responses(4, 1, "10.0.0.0/24"),
                 "stat-lease4-get": _subnet_stats(4, 1),
                 "lease4-get-all": self._multi([dict(self._LEASE4)]),
                 "reservation-get": self._NO_RESERVATION,
@@ -439,11 +441,7 @@ class TestLeaseSearchPaths(_ViewTestBase):
         lease = dict(self._LEASE4, state=1)
         with stub_kea(
             {
-                "subnet4-list": self._SUBNETS4,
-                "config-get": {
-                    "result": 0,
-                    "arguments": {"Dhcp4": {"subnet4": [{"id": 1, "subnet": "10.0.0.0/24"}]}},
-                },
+                **_catalogue_responses(4, 1, "10.0.0.0/24"),
                 "stat-lease4-get": _subnet_stats(4, 1, assigned=2001, declined=1),
                 "lease4-get-by-state": self._multi([lease]),
                 "reservation-get": self._NO_RESERVATION,
@@ -579,11 +577,7 @@ class TestLeaseExport(_ViewTestBase):
         ]
         with stub_kea(
             {
-                "subnet4-list": self._SUBNETS4,
-                "config-get": {
-                    "result": 0,
-                    "arguments": {"Dhcp4": {"subnet4": [{"id": 1, "subnet": "10.0.0.0/24"}]}},
-                },
+                **_catalogue_responses(4, 1, "10.0.0.0/24"),
                 "stat-lease4-get": _subnet_stats(4, 1, assigned=3),
                 "lease4-get-all": {"result": 0, "arguments": {"leases": leases}},
             }
@@ -1189,11 +1183,7 @@ class TestLeaseStateFilter(_ViewTestBase):
         declined = next(lease for lease in _PAGE_LEASES_RESP[0]["arguments"]["leases"] if lease["state"] == 1)
         with stub_kea(
             {
-                "subnet4-list": self._SUBNETS4,
-                "config-get": {
-                    "result": 0,
-                    "arguments": {"Dhcp4": {"subnet4": [{"id": 1, "subnet": "10.0.0.0/24"}]}},
-                },
+                **_catalogue_responses(4, 1, "10.0.0.0/24"),
                 "lease4-get-by-state": {"result": 0, "arguments": {"leases": [declined]}},
                 "reservation-get": {"result": 3},
             }
@@ -2362,14 +2352,9 @@ class TestLeaseExportStateFilter(_ViewTestBase):
             "hostname": "",
             "state": 1,
         }
-        subnets = _subnet_list(4, [{"id": 1, "subnet": "10.0.0.0/24"}])
         with stub_kea(
             {
-                "subnet4-list": subnets,
-                "config-get": {
-                    "result": 0,
-                    "arguments": {"Dhcp4": {"subnet4": [{"id": 1, "subnet": "10.0.0.0/24"}]}},
-                },
+                **_catalogue_responses(4, 1, "10.0.0.0/24"),
                 "lease4-get-by-state": {"result": 0, "arguments": {"leases": [declined]}},
             }
         ):
