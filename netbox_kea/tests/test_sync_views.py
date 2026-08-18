@@ -38,11 +38,9 @@ from ipam.models import IPAddress as NbIP
 from netbox_kea.models import Server
 
 from .kea_stub import _catalogue_responses, _res_page, _reservation_mutation_commands, stub_kea
-from .utils import _drop_subnet_choices_cache
+from .utils import _PLUGINS_CONFIG, _drop_subnet_choices_cache
 
 User = get_user_model()
-
-_PLUGINS_CONFIG = {"netbox_kea": {"kea_timeout": 30, "lease_query_max_unpaged_leases": 0}}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
