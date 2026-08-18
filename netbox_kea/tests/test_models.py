@@ -837,3 +837,40 @@ class TestMigrationState(TestCase):
             call_command("makemigrations", "netbox_kea", "--check", "--dry-run", "--no-input", verbosity=0)
         except SystemExit:
             self.fail("netbox_kea models changed with no matching migration. Run makemigrations.")
+
+
+class TestKeaDhcpLinkConstraintMigration(TestCase):
+    """Migration 0015 must accept every KeaDhcpLink row a released deployment can hold."""
+
+    _RELEASED = "0013_server_sync_dhcp_plugin_enabled_keadhcplink"
+    _CURRENT = "0015_keadhcplink_one_identity_kind"
+
+    def test_a_subnet_keyed_link_written_before_0014_survives_the_constraint(self):
+        """Release 1.9.0 stops at 0013, where the only writer always sets kea_subnet_id."""
+        from django.db import connection
+        from django.db.migrations.executor import MigrationExecutor
+
+        server = _make_db_server(name="released-link")
+        object_type = ContentType.objects.get_for_model(Server)
+        executor = MigrationExecutor(connection)
+        try:
+            executor.migrate([("netbox_kea", self._RELEASED)])
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "INSERT INTO netbox_kea_keadhcplink "
+                    "(server_id, family, kea_subnet_id, object_type_id, object_id, created, last_synced) "
+                    "VALUES (%s, 4, 7, %s, %s, NOW(), NOW())",
+                    [server.pk, object_type.pk, server.pk],
+                )
+                # Fire the deferred foreign-key triggers the insert queued, or PostgreSQL
+                # refuses to ALTER the table while the test transaction still holds them.
+                cursor.execute("SET CONSTRAINTS ALL IMMEDIATE")
+        finally:
+            # The forward migration is the assertion: AddConstraint raises here if a
+            # released row can violate keadhcplink_one_identity_kind.
+            executor.loader.build_graph()
+            executor.migrate([("netbox_kea", self._CURRENT)])
+
+        link = KeaDhcpLink.objects.get(server=server)
+        self.assertEqual(link.kea_subnet_id, 7)
+        self.assertIsNone(link.kea_identity)
