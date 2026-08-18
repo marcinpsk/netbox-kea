@@ -18,14 +18,62 @@
         <h5 class="card-header">Sync to DHCP plugin</h5>
         <div class="card-body">
           <p class="small text-muted mb-2">
-            Import this server's live Kea data-tier configuration (subnets, pools, reservations)
-            into the NetBox DHCP plugin. Reads Kea read-only; idempotent.
+            Import this server's live Kea configuration into the NetBox DHCP plugin. This includes
+            subnets, pools, reservations, supported settings, client classes, and DHCP options.
+            The import reads Kea without changing it. You can run the import more than once.
           </p>
-          <div class="alert alert-warning py-2 px-3 small mb-2" role="alert">
-            <i class="mdi mdi-alert-outline" aria-hidden="true"></i>
-            Kea <strong>shared-networks</strong> are a different concept from the DHCP plugin's
-            <em>Shared Networks</em> and are <strong>not</strong> imported as such — a shared-network's
-            member subnets are imported individually. DHCP <strong>options</strong> are not imported.
+          <div class="d-flex align-items-center gap-2 mb-2">
+            <i class="mdi mdi-information-outline" aria-hidden="true"></i>
+            <h6 class="mb-0">Import mapping notes</h6>
+          </div>
+          <div class="row row-cols-1 row-cols-lg-3 g-2 mb-3">
+            <div class="col">
+              <div class="card h-100 border-warning">
+                <div class="card-body p-3">
+                  <h6 class="card-title d-flex align-items-center gap-2">
+                    <span class="badge text-bg-warning">1</span>
+                    Shared Network grouping
+                  </h6>
+                  <p class="card-text small mb-0">
+                    Kea <strong>shared-networks</strong> define a DHCP link and subnet-selection domain.
+                    They do not map to the DHCP plugin's <em>Shared Networks</em>. The DHCP plugin's
+                    Shared Networks require an aggregate Prefix. Member Subnets are imported individually
+                    and remain attached directly to the DHCP Server.
+                  </p>
+                </div>
+              </div>
+            </div>
+            <div class="col">
+              <div class="card h-100 border-warning">
+                <div class="card-body p-3">
+                  <h6 class="card-title d-flex align-items-center gap-2">
+                    <span class="badge text-bg-warning">2</span>
+                    Direct-interface mapping
+                  </h6>
+                  <p class="card-text small mb-0">
+                    A direct-interface selector has a partial representation. When it resolves to a
+                    NetBox device or virtual-machine interface, <code>DHCPServerInterface</code> can
+                    represent that server attachment. It does not preserve Shared Network identity,
+                    membership, relay selection, inherited settings or options, or allocation behavior.
+                    NetBox Kea remains the authority for those facts.
+                  </p>
+                </div>
+              </div>
+            </div>
+            <div class="col">
+              <div class="card h-100 border-warning">
+                <div class="card-body p-3">
+                  <h6 class="card-title d-flex align-items-center gap-2">
+                    <span class="badge text-bg-warning">3</span>
+                    DHCP option mapping
+                  </h6>
+                  <p class="card-text small mb-0">
+                    DHCP options are imported at supported scopes when the import can resolve a matching
+                    standard or custom Option Definition. Unsupported options are skipped and reported.
+                  </p>
+                </div>
+              </div>
+            </div>
           </div>
           {% if can_sync %}
             <form method="post" action="{% url 'plugins:netbox_kea:server_dhcp_plugin_sync' object.pk %}">
@@ -49,45 +97,51 @@
               Could not read live configuration from Kea for one or more versions; showing last-imported records where available.
             </div>
           {% endif %}
-          {% for v in drift.versions %}
-            <h6 class="px-3 pt-3">DHCPv{{ v.version }}</h6>
-            <table class="table table-hover">
-              <thead>
-                <tr>
-                  <th>Kea subnet-id</th>
-                  <th>Prefix</th>
-                  <th>Status</th>
-                  <th>Pools</th>
-                  <th>Reservations</th>
-                </tr>
-              </thead>
-              <tbody>
-                {% for row in v.rows %}
+          {% if drift.versions %}
+            <div class="table-responsive">
+              <table class="table table-hover align-middle mb-0 drift-table">
+                <thead>
                   <tr>
-                    <td>{{ row.kea_subnet_id|placeholder }}</td>
-                    <td>{{ row.cidr|placeholder }}</td>
-                    <td>
-                      {% if row.status == "imported" %}
-                        <span class="badge text-bg-success">Imported</span>
-                      {% elif row.status == "new" %}
-                        <span class="badge text-bg-info">New in Kea</span>
-                      {% elif row.status == "orphaned" %}
-                        <span class="badge text-bg-warning">Orphaned (gone from Kea)</span>
-                      {% else %}
-                        <span class="badge text-bg-secondary">Unknown</span>
-                      {% endif %}
-                    </td>
-                    <td>{{ row.pools }}</td>
-                    <td>{{ row.reservations }}</td>
+                    <th scope="col">Kea subnet-id</th>
+                    <th scope="col">Prefix</th>
+                    <th scope="col">Status</th>
+                    <th scope="col">Pools</th>
+                    <th scope="col">Reservations</th>
                   </tr>
-                {% empty %}
-                  <tr><td colspan="5" class="text-muted">No subnets.</td></tr>
+                </thead>
+                {% for v in drift.versions %}
+                <tbody>
+                  <tr class="table-secondary">
+                    <th colspan="5" scope="rowgroup" class="px-3 py-2">DHCPv{{ v.version }}</th>
+                  </tr>
+                  {% for row in v.rows %}
+                    <tr>
+                      <td>{{ row.kea_subnet_id|placeholder }}</td>
+                      <td>{{ row.cidr|placeholder }}</td>
+                      <td>
+                        {% if row.status == "imported" %}
+                          <span class="badge text-bg-success">Imported</span>
+                        {% elif row.status == "new" %}
+                          <span class="badge text-bg-info">New in Kea</span>
+                        {% elif row.status == "orphaned" %}
+                          <span class="badge text-bg-warning">Orphaned (gone from Kea)</span>
+                        {% else %}
+                          <span class="badge text-bg-secondary">Unknown</span>
+                        {% endif %}
+                      </td>
+                      <td>{{ row.pools }}</td>
+                      <td>{{ row.reservations }}</td>
+                    </tr>
+                  {% empty %}
+                    <tr><td colspan="5" class="text-muted">No subnets.</td></tr>
+                  {% endfor %}
+                </tbody>
                 {% endfor %}
-              </tbody>
-            </table>
-          {% empty %}
+              </table>
+            </div>
+          {% else %}
             <p class="text-muted p-3 mb-0">No DHCP versions enabled on this server.</p>
-          {% endfor %}
+          {% endif %}
         </div>
       </div>
 

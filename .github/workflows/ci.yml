@@ -110,7 +110,7 @@ jobs:
           pytest ${{ github.workspace }}/netbox_kea/tests/ \
             --override-ini="DJANGO_SETTINGS_MODULE=netbox_kea.tests.isolated_settings" \
             --override-ini="pythonpath=${{ github.workspace }}/netbox/netbox" \
-            -n 4 \
+            -n auto \
             --dist loadscope \
             --reuse-db \
             --cov=netbox_kea \

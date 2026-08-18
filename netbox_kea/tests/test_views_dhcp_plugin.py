@@ -214,7 +214,12 @@ class SyncNowEndToEndTest(TestCase):
         self.assertContains(resp, "could not be read")
 
     def test_drift_view_renders_imported_status(self):
-        conf = {4: {"subnet4": [{"id": 1, "subnet": "10.88.0.0/24"}]}}
+        self.server.dhcp6 = True
+        self.server.save(update_fields=["dhcp6"])
+        conf = {
+            4: {"subnet4": [{"id": 1, "subnet": "10.88.0.0/24"}]},
+            6: {"subnet6": [{"id": 1, "subnet": "2001:db8:88::/64"}]},
+        }
         fake = _FakeKeaClient(conf)
         with patch("netbox_kea.models.Server.get_client", return_value=fake, autospec=True):
             self.client.post(self.url, follow=True)
@@ -222,8 +227,19 @@ class SyncNowEndToEndTest(TestCase):
             resp = self.client.get(tab_url)
         self.assertContains(resp, "Imported")
         self.assertContains(resp, "10.88.0.0/24")
-        # The tab warns that Kea shared-networks are a different concept (not imported as such).
-        self.assertContains(resp, "different concept")
+        self.assertContains(resp, "2001:db8:88::/64")
+        self.assertContains(resp, "DHCPv4")
+        self.assertContains(resp, "DHCPv6")
+        self.assertContains(resp, 'class="table table-hover align-middle mb-0 drift-table"', count=1)
+        self.assertContains(resp, "Shared Network grouping")
+        self.assertContains(resp, "Direct-interface mapping")
+        self.assertContains(resp, "DHCP option mapping")
+        self.assertContains(resp, "require an aggregate Prefix")
+        self.assertContains(resp, "DHCPServerInterface")
+        self.assertContains(resp, "does not preserve Shared Network identity")
+        self.assertContains(resp, "DHCP options are imported")
+        self.assertContains(resp, "Unsupported options are skipped")
+        self.assertNotContains(resp, "are not imported")
 
 
 class _MalformedConfigClient(KeaClient):
