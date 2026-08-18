@@ -28,10 +28,6 @@ from netbox_kea.tests.parallel import isolated_test_database_name
 logger = logging.getLogger(__name__)
 
 #: NetBox release that ``netbox_kea/tests/query_counts.json`` was recorded against.
-#: NetBox re-records its own baselines on patch releases — v4.6.7 to v4.6.8 moved
-#: ``core``'s ``datasource:list_objects_with_permission`` from 20 to 17 — so a count is
-#: a fact about one release, not about the plugin alone. The unit-test CI job pins this
-#: same version; ``test_pytest_configuration`` fails when the two drift.
 QUERY_COUNT_NETBOX_VERSION = "4.6.8"
 
 #: Where NetBox binds the context manager the baselines are asserted through.
