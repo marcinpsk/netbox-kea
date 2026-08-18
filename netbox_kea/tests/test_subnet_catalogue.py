@@ -243,6 +243,7 @@ class TestSubnetCatalogue(TestCase):
         for responses, expected_codes in cases:
             with self.subTest(expected_codes=expected_codes), stub_kea(responses):
                 snapshot = display(self.server, 4)
+                self.assertIsInstance(snapshot, IncompleteCatalogueSnapshot)
                 self.assertTrue(expected_codes.issubset({diagnostic.code for diagnostic in snapshot.diagnostics}))
 
     def test_display_omits_malformed_identities_but_keeps_valid_subnet(self):
@@ -260,6 +261,7 @@ class TestSubnetCatalogue(TestCase):
         with stub_kea({"subnet4-list": identities, "config-get": configuration}):
             snapshot = display(self.server, 4)
 
+        self.assertIsInstance(snapshot, IncompleteCatalogueSnapshot)
         self.assertEqual(snapshot.subnet_choices, (("198.18.1.0/24", 1),))
         self.assertIsNone(snapshot.subnets[0].shared_network)
         self.assertTrue(
@@ -326,6 +328,7 @@ class TestSubnetCatalogue(TestCase):
         with stub_kea({"subnet4-list": identities, "config-get": configuration}):
             snapshot = display(self.server, 4)
 
+        self.assertIsInstance(snapshot, IncompleteCatalogueSnapshot)
         first = snapshot.find_by_id(1)
         self.assertEqual(first.configuration.pools[0].range, "198.18.1.10-198.18.1.20")
         self.assertEqual(first.configuration.options[0].name, "routers")
@@ -361,6 +364,7 @@ class TestSubnetCatalogue(TestCase):
         ):
             snapshot = display(self.server, 4)
 
+        self.assertIsInstance(snapshot, IncompleteCatalogueSnapshot)
         self.assertFalse(snapshot.subnets)
         self.assertFalse(snapshot.unavailable)
         self.assertEqual(
