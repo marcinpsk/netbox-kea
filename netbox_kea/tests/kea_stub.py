@@ -214,6 +214,28 @@ def _subnet_list(version: int, subnets: list[dict[str, Any]]) -> dict[str, Any]:
     return {"result": 0, "arguments": {"subnets": list(subnets)}}
 
 
+def _subnet_stats(
+    version: int,
+    subnet_id: int,
+    *,
+    assigned: int = 1,
+    declined: int = 0,
+    assigned_pds: int = 0,
+) -> dict[str, Any]:
+    """A ``stat-lease{v}-get`` payload, the only measurement the lease-query guard reads.
+
+    The client rejects a ``result-set`` that omits a required column, so the column set
+    lives here once: DHCPv4 counts addresses, DHCPv6 also counts prefix delegations.
+    """
+    if version == 4:
+        columns = ["subnet-id", "assigned-addresses", "declined-addresses"]
+        row = [subnet_id, assigned, declined]
+    else:
+        columns = ["subnet-id", "assigned-nas", "declined-addresses", "assigned-pds"]
+        row = [subnet_id, assigned, declined, assigned_pds]
+    return {"result": 0, "arguments": {"result-set": {"columns": columns, "rows": [row]}}}
+
+
 def _catalogue_responses(
     version: int,
     subnet_id: int,

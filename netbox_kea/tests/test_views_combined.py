@@ -14,7 +14,7 @@ real request/response path.
 from django.test import override_settings
 from django.urls import reverse
 
-from .kea_stub import _res_page, _reservation_mutation_commands, stub_kea
+from .kea_stub import _catalogue_responses, _res_page, stub_kea
 from .utils import _PLUGINS_CONFIG, _ViewTestBase
 
 
@@ -160,12 +160,9 @@ class TestCombinedReservationsWithoutAddress(_ViewTestBase):
 
     def test_v4_identifier_only_reservation_renders(self):
         page = _res_page([{"subnet-id": 3742, "hw-address": "aa:bb:cc:dd:ee:ff", "hostname": "printer-1"}])
-        subnet = {"id": 3742, "subnet": "198.18.0.0/24"}
         with stub_kea(
             {
-                "subnet4-list": {"result": 0, "arguments": {"subnets": [subnet]}},
-                "config-get": {"result": 0, "arguments": {"Dhcp4": {"subnet4": [subnet]}}},
-                "list-commands": _reservation_mutation_commands(),
+                **_catalogue_responses(4, 3742, "198.18.0.0/24"),
                 "reservation-get-page": page,
                 "lease4-get-by-state": {"result": 0, "arguments": {"leases": []}},
             }
@@ -176,12 +173,9 @@ class TestCombinedReservationsWithoutAddress(_ViewTestBase):
 
     def test_v6_prefix_only_reservation_renders(self):
         page = _res_page([{"subnet-id": 12, "duid": "00:01:00:01:12:34", "prefixes": ["2001:db8:1::/64"]}])
-        subnet = {"id": 12, "subnet": "2001:db8::/48"}
         with stub_kea(
             {
-                "subnet6-list": {"result": 0, "arguments": {"subnets": [subnet]}},
-                "config-get": {"result": 0, "arguments": {"Dhcp6": {"subnet6": [subnet]}}},
-                "list-commands": _reservation_mutation_commands(),
+                **_catalogue_responses(6, 12, "2001:db8::/48"),
                 "reservation-get-page": page,
                 "lease6-get-by-state": {"result": 0, "arguments": {"leases": []}},
             }
@@ -203,13 +197,9 @@ class TestCombinedReservationsShowWhatIsReserved(_ViewTestBase):
         return base + query
 
     def _stub(self, hosts, version=4):
-        subnet_id = hosts[0]["subnet-id"]
         cidr = "198.18.0.0/24" if version == 4 else "2001:db8::/48"
-        subnet = {"id": subnet_id, "subnet": cidr}
         return {
-            f"subnet{version}-list": {"result": 0, "arguments": {"subnets": [subnet]}},
-            "config-get": {"result": 0, "arguments": {f"Dhcp{version}": {f"subnet{version}": [subnet]}}},
-            "list-commands": _reservation_mutation_commands(),
+            **_catalogue_responses(version, hosts[0]["subnet-id"], cidr),
             "reservation-get-page": _res_page(hosts),
             f"lease{version}-get-by-state": {"result": 0, "arguments": {"leases": []}},
         }
@@ -245,11 +235,8 @@ class TestCombinedReservationSyncControl(_ViewTestBase):
 
     def test_unsynchronized_row_offers_the_sync_control(self):
         hosts = [{"subnet-id": 1, "hw-address": "aa:bb:cc:00:00:01", "ip-address": "198.18.0.10"}]
-        subnet = {"id": 1, "subnet": "198.18.0.0/24"}
         stub = {
-            "subnet4-list": {"result": 0, "arguments": {"subnets": [subnet]}},
-            "config-get": {"result": 0, "arguments": {"Dhcp4": {"subnet4": [subnet]}}},
-            "list-commands": _reservation_mutation_commands(),
+            **_catalogue_responses(4, 1, "198.18.0.0/24"),
             "reservation-get-page": _res_page(hosts),
             "lease4-get-by-state": {"result": 0, "arguments": {"leases": []}},
         }
@@ -275,7 +262,6 @@ class TestCombinedReservationCursorPagination(_ViewTestBase):
     PAGE_SIZE = 100
 
     def _stub(self, *, next_from=0, next_source=0, hosts=None):
-        subnet = {"id": 1, "subnet": "198.18.0.0/16"}
         if hosts is None:
             hosts = [
                 {
@@ -286,9 +272,7 @@ class TestCombinedReservationCursorPagination(_ViewTestBase):
                 for index in range(self.PAGE_SIZE)
             ]
         return {
-            "subnet4-list": {"result": 0, "arguments": {"subnets": [subnet]}},
-            "config-get": {"result": 0, "arguments": {"Dhcp4": {"subnet4": [subnet]}}},
-            "list-commands": _reservation_mutation_commands(),
+            **_catalogue_responses(4, 1, "198.18.0.0/16"),
             "reservation-get-page": _res_page(hosts, next_from=next_from, next_source=next_source),
             "lease4-get-by-state": {"result": 0, "arguments": {"leases": []}},
         }
@@ -341,11 +325,8 @@ class TestReservationIdentifierColumns(_ViewTestBase):
 
     def _stub(self, hosts, version=4):
         cidr = "198.18.0.0/24" if version == 4 else "2001:db8::/48"
-        subnet = {"id": 1, "subnet": cidr}
         return {
-            f"subnet{version}-list": {"result": 0, "arguments": {"subnets": [subnet]}},
-            "config-get": {"result": 0, "arguments": {f"Dhcp{version}": {f"subnet{version}": [subnet]}}},
-            "list-commands": _reservation_mutation_commands(),
+            **_catalogue_responses(version, 1, cidr),
             "reservation-get-page": _res_page(hosts),
             f"lease{version}-get-by-state": {"result": 0, "arguments": {"leases": []}},
         }

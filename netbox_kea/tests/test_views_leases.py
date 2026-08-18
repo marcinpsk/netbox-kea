@@ -34,7 +34,7 @@ from netbox_kea.kea import KeaClient
 from netbox_kea.models import Server
 from netbox_kea.utilities import _subnet_choices_cache_key, fetch_subnet_choices, subnet_sort_key
 
-from .kea_stub import _subnet_list, queued, stub_kea
+from .kea_stub import _subnet_list, _subnet_stats, queued, stub_kea
 from .utils import _PLUGINS_CONFIG, _make_db_server, _ViewTestBase
 
 #: The HTMX error template renders a uuid4 reference ID, so a test that stops at the
@@ -367,15 +367,7 @@ class TestLeaseSearchPaths(_ViewTestBase):
                     "result": 0,
                     "arguments": {"Dhcp4": {"subnet4": [{"id": 1, "subnet": "10.0.0.0/24"}]}},
                 },
-                "stat-lease4-get": {
-                    "result": 0,
-                    "arguments": {
-                        "result-set": {
-                            "columns": ["subnet-id", "assigned-addresses", "declined-addresses"],
-                            "rows": [[1, 1, 0]],
-                        }
-                    },
-                },
+                "stat-lease4-get": _subnet_stats(4, 1),
                 "lease4-get-all": self._multi([dict(self._LEASE4)]),
                 "reservation-get": self._NO_RESERVATION,
             }
@@ -433,15 +425,7 @@ class TestLeaseSearchPaths(_ViewTestBase):
                     "result": 0,
                     "arguments": {"Dhcp4": {"subnet4": [{"id": 1, "subnet": "10.0.0.0/24"}]}},
                 },
-                "stat-lease4-get": {
-                    "result": 0,
-                    "arguments": {
-                        "result-set": {
-                            "columns": ["subnet-id", "assigned-addresses", "declined-addresses"],
-                            "rows": [[1, 2001, 1]],
-                        }
-                    },
-                },
+                "stat-lease4-get": _subnet_stats(4, 1, assigned=2001, declined=1),
                 "lease4-get-by-state": self._multi([lease]),
                 "reservation-get": self._NO_RESERVATION,
             }
@@ -460,15 +444,7 @@ class TestLeaseSearchPaths(_ViewTestBase):
         with stub_kea(
             {
                 "subnet4-list": self._SUBNETS4,
-                "stat-lease4-get": {
-                    "result": 0,
-                    "arguments": {
-                        "result-set": {
-                            "columns": ["subnet-id", "assigned-addresses", "declined-addresses"],
-                            "rows": [[1, 101, 0]],
-                        }
-                    },
-                },
+                "stat-lease4-get": _subnet_stats(4, 1, assigned=101),
             }
         ) as kea:
             response = self._htmx_get(self._url4(), {"by": "subnet_id", "q": "1"})
@@ -589,15 +565,7 @@ class TestLeaseExport(_ViewTestBase):
                     "result": 0,
                     "arguments": {"Dhcp4": {"subnet4": [{"id": 1, "subnet": "10.0.0.0/24"}]}},
                 },
-                "stat-lease4-get": {
-                    "result": 0,
-                    "arguments": {
-                        "result-set": {
-                            "columns": ["subnet-id", "assigned-addresses", "declined-addresses"],
-                            "rows": [[1, 3, 0]],
-                        }
-                    },
-                },
+                "stat-lease4-get": _subnet_stats(4, 1, assigned=3),
                 "lease4-get-all": {"result": 0, "arguments": {"leases": leases}},
             }
         ) as kea:
@@ -1194,6 +1162,9 @@ class TestLeaseStateFilter(_ViewTestBase):
         self.assertContains(response, "declined-host")
         self.assertContains(response, "expired-host")
 
+    # Unguarded on purpose: no stat-lease4-get preflight runs, so the Subnet query is
+    # the only command this test measures. State it here instead of inheriting it.
+    @override_settings(PLUGINS_CONFIG={"netbox_kea": {"kea_timeout": 30, "lease_query_max_unpaged_leases": 0}})
     def test_state_filter_is_sent_with_the_subnet_query(self):
         """A Subnet state filter must run in Kea before it builds the response."""
         declined = next(lease for lease in _PAGE_LEASES_RESP[0]["arguments"]["leases"] if lease["state"] == 1)
@@ -1932,15 +1903,7 @@ class TestFetchLeasesFromServer(_ViewTestBase):
         from netbox_kea import constants
         from netbox_kea.views import _fetch_leases_from_server
 
-        stats = {
-            "result": 0,
-            "arguments": {
-                "result-set": {
-                    "columns": ["subnet-id", "assigned-addresses", "declined-addresses"],
-                    "rows": [[1, 501, 1]],
-                }
-            },
-        }
+        stats = _subnet_stats(4, 1, assigned=501, declined=1)
         response = {
             "result": 0,
             "arguments": {"leases": [{"ip-address": "198.18.0.1", "valid-lft": 3600, "state": 1}]},
@@ -2366,6 +2329,9 @@ class TestLeaseExportStateFilter(_ViewTestBase):
     def _url(self):
         return reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
 
+    # Unguarded on purpose: the export takes the same unpaged Subnet path, with no
+    # stat-lease4-get preflight. State it here instead of inheriting it.
+    @override_settings(PLUGINS_CONFIG={"netbox_kea": {"kea_timeout": 30, "lease_query_max_unpaged_leases": 0}})
     def test_state_filter_applied_to_export(self):
         """Exported CSV must contain only leases matching the requested state."""
         declined = {

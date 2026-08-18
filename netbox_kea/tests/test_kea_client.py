@@ -26,7 +26,7 @@ from netbox_kea.kea import (
     check_response,
     lease_query_guard_message,
 )
-from netbox_kea.tests.kea_stub import stub_kea
+from netbox_kea.tests.kea_stub import _subnet_stats, stub_kea
 
 
 def _mock_http_response(json_data, status_code=200):
@@ -3452,16 +3452,6 @@ class TestLeaseSearch(TestCase):
     def setUp(self):
         self.client = KeaClient(url="http://kea:8000")
 
-    @staticmethod
-    def _subnet_stats(version, subnet_id, *, assigned=1, declined=0, assigned_pds=0):
-        if version == 4:
-            columns = ["subnet-id", "assigned-addresses", "declined-addresses"]
-            row = [subnet_id, assigned, declined]
-        else:
-            columns = ["subnet-id", "assigned-nas", "declined-addresses", "assigned-pds"]
-            row = [subnet_id, assigned, declined, assigned_pds]
-        return {"result": 0, "arguments": {"result-set": {"columns": columns, "rows": [row]}}}
-
     @patch("requests.Session.post")
     def test_rejects_selector_that_the_address_family_does_not_support(self, mock_post):
         with self.assertRaisesRegex(ValueError, "duid.*DHCPv4"):
@@ -3538,7 +3528,7 @@ class TestLeaseSearch(TestCase):
             response_arguments = {"leases": [lease]} if multiple else lease
             responses = {command: {"result": 0, "arguments": response_arguments}}
             if selector == "subnet_id":
-                responses[f"stat-lease{version}-get"] = self._subnet_stats(version, int(value))
+                responses[f"stat-lease{version}-get"] = _subnet_stats(version, int(value))
             with (
                 self.subTest(version=version, selector=selector),
                 stub_kea(responses) as kea,
@@ -3593,7 +3583,7 @@ class TestLeaseSearch(TestCase):
         lease = {"ip-address": "198.18.0.10", "state": 1}
         with stub_kea(
             {
-                "stat-lease4-get": self._subnet_stats(4, 12, assigned=201, declined=1),
+                "stat-lease4-get": _subnet_stats(4, 12, assigned=201, declined=1),
                 "lease4-get-by-state": {"result": 0, "arguments": {"leases": [lease]}},
             }
         ) as kea:
@@ -3649,7 +3639,7 @@ class TestLeaseSearch(TestCase):
         client = KeaClient(url="http://kea:8000", max_unpaged_leases=100)
         with stub_kea(
             {
-                "stat-lease4-get": self._subnet_stats(4, 12),
+                "stat-lease4-get": _subnet_stats(4, 12),
                 "lease4-get-by-state": {"result": 2, "text": "unknown command"},
             }
         ):
@@ -3722,7 +3712,7 @@ class TestLeaseSearch(TestCase):
 
     def test_v6_delegated_prefixes_contribute_to_the_guard(self):
         client = KeaClient(url="http://kea:8000", max_unpaged_leases=100)
-        with stub_kea({"stat-lease6-get": self._subnet_stats(6, 12, assigned=0, declined=0, assigned_pds=101)}) as kea:
+        with stub_kea({"stat-lease6-get": _subnet_stats(6, 12, assigned=0, declined=0, assigned_pds=101)}) as kea:
             with self.assertRaisesRegex(LeaseQueryTooBroad, "101.*100"):
                 client.lease_search(6, "subnet_id", 12, state=0)
 
@@ -3736,7 +3726,7 @@ class TestLeaseSearch(TestCase):
                     "result": 0,
                     "arguments": {"Dhcp4": {"subnet4": [{"id": 12, "subnet": "198.18.0.0/24"}]}},
                 },
-                "stat-lease4-get": self._subnet_stats(4, 12, assigned=1),
+                "stat-lease4-get": _subnet_stats(4, 12, assigned=1),
                 "lease4-get-by-state": {"result": 0, "arguments": {"leases": [lease]}},
             }
         ) as kea:
@@ -3760,7 +3750,7 @@ class TestLeaseSearch(TestCase):
                         }
                     },
                 },
-                "stat-lease4-get": self._subnet_stats(4, 12, assigned=0),
+                "stat-lease4-get": _subnet_stats(4, 12, assigned=0),
                 "lease4-get-all": {"result": 3},
             }
         ) as kea:
@@ -3779,7 +3769,7 @@ class TestLeaseSearch(TestCase):
                         "Dhcp6": {"subnet6": [{"id": 21, "subnet": "2001:0db8:0:0::/64"}]},
                     },
                 },
-                "stat-lease6-get": self._subnet_stats(6, 21, assigned=1),
+                "stat-lease6-get": _subnet_stats(6, 21, assigned=1),
                 "lease6-get-all": {"result": 0, "arguments": {"leases": [lease]}},
             }
         ) as kea:

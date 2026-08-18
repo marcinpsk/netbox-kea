@@ -24,7 +24,7 @@ from rest_framework import status
 from netbox_kea.api.views import ServerViewSet
 from netbox_kea.models import Server
 
-from .kea_stub import stub_kea
+from .kea_stub import _subnet_stats, stub_kea
 
 _PLUGINS_CONFIG = {"netbox_kea": {"kea_timeout": 30, "lease_query_max_unpaged_leases": 0}}
 _GUARDED_PLUGINS_CONFIG = {"netbox_kea": {"kea_timeout": 30, "lease_query_max_unpaged_leases": 100}}
@@ -277,15 +277,7 @@ class TestFetchLeasesSubnetId(SimpleTestCase):
     @override_settings(PLUGINS_CONFIG=_GUARDED_PLUGINS_CONFIG)
     def test_declined_state_uses_guarded_subnet_state_query(self):
         lease = {"ip-address": "198.18.0.1", "subnet-id": 1, "state": 1}
-        stats = {
-            "result": 0,
-            "arguments": {
-                "result-set": {
-                    "columns": ["subnet-id", "assigned-addresses", "declined-addresses"],
-                    "rows": [[1, 501, 1]],
-                }
-            },
-        }
+        stats = _subnet_stats(4, 1, assigned=501, declined=1)
         view, _ = _make_view()
         with stub_kea(
             {
@@ -304,15 +296,7 @@ class TestFetchLeasesSubnetId(SimpleTestCase):
 
     @override_settings(PLUGINS_CONFIG=_GUARDED_PLUGINS_CONFIG)
     def test_large_unqualified_subnet_query_is_rejected(self):
-        stats = {
-            "result": 0,
-            "arguments": {
-                "result-set": {
-                    "columns": ["subnet-id", "assigned-addresses", "declined-addresses"],
-                    "rows": [[1, 101, 0]],
-                }
-            },
-        }
+        stats = _subnet_stats(4, 1, assigned=101)
         view, _ = _make_view()
         with stub_kea({"stat-lease4-get": stats}) as kea:
             response = view._lease_search(_make_request({"subnet_id": "1"}), version=4)
