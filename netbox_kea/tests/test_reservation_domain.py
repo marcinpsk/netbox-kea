@@ -190,7 +190,7 @@ class TestReservationValues(SimpleTestCase):
 
 class TestReservationPage(SimpleTestCase):
     def setUp(self):
-        self.client = KeaClient(url="http://kea.example.invalid", send_service=False)
+        self.kea = KeaClient(url="http://kea.example.invalid", send_service=False)
 
     def test_returns_typed_snapshot_and_quarantines_one_malformed_record(self):
         page = _res_page(
@@ -223,7 +223,7 @@ class TestReservationPage(SimpleTestCase):
         )
 
         with stub_kea({"reservation-get-page": page}) as kea:
-            snapshot = self.client.reservation_page(6, _catalogue(6, 10, "2001:db8::/64"), limit=2)
+            snapshot = self.kea.reservation_page(6, _catalogue(6, 10, "2001:db8::/64"), limit=2)
 
         self.assertIsInstance(snapshot, ReservationSnapshot)
         self.assertFalse(snapshot.complete)
@@ -256,10 +256,10 @@ class TestReservationPage(SimpleTestCase):
         first_page = _res_page(hosts, next_from=17, next_source=2)
 
         with stub_kea({"reservation-get-page": first_page}):
-            first = self.client.reservation_page(4, _catalogue(4, 10, "198.18.0.0/24"), limit=25)
+            first = self.kea.reservation_page(4, _catalogue(4, 10, "198.18.0.0/24"), limit=25)
 
         with stub_kea({"reservation-get-page": _res_page([])}) as kea:
-            self.client.reservation_page(
+            self.kea.reservation_page(
                 4,
                 _catalogue(4, 10, "198.18.0.0/24"),
                 cursor=first.next_cursor,
@@ -281,7 +281,7 @@ class TestReservationPage(SimpleTestCase):
         )
 
         with stub_kea({"reservation-get-page": responses}) as kea:
-            snapshot = self.client.reservation_page(4, _catalogue(4, 10, "198.18.0.0/24"), limit=10)
+            snapshot = self.kea.reservation_page(4, _catalogue(4, 10, "198.18.0.0/24"), limit=10)
 
         self.assertEqual(len(snapshot.records), 7)
         self.assertIsNone(snapshot.next_cursor)
@@ -297,7 +297,7 @@ class TestReservationPage(SimpleTestCase):
     def test_rejects_a_malformed_response_envelope(self):
         with stub_kea({"reservation-get-page": []}):
             with self.assertRaisesRegex(RuntimeError, "malformed response"):
-                self.client.reservation_page(4, _catalogue(4, 10, "198.18.0.0/24"))
+                self.kea.reservation_page(4, _catalogue(4, 10, "198.18.0.0/24"))
 
     def test_rejects_a_malformed_page_cursor(self):
         page = {
@@ -309,13 +309,13 @@ class TestReservationPage(SimpleTestCase):
         }
         with stub_kea({"reservation-get-page": page}):
             with self.assertRaisesRegex(RuntimeError, "malformed next cursor"):
-                self.client.reservation_page(4, _catalogue(4, 10, "198.18.0.0/24"))
+                self.kea.reservation_page(4, _catalogue(4, 10, "198.18.0.0/24"))
 
     def test_preserves_a_global_addressless_reservation(self):
         page = _res_page([{"subnet-id": 0, "circuit-id": "opaque value"}])
 
         with stub_kea({"reservation-get-page": page}):
-            snapshot = self.client.reservation_page(4, _catalogue(4, 10, "198.18.0.0/24"))
+            snapshot = self.kea.reservation_page(4, _catalogue(4, 10, "198.18.0.0/24"))
 
         reservation = snapshot.records[0]
         self.assertEqual(reservation.scope, GlobalReservationScope())
@@ -343,7 +343,7 @@ class TestReservationPage(SimpleTestCase):
         ]
 
         with stub_kea({"reservation-get-page": _res_page(hosts)}):
-            snapshot = self.client.reservation_page(6, _catalogue(6, 10, "2001:db8::/64"))
+            snapshot = self.kea.reservation_page(6, _catalogue(6, 10, "2001:db8::/64"))
 
         self.assertEqual(snapshot.records, ())
         self.assertEqual(len(snapshot.diagnostics), len(hosts))
@@ -365,7 +365,7 @@ class TestReservationPage(SimpleTestCase):
         ]
 
         with stub_kea({"reservation-get-page": _res_page(hosts)}):
-            snapshot = self.client.reservation_page(6, _catalogue(6, 10, "2001:db8::/64"))
+            snapshot = self.kea.reservation_page(6, _catalogue(6, 10, "2001:db8::/64"))
 
         self.assertEqual(len(snapshot.records), 1)
         self.assertEqual(snapshot.records[0].identity, ReservationIdentity("duid", "00:01:02:03"))
@@ -379,7 +379,7 @@ class TestReservationPage(SimpleTestCase):
         ]
 
         with stub_kea({"reservation-get-page": _res_page(hosts)}):
-            snapshot = self.client.reservation_page(6, _catalogue(6, 10, "2001:db8::/64"))
+            snapshot = self.kea.reservation_page(6, _catalogue(6, 10, "2001:db8::/64"))
 
         self.assertEqual(len(snapshot.records), 1)
         self.assertEqual(snapshot.records[0].identity, ReservationIdentity("duid", "00:01:02:03"))
@@ -394,7 +394,7 @@ class TestReservationPage(SimpleTestCase):
         ]
 
         with stub_kea({"reservation-get-page": _res_page(hosts)}):
-            snapshot = self.client.reservation_page(6, _catalogue(6, 10, "2001:db8::/64"))
+            snapshot = self.kea.reservation_page(6, _catalogue(6, 10, "2001:db8::/64"))
 
         self.assertEqual(len(snapshot.records), 1)
         self.assertEqual(snapshot.records[0].identity, ReservationIdentity("duid", "00:01:02:03"))
@@ -416,7 +416,7 @@ class TestReservationPage(SimpleTestCase):
             },
         ]
         with stub_kea({"reservation-get-page": _res_page(hosts)}):
-            snapshot = self.client.reservation_page(4, _catalogue(4, 10, "198.18.0.0/24"))
+            snapshot = self.kea.reservation_page(4, _catalogue(4, 10, "198.18.0.0/24"))
 
         self.assertEqual(snapshot.records, ())
         self.assertEqual({item.code for item in snapshot.diagnostics}, {"invalid-addresses", "invalid-prefixes"})
@@ -436,7 +436,7 @@ class TestReservationPage(SimpleTestCase):
         ]
 
         with stub_kea({"reservation-get-page": _res_page(hosts)}):
-            snapshot = self.client.reservation_page(4, _catalogue(4, 10, "198.18.0.0/24"))
+            snapshot = self.kea.reservation_page(4, _catalogue(4, 10, "198.18.0.0/24"))
 
         self.assertEqual(len(snapshot.records), 1)
         self.assertEqual(snapshot.records[0].identity, ReservationIdentity("hw-address", "aa:bb:cc:dd:ee:01"))
@@ -446,7 +446,7 @@ class TestReservationPage(SimpleTestCase):
 
 class TestReservationExactIdentity(SimpleTestCase):
     def setUp(self):
-        self.client = KeaClient(url="http://kea.example.invalid", send_service=False)
+        self.kea = KeaClient(url="http://kea.example.invalid", send_service=False)
         self.catalogue = _catalogue(4, 20, "198.18.0.0/24")
         self.scope = InSubnetReservationScope(SubnetIdentity(20, ip_network("198.18.0.0/24")))
 
@@ -461,7 +461,7 @@ class TestReservationExactIdentity(SimpleTestCase):
         )
 
         with stub_kea({"reservation-get": response}) as kea:
-            reservation = self.client.reservation_by_identity(4, self.catalogue, self.scope, identity)
+            reservation = self.kea.reservation_by_identity(4, self.catalogue, self.scope, identity)
 
         self.assertEqual(reservation.identity, identity)
         self.assertEqual(reservation.addresses, (ip_address("198.18.0.20"),))
@@ -485,7 +485,7 @@ class TestReservationExactIdentity(SimpleTestCase):
 
         with stub_kea({"reservation-get": response}):
             with self.assertRaisesRegex(MalformedReservation, "exactly one"):
-                self.client.reservation_by_identity(
+                self.kea.reservation_by_identity(
                     4,
                     self.catalogue,
                     self.scope,
@@ -495,7 +495,7 @@ class TestReservationExactIdentity(SimpleTestCase):
 
 class TestReservationScopedAddress(SimpleTestCase):
     def setUp(self):
-        self.client = KeaClient(url="http://kea.example.invalid", send_service=False)
+        self.kea = KeaClient(url="http://kea.example.invalid", send_service=False)
         self.catalogue = _catalogue(4, 20, "198.18.0.0/24")
         self.scope = InSubnetReservationScope(SubnetIdentity(20, ip_network("198.18.0.0/24")))
 
@@ -509,7 +509,7 @@ class TestReservationScopedAddress(SimpleTestCase):
         )
 
         with stub_kea({"reservation-get": response}) as kea:
-            reservation = self.client.reservation_by_address(
+            reservation = self.kea.reservation_by_address(
                 4,
                 self.catalogue,
                 self.scope,
@@ -525,7 +525,7 @@ class TestReservationScopedAddress(SimpleTestCase):
     def test_rejects_address_discovery_in_global_scope_without_a_request(self):
         with stub_kea({}) as kea:
             with self.assertRaisesRegex(ValueError, "In-Subnet"):
-                self.client.reservation_by_address(
+                self.kea.reservation_by_address(
                     4,
                     self.catalogue,
                     GlobalReservationScope(),
@@ -686,7 +686,7 @@ class TestReservationIteration(SimpleTestCase):
 
 class TestReservationMutation(SimpleTestCase):
     def setUp(self):
-        self.client = KeaClient(url="http://kea.example.invalid", send_service=False)
+        self.kea = KeaClient(url="http://kea.example.invalid", send_service=False)
         self.catalogue = _catalogue(4, 20, "198.18.0.0/24")
         self.scope = InSubnetReservationScope(SubnetIdentity(20, ip_network("198.18.0.0/24")))
         self.reservation = IPv4Reservation(
@@ -732,7 +732,7 @@ class TestReservationMutation(SimpleTestCase):
                 "reservation-get": _res_get(raw),
             }
         ) as kea:
-            result = self.client.reservation_create(self.reservation, self.catalogue)
+            result = self.kea.reservation_create(self.reservation, self.catalogue)
 
         self.assertIsNone(result.previous)
         self.assertEqual(result.intended, self.reservation)
@@ -843,7 +843,7 @@ class TestReservationMutation(SimpleTestCase):
                 "reservation-update": {"result": 0},
             }
         ) as kea:
-            result = self.client.reservation_change(
+            result = self.kea.reservation_change(
                 self.reservation,
                 reservation_fingerprint(self.reservation),
                 change,
@@ -886,7 +886,7 @@ class TestReservationMutation(SimpleTestCase):
                 "config-write": {"result": 1, "text": "write failed"},
             }
         ):
-            result = self.client.reservation_create(self.reservation, self.catalogue)
+            result = self.kea.reservation_create(self.reservation, self.catalogue)
 
         self.assertEqual(result.application, "applied")
         self.assertEqual(result.persistence, "failed")
@@ -900,7 +900,7 @@ class TestReservationMutation(SimpleTestCase):
                 "reservation-get": {"result": 3},
             }
         ):
-            result = self.client.reservation_create(self.reservation, self.catalogue)
+            result = self.kea.reservation_create(self.reservation, self.catalogue)
 
         self.assertEqual(result.application, "applied")
         self.assertEqual(result.persistence, "persisted")
@@ -915,7 +915,7 @@ class TestReservationMutation(SimpleTestCase):
         }
         with stub_kea({"reservation-get": _res_get(changed_raw)}) as kea:
             with self.assertRaises(ReservationConflict):
-                self.client.reservation_change(
+                self.kea.reservation_change(
                     self.reservation,
                     reservation_fingerprint(self.reservation),
                     ReservationChange(hostname=SetValue("new.example.invalid")),
@@ -949,7 +949,7 @@ class TestReservationMutation(SimpleTestCase):
                 "reservation-del": {"result": 0},
             }
         ) as kea:
-            result = self.client.reservation_delete(self.reservation, self.catalogue)
+            result = self.kea.reservation_delete(self.reservation, self.catalogue)
 
         self.assertEqual(result.previous, self.reservation)
         self.assertIsNone(result.intended)
