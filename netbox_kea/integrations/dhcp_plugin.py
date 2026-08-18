@@ -16,7 +16,8 @@ v1 scope (import + diff, read-only against Kea):
   IPAM sync maintains.
 * **Host reservations** come from the shared typed Reservation Snapshot. The
   adapter never parses raw ``reservation-get-page`` records. Valid records import
-  even when the snapshot quarantines other records.
+  even when the snapshot quarantines other records. A Global Reservation skips the
+  IPAM sync, so the import creates no address rows for it.
 * Subnet identity is tracked in :class:`netbox_kea.models.KeaDhcpLink` keyed by
   ``(server, family, kea_subnet_id)`` — Kea's subnet-id is unique only per
   ``(server, protocol)`` and cannot live in the plugin's globally-unique
