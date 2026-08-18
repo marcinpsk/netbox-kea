@@ -340,7 +340,7 @@ uv build
 
 # Run unit tests inside the devcontainer with a dedicated test Redis host
 TEST_DB_NAME=test_netbox_kea_review TEST_REDIS_HOST=netbox-kea-review-redis \
-  uv run --native-tls pytest --reuse-db -n 8 --maxschedchunk=1 -q
+  uv run --native-tls pytest --reuse-db -n auto --maxschedchunk=1 -q
 
 # Run integration tests (requires Docker — see tests/test_setup.sh)
 ./tests/test_setup.sh

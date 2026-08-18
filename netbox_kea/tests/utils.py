@@ -52,13 +52,13 @@ def _drop_subnet_choices_cache(test_case, server) -> None:
     """
     from django.core.cache import cache
 
-    from netbox_kea.subnet_catalogue import invalidate
+    from netbox_kea.subnet_catalogue import _cache_key
     from netbox_kea.utilities import _subnet_choices_cache_key
 
     def _drop():
         for version in (4, 6):
             cache.delete(_subnet_choices_cache_key(server, version))
-            invalidate(server, version)
+            cache.delete(_cache_key(server, version))
 
     _drop()
     test_case.addCleanup(_drop)

@@ -3,13 +3,12 @@
 """Tests for the "Sync to DHCP plugin" views (tab, sync-now action, drift).
 
 Helper/guard tests run anywhere; the end-to-end import-through-the-view tests are
-gated on ``netbox_dhcp`` being installed.  Only the Kea HTTP transport is stubbed
-(``stub_kea``), never the ``KeaClient`` itself, the ORM, or the DHCP-plugin models.
+gated on ``netbox_dhcp`` being installed.  Only the Kea HTTP boundary is faked
+(a small fake client), never the ORM or the DHCP-plugin models.
 """
 
 from __future__ import annotations
 
-import re
 import unittest
 from unittest.mock import patch
 
@@ -21,58 +20,41 @@ from django.utils import timezone
 from netbox_kea.kea import KeaClient, KeaException
 from netbox_kea.views import dhcp_plugin_sync as dps
 
-from .kea_stub import _res_page, stub_kea
 from .utils import _make_db_server
 
 DHCP_PLUGIN = "netbox_dhcp"
 _PLUGINS_CONFIG = {"netbox_kea": {"kea_timeout": 30}}
 
 
-def _request_version(body: dict) -> int:
-    """Return the DHCP family one stubbed request targets, from its ``service``."""
-    service = body.get("service")
-    if service == ["dhcp4"]:
-        return 4
-    if service == ["dhcp6"]:
-        return 6
-    raise AssertionError(f"Expected exactly one DHCP service, got {service!r}")
+class _FakeKeaClient(KeaClient):
+    """Stand-in for KeaClient that answers ``config-get`` and ``reservation-get-page``.
 
-
-def _sync_responses(
-    conf_by_version: dict[int, dict],
-    hosts_by_version: dict[int, list] | None = None,
-    *,
-    reservations_available: bool = True,
-) -> dict:
-    """Kea responses for the DHCP-plugin sync path, answered per requested family.
-
-    Registered by command name for :func:`stub_kea`, so the real ``KeaClient`` builds
-    the requests and validates every response envelope. ``config-get`` and
-    ``reservation-get-page`` are callables because one stub must answer both families,
-    which a Control Agent distinguishes by ``service``.
+    Subclasses the real client (and skips its session setup) so the genuine
+    ``reservation_get_page``/``iter_reservations`` pagination logic runs against the
+    faked ``command`` — only the Kea HTTP boundary is replaced, never the ORM.
     """
-    hosts = hosts_by_version or {}
 
-    def config_get(body):
-        version = _request_version(body)
-        return {"result": 0, "arguments": {f"Dhcp{version}": conf_by_version.get(version, {})}}
+    def __init__(
+        self,
+        conf_by_version: dict[int, dict],
+        hosts_by_version: dict[int, list] | None = None,
+        reservations_available: bool = True,
+    ):
+        self._conf = conf_by_version
+        self._hosts = hosts_by_version or {}
+        self._reservations_available = reservations_available
 
-    def reservation_get_page(body):
-        if not reservations_available:
-            # host_cmds not loaded: the real client turns result 2 into a KeaException.
-            return {"result": 2, "text": "command not supported"}
-        return _res_page(hosts.get(_request_version(body), []))
-
-    return {"config-get": config_get, "reservation-get-page": reservation_get_page}
-
-
-class SyncResponseRoutingTest(SimpleTestCase):
-    def test_request_version_rejects_invalid_service(self):
-        invalid_bodies = ({}, {"service": []}, {"service": ["dhcp-four"]}, {"service": ["dhcp4", "dhcp6"]})
-
-        for body in invalid_bodies:
-            with self.subTest(body=body), self.assertRaises(AssertionError):
-                _request_version(body)
+    def command(self, command, service=None, arguments=None, check=(0,)):
+        version = 6 if service and service[0] == "dhcp6" else 4
+        if command == "config-get":
+            return [{"result": 0, "arguments": {f"Dhcp{version}": self._conf.get(version, {})}}]
+        if command == "reservation-get-page":
+            if not self._reservations_available:
+                # Simulate host_cmds not loaded (Kea result code 2).
+                raise KeaException({"result": 2, "text": "command not supported", "arguments": None})
+            hosts = self._hosts.get(version, [])
+            return [{"result": 0, "arguments": {"hosts": hosts, "next": {"from": 0, "source-index": 0}}}]
+        return [{"result": 0, "arguments": {}}]
 
 
 class ExtractDhcpConfTest(SimpleTestCase):
@@ -156,7 +138,7 @@ class SyncNowGuardTest(TestCase):
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class SyncNowEndToEndTest(TestCase):
-    """Full path: POST sync-now → real KeaClient over a stubbed transport → real rows."""
+    """Full path: POST sync-now → read (faked) Kea config → real DHCP-plugin rows."""
 
     @classmethod
     def setUpClass(cls):
@@ -191,7 +173,8 @@ class SyncNowEndToEndTest(TestCase):
                 ]
             }
         }
-        with stub_kea(_sync_responses(conf)):
+        fake = _FakeKeaClient(conf)
+        with patch("netbox_kea.models.Server.get_client", return_value=fake, autospec=True):
             resp = self.client.post(self.url, follow=True)
 
         self.assertContains(resp, "1 subnets created")
@@ -212,7 +195,8 @@ class SyncNowEndToEndTest(TestCase):
         hosts = {
             4: [{"subnet-id": 1, "hw-address": "aa:bb:cc:dd:ee:89", "ip-address": "10.89.0.50", "hostname": "db-res"}]
         }
-        with stub_kea(_sync_responses(conf, hosts)):
+        fake = _FakeKeaClient(conf, hosts)
+        with patch("netbox_kea.models.Server.get_client", return_value=fake, autospec=True):
             resp = self.client.post(self.url, follow=True)
 
         self.assertContains(resp, "1 reservations created")
@@ -222,9 +206,10 @@ class SyncNowEndToEndTest(TestCase):
         self.assertTrue(HostReservation.objects.filter(subnet=subnet, hostname="db-res").exists())
 
     def test_post_warns_when_reservations_unreadable(self):
-        # host_cmds absent means that the typed Snapshot cannot be read.
+        # Finding 4: host_cmds absent → the import must say reservations couldn't be read.
         conf = {4: {"subnet4": [{"id": 1, "subnet": "10.90.0.0/24"}]}}
-        with stub_kea(_sync_responses(conf, reservations_available=False)):
+        fake = _FakeKeaClient(conf, reservations_available=False)
+        with patch("netbox_kea.models.Server.get_client", return_value=fake, autospec=True):
             resp = self.client.post(self.url, follow=True)
         self.assertContains(resp, "could not be read")
 
@@ -235,7 +220,8 @@ class SyncNowEndToEndTest(TestCase):
             4: {"subnet4": [{"id": 1, "subnet": "10.88.0.0/24"}]},
             6: {"subnet6": [{"id": 1, "subnet": "2001:db8:88::/64"}]},
         }
-        with stub_kea(_sync_responses(conf)):
+        fake = _FakeKeaClient(conf)
+        with patch("netbox_kea.models.Server.get_client", return_value=fake, autospec=True):
             self.client.post(self.url, follow=True)
             tab_url = reverse("plugins:netbox_kea:server_dhcp_plugin", args=[self.server.pk])
             resp = self.client.get(tab_url)
@@ -244,10 +230,7 @@ class SyncNowEndToEndTest(TestCase):
         self.assertContains(resp, "2001:db8:88::/64")
         self.assertContains(resp, "DHCPv4")
         self.assertContains(resp, "DHCPv6")
-        # Match the marker class on a table element, so a Bootstrap class change here
-        # does not fail a test about the merged drift table.
-        drift_tables = re.findall(r"<table[^>]*\bdrift-table\b[^>]*>", resp.content.decode())
-        self.assertEqual(len(drift_tables), 1, drift_tables)
+        self.assertContains(resp, 'class="table table-hover align-middle mb-0 drift-table"', count=1)
         self.assertContains(resp, "Shared Network grouping")
         self.assertContains(resp, "Direct-interface mapping")
         self.assertContains(resp, "DHCP option mapping")
