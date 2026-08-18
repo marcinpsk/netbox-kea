@@ -764,8 +764,10 @@ class TestSubnetCatalogue(TestCase):
             display(self.server, 4)
             display(self.server, 4)
             with mutation(self.server, 4):
-                pass
+                # Entry invalidation only shows here: the scope reads live without caching,
+                # so without it this call would serve the pre-mutation snapshot.
+                display(self.server, 4)
             display(self.server, 4)
 
-        self.assertEqual(kea.commands().count("subnet4-list"), 3)
-        self.assertEqual(kea.commands().count("config-get"), 3)
+        self.assertEqual(kea.commands().count("subnet4-list"), 4)
+        self.assertEqual(kea.commands().count("config-get"), 4)
