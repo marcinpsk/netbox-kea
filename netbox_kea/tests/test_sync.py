@@ -1337,6 +1337,16 @@ class TestCleanupStaleIpsBatch(TestCase):
         with self.assertRaisesRegex(TypeError, "raw lease dict or a Reservation"):
             cleanup_stale_ips_batch([object()])
 
+    def test_the_producer_and_the_consumer_declare_the_same_record_types(self):
+        """The sync job fills this list, so both sides must name the same accepted types."""
+        from netbox_kea.jobs import _sync_server_leases
+        from netbox_kea.sync import cleanup_stale_ips_batch
+
+        self.assertEqual(
+            _sync_server_leases.__annotations__["all_synced"],
+            cleanup_stale_ips_batch.__annotations__["synced_records"],
+        )
+
     @override_settings(PLUGINS_CONFIG=_STALE_PLUGINS_CONFIG)
     def test_batch_groups_by_address_family(self):
         """Mixed v4/v6 records for same hostname clean both families independently."""

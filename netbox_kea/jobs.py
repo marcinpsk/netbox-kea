@@ -139,7 +139,7 @@ def _sync_server_leases(
     *,
     max_leases: int,
     stats: dict[str, int],
-    all_synced: list[Any],
+    all_synced: list[dict | Reservation],
     reservation_ips: frozenset[str] | None = None,
     subnet_prefix_map: dict[int, int] | None = None,
     conflict_ips: set[str] | None = None,
@@ -492,7 +492,7 @@ def _sync_one_server(
     """
     from .sync import cleanup_stale_ips_batch
 
-    all_synced: list[Any] = []
+    all_synced: list[dict | Reservation] = []
     if conflict_ips is None:
         conflict_ips = set()
     # Cleanup is only safe when both sources contributed, otherwise we risk
