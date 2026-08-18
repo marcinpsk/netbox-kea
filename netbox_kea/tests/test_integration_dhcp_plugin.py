@@ -784,6 +784,81 @@ class DhcpPluginReservationSnapshotImportTest(TestCase):
             MACAddress.objects.get(mac_address="aa:bb:cc:dd:ee:11"),
         )
 
+    def test_dual_stack_global_reservations_keep_separate_rows(self):
+        """One identifier reserved globally in both protocols is two Reservations, not one.
+
+        ``netbox_dhcp`` derives a reservation's family from its Subnet, and a Global
+        Reservation has none, so both families matched the same row: the second import
+        overwrote the first one's hostname and options instead of creating its own row.
+        ``KeaDhcpLink`` carries the family that the row cannot.
+        """
+        from netbox_kea.models import KeaDhcpLink
+
+        HostReservation = apps.get_model(DHCP_PLUGIN, "HostReservation")
+
+        identifier = "aa:bb:cc:dd:ee:41"
+        conf4, conf6 = {"subnet4": []}, {"subnet6": []}
+        hosts4 = [{"subnet-id": 0, "hw-address": identifier, "hostname": "dual-v4"}]
+        hosts6 = [{"subnet-id": 0, "hw-address": identifier, "hostname": "dual-v6"}]
+
+        for _ in range(2):  # idempotent: the second pass must update, never duplicate
+            v4 = self.adapter.import_server_config(
+                self.server, parse_dhcp_config(conf4, 4), _reservation_snapshot(conf4, 4, hosts4)
+            )
+            v6 = self.adapter.import_server_config(
+                self.server, parse_dhcp_config(conf6, 6), _reservation_snapshot(conf6, 6, hosts6)
+            )
+
+        self.assertEqual(v4.errors, 0, v4.warnings)
+        self.assertEqual(v6.errors, 0, v6.warnings)
+        self.assertEqual(v4.reservations_created, 0)
+        self.assertEqual(v6.reservations_created, 0)
+
+        rows = list(HostReservation.objects.order_by("name"))
+        self.assertEqual(len(rows), 2, [row.name for row in rows])
+        v4_row, v6_row = rows
+        self.assertIn("DHCPv4", v4_row.name)
+        self.assertIn("DHCPv6", v6_row.name)
+        # Each row keeps its own facts; one shared row kept only the last import's.
+        self.assertEqual(v4_row.hostname, "dual-v4")
+        self.assertEqual(v6_row.hostname, "dual-v6")
+        self.assertEqual(
+            sorted(KeaDhcpLink.objects.filter(kea_identity__isnull=False).values_list("family", "kea_identity")),
+            [(4, f"hw-address:{identifier}"), (6, f"hw-address:{identifier}")],
+        )
+
+    def test_global_reservation_imported_before_the_link_is_adopted(self):
+        """Relink a Global row from an earlier release instead of duplicating it."""
+        from netbox_kea.models import KeaDhcpLink
+
+        HostReservation = apps.get_model(DHCP_PLUGIN, "HostReservation")
+
+        conf = {"subnet4": []}
+        hosts = [{"subnet-id": 0, "hw-address": "aa:bb:cc:dd:ee:42", "ip-address": "10.42.0.9", "hostname": "legacy"}]
+        intent = parse_dhcp_config(conf, 4)
+        snapshot = _reservation_snapshot(conf, 4, hosts)
+
+        self.adapter.import_server_config(self.server, intent, snapshot)
+        legacy = HostReservation.objects.get()
+        legacy.name = "legacy name from an earlier import"
+        legacy.save()
+        KeaDhcpLink.objects.filter(kea_identity__isnull=False).delete()
+
+        summary = self.adapter.import_server_config(self.server, intent, snapshot)
+
+        self.assertEqual(summary.errors, 0, summary.warnings)
+        self.assertEqual(summary.reservations_created, 0)
+        self.assertEqual(HostReservation.objects.count(), 1)
+        adopted = HostReservation.objects.get()
+        self.assertEqual(adopted.pk, legacy.pk)
+        self.assertIn("DHCPv4", adopted.name)
+        self.assertEqual(
+            KeaDhcpLink.objects.filter(
+                server=self.server, family=4, kea_identity="hw-address:aa:bb:cc:dd:ee:42"
+            ).count(),
+            1,
+        )
+
     def test_addressless_hardware_reservation_keeps_its_identity_across_reimports(self):
         """An identifier-only host reserves no address, so the IPAM sync skips it too."""
         from dcim.models import MACAddress

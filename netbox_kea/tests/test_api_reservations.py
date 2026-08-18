@@ -420,17 +420,7 @@ class TestReservation6API(_APITestBase):
 
     def test_bounded_page_returns_normalized_snapshot(self):
         responses = {
-            "subnet6-list": {
-                "result": 0,
-                "arguments": {"subnets": [{"id": 10, "subnet": "2001:db8::/64"}]},
-            },
-            "config-get": {
-                "result": 0,
-                "arguments": {
-                    "Dhcp6": {"subnet6": [{"id": 10, "subnet": "2001:db8::/64"}]},
-                    "hash": "reservation-api-snapshot",
-                },
-            },
+            **_catalogue_responses(6, 10, "2001:db8::/64"),
             "reservation-get-page": _res_page(
                 [
                     {

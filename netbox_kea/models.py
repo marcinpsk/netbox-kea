@@ -470,6 +470,11 @@ class KeaDhcpLink(models.Model):
     — via a ``GenericForeignKey`` so there is no hard migration dependency on
     ``netbox_dhcp`` being installed — at the imported DHCP-plugin object.  It is the
     match key for idempotent re-import and the future home for accept/lock + drift state.
+
+    A Global Reservation has no ``subnet-id``, and ``netbox_dhcp`` derives a
+    ``HostReservation``'s family from its Subnet, so a Global row carries no family of
+    its own.  ``kea_identity`` holds that missing half of the identity here, which keeps
+    the DHCPv4 and DHCPv6 Reservations of one identifier on separate rows.
     """
 
     server = models.ForeignKey(
@@ -484,6 +489,15 @@ class KeaDhcpLink(models.Model):
         null=True,
         blank=True,
         help_text="Kea subnet-id for subnet links; null for objects without a Kea subnet-id.",
+    )
+    kea_identity = models.CharField(
+        max_length=300,
+        null=True,
+        blank=True,
+        help_text=(
+            "Normalized 'identifier-type:value' for a Global Reservation link; "
+            "null for objects Kea identifies by subnet-id."
+        ),
     )
     object_type = models.ForeignKey(
         to="contenttypes.ContentType",
@@ -508,7 +522,13 @@ class KeaDhcpLink(models.Model):
                 name="keadhcplink_unique_subnet_identity",
                 condition=models.Q(kea_subnet_id__isnull=False),
             ),
+            models.UniqueConstraint(
+                fields=["server", "family", "kea_identity"],
+                name="keadhcplink_unique_reservation_identity",
+                condition=models.Q(kea_identity__isnull=False),
+            ),
         ]
 
     def __str__(self) -> str:
-        return f"{self.server} v{self.family} subnet-id={self.kea_subnet_id} → {self.object_type_id}:{self.object_id}"
+        key = f"subnet-id={self.kea_subnet_id}" if self.kea_identity is None else self.kea_identity
+        return f"{self.server} v{self.family} {key} → {self.object_type_id}:{self.object_id}"

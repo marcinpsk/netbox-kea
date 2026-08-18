@@ -20,8 +20,9 @@ v1 scope (import + diff, read-only against Kea):
 * Subnet identity is tracked in :class:`netbox_kea.models.KeaDhcpLink` keyed by
   ``(server, family, kea_subnet_id)`` — Kea's subnet-id is unique only per
   ``(server, protocol)`` and cannot live in the plugin's globally-unique
-  ``Subnet.subnet_id``.  Pools and reservations match structurally within their
-  resolved parent subnet.
+  ``Subnet.subnet_id``.  Pools and In-Subnet reservations match structurally within
+  their resolved parent subnet.  A Global Reservation has no parent subnet to carry a
+  family, so its link is keyed by ``(server, family, kea_identity)`` instead.
 * DHCP **options** (``option-data``) are imported at every scope we model —
   ``DHCPServer`` (global), ``Subnet``, ``Pool``, ``HostReservation`` — binding to
   the sys4-shipped standard ``OptionDefinition`` (by space+code), or to a
@@ -692,6 +693,58 @@ def upsert_pools(subnet_obj, intent: SubnetIntent, server, summary: ImportSummar
         upsert_options(pool_obj, pool_intent.options, intent.family, dhcp_server, custom_defs, summary)
 
 
+def _reservation_link_identity(reservation: Reservation) -> str:
+    """Return the Kea identity a Global Reservation link is keyed on.
+
+    An identifier value is capped at 255 characters and the longest type name adds 11,
+    so the result always fits ``KeaDhcpLink.kea_identity``.
+    """
+    identity = reservation.identity
+    return f"{identity.identifier_type}:{identity.value}"
+
+
+def _linked_reservation(server, reservation: Reservation):
+    """Return the DHCP-plugin reservation linked to this Kea Global identity, or ``None``."""
+    KeaDhcpLink = _link_model()
+    link = KeaDhcpLink.objects.filter(
+        server=server,
+        family=reservation.family,
+        kea_identity=_reservation_link_identity(reservation),
+    ).first()
+    return link.sys4_object if link is not None else None
+
+
+def _link_reservation(server, reservation: Reservation, obj) -> None:
+    """Record the ``(server, family, identity)`` link for one Global Reservation.
+
+    Keyed on the Kea identity rather than the row, so a link whose row was deleted is
+    relinked instead of colliding with ``keadhcplink_unique_sys4_object``.
+    """
+    from django.contrib.contenttypes.models import ContentType
+
+    KeaDhcpLink = _link_model()
+    KeaDhcpLink.objects.update_or_create(
+        server=server,
+        family=reservation.family,
+        kea_identity=_reservation_link_identity(reservation),
+        defaults={
+            "object_type": ContentType.objects.get_for_model(obj.__class__),
+            "object_id": obj.pk,
+        },
+    )
+
+
+def _unlinked(base):
+    """Restrict *base* to the rows no Kea link claims yet."""
+    from django.contrib.contenttypes.models import ContentType
+
+    KeaDhcpLink = _link_model()
+    claimed = KeaDhcpLink.objects.filter(
+        object_type=ContentType.objects.get_for_model(base.model),
+    ).values_list("object_id", flat=True)
+    return base.exclude(pk__in=claimed)
+
+
 def _find_reservation(base, reservation: Reservation, mac_obj):
     """Find an existing reservation with the same typed identity in the parent scope."""
     id_type = reservation.identity.identifier_type
@@ -709,12 +762,17 @@ def _find_reservation(base, reservation: Reservation, mac_obj):
     return None
 
 
-def _upsert_reservation(reservation, subnet_obj, dhcp_server, custom_defs, summary):
+def _upsert_reservation(reservation, subnet_obj, server, dhcp_server, custom_defs, summary):
     """Upsert one typed Reservation while preserving its Global or In-Subnet Scope.
 
-    Reservations match within their parent scope by identifier, so re-import updates
-    the same row.  Reuses the IPAM/MAC sync helpers so the plugin reservation shares
-    the same ``ipam.IPAddress``/``dcim.MACAddress`` rows the lease/reservation sync owns.
+    An In-Subnet Reservation matches by identifier inside its Subnet, which already
+    fixes the family.  A Global Reservation has no Subnet, and ``netbox_dhcp`` derives a
+    reservation's family from one, so its family lives in the ``KeaDhcpLink`` identity
+    instead.  Without it one identifier shares a single row between DHCPv4 and DHCPv6,
+    merging ``ipv4_address`` and ``ipv6_addresses``.
+
+    Reuses the IPAM/MAC sync helpers so the plugin reservation shares the same
+    ``ipam.IPAddress``/``dcim.MACAddress`` rows the lease/reservation sync owns.
     """
     HostReservation = _model("HostReservation")
     scope = reservation.scope.subnet.cidr if isinstance(reservation.scope, InSubnetReservationScope) else "global"
@@ -724,12 +782,20 @@ def _upsert_reservation(reservation, subnet_obj, dhcp_server, custom_defs, summa
         scope_name = subnet_obj.name
     else:
         base = HostReservation.objects.filter(dhcp_server=dhcp_server, subnet__isnull=True)
-        scope_name = dhcp_server.name
+        scope_name = f"{dhcp_server.name} DHCPv{reservation.family}"
 
     try:
         # Inside the try so a resolver failure is counted per-reservation, not fatal.
         ipv4_ip, ipv6_ips, mac_obj = _ensure_reservation_addresses(reservation)
-        obj = _find_reservation(base, reservation, mac_obj)
+        linked = None if subnet_obj is not None else _linked_reservation(server, reservation)
+        if linked is not None:
+            obj = linked
+        elif subnet_obj is not None:
+            obj = _find_reservation(base, reservation, mac_obj)
+        else:
+            # Adopt a Global row imported before the link carried the family, so an
+            # upgrade relinks that row instead of duplicating it.
+            obj = _find_reservation(_unlinked(base), reservation, mac_obj)
         created = obj is None
         if obj is None:
             obj = HostReservation(
@@ -737,15 +803,21 @@ def _upsert_reservation(reservation, subnet_obj, dhcp_server, custom_defs, summa
                 dhcp_server=None if subnet_obj is not None else dhcp_server,
                 name=_reservation_name(scope_name, reservation),
             )
+        elif linked is None and subnet_obj is None:
+            # Newly adopted: take the family-qualified name so the other family is free
+            # to create its own row under the unique-name constraint.
+            obj.name = _reservation_name(scope_name, reservation)
         obj.hostname = reservation.hostname or None
         _apply_reservation_identifier(obj, reservation, mac_obj)
-        if reservation.family == 4:
-            obj.ipv4_address = ipv4_ip
+        # One row holds one family. _ensure_reservation_addresses returns the other
+        # family empty, which also splits a row an earlier import merged.
+        obj.ipv4_address = ipv4_ip
         obj.save()
-        if reservation.family == 6:
-            # set() unconditionally so re-importing a reservation that dropped its
-            # IPv6 addresses clears the stale M2M relations (empty list = clear).
-            obj.ipv6_addresses.set(ipv6_ips)
+        # set() unconditionally so re-importing a reservation that dropped its
+        # IPv6 addresses clears the stale M2M relations (empty list = clear).
+        obj.ipv6_addresses.set(ipv6_ips)
+        if subnet_obj is None:
+            _link_reservation(server, reservation, obj)
         if created:
             summary.reservations_created += 1
         else:
@@ -791,7 +863,7 @@ def import_reservation_snapshot(
             summary.reservations_unread = True
             summary.warn("reservation has an unsupported scope and was skipped")
             continue
-        _upsert_reservation(reservation, subnet_obj, dhcp_server, custom_defs, summary)
+        _upsert_reservation(reservation, subnet_obj, server, dhcp_server, custom_defs, summary)
 
 
 def _apply_reservation_identifier(obj, reservation: Reservation, mac_obj) -> None:

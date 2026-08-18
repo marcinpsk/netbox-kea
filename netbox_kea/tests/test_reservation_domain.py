@@ -23,6 +23,7 @@ from netbox_kea.reservations import (
 )
 from netbox_kea.subnet_catalogue import (
     CatalogueSnapshot,
+    IdentityOnlyCatalogueSnapshot,
     SubnetIdentity,
     VerifiedSubnet,
 )
@@ -36,7 +37,9 @@ def _catalogue(family: int, subnet_id: int, cidr: str) -> CatalogueSnapshot:
         configuration=None,
         shared_network=None,
     )
-    return CatalogueSnapshot(
+    # Identity-only: the fixture carries no configuration, which is all a Reservation
+    # Scope needs verified.
+    return IdentityOnlyCatalogueSnapshot(
         server_id=1,
         family=family,
         observed_at=datetime.now(UTC),

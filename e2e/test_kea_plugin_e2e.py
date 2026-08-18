@@ -932,7 +932,11 @@ class TestReservationCRUDLiveKea:
         The address must belong to the Subnet the live Kea exposes for ``_SUBNET_ID``, so
         derive it instead of pinning one range.
         """
-        return str(ipaddress.ip_network(cidr)[self._TEST_HOST_OFFSET])
+        network = ipaddress.ip_network(cidr)
+        assert network.num_addresses >= abs(self._TEST_HOST_OFFSET), (
+            f"Subnet {cidr} is too small for a reservation at host offset {self._TEST_HOST_OFFSET}"
+        )
+        return str(network[self._TEST_HOST_OFFSET])
 
     def _reservation_add_url(self, plugin_base: str, server_id: int) -> str:
         return f"{plugin_base}/servers/{server_id}/reservations4/add/"
