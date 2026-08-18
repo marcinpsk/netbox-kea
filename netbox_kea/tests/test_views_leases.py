@@ -63,6 +63,12 @@ def _assert_no_error_template(test, response):
     test.assertNotContains(response, "An internal error occurred. Reference ID:")
 
 
+#: The lease-query guard is off, so a Subnet lease search issues no stat-lease{v}-get
+#: preflight and needs none registered. Tests that register only the lease command name
+#: this dependency here instead of inheriting the value from the shared fixture.
+_UNGUARDED_PLUGINS_CONFIG = {"netbox_kea": {"kea_timeout": 30, "lease_query_max_unpaged_leases": 0}}
+
+
 def _reservation_stub(version: int, responses: dict):
     """Add the matching configuration source required by typed Reservation scope.
 
@@ -1177,7 +1183,7 @@ class TestLeaseStateFilter(_ViewTestBase):
 
     # Unguarded on purpose: no stat-lease4-get preflight runs, so the Subnet query is
     # the only command this test measures. State it here instead of inheriting it.
-    @override_settings(PLUGINS_CONFIG={"netbox_kea": {"kea_timeout": 30, "lease_query_max_unpaged_leases": 0}})
+    @override_settings(PLUGINS_CONFIG=_UNGUARDED_PLUGINS_CONFIG)
     def test_state_filter_is_sent_with_the_subnet_query(self):
         """A Subnet state filter must run in Kea before it builds the response."""
         declined = next(lease for lease in _PAGE_LEASES_RESP[0]["arguments"]["leases"] if lease["state"] == 1)
@@ -2340,7 +2346,7 @@ class TestLeaseExportStateFilter(_ViewTestBase):
 
     # Unguarded on purpose: the export takes the same unpaged Subnet path, with no
     # stat-lease4-get preflight. State it here instead of inheriting it.
-    @override_settings(PLUGINS_CONFIG={"netbox_kea": {"kea_timeout": 30, "lease_query_max_unpaged_leases": 0}})
+    @override_settings(PLUGINS_CONFIG=_UNGUARDED_PLUGINS_CONFIG)
     def test_state_filter_applied_to_export(self):
         """Exported CSV must contain only leases matching the requested state."""
         declined = {
@@ -2378,7 +2384,7 @@ class TestLeaseExportStateFilter(_ViewTestBase):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+@override_settings(PLUGINS_CONFIG=_UNGUARDED_PLUGINS_CONFIG)
 class TestHtmxHandlerExceptNarrowing(_ViewTestBase):
     """HTMX lease handler must not swallow programming errors via bare except Exception."""
 
@@ -2441,7 +2447,7 @@ class TestLeaseDeleteLoopTransportErrors(_ViewTestBase):
         self.assertEqual(kea.commands().count("lease4-del"), 2)
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+@override_settings(PLUGINS_CONFIG=_UNGUARDED_PLUGINS_CONFIG)
 class TestLeaseExportTransportErrors(_ViewTestBase):
     """get_export() must handle RequestException and ValueError gracefully."""
 
@@ -2576,7 +2582,7 @@ class TestLeaseJournalExceptionNarrowing(_ViewTestBase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+@override_settings(PLUGINS_CONFIG=_UNGUARDED_PLUGINS_CONFIG)
 class TestLeaseExportClientError(_ViewTestBase):
     """Cover error paths in get_export()."""
 
@@ -2605,7 +2611,7 @@ class TestLeaseExportClientError(_ViewTestBase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+@override_settings(PLUGINS_CONFIG=_UNGUARDED_PLUGINS_CONFIG)
 class TestLeaseHtmxErrorHandler(_ViewTestBase):
     """Cover HTMX error rendering paths."""
 
@@ -2960,7 +2966,7 @@ class TestGetLeasesSingleResultValidation(_ViewTestBase):
         _assert_rendered_error_template(self, response)
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+@override_settings(PLUGINS_CONFIG=_UNGUARDED_PLUGINS_CONFIG)
 class TestExportErrorPaths(_ViewTestBase):
     """Export must redirect with error messages when Kea calls fail."""
 
