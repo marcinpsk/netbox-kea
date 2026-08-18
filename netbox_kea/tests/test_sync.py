@@ -1279,6 +1279,11 @@ class TestCleanupStaleIpsBatch(TestCase):
 
         from netbox_kea.sync import cleanup_stale_ips_batch
 
+        # The Reservation's own address must exist, or an empty keep-set removes nothing
+        # extra and the test passes without reading the Reservation attributes at all.
+        NbIP.objects.create(
+            address="10.80.0.1/32", status="dhcp", dns_name="typed.example.com", description=self._KEA_DESC
+        )
         NbIP.objects.create(
             address="10.80.0.99/32", status="dhcp", dns_name="typed.example.com", description=self._KEA_DESC
         )
@@ -1289,6 +1294,7 @@ class TestCleanupStaleIpsBatch(TestCase):
         cleaned = cleanup_stale_ips_batch([reservation])
 
         self.assertEqual(cleaned, 1)
+        self.assertTrue(NbIP.objects.filter(address__startswith="10.80.0.1/").exists())
         self.assertFalse(NbIP.objects.filter(address__startswith="10.80.0.99/").exists())
 
     @override_settings(PLUGINS_CONFIG=_STALE_PLUGINS_CONFIG)
