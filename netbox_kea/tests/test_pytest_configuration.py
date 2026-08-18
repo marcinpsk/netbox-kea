@@ -155,7 +155,10 @@ def test_serial_django_suite_is_rejected():
 def test_dhcp_plugin_ci_uses_xdist():
     """Keep the DHCP plugin job on exactly one xdist worker, not merely on a count."""
     workflow = (REPOSITORY_ROOT / ".github" / "workflows" / "ci.yml").read_text()
-    command = workflow.split("- name: Run DHCP plugin adapter tests", 1)[1].split("\n\n", 1)[0]
+    marker = "- name: Run DHCP plugin adapter tests"
+    assert marker in workflow, "The DHCP plugin adapter step was renamed or removed."
+    # Bound the slice on the next step, so reformatting the workflow cannot widen it.
+    command = re.split(r"\n\s*- name:", workflow.split(marker, 1)[1], maxsplit=1)[0]
 
     assert [_xdist_settings(entry) for entry in _pytest_commands(command)] == [{"workers": "1", "maxschedchunk": "1"}]
 
