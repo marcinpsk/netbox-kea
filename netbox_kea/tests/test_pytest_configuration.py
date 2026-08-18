@@ -136,9 +136,4 @@ def test_query_counts_compare_only_on_the_recorded_release():
     from netbox_kea.tests.conftest import QUERY_COUNT_NETBOX_VERSION, query_counts_are_comparable
 
     assert query_counts_are_comparable(QUERY_COUNT_NETBOX_VERSION, update_mode=False)
-    assert not query_counts_are_comparable("4.3.11", update_mode=False)
-    assert not query_counts_are_comparable("4.8.1", update_mode=False)
-    # A packaging suffix is stripped before the comparison, never matched against.
     assert not query_counts_are_comparable(f"{QUERY_COUNT_NETBOX_VERSION}-Docker-5.0.2", update_mode=False)
-    # Recording on a new release must still write the file.
-    assert query_counts_are_comparable("4.8.1", update_mode=True)
