@@ -10,6 +10,7 @@ from utilities.forms.rendering import FieldSet
 
 from . import constants
 from .models import Server
+from .reservation_transfer import MAX_DOCUMENT_BYTES as MAX_TRANSFER_DOCUMENT_BYTES
 from .reservations import ReservationIdentity, reservation_identifier_choices, reservation_identifier_types
 from .utilities import is_hex_string, parse_delegated_prefixes
 
@@ -1071,9 +1072,9 @@ class DHCPDisableForm(forms.Form):
 class _BaseBulkReservationImportForm(forms.Form):
     """Accept one explicit YAML or JSON Reservation document."""
 
-    # Django's DATA_UPLOAD_MAX_MEMORY_SIZE does not cover file uploads, so bound the
-    # document here: ``clean`` reads all of it into memory before the parser runs.
-    MAX_DOCUMENT_BYTES = 8 * 1024 * 1024
+    # Django's DATA_UPLOAD_MAX_MEMORY_SIZE does not cover file uploads, so reject an
+    # oversized upload here instead of reading all of it into memory for the parser.
+    MAX_DOCUMENT_BYTES = MAX_TRANSFER_DOCUMENT_BYTES
 
     format = forms.ChoiceField(
         choices=(("yaml", "YAML"), ("json", "JSON")),

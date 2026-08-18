@@ -5,6 +5,7 @@ from django.test import SimpleTestCase
 
 from netbox_kea.dhcp_options import DHCPOption
 from netbox_kea.reservation_transfer import (
+    MAX_DOCUMENT_BYTES,
     ReservationTransferError,
     export_reservation_document,
     parse_reservation_document,
@@ -164,6 +165,13 @@ reservations:
     def test_rejects_an_unknown_or_ambiguous_format(self):
         with self.assertRaises(ReservationTransferError):
             parse_reservation_document("{}", "auto")
+
+    def test_rejects_a_document_larger_than_the_transfer_limit(self):
+        """The parser bounds every caller, not only the upload the import form accepts."""
+        oversized = '{"version": 1, "reservations": []}' + " " * MAX_DOCUMENT_BYTES
+
+        with self.assertRaisesRegex(ReservationTransferError, "must not exceed"):
+            parse_reservation_document(oversized, "json")
 
     def test_rejects_invalid_export_format_and_document_syntax(self):
         with self.assertRaisesRegex(ReservationTransferError, "YAML or JSON"):

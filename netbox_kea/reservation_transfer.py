@@ -30,6 +30,10 @@ _SUBNET_FIELDS = frozenset({"cidr"})
 _IDENTITY_FIELDS = frozenset({"type", "value"})
 _OPTION_FIELDS = frozenset({"code", "name", "space", "data", "csv_format", "always_send", "never_send"})
 
+#: Largest transfer document the parser reads. Every caller is bounded by this,
+#: not only the file upload the import form accepts.
+MAX_DOCUMENT_BYTES = 8 * 1024 * 1024
+
 
 class ReservationTransferError(ValueError):
     """The transfer document cannot be decoded."""
@@ -102,6 +106,10 @@ def export_reservation_document(records: tuple[Reservation, ...], format_name: s
 
 
 def _load_document(document: str, format_name: str) -> Any:
+    if len(document.encode("utf-8")) > MAX_DOCUMENT_BYTES:
+        raise ReservationTransferError(
+            f"The transfer document must not exceed {MAX_DOCUMENT_BYTES // (1024 * 1024)} MB."
+        )
     try:
         if format_name == "json":
             return json.loads(document)
