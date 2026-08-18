@@ -90,3 +90,45 @@ def test_pytest_configuration_works_with_django_plugin_disabled():
         )
 
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_ci_pins_the_netbox_release_the_query_counts_describe():
+    """Keep the unit-test NetBox checkout on the release the baselines were recorded on.
+
+    The two drift silently otherwise: CI would assert counts from another release, and
+    the conftest guard would skip the assertions on the pinned one.
+    """
+    from netbox_kea.tests.conftest import QUERY_COUNT_NETBOX_VERSION
+
+    workflow = (REPOSITORY_ROOT / ".github" / "workflows" / "ci.yml").read_text()
+    checkout = workflow.split("repository: netbox-community/netbox", 1)[1].split("path: netbox", 1)[0]
+
+    assert f"ref: v{QUERY_COUNT_NETBOX_VERSION}\n" in checkout, checkout
+
+
+def test_query_count_assertion_sites_still_exist():
+    """Fail when NetBox moves the helper the conftest guard patches.
+
+    A renamed import would make the guard patch nothing, so every release but the
+    recorded one would start failing on counts again with no sign of why.
+    """
+    import importlib
+
+    from netbox_kea.tests.conftest import QUERY_COUNT_ASSERTION_SITES
+
+    for module_name in QUERY_COUNT_ASSERTION_SITES:
+        module = importlib.import_module(module_name)
+        assert hasattr(module, "assert_expected_query_count"), module_name
+
+
+def test_query_counts_compare_only_on_the_recorded_release():
+    """Compare on the recorded release and while recording, and nowhere else."""
+    from netbox_kea.tests.conftest import QUERY_COUNT_NETBOX_VERSION, query_counts_are_comparable
+
+    assert query_counts_are_comparable(QUERY_COUNT_NETBOX_VERSION, update_mode=False)
+    assert not query_counts_are_comparable("4.3.11", update_mode=False)
+    assert not query_counts_are_comparable("4.8.1", update_mode=False)
+    # A packaging suffix is stripped before the comparison, never matched against.
+    assert not query_counts_are_comparable(f"{QUERY_COUNT_NETBOX_VERSION}-Docker-5.0.2", update_mode=False)
+    # Recording on a new release must still write the file.
+    assert query_counts_are_comparable("4.8.1", update_mode=True)
