@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import UTC, datetime
 from ipaddress import ip_address, ip_network
 
@@ -740,6 +741,67 @@ class TestReservationMutation(SimpleTestCase):
         self.assertEqual(result.verification, "verified")
         self.assertEqual(kea.bodies("reservation-add")[0]["arguments"]["reservation"], raw)
         self.assertEqual(kea.commands().count("config-write"), 1)
+
+    def _submitted_by_name(self):
+        """The Reservation an operator submits: an Option named, with no resolved metadata."""
+        return replace(
+            self.reservation,
+            options=(
+                DHCPOption(
+                    code=None,
+                    name="domain-name-servers",
+                    space=None,
+                    data="198.18.0.53",
+                    csv_format=None,
+                    always_send=None,
+                    never_send=None,
+                ),
+            ),
+        )
+
+    def _resolved_raw(self, data: str = "198.18.0.53"):
+        """What Kea returns for that Option once it resolved its own definition."""
+        return {
+            "subnet-id": 20,
+            "hw-address": "aa:bb:cc:dd:ee:ff",
+            "ip-address": "198.18.0.20",
+            "hostname": "old.example.invalid",
+            "option-data": [
+                {
+                    "code": 6,
+                    "name": "domain-name-servers",
+                    "space": "dhcp4",
+                    "data": data,
+                    "csv-format": True,
+                    "always-send": False,
+                    "never-send": False,
+                }
+            ],
+        }
+
+    def test_create_verifies_when_kea_resolves_the_submitted_option_metadata(self):
+        with stub_kea(
+            {
+                **_persistence_responses(4),
+                "reservation-add": {"result": 0},
+                "reservation-get": _res_get(self._resolved_raw()),
+            }
+        ):
+            result = self.kea.reservation_create(self._submitted_by_name(), self.catalogue)
+
+        self.assertEqual(result.verification, "verified")
+
+    def test_create_fails_verification_when_kea_stored_another_option_value(self):
+        with stub_kea(
+            {
+                **_persistence_responses(4),
+                "reservation-add": {"result": 0},
+                "reservation-get": _res_get(self._resolved_raw(data="198.18.0.54")),
+            }
+        ):
+            result = self.kea.reservation_create(self._submitted_by_name(), self.catalogue)
+
+        self.assertEqual(result.verification, "failed")
 
     def test_update_preserves_unknown_fields_and_applies_explicit_clear_and_set(self):
         current_raw = {

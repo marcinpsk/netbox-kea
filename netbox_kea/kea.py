@@ -34,6 +34,7 @@ from .reservations import (
     apply_reservation_change,
     reservation_fingerprint,
     reservation_identifier_types,
+    reservation_matches_intent,
 )
 
 logger = logging.getLogger(__name__)
@@ -781,7 +782,9 @@ class KeaClient:
         except (KeaException, MalformedReservation, requests.RequestException, RuntimeError, ValueError):
             logger.warning("Could not verify a confirmed Reservation mutation", exc_info=True)
             return "failed"
-        return "verified" if observed == intended else "failed"
+        if observed is None or intended is None:
+            return "verified" if observed is intended else "failed"
+        return "verified" if reservation_matches_intent(observed, intended) else "failed"
 
     def reservation_create(self, reservation: Reservation, catalogue) -> ReservationMutationResult:
         """Create one typed In-Subnet Reservation and verify the result."""

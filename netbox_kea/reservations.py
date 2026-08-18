@@ -417,6 +417,33 @@ def _reservation_to_raw(reservation: Reservation) -> dict[str, Any]:
     return raw
 
 
+def _option_matches_intent(observed: DHCPOption, intended: DHCPOption) -> bool:
+    """Say whether one observed Option carries every Option fact the caller submitted."""
+    if observed.data != intended.data:
+        return False
+    return all(
+        getattr(intended, field) is None or getattr(observed, field) == getattr(intended, field)
+        for field in ("code", "name", "space", "csv_format", "always_send", "never_send")
+    )
+
+
+def reservation_matches_intent(observed: Reservation, intended: Reservation) -> bool:
+    """Say whether one refetched Reservation carries every fact the caller submitted.
+
+    Kea resolves an Option submitted by name alone against its own definitions and
+    returns the code, space and CSV format with it, so an unspecified Option fact is
+    Kea's to fill and is not compared.
+    """
+    if replace(observed, options=()) != replace(intended, options=()):
+        return False
+    if len(observed.options) != len(intended.options):
+        return False
+    return all(
+        _option_matches_intent(observed_option, intended_option)
+        for observed_option, intended_option in zip(observed.options, intended.options, strict=True)
+    )
+
+
 def reservation_fingerprint(reservation: Reservation) -> str:
     """Return a stable fingerprint of managed facts only."""
     encoded = json.dumps(_reservation_to_raw(reservation), sort_keys=True, separators=(",", ":")).encode()
