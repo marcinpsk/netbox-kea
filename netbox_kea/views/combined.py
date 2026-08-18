@@ -269,7 +269,6 @@ def _catalogue_subnet_row(
         "server_pk": server.pk,
         "server_name": server.name,
         "identity_verified": isinstance(subnet, VerifiedSubnet),
-        "ddns_qualifying_suffix": configuration.settings.ddns_qualifying_suffix if configuration else None,
         "options": format_option_data(
             [_option_payload(option) for option in configuration.options] if configuration else [],
             version=version,
@@ -288,7 +287,7 @@ def _fetch_subnets_from_server(
     """Fetch safe Subnet Catalogue facts for one server and tag them for the combined table."""
     snapshot = display(server, version)
     if snapshot.unavailable:
-        return [], snapshot.diagnostics
+        raise RuntimeError(f"Subnet Catalogue is unavailable for DHCPv{version}")
     result = [
         _catalogue_subnet_row(subnet, server, version) for subnet in (*snapshot.subnets, *snapshot.configured_subnets)
     ]

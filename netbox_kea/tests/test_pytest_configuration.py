@@ -5,12 +5,43 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+
+
+SERIAL_BY_DESIGN = "1"
+"""The one worker count a unit-test command may request instead of ``auto``."""
+
+
+def _pytest_commands(text: str) -> list[str]:
+    """Return every pytest invocation in *text*, one string per command.
+
+    Shell line continuations are joined first, so a command spread over several lines is
+    one entry. The whitespace lookahead keeps prose such as ``pytest-xdist`` out.
+    """
+    return re.findall(r"pytest(?=[ \t]).*", text.replace("\\\n", " "))
+
+
+def _xdist_settings(command: str) -> dict[str, str]:
+    """Return the xdist settings of one pytest *command*, as whole tokens.
+
+    A command that requests no worker count yields an empty mapping, so a lost ``-n``
+    is visible instead of being filtered out. Values are whole tokens, because a
+    substring test accepts ``-n 10`` for ``-n 1``.
+    """
+    tokens = command.split()
+    settings: dict[str, str] = {}
+    for index, token in enumerate(tokens):
+        if token == "-n" and index + 1 < len(tokens):
+            settings["workers"] = tokens[index + 1]
+        elif token.startswith("--maxschedchunk="):
+            settings["maxschedchunk"] = token.split("=", 1)[1]
+    return settings
 
 
 def test_documented_unit_test_targets_are_shell_safe():
@@ -24,6 +55,52 @@ def test_documented_unit_test_targets_are_shell_safe():
     )
     assert "<unique-task>" not in agents
     assert "<dedicated-redis>" not in agents
+
+
+def test_worker_settings_are_read_as_whole_tokens():
+    """Reject the near misses a substring test accepts, and keep commands without `-n`."""
+    text = (
+        "pytest netbox_kea/tests/ \\\n  -n 10 --maxschedchunk=10 -q\n"
+        "pytest tests/ -n auto --maxschedchunk=1\n"
+        "pytest tests/ -p no:django -v\n"
+        "pytest-xdist is a dependency, not a command\n"
+    )
+
+    commands = _pytest_commands(text)
+
+    assert len(commands) == 3, commands
+    assert [_xdist_settings(command) for command in commands] == [
+        {"workers": "10", "maxschedchunk": "10"},
+        {"workers": "auto", "maxschedchunk": "1"},
+        {},
+    ]
+
+
+def test_every_unit_test_command_declares_auto_workers():
+    """Require an explicit worker count on each unit-test command.
+
+    Dropping `-n auto` from one command must fail here, so no command is skipped for
+    lacking a worker count. Integration commands never use xdist and are excluded by
+    their `-p no:django` marker. One worker stays allowed, because the query-count
+    baseline must be recorded serially.
+    """
+    for relative_path in (".github/workflows/ci.yml", "AGENTS.md", "README.md"):
+        text = (REPOSITORY_ROOT / relative_path).read_text()
+        unit_commands = [command for command in _pytest_commands(text) if "-p no:django" not in command]
+        assert unit_commands, relative_path
+
+        workers = []
+        for command in unit_commands:
+            settings = _xdist_settings(command)
+            assert "workers" in settings, (relative_path, command)
+            assert settings["workers"] in {"auto", SERIAL_BY_DESIGN}, (relative_path, command)
+            # CI distributes with `--dist loadscope` instead; the documented commands
+            # keep one test per chunk so a worker never waits on a long scope.
+            if settings["workers"] == "auto" and relative_path.endswith(".md"):
+                assert settings.get("maxschedchunk") == "1", (relative_path, command)
+            workers.append(settings["workers"])
+
+        assert "auto" in workers, (relative_path, workers)
 
 
 def test_documented_integration_commands_disable_pytest_django():

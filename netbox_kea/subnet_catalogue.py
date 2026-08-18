@@ -2,12 +2,11 @@ from __future__ import annotations
 
 import ipaddress
 import logging
-import secrets
 from collections import defaultdict
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Literal, Protocol, TypeVar
+from typing import Any, Literal
 
 import requests
 from django.core.cache import cache
@@ -62,16 +61,6 @@ class SubnetIdentity:
     def cidr(self) -> str:
         """Return the canonical CIDR text."""
         return str(self.network)
-
-
-class _CollisionFact(Protocol):
-    @property
-    def identity(self) -> SubnetIdentity:
-        """Return the fact's Subnet identity."""
-        ...
-
-
-_CollisionFactT = TypeVar("_CollisionFactT", bound=_CollisionFact)
 
 
 @dataclass(frozen=True)
@@ -292,24 +281,8 @@ def _network(value: str, family: Family) -> IPNetwork:
     return network_class(value, strict=True)
 
 
-def _generation_key(server: Server, family: Family) -> str:
-    return f"netbox_kea:subnet_catalogue:v1:{_require_persisted_server(server)}:{family}:generation"
-
-
-def _cache_generation(server: Server, family: Family) -> str:
-    key = _generation_key(server, family)
-    generation = cache.get(key)
-    if isinstance(generation, str):
-        return generation
-    candidate = secrets.token_hex(16)
-    cache.add(key, candidate, timeout=None)
-    generation = cache.get(key)
-    return generation if isinstance(generation, str) else candidate
-
-
-def _cache_key(server: Server, family: Family, generation: str | None = None) -> str:
-    generation = generation or _cache_generation(server, family)
-    return f"netbox_kea:subnet_catalogue:v1:{_require_persisted_server(server)}:{family}:snapshot:{generation}"
+def _cache_key(server: Server, family: Family) -> str:
+    return f"netbox_kea:subnet_catalogue:v1:{_require_persisted_server(server)}:{family}"
 
 
 def _require_persisted_server(server: Server) -> int:
@@ -318,10 +291,8 @@ def _require_persisted_server(server: Server) -> int:
     return server.pk
 
 
-def invalidate(server: Server, family: int) -> None:
-    """Discard the cached Complete snapshot after a configuration change."""
-    validated_family = _validate_family(family)
-    cache.set(_generation_key(server, validated_family), secrets.token_hex(16), timeout=None)
+def _invalidate(server: Server, family: Family) -> None:
+    cache.delete(_cache_key(server, family))
 
 
 def _diagnostic(code: str, message: str, source: str, path: str = "") -> Diagnostic:
@@ -450,10 +421,10 @@ def _parse_identity(
 
 
 def _quarantine_collisions(
-    facts: list[_CollisionFactT], source: str
-) -> tuple[list[_CollisionFactT], list[Diagnostic], set[int], set[IPNetwork]]:
-    ids: dict[int, list[_CollisionFactT]] = defaultdict(list)
-    networks: dict[IPNetwork, list[_CollisionFactT]] = defaultdict(list)
+    facts: list[Any], source: str
+) -> tuple[list[Any], list[Diagnostic], set[int], set[IPNetwork]]:
+    ids: dict[int, list[Any]] = defaultdict(list)
+    networks: dict[IPNetwork, list[Any]] = defaultdict(list)
     for fact in facts:
         ids[fact.identity.subnet_id].append(fact)
         networks[fact.identity.network].append(fact)
@@ -781,7 +752,7 @@ def _parse_settings(
         ddns_qualifying_suffix=_optional_string(entry, "ddns-qualifying-suffix", path, diagnostics, allow_empty=True),
         interface_id=_optional_string(entry, "interface-id", path, diagnostics),
         relay_addresses=_relay_addresses(entry.get("relay"), family, path, diagnostics),
-        client_classes=_client_classes(entry, path, diagnostics),
+        client_classes=_string_tuple(entry, "client-classes", path, diagnostics),
         require_client_classes=_additional_classes(entry, path, diagnostics),
     )
 
@@ -837,16 +808,6 @@ def _relay_addresses(
         return ()
     addresses: list[IPAddress] = []
     for address in value["ip-addresses"]:
-        if not isinstance(address, str):
-            diagnostics.append(
-                _diagnostic(
-                    "invalid-setting",
-                    "Kea returned an invalid relay address.",
-                    "configuration",
-                    f"{path}.relay.ip-addresses",
-                )
-            )
-            continue
         try:
             parsed = ipaddress.ip_address(address)
         except (TypeError, ValueError):
@@ -887,18 +848,6 @@ def _additional_classes(
     if "evaluate-additional-classes" in entry:
         return _string_tuple(entry, "evaluate-additional-classes", path, diagnostics)
     return _string_tuple(entry, "require-client-classes", path, diagnostics)
-
-
-def _client_classes(
-    entry: dict[str, Any],
-    path: str,
-    diagnostics: list[Diagnostic],
-) -> tuple[str, ...]:
-    """Read client restrictions, preferring the current list-valued Kea key."""
-    if "client-classes" in entry:
-        return _string_tuple(entry, "client-classes", path, diagnostics)
-    legacy = _optional_string(entry, "client-class", path, diagnostics)
-    return (legacy,) if legacy is not None else ()
 
 
 def _string_tuple(
@@ -1184,8 +1133,7 @@ def display(server: Server, family: int) -> CatalogueSnapshot:
     observation is retried on the next call.
     """
     validated_family = _validate_family(family)
-    generation = _cache_generation(server, validated_family)
-    key = _cache_key(server, validated_family, generation)
+    key = _cache_key(server, validated_family)
     cached = cache.get(key)
     if isinstance(cached, CompleteCatalogueSnapshot):
         return cached
@@ -1230,7 +1178,7 @@ class MutationScope(AbstractContextManager["MutationScope"]):
         self.snapshot: CatalogueSnapshot | None = None
 
     def __enter__(self) -> MutationScope:
-        invalidate(self.server, self.family)
+        _invalidate(self.server, self.family)
         self.snapshot = _read_live(self.server, self.family)
         return self
 
@@ -1238,7 +1186,7 @@ class MutationScope(AbstractContextManager["MutationScope"]):
         # Identity facts stop being live confirmation here, so drop them: a caller that
         # keeps the scope must not decide a mutation on pre-mutation observations.
         self.snapshot = None
-        invalidate(self.server, self.family)
+        _invalidate(self.server, self.family)
 
     def find_by_id(self, subnet_id: int) -> VerifiedSubnet | None:
         """Return one exact Verified Subnet, or confirm its absence safely."""

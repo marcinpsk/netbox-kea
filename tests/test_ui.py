@@ -583,11 +583,7 @@ def configure_table(page: Page, *selected_coumns: str) -> None:
     submit = apply_button if apply_button.count() else page.get_by_role("button", name="Save")
     with page.expect_navigation(wait_until="domcontentloaded") as navigation:
         submit.click()
-    # A same-document save (anchor or History API) navigates with no response, so name
-    # that case instead of failing on None.ok.
-    response = navigation.value
-    assert response is not None, "the column save did not reload the page"
-    assert response.ok
+    assert navigation.value.ok
 
 
 @pytest.mark.parametrize(

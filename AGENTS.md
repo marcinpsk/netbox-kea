@@ -43,15 +43,17 @@ boundary (see "Testing philosophy" below).
 
 Use a task-specific PostgreSQL database and a dedicated Redis host. Each xdist
 worker gets a private PostgreSQL database and private Redis task and cache
-databases. The supported maximum is eight workers. Always use xdist, including
-for focused tests. A serial run can clear Redis database 1, which the shared
-manual verification environment uses as its default cache.
+databases. Eight workers is the supported maximum. `-n auto` is capped there by
+`pytest_xdist_auto_num_workers` in `netbox_kea/tests/conftest.py`, so it is safe on
+any machine. Always use xdist, including for focused tests. A serial run can clear
+Redis database 1, which the shared manual verification environment uses as its
+default cache.
 
 ```bash
 TEST_DB_NAME=test_netbox_kea_review TEST_REDIS_HOST=netbox-kea-review-redis \
-  uv run --native-tls pytest --reuse-db -n 8 --maxschedchunk=1
+  uv run --native-tls pytest --reuse-db -n auto --maxschedchunk=1
 TEST_DB_NAME=test_netbox_kea_review TEST_REDIS_HOST=netbox-kea-review-redis \
-  uv run --native-tls pytest --reuse-db -n 8 --maxschedchunk=1 netbox_kea/tests/test_views_leases.py -v
+  uv run --native-tls pytest --reuse-db -n auto --maxschedchunk=1 netbox_kea/tests/test_views_leases.py -v
 ```
 
 `pythonpath` is set to `/opt/netbox/netbox` and
