@@ -635,8 +635,10 @@ class TestSubnetCatalogue(TestCase):
         self.server.client_cert_path = "/tmp/netbox-kea-client.crt"
         self.server.client_key_path = ""
 
-        snapshot = display(self.server, 4)
+        with stub_kea({}) as kea:
+            snapshot = display(self.server, 4)
 
+        self.assertEqual(kea.commands(), [])
         self.assertTrue(snapshot.unavailable)
         self.assertEqual(
             {item.code for item in snapshot.diagnostics},
