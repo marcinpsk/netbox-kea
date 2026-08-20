@@ -300,11 +300,11 @@ class ServerViewSet(NetBoxModelViewSet):
             return Response(
                 {"detail": "Kea returned a malformed Reservation target."}, status=status.HTTP_502_BAD_GATEWAY
             )
-        except (TypeError, ValueError):
-            return Response({"detail": "Invalid Reservation identity selector."}, status=status.HTTP_400_BAD_REQUEST)
         except requests.RequestException:
             logger.exception("Kea connection error on server %s", server.name)
             return Response({"detail": "Could not connect to Kea server."}, status=status.HTTP_502_BAD_GATEWAY)
+        except (TypeError, ValueError):
+            return Response({"detail": "Invalid Reservation identity selector."}, status=status.HTTP_400_BAD_REQUEST)
         except KeaException:
             logger.exception("Kea error on server %s", server.name)
             return Response({"detail": "An internal error occurred"}, status=status.HTTP_502_BAD_GATEWAY)
@@ -334,11 +334,11 @@ class ServerViewSet(NetBoxModelViewSet):
             return Response(
                 {"detail": "Kea returned a malformed Reservation target."}, status=status.HTTP_502_BAD_GATEWAY
             )
-        except (TypeError, ValueError):
-            return Response({"detail": "Invalid scoped address selector."}, status=status.HTTP_400_BAD_REQUEST)
         except requests.RequestException:
             logger.exception("Kea connection error on server %s", server.name)
             return Response({"detail": "Could not connect to Kea server."}, status=status.HTTP_502_BAD_GATEWAY)
+        except (TypeError, ValueError):
+            return Response({"detail": "Invalid scoped address selector."}, status=status.HTTP_400_BAD_REQUEST)
         except KeaException:
             logger.exception("Kea error on server %s", server.name)
             return Response({"detail": "An internal error occurred"}, status=status.HTTP_502_BAD_GATEWAY)

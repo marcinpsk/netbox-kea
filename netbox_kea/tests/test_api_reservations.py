@@ -289,6 +289,30 @@ class TestReservation4API(_APITestBase):
                     response = self.api_client.get(self._url(), params)
                 self.assertEqual(response.status_code, 502)
 
+    def test_a_value_error_transport_failure_is_not_reported_as_a_bad_selector(self):
+        """A malformed Kea body is an upstream failure, not an invalid client selector."""
+        cases = (
+            (
+                "identity",
+                {
+                    "scope": "in-subnet",
+                    "subnet_id": "20",
+                    "identifier_type": "hw-address",
+                    "identifier": "aa:bb:cc:dd:ee:ff",
+                },
+            ),
+            ("address", {"ip_address": "198.18.0.20", "subnet_id": "20"}),
+        )
+
+        for query_mode, params in cases:
+            with self.subTest(query_mode=query_mode):
+                responses = _catalogue_responses(4, 20, "198.18.0.0/24")
+                # JSONDecodeError subclasses both RequestException and ValueError.
+                responses["reservation-get"] = requests.exceptions.JSONDecodeError("bad", "doc", 0)
+                with stub_kea(responses):
+                    response = self.api_client.get(self._url(), params)
+                self.assertEqual(response.status_code, 502)
+
     def test_identity_requires_both_parts_and_a_valid_scope(self):
         with stub_kea({}) as kea:
             response = self.api_client.get(self._url(), {"identifier_type": "hw-address"})
