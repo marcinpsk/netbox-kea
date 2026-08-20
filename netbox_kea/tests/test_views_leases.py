@@ -467,15 +467,20 @@ class TestLeaseSearchPaths(_ViewTestBase):
         tracking_lock = threading.Lock()
         lookup_barrier = threading.Barrier(10)
         lookup_calls = 0
+        barrier_broke = False
         close_failure_injected = False
 
         def lookup_failure(_body):
-            nonlocal lookup_calls
+            nonlocal lookup_calls, barrier_broke
             with tracking_lock:
                 lookup_calls += 1
                 wait_for_workers = lookup_calls <= 10
             if wait_for_workers:
-                lookup_barrier.wait(timeout=5)
+                try:
+                    lookup_barrier.wait(timeout=30)
+                except threading.BrokenBarrierError:
+                    with tracking_lock:
+                        barrier_broke = True
             return {"result": 1, "text": "lookup failed"}
 
         def clone_client(client):
@@ -516,10 +521,14 @@ class TestLeaseSearchPaths(_ViewTestBase):
 
         created_clients = [client for clients in created_by_thread.values() for client in clients]
         self.assertEqual(response.status_code, 200)
-        self.assertGreater(clone_spy.call_count, 0)
-        self.assertLessEqual(clone_spy.call_count, 10)
+        # All ten workers ran concurrently, so a shared client would show up as fewer
+        # threads, and a per-lease clone would show up as more clients.
+        self.assertFalse(barrier_broke)
+        self.assertEqual(clone_spy.call_count, 10)
         self.assertLess(clone_spy.call_count, len(leases))
+        self.assertEqual(len(created_by_thread), 10)
         self.assertTrue(all(len(clients) == 1 for clients in created_by_thread.values()))
+        self.assertEqual(len({id(client) for client in created_clients}), 10)
         self.assertCountEqual([id(client) for client in closed_clients], [id(client) for client in created_clients])
 
     @override_settings(PLUGINS_CONFIG={"netbox_kea": {"kea_timeout": 30, "lease_query_max_unpaged_leases": 1000}})
