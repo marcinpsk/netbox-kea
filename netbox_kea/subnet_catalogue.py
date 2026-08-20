@@ -6,7 +6,7 @@ from collections import defaultdict
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any, Literal, Protocol, TypeVar
 
 import requests
 from django.core.cache import cache
@@ -61,6 +61,16 @@ class SubnetIdentity:
     def cidr(self) -> str:
         """Return the canonical CIDR text."""
         return str(self.network)
+
+
+class _CollisionFact(Protocol):
+    @property
+    def identity(self) -> SubnetIdentity:
+        """Return the fact's Subnet identity."""
+        ...
+
+
+_CollisionFactT = TypeVar("_CollisionFactT", bound=_CollisionFact)
 
 
 @dataclass(frozen=True)
@@ -421,10 +431,10 @@ def _parse_identity(
 
 
 def _quarantine_collisions(
-    facts: list[Any], source: str
-) -> tuple[list[Any], list[Diagnostic], set[int], set[IPNetwork]]:
-    ids: dict[int, list[Any]] = defaultdict(list)
-    networks: dict[IPNetwork, list[Any]] = defaultdict(list)
+    facts: list[_CollisionFactT], source: str
+) -> tuple[list[_CollisionFactT], list[Diagnostic], set[int], set[IPNetwork]]:
+    ids: dict[int, list[_CollisionFactT]] = defaultdict(list)
+    networks: dict[IPNetwork, list[_CollisionFactT]] = defaultdict(list)
     for fact in facts:
         ids[fact.identity.subnet_id].append(fact)
         networks[fact.identity.network].append(fact)
