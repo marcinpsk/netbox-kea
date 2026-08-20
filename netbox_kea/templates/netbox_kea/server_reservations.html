@@ -78,8 +78,8 @@
 {% if not snapshot_complete and reservation_diagnostics %}
 <div class="alert alert-warning" role="alert">
   <strong>Snapshot is incomplete.</strong>
-  {{ reservation_diagnostics|length }} malformed Reservation{{ reservation_diagnostics|length|pluralize }}
-  could not be displayed.
+  Some Reservations could not be read.
+  See the {{ reservation_diagnostics|length }} diagnostic{{ reservation_diagnostics|length|pluralize }} below.
   <ul class="mb-0 mt-2">
     {% for diagnostic in reservation_diagnostics %}
     <li><code>{{ diagnostic.code }}</code> at <code>{{ diagnostic.source_position }}</code>: {{ diagnostic.message }}</li>

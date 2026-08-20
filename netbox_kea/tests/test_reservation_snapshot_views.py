@@ -49,7 +49,7 @@ class TestPerServerReservationSnapshots(_ViewTestBase):
         self.assertContains(response, "198.18.0.0/24")
         self.assertContains(response, "domain-name-servers")
         self.assertContains(response, "Snapshot is incomplete")
-        self.assertContains(response, "1 malformed Reservation")
+        self.assertContains(response, "See the 1 diagnostic below.")
         self.assertNotContains(response, "private rejected value")
         self.assertContains(response, "Next page")
         self.assertEqual(len(kea.bodies("reservation-get-page")), 1)

@@ -44,6 +44,8 @@ instance for a command (the stub raises it at the boundary), so the per-server
 error handling runs through the real client instead of a mocked ``side_effect``.
 """
 
+from unittest.mock import patch
+
 import requests
 from django.test import TestCase, override_settings
 from django.urls import reverse
@@ -51,8 +53,9 @@ from ipam.models import IPAddress
 
 from netbox_kea import constants
 from netbox_kea.models import Server
+from netbox_kea.views.combined import _fetch_reservations_from_server
 
-from .kea_stub import _res_get, _res_page, _reservation_mutation_commands, stub_kea
+from .kea_stub import _res_get, _res_page, _reservation_mutation_commands, queued, stub_kea
 from .utils import _PLUGINS_CONFIG, User, _drop_subnet_choices_cache, _make_db_server
 
 # ---------------------------------------------------------------------------
@@ -390,6 +393,43 @@ class TestCombinedReservations4View(_CombinedViewBase):
             url = reverse("plugins:netbox_kea:combined_reservations4")
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
+
+    def test_page_diagnostic_uses_neutral_incomplete_snapshot_alert(self):
+        hosts = [
+            {"subnet-id": 0, "flex-id": f"global-{index}", "hostname": f"host-{index}.example.invalid"}
+            for index in range(100)
+        ]
+        first_page = _res_page(
+            hosts,
+            next_from=100,
+            next_source=1,
+        )
+        url = reverse("plugins:netbox_kea:combined_reservations4") + f"?server={self.v4_server.pk}"
+
+        def fetch_full_snapshot(server, version, cursor=None, **_kwargs):
+            return _fetch_reservations_from_server(server, version, cursor, full_snapshot=True)
+
+        with (
+            patch(
+                "netbox_kea.views.combined._fetch_reservations_from_server",
+                autospec=True,
+                side_effect=fetch_full_snapshot,
+            ),
+            _reservation_stub(
+                4,
+                {
+                    "reservation-get-page": queued(first_page, requests.ConnectionError("page failed")),
+                },
+            ),
+        ):
+            response = self.client.get(url)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Snapshot is incomplete.")
+        self.assertContains(response, "Some Reservations could not be read.")
+        self.assertContains(response, "See the 1 diagnostic below.")
+        self.assertContains(response, "page-fetch-failed")
+        self.assertNotContains(response, "malformed Reservation")
 
     def test_no_v4_servers_returns_200_empty_table(self):
         """If no dhcp4-enabled servers exist, the view renders with an empty table (no Kea traffic)."""
