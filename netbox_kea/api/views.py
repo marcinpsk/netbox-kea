@@ -251,7 +251,7 @@ class ServerViewSet(NetBoxModelViewSet):
                 cursor=params.get("cursor"),
                 limit=limit,
             )
-        except (requests.ConnectionError, requests.Timeout):
+        except requests.RequestException:
             logger.exception("Kea connection error on server %s", server.name)
             return Response({"detail": "Could not connect to Kea server."}, status=status.HTTP_502_BAD_GATEWAY)
         except KeaException:
@@ -302,7 +302,7 @@ class ServerViewSet(NetBoxModelViewSet):
             )
         except (TypeError, ValueError):
             return Response({"detail": "Invalid Reservation identity selector."}, status=status.HTTP_400_BAD_REQUEST)
-        except (requests.ConnectionError, requests.Timeout):
+        except requests.RequestException:
             logger.exception("Kea connection error on server %s", server.name)
             return Response({"detail": "Could not connect to Kea server."}, status=status.HTTP_502_BAD_GATEWAY)
         except KeaException:
@@ -336,7 +336,7 @@ class ServerViewSet(NetBoxModelViewSet):
             )
         except (TypeError, ValueError):
             return Response({"detail": "Invalid scoped address selector."}, status=status.HTTP_400_BAD_REQUEST)
-        except (requests.ConnectionError, requests.Timeout):
+        except requests.RequestException:
             logger.exception("Kea connection error on server %s", server.name)
             return Response({"detail": "Could not connect to Kea server."}, status=status.HTTP_502_BAD_GATEWAY)
         except KeaException:
@@ -353,7 +353,7 @@ class ServerViewSet(NetBoxModelViewSet):
             catalogue = subnet_catalogue(server, version)
             client = server.get_client(version=version)
             snapshot = client.reservations_by_hostname(version, catalogue, hostname)
-        except (requests.ConnectionError, requests.Timeout):
+        except requests.RequestException:
             logger.exception("Kea connection error on server %s", server.name)
             return Response({"detail": "Could not connect to Kea server."}, status=status.HTTP_502_BAD_GATEWAY)
         except KeaException:

@@ -264,6 +264,31 @@ class TestReservation4API(_APITestBase):
                     response = self.api_client.get(self._url(), {"page": "1"})
                 self.assertEqual(response.status_code, expected_status)
 
+    def test_all_query_modes_map_request_exceptions_to_502(self):
+        cases = (
+            ("page", "reservation-get-page", {"page": "1"}),
+            (
+                "identity",
+                "reservation-get",
+                {
+                    "scope": "in-subnet",
+                    "subnet_id": "20",
+                    "identifier_type": "hw-address",
+                    "identifier": "aa:bb:cc:dd:ee:ff",
+                },
+            ),
+            ("address", "reservation-get", {"ip_address": "198.18.0.20", "subnet_id": "20"}),
+            ("hostname", "reservation-get-by-hostname", {"hostname": "host.example.invalid"}),
+        )
+
+        for query_mode, command, params in cases:
+            with self.subTest(query_mode=query_mode):
+                responses = _catalogue_responses(4, 20, "198.18.0.0/24")
+                responses[command] = requests.TooManyRedirects("redirect loop")
+                with stub_kea(responses):
+                    response = self.api_client.get(self._url(), params)
+                self.assertEqual(response.status_code, 502)
+
     def test_identity_requires_both_parts_and_a_valid_scope(self):
         with stub_kea({}) as kea:
             response = self.api_client.get(self._url(), {"identifier_type": "hw-address"})
