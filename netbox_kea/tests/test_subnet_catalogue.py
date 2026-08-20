@@ -213,6 +213,33 @@ class TestSubnetCatalogue(TestCase):
             (ipaddress.ip_address("2001:db8::1"),),
         )
 
+    def test_dhcpv4_relay_rejects_non_string_address(self):
+        # Only DHCPv4 reaches this bug: ``1`` parses as an IPv4 address, so the
+        # wrong-family check already rejects it for DHCPv6.
+        identities = _identity(4, [{"id": 1, "subnet": "198.18.1.0/24", "shared-network-name": None}])
+        configuration = _config(
+            4,
+            [
+                {
+                    "id": 1,
+                    "subnet": "198.18.1.0/24",
+                    "pools": [{"pool": "198.18.1.0/26"}],
+                    "option-data": [],
+                    "relay": {"ip-addresses": [1]},
+                }
+            ],
+        )
+
+        with stub_kea({"subnet4-list": identities, "config-get": configuration}):
+            snapshot = display(self.server, 4)
+
+        self.assertIsInstance(snapshot, IncompleteCatalogueSnapshot)
+        self.assertEqual(snapshot.find_by_id(1).configuration.settings.relay_addresses, ())
+        self.assertIn(
+            ("invalid-setting", "subnet4[0].relay.ip-addresses"),
+            {(diagnostic.code, diagnostic.path) for diagnostic in snapshot.diagnostics},
+        )
+
     def test_public_operations_reject_invalid_scope(self):
         with self.assertRaisesMessage(ValueError, "family must be 4 or 6"):
             display(self.server, 5)
