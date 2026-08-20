@@ -9,6 +9,7 @@ gated on ``netbox_dhcp`` being installed.  Only the Kea HTTP boundary is faked
 
 from __future__ import annotations
 
+import re
 import unittest
 from unittest.mock import patch
 
@@ -230,7 +231,10 @@ class SyncNowEndToEndTest(TestCase):
         self.assertContains(resp, "2001:db8:88::/64")
         self.assertContains(resp, "DHCPv4")
         self.assertContains(resp, "DHCPv6")
-        self.assertContains(resp, 'class="table table-hover align-middle mb-0 drift-table"', count=1)
+        # Match the marker class on a table element, so a Bootstrap class change here
+        # does not fail a test about the merged drift table.
+        drift_tables = re.findall(r"<table[^>]*\bdrift-table\b[^>]*>", resp.content.decode())
+        self.assertEqual(len(drift_tables), 1, drift_tables)
         self.assertContains(resp, "Shared Network grouping")
         self.assertContains(resp, "Direct-interface mapping")
         self.assertContains(resp, "DHCP option mapping")

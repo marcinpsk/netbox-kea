@@ -213,3 +213,5 @@ def test_query_counts_compare_only_on_the_recorded_release():
 
     assert query_counts_are_comparable(QUERY_COUNT_NETBOX_VERSION, update_mode=False)
     assert not query_counts_are_comparable(f"{QUERY_COUNT_NETBOX_VERSION}-Docker-5.0.2", update_mode=False)
+    # Same release as the line above, so only update_mode can explain the difference.
+    assert query_counts_are_comparable(f"{QUERY_COUNT_NETBOX_VERSION}-Docker-5.0.2", update_mode=True)
