@@ -772,6 +772,10 @@ class TestGetMaxUnpagedLeases(SimpleTestCase):
     def test_fractional_value_uses_the_default(self):
         self.assertEqual(_get_max_unpaged_leases(), 1000)
 
+    @override_settings(PLUGINS_CONFIG={"netbox_kea": {"lease_query_max_unpaged_leases": "invalid"}})
+    def test_malformed_string_uses_the_default(self):
+        self.assertEqual(_get_max_unpaged_leases(), 1000)
+
 
 class TestKeaDhcpLinkIdentity(TestCase):
     """A link row carries exactly one Kea identity kind.
