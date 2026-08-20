@@ -3635,7 +3635,7 @@ class TestGetLeasesPageMalformedResponse(_ViewTestBase):
         with stub_kea({"subnet4-list": self._SUBNETS4, "lease4-get-page": page}):
             response = self._htmx_get(self._url(), {"by": "subnet", "q": "10.0.0.0/24"})
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "error")
+        self.assertContains(response, "An internal error occurred. Reference ID:")
 
     def test_non_int_count_renders_error(self):
         """When Kea returns non-int 'count', the HTMX handler catches RuntimeError."""
@@ -3643,7 +3643,7 @@ class TestGetLeasesPageMalformedResponse(_ViewTestBase):
         with stub_kea({"subnet4-list": self._SUBNETS4, "lease4-get-page": page}):
             response = self._htmx_get(self._url(), {"by": "subnet", "q": "10.0.0.0/24"})
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "error")
+        self.assertContains(response, "An internal error occurred. Reference ID:")
 
     def test_full_page_all_filtered_renders_error(self):
         """Full page (count==per_page) but all entries invalid must trigger RuntimeError."""
@@ -3656,14 +3656,14 @@ class TestGetLeasesPageMalformedResponse(_ViewTestBase):
                 {"by": "subnet", "q": "10.0.0.0/24", "per_page": str(per_page)},
             )
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "error")
+        self.assertContains(response, "An internal error occurred. Reference ID:")
 
     def test_none_arguments_renders_error(self):
         """When resp[0]['arguments'] is None, the HTMX handler catches RuntimeError."""
         with stub_kea({"subnet4-list": self._SUBNETS4, "lease4-get-page": {"result": 0, "arguments": None}}):
             response = self._htmx_get(self._url(), {"by": "subnet", "q": "10.0.0.0/24"})
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "error")
+        self.assertContains(response, "An internal error occurred. Reference ID:")
 
     def test_empty_response_list_renders_error(self):
         """When Kea returns an empty list, get_leases_page raises RuntimeError."""
@@ -3671,7 +3671,7 @@ class TestGetLeasesPageMalformedResponse(_ViewTestBase):
         with stub_kea({"subnet4-list": self._SUBNETS4, "lease4-get-page": lambda body: []}):
             response = self._htmx_get(self._url(), {"by": "subnet", "q": "10.0.0.0/24"})
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "error")
+        self.assertContains(response, "An internal error occurred. Reference ID:")
 
     def test_non_dict_first_element_renders_error(self):
         """When resp[0] is not a dict, the HTMX handler catches RuntimeError."""
@@ -3681,7 +3681,7 @@ class TestGetLeasesPageMalformedResponse(_ViewTestBase):
         with patch.object(KeaClient, "command", return_value=["not-a-dict"], autospec=True):
             response = self._htmx_get(self._url(), {"by": "subnet", "q": "10.0.0.0/24"})
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "error")
+        self.assertContains(response, "An internal error occurred. Reference ID:")
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
@@ -3706,7 +3706,7 @@ class TestGetLeasesSingleResultValidation(_ViewTestBase):
         with stub_kea({"subnet4-list": self._SUBNETS4, "lease4-get": resp}):
             response = self._htmx_get(self._url(), {"by": "ip", "q": "10.0.0.5"})
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "error")
+        self.assertContains(response, "An internal error occurred. Reference ID:")
 
     def test_multiple_result_all_non_dict_renders_error(self):
         """Multiple-result with all non-dict entries filtered out must trigger RuntimeError."""
@@ -3715,7 +3715,7 @@ class TestGetLeasesSingleResultValidation(_ViewTestBase):
         with stub_kea({"subnet4-list": self._SUBNETS4, "lease4-get-by-hw-address": resp}):
             response = self._htmx_get(self._url(), {"by": "hw", "q": "aa:bb:cc:dd:ee:ff"})
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "error")
+        self.assertContains(response, "An internal error occurred. Reference ID:")
 
     def test_multiple_result_none_arguments_renders_error(self):
         """Multiple-result with None arguments must trigger RuntimeError."""
@@ -3723,7 +3723,7 @@ class TestGetLeasesSingleResultValidation(_ViewTestBase):
         with stub_kea({"subnet4-list": self._SUBNETS4, "lease4-get-by-hw-address": resp}):
             response = self._htmx_get(self._url(), {"by": "hw", "q": "aa:bb:cc:dd:ee:ff"})
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "error")
+        self.assertContains(response, "An internal error occurred. Reference ID:")
 
     def test_multiple_result_non_list_leases_renders_error(self):
         """Multiple-result with non-list leases must trigger RuntimeError."""
@@ -3731,7 +3731,7 @@ class TestGetLeasesSingleResultValidation(_ViewTestBase):
         with stub_kea({"subnet4-list": self._SUBNETS4, "lease4-get-by-hw-address": resp}):
             response = self._htmx_get(self._url(), {"by": "hw", "q": "aa:bb:cc:dd:ee:ff"})
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "error")
+        self.assertContains(response, "An internal error occurred. Reference ID:")
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
@@ -3925,7 +3925,7 @@ class TestGetLeasesPageSubnetEdgeCases(_ViewTestBase):
             response = self._htmx_get(self._url(), {"by": "subnet", "q": "10.0.0.0/24"})
         self.assertEqual(response.status_code, 200)
         # Should NOT contain the error template content
-        self.assertNotContains(response, "error_id")
+        self.assertNotContains(response, "An internal error occurred. Reference ID:")
 
     def test_leases_outside_subnet_are_truncated(self):
         """Leases with IPs outside the queried subnet must be excluded."""
