@@ -1956,6 +1956,7 @@ class KeaClient:
             raise ValueError(f"max_leases must be >= 1 (or None for no cap), got {max_leases!r}")
         cursor: str | None = None
         all_leases: list[dict[str, Any]] = []
+        seen_cursors: set[str] = set()
 
         while True:
             page = self._request_lease_page(
@@ -1973,6 +1974,9 @@ class KeaClient:
                 return LeaseCollection(leases=all_leases, truncated=truncated)
             if page.next_cursor is None:
                 return LeaseCollection(leases=all_leases, truncated=False)
+            if page.next_cursor in seen_cursors:
+                raise RuntimeError("Lease page cursor did not advance.")
+            seen_cursors.add(page.next_cursor)
             cursor = page.next_cursor
 
     def dhcp_disable(self, service: str, max_period: int | None = None) -> None:

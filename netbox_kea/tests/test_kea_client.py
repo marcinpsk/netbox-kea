@@ -5145,6 +5145,18 @@ class TestLeaseGetAllPagination(TestCase):
         self.assertEqual(first_payload["arguments"]["from"], "0.0.0.0")
         self.assertEqual(second_payload["arguments"]["from"], "10.0.0.2")
 
+    def test_rejects_a_cursor_that_does_not_advance(self):
+        page = {
+            "result": 0,
+            "arguments": {"leases": [{"ip-address": "198.18.0.10"}], "count": 1},
+        }
+
+        with stub_kea({"lease4-get-page": page}) as kea:
+            with self.assertRaisesRegex(RuntimeError, "Lease page cursor did not advance"):
+                self.client.lease_get_all(version=4, per_page=1)
+
+        self.assertEqual(len(kea.bodies("lease4-get-page")), 2)
+
     def test_per_page_zero_raises_value_error(self):
         """per_page < 1 → ValueError before any HTTP call is made."""
         with self.assertRaises(ValueError) as cm:
