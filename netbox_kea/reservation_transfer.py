@@ -413,7 +413,8 @@ def parse_reservation_document(
             (), (_diagnostic("invalid-document", "Document root must be an object.", "$"),)
         )
     _report_unknown_fields(raw, _DOCUMENT_FIELDS, "", diagnostics)
-    if raw.get("version") != 1:
+    version = raw.get("version")
+    if isinstance(version, bool) or version != 1:
         diagnostics.append(_diagnostic("invalid-version", "Document version must be 1.", "version"))
     records = raw.get("reservations")
     if not isinstance(records, list):

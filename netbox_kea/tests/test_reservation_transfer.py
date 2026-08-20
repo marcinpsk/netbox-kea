@@ -200,6 +200,14 @@ reservations:
             {"invalid-version", "invalid-reservations"},
         )
 
+    def test_rejects_a_boolean_document_version(self):
+        result = parse_reservation_document('{"version": true, "reservations": []}', "json")
+
+        self.assertEqual(
+            [(diagnostic.code, diagnostic.source_position) for diagnostic in result.diagnostics],
+            [("invalid-version", "version")],
+        )
+
     def test_reports_invalid_record_field_shapes_together(self):
         document = {
             "version": 1,
