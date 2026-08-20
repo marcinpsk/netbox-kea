@@ -23,6 +23,7 @@ connectivity checks.
 """
 
 import re
+import threading
 from unittest.mock import MagicMock, patch
 
 import requests
@@ -448,6 +449,77 @@ class TestLeaseSearchPaths(_ViewTestBase):
         # One address probe per lease, then one probe per Identity in each of the two
         # Scopes: every lease carries the same hardware address and Client ID.
         self.assertEqual(len(kea.bodies("reservation-get")), 5 + 4)
+
+    def test_reservation_workers_reuse_and_close_one_client_per_thread(self):
+        leases = [
+            {
+                **self._LEASE4,
+                "ip-address": f"10.0.0.{index}",
+                "hw-address": f"aa:bb:cc:dd:ee:{index:02x}",
+            }
+            for index in range(1, 13)
+        ]
+        real_clone = KeaClient.clone
+        real_close = KeaClient.close
+        created_by_thread = {}
+        closed_clients = []
+        tracking_lock = threading.Lock()
+        lookup_barrier = threading.Barrier(10)
+        lookup_calls = 0
+        close_failure_injected = False
+
+        def lookup_failure(_body):
+            nonlocal lookup_calls
+            with tracking_lock:
+                lookup_calls += 1
+                wait_for_workers = lookup_calls <= 10
+            if wait_for_workers:
+                lookup_barrier.wait(timeout=5)
+            return {"result": 1, "text": "lookup failed"}
+
+        def clone_client(client):
+            worker_client = real_clone(client)
+            with tracking_lock:
+                created_by_thread.setdefault(threading.get_ident(), []).append(worker_client)
+            return worker_client
+
+        def close_client(client):
+            nonlocal close_failure_injected
+            with tracking_lock:
+                is_worker_client = any(
+                    client is worker_client for clients in created_by_thread.values() for worker_client in clients
+                )
+                fail_close = is_worker_client and not close_failure_injected
+                if fail_close:
+                    close_failure_injected = True
+            real_close(client)
+            if is_worker_client:
+                with tracking_lock:
+                    closed_clients.append(client)
+            if fail_close:
+                raise RuntimeError("close failed")
+
+        with (
+            patch.object(KeaClient, "clone", autospec=True, side_effect=clone_client) as clone_spy,
+            patch.object(KeaClient, "close", autospec=True, side_effect=close_client),
+            _reservation_stub(
+                4,
+                {
+                    "subnet4-list": self._SUBNETS4,
+                    "lease4-get-all": self._multi(leases),
+                    "reservation-get": lookup_failure,
+                },
+            ),
+        ):
+            response = self._htmx_get(self._url4(), {"by": "subnet_id", "q": "1"})
+
+        created_clients = [client for clients in created_by_thread.values() for client in clients]
+        self.assertEqual(response.status_code, 200)
+        self.assertGreater(clone_spy.call_count, 0)
+        self.assertLessEqual(clone_spy.call_count, 10)
+        self.assertLess(clone_spy.call_count, len(leases))
+        self.assertTrue(all(len(clients) == 1 for clients in created_by_thread.values()))
+        self.assertCountEqual([id(client) for client in closed_clients], [id(client) for client in created_clients])
 
     @override_settings(PLUGINS_CONFIG={"netbox_kea": {"kea_timeout": 30, "lease_query_max_unpaged_leases": 1000}})
     def test_search_by_subnet_id_and_state_filters_in_kea(self):

@@ -4,6 +4,7 @@ import threading
 import uuid
 from abc import ABCMeta
 from collections.abc import Callable
+from contextlib import ExitStack
 from functools import partial
 from typing import Any, Generic, TypeVar
 from urllib.parse import urlencode as _urlencode
@@ -910,7 +911,35 @@ class _IdentityLookups:
             return self._results[key]
 
 
-def _reservation_for_lease_worker(client, version, catalogue, lease, lookups: _IdentityLookups):
+class _LeaseReservationWorkerClients:
+    """Keep one private Kea client for each reservation worker thread."""
+
+    def __init__(self, source: KeaClient) -> None:
+        self._source = source
+        self._local = threading.local()
+        self._registry = threading.Lock()
+        self._clients: list[KeaClient] = []
+
+    def get(self) -> KeaClient:
+        """Return the current worker thread's Kea client."""
+        worker_client = getattr(self._local, "client", None)
+        if worker_client is None:
+            worker_client = self._source.clone()
+            with self._registry:
+                self._clients.append(worker_client)
+            self._local.client = worker_client
+        return worker_client
+
+    def close(self) -> None:
+        """Close all worker clients after the executor stops."""
+        with self._registry:
+            clients = tuple(self._clients)
+        with ExitStack() as stack:
+            for client in clients:
+                stack.callback(client.close)
+
+
+def _reservation_for_lease_worker(worker_clients, version, catalogue, lease, lookups: _IdentityLookups):
     """Resolve one lease to a typed Reservation in a thread-local client."""
     ip = lease.get("ip_address", "")
     subnet_id = lease.get("subnet_id")
@@ -921,28 +950,28 @@ def _reservation_for_lease_worker(client, version, catalogue, lease, lookups: _I
         return ip, None, None
     scope = InSubnetReservationScope(subnet.identity)
     identities = _lease_reservation_identities(lease, version)
-    with client.clone() as worker_client:
-        try:
-            reservation = worker_client.reservation_by_address(version, catalogue, scope, ip)
-            if reservation is not None:
-                return ip, reservation, True
-            for identity_scope in (scope, GlobalReservationScope()):
-                for identity in identities:
-                    reservation = lookups.resolve(
-                        (identity_scope, identity),
-                        partial(worker_client.reservation_by_identity, version, catalogue, identity_scope, identity),
-                    )
-                    if reservation is not None:
-                        return ip, reservation, True
-            return ip, None, True
-        except KeaException as exc:
-            if exc.response.get("result") == 2:
-                return ip, None, False
-            logger.debug("Reservation lookup failed for lease %s", ip, exc_info=True)
-            return ip, None, None
-        except (requests.RequestException, RuntimeError, ValueError):
-            logger.debug("Reservation lookup failed for lease %s", ip, exc_info=True)
-            return ip, None, None
+    worker_client = worker_clients.get()
+    try:
+        reservation = worker_client.reservation_by_address(version, catalogue, scope, ip)
+        if reservation is not None:
+            return ip, reservation, True
+        for identity_scope in (scope, GlobalReservationScope()):
+            for identity in identities:
+                reservation = lookups.resolve(
+                    (identity_scope, identity),
+                    partial(worker_client.reservation_by_identity, version, catalogue, identity_scope, identity),
+                )
+                if reservation is not None:
+                    return ip, reservation, True
+        return ip, None, True
+    except KeaException as exc:
+        if exc.response.get("result") == 2:
+            return ip, None, False
+        logger.debug("Reservation lookup failed for lease %s", ip, exc_info=True)
+        return ip, None, None
+    except (requests.RequestException, RuntimeError, ValueError):
+        logger.debug("Reservation lookup failed for lease %s", ip, exc_info=True)
+        return ip, None, None
 
 
 def _fetch_reservations_for_leases(
@@ -957,20 +986,24 @@ def _fetch_reservations_for_leases(
     matches: dict[str, Reservation] = {}
     failed_ips: set[str] = set()
     host_cmds_available = True
-    with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(leases), 10)) as executor:
-        lookups = _IdentityLookups()
-        futures = [
-            executor.submit(_reservation_for_lease_worker, client, version, catalogue, lease, lookups)
-            for lease in leases
-        ]
-        for future in concurrent.futures.as_completed(futures):
-            ip, reservation, lookup_state = future.result()
-            if lookup_state is False:
-                host_cmds_available = False
-            elif lookup_state is None:
-                failed_ips.add(ip)
-            if reservation is not None:
-                matches[ip] = reservation
+    worker_clients = _LeaseReservationWorkerClients(client)
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(leases), 10)) as executor:
+            lookups = _IdentityLookups()
+            futures = [
+                executor.submit(_reservation_for_lease_worker, worker_clients, version, catalogue, lease, lookups)
+                for lease in leases
+            ]
+            for future in concurrent.futures.as_completed(futures):
+                ip, reservation, lookup_state = future.result()
+                if lookup_state is False:
+                    host_cmds_available = False
+                elif lookup_state is None:
+                    failed_ips.add(ip)
+                if reservation is not None:
+                    matches[ip] = reservation
+    finally:
+        worker_clients.close()
     return matches, host_cmds_available, failed_ips
 
 
