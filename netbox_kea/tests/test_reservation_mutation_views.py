@@ -7,7 +7,7 @@ import requests
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.urls import reverse
 
-from .kea_stub import _res_get, _res_page, queued, stub_kea
+from .kea_stub import _res_get, _res_page, _reservation_mutation_commands, queued, stub_kea
 from .utils import _ViewTestBase
 
 
@@ -26,9 +26,8 @@ def _live_config(version: int, subnet_id: int, cidr: str, identifiers: list[str]
 
 
 def _mutation_responses(version: int, subnet_id: int, cidr: str, identifiers: list[str]) -> dict:
-    commands = ["reservation-get", "reservation-add", "reservation-update", "reservation-del"]
     return {
-        "list-commands": {"result": 0, "arguments": commands},
+        "list-commands": _reservation_mutation_commands(),
         f"subnet{version}-list": {
             "result": 0,
             "arguments": {"subnets": [{"id": subnet_id, "subnet": cidr}]},
