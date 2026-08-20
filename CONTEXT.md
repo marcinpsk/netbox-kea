@@ -58,7 +58,7 @@ The complete canonical description of configured Subnets for one Server and addr
 _Avoid_: Subnet list, subnet choices
 
 **Catalogue Snapshot**:
-A time-bounded observation of one Subnet Catalogue. A Complete Catalogue Snapshot has valid and consistent required facts. An Incomplete Catalogue Snapshot preserves safe facts but identifies missing, invalid, or inconsistent facts. One missing or invalid Pool, DHCP Option, or Subnet Settings value makes the Snapshot incomplete, and the facts that did parse are not authoritative for the Subnet.
+A time-bounded observation of one Subnet Catalogue. A Complete Catalogue Snapshot has valid and consistent required facts. An Incomplete Catalogue Snapshot preserves safe facts but identifies missing, invalid, or inconsistent facts. One missing or invalid Pool, DHCP Option, or Subnet Settings value makes the Snapshot incomplete, and the configuration facts that did parse are not authoritative for the Subnet.
 _Avoid_: Response, raw configuration
 
 **Identity-Only Catalogue Snapshot**:
