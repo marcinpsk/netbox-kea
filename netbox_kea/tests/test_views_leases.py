@@ -387,6 +387,7 @@ class TestLeaseSearchPaths(_ViewTestBase):
         self.assertEqual(body["arguments"]["subnets"], [1])
         self.assertEqual(body["service"], ["dhcp4"])
 
+    @override_settings(PLUGINS_CONFIG=_UNGUARDED_PLUGINS_CONFIG)
     def test_search_by_subnet_id_paginates_locally_and_enriches_only_visible_page(self):
         """Expose rows after the first table page without repeating their enrichment."""
         leases = [
@@ -424,6 +425,7 @@ class TestLeaseSearchPaths(_ViewTestBase):
         # Rows outside this page are not enriched.
         self.assertEqual(len(kea.bodies("reservation-get")), 6 + 6 + 6 + 1 + 1)
 
+    @override_settings(PLUGINS_CONFIG=_UNGUARDED_PLUGINS_CONFIG)
     def test_one_device_with_several_leases_is_probed_once_per_identity(self):
         """Identity lookups repeat across rows, so resolve each one once for the page."""
         leases = [{**self._LEASE4, "ip-address": f"10.0.0.{index}"} for index in range(1, 6)]
