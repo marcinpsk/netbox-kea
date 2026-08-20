@@ -1831,14 +1831,18 @@ class TestJournalHelperEdgeCases(_ViewTestBase):
 
         from netbox_kea.views import _add_reservation_journal
 
-        with patch("extras.models.JournalEntry.objects.create", side_effect=ProgrammingError("table missing")):
+        with patch(
+            "extras.models.JournalEntry.objects.create",
+            autospec=True,
+            side_effect=ProgrammingError("table missing"),
+        ):
             _add_reservation_journal(self.server, self.user, "deleted", {"ip-address": "10.0.0.1"})
 
     def test_lease_journal_multiple_ips(self):
         """_add_lease_journal with a list of IP addresses uses the 'N lease(s)' branch."""
         from netbox_kea.views import _add_lease_journal
 
-        with patch("extras.models.JournalEntry.objects.create") as mock_create:
+        with patch("extras.models.JournalEntry.objects.create", autospec=True) as mock_create:
             mock_create.return_value = None
             _add_lease_journal(
                 self.server,
@@ -1866,7 +1870,11 @@ class TestJournalHelperEdgeCases(_ViewTestBase):
 
         from netbox_kea.views import _add_lease_journal
 
-        with patch("extras.models.JournalEntry.objects.create", side_effect=OperationalError("db gone")):
+        with patch(
+            "extras.models.JournalEntry.objects.create",
+            autospec=True,
+            side_effect=OperationalError("db gone"),
+        ):
             _add_lease_journal(self.server, self.user, "created", ip_addresses=["10.0.0.1"])
 
 
