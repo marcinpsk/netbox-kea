@@ -393,6 +393,29 @@ class TestCombinedReservations4View(_CombinedViewBase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(kea.commands(), [])
 
+    def test_results_include_ddns_qualifying_suffix(self):
+        config = [
+            {
+                "result": 0,
+                "arguments": {
+                    "Dhcp4": {
+                        "subnet4": [
+                            {
+                                "id": 1,
+                                "subnet": "10.0.0.0/24",
+                                "ddns-qualifying-suffix": "dhcp.example",
+                            }
+                        ],
+                        "shared-networks": [],
+                    }
+                },
+            }
+        ]
+        with stub_kea(_subnet_responses(4, config=config)):
+            url = reverse("plugins:netbox_kea:combined_subnets4") + f"?server={self.v4_server.pk}"
+            response = self.client.get(url)
+        self.assertContains(response, "DDNS: dhcp.example")
+
     def test_context_active_tab(self):
         with stub_kea({"reservation-get-page": _RES_EMPTY_PAGE}):
             url = reverse("plugins:netbox_kea:combined_reservations4")
