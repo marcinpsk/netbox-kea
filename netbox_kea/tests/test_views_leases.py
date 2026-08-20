@@ -420,10 +420,15 @@ class TestLeaseSearchPaths(_ViewTestBase):
         self.assertEqual([row.record["ip_address"] for row in rows], [f"10.0.0.{index}" for index in range(51, 57)])
         self.assertTrue(response.context["paginate"])
         self.assertIsNone(response.context["next_page"])
-        # Each visible row probes its own address and its own hardware address in both
-        # Scopes. The Client ID is shared by every row, so it is probed once per Scope.
+        address_probes = 6
+        distinct_hardware_addresses = 6
+        distinct_client_ids = 1
+        reservation_scopes = 2
+        expected_probes = (
+            address_probes + distinct_hardware_addresses * reservation_scopes + distinct_client_ids * reservation_scopes
+        )
         # Rows outside this page are not enriched.
-        self.assertEqual(len(kea.bodies("reservation-get")), 6 + 6 + 6 + 1 + 1)
+        self.assertEqual(len(kea.bodies("reservation-get")), expected_probes)
 
     @override_settings(PLUGINS_CONFIG=_UNGUARDED_PLUGINS_CONFIG)
     def test_one_device_with_several_leases_is_probed_once_per_identity(self):
