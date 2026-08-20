@@ -818,6 +818,16 @@ def _relay_addresses(
         return ()
     addresses: list[IPAddress] = []
     for address in value["ip-addresses"]:
+        if not isinstance(address, str):
+            diagnostics.append(
+                _diagnostic(
+                    "invalid-setting",
+                    "Kea returned an invalid relay address.",
+                    "configuration",
+                    f"{path}.relay.ip-addresses",
+                )
+            )
+            continue
         try:
             parsed = ipaddress.ip_address(address)
         except (TypeError, ValueError):
