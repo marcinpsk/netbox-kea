@@ -456,24 +456,18 @@ class TestCombinedReservations4View(_CombinedViewBase):
         rec2 = dict(_MOCK_RESERVATION_V4)
         rec2["subnet-id"] = 2
         rec2["ip-address"] = "10.0.0.200"
+        # Both Catalogue sources share this list, so identity and configuration cannot drift apart.
+        two_subnets = [{"id": 1, "subnet": "10.0.0.0/25"}, {"id": 2, "subnet": "10.0.0.128/25"}]
         subnets = {
             "result": 0,
-            "arguments": {
-                "subnets": [
-                    {"id": 1, "subnet": "10.0.0.0/25", "shared-network-name": None},
-                    {"id": 2, "subnet": "10.0.0.128/25", "shared-network-name": None},
-                ]
-            },
+            "arguments": {"subnets": [{**subnet, "shared-network-name": None} for subnet in two_subnets]},
         }
         config = [
             {
                 "result": 0,
                 "arguments": {
                     "Dhcp4": {
-                        "subnet4": [
-                            {"id": 1, "subnet": "10.0.0.0/25"},
-                            {"id": 2, "subnet": "10.0.0.128/25"},
-                        ],
+                        "subnet4": two_subnets,
                         "shared-networks": [],
                     }
                 },
