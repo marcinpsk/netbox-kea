@@ -494,6 +494,20 @@ class TestKeaIpamSyncJobRun(TestCase):
                 self._run()
         self.assertTrue(any("host_cmds" in msg for msg in cm.output))
 
+    def test_catalogue_failure_is_not_reported_as_missing_host_cmds(self):
+        self._make_db_server(dhcp6=False)
+        with _patch_kea(
+            leases4=[_LEASE4],
+            responses={"subnet4-list": {"result": 2, "text": "unknown command"}},
+        ) as kea:
+            with self.assertLogs("netbox_kea.jobs", level="WARNING") as cm:
+                job = self._run()
+
+        self.assertEqual([entry["errors"] for entry in job.data["summary"]], [1])
+        self.assertTrue(any("Subnet Catalogue unavailable" in message for message in cm.output))
+        self.assertFalse(any("host_cmds" in message for message in cm.output))
+        self.assertNotIn("reservation-get-page", kea.commands())
+
     def test_absent_host_cmds_is_skipped_not_counted_as_an_error(self):
         """A server without host_cmds has no reservations to sync, so the job must not fail.
 

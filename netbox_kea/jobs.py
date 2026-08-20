@@ -74,11 +74,24 @@ SNAPSHOT_SKIPPED = _SnapshotSkipped()
 def _fetch_reservation_snapshot(server: Server, version: int):
     """Return a typed Reservation Snapshot, SNAPSHOT_SKIPPED, or None after a failure."""
     from .kea import KeaException
-    from .subnet_catalogue import for_synchronization
+    from .subnet_catalogue import CatalogueUnavailable, for_synchronization
 
     try:
         client = server.get_client(version=version)
         catalogue = for_synchronization(server, version)
+    except CatalogueUnavailable as exc:
+        logger.warning(
+            "Server %s (v%s): Subnet Catalogue unavailable for Reservation Snapshot: %s",
+            server.name,
+            version,
+            exc,
+        )
+        return None
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Server %s (v%s): Reservation Snapshot failed: %s", server.name, version, exc)
+        return None
+
+    try:
         return client.reservation_snapshot(version, catalogue)
     except KeaException as exc:
         if exc.response.get("result") == 2:
