@@ -1,5 +1,6 @@
 import json
 from ipaddress import ip_address, ip_network
+from unittest.mock import patch
 
 from django.test import SimpleTestCase
 
@@ -181,14 +182,23 @@ reservations:
                 with self.assertRaisesRegex(ReservationTransferError, "not valid syntax"):
                     parse_reservation_document(document, format_name)
 
-    def test_rejects_documents_that_exceed_the_parser_recursion_limit(self):
-        # The C JSON scanner tolerates deeper nesting than the Python YAML parser, so
-        # each format needs its own depth. Both documents stay far below the size bound.
-        for format_name, depth in (("json", 100_000), ("yaml", 10_000)):
-            document = "[" * depth + "]" * depth
-            with self.subTest(format_name=format_name):
-                with self.assertRaisesRegex(ReservationTransferError, "not valid syntax"):
-                    parse_reservation_document(document, format_name)
+    def test_rejects_a_yaml_document_that_exceeds_the_parser_recursion_limit(self):
+        document = "[" * 10_000 + "]" * 10_000
+
+        with self.assertRaisesRegex(ReservationTransferError, "not valid syntax"):
+            parse_reservation_document(document, "yaml")
+
+    def test_reports_a_json_recursion_error_as_a_parse_error(self):
+        """The JSON scanner probes the real C stack, so no document depth is portable."""
+
+        def raise_recursion_error(*_args, **_kwargs):
+            raise RecursionError("maximum recursion depth exceeded")
+
+        with (
+            patch("netbox_kea.reservation_transfer.json.loads", raise_recursion_error),
+            self.assertRaisesRegex(ReservationTransferError, "not valid syntax"),
+        ):
+            parse_reservation_document("[]", "json")
 
     def test_rejects_invalid_document_envelopes(self):
         root = parse_reservation_document("[]", "json")

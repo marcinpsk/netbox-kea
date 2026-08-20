@@ -2926,7 +2926,7 @@ class TestGetLeasesPageDefensiveChecks(_ViewTestBase):
         with stub_kea({"subnet4-list": self._SUBNETS4, "lease4-get-page": page}):
             response = self.client.get(self._url(), {"by": ""}, HTTP_HX_REQUEST="true")
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "An internal error occurred. Reference ID:")
+        _assert_rendered_error_template(self, response)
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
