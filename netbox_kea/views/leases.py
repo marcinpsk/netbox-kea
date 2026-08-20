@@ -914,7 +914,7 @@ def _reservation_for_lease_worker(client, version, catalogue, lease, lookups: _I
     """Resolve one lease to a typed Reservation in a thread-local client."""
     ip = lease.get("ip_address", "")
     subnet_id = lease.get("subnet_id")
-    if not ip or not isinstance(subnet_id, int):
+    if not ip or isinstance(subnet_id, bool) or not isinstance(subnet_id, int):
         return ip, None, None
     subnet = catalogue.find_by_id(subnet_id)
     if subnet is None:

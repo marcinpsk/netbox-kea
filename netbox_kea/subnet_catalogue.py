@@ -202,6 +202,8 @@ class CatalogueSnapshot:
 
     def find_by_id(self, subnet_id: int) -> VerifiedSubnet | None:
         """Return the verified Subnet with an exact Kea ID, if present."""
+        if isinstance(subnet_id, bool) or not isinstance(subnet_id, int):
+            return None
         return next((subnet for subnet in self.subnets if subnet.subnet_id == subnet_id), None)
 
     def find_by_cidr(self, cidr: str) -> VerifiedSubnet | None:
