@@ -450,6 +450,7 @@ class TestLeaseSearchPaths(_ViewTestBase):
         # Scopes: every lease carries the same hardware address and Client ID.
         self.assertEqual(len(kea.bodies("reservation-get")), 5 + 4)
 
+    @override_settings(PLUGINS_CONFIG=_UNGUARDED_PLUGINS_CONFIG)
     def test_reservation_workers_reuse_and_close_one_client_per_thread(self):
         leases = [
             {
@@ -2916,7 +2917,7 @@ class TestGetLeasesPageDefensiveChecks(_ViewTestBase):
         with stub_kea({"subnet4-list": self._SUBNETS4, "lease4-get-page": page}):
             response = self.client.get(self._url(), {"by": ""}, HTTP_HX_REQUEST="true")
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "error")
+        self.assertContains(response, "An internal error occurred. Reference ID:")
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
