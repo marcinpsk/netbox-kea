@@ -181,6 +181,15 @@ reservations:
                 with self.assertRaisesRegex(ReservationTransferError, "not valid syntax"):
                     parse_reservation_document(document, format_name)
 
+    def test_rejects_documents_that_exceed_the_parser_recursion_limit(self):
+        # The C JSON scanner tolerates deeper nesting than the Python YAML parser, so
+        # each format needs its own depth. Both documents stay far below the size bound.
+        for format_name, depth in (("json", 100_000), ("yaml", 10_000)):
+            document = "[" * depth + "]" * depth
+            with self.subTest(format_name=format_name):
+                with self.assertRaisesRegex(ReservationTransferError, "not valid syntax"):
+                    parse_reservation_document(document, format_name)
+
     def test_rejects_invalid_document_envelopes(self):
         root = parse_reservation_document("[]", "json")
         self.assertEqual(root.diagnostics[0].code, "invalid-document")

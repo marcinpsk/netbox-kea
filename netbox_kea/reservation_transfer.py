@@ -115,7 +115,7 @@ def _load_document(document: str, format_name: str) -> Any:
             return json.loads(document)
         if format_name == "yaml":
             return yaml.safe_load(document)
-    except (json.JSONDecodeError, yaml.YAMLError) as exc:
+    except (json.JSONDecodeError, yaml.YAMLError, RecursionError) as exc:
         raise ReservationTransferError("The transfer document is not valid syntax for the selected format.") from exc
     raise ReservationTransferError("The transfer format must be YAML or JSON.")
 
