@@ -426,7 +426,7 @@ class TestCombinedReservations4View(_CombinedViewBase):
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Snapshot is incomplete.")
-        self.assertContains(response, "Some Reservations could not be read.")
+        self.assertContains(response, "The Reservation Snapshot could not be read completely.")
         self.assertContains(response, "See the 1 diagnostic below.")
         self.assertContains(response, "page-fetch-failed")
         self.assertNotContains(response, "malformed Reservation")
