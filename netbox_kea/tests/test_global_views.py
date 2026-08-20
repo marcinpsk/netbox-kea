@@ -393,29 +393,6 @@ class TestCombinedReservations4View(_CombinedViewBase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(kea.commands(), [])
 
-    def test_results_include_ddns_qualifying_suffix(self):
-        config = [
-            {
-                "result": 0,
-                "arguments": {
-                    "Dhcp4": {
-                        "subnet4": [
-                            {
-                                "id": 1,
-                                "subnet": "10.0.0.0/24",
-                                "ddns-qualifying-suffix": "dhcp.example",
-                            }
-                        ],
-                        "shared-networks": [],
-                    }
-                },
-            }
-        ]
-        with stub_kea(_subnet_responses(4, config=config)):
-            url = reverse("plugins:netbox_kea:combined_subnets4") + f"?server={self.v4_server.pk}"
-            response = self.client.get(url)
-        self.assertContains(response, "DDNS: dhcp.example")
-
     def test_context_active_tab(self):
         with stub_kea({"reservation-get-page": _RES_EMPTY_PAGE}):
             url = reverse("plugins:netbox_kea:combined_reservations4")
@@ -752,6 +729,29 @@ class TestCombinedSubnets4View(_CombinedViewBase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "v4-server")
 
+    def test_results_include_ddns_qualifying_suffix(self):
+        config = [
+            {
+                "result": 0,
+                "arguments": {
+                    "Dhcp4": {
+                        "subnet4": [
+                            {
+                                "id": 1,
+                                "subnet": "10.0.0.0/24",
+                                "ddns-qualifying-suffix": "dhcp.example",
+                            }
+                        ],
+                        "shared-networks": [],
+                    }
+                },
+            }
+        ]
+        with stub_kea(_subnet_responses(4, config=config)):
+            url = reverse("plugins:netbox_kea:combined_subnets4") + f"?server={self.v4_server.pk}"
+            response = self.client.get(url)
+        self.assertContains(response, "DDNS: dhcp.example")
+
     def test_context_active_tab(self):
         with stub_kea(_subnet_responses(4)):
             url = reverse("plugins:netbox_kea:combined_subnets4")
@@ -878,29 +878,13 @@ class TestCombinedSubnets6View(_CombinedViewBase):
 
     def test_search_by_cidr_filters_results(self):
         """?q=2001:db8 returns only matching v6 subnets."""
+        # Both Catalogue sources read this one list, so identity and configuration cannot
+        # drift apart when a test edits it.
+        two_subnets = [{"id": 1, "subnet": "2001:db8::/32"}, {"id": 2, "subnet": "fd00::/8"}]
         config_with_two_subnets = [
-            {
-                "result": 0,
-                "arguments": {
-                    "Dhcp6": {
-                        "subnet6": [
-                            {"id": 1, "subnet": "2001:db8::/32"},
-                            {"id": 2, "subnet": "fd00::/8"},
-                        ],
-                        "shared-networks": [],
-                    }
-                },
-            }
+            {"result": 0, "arguments": {"Dhcp6": {"subnet6": two_subnets, "shared-networks": []}}}
         ]
-        subnet_list = {
-            "result": 0,
-            "arguments": {
-                "subnets": [
-                    {"id": 1, "subnet": "2001:db8::/32"},
-                    {"id": 2, "subnet": "fd00::/8"},
-                ]
-            },
-        }
+        subnet_list = {"result": 0, "arguments": {"subnets": two_subnets}}
         with stub_kea(_subnet_responses(6, config=config_with_two_subnets, subnets=subnet_list)):
             url = reverse("plugins:netbox_kea:combined_subnets6") + f"?server={self.v6_server.pk}&q=2001:db8"
             response = self.client.get(url)
