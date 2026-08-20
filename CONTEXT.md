@@ -46,7 +46,7 @@ A Kea host-specific DHCP configuration for exactly one Reservation Identity. It 
 _Avoid_: Host record, static lease
 
 **Reservation Identity**:
-Within a Server and address family, the Reservation Scope plus exactly one Kea identifier type and value that identify a Reservation.
+Within a Server and address family, the Reservation Scope together with exactly one Kea identifier type and value. All three parts are necessary. The identifier type and value alone do not identify a Reservation, because the same identifier can name one Global and one In-Subnet Reservation.
 _Avoid_: Identifier priority, reservation key
 
 **Reservation Scope**:
