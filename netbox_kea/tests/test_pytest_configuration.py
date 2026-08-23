@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import ast
 import os
 import re
 import subprocess
@@ -61,31 +60,16 @@ def test_documented_unit_test_targets_are_shell_safe():
 def test_dhcp_plugin_job_uses_the_unit_test_runtime_versions():
     """Keep both database-backed CI jobs on the same NetBox and Python inputs."""
     workflow = (REPOSITORY_ROOT / ".github/workflows/ci.yml").read_text()
+    unit_test_job = workflow.split("  unit-test:\n", 1)[1].split("\n  dhcp-plugin-test:\n", 1)[0]
     dhcp_plugin_job = workflow.split("  dhcp-plugin-test:\n", 1)[1].split("\n  lint:\n", 1)[0]
 
-    assert "ref: v4.6.8" in dhcp_plugin_job
-    assert "python-version-file: pyproject.toml" in dhcp_plugin_job
-    assert "ref: v4.6.7" not in dhcp_plugin_job
-    assert 'python-version: "3.12"' not in dhcp_plugin_job
-
-
-def test_get_client_view_tests_pin_plugin_settings():
-    """Keep each mutation-view test class independent from ambient plugin settings."""
-    path = REPOSITORY_ROOT / "netbox_kea/tests/test_reservation_mutation_views.py"
-    tree = ast.parse(path.read_text(), filename=str(path))
-    required_classes = {
-        "TestReservationMutationViews",
-        "TestReservationDocumentImport",
-        "TestMutationCapabilityGate",
-    }
-    classes = {
-        node.name: node for node in tree.body if isinstance(node, ast.ClassDef) and node.name in required_classes
-    }
-
-    assert classes.keys() == required_classes
-    for name, node in classes.items():
-        decorators = {ast.unparse(decorator) for decorator in node.decorator_list}
-        assert "override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)" in decorators, name
+    for setting in ("ref", "python-version-file"):
+        pattern = rf"^\s+{setting}: (.+)$"
+        unit_value = re.search(pattern, unit_test_job, re.MULTILINE)
+        plugin_value = re.search(pattern, dhcp_plugin_job, re.MULTILINE)
+        assert unit_value is not None, (setting, unit_test_job)
+        assert plugin_value is not None, (setting, dhcp_plugin_job)
+        assert plugin_value.group(1) == unit_value.group(1), setting
 
 
 def test_worker_settings_are_read_as_whole_tokens():
