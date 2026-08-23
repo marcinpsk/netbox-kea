@@ -78,6 +78,33 @@ class TestCombinedResponseShapeGuards(_ViewTestBase):
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestCombinedSubnetDiagnostics(_ViewTestBase):
+    def test_complete_catalogue_is_refetched_for_each_request(self):
+        url = reverse("plugins:netbox_kea:combined_subnets4") + f"?server={self.server.pk}"
+        first_identity = {"result": 0, "arguments": {"subnets": [{"id": 1, "subnet": "198.18.1.0/24"}]}}
+        second_identity = {"result": 0, "arguments": {"subnets": [{"id": 2, "subnet": "198.18.2.0/24"}]}}
+        first_configuration = {
+            "result": 0,
+            "arguments": {"Dhcp4": {"subnet4": [{"id": 1, "subnet": "198.18.1.0/24", "pools": []}]}},
+        }
+        second_configuration = {
+            "result": 0,
+            "arguments": {"Dhcp4": {"subnet4": [{"id": 2, "subnet": "198.18.2.0/24", "pools": []}]}},
+        }
+
+        with stub_kea(
+            {
+                "subnet4-list": queued(first_identity, second_identity),
+                "config-get": queued(first_configuration, second_configuration),
+                "stat-lease4-get": {"result": 2, "text": "unknown command"},
+            }
+        ):
+            first_response = self.client.get(url)
+            second_response = self.client.get(url)
+
+        self.assertContains(first_response, "198.18.1.0/24")
+        self.assertContains(second_response, "198.18.2.0/24")
+        self.assertNotContains(second_response, "198.18.1.0/24")
+
     def test_unavailable_catalogue_preserves_specific_diagnostics(self):
         url = reverse("plugins:netbox_kea:combined_subnets4") + f"?server={self.server.pk}"
 

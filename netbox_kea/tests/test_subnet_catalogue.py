@@ -850,19 +850,3 @@ class TestSubnetCatalogue(TestCase):
             ):
                 with self.assertRaisesMessage(RuntimeError, "must be entered"):
                     use()
-
-    def test_mutation_scope_invalidates_display_cache_on_entry_and_exit(self):
-        identities = _identity(4, [{"id": 1, "subnet": "198.18.1.0/24"}])
-        configuration = _config(4, [{"id": 1, "subnet": "198.18.1.0/24", "pools": []}])
-
-        with stub_kea({"subnet4-list": identities, "config-get": configuration}) as kea:
-            display(self.server, 4)
-            display(self.server, 4)
-            with mutation(self.server, 4):
-                # Entry invalidation only shows here: the scope reads live without caching,
-                # so without it this call would serve the pre-mutation snapshot.
-                display(self.server, 4)
-            display(self.server, 4)
-
-        self.assertEqual(kea.commands().count("subnet4-list"), 4)
-        self.assertEqual(kea.commands().count("config-get"), 4)
