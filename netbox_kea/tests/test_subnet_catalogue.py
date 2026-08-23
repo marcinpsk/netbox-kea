@@ -439,6 +439,70 @@ class TestSubnetCatalogue(TestCase):
             ("additional-client",),
         )
 
+    def test_legacy_client_class_is_read(self):
+        identities = _identity(4, [{"id": 1, "subnet": "198.18.1.0/24"}])
+        configuration = _config(
+            4,
+            [
+                {
+                    "id": 1,
+                    "subnet": "198.18.1.0/24",
+                    "pools": [],
+                    "client-class": "legacy-client",
+                }
+            ],
+        )
+
+        with stub_kea({"subnet4-list": identities, "config-get": configuration}):
+            snapshot = display(self.server, 4)
+
+        self.assertIsInstance(snapshot, CompleteCatalogueSnapshot)
+        self.assertEqual(snapshot.find_by_id(1).configuration.settings.client_classes, ("legacy-client",))
+
+    def test_current_client_classes_take_precedence_over_legacy_client_class(self):
+        identities = _identity(4, [{"id": 1, "subnet": "198.18.1.0/24"}])
+        configuration = _config(
+            4,
+            [
+                {
+                    "id": 1,
+                    "subnet": "198.18.1.0/24",
+                    "pools": [],
+                    "client-classes": ["current-client"],
+                    "client-class": "legacy-client",
+                }
+            ],
+        )
+
+        with stub_kea({"subnet4-list": identities, "config-get": configuration}):
+            snapshot = display(self.server, 4)
+
+        self.assertEqual(snapshot.find_by_id(1).configuration.settings.client_classes, ("current-client",))
+
+    def test_invalid_legacy_client_class_makes_snapshot_incomplete(self):
+        identities = _identity(4, [{"id": 1, "subnet": "198.18.1.0/24"}])
+        configuration = _config(
+            4,
+            [
+                {
+                    "id": 1,
+                    "subnet": "198.18.1.0/24",
+                    "pools": [],
+                    "client-class": ["not-a-string"],
+                }
+            ],
+        )
+
+        with stub_kea({"subnet4-list": identities, "config-get": configuration}):
+            snapshot = display(self.server, 4)
+
+        self.assertIsInstance(snapshot, IncompleteCatalogueSnapshot)
+        self.assertEqual(snapshot.find_by_id(1).configuration.settings.client_classes, ())
+        self.assertEqual(
+            [(diagnostic.code, diagnostic.path) for diagnostic in snapshot.diagnostics],
+            [("invalid-setting", "subnet4[0].client-class")],
+        )
+
     def test_failed_configuration_read_keeps_the_kea_hint(self):
         """Name the Kea result in the diagnostic, so the operator can act on it."""
         identities = _identity(4, [{"id": 1, "subnet": "198.18.1.0/24"}])
