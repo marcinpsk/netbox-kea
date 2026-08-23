@@ -11,6 +11,7 @@ via ``kea_stub.stub_kea``, so the combined multi-server fetch helpers exercise t
 real request/response path.
 """
 
+import requests
 from django.test import override_settings
 from django.urls import reverse
 
@@ -77,6 +78,22 @@ class TestCombinedResponseShapeGuards(_ViewTestBase):
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestCombinedSubnetDiagnostics(_ViewTestBase):
+    def test_unavailable_catalogue_preserves_specific_diagnostics(self):
+        url = reverse("plugins:netbox_kea:combined_subnets4") + f"?server={self.server.pk}"
+
+        with stub_kea(
+            {
+                "subnet4-list": requests.ConnectionError("identity unavailable"),
+                "config-get": requests.ConnectionError("configuration unavailable"),
+            }
+        ):
+            response = self.client.get(url)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Kea subnet identity facts are unavailable.")
+        self.assertContains(response, "Kea Subnet configuration facts are unavailable.")
+        self.assertNotContains(response, "Failed to query server")
+
     def test_empty_config_response_preserves_confirmed_empty_identity(self):
         from netbox_kea.views import _fetch_subnets_from_server
 
