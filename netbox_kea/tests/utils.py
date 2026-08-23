@@ -43,20 +43,22 @@ def _make_db_server(**kwargs) -> Server:
 
 
 def _drop_subnet_choices_cache(test_case, server) -> None:
-    """Delete *server*'s cached subnet choices.
+    """Delete *server*'s cached subnet choices and Catalogue snapshots.
 
     Every view that renders the lease search or the reservation add form calls
     ``fetch_subnet_choices()``, which writes into the *shared* cache backend. Each test
     builds its own Server, but reused test IDs can otherwise retain a result for the
-    whole TTL.
+    whole TTL. The Subnet Catalogue uses a separate key for complete display snapshots.
     """
     from django.core.cache import cache
 
+    from netbox_kea.subnet_catalogue import _cache_key
     from netbox_kea.utilities import _subnet_choices_cache_key
 
     def _drop():
         for version in (4, 6):
             cache.delete(_subnet_choices_cache_key(server, version))
+            cache.delete(_cache_key(server, version))
 
     _drop()
     test_case.addCleanup(_drop)

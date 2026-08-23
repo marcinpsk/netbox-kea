@@ -9,8 +9,10 @@ from datetime import datetime
 from typing import Any, Literal, Protocol, TypeVar
 
 import requests
+from django.core.cache import cache
 from django.utils import timezone
 
+from . import constants
 from .kea import KeaClient, KeaException
 from .models import Server
 from .utilities import kea_error_hint
@@ -289,10 +291,19 @@ def _network(value: str, family: Family) -> IPNetwork:
     return network_class(value, strict=True)
 
 
+def _cache_key(server: Server, family: Family) -> str:
+    return f"netbox_kea:subnet_catalogue:v1:{_require_persisted_server(server)}:{family}"
+
+
 def _require_persisted_server(server: Server) -> int:
     if server.pk is None:
         raise ValueError("The Subnet Catalogue requires a persisted Server.")
     return server.pk
+
+
+def invalidate(server: Server, family: int) -> None:
+    """Discard the cached Complete snapshot after a configuration change."""
+    cache.delete(_cache_key(server, _validate_family(family)))
 
 
 def _diagnostic(code: str, message: str, source: str, path: str = "") -> Diagnostic:
@@ -1149,8 +1160,20 @@ def _read_live(server: Server, family: Family) -> CatalogueSnapshot:
 
 
 def display(server: Server, family: int) -> CatalogueSnapshot:
-    """Return a live snapshot for presentation."""
-    return _read_live(server, _validate_family(family))
+    """Return a cached Complete or live Incomplete snapshot for presentation.
+
+    Only Complete snapshots enter the interactive cache. A failed or incomplete
+    observation is retried on the next call.
+    """
+    validated_family = _validate_family(family)
+    key = _cache_key(server, validated_family)
+    cached = cache.get(key)
+    if isinstance(cached, CompleteCatalogueSnapshot):
+        return cached
+    snapshot = _read_live(server, validated_family)
+    if isinstance(snapshot, CompleteCatalogueSnapshot):
+        cache.set(key, snapshot, constants.SUBNET_CHOICES_TTL)
+    return snapshot
 
 
 def for_synchronization(server: Server, family: int) -> CompleteCatalogueSnapshot:
@@ -1188,6 +1211,7 @@ class MutationScope(AbstractContextManager["MutationScope"]):
         self.snapshot: CatalogueSnapshot | None = None
 
     def __enter__(self) -> MutationScope:
+        invalidate(self.server, self.family)
         self.snapshot = _read_live(self.server, self.family)
         return self
 
@@ -1195,6 +1219,7 @@ class MutationScope(AbstractContextManager["MutationScope"]):
         # Identity facts stop being live confirmation here, so drop them: a caller that
         # keeps the scope must not decide a mutation on pre-mutation observations.
         self.snapshot = None
+        invalidate(self.server, self.family)
 
     def find_by_id(self, subnet_id: int) -> VerifiedSubnet | None:
         """Return one exact Verified Subnet, or confirm its absence safely."""
@@ -1245,5 +1270,5 @@ class MutationScope(AbstractContextManager["MutationScope"]):
 
 
 def mutation(server: Server, family: int) -> MutationScope:
-    """Open a live mutation scope."""
+    """Open a live mutation scope and invalidate the interactive cache around it."""
     return MutationScope(server, _validate_family(family))
