@@ -44,6 +44,14 @@ def test_database_name_stays_within_postgresql_limit():
     assert database_name.endswith("_gw7")
 
 
+def test_multibyte_database_name_stays_within_postgresql_byte_limit():
+    """Keep the worker suffix when the base name contains multibyte characters."""
+    database_name = isolated_test_database_name(f"test_{'é' * 70}", "gw7")
+
+    assert len(database_name.encode()) <= 63
+    assert database_name.endswith("_gw7")
+
+
 def test_more_than_eight_workers_is_rejected():
     """Reject workers that cannot receive a private Redis database pair."""
     with pytest.raises(ValueError, match="At most 8 pytest workers are supported"):
