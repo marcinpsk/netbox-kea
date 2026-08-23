@@ -30,8 +30,12 @@ _PLUGINS_CONFIG = {"netbox_kea": {"kea_timeout": 30}}
 
 def _request_version(body: dict) -> int:
     """Return the DHCP family one stubbed request targets, from its ``service``."""
-    service = body.get("service") or []
-    return 6 if service and service[0] == "dhcp6" else 4
+    service = body.get("service")
+    if service == ["dhcp4"]:
+        return 4
+    if service == ["dhcp6"]:
+        return 6
+    raise AssertionError(f"Expected exactly one DHCP service, got {service!r}")
 
 
 def _sync_responses(
@@ -63,6 +67,15 @@ def _sync_responses(
     for version, conf in conf_by_version.items():
         responses[f"subnet{version}-list"] = _subnet_list(version, conf.get(f"subnet{version}", []))
     return responses
+
+
+class SyncResponseRoutingTest(SimpleTestCase):
+    def test_request_version_rejects_invalid_service(self):
+        invalid_bodies = ({}, {"service": []}, {"service": ["dhcp-four"]}, {"service": ["dhcp4", "dhcp6"]})
+
+        for body in invalid_bodies:
+            with self.subTest(body=body), self.assertRaises(AssertionError):
+                _request_version(body)
 
 
 class ExtractDhcpConfTest(SimpleTestCase):
