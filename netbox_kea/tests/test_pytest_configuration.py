@@ -237,7 +237,9 @@ def test_query_counts_compare_only_on_the_recorded_release():
     """Compare on the recorded release and while recording, and nowhere else."""
     from netbox_kea.tests.conftest import QUERY_COUNT_NETBOX_VERSION, query_counts_are_comparable
 
+    release, patch = QUERY_COUNT_NETBOX_VERSION.rsplit(".", 1)
+    different_patch_release = f"{release}.{int(patch) + 1}"
+
     assert query_counts_are_comparable(QUERY_COUNT_NETBOX_VERSION, update_mode=False)
-    assert not query_counts_are_comparable(f"{QUERY_COUNT_NETBOX_VERSION}-Docker-5.0.2", update_mode=False)
-    # Same release as the line above, so only update_mode can explain the difference.
-    assert query_counts_are_comparable(f"{QUERY_COUNT_NETBOX_VERSION}-Docker-5.0.2", update_mode=True)
+    assert not query_counts_are_comparable(different_patch_release, update_mode=False)
+    assert query_counts_are_comparable(different_patch_release, update_mode=True)

@@ -38,8 +38,8 @@ An inclusive address range within a Subnet from which Kea can allocate leases. K
 _Avoid_: Range
 
 **DHCP Option**:
-A DHCP parameter assignment with an option space, a name or code, encoded data, and Kea delivery flags. The same value semantics apply wherever Kea assigns the option.
-_Avoid_: Subnet option, reservation option
+A DHCP parameter assignment identified by an option space and a code or name. It includes encoded data and Kea delivery flags. Its declaration scope determines which clients receive it. The same value semantics apply wherever Kea assigns the option.
+_Avoid_: Option, option-data, Subnet option, reservation option
 
 **Reservation**:
 A Kea host-specific DHCP configuration for exactly one Reservation Identity. It can reserve no address, one IPv4 address, or multiple IPv6 addresses and delegated prefixes.
@@ -82,7 +82,7 @@ A proposed canonical CIDR and Kea subnet ID that a complete live identity observ
 _Avoid_: Free subnet ID, next subnet ID
 
 **Subnet Catalogue**:
-The complete canonical description of configured Subnets for one Server and address family. It includes identity, Shared Network membership, Pools, DHCP Options, and Subnet Settings.
+The complete canonical description of configured Subnets for one Server and address family. It includes identity, Shared Network membership, Pools, DHCP Option values, and Subnet Settings.
 _Avoid_: Subnet list, subnet choices
 
 **Catalogue Snapshot**:
