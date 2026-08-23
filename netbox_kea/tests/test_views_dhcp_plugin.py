@@ -21,7 +21,7 @@ from django.utils import timezone
 from netbox_kea.kea import KeaClient, KeaException
 from netbox_kea.views import dhcp_plugin_sync as dps
 
-from .kea_stub import _res_page, _subnet_list, stub_kea
+from .kea_stub import _res_page, stub_kea
 from .utils import _make_db_server
 
 DHCP_PLUGIN = "netbox_dhcp"
@@ -30,8 +30,12 @@ _PLUGINS_CONFIG = {"netbox_kea": {"kea_timeout": 30}}
 
 def _request_version(body: dict) -> int:
     """Return the DHCP family one stubbed request targets, from its ``service``."""
-    service = body.get("service") or []
-    return 6 if service and service[0] == "dhcp6" else 4
+    service = body.get("service")
+    if service == ["dhcp4"]:
+        return 4
+    if service == ["dhcp6"]:
+        return 6
+    raise AssertionError(f"Expected exactly one DHCP service, got {service!r}")
 
 
 def _sync_responses(
@@ -59,10 +63,16 @@ def _sync_responses(
             return {"result": 2, "text": "command not supported"}
         return _res_page(hosts.get(_request_version(body), []))
 
-    responses: dict = {"config-get": config_get, "reservation-get-page": reservation_get_page}
-    for version, conf in conf_by_version.items():
-        responses[f"subnet{version}-list"] = _subnet_list(version, conf.get(f"subnet{version}", []))
-    return responses
+    return {"config-get": config_get, "reservation-get-page": reservation_get_page}
+
+
+class SyncResponseRoutingTest(SimpleTestCase):
+    def test_request_version_rejects_invalid_service(self):
+        invalid_bodies = ({}, {"service": []}, {"service": ["dhcp-four"]}, {"service": ["dhcp4", "dhcp6"]})
+
+        for body in invalid_bodies:
+            with self.subTest(body=body), self.assertRaises(AssertionError):
+                _request_version(body)
 
 
 class ExtractDhcpConfTest(SimpleTestCase):
