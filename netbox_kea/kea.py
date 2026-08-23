@@ -152,21 +152,6 @@ class KeaClient:
         except Exception:  # noqa: BLE001
             logger.exception("Configuration changed for %s, but cache invalidation failed", service)
 
-    def _config_mutation_command(
-        self,
-        command: str,
-        service: str,
-        arguments: dict[str, Any],
-    ) -> list[KeaResponse]:
-        """Send one live configuration mutation between invalidation notifications."""
-        self._notify_config_change(service)
-        try:
-            return self.command(command, service=[service], arguments=arguments)
-        finally:
-            # The response can be lost after Kea applies the command. Invalidate again
-            # so a read during the request cannot repopulate the active cache generation.
-            self._notify_config_change(service)
-
     def close(self) -> None:
         """Close the underlying requests.Session and release connection resources."""
         self._session.close()
@@ -554,10 +539,10 @@ class KeaClient:
             auto_assigned_id = subnet_id is None and "id" in subnet_def
             for _attempt in range(3):
                 try:
-                    add_resp = self._config_mutation_command(
+                    add_resp = self.command(
                         f"subnet{version}-add",
-                        service,
-                        {subnet_key: [dict(subnet_def)]},
+                        service=[service],
+                        arguments={subnet_key: [dict(subnet_def)]},
                     )
                     last_exc = None
                     break
@@ -572,6 +557,7 @@ class KeaClient:
         except (requests.RequestException, ValueError) as transport_exc:
             found_id = self._find_subnet_id_by_cidr(version, subnet_def["subnet"])
             if found_id is not None:
+                self._notify_config_change(service)
                 err = PartialPersistError(service, transport_exc, subnet_id=found_id)
                 raise err from transport_exc
             raise
@@ -608,10 +594,10 @@ class KeaClient:
 
         """
         service = f"dhcp{version}"
-        self._config_mutation_command(
+        self.command(
             f"subnet{version}-del",
-            service,
-            {"id": subnet_id},
+            service=[service],
+            arguments={"id": subnet_id},
         )
         self._persist_config(service)
 
@@ -631,10 +617,10 @@ class KeaClient:
         network_def: dict[str, Any] = {"name": name}
         if options:
             network_def["option-data"] = options
-        self._config_mutation_command(
+        self.command(
             f"network{version}-add",
-            service,
-            {"shared-networks": [network_def]},
+            service=[service],
+            arguments={"shared-networks": [network_def]},
         )
         self._persist_config(service)
 
@@ -653,10 +639,10 @@ class KeaClient:
 
         """
         service = f"dhcp{version}"
-        self._config_mutation_command(
+        self.command(
             f"network{version}-del",
-            service,
-            {"name": name},
+            service=[service],
+            arguments={"name": name},
         )
         self._persist_config(service)
 
@@ -725,10 +711,10 @@ class KeaClient:
 
         """
         service = f"dhcp{version}"
-        self._config_mutation_command(
+        self.command(
             f"network{version}-subnet-add",
-            service,
-            {"name": name, "id": subnet_id},
+            service=[service],
+            arguments={"name": name, "id": subnet_id},
         )
         self._persist_config(service)
 
@@ -745,10 +731,10 @@ class KeaClient:
 
         """
         service = f"dhcp{version}"
-        self._config_mutation_command(
+        self.command(
             f"network{version}-subnet-del",
-            service,
-            {"name": name, "id": subnet_id},
+            service=[service],
+            arguments={"name": name, "id": subnet_id},
         )
         self._persist_config(service)
 
@@ -861,10 +847,10 @@ class KeaClient:
             if value is not None:
                 subnet_def[kea_key] = value
 
-        self._config_mutation_command(
+        self.command(
             f"subnet{version}-update",
-            service,
-            {subnet_key: [subnet_def]},
+            service=[service],
+            arguments={subnet_key: [subnet_def]},
         )
         self._persist_config(service)
 
@@ -1281,17 +1267,17 @@ class KeaClient:
         subnet_key = f"subnet{version}"
         available = self.get_available_commands(service)
         if f"subnet{version}-pool-add" in available:
-            self._config_mutation_command(
+            self.command(
                 f"subnet{version}-pool-add",
-                service,
-                {subnet_key: [{"id": subnet_id, "pools": [{"pool": pool}]}]},
+                service=[service],
+                arguments={subnet_key: [{"id": subnet_id, "pools": [{"pool": pool}]}]},
             )
         else:
             subnet_cidr = self.get_subnet_cidr(version, subnet_id)
-            self._config_mutation_command(
+            self.command(
                 f"subnet{version}-delta-add",
-                service,
-                {subnet_key: [{"id": subnet_id, "subnet": subnet_cidr, "pools": [{"pool": pool}]}]},
+                service=[service],
+                arguments={subnet_key: [{"id": subnet_id, "subnet": subnet_cidr, "pools": [{"pool": pool}]}]},
             )
         self._persist_config(service)
 
@@ -1319,17 +1305,17 @@ class KeaClient:
         subnet_key = f"subnet{version}"
         available = self.get_available_commands(service)
         if f"subnet{version}-pool-del" in available:
-            self._config_mutation_command(
+            self.command(
                 f"subnet{version}-pool-del",
-                service,
-                {subnet_key: [{"id": subnet_id, "pools": [{"pool": pool}]}]},
+                service=[service],
+                arguments={subnet_key: [{"id": subnet_id, "pools": [{"pool": pool}]}]},
             )
         else:
             subnet_cidr = self.get_subnet_cidr(version, subnet_id)
-            self._config_mutation_command(
+            self.command(
                 f"subnet{version}-delta-del",
-                service,
-                {subnet_key: [{"id": subnet_id, "subnet": subnet_cidr, "pools": [{"pool": pool}]}]},
+                service=[service],
+                arguments={subnet_key: [{"id": subnet_id, "subnet": subnet_cidr, "pools": [{"pool": pool}]}]},
             )
         self._persist_config(service)
 
@@ -1366,12 +1352,14 @@ class KeaClient:
             )
             raise KeaConfigTestError(service, exc) from exc
         try:
-            self._config_mutation_command("config-set", service, config)
+            self.command("config-set", service=[service], arguments=config)
         except (requests.RequestException, ValueError) as exc:
             logger.warning(
                 "config-set transport/parse error for service %s — change may be live but unpersisted", service
             )
+            self._notify_config_change(service)
             raise AmbiguousConfigSetError(service, exc) from exc
+        self._notify_config_change(service)
         if self.persist_config:
             try:
                 self.command("config-write", service=[service])
@@ -1395,6 +1383,7 @@ class KeaClient:
         3. ``config-write`` — persist the validated config to disk.  Failure raises
            :exc:`PartialPersistError` (change is live but will be lost on restart).
         """
+        self._notify_config_change(service)
         if not self.persist_config:
             logger.debug("persist_config disabled for service %s — skipping config-write", service)
             return
