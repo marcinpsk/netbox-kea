@@ -3466,6 +3466,7 @@ class TestLeaseSearch(TestCase):
             (4, "hostname", "host.example.invalid", 0, "state can only"),
             (4, "hostname", "", None, "non-empty string"),
             (4, "subnet_id", True, None, "positive integer"),
+            (4, "subnet_id", 1.5, None, "positive integer"),
             (4, "subnet_id", object(), None, "positive integer"),
         )
 
@@ -5039,6 +5040,27 @@ class TestLeaseGetAllPagination(TestCase):
     def _no_leases_response(self):
         """Kea returns result=3 (no more leases)."""
         return _mock_http_response([{"result": 3}])
+
+    def test_rejects_invalid_addresses_in_a_partial_page(self):
+        cases = (
+            ("not-an-address", "invalid ip-address"),
+            ("2001:db8::1", "wrong address family"),
+        )
+
+        for address, message in cases:
+            with (
+                self.subTest(address=address),
+                stub_kea(
+                    {
+                        "lease4-get-page": {
+                            "result": 0,
+                            "arguments": {"leases": [{"ip-address": address}], "count": 1},
+                        }
+                    }
+                ),
+                self.assertRaisesRegex(RuntimeError, message),
+            ):
+                self.client.lease_get_all(version=4, per_page=2)
 
     @patch("requests.Session.post")
     def test_empty_page_breaks_loop(self, mock_post):

@@ -1806,7 +1806,7 @@ class KeaClient:
 
     def _subnet_lease_search_spec(self, version: int, value: Any, state: int | None) -> tuple[str, dict[str, Any]]:
         """Validate and guard one Subnet lease query before selecting its command."""
-        if isinstance(value, bool):
+        if isinstance(value, bool) or not isinstance(value, (int, str)):
             raise ValueError("subnet_id must be a positive integer.")
         try:
             subnet_id = int(value)
@@ -1911,13 +1911,11 @@ class KeaClient:
         if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
             raise ValueError(f"limit must be a positive integer, got {limit!r}")
 
-        page = self._request_lease_page(
+        return self._request_lease_page(
             version,
             limit=limit,
             cursor=_lease_page_start(version, cursor),
         )
-        _validated_lease_addresses(page.leases, version, f"lease{version}-get-page")
-        return page
 
     def _request_lease_page(self, version: int, *, limit: int, cursor: str) -> LeasePage:
         """Request one structurally valid lease page from Kea."""
@@ -1952,6 +1950,7 @@ class KeaClient:
             if last_address.version != version:
                 raise RuntimeError(f"{command} returned a final lease for the wrong address family.")
             next_cursor = str(last_address)
+        _validated_lease_addresses(leases, version, command)
         return LeasePage(leases=leases, next_cursor=next_cursor)
 
     def lease_get_all(self, version: int, *, per_page: int = 250, max_leases: int | None = None) -> LeaseCollection:
