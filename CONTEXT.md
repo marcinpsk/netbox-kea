@@ -37,6 +37,10 @@ _Avoid_: DHCP Link, Shared Prefix
 An inclusive address range within a Subnet from which Kea can allocate leases. Kea can express it as explicit endpoints or as a prefix.
 _Avoid_: Range
 
+**DHCP Option**:
+A DHCP configuration value identified by an option space and code or name. Its declaration scope determines which clients receive it.
+_Avoid_: Option, option-data
+
 **Subnet Settings**:
 The typed DHCP behavior that Kea currently applies to a Subnet after inheritance, such as lease timers, allocator selection, relay data, class restrictions, and DDNS settings. It does not state where a value was declared.
 _Avoid_: Raw subnet configuration, settings dictionary
@@ -54,7 +58,7 @@ A proposed canonical CIDR and Kea subnet ID that a complete live identity observ
 _Avoid_: Free subnet ID, next subnet ID
 
 **Subnet Catalogue**:
-The complete canonical description of configured Subnets for one Server and address family. It includes identity, Shared Network membership, Pools, DHCP Options, and Subnet Settings.
+The complete canonical description of configured Subnets for one Server and address family. It includes identity, Shared Network membership, Pools, DHCP Option values, and Subnet Settings.
 _Avoid_: Subnet list, subnet choices
 
 **Catalogue Snapshot**:

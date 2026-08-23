@@ -762,7 +762,7 @@ def _parse_settings(
         ddns_qualifying_suffix=_optional_string(entry, "ddns-qualifying-suffix", path, diagnostics, allow_empty=True),
         interface_id=_optional_string(entry, "interface-id", path, diagnostics),
         relay_addresses=_relay_addresses(entry.get("relay"), family, path, diagnostics),
-        client_classes=_string_tuple(entry, "client-classes", path, diagnostics),
+        client_classes=_client_classes(entry, path, diagnostics),
         require_client_classes=_additional_classes(entry, path, diagnostics),
     )
 
@@ -868,6 +868,18 @@ def _additional_classes(
     if "evaluate-additional-classes" in entry:
         return _string_tuple(entry, "evaluate-additional-classes", path, diagnostics)
     return _string_tuple(entry, "require-client-classes", path, diagnostics)
+
+
+def _client_classes(
+    entry: dict[str, Any],
+    path: str,
+    diagnostics: list[Diagnostic],
+) -> tuple[str, ...]:
+    """Read client restrictions, preferring the current list-valued Kea key."""
+    if "client-classes" in entry:
+        return _string_tuple(entry, "client-classes", path, diagnostics)
+    legacy = _optional_string(entry, "client-class", path, diagnostics)
+    return (legacy,) if legacy is not None else ()
 
 
 def _string_tuple(
