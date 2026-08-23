@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ipaddress
 import logging
+import secrets
 from collections import defaultdict
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
@@ -281,8 +282,24 @@ def _network(value: str, family: Family) -> IPNetwork:
     return network_class(value, strict=True)
 
 
-def _cache_key(server: Server, family: Family) -> str:
-    return f"netbox_kea:subnet_catalogue:v1:{_require_persisted_server(server)}:{family}"
+def _generation_key(server: Server, family: Family) -> str:
+    return f"netbox_kea:subnet_catalogue:v1:{_require_persisted_server(server)}:{family}:generation"
+
+
+def _cache_generation(server: Server, family: Family) -> str:
+    key = _generation_key(server, family)
+    generation = cache.get(key)
+    if isinstance(generation, str):
+        return generation
+    candidate = secrets.token_hex(16)
+    cache.add(key, candidate, timeout=None)
+    generation = cache.get(key)
+    return generation if isinstance(generation, str) else candidate
+
+
+def _cache_key(server: Server, family: Family, generation: str | None = None) -> str:
+    generation = generation or _cache_generation(server, family)
+    return f"netbox_kea:subnet_catalogue:v1:{_require_persisted_server(server)}:{family}:snapshot:{generation}"
 
 
 def _require_persisted_server(server: Server) -> int:
@@ -291,8 +308,10 @@ def _require_persisted_server(server: Server) -> int:
     return server.pk
 
 
-def _invalidate(server: Server, family: Family) -> None:
-    cache.delete(_cache_key(server, family))
+def invalidate(server: Server, family: int) -> None:
+    """Discard the cached Complete snapshot after a configuration change."""
+    validated_family = _validate_family(family)
+    cache.set(_generation_key(server, validated_family), secrets.token_hex(16), timeout=None)
 
 
 def _diagnostic(code: str, message: str, source: str, path: str = "") -> Diagnostic:
@@ -1125,7 +1144,8 @@ def display(server: Server, family: int) -> CatalogueSnapshot:
     observation is retried on the next call.
     """
     validated_family = _validate_family(family)
-    key = _cache_key(server, validated_family)
+    generation = _cache_generation(server, validated_family)
+    key = _cache_key(server, validated_family, generation)
     cached = cache.get(key)
     if isinstance(cached, CompleteCatalogueSnapshot):
         return cached
@@ -1170,7 +1190,7 @@ class MutationScope(AbstractContextManager["MutationScope"]):
         self.snapshot: CatalogueSnapshot | None = None
 
     def __enter__(self) -> MutationScope:
-        _invalidate(self.server, self.family)
+        invalidate(self.server, self.family)
         self.snapshot = _read_live(self.server, self.family)
         return self
 
@@ -1178,7 +1198,7 @@ class MutationScope(AbstractContextManager["MutationScope"]):
         # Identity facts stop being live confirmation here, so drop them: a caller that
         # keeps the scope must not decide a mutation on pre-mutation observations.
         self.snapshot = None
-        _invalidate(self.server, self.family)
+        invalidate(self.server, self.family)
 
     def find_by_id(self, subnet_id: int) -> VerifiedSubnet | None:
         """Return one exact Verified Subnet, or confirm its absence safely."""

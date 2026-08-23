@@ -224,7 +224,7 @@ def _fetch_subnets_from_server(
     """Fetch safe Subnet Catalogue facts for one server and tag them for the combined table."""
     snapshot = display(server, version)
     if snapshot.unavailable:
-        raise RuntimeError(f"Subnet Catalogue is unavailable for DHCPv{version}")
+        return [], snapshot.diagnostics
     result = [
         _catalogue_subnet_row(subnet, server, version) for subnet in (*snapshot.subnets, *snapshot.configured_subnets)
     ]
