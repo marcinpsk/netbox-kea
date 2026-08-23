@@ -161,8 +161,8 @@ def django_db_setup(request, django_test_environment, django_db_blocker):
             teardown_databases(db_cfg, verbosity=verbosity)
 
 
-#: The plugin's own cache key prefixes. Both are keyed on a Server ID.
-_PLUGIN_CACHE_PATTERNS = ("netbox_kea:subnet_catalogue:*", "netbox_kea:subnet_choices:*")
+#: The plugin's cached subnet-choice keys, keyed on a Server ID.
+_PLUGIN_CACHE_PATTERNS = ("netbox_kea:subnet_choices:*",)
 
 
 def _drop_plugin_cache_entries() -> None:
