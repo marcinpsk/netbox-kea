@@ -250,7 +250,7 @@ resort, reserved for true external boundaries you cannot run locally.
 - **Query-count baselines.** The list-view mixins assert an exact SQL query count
   against `netbox_kea/tests/query_counts.json` to catch N+1 drift. Record/update with
   `TEST_DB_NAME=test_netbox_kea_review TEST_REDIS_HOST=netbox-kea-review-redis \
-  UPDATE_QUERY_COUNTS=1 uv run pytest -n 1 ...`, then commit the file. One xdist
+  UPDATE_QUERY_COUNTS=1 uv run --native-tls pytest -n 1 ...`, then commit the file. One xdist
   worker prevents concurrent writes and keeps Redis isolated. A count is a fact about
   one NetBox release, not about the plugin alone: NetBox re-records its own baselines on
   patch releases. `QUERY_COUNT_NETBOX_VERSION` in `netbox_kea/tests/conftest.py` names

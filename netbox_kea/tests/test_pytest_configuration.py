@@ -51,7 +51,7 @@ def test_documented_unit_test_targets_are_shell_safe():
     assert "TEST_DB_NAME=test_netbox_kea_review TEST_REDIS_HOST=netbox-kea-review-redis" in agents
     assert (
         "TEST_DB_NAME=test_netbox_kea_review TEST_REDIS_HOST=netbox-kea-review-redis \\\n"
-        "  UPDATE_QUERY_COUNTS=1 uv run pytest -n 1" in agents
+        "  UPDATE_QUERY_COUNTS=1 uv run --native-tls pytest -n 1" in agents
     )
     assert "<unique-task>" not in agents
     assert "<dedicated-redis>" not in agents
