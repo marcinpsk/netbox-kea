@@ -404,13 +404,8 @@ class TestKeaIpamSyncJobRun(TestCase):
         # server2's lease was still synced despite server1 failing.
         self.assertTrue(IPAddress.objects.filter(address__startswith="10.0.0.1/").exists())
 
-    def test_per_lease_error_does_not_abort_batch(self):
-        """An invalid lease does not stop the rest of the batch from syncing.
-
-        "not-an-ip" causes ``netaddr.AddrFormatError`` inside
-        ``sync_lease_to_netbox``.  The job catches it, increments errors, and
-        continues.  The valid lease's IP must still be created.
-        """
+    def test_invalid_lease_page_does_not_sync_a_partial_batch(self):
+        """An invalid paged response is rejected before any lease is synced."""
         self._make_db_server()
         bad_lease = {**_LEASE4, "ip-address": "not-an-ip"}
         good_lease = {**_LEASE4, "ip-address": "10.0.0.2"}
@@ -418,7 +413,7 @@ class TestKeaIpamSyncJobRun(TestCase):
             self._run_raises()  # errors > 0 → JobFailed
         from ipam.models import IPAddress
 
-        self.assertTrue(IPAddress.objects.filter(address__startswith="10.0.0.2/").exists())
+        self.assertFalse(IPAddress.objects.filter(address__startswith="10.0.0.2/").exists())
 
     # ── idempotency ────────────────────────────────────────────────────────
 
