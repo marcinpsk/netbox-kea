@@ -1,7 +1,7 @@
 import copy
 import ipaddress
 import logging
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from typing import Any, TypedDict
 
 import requests
@@ -32,6 +32,7 @@ class KeaClient:
         timeout: int = 30,
         persist_config: bool = True,
         send_service: bool = True,
+        on_config_change: Callable[[], None] | None = None,
     ):
         """Initialise a Kea HTTP client session.
 
@@ -53,6 +54,9 @@ class KeaClient:
                 daemon: Kea 3.2.0+ rejects a ``service`` that does not match the
                 daemon, and ISC recommends omitting it for direct connections
                 (3.0.x silently ignored it).
+            on_config_change: Optional callback invoked after Kea's live configuration
+                changes. Cache invalidation failures are logged and do not interrupt
+                persistence of an already-applied change.
 
         Raises:
             ValueError: If only one of client_cert/client_key is provided.
@@ -65,6 +69,7 @@ class KeaClient:
         self.timeout = timeout
         self.persist_config = persist_config
         self.send_service = send_service
+        self._on_config_change = on_config_change
 
         self._session = requests.Session()
         if verify is not None:
@@ -135,7 +140,17 @@ class KeaClient:
         new._session.cert = self._session.cert
         new.persist_config = self.persist_config
         new.send_service = self.send_service
+        new._on_config_change = self._on_config_change
         return new
+
+    def _notify_config_change(self, service: str) -> None:
+        """Notify the owner without interrupting persistence of a live change."""
+        if self._on_config_change is None:
+            return
+        try:
+            self._on_config_change()
+        except Exception:  # noqa: BLE001
+            logger.exception("Configuration changed for %s, but cache invalidation failed", service)
 
     def close(self) -> None:
         """Close the underlying requests.Session and release connection resources."""
@@ -542,6 +557,7 @@ class KeaClient:
         except (requests.RequestException, ValueError) as transport_exc:
             found_id = self._find_subnet_id_by_cidr(version, subnet_def["subnet"])
             if found_id is not None:
+                self._notify_config_change(service)
                 err = PartialPersistError(service, transport_exc, subnet_id=found_id)
                 raise err from transport_exc
             raise
@@ -1341,7 +1357,9 @@ class KeaClient:
             logger.warning(
                 "config-set transport/parse error for service %s — change may be live but unpersisted", service
             )
+            self._notify_config_change(service)
             raise AmbiguousConfigSetError(service, exc) from exc
+        self._notify_config_change(service)
         if self.persist_config:
             try:
                 self.command("config-write", service=[service])
@@ -1365,6 +1383,7 @@ class KeaClient:
         3. ``config-write`` — persist the validated config to disk.  Failure raises
            :exc:`PartialPersistError` (change is live but will be lost on restart).
         """
+        self._notify_config_change(service)
         if not self.persist_config:
             logger.debug("persist_config disabled for service %s — skipping config-write", service)
             return

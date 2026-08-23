@@ -213,6 +213,72 @@ class TestSubnetCatalogue(TestCase):
             (ipaddress.ip_address("2001:db8::1"),),
         )
 
+    def test_client_config_mutation_invalidates_complete_display_snapshot(self):
+        self.server.persist_config = False
+        identities = _identity(4, [{"id": 1, "subnet": "198.18.1.0/24"}])
+        before = _config(4, [{"id": 1, "subnet": "198.18.1.0/24", "pools": []}])
+        after = _config(
+            4,
+            [
+                {
+                    "id": 1,
+                    "subnet": "198.18.1.0/24",
+                    "pools": [{"pool": "198.18.1.10 - 198.18.1.20"}],
+                }
+            ],
+        )
+
+        with stub_kea(
+            {
+                "subnet4-list": queued(identities, identities),
+                "config-get": queued(before, after),
+                "list-commands": {"result": 0, "arguments": ["subnet4-pool-add"]},
+                "subnet4-pool-add": {"result": 0},
+            }
+        ) as kea:
+            initial = display(self.server, 4)
+            display(self.server, 4)
+            self.server.get_client(version=4).pool_add(4, 1, "198.18.1.10 - 198.18.1.20")
+            refreshed = display(self.server, 4)
+
+        self.assertEqual(initial.find_by_id(1).configuration.pools, ())
+        self.assertEqual(refreshed.find_by_id(1).configuration.pools[0].start, ipaddress.ip_address("198.18.1.10"))
+        self.assertEqual(kea.commands().count("subnet4-list"), 2)
+        self.assertEqual(kea.commands().count("config-get"), 2)
+
+    def test_client_config_set_invalidates_complete_display_snapshot(self):
+        self.server.persist_config = False
+        subnet = {"id": 1, "subnet": "198.18.1.0/24", "pools": []}
+        identities = _identity(4, [{"id": 1, "subnet": "198.18.1.0/24"}])
+        before = _config(4, [subnet])
+        after = _config(
+            4,
+            [
+                {
+                    **subnet,
+                    "option-data": [{"name": "domain-name-servers", "data": "198.18.0.53"}],
+                }
+            ],
+        )
+        options = [{"name": "domain-name-servers", "data": "198.18.0.53"}]
+
+        with stub_kea(
+            {
+                "subnet4-list": queued(identities, identities),
+                "config-get": queued(before, before, after),
+                "config-test": {"result": 0},
+                "config-set": {"result": 0},
+            }
+        ) as kea:
+            initial = display(self.server, 4)
+            self.server.get_client(version=4).subnet_update_options(4, 1, options)
+            refreshed = display(self.server, 4)
+
+        self.assertEqual(initial.find_by_id(1).configuration.options, ())
+        self.assertEqual(refreshed.find_by_id(1).configuration.options[0].name, "domain-name-servers")
+        self.assertEqual(kea.commands().count("subnet4-list"), 2)
+        self.assertEqual(kea.commands().count("config-get"), 3)
+
     def test_dhcpv4_relay_rejects_non_string_address(self):
         # Only DHCPv4 reaches this bug: ``1`` parses as an IPv4 address, so the
         # wrong-family check already rejects it for DHCPv6.
@@ -850,3 +916,19 @@ class TestSubnetCatalogue(TestCase):
             ):
                 with self.assertRaisesMessage(RuntimeError, "must be entered"):
                     use()
+
+    def test_mutation_scope_invalidates_display_cache_on_entry_and_exit(self):
+        identities = _identity(4, [{"id": 1, "subnet": "198.18.1.0/24"}])
+        configuration = _config(4, [{"id": 1, "subnet": "198.18.1.0/24", "pools": []}])
+
+        with stub_kea({"subnet4-list": identities, "config-get": configuration}) as kea:
+            display(self.server, 4)
+            display(self.server, 4)
+            with mutation(self.server, 4):
+                # Entry invalidation only shows here: the scope reads live without caching,
+                # so without it this call would serve the pre-mutation snapshot.
+                display(self.server, 4)
+            display(self.server, 4)
+
+        self.assertEqual(kea.commands().count("subnet4-list"), 4)
+        self.assertEqual(kea.commands().count("config-get"), 4)
