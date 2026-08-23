@@ -5,10 +5,11 @@ import json
 
 import requests
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.test import override_settings
 from django.urls import reverse
 
 from .kea_stub import _res_get, _res_page, _reservation_mutation_commands, queued, stub_kea
-from .utils import _ViewTestBase
+from .utils import _PLUGINS_CONFIG, _ViewTestBase
 
 
 def _live_config(version: int, subnet_id: int, cidr: str, identifiers: list[str]) -> dict:
@@ -38,6 +39,7 @@ def _mutation_responses(version: int, subnet_id: int, cidr: str, identifiers: li
     }
 
 
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestReservationMutationViews(_ViewTestBase):
     def test_add_form_uses_live_identifier_choices_and_explains_relay_remote_id(self):
         responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address", "flex-id"])
@@ -609,6 +611,7 @@ class TestReservationMutationViews(_ViewTestBase):
         self.assertNotIn("reservation-del", kea.commands())
 
 
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestReservationDocumentImport(_ViewTestBase):
     def _url(self):
         return reverse("plugins:netbox_kea:server_reservation4_bulk_import", args=[self.server.pk])
@@ -791,6 +794,7 @@ reservations:
         self.assertEqual(len(received), 1)
 
 
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestMutationCapabilityGate(_ViewTestBase):
     """A direct POST must never reach Kea when no mutation capability is confirmed.
 

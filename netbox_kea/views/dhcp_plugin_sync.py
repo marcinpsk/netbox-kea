@@ -21,7 +21,7 @@ from netbox.views import generic
 from utilities.views import register_model_view
 
 from ..integrations import dhcp_plugin
-from ..kea import KeaException
+from ..kea import KeaException, PartialPersistError
 from ..mappers.kea_to_dhcp import parse_dhcp_config
 from ..models import Server
 from ..utilities import OptionalViewTab
@@ -255,9 +255,11 @@ class ServerDhcpPluginSyncNowView(View):
 
         try:
             results = run_dhcp_plugin_import(server)
+        except PartialPersistError:
+            logger.exception("DHCP-plugin import failed for server %s after partial persistence", server.name)
+            messages.error(request, "An internal error occurred during the DHCP-plugin import.")
+            return redirect
         except (KeaException, requests.RequestException, ValueError):
-            # Expected external-boundary failures (Kea read / validation);
-            # PartialPersistError is a KeaException subclass and lands here too.
             logger.exception("DHCP-plugin import failed for server %s (Kea read/validation)", server.name)
             messages.error(request, "An internal error occurred during the DHCP-plugin import.")
             return redirect

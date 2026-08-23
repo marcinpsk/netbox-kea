@@ -18,7 +18,7 @@ from django.test import SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
-from netbox_kea.kea import KeaClient, KeaException
+from netbox_kea.kea import KeaClient, KeaException, PartialPersistError
 from netbox_kea.views import dhcp_plugin_sync as dps
 
 from .kea_stub import _res_page, _subnet_list, stub_kea
@@ -291,8 +291,8 @@ class SyncNowErrorHandlingTest(TestCase):
         self.url = reverse("plugins:netbox_kea:server_dhcp_plugin_sync", args=[self.server.pk])
 
     def test_kea_exception_routes_through_specific_handler(self):
-        # A KeaException (or its PartialPersistError subclass) is handled by the
-        # dedicated contract branch, logged distinctly, and shown as a generic error.
+        # A KeaException is handled by the dedicated contract branch, logged
+        # distinctly, and shown as a generic error.
         with (
             patch.object(dps.dhcp_plugin, "is_available", return_value=True, autospec=True),
             patch.object(
@@ -303,6 +303,19 @@ class SyncNowErrorHandlingTest(TestCase):
                 resp = self.client.post(self.url, follow=True)
         self.assertContains(resp, "An internal error occurred")
         self.assertTrue(any("Kea read/validation" in line for line in cm.output))
+
+    def test_partial_persistence_routes_through_specific_handler(self):
+        """A live but unpersisted Kea change receives its distinct log classification."""
+        error = PartialPersistError("dhcp4", RuntimeError("config-write failed"))
+        with (
+            patch.object(dps.dhcp_plugin, "is_available", return_value=True, autospec=True),
+            patch.object(dps, "run_dhcp_plugin_import", side_effect=error, autospec=True),
+        ):
+            with self.assertLogs("netbox_kea.views.dhcp_plugin_sync", level="ERROR") as cm:
+                resp = self.client.post(self.url, follow=True)
+
+        self.assertContains(resp, "An internal error occurred")
+        self.assertTrue(any("partial persistence" in line for line in cm.output))
 
     def test_unexpected_exception_is_caught_not_leaked(self):
         # A non-contract error (e.g. a DB error) still hits the fallback: logged,
