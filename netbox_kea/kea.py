@@ -111,6 +111,19 @@ class KeaResponse(TypedDict):
     text: str | None
 
 
+def _reservation_get_arguments(response: list[KeaResponse]) -> dict[str, Any] | None:
+    """Return reservation-get arguments or classify Kea's not-found responses."""
+    if not response or not isinstance(response[0], dict):
+        raise RuntimeError("reservation-get returned a malformed response.")
+    result = response[0]
+    if result.get("result") == 3 or (result.get("result") == 0 and result.get("text") == "Host not found."):
+        return None
+    arguments = result.get("arguments")
+    if not isinstance(arguments, dict):
+        raise RuntimeError("reservation-get returned malformed arguments.")
+    return arguments
+
+
 class LeasePage(NamedTuple):
     """One validated Kea lease page and its next cursor."""
 
@@ -187,6 +200,7 @@ class _SubnetLeaseCounts(NamedTuple):
 
 
 def _lease_page_start(version: int, cursor: str | None) -> str:
+    """Return the validated Kea page cursor for one DHCP family."""
     if cursor is not None:
         try:
             parsed_cursor = ipaddress.ip_address(cursor)
@@ -199,6 +213,7 @@ def _lease_page_start(version: int, cursor: str | None) -> str:
 
 
 def _lease_address_values(leases: list[Any], command: str) -> list[str]:
+    """Return non-empty lease address strings or reject a malformed page."""
     values: list[str] = []
     for index, lease in enumerate(leases):
         raw_address = lease.get("ip-address") if isinstance(lease, dict) else None
@@ -213,6 +228,7 @@ def _validated_lease_addresses(
     version: int,
     command: str,
 ) -> list[ipaddress.IPv4Address | ipaddress.IPv6Address]:
+    """Return parsed lease addresses that match the requested DHCP family."""
     addresses: list[ipaddress.IPv4Address | ipaddress.IPv6Address] = []
     for index, raw_address in enumerate(_lease_address_values(leases, command)):
         try:
@@ -440,8 +456,9 @@ class KeaClient:
         dhcp = arguments.get(f"Dhcp{version}") if isinstance(arguments, dict) else None
         if not isinstance(dhcp, dict):
             raise RuntimeError("config-get returned malformed DHCP configuration.")
-        configured = dhcp.get("host-reservation-identifiers")
-        if configured is None:
+        if "host-reservation-identifiers" in dhcp:
+            configured = dhcp["host-reservation-identifiers"]
+        else:
             configured = ["hw-address", "duid", "circuit-id", "client-id"] if version == 4 else ["duid", "hw-address"]
         if not isinstance(configured, list) or any(not isinstance(identifier, str) for identifier in configured):
             raise RuntimeError("config-get returned malformed host-reservation-identifiers.")
@@ -625,14 +642,7 @@ class KeaClient:
             },
             check=(0, 3),
         )
-        if not response or not isinstance(response[0], dict):
-            raise RuntimeError("reservation-get returned a malformed response.")
-        if response[0].get("result") == 3:
-            return None
-        raw = response[0].get("arguments")
-        if not isinstance(raw, dict):
-            raise RuntimeError("reservation-get returned malformed arguments.")
-        return raw
+        return _reservation_get_arguments(response)
 
     def _reservation_raw_by_address(
         self,
@@ -647,14 +657,7 @@ class KeaClient:
             arguments={"subnet-id": scope.subnet.subnet_id, "ip-address": address},
             check=(0, 3),
         )
-        if not response or not isinstance(response[0], dict):
-            raise RuntimeError("reservation-get returned a malformed response.")
-        if response[0].get("result") == 3:
-            return None
-        raw = response[0].get("arguments")
-        if not isinstance(raw, dict):
-            raise RuntimeError("reservation-get returned malformed arguments.")
-        return raw
+        return _reservation_get_arguments(response)
 
     def reservation_by_address(
         self,

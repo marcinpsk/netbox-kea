@@ -492,6 +492,21 @@ class TestReservationExactIdentity(SimpleTestCase):
                     ReservationIdentity("client-id", "01:aa:bb:cc:dd:ee:ff"),
                 )
 
+    def test_result_zero_host_not_found_returns_none(self):
+        identity = ReservationIdentity("client-id", "01:aa:bb:cc:dd:ee:ff")
+
+        with stub_kea({"reservation-get": {"result": 0, "text": "Host not found."}}):
+            reservation = self.kea.reservation_by_identity(4, self.catalogue, self.scope, identity)
+
+        self.assertIsNone(reservation)
+
+    def test_result_zero_without_not_found_text_stays_malformed(self):
+        identity = ReservationIdentity("client-id", "01:aa:bb:cc:dd:ee:ff")
+
+        with stub_kea({"reservation-get": {"result": 0, "text": "Host lookup completed."}}):
+            with self.assertRaisesRegex(RuntimeError, "malformed arguments"):
+                self.kea.reservation_by_identity(4, self.catalogue, self.scope, identity)
+
 
 class TestReservationScopedAddress(SimpleTestCase):
     def setUp(self):
@@ -533,6 +548,17 @@ class TestReservationScopedAddress(SimpleTestCase):
                 )
 
         self.assertEqual(kea.commands(), [])
+
+    def test_result_zero_host_not_found_returns_none(self):
+        with stub_kea({"reservation-get": {"result": 0, "text": "Host not found."}}):
+            reservation = self.kea.reservation_by_address(
+                4,
+                self.catalogue,
+                self.scope,
+                "198.18.0.20",
+            )
+
+        self.assertIsNone(reservation)
 
 
 class TestReservationHostname(SimpleTestCase):
@@ -963,6 +989,23 @@ class TestReservationMutation(SimpleTestCase):
             },
         )
 
+    def test_delete_accepts_result_zero_host_not_found_verification(self):
+        raw = {
+            "subnet-id": 20,
+            "hw-address": "aa:bb:cc:dd:ee:ff",
+            "ip-address": "198.18.0.20",
+        }
+        with stub_kea(
+            {
+                **_persistence_responses(4),
+                "reservation-get": queued(_res_get(raw), {"result": 0, "text": "Host not found."}),
+                "reservation-del": {"result": 0},
+            }
+        ):
+            result = self.kea.reservation_delete(self.reservation, self.catalogue)
+
+        self.assertEqual(result.verification, "verified")
+
     def test_create_reports_when_persistence_is_not_requested(self):
         client = KeaClient(url="http://kea.example.invalid", send_service=False, persist_config=False)
         raw = {
@@ -1031,3 +1074,20 @@ class TestReservationCapabilities(SimpleTestCase):
         self.assertFalse(capabilities.mutation_available)
         self.assertEqual(capabilities.identifiers, ("duid",))
         self.assertIn("host_cmds", capabilities.explanation)
+
+    def test_rejects_explicit_null_host_reservation_identifiers(self):
+        client = KeaClient(url="http://kea.example.invalid", send_service=False)
+        config = {"result": 0, "arguments": {"Dhcp4": {"host-reservation-identifiers": None}}}
+
+        with stub_kea({"list-commands": {"result": 0, "arguments": []}, "config-get": config}):
+            with self.assertRaisesRegex(RuntimeError, "host-reservation-identifiers"):
+                client.reservation_capabilities(4)
+
+    def test_uses_family_defaults_when_host_reservation_identifiers_are_absent(self):
+        client = KeaClient(url="http://kea.example.invalid", send_service=False)
+        config = {"result": 0, "arguments": {"Dhcp6": {}}}
+
+        with stub_kea({"list-commands": {"result": 0, "arguments": []}, "config-get": config}):
+            capabilities = client.reservation_capabilities(6)
+
+        self.assertEqual(capabilities.identifiers, ("duid", "hw-address"))

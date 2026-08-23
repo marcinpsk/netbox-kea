@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, patch
 
 import requests
 
+from netbox_kea import kea as kea_module
 from netbox_kea.kea import (
     AmbiguousConfigSetError,
     KeaClient,
@@ -4910,6 +4911,18 @@ class TestLeaseGetPage(TestCase):
 
     def setUp(self):
         self.client = KeaClient(url="http://kea:8000")
+
+    def test_private_lease_helpers_document_their_contracts(self):
+        """Keep the cursor and address-validation contracts discoverable."""
+        helpers = (
+            kea_module._lease_page_start,
+            kea_module._lease_address_values,
+            kea_module._validated_lease_addresses,
+        )
+
+        for helper in helpers:
+            with self.subTest(helper=helper.__name__):
+                self.assertIsNotNone(helper.__doc__)
 
     def test_explicit_cursor_is_sent_without_assuming_backend_order(self):
         first = {"ip-address": "198.18.1.10"}
