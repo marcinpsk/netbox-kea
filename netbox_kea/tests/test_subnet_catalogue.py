@@ -1,4 +1,6 @@
 import ipaddress
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event
 from unittest.mock import patch
 
 import requests
@@ -16,6 +18,7 @@ from netbox_kea.subnet_catalogue import (
     SubnetIdExhausted,
     display,
     for_synchronization,
+    invalidate,
     mutation,
 )
 from netbox_kea.tests.kea_stub import _subnet_list, queued, stub_kea
@@ -278,6 +281,72 @@ class TestSubnetCatalogue(TestCase):
         self.assertEqual(refreshed.find_by_id(1).configuration.options[0].name, "domain-name-servers")
         self.assertEqual(kea.commands().count("subnet4-list"), 2)
         self.assertEqual(kea.commands().count("config-get"), 3)
+
+    def test_ambiguous_native_mutation_invalidates_complete_display_snapshot(self):
+        self.server.persist_config = False
+        identities = _identity(4, [{"id": 1, "subnet": "198.18.1.0/24"}])
+        before = _config(4, [{"id": 1, "subnet": "198.18.1.0/24", "pools": []}])
+        after = _config(
+            4,
+            [
+                {
+                    "id": 1,
+                    "subnet": "198.18.1.0/24",
+                    "pools": [{"pool": "198.18.1.10 - 198.18.1.20"}],
+                }
+            ],
+        )
+
+        with stub_kea(
+            {
+                "subnet4-list": queued(identities, identities),
+                "config-get": queued(before, after),
+                "list-commands": {"result": 0, "arguments": ["subnet4-pool-add"]},
+                "subnet4-pool-add": requests.ReadTimeout("response lost after apply"),
+            }
+        ):
+            initial = display(self.server, 4)
+            with self.assertRaises(requests.ReadTimeout):
+                self.server.get_client(version=4).pool_add(4, 1, "198.18.1.10 - 198.18.1.20")
+            refreshed = display(self.server, 4)
+
+        self.assertEqual(initial.find_by_id(1).configuration.pools, ())
+        self.assertEqual(refreshed.find_by_id(1).configuration.pools[0].start, ipaddress.ip_address("198.18.1.10"))
+
+    def test_concurrent_invalidation_cannot_republish_stale_snapshot(self):
+        old_identity = _identity(4, [{"id": 1, "subnet": "198.18.1.0/24"}])
+        new_identity = _identity(4, [{"id": 2, "subnet": "198.18.2.0/24"}])
+        old_configuration = _config(4, [{"id": 1, "subnet": "198.18.1.0/24", "pools": []}])
+        new_configuration = _config(4, [{"id": 2, "subnet": "198.18.2.0/24", "pools": []}])
+        read_started = Event()
+        invalidated = Event()
+        identity_call = 0
+
+        def identity_response(_body):
+            nonlocal identity_call
+            identity_call += 1
+            if identity_call == 1:
+                read_started.set()
+                self.assertTrue(invalidated.wait(timeout=5))
+                return old_identity
+            return new_identity
+
+        with stub_kea(
+            {
+                "subnet4-list": identity_response,
+                "config-get": queued(old_configuration, new_configuration),
+            }
+        ):
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                stale_read = executor.submit(display, self.server, 4)
+                self.assertTrue(read_started.wait(timeout=5))
+                invalidate(self.server, 4)
+                invalidated.set()
+                self.assertEqual(stale_read.result().find_by_id(1).cidr, "198.18.1.0/24")
+            refreshed = display(self.server, 4)
+
+        self.assertEqual(refreshed.find_by_id(2).cidr, "198.18.2.0/24")
+        self.assertIsNone(refreshed.find_by_id(1))
 
     def test_dhcpv4_relay_rejects_non_string_address(self):
         # Only DHCPv4 reaches this bug: ``1`` parses as an IPv4 address, so the
