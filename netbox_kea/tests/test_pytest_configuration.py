@@ -50,8 +50,10 @@ def _xdist_settings(command: str) -> dict[str, str]:
 def _workflow_job(workflow: str, name: str) -> str:
     """Return one workflow job, bounded by the next top-level job key."""
     marker = f"  {name}:\n"
-    assert marker in workflow, f"The {name} job was renamed or removed."
-    return re.split(r"\n {2}[A-Za-z0-9_-]+:\n", workflow.split(marker, 1)[1], maxsplit=1)[0]
+    lines = workflow.splitlines(keepends=True)
+    assert marker in lines, f"The {name} job was renamed or removed."
+    job = "".join(lines[lines.index(marker) + 1 :])
+    return re.split(r"\n {2}[A-Za-z0-9_-]+:\n", job, maxsplit=1)[0]
 
 
 def test_documented_unit_test_targets_are_shell_safe():
@@ -126,10 +128,13 @@ def test_database_jobs_use_the_shared_ci_configuration_writer():
 def test_workflow_job_slice_uses_structural_job_boundaries():
     """Find a job after reordering, and report a missing marker clearly."""
     workflow = "jobs:\n  lint:\n    marker: lint\n  unit-test:\n    marker: unit\n  release_1:\n    marker: release\n"
+    nested_marker = "jobs:\n  lint:\n    unit-test:\n      marker: nested\n"
 
     assert _workflow_job(workflow, "unit-test") == "    marker: unit"
     with pytest.raises(AssertionError, match="missing job was renamed or removed"):
         _workflow_job(workflow, "missing")
+    with pytest.raises(AssertionError, match="unit-test job was renamed or removed"):
+        _workflow_job(nested_marker, "unit-test")
 
 
 def test_dhcp_plugin_job_uses_the_unit_test_runtime_versions():
