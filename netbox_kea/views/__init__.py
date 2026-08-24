@@ -78,7 +78,7 @@ from .reservation_mutations import (  # noqa: F401
     ServerReservation6EditView,
 )
 
-# Reservation list/add/edit/delete views + helpers
+# Reservation list views + helpers
 from .reservations import (  # noqa: F401
     ServerReservations4View,
     ServerReservations6View,

@@ -73,36 +73,8 @@ jobs:
       - name: Set up NetBox configuration
         working-directory: netbox/netbox
         run: |
-          cat > netbox/configuration.py << 'EOF'
-          import os
-
-          ALLOWED_HOSTS = ['*']
-          DATABASE = {
-              'NAME': 'netbox',
-              'USER': 'netbox',
-              'PASSWORD': 'netbox',
-              'HOST': 'localhost',
-              'PORT': '',
-              'CONN_MAX_AGE': 300,
-              'ENGINE': 'django.db.backends.postgresql'
-          }
-          REDIS = {
-              'tasks': {
-                  'HOST': os.environ.get('REDIS_HOST', 'localhost'),
-                  'PORT': 6379,
-                  'DATABASE': int(os.environ.get('REDIS_DATABASE', '0')),
-              },
-              'caching': {
-                  'HOST': os.environ.get('REDIS_CACHE_HOST', 'localhost'),
-                  'PORT': 6379,
-                  'DATABASE': int(os.environ.get('REDIS_CACHE_DATABASE', '1')),
-              },
-          }
-          SECRET_KEY = 'ci-test-secret-key-not-for-production-1234567890123456'
-          API_TOKEN_PEPPERS = {0: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'}
-          PLUGINS = ['netbox_kea']
-          PLUGINS_CONFIG = {'netbox_kea': {'kea_timeout': 30}}
-          EOF
+          python "${{ github.workspace }}/scripts/write_netbox_ci_configuration.py" \
+            --output netbox/configuration.py --plugin netbox_kea
 
       - name: Run unit tests with coverage
         working-directory: netbox/netbox
@@ -187,36 +159,8 @@ jobs:
       - name: Set up NetBox configuration
         working-directory: netbox/netbox
         run: |
-          cat > netbox/configuration.py << 'EOF'
-          import os
-
-          ALLOWED_HOSTS = ['*']
-          DATABASE = {
-              'NAME': 'netbox',
-              'USER': 'netbox',
-              'PASSWORD': 'netbox',
-              'HOST': 'localhost',
-              'PORT': '',
-              'CONN_MAX_AGE': 300,
-              'ENGINE': 'django.db.backends.postgresql'
-          }
-          REDIS = {
-              'tasks': {
-                  'HOST': os.environ.get('REDIS_HOST', 'localhost'),
-                  'PORT': 6379,
-                  'DATABASE': int(os.environ.get('REDIS_DATABASE', '0')),
-              },
-              'caching': {
-                  'HOST': os.environ.get('REDIS_CACHE_HOST', 'localhost'),
-                  'PORT': 6379,
-                  'DATABASE': int(os.environ.get('REDIS_CACHE_DATABASE', '1')),
-              },
-          }
-          SECRET_KEY = 'ci-test-secret-key-not-for-production-1234567890123456'
-          API_TOKEN_PEPPERS = {0: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'}
-          PLUGINS = ['netbox_kea', 'netbox_dhcp']
-          PLUGINS_CONFIG = {'netbox_kea': {'kea_timeout': 30}}
-          EOF
+          python "${{ github.workspace }}/scripts/write_netbox_ci_configuration.py" \
+            --output netbox/configuration.py --plugin netbox_kea --plugin netbox_dhcp
 
       - name: Run DHCP plugin adapter tests
         working-directory: netbox/netbox

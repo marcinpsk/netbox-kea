@@ -6,10 +6,13 @@ from __future__ import annotations
 
 import os
 import re
+import runpy
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+import pytest
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
@@ -44,6 +47,13 @@ def _xdist_settings(command: str) -> dict[str, str]:
     return settings
 
 
+def _workflow_job(workflow: str, name: str) -> str:
+    """Return one workflow job, bounded by the next top-level job key."""
+    marker = f"  {name}:\n"
+    assert marker in workflow, f"The {name} job was renamed or removed."
+    return re.split(r"\n {2}[A-Za-z0-9_-]+:\n", workflow.split(marker, 1)[1], maxsplit=1)[0]
+
+
 def test_documented_unit_test_targets_are_shell_safe():
     """Keep task-specific test targets usable when copied into a shell."""
     agents = (REPOSITORY_ROOT / "AGENTS.md").read_text()
@@ -57,11 +67,76 @@ def test_documented_unit_test_targets_are_shell_safe():
     assert "<dedicated-redis>" not in agents
 
 
+def test_ci_configuration_writer_generates_the_requested_plugins(monkeypatch, tmp_path):
+    """Generate an importable NetBox configuration with the requested plugins."""
+    output = tmp_path / "configuration.py"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(REPOSITORY_ROOT / "scripts/write_netbox_ci_configuration.py"),
+            "--output",
+            str(output),
+            "--plugin",
+            "netbox_kea",
+            "--plugin",
+            "netbox_dhcp",
+        ],
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    for variable in ("REDIS_HOST", "REDIS_DATABASE", "REDIS_CACHE_HOST", "REDIS_CACHE_DATABASE"):
+        monkeypatch.delenv(variable, raising=False)
+    namespace = runpy.run_path(str(output))
+    assert namespace["ALLOWED_HOSTS"] == ["*"]
+    assert namespace["PLUGINS"] == ["netbox_kea", "netbox_dhcp"]
+    assert namespace["DATABASE"] == {
+        "NAME": "netbox",
+        "USER": "netbox",
+        "PASSWORD": "netbox",
+        "HOST": "localhost",
+        "PORT": "",
+        "CONN_MAX_AGE": 300,
+        "ENGINE": "django.db.backends.postgresql",
+    }
+    assert namespace["REDIS"] == {
+        "tasks": {"HOST": "localhost", "PORT": 6379, "DATABASE": 0},
+        "caching": {"HOST": "localhost", "PORT": 6379, "DATABASE": 1},
+    }
+    assert namespace["SECRET_KEY"] == "ci-test-secret-key-not-for-production-1234567890123456"
+    assert namespace["API_TOKEN_PEPPERS"] == {0: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+    assert namespace["PLUGINS_CONFIG"] == {"netbox_kea": {"kea_timeout": 30}}
+
+
+def test_database_jobs_use_the_shared_ci_configuration_writer():
+    """Configure both database-backed jobs through the tested writer."""
+    workflow = (REPOSITORY_ROOT / ".github/workflows/ci.yml").read_text()
+    unit_test_job = re.sub(r"[ \t]*\\\n[ \t]*", " ", _workflow_job(workflow, "unit-test"))
+    dhcp_plugin_job = re.sub(r"[ \t]*\\\n[ \t]*", " ", _workflow_job(workflow, "dhcp-plugin-test"))
+    writer = 'python "${{ github.workspace }}/scripts/write_netbox_ci_configuration.py"'
+
+    assert workflow.count(writer) == 2
+    assert f"{writer} --output netbox/configuration.py --plugin netbox_kea\n" in unit_test_job
+    assert f"{writer} --output netbox/configuration.py --plugin netbox_kea --plugin netbox_dhcp\n" in dhcp_plugin_job
+    assert "cat > netbox/configuration.py" not in workflow
+
+
+def test_workflow_job_slice_uses_structural_job_boundaries():
+    """Find a job after reordering, and report a missing marker clearly."""
+    workflow = "jobs:\n  lint:\n    marker: lint\n  unit-test:\n    marker: unit\n  release_1:\n    marker: release\n"
+
+    assert _workflow_job(workflow, "unit-test") == "    marker: unit"
+    with pytest.raises(AssertionError, match="missing job was renamed or removed"):
+        _workflow_job(workflow, "missing")
+
+
 def test_dhcp_plugin_job_uses_the_unit_test_runtime_versions():
     """Keep both database-backed CI jobs on the same NetBox and Python inputs."""
     workflow = (REPOSITORY_ROOT / ".github/workflows/ci.yml").read_text()
-    unit_test_job = workflow.split("  unit-test:\n", 1)[1].split("\n  dhcp-plugin-test:\n", 1)[0]
-    dhcp_plugin_job = workflow.split("  dhcp-plugin-test:\n", 1)[1].split("\n  lint:\n", 1)[0]
+    unit_test_job = _workflow_job(workflow, "unit-test")
+    dhcp_plugin_job = _workflow_job(workflow, "dhcp-plugin-test")
 
     for setting in ("ref", "python-version-file"):
         pattern = rf"^\s+{setting}: (.+)$"

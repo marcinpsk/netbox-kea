@@ -2,14 +2,12 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import yaml
-from django.test import override_settings
 from django.urls import reverse
 
 from .kea_stub import _catalogue_responses, _res_get, _res_page, _reservation_mutation_commands, queued, stub_kea
-from .utils import _PLUGINS_CONFIG, _ViewTestBase
+from .utils import _ViewTestBase
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestPerServerReservationSnapshots(_ViewTestBase):
     def _url(self, version: int = 4) -> str:
         return reverse(f"plugins:netbox_kea:server_reservations{version}", args=[self.server.pk])
@@ -301,7 +299,6 @@ class TestPerServerReservationSnapshots(_ViewTestBase):
         self.assertEqual(response.status_code, 409)
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestCombinedReservationSnapshots(_ViewTestBase):
     def test_combined_view_fetches_one_bounded_page_and_offers_the_next_cursor(self):
         responses = _catalogue_responses(6, 30, "2001:db8::/64")
@@ -418,7 +415,6 @@ class TestCombinedReservationSnapshots(_ViewTestBase):
         self.assertEqual(len(kea.bodies("reservation-get-page")), 2)
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestLeaseReservationIdentityMatching(_ViewTestBase):
     lease = {
         "ip-address": "198.18.0.20",
