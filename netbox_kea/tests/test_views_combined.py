@@ -11,6 +11,7 @@ via ``kea_stub.stub_kea``, so the combined multi-server fetch helpers exercise t
 real request/response path.
 """
 
+import requests
 from django.test import override_settings
 from django.urls import reverse
 
@@ -67,19 +68,124 @@ class TestCombinedResponseShapeGuards(_ViewTestBase):
             with self.assertRaises(RuntimeError):
                 _fetch_all_leases_from_server(self.server, 4)
 
-    def test_subnets_empty_response_raises_runtime_error(self):
-        from netbox_kea.views import _fetch_subnets_from_server
-
-        with stub_kea({"config-get": []}):
-            with self.assertRaises(RuntimeError):
-                _fetch_subnets_from_server(self.server, 4)
-
     def test_shared_networks_empty_response_raises_runtime_error(self):
         from netbox_kea.views import _fetch_shared_networks_from_server
 
         with stub_kea({"config-get": []}):
             with self.assertRaises(RuntimeError):
                 _fetch_shared_networks_from_server(self.server, 4)
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestCombinedSubnetDiagnostics(_ViewTestBase):
+    def test_complete_catalogue_is_reused_for_unchanged_requests(self):
+        url = reverse("plugins:netbox_kea:combined_subnets4") + f"?server={self.server.pk}"
+        identity = {"result": 0, "arguments": {"subnets": [{"id": 1, "subnet": "198.18.1.0/24"}]}}
+        configuration = {
+            "result": 0,
+            "arguments": {"Dhcp4": {"subnet4": [{"id": 1, "subnet": "198.18.1.0/24", "pools": []}]}},
+        }
+
+        with stub_kea(
+            {
+                "subnet4-list": identity,
+                "config-get": configuration,
+                "stat-lease4-get": {"result": 2, "text": "unknown command"},
+            }
+        ) as kea:
+            first_response = self.client.get(url)
+            second_response = self.client.get(url)
+
+        self.assertContains(first_response, "198.18.1.0/24")
+        self.assertContains(second_response, "198.18.1.0/24")
+        self.assertEqual(kea.commands().count("subnet4-list"), 1)
+        self.assertEqual(kea.commands().count("config-get"), 1)
+
+    def test_unavailable_catalogue_preserves_specific_diagnostics(self):
+        url = reverse("plugins:netbox_kea:combined_subnets4") + f"?server={self.server.pk}"
+
+        with stub_kea(
+            {
+                "subnet4-list": requests.ConnectionError("identity unavailable"),
+                "config-get": requests.ConnectionError("configuration unavailable"),
+            }
+        ):
+            response = self.client.get(url)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Kea subnet identity facts are unavailable.")
+        self.assertContains(response, "Kea Subnet configuration facts are unavailable.")
+        self.assertNotContains(response, "Failed to query server")
+
+    def test_empty_config_response_preserves_confirmed_empty_identity(self):
+        from netbox_kea.views import _fetch_subnets_from_server
+
+        with stub_kea(
+            {
+                "subnet4-list": {"result": 3, "text": "no subnets"},
+                "config-get": [],
+                "stat-lease4-get": {"result": 2, "text": "unknown command"},
+            }
+        ):
+            subnets, diagnostics = _fetch_subnets_from_server(self.server, 4)
+
+        self.assertEqual(subnets, [])
+        self.assertTrue(diagnostics)
+
+    def test_incomplete_catalogue_explains_omitted_facts(self):
+        responses = {
+            "subnet4-list": {
+                "result": 0,
+                "arguments": {"subnets": [{"id": 1, "subnet": "198.18.0.0/24"}]},
+            },
+            "config-get": {
+                "result": 0,
+                "arguments": {
+                    "Dhcp4": {
+                        "subnet4": [{"id": 1, "subnet": "198.18.0.0/24", "pools": "not-a-list"}],
+                    }
+                },
+            },
+            "stat-lease4-get": {"result": 2, "text": "unknown command"},
+        }
+        url = reverse("plugins:netbox_kea:combined_subnets4") + f"?server={self.server.pk}"
+
+        with stub_kea(responses):
+            response = self.client.get(url)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "198.18.0.0/24")
+        self.assertContains(response, "Kea returned a non-list Pool collection.")
+
+    def test_repeated_catalogue_diagnostics_render_once(self):
+        responses = {
+            "subnet4-list": {
+                "result": 0,
+                "arguments": {"subnets": [{"id": 1, "subnet": "198.18.0.0/24"}]},
+            },
+            "config-get": {
+                "result": 0,
+                "arguments": {
+                    "Dhcp4": {
+                        "subnet4": [
+                            {
+                                "id": 1,
+                                "subnet": "198.18.0.0/24",
+                                "pools": ["invalid-one", "invalid-two"],
+                            }
+                        ],
+                    }
+                },
+            },
+            "stat-lease4-get": {"result": 2, "text": "unknown command"},
+        }
+        url = reverse("plugins:netbox_kea:combined_subnets4") + f"?server={self.server.pk}"
+
+        with stub_kea(responses):
+            response = self.client.get(url)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Kea returned an invalid Pool.", count=1)
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)

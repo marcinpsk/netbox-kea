@@ -6,9 +6,9 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from django.test import SimpleTestCase
+from django.test import SimpleTestCase, override_settings
 
-from netbox_kea.tests.conftest import _prepopulate_url_resolver
+from netbox_kea.tests.conftest import _prepopulate_url_resolver, _test_database_name
 
 
 class TestPrepopulateUrlResolver(SimpleTestCase):
@@ -36,3 +36,46 @@ def test_prepopulation_runs_after_db_unblock_not_in_pytest_configure():
 
     assert not hasattr(cf, "pytest_configure"), "prepopulation must not run in pytest_configure (DB is blocked there)"
     assert "_prepopulate_url_resolver()" in inspect.getsource(cf.django_db_setup)
+
+
+@patch.dict("os.environ", {"TEST_DB_NAME": "test_parallel_task", "PYTEST_XDIST_WORKER": "gw2"})
+def test_database_name_includes_xdist_worker():
+    """Give each xdist worker a private database derived from the task name."""
+    assert _test_database_name() == "test_parallel_task_gw2"
+
+
+class TestPluginCacheHygiene(SimpleTestCase):
+    """The autouse cleanup must clear the plugin's keys, and only the plugin's keys."""
+
+    def test_drops_every_plugin_key_and_leaves_others_alone(self):
+        from django.core.cache import cache
+
+        from netbox_kea.tests.conftest import _PLUGIN_CACHE_PATTERNS, _drop_plugin_cache_entries
+
+        plugin_keys = [pattern.replace("*", "4242:4") for pattern in _PLUGIN_CACHE_PATTERNS]
+        unrelated = "netbox_kea_unrelated:keep-me"
+        for key in (*plugin_keys, unrelated):
+            cache.set(key, "sentinel", 300)
+        self.addCleanup(cache.delete, unrelated)
+
+        _drop_plugin_cache_entries()
+
+        for key in plugin_keys:
+            self.assertIsNone(cache.get(key), key)
+        # Scoped cleanup: NetBox's own cached state must survive.
+        self.assertEqual(cache.get(unrelated), "sentinel")
+
+    def test_cleanup_is_autouse_so_no_test_base_has_to_opt_in(self):
+        from netbox_kea.tests import conftest as cf
+
+        marker = cf._plugin_cache_hygiene._fixture_function_marker
+        self.assertTrue(marker.autouse, "the whole point is that no base has to opt in")
+        self.assertEqual(marker.scope, "function", "per-test cleanup, not per-class")
+
+    @override_settings(CACHES={"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}})
+    def test_a_backend_without_delete_pattern_fails_loudly(self):
+        """Silently skipping the cleanup would let the cross-test cache leak return."""
+        from netbox_kea.tests.conftest import _drop_plugin_cache_entries
+
+        with self.assertRaisesRegex(RuntimeError, "delete_pattern"):
+            _drop_plugin_cache_entries()

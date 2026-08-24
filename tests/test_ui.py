@@ -577,15 +577,17 @@ def configure_table(page: Page, *selected_coumns: str) -> None:
                 if attempt == 2:
                     raise
 
-    # Submit the column selection. NetBox <=4.5 labelled this button "Save"; 4.6 reworked the
-    # table-config modal and renamed it "Apply" (id=apply_tableconfig). Both reload to
-    # origin + pathname on success (4.6 sets window.location.href), stripping the query string.
+    # NetBox 4.5 and earlier label this button "Save". NetBox 4.6 labels it "Apply".
+    # Both versions reload the current path after they save the column selection.
     apply_button = page.locator("#apply_tableconfig")
     submit = apply_button if apply_button.count() else page.get_by_role("button", name="Save")
-    # wait_for_url (not the deprecated/racy expect_navigation) for that query-less URL.
-    target = page.url.split("?", 1)[0]
-    submit.click()
-    page.wait_for_url(target)
+    with page.expect_navigation(wait_until="domcontentloaded") as navigation:
+        submit.click()
+    # A same-document save (anchor or History API) navigates with no response, so name
+    # that case instead of failing on None.ok.
+    response = navigation.value
+    assert response is not None, "the column save did not reload the page"
+    assert response.ok
 
 
 @pytest.mark.parametrize(

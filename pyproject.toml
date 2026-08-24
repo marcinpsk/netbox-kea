@@ -45,6 +45,7 @@ dev = [
   "pytest>=8.0.0,<10.0.0",
   "pytest-cov>=6.0",
   "pytest-django>=4.9.0,<5.0.0",
+  "pytest-xdist>=3.8.0,<4.0.0",
   "pytest-playwright>=0.6.0,<0.10.0",
   "pynetbox>=7.3.0,<7.9.0",
   "django-stubs[compatible-mypy]>=5.0.0,<7.0.0",
@@ -131,7 +132,7 @@ max-complexity = 15
 
 [tool.pytest.ini_options]
 pythonpath = ["/opt/netbox/netbox"]
-DJANGO_SETTINGS_MODULE = "netbox.settings"
+DJANGO_SETTINGS_MODULE = "netbox_kea.tests.isolated_settings"
 testpaths = ["netbox_kea/tests"]
 addopts = "--ignore=tests/docker"
 

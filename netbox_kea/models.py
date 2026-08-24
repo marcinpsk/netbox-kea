@@ -232,6 +232,15 @@ class Server(JobsMixin, NetBoxModel):
             username = self.ca_username or None
             password = self.ca_password or None
 
+        if version in (4, 6):
+            from .subnet_catalogue import invalidate
+
+            def on_config_change() -> None:
+                invalidate(self, version)
+
+        else:
+            on_config_change = None
+
         return KeaClient(
             url=url,
             username=username,
@@ -242,6 +251,7 @@ class Server(JobsMixin, NetBoxModel):
             timeout=_get_kea_timeout(),
             persist_config=self.persist_config,
             send_service=self.has_control_agent,
+            on_config_change=on_config_change,
         )
 
     def clean(self) -> None:
