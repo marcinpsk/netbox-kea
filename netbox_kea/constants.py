@@ -20,6 +20,14 @@ BY_SUBNET_ID = "subnet_id"
 BY_HW_ADDRESS = "hw"
 BY_CLIENT_ID = "client_id"
 
+# The lease selector that finds every lease for one Reservation Identity without a
+# Subnet. Kea has no lease query for the other identifier types, so they are absent
+# and a Global Reservation that uses one reports no lease relationship.
+LEASE_SELECTOR_BY_IDENTIFIER: dict[int, dict[str, str]] = {
+    4: {"hw-address": BY_HW_ADDRESS, "client-id": BY_CLIENT_ID},
+    6: {"duid": BY_DUID},
+}
+
 HEX_STRING_REGEX = r"^([0-9A-Fa-f]{2}[:-]?)*([0-9A-Fa-f]{2})$"
 
 # id of the <datalist> that suggests subnet CIDRs on the reservation add form.
