@@ -116,7 +116,7 @@ class TestServerList:
         ("action", "label"),
         [("_edit", r"edit.?selected"), ("_delete", r"delete.?selected")],
     )
-    def test_bulk_actions_stay_disabled_without_a_selection(
+    def test_bulk_action_without_a_selection_reaches_no_broken_url(
         self,
         page: Page,
         netbox_login: None,
@@ -125,19 +125,28 @@ class TestServerList:
         label: str,
         track_http_errors: list,
     ) -> None:
-        """A bulk action with nothing checked must not be reachable.
+        """A bulk action with nothing checked once submitted an empty selection and
+        landed on ``/servers/None``.
 
-        It once submitted an empty selection and landed on ``/servers/None``. NetBox now
-        disables the button, so the guard is the disabled state, not the response code.
+        NetBox 4.6 renders the button disabled, which makes the action unreachable.
+        NetBox 4.3 leaves it enabled, so the guard has to be the outcome of the click,
+        not the state of the control.
         """
         page.goto(f"{plugin_base}/servers/")
         _check_no_django_error(page)
 
         button = page.get_by_role("button", name=re.compile(label, re.I))
-        expect(button).to_be_disabled()
-        assert page.locator(f'button[name="{action}"]:not([disabled])').count() == 0
+        expect(button).to_be_visible()
+        if button.is_disabled():
+            assert page.locator(f'button[name="{action}"]:not([disabled])').count() == 0
+        else:
+            button.click()
+            page.wait_for_load_state("networkidle")
         _assert_no_none_pk(page)
         _check_no_django_error(page)
+        assert not [error for error in track_http_errors if error[0] == 404], (
+            f"Got 404 from the empty {action} selection: {track_http_errors}"
+        )
         _assert_no_http_errors(track_http_errors)
 
     def test_import_button_loads_form_not_404(

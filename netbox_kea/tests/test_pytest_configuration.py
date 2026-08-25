@@ -211,9 +211,14 @@ def test_the_browser_suite_runs_in_the_integration_job():
     integration_job = _workflow_job(workflow, "test")
     # The trailing space keeps the step's own "- name: Run pytest" line out.
     command = next(line for line in integration_job.splitlines() if "pytest " in line)
-    target = command.split("pytest ", 1)[1].split()[0]
-    assert _BROWSER_SUITE.is_relative_to(REPOSITORY_ROOT / target), (
-        f"The integration job runs `pytest {target}`, which does not contain "
+    # Every token that names a real path, so option order cannot change the answer.
+    targets = [
+        token
+        for token in command.split("pytest ", 1)[1].split()
+        if not token.startswith("-") and (REPOSITORY_ROOT / token).exists()
+    ]
+    assert any(_BROWSER_SUITE.is_relative_to(REPOSITORY_ROOT / target) for target in targets), (
+        f"The integration job runs `pytest` over {targets}, which does not contain "
         f"{_BROWSER_SUITE.relative_to(REPOSITORY_ROOT)}."
     )
 
