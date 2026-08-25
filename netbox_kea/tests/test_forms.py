@@ -440,6 +440,23 @@ class TestReservationForm4(SimpleTestCase):
         self.assertFalse(form.is_valid())
         self.assertIn("identifier_type", form.errors)
 
+    def test_identifier_errors_are_curated_validation_copy(self):
+        """The domain ValueError *is* the field's validation text, so pin what reaches the page.
+
+        Change this list only with a fresh check that the new message carries no internal
+        URL, TLS, or Kea configuration detail.
+        """
+        malformed = self._form(self._valid_data(identifier="zz:zz:zz:zz:zz:zz"))
+        self.assertFalse(malformed.is_valid())
+        self.assertEqual(malformed.errors["identifier"], ["The Reservation identifier is invalid."])
+
+        too_long = self._form(self._valid_data(identifier_type="circuit-id", identifier="a" * 256))
+        self.assertFalse(too_long.is_valid())
+        self.assertEqual(
+            too_long.errors["identifier"],
+            ["Reservation identifier value must not exceed 255 characters."],
+        )
+
     def test_max_octet_client_id_is_accepted(self):
         """A 128-octet client-id is 383 characters delimited — past the opaque 255-char cap."""
         identifier = ":".join(["ab"] * constants.CLIENT_ID_MAX_OCTETS)
