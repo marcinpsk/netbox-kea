@@ -536,24 +536,16 @@ RESERVATION_ACTIONS = """
 """
 
 
-_LEASE_STATUS_LINK_V4 = (
+#: The view resolves the search that finds the matched lease, because an addressless or
+#: multi-address Reservation has no single address the template could link to.
+_LEASE_STATUS_LINK = (
     "{% if record.has_active_lease is not None %}"
-    "{% if record.has_active_lease %}"
-    "<a href=\"{% url 'plugins:netbox_kea:server_leases4' record.server_pk %}?q={{ record.ip_address }}&by=ip\""
-    ' class="badge text-bg-success text-decoration-none">Active Lease</a>'
-    "{% else %}"
+    "{% if not record.has_active_lease %}"
     '<span class="badge text-bg-secondary">No Lease</span>'
-    "{% endif %}"
-    "{% endif %}"
-)
-
-_LEASE_STATUS_LINK_V6 = (
-    "{% if record.has_active_lease is not None %}"
-    "{% if record.has_active_lease %}"
-    "<a href=\"{% url 'plugins:netbox_kea:server_leases6' record.server_pk %}?q={{ record.ip_address }}&by=ip\""
-    ' class="badge text-bg-success text-decoration-none">Active Lease</a>'
+    "{% elif record.lease_url %}"
+    '<a href="{{ record.lease_url }}" class="badge text-bg-success text-decoration-none">Active Lease</a>'
     "{% else %}"
-    '<span class="badge text-bg-secondary">No Lease</span>'
+    '<span class="badge text-bg-success">Active Lease</span>'
     "{% endif %}"
     "{% endif %}"
 )
@@ -697,7 +689,7 @@ class ReservationTable4(GenericTable):
     lease_status = tables.TemplateColumn(
         verbose_name="Lease",
         orderable=False,
-        template_code=_LEASE_STATUS_LINK_V4,
+        template_code=_LEASE_STATUS_LINK,
     )
     netbox_ip = tables.TemplateColumn(
         verbose_name="NetBox IP",
@@ -767,7 +759,7 @@ class ReservationTable6(GenericTable):
     lease_status = tables.TemplateColumn(
         verbose_name="Lease",
         orderable=False,
-        template_code=_LEASE_STATUS_LINK_V6,
+        template_code=_LEASE_STATUS_LINK,
     )
     netbox_ip = tables.TemplateColumn(
         verbose_name="NetBox IP",
