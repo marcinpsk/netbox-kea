@@ -128,7 +128,7 @@ max-complexity = 15
 # try/except/pass in helpers) are expected fixtures, not production risks.
 "*/tests/*.py" = ["D", "S"]
 "tests/*.py" = ["D", "S"]
-"e2e/*.py" = ["D", "S"]
+"tests/ui/*.py" = ["D", "S"]
 ".devcontainer/**/*.py" = ["D", "C4", "S"]
 "netbox_kea/forms.py" = ["C901"]  # upstream complex validation logic
 

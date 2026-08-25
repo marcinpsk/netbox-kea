@@ -74,10 +74,18 @@ The compose stack runs: NetBox, netbox-worker, postgres, redis, nginx (basic-aut
 daemons run with `-X` because Kea 3.2.0 refuses to start with an unsecured HTTP
 control socket; the sockets are loopback-bound with nginx terminating auth in front.
 
-### E2E tests
+### Browser tests (`tests/ui/`, Docker required)
 
-Playwright end-to-end tests live in `e2e/` and are separate from both unit and
-integration tests.
+Playwright tests are part of the integration suite: one run over `tests/` covers both,
+against the same compose stack. `tests/ui/conftest.py` holds the one browser harness
+both modules share: login, the Server object, a real `KeaClient` on each daemon's
+loopback socket, and HTTP-error tracking. `test_ui.py` covers tables,
+search, and permissions; `test_workflows.py` covers navigation, badge enrichment, and
+CRUD lifecycles.
+
+They used to live in a top-level `e2e/` directory that no workflow named, so they never
+ran anywhere. `test_pytest_configuration.py` now asserts the suite stays inside the path
+the integration job executes.
 
 ### CI
 

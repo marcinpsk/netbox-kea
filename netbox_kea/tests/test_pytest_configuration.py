@@ -16,6 +16,8 @@ from pathlib import Path
 import pytest
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+#: The Playwright suite. It must stay inside the path the integration job runs.
+_BROWSER_SUITE = REPOSITORY_ROOT / "tests" / "ui"
 
 
 SERIAL_BY_DESIGN = "1"
@@ -197,6 +199,23 @@ def test_every_unit_test_command_declares_auto_workers():
             workers.append(settings["workers"])
 
         assert "auto" in workers, (relative_path, workers)
+
+
+def test_the_browser_suite_runs_in_the_integration_job():
+    """The Playwright suite must sit inside the path CI actually executes.
+
+    It previously lived in a top-level ``e2e/`` directory that no workflow named, so
+    fifty browser tests never ran anywhere.
+    """
+    workflow = (REPOSITORY_ROOT / ".github/workflows/ci.yml").read_text()
+    integration_job = _workflow_job(workflow, "test")
+    # The trailing space keeps the step's own "- name: Run pytest" line out.
+    command = next(line for line in integration_job.splitlines() if "pytest " in line)
+    target = command.split("pytest ", 1)[1].split()[0]
+    assert _BROWSER_SUITE.is_relative_to(REPOSITORY_ROOT / target), (
+        f"The integration job runs `pytest {target}`, which does not contain "
+        f"{_BROWSER_SUITE.relative_to(REPOSITORY_ROOT)}."
+    )
 
 
 def test_documented_integration_commands_disable_pytest_django():
@@ -381,8 +400,8 @@ def _hrefs_navigated_raw(source: str) -> list[str]:
     """Return the places a function navigates straight to a raw ``get_attribute("href")``.
 
     ``get_attribute`` returns the raw attribute text, so a Django ``reverse()`` link is
-    root-relative. The e2e suite configures no Playwright ``base_url``, so navigating to
-    that value fails. Read the resolved DOM ``href`` property instead.
+    root-relative. The browser suite configures no Playwright ``base_url``, so navigating
+    to that value fails. Read the resolved DOM ``href`` property instead.
 
     A name that is rebound anywhere in the function is left alone, so resolving the value
     before navigating is accepted rather than reported.
@@ -407,10 +426,10 @@ def _hrefs_navigated_raw(source: str) -> list[str]:
     return offenders
 
 
-def test_e2e_navigation_resolves_hrefs_before_visiting_them():
+def test_browser_navigation_resolves_hrefs_before_visiting_them():
     """A root-relative href cannot be navigated to without a Playwright base_url."""
-    sources = sorted((REPOSITORY_ROOT / "e2e").rglob("*.py"))
-    assert sources, "The e2e suite moved; this guard would pass without reading anything."
+    sources = sorted(_BROWSER_SUITE.rglob("*.py"))
+    assert sources, "The browser suite moved; this guard would pass without reading anything."
     for path in sources:
         offenders = _hrefs_navigated_raw(path.read_text())
         assert not offenders, (

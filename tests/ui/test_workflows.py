@@ -1,30 +1,17 @@
-"""E2E Playwright tests for the NetBox Kea plugin.
+"""Browser workflow tests: navigation, badge enrichment, and CRUD lifecycles.
 
-These tests run against a live NetBox instance (default: http://localhost:8000).
-Tests in ``TestLiveKeaServer`` additionally require the environment variable
-``KEA_API_PASSWORD`` to be set; they are skipped otherwise.
-
-Run (headless, from the repo root):
-    .venv/bin/python3 -m pytest e2e/ -v --base-url http://localhost:8000 --override-ini 'addopts='
-
-Run (headed, useful for debugging):
-    .venv/bin/python3 -m pytest e2e/ -v --headed --base-url http://localhost:8000 --override-ini 'addopts='
-
-Run live-Kea tests only:
-    KEA_API_PASSWORD=<pw> .venv/bin/python3 -m pytest e2e/ -v -k TestLiveKea --override-ini 'addopts='
+They share the ``tests/ui`` harness with ``test_ui.py`` and run against the compose
+stack that ``tests/test_setup.sh`` starts. See AGENTS.md for how to start it.
 """
 
 import ipaddress
 import re
 import subprocess
-from typing import TYPE_CHECKING
 from urllib.parse import urlencode
 
 import pytest
+import requests
 from playwright.sync_api import Page, expect
-
-if TYPE_CHECKING:
-    import requests
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -125,36 +112,30 @@ class TestServerList:
         expect(page.locator("a[href*='/servers/add/']").first).to_be_visible()
         _assert_no_http_errors(track_http_errors)
 
-    def test_edit_selected_without_selection_does_not_404(
+    @pytest.mark.parametrize(
+        ("action", "label"),
+        [("_edit", r"edit.?selected"), ("_delete", r"delete.?selected")],
+    )
+    def test_bulk_actions_stay_disabled_without_a_selection(
         self,
         page: Page,
         netbox_login: None,
         plugin_base: str,
+        action: str,
+        label: str,
         track_http_errors: list,
     ) -> None:
-        """Regression: 'Edit Selected' with nothing checked must never go to /servers/None."""
-        page.goto(f"{plugin_base}/servers/")
-        page.get_by_role("button", name=re.compile(r"edit.?selected", re.I)).click()
-        page.wait_for_load_state("networkidle")
+        """A bulk action with nothing checked must not be reachable.
 
-        _assert_no_none_pk(page)
+        It once submitted an empty selection and landed on ``/servers/None``. NetBox now
+        disables the button, so the guard is the disabled state, not the response code.
+        """
+        page.goto(f"{plugin_base}/servers/")
         _check_no_django_error(page)
-        # Should either stay on server list or reach the bulk-edit page — not a 404
-        http_404 = [e for e in track_http_errors if e[0] == 404]
-        assert not http_404, f"Got 404 after 'Edit Selected': {http_404}"
 
-    def test_delete_selected_without_selection_does_not_crash(
-        self,
-        page: Page,
-        netbox_login: None,
-        plugin_base: str,
-        track_http_errors: list,
-    ) -> None:
-        """'Delete Selected' with nothing checked must not produce a 5xx."""
-        page.goto(f"{plugin_base}/servers/")
-        page.get_by_role("button", name=re.compile(r"delete.?selected", re.I)).click()
-        page.wait_for_load_state("networkidle")
-
+        button = page.get_by_role("button", name=re.compile(label, re.I))
+        expect(button).to_be_disabled()
+        assert page.locator(f'button[name="{action}"]:not([disabled])').count() == 0
         _assert_no_none_pk(page)
         _check_no_django_error(page)
         _assert_no_http_errors(track_http_errors)
@@ -210,8 +191,8 @@ class TestAddServerForm:
         _check_no_django_error(page)
 
         expect(page.get_by_label("Name", exact=True)).to_be_visible()
-        expect(page.get_by_label("Server URL", exact=True)).to_be_visible()
-        expect(page.get_by_label("Username", exact=True)).to_be_visible()
+        expect(page.get_by_label("CA / Server URL", exact=True)).to_be_visible()
+        expect(page.locator("#id_ca_username")).to_be_visible()
         # Checkboxes use IDs reliably across NetBox versions
         expect(page.locator("#id_dhcp4")).to_be_visible()
         expect(page.locator("#id_dhcp6")).to_be_visible()
@@ -227,7 +208,7 @@ class TestAddServerForm:
     ) -> None:
         """Submitting without a name must re-render the form, NOT redirect to /servers/None."""
         page.goto(f"{plugin_base}/servers/add/")
-        page.get_by_label("Server URL", exact=True).fill("http://not-real")
+        page.get_by_label("CA / Server URL", exact=True).fill("http://not-real")
         page.locator('[name="_create"]').click()
         page.wait_for_load_state("networkidle")
 
@@ -238,29 +219,26 @@ class TestAddServerForm:
 
 
 # ---------------------------------------------------------------------------
-# TestLiveKeaServer — requires KEA_API_PASSWORD
+# Server tabs
 # ---------------------------------------------------------------------------
 
 
-class TestLiveKeaServer:
-    """Full-stack tests that create a real Server entry pointing at live Kea daemons.
-
-    Skipped automatically when the ``KEA_API_PASSWORD`` env var is absent.
-    """
+class TestKeaServerTabs:
+    """Every Server tab renders against the harness Kea daemons."""
 
     def test_server_detail_page_loads(
         self,
         page: Page,
         netbox_login: None,
         plugin_base: str,
-        live_kea_server: dict,
+        kea_server,
         track_http_errors: list,
     ) -> None:
         """Detail page of a live Kea server loads without errors."""
-        server_id = live_kea_server["id"]
+        server_id = kea_server.id
         page.goto(f"{plugin_base}/servers/{server_id}/")
         _check_no_django_error(page)
-        expect(page.get_by_role("heading", name="e2e-live-kea")).to_be_visible()
+        expect(page.get_by_role("heading", name=kea_server.name)).to_be_visible()
         _assert_no_http_errors(track_http_errors)
 
     def test_server_status_tab(
@@ -268,10 +246,10 @@ class TestLiveKeaServer:
         page: Page,
         netbox_login: None,
         plugin_base: str,
-        live_kea_server: dict,
+        kea_server,
         track_http_errors: list,
     ) -> None:
-        server_id = live_kea_server["id"]
+        server_id = kea_server.id
         page.goto(f"{plugin_base}/servers/{server_id}/status/")
         _check_no_django_error(page)
         # Status tab should surface daemon version / uptime data from Kea
@@ -286,10 +264,10 @@ class TestLiveKeaServer:
         page: Page,
         netbox_login: None,
         plugin_base: str,
-        live_kea_server: dict,
+        kea_server,
         track_http_errors: list,
     ) -> None:
-        server_id = live_kea_server["id"]
+        server_id = kea_server.id
         page.goto(f"{plugin_base}/servers/{server_id}/leases4/")
         _check_no_django_error(page)
         _assert_no_http_errors(track_http_errors)
@@ -299,10 +277,10 @@ class TestLiveKeaServer:
         page: Page,
         netbox_login: None,
         plugin_base: str,
-        live_kea_server: dict,
+        kea_server,
         track_http_errors: list,
     ) -> None:
-        server_id = live_kea_server["id"]
+        server_id = kea_server.id
         page.goto(f"{plugin_base}/servers/{server_id}/leases6/")
         _check_no_django_error(page)
         _assert_no_http_errors(track_http_errors)
@@ -312,10 +290,10 @@ class TestLiveKeaServer:
         page: Page,
         netbox_login: None,
         plugin_base: str,
-        live_kea_server: dict,
+        kea_server,
         track_http_errors: list,
     ) -> None:
-        server_id = live_kea_server["id"]
+        server_id = kea_server.id
         page.goto(f"{plugin_base}/servers/{server_id}/subnets4/")
         _check_no_django_error(page)
         _assert_no_http_errors(track_http_errors)
@@ -325,10 +303,10 @@ class TestLiveKeaServer:
         page: Page,
         netbox_login: None,
         plugin_base: str,
-        live_kea_server: dict,
+        kea_server,
         track_http_errors: list,
     ) -> None:
-        server_id = live_kea_server["id"]
+        server_id = kea_server.id
         page.goto(f"{plugin_base}/servers/{server_id}/subnets6/")
         _check_no_django_error(page)
         _assert_no_http_errors(track_http_errors)
@@ -338,11 +316,11 @@ class TestLiveKeaServer:
         page: Page,
         netbox_login: None,
         plugin_base: str,
-        live_kea_server: dict,
+        kea_server,
         track_http_errors: list,
     ) -> None:
         """Editing a server via the edit form redirects to a real integer-pk URL."""
-        server_id = live_kea_server["id"]
+        server_id = kea_server.id
         page.goto(f"{plugin_base}/servers/{server_id}/edit/")
         _check_no_django_error(page)
 
@@ -363,7 +341,7 @@ class TestLiveKeaServer:
         page: Page,
         netbox_login: None,
         plugin_base: str,
-        live_kea_server: dict,
+        kea_server,
         track_http_errors: list,
     ) -> None:
         """Selecting a server and clicking 'Edit Selected' reaches /servers/edit/."""
@@ -383,13 +361,13 @@ class TestLiveKeaServer:
         page: Page,
         netbox_login: None,
         plugin_base: str,
-        live_kea_server: dict,
-        api_session: "requests.Session",
+        kea_server,
+        nb_http: requests.Session,
         netbox_url: str,
         track_http_errors: list,
     ) -> None:
         """Confirming server deletion removes it from NetBox."""
-        server_id = live_kea_server["id"]
+        server_id = kea_server.id
         page.goto(f"{plugin_base}/servers/{server_id}/delete/")
         _check_no_django_error(page)
 
@@ -403,7 +381,7 @@ class TestLiveKeaServer:
         _assert_no_http_errors(track_http_errors)
 
         # Verify the API agrees the server is gone
-        resp = api_session.get(f"{netbox_url}/api/plugins/kea/servers/{server_id}/", timeout=5)
+        resp = nb_http.get(f"{netbox_url}/api/plugins/kea/servers/{server_id}/", timeout=5)
         assert resp.status_code == 404, f"Server {server_id} should be deleted but API returned {resp.status_code}"
 
 
@@ -528,11 +506,11 @@ class TestCombinedViews:
 
 
 # ---------------------------------------------------------------------------
-# TestCombinedViewsLiveKea — column/table structure with a real server
+# TestCombinedViewsWithKea — column/table structure with a real server
 # ---------------------------------------------------------------------------
 
 
-class TestCombinedViewsLiveKea:
+class TestCombinedViewsWithKea:
     """Combined view content checks that require a live Kea server fixture."""
 
     def test_combined_leases4_server_column_present(
@@ -540,7 +518,7 @@ class TestCombinedViewsLiveKea:
         page: Page,
         netbox_login: None,
         plugin_base: str,
-        live_kea_server: dict,
+        kea_server,
         track_http_errors: list,
     ) -> None:
         """Combined leases4 table must include a 'Server' column header."""
@@ -556,7 +534,7 @@ class TestCombinedViewsLiveKea:
         page: Page,
         netbox_login: None,
         plugin_base: str,
-        live_kea_server: dict,
+        kea_server,
         track_http_errors: list,
     ) -> None:
         """Combined leases4 table must include a 'Reserved' column header."""
@@ -571,7 +549,7 @@ class TestCombinedViewsLiveKea:
         page: Page,
         netbox_login: None,
         plugin_base: str,
-        live_kea_server: dict,
+        kea_server,
         track_http_errors: list,
     ) -> None:
         """Combined leases4 table must include a 'NetBox IP' column header."""
@@ -586,7 +564,7 @@ class TestCombinedViewsLiveKea:
         page: Page,
         netbox_login: None,
         plugin_base: str,
-        live_kea_server: dict,
+        kea_server,
         track_http_errors: list,
     ) -> None:
         """Combined reservations4 table must include a 'Server' column header."""
@@ -602,7 +580,7 @@ class TestCombinedViewsLiveKea:
         page: Page,
         netbox_login: None,
         plugin_base: str,
-        live_kea_server: dict,
+        kea_server,
         track_http_errors: list,
     ) -> None:
         """Combined reservations4 table must include a 'Lease' column header."""
@@ -617,7 +595,7 @@ class TestCombinedViewsLiveKea:
         page: Page,
         netbox_login: None,
         plugin_base: str,
-        live_kea_server: dict,
+        kea_server,
         track_http_errors: list,
     ) -> None:
         """Per-server leases4 table must include 'Reserved' column header.
@@ -626,7 +604,7 @@ class TestCombinedViewsLiveKea:
         per-user column visibility preferences; the admin user may have toggled it off.
         Use the combined view tests to verify NetBox IP column presence.
         """
-        server_id = live_kea_server["id"]
+        server_id = kea_server.id
         page.goto(f"{plugin_base}/servers/{server_id}/leases4/?q=192.0.2.1&by=ip")
         page.wait_for_load_state("networkidle")
         _check_no_django_error(page)
@@ -638,11 +616,11 @@ class TestCombinedViewsLiveKea:
         page: Page,
         netbox_login: None,
         plugin_base: str,
-        live_kea_server: dict,
+        kea_server,
         track_http_errors: list,
     ) -> None:
         """Per-server reservations4 table must include 'Lease' and 'NetBox IP' columns."""
-        server_id = live_kea_server["id"]
+        server_id = kea_server.id
         page.goto(f"{plugin_base}/servers/{server_id}/reservations4/")
         page.wait_for_load_state("networkidle")
         _check_no_django_error(page)
@@ -652,11 +630,11 @@ class TestCombinedViewsLiveKea:
 
 
 # ---------------------------------------------------------------------------
-# TestBadgeEnrichmentLiveKea — verify badge rendering with live Kea data
+# TestBadgeEnrichment — verify badge rendering with live Kea data
 # ---------------------------------------------------------------------------
 
 
-class TestBadgeEnrichmentLiveKea:
+class TestBadgeEnrichment:
     """Badge enrichment rendering against live Kea servers.
 
     These tests inspect live Reservation and lease data through the plugin UI.
@@ -667,11 +645,11 @@ class TestBadgeEnrichmentLiveKea:
         page: Page,
         netbox_login: None,
         plugin_base: str,
-        live_kea_server: dict,
+        kea_server,
         track_http_errors: list,
     ) -> None:
         """A lease with a matching reservation must show the 'Reserved' badge on the leases page."""
-        server_id = live_kea_server["id"]
+        server_id = kea_server.id
         # Use a search query to trigger table rendering; even with no results headers must be visible
         page.goto(f"{plugin_base}/servers/{server_id}/leases4/?q=192.0.2.1&by=ip")
         page.wait_for_load_state("networkidle")
@@ -699,11 +677,11 @@ class TestBadgeEnrichmentLiveKea:
         page: Page,
         netbox_login: None,
         plugin_base: str,
-        live_kea_server: dict,
+        kea_server,
         track_http_errors: list,
     ) -> None:
         """'Active Lease' badges on the reservations4 page must be clickable links."""
-        server_id = live_kea_server["id"]
+        server_id = kea_server.id
         page.goto(f"{plugin_base}/servers/{server_id}/reservations4/")
         page.wait_for_load_state("networkidle")
         _check_no_django_error(page)
@@ -735,11 +713,11 @@ class TestBadgeEnrichmentLiveKea:
         page: Page,
         netbox_login: None,
         plugin_base: str,
-        live_kea_server: dict,
+        kea_server,
         track_http_errors: list,
     ) -> None:
         """Clicking an 'Active Lease' badge navigates to the lease search page without errors."""
-        server_id = live_kea_server["id"]
+        server_id = kea_server.id
         page.goto(f"{plugin_base}/servers/{server_id}/reservations4/")
         page.wait_for_load_state("networkidle")
         _check_no_django_error(page)
@@ -760,7 +738,7 @@ class TestBadgeEnrichmentLiveKea:
         page: Page,
         netbox_login: None,
         plugin_base: str,
-        live_kea_server: dict,
+        kea_server,
         track_http_errors: list,
     ) -> None:
         """Combined reservations4 'Active Lease' badges must also be <a> links."""
@@ -779,7 +757,7 @@ class TestBadgeEnrichmentLiveKea:
         page: Page,
         netbox_login: None,
         plugin_base: str,
-        live_kea_server: dict,
+        kea_server,
         track_http_errors: list,
     ) -> None:
         """Combined leases4 'NetBox IP' column header is always present after a search.
@@ -816,7 +794,7 @@ def _dismiss_debug_toolbar(page: Page) -> None:
     page.evaluate("() => { const el = document.getElementById('djDebug'); if (el) el.remove(); }")
 
 
-class TestLeaseSearchLiveKea:
+class TestLeaseSearchModes:
     """Verify each lease search mode renders the table correctly against live Kea."""
 
     def test_search_by_subnet_shows_table(
@@ -824,11 +802,11 @@ class TestLeaseSearchLiveKea:
         page: Page,
         netbox_login: None,
         plugin_base: str,
-        live_kea_server: dict,
+        kea_server,
         track_http_errors: list,
     ) -> None:
         """Searching leases4 by subnet_id renders headers without a Django error."""
-        server_id = live_kea_server["id"]
+        server_id = kea_server.id
         # Navigate directly with URL params — avoids Tom Select interaction
         page.goto(f"{plugin_base}/servers/{server_id}/leases4/?q=1&by=subnet_id")
         page.wait_for_load_state("networkidle")
@@ -841,11 +819,11 @@ class TestLeaseSearchLiveKea:
         page: Page,
         netbox_login: None,
         plugin_base: str,
-        live_kea_server: dict,
+        kea_server,
         track_http_errors: list,
     ) -> None:
         """Searching leases4 by IP produces a valid page (found or not-found, never a 500)."""
-        server_id = live_kea_server["id"]
+        server_id = kea_server.id
         page.goto(f"{plugin_base}/servers/{server_id}/leases4/?q=192.0.2.1&by=ip")
         page.wait_for_load_state("networkidle")
         _check_no_django_error(page)
@@ -857,11 +835,11 @@ class TestLeaseSearchLiveKea:
         page: Page,
         netbox_login: None,
         plugin_base: str,
-        live_kea_server: dict,
+        kea_server,
         track_http_errors: list,
     ) -> None:
         """Searching leases4 by hostname renders the table without errors."""
-        server_id = live_kea_server["id"]
+        server_id = kea_server.id
         page.goto(f"{plugin_base}/servers/{server_id}/leases4/?q=test&by=hostname")
         page.wait_for_load_state("networkidle")
         _check_no_django_error(page)
@@ -873,14 +851,14 @@ class TestLeaseSearchLiveKea:
         page: Page,
         netbox_login: None,
         plugin_base: str,
-        live_kea_server: dict,
+        kea_server,
         track_http_errors: list,
     ) -> None:
         """Searching leases4 by hardware address renders the table without errors.
 
         Note: BY_HW_ADDRESS constant value is "hw" (not "hw_address").
         """
-        server_id = live_kea_server["id"]
+        server_id = kea_server.id
         page.goto(f"{plugin_base}/servers/{server_id}/leases4/?q=aa:bb:cc:dd:ee:ff&by=hw")
         page.wait_for_load_state("networkidle")
         _check_no_django_error(page)
@@ -892,14 +870,14 @@ class TestLeaseSearchLiveKea:
         page: Page,
         netbox_login: None,
         plugin_base: str,
-        live_kea_server: dict,
+        kea_server,
     ) -> None:
         """CSV export for leases4 returns text/csv content.
 
         Uses the browser session (via page.context.request) so Django's session
         auth is used — regular plugin views don't accept Token auth headers.
         """
-        server_id = live_kea_server["id"]
+        server_id = kea_server.id
         url = f"{plugin_base}/servers/{server_id}/leases4/?q=1&by=subnet_id&export=all"
         # page.context.request shares the browser's cookie jar (including the session
         # cookie set by netbox_login), so it's fully authenticated.
@@ -914,7 +892,7 @@ class TestLeaseSearchLiveKea:
 # ---------------------------------------------------------------------------
 
 
-class TestReservationCRUDLiveKea:
+class TestReservationCRUD:
     """End-to-end create → verify → edit → delete reservation cycle via the UI."""
 
     # Deterministic test data — unlikely to clash with real production entries
@@ -992,11 +970,11 @@ class TestReservationCRUDLiveKea:
         page: Page,
         netbox_login: None,
         plugin_base: str,
-        live_kea_server: dict,
+        kea_server,
         track_http_errors: list,
     ) -> None:
         """Create → verify listed → edit hostname → verify edit → delete → verify gone."""
-        server_id = live_kea_server["id"]
+        server_id = kea_server.id
 
         # ---- 0. PRE-CLEAN — remove any leftover from a previous interrupted run ----
         # Match on the identifier: the address is only known once the add form is open.
@@ -1081,11 +1059,11 @@ class TestReservationCRUDLiveKea:
         page: Page,
         netbox_login: None,
         plugin_base: str,
-        live_kea_server: dict,
+        kea_server,
         track_http_errors: list,
     ) -> None:
         """Add-reservation form renders without error."""
-        server_id = live_kea_server["id"]
+        server_id = kea_server.id
         page.goto(self._reservation_add_url(plugin_base, server_id))
         page.wait_for_load_state("networkidle")
         _check_no_django_error(page)
@@ -1097,14 +1075,14 @@ class TestReservationCRUDLiveKea:
         page: Page,
         netbox_login: None,
         plugin_base: str,
-        live_kea_server: dict,
+        kea_server,
         track_http_errors: list,
     ) -> None:
         """Edit-reservation form loads for an existing reservation without error.
 
         Skips if no reservations exist on the live server.
         """
-        server_id = live_kea_server["id"]
+        server_id = kea_server.id
         page.goto(self._reservation_list_url(plugin_base, server_id))
         page.wait_for_load_state("networkidle")
         _check_no_django_error(page)
@@ -1130,14 +1108,14 @@ class TestReservationCRUDLiveKea:
         page: Page,
         netbox_login: None,
         plugin_base: str,
-        live_kea_server: dict,
+        kea_server,
         track_http_errors: list,
     ) -> None:
         """Delete confirmation page for a known reservation loads without error.
 
         Skips if no reservations exist on the live server.
         """
-        server_id = live_kea_server["id"]
+        server_id = kea_server.id
         page.goto(self._reservation_list_url(plugin_base, server_id))
         page.wait_for_load_state("networkidle")
         _check_no_django_error(page)
@@ -1161,12 +1139,8 @@ class TestReservationCRUDLiveKea:
         expect(page.locator('form[method="post"]').last).to_be_visible()
 
 
-class TestPoolManagementLiveKea:
-    """E2E tests for pool add/delete against a live Kea server.
-
-    Requires KEA_API_PASSWORD env var.  Run with:
-        KEA_API_PASSWORD=<pw> pytest e2e/ -v -k TestPoolManagement ...
-    """
+class TestPoolManagement:
+    """E2E tests for pool add/delete against a live Kea server."""
 
     @staticmethod
     def _subnets4_url(plugin_base: str, server_id: int) -> str:
@@ -1205,11 +1179,11 @@ class TestPoolManagementLiveKea:
         page: Page,
         netbox_login: None,
         plugin_base: str,
-        live_kea_server: dict,
+        kea_server,
         track_http_errors: list,
     ) -> None:
         """Pool add form renders without error."""
-        server_id = live_kea_server["id"]
+        server_id = kea_server.id
         page.goto(self._subnets4_url(plugin_base, server_id))
         page.wait_for_load_state("networkidle")
         _check_no_django_error(page)
@@ -1230,14 +1204,14 @@ class TestPoolManagementLiveKea:
         page: Page,
         netbox_login: None,
         plugin_base: str,
-        live_kea_server: dict,
+        kea_server,
         track_http_errors: list,
     ) -> None:
         """Pool delete confirmation page renders for an existing pool.
 
         Skips if the live server has no pools configured.
         """
-        server_id = live_kea_server["id"]
+        server_id = kea_server.id
         page.goto(self._subnets4_url(plugin_base, server_id))
         page.wait_for_load_state("networkidle")
         _check_no_django_error(page)
@@ -1262,11 +1236,11 @@ class TestPoolManagementLiveKea:
         page: Page,
         netbox_login: None,
         plugin_base: str,
-        live_kea_server: dict,
+        kea_server,
         track_http_errors: list,
     ) -> None:
         """Full cycle: add a pool → verify present → delete it → verify gone."""
-        server_id = live_kea_server["id"]
+        server_id = kea_server.id
         page.goto(self._subnets4_url(plugin_base, server_id))
         page.wait_for_load_state("networkidle")
         _check_no_django_error(page)
@@ -1322,30 +1296,26 @@ class TestPoolManagementLiveKea:
         assert test_pool not in page.content(), f"Test pool {test_pool} still visible after delete"
 
 
-class TestSubnetManagementLiveKea:
-    """E2E tests for subnet add/delete against a live Kea server.
+class TestSubnetManagement:
+    """E2E tests for subnet add/delete against a live Kea server."""
 
-    Requires KEA_API_PASSWORD env var.  Run with:
-        KEA_API_PASSWORD=<pw> pytest e2e/ -v -k TestSubnetManagement ...
-    """
-
-    def _kea4_cleanup_subnet(self, kea4_call, cidr: str) -> None:
+    def _kea4_cleanup_subnet(self, kea_client, cidr: str) -> None:
         """Remove every Kea subnet whose CIDR matches *cidr* (direct API call)."""
-        data = kea4_call("subnet4-list")
+        data = kea_client.command("subnet4-list", service=["dhcp4"], check=(0, 3))[0]
         for s in (data.get("arguments") or {}).get("subnets", []):
             if s.get("subnet") == cidr:
-                kea4_call("subnet4-del", {"id": s["id"]})
+                kea_client.command("subnet4-del", service=["dhcp4"], arguments={"id": s["id"]}, check=(0, 3))
 
     def test_subnet_add_form_loads(
         self,
         page: Page,
         netbox_login: None,
         plugin_base: str,
-        live_kea_server: dict,
+        kea_server,
         track_http_errors: list,
     ) -> None:
         """The add-subnet form renders without error."""
-        server_id = live_kea_server["id"]
+        server_id = kea_server.id
         page.goto(f"{plugin_base}/servers/{server_id}/subnets4/add/")
         page.wait_for_load_state("networkidle")
         _check_no_django_error(page)
@@ -1357,17 +1327,17 @@ class TestSubnetManagementLiveKea:
         page: Page,
         netbox_login: None,
         plugin_base: str,
-        live_kea_server: dict,
+        kea_server,
         track_http_errors: list,
-        kea4_call,
+        kea_client,
     ) -> None:
         """Full add→verify→delete cycle for a DHCPv4 subnet."""
-        server_id = live_kea_server["id"]
+        server_id = kea_server.id
         test_subnet = "10.254.253.0/24"
         test_pool = "10.254.253.10-10.254.253.20"
 
         # ---- PRE-CLEANUP: remove any leftover test subnets via direct Kea API ----
-        self._kea4_cleanup_subnet(kea4_call, test_subnet)
+        self._kea4_cleanup_subnet(kea_client, test_subnet)
 
         new_subnet_id = None
         try:
@@ -1413,7 +1383,7 @@ class TestSubnetManagementLiveKea:
             _assert_no_http_errors(track_http_errors)
 
             # ---- VERIFY DELETED via direct Kea API ----
-            data = kea4_call("subnet4-list")
+            data = kea_client.command("subnet4-list", service=["dhcp4"], check=(0, 3))[0]
             remaining_ids = {s["id"] for s in data.get("arguments", {}).get("subnets", [])}
             assert new_subnet_id not in remaining_ids, (
                 f"Subnet ID {new_subnet_id} ({test_subnet}) still present in Kea after UI delete"
@@ -1423,4 +1393,4 @@ class TestSubnetManagementLiveKea:
         finally:
             # ---- TEARDOWN: remove test subnet if test failed before the delete step ----
             if new_subnet_id is not None:
-                self._kea4_cleanup_subnet(kea4_call, test_subnet)
+                self._kea4_cleanup_subnet(kea_client, test_subnet)
