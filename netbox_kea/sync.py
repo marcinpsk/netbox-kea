@@ -391,6 +391,11 @@ def _sync_mac_address(hw_address: str, hostname: str = ""):
 
 _KEA_DESC_PREFIX = "Synced from Kea DHCP"
 
+#: The note this module writes on a Prefix it creates for a Kea subnet.
+KEA_SUBNET_PREFIX_DESCRIPTION = f"{_KEA_DESC_PREFIX} subnet"
+#: The note for a Prefix created from a Reservation's delegated prefix.
+KEA_DELEGATED_PREFIX_DESCRIPTION = f"{_KEA_DESC_PREFIX} delegated prefix"
+
 
 def _is_kea_managed_description(description: str | None) -> bool:
     """Return ``True`` when *description* is safe for the sync to overwrite.
@@ -841,19 +846,20 @@ def cleanup_stale_ips_batch(
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def sync_subnet_to_netbox_prefix(subnet_cidr: str, vrf=None) -> tuple:
-    """Create or update a NetBox Prefix from a Kea subnet CIDR string.
+def sync_subnet_to_netbox_prefix(cidr: str, vrf=None, description: str = KEA_SUBNET_PREFIX_DESCRIPTION) -> tuple:
+    """Create or update a NetBox Prefix from a Kea CIDR string.
 
     Behaviour:
     - If a Prefix with this CIDR already exists (in *vrf*), it is returned
       as-is (idempotent).  The description is set only when the existing
       object has an empty description, to avoid overwriting operator notes.
-    - Otherwise a new active Prefix is created with description
-      ``"Synced from Kea DHCP subnet"``.
+    - Otherwise a new active Prefix is created with *description*.
 
     Args:
-        subnet_cidr: CIDR notation, e.g. ``"192.168.10.0/24"`` or ``"2001:db8::/48"``.
+        cidr: CIDR notation, e.g. ``"192.168.10.0/24"`` or ``"2001:db8::/48"``.
         vrf: NetBox VRF instance to assign the prefix to.  ``None`` means the global VRF.
+        description: The note for a Prefix this call creates, or for an existing one that
+            carries none.
 
     Returns ``(prefix_object, created, did_update)`` where *created* is ``True`` for new
     objects and *did_update* is ``True`` when an existing object's description was set.
@@ -862,13 +868,13 @@ def sync_subnet_to_netbox_prefix(subnet_cidr: str, vrf=None) -> tuple:
     from ipam.models import Prefix
 
     prefix_obj, created = Prefix.objects.get_or_create(
-        prefix=subnet_cidr,
+        prefix=cidr,
         vrf=vrf,
-        defaults={"status": "active", "description": "Synced from Kea DHCP subnet"},
+        defaults={"status": "active", "description": description},
     )
     did_update = False
     if not created and not prefix_obj.description:
-        prefix_obj.description = "Synced from Kea DHCP subnet"
+        prefix_obj.description = description
         prefix_obj.save(update_fields=["description"])
         did_update = True
     return prefix_obj, created, did_update
