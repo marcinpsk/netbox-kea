@@ -87,8 +87,9 @@ def _fetch_reservation_snapshot(server: Server, version: int):
             exc,
         )
         return None
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Server %s (v%s): Reservation Snapshot failed: %s", server.name, version, exc)
+    except Exception:  # noqa: BLE001
+        # exc_info, because the job continues and the traceback is the only record.
+        logger.warning("Server %s (v%s): Reservation Snapshot failed", server.name, version, exc_info=True)
         return None
 
     try:
@@ -97,10 +98,10 @@ def _fetch_reservation_snapshot(server: Server, version: int):
         if exc.response.get("result") == 2:
             logger.warning("Server %s (v%s): host_cmds is unavailable; Reservation sync skipped", server.name, version)
             return SNAPSHOT_SKIPPED
-        logger.warning("Server %s (v%s): Reservation Snapshot failed: %s", server.name, version, exc)
+        logger.warning("Server %s (v%s): Reservation Snapshot failed", server.name, version, exc_info=True)
         return None
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Server %s (v%s): Reservation Snapshot failed: %s", server.name, version, exc)
+    except Exception:  # noqa: BLE001
+        logger.warning("Server %s (v%s): Reservation Snapshot failed", server.name, version, exc_info=True)
         return None
 
 

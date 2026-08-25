@@ -530,6 +530,26 @@ class TestKeaIpamSyncJobRun(TestCase):
 
         self.assertEqual([entry["errors"] for entry in job.data["summary"]], [0])
 
+    def test_a_failed_reservation_read_records_its_traceback(self):
+        """The job continues past the failure, so the traceback is the only record of it.
+
+        The message alone named the exception text and lost the stack that produced it.
+        """
+        self._make_db_server(dhcp6=False)
+        with _patch_kea(
+            leases4=[_LEASE4],
+            responses={"reservation-get-page": {"result": 1, "text": "internal error"}},
+        ):
+            with self.assertLogs("netbox_kea.jobs", level="WARNING") as logs:
+                self._run()
+
+        failures = [
+            record
+            for record in logs.records
+            if "Reservation Snapshot failed" in record.getMessage() and record.exc_info is not None
+        ]
+        self.assertTrue(failures, [record.getMessage() for record in logs.records])
+
     def test_a_failed_reservation_read_is_still_counted_as_an_error(self):
         """Only the missing-hook case is a skip; a real read failure must still fail the job."""
         # DHCPv4 only, so the count is exactly one failed reservation read.
