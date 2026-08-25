@@ -835,6 +835,10 @@ class TestReservationCRUD:
     # Host offset inside the selected Subnet. High enough to sit outside the pools a
     # live Kea normally allocates from, so the reservation does not clash with a lease.
     _TEST_HOST_OFFSET = -34
+    # A second identifier and address, so the state test never races the CRUD test.
+    _STATE_MAC = "e2:e2:e2:e2:e2:02"
+    _STATE_HOSTNAME = "e2e-state-test"
+    _STATE_HOST_OFFSET = -35
 
     def _test_ip(self, cidr: str) -> str:
         """Return the reservation address to use inside *cidr*.
@@ -932,6 +936,33 @@ class TestReservationCRUD:
                 raise
             warnings.warn(f"Could not remove test reservation {self._TEST_MAC}: {exc}", stacklevel=2)
 
+    @staticmethod
+    def _delete_reservation_if_present(page: Page, list_url: str, identifier: str) -> None:
+        """Delete the Reservation for *identifier* when a previous run left one behind."""
+        page.goto(list_url)
+        page.wait_for_load_state("networkidle")
+        stale_row = page.locator("tr", has_text=identifier)
+        if not stale_row.count():
+            return
+        # get_attribute returns the raw root-relative href and this suite sets no base_url.
+        delete_url = stale_row.first.locator('a[href*="/delete/"]').evaluate("el => el.href")
+        assert delete_url
+        page.goto(delete_url)
+        page.wait_for_load_state("networkidle")
+        _submit_and_wait_nav(
+            page,
+            "document.querySelectorAll('form[method=\"post\"]')"
+            "[ document.querySelectorAll('form[method=\"post\"]').length - 1 ].submit()",
+        )
+
+    @staticmethod
+    def _delete_netbox_ip(api_session: "requests.Session", netbox_url: str, address: str) -> None:
+        """Remove the NetBox IP this test synchronized, so the next run starts unsynchronized."""
+        found = api_session.get(f"{netbox_url}/api/ipam/ip-addresses/", params={"q": address})
+        found.raise_for_status()
+        for entry in found.json().get("results", []):
+            api_session.delete(f"{netbox_url}/api/ipam/ip-addresses/{entry['id']}/").raise_for_status()
+
     def test_full_crud_lifecycle(
         self,
         page: Page,
@@ -1011,6 +1042,59 @@ class TestReservationCRUD:
         finally:
             # A reservation left in live Kea blocks the next run on the same identifier.
             self._ui_cleanup_reservation(page, plugin_base, server_id, strict=sys.exc_info()[0] is None)
+
+    def test_reservation_relationship_and_synchronization_state_are_definite(
+        self,
+        page: Page,
+        netbox_login: None,
+        plugin_base: str,
+        netbox_url: str,
+        api_session: "requests.Session",
+        live_kea_server: dict,
+        track_http_errors: list,
+    ) -> None:
+        """One Reservation reports a definite lease relationship and synchronization state.
+
+        The fixture address sits outside the pools live Kea allocates from and uses an
+        identifier no client offers, so both answers are deterministic: no lease, and
+        not synchronized until this test synchronizes it.
+        """
+        server_id = live_kea_server["id"]
+        list_url = self._reservation_list_url(plugin_base, server_id)
+        self._delete_reservation_if_present(page, list_url, self._STATE_MAC)
+
+        page.goto(self._reservation_add_url(plugin_base, server_id))
+        page.wait_for_load_state("networkidle")
+        _check_no_django_error(page)
+        _dismiss_debug_toolbar(page)
+        cidr = _subnet_cidr_for_id(page, self._SUBNET_ID)
+        test_ip = str(ipaddress.ip_network(cidr)[self._STATE_HOST_OFFSET])
+        self._fill_reservation_form(page, cidr, test_ip, self._STATE_MAC, hostname=self._STATE_HOSTNAME)
+        self._submit_form_by_field(page, "id_subnet_cidr")
+        _check_no_django_error(page)
+
+        try:
+            page.goto(list_url)
+            page.wait_for_load_state("networkidle")
+            _check_no_django_error(page)
+            row = page.locator("tr", has_text=self._STATE_MAC).first
+            expect(row).to_be_visible()
+
+            # A definite relationship, not a missing badge: this address holds no lease.
+            expect(row.locator('.badge:has-text("No Lease")')).to_be_visible()
+            assert row.locator('.badge:has-text("Active Lease")').count() == 0, (
+                "A Reservation outside every pool must not report an active lease"
+            )
+
+            # One address, none of it in NetBox yet.
+            expect(row.locator('.badge:has-text("Not Synchronized 0/1")')).to_be_visible()
+
+            row.locator('button:has-text("Sync all")').click()
+            expect(row.locator('.badge:has-text("Synchronized 1/1")')).to_be_visible()
+            _assert_no_http_errors(track_http_errors)
+        finally:
+            self._delete_reservation_if_present(page, list_url, self._STATE_MAC)
+            self._delete_netbox_ip(api_session, netbox_url, test_ip)
 
     def test_add_reservation_form_loads(
         self,
