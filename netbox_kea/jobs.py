@@ -229,7 +229,7 @@ def _sync_server_reservations(
     snapshot,
     *,
     stats: dict[str, int],
-    all_synced: list[Reservation],
+    all_synced: list[dict | Reservation],
     lease_ips: frozenset[str] | None = None,
     conflict_ips: set[str] | None = None,
 ) -> bool:
