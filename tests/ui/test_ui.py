@@ -20,6 +20,17 @@ from ..kea import KeaClient
 from .conftest import _DualEndpointKeaClient
 
 
+def _claim_netbox_ip(nb_api: pynetbox.api, address: str, **fields):
+    """Create the NetBox IP for *address*, clearing any row an earlier test left behind.
+
+    NetBox enforces global address uniqueness by default now, so one stray row for this
+    address fails every fixture that reserves it, and then fails their teardown too.
+    """
+    for stale in nb_api.ipam.ip_addresses.filter(address=address):
+        stale.delete()
+    return nb_api.ipam.ip_addresses.create(address=address, **fields)
+
+
 @pytest.fixture
 def lease6(kea: KeaClient) -> dict[str, Any]:
     lease_ip = "2001:db8:1::1"
@@ -75,8 +86,9 @@ def lease6_netbox_device(
         )
         assert interface.update({"primary_mac_address": intf_mac.id})
 
-    ip = nb_api.ipam.ip_addresses.create(
-        address=f"{lease_ip}/64",
+    ip = _claim_netbox_ip(
+        nb_api,
+        f"{lease_ip}/64",
         assigned_object_type="dcim.interface",
         assigned_object_id=interface.id,
     )
@@ -114,8 +126,9 @@ def lease6_netbox_vm(
         )
         assert interface.update({"primary_mac_address": intf_mac.id})
 
-    ip = nb_api.ipam.ip_addresses.create(
-        address=f"{lease_ip}/64",
+    ip = _claim_netbox_ip(
+        nb_api,
+        f"{lease_ip}/64",
         assigned_object_type="virtualization.vminterface",
         assigned_object_id=interface.id,
     )
@@ -130,7 +143,7 @@ def lease6_netbox_vm(
 @pytest.fixture
 def lease6_netbox_ip(nb_api: pynetbox.api, lease6: dict[str, Any]):
     lease_ip = lease6["ip-address"]
-    ip = nb_api.ipam.ip_addresses.create(address=f"{lease_ip}/64")
+    ip = _claim_netbox_ip(nb_api, f"{lease_ip}/64")
     yield lease_ip
     ip.delete()
 
@@ -188,8 +201,9 @@ def lease4_netbox_device(
         )
         assert interface.update({"primary_mac_address": intf_mac.id})
 
-    ip = nb_api.ipam.ip_addresses.create(
-        address=f"{lease_ip}/24",
+    ip = _claim_netbox_ip(
+        nb_api,
+        f"{lease_ip}/24",
         assigned_object_type="dcim.interface",
         assigned_object_id=interface.id,
     )
@@ -229,8 +243,9 @@ def lease4_netbox_vm(
         )
         assert interface.update({"primary_mac_address": intf_mac.id})
 
-    ip = nb_api.ipam.ip_addresses.create(
-        address=f"{lease_ip}/24",
+    ip = _claim_netbox_ip(
+        nb_api,
+        f"{lease_ip}/24",
         assigned_object_type="virtualization.vminterface",
         assigned_object_id=interface.id,
     )
@@ -245,7 +260,7 @@ def lease4_netbox_vm(
 @pytest.fixture
 def lease4_netbox_ip(nb_api: pynetbox.api, lease4: dict[str, Any]):
     lease_ip = lease4["ip-address"]
-    ip = nb_api.ipam.ip_addresses.create(address=f"{lease_ip}/24")
+    ip = _claim_netbox_ip(nb_api, f"{lease_ip}/24")
     yield lease_ip
     ip.delete()
 
