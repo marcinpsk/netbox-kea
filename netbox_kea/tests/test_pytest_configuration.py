@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import ast
 import os
 import re
 import runpy
@@ -323,3 +324,95 @@ def test_query_counts_compare_only_on_the_recorded_release():
     assert query_counts_are_comparable(QUERY_COUNT_NETBOX_VERSION, update_mode=False)
     assert not query_counts_are_comparable(different_patch_release, update_mode=False)
     assert query_counts_are_comparable(different_patch_release, update_mode=True)
+
+
+def _href_attribute_call(node: ast.AST) -> bool:
+    """Is *node* a ``get_attribute("href")`` call, positional or by keyword?"""
+    if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+        return False
+    if node.func.attr != "get_attribute":
+        return False
+    named = [argument.value for argument in node.keywords if argument.arg == "name"]
+    supplied = list(node.args[:1]) + named
+    return any(isinstance(value, ast.Constant) and value.value == "href" for value in supplied)
+
+
+def _goto_target(node: ast.AST) -> ast.expr | None:
+    """Return the URL expression of a ``goto`` call, positional or by keyword."""
+    if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+        return None
+    if node.func.attr != "goto":
+        return None
+    for argument in node.keywords:
+        if argument.arg == "url":
+            return argument.value
+    return node.args[0] if node.args else None
+
+
+def _unwrap(node: ast.expr | None) -> ast.expr | None:
+    """Strip ``await`` and a walrus binding so every call spelling reads the same."""
+    while isinstance(node, (ast.Await, ast.NamedExpr)):
+        node = node.value
+    return node
+
+
+def _own_nodes(function: ast.AST):
+    """Walk *function* without descending into a nested function or lambda."""
+    stack = list(ast.iter_child_nodes(function))
+    while stack:
+        node = stack.pop()
+        yield node
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            stack.extend(ast.iter_child_nodes(node))
+
+
+def _bindings(node: ast.AST) -> list[tuple[str, ast.expr]]:
+    """Return the ``(name, value)`` pairs one statement binds."""
+    if isinstance(node, ast.Assign):
+        return [(t.id, node.value) for t in node.targets if isinstance(t, ast.Name)]
+    if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and node.value is not None:
+        return [(node.target.id, node.value)]
+    if isinstance(node, ast.NamedExpr) and isinstance(node.target, ast.Name):
+        return [(node.target.id, node.value)]
+    return []
+
+
+def _hrefs_navigated_raw(source: str) -> list[str]:
+    """Return the places a function navigates straight to a raw ``get_attribute("href")``.
+
+    ``get_attribute`` returns the raw attribute text, so a Django ``reverse()`` link is
+    root-relative. The e2e suite configures no Playwright ``base_url``, so navigating to
+    that value fails. Read the resolved DOM ``href`` property instead.
+
+    A name that is rebound anywhere in the function is left alone, so resolving the value
+    before navigating is accepted rather than reported.
+    """
+    offenders: list[str] = []
+    for function in ast.walk(ast.parse(source)):
+        if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        bound: dict[str, list[ast.expr]] = {}
+        own = list(_own_nodes(function))
+        for node in own:
+            for name, value in _bindings(node):
+                bound.setdefault(name, []).append(_unwrap(value))
+        raw = {name for name, values in bound.items() if all(_href_attribute_call(v) for v in values)}
+        for node in own:
+            target = _unwrap(_goto_target(node))
+            if target is None:
+                continue
+            if _href_attribute_call(target) or (isinstance(target, ast.Name) and target.id in raw):
+                offenders.append(f"{function.name}:{node.lineno}")
+    return offenders
+
+
+def test_e2e_navigation_resolves_hrefs_before_visiting_them():
+    """A root-relative href cannot be navigated to without a Playwright base_url."""
+    sources = sorted((REPOSITORY_ROOT / "e2e").rglob("*.py"))
+    assert sources, "The e2e suite moved; this guard would pass without reading anything."
+    for path in sources:
+        offenders = _hrefs_navigated_raw(path.read_text())
+        assert not offenders, (
+            f"{path.name} navigates to an unresolved get_attribute('href') value at {offenders}. "
+            "Use the resolved DOM property, e.g. locator.evaluate('el => el.href')."
+        )

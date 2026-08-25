@@ -1004,7 +1004,8 @@ class TestReservationCRUDLiveKea:
         page.wait_for_load_state("networkidle")
         stale_row = page.locator("tr", has_text=self._TEST_MAC)
         if stale_row.count():
-            delete_url = stale_row.first.locator('a[href*="/delete/"]').get_attribute("href")
+            # get_attribute returns the raw root-relative href and this suite sets no base_url.
+            delete_url = stale_row.first.locator('a[href*="/delete/"]').evaluate("el => el.href")
             assert delete_url
             page.goto(delete_url)
             page.wait_for_load_state("networkidle")
