@@ -33,10 +33,9 @@ from ..kea import (
 from ..models import Server
 from ..reservations import (
     GlobalReservationScope,
-    IdentifierType,
     InSubnetReservationScope,
     Reservation,
-    ReservationIdentity,
+    lease_identities,
 )
 from ..signals import lease_added, leases_deleted
 from ..sync import sync_lease_to_netbox
@@ -886,27 +885,6 @@ class ServerLease6AddView(_BaseLeaseAddView):
     _active_tab = _LEASES_TAB
 
 
-_LEASE_RESERVATION_IDENTIFIERS: dict[int, tuple[tuple[IdentifierType, str], ...]] = {
-    4: (("hw-address", "hw_address"), ("client-id", "client_id")),
-    6: (("duid", "duid"), ("hw-address", "hw_address")),
-}
-
-
-def _lease_reservation_identities(lease: dict[str, Any], version: int) -> tuple[ReservationIdentity, ...]:
-    identities = []
-    for identifier_type, lease_key in _LEASE_RESERVATION_IDENTIFIERS[version]:
-        value = lease.get(lease_key)
-        if not value:
-            continue
-        try:
-            identity = ReservationIdentity(identifier_type, value)
-        except ValueError:
-            continue
-        if identity not in identities:
-            identities.append(identity)
-    return tuple(identities)
-
-
 class _IdentityLookups:
     """Resolve each ``(Scope, Identity)`` Reservation lookup once for a whole lease page.
 
@@ -978,7 +956,7 @@ def _reservation_for_lease_worker(worker_clients, version, catalogue, lease, loo
     if subnet is None:
         return ip, None, True
     scope = InSubnetReservationScope(subnet.identity)
-    identities = _lease_reservation_identities(lease, version)
+    identities = lease_identities(lease, version)
     worker_client = worker_clients.get()
     try:
         reservation = worker_client.reservation_by_address(version, catalogue, scope, ip)
@@ -1087,12 +1065,13 @@ def _set_lease_reservation_fields(
             and all(str(address) != ip for address in reservation.addresses)
         ):
             lease["pending_ip_change"] = True
-            lease["pending_reservation_ip"] = str(reservation.addresses[0])
+            # Every reserved address, because the domain names no primary one.
+            lease["pending_reservation_ip"] = ", ".join(str(address) for address in reservation.addresses)
         if (
             ip in {str(address) for address in reservation.addresses}
             and reservation.identity.identifier_type == "hw-address"
         ):
-            lease_hw = _lease_reservation_identities(lease, version)
+            lease_hw = lease_identities(lease, version)
             lease_hw_value = next(
                 (identity.value for identity in lease_hw if identity.identifier_type == "hw-address"), ""
             )
@@ -1112,7 +1091,7 @@ def _set_lease_reservation_fields(
         "ip_addresses" if version == 6 else "ip_address": ip,
         "hostname": lease.get("hostname", ""),
     }
-    identities = _lease_reservation_identities(lease, version)
+    identities = lease_identities(lease, version)
     if identities:
         params["identifier_type"] = identities[0].identifier_type
         params["identifier"] = identities[0].value
