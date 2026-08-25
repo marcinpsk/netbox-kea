@@ -1069,6 +1069,9 @@ class TestReservationCRUD:
         _dismiss_debug_toolbar(page)
         cidr = _subnet_cidr_for_id(page, self._SUBNET_ID)
         test_ip = str(ipaddress.ip_network(cidr)[self._STATE_HOST_OFFSET])
+        # A run that stopped after synchronizing leaves the NetBox IP, which would make
+        # the Not Synchronized assertion below read as already synchronized.
+        self._delete_netbox_ip(nb_http, netbox_url, test_ip)
         # The Reservation lives on the live Kea, so cleanup covers every step that can
         # create it, not only the assertions after it.
         try:
@@ -1096,8 +1099,11 @@ class TestReservationCRUD:
             expect(row.locator('.badge:has-text("Synchronized 1/1")')).to_be_visible()
             _assert_no_http_errors(track_http_errors)
         finally:
-            self._delete_reservation_if_present(page, list_url, self._STATE_MAC)
-            self._delete_netbox_ip(nb_http, netbox_url, test_ip)
+            # Nested, so a failure removing the Reservation still removes the NetBox IP.
+            try:
+                self._delete_reservation_if_present(page, list_url, self._STATE_MAC)
+            finally:
+                self._delete_netbox_ip(nb_http, netbox_url, test_ip)
 
     def test_add_reservation_form_loads(
         self,
