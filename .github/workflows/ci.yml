@@ -202,6 +202,9 @@ jobs:
       - name: Ruff format check
         run: uv run ruff format --check netbox_kea/
 
+      - name: Type check (mypy, new errors only)
+        run: uv run scripts/mypy-gate.sh
+
       - name: REUSE compliance
         run: uv run reuse lint
 

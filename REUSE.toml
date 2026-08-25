@@ -88,6 +88,7 @@ path = [
     "netbox_kea/templates/netbox_kea/server_sync_status.html",
     "CLAUDE.md",
     ".superpowers/**",
+    "mypy-baseline.txt",
 ]
 SPDX-FileCopyrightText = "Copyright (C) 2025 Marcin Zieba <marcinpsk@gmail.com>"
 SPDX-License-Identifier = "Apache-2.0"

@@ -349,7 +349,7 @@ def _goto_target(node: ast.AST) -> ast.expr | None:
     return node.args[0] if node.args else None
 
 
-def _unwrap(node: ast.expr | None) -> ast.expr | None:
+def _unwrap(node: ast.expr) -> ast.expr:
     """Strip ``await`` and a walrus binding so every call spelling reads the same."""
     while isinstance(node, (ast.Await, ast.NamedExpr)):
         node = node.value
@@ -398,9 +398,10 @@ def _hrefs_navigated_raw(source: str) -> list[str]:
                 bound.setdefault(name, []).append(_unwrap(value))
         raw = {name for name, values in bound.items() if all(_href_attribute_call(v) for v in values)}
         for node in own:
-            target = _unwrap(_goto_target(node))
-            if target is None:
+            navigated = _goto_target(node)
+            if navigated is None:
                 continue
+            target = _unwrap(navigated)
             if _href_attribute_call(target) or (isinstance(target, ast.Name) and target.id in raw):
                 offenders.append(f"{function.name}:{node.lineno}")
     return offenders

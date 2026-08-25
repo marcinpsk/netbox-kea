@@ -31,6 +31,8 @@ uv run reuse lint                          # SPDX/REUSE compliance
 uv run pre-commit install --install-hooks  # install pre-commit hooks (incl. pre-push opengrep)
 ./scripts/opengrep-scan.sh                 # custom opengrep ruleset gate (pre-push + CI)
 ./scripts/opengrep-test.sh                 # opengrep rule tests
+uv run ./scripts/mypy-gate.sh              # type check, new errors only (pre-push + CI)
+uv run ./scripts/mypy-gate.sh --sync       # rewrite mypy-baseline.txt after fixing errors
 ```
 
 ### Unit tests (`netbox_kea/tests/`)
@@ -227,6 +229,24 @@ resort, reserved for true external boundaries you cannot run locally.
   parser can't hide behind a `MagicMock`. Register responses by command name (dict /
   list / `queued(...)` / a `(body) -> payload` callable / an exception instance raised
   at the boundary). Patching is at the class level so it also covers `clone()`.
+- **Type-check gate.** `scripts/mypy-gate.sh` (+ `test_mypy_gate.py`, a pre-push hook,
+  the CI `lint` job) type-checks `netbox_kea/` and fails only on errors that are absent
+  from `mypy-baseline.txt`. It exists to catch annotation drift between a producer and
+  its consumer: a `list[dict | Reservation]` passed to a `list[Reservation]` parameter is
+  an error because `list` is invariant, and that reached review once already. NetBox is
+  deliberately **not** installed for this gate, so NetBox objects are `Any`; every
+  first-party signature and call site is still checked, and no upstream NetBox release
+  can break the gate. Unlike the mock-discipline baseline, `mypy-baseline.txt` is **not**
+  empty: it records the errors that already existed when the gate was added. Fix one and
+  run `--sync` to shrink it; never `--sync` to silence a new error. The baseline matches
+  on error text, not line number, so edits above an error do not force a resync.
+  **Always run the gate through `uv run`**, so the locked dev group is active. `django-stubs`
+  is a dev dependency, and mypy resolves Django imports through its stubs only when it is
+  installed; a baseline generated without it misses ~95 findings and CI then fails on a
+  clean checkout. A resolved baseline error does not fail the gate (`--allow-unsynced`),
+  so fixing types never breaks the build, and a mypy exit status above 1 fails loudly
+  rather than filtering an empty report into a false pass.
+
 - **Mock-discipline gate.** `netbox_kea/tests/mock_discipline.py` (+
   `test_mock_discipline.py`, a pre-commit hook) flags new spec-less
   `MagicMock`/`Mock`, and new `patch("netbox_kea…")` / `patch.object(<our class>, …)`
