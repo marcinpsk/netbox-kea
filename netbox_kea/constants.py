@@ -23,46 +23,6 @@ DUID_MIN_OCTETS = 1
 CLIENT_ID_MAX_OCTETS = DUID_MAX_OCTETS
 CLIENT_ID_MIN_OCTETS = 2
 
-# ---------------------------------------------------------------------------
-# Host-reservation client identifiers.
-# ---------------------------------------------------------------------------
-# One authoritative answer to "which identifier types may a reservation use",
-# shared by the forms, the CSV importer and the by-identifier URLs so a value one
-# of them accepts cannot be rejected by another. Preference order: the first key
-# a host actually carries is the one the UI addresses it by.
-RESERVATION_IDENTIFIER_TYPES: dict[int, tuple[str, ...]] = {
-    4: ("hw-address", "client-id", "circuit-id", "flex-id", "remote-id"),
-    6: ("duid", "hw-address", "client-id", "flex-id", "remote-id"),
-}
-
-RESERVATION_IDENTIFIER_LABELS: dict[str, str] = {
-    "hw-address": "Hardware Address",
-    "duid": "DUID",
-    "client-id": "Client ID",
-    "circuit-id": "Circuit ID",
-    "flex-id": "Flex ID",
-    "remote-id": "Remote ID",
-}
-
-# Kea sets no length limit on the opaque identifiers (circuit-id, flex-id,
-# remote-id). This only stops an absurd value reaching the Kea API.
-MAX_IDENTIFIER_LENGTH = 255
-
-# duid and client-id are bounded by their octet count, not by a character count: a
-# 128-octet DUID is 383 characters colon-delimited, so the 255 cap above rejected
-# valid values. Three characters per octet is the delimited worst case; is_hex_string()
-# does the real check. hw-address needs no entry — 6 octets is 17 characters.
-MAX_HEX_IDENTIFIER_LENGTH = 3 * DUID_MAX_OCTETS
-_HEX_IDENTIFIER_TYPES = frozenset({"duid", "client-id"})
-
-
-def max_identifier_length(identifier_type: str) -> int:
-    """Return the character cap that applies to *identifier_type*."""
-    if identifier_type in _HEX_IDENTIFIER_TYPES:
-        return MAX_HEX_IDENTIFIER_LENGTH
-    return MAX_IDENTIFIER_LENGTH
-
-
 # Kea lease state codes and human-readable labels.
 # https://kea.readthedocs.io/en/latest/arm/lease-db.html#lease-states
 LEASE_STATE_LABELS: dict[int, str] = {

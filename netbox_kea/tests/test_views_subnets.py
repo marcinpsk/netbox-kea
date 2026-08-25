@@ -29,7 +29,7 @@ from django.contrib import messages as django_messages
 from django.test import override_settings
 from django.urls import reverse
 
-from .kea_stub import queued, stub_kea
+from .kea_stub import _res_page, _subnet_list, queued, stub_kea
 from .utils import _PLUGINS_CONFIG, _make_db_server, _ViewTestBase
 
 # Shared stub responses for the subnet list/table views, which issue config-get
@@ -2192,6 +2192,9 @@ class TestPoolAddPostErrors(_ViewTestBase):
         follow=True lands on the subnets list (config-get + stat). Override a leg to drive errors.
         """
         base = {
+            # The overlap probe reads the Subnet Catalogue first; without this the
+            # unregistered command aborts the probe before it reads any reservation.
+            "subnet4-list": _subnet_list(4, [{"id": 1, "subnet": "10.0.0.0/24"}]),
             "reservation-get-page": {"result": 3},
             "list-commands": {
                 "result": 0,
@@ -2211,6 +2214,40 @@ class TestPoolAddPostErrors(_ViewTestBase):
         with self._pool_add_stub(**{"config-write": {"result": 1, "text": "disk full"}}):
             response = self.client.post(self._url(), {"pool": "10.0.0.10-10.0.0.20"}, follow=True)
         self.assertEqual(response.status_code, 200)
+
+    def test_incomplete_reservation_snapshot_is_reported(self):
+        """Say so when the overlap check could not read every reservation.
+
+        `reservation_snapshot` does not raise once a page has succeeded: it quarantines
+        the rest as diagnostics. Reading only `snapshot.records` then produces no
+        warning, which the operator reads as "no overlapping reservation".
+        """
+        quarantined = _res_page([{"subnet-id": 1, "remote-id": "relay-value"}])
+
+        with self._pool_add_stub(**{"reservation-get-page": quarantined}) as kea:
+            response = self.client.post(self._url(), {"pool": "10.0.0.10-10.0.0.20"}, follow=True)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "incomplete list")
+        self.assertIn("subnet4-pool-add", kea.commands())
+
+    def test_failed_overlap_probe_logs_its_traceback(self):
+        """Record why the overlap warning was skipped, and keep the pool add working.
+
+        The probe swallows every exception to stay non-blocking, so without the traceback
+        an operator cannot tell a Kea read failure from a genuinely empty overlap.
+        """
+        malformed_probe = {"result": 0, "arguments": {"hosts": None, "next": {"from": 0, "source-index": 0}}}
+
+        with self._pool_add_stub(**{"reservation-get-page": malformed_probe}) as kea:
+            with self.assertLogs("netbox_kea.views.subnets", level="ERROR") as logs:
+                response = self.client.post(self._url(), {"pool": "10.0.0.10-10.0.0.20"}, follow=True)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("subnet4-pool-add", kea.commands())
+        overlap_records = [record for record in logs.records if "overlap" in record.getMessage()]
+        self.assertTrue(overlap_records)
+        self.assertIsNotNone(overlap_records[0].exc_info)
 
     def test_kea_exception_shows_error(self):
         """A KeaException (subnet4-pool-add result 1) from pool_add shows a Kea error, no 500."""

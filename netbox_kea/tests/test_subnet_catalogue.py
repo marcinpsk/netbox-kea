@@ -108,6 +108,15 @@ class TestSubnetCatalogue(TestCase):
         self.assertEqual(standalone.configuration.settings.valid_lifetime, 3600)
         self.assertEqual(standalone.configuration.settings.ddns_qualifying_suffix, "example.invalid")
 
+    def test_find_by_id_rejects_non_integer_values(self):
+        subnet = {"id": 1, "subnet": "198.18.1.0/24"}
+        with stub_kea({"subnet4-list": _identity(4, [subnet]), "config-get": _config(4, [subnet])}):
+            snapshot = display(self.server, 4)
+
+        for subnet_id in (1.0, True):
+            with self.subTest(subnet_id=subnet_id):
+                self.assertIsNone(snapshot.find_by_id(subnet_id))
+
     def test_display_reconciles_typed_dhcpv6_configuration(self):
         identities = _identity(
             6,

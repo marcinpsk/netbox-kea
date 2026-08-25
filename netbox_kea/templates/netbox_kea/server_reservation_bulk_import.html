@@ -3,46 +3,44 @@
 
 {% block content %}
 <div class="row">
-  <div class="col col-md-8 offset-md-2">
-
-    {# ── Upload form ── #}
+  <div class="col col-xl-10 offset-xl-1">
     <div class="card mb-4">
       <div class="card-header">
-        <strong>Import DHCPv{{ dhcp_version }} Reservations from CSV</strong>
+        <strong>Import DHCPv{{ dhcp_version }} Reservations</strong>
       </div>
       <div class="card-body">
-        <p class="text-muted mb-3">
-          Upload a UTF-8 CSV file.
-          Lines starting with <code>#</code> are treated as comments and ignored.
+        <p class="text-muted">
+          Select YAML or JSON. Then paste a document or upload one UTF-8 file.
+          NetBox Kea validates the complete document before it contacts Kea.
         </p>
+        <div class="alert alert-info" role="note">
+          <strong>Scope and identity rules</strong>
+          <ul class="mb-0 mt-2">
+            <li>Use a subnet CIDR. The import resolves its current Kea subnet ID from the live Subnet Catalogue.</li>
+            <li>Each record needs exactly one native Kea identity.</li>
+            <li>Global scope is valid in exports, but import currently supports only <code>in-subnet</code>.</li>
+            <li>Any validation error stops the complete import. A Kea write failure stops the remaining records.</li>
+          </ul>
+        </div>
 
-        {# Columns are matched by header name, in any order. #}
-        {% if dhcp_version == 4 %}
-        <div class="alert alert-info" role="alert">
-          <strong>v4 columns</strong> (matched by header name, any order):<br>
-          Required: <code>subnet-id</code> and exactly one identifier column —
-          <code>hw-address</code>, <code>client-id</code>, <code>circuit-id</code>,
-          <code>flex-id</code> or <code>remote-id</code>.<br>
-          Optional: <code>ip-address</code>, <code>hostname</code>.<br>
-          <small>Example: <code>subnet-id,hw-address,ip-address,hostname</code> →
-          <code>1,aa:bb:cc:dd:ee:ff,192.168.1.100,host1.example.com</code></small><br>
-          <small>Leave <code>ip-address</code> empty to reserve only a hostname, options or client classes.</small>
-        </div>
-        {% else %}
-        <div class="alert alert-info" role="alert">
-          <strong>v6 columns</strong> (matched by header name, any order):<br>
-          Required: <code>subnet-id</code> and exactly one identifier column —
-          <code>duid</code>, <code>hw-address</code>, <code>client-id</code>,
-          <code>flex-id</code> or <code>remote-id</code>.<br>
-          Optional: <code>ip-addresses</code>, <code>prefixes</code>, <code>hostname</code>.<br>
-          <small>Both <code>ip-addresses</code> and <code>prefixes</code> take several values per host:
-          separate them with a semicolon inside the cell.</small><br>
-          <small>Example: <code>subnet-id,duid,ip-addresses,hostname</code> →
-          <code>10,00:01:02:03:04:05,2001:db8::100;2001:db8::101,v6host.example.com</code></small><br>
-          <small>A host may delegate prefixes without reserving an address — fill in
-          <code>prefixes</code> and leave <code>ip-addresses</code> empty.</small>
-        </div>
-        {% endif %}
+        <details class="mb-3">
+          <summary>Show a minimal YAML example</summary>
+          <pre class="bg-body-tertiary border rounded p-3 mt-2 mb-0"><code>version: 1
+reservations:
+  - family: {{ dhcp_version }}
+    scope:
+      type: in-subnet
+      subnet:
+        cidr: {% if dhcp_version == 4 %}198.18.0.0/24{% else %}2001:db8::/64{% endif %}
+    identity:
+      type: {% if dhcp_version == 4 %}hw-address
+      value: "aa:bb:cc:dd:ee:ff"{% else %}duid
+      value: "00:01:02:03:04:05"{% endif %}
+    addresses: [{% if dhcp_version == 4 %}198.18.0.20{% else %}2001:db8::20{% endif %}]
+    delegated_prefixes: []
+    hostname: host.example.invalid
+    options: []</code></pre>
+        </details>
 
         <form method="post" enctype="multipart/form-data">
           {% csrf_token %}
@@ -50,62 +48,52 @@
           <div class="text-end mt-3">
             <a href="{{ return_url }}" class="btn btn-secondary me-2">Cancel</a>
             <button type="submit" class="btn btn-primary">
-              <i class="mdi mdi-upload" aria-hidden="true"></i> Import
+              <i class="mdi mdi-upload" aria-hidden="true"></i> Validate and import
             </button>
           </div>
         </form>
       </div>
     </div>
 
-    {# ── Results summary ── #}
     {% if result is not None %}
     <div class="card">
-      <div class="card-header">
-        <strong>Import Results</strong>
-      </div>
+      <div class="card-header"><strong>Import result</strong></div>
       <div class="card-body">
-        <div class="row text-center mb-3">
-          <div class="col">
-            <div class="display-6 text-success">{{ result.created }}</div>
-            <div class="text-muted small">Created</div>
-          </div>
-          <div class="col">
-            <div class="display-6 text-warning">{{ result.skipped }}</div>
-            <div class="text-muted small">Skipped (already exist)</div>
-          </div>
-          <div class="col">
-            <div class="display-6 text-danger">{{ result.errors }}</div>
-            <div class="text-muted small">Errors</div>
-          </div>
-          <div class="col">
-            <div class="display-6">{{ result.total }}</div>
-            <div class="text-muted small">Total rows</div>
-          </div>
+        {% if result.diagnostics %}
+        <div class="alert alert-danger" role="alert">
+          <strong>No Reservations were created.</strong>
+          Correct every document error and try again.
         </div>
-
-        {% if result.error_rows %}
-        <h6 class="mt-3">Error Details</h6>
-        <table class="table table-sm table-bordered">
-          <thead>
-            <tr>
-              <th>Row data</th>
-              <th>Error</th>
-            </tr>
-          </thead>
+        <table class="table table-sm table-bordered align-middle">
+          <thead><tr><th>Position</th><th>Code</th><th>Problem</th></tr></thead>
           <tbody>
-            {% for item in result.error_rows %}
-            <tr class="table-danger">
-              <td><code>{{ item.row }}</code></td>
-              <td>{{ item.error }}</td>
+            {% for diagnostic in result.diagnostics %}
+            <tr>
+              <td><code>{{ diagnostic.source_position }}</code></td>
+              <td><code>{{ diagnostic.code }}</code></td>
+              <td>{{ diagnostic.message }}</td>
             </tr>
             {% endfor %}
           </tbody>
         </table>
+        {% else %}
+        <div class="row text-center mb-3">
+          <div class="col"><div class="display-6 text-success">{{ result.created }}</div><div class="text-muted small">Created</div></div>
+          <div class="col"><div class="display-6 text-danger">{{ result.failed }}</div><div class="text-muted small">Failed</div></div>
+          <div class="col"><div class="display-6 text-secondary">{{ result.not_attempted }}</div><div class="text-muted small">Not attempted</div></div>
+          <div class="col"><div class="display-6">{{ result.total }}</div><div class="text-muted small">Total</div></div>
+        </div>
+        {% if result.failure %}
+        <div class="alert alert-danger" role="alert">
+          Import stopped at <code>{{ result.failure.position }}</code>: {{ result.failure.message }}
+        </div>
+        {% else %}
+        <div class="alert alert-success mb-0" role="status">All Reservations were created.</div>
+        {% endif %}
         {% endif %}
       </div>
     </div>
     {% endif %}
-
   </div>
 </div>
 {% endblock %}

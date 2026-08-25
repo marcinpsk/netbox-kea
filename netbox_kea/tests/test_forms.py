@@ -2,11 +2,31 @@
 # SPDX-License-Identifier: Apache-2.0
 """Unit tests for netbox_kea.forms — validation logic for all form classes."""
 
+import re
+
 from django.core.exceptions import ValidationError
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import SimpleTestCase, TestCase
 
 from netbox_kea import constants
 from netbox_kea.forms import Leases4SearchForm, Leases6SearchForm, MultipleIPField, ServerForm
+from netbox_kea.reservations import ReservationCapabilities, reservation_identifier_types
+
+
+def _reservation_capabilities(family, identifiers=None):
+    """Live capabilities for *family*; pass *identifiers* to restrict what Kea enables."""
+    enabled = reservation_identifier_types(family) if identifiers is None else tuple(identifiers)
+    return ReservationCapabilities(
+        family=family,
+        identifiers=enabled,
+        mutation_available=True,
+        explanation="",
+        unavailable_identifiers=tuple(
+            (identifier, "Not enabled in the live Kea configuration.")
+            for identifier in reservation_identifier_types(family)
+            if identifier not in enabled
+        ),
+    )
 
 
 class TestLeases4SearchFormValidation(SimpleTestCase):
@@ -90,20 +110,40 @@ class TestLeases4SearchFormValidation(SimpleTestCase):
         form = Leases4SearchForm(data={"by": "ip", "q": ""})
         self.assertFalse(form.is_valid())
 
-    def test_page_requires_subnet_by(self):
+    def test_page_requires_subnet_or_all_leases_search(self):
         form = Leases4SearchForm(data={"by": "ip", "q": "192.168.1.1", "page": "192.168.1.2"})
         self.assertFalse(form.is_valid())
-        self.assertIn("page", form.errors)
+        self.assertEqual(form.errors["page"], ["page is only supported with subnet or all-leases search."])
 
-    def test_valid_page_with_subnet(self):
-        form = Leases4SearchForm(data={"by": "subnet", "q": "192.168.1.0/24", "page": "192.168.1.5"})
+    def test_valid_numeric_page_with_subnet_search(self):
+        form = self._form("subnet", "192.168.1.0/24", page="2")
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.cleaned_data["page"], 2)
+
+    def test_subnet_page_must_be_a_positive_integer(self):
+        form = self._form("subnet_id", "42", page="192.168.1.2")
+        self.assertFalse(form.is_valid())
+        self.assertEqual(form.errors["page"], ["Subnet page must be a positive integer."])
+
+    def test_subnet_page_rejects_zero(self):
+        form = self._form("subnet_id", "42", page="0")
+        self.assertFalse(form.is_valid())
+        self.assertEqual(form.errors["page"], ["Subnet page must be a positive integer."])
+
+    def test_valid_page_with_all_leases_search(self):
+        form = Leases4SearchForm(data={"by": "", "q": "", "page": "192.168.1.5"})
         self.assertTrue(form.is_valid(), form.errors)
         self.assertEqual(form.cleaned_data["page"], "192.168.1.5")
 
-    def test_page_not_in_subnet_fails(self):
-        form = Leases4SearchForm(data={"by": "subnet", "q": "192.168.1.0/24", "page": "10.0.0.1"})
+    def test_invalid_page_address_fails(self):
+        form = Leases4SearchForm(data={"by": "", "q": "", "page": "not-an-address"})
         self.assertFalse(form.is_valid())
         self.assertIn("page", form.errors)
+
+    def test_page_address_with_prefix_fails(self):
+        form = Leases4SearchForm(data={"by": "", "q": "", "page": "192.0.2.1/24"})
+        self.assertFalse(form.is_valid())
+        self.assertEqual(form.errors["page"], ["Invalid IP."])
 
     def test_ipv6_address_fails_for_v4_form(self):
         form = self._form("ip", "2001:db8::1")
@@ -144,6 +184,11 @@ class TestLeases6SearchFormValidation(SimpleTestCase):
     def test_valid_subnet_id(self):
         form = self._form("subnet_id", "10")
         self.assertTrue(form.is_valid(), form.errors)
+
+    def test_valid_numeric_page_with_subnet_id_search(self):
+        form = self._form("subnet_id", "10", page="3")
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.cleaned_data["page"], 3)
 
 
 class TestMultipleIPField(SimpleTestCase):
@@ -229,7 +274,7 @@ class TestReservationForm4(SimpleTestCase):
     def _form(self, data):
         from netbox_kea.forms import Reservation4Form  # deferred: class not yet defined
 
-        return Reservation4Form(data=data)
+        return Reservation4Form(data=data, capabilities=_reservation_capabilities(4))
 
     def _valid_data(self, **overrides):
         base = {
@@ -245,6 +290,13 @@ class TestReservationForm4(SimpleTestCase):
     def test_valid_form_with_hw_address_identifier(self):
         form = self._form(self._valid_data())
         self.assertTrue(form.is_valid(), form.errors)
+
+    def test_mutation_fails_closed_without_live_capabilities(self):
+        from netbox_kea.forms import Reservation4Form
+
+        form = Reservation4Form(data=self._valid_data())
+        self.assertFalse(form.is_valid())
+        self.assertIn("Reservation mutation capabilities are unavailable", form.non_field_errors()[0])
 
     def test_valid_form_with_client_id_identifier(self):
         form = self._form(self._valid_data(identifier_type="client-id", identifier="01aabbccddeeff"))
@@ -374,7 +426,11 @@ class TestReservationForm4(SimpleTestCase):
         """
         from netbox_kea.forms import Reservation4Form
 
-        form = Reservation4Form(data=self._valid_data(), initial={"subnet_cidr": "1"})
+        form = Reservation4Form(
+            data=self._valid_data(),
+            initial={"subnet_cidr": "1"},
+            capabilities=_reservation_capabilities(4),
+        )
         form.fields["subnet_cidr"].disabled = True
         self.assertTrue(form.is_valid(), form.errors)
         self.assertEqual(form.cleaned_data["subnet_cidr"], "1")
@@ -383,6 +439,23 @@ class TestReservationForm4(SimpleTestCase):
         form = self._form(self._valid_data(identifier_type="not-a-real-type"))
         self.assertFalse(form.is_valid())
         self.assertIn("identifier_type", form.errors)
+
+    def test_identifier_errors_are_curated_validation_copy(self):
+        """The domain ValueError *is* the field's validation text, so pin what reaches the page.
+
+        Change this list only with a fresh check that the new message carries no internal
+        URL, TLS, or Kea configuration detail.
+        """
+        malformed = self._form(self._valid_data(identifier="zz:zz:zz:zz:zz:zz"))
+        self.assertFalse(malformed.is_valid())
+        self.assertEqual(malformed.errors["identifier"], ["The Reservation identifier is invalid."])
+
+        too_long = self._form(self._valid_data(identifier_type="circuit-id", identifier="a" * 256))
+        self.assertFalse(too_long.is_valid())
+        self.assertEqual(
+            too_long.errors["identifier"],
+            ["Reservation identifier value must not exceed 255 characters."],
+        )
 
     def test_max_octet_client_id_is_accepted(self):
         """A 128-octet client-id is 383 characters delimited — past the opaque 255-char cap."""
@@ -396,7 +469,12 @@ class TestReservationForm4(SimpleTestCase):
         self.assertFalse(form.is_valid())
         self.assertIn("identifier", form.errors)
 
-    def test_over_long_opaque_identifier_is_rejected(self):
+    def test_opaque_identifier_is_preserved_exactly(self):
+        form = self._form(self._valid_data(identifier_type="flex-id", identifier="a" * 255))
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.cleaned_data["identifier"], "a" * 255)
+
+    def test_opaque_identifier_past_the_length_limit_is_rejected(self):
         form = self._form(self._valid_data(identifier_type="flex-id", identifier="a" * 256))
         self.assertFalse(form.is_valid())
         self.assertIn("identifier", form.errors)
@@ -408,7 +486,7 @@ class TestReservationForm6(SimpleTestCase):
     def _form(self, data):
         from netbox_kea.forms import Reservation6Form  # deferred: class not yet defined
 
-        return Reservation6Form(data=data)
+        return Reservation6Form(data=data, capabilities=_reservation_capabilities(6))
 
     def _valid_data(self, **overrides):
         base = {
@@ -424,6 +502,13 @@ class TestReservationForm6(SimpleTestCase):
     def test_valid_form_with_duid_identifier(self):
         form = self._form(self._valid_data())
         self.assertTrue(form.is_valid(), form.errors)
+
+    def test_mutation_fails_closed_without_live_capabilities(self):
+        from netbox_kea.forms import Reservation6Form
+
+        form = Reservation6Form(data=self._valid_data())
+        self.assertFalse(form.is_valid())
+        self.assertIn("Reservation mutation capabilities are unavailable", form.non_field_errors()[0])
 
     def test_valid_form_with_hw_address_identifier(self):
         form = self._form(self._valid_data(identifier_type="hw-address", identifier="aa:bb:cc:dd:ee:ff"))
@@ -495,7 +580,11 @@ class TestReservationForm6(SimpleTestCase):
         """
         from netbox_kea.forms import Reservation6Form
 
-        form = Reservation6Form(data=self._valid_data(), initial={"subnet_cidr": "1"})
+        form = Reservation6Form(
+            data=self._valid_data(),
+            initial={"subnet_cidr": "1"},
+            capabilities=_reservation_capabilities(6),
+        )
         form.fields["subnet_cidr"].disabled = True
         self.assertTrue(form.is_valid(), form.errors)
         self.assertEqual(form.cleaned_data["subnet_cidr"], "1")
@@ -597,11 +686,11 @@ class TestReservationForm6(SimpleTestCase):
         choices = [c[0] for c in Reservation6Form().fields["identifier_type"].choices]
         self.assertIn("hw-address", choices)
 
-    def test_identifier_type_choices_include_client_id(self):
+    def test_identifier_type_choices_exclude_client_id(self):
         from netbox_kea.forms import Reservation6Form
 
         choices = [c[0] for c in Reservation6Form().fields["identifier_type"].choices]
-        self.assertIn("client-id", choices)
+        self.assertNotIn("client-id", choices)
 
     def test_identifier_type_choices_include_flex_id(self):
         from netbox_kea.forms import Reservation6Form
@@ -1089,3 +1178,158 @@ class TestLeasesSearchFormSubnetCombobox(SimpleTestCase):
         form = Leases4SearchForm(data={"by": "subnet_id", "q": "3"})
         self.assertTrue(form.is_valid(), form.errors)
         self.assertEqual(form.cleaned_data["q"], 3)
+
+    def test_subnet_search_rejects_a_page_cursor(self):
+        form = Leases4SearchForm(data={"by": "subnet", "q": "192.168.1.0/24", "page": "192.168.1.10"})
+        self.assertFalse(form.is_valid())
+        self.assertIn("page", form.errors)
+
+
+class TestReservationIdentifierCapabilities(SimpleTestCase):
+    """The identifier the operator picked must be one the live Kea config enables."""
+
+    def test_v4_rejects_an_identifier_the_live_configuration_disables(self):
+        from netbox_kea.forms import Reservation4Form
+
+        form = Reservation4Form(
+            data={
+                "subnet_cidr": "192.168.1.0/24",
+                "ip_address": "192.168.1.100",
+                "identifier_type": "client-id",
+                "identifier": "01aabbccddeeff",
+            },
+            capabilities=_reservation_capabilities(4, identifiers=("hw-address",)),
+        )
+
+        self.assertFalse(form.is_valid())
+        self.assertIn(
+            "This identifier is not enabled in the live Kea configuration.",
+            form.errors["identifier_type"],
+        )
+
+    def test_v4_accepts_an_identifier_the_live_configuration_enables(self):
+        from netbox_kea.forms import Reservation4Form
+
+        form = Reservation4Form(
+            data={
+                "subnet_cidr": "192.168.1.0/24",
+                "ip_address": "192.168.1.100",
+                "identifier_type": "hw-address",
+                "identifier": "aa:bb:cc:dd:ee:ff",
+            },
+            capabilities=_reservation_capabilities(4, identifiers=("hw-address",)),
+        )
+
+        self.assertTrue(form.is_valid(), form.errors)
+
+    def test_v6_rejects_an_identifier_the_live_configuration_disables(self):
+        from netbox_kea.forms import Reservation6Form
+
+        form = Reservation6Form(
+            data={
+                "subnet_cidr": "2001:db8::/64",
+                "ip_addresses": "2001:db8::100",
+                "identifier_type": "hw-address",
+                "identifier": "aa:bb:cc:dd:ee:ff",
+            },
+            capabilities=_reservation_capabilities(6, identifiers=("duid",)),
+        )
+
+        self.assertFalse(form.is_valid())
+        self.assertIn(
+            "This identifier is not enabled in the live Kea configuration.",
+            form.errors["identifier_type"],
+        )
+
+    def test_disabled_identifier_option_is_rendered_disabled_with_its_reason(self):
+        """Render the unavailable choice as disabled, not only reject it on submit.
+
+        Server-side rejection is covered above. Nothing exercised
+        `ReservationIdentifierSelect.create_option`, so a regression that stopped
+        disabling the option would offer a choice Kea cannot accept.
+        """
+        from netbox_kea.forms import Reservation4Form
+
+        form = Reservation4Form(capabilities=_reservation_capabilities(4, identifiers=("hw-address",)))
+        markup = str(form["identifier_type"])
+
+        disabled = re.findall(r'<option value="([^"]+)"[^>]*\bdisabled\b', markup)
+
+        self.assertNotIn("hw-address", disabled)
+        self.assertIn("client-id", disabled)
+        self.assertIn('title="Not enabled in the live Kea configuration."', markup)
+
+
+class TestBulkReservationImportForm(SimpleTestCase):
+    """Exactly one document source, with a message that names the actual problem."""
+
+    def _form(self, **kwargs):
+        from netbox_kea.forms import Reservation4ImportForm
+
+        return Reservation4ImportForm(**kwargs)
+
+    def test_rejects_both_sources_at_once(self):
+        upload = SimpleUploadedFile("r.yaml", b"reservations: []", content_type="application/yaml")
+        form = self._form(data={"document": "reservations: []", "format": "yaml"}, files={"document_file": upload})
+
+        self.assertFalse(form.is_valid())
+        self.assertIn(
+            "Paste a document or upload a document file, but do not use both.",
+            form.non_field_errors(),
+        )
+
+    def test_rejects_neither_source_without_claiming_both_were_used(self):
+        form = self._form(data={"format": "yaml"})
+
+        self.assertFalse(form.is_valid())
+        # The empty form is a distinct problem: "do not use both" described it wrongly.
+        self.assertIn("Paste a document or upload a document file.", form.non_field_errors())
+        self.assertNotIn(
+            "Paste a document or upload a document file, but do not use both.",
+            form.non_field_errors(),
+        )
+
+    def test_accepts_a_pasted_document(self):
+        form = self._form(data={"document": "reservations: []", "format": "yaml"})
+
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.cleaned_data["document"], "reservations: []")
+
+    def test_decodes_an_uploaded_document_as_utf8(self):
+        upload = SimpleUploadedFile("r.yaml", "reservations: []\n# café\n".encode(), content_type="application/yaml")
+        form = self._form(data={"format": "yaml"}, files={"document_file": upload})
+
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertIn("café", form.cleaned_data["document"])
+
+    def test_rejects_an_upload_that_is_not_utf8(self):
+        upload = SimpleUploadedFile("r.yaml", b"reservations: []\n# \xff\xfe", content_type="application/yaml")
+        form = self._form(data={"format": "yaml"}, files={"document_file": upload})
+
+        self.assertFalse(form.is_valid())
+        self.assertIn("The document file must use UTF-8 encoding.", form.non_field_errors())
+
+    def test_rejects_an_oversized_upload_before_reading_it(self):
+        """Reject the upload on its declared size, so `clean` never buffers the content.
+
+        Django's DATA_UPLOAD_MAX_MEMORY_SIZE does not apply to file uploads, so without
+        this limit one request can allocate the whole file.
+        """
+        from netbox_kea.forms import _BaseBulkReservationImportForm
+
+        limit = _BaseBulkReservationImportForm.MAX_DOCUMENT_BYTES
+        oversized = SimpleUploadedFile("r.yaml", b"a" * (limit + 1), content_type="application/yaml")
+        form = self._form(data={"format": "yaml"}, files={"document_file": oversized})
+
+        self.assertFalse(form.is_valid())
+        self.assertIn(f"The document file must not exceed {limit // (1024 * 1024)} MB.", form.non_field_errors())
+
+    def test_accepts_an_upload_at_the_size_limit(self):
+        from netbox_kea.forms import _BaseBulkReservationImportForm
+
+        limit = _BaseBulkReservationImportForm.MAX_DOCUMENT_BYTES
+        document = b"reservations: []\n" + b"#" * (limit - len(b"reservations: []\n"))
+        upload = SimpleUploadedFile("r.yaml", document, content_type="application/yaml")
+        form = self._form(data={"format": "yaml"}, files={"document_file": upload})
+
+        self.assertTrue(form.is_valid(), form.errors)

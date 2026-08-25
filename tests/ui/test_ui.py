@@ -1,4 +1,5 @@
 import csv
+import json
 import re
 from collections.abc import Sequence
 from datetime import datetime, timezone
@@ -8,119 +9,26 @@ from urllib.parse import quote_plus, urljoin
 import pynetbox
 import pytest
 import requests
-from netaddr import EUI, IPAddress, IPNetwork, mac_unix_expanded
+import yaml
+from netaddr import EUI, IPNetwork, mac_unix_expanded
 from playwright.sync_api import Page, expect
 
-from . import constants
+from .. import constants
+from ..kea import KeaClient
 
 # This is linked from netbox_kea to avoid import errors
-from .kea import KeaClient
+from .conftest import _DualEndpointKeaClient
 
 
-@pytest.fixture
-def requests_session(nb_api: pynetbox.api) -> requests.Session:
-    s = requests.Session()
-    s.headers.update(
-        {
-            "Authorization": f"Token {nb_api.token}",
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-        }
-    )
-    return s
+def _claim_netbox_ip(nb_api: pynetbox.api, address: str, **fields):
+    """Create the NetBox IP for *address*, clearing any row an earlier test left behind.
 
-
-@pytest.fixture(autouse=True)
-def clear_leases(kea_client: KeaClient) -> None:
-    kea_client.command("lease4-wipe", service=["dhcp4"], check=(0, 3))
-    kea_client.command("lease6-wipe", service=["dhcp6"], check=(0, 3))
-
-
-@pytest.fixture(autouse=True)
-def reset_user_preferences(requests_session: requests.Session, nb_api: pynetbox.api) -> None:
-    r = requests_session.get(url=f"{nb_api.base_url}/users/config/")
-    r.raise_for_status()
-    tables_config = r.json().get("tables", {})
-
-    # pynetbox doesn't support this endpoint
-    requests_session.patch(
-        url=f"{nb_api.base_url}/users/config/",
-        json={"tables": {k: {} for k in tables_config}},
-    ).raise_for_status()
-
-    # restore pagination
-    requests_session.patch(
-        url=f"{nb_api.base_url}/users/config/",
-        json={"pagination": {"placement": "bottom"}},
-    ).raise_for_status()
-
-
-@pytest.fixture
-def with_test_server(
-    nb_api: pynetbox.api, kea_url: str, kea_dhcp6_url: str, page: Page, netbox_login: None, plugin_base: str
-):
-    server = nb_api.plugins.kea.servers.create(
-        name="test", ca_url=kea_url, dhcp6_url=kea_dhcp6_url, has_control_agent=False
-    )
-    try:
-        page.goto(f"{plugin_base}/servers/{server.id}/")
-        yield
-    finally:
-        server.delete()
-
-
-@pytest.fixture
-def with_test_server_only6(nb_api: pynetbox.api, kea_dhcp6_url: str, page: Page, netbox_login: None, plugin_base: str):
-    server = nb_api.plugins.kea.servers.create(
-        name="only6", ca_url=kea_dhcp6_url, dhcp4=False, dhcp6=True, has_control_agent=False
-    )
-    try:
-        page.goto(f"{plugin_base}/servers/{server.id}/")
-        yield
-    finally:
-        server.delete()
-
-
-@pytest.fixture
-def with_test_server_only4(nb_api: pynetbox.api, kea_url: str, page: Page, netbox_login: None, plugin_base: str):
-    server = nb_api.plugins.kea.servers.create(
-        name="only4", ca_url=kea_url, dhcp4=True, dhcp6=False, has_control_agent=False
-    )
-    try:
-        page.goto(f"{plugin_base}/servers/{server.id}/")
-        yield
-    finally:
-        server.delete()
-
-
-class _DualEndpointKeaClient:
-    """Test-side client for Kea 3.0 (no Control Agent): routes each service to its own daemon socket."""
-
-    def __init__(self, dhcp4: KeaClient, dhcp6: KeaClient) -> None:
-        self._clients = {"dhcp4": dhcp4, "dhcp6": dhcp6}
-
-    def command(self, command, service=None, arguments=None, check=(0,)):
-        svc = (service or ["dhcp4"])[0]
-        return self._clients[svc].command(command, service=[svc], arguments=arguments, check=check)
-
-
-@pytest.fixture
-def kea_client() -> _DualEndpointKeaClient:
-    # Kea 3.0: two daemons, each on its own host-exposed HTTP control socket.
-    return _DualEndpointKeaClient(
-        KeaClient("http://127.0.0.1:8001"),  # kea-dhcp4 (loopback-bound)
-        KeaClient("http://127.0.0.1:8003"),  # kea-dhcp6 (loopback-bound)
-    )
-
-
-@pytest.fixture
-def kea(with_test_server: None, kea_client: _DualEndpointKeaClient) -> _DualEndpointKeaClient:
-    return kea_client
-
-
-@pytest.fixture
-def plugin_base(netbox_url: str) -> str:
-    return f"{netbox_url}/plugins/kea"
+    NetBox enforces global address uniqueness by default now, so one stray row for this
+    address fails every fixture that reserves it, and then fails their teardown too.
+    """
+    for stale in nb_api.ipam.ip_addresses.filter(address=address):
+        stale.delete()
+    return nb_api.ipam.ip_addresses.create(address=address, **fields)
 
 
 @pytest.fixture
@@ -178,8 +86,9 @@ def lease6_netbox_device(
         )
         assert interface.update({"primary_mac_address": intf_mac.id})
 
-    ip = nb_api.ipam.ip_addresses.create(
-        address=f"{lease_ip}/64",
+    ip = _claim_netbox_ip(
+        nb_api,
+        f"{lease_ip}/64",
         assigned_object_type="dcim.interface",
         assigned_object_id=interface.id,
     )
@@ -217,8 +126,9 @@ def lease6_netbox_vm(
         )
         assert interface.update({"primary_mac_address": intf_mac.id})
 
-    ip = nb_api.ipam.ip_addresses.create(
-        address=f"{lease_ip}/64",
+    ip = _claim_netbox_ip(
+        nb_api,
+        f"{lease_ip}/64",
         assigned_object_type="virtualization.vminterface",
         assigned_object_id=interface.id,
     )
@@ -233,7 +143,7 @@ def lease6_netbox_vm(
 @pytest.fixture
 def lease6_netbox_ip(nb_api: pynetbox.api, lease6: dict[str, Any]):
     lease_ip = lease6["ip-address"]
-    ip = nb_api.ipam.ip_addresses.create(address=f"{lease_ip}/64")
+    ip = _claim_netbox_ip(nb_api, f"{lease_ip}/64")
     yield lease_ip
     ip.delete()
 
@@ -291,8 +201,9 @@ def lease4_netbox_device(
         )
         assert interface.update({"primary_mac_address": intf_mac.id})
 
-    ip = nb_api.ipam.ip_addresses.create(
-        address=f"{lease_ip}/24",
+    ip = _claim_netbox_ip(
+        nb_api,
+        f"{lease_ip}/24",
         assigned_object_type="dcim.interface",
         assigned_object_id=interface.id,
     )
@@ -332,8 +243,9 @@ def lease4_netbox_vm(
         )
         assert interface.update({"primary_mac_address": intf_mac.id})
 
-    ip = nb_api.ipam.ip_addresses.create(
-        address=f"{lease_ip}/24",
+    ip = _claim_netbox_ip(
+        nb_api,
+        f"{lease_ip}/24",
         assigned_object_type="virtualization.vminterface",
         assigned_object_id=interface.id,
     )
@@ -348,7 +260,7 @@ def lease4_netbox_vm(
 @pytest.fixture
 def lease4_netbox_ip(nb_api: pynetbox.api, lease4: dict[str, Any]):
     lease_ip = lease4["ip-address"]
-    ip = nb_api.ipam.ip_addresses.create(address=f"{lease_ip}/24")
+    ip = _claim_netbox_ip(nb_api, f"{lease_ip}/24")
     yield lease_ip
     ip.delete()
 
@@ -384,46 +296,6 @@ def leases4_250(kea: KeaClient) -> None:
                 "hostname": f"test-lease4-{i}",
             },
         )
-
-
-@pytest.fixture(scope="function")
-def netbox_user_permissions() -> list[dict[str, list[Any]]]:
-    return [{"actions": [], "object_types": []}]
-
-
-@pytest.fixture(scope="function", autouse=True)
-def netbox_login(
-    page: Page,
-    netbox_url: str,
-    netbox_username: str,
-    netbox_password: str,
-    netbox_user_permissions: list[dict[str, list[Any]]],
-    nb_api: pynetbox.api,
-):
-    to_delete = []
-    if netbox_username != "admin":
-        nb_api.users.users.filter(username=netbox_username).delete()
-        nb_api.users.permissions.all(0).delete()
-        user = nb_api.users.users.create(username=netbox_username, password=netbox_password)
-        to_delete.append(user)
-        for permission in netbox_user_permissions:
-            p = nb_api.users.permissions.create(
-                name=netbox_username,
-                actions=permission["actions"],
-                object_types=permission["object_types"],
-                users=[user.id],
-            )
-            to_delete.append(p)
-
-    page.goto(f"{netbox_url}/login/")
-    page.get_by_label("Username").fill(netbox_username)
-    page.get_by_label("Password").fill(netbox_password)
-    page.get_by_role("button", name="Sign In").click()
-
-    yield
-
-    for obj in to_delete:
-        assert obj.delete()
 
 
 @pytest.fixture(scope="session")
@@ -1327,69 +1199,36 @@ def test_lease_search_cisco_style_mac(page: Page, lease4: dict[str, Any]) -> Non
     expect(page.locator(".object-list > tbody > tr > td").nth(1)).to_have_text(lease4["ip-address"])
 
 
-@pytest.mark.parametrize(
-    "prefix",
-    (
-        "2001:db8:1::/124",
-        "2001:db8:1::10/124",
-        "2001:db8:1::/121",
-        "2001:db8:1::/64",
-        "::/0",
-        "192.0.2.0/29",
-        "192.0.2.8/29",
-        "192.0.2.0/25",
-        "192.0.2.0/24",
-        "0.0.0.0/0",
-    ),
-)
-def test_lease_search_by_subnet(
+@pytest.mark.parametrize(("family", "prefix"), ((6, "2001:db8:1::/64"), (4, "192.0.2.0/24")))
+def test_lease_search_by_configured_subnet(
     page: Page,
+    family: Literal[6, 4],
     prefix: str,
     request: pytest.FixtureRequest,
 ) -> None:
-    # per page default is 50
     per_page = 50
-
     net = IPNetwork(prefix)
-    family = net.version
-    dhcp_scope = IPNetwork("2001:db8:1::/64") if family == 6 else IPNetwork("192.0.2.0/24")
-    skip_first = dhcp_scope.network in net
-    lease_count = min(net.size - int(skip_first), 250)
     request.getfixturevalue(f"leases{family}_250")
 
     search_lease(page, family, "Subnet", str(net))
+    # The search form submits with GET, so the filter is already in the query string.
+    # Assert it before appending, so a lost subnet filter fails here instead of
+    # silently paging an unfiltered result set.
+    expect(page).to_have_url(re.compile(rf"q={re.escape(quote_plus(str(net)))}&by=subnet"))
+    page.goto(f"{page.url}&per_page={per_page}")
 
-    def check_count(count: int) -> None:
-        expect(page.locator(".object-list > tbody > tr")).to_have_count(count)
-
-    first_ip = max(net[int(skip_first)], dhcp_scope[1])
+    rows = page.locator(".object-list > tbody > tr")
+    expect(rows).to_have_count(per_page)
 
     def click_next() -> None:
         with page.expect_response(re.compile(f"/leases{family}/")) as r:
             page.get_by_role("button", name="Next").click()
             assert r.value.ok
 
-    def check_first_row_ip(ip: IPAddress) -> None:
-        expect(page.locator(".object-list > tbody > tr > td").nth(1)).to_have_text(str(ip))
-
-    check_first_row_ip(first_ip)
-    check_count(min(lease_count, per_page))
-
-    for _ in range(int(lease_count / per_page) - 1):
-        # Kea doesn't guarantee order...
-        first_ip += per_page
+    for page_number in range(2, 6):
         click_next()
-        check_first_row_ip(first_ip)
-        check_count(per_page)
-
-    if net.size > per_page:
-        first_ip += per_page
-        click_next()
-        if first_ip != dhcp_scope.network + 251:
-            check_first_row_ip(first_ip)
-            check_count(lease_count % per_page)
-        else:
-            expect(page.locator(".object-list > tbody > tr > td")).to_have_text("— No leases found. —")
+        expect(page).to_have_url(re.compile(f"[?&]page={page_number}(?:&|$)"))
+        expect(rows).to_have_count(per_page)
 
     expect(page.get_by_role("button", name="Next")).to_be_disabled()
 
@@ -1436,9 +1275,12 @@ def test_lease_search_page_param_without_subnet(
     expect(page).to_have_url(re.compile("by="))
     page_param = "2001:db8:1::" if family == 6 else "192.0.2.0"
     page.goto(f"{page.url}&page={quote_plus(page_param)}")
-    expect(page.locator("form.form").get_by_role("alert")).to_contain_text(
-        "page is only supported with subnet or all-leases search."
+    expected_error = (
+        "Subnet page must be a positive integer."
+        if by == "Subnet ID"
+        else "page is only supported with subnet or all-leases search."
     )
+    expect(page.locator("form.form").get_by_role("alert")).to_contain_text(expected_error)
 
 
 def test_filter_servers_by_tag(
@@ -1714,7 +1556,7 @@ def _save_reservation_form(page: Page, version: Literal[4, 6]) -> None:
     page.wait_for_url(re.compile(rf"/reservations{version}/$"))
 
 
-def _reservation_by_identifier_url(
+def _reservation_identity_url(
     plugin_base: str,
     server_id: int,
     version: Literal[4, 6],
@@ -1723,7 +1565,7 @@ def _reservation_by_identifier_url(
     identifier: str,
 ) -> str:
     return (
-        f"{plugin_base}/servers/{server_id}/reservations{version}/{RESERVATION_SUBNET_ID}/{action}-by-identifier/"
+        f"{plugin_base}/servers/{server_id}/reservations{version}/{RESERVATION_SUBNET_ID}/{action}/"
         f"?identifier_type={quote_plus(identifier_type)}&identifier={quote_plus(identifier)}"
     )
 
@@ -1803,7 +1645,7 @@ def test_reservation4_edit_by_identifier_keeps_option_data(
         page, plugin_base, reservation_server.id, mac, "before-edit", ("boot-file-name", "http://192.0.2.1/ztp.py")
     )
 
-    page.goto(_reservation_by_identifier_url(plugin_base, reservation_server.id, 4, "edit", "hw-address", mac))
+    page.goto(_reservation_identity_url(plugin_base, reservation_server.id, 4, "edit", "hw-address", mac))
     # The form is populated from the daemon, and this route freezes only the key.
     expect(page.locator("#id_hostname")).to_have_value("before-edit")
     expect(page.locator("#id_identifier")).to_be_disabled()
@@ -1832,7 +1674,7 @@ def test_reservation4_delete_by_identifier(
     _add_reservation4_without_address(page, plugin_base, reservation_server.id, mac, "to-be-deleted")
     assert _reservation_get(kea_client, 4, RESERVATION_SUBNET_ID, "hw-address", mac) is not None
 
-    page.goto(_reservation_by_identifier_url(plugin_base, reservation_server.id, 4, "delete", "hw-address", mac))
+    page.goto(_reservation_identity_url(plugin_base, reservation_server.id, 4, "delete", "hw-address", mac))
     expect(page.get_by_text(f"hw-address {mac}")).to_be_visible()
     page.locator('form[method="post"] button.btn-danger').click()
     page.wait_for_url(re.compile(r"/reservations4/$"))
@@ -1899,7 +1741,7 @@ def test_reservation6_prefix_only_round_trip(
     expect(row.get_by_text("No address", exact=True)).to_be_visible()
     expect(row.get_by_text(prefix, exact=True)).to_be_visible()
 
-    page.goto(_reservation_by_identifier_url(plugin_base, reservation_server.id, 6, "edit", "duid", duid))
+    page.goto(_reservation_identity_url(plugin_base, reservation_server.id, 6, "edit", "duid", duid))
     expect(page.locator("#id_prefixes")).to_have_value(prefix)
     page.locator("#id_hostname").fill("pd-only-renamed")
     _save_reservation_form(page, 6)
@@ -1910,8 +1752,143 @@ def test_reservation6_prefix_only_round_trip(
     assert stored["prefixes"] == [prefix]
     assert not stored.get("ip-addresses")
 
-    page.goto(_reservation_by_identifier_url(plugin_base, reservation_server.id, 6, "delete", "duid", duid))
+    page.goto(_reservation_identity_url(plugin_base, reservation_server.id, 6, "delete", "duid", duid))
     page.locator('form[method="post"] button.btn-danger').click()
     page.wait_for_url(re.compile(r"/reservations6/$"))
 
     assert _reservation_get(kea_client, 6, RESERVATION_SUBNET_ID, "duid", duid) is None
+
+
+def test_reservation_add_form_explains_relay_remote_id_flex_id(
+    page: Page,
+    plugin_base: str,
+    reservation_server,
+) -> None:
+    """The live add form excludes remote ID and links to the Kea Flex ID guidance."""
+    page.goto(f"{plugin_base}/servers/{reservation_server.id}/reservations4/add/")
+
+    expect(page.get_by_text("Relay remote ID is not a native Reservation Identity.", exact=True)).to_be_visible()
+    expect(page.get_by_role("link", name="Flexible Identifiers for Host Reservations")).to_have_attribute(
+        "href", re.compile(r"kea\.readthedocs\.io/.+flex-id")
+    )
+    expect(page.locator('#id_identifier_type option[value="remote-id"]')).to_have_count(0)
+
+
+def test_global_reservation_is_visible_and_read_only(
+    page: Page,
+    plugin_base: str,
+    kea_client: _DualEndpointKeaClient,
+    reservation_server,
+    reservation_keys: list,
+) -> None:
+    """Per-server and combined views keep a live Global Reservation read-only."""
+    mac = "aa:bb:cc:00:02:02"
+    reservation_keys.append((4, 0, "hw-address", mac))
+    _reservation_del(kea_client, 4, 0, "hw-address", mac)
+    kea_client.command(
+        "reservation-add",
+        service=["dhcp4"],
+        arguments={
+            "reservation": {
+                "subnet-id": 0,
+                "hw-address": mac,
+                "hostname": "global-read-only",
+            }
+        },
+    )
+
+    urls = (
+        f"{plugin_base}/servers/{reservation_server.id}/reservations4/",
+        f"{plugin_base}/combined/reservations4/?server={reservation_server.id}",
+    )
+    for url in urls:
+        page.goto(url)
+        row = page.locator("table.object-list > tbody > tr").filter(has_text=mac)
+
+        expect(row).to_have_count(1)
+        expect(row.get_by_text("Global", exact=True)).to_be_visible()
+        expect(row.get_by_text("Not Applicable", exact=True)).to_be_visible()
+        expect(row.locator('a[aria-label^="Edit reservation"]')).to_have_count(0)
+        expect(row.locator('a[aria-label^="Delete reservation"]')).to_have_count(0)
+        expect(row.get_by_role("button", name="Sync all")).to_have_count(0)
+
+
+@pytest.mark.parametrize(
+    ("version", "format_name", "identifier_type", "identifier", "addresses", "prefixes"),
+    (
+        (4, "yaml", "hw-address", "aa:bb:cc:00:02:01", ["192.0.2.211"], []),
+        (
+            6,
+            "json",
+            "duid",
+            "01:02:03:04:05:06:08:c1",
+            ["2001:db8:1::211", "2001:db8:1::212"],
+            ["2001:db8:8:c1::/64"],
+        ),
+    ),
+)
+def test_reservation_document_import_and_export_round_trip(
+    page: Page,
+    plugin_base: str,
+    kea_client: _DualEndpointKeaClient,
+    reservation_server,
+    reservation_keys: list,
+    version: Literal[4, 6],
+    format_name: Literal["yaml", "json"],
+    identifier_type: str,
+    identifier: str,
+    addresses: list[str],
+    prefixes: list[str],
+) -> None:
+    """The browser imports and exports the normalized YAML or JSON Reservation document."""
+    reservation_keys.append((version, RESERVATION_SUBNET_ID, identifier_type, identifier))
+    _reservation_del(kea_client, version, RESERVATION_SUBNET_ID, identifier_type, identifier)
+    document = {
+        "version": 1,
+        "reservations": [
+            {
+                "family": version,
+                "scope": {
+                    "type": "in-subnet",
+                    "subnet": {"cidr": RESERVATION_SUBNET_CIDR_V4 if version == 4 else RESERVATION_SUBNET_CIDR_V6},
+                },
+                "identity": {"type": identifier_type, "value": identifier},
+                "addresses": addresses,
+                "delegated_prefixes": prefixes,
+                "hostname": f"transfer-{version}-{format_name}",
+                "options": [],
+            }
+        ],
+    }
+    encoded = yaml.safe_dump(document, sort_keys=False) if format_name == "yaml" else json.dumps(document)
+
+    page.goto(f"{plugin_base}/servers/{reservation_server.id}/reservations{version}/import/")
+    page.locator("#id_format").select_option(format_name)
+    if format_name == "yaml":
+        page.locator("#id_document").fill(encoded)
+    else:
+        page.locator("#id_document_file").set_input_files(
+            {"name": "reservations.json", "mimeType": "application/json", "buffer": encoded.encode()}
+        )
+    page.get_by_role("button", name="Validate and import").click()
+
+    expect(page.get_by_text("All Reservations were created.", exact=True)).to_be_visible()
+    stored = _reservation_get(kea_client, version, RESERVATION_SUBNET_ID, identifier_type, identifier)
+    assert stored is not None
+    if version == 4:
+        assert stored.get("ip-address") == addresses[0]
+    else:
+        assert stored.get("ip-addresses") == addresses
+        assert stored.get("prefixes") == prefixes
+
+    page.get_by_role("link", name="Cancel").click()
+    page.get_by_role("button", name="Export").click()
+    label = "Complete Snapshot (YAML)" if format_name == "yaml" else "Complete Snapshot (JSON)"
+    with page.expect_download() as download:
+        page.get_by_role("link", name=label, exact=True).click()
+    with open(download.value.path()) as exported_file:
+        exported = yaml.safe_load(exported_file) if format_name == "yaml" else json.load(exported_file)
+    exported_record = next(record for record in exported["reservations"] if record["identity"]["value"] == identifier)
+    assert exported_record["identity"] == {"type": identifier_type, "value": identifier}
+    assert exported_record["addresses"] == addresses
+    assert exported_record["delegated_prefixes"] == prefixes

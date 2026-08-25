@@ -12,8 +12,8 @@ from django.test import TestCase, override_settings
 
 from netbox_kea.models import Server
 
-# Minimal PLUGINS_CONFIG so server.get_client() can read kea_timeout.
-_PLUGINS_CONFIG = {"netbox_kea": {"kea_timeout": 30}}
+# Minimal PLUGINS_CONFIG for tests that do not exercise the Subnet lease-query guard.
+_PLUGINS_CONFIG = {"netbox_kea": {"kea_timeout": 30, "lease_query_max_unpaged_leases": 0}}
 
 User = get_user_model()
 

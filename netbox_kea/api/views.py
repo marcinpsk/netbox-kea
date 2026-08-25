@@ -1,4 +1,5 @@
 import logging
+from typing import cast
 
 import requests
 from netbox.api.viewsets import NetBoxModelViewSet
@@ -6,12 +7,71 @@ from rest_framework import status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
-from .. import filtersets, models
-from ..kea import KeaClient, KeaException, iter_reservations
+from .. import constants, filtersets, models
+from ..kea import KeaException, LeaseQueryGuardError, lease_query_guard_message
+from ..reservations import (
+    Family,
+    GlobalReservationScope,
+    InSubnetReservationScope,
+    MalformedReservation,
+    Reservation,
+    ReservationIdentity,
+    ReservationScope,
+    ReservationSnapshot,
+    reservation_query_mode,
+    reservation_record_data,
+)
+from ..subnet_catalogue import display as subnet_catalogue
 from ..utilities import format_leases
 from .serializers import ServerSerializer
 
 logger = logging.getLogger(__name__)
+
+
+def _reservation_snapshot_data(snapshot: ReservationSnapshot) -> dict:
+    """Return one normalized REST page without raw rejected Kea data."""
+    return {
+        "count": len(snapshot.records),
+        "results": [reservation_record_data(record) for record in snapshot.records],
+        "diagnostics": [
+            {
+                "code": diagnostic.code,
+                "message": diagnostic.message,
+                "source_position": diagnostic.source_position,
+            }
+            for diagnostic in snapshot.diagnostics
+        ],
+        "complete": snapshot.complete,
+        "next_cursor": snapshot.next_cursor,
+    }
+
+
+def _single_reservation_response(version: int, reservation: Reservation | None) -> Response:
+    if version not in (4, 6):
+        raise ValueError(f"version must be 4 or 6, got {version!r}")
+    snapshot = ReservationSnapshot(
+        family=cast(Family, version),
+        records=(reservation,) if reservation is not None else (),
+        diagnostics=(),
+        complete=True,
+        next_cursor=None,
+    )
+    return Response(_reservation_snapshot_data(snapshot))
+
+
+def _parse_subnet_lease_state(raw_state, selector) -> tuple[int | None, str | None]:
+    """Return a safe Subnet lease state and an optional parameter error."""
+    if raw_state in (None, ""):
+        return None, None
+    if selector != constants.BY_SUBNET_ID:
+        return None, "state requires subnet_id as the selected filter."
+    try:
+        state = int(raw_state)
+    except (TypeError, ValueError):
+        return None, "A Subnet query supports only the Active or Declined state."
+    if state not in (0, 1):
+        return None, "A Subnet query supports only the Active or Declined state."
+    return state, None
 
 
 class ServerViewSet(NetBoxModelViewSet):
@@ -34,6 +94,7 @@ class ServerViewSet(NetBoxModelViewSet):
         - ``hw_address``: lookup by MAC address (requires lease_cmds hook)
         - ``hostname``: lookup by hostname (requires lease_cmds hook)
         - ``subnet_id``: lookup all leases in a subnet (requires lease_cmds hook)
+        - ``state``: narrow a subnet lookup to Active (0) or Declined (1)
         """
         return self._lease_search(request, version=4)
 
@@ -46,6 +107,7 @@ class ServerViewSet(NetBoxModelViewSet):
         - ``duid``: lookup by DUID (requires lease_cmds hook)
         - ``hostname``: lookup by hostname (requires lease_cmds hook)
         - ``subnet_id``: lookup all leases in a subnet (requires lease_cmds hook)
+        - ``state``: narrow a subnet lookup to Active (0) or Declined (1)
         """
         return self._lease_search(request, version=6)
 
@@ -58,6 +120,7 @@ class ServerViewSet(NetBoxModelViewSet):
         hw_address = params.get("hw_address")
         hostname = params.get("hostname")
         subnet_id = params.get("subnet_id")
+        raw_state = params.get("state")
         duid = params.get("duid")  # v6 only
 
         if not any([ip_address, hw_address, hostname, subnet_id, duid]):
@@ -71,15 +134,40 @@ class ServerViewSet(NetBoxModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        if duid and version != 6:
+            return Response({"detail": "duid is only supported for DHCPv6."}, status=status.HTTP_400_BAD_REQUEST)
+        if hw_address and version != 4:
+            return Response({"detail": "hw_address is only supported for DHCPv4."}, status=status.HTTP_400_BAD_REQUEST)
+
         if subnet_id is not None:
             try:
-                int(subnet_id)
+                parsed_subnet_id = int(subnet_id)
             except ValueError:
                 return Response({"detail": "subnet_id must be an integer."}, status=status.HTTP_400_BAD_REQUEST)
+            if parsed_subnet_id < 1:
+                return Response({"detail": "subnet_id must be positive."}, status=status.HTTP_400_BAD_REQUEST)
+
+        queries = (
+            (constants.BY_IP, ip_address),
+            (constants.BY_HW_ADDRESS, hw_address),
+            (constants.BY_DUID, duid),
+            (constants.BY_HOSTNAME, hostname),
+            (constants.BY_SUBNET_ID, subnet_id),
+        )
+        selector, value = next((query for query in queries if query[1]), (None, None))
+        lease_state, state_error = _parse_subnet_lease_state(raw_state, selector)
+        if state_error is not None:
+            return Response({"detail": state_error}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
             client = server.get_client(version=version)
-            leases = self._fetch_leases(client, version, ip_address, hw_address, hostname, subnet_id, duid)
+            leases = client.lease_search(version, selector, value, state=lease_state)
+        except LeaseQueryGuardError as exc:
+            logger.info("Rejected unsafe Subnet lease API query on server %s", server.name)
+            return Response(
+                {"detail": lease_query_guard_message(exc, lease_state)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         except (requests.ConnectionError, requests.Timeout):
             logger.exception("Kea connection error on server %s", server.name)
             return Response({"detail": "Could not connect to Kea server."}, status=status.HTTP_502_BAD_GATEWAY)
@@ -96,77 +184,6 @@ class ServerViewSet(NetBoxModelViewSet):
         enriched = format_leases(leases)
         return Response({"count": len(enriched), "results": enriched})
 
-    def _fetch_leases(
-        self,
-        client: KeaClient,
-        version: int,
-        ip_address: str | None,
-        hw_address: str | None,
-        hostname: str | None,
-        subnet_id: str | None,
-        duid: str | None,
-    ) -> list[dict]:
-        """Call the appropriate Kea lease command and return raw lease dicts."""
-        service = f"dhcp{version}"
-
-        if ip_address:
-            resp = client.command(
-                f"lease{version}-get",
-                service=[service],
-                arguments={"ip-address": ip_address},
-                check=(0, 3),
-            )
-            if resp[0]["result"] == 3:
-                return []
-            args = resp[0].get("arguments")
-            return [args] if args else []
-
-        if hw_address:
-            resp = client.command(
-                f"lease{version}-get-by-hw-address",
-                service=[service],
-                arguments={"hw-address": hw_address},
-                check=(0, 3),
-            )
-            if resp[0]["result"] == 3:
-                return []
-            return (resp[0].get("arguments") or {}).get("leases", [])
-
-        if duid and version == 6:
-            resp = client.command(
-                "lease6-get-by-duid",
-                service=[service],
-                arguments={"duid": duid},
-                check=(0, 3),
-            )
-            if resp[0]["result"] == 3:
-                return []
-            return (resp[0].get("arguments") or {}).get("leases", [])
-
-        if hostname:
-            resp = client.command(
-                f"lease{version}-get-by-hostname",
-                service=[service],
-                arguments={"hostname": hostname},
-                check=(0, 3),
-            )
-            if resp[0]["result"] == 3:
-                return []
-            return (resp[0].get("arguments") or {}).get("leases", [])
-
-        if subnet_id:
-            resp = client.command(
-                f"lease{version}-get-all",
-                service=[service],
-                arguments={"subnets": [int(subnet_id)]},
-                check=(0, 3),
-            )
-            if resp[0]["result"] == 3:
-                return []
-            return (resp[0].get("arguments") or {}).get("leases", [])
-
-        return []
-
     # ─────────────────────────────────────────────────────────────────────
     # Reservation search actions
     # ─────────────────────────────────────────────────────────────────────
@@ -175,10 +192,8 @@ class ServerViewSet(NetBoxModelViewSet):
     def reservations4(self, request, pk=None):
         """Search DHCPv4 host reservations on this server.
 
-        Query parameters — at least one required:
-        - ``ip_address`` + ``subnet_id``: exact lookup by IP
-        - ``hw_address`` + ``subnet_id``: lookup by hardware address
-        - ``subnet_id`` only: all reservations in that subnet (paginated via reservation-get-page)
+        Select exactly one bounded page, exact identity, scoped address, or
+        hostname query. Results use the family-neutral Reservation schema.
         """
         return self._reservation_search(request, version=4)
 
@@ -186,10 +201,8 @@ class ServerViewSet(NetBoxModelViewSet):
     def reservations6(self, request, pk=None):
         """Search DHCPv6 host reservations on this server.
 
-        Query parameters — at least one required:
-        - ``ip_address`` + ``subnet_id``: exact lookup by IP
-        - ``duid`` + ``subnet_id``: lookup by DUID
-        - ``subnet_id`` only: all reservations in that subnet
+        Select exactly one bounded page, exact identity, scoped address, or
+        hostname query. Results use the family-neutral Reservation schema.
         """
         return self._reservation_search(request, version=6)
 
@@ -198,72 +211,157 @@ class ServerViewSet(NetBoxModelViewSet):
         server = self.get_object()
         params = request.query_params
 
-        ip_address = params.get("ip_address")
-        hw_address = params.get("hw_address")
-        subnet_id = params.get("subnet_id")
-        duid = params.get("duid")  # v6 only
+        hostname = params.get("hostname")
 
-        if not any([ip_address, hw_address, subnet_id, duid]):
+        try:
+            query_mode = reservation_query_mode(params.keys())
+        except ValueError:
             return Response(
-                {
-                    "detail": (
-                        "At least one filter parameter is required: "
-                        "ip_address, hw_address, subnet_id" + (", duid" if version == 6 else "")
-                    )
-                },
+                {"detail": "Select exactly one Reservation query: page, identity, scoped address, or hostname."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        if subnet_id is not None:
-            try:
-                int(subnet_id)
-            except ValueError:
-                return Response({"detail": "subnet_id must be an integer."}, status=status.HTTP_400_BAD_REQUEST)
+        if query_mode == "page":
+            return self._reservation_page_response(server, params, version)
+        if query_mode == "identity":
+            return self._reservation_identity_response(server, params, version)
+        if query_mode == "address":
+            return self._reservation_address_response(server, params, version)
+        if query_mode == "hostname":
+            return self._reservation_hostname_response(server, hostname, version)
+        raise AssertionError(f"Unsupported Reservation query mode {query_mode!r}")
 
+    def _reservation_page_response(self, server, params, version: int) -> Response:
+        """Return one validated and normalized bounded Reservation page."""
         try:
+            limit = int(params.get("limit", 100))
+        except (TypeError, ValueError):
+            return Response({"detail": "limit must be an integer."}, status=status.HTTP_400_BAD_REQUEST)
+        if not 1 <= limit <= 500:
+            return Response(
+                {"detail": "limit must be between 1 and 500."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            catalogue = subnet_catalogue(server, version)
             client = server.get_client(version=version)
-            reservations = self._fetch_reservations(client, version, ip_address, hw_address, subnet_id, duid)
-        except (requests.ConnectionError, requests.Timeout):
+            snapshot = client.reservation_page(
+                version,
+                catalogue,
+                cursor=params.get("cursor"),
+                limit=limit,
+            )
+        except requests.RequestException:
             logger.exception("Kea connection error on server %s", server.name)
             return Response({"detail": "Could not connect to Kea server."}, status=status.HTTP_502_BAD_GATEWAY)
         except KeaException:
             logger.exception("Kea error on server %s", server.name)
             return Response({"detail": "An internal error occurred"}, status=status.HTTP_502_BAD_GATEWAY)
         except ValueError:
-            logger.exception("Configuration error for server %s", server.name)
-            return Response({"detail": "Server configuration error."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-        except Exception:
-            logger.exception("Unexpected error fetching reservations from %s", server.name)
-            return Response({"detail": "An internal error occurred"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            logger.info("Rejected invalid Reservation page parameters for server %s", server.name)
+            return Response({"detail": "Invalid Reservation page parameters."}, status=status.HTTP_400_BAD_REQUEST)
+        except RuntimeError:
+            logger.exception("Malformed Kea Reservation page on server %s", server.name)
+            return Response({"detail": "An internal error occurred"}, status=status.HTTP_502_BAD_GATEWAY)
+        return Response(_reservation_snapshot_data(snapshot))
 
-        return Response({"count": len(reservations), "results": reservations})
+    def _reservation_identity_response(self, server, params, version: int) -> Response:
+        """Return one exact Reservation Identity target."""
+        identifier_type = params.get("identifier_type")
+        identifier = params.get("identifier")
+        if not identifier_type or not identifier:
+            return Response(
+                {"detail": "identifier_type and identifier are both required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            scope_name = params.get("scope")
+            if scope_name == "global":
+                if "subnet_id" in params:
+                    raise ValueError("A Global Reservation query cannot select a Subnet.")
+                subnet_id = None
+            elif scope_name == "in-subnet":
+                subnet_id = int(params.get("subnet_id", ""))
+            else:
+                raise ValueError("scope must be global or in-subnet.")
+            catalogue = subnet_catalogue(server, version)
+            if subnet_id is None:
+                scope: ReservationScope = GlobalReservationScope()
+            else:
+                subnet = catalogue.find_by_id(subnet_id)
+                if subnet is None:
+                    raise ValueError("The Reservation Subnet is not verified.")
+                scope = InSubnetReservationScope(subnet.identity)
+            identity = ReservationIdentity(identifier_type, identifier)
+            client = server.get_client(version=version)
+            reservation = client.reservation_by_identity(version, catalogue, scope, identity)
+        except MalformedReservation:
+            logger.warning("Malformed exact Reservation target on server %s", server.name, exc_info=True)
+            return Response(
+                {"detail": "Kea returned a malformed Reservation target."}, status=status.HTTP_502_BAD_GATEWAY
+            )
+        except requests.RequestException:
+            logger.exception("Kea connection error on server %s", server.name)
+            return Response({"detail": "Could not connect to Kea server."}, status=status.HTTP_502_BAD_GATEWAY)
+        except (TypeError, ValueError):
+            return Response({"detail": "Invalid Reservation identity selector."}, status=status.HTTP_400_BAD_REQUEST)
+        except KeaException:
+            logger.exception("Kea error on server %s", server.name)
+            return Response({"detail": "An internal error occurred"}, status=status.HTTP_502_BAD_GATEWAY)
+        except RuntimeError:
+            logger.exception("Malformed Kea Reservation response on server %s", server.name)
+            return Response({"detail": "An internal error occurred"}, status=status.HTTP_502_BAD_GATEWAY)
+        return _single_reservation_response(version, reservation)
 
-    def _fetch_reservations(
-        self,
-        client: KeaClient,
-        version: int,
-        ip_address: str | None,
-        hw_address: str | None,
-        subnet_id: str | None,
-        duid: str | None,
-    ) -> list[dict]:
-        """Call the appropriate Kea reservation command and return reservation dicts."""
-        service = f"dhcp{version}"
+    def _reservation_address_response(self, server, params, version: int) -> Response:
+        """Resolve one In-Subnet address to its canonical Reservation."""
+        try:
+            subnet_id = int(params.get("subnet_id", ""))
+            catalogue = subnet_catalogue(server, version)
+            subnet = catalogue.find_by_id(subnet_id)
+            if subnet is None:
+                raise ValueError("The Reservation Subnet is not verified.")
+            scope = InSubnetReservationScope(subnet.identity)
+            client = server.get_client(version=version)
+            reservation = client.reservation_by_address(
+                version,
+                catalogue,
+                scope,
+                params.get("ip_address"),
+            )
+        except MalformedReservation:
+            logger.warning("Malformed scoped Reservation target on server %s", server.name, exc_info=True)
+            return Response(
+                {"detail": "Kea returned a malformed Reservation target."}, status=status.HTTP_502_BAD_GATEWAY
+            )
+        except requests.RequestException:
+            logger.exception("Kea connection error on server %s", server.name)
+            return Response({"detail": "Could not connect to Kea server."}, status=status.HTTP_502_BAD_GATEWAY)
+        except (TypeError, ValueError):
+            return Response({"detail": "Invalid scoped address selector."}, status=status.HTTP_400_BAD_REQUEST)
+        except KeaException:
+            logger.exception("Kea error on server %s", server.name)
+            return Response({"detail": "An internal error occurred"}, status=status.HTTP_502_BAD_GATEWAY)
+        except RuntimeError:
+            logger.exception("Malformed Kea Reservation response on server %s", server.name)
+            return Response({"detail": "An internal error occurred"}, status=status.HTTP_502_BAD_GATEWAY)
+        return _single_reservation_response(version, reservation)
 
-        if ip_address and subnet_id:
-            host = client.reservation_get(service, int(subnet_id), ip_address=ip_address)
-            return [host] if host else []
-
-        if hw_address and subnet_id:
-            host = client.reservation_get(service, int(subnet_id), identifier_type="hw-address", identifier=hw_address)
-            return [host] if host else []
-
-        if duid and subnet_id and version == 6:
-            host = client.reservation_get(service, int(subnet_id), identifier_type="duid", identifier=duid)
-            return [host] if host else []
-
-        if subnet_id:
-            # Page through all reservations exhaustively, then filter by subnet_id client-side.
-            return [h for h in iter_reservations(client, service) if str(h.get("subnet-id", "")) == str(subnet_id)]
-
-        return []
+    def _reservation_hostname_response(self, server, hostname: str, version: int) -> Response:
+        """Return one normalized hostname Reservation Snapshot."""
+        try:
+            catalogue = subnet_catalogue(server, version)
+            client = server.get_client(version=version)
+            snapshot = client.reservations_by_hostname(version, catalogue, hostname)
+        except requests.RequestException:
+            logger.exception("Kea connection error on server %s", server.name)
+            return Response({"detail": "Could not connect to Kea server."}, status=status.HTTP_502_BAD_GATEWAY)
+        except KeaException:
+            logger.exception("Kea error on server %s", server.name)
+            return Response({"detail": "An internal error occurred"}, status=status.HTTP_502_BAD_GATEWAY)
+        except ValueError:
+            return Response({"detail": "Invalid hostname selector."}, status=status.HTTP_400_BAD_REQUEST)
+        except RuntimeError:
+            logger.exception("Malformed Kea Reservation response on server %s", server.name)
+            return Response({"detail": "An internal error occurred"}, status=status.HTTP_502_BAD_GATEWAY)
+        return Response(_reservation_snapshot_data(snapshot))

@@ -3,7 +3,8 @@
 set -euxo pipefail
 
 echo "Generating certs"
-mkdir ./tests/docker/certs/
+# -p, so a second run on an existing checkout regenerates the certs instead of failing.
+mkdir -p ./tests/docker/certs/
 openssl req -new -newkey rsa:2048 -sha256 -days 365 -nodes -x509 -keyout ./tests/docker/certs/netbox.key -out ./tests/docker/certs/netbox.crt -addext "subjectAltName=DNS:netbox" -subj "/CN=netbox"
 openssl req -new -newkey rsa:2048 -sha256 -days 365 -nodes -x509 -keyout ./tests/docker/certs/nginx.key -out ./tests/docker/certs/nginx.crt -addext "subjectAltName=DNS:nginx" -subj "/CN=nginx"
 chmod -R 0777 ./tests/docker/certs/
@@ -28,8 +29,18 @@ tar xJf "$tarball" -C ./tests/docker/kea_schema/ --strip-components=6 \
     "kea-$KEA_VERSION/src/share/database/scripts/pgsql/dhcpdb_create.pgsql"
 
 echo "Copying whl"
-WHL_FILE=$(ls ./dist/ | grep .whl)
-cp  "./dist/$WHL_FILE" ./tests/docker/
+# An old wheel left in ./dist/ used to make this two file names in one variable, and the
+# copy then failed on a path that named both. Take exactly one wheel or stop here.
+shopt -s nullglob
+wheels=(./dist/*.whl)
+shopt -u nullglob
+if [ "${#wheels[@]}" -ne 1 ]; then
+    echo "Expected exactly one wheel in ./dist/, found ${#wheels[@]}: ${wheels[*]-none}" >&2
+    echo "Remove ./dist/ and run 'uv build' again." >&2
+    exit 1
+fi
+WHL_FILE=$(basename "${wheels[0]}")
+cp "./dist/$WHL_FILE" ./tests/docker/
 
 echo "Running docker compose up"
 cd ./tests/docker/

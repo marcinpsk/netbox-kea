@@ -91,10 +91,39 @@ def test_shared_response_builders_shape():
         "arguments": {"subnet4": [{"id": 7, "pools": [{"pool": "10.0.0.10-10.0.0.20"}]}]},
     }
     assert _subnet_get(6)["arguments"]["subnet6"][0]["pools"] == []
-    # _subnet_list: the candidate-subnet list reservation_get_by_ip scans.
+    # _subnet_list: the Subnet catalogue list response.
     subnets = [{"id": 1, "subnet": "10.0.0.0/24"}]
     assert _subnet_list(4, subnets) == {"result": 0, "arguments": {"subnets": subnets}}
     assert _subnet_list(6, []) == {"result": 0, "arguments": {"subnets": []}}
+
+
+def test_catalogue_responses_shape():
+    """Lock the shared catalogue factory that replaced three drifting local copies."""
+    from netbox_kea.tests.kea_stub import _catalogue_responses, _subnet_list
+
+    responses = _catalogue_responses(4, 20, "198.18.0.0/24")
+
+    subnet = {"id": 20, "subnet": "198.18.0.0/24"}
+    assert set(responses) == {"subnet4-list", "config-get", "list-commands"}
+    assert responses["subnet4-list"] == _subnet_list(4, [subnet])
+    # Pinned literally: comparing against the builder that produced it holds however the
+    # command list drifts, and this payload gates mutation-capability probing everywhere.
+    assert responses["list-commands"] == {
+        "result": 0,
+        "arguments": ["reservation-get", "reservation-add", "reservation-update", "reservation-del"],
+    }
+    assert responses["config-get"] == {
+        "result": 0,
+        "arguments": {
+            "Dhcp4": {"subnet4": [subnet], "shared-networks": []},
+            "hash": "shared-catalogue",
+        },
+    }
+    # The family drives both the identity command and the configuration block.
+    v6 = _catalogue_responses(6, 30, "2001:db8::/64", config_hash="other")
+    assert "subnet6-list" in v6
+    assert v6["config-get"]["arguments"]["Dhcp6"]["subnet6"] == [{"id": 30, "subnet": "2001:db8::/64"}]
+    assert v6["config-get"]["arguments"]["hash"] == "other"
 
 
 def test_exception_value_is_raised():

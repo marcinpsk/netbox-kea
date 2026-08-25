@@ -1,6 +1,7 @@
 {% extends "generic/object.html" %}
 
 {% block content %}
+{% include "netbox_kea/includes/persist_config_warning.html" %}
 <div class="row">
   <div class="col col-md-6 offset-md-3">
     <div class="card border-danger">
@@ -10,7 +11,7 @@
       <div class="card-body">
         <p>
           Are you sure you want to delete the DHCPv{{ dhcp_version }} reservation for
-          <strong>{{ reservation_label|default:ip_address }}</strong> in subnet <strong>{{ subnet_id }}</strong>?
+          <strong>{{ reservation_label }}</strong> in subnet <strong>{{ subnet_id }}</strong>?
         </p>
         <p class="text-danger">
           <i class="mdi mdi-alert-circle-outline"></i>

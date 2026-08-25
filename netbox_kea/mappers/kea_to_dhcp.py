@@ -13,28 +13,21 @@ Input shape (the ``Dhcp4``/``Dhcp6`` object from ``config-get``)::
     {
         "subnet4": [{"id": 1, "subnet": "10.0.0.0/24",
                      "pools": [{"pool": "10.0.0.10-10.0.0.200"}],
-                     "option-data": [...],
-                     "reservations": [{"hw-address": "...", "ip-address": "...",
-                                       "hostname": "...", "option-data": [...]}]}],
+                     "option-data": [...]}],
         "shared-networks": [{"name": "office", "subnet4": [ ...same shape... ]}],
     }
 
-DHCPv6 uses ``subnet6`` and reservations carry ``ip-addresses``/``prefixes``.
+DHCPv6 uses ``subnet6``.
 """
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 
-# Kea host-reservation identifier types, in the priority order Kea itself documents
-# (host-reservation-identifiers). The first present on a reservation is its identity.
-RESERVATION_IDENTIFIER_TYPES: tuple[str, ...] = (
-    "hw-address",
-    "duid",
-    "circuit-id",
-    "client-id",
-    "flex-id",
-)
+from ..dhcp_options import DHCPOption, parse_dhcp_option
+
+logger = logging.getLogger(__name__)
 
 # Scalar Kea config keys that map onto netbox_dhcp tuning fields (lifetimes, timers,
 # lease/DDNS/BOOTP/network settings, and server-level globals).  ``config-get``
@@ -106,24 +99,6 @@ def _settings(raw: dict) -> dict:
 
 
 @dataclass(frozen=True)
-class OptionIntent:
-    """A single Kea ``option-data`` entry, normalized."""
-
-    code: int | None
-    name: str | None
-    space: str | None
-    data: str
-    csv_format: bool | None
-    always_send: bool | None
-    never_send: bool | None = None
-
-    @property
-    def match_key(self) -> tuple:
-        """Identity within a parent: (space, code) — or (space, name) when code is absent."""
-        return (self.space, self.code if self.code is not None else self.name)
-
-
-@dataclass(frozen=True)
 class OptionDefIntent:
     """A Kea custom ``option-def`` entry (defines a non-standard option code)."""
 
@@ -142,41 +117,11 @@ class OptionDefIntent:
 
 
 @dataclass(frozen=True)
-class ReservationIntent:
-    """A Kea host reservation, normalized to a single identifier + its addresses."""
-
-    family: int
-    identifier_type: str | None
-    identifier: str | None
-    ip_address: str | None
-    ip_addresses: tuple[str, ...]
-    prefixes: tuple[str, ...]
-    hostname: str
-    options: tuple[OptionIntent, ...]
-
-    @property
-    def match_key(self) -> tuple:
-        """Identity within a parent subnet: (identifier_type, identifier)."""
-        return (self.identifier_type, self.identifier)
-
-    @property
-    def all_addresses(self) -> tuple[str, ...]:
-        """Every host IP (v4 single + v6 list), de-duplicated, order-preserving."""
-        seen: dict[str, None] = {}
-        if self.ip_address:
-            seen.setdefault(self.ip_address, None)
-        for addr in self.ip_addresses:
-            if addr:
-                seen.setdefault(addr, None)
-        return tuple(seen)
-
-
-@dataclass(frozen=True)
 class PoolIntent:
     """A Kea pool string (``start-end`` range or ``CIDR``) within a subnet."""
 
     pool: str
-    options: tuple[OptionIntent, ...] = ()
+    options: tuple[DHCPOption, ...] = ()
 
     @property
     def match_key(self) -> str:
@@ -193,8 +138,7 @@ class SubnetIntent:
     family: int
     shared_network: str | None
     pools: tuple[PoolIntent, ...]
-    reservations: tuple[ReservationIntent, ...]
-    options: tuple[OptionIntent, ...]
+    options: tuple[DHCPOption, ...]
     settings: dict = field(default_factory=dict)
 
 
@@ -204,7 +148,7 @@ class SharedNetworkIntent:
 
     name: str
     family: int
-    options: tuple[OptionIntent, ...]
+    options: tuple[DHCPOption, ...]
 
 
 @dataclass(frozen=True)
@@ -216,7 +160,7 @@ class ClientClassIntent:
     test: str
     template_test: str
     only_in_additional_list: bool | None
-    options: tuple[OptionIntent, ...]
+    options: tuple[DHCPOption, ...]
     settings: dict = field(default_factory=dict)
 
 
@@ -228,43 +172,26 @@ class ServerConfigIntent:
     shared_networks: list[SharedNetworkIntent] = field(default_factory=list)
     subnets: list[SubnetIntent] = field(default_factory=list)
     client_classes: list[ClientClassIntent] = field(default_factory=list)
-    global_options: tuple[OptionIntent, ...] = ()
+    global_options: tuple[DHCPOption, ...] = ()
     option_defs: tuple[OptionDefIntent, ...] = ()
     global_settings: dict = field(default_factory=dict)
-    # DB-backed host reservations (from reservation-get-page), grouped by Kea subnet-id
-    # (0 = global). These never appear in config-get when a hosts database is used.
-    page_reservations: dict[int, tuple[ReservationIntent, ...]] = field(default_factory=dict)
-    # True when reservation-get-page could not be read (e.g. host_cmds not loaded);
-    # lets the importer report that DB-backed reservations may be missing.
-    reservations_unavailable: bool = False
 
 
-def _option_intent(raw: dict) -> OptionIntent | None:
-    """Normalize one ``option-data`` dict; return ``None`` if it is not a dict."""
-    if not isinstance(raw, dict):
-        return None
-    code = raw.get("code")
+def _optional_dhcp_option(raw) -> DHCPOption | None:
     try:
-        code = int(code) if code is not None else None
-    except (TypeError, ValueError):
-        code = None
-    return OptionIntent(
-        code=code,
-        name=raw.get("name"),
-        space=raw.get("space"),
-        data=raw.get("data", "") or "",
-        csv_format=raw.get("csv-format"),
-        always_send=raw.get("always-send"),
-        never_send=raw.get("never-send"),
-    )
+        return parse_dhcp_option(raw)
+    except ValueError:
+        # The importer reports nothing for a dropped entry, so leave the only record of it.
+        logger.debug("Discarded an invalid option-data entry: %r", raw, exc_info=True)
+        return None
 
 
-def _options(raw_list) -> tuple[OptionIntent, ...]:
-    """Normalize an ``option-data`` list, dropping non-dict entries."""
+def _options(raw_list) -> tuple[DHCPOption, ...]:
+    """Normalize an ``option-data`` list, dropping invalid entries."""
     if not isinstance(raw_list, list):
         return ()
-    out = [_option_intent(o) for o in raw_list]
-    return tuple(o for o in out if o is not None)
+    options = (_optional_dhcp_option(raw) for raw in raw_list)
+    return tuple(option for option in options if option is not None)
 
 
 def _option_def_intent(raw: dict) -> OptionDefIntent | None:
@@ -297,36 +224,6 @@ def _option_defs(raw_list) -> tuple[OptionDefIntent, ...]:
     return tuple(o for o in out if o is not None)
 
 
-def _reservation_identifier(raw: dict) -> tuple[str | None, str | None]:
-    """Return ``(identifier_type, identifier)`` using Kea's priority order."""
-    for id_type in RESERVATION_IDENTIFIER_TYPES:
-        value = raw.get(id_type)
-        if value:
-            return id_type, str(value)
-    return None, None
-
-
-def _reservation_intent(raw: dict, family: int) -> ReservationIntent | None:
-    """Normalize one Kea reservation dict; return ``None`` if not a dict."""
-    if not isinstance(raw, dict):
-        return None
-    id_type, identifier = _reservation_identifier(raw)
-    ip_addresses = raw.get("ip-addresses")
-    ip_addresses = tuple(a for a in ip_addresses if a) if isinstance(ip_addresses, list) else ()
-    prefixes = raw.get("prefixes")
-    prefixes = tuple(p for p in prefixes if p) if isinstance(prefixes, list) else ()
-    return ReservationIntent(
-        family=family,
-        identifier_type=id_type,
-        identifier=identifier,
-        ip_address=raw.get("ip-address") or None,
-        ip_addresses=ip_addresses,
-        prefixes=prefixes,
-        hostname=raw.get("hostname", "") or "",
-        options=_options(raw.get("option-data")),
-    )
-
-
 def _pools(raw_list) -> tuple[PoolIntent, ...]:
     """Normalize a subnet's ``pools`` list to non-empty pool strings (with options)."""
     if not isinstance(raw_list, list):
@@ -353,44 +250,15 @@ def _subnet_intent(raw: dict, family: int, shared_network: str | None) -> Subnet
         sid = int(sid) if sid is not None else None
     except (TypeError, ValueError):
         sid = None
-    reservations = tuple(
-        r for r in (_reservation_intent(x, family) for x in raw.get("reservations") or []) if r is not None
-    )
     return SubnetIntent(
         kea_subnet_id=sid,
         cidr=cidr,
         family=family,
         shared_network=shared_network,
         pools=_pools(raw.get("pools")),
-        reservations=reservations,
         options=_options(raw.get("option-data")),
         settings=_settings(raw),
     )
-
-
-def parse_reservations_page(hosts, family: int) -> dict[int, tuple[ReservationIntent, ...]]:
-    """Group ``reservation-get-page`` host dicts into ReservationIntents by Kea subnet-id.
-
-    Each host carries a ``subnet-id`` (0 for a global reservation).  The host dicts
-    have the same shape as inline subnet reservations, so :func:`_reservation_intent`
-    parses them directly.  Malformed/identifier-less entries are dropped.
-    """
-    grouped: dict[int, list[ReservationIntent]] = {}
-    if not isinstance(hosts, list):
-        return {}
-    for raw in hosts:
-        if not isinstance(raw, dict):
-            continue
-        res = _reservation_intent(raw, family)
-        if res is None:
-            continue
-        sid = raw.get("subnet-id")
-        try:
-            sid = int(sid) if sid is not None else 0
-        except (TypeError, ValueError):
-            sid = 0
-        grouped.setdefault(sid, []).append(res)
-    return {sid: tuple(reservations) for sid, reservations in grouped.items()}
 
 
 def _client_class_intent(raw: dict, family: int) -> ClientClassIntent | None:
