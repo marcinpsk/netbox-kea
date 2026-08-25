@@ -87,12 +87,15 @@ NetBox plugin for the [Kea DHCP](https://www.isc.org/kea/) server. Manage your D
 - NetBox 4.3 – 4.6
 - Kea 3.0+ (recommended) — the plugin connects directly to each daemon's built-in HTTP control socket (`kea-dhcp4` / `kea-dhcp6`). The [Kea Control Agent](https://kea.readthedocs.io/en/latest/arm/agent.html) was deprecated in Kea 2.7 and removed in 3.0; on Kea < 3.0, point the server URL at the Control Agent instead.
 - [`lease_cmds`](https://kea.readthedocs.io/en/latest/arm/hooks.html#lease-cmds-lease-commands-for-easier-lease-management) hook library (for lease search and management)
+- [`stat_cmds`](https://kea.readthedocs.io/en/latest/arm/hooks.html#stat-cmds-lease-statistics-commands) hook library (for guarded Subnet lease searches unless `lease_query_max_unpaged_leases` is `0`)
+- Kea 3.1.5+ for guarded state-filtered Subnet lease searches. On Kea 3.0 through 3.1.4, setting
+  `lease_query_max_unpaged_leases` to `0` permits an unbounded compatibility query that NetBox filters locally.
 - [`host_cmds`](https://kea.readthedocs.io/en/latest/arm/hooks.html#host-cmds) hook library (optional, for reservation management — also requires `subnet_cmds` to resolve a reservation's subnet from its CIDR)
 - [`subnet_cmds`](https://kea.readthedocs.io/en/latest/arm/hooks.html#subnet-cmds) hook library (optional, for subnet add/edit/delete, reservation management, and the subnet suggestions on the lease search and reservation forms)
 
 The plugin degrades gracefully when optional hooks are absent — tabs for unavailable features are hidden automatically. Two pages offer the server's configured subnets as suggestions and read them through `subnet_cmds`; without that hook each says so in a banner rather than silently offering nothing:
 
-- **Lease search** keeps working: the Search field offers no subnet suggestions, so type a subnet CIDR or ID.
+- **Lease search** keeps working: the Search field offers no subnet suggestions, so type an exact configured subnet CIDR or ID.
 - **Add reservation** cannot save, because resolving the entered CIDR to a Kea subnet ID needs `subnet_cmds`. Load the hook first.
 
 ---
@@ -131,6 +134,7 @@ Optionally configure plugin settings (see [Configuration](#configuration)):
 PLUGINS_CONFIG = {
     "netbox_kea": {
         "kea_timeout": 30,
+        "lease_query_max_unpaged_leases": 1000,
         "sync_interval_minutes": 5,
         "sync_leases_enabled": True,
         "sync_reservations_enabled": True,
@@ -167,6 +171,7 @@ All settings are under `PLUGINS_CONFIG["netbox_kea"]`:
 | Setting | Default | Description |
 |---|---|---|
 | `kea_timeout` | `30` | HTTP request timeout in seconds for Kea API calls |
+| `lease_query_max_unpaged_leases` | `1000` | Reject an unpaged Subnet lease query when its Kea statistics count exceeds this limit. Set to `0` to disable this safety check |
 | `stale_ip_cleanup` | `"remove"` | What to do with stale IPs after sync: `"remove"` (delete), `"deprecate"` (set status=deprecated), `"none"` (skip) |
 | `sync_interval_minutes` | `5` | How often the background sync job runs (minutes). Also editable via NetBox admin → Jobs |
 | `sync_leases_enabled` | `True` | Sync active DHCP leases to NetBox IPAM |
@@ -174,6 +179,14 @@ All settings are under `PLUGINS_CONFIG["netbox_kea"]`:
 | `sync_prefixes_enabled` | `True` | Sync Kea subnets to NetBox IPAM as IP Prefixes |
 | `sync_ip_ranges_enabled` | `True` | Sync Kea pools to NetBox IPAM as IP Ranges |
 | `sync_max_leases_per_server` | `50000` | Hard cap on leases fetched per server per sync run. Set to `0` for no limit |
+
+Subnet lease searches use `stat-lease4-get` or `stat-lease6-get` before an
+unpaged lease command. Kea statistics can reject a query that is already too
+large. They cannot prove that an unqualified query is below the limit because
+stored expired states are not included in all statistics. Select Active or
+Declined to narrow a large query. Other states require an exact IP address or
+client identifier search. The guard fails closed when the `stat_cmds` hook is
+not available. Set the limit to `0` only when you accept unbounded responses.
 
 ---
 

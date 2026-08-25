@@ -5,10 +5,10 @@
 URL names (all registered in netbox_kea/urls.py):
   server_lease4_sync       — POST /servers/<pk>/leases4/sync/
   server_lease6_sync       — POST /servers/<pk>/leases6/sync/
-  server_reservation4_sync — POST /servers/<pk>/reservations4/sync/
-  server_reservation6_sync — POST /servers/<pk>/reservations6/sync/
+  server_reservation4_sync: POST /servers/<pk>/reservations4/<subnet-id>/sync/
+  server_reservation6_sync: POST /servers/<pk>/reservations6/<subnet-id>/sync/
 
-Each endpoint accepts POST with:
+Lease endpoints accept POST with:
   ip_address   — host IP to sync
   hostname     — (optional) hostname / dns_name
   status       — "active" (leases) or "reserved" (reservations)
@@ -22,24 +22,25 @@ NetBox ``IPAddress`` rows those create. Only the HTTP boundary to Kea is stubbed
 via ``kea_stub.stub_kea``:
 
 * single lease sync       → ``lease{v}-get`` (echoes the posted IP back)
-* single reservation sync → ``subnet{v}-list`` + ``reservation-get``
-* bulk reservation sync   → ``reservation-get-page``
+* single reservation sync: Subnet Catalogue plus an exact ``reservation-get``
+* bulk reservation sync: Subnet Catalogue plus ``reservation-get-page``
 """
 
 from __future__ import annotations
 
 from django.contrib.auth import get_user_model
+from django.core.exceptions import ValidationError
+from django.db.models.signals import pre_save
 from django.test import TestCase, override_settings
 from django.urls import reverse
 from ipam.models import IPAddress as NbIP
 
 from netbox_kea.models import Server
 
-from .kea_stub import _res_page, _subnet_list, stub_kea
+from .kea_stub import _catalogue_responses, _res_page, _reservation_mutation_commands, stub_kea
+from .utils import _PLUGINS_CONFIG, _drop_subnet_choices_cache
 
 User = get_user_model()
-
-_PLUGINS_CONFIG = {"netbox_kea": {"kea_timeout": 30}}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -57,14 +58,13 @@ def _lease_get(hostname, **extra):
     return _resp
 
 
-def _reservation_get(hostname, **extra):
-    """Build a ``reservation-get`` callable that echoes the queried ip-address."""
-
-    def _resp(body):
-        ip = body["arguments"]["ip-address"]
-        return {"result": 0, "arguments": {"ip-address": ip, "hostname": hostname, "subnet-id": 1, **extra}}
-
-    return _resp
+def _reservation_get(hostname, address, *, version=4, **extra):
+    """Build an exact typed ``reservation-get`` response."""
+    address_fields = {"ip-address": address} if version == 4 else {"ip-addresses": [address]}
+    return {
+        "result": 0,
+        "arguments": {**address_fields, "hostname": hostname, "subnet-id": 1, **extra},
+    }
 
 
 def _make_server(**kwargs) -> Server:
@@ -89,6 +89,9 @@ class _SyncViewBase(TestCase):
         )
         self.client.force_login(self.user)
         self.server = _make_server()
+        # Reused test server IDs otherwise serve another test's cached Catalogue
+        # snapshot: the DB rolls back per test, the cache backend does not.
+        _drop_subnet_choices_cache(self, self.server)
 
     def _start_stub(self, responses):
         """Enter a ``stub_kea`` context for the whole test and return the stub."""
@@ -152,6 +155,13 @@ class TestLease4SyncView(_SyncViewBase):
         response = self.client.post(self._url(), {"hostname": "no-ip"})
         self.assertEqual(response.status_code, 400)
 
+    def test_malformed_lease_response_returns_400(self):
+        """A malformed Kea response does not escape the live-data boundary."""
+        with stub_kea({"lease4-get": {"result": 0, "arguments": None}}):
+            response = self.client.post(self._url(), {"ip_address": "192.168.10.5"})
+        self.assertEqual(response.status_code, 400)
+        self.assertContains(response, "Could not fetch live data", status_code=400)
+
     def test_idempotent_second_post_does_not_create_duplicate(self):
 
         self.client.post(self._url(), {"ip_address": "192.168.10.20", "hostname": "idem-host"})
@@ -214,6 +224,13 @@ class TestLease6SyncView(_SyncViewBase):
         ip = NbIP.objects.filter(address__startswith="2001:db8::3/").first()
         self.assertEqual(ip.status, "dhcp")
 
+    def test_malformed_lease_response_returns_400(self):
+        """A malformed DHCPv6 lease response does not escape the live-data boundary."""
+        with stub_kea({"lease6-get": {"result": 0, "arguments": None}}):
+            response = self.client.post(self._url(), {"ip_address": "2001:db8::4"})
+        self.assertEqual(response.status_code, 400)
+        self.assertContains(response, "Could not fetch live data", status_code=400)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TestReservation4SyncView
@@ -228,13 +245,18 @@ class TestReservation4SyncView(_SyncViewBase):
         super().setUp()
         self._start_stub(
             {
-                "subnet4-list": _subnet_list(4, [{"id": 1, "subnet": "10.0.0.0/24"}]),
-                "reservation-get": _reservation_get("mock-res.local", **{"hw-address": "aa:bb:cc:00:00:02"}),
+                **_catalogue_responses(4, 1, "10.0.0.0/24"),
+                "reservation-get": _reservation_get(
+                    "mock-res.local",
+                    "10.0.0.50",
+                    **{"hw-address": "aa:bb:cc:00:00:02"},
+                ),
             }
         )
 
-    def _url(self):
-        return reverse("plugins:netbox_kea:server_reservation4_sync", args=[self.server.pk])
+    def _url(self, include_identity: bool = True):
+        url = reverse("plugins:netbox_kea:server_reservation4_sync", args=[self.server.pk, 1])
+        return f"{url}?identifier_type=hw-address&identifier=aa%3Abb%3Acc%3A00%3A00%3A02" if include_identity else url
 
     def test_returns_200_on_valid_post(self):
         response = self.client.post(self._url(), {"ip_address": "10.0.0.50", "hostname": "res-host"})
@@ -242,25 +264,44 @@ class TestReservation4SyncView(_SyncViewBase):
 
     def test_creates_ip_with_reserved_status(self):
 
-        self.client.post(self._url(), {"ip_address": "10.0.0.51", "hostname": "res-host2"})
-        ip = NbIP.objects.filter(address__startswith="10.0.0.51/").first()
+        self.client.post(self._url())
+        ip = NbIP.objects.filter(address__startswith="10.0.0.50/").first()
         self.assertIsNotNone(ip)
         self.assertEqual(ip.status, "reserved")
 
     def test_sets_dns_name(self):
         # hostname in POST is ignored; dns_name comes from Kea reservation data (mock returns "mock-res.local")
-        self.client.post(self._url(), {"ip_address": "10.0.0.52", "hostname": "dns.local"})
-        ip = NbIP.objects.filter(address__startswith="10.0.0.52/").first()
+        self.client.post(self._url())
+        ip = NbIP.objects.filter(address__startswith="10.0.0.50/").first()
         self.assertEqual(ip.dns_name, "mock-res.local")
 
-    def test_response_contains_ip_link(self):
-        response = self.client.post(self._url(), {"ip_address": "10.0.0.53", "hostname": "link-res"})
-        self.assertContains(response, "10.0.0.53")
-        self.assertContains(response, "/ipam/ip-addresses/")
+    def test_response_contains_the_synchronization_badge(self):
+        response = self.client.post(self._url())
+        self.assertContains(response, "Synchronized 1/1")
 
-    def test_returns_400_when_ip_missing(self):
-        response = self.client.post(self._url(), {"hostname": "no-ip"})
+    def test_returns_400_when_identity_missing(self):
+        response = self.client.post(self._url(include_identity=False))
         self.assertEqual(response.status_code, 400)
+
+    def test_validation_error_from_an_ipam_receiver_is_handled(self):
+        """Keep a Django `ValidationError` raised during the IPAM write off the response.
+
+        `dns_name` is written from the Kea hostname, and netbox-dns validates it on
+        IPAddress save. Django's ValidationError is neither a ValueError nor a
+        DatabaseError, so it escaped this handler while both sibling handlers caught it.
+        """
+
+        def reject(sender, **kwargs):  # noqa: ARG001
+            raise ValidationError("dns_name is not valid for the configured zone.")
+
+        pre_save.connect(reject, sender=NbIP)
+        self.addCleanup(pre_save.disconnect, reject, sender=NbIP)
+
+        with self.assertLogs("netbox_kea.views.sync_views", level="ERROR"):
+            response = self.client.post(self._url())
+
+        self.assertContains(response, "Reservation synchronization failed", status_code=500)
+        self.assertEqual(NbIP.objects.count(), 0)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -276,13 +317,19 @@ class TestReservation6SyncView(_SyncViewBase):
         super().setUp()
         self._start_stub(
             {
-                "subnet6-list": _subnet_list(6, [{"id": 1, "subnet": "2001:db8:1::/64"}]),
-                "reservation-get": _reservation_get("mock-v6res.local", duid="01:02:03:04"),
+                **_catalogue_responses(6, 1, "2001:db8:1::/64"),
+                "reservation-get": _reservation_get(
+                    "mock-v6res.local",
+                    "2001:db8:1::50",
+                    version=6,
+                    duid="01:02:03:04",
+                ),
             }
         )
 
     def _url(self):
-        return reverse("plugins:netbox_kea:server_reservation6_sync", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_reservation6_sync", args=[self.server.pk, 1])
+        return f"{url}?identifier_type=duid&identifier=01%3A02%3A03%3A04"
 
     def test_returns_200_on_valid_post(self):
         response = self.client.post(
@@ -293,11 +340,8 @@ class TestReservation6SyncView(_SyncViewBase):
 
     def test_creates_ip_with_reserved_status(self):
 
-        self.client.post(
-            self._url(),
-            {"ip_address": "2001:db8:1::51", "hostname": "v6res2"},
-        )
-        ip = NbIP.objects.filter(address__startswith="2001:db8:1::51/").first()
+        self.client.post(self._url())
+        ip = NbIP.objects.filter(address__startswith="2001:db8:1::50/").first()
         self.assertIsNotNone(ip)
         self.assertEqual(ip.status, "reserved")
 
@@ -315,29 +359,68 @@ class TestReservation4BulkSyncView(_SyncViewBase):
         return reverse("plugins:netbox_kea:server_reservation4_bulk_sync", args=[self.server.pk])
 
     def test_redirects_after_success(self):
-        hosts = [{"ip-address": "10.0.10.1", "hostname": "bulk-host", "subnet-id": 1}]
-        with stub_kea({"reservation-get-page": _res_page(hosts)}):
+        hosts = [
+            {
+                "ip-address": "10.0.10.1",
+                "hostname": "bulk-host",
+                "subnet-id": 1,
+                "hw-address": "aa:bb:cc:00:10:01",
+            }
+        ]
+        with stub_kea({**_catalogue_responses(4, 1, "10.0.0.0/8"), "reservation-get-page": _res_page(hosts)}):
             response = self.client.post(self._url(), follow=False)
         # Must redirect back to reservations page
         self.assertIn(response.status_code, [302, 303])
 
     def test_creates_netbox_ips_for_all_reservations(self):
         hosts = [
-            {"ip-address": "10.0.11.1", "hostname": "bulk-1", "subnet-id": 1},
-            {"ip-address": "10.0.11.2", "hostname": "bulk-2", "subnet-id": 1},
+            {
+                "ip-address": "10.0.11.1",
+                "hostname": "bulk-1",
+                "subnet-id": 1,
+                "hw-address": "aa:bb:cc:00:11:01",
+            },
+            {
+                "ip-address": "10.0.11.2",
+                "hostname": "bulk-2",
+                "subnet-id": 1,
+                "hw-address": "aa:bb:cc:00:11:02",
+            },
         ]
-        with stub_kea({"reservation-get-page": _res_page(hosts)}):
+        with stub_kea({**_catalogue_responses(4, 1, "10.0.0.0/8"), "reservation-get-page": _res_page(hosts)}):
             self.client.post(self._url())
         self.assertTrue(NbIP.objects.filter(address__startswith="10.0.11.1/").exists())
         self.assertTrue(NbIP.objects.filter(address__startswith="10.0.11.2/").exists())
 
     def test_created_ips_have_reserved_status(self):
-        hosts = [{"ip-address": "10.0.12.1", "hostname": "bulk-rsv", "subnet-id": 1}]
-        with stub_kea({"reservation-get-page": _res_page(hosts)}):
+        hosts = [
+            {
+                "ip-address": "10.0.12.1",
+                "hostname": "bulk-rsv",
+                "subnet-id": 1,
+                "hw-address": "aa:bb:cc:00:12:01",
+            }
+        ]
+        with stub_kea({**_catalogue_responses(4, 1, "10.0.0.0/8"), "reservation-get-page": _res_page(hosts)}):
             self.client.post(self._url())
         ip = NbIP.objects.filter(address__startswith="10.0.12.1/").first()
         self.assertIsNotNone(ip)
         self.assertEqual(ip.status, "reserved")
+
+    def test_malformed_snapshot_fails_closed_with_a_message(self):
+        malformed_page = {
+            "result": 0,
+            "arguments": {"hosts": None, "next": {"from": 0, "source-index": 0}},
+        }
+        with stub_kea({**_catalogue_responses(4, 1, "10.0.0.0/8"), "reservation-get-page": malformed_page}):
+            response = self.client.post(self._url(), follow=True)
+
+        self.assertRedirects(
+            response,
+            reverse("plugins:netbox_kea:server_reservations4", args=[self.server.pk]),
+        )
+        self.assertContains(response, "Failed to fetch reservations")
+        self.assertEqual(NbIP.objects.count(), 0)
 
     def test_returns_404_for_nonexistent_server(self):
         url = reverse("plugins:netbox_kea:server_reservation4_bulk_sync", args=[99999])
@@ -380,7 +463,7 @@ class TestSyncViewPermissionChecks(_SyncViewBase):
 
     def test_reservation4_sync_requires_ipam_add_permission(self):
         self._login_limited()
-        url = reverse("plugins:netbox_kea:server_reservation4_sync", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_reservation4_sync", args=[self.server.pk, 1])
         response = self.client.post(url, {"ip_address": "192.168.99.2"})
         self.assertEqual(response.status_code, 403)
 
@@ -410,14 +493,21 @@ class TestReservation6BulkSyncView(_SyncViewBase):
         return reverse("plugins:netbox_kea:server_reservation6_bulk_sync", args=[self.server.pk])
 
     def test_post_bulk_syncs_v6_reservations(self):
-        """Bulk sync v6 reservation creates an IPAddress with /128 prefix and reserved status."""
-        hosts = [{"subnet-id": 1, "duid": "00:01:aa:bb", "ip-addresses": ["2001:db8::1"], "hostname": "host-v6"}]
-        with stub_kea({"reservation-get-page": _res_page(hosts)}):
+        """Bulk sync v6 reservation creates a reserved IPAddress masked by its catalogue Subnet."""
+        hosts = [
+            {
+                "subnet-id": 1,
+                "duid": "00:01:aa:bb",
+                "ip-addresses": ["2001:db8::1"],
+                "hostname": "host-v6",
+            }
+        ]
+        with stub_kea({**_catalogue_responses(6, 1, "2001:db8::/32"), "reservation-get-page": _res_page(hosts)}):
             self.client.post(self._url())
         ip = NbIP.objects.filter(address__startswith="2001:db8::1/").first()
         self.assertIsNotNone(ip)
         self.assertEqual(ip.status, "reserved")
-        self.assertIn("/128", str(ip.address))
+        self.assertIn("/32", str(ip.address))
 
     def test_post_unauthenticated_redirects(self):
         self.client.logout()
@@ -446,10 +536,22 @@ class TestReservationBulkSyncConflictProtection(_SyncViewBase):
         from django.contrib import messages as django_messages
 
         NbIP.objects.create(address="10.0.20.5/32", status="active", description="Router loopback")
-        hosts = [{"ip-address": "10.0.20.5", "hostname": "foreign", "subnet-id": 1}]
+        hosts = [
+            {
+                "ip-address": "10.0.20.5",
+                "hostname": "foreign",
+                "subnet-id": 1,
+                "hw-address": "aa:bb:cc:00:20:05",
+            }
+        ]
         # follow=True lands on the reservations list, which re-drains reservation-get-page
-        # and enriches with lease4-get-all per subnet.
-        stub = {"reservation-get-page": _res_page(hosts), "lease4-get-all": {"result": 0, "arguments": {"leases": []}}}
+        # and enriches with lease4-get-by-state per subnet.
+        stub = {
+            **_catalogue_responses(4, 1, "10.0.0.0/8"),
+            "list-commands": _reservation_mutation_commands(),
+            "reservation-get-page": _res_page(hosts),
+            "lease4-get-by-state": {"result": 0, "arguments": {"leases": []}},
+        }
         with stub_kea(stub):
             response = self.client.post(self._url(), follow=True)
 
@@ -464,10 +566,25 @@ class TestReservationBulkSyncConflictProtection(_SyncViewBase):
     def test_managed_ip_still_synced_alongside_conflict(self):
         NbIP.objects.create(address="10.0.20.6/32", status="active", description="Router loopback")
         hosts = [
-            {"ip-address": "10.0.20.6", "hostname": "foreign", "subnet-id": 1},
-            {"ip-address": "10.0.20.7", "hostname": "managed", "subnet-id": 1},
+            {
+                "ip-address": "10.0.20.6",
+                "hostname": "foreign",
+                "subnet-id": 1,
+                "hw-address": "aa:bb:cc:00:20:06",
+            },
+            {
+                "ip-address": "10.0.20.7",
+                "hostname": "managed",
+                "subnet-id": 1,
+                "hw-address": "aa:bb:cc:00:20:07",
+            },
         ]
-        stub = {"reservation-get-page": _res_page(hosts), "lease4-get-all": {"result": 0, "arguments": {"leases": []}}}
+        stub = {
+            **_catalogue_responses(4, 1, "10.0.0.0/8"),
+            "list-commands": _reservation_mutation_commands(),
+            "reservation-get-page": _res_page(hosts),
+            "lease4-get-by-state": {"result": 0, "arguments": {"leases": []}},
+        }
         with stub_kea(stub):
             self.client.post(self._url(), follow=True)
 

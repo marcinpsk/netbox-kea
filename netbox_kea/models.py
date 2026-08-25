@@ -15,6 +15,7 @@ from netbox.models import NetBoxModel
 from netbox.models.features import JobsMixin
 
 from .kea import KeaClient, KeaException
+from .reservations import MAX_IDENTITY_LENGTH
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +30,31 @@ def _get_kea_timeout(default: int = 30) -> int:
         return int(raw)
     except (TypeError, ValueError):
         return default
+
+
+def _get_max_unpaged_leases(default: int = 1000) -> int | None:
+    """Return the Subnet lease-query guard limit, or ``None`` when disabled."""
+    plugins_config = getattr(settings, "PLUGINS_CONFIG", {})
+    if not isinstance(plugins_config, dict):
+        return default
+    plugin_config = plugins_config.get("netbox_kea") or {}
+    if not isinstance(plugin_config, dict):
+        return default
+    raw = plugin_config.get("lease_query_max_unpaged_leases", default)
+    if isinstance(raw, bool):
+        return default
+    if isinstance(raw, int):
+        value = raw
+    elif isinstance(raw, str):
+        try:
+            value = int(raw)
+        except ValueError:
+            return default
+    else:
+        return default
+    if value == 0:
+        return None
+    return value if value > 0 else default
 
 
 class Server(JobsMixin, NetBoxModel):
@@ -251,6 +277,7 @@ class Server(JobsMixin, NetBoxModel):
             timeout=_get_kea_timeout(),
             persist_config=self.persist_config,
             send_service=self.has_control_agent,
+            max_unpaged_leases=_get_max_unpaged_leases(),
             on_config_change=on_config_change,
         )
 
@@ -454,6 +481,14 @@ class KeaDhcpLink(models.Model):
     — via a ``GenericForeignKey`` so there is no hard migration dependency on
     ``netbox_dhcp`` being installed — at the imported DHCP-plugin object.  It is the
     match key for idempotent re-import and the future home for accept/lock + drift state.
+
+    A Global Reservation has no ``subnet-id``, and ``netbox_dhcp`` derives a
+    ``HostReservation``'s family from its Subnet, so a Global row carries no family of
+    its own.  ``kea_identity`` holds that missing half of the identity here, which keeps
+    the DHCPv4 and DHCPv6 Reservations of one identifier on separate rows.
+
+    Exactly one identity kind is set per row, so the two partial unique constraints
+    together cover every link and no row can escape both.
     """
 
     server = models.ForeignKey(
@@ -468,6 +503,15 @@ class KeaDhcpLink(models.Model):
         null=True,
         blank=True,
         help_text="Kea subnet-id for subnet links; null for objects without a Kea subnet-id.",
+    )
+    kea_identity = models.CharField(
+        max_length=MAX_IDENTITY_LENGTH,
+        null=True,
+        blank=True,
+        help_text=(
+            "Normalized 'identifier-type:value' for a Global Reservation link; "
+            "null for objects Kea identifies by subnet-id."
+        ),
     )
     object_type = models.ForeignKey(
         to="contenttypes.ContentType",
@@ -492,7 +536,18 @@ class KeaDhcpLink(models.Model):
                 name="keadhcplink_unique_subnet_identity",
                 condition=models.Q(kea_subnet_id__isnull=False),
             ),
+            models.UniqueConstraint(
+                fields=["server", "family", "kea_identity"],
+                name="keadhcplink_unique_reservation_identity",
+                condition=models.Q(kea_identity__isnull=False),
+            ),
+            models.CheckConstraint(
+                condition=models.Q(kea_subnet_id__isnull=False, kea_identity__isnull=True)
+                | models.Q(kea_subnet_id__isnull=True, kea_identity__isnull=False),
+                name="keadhcplink_one_identity_kind",
+            ),
         ]
 
     def __str__(self) -> str:
-        return f"{self.server} v{self.family} subnet-id={self.kea_subnet_id} → {self.object_type_id}:{self.object_id}"
+        key = f"subnet-id={self.kea_subnet_id}" if self.kea_identity is None else self.kea_identity
+        return f"{self.server} v{self.family} {key} → {self.object_type_id}:{self.object_id}"

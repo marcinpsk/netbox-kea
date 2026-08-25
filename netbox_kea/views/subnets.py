@@ -14,8 +14,10 @@ from utilities.htmx import htmx_partial
 from utilities.views import register_model_view
 
 from .. import forms, tables
-from ..kea import KeaClient, KeaException, PartialPersistError, iter_reservations
+from ..kea import KeaClient, KeaException, PartialPersistError
 from ..models import Server
+from ..reservations import InSubnetReservationScope
+from ..subnet_catalogue import display as subnet_catalogue
 from ..utilities import (
     OptionalViewTab,
     check_dhcp_enabled,
@@ -234,6 +236,7 @@ class ServerDHCP4SubnetsView(BaseServerDHCPSubnetsView):
 
 def _warn_pool_reservation_overlap(
     request: HttpRequest,
+    server: Server,
     client: "KeaClient",
     version: int,
     subnet_id: int,
@@ -241,9 +244,8 @@ def _warn_pool_reservation_overlap(
 ) -> None:
     """Add a non-blocking warning if any existing reservation IP falls within *pool_str*.
 
-    Uses ``reservation-get-page`` to iterate all reservations for the subnet
-    and checks each one against the pool range (IPRange or CIDR).  Silently
-    skips on any error (host_cmds not loaded, network failure, etc.).
+    Uses the shared typed Reservation Snapshot and checks each verified record
+    against the pool range. Silently skips on read errors.
     """
     try:
         from netaddr import IPAddress, IPNetwork, IPRange
@@ -254,17 +256,24 @@ def _warn_pool_reservation_overlap(
         else:
             pool_range = IPNetwork(pool_str)
 
+        snapshot = client.reservation_snapshot(version, subnet_catalogue(server, version), page_size=200)
+        if not snapshot.complete:
+            # No warning below would otherwise read as "no overlapping reservation".
+            messages.warning(
+                request,
+                f"Could not read every reservation on this server, so pool {pool_str} was checked "
+                "against an incomplete list.",
+            )
         overlapping: list[str] = []
-        for host in iter_reservations(client, f"dhcp{version}", limit=200):
-            if host.get("subnet-id") != subnet_id:
+        for reservation in snapshot.records:
+            if (
+                not isinstance(reservation.scope, InSubnetReservationScope)
+                or reservation.scope.subnet.subnet_id != subnet_id
+            ):
                 continue
-            candidate_ips = list(filter(None, [host.get("ip-address")] + list(host.get("ip-addresses") or [])))
-            for ip_str in candidate_ips:
-                try:
-                    if IPAddress(ip_str) in pool_range:
-                        overlapping.append(ip_str)
-                except Exception:  # noqa: BLE001, PERF203, S110  skip unparseable reservation IPs
-                    pass
+            overlapping.extend(
+                str(address) for address in reservation.addresses if IPAddress(str(address)) in pool_range
+            )
 
         if overlapping:
             sample = ", ".join(overlapping[:5])
@@ -272,10 +281,10 @@ def _warn_pool_reservation_overlap(
             messages.warning(
                 request,
                 f"Pool {pool_str} overlaps {len(overlapping)} existing reservation(s): {sample}{extra}. "
-                "Kea allows this — reservations take priority over pool allocation.",
+                "Kea allows this. Reservations take priority over pool allocation.",
             )
     except Exception:  # noqa: BLE001
-        logger.debug("Failed to check pool/reservation overlap for subnet %s", subnet_id)
+        logger.exception("Failed to check pool/reservation overlap for subnet %s", subnet_id)
 
 
 def _warn_reservation_pool_overlap(
@@ -326,7 +335,7 @@ def _warn_reservation_pool_overlap(
                 )
                 break
     except Exception:  # noqa: BLE001
-        logger.debug("Failed to check reservation/pool overlap for %s in subnet %s", ip_str, subnet_id)
+        logger.exception("Failed to check reservation/pool overlap for %s in subnet %s", ip_str, subnet_id)
 
 
 class _BasePoolAddView(_KeaChangeMixin, generic.ObjectView):
@@ -379,7 +388,7 @@ class _BasePoolAddView(_KeaChangeMixin, generic.ObjectView):
             messages.error(request, "Failed to connect to Kea: see server logs.")
             return redirect(return_url)
         # F4: Warn (non-blocking) when any reservation IP falls in the new pool range
-        _warn_pool_reservation_overlap(request, client, self.dhcp_version, subnet_id, pool)
+        _warn_pool_reservation_overlap(request, server, client, self.dhcp_version, subnet_id, pool)
         try:
             client.pool_add(version=self.dhcp_version, subnet_id=subnet_id, pool=pool)
             messages.success(request, f"Pool {pool} added to subnet {subnet_id}.")

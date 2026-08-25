@@ -8,12 +8,16 @@ All Kea HTTP calls are mocked; these tests require no running services.
 from unittest.mock import patch
 
 import requests
+from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import ValidationError
+from django.core.management import call_command
+from django.db import IntegrityError, transaction
 from django.test import SimpleTestCase, TestCase, override_settings
 from netbox.models import NetBoxModel
 
 from netbox_kea.kea import KeaClient
-from netbox_kea.models import Server, SyncConfig, _get_kea_timeout
+from netbox_kea.models import KeaDhcpLink, Server, SyncConfig, _get_kea_timeout, _get_max_unpaged_leases
+from netbox_kea.reservations import MAX_IDENTITY_LENGTH
 from netbox_kea.tests.kea_stub import stub_kea
 from netbox_kea.tests.utils import _make_db_server
 
@@ -120,6 +124,16 @@ class TestServerGetClient(SimpleTestCase):
         server = _make_server()
         client = server.get_client()
         self.assertEqual(client.timeout, 5)
+
+    @override_settings(PLUGINS_CONFIG={"netbox_kea": {"lease_query_max_unpaged_leases": 250}})
+    def test_get_client_uses_configured_unpaged_lease_limit(self):
+        client = _make_server().get_client()
+        self.assertEqual(client.max_unpaged_leases, 250)
+
+    @override_settings(PLUGINS_CONFIG={"netbox_kea": {"lease_query_max_unpaged_leases": 0}})
+    def test_get_client_can_explicitly_disable_unpaged_lease_guard(self):
+        client = _make_server().get_client()
+        self.assertIsNone(client.max_unpaged_leases)
 
     @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
     def test_v4_uses_dhcp4_credentials_when_set(self):
@@ -733,3 +747,134 @@ class TestGetKeaTimeout(SimpleTestCase):
     def test_custom_default(self):
         with self.settings(PLUGINS_CONFIG={}):
             self.assertEqual(_get_kea_timeout(default=60), 60)
+
+
+class TestGetMaxUnpagedLeases(SimpleTestCase):
+    """Tests for the unpaged Subnet lease-query safety setting."""
+
+    @override_settings(PLUGINS_CONFIG={"netbox_kea": {"lease_query_max_unpaged_leases": "250"}})
+    def test_accepts_a_numeric_string(self):
+        self.assertEqual(_get_max_unpaged_leases(), 250)
+
+    @override_settings(PLUGINS_CONFIG={"netbox_kea": {"lease_query_max_unpaged_leases": 0}})
+    def test_zero_disables_the_guard(self):
+        self.assertIsNone(_get_max_unpaged_leases())
+
+    @override_settings(PLUGINS_CONFIG={"netbox_kea": {"lease_query_max_unpaged_leases": -1}})
+    def test_negative_value_uses_the_default(self):
+        self.assertEqual(_get_max_unpaged_leases(), 1000)
+
+    @override_settings(PLUGINS_CONFIG={"netbox_kea": {"lease_query_max_unpaged_leases": True}})
+    def test_boolean_uses_the_default(self):
+        self.assertEqual(_get_max_unpaged_leases(), 1000)
+
+    @override_settings(PLUGINS_CONFIG={"netbox_kea": {"lease_query_max_unpaged_leases": 2.5}})
+    def test_fractional_value_uses_the_default(self):
+        self.assertEqual(_get_max_unpaged_leases(), 1000)
+
+    @override_settings(PLUGINS_CONFIG={"netbox_kea": {"lease_query_max_unpaged_leases": "invalid"}})
+    def test_malformed_string_uses_the_default(self):
+        self.assertEqual(_get_max_unpaged_leases(), 1000)
+
+
+class TestKeaDhcpLinkIdentity(TestCase):
+    """A link row carries exactly one Kea identity kind.
+
+    Both partial unique constraints are conditional, so a row with neither
+    identity would escape both and duplicate freely.
+    """
+
+    def setUp(self):
+        self.server = _make_db_server(name="kea-link-identity")
+        self.object_type = ContentType.objects.get_for_model(Server)
+
+    def _link(self, **identity) -> KeaDhcpLink:
+        return KeaDhcpLink(
+            server=self.server,
+            family=4,
+            object_type=self.object_type,
+            object_id=self.server.pk,
+            **identity,
+        )
+
+    def test_subnet_identity_alone_is_stored(self):
+        self._link(kea_subnet_id=7).save()
+
+        self.assertEqual(KeaDhcpLink.objects.get().kea_subnet_id, 7)
+
+    def test_reservation_identity_alone_is_stored(self):
+        self._link(kea_identity="hw-address:aa:bb:cc:dd:ee:ff").save()
+
+        self.assertEqual(KeaDhcpLink.objects.get().kea_identity, "hw-address:aa:bb:cc:dd:ee:ff")
+
+    def test_both_identity_kinds_are_rejected(self):
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            self._link(kea_subnet_id=7, kea_identity="hw-address:aa:bb:cc:dd:ee:ff").save()
+
+    def test_neither_identity_kind_is_rejected(self):
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            self._link().save()
+
+    def test_the_longest_reservation_identity_is_stored(self):
+        """Kea accepts a 128-octet Client ID, so the column must hold the identity it forms."""
+        from netbox_kea.integrations.dhcp_plugin import _reservation_link_identity
+        from netbox_kea.reservations import GlobalReservationScope, IPv4Reservation, ReservationIdentity
+
+        reservation = IPv4Reservation(
+            scope=GlobalReservationScope(),
+            identity=ReservationIdentity("client-id", "ab" * 128),
+            addresses=(),
+        )
+        identity = _reservation_link_identity(reservation)
+        self.assertEqual(len(identity), MAX_IDENTITY_LENGTH)
+
+        self._link(kea_identity=identity).save()
+
+        self.assertEqual(KeaDhcpLink.objects.get().kea_identity, identity)
+
+
+class TestMigrationState(TestCase):
+    """The recorded migrations describe the current netbox_kea models."""
+
+    def test_models_have_no_unmigrated_changes(self):
+        try:
+            call_command("makemigrations", "netbox_kea", "--check", "--dry-run", "--no-input", verbosity=0)
+        except SystemExit:
+            self.fail("netbox_kea models changed with no matching migration. Run makemigrations.")
+
+
+class TestKeaDhcpLinkConstraintMigration(TestCase):
+    """Current migrations must accept every KeaDhcpLink row a released deployment can hold."""
+
+    _RELEASED = "0013_server_sync_dhcp_plugin_enabled_keadhcplink"
+
+    def test_a_subnet_keyed_link_written_before_0014_survives_the_constraint(self):
+        """Release 1.9.0 stops at 0013, where the only writer always sets kea_subnet_id."""
+        from django.db import connection
+        from django.db.migrations.executor import MigrationExecutor
+
+        server = _make_db_server(name="released-link")
+        object_type = ContentType.objects.get_for_model(Server)
+        executor = MigrationExecutor(connection)
+        # Target the newest migration on disk, so a later one cannot narrow this cover.
+        current = executor.loader.graph.leaf_nodes("netbox_kea")
+        self.assertEqual(len(current), 1, f"netbox_kea migrations must have one leaf, found {current}.")
+        executor.migrate([("netbox_kea", self._RELEASED)])
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO netbox_kea_keadhcplink "
+                "(server_id, family, kea_subnet_id, object_type_id, object_id, created, last_synced) "
+                "VALUES (%s, 4, 7, %s, %s, NOW(), NOW())",
+                [server.pk, object_type.pk, server.pk],
+            )
+            # Fire the deferred foreign-key triggers the insert queued, or PostgreSQL
+            # refuses to ALTER the table while the test transaction still holds them.
+            cursor.execute("SET CONSTRAINTS ALL IMMEDIATE")
+        # The forward migration is the assertion: AddConstraint raises here if a
+        # released row can violate keadhcplink_one_identity_kind.
+        executor.loader.build_graph()
+        executor.migrate(current)
+
+        link = KeaDhcpLink.objects.get(server=server)
+        self.assertEqual(link.kea_subnet_id, 7)
+        self.assertIsNone(link.kea_identity)

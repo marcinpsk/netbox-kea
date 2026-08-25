@@ -2,6 +2,7 @@
 {% load render_table from django_tables2 %}
 
 {% block content %}
+{% include "netbox_kea/includes/persist_config_warning.html" %}
 {% if object.dhcp4 and object.dhcp6 %}
 <ul class="nav nav-pills justify-content-center mb-3">
   <li class="nav-item">
@@ -19,6 +20,13 @@
       <i class="mdi mdi-alert-circle-outline"></i>
       The <strong>host_cmds</strong> hook library is not loaded on this Kea server.
       Reservation management requires the <code>host_cmds</code> hook.
+    </div>
+    {% endif %}
+    {% if mutation_unavailable %}
+    <div class="alert alert-warning" role="alert">
+      <i class="mdi mdi-alert-circle-outline" aria-hidden="true"></i>
+      <strong>Reservation mutation controls are unavailable.</strong>
+      {{ mutation_unavailable_reason }} Existing Reservations remain visible for read-only use.
     </div>
     {% endif %}
   </div>
@@ -46,6 +54,13 @@
         {% endif %}
       </div>
       <div class="col-auto">
+        <label for="id_scope" class="form-label">{{ search_form.scope.label }}</label>
+        {{ search_form.scope }}
+        {% if search_form.scope.errors %}
+        <div class="text-danger small">{{ search_form.scope.errors }}</div>
+        {% endif %}
+      </div>
+      <div class="col-auto">
         <button type="submit" class="btn btn-primary btn-sm">
           <i class="mdi mdi-magnify"></i> Filter
         </button>
@@ -57,6 +72,24 @@
       </div>
     </form>
   </div>
+</div>
+{% endif %}
+
+{% if not snapshot_complete and reservation_diagnostics %}
+<div class="alert alert-warning" role="alert">
+  <strong>Snapshot is incomplete.</strong>
+  The Reservation Snapshot could not be read completely.
+  See the {{ reservation_diagnostics|length }} diagnostic{{ reservation_diagnostics|length|pluralize }} below.
+  <ul class="mb-0 mt-2">
+    {% for diagnostic in reservation_diagnostics %}
+    <li><code>{{ diagnostic.code }}</code> at <code>{{ diagnostic.source_position }}</code>: {{ diagnostic.message }}</li>
+    {% endfor %}
+  </ul>
+</div>
+{% elif snapshot_complete %}
+<div class="alert alert-success py-2" role="status">
+  <i class="mdi mdi-check-circle-outline" aria-hidden="true"></i>
+  This bounded Snapshot is complete for the current page.
 </div>
 {% endif %}
 
@@ -74,15 +107,26 @@
     {% if hook_available and import_url %}
     <a href="{{ import_url }}" class="btn btn-outline-secondary btn-sm me-2">
       <i class="mdi mdi-upload" aria-hidden="true"></i>
-      Import CSV
+      Import YAML/JSON
     </a>
     {% endif %}
     {% if hook_available %}
+    <div class="dropdown d-inline-block me-2">
+      <button type="button" class="btn btn-outline-secondary btn-sm dropdown-toggle" data-bs-toggle="dropdown">
+        <i class="mdi mdi-download" aria-hidden="true"></i> Export
+      </button>
+      <ul class="dropdown-menu dropdown-menu-end">
+        <li><a class="dropdown-item" href="?export=yaml">Complete Snapshot (YAML)</a></li>
+        <li><a class="dropdown-item" href="?export=json">Complete Snapshot (JSON)</a></li>
+      </ul>
+    </div>
+    {% endif %}
+    {% if hook_available and add_url %}
     <a href="{{ add_url }}" class="btn btn-primary btn-sm">
       <i class="mdi mdi-plus-thick" aria-hidden="true"></i>
       Add DHCPv{{ dhcp_version }} Reservation
     </a>
-    {% else %}
+    {% elif not hook_available or mutation_unavailable %}
     <button type="button" class="btn btn-primary btn-sm" disabled aria-disabled="true">
       <i class="mdi mdi-plus-thick" aria-hidden="true"></i>
       Add DHCPv{{ dhcp_version }} Reservation
@@ -96,4 +140,11 @@
     {% render_table table %}
   </div>
 </div>
+{% if next_page_url %}
+<div class="d-flex justify-content-end mt-3">
+  <a href="{{ next_page_url }}" class="btn btn-outline-primary btn-sm">
+    Next page <i class="mdi mdi-chevron-right" aria-hidden="true"></i>
+  </a>
+</div>
+{% endif %}
 {% endblock %}

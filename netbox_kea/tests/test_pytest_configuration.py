@@ -4,14 +4,20 @@
 
 from __future__ import annotations
 
+import ast
 import os
 import re
+import runpy
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
+import pytest
+
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+#: The Playwright suite. It must stay inside the path the integration job runs.
+_BROWSER_SUITE = REPOSITORY_ROOT / "tests" / "ui"
 
 
 SERIAL_BY_DESIGN = "1"
@@ -44,6 +50,15 @@ def _xdist_settings(command: str) -> dict[str, str]:
     return settings
 
 
+def _workflow_job(workflow: str, name: str) -> str:
+    """Return one workflow job, bounded by the next top-level job key."""
+    marker = f"  {name}:\n"
+    lines = workflow.splitlines(keepends=True)
+    assert marker in lines, f"The {name} job was renamed or removed."
+    job = "".join(lines[lines.index(marker) + 1 :])
+    return re.split(r"\n {2}[A-Za-z0-9_-]+:\n", job, maxsplit=1)[0]
+
+
 def test_documented_unit_test_targets_are_shell_safe():
     """Keep task-specific test targets usable when copied into a shell."""
     agents = (REPOSITORY_ROOT / "AGENTS.md").read_text()
@@ -55,6 +70,89 @@ def test_documented_unit_test_targets_are_shell_safe():
     )
     assert "<unique-task>" not in agents
     assert "<dedicated-redis>" not in agents
+
+
+def test_ci_configuration_writer_generates_the_requested_plugins(monkeypatch, tmp_path):
+    """Generate an importable NetBox configuration with the requested plugins."""
+    output = tmp_path / "configuration.py"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(REPOSITORY_ROOT / "scripts/write_netbox_ci_configuration.py"),
+            "--output",
+            str(output),
+            "--plugin",
+            "netbox_kea",
+            "--plugin",
+            "netbox_dhcp",
+        ],
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    for variable in ("REDIS_HOST", "REDIS_DATABASE", "REDIS_CACHE_HOST", "REDIS_CACHE_DATABASE"):
+        monkeypatch.delenv(variable, raising=False)
+    namespace = runpy.run_path(str(output))
+    assert namespace["ALLOWED_HOSTS"] == ["*"]
+    assert namespace["PLUGINS"] == ["netbox_kea", "netbox_dhcp"]
+    assert namespace["DATABASE"] == {
+        "NAME": "netbox",
+        "USER": "netbox",
+        "PASSWORD": "netbox",
+        "HOST": "localhost",
+        "PORT": "",
+        "CONN_MAX_AGE": 300,
+        "ENGINE": "django.db.backends.postgresql",
+    }
+    assert namespace["REDIS"] == {
+        "tasks": {"HOST": "localhost", "PORT": 6379, "DATABASE": 0},
+        "caching": {"HOST": "localhost", "PORT": 6379, "DATABASE": 1},
+    }
+    assert namespace["SECRET_KEY"] == "ci-test-secret-key-not-for-production-1234567890123456"
+    assert namespace["API_TOKEN_PEPPERS"] == {0: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+    assert namespace["PLUGINS_CONFIG"] == {"netbox_kea": {"kea_timeout": 30}}
+
+
+def test_database_jobs_use_the_shared_ci_configuration_writer():
+    """Configure both database-backed jobs through the tested writer."""
+    workflow = (REPOSITORY_ROOT / ".github/workflows/ci.yml").read_text()
+    unit_test_job = re.sub(r"[ \t]*\\\n[ \t]*", " ", _workflow_job(workflow, "unit-test"))
+    dhcp_plugin_job = re.sub(r"[ \t]*\\\n[ \t]*", " ", _workflow_job(workflow, "dhcp-plugin-test"))
+    writer = 'python "${{ github.workspace }}/scripts/write_netbox_ci_configuration.py"'
+
+    assert workflow.count(writer) == 2
+    assert f"{writer} --output netbox/configuration.py --plugin netbox_kea\n" in unit_test_job
+    assert f"{writer} --output netbox/configuration.py --plugin netbox_kea --plugin netbox_dhcp\n" in dhcp_plugin_job
+    assert "cat > netbox/configuration.py" not in workflow
+
+
+def test_workflow_job_slice_uses_structural_job_boundaries():
+    """Find a job after reordering, and report a missing marker clearly."""
+    workflow = "jobs:\n  lint:\n    marker: lint\n  unit-test:\n    marker: unit\n  release_1:\n    marker: release\n"
+    nested_marker = "jobs:\n  lint:\n    unit-test:\n      marker: nested\n"
+
+    assert _workflow_job(workflow, "unit-test") == "    marker: unit"
+    with pytest.raises(AssertionError, match="missing job was renamed or removed"):
+        _workflow_job(workflow, "missing")
+    with pytest.raises(AssertionError, match="unit-test job was renamed or removed"):
+        _workflow_job(nested_marker, "unit-test")
+
+
+def test_dhcp_plugin_job_uses_the_unit_test_runtime_versions():
+    """Keep both database-backed CI jobs on the same NetBox and Python inputs."""
+    workflow = (REPOSITORY_ROOT / ".github/workflows/ci.yml").read_text()
+    unit_test_job = _workflow_job(workflow, "unit-test")
+    dhcp_plugin_job = _workflow_job(workflow, "dhcp-plugin-test")
+
+    for setting in ("ref", "python-version-file"):
+        pattern = rf"^\s+{setting}: (.+)$"
+        unit_value = re.search(pattern, unit_test_job, re.MULTILINE)
+        plugin_value = re.search(pattern, dhcp_plugin_job, re.MULTILINE)
+        assert unit_value is not None, (setting, unit_test_job)
+        assert plugin_value is not None, (setting, dhcp_plugin_job)
+        assert plugin_value.group(1) == unit_value.group(1), setting
 
 
 def test_worker_settings_are_read_as_whole_tokens():
@@ -101,6 +199,28 @@ def test_every_unit_test_command_declares_auto_workers():
             workers.append(settings["workers"])
 
         assert "auto" in workers, (relative_path, workers)
+
+
+def test_the_browser_suite_runs_in_the_integration_job():
+    """The Playwright suite must sit inside the path CI actually executes.
+
+    It previously lived in a top-level ``e2e/`` directory that no workflow named, so
+    fifty browser tests never ran anywhere.
+    """
+    workflow = (REPOSITORY_ROOT / ".github/workflows/ci.yml").read_text()
+    integration_job = _workflow_job(workflow, "test")
+    # The trailing space keeps the step's own "- name: Run pytest" line out.
+    command = next(line for line in integration_job.splitlines() if "pytest " in line)
+    # Every token that names a real path, so option order cannot change the answer.
+    targets = [
+        token
+        for token in command.split("pytest ", 1)[1].split()
+        if not token.startswith("-") and (REPOSITORY_ROOT / token).exists()
+    ]
+    assert any(_BROWSER_SUITE.is_relative_to(REPOSITORY_ROOT / target) for target in targets), (
+        f"The integration job runs `pytest` over {targets}, which does not contain "
+        f"{_BROWSER_SUITE.relative_to(REPOSITORY_ROOT)}."
+    )
 
 
 def test_documented_integration_commands_disable_pytest_django():
@@ -150,6 +270,17 @@ def test_serial_django_suite_is_rejected():
 
     assert result.returncode == 4
     assert "requires pytest-xdist" in result.stdout + result.stderr
+
+
+def test_dhcp_plugin_ci_uses_xdist():
+    """Keep the DHCP plugin job on exactly one xdist worker, not merely on a count."""
+    workflow = (REPOSITORY_ROOT / ".github" / "workflows" / "ci.yml").read_text()
+    marker = "- name: Run DHCP plugin adapter tests"
+    assert marker in workflow, "The DHCP plugin adapter step was renamed or removed."
+    # Bound the slice on the next step, so reformatting the workflow cannot widen it.
+    command = re.split(r"\n\s*- name:", workflow.split(marker, 1)[1], maxsplit=1)[0]
+
+    assert [_xdist_settings(entry) for entry in _pytest_commands(command)] == [{"workers": "1", "maxschedchunk": "1"}]
 
 
 def test_pytest_configuration_works_with_django_plugin_disabled():
@@ -217,3 +348,156 @@ def test_query_counts_compare_only_on_the_recorded_release():
     assert query_counts_are_comparable(QUERY_COUNT_NETBOX_VERSION, update_mode=False)
     assert not query_counts_are_comparable(different_patch_release, update_mode=False)
     assert query_counts_are_comparable(different_patch_release, update_mode=True)
+
+
+def _href_attribute_call(node: ast.AST) -> bool:
+    """Is *node* a ``get_attribute("href")`` call, positional or by keyword?"""
+    if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+        return False
+    if node.func.attr != "get_attribute":
+        return False
+    named = [argument.value for argument in node.keywords if argument.arg == "name"]
+    supplied = list(node.args[:1]) + named
+    return any(isinstance(value, ast.Constant) and value.value == "href" for value in supplied)
+
+
+def _goto_target(node: ast.AST) -> ast.expr | None:
+    """Return the URL expression of a ``goto`` call, positional or by keyword."""
+    if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+        return None
+    if node.func.attr != "goto":
+        return None
+    for argument in node.keywords:
+        if argument.arg == "url":
+            return argument.value
+    return node.args[0] if node.args else None
+
+
+def _unwrap(node: ast.expr) -> ast.expr:
+    """Strip ``await`` and a walrus binding so every call spelling reads the same."""
+    while isinstance(node, (ast.Await, ast.NamedExpr)):
+        node = node.value
+    return node
+
+
+def _own_nodes(function: ast.AST):
+    """Walk *function* without descending into a nested function or lambda."""
+    stack = list(ast.iter_child_nodes(function))
+    while stack:
+        node = stack.pop()
+        yield node
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            stack.extend(ast.iter_child_nodes(node))
+
+
+def _bindings(node: ast.AST) -> list[tuple[str, ast.expr]]:
+    """Return the ``(name, value)`` pairs one statement binds."""
+    if isinstance(node, ast.Assign):
+        return [(t.id, node.value) for t in node.targets if isinstance(t, ast.Name)]
+    if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and node.value is not None:
+        return [(node.target.id, node.value)]
+    if isinstance(node, ast.NamedExpr) and isinstance(node.target, ast.Name):
+        return [(node.target.id, node.value)]
+    return []
+
+
+def _hrefs_navigated_raw(source: str) -> list[str]:
+    """Return the places a function navigates straight to a raw ``get_attribute("href")``.
+
+    ``get_attribute`` returns the raw attribute text, so a Django ``reverse()`` link is
+    root-relative. The browser suite configures no Playwright ``base_url``, so navigating
+    to that value fails. Read the resolved DOM ``href`` property instead.
+
+    A name that is rebound anywhere in the function is left alone, so resolving the value
+    before navigating is accepted rather than reported.
+    """
+    offenders: list[str] = []
+    for function in ast.walk(ast.parse(source)):
+        if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        bound: dict[str, list[ast.expr]] = {}
+        own = list(_own_nodes(function))
+        for node in own:
+            for name, value in _bindings(node):
+                bound.setdefault(name, []).append(_unwrap(value))
+        raw = {name for name, values in bound.items() if all(_href_attribute_call(v) for v in values)}
+        for node in own:
+            navigated = _goto_target(node)
+            if navigated is None:
+                continue
+            target = _unwrap(navigated)
+            if _href_attribute_call(target) or (isinstance(target, ast.Name) and target.id in raw):
+                offenders.append(f"{function.name}:{node.lineno}")
+    return offenders
+
+
+def test_browser_navigation_resolves_hrefs_before_visiting_them():
+    """A root-relative href cannot be navigated to without a Playwright base_url."""
+    sources = sorted(_BROWSER_SUITE.rglob("*.py"))
+    assert sources, "The browser suite moved; this guard would pass without reading anything."
+    for path in sources:
+        offenders = _hrefs_navigated_raw(path.read_text())
+        assert not offenders, (
+            f"{path.name} navigates to an unresolved get_attribute('href') value at {offenders}. "
+            "Use the resolved DOM property, e.g. locator.evaluate('el => el.href')."
+        )
+
+
+#: Every external tool the integration setup script calls. Stubbed so the script can run
+#: in a test without a network, a Docker daemon, or a real Kea release tarball.
+_SETUP_SCRIPT_TOOLS = ("openssl", "curl", "sha256sum", "tar", "docker")
+
+
+def _run_setup_script(sandbox: Path, wheel_names: tuple[str, ...]) -> subprocess.CompletedProcess:
+    """Run the real ``tests/test_setup.sh`` in *sandbox* with every external tool stubbed."""
+    (sandbox / "tests" / "docker").mkdir(parents=True, exist_ok=True)
+    (sandbox / "tests" / "test_setup.sh").write_bytes((REPOSITORY_ROOT / "tests/test_setup.sh").read_bytes())
+    dist = sandbox / "dist"
+    dist.mkdir(exist_ok=True)
+    for name in wheel_names:
+        (dist / name).write_text("not a real wheel")
+
+    stub_bin = sandbox / "stub-bin"
+    stub_bin.mkdir(exist_ok=True)
+    for tool in _SETUP_SCRIPT_TOOLS:
+        stub = stub_bin / tool
+        stub.write_text("#!/bin/sh\nexit 0\n")
+        stub.chmod(0o755)
+
+    return subprocess.run(
+        ["bash", "./tests/test_setup.sh"],
+        cwd=sandbox,
+        env={**os.environ, "PATH": f"{stub_bin}:{os.environ['PATH']}", "NETBOX_CONTAINER_TAG": "v4.6"},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def test_the_setup_script_runs_twice_on_one_checkout():
+    """A second run must regenerate the certificates, not stop on the directory.
+
+    The script created ``tests/docker/certs/`` without ``-p``, so every run after the
+    first failed on a checkout that had already been set up once.
+    """
+    with tempfile.TemporaryDirectory() as directory:
+        sandbox = Path(directory)
+        first = _run_setup_script(sandbox, ("netbox_kea_ng-1.9.0-py3-none-any.whl",))
+        assert first.returncode == 0, first.stderr
+        second = _run_setup_script(sandbox, ("netbox_kea_ng-1.9.0-py3-none-any.whl",))
+        assert second.returncode == 0, second.stderr
+        assert (sandbox / "tests/docker/netbox_kea_ng-1.9.0-py3-none-any.whl").exists()
+
+
+@pytest.mark.parametrize("wheel_names", [(), ("one-1.0.whl", "two-2.0.whl")])
+def test_the_setup_script_refuses_an_ambiguous_wheel_set(wheel_names):
+    """A stale wheel beside the new one once put two file names in one path.
+
+    The copy then failed on a path naming both, which reads as a missing file rather
+    than as a dirty ``dist/``.
+    """
+    with tempfile.TemporaryDirectory() as directory:
+        result = _run_setup_script(Path(directory), wheel_names)
+
+        assert result.returncode == 1, result.stdout
+        assert "Expected exactly one wheel" in result.stderr, result.stderr

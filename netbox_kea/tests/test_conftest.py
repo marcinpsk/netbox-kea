@@ -25,6 +25,23 @@ class TestPrepopulateUrlResolver(SimpleTestCase):
         )
 
 
+class TestDatabaseName(SimpleTestCase):
+    """The test database selector must default safely and support task isolation."""
+
+    @patch.dict("os.environ", {}, clear=True)
+    def test_default_name(self):
+        self.assertEqual(_test_database_name(), "test_netbox_kea")
+
+    @patch.dict("os.environ", {"TEST_DB_NAME": "test_netbox_kea_lease_guard"}, clear=True)
+    def test_explicit_isolated_name(self):
+        self.assertEqual(_test_database_name(), "test_netbox_kea_lease_guard")
+
+    @patch.dict("os.environ", {"TEST_DB_NAME": "netbox"}, clear=True)
+    def test_non_test_database_name_is_rejected(self):
+        with self.assertRaisesRegex(RuntimeError, "must start with test_"):
+            _test_database_name()
+
+
 def test_prepopulation_runs_after_db_unblock_not_in_pytest_configure():
     """Regression: the DB-touching ``_populate()`` must run in ``django_db_setup``
     (after ``django_db_blocker.unblock()``), not in ``pytest_configure`` where
