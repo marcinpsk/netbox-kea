@@ -441,3 +441,63 @@ def test_browser_navigation_resolves_hrefs_before_visiting_them():
             f"{path.name} navigates to an unresolved get_attribute('href') value at {offenders}. "
             "Use the resolved DOM property, e.g. locator.evaluate('el => el.href')."
         )
+
+
+#: Every external tool the integration setup script calls. Stubbed so the script can run
+#: in a test without a network, a Docker daemon, or a real Kea release tarball.
+_SETUP_SCRIPT_TOOLS = ("openssl", "curl", "sha256sum", "tar", "docker")
+
+
+def _run_setup_script(sandbox: Path, wheel_names: tuple[str, ...]) -> subprocess.CompletedProcess:
+    """Run the real ``tests/test_setup.sh`` in *sandbox* with every external tool stubbed."""
+    (sandbox / "tests" / "docker").mkdir(parents=True, exist_ok=True)
+    (sandbox / "tests" / "test_setup.sh").write_bytes((REPOSITORY_ROOT / "tests/test_setup.sh").read_bytes())
+    dist = sandbox / "dist"
+    dist.mkdir(exist_ok=True)
+    for name in wheel_names:
+        (dist / name).write_text("not a real wheel")
+
+    stub_bin = sandbox / "stub-bin"
+    stub_bin.mkdir(exist_ok=True)
+    for tool in _SETUP_SCRIPT_TOOLS:
+        stub = stub_bin / tool
+        stub.write_text("#!/bin/sh\nexit 0\n")
+        stub.chmod(0o755)
+
+    return subprocess.run(
+        ["bash", "./tests/test_setup.sh"],
+        cwd=sandbox,
+        env={**os.environ, "PATH": f"{stub_bin}:{os.environ['PATH']}", "NETBOX_CONTAINER_TAG": "v4.6"},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def test_the_setup_script_runs_twice_on_one_checkout():
+    """A second run must regenerate the certificates, not stop on the directory.
+
+    The script created ``tests/docker/certs/`` without ``-p``, so every run after the
+    first failed on a checkout that had already been set up once.
+    """
+    with tempfile.TemporaryDirectory() as directory:
+        sandbox = Path(directory)
+        first = _run_setup_script(sandbox, ("netbox_kea_ng-1.9.0-py3-none-any.whl",))
+        assert first.returncode == 0, first.stderr
+        second = _run_setup_script(sandbox, ("netbox_kea_ng-1.9.0-py3-none-any.whl",))
+        assert second.returncode == 0, second.stderr
+        assert (sandbox / "tests/docker/netbox_kea_ng-1.9.0-py3-none-any.whl").exists()
+
+
+@pytest.mark.parametrize("wheel_names", [(), ("one-1.0.whl", "two-2.0.whl")])
+def test_the_setup_script_refuses_an_ambiguous_wheel_set(wheel_names):
+    """A stale wheel beside the new one once put two file names in one path.
+
+    The copy then failed on a path naming both, which reads as a missing file rather
+    than as a dirty ``dist/``.
+    """
+    with tempfile.TemporaryDirectory() as directory:
+        result = _run_setup_script(Path(directory), wheel_names)
+
+        assert result.returncode == 1, result.stdout
+        assert "Expected exactly one wheel" in result.stderr, result.stderr
