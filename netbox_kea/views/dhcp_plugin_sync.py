@@ -120,6 +120,11 @@ def _summary_problems(summary) -> list[str]:
             f"{summary.foreign_addresses_skipped} manually curated NetBox IP(s) were left unchanged. "
             "Use the per-reservation Sync to claim one."
         )
+    if summary.addresses_unattached:
+        problems.append(
+            f"{summary.addresses_unattached} reserved address(es) were not attached because no NetBox IP "
+            "holds them. A Global Reservation has no Subnet to size an address from."
+        )
     if summary.errors:
         problems.append(f"{summary.errors} errors occurred. See the logs.")
     return problems
