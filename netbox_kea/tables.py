@@ -655,7 +655,9 @@ _RESERVATION_SYNC_CELL = (
     '<span class="badge text-bg-warning" title="{{ record.sync_reason }}">Unknown</span>'
     "{% endif %}"
     "{% if record.sync_url %}"
+    # This table is not inside a form, so the token has to travel as a header.
     '<button type="button" hx-post="{{ record.sync_url }}" hx-target="closest td" hx-swap="innerHTML"'
+    ' hx-headers=\'{"X-CSRFToken": "{{ csrf_token }}"}\''
     ' class="badge text-bg-primary border-0 ms-1" style="cursor:pointer">'
     '<i class="mdi mdi-sync"></i> Sync all</button>'
     "{% endif %}"
