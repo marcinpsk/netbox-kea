@@ -448,6 +448,19 @@ def test_browser_navigation_resolves_hrefs_before_visiting_them():
 _SETUP_SCRIPT_TOOLS = ("openssl", "curl", "sha256sum", "tar", "docker")
 
 
+def _write_tool_stubs(stub_bin: Path) -> None:
+    """Write a stub for every external tool the setup script calls.
+
+    Each stub drains stdin, because the real tools read it and a stub that exits first
+    kills the writer of ``echo ... | sha256sum -c -`` with SIGPIPE.
+    """
+    stub_bin.mkdir(exist_ok=True)
+    for tool in _SETUP_SCRIPT_TOOLS:
+        stub = stub_bin / tool
+        stub.write_text("#!/bin/sh\ncat >/dev/null 2>&1\nexit 0\n")
+        stub.chmod(0o755)
+
+
 def _run_setup_script(sandbox: Path, wheel_names: tuple[str, ...]) -> subprocess.CompletedProcess:
     """Run the real ``tests/test_setup.sh`` in *sandbox* with every external tool stubbed."""
     (sandbox / "tests" / "docker").mkdir(parents=True, exist_ok=True)
@@ -458,11 +471,7 @@ def _run_setup_script(sandbox: Path, wheel_names: tuple[str, ...]) -> subprocess
         (dist / name).write_text("not a real wheel")
 
     stub_bin = sandbox / "stub-bin"
-    stub_bin.mkdir(exist_ok=True)
-    for tool in _SETUP_SCRIPT_TOOLS:
-        stub = stub_bin / tool
-        stub.write_text("#!/bin/sh\nexit 0\n")
-        stub.chmod(0o755)
+    _write_tool_stubs(stub_bin)
 
     return subprocess.run(
         ["bash", "./tests/test_setup.sh"],
@@ -471,6 +480,7 @@ def _run_setup_script(sandbox: Path, wheel_names: tuple[str, ...]) -> subprocess
         capture_output=True,
         text=True,
         check=False,
+        stdin=subprocess.DEVNULL,
     )
 
 
@@ -487,6 +497,30 @@ def test_the_setup_script_runs_twice_on_one_checkout():
         second = _run_setup_script(sandbox, ("netbox_kea_ng-1.9.0-py3-none-any.whl",))
         assert second.returncode == 0, second.stderr
         assert (sandbox / "tests/docker/netbox_kea_ng-1.9.0-py3-none-any.whl").exists()
+
+
+def test_the_setup_script_stubs_read_their_input():
+    """The setup script pipes into ``sha256sum -c -``, so the stub must read stdin.
+
+    A stub that exits without reading closes the pipe under the writer, which then dies
+    of SIGPIPE and takes the whole script with it through ``pipefail``. A short payload
+    fits in the pipe buffer and usually hides that, so send more than the buffer holds.
+    """
+    with tempfile.TemporaryDirectory() as directory:
+        stub_bin = Path(directory) / "stub-bin"
+        _write_tool_stubs(stub_bin)
+        for tool in _SETUP_SCRIPT_TOOLS:
+            result = subprocess.run(
+                ["bash", "-o", "pipefail", "-c", f'head -c 262144 /dev/zero | "{stub_bin / tool}"'],
+                capture_output=True,
+                text=True,
+                check=False,
+                stdin=subprocess.DEVNULL,
+            )
+            assert result.returncode == 0, (
+                f"The {tool} stub left the writer at {result.returncode}. "
+                "128 means a signal, and 141 is SIGPIPE from a reader that never read."
+            )
 
 
 @pytest.mark.parametrize("wheel_names", [(), ("one-1.0.whl", "two-2.0.whl")])
