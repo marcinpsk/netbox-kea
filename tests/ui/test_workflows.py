@@ -1069,11 +1069,13 @@ class TestReservationCRUD:
         _dismiss_debug_toolbar(page)
         cidr = _subnet_cidr_for_id(page, self._SUBNET_ID)
         test_ip = str(ipaddress.ip_network(cidr)[self._STATE_HOST_OFFSET])
-        self._fill_reservation_form(page, cidr, test_ip, self._STATE_MAC, hostname=self._STATE_HOSTNAME)
-        self._submit_form_by_field(page, "id_subnet_cidr")
-        _check_no_django_error(page)
-
+        # The Reservation lives on the live Kea, so cleanup covers every step that can
+        # create it, not only the assertions after it.
         try:
+            self._fill_reservation_form(page, cidr, test_ip, self._STATE_MAC, hostname=self._STATE_HOSTNAME)
+            self._submit_form_by_field(page, "id_subnet_cidr")
+            _check_no_django_error(page)
+
             page.goto(list_url)
             page.wait_for_load_state("networkidle")
             _check_no_django_error(page)
