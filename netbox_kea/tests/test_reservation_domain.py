@@ -30,7 +30,7 @@ from netbox_kea.subnet_catalogue import (
     VerifiedSubnet,
 )
 
-from .kea_stub import _res_get, _res_page, queued, stub_kea
+from .kea_stub import _res_get, _res_page, _typed_reservation, queued, stub_kea
 
 
 def _catalogue(family: int, subnet_id: int, cidr: str) -> CatalogueSnapshot:
@@ -322,6 +322,16 @@ class TestReservationPage(SimpleTestCase):
         self.assertEqual(reservation.identity, ReservationIdentity("circuit-id", "opaque value"))
         self.assertEqual(reservation.addresses, ())
         self.assertEqual(reservation.delegated_prefixes, ())
+
+    def test_the_fixture_helper_scopes_subnet_id_zero_like_the_parser(self):
+        """A subnet-id 0 fixture must not enter the in-subnet path the parser rejects."""
+        raw = {"subnet-id": 0, "hw-address": "aa:bb:cc:dd:ee:ff", "ip-address": "198.18.0.9"}
+        page = _res_page([raw])
+
+        with stub_kea({"reservation-get-page": page}):
+            snapshot = self.kea.reservation_page(4, _catalogue(4, 10, "198.18.0.0/24"))
+
+        self.assertEqual(_typed_reservation(raw).scope, snapshot.records[0].scope)
 
     def test_quarantines_malformed_ipv6_records_independently(self):
         valid_identity = {"subnet-id": 10, "duid": "00:01:02:03"}

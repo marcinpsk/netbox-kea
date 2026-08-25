@@ -26,11 +26,13 @@ from unittest.mock import MagicMock, patch
 import requests
 
 from netbox_kea.reservations import (
+    GlobalReservationScope,
     InSubnetReservationScope,
     IPv4Reservation,
     IPv6Reservation,
     Reservation,
     ReservationIdentity,
+    ReservationScope,
 )
 from netbox_kea.subnet_catalogue import SubnetIdentity
 
@@ -185,7 +187,12 @@ def _typed_reservation(raw: dict[str, Any], *, prefix_length: int | None = None)
         network = ipaddress.ip_network(f"{addresses[0]}/{prefix_length or default_prefix}", strict=False)
     else:
         network = ipaddress.ip_network("2001:db8::/64" if family == 6 else "198.18.0.0/24")
-    scope = InSubnetReservationScope(SubnetIdentity(subnet_id=int(raw.get("subnet-id", 1)), network=network))
+    subnet_id = int(raw.get("subnet-id", 1))
+    scope: ReservationScope = (
+        GlobalReservationScope()
+        if subnet_id == 0
+        else InSubnetReservationScope(SubnetIdentity(subnet_id=subnet_id, network=network))
+    )
     common = {
         "scope": scope,
         "identity": ReservationIdentity(identity_type, identity_value),
