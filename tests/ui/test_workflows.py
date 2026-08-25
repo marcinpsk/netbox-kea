@@ -956,12 +956,12 @@ class TestReservationCRUD:
         )
 
     @staticmethod
-    def _delete_netbox_ip(api_session: "requests.Session", netbox_url: str, address: str) -> None:
+    def _delete_netbox_ip(nb_http: requests.Session, netbox_url: str, address: str) -> None:
         """Remove the NetBox IP this test synchronized, so the next run starts unsynchronized."""
-        found = api_session.get(f"{netbox_url}/api/ipam/ip-addresses/", params={"q": address})
+        found = nb_http.get(f"{netbox_url}/api/ipam/ip-addresses/", params={"q": address})
         found.raise_for_status()
         for entry in found.json().get("results", []):
-            api_session.delete(f"{netbox_url}/api/ipam/ip-addresses/{entry['id']}/").raise_for_status()
+            nb_http.delete(f"{netbox_url}/api/ipam/ip-addresses/{entry['id']}/").raise_for_status()
 
     def test_full_crud_lifecycle(
         self,
@@ -1049,8 +1049,8 @@ class TestReservationCRUD:
         netbox_login: None,
         plugin_base: str,
         netbox_url: str,
-        api_session: "requests.Session",
-        live_kea_server: dict,
+        nb_http: requests.Session,
+        kea_server,
         track_http_errors: list,
     ) -> None:
         """One Reservation reports a definite lease relationship and synchronization state.
@@ -1059,7 +1059,7 @@ class TestReservationCRUD:
         identifier no client offers, so both answers are deterministic: no lease, and
         not synchronized until this test synchronizes it.
         """
-        server_id = live_kea_server["id"]
+        server_id = kea_server.id
         list_url = self._reservation_list_url(plugin_base, server_id)
         self._delete_reservation_if_present(page, list_url, self._STATE_MAC)
 
@@ -1077,6 +1077,7 @@ class TestReservationCRUD:
             page.goto(list_url)
             page.wait_for_load_state("networkidle")
             _check_no_django_error(page)
+            _dismiss_debug_toolbar(page)
             row = page.locator("tr", has_text=self._STATE_MAC).first
             expect(row).to_be_visible()
 
@@ -1094,7 +1095,7 @@ class TestReservationCRUD:
             _assert_no_http_errors(track_http_errors)
         finally:
             self._delete_reservation_if_present(page, list_url, self._STATE_MAC)
-            self._delete_netbox_ip(api_session, netbox_url, test_ip)
+            self._delete_netbox_ip(nb_http, netbox_url, test_ip)
 
     def test_add_reservation_form_loads(
         self,

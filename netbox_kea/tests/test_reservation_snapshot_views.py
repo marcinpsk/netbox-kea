@@ -330,6 +330,33 @@ class TestPerServerReservationSnapshots(_ViewTestBase):
         self.assertIsNone(response.context["add_url"])
         self.assertIsNone(response.context["import_url"])
 
+    def test_the_row_sync_control_sends_a_csrf_token(self):
+        """The Reservation table is not inside a form, so the token must travel as a header.
+
+        Without it the HTMX POST is rejected with 403 before the view runs, and the
+        button silently does nothing.
+        """
+        import re
+
+        responses = _catalogue_responses(4, 20, "198.18.0.0/24")
+        responses.update(
+            {
+                "reservation-get-page": _res_page(
+                    [{"subnet-id": 20, "hw-address": "aa:bb:cc:dd:ee:ff", "ip-address": "198.18.0.20"}]
+                ),
+                "lease4-get-by-state": {"result": 0, "arguments": {"leases": []}},
+            }
+        )
+
+        with stub_kea(responses):
+            response = self.client.get(self._url())
+
+        content = response.content.decode()
+        self.assertIn("Sync all", content)
+        token = re.search(r'hx-headers=\'{"X-CSRFToken": "([^"]*)"}\'', content)
+        self.assertIsNotNone(token, "The row sync control sends no CSRF header.")
+        self.assertTrue(token.group(1), "The CSRF header is present but empty.")
+
     def test_exports_the_complete_current_snapshot_as_yaml(self):
         responses = _catalogue_responses(4, 20, "198.18.0.0/24")
         responses["reservation-get-page"] = _res_page(
