@@ -465,18 +465,24 @@ def _unsafe_environ_defaults(source: str) -> list[str]:
     ``os.environ.get(NAME, "").strip() or default``, which treats blank as unset.
     """
     tree = ast.parse(source)
-    stripped = {
-        id(node.value)
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Attribute) and node.attr == "strip" and isinstance(node.value, ast.Call)
-    }
+    # Safe means the blank result actually falls through: ``get(...).strip() or <default>``.
+    # A bare ``.strip()`` still yields "" for a blank variable, so the ``or`` is what matters.
+    blank_safe = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.BoolOp) or not isinstance(node.op, ast.Or):
+            continue
+        left = node.values[0]
+        if not isinstance(left, ast.Call) or not isinstance(left.func, ast.Attribute):
+            continue
+        if left.func.attr == "strip" and isinstance(left.func.value, ast.Call):
+            blank_safe.add(id(left.func.value))
     offenders: list[str] = []
     for call in _environ_get_calls(tree):
         if len(call.args) < 2:
             continue  # no default: the caller handles None itself
         default = call.args[1]
         blank_default = isinstance(default, ast.Constant) and default.value == ""
-        if not blank_default or id(call) not in stripped:
+        if not blank_default or id(call) not in blank_safe:
             variable = call.args[0]
             name = variable.value if isinstance(variable, ast.Constant) and isinstance(variable.value, str) else "?"
             offenders.append(f"{name} at line {call.lineno}")
@@ -489,9 +495,12 @@ def test_the_environ_default_guard_reads_every_spelling():
         'os.environ.get("X", "http://default")',
         'os.environ.get("X", "")',
         'os.environ.get("X", "").lower() or "d"',
+        'os.environ.get("X", "").strip()',  # no fallback: still "" for a blank variable
+        'os.environ.get("X", "").strip() and "d"',
     )
     must_not_flag = (
         'os.environ.get("X", "").strip() or "http://default"',
+        'KeaClient(os.environ.get("X", "").strip() or "http://default")',
         'os.environ.get("X")',
         'config.get("X", "http://default")',
     )
