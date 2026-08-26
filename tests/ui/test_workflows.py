@@ -62,14 +62,13 @@ def _subnet_cidr_for_id(page: Page, subnet_id: int) -> str:
     return cidr
 
 
-def _assert_no_http_errors(errors: list, *, allow_404: bool = False) -> None:
-    """Fail on any tracked 4xx or 5xx response, except 404s the caller allows.
+def _assert_no_http_errors(errors: list) -> None:
+    """Fail on any tracked 4xx or 5xx response.
 
     ``track_http_errors`` records every response at 400 and above. Asserting only on
     5xx let a 400 or 403 after a form submit pass as success.
     """
-    filtered = [e for e in errors if not (allow_404 and e[0] == 404)]
-    assert not filtered, f"4xx/5xx responses during test: {filtered}"
+    assert not errors, f"4xx/5xx responses during test: {errors}"
 
 
 def _tail_container_logs(container_filter: str = "devcontainer", lines: int = 30) -> str:
