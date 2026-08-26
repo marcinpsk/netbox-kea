@@ -2215,6 +2215,20 @@ class TestPoolAddPostErrors(_ViewTestBase):
             response = self.client.post(self._url(), {"pool": "10.0.0.10-10.0.0.20"}, follow=True)
         self.assertEqual(response.status_code, 200)
 
+    def test_the_overlap_probe_asks_kea_for_one_subnet(self):
+        """The probe needs one subnet, so it must not page through the whole server.
+
+        ``reservation-get-page`` takes an optional ``subnet-id``. Without it Kea returns
+        every reservation on the server and the view filters them client-side.
+        """
+        with self._pool_add_stub() as kea:
+            response = self.client.post(self._url(subnet_id=1), {"pool": "10.0.0.10-10.0.0.20"}, follow=True)
+
+        self.assertEqual(response.status_code, 200)
+        probe = kea.bodies("reservation-get-page")
+        self.assertTrue(probe)
+        self.assertEqual(probe[0]["arguments"]["subnet-id"], 1)
+
     def test_incomplete_reservation_snapshot_is_reported(self):
         """Say so when the overlap check could not read every reservation.
 

@@ -256,7 +256,9 @@ def _warn_pool_reservation_overlap(
         else:
             pool_range = IPNetwork(pool_str)
 
-        snapshot = client.reservation_snapshot(version, subnet_catalogue(server, version), page_size=200)
+        snapshot = client.reservation_snapshot(
+            version, subnet_catalogue(server, version), page_size=200, subnet_id=subnet_id
+        )
         if not snapshot.complete:
             # No warning below would otherwise read as "no overlapping reservation".
             messages.warning(
