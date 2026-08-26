@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import json
+from urllib.parse import urlencode
 
 import requests
 from django.core.files.uploadedfile import SimpleUploadedFile
@@ -36,6 +37,11 @@ def _mutation_responses(version: int, subnet_id: int, cidr: str, identifiers: li
         "config-test": {"result": 0},
         "config-write": {"result": 0},
     }
+
+
+def _identity_query(identifier: str = "aa:bb:cc:dd:ee:ff", identifier_type: str = "hw-address") -> str:
+    """The identity query string every reservation edit and delete route requires."""
+    return urlencode({"identifier_type": identifier_type, "identifier": identifier})
 
 
 class TestReservationMutationViews(_ViewTestBase):
@@ -269,7 +275,7 @@ class TestReservationMutationViews(_ViewTestBase):
             "plugins:netbox_kea:server_reservation4_edit",
             args=[self.server.pk, 20],
         )
-        query = "identifier_type=hw-address&identifier=aa%3Abb%3Acc%3Add%3Aee%3Aff"
+        query = _identity_query()
 
         with stub_kea({**responses, "reservation-get": _res_get(original)}):
             form_page = self.client.get(f"{url}?{query}")
@@ -308,7 +314,7 @@ class TestReservationMutationViews(_ViewTestBase):
 
     def test_edit_returns_not_found_for_an_unknown_subnet_or_identity(self):
         url = reverse("plugins:netbox_kea:server_reservation4_edit", args=[self.server.pk, 20])
-        query = "identifier_type=hw-address&identifier=aa%3Abb%3Acc%3Add%3Aee%3Aff"
+        query = _identity_query()
         no_subnet = _mutation_responses(4, 21, "198.18.1.0/24", ["hw-address"])
         with stub_kea(no_subnet):
             response = self.client.get(f"{url}?{query}")
@@ -401,7 +407,7 @@ class TestReservationMutationViews(_ViewTestBase):
             "hostname": "new6.example.invalid",
         }
         url = reverse("plugins:netbox_kea:server_reservation6_edit", args=[self.server.pk, 10])
-        query = "identifier_type=duid&identifier=00%3A01%3A02%3A03"
+        query = _identity_query("00:01:02:03", "duid")
         with stub_kea({**responses, "reservation-get": _res_get(current)}):
             form_page = self.client.get(f"{url}?{query}")
         fingerprint = form_page.context["form"].initial["managed_fingerprint"]
@@ -463,7 +469,7 @@ class TestReservationMutationViews(_ViewTestBase):
         }
         intended = {**current, "hostname": "new.example.invalid"}
         url = reverse("plugins:netbox_kea:server_reservation4_edit", args=[self.server.pk, 20])
-        query = "identifier_type=hw-address&identifier=aa%3Abb%3Acc%3Add%3Aee%3Aff"
+        query = _identity_query()
         with stub_kea({**responses, "reservation-get": _res_get(current)}):
             form_page = self.client.get(f"{url}?{query}")
         fingerprint = form_page.context["form"].initial["managed_fingerprint"]
@@ -508,7 +514,7 @@ class TestReservationMutationViews(_ViewTestBase):
         }
         responses["reservation-get"] = _res_get(current)
         url = reverse("plugins:netbox_kea:server_reservation4_edit", args=[self.server.pk, 20])
-        query = "identifier_type=hw-address&identifier=aa%3Abb%3Acc%3Add%3Aee%3Aff"
+        query = _identity_query()
 
         with stub_kea(responses) as kea:
             response = self.client.post(
@@ -534,7 +540,7 @@ class TestReservationMutationViews(_ViewTestBase):
             "ip-address": "198.18.0.20",
         }
         url = reverse("plugins:netbox_kea:server_reservation4_delete", args=[self.server.pk, 20])
-        query = "identifier_type=hw-address&identifier=aa%3Abb%3Acc%3Add%3Aee%3Aff"
+        query = _identity_query()
 
         with stub_kea({**responses, "reservation-get": _res_get(raw)}):
             confirmation = self.client.get(f"{url}?{query}")
@@ -574,7 +580,7 @@ class TestReservationMutationViews(_ViewTestBase):
         responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
         responses["subnet4-list"] = requests.ConnectionError("Kea unavailable")
         url = reverse("plugins:netbox_kea:server_reservation4_delete", args=[self.server.pk, 20])
-        query = "identifier_type=hw-address&identifier=aa%3Abb%3Acc%3Add%3Aee%3Aff"
+        query = _identity_query()
 
         with stub_kea(responses):
             response = self.client.get(f"{url}?{query}")
@@ -589,7 +595,7 @@ class TestReservationMutationViews(_ViewTestBase):
         responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
         responses["reservation-get"] = {"result": 3}
         url = reverse("plugins:netbox_kea:server_reservation4_delete", args=[self.server.pk, 20])
-        query = "identifier_type=hw-address&identifier=aa%3Abb%3Acc%3Add%3Aee%3Aff"
+        query = _identity_query()
 
         with stub_kea(responses):
             response = self.client.get(f"{url}?{query}")
@@ -600,7 +606,7 @@ class TestReservationMutationViews(_ViewTestBase):
         responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
         responses["list-commands"] = {"result": 0, "arguments": ["reservation-get"]}
         url = reverse("plugins:netbox_kea:server_reservation4_delete", args=[self.server.pk, 20])
-        query = "identifier_type=hw-address&identifier=aa%3Abb%3Acc%3Add%3Aee%3Aff"
+        query = _identity_query()
 
         with stub_kea(responses) as kea:
             response = self.client.post(f"{url}?{query}")
@@ -843,7 +849,7 @@ class TestMutationCapabilityGate(_ViewTestBase):
 
     def test_edit_post_is_rejected_without_mutation_capabilities(self):
         url = reverse("plugins:netbox_kea:server_reservation4_edit", args=[self.server.pk, 20])
-        query = "identifier_type=hw-address&identifier=aa%3Abb%3Acc%3Add%3Aee%3Aff"
+        query = _identity_query()
         original = {
             "subnet-id": 20,
             "hw-address": "aa:bb:cc:dd:ee:ff",
@@ -871,7 +877,7 @@ class TestMutationCapabilityGate(_ViewTestBase):
 
     def test_delete_post_stays_rejected_without_mutation_capabilities(self):
         url = reverse("plugins:netbox_kea:server_reservation4_delete", args=[self.server.pk, 20])
-        query = "identifier_type=hw-address&identifier=aa%3Abb%3Acc%3Add%3Aee%3Aff"
+        query = _identity_query()
 
         with stub_kea(self._responses_without_mutation()) as kea:
             response = self.client.post(f"{url}?{query}", follow=True)

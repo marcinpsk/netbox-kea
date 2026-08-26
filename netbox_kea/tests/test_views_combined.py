@@ -12,14 +12,12 @@ real request/response path.
 """
 
 import requests
-from django.test import override_settings
 from django.urls import reverse
 
 from .kea_stub import _catalogue_responses, _res_page, stub_kea
-from .utils import _PLUGINS_CONFIG, _ViewTestBase
+from .utils import _ViewTestBase
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestFetchSharedNetworksFromServer(_ViewTestBase):
     """_fetch_shared_networks_from_server with null config-get arguments raises RuntimeError."""
 
@@ -36,7 +34,6 @@ class TestFetchSharedNetworksFromServer(_ViewTestBase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestCombinedResponseShapeGuards(_ViewTestBase):
     """An empty Kea response list must raise RuntimeError before indexing ``resp[0]``.
 
@@ -76,7 +73,6 @@ class TestCombinedResponseShapeGuards(_ViewTestBase):
                 _fetch_shared_networks_from_server(self.server, 4)
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestCombinedSubnetDiagnostics(_ViewTestBase):
     def test_complete_catalogue_is_reused_for_unchanged_requests(self):
         url = reverse("plugins:netbox_kea:combined_subnets4") + f"?server={self.server.pk}"
@@ -191,7 +187,6 @@ class TestCombinedSubnetDiagnostics(_ViewTestBase):
         self.assertContains(response, "Kea returned an invalid Pool.", count=1)
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestCombinedReservationsWithoutAddress(_ViewTestBase):
     """The global reservations tab hits the same address-less crash as the per-server tab (#110)."""
 
@@ -224,7 +219,6 @@ class TestCombinedReservationsWithoutAddress(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestCombinedReservationsShowWhatIsReserved(_ViewTestBase):
     """The global tab shows the identifier and prefixes an address-less host reserves.
 
@@ -261,7 +255,6 @@ class TestCombinedReservationsShowWhatIsReserved(_ViewTestBase):
         self.assertIn("No address", body)
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestCombinedReservationSyncControl(_ViewTestBase):
     """The combined tab must offer the same Reservation synchronization as one server.
 
@@ -291,7 +284,6 @@ class TestCombinedReservationSyncControl(_ViewTestBase):
         self.assertIn("Sync all", body)
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestCombinedReservationCursorPagination(_ViewTestBase):
     """The Next page link must carry the encoded per-server cursor, not just exist."""
 
@@ -354,7 +346,6 @@ class TestCombinedReservationCursorPagination(_ViewTestBase):
         self.assertNotContains(response, "Next page")
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestReservationIdentifierColumns(_ViewTestBase):
     """A typed identifier column must stay empty for every other identifier type.
 
