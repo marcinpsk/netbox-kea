@@ -18,6 +18,8 @@ import pytest
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 #: The Playwright suite. It must stay inside the path the integration job runs.
 _BROWSER_SUITE = REPOSITORY_ROOT / "tests" / "ui"
+#: The whole integration suite, whose fixtures read endpoint overrides from the environment.
+_INTEGRATION_SUITE = REPOSITORY_ROOT / "tests"
 
 
 SERIAL_BY_DESIGN = "1"
@@ -440,6 +442,73 @@ def test_browser_navigation_resolves_hrefs_before_visiting_them():
         assert not offenders, (
             f"{path.name} navigates to an unresolved get_attribute('href') value at {offenders}. "
             "Use the resolved DOM property, e.g. locator.evaluate('el => el.href')."
+        )
+
+
+def _environ_get_calls(node: ast.AST):
+    """Yield every ``os.environ.get`` call in *node*."""
+    for candidate in ast.walk(node):
+        if not isinstance(candidate, ast.Call) or not isinstance(candidate.func, ast.Attribute):
+            continue
+        if candidate.func.attr != "get":
+            continue
+        target = candidate.func.value
+        if isinstance(target, ast.Attribute) and target.attr == "environ":
+            yield candidate
+
+
+def _unsafe_environ_defaults(source: str) -> list[str]:
+    """Return the environment overrides in *source* that a blank value can win.
+
+    ``os.environ.get(NAME, default)`` returns the empty string when the variable is set
+    but blank, so an exported-but-empty override beats the default. The suite's idiom is
+    ``os.environ.get(NAME, "").strip() or default``, which treats blank as unset.
+    """
+    tree = ast.parse(source)
+    stripped = {
+        id(node.value)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Attribute) and node.attr == "strip" and isinstance(node.value, ast.Call)
+    }
+    offenders: list[str] = []
+    for call in _environ_get_calls(tree):
+        if len(call.args) < 2:
+            continue  # no default: the caller handles None itself
+        default = call.args[1]
+        blank_default = isinstance(default, ast.Constant) and default.value == ""
+        if not blank_default or id(call) not in stripped:
+            variable = call.args[0]
+            name = variable.value if isinstance(variable, ast.Constant) and isinstance(variable.value, str) else "?"
+            offenders.append(f"{name} at line {call.lineno}")
+    return offenders
+
+
+def test_the_environ_default_guard_reads_every_spelling():
+    """Table-test the guard: one that reports clean while missing the pattern is worse than none."""
+    must_flag = (
+        'os.environ.get("X", "http://default")',
+        'os.environ.get("X", "")',
+        'os.environ.get("X", "").lower() or "d"',
+    )
+    must_not_flag = (
+        'os.environ.get("X", "").strip() or "http://default"',
+        'os.environ.get("X")',
+        'config.get("X", "http://default")',
+    )
+    for source in must_flag:
+        assert _unsafe_environ_defaults(source), f"the guard missed {source!r}"
+    for source in must_not_flag:
+        assert not _unsafe_environ_defaults(source), f"the guard wrongly flagged {source!r}"
+
+
+def test_the_integration_suite_treats_a_blank_override_as_unset():
+    sources = sorted(_INTEGRATION_SUITE.rglob("*.py"))
+    assert sources, "The integration suite moved; this guard would pass without reading anything."
+    for path in sources:
+        offenders = _unsafe_environ_defaults(path.read_text())
+        assert not offenders, (
+            f"{path.relative_to(REPOSITORY_ROOT)} lets a blank environment value win at {offenders}. "
+            'Use os.environ.get(NAME, "").strip() or <default>.'
         )
 
 

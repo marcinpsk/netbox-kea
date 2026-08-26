@@ -1346,7 +1346,6 @@ class TestSubnetManagement:
         # ---- PRE-CLEANUP: remove any leftover test subnets via direct Kea API ----
         self._kea4_cleanup_subnet(kea_client, test_subnet)
 
-        created = False
         try:
             # ---- ADD ----
             page.goto(f"{plugin_base}/servers/{server_id}/subnets4/add/")
@@ -1358,7 +1357,6 @@ class TestSubnetManagement:
             page.fill("#id_gateway", "10.254.253.1")
 
             _submit_and_wait_nav(page, "document.getElementById('id_subnet').closest('form').submit()")
-            created = True
             _check_no_django_error(page)
             _assert_no_http_errors(track_http_errors)
 
@@ -1396,9 +1394,8 @@ class TestSubnetManagement:
             assert new_subnet_id not in remaining_ids, (
                 f"Subnet ID {new_subnet_id} ({test_subnet}) still present in Kea after UI delete"
             )
-            created = False  # removed through the UI
 
         finally:
-            # ---- TEARDOWN: remove the test subnet if any step before the UI delete failed ----
-            if created:
-                self._kea4_cleanup_subnet(kea_client, test_subnet)
+            # Unconditional: the helper matches by CIDR under check=(0, 3), so it is a no-op
+            # once the UI delete succeeded, and no flag can be left stale by a failed wait.
+            self._kea4_cleanup_subnet(kea_client, test_subnet)
