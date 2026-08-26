@@ -840,17 +840,18 @@ class TestReservationCRUD:
     _STATE_HOSTNAME = "e2e-state-test"
     _STATE_HOST_OFFSET = -35
 
-    def _test_ip(self, cidr: str) -> str:
-        """Return the reservation address to use inside *cidr*.
+    def _test_ip(self, cidr: str, offset: int | None = None) -> str:
+        """Return the reservation address at *offset* inside *cidr*.
 
         The address must belong to the Subnet the live Kea exposes for ``_SUBNET_ID``, so
         derive it instead of pinning one range.
         """
+        host_offset = self._TEST_HOST_OFFSET if offset is None else offset
         network = ipaddress.ip_network(cidr)
-        assert network.num_addresses > abs(self._TEST_HOST_OFFSET), (
-            f"Subnet {cidr} is too small for a reservation at host offset {self._TEST_HOST_OFFSET}"
+        assert network.num_addresses > abs(host_offset), (
+            f"Subnet {cidr} is too small for a reservation at host offset {host_offset}"
         )
-        return str(network[self._TEST_HOST_OFFSET])
+        return str(network[host_offset])
 
     def _reservation_add_url(self, plugin_base: str, server_id: int) -> str:
         return f"{plugin_base}/servers/{server_id}/reservations4/add/"
@@ -1068,7 +1069,7 @@ class TestReservationCRUD:
         _check_no_django_error(page)
         _dismiss_debug_toolbar(page)
         cidr = _subnet_cidr_for_id(page, self._SUBNET_ID)
-        test_ip = str(ipaddress.ip_network(cidr)[self._STATE_HOST_OFFSET])
+        test_ip = self._test_ip(cidr, self._STATE_HOST_OFFSET)
         # A run that stopped after synchronizing leaves the NetBox IP, which would make
         # the Not Synchronized assertion below read as already synchronized.
         self._delete_netbox_ip(nb_http, netbox_url, test_ip)

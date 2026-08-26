@@ -1418,10 +1418,35 @@ def _requests_without_timeout(source: str) -> list[str]:
         target = node.func.value
         if not isinstance(target, ast.Name) or not target.id.endswith("http"):
             continue
-        if any(keyword.arg == "timeout" for keyword in node.keywords):
+        # requests treats timeout=None as no timeout, so the keyword alone is not a bound.
+        bounded = any(
+            keyword.arg == "timeout" and not (isinstance(keyword.value, ast.Constant) and keyword.value.value is None)
+            for keyword in node.keywords
+        )
+        if bounded:
             continue
         offenders.append(f"{target.id}.{node.func.attr} at line {node.lineno}")
     return offenders
+
+
+def test_the_request_timeout_guard_reads_every_spelling():
+    """Table-test the guard itself: a guard that reports clean while missing the pattern is worse than none."""
+    must_flag = (
+        "nb_http.get(url)",
+        "nb_http.delete(url)",
+        "nb_http.get(url, timeout=None)",
+        "nb_http.request('GET', url)",
+    )
+    must_not_flag = (
+        "nb_http.get(url, timeout=5)",
+        "nb_http.get(url, timeout=TIMEOUT)",
+        "nb_http.json()",
+        "page.get(url)",
+    )
+    for source in must_flag:
+        assert _requests_without_timeout(source), f"the guard missed {source!r}"
+    for source in must_not_flag:
+        assert not _requests_without_timeout(source), f"the guard wrongly flagged {source!r}"
 
 
 def test_the_browser_suite_bounds_every_netbox_request():
