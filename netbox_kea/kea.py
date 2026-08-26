@@ -509,6 +509,7 @@ class KeaClient:
         source_index: int = 0,
         from_index: int = 0,
         limit: int = 100,
+        subnet_id: int | None = None,
     ) -> tuple[list[dict[str, Any]], int, int]:
         """Fetch a page of host reservations from Kea.
 
@@ -518,6 +519,7 @@ class KeaClient:
             from_index: Starting offset within the source (use ``next_from`` returned
                 by a previous call to continue pagination).
             limit: Maximum number of hosts to return per page.
+            subnet_id: Restrict the page to one subnet. ``None`` reads every subnet.
 
         Returns:
             A ``(hosts, next_from, next_source_index)`` tuple.  Both ``next_from``
@@ -529,10 +531,13 @@ class KeaClient:
             KeaException: If Kea returns result code 1 or 2 (error / unknown command).
 
         """
+        arguments: dict[str, Any] = {"source-index": source_index, "from": from_index, "limit": limit}
+        if subnet_id is not None:
+            arguments["subnet-id"] = subnet_id
         resp = self.command(
             "reservation-get-page",
             service=[service],
-            arguments={"source-index": source_index, "from": from_index, "limit": limit},
+            arguments=arguments,
             check=(0, 3),
         )
         if not resp or not isinstance(resp[0], dict):
@@ -560,8 +565,9 @@ class KeaClient:
         *,
         cursor: str | None = None,
         limit: int = 100,
+        subnet_id: int | None = None,
     ) -> ReservationSnapshot:
-        """Return one bounded, typed Reservation Snapshot."""
+        """Return one bounded, typed Reservation Snapshot, optionally for one subnet."""
         if version not in (4, 6):
             raise ValueError(f"version must be 4 or 6, got {version!r}")
         if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
@@ -578,6 +584,7 @@ class KeaClient:
                 source_index=next_source,
                 from_index=next_from,
                 limit=remaining,
+                subnet_id=subnet_id,
             )
             if len(page) > remaining:
                 raise RuntimeError("reservation-get-page exceeded the requested page limit.")
@@ -726,8 +733,13 @@ class KeaClient:
         catalogue,
         *,
         page_size: int = 100,
+        subnet_id: int | None = None,
     ) -> ReservationSnapshot:
-        """Traverse bounded pages and return one non-atomic Reservation Snapshot."""
+        """Traverse bounded pages and return one non-atomic Reservation Snapshot.
+
+        ``subnet_id`` restricts the traversal to one subnet, so a caller that needs one
+        subnet does not read every reservation on the server.
+        """
         if version not in (4, 6):
             raise ValueError(f"version must be 4 or 6, got {version!r}")
         records: list[Reservation] = []
@@ -742,6 +754,7 @@ class KeaClient:
                     catalogue,
                     cursor=cursor,
                     limit=page_size,
+                    subnet_id=subnet_id,
                 )
             except (KeaException, requests.RequestException, RuntimeError, ValueError):
                 if pages_fetched == 0:
