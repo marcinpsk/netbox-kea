@@ -958,10 +958,10 @@ class TestReservationCRUD:
     @staticmethod
     def _delete_netbox_ip(nb_http: requests.Session, netbox_url: str, address: str) -> None:
         """Remove the NetBox IP this test synchronized, so the next run starts unsynchronized."""
-        found = nb_http.get(f"{netbox_url}/api/ipam/ip-addresses/", params={"q": address})
+        found = nb_http.get(f"{netbox_url}/api/ipam/ip-addresses/", params={"q": address}, timeout=5)
         found.raise_for_status()
         for entry in found.json().get("results", []):
-            nb_http.delete(f"{netbox_url}/api/ipam/ip-addresses/{entry['id']}/").raise_for_status()
+            nb_http.delete(f"{netbox_url}/api/ipam/ip-addresses/{entry['id']}/", timeout=5).raise_for_status()
 
     def test_full_crud_lifecycle(
         self,

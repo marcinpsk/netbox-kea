@@ -1399,6 +1399,42 @@ def test_reservation_workflow_rejects_an_offset_at_the_network_boundary():
         workflow._test_ip("198.18.0.0/27")
 
 
+#: ``requests.Session`` methods the browser suite uses to reach NetBox.
+_SESSION_REQUEST_METHODS = frozenset({"get", "post", "put", "patch", "delete", "head", "options", "request"})
+
+
+def _requests_without_timeout(source: str) -> list[str]:
+    """Return the ``requests.Session`` calls in *source* that pass no timeout.
+
+    A session carries no default timeout, so one of these against a hung NetBox blocks
+    the whole run: cleanup helpers run in ``finally`` and never time out on their own.
+    """
+    offenders: list[str] = []
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+            continue
+        if node.func.attr not in _SESSION_REQUEST_METHODS:
+            continue
+        target = node.func.value
+        if not isinstance(target, ast.Name) or not target.id.endswith("http"):
+            continue
+        if any(keyword.arg == "timeout" for keyword in node.keywords):
+            continue
+        offenders.append(f"{target.id}.{node.func.attr} at line {node.lineno}")
+    return offenders
+
+
+def test_the_browser_suite_bounds_every_netbox_request():
+    sources = sorted(_BROWSER_SUITE.rglob("*.py"))
+    assert sources, "The browser suite moved; this guard would pass without reading anything."
+    for path in sources:
+        offenders = _requests_without_timeout(path.read_text())
+        assert not offenders, (
+            f"{path.name} calls NetBox without a timeout at {offenders}. "
+            "A requests.Session has no default timeout, so a hung NetBox blocks the run."
+        )
+
+
 #: Every external tool the integration setup script calls. Stubbed so the script can run
 #: in a test without a network, a Docker daemon, or a real Kea release tarball.
 _SETUP_SCRIPT_TOOLS = ("openssl", "curl", "sha256sum", "tar", "docker")
