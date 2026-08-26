@@ -63,10 +63,13 @@ def _subnet_cidr_for_id(page: Page, subnet_id: int) -> str:
 
 
 def _assert_no_http_errors(errors: list, *, allow_404: bool = False) -> None:
-    """Fail if any tracked HTTP errors exceed the allowed threshold."""
+    """Fail on any tracked 4xx or 5xx response, except 404s the caller allows.
+
+    ``track_http_errors`` records every response at 400 and above. Asserting only on
+    5xx let a 400 or 403 after a form submit pass as success.
+    """
     filtered = [e for e in errors if not (allow_404 and e[0] == 404)]
-    server_errors = [e for e in filtered if e[0] >= 500]
-    assert not server_errors, f"5xx responses during test: {server_errors}"
+    assert not filtered, f"4xx/5xx responses during test: {filtered}"
 
 
 def _tail_container_logs(container_filter: str = "devcontainer", lines: int = 30) -> str:
@@ -510,7 +513,8 @@ class TestCombinedViews:
         _check_no_django_error(page)
         for _name, path in self.COMBINED_TABS[1:]:  # skip dashboard itself
             link = page.locator(f'a[href*="{path}"]').first
-            expect(link).to_be_visible(), f"Missing tab link for {path}"
+            assert link.count(), f"Missing tab link for {path}"
+            expect(link).to_be_visible()
         _assert_no_http_errors(track_http_errors)
 
 
@@ -668,14 +672,9 @@ class TestBadgeEnrichment:
         # The 'Reserved' column header must always be present regardless of data
         expect(page.locator("th", has_text="Reserved").first).to_be_visible()
 
-        # If any lease row has a 'Reserved' badge it must be a link (not a plain span)
+        # A plain span is the correct render for a global or non-editable reservation
+        # (see netbox_kea/tables.py), so only the linked variant carries a contract.
         reserved_links = page.locator('a.badge:has-text("Reserved")')
-        reserved_spans = page.locator('span.badge:has-text("Reserved")')
-        reserved_span_count = reserved_spans.count()
-        # Either there are reserved links OR there are no reserved badges at all — never a plain span
-        assert reserved_span_count == 0, (
-            f"Found {reserved_span_count} plain-span 'Reserved' badges; they should all be links"
-        )
         if reserved_links.count() > 0:
             # Spot-check first link href points to a reservation URL
             href = reserved_links.first.get_attribute("href")
@@ -1348,7 +1347,7 @@ class TestSubnetManagement:
         # ---- PRE-CLEANUP: remove any leftover test subnets via direct Kea API ----
         self._kea4_cleanup_subnet(kea_client, test_subnet)
 
-        new_subnet_id = None
+        created = False
         try:
             # ---- ADD ----
             page.goto(f"{plugin_base}/servers/{server_id}/subnets4/add/")
@@ -1360,6 +1359,7 @@ class TestSubnetManagement:
             page.fill("#id_gateway", "10.254.253.1")
 
             _submit_and_wait_nav(page, "document.getElementById('id_subnet').closest('form').submit()")
+            created = True
             _check_no_django_error(page)
             _assert_no_http_errors(track_http_errors)
 
@@ -1397,9 +1397,9 @@ class TestSubnetManagement:
             assert new_subnet_id not in remaining_ids, (
                 f"Subnet ID {new_subnet_id} ({test_subnet}) still present in Kea after UI delete"
             )
-            new_subnet_id = None  # mark as cleaned up
+            created = False  # removed through the UI
 
         finally:
-            # ---- TEARDOWN: remove test subnet if test failed before the delete step ----
-            if new_subnet_id is not None:
+            # ---- TEARDOWN: remove the test subnet if any step before the UI delete failed ----
+            if created:
                 self._kea4_cleanup_subnet(kea_client, test_subnet)
