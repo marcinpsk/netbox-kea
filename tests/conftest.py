@@ -8,9 +8,11 @@ import requests
 @pytest.fixture(scope="session")
 def netbox_url() -> str:
     # Overridable so the harness can be published on another port when 8000 is taken.
-    # A blank NETBOX_URL means "unset", and a trailing slash would double up the / in
-    # every f-string that appends a path.
-    url = os.environ.get("NETBOX_URL", "").strip() or "http://localhost:8000"
+    # NETBOX_PORT is what Compose publishes on, so fall back to it before assuming 8000.
+    # A blank value means "unset", and a trailing slash would double up the / in every
+    # f-string that appends a path.
+    port = os.environ.get("NETBOX_PORT", "").strip() or "8000"
+    url = os.environ.get("NETBOX_URL", "").strip() or f"http://localhost:{port}"
     return url.rstrip("/")
 
 
