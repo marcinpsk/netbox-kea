@@ -1,4 +1,5 @@
 import json
+import time
 from ipaddress import ip_address, ip_network
 from unittest.mock import patch
 
@@ -484,3 +485,59 @@ reservations:
         self.assertEqual(reservation.delegated_prefixes, (ip_network("2001:db8:100::/56"),))
         with self.assertRaisesRegex(ValueError, "does not match"):
             resolve_import_proposal(proposal, SubnetIdentity(11, ip_network("2001:db8:1::/64")))
+
+
+class TestReservationTransferDocumentBounds(SimpleTestCase):
+    """MAX_DOCUMENT_BYTES must bound parser work, not only the input length."""
+
+    _SUBNET = "2001:db8::/64"
+
+    @classmethod
+    def _one_record(cls, addresses: str) -> str:
+        return (
+            "version: 1\nreservations: [{family: 6, "
+            f"scope: {{type: in-subnet, subnet: {{cidr: '{cls._SUBNET}'}}}}, "
+            "identity: {type: duid, value: '00:01:02:03'}, "
+            f"addresses: [{addresses}], "
+            "delegated_prefixes: [], hostname: 'host.example.invalid', options: []}]\n"
+        )
+
+    def test_a_yaml_alias_is_rejected(self):
+        document = "addrs: &addrs ['2001:db8::1', '2001:db8::2']\n" + self._one_record("*addrs")
+
+        with self.assertRaisesRegex(ReservationTransferError, "must not use YAML aliases"):
+            parse_reservation_document(document, "yaml")
+
+    def test_a_yaml_anchor_without_an_alias_still_loads(self):
+        document = self._one_record("&first '2001:db8::1'")
+
+        result = parse_reservation_document(document, "yaml")
+
+        self.assertEqual(result.diagnostics, ())
+        self.assertEqual(len(result.proposals), 1)
+
+    def test_many_addresses_parse_in_linear_time(self):
+        """Duplicate detection scanned a list, so one record could hang a worker.
+
+        20k addresses take about 18s against the list scan and well under a second
+        against the set, so the budget separates them even on a slow shared runner.
+        """
+        addresses = ", ".join(f"'2001:db8::{index:x}'" for index in range(1, 20_001))
+        document = self._one_record(addresses)
+        self.assertLess(len(document.encode()), MAX_DOCUMENT_BYTES)
+
+        start = time.monotonic()
+        result = parse_reservation_document(document, "yaml")
+        elapsed = time.monotonic() - start
+
+        self.assertEqual(result.diagnostics, ())
+        self.assertEqual(len(result.proposals[0].addresses), 20_000)
+        self.assertLess(elapsed, 5.0, f"Parsing 20k addresses took {elapsed:.1f}s; the duplicate scan is quadratic.")
+
+    def test_a_duplicate_address_is_still_reported(self):
+        document = self._one_record("'2001:db8::1', '2001:db8::2', '2001:db8::1'")
+
+        result = parse_reservation_document(document, "yaml")
+
+        self.assertEqual([d.code for d in result.diagnostics], ["duplicate-address"])
+        self.assertEqual(result.diagnostics[0].source_position, "reservations[0].addresses[2]")

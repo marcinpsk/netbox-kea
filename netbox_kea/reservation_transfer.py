@@ -105,6 +105,20 @@ def export_reservation_document(records: tuple[Reservation, ...], format_name: s
     raise ReservationTransferError("The transfer format must be YAML or JSON.")
 
 
+class _NoAliasLoader(yaml.SafeLoader):
+    """Safe loader that refuses YAML aliases.
+
+    An alias is a shared reference, so a document inside MAX_DOCUMENT_BYTES can still
+    expand into a graph whose traversal is unbounded. Rejecting aliases keeps the byte
+    cap a real bound on parser work.
+    """
+
+    def compose_node(self, parent: Any, index: Any) -> Any:
+        if self.check_event(yaml.events.AliasEvent):
+            raise ReservationTransferError("The transfer document must not use YAML aliases.")
+        return super().compose_node(parent, index)
+
+
 def _load_document(document: str, format_name: str) -> Any:
     if len(document.encode("utf-8")) > MAX_DOCUMENT_BYTES:
         raise ReservationTransferError(
@@ -114,7 +128,7 @@ def _load_document(document: str, format_name: str) -> Any:
         if format_name == "json":
             return json.loads(document)
         if format_name == "yaml":
-            return yaml.safe_load(document)
+            return yaml.load(document, Loader=_NoAliasLoader)  # noqa: S506  # _NoAliasLoader extends SafeLoader
     except (json.JSONDecodeError, yaml.YAMLError, RecursionError) as exc:
         raise ReservationTransferError("The transfer document is not valid syntax for the selected format.") from exc
     raise ReservationTransferError("The transfer format must be YAML or JSON.")
@@ -240,6 +254,7 @@ def _parse_addresses(
         return None
     subnet = ipaddress.ip_network(subnet_cidr) if subnet_cidr is not None else None
     parsed: list[IPAddress] = []
+    seen: set[IPAddress] = set()
     for index, raw in enumerate(value):
         if not isinstance(raw, str):
             diagnostics.append(_diagnostic("invalid-address", "The address is invalid.", f"{position}[{index}]"))
@@ -261,9 +276,10 @@ def _parse_addresses(
                     f"{position}[{index}]",
                 )
             )
-        elif address in parsed:
+        elif address in seen:
             diagnostics.append(_diagnostic("duplicate-address", "The address is duplicated.", f"{position}[{index}]"))
         else:
+            seen.add(address)
             parsed.append(address)
     if family == 4 and len(parsed) > 1:
         diagnostics.append(_diagnostic("invalid-addresses", "DHCPv4 permits at most one address.", position))
@@ -283,6 +299,7 @@ def _parse_prefixes(
         diagnostics.append(_diagnostic("invalid-prefixes", "DHCPv4 does not support delegated prefixes.", position))
         return None
     parsed: list[ipaddress.IPv6Network] = []
+    seen: set[ipaddress.IPv6Network] = set()
     for index, raw in enumerate(value):
         if not isinstance(raw, str):
             diagnostics.append(
@@ -296,11 +313,12 @@ def _parse_prefixes(
                 _diagnostic("invalid-prefix", "The delegated prefix is invalid.", f"{position}[{index}]")
             )
             continue
-        if prefix in parsed:
+        if prefix in seen:
             diagnostics.append(
                 _diagnostic("duplicate-prefix", "The delegated prefix is duplicated.", f"{position}[{index}]")
             )
         else:
+            seen.add(prefix)
             parsed.append(prefix)
     return tuple(parsed)
 
