@@ -44,12 +44,12 @@ def netbox_password() -> str:
 def kea_url() -> str:
     # Kea 3.0: no Control Agent — the DHCPv4 daemon's own HTTP control socket.
     # Used as ca_url / DHCPv4 endpoint; pair with kea_dhcp6_url for the v6 daemon.
-    return os.environ.get("KEA_DHCP4_URL", "http://kea-dhcp4:8000")
+    return os.environ.get("KEA_DHCP4_URL", "").strip() or "http://kea-dhcp4:8000"
 
 
 @pytest.fixture(scope="session")
 def kea_dhcp6_url() -> str:
-    return os.environ.get("KEA_DHCP6_URL", "http://kea-dhcp6:8000")
+    return os.environ.get("KEA_DHCP6_URL", "").strip() or "http://kea-dhcp6:8000"
 
 
 @pytest.fixture(scope="session")
