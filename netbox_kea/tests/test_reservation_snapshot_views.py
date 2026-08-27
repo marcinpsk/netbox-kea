@@ -58,6 +58,40 @@ class TestPerServerReservationSnapshots(_ViewTestBase):
         self.assertIsNone(global_row["delete_url"])
         self.assertIsNone(global_row.get("sync_url"))
 
+    def test_an_incomplete_snapshot_warns_without_any_diagnostic(self):
+        """A bounded page that stops early is incomplete even when every record parsed.
+
+        Without the warning the reader takes a partial table for the whole Snapshot.
+        """
+        responses = _catalogue_responses(4, 20, "198.18.0.0/24")
+        responses.update(
+            {
+                "reservation-get-page": _res_page(
+                    [
+                        {
+                            "subnet-id": 20,
+                            "hw-address": "AA-BB-CC-DD-EE-FF",
+                            "ip-address": "198.18.0.20",
+                            "hostname": "valid.example.invalid",
+                        }
+                    ],
+                    next_from=3,
+                    next_source=1,
+                ),
+                "lease4-get-by-state": {"result": 0, "arguments": {"leases": []}},
+            }
+        )
+
+        with stub_kea(responses):
+            response = self.client.get(self._url())
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.context["snapshot_complete"])
+        self.assertEqual(response.context["reservation_diagnostics"], ())
+        self.assertContains(response, "Snapshot is incomplete")
+        self.assertNotContains(response, "diagnostic below")
+        self.assertNotContains(response, "This bounded Snapshot is complete")
+
     def test_scope_filter_keeps_only_global_records_on_the_current_page(self):
         responses = _catalogue_responses(4, 20, "198.18.0.0/24")
         responses["reservation-get-page"] = _res_page(
