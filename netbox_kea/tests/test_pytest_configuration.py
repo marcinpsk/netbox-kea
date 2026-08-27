@@ -530,6 +530,59 @@ def test_the_integration_suite_treats_a_blank_override_as_unset():
         )
 
 
+def _unscoped_deletes(source: str) -> list[str]:
+    """Return every ``.delete()`` whose receiver names a whole collection.
+
+    ``x.all(...).delete()`` removes every object of that type in the target NetBox, so
+    an integration fixture pointed at a real instance destroys data it never created.
+    A receiver that filters (``.filter(...)``, ``.get(...)``) is bounded and passes.
+    """
+    offenders: list[str] = []
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+            continue
+        if node.func.attr != "delete":
+            continue
+        receiver = node.func.value
+        if isinstance(receiver, ast.Call) and isinstance(receiver.func, ast.Attribute) and receiver.func.attr == "all":
+            offenders.append(f"line {node.lineno}")
+    return offenders
+
+
+def test_the_unscoped_delete_guard_reads_the_receiver():
+    must_flag = (
+        "nb.users.permissions.all(0).delete()",
+        "nb.ipam.ip_addresses.all().delete()",
+    )
+    must_not_flag = (
+        "nb.users.permissions.filter(name=user).delete()",
+        "nb.users.users.get(username=user).delete()",
+        "obj.delete()",
+        # Reading a whole collection is not a deletion.
+        "everything = nb.users.permissions.all(0)",
+    )
+    for source in must_flag:
+        assert _unscoped_deletes(source), f"the guard missed {source!r}"
+    for source in must_not_flag:
+        assert not _unscoped_deletes(source), f"the guard wrongly flagged {source!r}"
+
+
+def test_the_integration_suite_deletes_only_what_it_created():
+    """A fixture must never empty a collection it does not own.
+
+    The browser fixtures accept ``NETBOX_URL``, so the target is not always the
+    disposable Compose stack, and there is no rollback.
+    """
+    sources = sorted(_INTEGRATION_SUITE.rglob("*.py"))
+    assert sources, "The integration suite moved; this guard would pass without reading anything."
+    for path in sources:
+        offenders = _unscoped_deletes(path.read_text())
+        assert not offenders, (
+            f"{path.relative_to(REPOSITORY_ROOT)} deletes a whole collection at {offenders}. "
+            "Filter the queryset down to the objects the fixture created."
+        )
+
+
 #: Every external tool the integration setup script calls. Stubbed so the script can run
 #: in a test without a network, a Docker daemon, or a real Kea release tarball.
 _SETUP_SCRIPT_TOOLS = ("openssl", "curl", "sha256sum", "tar", "docker")

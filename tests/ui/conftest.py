@@ -177,7 +177,9 @@ def netbox_login(
     to_delete = []
     if netbox_username != "admin":
         nb_api.users.users.filter(username=netbox_username).delete()
-        nb_api.users.permissions.all(0).delete()
+        # Only what a previous interrupted run left under this name. Deleting every
+        # ObjectPermission would wipe the target NetBox if NETBOX_URL is not disposable.
+        nb_api.users.permissions.filter(name=netbox_username).delete()
         user = nb_api.users.users.create(username=netbox_username, password=netbox_password)
         to_delete.append(user)
         for permission in netbox_user_permissions:
