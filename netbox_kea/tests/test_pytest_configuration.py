@@ -61,17 +61,42 @@ def _workflow_job(workflow: str, name: str) -> str:
     return re.split(r"\n {2}[A-Za-z0-9_-]+:\n", job, maxsplit=1)[0]
 
 
+#: Documentation a reader outside this machine consumes.
+_PUBLISHED_DOCS = ("AGENTS.md", "README.md")
+
+#: Hosts and database names that are safe to publish: they name no particular machine
+#: and paste into a shell unchanged.
+_DOCUMENTED_TEST_ENV = "TEST_DB_NAME=test_netbox_kea_local TEST_REDIS_HOST=localhost"
+
+
 def test_documented_unit_test_targets_are_shell_safe():
-    """Keep task-specific test targets usable when copied into a shell."""
+    """Keep the documented test command usable when copied into a shell.
+
+    An angle-bracket placeholder is a redirect to the shell, so the pasted command
+    fails with a syntax error rather than a clear "set this variable" message.
+    """
     agents = (REPOSITORY_ROOT / "AGENTS.md").read_text()
 
-    assert "TEST_DB_NAME=test_netbox_kea_review TEST_REDIS_HOST=netbox-kea-review-redis" in agents
-    assert (
-        "TEST_DB_NAME=test_netbox_kea_review TEST_REDIS_HOST=netbox-kea-review-redis \\\n"
-        "  UPDATE_QUERY_COUNTS=1 uv run --native-tls pytest -n 1" in agents
+    assert _DOCUMENTED_TEST_ENV in agents
+    assert f"{_DOCUMENTED_TEST_ENV} \\\n  UPDATE_QUERY_COUNTS=1 uv run --native-tls pytest -n 1" in agents
+    assert not re.search(r"TEST_(?:DB_NAME|REDIS_HOST)=<", agents), (
+        "An angle-bracket placeholder is a shell redirect; name a real, generic default."
     )
-    assert "<unique-task>" not in agents
-    assert "<dedicated-redis>" not in agents
+
+
+def test_published_docs_name_no_machine_specific_resource():
+    """Docs ship to readers who do not have this host's containers or databases.
+
+    A documented value that only resolves on one machine sends every other reader to
+    a connection error, and it discloses how that machine is set up.
+    """
+    # Hosts and database names that only exist on a particular developer machine.
+    private = re.compile(r"[\w.-]*(?:review-redis|_review\b|devcontainer-devcontainer|nblp-)[\w.-]*")
+    for name in _PUBLISHED_DOCS:
+        text = (REPOSITORY_ROOT / name).read_text()
+        assert text, f"{name} is empty; this guard would pass without reading anything."
+        found = private.findall(text)
+        assert not found, f"{name} names machine-specific resources: {sorted(set(found))}"
 
 
 def test_ci_configuration_writer_generates_the_requested_plugins(monkeypatch, tmp_path):
@@ -659,6 +684,54 @@ def test_the_integration_suite_deletes_only_what_it_created():
             f"{path.relative_to(REPOSITORY_ROOT)} deletes a whole collection at {offenders}. "
             "Filter the queryset down to the objects the fixture created."
         )
+
+
+#: Type aliases that describe one shared fact and must have exactly one definition.
+_SHARED_ALIASES = ("Family", "IPAddress", "IPNetwork")
+
+
+def _alias_definitions(alias: str) -> dict[str, int]:
+    """Return each package module that assigns *alias* at module level, and its line."""
+    found: dict[str, int] = {}
+    for path in sorted((REPOSITORY_ROOT / "netbox_kea").rglob("*.py")):
+        if "/tests/" in path.as_posix() or "/migrations/" in path.as_posix():
+            continue
+        for node in ast.parse(path.read_text()).body:
+            targets = node.targets if isinstance(node, ast.Assign) else []
+            if any(isinstance(t, ast.Name) and t.id == alias for t in targets):
+                found[str(path.relative_to(REPOSITORY_ROOT))] = node.lineno
+    return found
+
+
+@pytest.mark.parametrize("alias", _SHARED_ALIASES)
+def test_each_shared_type_alias_is_defined_once(alias):
+    """Two identical aliases in two modules can drift apart without any error.
+
+    ``Family`` was written out in both the Reservation domain and the Subnet
+    Catalogue. Both describe the same two DHCP families, so they are one fact.
+    """
+    definitions = _alias_definitions(alias)
+    assert definitions, f"{alias} is defined nowhere; this guard would read nothing."
+    assert len(definitions) == 1, f"{alias} is defined in {definitions}; import it from netbox_kea.constants."
+    assert "netbox_kea/constants.py" in definitions, (
+        f"{alias} is defined in {definitions}; netbox_kea/constants.py is where shared facts live."
+    )
+
+
+def test_ci_lints_every_file_the_pre_commit_hooks_lint():
+    """The ruff pre-commit hooks carry no file filter, so they cover the whole repo.
+
+    CI scoped to one package let a file outside it drift until a hook ran locally.
+    Neither gate may be narrower than the other; ``[tool.ruff] exclude`` is the one
+    place that decides what is out of scope.
+    """
+    workflow = (REPOSITORY_ROOT / ".github/workflows/ci.yml").read_text()
+    targets = re.findall(r"run: uv run ruff (?:check|format --check) (\S+)", workflow)
+    assert targets, "The lint job no longer runs ruff; this guard would read nothing."
+    assert set(targets) == {"."}, (
+        f"CI runs ruff over {sorted(set(targets))}, but the pre-commit hooks read every "
+        "Python file in the repository. Narrow the scope in [tool.ruff] exclude instead."
+    )
 
 
 def _compose_service_names(source: str) -> set[str]:
