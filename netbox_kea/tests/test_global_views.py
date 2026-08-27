@@ -58,7 +58,7 @@ from netbox_kea.models import Server
 from netbox_kea.views.combined import _fetch_reservations_from_server
 
 from .kea_stub import _res_get, _res_page, _reservation_mutation_commands, queued, stub_kea
-from .utils import _PLUGINS_CONFIG, User, _drop_subnet_choices_cache, _make_db_server
+from .utils import _PLUGINS_CONFIG, User, _make_db_server
 
 # ---------------------------------------------------------------------------
 # Kea response fixtures
@@ -205,8 +205,6 @@ class _CombinedViewBase(TestCase):
         self.v4_server = _make_db_server(name="v4-server", dhcp4=True, dhcp6=False, has_control_agent=False)
         self.v6_server = _make_db_server(name="v6-server", dhcp4=False, dhcp6=True, has_control_agent=False)
         self.dual_server = _make_db_server(name="dual-server", dhcp4=True, dhcp6=True, has_control_agent=False)
-        for server in (self.v4_server, self.v6_server, self.dual_server):
-            _drop_subnet_choices_cache(self, server)
 
 
 # ---------------------------------------------------------------------------

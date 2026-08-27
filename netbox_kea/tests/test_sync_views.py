@@ -38,7 +38,7 @@ from ipam.models import IPAddress as NbIP
 from netbox_kea.models import Server
 
 from .kea_stub import _catalogue_responses, _res_page, _reservation_mutation_commands, stub_kea
-from .utils import _PLUGINS_CONFIG, _drop_subnet_choices_cache
+from .utils import _PLUGINS_CONFIG
 
 User = get_user_model()
 
@@ -89,9 +89,6 @@ class _SyncViewBase(TestCase):
         )
         self.client.force_login(self.user)
         self.server = _make_server()
-        # Reused test server IDs otherwise serve another test's cached Catalogue
-        # snapshot: the DB rolls back per test, the cache backend does not.
-        _drop_subnet_choices_cache(self, self.server)
 
     def _start_stub(self, responses):
         """Enter a ``stub_kea`` context for the whole test and return the stub."""
