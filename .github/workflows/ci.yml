@@ -197,10 +197,10 @@ jobs:
         run: uv sync --group dev
 
       - name: Ruff lint
-        run: uv run ruff check netbox_kea/
+        run: uv run ruff check .
 
       - name: Ruff format check
-        run: uv run ruff format --check netbox_kea/
+        run: uv run ruff format --check .
 
       - name: Type check (mypy, new errors only)
         run: uv run scripts/mypy-gate.sh
