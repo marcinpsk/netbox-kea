@@ -121,56 +121,89 @@ class TestReservationValues(SimpleTestCase):
 
     def test_rejects_invalid_reservation_invariants(self):
         cases = (
-            lambda: IPv6Reservation(
-                scope=self.scope6,
-                identity=ReservationIdentity("client-id", "01:02"),
-                addresses=(),
-                delegated_prefixes=(),
+            (
+                "v6 identifier from another family",
+                lambda: IPv6Reservation(
+                    scope=self.scope6,
+                    identity=ReservationIdentity("client-id", "01:02"),
+                    addresses=(),
+                    delegated_prefixes=(),
+                ),
             ),
-            lambda: IPv4Reservation(scope=self.scope6, identity=self.identity4, addresses=()),
-            lambda: IPv4Reservation(scope=self.scope4, identity=self.identity4, addresses=(), hostname=1),
-            lambda: IPv4Reservation(
-                scope=self.scope4,
-                identity=self.identity4,
-                addresses=(ip_address("198.18.0.20"), ip_address("198.18.0.20")),
+            (
+                "v4 reservation in a v6 scope",
+                lambda: IPv4Reservation(scope=self.scope6, identity=self.identity4, addresses=()),
             ),
-            lambda: IPv4Reservation(
-                scope=self.scope4,
-                identity=self.identity4,
-                addresses=(ip_address("2001:db8::20"),),
+            (
+                "hostname is not a string",
+                lambda: IPv4Reservation(scope=self.scope4, identity=self.identity4, addresses=(), hostname=1),
             ),
-            lambda: IPv4Reservation(
-                scope=self.scope4,
-                identity=self.identity4,
-                addresses=(ip_address("198.18.1.20"),),
+            (
+                "duplicate v4 address",
+                lambda: IPv4Reservation(
+                    scope=self.scope4,
+                    identity=self.identity4,
+                    addresses=(ip_address("198.18.0.20"), ip_address("198.18.0.20")),
+                ),
             ),
-            lambda: IPv4Reservation(
-                scope=self.scope4,
-                identity=self.identity4,
-                addresses=(ip_address("198.18.0.20"), ip_address("198.18.0.21")),
+            (
+                "v6 address in a v4 reservation",
+                lambda: IPv4Reservation(
+                    scope=self.scope4,
+                    identity=self.identity4,
+                    addresses=(ip_address("2001:db8::20"),),
+                ),
             ),
-            lambda: IPv4Reservation(
-                scope=self.scope4,
-                identity=self.identity4,
-                addresses=(),
-                delegated_prefixes=(ip_network("2001:db8:100::/56"),),
+            (
+                "v4 address outside its scope subnet",
+                lambda: IPv4Reservation(
+                    scope=self.scope4,
+                    identity=self.identity4,
+                    addresses=(ip_address("198.18.1.20"),),
+                ),
             ),
-            lambda: IPv6Reservation(
-                scope=self.scope6,
-                identity=self.identity6,
-                addresses=(),
-                delegated_prefixes=(ip_network("2001:db8:100::/56"), ip_network("2001:db8:100::/56")),
+            (
+                "more than one v4 address",
+                lambda: IPv4Reservation(
+                    scope=self.scope4,
+                    identity=self.identity4,
+                    addresses=(ip_address("198.18.0.20"), ip_address("198.18.0.21")),
+                ),
             ),
-            lambda: IPv6Reservation(
-                scope=self.scope6,
-                identity=self.identity6,
-                addresses=(),
-                delegated_prefixes=(ip_network("198.18.0.0/24"),),
+            (
+                "v4 reservation delegates a prefix",
+                lambda: IPv4Reservation(
+                    scope=self.scope4,
+                    identity=self.identity4,
+                    addresses=(),
+                    delegated_prefixes=(ip_network("2001:db8:100::/56"),),
+                ),
             ),
-            lambda: IPv4Reservation(scope=self.scope4, identity=self.identity4, addresses=(), options=(object(),)),
+            (
+                "duplicate delegated prefix",
+                lambda: IPv6Reservation(
+                    scope=self.scope6,
+                    identity=self.identity6,
+                    addresses=(),
+                    delegated_prefixes=(ip_network("2001:db8:100::/56"), ip_network("2001:db8:100::/56")),
+                ),
+            ),
+            (
+                "v4 prefix delegated by a v6 reservation",
+                lambda: IPv6Reservation(
+                    scope=self.scope6,
+                    identity=self.identity6,
+                    addresses=(),
+                    delegated_prefixes=(ip_network("198.18.0.0/24"),),
+                ),
+            ),
+            (
+                "option is not a mapping",
+                lambda: IPv4Reservation(scope=self.scope4, identity=self.identity4, addresses=(), options=(object(),)),
+            ),
         )
-        for index, build in enumerate(cases):
-            with self.subTest(index=index):
+        for name, build in cases:
+            with self.subTest(case=name):
                 with self.assertRaises(ValueError):
                     build()
 

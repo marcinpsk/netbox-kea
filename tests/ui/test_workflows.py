@@ -1390,7 +1390,7 @@ class TestSubnetManagement:
 
             # ---- VERIFY DELETED via direct Kea API ----
             data = kea_client.command("subnet4-list", service=["dhcp4"], check=(0, 3))[0]
-            remaining_ids = {s["id"] for s in data.get("arguments", {}).get("subnets", [])}
+            remaining_ids = {s["id"] for s in (data.get("arguments") or {}).get("subnets", [])}
             assert new_subnet_id not in remaining_ids, (
                 f"Subnet ID {new_subnet_id} ({test_subnet}) still present in Kea after UI delete"
             )

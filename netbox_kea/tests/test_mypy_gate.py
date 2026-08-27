@@ -66,8 +66,9 @@ def test_a_matching_annotation_passes(tmp_path):
 
 def test_the_baseline_records_only_pre_existing_errors():
     """Every baseline line is a real mypy finding, so the file cannot mute new codes."""
+    # No lower bound on the count: test_resolving_every_baseline_error_passes_the_gate
+    # requires that fixing the last error still builds, which leaves the baseline empty.
     entries = [line for line in BASELINE.read_text().splitlines() if line.strip()]
-    assert entries, "The baseline is empty; regenerate it with scripts/mypy-gate.sh --sync."
     for entry in entries:
         assert re.match(r"^netbox_kea/[\w/.]+:\d+: (error|note): .+", entry), f"Malformed baseline entry: {entry}"
 

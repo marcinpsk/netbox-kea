@@ -1787,7 +1787,6 @@ class TestLeaseJournalEntries(_ViewTestBase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestJournalHelperEdgeCases(_ViewTestBase):
     """Unit tests for _add_lease_journal exception paths."""
 
