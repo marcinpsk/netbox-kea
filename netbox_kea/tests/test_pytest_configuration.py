@@ -535,16 +535,22 @@ def test_the_integration_suite_treats_a_blank_override_as_unset():
 
 _COMPOSE_FILE = REPOSITORY_ROOT / "tests" / "docker" / "docker-compose.yml"
 
-#: ``${NAME:-default}`` and ``${NAME:+alternate}``, the two Compose interpolation forms.
-_INTERPOLATION = re.compile(r"\$\{(\w+):([-+])([^{}]*)\}")
+#: ``${NAME}``, ``${NAME:-default}`` and ``${NAME:+alternate}``. The argument excludes
+#: braces, so a nested expansion is only matched once its inner form has been replaced.
+_INTERPOLATION = re.compile(r"\$\{(\w+)(?::([-+])([^{}]*))?\}")
 
 
 def _expand(value: str, variables: dict[str, str]) -> str:
-    """Expand one Compose value the way Compose does, under a given environment."""
+    """Expand one Compose value the way Compose does, under a given environment.
+
+    Innermost first, so ``${NAME:+${NAME},}`` resolves rather than being left literal.
+    """
 
     def replace(match: re.Match) -> str:
         name, form, argument = match.groups()
         set_and_non_empty = bool(variables.get(name))
+        if form is None:
+            return variables.get(name, "")
         if form == "-":
             return variables[name] if set_and_non_empty else argument
         return argument if set_and_non_empty else ""
@@ -574,7 +580,13 @@ def _empty_list_elements(source: str) -> list[str]:
 
 
 def test_the_empty_list_element_guard_reads_both_environments():
-    must_flag = ('NO_PROXY: "${NO_PROXY:-},localhost,nginx"',)
+    must_flag = (
+        'NO_PROXY: "${NO_PROXY:-},localhost,nginx"',
+        # The separator sits outside the expansion, so an unset variable still leaves it.
+        'NO_PROXY: "${NO_PROXY:+${NO_PROXY}},localhost,nginx"',
+        # Set but trailing: an empty last element.
+        'NO_PROXY: "localhost,nginx,${NO_PROXY:-}"',
+    )
     must_not_flag = (
         'NO_PROXY: "${NO_PROXY:+${NO_PROXY},}localhost,nginx"',
         'DB_NAME: "${DB_NAME:-netbox}"',
