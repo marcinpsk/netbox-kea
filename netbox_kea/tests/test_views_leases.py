@@ -188,6 +188,11 @@ class TestServerLeases6DeleteView(_ViewTestBase):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+def _close_that_fails(self) -> None:
+    """Stand in for KeaClient.close when the connection is already gone."""
+    raise OSError("connection already gone")
+
+
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestReservedBadgeOnLeases(_ViewTestBase):
     """HTMX lease search must show a 'Reserved' badge when a matching reservation exists.
@@ -231,6 +236,29 @@ class TestReservedBadgeOnLeases(_ViewTestBase):
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Reserved")
+
+    def test_a_worker_client_close_failure_keeps_the_badge(self):
+        """Closing the worker clients ran in a finally that could replace the result.
+
+        Every reservation lookup had already succeeded, so a socket error while
+        releasing the connections must not blank the whole column.
+        """
+        url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+        with (
+            stub_kea(
+                {
+                    "subnet4-list": self._SUBNETS4,
+                    "lease4-get": {"result": 0, "arguments": {"ip-address": "192.168.1.100", **self._LEASE4}},
+                    "reservation-get": {"result": 0, "arguments": self._RESERVATION4},
+                }
+            ),
+            patch.object(KeaClient, "close", _close_that_fails),
+        ):
+            response = self._htmx_get(url, {"by": "ip", "q": "192.168.1.100"})
+
+        self.assertEqual(response.status_code, 200)
+        # The column header also reads "Reserved", so assert on the badge link itself.
+        self.assertContains(response, 'text-decoration-none">Reserved</a>')
 
     def test_no_reserved_badge_when_no_reservation(self):
         """When no reservation exists for the lease IP, no badge is rendered."""

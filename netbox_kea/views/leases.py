@@ -4,7 +4,6 @@ import threading
 import uuid
 from abc import ABCMeta
 from collections.abc import Callable
-from contextlib import ExitStack
 from functools import partial
 from typing import Any, Generic, TypeVar
 from urllib.parse import urlencode as _urlencode
@@ -911,6 +910,14 @@ class _IdentityLookups:
             return self._results[key]
 
 
+def _close_worker_client(client: KeaClient) -> None:
+    """Close one worker client, reporting a failure instead of raising it."""
+    try:
+        client.close()
+    except Exception:  # noqa: BLE001
+        logger.warning("Could not close a Reservation worker Kea client", exc_info=True)
+
+
 class _LeaseReservationWorkerClients:
     """Keep one private Kea client for each reservation worker thread."""
 
@@ -931,12 +938,15 @@ class _LeaseReservationWorkerClients:
         return worker_client
 
     def close(self) -> None:
-        """Close all worker clients after the executor stops."""
+        """Close all worker clients after the executor stops.
+
+        A close failure must not replace the enrichment result the callers already
+        computed, so each one is logged and the rest still close.
+        """
         with self._registry:
             clients = tuple(self._clients)
-        with ExitStack() as stack:
-            for client in clients:
-                stack.callback(client.close)
+        for client in clients:
+            _close_worker_client(client)
 
 
 def _reservation_for_lease_worker(worker_clients, version, catalogue, lease, lookups: _IdentityLookups):
