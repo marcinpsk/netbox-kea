@@ -51,10 +51,16 @@ any machine. Always use xdist, including for focused tests. A serial run can cle
 Redis database 1, which the shared manual verification environment uses as its
 default cache.
 
+`TEST_DB_NAME` must start with `test_`; `TEST_REDIS_HOST` names a Redis reachable
+from the run. Both are required. The values below are the defaults CI uses. Change
+them to something only this task holds when another project shares the host: a shared
+database is rebuilt by whichever suite runs `--create-db` next, and a shared Redis is
+written to by every worker.
+
 ```bash
-TEST_DB_NAME=test_netbox_kea_review TEST_REDIS_HOST=netbox-kea-review-redis \
+TEST_DB_NAME=test_netbox_kea_local TEST_REDIS_HOST=localhost \
   uv run --native-tls pytest --reuse-db -n auto --maxschedchunk=1
-TEST_DB_NAME=test_netbox_kea_review TEST_REDIS_HOST=netbox-kea-review-redis \
+TEST_DB_NAME=test_netbox_kea_local TEST_REDIS_HOST=localhost \
   uv run --native-tls pytest --reuse-db -n auto --maxschedchunk=1 netbox_kea/tests/test_views_leases.py -v
 ```
 
@@ -281,7 +287,7 @@ resort, reserved for true external boundaries you cannot run locally.
   those stay `stub_kea`-driven.
 - **Query-count baselines.** The list-view mixins assert an exact SQL query count
   against `netbox_kea/tests/query_counts.json` to catch N+1 drift. Record/update with
-  `TEST_DB_NAME=test_netbox_kea_review TEST_REDIS_HOST=netbox-kea-review-redis \
+  `TEST_DB_NAME=test_netbox_kea_local TEST_REDIS_HOST=localhost \
   UPDATE_QUERY_COUNTS=1 uv run --native-tls pytest -n 1 ...`, then commit the file. One xdist
   worker prevents concurrent writes and keeps Redis isolated. A count is a fact about
   one NetBox release, not about the plugin alone: NetBox re-records its own baselines on

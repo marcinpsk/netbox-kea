@@ -351,8 +351,8 @@ uv run pre-commit install
 # Build wheel (required before integration tests)
 uv build
 
-# Run unit tests inside the devcontainer with a dedicated test Redis host
-TEST_DB_NAME=test_netbox_kea_review TEST_REDIS_HOST=netbox-kea-review-redis \
+# Run unit tests; both variables are required (see AGENTS.md for picking values)
+TEST_DB_NAME=test_netbox_kea_local TEST_REDIS_HOST=localhost \
   uv run --native-tls pytest --reuse-db -n auto --maxschedchunk=1 -q
 
 # Run integration tests (requires Docker — see tests/test_setup.sh)
