@@ -48,7 +48,9 @@ repos:
         language: system
         pass_filenames: false
         stages: [pre-push]
-        types: [python]
+        # No types filter: the gate reads the whole package, so a push that changes only
+        # mypy-baseline.txt or the mypy config must still run it.
+        always_run: true
 
   # Conventional commit message validation
   - repo: https://github.com/compilerla/conventional-pre-commit

@@ -103,6 +103,28 @@ def test_the_lint_job_and_the_pre_push_hook_share_the_gate():
     assert GATE.stat().st_mode & 0o111, "scripts/mypy-gate.sh is not executable."
 
 
+def test_the_pre_push_gate_cannot_be_skipped_by_file_type():
+    """The gate reads the whole package, so no changed-file filter may gate it.
+
+    A push that touches only mypy-baseline.txt, pyproject.toml or the gate script
+    changes what the gate reports while matching no Python file.
+    """
+    import yaml
+
+    hooks = yaml.safe_load((REPOSITORY_ROOT / ".pre-commit-config.yaml").read_text())
+    gate = [
+        hook for repository in hooks["repos"] for hook in repository["hooks"] if "mypy-gate.sh" in hook.get("entry", "")
+    ]
+
+    assert len(gate) == 1, f"Expected one mypy gate hook, found {len(gate)}."
+    hook = gate[0]
+    filters = {key: hook[key] for key in ("types", "types_or", "files") if key in hook}
+    assert hook.get("always_run") or not filters, (
+        f"The gate hook is filtered by {filters} and is not always_run, so a push that "
+        "changes only the baseline or the mypy config skips it."
+    )
+
+
 def _fake_tools(*, mypy_stdout: str, mypy_status: int):
     """Put a stub ``mypy`` on PATH so the gate's own control flow can be exercised.
 
