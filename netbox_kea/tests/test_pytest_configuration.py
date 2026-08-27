@@ -465,8 +465,10 @@ def _unsafe_environ_defaults(source: str) -> list[str]:
     ``os.environ.get(NAME, "").strip() or default``, which treats blank as unset.
     """
     tree = ast.parse(source)
-    # Safe means the blank result actually falls through: ``get(...).strip() or <default>``.
-    # A bare ``.strip()`` still yields "" for a blank variable, so the ``or`` is what matters.
+    # Safe is a positive shape, not the absence of known-bad ones: the call must read
+    # ``get(...).strip() or <fallback>`` and at least one fallback must be something a
+    # blank variable can actually fall through to. A bare ``.strip()`` still yields "",
+    # and so does ``or ""``.
     blank_safe = set()
     for node in ast.walk(tree):
         if not isinstance(node, ast.BoolOp) or not isinstance(node.op, ast.Or):
@@ -474,7 +476,10 @@ def _unsafe_environ_defaults(source: str) -> list[str]:
         left = node.values[0]
         if not isinstance(left, ast.Call) or not isinstance(left.func, ast.Attribute):
             continue
-        if left.func.attr == "strip" and isinstance(left.func.value, ast.Call):
+        if left.func.attr != "strip" or not isinstance(left.func.value, ast.Call):
+            continue
+        usable = [f for f in node.values[1:] if not (isinstance(f, ast.Constant) and not f.value)]
+        if usable:
             blank_safe.add(id(left.func.value))
     offenders: list[str] = []
     for call in _environ_get_calls(tree):
@@ -497,10 +502,14 @@ def test_the_environ_default_guard_reads_every_spelling():
         'os.environ.get("X", "").lower() or "d"',
         'os.environ.get("X", "").strip()',  # no fallback: still "" for a blank variable
         'os.environ.get("X", "").strip() and "d"',
+        'os.environ.get("X", "").strip() or ""',  # fallback is itself blank
+        'os.environ.get("X", "").strip() or None',
     )
     must_not_flag = (
         'os.environ.get("X", "").strip() or "http://default"',
         'KeaClient(os.environ.get("X", "").strip() or "http://default")',
+        'os.environ.get("X", "").strip() or f"http://localhost:{port}"',
+        'os.environ.get("X", "").strip() or "" or "http://default"',
         'os.environ.get("X")',
         'config.get("X", "http://default")',
     )
