@@ -1,6 +1,5 @@
 import json
-import time
-from ipaddress import ip_address, ip_network
+from ipaddress import IPv6Address, ip_address, ip_network
 from unittest.mock import patch
 
 from django.test import SimpleTestCase
@@ -516,23 +515,40 @@ class TestReservationTransferDocumentBounds(SimpleTestCase):
         self.assertEqual(result.diagnostics, ())
         self.assertEqual(len(result.proposals), 1)
 
-    def test_many_addresses_parse_in_linear_time(self):
-        """Duplicate detection scanned a list, so one record could hang a worker.
-
-        20k addresses take about 18s against the list scan and well under a second
-        against the set, so the budget separates them even on a slow shared runner.
-        """
+    def test_many_addresses_parse_without_a_diagnostic(self):
+        """One record can carry every address that fits inside the byte cap."""
         addresses = ", ".join(f"'2001:db8::{index:x}'" for index in range(1, 20_001))
         document = self._one_record(addresses)
         self.assertLess(len(document.encode()), MAX_DOCUMENT_BYTES)
 
-        start = time.monotonic()
         result = parse_reservation_document(document, "yaml")
-        elapsed = time.monotonic() - start
 
         self.assertEqual(result.diagnostics, ())
         self.assertEqual(len(result.proposals[0].addresses), 20_000)
-        self.assertLess(elapsed, 5.0, f"Parsing 20k addresses took {elapsed:.1f}s; the duplicate scan is quadratic.")
+
+    def test_duplicate_detection_never_scans_the_addresses_it_has_seen(self):
+        """Duplicate detection scanned a list, so one record could hang a worker.
+
+        Count the comparisons instead of the clock: a set membership hashes and
+        compares only on a bucket collision, while a list scan compares against every
+        earlier address. A loaded runner changes the wall clock, not the comparisons.
+        """
+        count = 2_000
+        document = self._one_record(", ".join(f"'2001:db8::{index:x}'" for index in range(1, count + 1)))
+        comparisons = 0
+        equal = IPv6Address.__eq__
+
+        def counting_equal(self, other):
+            nonlocal comparisons
+            comparisons += 1
+            return equal(self, other)
+
+        with patch.object(IPv6Address, "__eq__", counting_equal):
+            result = parse_reservation_document(document, "yaml")
+
+        self.assertEqual(len(result.proposals[0].addresses), count)
+        # A list scan makes about count * count / 2 comparisons: two million here.
+        self.assertLess(comparisons, count, f"{comparisons} comparisons for {count} addresses is not linear.")
 
     def test_a_duplicate_address_is_still_reported(self):
         document = self._one_record("'2001:db8::1', '2001:db8::2', '2001:db8::1'")

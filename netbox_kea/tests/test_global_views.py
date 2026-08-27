@@ -44,9 +44,11 @@ instance for a command (the stub raises it at the boundary), so the per-server
 error handling runs through the real client instead of a mocked ``side_effect``.
 """
 
+import json
 from unittest.mock import patch
 
 import requests
+import yaml
 from django.test import TestCase, override_settings
 from django.urls import reverse
 from ipam.models import IPAddress
@@ -455,6 +457,11 @@ class TestCombinedReservations4View(_CombinedViewBase):
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         self.assertIn("application/yaml", response.get("Content-Type", ""))
+        # A serializer that emits an empty or wrong-shaped document passes a header check.
+        document = yaml.safe_load(response.content.decode())
+        self.assertEqual(document["version"], 1)
+        self.assertEqual([record["hostname"] for record in document["reservations"]], ["host-v4"])
+        self.assertEqual(document["reservations"][0]["addresses"], ["10.0.0.100"])
 
     def test_search_form_in_context(self):
         """Response context must contain search_form for the search card to render."""
@@ -588,6 +595,10 @@ class TestCombinedReservations6View(_CombinedViewBase):
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         self.assertIn("application/json", response.get("Content-Type", ""))
+        document = json.loads(response.content.decode())
+        self.assertEqual(document["version"], 1)
+        self.assertEqual([record["hostname"] for record in document["reservations"]], ["host-v6"])
+        self.assertEqual(document["reservations"][0]["addresses"], ["2001:db8::1"])
 
     def test_search_form_in_context(self):
         """Response context must contain search_form."""
