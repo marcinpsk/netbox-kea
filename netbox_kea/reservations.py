@@ -8,7 +8,7 @@ from collections.abc import Collection
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Generic, Literal, TypeVar, cast
 
-from .constants import Family, IPAddress
+from .constants import Family, IPAddressValue
 from .dhcp_options import DHCPOption, parse_dhcp_options
 
 if TYPE_CHECKING:
@@ -239,7 +239,7 @@ ReservationPersistence = Literal["persisted", "failed", "not-requested"]
 class ReservationChange:
     """Explicit changes to the mutable facts of one Reservation."""
 
-    addresses: FieldChange[tuple[IPAddress, ...]] = UNCHANGED
+    addresses: FieldChange[tuple[IPAddressValue, ...]] = UNCHANGED
     delegated_prefixes: FieldChange[tuple[ipaddress.IPv6Network, ...]] = UNCHANGED
     hostname: FieldChange[str] = UNCHANGED
     options: FieldChange[tuple[DHCPOption, ...]] = UNCHANGED
@@ -565,7 +565,7 @@ def _scope(raw: dict[str, Any], catalogue: CatalogueSnapshot) -> ReservationScop
     return InSubnetReservationScope(subnet=subnet.identity)
 
 
-def _addresses(raw: dict[str, Any], family: Family) -> tuple[IPAddress, ...]:
+def _addresses(raw: dict[str, Any], family: Family) -> tuple[IPAddressValue, ...]:
     if family == 4:
         if "ip-addresses" in raw:
             raise MalformedReservation(
@@ -580,7 +580,7 @@ def _addresses(raw: dict[str, Any], family: Family) -> tuple[IPAddress, ...]:
         values = raw.get("ip-addresses", [])
         if not isinstance(values, list):
             raise MalformedReservation("invalid-addresses", "Reservation addresses must be a list.", "ip-addresses")
-    parsed: list[IPAddress] = []
+    parsed: list[IPAddressValue] = []
     for index, value in enumerate(values):
         field = "ip-address" if family == 4 else f"ip-addresses[{index}]"
         if not isinstance(value, str):

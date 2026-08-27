@@ -687,7 +687,9 @@ def test_the_integration_suite_deletes_only_what_it_created():
 
 
 #: Type aliases that describe one shared fact and must have exactly one definition.
-_SHARED_ALIASES = ("Family", "IPAddress", "IPNetwork")
+#: The "Value" suffix keeps them apart from netaddr's same-named classes, which this
+#: package also imports and which are not interchangeable with the stdlib ones.
+_SHARED_ALIASES = ("Family", "IPAddressValue", "IPNetworkValue")
 
 
 def _alias_definitions(alias: str) -> dict[str, int]:
