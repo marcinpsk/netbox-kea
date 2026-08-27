@@ -7,23 +7,20 @@ from collections import defaultdict
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Literal, Protocol, TypeVar
+from typing import Any, Protocol, TypeVar
 
 import requests
 from django.core.cache import cache
 from django.utils import timezone
 
 from . import constants
+from .constants import Family, IPAddress, IPNetwork
 from .dhcp_options import DHCPOption, parse_dhcp_option
 from .kea import KeaClient, KeaException
 from .models import Server
 from .utilities import kea_error_hint
 
 logger = logging.getLogger(__name__)
-
-Family = Literal[4, 6]
-IPAddress = ipaddress.IPv4Address | ipaddress.IPv6Address
-IPNetwork = ipaddress.IPv4Network | ipaddress.IPv6Network
 
 # Kea requires subnet IDs greater than zero and less than UINT32_MAX.
 MIN_SUBNET_ID = 1

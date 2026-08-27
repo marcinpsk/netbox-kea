@@ -7,9 +7,9 @@ from typing import Any, Literal, cast
 
 import yaml
 
+from .constants import Family, IPAddress
 from .dhcp_options import DHCPOption, parse_dhcp_option
 from .reservations import (
-    Family,
     InSubnetReservationScope,
     IPv4Reservation,
     IPv6Reservation,
@@ -21,7 +21,6 @@ from .reservations import (
 from .subnet_catalogue import SubnetIdentity
 
 TransferFormat = Literal["yaml", "json"]
-IPAddress = ipaddress.IPv4Address | ipaddress.IPv6Address
 _DOCUMENT_FIELDS = frozenset({"version", "reservations"})
 _RECORD_FIELDS = frozenset({"family", "scope", "identity", "addresses", "delegated_prefixes", "hostname", "options"})
 _SCOPE_FIELDS = frozenset({"type", "subnet"})
