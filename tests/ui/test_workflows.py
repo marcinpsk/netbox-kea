@@ -71,12 +71,23 @@ def _assert_no_http_errors(errors: list) -> None:
     assert not errors, f"4xx/5xx responses during test: {errors}"
 
 
-def _tail_container_logs(container_filter: str = "devcontainer", lines: int = 30) -> str:
-    """Return the last N lines from the matching container's stderr (Django log)."""
+def _tail_container_logs(service: str = "netbox", lines: int = 30) -> str:
+    """Return the last N lines from one Compose service's stderr (Django log).
+
+    Filtering on the service label rather than the container name: the stack also runs
+    netbox-worker and netbox-housekeeping, whose names contain "netbox" too.
+    """
     try:
         name = (
             subprocess.check_output(
-                ["docker", "ps", "--filter", f"name={container_filter}", "--format", "{{.Names}}"],
+                [
+                    "docker",
+                    "ps",
+                    "--filter",
+                    f"label=com.docker.compose.service={service}",
+                    "--format",
+                    "{{.Names}}",
+                ],
                 timeout=5,
             )
             .decode()
@@ -267,8 +278,10 @@ class TestKeaServerTabs:
         expect(page.get_by_text(re.compile(r"version|uptime|pid", re.I)).first).to_be_visible()
         _assert_no_http_errors(track_http_errors)
 
+        # The helper returns "" for every failure, so an empty result proves nothing.
         logs = _tail_container_logs()
-        assert "ERROR" not in logs or "kea" not in logs.lower(), f"Unexpected server errors after status tab:\n{logs}"
+        if logs:
+            assert "ERROR" not in logs, f"Unexpected server errors after status tab:\n{logs}"
 
     def test_server_leases4_tab(
         self,
@@ -1238,12 +1251,26 @@ class TestPoolManagement:
         _assert_no_http_errors(track_http_errors)
         expect(page.locator('form[method="post"]').last).to_be_visible()
 
+    def _kea4_cleanup_pool(self, kea_client, subnet_id: int, pool: str) -> None:
+        """Remove *pool* from *subnet_id* through Kea directly (safe to call twice)."""
+        data = kea_client.command("subnet4-get", service=["dhcp4"], arguments={"id": subnet_id}, check=(0, 3))[0]
+        for subnet in (data.get("arguments") or {}).get("subnet4") or []:
+            if not any(entry.get("pool") == pool for entry in subnet.get("pools") or []):
+                continue
+            kea_client.command(
+                "subnet4-delta-del",
+                service=["dhcp4"],
+                arguments={"subnet4": [{"id": subnet_id, "subnet": subnet["subnet"], "pools": [{"pool": pool}]}]},
+                check=(0, 3),
+            )
+
     def test_pool_add_and_delete_cycle(
         self,
         page: Page,
         netbox_login: None,
         plugin_base: str,
         kea_server,
+        kea_client,
         track_http_errors: list,
     ) -> None:
         """Full cycle: add a pool → verify present → delete it → verify gone."""
@@ -1271,36 +1298,40 @@ class TestPoolManagement:
         parts = ("/" + add_url_path).rstrip("/").split("/")
         subnet_id = int(parts[parts.index("subnets4") + 1])
 
-        # ---- ADD ----
-        page.goto(self._pool_add_url(plugin_base, server_id, subnet_id))
-        page.wait_for_load_state("networkidle")
-        _check_no_django_error(page)
-        page.fill("#id_pool", test_pool)
-        _submit_and_wait_nav(page, "document.getElementById('id_pool').closest('form').submit()")
-        _check_no_django_error(page)
-        _assert_no_http_errors(track_http_errors)
+        try:
+            # ---- ADD ----
+            page.goto(self._pool_add_url(plugin_base, server_id, subnet_id))
+            page.wait_for_load_state("networkidle")
+            _check_no_django_error(page)
+            page.fill("#id_pool", test_pool)
+            _submit_and_wait_nav(page, "document.getElementById('id_pool').closest('form').submit()")
+            _check_no_django_error(page)
+            _assert_no_http_errors(track_http_errors)
 
-        # ---- VERIFY ADDED ----
-        page.goto(self._subnets4_url(plugin_base, server_id))
-        page.wait_for_load_state("networkidle")
-        assert test_pool in page.content(), f"Test pool {test_pool} not visible in subnets table after add"
+            # ---- VERIFY ADDED ----
+            page.goto(self._subnets4_url(plugin_base, server_id))
+            page.wait_for_load_state("networkidle")
+            assert test_pool in page.content(), f"Test pool {test_pool} not visible in subnets table after add"
 
-        # ---- DELETE ----
-        page.goto(self._pool_delete_url(plugin_base, server_id, subnet_id, test_pool))
-        page.wait_for_load_state("networkidle")
-        _check_no_django_error(page)
-        _submit_and_wait_nav(
-            page,
-            "document.querySelectorAll('form[method=\"post\"]')"
-            "[ document.querySelectorAll('form[method=\"post\"]').length - 1 ].submit()",
-        )
-        _check_no_django_error(page)
-        _assert_no_http_errors(track_http_errors)
+            # ---- DELETE ----
+            page.goto(self._pool_delete_url(plugin_base, server_id, subnet_id, test_pool))
+            page.wait_for_load_state("networkidle")
+            _check_no_django_error(page)
+            _submit_and_wait_nav(
+                page,
+                "document.querySelectorAll('form[method=\"post\"]')"
+                "[ document.querySelectorAll('form[method=\"post\"]').length - 1 ].submit()",
+            )
+            _check_no_django_error(page)
+            _assert_no_http_errors(track_http_errors)
 
-        # ---- VERIFY DELETED ----
-        page.goto(self._subnets4_url(plugin_base, server_id))
-        page.wait_for_load_state("networkidle")
-        assert test_pool not in page.content(), f"Test pool {test_pool} still visible after delete"
+            # ---- VERIFY DELETED ----
+            page.goto(self._subnets4_url(plugin_base, server_id))
+            page.wait_for_load_state("networkidle")
+            assert test_pool not in page.content(), f"Test pool {test_pool} still visible after delete"
+        finally:
+            # Kea rejects a duplicate range, so a pool left behind fails every later run.
+            self._kea4_cleanup_pool(kea_client, subnet_id, test_pool)
 
 
 class TestSubnetManagement:

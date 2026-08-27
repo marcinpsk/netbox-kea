@@ -661,6 +661,53 @@ def test_the_integration_suite_deletes_only_what_it_created():
         )
 
 
+def _compose_service_names(source: str) -> set[str]:
+    """Return the service keys the Compose file declares."""
+    body = source.split("\nservices:\n", 1)[-1]
+    # Stop at the next top-level key, or volumes and secrets would count as services.
+    block = re.split(r"^\w", body, maxsplit=1, flags=re.MULTILINE)[0]
+    return {line.split(":", 1)[0].strip() for line in block.splitlines() if re.match(r"^  [\w-]+:", line)}
+
+
+def test_the_container_log_helper_names_a_service_the_stack_runs():
+    """The helper returns "" for every failure, so a wrong name reads as a clean log.
+
+    A default that matches no container turns every assertion on its result into a
+    tautology.
+    """
+    source = (_BROWSER_SUITE / "test_workflows.py").read_text()
+    default = re.search(r'def _tail_container_logs\(service: str = "([\w-]+)"', source)
+    assert default, "The container-log helper moved; this guard would pass without reading anything."
+
+    services = _compose_service_names(_COMPOSE_FILE.read_text())
+    assert services, "The Compose file declares no service; this guard would pass without reading anything."
+    assert default.group(1) in services, (
+        f"_tail_container_logs reads the {default.group(1)!r} service, which is not one of {sorted(services)}."
+    )
+
+
+def _cycle_tests_without_teardown(source: str) -> list[str]:
+    """Return every add-and-delete cycle test whose live state is not torn down."""
+    offenders: list[str] = []
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.FunctionDef) or not node.name.endswith("_add_and_delete_cycle"):
+            continue
+        if not any(isinstance(inner, ast.Try) and inner.finalbody for inner in ast.walk(node)):
+            offenders.append(node.name)
+    return offenders
+
+
+def test_every_live_kea_cycle_test_tears_its_object_down():
+    """Kea rejects a duplicate, so one leftover object fails every later run.
+
+    These tests write to a live daemon that nothing rolls back.
+    """
+    source = (_BROWSER_SUITE / "test_workflows.py").read_text()
+    assert "_add_and_delete_cycle" in source, "The cycle tests moved; this guard would read nothing."
+    offenders = _cycle_tests_without_teardown(source)
+    assert not offenders, f"{offenders} create live Kea state without a finally that removes it."
+
+
 #: Every external tool the integration setup script calls. Stubbed so the script can run
 #: in a test without a network, a Docker daemon, or a real Kea release tarball.
 _SETUP_SCRIPT_TOOLS = ("openssl", "curl", "sha256sum", "tar", "docker")
