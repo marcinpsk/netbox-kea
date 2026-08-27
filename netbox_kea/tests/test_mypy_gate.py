@@ -64,6 +64,70 @@ def test_a_matching_annotation_passes(tmp_path):
     assert status == 0, f"mypy rejected an aligned call:\n{stdout}"
 
 
+NETADDR_MIXUP_MODULE = '''
+import ipaddress
+
+import netaddr
+
+IPAddressValue = ipaddress.IPv4Address | ipaddress.IPv6Address
+
+
+def consume(addresses: tuple[IPAddressValue, ...]) -> int:
+    """Accept only stdlib address values."""
+    return len(addresses)
+
+
+def produce() -> None:
+    """Hand it netaddr's same-named class instead."""
+    consume((netaddr.IPAddress("198.18.0.5"),))
+'''
+
+
+#: Stub-only packages the gate needs to see third-party values as anything but Any.
+#: `ignore_missing_imports` is on for NetBox, so a missing stub is silent, not an error.
+REQUIRED_STUB_PACKAGES = ("types-netaddr", "types-PyYAML", "djangorestframework-stubs")
+
+
+def _stub_package_installed(name: str) -> bool:
+    from importlib.metadata import PackageNotFoundError, distribution
+
+    try:
+        distribution(name)
+    except PackageNotFoundError:
+        return False
+    return True
+
+
+@pytest.mark.parametrize("package", REQUIRED_STUB_PACKAGES)
+def test_the_dev_group_declares_the_stub_packages_the_gate_needs(package):
+    """A dropped stub package silently turns that library's values back into Any.
+
+    `ignore_missing_imports = true` means mypy reports nothing when a stub goes
+    missing, so only this check would notice.
+    """
+    dev_group = (REPOSITORY_ROOT / "pyproject.toml").read_text().split("[dependency-groups]", 1)[-1]
+    assert f'"{package}' in dev_group, f"{package} is no longer in the dev dependency group."
+
+
+def test_a_netaddr_value_cannot_pass_as_a_stdlib_address(tmp_path):
+    """netaddr exports IPAddress and IPNetwork too, and they are not interchangeable.
+
+    The same address built by each library compares unequal, so a mix-up makes a
+    duplicate check silently miss. Without the netaddr stubs its objects are Any and
+    mypy accepts them anywhere, which is why types-netaddr is a dev dependency.
+    """
+    api = pytest.importorskip("mypy.api", reason="mypy is a dev dependency")
+    if not _stub_package_installed("types-netaddr"):
+        pytest.skip("types-netaddr is not installed here; the dev group declares it.")
+    module = tmp_path / "netaddr_mixup.py"
+    module.write_text(NETADDR_MIXUP_MODULE)
+
+    stdout, _stderr, status = api.run(["--config-file", str(REPOSITORY_ROOT / "pyproject.toml"), str(module)])
+
+    assert status != 0, f"mypy accepted a netaddr value where a stdlib address was declared:\n{stdout}"
+    assert "[arg-type]" in stdout, stdout
+
+
 def test_the_baseline_records_only_pre_existing_errors():
     """Every baseline line is a real mypy finding, so the file cannot mute new codes."""
     # No lower bound on the count: test_resolving_every_baseline_error_passes_the_gate
