@@ -722,7 +722,7 @@ def _validate_pool_string(pool: str) -> None:
             raise forms.ValidationError(f"Invalid pool range '{pool}': {exc}") from exc
     elif "/" in pool:
         try:
-            IPNetwork(pool, implicit_prefix=False)
+            IPNetwork(pool)
         except (AddrFormatError, ValueError) as exc:
             raise forms.ValidationError(f"Invalid pool CIDR '{pool}': {exc}") from exc
     else:

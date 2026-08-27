@@ -415,6 +415,20 @@ wheels = [
 ]
 
 [[package]]
+name = "djangorestframework-stubs"
+version = "3.17.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "django-stubs" },
+    { name = "types-pyyaml" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/8a/4b/1bee065c6c87ee04b905732deb53acdfc43d0e5673f43a5f75ec4deb7f6f/djangorestframework_stubs-3.17.1.tar.gz", hash = "sha256:5b67655090e2976b778bad572840b732a87ab2911402530d0dca2fbf72f891c5", size = 33470, upload-time = "2026-07-28T21:27:52.071Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/86/38/6a04ffca56e24220bf37494fe9f75ce9abe8115776a90c924732bb37823a/djangorestframework_stubs-3.17.1-py3-none-any.whl", hash = "sha256:40f1f22ec1965d1caff17c66794b87799eb8f42e0628ea46b501dcd565d8a803", size = 57562, upload-time = "2026-07-28T21:27:50.58Z" },
+]
+
+[[package]]
 name = "dotty-dict"
 version = "1.3.1"
 source = { registry = "https://pypi.org/simple" }
@@ -885,6 +899,7 @@ dependencies = [
 [package.dev-dependencies]
 dev = [
     { name = "django-stubs", extra = ["compatible-mypy"] },
+    { name = "djangorestframework-stubs" },
     { name = "mypy" },
     { name = "mypy-baseline" },
     { name = "pre-commit" },
@@ -898,6 +913,8 @@ dev = [
     { name = "reuse" },
     { name = "ruff" },
     { name = "tblib" },
+    { name = "types-netaddr" },
+    { name = "types-pyyaml" },
     { name = "types-requests" },
 ]
 
@@ -911,6 +928,7 @@ requires-dist = [
 [package.metadata.requires-dev]
 dev = [
     { name = "django-stubs", extras = ["compatible-mypy"], specifier = ">=5.0.0,<7.0.0" },
+    { name = "djangorestframework-stubs", specifier = ">=3.14.0,<4.0.0" },
     { name = "mypy", specifier = ">=1.14.0,<2.4.0" },
     { name = "mypy-baseline", specifier = ">=0.7.0,<1.0.0" },
     { name = "pre-commit" },
@@ -924,6 +942,8 @@ dev = [
     { name = "reuse" },
     { name = "ruff", specifier = ">=0.8.0" },
     { name = "tblib", specifier = ">=3.0.0,<4.0.0" },
+    { name = "types-netaddr", specifier = ">=1.0.0,<2.0.0" },
+    { name = "types-pyyaml", specifier = ">=6.0.0,<7.0.0" },
     { name = "types-requests", specifier = ">=2.27.0,<3.0.0" },
 ]
 
@@ -1590,6 +1610,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/cc/18/0bbf3884e9eaa38819ebe46a7bd25dcd56b67434402b66a58c4b8e552575/tomlkit-0.13.3.tar.gz", hash = "sha256:430cf247ee57df2b94ee3fbe588e71d362a941ebb545dec29b53961d61add2a1", size = 185207, upload-time = "2025-06-05T07:13:44.947Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/bd/75/8539d011f6be8e29f339c42e633aae3cb73bffa95dd0f9adec09b9c58e85/tomlkit-0.13.3-py3-none-any.whl", hash = "sha256:c89c649d79ee40629a9fda55f8ace8c6a1b42deb912b2a8fd8d942ddadb606b0", size = 38901, upload-time = "2025-06-05T07:13:43.546Z" },
+]
+
+[[package]]
+name = "types-netaddr"
+version = "1.3.0.20260724"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/38/b0/f78e583f5e3758b33bfbf1ae05b869e4ddc4302aff7208174be73ebf684d/types_netaddr-1.3.0.20260724.tar.gz", hash = "sha256:f8236f872a6f86d843aa3a10d537049f426fe86b5ad9f93424e8d8f037879f66", size = 15689, upload-time = "2026-07-24T04:59:13.93Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e7/dd/8a4d9f07b31a645c15faee2e8f963bbe00cbc0b0add441a2eabb1fe64ee5/types_netaddr-1.3.0.20260724-py3-none-any.whl", hash = "sha256:b599f28d4394f47722c0e8effb4e2c9847124080b0a52ef5ab626580a7f77ace", size = 19223, upload-time = "2026-07-24T04:59:12.908Z" },
 ]
 
 [[package]]
