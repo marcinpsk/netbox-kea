@@ -1610,7 +1610,7 @@ class TestSyncServerReservationsReturnValue(TestCase):
         stats = self._stats()
         bad = {"ip-address": "999.999.999.999", "hw-address": "aa:bb:cc:dd:ee:ff", "subnet-id": 1}
         snapshot = _reservation_snapshot([bad], 4)
-        ok = _sync_server_reservations(self._server(), snapshot, stats=stats, all_synced=[])
+        ok = _sync_server_reservations(self._server(), snapshot, stats=stats, all_synced=[], protected=[])
 
         self.assertFalse(ok)
         self.assertEqual(stats["errors"], 1)
@@ -1627,14 +1627,19 @@ class TestSyncServerReservationsReturnValue(TestCase):
 
         stats = self._stats()
         all_synced: list = []
+        protected = []
         host = {"hostname": "printer-1", "hw-address": "aa:bb:cc:dd:ee:ff", "subnet-id": 1}
         snapshot = _reservation_snapshot([host], 4)
-        ok = _sync_server_reservations(self._server(), snapshot, stats=stats, all_synced=all_synced)
+        ok = _sync_server_reservations(
+            self._server(), snapshot, stats=stats, all_synced=all_synced, protected=protected
+        )
 
         self.assertTrue(ok)
         self.assertEqual(stats["errors"], 0)
         self.assertEqual(stats["skipped"], 1)
         self.assertEqual(all_synced, [])
+        # Skipped records still go to the keep-set channel, which stale cleanup reads.
+        self.assertEqual(protected, list(snapshot.records))
 
     def test_conflicts_stay_consistent_with_the_deduplicated_set(self):
         """``conflicts`` must equal the size of the caller's set, not a running sum.
@@ -1651,7 +1656,9 @@ class TestSyncServerReservationsReturnValue(TestCase):
         stats = self._stats()
         host = {"ip-address": "10.0.0.100", "hw-address": "11:22:33:44:55:66", "subnet-id": 1}
         snapshot = _reservation_snapshot([host], 4)
-        _sync_server_reservations(self._server(), snapshot, stats=stats, all_synced=[], conflict_ips=conflict_ips)
+        _sync_server_reservations(
+            self._server(), snapshot, stats=stats, all_synced=[], protected=[], conflict_ips=conflict_ips
+        )
 
         self.assertEqual(conflict_ips, {"10.0.0.100"})
         self.assertEqual(stats["conflicts"], len(conflict_ips))
@@ -1662,14 +1669,18 @@ class TestSyncServerReservationsReturnValue(TestCase):
 
         stats = self._stats()
         all_synced: list = []
+        protected = []
         host = {"duid": "00:01:00:01:12:34", "subnet-id": 12, "prefixes": ["2001:db8:1::/64"]}
         snapshot = _reservation_snapshot([host], 6)
-        ok = _sync_server_reservations(self._server(), snapshot, stats=stats, all_synced=all_synced)
+        ok = _sync_server_reservations(
+            self._server(), snapshot, stats=stats, all_synced=all_synced, protected=protected
+        )
 
         self.assertTrue(ok)
         self.assertEqual(stats["errors"], 0)
         self.assertEqual(stats["skipped"], 1)
         self.assertEqual(all_synced, [])
+        self.assertEqual(protected, list(snapshot.records))
 
 
 class TestSyncServerPrefixesAndRanges(SimpleTestCase):
@@ -1903,7 +1914,7 @@ class TestSyncServerReservationsUpdated(TestCase):
         stats = {"created": 0, "updated": 0, "errors": 0, "prefix_errors": 0}
         all_synced: list = []
         snapshot = _reservation_snapshot([_RESV4], 4)
-        result = _sync_server_reservations(server, snapshot, stats=stats, all_synced=all_synced)
+        result = _sync_server_reservations(server, snapshot, stats=stats, all_synced=all_synced, protected=[])
 
         self.assertTrue(result)
         self.assertEqual(stats["updated"], 1)
