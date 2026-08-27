@@ -24,6 +24,7 @@ from ..integrations import dhcp_plugin
 from ..kea import KeaException
 from ..mappers.kea_to_dhcp import parse_dhcp_config
 from ..models import Server
+from ..reservations import Family
 from ..utilities import OptionalViewTab
 
 logger = logging.getLogger(__name__)
@@ -34,9 +35,9 @@ def _tab_enabled(server: Server) -> bool:
     return dhcp_plugin.is_available() and server.sync_dhcp_plugin_enabled
 
 
-def _enabled_versions(server: Server) -> list[int]:
+def _enabled_versions(server: Server) -> list[Family]:
     """Return the DHCP protocol versions enabled on *server* (4 and/or 6)."""
-    versions = []
+    versions: list[Family] = []
     if server.dhcp4:
         versions.append(4)
     if server.dhcp6:
@@ -64,7 +65,7 @@ def _extract_dhcp_conf(resp, version: int) -> dict | None:
     return conf if isinstance(conf, dict) else None
 
 
-def _fetch_config_intent(server: Server, version: int):
+def _fetch_config_intent(server: Server, version: Family):
     """Read live ``config-get`` for one version and parse it to intent (read-only).
 
     ``config-get`` is issued exactly once here. Reservations use their separate
@@ -83,7 +84,7 @@ def _fetch_config_intent(server: Server, version: int):
     return parse_dhcp_config(conf, version)
 
 
-def _fetch_reservation_snapshot(server: Server, version: int):
+def _fetch_reservation_snapshot(server: Server, version: Family):
     """Return one complete typed Reservation Snapshot, or ``None`` after a read failure."""
     from ..subnet_catalogue import for_synchronization
 
