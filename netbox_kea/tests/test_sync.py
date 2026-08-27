@@ -1298,6 +1298,69 @@ class TestCleanupStaleIpsBatch(TestCase):
         self.assertFalse(NbIP.objects.filter(address__startswith="10.80.0.99/").exists())
 
     @override_settings(PLUGINS_CONFIG=_STALE_PLUGINS_CONFIG)
+    def test_a_protected_record_keeps_the_address_it_reserves(self):
+        """A skipped Global Reservation still owns its address.
+
+        The bulk sync leaves Global Reservations out of the keep-set, so one that
+        shares a hostname with an In-Subnet Reservation lost its IP to cleanup.
+        """
+        from ipam.models import IPAddress as NbIP
+
+        from netbox_kea.sync import cleanup_stale_ips_batch
+
+        for host in ("10.81.0.1", "10.81.0.2", "10.81.0.99"):
+            NbIP.objects.create(
+                address=f"{host}/32", status="dhcp", dns_name="shared.example.com", description=self._KEA_DESC
+            )
+        synced = _typed_reservation(
+            {
+                "subnet-id": 5,
+                "ip-address": "10.81.0.1",
+                "hostname": "shared.example.com",
+                "hw-address": "aa:bb:cc:dd:ee:81",
+            }
+        )
+        skipped_global = _typed_reservation(
+            {"subnet-id": 0, "ip-address": "10.81.0.2", "hostname": "shared.example.com", "flex-id": "global-host"}
+        )
+
+        cleaned = cleanup_stale_ips_batch([synced], [skipped_global])
+
+        self.assertEqual(cleaned, 1)
+        self.assertTrue(NbIP.objects.filter(address__startswith="10.81.0.2/").exists())
+        self.assertFalse(NbIP.objects.filter(address__startswith="10.81.0.99/").exists())
+
+    @override_settings(PLUGINS_CONFIG=_STALE_PLUGINS_CONFIG)
+    def test_a_protected_record_never_starts_a_cleanup_of_its_own(self):
+        """Protecting an address must widen the keep-set, never add a cleanup target."""
+        from ipam.models import IPAddress as NbIP
+
+        from netbox_kea.sync import cleanup_stale_ips_batch
+
+        NbIP.objects.create(
+            address="10.82.0.1/32", status="dhcp", dns_name="synced.example.com", description=self._KEA_DESC
+        )
+        NbIP.objects.create(
+            address="10.82.0.99/32", status="dhcp", dns_name="global-only.example.com", description=self._KEA_DESC
+        )
+        synced = _typed_reservation(
+            {
+                "subnet-id": 5,
+                "ip-address": "10.82.0.1",
+                "hostname": "synced.example.com",
+                "hw-address": "aa:bb:cc:dd:ee:82",
+            }
+        )
+        skipped_global = _typed_reservation(
+            {"subnet-id": 0, "ip-address": "10.82.0.2", "hostname": "global-only.example.com", "flex-id": "global-only"}
+        )
+
+        cleaned = cleanup_stale_ips_batch([synced], [skipped_global])
+
+        self.assertEqual(cleaned, 0)
+        self.assertTrue(NbIP.objects.filter(address__startswith="10.82.0.99/").exists())
+
+    @override_settings(PLUGINS_CONFIG=_STALE_PLUGINS_CONFIG)
     def test_unsupported_record_type_is_rejected(self):
         """Neither a raw lease dict nor a Reservation: fail loudly instead of guessing."""
         from netbox_kea.sync import cleanup_stale_ips_batch
@@ -1313,6 +1376,10 @@ class TestCleanupStaleIpsBatch(TestCase):
         consumed = cleanup_stale_ips_batch.__annotations__["synced_records"]
         self.assertEqual(_sync_server_leases.__annotations__["all_synced"], consumed)
         self.assertEqual(_sync_server_reservations.__annotations__["all_synced"], consumed)
+        # The keep-set channel carries the same records; the consumer only reads them.
+        record_types = consumed.removeprefix("list[").removesuffix("]")
+        self.assertEqual(cleanup_stale_ips_batch.__annotations__["protected_records"], f"Iterable[{record_types}]")
+        self.assertEqual(_sync_server_reservations.__annotations__["protected"], consumed)
 
     @override_settings(PLUGINS_CONFIG=_STALE_PLUGINS_CONFIG)
     def test_batch_groups_by_address_family(self):

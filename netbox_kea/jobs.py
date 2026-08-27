@@ -231,6 +231,7 @@ def _sync_server_reservations(
     *,
     stats: dict[str, int],
     all_synced: list[dict | Reservation],
+    protected: list[dict | Reservation],
     lease_ips: frozenset[str] | None = None,
     conflict_ips: set[str] | None = None,
 ) -> bool:
@@ -240,6 +241,9 @@ def _sync_server_reservations(
     DHCPv6 host that only delegates prefixes — are counted in ``stats["skipped"]``
     and left out of *all_synced*.  They are legal Kea configuration with nothing to
     write to IPAM, so treating them as errors failed the whole job (issue #110).
+
+    A skipped Global Reservation still owns its addresses, so it joins *protected*:
+    stale-IP cleanup must keep them when another record shares its hostname.
 
     Returns ``True`` when all reservation pages were fetched successfully,
     ``False`` when the sync was skipped (e.g. host_cmds not loaded) or failed.
@@ -274,6 +278,7 @@ def _sync_server_reservations(
         if scope.kind == "global" or not reservation.addresses:
             skipped += 1
             stats["skipped"] = stats.get("skipped", 0) + 1
+            protected.append(reservation)
             continue
         try:
             result = sync_reservation_to_netbox(
@@ -508,6 +513,8 @@ def _sync_one_server(
     from .sync import cleanup_stale_ips_batch
 
     all_synced: list[dict | Reservation] = []
+    # Records the job deliberately did not write, whose addresses cleanup must keep.
+    protected: list[dict | Reservation] = []
     if conflict_ips is None:
         conflict_ips = set()
     # Cleanup is only safe when both sources contributed, otherwise we risk
@@ -567,6 +574,7 @@ def _sync_one_server(
                 reservation_snapshot,
                 stats=stats,
                 all_synced=all_synced,
+                protected=protected,
                 lease_ips=lease_ips_set if lease_phase_ok else None,
                 conflict_ips=conflict_ips,
             )
@@ -597,7 +605,7 @@ def _sync_one_server(
         )
 
     if all_synced and stats["errors"] == 0 and cleanup_safe:
-        cleanup_stale_ips_batch(all_synced)
+        cleanup_stale_ips_batch(all_synced, protected)
     elif all_synced:
         logger.warning(
             "Server %s: skipping stale-IP cleanup (errors=%d, prefix_errors=%d, cleanup_safe=%s)",
