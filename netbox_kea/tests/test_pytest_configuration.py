@@ -530,6 +530,69 @@ def test_the_integration_suite_treats_a_blank_override_as_unset():
         )
 
 
+_COMPOSE_FILE = REPOSITORY_ROOT / "tests" / "docker" / "docker-compose.yml"
+
+#: ``${NAME:-default}`` and ``${NAME:+alternate}``, the two Compose interpolation forms.
+_INTERPOLATION = re.compile(r"\$\{(\w+):([-+])([^{}]*)\}")
+
+
+def _expand(value: str, variables: dict[str, str]) -> str:
+    """Expand one Compose value the way Compose does, under a given environment."""
+
+    def replace(match: re.Match) -> str:
+        name, form, argument = match.groups()
+        set_and_non_empty = bool(variables.get(name))
+        if form == "-":
+            return variables[name] if set_and_non_empty else argument
+        return argument if set_and_non_empty else ""
+
+    while (expanded := _INTERPOLATION.sub(replace, value)) != value:
+        value = expanded
+    return value
+
+
+def _empty_list_elements(source: str) -> list[str]:
+    """Return every comma-separated Compose value that keeps an empty element.
+
+    A list built as ``"${NAME:-},a,b"`` starts with a separator whenever NAME is unset.
+    The variable must carry its own separator instead: ``"${NAME:+${NAME},}a,b"``.
+    """
+    offenders: list[str] = []
+    for number, line in enumerate(source.splitlines(), start=1):
+        key, separator, raw = line.strip().partition(": ")
+        if not separator or "," not in raw or "${" not in raw:
+            continue
+        names = {match[0] for match in _INTERPOLATION.findall(raw)}
+        unset = dict.fromkeys(names, "")
+        given = dict.fromkeys(names, "set.example.invalid")
+        if any("" in _expand(raw.strip('"'), setting).split(",") for setting in (unset, given)):
+            offenders.append(f"{key} at line {number}")
+    return offenders
+
+
+def test_the_empty_list_element_guard_reads_both_environments():
+    must_flag = ('NO_PROXY: "${NO_PROXY:-},localhost,nginx"',)
+    must_not_flag = (
+        'NO_PROXY: "${NO_PROXY:+${NO_PROXY},}localhost,nginx"',
+        'DB_NAME: "${DB_NAME:-netbox}"',
+        "HOUSEKEEPING_INTERVAL: 86400",
+    )
+    for source in must_flag:
+        assert _empty_list_elements(source), f"the guard missed {source!r}"
+    for source in must_not_flag:
+        assert not _empty_list_elements(source), f"the guard wrongly flagged {source!r}"
+
+
+def test_the_compose_stack_builds_no_empty_list_element():
+    """An unset proxy variable must leave the list unchanged, not add a blank entry."""
+    assert _COMPOSE_FILE.exists(), "The compose stack moved; this guard reads nothing."
+    offenders = _empty_list_elements(_COMPOSE_FILE.read_text())
+    assert not offenders, (
+        f"{_COMPOSE_FILE.relative_to(REPOSITORY_ROOT)} keeps an empty list element at {offenders}. "
+        "Move the separator inside the expansion: ${NAME:+${NAME},}."
+    )
+
+
 def _unscoped_deletes(source: str) -> list[str]:
     """Return every ``.delete()`` whose receiver names a whole collection.
 
