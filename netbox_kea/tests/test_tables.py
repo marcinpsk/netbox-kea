@@ -121,11 +121,10 @@ class TestReservationSyncCell(TestCase):
     compared display text would render every row as Unknown.
     """
 
-    def _render(self, state):
-        from netbox_kea.tables import ReservationTable4
-
-        row = {
-            "subnet-id": 1,
+    def _row(self, state) -> dict:
+        """One row in the shape the reservation views build (``views/reservations.py``)."""
+        return {
+            "subnet_id": 1,
             "ip_address": "198.18.0.10",
             "sync_state": state,
             "sync_synchronized": state.synchronized,
@@ -134,8 +133,12 @@ class TestReservationSyncCell(TestCase):
             "netbox_ip_url": "/ipam/ip-addresses/1/",
             "sync_url": None,
         }
-        table = ReservationTable4([row])
-        return str(table.rows[0].get_cell("netbox_ip"))
+
+    def _render(self, state, column: str = "netbox_ip"):
+        from netbox_kea.tables import ReservationTable4
+
+        table = ReservationTable4([self._row(state)])
+        return str(table.rows[0].get_cell(column))
 
     def test_every_state_renders_its_own_badge(self):
         from netbox_kea.reservations import ReservationSynchronizationState
@@ -151,3 +154,11 @@ class TestReservationSyncCell(TestCase):
         for state, expected in cases:
             with self.subTest(code=state.code):
                 self.assertIn(expected, self._render(state))
+
+    def test_the_subnet_id_cell_reads_the_key_the_views_build(self):
+        """Pin the row key. Kea sends ``subnet-id``; every view row carries ``subnet_id``."""
+        from netbox_kea.reservations import ReservationSynchronizationState
+
+        state = ReservationSynchronizationState.from_counts(1, 1)
+
+        self.assertIn("1", self._render(state, column="subnet_id"))
