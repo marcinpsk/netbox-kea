@@ -4,9 +4,13 @@ from typing import Literal
 # The DHCP address families, and the value types their records carry. Defined here
 # because both the Reservation domain and the Subnet Catalogue describe the same two
 # families; a second definition can drift from this one without any error.
+#
+# The "Value" suffix is deliberate. netaddr exports its own IPAddress and IPNetwork,
+# which this package also uses, and the two are not interchangeable: the same address
+# built by each library compares unequal, so a mix-up makes a duplicate check miss.
 Family = Literal[4, 6]
-IPAddress = ipaddress.IPv4Address | ipaddress.IPv6Address
-IPNetwork = ipaddress.IPv4Network | ipaddress.IPv6Network
+IPAddressValue = ipaddress.IPv4Address | ipaddress.IPv6Address
+IPNetworkValue = ipaddress.IPv4Network | ipaddress.IPv6Network
 
 BY_IP = "ip"
 BY_HOSTNAME = "hostname"

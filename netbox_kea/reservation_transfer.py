@@ -7,7 +7,7 @@ from typing import Any, Literal, cast
 
 import yaml
 
-from .constants import Family, IPAddress
+from .constants import Family, IPAddressValue
 from .dhcp_options import DHCPOption, parse_dhcp_option
 from .reservations import (
     InSubnetReservationScope,
@@ -54,7 +54,7 @@ class ReservationImportProposal:
     family: Family
     subnet_cidr: str
     identity: ReservationIdentity
-    addresses: tuple[IPAddress, ...]
+    addresses: tuple[IPAddressValue, ...]
     delegated_prefixes: tuple[ipaddress.IPv6Network, ...]
     hostname: str
     options: tuple[DHCPOption, ...]
@@ -247,13 +247,13 @@ def _parse_addresses(
     subnet_cidr: str | None,
     position: str,
     diagnostics: list[ReservationTransferDiagnostic],
-) -> tuple[IPAddress, ...] | None:
+) -> tuple[IPAddressValue, ...] | None:
     if not isinstance(value, list):
         diagnostics.append(_diagnostic("invalid-addresses", "Addresses must be a list.", position))
         return None
     subnet = ipaddress.ip_network(subnet_cidr) if subnet_cidr is not None else None
-    parsed: list[IPAddress] = []
-    seen: set[IPAddress] = set()
+    parsed: list[IPAddressValue] = []
+    seen: set[IPAddressValue] = set()
     for index, raw in enumerate(value):
         if not isinstance(raw, str):
             diagnostics.append(_diagnostic("invalid-address", "The address is invalid.", f"{position}[{index}]"))
