@@ -96,3 +96,31 @@ class TestPluginCacheHygiene(SimpleTestCase):
 
         with self.assertRaisesRegex(RuntimeError, "delete_pattern"):
             _drop_plugin_cache_entries()
+
+
+class TestPluginCacheHygieneReachesDjangoTestCases(SimpleTestCase):
+    """The autouse fixture must reach unittest-style classes, not only pytest functions.
+
+    Every view test is a Django ``TestCase``. If the fixture did not apply there, each
+    base would have to clear the cache itself, which is the leak that keeps coming back.
+    ``setUpClass`` runs before the function-scoped fixture, so the planted entry proves
+    the cleanup ran for this class rather than for some earlier test.
+    """
+
+    _PLANTED = "netbox_kea:subnet_catalogue:v1:4242:4:snapshot:planted"
+
+    @classmethod
+    def setUpClass(cls):
+        from django.core.cache import cache
+
+        super().setUpClass()
+        cache.set(cls._PLANTED, "sentinel", 300)
+
+    def test_the_autouse_cleanup_runs_for_a_django_test_case(self):
+        from django.core.cache import cache
+
+        self.assertIsNone(
+            cache.get(self._PLANTED),
+            "The autouse cache cleanup did not run for a Django TestCase; every view base "
+            "would then have to clear the plugin cache itself.",
+        )
