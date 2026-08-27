@@ -9,7 +9,7 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import SimpleTestCase, TestCase
 
 from netbox_kea import constants
-from netbox_kea.forms import Leases4SearchForm, Leases6SearchForm, MultipleIPField, ServerForm
+from netbox_kea.forms import Leases4SearchForm, Leases6SearchForm, MultipleIPField, PoolAddForm, ServerForm
 from netbox_kea.reservations import ReservationCapabilities, reservation_identifier_types
 
 
@@ -1333,3 +1333,39 @@ class TestBulkReservationImportForm(SimpleTestCase):
         form = self._form(data={"format": "yaml"}, files={"document_file": upload})
 
         self.assertTrue(form.is_valid(), form.errors)
+
+
+class TestPoolAddForm(SimpleTestCase):
+    """A pool is either a start-end range or a CIDR; both must validate."""
+
+    def test_a_cidr_pool_is_accepted(self):
+        """The CIDR branch called netaddr with a keyword it does not take.
+
+        That raised TypeError, which the branch's `except (AddrFormatError, ValueError)`
+        does not catch, so every CIDR pool reached the user as a server error instead of
+        a validated value.
+        """
+        form = PoolAddForm(data={"pool": "10.0.0.0/28"})
+
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.cleaned_data["pool"], "10.0.0.0/28")
+
+    def test_a_range_pool_is_normalized(self):
+        form = PoolAddForm(data={"pool": " 10.0.0.50 - 10.0.0.99 "})
+
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.cleaned_data["pool"], "10.0.0.50-10.0.0.99")
+
+    def test_a_malformed_cidr_is_a_validation_error(self):
+        """A bad CIDR must reach the user as a form error, never as a crash."""
+        form = PoolAddForm(data={"pool": "10.0.0.0/99"})
+
+        self.assertFalse(form.is_valid())
+        self.assertIn("Invalid pool CIDR", str(form.errors))
+
+    def test_a_value_that_is_neither_range_nor_cidr_is_rejected(self):
+        # No "-" and no "/", so neither branch applies and the format message is used.
+        form = PoolAddForm(data={"pool": "nonsense"})
+
+        self.assertFalse(form.is_valid())
+        self.assertIn("Invalid pool format", str(form.errors))
