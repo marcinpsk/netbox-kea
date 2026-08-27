@@ -115,6 +115,8 @@ class TestPluginCacheHygieneReachesDjangoTestCases(SimpleTestCase):
 
         super().setUpClass()
         cache.set(cls._PLANTED, "sentinel", 300)
+        # Without this the test passes when the plant never landed, which proves nothing.
+        assert cache.get(cls._PLANTED) == "sentinel", "The planted cache entry did not land."
 
     def test_the_autouse_cleanup_runs_for_a_django_test_case(self):
         from django.core.cache import cache
