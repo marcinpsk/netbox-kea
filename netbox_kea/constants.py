@@ -1,3 +1,13 @@
+import ipaddress
+from typing import Literal
+
+# The DHCP address families, and the value types their records carry. Defined here
+# because both the Reservation domain and the Subnet Catalogue describe the same two
+# families; a second definition can drift from this one without any error.
+Family = Literal[4, 6]
+IPAddress = ipaddress.IPv4Address | ipaddress.IPv6Address
+IPNetwork = ipaddress.IPv4Network | ipaddress.IPv6Network
+
 BY_IP = "ip"
 BY_HOSTNAME = "hostname"
 BY_DUID = "duid"

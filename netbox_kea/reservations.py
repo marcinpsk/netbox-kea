@@ -8,14 +8,12 @@ from collections.abc import Collection
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Generic, Literal, TypeVar, cast
 
+from .constants import Family, IPAddress
 from .dhcp_options import DHCPOption, parse_dhcp_options
 
 if TYPE_CHECKING:
     from .subnet_catalogue import CatalogueSnapshot, SubnetIdentity
 
-Family = Literal[4, 6]
-IPAddress = ipaddress.IPv4Address | ipaddress.IPv6Address
-IPNetwork = ipaddress.IPv4Network | ipaddress.IPv6Network
 IdentifierType = Literal["hw-address", "duid", "circuit-id", "client-id", "flex-id"]
 ReservationQueryMode = Literal["page", "identity", "address", "hostname"]
 
