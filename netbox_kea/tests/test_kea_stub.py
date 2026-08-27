@@ -106,8 +106,8 @@ def test_catalogue_responses_shape():
     subnet = {"id": 20, "subnet": "198.18.0.0/24"}
     assert set(responses) == {"subnet4-list", "config-get", "list-commands"}
     assert responses["subnet4-list"] == _subnet_list(4, [subnet])
-    # Pinned literally: comparing against the builder that produced it holds however the
-    # command list drifts, and this payload gates mutation-capability probing everywhere.
+    # Pinned literally, unlike the builder comparison above: this payload gates
+    # mutation-capability probing everywhere, so a drifting command list must fail here.
     assert responses["list-commands"] == {
         "result": 0,
         "arguments": ["reservation-get", "reservation-add", "reservation-update", "reservation-del"],

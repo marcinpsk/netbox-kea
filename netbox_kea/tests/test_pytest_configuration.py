@@ -211,13 +211,11 @@ def test_the_browser_suite_runs_in_the_integration_job():
     """
     workflow = (REPOSITORY_ROOT / ".github/workflows/ci.yml").read_text()
     integration_job = _workflow_job(workflow, "test")
-    # The trailing space keeps the step's own "- name: Run pytest" line out.
-    command = next(line for line in integration_job.splitlines() if "pytest " in line)
+    commands = _pytest_commands(integration_job)
+    assert commands, "The integration job no longer runs pytest."
     # Every token that names a real path, so option order cannot change the answer.
     targets = [
-        token
-        for token in command.split("pytest ", 1)[1].split()
-        if not token.startswith("-") and (REPOSITORY_ROOT / token).exists()
+        token for token in commands[0].split()[1:] if not token.startswith("-") and (REPOSITORY_ROOT / token).exists()
     ]
     assert any(_BROWSER_SUITE.is_relative_to(REPOSITORY_ROOT / target) for target in targets), (
         f"The integration job runs `pytest` over {targets}, which does not contain "
@@ -320,9 +318,14 @@ def test_ci_pins_the_netbox_release_the_query_counts_describe():
     from netbox_kea.tests.conftest import QUERY_COUNT_NETBOX_VERSION
 
     workflow = (REPOSITORY_ROOT / ".github" / "workflows" / "ci.yml").read_text()
-    checkout = workflow.split("repository: netbox-community/netbox", 1)[1].split("path: netbox", 1)[0]
+    # Every job that checks NetBox out, so a bump cannot leave one job on an older release.
+    checkouts = [
+        section.split("path: netbox", 1)[0] for section in workflow.split("repository: netbox-community/netbox")[1:]
+    ]
 
-    assert f"ref: v{QUERY_COUNT_NETBOX_VERSION}\n" in checkout, checkout
+    assert checkouts, "No job checks NetBox out; this guard would pass without reading anything."
+    for checkout in checkouts:
+        assert f"ref: v{QUERY_COUNT_NETBOX_VERSION}\n" in checkout, checkout
 
 
 def test_query_count_assertion_sites_still_exist():
