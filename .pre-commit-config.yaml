@@ -44,8 +44,8 @@ repos:
     hooks:
       - id: mypy-gate
         name: mypy (new type errors only)
-        entry: scripts/mypy-gate.sh
-        language: script
+        entry: uv run scripts/mypy-gate.sh
+        language: system
         pass_filenames: false
         stages: [pre-push]
         types: [python]
