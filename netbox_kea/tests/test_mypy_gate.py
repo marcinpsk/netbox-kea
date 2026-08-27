@@ -73,12 +73,32 @@ def test_the_baseline_records_only_pre_existing_errors():
 
 
 def test_the_lint_job_and_the_pre_push_hook_share_the_gate():
-    """CI and the local hook must run one script, or the two gates drift apart."""
-    workflow = (REPOSITORY_ROOT / ".github/workflows/ci.yml").read_text()
-    hooks = (REPOSITORY_ROOT / ".pre-commit-config.yaml").read_text()
+    """CI and the local hook must run one command, or the two gates drift apart.
 
-    assert "scripts/mypy-gate.sh" in workflow, "The lint job no longer runs the mypy gate."
-    assert "scripts/mypy-gate.sh" in hooks, "The pre-push hook no longer runs the mypy gate."
+    Naming the same script is not enough. The gate resolves ``mypy`` from PATH, so a hook
+    that skips ``uv run`` type-checks against whatever interpreter the push shell exposes.
+    Without ``django-stubs`` from the locked dev group that report differs from CI.
+    """
+    import yaml
+
+    workflow = (REPOSITORY_ROOT / ".github/workflows/ci.yml").read_text()
+    hooks = yaml.safe_load((REPOSITORY_ROOT / ".pre-commit-config.yaml").read_text())
+
+    ci_commands = [
+        line.split("run:", 1)[1].strip() for line in workflow.splitlines() if re.search(r"run:.*mypy-gate\.sh", line)
+    ]
+    hook_entries = [
+        hook["entry"]
+        for repository in hooks["repos"]
+        for hook in repository["hooks"]
+        if "mypy-gate.sh" in hook.get("entry", "")
+    ]
+
+    assert ci_commands, "The lint job no longer runs the mypy gate."
+    assert hook_entries, "The pre-push hook no longer runs the mypy gate."
+    assert set(ci_commands) == set(hook_entries), (
+        f"CI runs {ci_commands} while the hook runs {hook_entries}; both must run one command."
+    )
     assert GATE.stat().st_mode & 0o111, "scripts/mypy-gate.sh is not executable."
 
 
