@@ -185,7 +185,12 @@ def test_an_unbaselined_error_fails_the_gate():
 @requires_baseline_tool
 def test_a_baselined_error_passes_the_gate():
     """A finding already recorded in the baseline is known debt, not a new failure."""
-    known = BASELINE.read_text().splitlines()[0].replace(":0:", ":1:", 1)
+    # test_resolving_every_baseline_error_passes_the_gate accepts an empty baseline, so
+    # indexing the first entry unconditionally would report an error on a clean tree.
+    entries = [line for line in BASELINE.read_text().splitlines() if line.strip()]
+    if not entries:
+        pytest.skip("The baseline is empty, so there is no recorded finding to replay.")
+    known = entries[0].replace(":0:", ":1:", 1)
     result = _run_gate(_fake_tools(mypy_stdout=known, mypy_status=1))
 
     assert result.returncode == 0, f"the gate rejected a baselined error:\n{result.stdout}{result.stderr}"
