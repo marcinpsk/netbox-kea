@@ -32,7 +32,7 @@ NetBox plugin for the [Kea DHCP](https://www.isc.org/kea/) server. Manage your D
 ### Additions in this fork
 
 **Host Reservations**
-- Full CRUD for DHCPv4 and DHCPv6 reservations via [`host_cmds`](https://kea.readthedocs.io/en/latest/arm/hooks.html#host-cmds) and [`subnet_cmds`](https://kea.readthedocs.io/en/latest/arm/hooks.html#subnet-cmds) hooks
+- Full CRUD for DHCPv4 and DHCPv6 reservations via [`host_cmds`](https://kea.readthedocs.io/en/latest/arm/hooks.html#hooks-host-cmds) and [`subnet_cmds`](https://kea.readthedocs.io/en/latest/arm/hooks.html#hooks-subnet-cmds) hooks
 - Identifier types: hw-address (v4), DUID (v6), client-id, flex-id, circuit-id, remote-id
 - Reservations that reserve no address — an identifier-only host (hostname, options or
   client classes only) and a DHCPv6 host that only delegates prefixes. Both are listed,
@@ -47,7 +47,7 @@ NetBox plugin for the [Kea DHCP](https://www.isc.org/kea/) server. Manage your D
   rows may carry a semicolon-separated `prefixes` column
 
 **Subnet Management**
-- Add, edit and delete subnets (requires [`subnet_cmds`](https://kea.readthedocs.io/en/latest/arm/hooks.html#subnet-cmds) or `config-set`)
+- Add, edit and delete subnets (requires [`subnet_cmds`](https://kea.readthedocs.io/en/latest/arm/hooks.html#hooks-subnet-cmds) or `config-set`)
 - Pool management (add/delete pools per subnet)
 - Shared network management (add/edit/delete)
 - Per-subnet and global DHCP option editing
@@ -86,12 +86,12 @@ NetBox plugin for the [Kea DHCP](https://www.isc.org/kea/) server. Manage your D
 
 - NetBox 4.3 – 4.6
 - Kea 3.0+ (recommended) — the plugin connects directly to each daemon's built-in HTTP control socket (`kea-dhcp4` / `kea-dhcp6`). The [Kea Control Agent](https://kea.readthedocs.io/en/latest/arm/agent.html) was deprecated in Kea 2.7 and removed in 3.0; on Kea < 3.0, point the server URL at the Control Agent instead.
-- [`lease_cmds`](https://kea.readthedocs.io/en/latest/arm/hooks.html#lease-cmds-lease-commands-for-easier-lease-management) hook library (for lease search and management)
-- [`stat_cmds`](https://kea.readthedocs.io/en/latest/arm/hooks.html#stat-cmds-lease-statistics-commands) hook library (for guarded Subnet lease searches unless `lease_query_max_unpaged_leases` is `0`)
+- [`lease_cmds`](https://kea.readthedocs.io/en/latest/arm/hooks.html#hooks-lease-cmds) hook library (for lease search and management)
+- [`stat_cmds`](https://kea.readthedocs.io/en/latest/arm/hooks.html#hooks-stat-cmds) hook library (for guarded Subnet lease searches unless `lease_query_max_unpaged_leases` is `0`)
 - Kea 3.1.5+ for guarded state-filtered Subnet lease searches. On Kea 3.0 through 3.1.4, setting
   `lease_query_max_unpaged_leases` to `0` permits an unbounded compatibility query that NetBox filters locally.
-- [`host_cmds`](https://kea.readthedocs.io/en/latest/arm/hooks.html#host-cmds) hook library (optional, for reservation management — also requires `subnet_cmds` to resolve a reservation's subnet from its CIDR)
-- [`subnet_cmds`](https://kea.readthedocs.io/en/latest/arm/hooks.html#subnet-cmds) hook library (optional, for subnet add/edit/delete, reservation management, and the subnet suggestions on the lease search and reservation forms)
+- [`host_cmds`](https://kea.readthedocs.io/en/latest/arm/hooks.html#hooks-host-cmds) hook library (optional, for reservation management — also requires `subnet_cmds` to resolve a reservation's subnet from its CIDR)
+- [`subnet_cmds`](https://kea.readthedocs.io/en/latest/arm/hooks.html#hooks-subnet-cmds) hook library (optional, for subnet add/edit/delete, reservation management, and the subnet suggestions on the lease search and reservation forms)
 
 The plugin degrades gracefully when optional hooks are absent — tabs for unavailable features are hidden automatically. Two pages offer the server's configured subnets as suggestions and read them through `subnet_cmds`; without that hook each says so in a banner rather than silently offering nothing:
 
