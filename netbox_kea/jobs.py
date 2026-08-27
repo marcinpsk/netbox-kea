@@ -37,7 +37,7 @@ from netbox.jobs import JobRunner, system_job
 
 if TYPE_CHECKING:
     from .models import Server
-    from .reservations import Reservation
+    from .reservations import Reservation, ReservationSnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +71,7 @@ class _SnapshotSkipped:
 SNAPSHOT_SKIPPED = _SnapshotSkipped()
 
 
-def _fetch_reservation_snapshot(server: Server, version: int):
+def _fetch_reservation_snapshot(server: Server, version: int) -> ReservationSnapshot | _SnapshotSkipped | None:
     """Return a typed Reservation Snapshot, SNAPSHOT_SKIPPED, or None after a failure."""
     from .kea import KeaException
     from .subnet_catalogue import CatalogueUnavailable, for_synchronization
@@ -105,9 +105,9 @@ def _fetch_reservation_snapshot(server: Server, version: int):
         return None
 
 
-def _reservation_snapshot_ips(snapshot) -> frozenset[str] | None:
+def _reservation_snapshot_ips(snapshot: ReservationSnapshot | _SnapshotSkipped | None) -> frozenset[str] | None:
     """Return all Snapshot addresses only when the traversal and every record are complete."""
-    if snapshot is None or snapshot is SNAPSHOT_SKIPPED or not snapshot.complete:
+    if snapshot is None or isinstance(snapshot, _SnapshotSkipped) or not snapshot.complete:
         return None
     return frozenset(str(address) for reservation in snapshot.records for address in reservation.addresses)
 
@@ -227,7 +227,7 @@ def _sync_server_leases(
 
 def _sync_server_reservations(
     server: Server,
-    snapshot,
+    snapshot: ReservationSnapshot | _SnapshotSkipped | None,
     *,
     stats: dict[str, int],
     all_synced: list[dict | Reservation],
@@ -255,7 +255,7 @@ def _sync_server_reservations(
     # Foreign (manually-curated) NetBox IPs skipped to avoid overwriting them.
     conflicts: list[str] = []
 
-    if snapshot is SNAPSHOT_SKIPPED:
+    if isinstance(snapshot, _SnapshotSkipped):
         return False
     if snapshot is None:
         stats["errors"] += 1
@@ -270,7 +270,8 @@ def _sync_server_reservations(
         )
 
     for reservation in snapshot.records:
-        if reservation.scope.kind == "global" or not reservation.addresses:
+        scope = reservation.scope
+        if scope.kind == "global" or not reservation.addresses:
             skipped += 1
             stats["skipped"] = stats.get("skipped", 0) + 1
             continue
@@ -292,7 +293,7 @@ def _sync_server_reservations(
                     "Failed to sync Reservation (server %s, v%s, subnet-id %s, id-type %s): %s",
                     server.name,
                     reservation.family,
-                    reservation.scope.subnet.subnet_id,
+                    scope.subnet.subnet_id,
                     reservation.identity.identifier_type,
                     type(exc).__name__,
                 )

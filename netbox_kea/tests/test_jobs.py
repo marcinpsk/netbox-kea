@@ -118,10 +118,10 @@ def _empty_config(body: dict) -> dict:
 
 def _reservation_subnets(reservations: list[dict], version: int) -> list[dict]:
     subnets: dict[int, str] = {}
+    default_network = "2001:db8::/64" if version == 6 else "198.18.0.0/24"
     for host in reservations:
         if _reservation_family(host) != version or not host.get("subnet-id"):
             continue
-        default_network = "2001:db8::/64" if version == 6 else "198.18.0.0/24"
         addresses = host.get("ip-addresses") or [host.get("ip-address", "")]
         address = next((value for value in addresses if value), None)
         if address:
@@ -164,8 +164,10 @@ def _reservation_snapshot(reservations: list[dict], version: int):
     hosts = [host for host in reservations if _reservation_family(host) == version]
     client = KeaClient(url="http://kea.example.invalid", send_service=False)
     with stub_kea({"reservation-get-page": _res_page(hosts)}):
-        # Bound the page to the fixture so a larger fixture cannot silently truncate.
-        return client.reservation_page(version, catalogue, limit=max(len(hosts), 1))
+        # The method the job itself calls, so the double cannot differ from production in
+        # traversal state. Page size is bound to the fixture, so a larger fixture cannot
+        # silently truncate.
+        return client.reservation_snapshot(version, catalogue, page_size=max(len(hosts), 1))
 
 
 @contextmanager
