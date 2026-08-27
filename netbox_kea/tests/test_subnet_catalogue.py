@@ -22,7 +22,7 @@ from netbox_kea.subnet_catalogue import (
     mutation,
 )
 from netbox_kea.tests.kea_stub import _subnet_list, queued, stub_kea
-from netbox_kea.tests.utils import _PLUGINS_CONFIG, _drop_subnet_choices_cache, _make_db_server
+from netbox_kea.tests.utils import _PLUGINS_CONFIG, _make_db_server
 
 
 def _identity(version, subnets, *, result=0):
@@ -50,7 +50,6 @@ def _config(version, subnets, *, shared_networks=None, config_hash="hash-a", res
 class TestSubnetCatalogue(TestCase):
     def setUp(self):
         self.server = _make_db_server()
-        _drop_subnet_choices_cache(self, self.server)
 
     def test_display_reconciles_typed_configuration(self):
         identities = _identity(
