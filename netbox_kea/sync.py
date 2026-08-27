@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import importlib.util
 import logging
+from collections.abc import Iterable
 from dataclasses import dataclass
 from functools import cached_property
 from typing import TYPE_CHECKING
@@ -752,7 +753,31 @@ def sync_reservation_to_netbox(
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def cleanup_stale_ips_batch(synced_records: list[dict | Reservation]) -> int:
+def _record_hostname_and_addresses(record: dict | Reservation) -> tuple[str, set[str]]:
+    """Return one record's hostname and its address strings."""
+    if isinstance(record, dict):
+        addresses = {record["ip-address"]} if record.get("ip-address") else set()
+        addresses |= {address for address in record.get("ip-addresses", []) if address}
+        return record.get("hostname", ""), addresses
+    if isinstance(record, Reservation):
+        return record.hostname, {str(address) for address in record.addresses}
+    raise TypeError(f"cleanup_stale_ips_batch accepts a raw lease dict or a Reservation, not {type(record).__name__}")
+
+
+def _index_by_hostname(records: Iterable[dict | Reservation], index: dict[tuple[str, int], set[str]]) -> None:
+    """Add each record's addresses to *index* under (hostname, family)."""
+    for record in records:
+        hostname, addresses = _record_hostname_and_addresses(record)
+        if not hostname:
+            continue
+        for address in addresses:
+            index.setdefault((hostname, 6 if ":" in address else 4), set()).add(address)
+
+
+def cleanup_stale_ips_batch(
+    synced_records: list[dict | Reservation],
+    protected_records: Iterable[dict | Reservation] = (),
+) -> int:
     """Run stale-IP cleanup once per hostname using the full keep-set.
 
     When multiple records share a hostname (e.g., two leases assigned to the
@@ -764,6 +789,10 @@ def cleanup_stale_ips_batch(synced_records: list[dict | Reservation]) -> int:
     Args:
         synced_records: Typed Reservations or raw lease records synchronized in
             this batch.
+        protected_records: Records the caller deliberately did not synchronize,
+            for example a Global Reservation. Their addresses join the keep-set
+            but never trigger a cleanup of their own, so a hostname the batch
+            never touched cannot lose an IP.
 
     Returns the total number of stale IPs cleaned up across all hostnames.
 
@@ -772,35 +801,19 @@ def cleanup_stale_ips_batch(synced_records: list[dict | Reservation]) -> int:
     if mode == "none":
         return 0
 
-    # Build (hostname, family) → {IPs} mapping so each address family
-    # is cleaned independently (prevents wrong family filter).
+    # Build (hostname, family) → {IPs} mappings so each address family is cleaned
+    # independently (prevents wrong family filter). The keep-set is the wider of the
+    # two: a protected record must not become a cleanup target.
     hostname_ips: dict[tuple[str, int], set[str]] = {}
-    for record in synced_records:
-        if isinstance(record, dict):
-            hostname = record.get("hostname", "")
-            ips = set()
-            if "ip-address" in record and record["ip-address"]:
-                ips.add(record["ip-address"])
-            for addr in record.get("ip-addresses", []):
-                if addr:
-                    ips.add(addr)
-        elif isinstance(record, Reservation):
-            hostname = record.hostname
-            ips = {str(address) for address in record.addresses}
-        else:
-            raise TypeError(
-                f"cleanup_stale_ips_batch accepts a raw lease dict or a Reservation, not {type(record).__name__}"
-            )
-        if not hostname:
-            continue
-        for ip in ips:
-            family = 6 if ":" in ip else 4
-            hostname_ips.setdefault((hostname, family), set()).add(ip)
+    _index_by_hostname(synced_records, hostname_ips)
 
     # No cleanup candidates → skip the protected-ID lookup entirely. Computing it
     # here would trigger a full reservation-table scan for a no-op batch.
     if not hostname_ips:
         return 0
+
+    keep_ips: dict[tuple[str, int], set[str]] = {key: set(ips) for key, ips in hostname_ips.items()}
+    _index_by_hostname(protected_records, keep_ips)
 
     # Compute the DHCP-plugin protected-IP set once for the whole batch instead of
     # rescanning the reservation tables inside every per-hostname cleanup call.
@@ -809,13 +822,14 @@ def cleanup_stale_ips_batch(synced_records: list[dict | Reservation]) -> int:
     protected_ids = dhcp_plugin.sys4_referenced_ip_ids() if dhcp_plugin.is_available() else set()
 
     total_cleaned = 0
-    for (hostname, _family), all_ips in hostname_ips.items():
+    for key, all_ips in hostname_ips.items():
+        hostname, _family = key
         primary_ip = next(iter(all_ips))
         total_cleaned += _cleanup_stale_ips(
             primary_ip,
             hostname,
             mode=mode,
-            exclude_ips=frozenset(all_ips),
+            exclude_ips=frozenset(keep_ips[key]),
             protected_ids=protected_ids,
         )
 

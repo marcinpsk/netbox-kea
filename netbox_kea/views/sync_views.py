@@ -189,11 +189,15 @@ class _BaseBulkReservationSyncView(ConditionalLoginRequiredMixin, View):
 
         created = updated = errors = skipped = 0
         synced_records = []
+        # Skipped Reservations still own their addresses: a Global Reservation that
+        # shares a hostname with an In-Subnet one must not lose its IP to cleanup.
+        protected_records = []
         # Foreign (manually-curated) NetBox IPs skipped to avoid overwriting them.
         conflicts: list[str] = []
         for reservation in snapshot.records:
             if reservation.scope.kind == "global" or not reservation.addresses:
                 skipped += 1
+                protected_records.append(reservation)
                 continue
             try:
                 sync_result = sync_reservation_to_netbox(reservation, cleanup=False, conflicts=conflicts)
@@ -215,7 +219,7 @@ class _BaseBulkReservationSyncView(ConditionalLoginRequiredMixin, View):
         # Skip cleanup when errors occurred — the keep-set is incomplete.
         stale_cleaned = 0
         if snapshot.complete and not errors:
-            stale_cleaned = cleanup_stale_ips_batch(synced_records)
+            stale_cleaned = cleanup_stale_ips_batch(synced_records, protected_records)
 
         stale_msg = f", {stale_cleaned} stale cleaned" if stale_cleaned else ""
         conflict_msg = f", {conflicts_skipped} conflicts skipped" if conflicts_skipped else ""

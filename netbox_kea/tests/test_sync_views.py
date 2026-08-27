@@ -407,6 +407,36 @@ class TestReservation4BulkSyncView(_SyncViewBase):
         self.assertIsNotNone(ip)
         self.assertEqual(ip.status, "reserved")
 
+    def test_a_skipped_global_reservation_keeps_its_netbox_ip(self):
+        """The bulk sync skips a Global Reservation, but it still owns its address.
+
+        Sharing a hostname with an In-Subnet Reservation once put that address in the
+        stale set, so the sync deleted an IP no Kea record had released.
+        """
+        NbIP.objects.create(
+            address="10.0.13.2/32",
+            status="reserved",
+            dns_name="shared-bulk",
+            description="Synced from Kea DHCP reservation",
+        )
+        hosts = [
+            {
+                "ip-address": "10.0.13.1",
+                "hostname": "shared-bulk",
+                "subnet-id": 1,
+                "hw-address": "aa:bb:cc:00:13:01",
+            },
+            {"ip-address": "10.0.13.2", "hostname": "shared-bulk", "subnet-id": 0, "flex-id": "global-bulk"},
+        ]
+        with stub_kea({**_catalogue_responses(4, 1, "10.0.0.0/8"), "reservation-get-page": _res_page(hosts)}):
+            self.client.post(self._url())
+
+        self.assertTrue(NbIP.objects.filter(address__startswith="10.0.13.1/").exists())
+        self.assertTrue(
+            NbIP.objects.filter(address__startswith="10.0.13.2/").exists(),
+            "the skipped Global Reservation lost its address to stale-IP cleanup",
+        )
+
     def test_malformed_snapshot_fails_closed_with_a_message(self):
         malformed_page = {
             "result": 0,
