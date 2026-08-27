@@ -181,7 +181,7 @@ Reservation = IPv4Reservation | IPv6Reservation
 def reservation_record_data(reservation: Reservation, *, include_subnet_id: bool = True) -> dict[str, Any]:
     """Return the normalized public data for one Reservation."""
     if isinstance(reservation.scope, InSubnetReservationScope):
-        subnet = {"cidr": reservation.scope.subnet.cidr}
+        subnet: dict[str, Any] = {"cidr": reservation.scope.subnet.cidr}
         if include_subnet_id:
             subnet = {"id": reservation.scope.subnet.subnet_id, **subnet}
         scope: dict[str, Any] = {"type": "in-subnet", "subnet": subnet}
@@ -295,7 +295,15 @@ class ReservationSnapshot:
 
 #: Display label to stable machine key. Templates and Python branch on the key, so
 #: renaming a label can never silently change which branch a state matches.
-_SYNCHRONIZATION_STATE_CODES = {
+SynchronizationLabel = Literal[
+    "Not Applicable",
+    "Not Synchronized",
+    "Partially Synchronized",
+    "Synchronized",
+    "Unknown",
+]
+
+_SYNCHRONIZATION_STATE_CODES: dict[SynchronizationLabel, str] = {
     "Not Applicable": "not-applicable",
     "Not Synchronized": "not-synchronized",
     "Partially Synchronized": "partially-synchronized",
@@ -308,13 +316,7 @@ _SYNCHRONIZATION_STATE_CODES = {
 class ReservationSynchronizationState:
     """One aggregate synchronization state for all allocation addresses."""
 
-    label: Literal[
-        "Not Applicable",
-        "Not Synchronized",
-        "Partially Synchronized",
-        "Synchronized",
-        "Unknown",
-    ]
+    label: SynchronizationLabel
     synchronized: int
     total: int
     reason: str = ""
@@ -329,6 +331,7 @@ class ReservationSynchronizationState:
         """Build the exact aggregate state for known address counts."""
         if total < 1 or not 0 <= synchronized <= total:
             raise ValueError("Synchronization counts are invalid.")
+        label: SynchronizationLabel
         if synchronized == 0:
             label = "Not Synchronized"
         elif synchronized == total:
@@ -464,9 +467,19 @@ def apply_reservation_change(reservation: Reservation, change: ReservationChange
     prefixes = _change_value(change.delegated_prefixes, reservation.delegated_prefixes, ())
     hostname = _change_value(change.hostname, reservation.hostname, "")
     options = _change_value(change.options, reservation.options, ())
+    # One ReservationChange serves both families, so narrow before replace(). Each cast
+    # reaches __post_init__, which rejects a value the other family cannot hold.
+    if isinstance(reservation, IPv4Reservation):
+        return replace(
+            reservation,
+            addresses=cast("tuple[ipaddress.IPv4Address, ...]", addresses),
+            delegated_prefixes=cast("tuple[()]", prefixes),
+            hostname=hostname,
+            options=options,
+        )
     return replace(
         reservation,
-        addresses=addresses,
+        addresses=cast("tuple[ipaddress.IPv6Address, ...]", addresses),
         delegated_prefixes=prefixes,
         hostname=hostname,
         options=options,

@@ -1,6 +1,7 @@
 from dataclasses import replace
 from datetime import UTC, datetime
 from ipaddress import ip_address, ip_network
+from typing import get_args
 
 from django.test import SimpleTestCase
 
@@ -21,6 +22,8 @@ from netbox_kea.reservations import (
     ReservationSnapshot,
     ReservationSynchronizationState,
     SetValue,
+    SynchronizationLabel,
+    apply_reservation_change,
     reservation_fingerprint,
 )
 from netbox_kea.subnet_catalogue import (
@@ -1134,3 +1137,74 @@ class TestReservationCapabilities(SimpleTestCase):
             capabilities = client.reservation_capabilities(6)
 
         self.assertEqual(capabilities.identifiers, ("duid", "hw-address"))
+
+
+class TestApplyReservationChange(SimpleTestCase):
+    """One ReservationChange serves both families, so each apply must stay family-safe."""
+
+    def _v4(self, **overrides) -> IPv4Reservation:
+        defaults = {
+            "scope": InSubnetReservationScope(subnet=SubnetIdentity(subnet_id=20, network=ip_network("198.18.0.0/24"))),
+            "identity": ReservationIdentity("hw-address", "aa:bb:cc:dd:ee:ff"),
+            "addresses": (ip_address("198.18.0.10"),),
+            "hostname": "host-v4",
+        }
+        return IPv4Reservation(**{**defaults, **overrides})
+
+    def _v6(self, **overrides) -> IPv6Reservation:
+        defaults = {
+            "scope": InSubnetReservationScope(subnet=SubnetIdentity(subnet_id=30, network=ip_network("2001:db8::/64"))),
+            "identity": ReservationIdentity("duid", "00:01:02:03"),
+            "addresses": (ip_address("2001:db8::10"),),
+            "delegated_prefixes": (),
+            "hostname": "host-v6",
+        }
+        return IPv6Reservation(**{**defaults, **overrides})
+
+    def test_a_v4_address_change_keeps_the_v4_record(self):
+        applied = apply_reservation_change(
+            self._v4(), ReservationChange(addresses=SetValue((ip_address("198.18.0.11"),)))
+        )
+
+        self.assertIsInstance(applied, IPv4Reservation)
+        self.assertEqual(applied.addresses, (ip_address("198.18.0.11"),))
+        self.assertEqual(applied.delegated_prefixes, ())
+
+    def test_a_v6_change_lands_both_addresses_and_delegated_prefixes(self):
+        change = ReservationChange(
+            addresses=SetValue((ip_address("2001:db8::11"),)),
+            delegated_prefixes=SetValue((ip_network("2001:db8:1::/48"),)),
+        )
+
+        applied = apply_reservation_change(self._v6(), change)
+
+        self.assertIsInstance(applied, IPv6Reservation)
+        self.assertEqual(applied.addresses, (ip_address("2001:db8::11"),))
+        self.assertEqual(applied.delegated_prefixes, (ip_network("2001:db8:1::/48"),))
+
+    def test_a_delegated_prefix_on_a_v4_record_is_still_rejected(self):
+        """The narrowing casts must not swallow what __post_init__ rejects."""
+        change = ReservationChange(delegated_prefixes=SetValue((ip_network("2001:db8:1::/48"),)))
+
+        with self.assertRaisesRegex(ValueError, "does not support delegated prefixes"):
+            apply_reservation_change(self._v4(), change)
+
+    def test_a_v6_address_on_a_v4_record_is_still_rejected(self):
+        change = ReservationChange(addresses=SetValue((ip_address("2001:db8::10"),)))
+
+        with self.assertRaisesRegex(ValueError, "must use the Reservation family"):
+            apply_reservation_change(self._v4(), change)
+
+    def test_clearing_the_hostname_leaves_the_other_facts_alone(self):
+        applied = apply_reservation_change(self._v6(), ReservationChange(hostname=ClearValue()))
+
+        self.assertEqual(applied.hostname, "")
+        self.assertEqual(applied.addresses, (ip_address("2001:db8::10"),))
+
+
+class TestSynchronizationLabel(SimpleTestCase):
+    def test_every_label_carries_a_code(self):
+        """The label Literal and the code map are one fact; a label without a code raises."""
+        for label in get_args(SynchronizationLabel):
+            with self.subTest(label=label):
+                self.assertTrue(ReservationSynchronizationState(label=label, synchronized=0, total=0).code)

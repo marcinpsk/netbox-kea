@@ -1,8 +1,4 @@
 netbox_kea/tests/isolated_settings.py:0: error: Name "DATABASES" is not defined  [name-defined]
-netbox_kea/reservations.py:0: error: Dict entry 0 has incompatible type "str": "int"; expected "str": "str"  [dict-item]
-netbox_kea/reservations.py:0: error: Argument "label" to "ReservationSynchronizationState" has incompatible type "str"; expected "Literal['Not Applicable', 'Not Synchronized', 'Partially Synchronized', 'Synchronized', 'Unknown']"  [arg-type]
-netbox_kea/reservations.py:0: error: Argument "addresses" to "replace" of "IPv4Reservation | IPv6Reservation" has incompatible type "tuple[IPv4Address | IPv6Address, ...]"; expected "Never"  [arg-type]
-netbox_kea/reservations.py:0: error: Argument "delegated_prefixes" to "replace" of "IPv4Reservation | IPv6Reservation" has incompatible type "tuple[IPv6Network, ...]"; expected "tuple[()]"  [arg-type]
 netbox_kea/sync.py:0: error: "object" has no attribute "description"  [attr-defined]
 netbox_kea/sync.py:0: error: "object" has no attribute "description"  [attr-defined]
 netbox_kea/sync.py:0: error: "object" has no attribute "description"  [attr-defined]
