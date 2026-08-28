@@ -200,16 +200,26 @@ reservations:
         ):
             parse_reservation_document("[]", "json")
 
-    def test_reports_an_oversized_json_integer_as_a_transfer_error(self):
-        """`json.loads` raises a plain ValueError here, not JSONDecodeError.
+    def test_reports_a_plain_json_value_error_as_a_parse_error(self):
+        """`json.loads` can raise a bare ValueError, not only JSONDecodeError.
+
+        The real trigger is an integer literal past the interpreter's digit limit, which
+        is not portable: the limit arrived in 3.11, the floor here is 3.10, and it is
+        configurable through PYTHONINTMAXSTRDIGITS. The raised type is the contract, so
+        the test drives that directly, as the RecursionError case above does.
 
         The import view handles only ReservationTransferError, so the bare ValueError
-        left the view as an unhandled 500 instead of a form error.
+        left it an unhandled 500 instead of a form error.
         """
-        document = '{"version": ' + "9" * 5000 + "}"
 
-        with self.assertRaises(ReservationTransferError):
-            parse_reservation_document(document, "json")
+        def raise_value_error(*_args, **_kwargs):
+            raise ValueError("Exceeds the limit (4300 digits) for integer string conversion")
+
+        with (
+            patch("netbox_kea.reservation_transfer.json.loads", raise_value_error),
+            self.assertRaisesRegex(ReservationTransferError, "not valid syntax"),
+        ):
+            parse_reservation_document('{"version": 1}', "json")
 
     def test_rejects_invalid_document_envelopes(self):
         root = parse_reservation_document("[]", "json")
