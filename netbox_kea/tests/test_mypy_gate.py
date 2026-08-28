@@ -16,10 +16,16 @@ import re
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
 import pytest
+
+if sys.version_info >= (3, 11):
+    import tomllib
+else:  # mypy pulls tomli on 3.10, so the dev group always has a reader.
+    import tomli as tomllib
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 BASELINE = REPOSITORY_ROOT / "mypy-baseline.txt"
@@ -98,6 +104,17 @@ def _stub_package_installed(name: str) -> bool:
     return True
 
 
+def _dev_group_requirements(pyproject: Path) -> list[str]:
+    """Return the ``dependency-groups.dev`` requirement strings of *pyproject*."""
+    data = tomllib.loads(pyproject.read_text())
+    return data.get("dependency-groups", {}).get("dev", [])
+
+
+def _declares_package(requirements: list[str], package: str) -> bool:
+    """Report whether *requirements* pins *package*, ignoring its version specifier."""
+    return any(re.split(r"[<>=!~\[;\s]", requirement, maxsplit=1)[0] == package for requirement in requirements)
+
+
 @pytest.mark.parametrize("package", REQUIRED_STUB_PACKAGES)
 def test_the_dev_group_declares_the_stub_packages_the_gate_needs(package):
     """A dropped stub package silently turns that library's values back into Any.
@@ -105,8 +122,24 @@ def test_the_dev_group_declares_the_stub_packages_the_gate_needs(package):
     `ignore_missing_imports = true` means mypy reports nothing when a stub goes
     missing, so only this check would notice.
     """
-    dev_group = (REPOSITORY_ROOT / "pyproject.toml").read_text().split("[dependency-groups]", 1)[-1]
-    assert f'"{package}' in dev_group, f"{package} is no longer in the dev dependency group."
+    requirements = _dev_group_requirements(REPOSITORY_ROOT / "pyproject.toml")
+    assert requirements, "The dev dependency group is empty; this guard would read nothing."
+    assert _declares_package(requirements, package), f"{package} is no longer in the dev dependency group."
+
+
+def test_the_stub_package_check_reads_only_the_dev_group(tmp_path):
+    """A text scan of everything after ``[dependency-groups]`` also reads later tables.
+
+    A package named anywhere below that marker satisfied the assertion, so moving a
+    stub out of ``dev`` and mentioning it in any later table read as still declared.
+    """
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        '[dependency-groups]\ndev = ["pytest>=8.0.0"]\n\n[tool.example]\nnote = "types-netaddr lives elsewhere now"\n'
+    )
+
+    assert '"types-netaddr' in pyproject.read_text().split("[dependency-groups]", 1)[-1]
+    assert not _declares_package(_dev_group_requirements(pyproject), "types-netaddr")
 
 
 def test_a_netaddr_value_cannot_pass_as_a_stdlib_address(tmp_path):
