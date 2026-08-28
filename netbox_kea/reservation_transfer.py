@@ -128,7 +128,11 @@ def _load_document(document: str, format_name: str) -> Any:
             return json.loads(document)
         if format_name == "yaml":
             return yaml.load(document, Loader=_NoAliasLoader)  # noqa: S506  # _NoAliasLoader extends SafeLoader
-    except (json.JSONDecodeError, yaml.YAMLError, RecursionError) as exc:
+    except ReservationTransferError:
+        raise  # the alias guard already reports precisely; it is a ValueError subclass.
+    except (yaml.YAMLError, RecursionError, ValueError) as exc:
+        # json.loads raises a plain ValueError for an oversized integer literal, not
+        # JSONDecodeError, and the caller only handles ReservationTransferError.
         raise ReservationTransferError("The transfer document is not valid syntax for the selected format.") from exc
     raise ReservationTransferError("The transfer format must be YAML or JSON.")
 
