@@ -6,7 +6,7 @@ from typing import Any, Literal
 import requests
 from django.contrib import messages
 from django.core import signing
-from django.core.exceptions import BadRequest
+from django.core.exceptions import BadRequest, ValidationError
 from django.db import DatabaseError
 from django.http import Http404, HttpRequest, HttpResponse
 from django.shortcuts import redirect, render
@@ -235,7 +235,7 @@ def _confirmed_side_effects(
     elif sync_to_netbox and result.intended is not None and result.intended.addresses:
         try:
             sync_reservation_to_netbox(result.intended, cleanup=False, force=True)
-        except (DatabaseError, ValueError, requests.RequestException):
+        except (DatabaseError, ValidationError, ValueError, requests.RequestException):
             logger.exception("Could not synchronize a confirmed Reservation mutation to NetBox IPAM")
             messages.warning(request, "The Reservation changed, but NetBox IPAM synchronization failed.")
     if result.verification == "failed":
