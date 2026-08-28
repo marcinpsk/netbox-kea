@@ -587,28 +587,35 @@ def _expand(value: str, variables: dict[str, str]) -> str:
     return value
 
 
-def _empty_list_elements(source: str) -> list[str]:
-    """Return every comma-separated Compose value that keeps an empty element.
+def _empty_list_elements(source: str) -> tuple[list[str], set[str]]:
+    """Return empty-list offenders and the Compose keys that were examined.
 
     A list built as ``"${NAME:-},a,b"`` starts with a separator whenever NAME is unset.
     The variable must carry its own separator instead: ``"${NAME:+${NAME},}a,b"``.
     """
     offenders: list[str] = []
+    examined: set[str] = set()
     for number, line in enumerate(source.splitlines(), start=1):
-        key, separator, raw = line.strip().partition(": ")
+        stripped = line.strip()
+        if stripped.startswith("- "):
+            key, separator, raw = stripped[2:].partition("=")
+        else:
+            key, separator, raw = stripped.partition(": ")
         if not separator or "," not in raw or "${" not in raw:
             continue
+        examined.add(key)
         names = {match[0] for match in _INTERPOLATION.findall(raw)}
         unset = dict.fromkeys(names, "")
         given = dict.fromkeys(names, "set.example.invalid")
         if any("" in _expand(raw.strip('"'), setting).split(",") for setting in (unset, given)):
             offenders.append(f"{key} at line {number}")
-    return offenders
+    return offenders, examined
 
 
 def test_the_empty_list_element_guard_reads_both_environments():
     must_flag = (
         'NO_PROXY: "${NO_PROXY:-},localhost,nginx"',
+        "- NO_PROXY=${NO_PROXY:-},localhost,nginx",
         # The separator sits outside the expansion, so an unset variable still leaves it.
         'NO_PROXY: "${NO_PROXY:+${NO_PROXY}},localhost,nginx"',
         # Set but trailing: an empty last element.
@@ -616,19 +623,27 @@ def test_the_empty_list_element_guard_reads_both_environments():
     )
     must_not_flag = (
         'NO_PROXY: "${NO_PROXY:+${NO_PROXY},}localhost,nginx"',
+        "- NO_PROXY=${NO_PROXY:+${NO_PROXY},}localhost,nginx",
         'DB_NAME: "${DB_NAME:-netbox}"',
         "HOUSEKEEPING_INTERVAL: 86400",
     )
     for source in must_flag:
-        assert _empty_list_elements(source), f"the guard missed {source!r}"
+        offenders, examined = _empty_list_elements(source)
+        assert offenders, f"the guard missed {source!r}"
+        assert examined == {"NO_PROXY"}, f"the guard did not report the examined key for {source!r}"
     for source in must_not_flag:
-        assert not _empty_list_elements(source), f"the guard wrongly flagged {source!r}"
+        offenders, _examined = _empty_list_elements(source)
+        assert not offenders, f"the guard wrongly flagged {source!r}"
 
 
 def test_the_compose_stack_builds_no_empty_list_element():
     """An unset proxy variable must leave the list unchanged, not add a blank entry."""
     assert _COMPOSE_FILE.exists(), "The compose stack moved; this guard reads nothing."
-    offenders = _empty_list_elements(_COMPOSE_FILE.read_text())
+    offenders, examined = _empty_list_elements(_COMPOSE_FILE.read_text())
+    assert {"NO_PROXY", "no_proxy"} <= examined, (
+        f"{_COMPOSE_FILE.relative_to(REPOSITORY_ROOT)} did not expose both proxy list keys to the guard. "
+        f"Examined: {sorted(examined)}."
+    )
     assert not offenders, (
         f"{_COMPOSE_FILE.relative_to(REPOSITORY_ROOT)} keeps an empty list element at {offenders}. "
         "Move the separator inside the expansion: ${NAME:+${NAME},}."
