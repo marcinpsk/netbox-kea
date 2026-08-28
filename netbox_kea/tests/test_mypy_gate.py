@@ -24,7 +24,7 @@ import pytest
 
 if sys.version_info >= (3, 11):
     import tomllib
-else:  # mypy pulls tomli on 3.10, so the dev group always has a reader.
+else:  # Python 3.10 needs the dev group's explicit TOML reader.
     import tomli as tomllib
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
@@ -125,6 +125,13 @@ def test_the_dev_group_declares_the_stub_packages_the_gate_needs(package):
     requirements = _dev_group_requirements(REPOSITORY_ROOT / "pyproject.toml")
     assert requirements, "The dev dependency group is empty; this guard would read nothing."
     assert _declares_package(requirements, package), f"{package} is no longer in the dev dependency group."
+
+
+def test_the_dev_group_declares_the_python_310_toml_reader():
+    """Python 3.10 needs an explicit TOML reader to run this guard module."""
+    requirements = _dev_group_requirements(REPOSITORY_ROOT / "pyproject.toml")
+    assert requirements, "The dev dependency group is empty; this guard would read nothing."
+    assert _declares_package(requirements, "tomli"), "tomli is no longer in the dev dependency group."
 
 
 def test_the_stub_package_check_reads_only_the_dev_group(tmp_path):
@@ -235,6 +242,8 @@ def _fake_tools(*, mypy_stdout: str, mypy_status: int):
     fake.write_text(f"#!/usr/bin/env bash\ncat <<'REPORT'\n{mypy_stdout}\nREPORT\nexit {mypy_status}\n")
     fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
     environment = dict(os.environ)
+    environment.pop("MYPY_BIN", None)
+    environment.pop("MYPY_BASELINE_BIN", None)
     environment["PATH"] = f"{bin_dir}{os.pathsep}{environment['PATH']}"
     return environment
 
@@ -291,3 +300,18 @@ def test_a_baselined_error_passes_the_gate():
     result = _run_gate(_fake_tools(mypy_stdout=known, mypy_status=1))
 
     assert result.returncode == 0, f"the gate rejected a baselined error:\n{result.stdout}{result.stderr}"
+
+
+@requires_baseline_tool
+def test_the_path_stub_wins_over_an_exported_mypy_override(tmp_path, monkeypatch):
+    """The fake-tool environment must not inherit a caller's mypy override."""
+    override = tmp_path / "override-mypy"
+    override.write_text("#!/usr/bin/env bash\nexit 0\n")
+    override.chmod(override.stat().st_mode | stat.S_IEXEC)
+    monkeypatch.setenv("MYPY_BIN", str(override))
+    unknown = "netbox_kea/jobs.py:1: error: Stub-controlled gate finding  [arg-type]"
+
+    result = _run_gate(_fake_tools(mypy_stdout=unknown, mypy_status=1))
+
+    assert result.returncode != 0, f"the exported override bypassed the PATH stub:\n{result.stdout}{result.stderr}"
+    assert "Stub-controlled gate finding" in result.stdout, result.stdout
