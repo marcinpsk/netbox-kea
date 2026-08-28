@@ -416,6 +416,14 @@ class TestReservation4BulkSyncView(_SyncViewBase):
             dns_name="shared-bulk",
             description="Synced from Kea DHCP reservation",
         )
+        # No Kea record holds this address, so cleanup must remove it. Without it the
+        # two assertions below also pass when cleanup never runs.
+        NbIP.objects.create(
+            address="10.0.13.99/32",
+            status="reserved",
+            dns_name="shared-bulk",
+            description="Synced from Kea DHCP reservation",
+        )
         hosts = [
             {
                 "ip-address": "10.0.13.1",
@@ -432,6 +440,10 @@ class TestReservation4BulkSyncView(_SyncViewBase):
         self.assertTrue(
             NbIP.objects.filter(address__startswith="10.0.13.2/").exists(),
             "the skipped Global Reservation lost its address to stale-IP cleanup",
+        )
+        self.assertFalse(
+            NbIP.objects.filter(address__startswith="10.0.13.99/").exists(),
+            "stale-IP cleanup did not run, so the assertions above prove nothing",
         )
 
     def test_malformed_snapshot_fails_closed_with_a_message(self):
