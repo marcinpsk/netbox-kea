@@ -7,6 +7,7 @@ stack that ``tests/test_setup.sh`` starts. See AGENTS.md for how to start it.
 import ipaddress
 import re
 import subprocess
+import sys
 import warnings
 from urllib.parse import urlencode
 
@@ -991,11 +992,11 @@ class TestReservationCRUD:
         if hostname:
             page.locator("#id_hostname").fill(hostname)
 
-    def _ui_cleanup_reservation(self, page: Page, plugin_base: str, server_id: int) -> None:
+    def _ui_cleanup_reservation(self, page: Page, plugin_base: str, server_id: int, *, strict: bool) -> None:
         """Delete any Reservation row matching ``_TEST_MAC`` through the UI.
 
-        Safe to call twice, and also runs from ``finally``, so it reports a failure as a
-        warning instead of raising it over the assertion that failed the test.
+        Safe to call twice. Strict cleanup raises failures. Lenient cleanup warns so it
+        does not replace an exception that is already propagating from the test body.
         """
         try:
             stale_row = self._reservation_row(page, plugin_base, server_id)
@@ -1012,8 +1013,13 @@ class TestReservationCRUD:
                 "[ document.querySelectorAll('form[method=\"post\"]').length - 1 ].submit()",
             )
             if self._reservation_row(page, plugin_base, server_id).count():
-                warnings.warn(f"Test reservation {self._TEST_MAC} is still present after delete", stacklevel=2)
+                message = f"Test reservation {self._TEST_MAC} is still present after delete"
+                if strict:
+                    raise AssertionError(message)
+                warnings.warn(message, stacklevel=2)
         except Exception as exc:
+            if strict:
+                raise
             warnings.warn(f"Could not remove test reservation {self._TEST_MAC}: {exc}", stacklevel=2)
 
     def test_full_crud_lifecycle(
@@ -1029,7 +1035,7 @@ class TestReservationCRUD:
 
         # ---- 0. PRE-CLEAN — remove any leftover from a previous interrupted run ----
         # Match on the identifier: the address is only known once the add form is open.
-        self._ui_cleanup_reservation(page, plugin_base, server_id)
+        self._ui_cleanup_reservation(page, plugin_base, server_id, strict=True)
 
         try:
             # ---- 1. CREATE ----
@@ -1094,7 +1100,7 @@ class TestReservationCRUD:
             assert test_ip not in page.content(), f"Reservation {test_ip} still visible after delete"
         finally:
             # A reservation left in live Kea blocks the next run on the same identifier.
-            self._ui_cleanup_reservation(page, plugin_base, server_id)
+            self._ui_cleanup_reservation(page, plugin_base, server_id, strict=sys.exc_info()[0] is None)
 
     def test_add_reservation_form_loads(
         self,
@@ -1273,11 +1279,11 @@ class TestPoolManagement:
         _assert_no_http_errors(track_http_errors)
         expect(page.locator('form[method="post"]').last).to_be_visible()
 
-    def _kea4_cleanup_pool(self, kea_client, subnet_id: int, pool: str) -> None:
+    def _kea4_cleanup_pool(self, kea_client, subnet_id: int, pool: str, *, strict: bool) -> None:
         """Remove *pool* from *subnet_id* through Kea directly (safe to call twice).
 
-        Runs from ``finally``, so it reports a Kea failure as a warning instead of
-        raising it over the assertion that failed the test.
+        Strict cleanup raises failures. Lenient cleanup warns so it does not replace
+        an exception that is already propagating from the test body.
         """
         try:
             data = kea_client.command("subnet4-get", service=["dhcp4"], arguments={"id": subnet_id}, check=(0, 3))[0]
@@ -1291,6 +1297,8 @@ class TestPoolManagement:
                     check=(0, 3),
                 )
         except Exception as exc:
+            if strict:
+                raise
             warnings.warn(f"Could not remove test pool {pool} from subnet {subnet_id}: {exc}", stacklevel=2)
 
     def test_pool_add_and_delete_cycle(
@@ -1360,17 +1368,17 @@ class TestPoolManagement:
             assert test_pool not in page.content(), f"Test pool {test_pool} still visible after delete"
         finally:
             # Kea rejects a duplicate range, so a pool left behind fails every later run.
-            self._kea4_cleanup_pool(kea_client, subnet_id, test_pool)
+            self._kea4_cleanup_pool(kea_client, subnet_id, test_pool, strict=sys.exc_info()[0] is None)
 
 
 class TestSubnetManagement:
     """E2E tests for subnet add/delete against a live Kea server."""
 
-    def _kea4_cleanup_subnet(self, kea_client, cidr: str) -> None:
+    def _kea4_cleanup_subnet(self, kea_client, cidr: str, *, strict: bool) -> None:
         """Remove every Kea subnet whose CIDR matches *cidr* (direct API call).
 
-        Runs from ``finally``, so it reports a Kea failure as a warning instead of
-        raising it over the assertion that failed the test.
+        Strict cleanup raises failures. Lenient cleanup warns so it does not replace
+        an exception that is already propagating from the test body.
         """
         try:
             data = kea_client.command("subnet4-list", service=["dhcp4"], check=(0, 3))[0]
@@ -1378,6 +1386,8 @@ class TestSubnetManagement:
                 if s.get("subnet") == cidr:
                     kea_client.command("subnet4-del", service=["dhcp4"], arguments={"id": s["id"]}, check=(0, 3))
         except Exception as exc:
+            if strict:
+                raise
             warnings.warn(f"Could not remove test subnet {cidr}: {exc}", stacklevel=2)
 
     def test_subnet_add_form_loads(
@@ -1411,7 +1421,7 @@ class TestSubnetManagement:
         test_pool = "10.254.253.10-10.254.253.20"
 
         # ---- PRE-CLEANUP: remove any leftover test subnets via direct Kea API ----
-        self._kea4_cleanup_subnet(kea_client, test_subnet)
+        self._kea4_cleanup_subnet(kea_client, test_subnet, strict=True)
 
         try:
             # ---- ADD ----
@@ -1465,4 +1475,4 @@ class TestSubnetManagement:
         finally:
             # Unconditional: the helper matches by CIDR under check=(0, 3), so it is a no-op
             # once the UI delete succeeded, and no flag can be left stale by a failed wait.
-            self._kea4_cleanup_subnet(kea_client, test_subnet)
+            self._kea4_cleanup_subnet(kea_client, test_subnet, strict=sys.exc_info()[0] is None)
