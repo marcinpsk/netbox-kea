@@ -786,22 +786,23 @@ def test_the_container_log_helper_names_a_service_the_stack_runs():
 _SUBMIT_HELPERS = frozenset({"_submit_form_by_field", "_submit_and_wait_nav"})
 
 
-def _called_names(node: ast.FunctionDef) -> set[str]:
-    """Return every function or method name *node* calls."""
+def _called_names(body: list[ast.stmt]) -> set[str]:
+    """Return every function or method name called anywhere inside *body*."""
     names: set[str] = set()
-    for inner in ast.walk(node):
-        if not isinstance(inner, ast.Call):
-            continue
-        func = inner.func
-        name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
-        if isinstance(name, str):
-            names.add(name)
+    for statement in body:
+        for inner in ast.walk(statement):
+            if not isinstance(inner, ast.Call):
+                continue
+            func = inner.func
+            name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
+            if isinstance(name, str):
+                names.add(name)
     return names
 
 
-def _creates_live_kea_state(node: ast.FunctionDef) -> bool:
-    """Report whether a test navigates an add route and submits the form there."""
-    called = _called_names(node)
+def _creates_live_kea_state(body: list[ast.stmt]) -> bool:
+    """Report whether *body* navigates an add route and submits the form there."""
+    called = _called_names(body)
     return any(name.endswith("_add_url") for name in called) and bool(called & _SUBMIT_HELPERS)
 
 
@@ -809,15 +810,20 @@ def _cycle_tests_without_teardown(source: str) -> list[str]:
     """Return every test that creates live Kea state without tearing it down.
 
     Naming alone missed `test_full_crud_lifecycle`, which creates a Reservation and only
-    deleted it on the happy path, so the behavioural check is the wider of the two.
+    deleted it on the happy path. Requiring the creation calls inside the guarded ``try``
+    body is what makes the check real: a submit placed before the ``try`` is not covered
+    by its ``finally``, so a test that leaks would otherwise read as safe.
     """
     offenders: list[str] = []
     for node in ast.walk(ast.parse(source)):
         if not isinstance(node, ast.FunctionDef):
             continue
-        if not (node.name.endswith("_add_and_delete_cycle") or _creates_live_kea_state(node)):
-            continue
-        if not any(isinstance(inner, ast.Try) and inner.finalbody for inner in ast.walk(node)):
+        guarded = [inner for inner in ast.walk(node) if isinstance(inner, ast.Try) and inner.finalbody]
+        if _creates_live_kea_state(node.body):
+            if not any(_creates_live_kea_state(block.body) for block in guarded):
+                offenders.append(node.name)
+        elif node.name.endswith("_add_and_delete_cycle") and not guarded:
+            # Builds its Kea state through another route; the name is all there is to go on.
             offenders.append(node.name)
     return offenders
 
@@ -834,6 +840,28 @@ def test_every_live_kea_cycle_test_tears_its_object_down():
     )
     offenders = _cycle_tests_without_teardown(source)
     assert not offenders, f"{offenders} create live Kea state without a finally that removes it."
+
+
+#: A test whose submit runs before the ``try``, so its ``finally`` cannot undo it.
+_CREATION_BEFORE_TRY = """
+class TestLeak:
+    def test_thing_add_and_delete_cycle(self):
+        page.goto(self._reservation_add_url(base, 1))
+        self._submit_form_by_field(page, "id_x")
+        try:
+            assert True
+        finally:
+            self._cleanup()
+"""
+
+
+def test_the_teardown_guard_requires_creation_inside_the_try():
+    """A `finally` only undoes what the matching `try` body ran.
+
+    Accepting any `try`/`finally` in the function would pass a test that submits the
+    add form first and leaks the object on failure.
+    """
+    assert _cycle_tests_without_teardown(_CREATION_BEFORE_TRY) == ["test_thing_add_and_delete_cycle"]
 
 
 def _unguarded_finally_cleanups(source: str) -> list[str]:
