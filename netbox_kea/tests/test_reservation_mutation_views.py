@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import json
+from unittest.mock import patch
 from urllib.parse import urlencode
 
 import requests
@@ -261,6 +262,49 @@ class TestReservationMutationViews(_ViewTestBase):
         self.assertEqual(response.status_code, 302)
         self.assertEqual(kea.commands().count("reservation-add"), 1)
         self.assertFalse(IPAddress.objects.filter(address="198.18.0.20/24").exists())
+
+    def test_create_redirects_and_warns_when_ipam_validation_fails(self):
+        from django.contrib.messages import get_messages
+        from django.core.exceptions import ValidationError
+
+        def fail_sync(_reservation, *, cleanup, force):
+            raise ValidationError("IPAM validation failed")
+
+        responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
+        raw = {
+            "subnet-id": 20,
+            "hw-address": "aa:bb:cc:dd:ee:ff",
+            "ip-address": "198.18.0.20",
+        }
+        responses.update(
+            {
+                "subnet4-get": {"result": 3},
+                "reservation-add": {"result": 0},
+                "reservation-get": _res_get(raw),
+            }
+        )
+
+        with (
+            patch("netbox_kea.views.reservation_mutations.sync_reservation_to_netbox", new=fail_sync),
+            stub_kea(responses) as kea,
+        ):
+            response = self.client.post(
+                reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk]),
+                {
+                    "subnet_cidr": "198.18.0.0/24",
+                    "ip_address": "198.18.0.20",
+                    "identifier_type": "hw-address",
+                    "identifier": "aa:bb:cc:dd:ee:ff",
+                    "sync_to_netbox": "on",
+                },
+            )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(kea.commands().count("reservation-add"), 1)
+        self.assertIn(
+            "The Reservation changed, but NetBox IPAM synchronization failed.",
+            [str(message) for message in get_messages(response.wsgi_request)],
+        )
 
     def test_edit_rejects_a_stale_managed_fingerprint_without_an_update(self):
         responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
