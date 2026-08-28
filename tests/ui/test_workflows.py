@@ -7,6 +7,7 @@ stack that ``tests/test_setup.sh`` starts. See AGENTS.md for how to start it.
 import ipaddress
 import re
 import subprocess
+import warnings
 from urllib.parse import urlencode
 
 import pytest
@@ -1252,17 +1253,24 @@ class TestPoolManagement:
         expect(page.locator('form[method="post"]').last).to_be_visible()
 
     def _kea4_cleanup_pool(self, kea_client, subnet_id: int, pool: str) -> None:
-        """Remove *pool* from *subnet_id* through Kea directly (safe to call twice)."""
-        data = kea_client.command("subnet4-get", service=["dhcp4"], arguments={"id": subnet_id}, check=(0, 3))[0]
-        for subnet in (data.get("arguments") or {}).get("subnet4") or []:
-            if not any(entry.get("pool") == pool for entry in subnet.get("pools") or []):
-                continue
-            kea_client.command(
-                "subnet4-delta-del",
-                service=["dhcp4"],
-                arguments={"subnet4": [{"id": subnet_id, "subnet": subnet["subnet"], "pools": [{"pool": pool}]}]},
-                check=(0, 3),
-            )
+        """Remove *pool* from *subnet_id* through Kea directly (safe to call twice).
+
+        Runs from ``finally``, so it reports a Kea failure as a warning instead of
+        raising it over the assertion that failed the test.
+        """
+        try:
+            data = kea_client.command("subnet4-get", service=["dhcp4"], arguments={"id": subnet_id}, check=(0, 3))[0]
+            for subnet in (data.get("arguments") or {}).get("subnet4") or []:
+                if not any(entry.get("pool") == pool for entry in subnet.get("pools") or []):
+                    continue
+                kea_client.command(
+                    "subnet4-delta-del",
+                    service=["dhcp4"],
+                    arguments={"subnet4": [{"id": subnet_id, "subnet": subnet["subnet"], "pools": [{"pool": pool}]}]},
+                    check=(0, 3),
+                )
+        except Exception as exc:
+            warnings.warn(f"Could not remove test pool {pool} from subnet {subnet_id}: {exc}", stacklevel=2)
 
     def test_pool_add_and_delete_cycle(
         self,
@@ -1338,11 +1346,18 @@ class TestSubnetManagement:
     """E2E tests for subnet add/delete against a live Kea server."""
 
     def _kea4_cleanup_subnet(self, kea_client, cidr: str) -> None:
-        """Remove every Kea subnet whose CIDR matches *cidr* (direct API call)."""
-        data = kea_client.command("subnet4-list", service=["dhcp4"], check=(0, 3))[0]
-        for s in (data.get("arguments") or {}).get("subnets", []):
-            if s.get("subnet") == cidr:
-                kea_client.command("subnet4-del", service=["dhcp4"], arguments={"id": s["id"]}, check=(0, 3))
+        """Remove every Kea subnet whose CIDR matches *cidr* (direct API call).
+
+        Runs from ``finally``, so it reports a Kea failure as a warning instead of
+        raising it over the assertion that failed the test.
+        """
+        try:
+            data = kea_client.command("subnet4-list", service=["dhcp4"], check=(0, 3))[0]
+            for s in (data.get("arguments") or {}).get("subnets", []):
+                if s.get("subnet") == cidr:
+                    kea_client.command("subnet4-del", service=["dhcp4"], arguments={"id": s["id"]}, check=(0, 3))
+        except Exception as exc:
+            warnings.warn(f"Could not remove test subnet {cidr}: {exc}", stacklevel=2)
 
     def test_subnet_add_form_loads(
         self,

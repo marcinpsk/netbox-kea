@@ -803,6 +803,42 @@ def test_every_live_kea_cycle_test_tears_its_object_down():
     assert not offenders, f"{offenders} create live Kea state without a finally that removes it."
 
 
+def _unguarded_finally_cleanups(source: str) -> list[str]:
+    """Return every helper a ``finally`` block calls that can raise out of itself."""
+    tree = ast.parse(source)
+    helpers = {node.name: node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)}
+    offenders: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Try) or not node.finalbody:
+            continue
+        for statement in node.finalbody:
+            for inner in ast.walk(statement):
+                if not isinstance(inner, ast.Call):
+                    continue
+                func = inner.func
+                name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
+                if not isinstance(name, str):
+                    continue
+                helper = helpers.get(name)
+                if helper is None:
+                    continue
+                if not any(isinstance(x, ast.Try) and x.handlers for x in ast.walk(helper)):
+                    offenders.append(name)
+    return sorted(set(offenders))
+
+
+def test_every_finally_cleanup_reports_its_own_failure():
+    """An exception raised in ``finally`` replaces the assertion that failed the test.
+
+    These helpers talk to a live Kea daemon, so a teardown failure is exactly when the
+    real failure matters most. They must warn instead of raise.
+    """
+    source = (_BROWSER_SUITE / "test_workflows.py").read_text()
+    assert "finally:" in source, "The cycle tests no longer tear down; this guard would read nothing."
+    offenders = _unguarded_finally_cleanups(source)
+    assert not offenders, f"{offenders} run from finally and can replace the test's own failure."
+
+
 #: Every external tool the integration setup script calls. Stubbed so the script can run
 #: in a test without a network, a Docker daemon, or a real Kea release tarball.
 _SETUP_SCRIPT_TOOLS = ("openssl", "curl", "sha256sum", "tar", "docker")
