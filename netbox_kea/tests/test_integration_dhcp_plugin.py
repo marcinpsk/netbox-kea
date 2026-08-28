@@ -940,7 +940,8 @@ class DhcpPluginReservationSnapshotImportTest(TestCase):
 
         self.assertEqual(HostReservation.objects.count(), 0)
         self.assertEqual(first.reservations_created, 0)
-        self.assertTrue(first.reservations_unread)
+        self.assertFalse(first.reservations_unread)
+        self.assertEqual(first.reservations_skipped, 1)
         self.assertTrue(
             any("hardware address could not be resolved" in warning for warning in second.warnings),
             second.warnings,
@@ -1000,25 +1001,31 @@ class DhcpPluginStaleCleanupGuardTest(TestCase):
 
 
 class ImportSummaryCompletenessTest(SimpleTestCase):
-    """``reservations_unread`` must follow the Snapshot's own completeness flag.
+    """Reservation import counts must distinguish traversal and record failures.
 
-    Needs no ``netbox_dhcp`` model: an incomplete Snapshot with no records never
+    Needs no ``netbox_dhcp`` model: a Snapshot with no records never
     reaches the per-record upsert, so this runs in the ordinary unit-test job.
     """
 
-    def _snapshot(self, *, complete):
+    def _snapshot(self, *, diagnostic_code: str | None = None):
         diagnostics = (
             ()
-            if complete
+            if diagnostic_code is None
             else (
                 ReservationDiagnostic(
-                    code="page-fetch-failed",
-                    message="Reservation page traversal did not complete.",
-                    source_position="pages[1]",
+                    code=diagnostic_code,
+                    message="Reservation Snapshot diagnostic.",
+                    source_position="records[1]",
                 ),
             )
         )
-        return ReservationSnapshot(family=4, records=(), diagnostics=diagnostics, complete=complete, next_cursor=None)
+        return ReservationSnapshot(
+            family=4,
+            records=(),
+            diagnostics=diagnostics,
+            complete=not diagnostics,
+            next_cursor=None,
+        )
 
     def _import(self, snapshot):
         from netbox_kea.integrations.dhcp_plugin import ImportSummary, import_reservation_snapshot
@@ -1032,16 +1039,22 @@ class ImportSummaryCompletenessTest(SimpleTestCase):
 
         self.assertTrue(summary.reservations_unread)
 
-    def test_incomplete_snapshot_reports_the_counts_as_unread(self):
+    def test_truncated_snapshot_reports_counts_as_unread_without_quarantine(self):
         # A truncated traversal imports only part of the record set, so the counts
         # are no more complete than for a Snapshot that could not be read at all.
-        summary = self._import(self._snapshot(complete=False))
+        summary = self._import(self._snapshot(diagnostic_code="page-fetch-failed"))
 
         self.assertTrue(summary.reservations_unread)
+        self.assertEqual(summary.reservations_quarantined, 0)
+
+    def test_record_quarantine_keeps_counts_read_and_counts_the_malformed_record(self):
+        summary = self._import(self._snapshot(diagnostic_code="invalid-identifier"))
+
+        self.assertFalse(summary.reservations_unread)
         self.assertEqual(summary.reservations_quarantined, 1)
 
     def test_complete_snapshot_reports_the_counts_as_read(self):
-        summary = self._import(self._snapshot(complete=True))
+        summary = self._import(self._snapshot())
 
         self.assertFalse(summary.reservations_unread)
         self.assertEqual(summary.reservations_quarantined, 0)
@@ -1049,7 +1062,7 @@ class ImportSummaryCompletenessTest(SimpleTestCase):
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class SkippedReservationCompletenessTest(TestCase):
-    """A record the importer drops must leave the counts marked incomplete.
+    """A record the importer drops must be counted as skipped.
 
     Needs the real ``KeaDhcpLink`` table to resolve the Subnet, but never reaches the
     per-record upsert, so it runs without ``netbox_dhcp`` installed.
@@ -1058,8 +1071,9 @@ class SkippedReservationCompletenessTest(TestCase):
     def setUp(self):
         self.server = _make_db_server()
 
-    def test_record_for_an_unlinked_subnet_id_reports_the_counts_as_unread(self):
+    def test_record_for_an_unlinked_subnet_id_reports_the_record_as_skipped(self):
         from netbox_kea.integrations.dhcp_plugin import ImportSummary, import_reservation_snapshot
+        from netbox_kea.views.dhcp_plugin_sync import _summary_problems
 
         conf = {"subnet4": [{"id": 7, "subnet": "198.18.7.0/24"}]}
         hosts = [{"subnet-id": 7, "hw-address": "aa:bb:cc:00:00:07", "ip-address": "198.18.7.10"}]
@@ -1071,5 +1085,7 @@ class SkippedReservationCompletenessTest(TestCase):
 
         self.assertTrue(snapshot.complete)
         self.assertEqual(summary.reservations_created, 0)
-        self.assertTrue(summary.reservations_unread)
+        self.assertFalse(summary.reservations_unread)
+        self.assertEqual(summary.reservations_skipped, 1)
         self.assertIn("reservation for unknown subnet-id 7 skipped", summary.warnings)
+        self.assertNotIn("host_cmds", " ".join(_summary_problems(summary)))

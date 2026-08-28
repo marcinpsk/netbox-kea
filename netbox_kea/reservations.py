@@ -280,6 +280,11 @@ class ReservationDiagnostic:
     source_position: str
 
 
+RESERVATION_PAGE_FETCH_FAILED = "page-fetch-failed"
+RESERVATION_PAGINATION_STALLED = "pagination-stalled"
+TRAVERSAL_DIAGNOSTIC_CODES: frozenset[str] = frozenset({RESERVATION_PAGE_FETCH_FAILED, RESERVATION_PAGINATION_STALLED})
+
+
 @dataclass(frozen=True)
 class ReservationSnapshot:
     """One bounded observation that preserves valid Reservations and diagnostics."""
@@ -289,6 +294,11 @@ class ReservationSnapshot:
     diagnostics: tuple[ReservationDiagnostic, ...]
     complete: bool
     next_cursor: str | None
+
+    @property
+    def traversal_truncated(self) -> bool:
+        """Report whether Reservation page traversal stopped early."""
+        return any(diagnostic.code in TRAVERSAL_DIAGNOSTIC_CODES for diagnostic in self.diagnostics)
 
 
 #: Display label to stable machine key. Templates and Python branch on the key, so

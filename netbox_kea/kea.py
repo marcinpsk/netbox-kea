@@ -12,6 +12,8 @@ from requests.models import HTTPBasicAuth
 from . import constants
 from .dhcp_options import DHCPOption
 from .reservations import (
+    RESERVATION_PAGE_FETCH_FAILED,
+    RESERVATION_PAGINATION_STALLED,
     Family,
     GlobalReservationScope,
     IdentifierType,
@@ -761,7 +763,7 @@ class KeaClient:
                     raise
                 diagnostics.append(
                     ReservationDiagnostic(
-                        code="page-fetch-failed",
+                        code=RESERVATION_PAGE_FETCH_FAILED,
                         message="Reservation page traversal did not complete.",
                         source_position=f"pages[{pages_fetched}]",
                     )
@@ -775,7 +777,7 @@ class KeaClient:
             if page.next_cursor == cursor or page.next_cursor in seen_cursors:
                 diagnostics.append(
                     ReservationDiagnostic(
-                        code="pagination-stalled",
+                        code=RESERVATION_PAGINATION_STALLED,
                         message="Reservation page traversal did not complete because its cursor did not advance.",
                         source_position=f"pages[{pages_fetched - 1}].next",
                     )
