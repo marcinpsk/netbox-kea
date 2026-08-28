@@ -181,14 +181,18 @@ def _optional_dhcp_option(raw) -> DHCPOption | None:
     try:
         return parse_dhcp_option(raw)
     except ValueError:
-        # The importer reports nothing for a dropped entry, so leave the only record of it.
-        logger.debug("Discarded an invalid option-data entry: %r", raw, exc_info=True)
+        # The importer has no summary, so log each dropped config entry.
+        logger.warning("Discarded an invalid option-data entry: %r", raw, exc_info=True)
         return None
 
 
 def _options(raw_list) -> tuple[DHCPOption, ...]:
     """Normalize an ``option-data`` list, dropping invalid entries."""
+    if raw_list is None:
+        return ()
     if not isinstance(raw_list, list):
+        # A present non-list collection dropped every option, so leave a record of it.
+        logger.warning("Discarded a non-list option-data collection: %r", raw_list)
         return ()
     options = (_optional_dhcp_option(raw) for raw in raw_list)
     return tuple(option for option in options if option is not None)
