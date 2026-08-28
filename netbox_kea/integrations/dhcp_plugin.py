@@ -56,7 +56,13 @@ from ..mappers.kea_to_dhcp import (
     ServerConfigIntent,
     SubnetIntent,
 )
-from ..reservations import GlobalReservationScope, InSubnetReservationScope, Reservation, ReservationSnapshot
+from ..reservations import (
+    TRAVERSAL_DIAGNOSTIC_CODES,
+    GlobalReservationScope,
+    InSubnetReservationScope,
+    Reservation,
+    ReservationSnapshot,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +84,7 @@ class ImportSummary:
     reservations_created: int = 0
     reservations_updated: int = 0
     reservations_quarantined: int = 0
+    reservations_skipped: int = 0
     options_created: int = 0
     options_updated: int = 0
     options_skipped: int = 0
@@ -86,8 +93,7 @@ class ImportSummary:
     client_classes_updated: int = 0
     shared_networks_deferred: int = 0
     foreign_addresses_skipped: int = 0
-    # True when the DB-backed host reservations could not be read (e.g. host_cmds
-    # hook not loaded), so the reservation counts above may be incomplete.
+    # True when the Reservation Snapshot traversal could not read every record.
     reservations_unread: bool = False
     errors: int = 0
     warnings: list[str] = field(default_factory=list)
@@ -803,7 +809,7 @@ def _upsert_reservation(reservation, subnet_obj, server, dhcp_server, custom_def
         if reservation.identity.identifier_type == "hw-address" and mac_obj is None:
             # Importing it would write a row with no identifier, which matches nothing
             # on the next run and duplicates instead.
-            summary.reservations_unread = True
+            summary.reservations_skipped += 1
             summary.warn(
                 f"reservation {reservation.identity.value} in {scope}: the hardware address "
                 "could not be resolved, skipped"
@@ -863,11 +869,11 @@ def import_reservation_snapshot(
     if snapshot is None:
         summary.reservations_unread = True
         return
-    if not snapshot.complete:
-        # A truncated traversal (page-fetch-failed, pagination-stalled) imports only
-        # part of the record set, so the counts below are not a full picture either.
+    if snapshot.traversal_truncated:
         summary.reservations_unread = True
-    summary.reservations_quarantined += len(snapshot.diagnostics)
+    summary.reservations_quarantined += sum(
+        diagnostic.code not in TRAVERSAL_DIAGNOSTIC_CODES for diagnostic in snapshot.diagnostics
+    )
     for diagnostic in snapshot.diagnostics:
         summary.warn(f"reservation {diagnostic.source_position}: {diagnostic.message}")
     for reservation in snapshot.records:
@@ -875,14 +881,13 @@ def import_reservation_snapshot(
             subnet_id = reservation.scope.subnet.subnet_id
             subnet_obj = _linked_subnet(server, reservation.family, subnet_id)
             if subnet_obj is None:
-                # A skipped record leaves the counts below short of the record set.
-                summary.reservations_unread = True
+                summary.reservations_skipped += 1
                 summary.warn(f"reservation for unknown subnet-id {subnet_id} skipped")
                 continue
         elif isinstance(reservation.scope, GlobalReservationScope):
             subnet_obj = None
         else:
-            summary.reservations_unread = True
+            summary.reservations_skipped += 1
             summary.warn("reservation has an unsupported scope and was skipped")
             continue
         _upsert_reservation(reservation, subnet_obj, server, dhcp_server, custom_defs, summary)

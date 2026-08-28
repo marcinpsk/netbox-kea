@@ -113,6 +113,8 @@ def _summary_problems(summary) -> list[str]:
         )
     if summary.reservations_quarantined:
         problems.append(f"{summary.reservations_quarantined} malformed reservation(s) were quarantined.")
+    if summary.reservations_skipped:
+        problems.append(f"{summary.reservations_skipped} reservation(s) were skipped after they were read.")
     if summary.foreign_addresses_skipped:
         problems.append(
             f"{summary.foreign_addresses_skipped} manually curated NetBox IP(s) were left unchanged. "

@@ -339,13 +339,14 @@ class SummaryProblemsTest(SimpleTestCase):
     def _summary(self, **counts):
         from netbox_kea.integrations.dhcp_plugin import ImportSummary
 
-        summary = ImportSummary()
-        for name, value in counts.items():
-            setattr(summary, name, value)
-        return summary
+        return ImportSummary(**counts)
 
     def test_no_problems_yields_no_notes(self):
         self.assertEqual(dps._summary_problems(self._summary()), [])
+
+    def test_unknown_summary_field_is_rejected(self):
+        with self.assertRaises(TypeError):
+            self._summary(not_a_field=1)
 
     def test_every_non_zero_count_is_reported_together(self):
         problems = dps._summary_problems(self._summary(reservations_unread=True, reservations_quarantined=2, errors=3))
@@ -373,3 +374,10 @@ class SummaryProblemsTest(SimpleTestCase):
 
         self.assertEqual(len(problems), 1)
         self.assertIn("3 manually curated NetBox IP(s) were left unchanged.", problems[0])
+
+    def test_skipped_reservations_do_not_report_a_host_cmds_problem(self):
+        problems = dps._summary_problems(self._summary(reservations_skipped=1))
+
+        self.assertEqual(len(problems), 1)
+        self.assertIn("1 reservation(s) were skipped after they were read.", problems[0])
+        self.assertNotIn("host_cmds", problems[0])
