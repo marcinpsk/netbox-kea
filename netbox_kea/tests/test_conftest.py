@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from django.test import SimpleTestCase, override_settings
+from django.test import SimpleTestCase, TestCase, override_settings
 
 from netbox_kea.tests.conftest import _prepopulate_url_resolver, _test_database_name
 
@@ -98,11 +98,9 @@ class TestPluginCacheHygiene(SimpleTestCase):
             _drop_plugin_cache_entries()
 
 
-class TestPluginCacheHygieneReachesDjangoTestCases(SimpleTestCase):
-    """The autouse fixture must reach unittest-style classes, not only pytest functions.
+class TestPluginCacheHygieneReachesDjangoTestCases(TestCase):
+    """Django ``TestCase`` is the base every view test uses.
 
-    Every view test is a Django ``TestCase``. If the fixture did not apply there, each
-    base would have to clear the cache itself, which is the leak that keeps coming back.
     ``setUpClass`` runs before the function-scoped fixture, so the planted entry proves
     the cleanup ran for this class rather than for some earlier test.
     """
