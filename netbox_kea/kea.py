@@ -13,6 +13,7 @@ from . import constants
 from .dhcp_options import DHCPOption
 from .reservations import (
     RESERVATION_PAGE_FETCH_FAILED,
+    RESERVATION_PAGE_LIMIT_REACHED,
     RESERVATION_PAGINATION_STALLED,
     Family,
     GlobalReservationScope,
@@ -46,6 +47,10 @@ _MANAGED_OPTION_KEYS = frozenset({"code", "name", "space", "data", "csv-format",
 # One exhausted host backend can legitimately answer with an empty page before the
 # cursor moves to the next source index, so allow a few before giving up.
 _MAX_EMPTY_RESERVATION_PAGES = 8
+
+# A backend that answers every cursor with a full page and a fresh cursor would grow the
+# record list without end, so bound the whole traversal and report why it stopped.
+_MAX_RESERVATION_SNAPSHOT_PAGES = 10_000
 
 
 def _encode_reservation_cursor(source_index: int, from_index: int) -> str | None:
@@ -591,7 +596,10 @@ class KeaClient:
             if len(page) > remaining:
                 raise RuntimeError("reservation-get-page exceeded the requested page limit.")
             hosts.extend(page)
-            if not page:
+            if page:
+                # An empty page between real ones is a source transition, not a stall.
+                empty_pages = 0
+            else:
                 # Only a non-empty page moves this loop towards its limit. A backend that
                 # keeps advancing the cursor over empty pages would never end it.
                 empty_pages += 1
@@ -779,6 +787,15 @@ class KeaClient:
                     ReservationDiagnostic(
                         code=RESERVATION_PAGINATION_STALLED,
                         message="Reservation page traversal did not complete because its cursor did not advance.",
+                        source_position=f"pages[{pages_fetched - 1}].next",
+                    )
+                )
+                break
+            if pages_fetched >= _MAX_RESERVATION_SNAPSHOT_PAGES:
+                diagnostics.append(
+                    ReservationDiagnostic(
+                        code=RESERVATION_PAGE_LIMIT_REACHED,
+                        message="Reservation page traversal did not complete because it reached its page limit.",
                         source_position=f"pages[{pages_fetched - 1}].next",
                     )
                 )
