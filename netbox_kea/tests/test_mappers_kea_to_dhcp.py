@@ -135,11 +135,36 @@ class TestParseDhcpConfigOptions(SimpleTestCase):
             ]
         }
 
-        with self.assertLogs("netbox_kea.mappers.kea_to_dhcp", level="DEBUG") as logs:
+        with self.assertLogs("netbox_kea.mappers.kea_to_dhcp", level="WARNING") as logs:
             options = parse_dhcp_config(conf, 4).subnets[0].options
 
         self.assertEqual([option.code for option in options], [3])
         self.assertIn("Discarded an invalid option-data entry", "\n".join(logs.output))
+
+    def test_non_list_option_collection_is_logged_and_dropped(self):
+        conf = {
+            "subnet4": [
+                {
+                    "id": 1,
+                    "subnet": "198.18.0.0/24",
+                    "option-data": {"code": 3, "data": "198.18.0.1", "space": "dhcp4"},
+                }
+            ]
+        }
+
+        with self.assertLogs("netbox_kea.mappers.kea_to_dhcp", level="WARNING") as logs:
+            options = parse_dhcp_config(conf, 4).subnets[0].options
+
+        self.assertEqual(options, ())
+        self.assertIn("Discarded a non-list option-data collection", "\n".join(logs.output))
+
+    def test_absent_option_collection_is_not_logged(self):
+        conf = {"subnet4": [{"id": 1, "subnet": "198.18.0.0/24"}]}
+
+        with self.assertNoLogs("netbox_kea.mappers.kea_to_dhcp", level="WARNING"):
+            options = parse_dhcp_config(conf, 4).subnets[0].options
+
+        self.assertEqual(options, ())
 
     def test_option_match_key_falls_back_to_name_without_code(self):
         conf = {
