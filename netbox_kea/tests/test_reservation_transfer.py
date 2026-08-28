@@ -200,6 +200,17 @@ reservations:
         ):
             parse_reservation_document("[]", "json")
 
+    def test_reports_an_oversized_json_integer_as_a_transfer_error(self):
+        """`json.loads` raises a plain ValueError here, not JSONDecodeError.
+
+        The import view handles only ReservationTransferError, so the bare ValueError
+        left the view as an unhandled 500 instead of a form error.
+        """
+        document = '{"version": ' + "9" * 5000 + "}"
+
+        with self.assertRaises(ReservationTransferError):
+            parse_reservation_document(document, "json")
+
     def test_rejects_invalid_document_envelopes(self):
         root = parse_reservation_document("[]", "json")
         self.assertEqual(root.diagnostics[0].code, "invalid-document")
