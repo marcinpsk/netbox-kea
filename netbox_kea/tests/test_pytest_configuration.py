@@ -891,10 +891,10 @@ def _unguarded_finally_cleanups(source: str) -> list[str]:
 
 
 def test_every_finally_cleanup_reports_its_own_failure():
-    """An exception raised in ``finally`` replaces the assertion that failed the test.
+    """Require each ``finally`` cleanup helper to handle its own failures.
 
-    These helpers talk to a live Kea daemon, so a teardown failure is exactly when the
-    real failure matters most. They must warn instead of raise.
+    This structural check is a floor. The behavioural tests below cover when cleanup
+    failures must raise and when they must warn.
     """
     source = (_BROWSER_SUITE / "test_workflows.py").read_text()
     assert "finally:" in source, "The cycle tests no longer tear down; this guard would read nothing."
@@ -951,7 +951,7 @@ class _FakeReservationPage:
         return _FakeRowLocator(0 if (self.submitted and self.delete_succeeds) else 1)
 
 
-def _run_reservation_cleanup(delete_succeeds: bool) -> list[str]:
+def _run_reservation_cleanup(delete_succeeds: bool, *, strict: bool) -> list[str]:
     """Run the real cleanup helper against a fake page and return its warnings."""
     pytest.importorskip("playwright", reason="pytest-playwright is a dev dependency")
     spec = importlib.util.spec_from_file_location("_kea_browser_suite", _BROWSER_SUITE / "test_workflows.py")
@@ -962,22 +962,32 @@ def _run_reservation_cleanup(delete_succeeds: bool) -> list[str]:
     page = _FakeReservationPage(delete_succeeds)
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        module.TestReservationCRUD()._ui_cleanup_reservation(page, "/plugins/netbox_kea", 1)
+        module.TestReservationCRUD()._ui_cleanup_reservation(page, "/plugins/netbox_kea", 1, strict=strict)
     assert page.submitted, "The helper never submitted the delete; this guard would prove nothing."
     return [str(entry.message) for entry in caught]
 
 
-def test_the_reservation_cleanup_reports_a_delete_the_server_refused():
+def test_strict_reservation_cleanup_raises_when_the_server_refuses_delete():
     """The delete view answers a refused delete with a redirect, not an error status.
 
     It catches the Kea failure, flashes a message and still redirects, so the submit
     alone cannot tell removal from refusal. Without the re-query the helper stays silent
     and the identifier survives in the shared daemon, blocking the next run.
     """
-    assert _run_reservation_cleanup(delete_succeeds=True) == []
-    assert _run_reservation_cleanup(delete_succeeds=False), (
+    with pytest.raises(AssertionError, match="still present after delete"):
+        _run_reservation_cleanup(delete_succeeds=False, strict=True)
+
+
+def test_the_reservation_cleanup_reports_a_delete_the_server_refused():
+    """Lenient cleanup reports a refused delete without replacing an earlier failure."""
+    assert _run_reservation_cleanup(delete_succeeds=False, strict=False), (
         "A Reservation that survived the delete produced no warning."
     )
+
+
+def test_strict_reservation_cleanup_accepts_a_successful_delete():
+    """Strict cleanup does not report a Reservation that the server removed."""
+    assert _run_reservation_cleanup(delete_succeeds=True, strict=True) == []
 
 
 #: Every external tool the integration setup script calls. Stubbed so the script can run
