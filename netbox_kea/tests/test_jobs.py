@@ -1703,7 +1703,7 @@ class TestSyncServerReservationsReturnValue(TestCase):
         all_synced = []
         snapshot = _incomplete_reservation_snapshot([_RESV4], 4)
 
-        ok = _sync_server_reservations(self._server(), snapshot, stats=stats, all_synced=all_synced)
+        ok = _sync_server_reservations(self._server(), snapshot, stats=stats, all_synced=all_synced, protected=[])
 
         self.assertFalse(snapshot.complete)
         self.assertFalse(ok)
