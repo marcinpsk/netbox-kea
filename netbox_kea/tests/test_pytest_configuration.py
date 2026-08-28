@@ -1297,6 +1297,23 @@ async def test_cycle():
     assert _unguarded_finally_cleanups(source) == ["cleanup"]
 
 
+def test_the_browser_suite_mirrors_the_kea_sync_description_prefix():
+    """The browser cleanup deletes by this prefix, so a drift would widen what it removes.
+
+    ``tests/ui`` cannot import the package, so the literal is duplicated there. This is
+    the check that keeps the copy honest.
+    """
+    from netbox_kea.sync import _KEA_DESC_PREFIX
+
+    source = (_BROWSER_SUITE / "test_workflows.py").read_text()
+    match = re.search(r'^_KEA_SYNC_DESCRIPTION_PREFIX = "([^"]*)"$', source, re.MULTILINE)
+    assert match, "The browser suite no longer defines _KEA_SYNC_DESCRIPTION_PREFIX."
+    assert match.group(1) == _KEA_DESC_PREFIX, (
+        f"The browser suite mirrors {match.group(1)!r} but netbox_kea/sync.py writes "
+        f"{_KEA_DESC_PREFIX!r}. Its NetBox cleanup would match the wrong rows."
+    )
+
+
 class _FakeRowLocator:
     """The subset of the Playwright Locator API the reservation cleanup helper uses."""
 

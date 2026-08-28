@@ -15,6 +15,10 @@ import pytest
 import requests
 from playwright.sync_api import Locator, Page, expect
 
+#: Mirrors ``_KEA_DESC_PREFIX`` in netbox_kea/sync.py. This suite cannot import the
+#: package (it needs Django), so a guard in the unit suite keeps the two in step.
+_KEA_SYNC_DESCRIPTION_PREFIX = "Synced from Kea DHCP"
+
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
@@ -958,10 +962,22 @@ class TestReservationCRUD:
 
     @staticmethod
     def _delete_netbox_ip(nb_http: requests.Session, netbox_url: str, address: str) -> None:
-        """Remove the NetBox IP this test synchronized, so the next run starts unsynchronized."""
-        found = nb_http.get(f"{netbox_url}/api/ipam/ip-addresses/", params={"q": address}, timeout=5)
+        """Remove the NetBox IP this test synchronized, so the next run starts unsynchronized.
+
+        This runs against a live NetBox, so it must delete only what the test created.
+        """
+        found = nb_http.get(
+            f"{netbox_url}/api/ipam/ip-addresses/",
+            # `q` is a substring search over address, description and dns_name, so it can
+            # return rows this test never created. Match the exact address instead.
+            params={"address": address, "description__isw": _KEA_SYNC_DESCRIPTION_PREFIX},
+            timeout=5,
+        )
         found.raise_for_status()
         for entry in found.json().get("results", []):
+            if not str(entry.get("description", "")).startswith(_KEA_SYNC_DESCRIPTION_PREFIX):
+                warnings.warn(f"Left NetBox IP {entry.get('address')!r}: it is not a Kea-synced row", stacklevel=2)
+                continue
             nb_http.delete(f"{netbox_url}/api/ipam/ip-addresses/{entry['id']}/", timeout=5).raise_for_status()
 
     def test_full_crud_lifecycle(
