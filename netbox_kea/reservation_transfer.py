@@ -160,7 +160,8 @@ def _report_unknown_fields(
 
 
 def _parse_family(value: Any, position: str, diagnostics: list[ReservationTransferDiagnostic]) -> Family | None:
-    if isinstance(value, bool) or value not in (4, 6):
+    # bool is an int subclass and 4.0 == 4, so equality alone accepts both.
+    if not isinstance(value, int) or isinstance(value, bool) or value not in (4, 6):
         diagnostics.append(_diagnostic("invalid-family", "Family must be 4 or 6.", position))
         return None
     return cast(Family, value)
@@ -431,7 +432,7 @@ def parse_reservation_document(
         )
     _report_unknown_fields(raw, _DOCUMENT_FIELDS, "", diagnostics)
     version = raw.get("version")
-    if isinstance(version, bool) or version != 1:
+    if not isinstance(version, int) or isinstance(version, bool) or version != 1:
         diagnostics.append(_diagnostic("invalid-version", "Document version must be 1.", "version"))
     records = raw.get("reservations")
     if not isinstance(records, list):
