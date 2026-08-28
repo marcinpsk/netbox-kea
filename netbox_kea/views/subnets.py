@@ -245,8 +245,11 @@ def _warn_pool_reservation_overlap(
     """Add a non-blocking warning if any existing reservation IP falls within *pool_str*.
 
     Uses the shared typed Reservation Snapshot and checks each verified record
-    against the pool range. Silently skips on read errors.
+    against the pool range. Warns when the check cannot run.
     """
+    check_failed_message = (
+        f"The Reservation overlap check did not run. Pool {pool_str} was not checked against existing Reservations."
+    )
     try:
         from netaddr import IPAddress, IPNetwork, IPRange
 
@@ -285,8 +288,12 @@ def _warn_pool_reservation_overlap(
                 f"Pool {pool_str} overlaps {len(overlapping)} existing reservation(s): {sample}{extra}. "
                 "Kea allows this. Reservations take priority over pool allocation.",
             )
+    except (KeaException, requests.RequestException, RuntimeError, ValueError):
+        logger.warning("Could not check Pool and Reservation overlap for subnet %s", subnet_id, exc_info=True)
+        messages.warning(request, check_failed_message)
     except Exception:  # noqa: BLE001
         logger.exception("Failed to check pool/reservation overlap for subnet %s", subnet_id)
+        messages.warning(request, check_failed_message)
 
 
 def _warn_reservation_pool_overlap(

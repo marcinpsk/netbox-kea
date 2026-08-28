@@ -2254,7 +2254,7 @@ class TestPoolAddPostErrors(_ViewTestBase):
         malformed_probe = {"result": 0, "arguments": {"hosts": None, "next": {"from": 0, "source-index": 0}}}
 
         with self._pool_add_stub(**{"reservation-get-page": malformed_probe}) as kea:
-            with self.assertLogs("netbox_kea.views.subnets", level="ERROR") as logs:
+            with self.assertLogs("netbox_kea.views.subnets", level="WARNING") as logs:
                 response = self.client.post(self._url(), {"pool": "10.0.0.10-10.0.0.20"}, follow=True)
 
         self.assertEqual(response.status_code, 200)
@@ -2579,6 +2579,9 @@ class TestSubnetViewCoverageGaps(_ViewTestBase):
     def _pool_add_stub(self, **overrides):
         """pool_add chain: reservation overlap probe → list-commands → subnet4-pool-add → persist + list."""
         base = {
+            # The probe reads the Subnet catalogue first, so subnet4-list must answer or the
+            # overlap tests below exercise an unregistered-command error instead of Kea's.
+            "subnet4-list": _subnet_list(4, [{"id": 42, "subnet": "10.0.0.0/24"}]),
             "reservation-get-page": {"result": 3},
             "list-commands": {
                 "result": 0,
@@ -2790,24 +2793,28 @@ class TestSubnetViewCoverageGaps(_ViewTestBase):
             "plugins:netbox_kea:server_subnet4_pool_delete", args=[self.server.pk, 42, "10.0.0.100-10.0.0.200"]
         )
 
-    def test_pool_add_reservation_lookup_failure_suppresses_warning(self):
-        """A reservation overlap probe failing (result 2 → KeaException) is suppressed; pool_add succeeds."""
-        with self._pool_add_stub(**{"reservation-get-page": {"result": 2, "text": "host_cmds not loaded"}}):
-            response = self.client.post(self._pool_add_url(), {"pool": "10.0.0.100-10.0.0.200"}, follow=True)
+    def test_pool_add_reservation_lookup_failure_warns_that_the_check_did_not_run(self):
+        """A Kea contract error must tell the operator that no overlap check ran."""
+        with self.assertLogs("netbox_kea.views.subnets", level="WARNING") as logs:
+            with self._pool_add_stub(**{"reservation-get-page": {"result": 2, "text": "host_cmds not loaded"}}):
+                response = self.client.post(self._pool_add_url(), {"pool": "10.0.0.100-10.0.0.200"}, follow=True)
         self.assertEqual(response.status_code, 200)
         msgs = list(response.context["messages"])
-        # success message present, but no overlap warning
         self.assertTrue(any(m.level == django_messages.SUCCESS for m in msgs))
-        self.assertFalse(any("overlaps" in m.message.lower() for m in msgs))
+        self.assertTrue(any("overlap check did not run" in m.message.lower() for m in msgs))
+        overlap_records = [record for record in logs.records if "overlap" in record.getMessage()]
+        self.assertTrue(overlap_records, logs.output)
+        self.assertEqual(overlap_records[0].levelname, "WARNING", logs.output)
+        self.assertIsNotNone(overlap_records[0].exc_info)
 
-    def test_pool_add_reservation_lookup_request_exception_suppresses_warning(self):
-        """A reservation overlap probe raising a transport error is suppressed; pool_add succeeds."""
+    def test_pool_add_reservation_lookup_request_exception_warns_that_the_check_did_not_run(self):
+        """A transport error must tell the operator that no overlap check ran."""
         with self._pool_add_stub(**{"reservation-get-page": requests.RequestException("timeout")}):
             response = self.client.post(self._pool_add_url(), {"pool": "10.0.0.100-10.0.0.200"}, follow=True)
         self.assertEqual(response.status_code, 200)
         msgs = list(response.context["messages"])
         self.assertTrue(any(m.level == django_messages.SUCCESS for m in msgs))
-        self.assertFalse(any("overlaps" in m.message.lower() for m in msgs))
+        self.assertTrue(any("overlap check did not run" in m.message.lower() for m in msgs))
 
     def test_pool_add_kea_exception_shows_error(self):
         """A KeaException (subnet4-pool-add result 1) on pool_add must show an error."""
