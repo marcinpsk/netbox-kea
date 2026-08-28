@@ -336,14 +336,14 @@ You can substitute `{{ object.name|lower }}` with a custom field: `{{ object.cf.
 uv sync
 
 # Lint
-uv run ruff check netbox_kea/
-uv run ruff format --check netbox_kea/
+uv run ruff check .
+uv run ruff format --check .
 
 # REUSE compliance check
 uv run reuse lint
 
 # Format
-uv run ruff format netbox_kea/
+uv run ruff format .
 
 # Install pre-commit hooks
 uv run pre-commit install

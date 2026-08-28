@@ -736,6 +736,26 @@ def test_ci_lints_every_file_the_pre_commit_hooks_lint():
     )
 
 
+def test_published_docs_run_ruff_over_the_scope_ci_lints():
+    """A narrower documented scope lets a contributor pass locally and fail CI.
+
+    The documented commands are the ones a contributor runs before pushing, so they
+    must read the same files as the lint job.
+    """
+    workflow = (REPOSITORY_ROOT / ".github/workflows/ci.yml").read_text()
+    ci_targets = set(re.findall(r"run: uv run ruff (?:check|format --check) (\S+)", workflow))
+    assert ci_targets, "The lint job no longer runs ruff; this guard would read nothing."
+
+    for name in _PUBLISHED_DOCS:
+        documented = re.findall(
+            r"uv run ruff (?:check|format)(?: --check)? (\S+)", (REPOSITORY_ROOT / name).read_text()
+        )
+        assert documented, f"{name} documents no ruff command; this guard would read nothing."
+        assert set(documented) == ci_targets, (
+            f"{name} runs ruff over {sorted(set(documented))}, but CI reads {sorted(ci_targets)}."
+        )
+
+
 def _compose_service_names(source: str) -> set[str]:
     """Return the service keys the Compose file declares."""
     body = source.split("\nservices:\n", 1)[-1]
