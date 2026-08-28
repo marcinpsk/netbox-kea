@@ -218,6 +218,75 @@ reservations:
             [("invalid-version", "version")],
         )
 
+    def _valid_record(self, **overrides):
+        """One complete in-subnet IPv4 record, so a probe changes exactly one field."""
+        record = {
+            "family": 4,
+            "scope": {"type": "in-subnet", "subnet": {"cidr": "198.18.0.0/24"}},
+            "identity": {"type": "hw-address", "value": "aa:bb:cc:dd:ee:ff"},
+            "addresses": ["198.18.0.20"],
+            "delegated_prefixes": [],
+            "hostname": "host.example.invalid",
+            "options": [],
+        }
+        record.update(overrides)
+        return record
+
+    def test_rejects_a_float_family(self):
+        """``4.0 == 4``, so an equality test alone lets a float into a ``Family`` field."""
+        document = {"version": 1, "reservations": [self._valid_record(family=4.0)]}
+
+        result = parse_reservation_document(json.dumps(document), "json")
+
+        self.assertEqual(
+            [(diagnostic.code, diagnostic.source_position) for diagnostic in result.diagnostics],
+            [("invalid-family", "reservations[0].family")],
+        )
+
+    def test_rejects_a_float_document_version(self):
+        """``1.0 != 1`` is False, so the version gate needs a type check of its own."""
+        document = {"version": 1.0, "reservations": [self._valid_record()]}
+
+        result = parse_reservation_document(json.dumps(document), "json")
+
+        self.assertEqual(
+            [(diagnostic.code, diagnostic.source_position) for diagnostic in result.diagnostics],
+            [("invalid-version", "version")],
+        )
+
+    def test_normalizes_a_non_canonical_subnet_cidr(self):
+        """The catalogue match compares canonical strings, so the parser normalizes here.
+
+        ``2001:0db8::/64`` names the same network as ``2001:db8::/64``. Rejecting the
+        spelling would fail a valid document; ``strict=True`` still rejects host bits.
+        """
+        record = self._valid_record(
+            family=6,
+            scope={"type": "in-subnet", "subnet": {"cidr": "2001:0db8::/64"}},
+            identity={"type": "duid", "value": "00:01:02:03"},
+            addresses=["2001:db8::5"],
+        )
+        document = {"version": 1, "reservations": [record]}
+
+        result = parse_reservation_document(json.dumps(document), "json", expected_family=6)
+
+        self.assertEqual(result.diagnostics, ())
+        self.assertEqual(result.proposals[0].subnet_cidr, "2001:db8::/64")
+
+    def test_rejects_a_subnet_cidr_with_host_bits_set(self):
+        """The diagnostic exists for an address that is not a network, and still fires."""
+        document = {
+            "version": 1,
+            "reservations": [self._valid_record(scope={"type": "in-subnet", "subnet": {"cidr": "198.18.0.1/24"}})],
+        }
+
+        result = parse_reservation_document(json.dumps(document), "json")
+
+        self.assertEqual(
+            [(diagnostic.code, diagnostic.source_position) for diagnostic in result.diagnostics],
+            [("invalid-subnet", "reservations[0].scope.subnet.cidr")],
+        )
+
     def test_reports_invalid_record_field_shapes_together(self):
         document = {
             "version": 1,
