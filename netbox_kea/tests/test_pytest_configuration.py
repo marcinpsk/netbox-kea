@@ -781,11 +781,41 @@ def test_the_container_log_helper_names_a_service_the_stack_runs():
     )
 
 
+#: Helpers that submit a form in the browser suite. An add route plus one of these is
+#: what creates live Kea state, whatever the test is called.
+_SUBMIT_HELPERS = frozenset({"_submit_form_by_field", "_submit_and_wait_nav"})
+
+
+def _called_names(node: ast.FunctionDef) -> set[str]:
+    """Return every function or method name *node* calls."""
+    names: set[str] = set()
+    for inner in ast.walk(node):
+        if not isinstance(inner, ast.Call):
+            continue
+        func = inner.func
+        name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
+        if isinstance(name, str):
+            names.add(name)
+    return names
+
+
+def _creates_live_kea_state(node: ast.FunctionDef) -> bool:
+    """Report whether a test navigates an add route and submits the form there."""
+    called = _called_names(node)
+    return any(name.endswith("_add_url") for name in called) and bool(called & _SUBMIT_HELPERS)
+
+
 def _cycle_tests_without_teardown(source: str) -> list[str]:
-    """Return every add-and-delete cycle test whose live state is not torn down."""
+    """Return every test that creates live Kea state without tearing it down.
+
+    Naming alone missed `test_full_crud_lifecycle`, which creates a Reservation and only
+    deleted it on the happy path, so the behavioural check is the wider of the two.
+    """
     offenders: list[str] = []
     for node in ast.walk(ast.parse(source)):
-        if not isinstance(node, ast.FunctionDef) or not node.name.endswith("_add_and_delete_cycle"):
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        if not (node.name.endswith("_add_and_delete_cycle") or _creates_live_kea_state(node)):
             continue
         if not any(isinstance(inner, ast.Try) and inner.finalbody for inner in ast.walk(node)):
             offenders.append(node.name)
@@ -799,6 +829,9 @@ def test_every_live_kea_cycle_test_tears_its_object_down():
     """
     source = (_BROWSER_SUITE / "test_workflows.py").read_text()
     assert "_add_and_delete_cycle" in source, "The cycle tests moved; this guard would read nothing."
+    assert _SUBMIT_HELPERS & set(re.findall(r"def (_submit\w+)", source)), (
+        "The submit helpers were renamed; the behavioural half of this guard would read nothing."
+    )
     offenders = _cycle_tests_without_teardown(source)
     assert not offenders, f"{offenders} create live Kea state without a finally that removes it."
 

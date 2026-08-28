@@ -986,6 +986,31 @@ class TestReservationCRUD:
         if hostname:
             page.locator("#id_hostname").fill(hostname)
 
+    def _ui_cleanup_reservation(self, page: Page, plugin_base: str, server_id: int) -> None:
+        """Delete any Reservation row matching ``_TEST_MAC`` through the UI.
+
+        Safe to call twice, and also runs from ``finally``, so it reports a failure as a
+        warning instead of raising it over the assertion that failed the test.
+        """
+        try:
+            page.goto(self._reservation_list_url(plugin_base, server_id))
+            page.wait_for_load_state("networkidle")
+            stale_row = page.locator("tr", has_text=self._TEST_MAC)
+            if not stale_row.count():
+                return
+            # get_attribute returns the raw root-relative href and this suite sets no base_url.
+            delete_url = stale_row.first.locator('a[href*="/delete/"]').evaluate("el => el.href")
+            assert delete_url
+            page.goto(delete_url)
+            page.wait_for_load_state("networkidle")
+            _submit_and_wait_nav(
+                page,
+                "document.querySelectorAll('form[method=\"post\"]')"
+                "[ document.querySelectorAll('form[method=\"post\"]').length - 1 ].submit()",
+            )
+        except Exception as exc:
+            warnings.warn(f"Could not remove test reservation {self._TEST_MAC}: {exc}", stacklevel=2)
+
     def test_full_crud_lifecycle(
         self,
         page: Page,
@@ -999,81 +1024,72 @@ class TestReservationCRUD:
 
         # ---- 0. PRE-CLEAN — remove any leftover from a previous interrupted run ----
         # Match on the identifier: the address is only known once the add form is open.
-        page.goto(self._reservation_list_url(plugin_base, server_id))
-        page.wait_for_load_state("networkidle")
-        stale_row = page.locator("tr", has_text=self._TEST_MAC)
-        if stale_row.count():
-            # get_attribute returns the raw root-relative href and this suite sets no base_url.
-            delete_url = stale_row.first.locator('a[href*="/delete/"]').evaluate("el => el.href")
-            assert delete_url
-            page.goto(delete_url)
+        self._ui_cleanup_reservation(page, plugin_base, server_id)
+
+        try:
+            # ---- 1. CREATE ----
+            page.goto(self._reservation_add_url(plugin_base, server_id))
             page.wait_for_load_state("networkidle")
+            _check_no_django_error(page)
+            _dismiss_debug_toolbar(page)
+
+            cidr = _subnet_cidr_for_id(page, self._SUBNET_ID)
+            test_ip = self._test_ip(cidr)
+            self._fill_reservation_form(
+                page,
+                cidr,
+                test_ip,
+                self._TEST_MAC,
+                hostname=self._TEST_HOSTNAME,
+            )
+            self._submit_form_by_field(page, "id_subnet_cidr")
+            _check_no_django_error(page)
+            _assert_no_http_errors(track_http_errors)
+
+            # ---- 2. VERIFY LISTED ----
+            page.goto(self._reservation_list_url(plugin_base, server_id))
+            page.wait_for_load_state("networkidle")
+            _check_no_django_error(page)
+            expect(page.get_by_text(test_ip)).to_be_visible()
+
+            # ---- 3. EDIT ----
+            page.goto(self._reservation_edit_url(plugin_base, server_id, self._SUBNET_ID, self._TEST_MAC))
+            page.wait_for_load_state("networkidle")
+            _check_no_django_error(page)
+            _dismiss_debug_toolbar(page)
+
+            page.locator("#id_hostname").fill(self._TEST_HOSTNAME_EDITED)
+            self._submit_form_by_field(page, "id_ip_address")
+            _check_no_django_error(page)
+            _assert_no_http_errors(track_http_errors)
+
+            # ---- 4. VERIFY EDIT — reload list and confirm hostname changed ----
+            page.goto(self._reservation_list_url(plugin_base, server_id))
+            page.wait_for_load_state("networkidle")
+            expect(page.get_by_text(test_ip)).to_be_visible()
+            expect(page.get_by_text(self._TEST_HOSTNAME_EDITED)).to_be_visible()
+
+            # ---- 5. DELETE ----
+            page.goto(self._reservation_delete_url(plugin_base, server_id, self._SUBNET_ID, self._TEST_MAC))
+            page.wait_for_load_state("networkidle")
+            _check_no_django_error(page)
+            # The delete confirmation form has only one unique element — submit it directly
             _submit_and_wait_nav(
                 page,
                 "document.querySelectorAll('form[method=\"post\"]')"
                 "[ document.querySelectorAll('form[method=\"post\"]').length - 1 ].submit()",
             )
+            _check_no_django_error(page)
+            _assert_no_http_errors(track_http_errors)
 
-        # ---- 1. CREATE ----
-        page.goto(self._reservation_add_url(plugin_base, server_id))
-        page.wait_for_load_state("networkidle")
-        _check_no_django_error(page)
-        _dismiss_debug_toolbar(page)
-
-        cidr = _subnet_cidr_for_id(page, self._SUBNET_ID)
-        test_ip = self._test_ip(cidr)
-        self._fill_reservation_form(
-            page,
-            cidr,
-            test_ip,
-            self._TEST_MAC,
-            hostname=self._TEST_HOSTNAME,
-        )
-        self._submit_form_by_field(page, "id_subnet_cidr")
-        _check_no_django_error(page)
-        _assert_no_http_errors(track_http_errors)
-
-        # ---- 2. VERIFY LISTED ----
-        page.goto(self._reservation_list_url(plugin_base, server_id))
-        page.wait_for_load_state("networkidle")
-        _check_no_django_error(page)
-        expect(page.get_by_text(test_ip)).to_be_visible()
-
-        # ---- 3. EDIT ----
-        page.goto(self._reservation_edit_url(plugin_base, server_id, self._SUBNET_ID, self._TEST_MAC))
-        page.wait_for_load_state("networkidle")
-        _check_no_django_error(page)
-        _dismiss_debug_toolbar(page)
-
-        page.locator("#id_hostname").fill(self._TEST_HOSTNAME_EDITED)
-        self._submit_form_by_field(page, "id_ip_address")
-        _check_no_django_error(page)
-        _assert_no_http_errors(track_http_errors)
-
-        # ---- 4. VERIFY EDIT — reload list and confirm hostname changed ----
-        page.goto(self._reservation_list_url(plugin_base, server_id))
-        page.wait_for_load_state("networkidle")
-        expect(page.get_by_text(test_ip)).to_be_visible()
-        expect(page.get_by_text(self._TEST_HOSTNAME_EDITED)).to_be_visible()
-
-        # ---- 5. DELETE ----
-        page.goto(self._reservation_delete_url(plugin_base, server_id, self._SUBNET_ID, self._TEST_MAC))
-        page.wait_for_load_state("networkidle")
-        _check_no_django_error(page)
-        # The delete confirmation form has only one unique element — submit it directly
-        _submit_and_wait_nav(
-            page,
-            "document.querySelectorAll('form[method=\"post\"]')"
-            "[ document.querySelectorAll('form[method=\"post\"]').length - 1 ].submit()",
-        )
-        _check_no_django_error(page)
-        _assert_no_http_errors(track_http_errors)
-
-        # ---- 6. VERIFY GONE ----
-        page.goto(self._reservation_list_url(plugin_base, server_id))
-        page.wait_for_load_state("networkidle")
-        _check_no_django_error(page)
-        assert test_ip not in page.content(), f"Reservation {test_ip} still visible after delete"
+            # ---- 6. VERIFY GONE ----
+            page.goto(self._reservation_list_url(plugin_base, server_id))
+            page.wait_for_load_state("networkidle")
+            _check_no_django_error(page)
+            assert test_ip not in page.content(), f"Reservation {test_ip} still visible after delete"
+        finally:
+            # A reservation left in live Kea blocks the next run on the same identifier.
+            self._ui_cleanup_reservation(page, plugin_base, server_id)
 
     def test_add_reservation_form_loads(
         self,
