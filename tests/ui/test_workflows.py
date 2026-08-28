@@ -429,87 +429,21 @@ class TestCombinedViews:
         ("combined_subnets6", "combined/subnets6/"),
     ]
 
-    def test_combined_dashboard_loads(
+    @pytest.mark.parametrize(
+        ("_tab_name", "path"),
+        COMBINED_TABS,
+        ids=[name for name, _path in COMBINED_TABS],
+    )
+    def test_combined_tab_loads(
         self,
+        _tab_name: str,
+        path: str,
         page: Page,
         netbox_login: None,
         plugin_base: str,
         track_http_errors: list,
     ) -> None:
-        """Combined dashboard renders without errors."""
-        page.goto(f"{plugin_base}/combined/")
-        page.wait_for_load_state("networkidle")
-        _check_no_django_error(page)
-        _assert_no_http_errors(track_http_errors)
-
-    def test_combined_leases4_loads(
-        self,
-        page: Page,
-        netbox_login: None,
-        plugin_base: str,
-        track_http_errors: list,
-    ) -> None:
-        page.goto(f"{plugin_base}/combined/leases4/")
-        page.wait_for_load_state("networkidle")
-        _check_no_django_error(page)
-        _assert_no_http_errors(track_http_errors)
-
-    def test_combined_leases6_loads(
-        self,
-        page: Page,
-        netbox_login: None,
-        plugin_base: str,
-        track_http_errors: list,
-    ) -> None:
-        page.goto(f"{plugin_base}/combined/leases6/")
-        page.wait_for_load_state("networkidle")
-        _check_no_django_error(page)
-        _assert_no_http_errors(track_http_errors)
-
-    def test_combined_reservations4_loads(
-        self,
-        page: Page,
-        netbox_login: None,
-        plugin_base: str,
-        track_http_errors: list,
-    ) -> None:
-        page.goto(f"{plugin_base}/combined/reservations4/")
-        page.wait_for_load_state("networkidle")
-        _check_no_django_error(page)
-        _assert_no_http_errors(track_http_errors)
-
-    def test_combined_reservations6_loads(
-        self,
-        page: Page,
-        netbox_login: None,
-        plugin_base: str,
-        track_http_errors: list,
-    ) -> None:
-        page.goto(f"{plugin_base}/combined/reservations6/")
-        page.wait_for_load_state("networkidle")
-        _check_no_django_error(page)
-        _assert_no_http_errors(track_http_errors)
-
-    def test_combined_subnets4_loads(
-        self,
-        page: Page,
-        netbox_login: None,
-        plugin_base: str,
-        track_http_errors: list,
-    ) -> None:
-        page.goto(f"{plugin_base}/combined/subnets4/")
-        page.wait_for_load_state("networkidle")
-        _check_no_django_error(page)
-        _assert_no_http_errors(track_http_errors)
-
-    def test_combined_subnets6_loads(
-        self,
-        page: Page,
-        netbox_login: None,
-        plugin_base: str,
-        track_http_errors: list,
-    ) -> None:
-        page.goto(f"{plugin_base}/combined/subnets6/")
+        page.goto(f"{plugin_base}/{path}")
         page.wait_for_load_state("networkidle")
         _check_no_django_error(page)
         _assert_no_http_errors(track_http_errors)
@@ -540,50 +474,21 @@ class TestCombinedViews:
 class TestCombinedViewsWithKea:
     """Combined view content checks that require a live Kea server fixture."""
 
-    def test_combined_leases4_server_column_present(
+    @pytest.mark.parametrize("header", ("Server", "Reserved", "NetBox IP"))
+    def test_combined_leases4_column_present(
         self,
+        header: str,
         page: Page,
         netbox_login: None,
         plugin_base: str,
         kea_server,
         track_http_errors: list,
     ) -> None:
-        """Combined leases4 table must include a 'Server' column header."""
-        # Use a search query to trigger table rendering (combined view shows form until searched)
+        """Combined leases4 must show each required column as its own case."""
         page.goto(f"{plugin_base}/combined/leases4/?q=192.0.2.1&by=ip")
         page.wait_for_load_state("networkidle")
         _check_no_django_error(page)
-        expect(page.locator("th", has_text="Server").first).to_be_visible()
-        _assert_no_http_errors(track_http_errors)
-
-    def test_combined_leases4_reserved_column_present(
-        self,
-        page: Page,
-        netbox_login: None,
-        plugin_base: str,
-        kea_server,
-        track_http_errors: list,
-    ) -> None:
-        """Combined leases4 table must include a 'Reserved' column header."""
-        page.goto(f"{plugin_base}/combined/leases4/?q=192.0.2.1&by=ip")
-        page.wait_for_load_state("networkidle")
-        _check_no_django_error(page)
-        expect(page.locator("th", has_text="Reserved").first).to_be_visible()
-        _assert_no_http_errors(track_http_errors)
-
-    def test_combined_leases4_netbox_ip_column_present(
-        self,
-        page: Page,
-        netbox_login: None,
-        plugin_base: str,
-        kea_server,
-        track_http_errors: list,
-    ) -> None:
-        """Combined leases4 table must include a 'NetBox IP' column header."""
-        page.goto(f"{plugin_base}/combined/leases4/?q=192.0.2.1&by=ip")
-        page.wait_for_load_state("networkidle")
-        _check_no_django_error(page)
-        expect(page.locator("th", has_text="NetBox IP").first).to_be_visible()
+        expect(page.locator("th", has_text=header).first).to_be_visible()
         _assert_no_http_errors(track_http_errors)
 
     def test_combined_reservations4_server_column_present(
