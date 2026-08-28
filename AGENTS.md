@@ -24,9 +24,9 @@ routing — see "Protocol-aware / direct-daemon client" below.
 ```bash
 uv sync                                    # install dev dependencies (activates .venv via .envrc)
 uv build                                   # build wheel (required before integration tests)
-uv run ruff check netbox_kea/              # lint
-uv run ruff format --check netbox_kea/     # check formatting
-uv run ruff format netbox_kea/             # auto-format
+uv run ruff check .                        # lint
+uv run ruff format --check .               # check formatting
+uv run ruff format .                       # auto-format
 uv run reuse lint                          # SPDX/REUSE compliance
 uv run pre-commit install --install-hooks  # install pre-commit hooks (incl. pre-push opengrep)
 ./scripts/opengrep-scan.sh                 # custom opengrep ruleset gate (pre-push + CI)
