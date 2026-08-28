@@ -5,12 +5,14 @@
 from __future__ import annotations
 
 import ast
+import importlib.util
 import os
 import re
 import runpy
 import subprocess
 import sys
 import tempfile
+import warnings
 from pathlib import Path
 
 import pytest
@@ -898,6 +900,84 @@ def test_every_finally_cleanup_reports_its_own_failure():
     assert "finally:" in source, "The cycle tests no longer tear down; this guard would read nothing."
     offenders = _unguarded_finally_cleanups(source)
     assert not offenders, f"{offenders} run from finally and can replace the test's own failure."
+
+
+class _FakeRowLocator:
+    """The subset of the Playwright Locator API the reservation cleanup helper uses."""
+
+    def __init__(self, rows: int, href: str = "http://netbox.invalid/reservations4/1/delete/"):
+        self._rows = rows
+        self._href = href
+
+    def count(self) -> int:
+        return self._rows
+
+    @property
+    def first(self) -> _FakeRowLocator:
+        return self
+
+    def locator(self, *_args, **_kwargs) -> _FakeRowLocator:
+        return self
+
+    def evaluate(self, *_args, **_kwargs) -> str:
+        return self._href
+
+
+class _FakeReservationPage:
+    """A page whose Reservation row survives the delete unless *delete_succeeds*.
+
+    Models the shape the production view actually has: a rejected delete is reported as
+    a message and still answered with a redirect, so the submit itself always looks fine.
+    """
+
+    def __init__(self, delete_succeeds: bool):
+        self.delete_succeeds = delete_succeeds
+        self.submitted = False
+        self.url = "http://netbox.invalid/start"
+
+    def goto(self, url: str) -> None:
+        self.url = url
+
+    def wait_for_load_state(self, *_args, **_kwargs) -> None:
+        pass
+
+    def evaluate(self, *_args, **_kwargs) -> None:
+        self.submitted = True
+
+    def wait_for_url(self, *_args, **_kwargs) -> None:
+        self.url = "http://netbox.invalid/reservations4/"
+
+    def locator(self, *_args, **_kwargs) -> _FakeRowLocator:
+        return _FakeRowLocator(0 if (self.submitted and self.delete_succeeds) else 1)
+
+
+def _run_reservation_cleanup(delete_succeeds: bool) -> list[str]:
+    """Run the real cleanup helper against a fake page and return its warnings."""
+    pytest.importorskip("playwright", reason="pytest-playwright is a dev dependency")
+    spec = importlib.util.spec_from_file_location("_kea_browser_suite", _BROWSER_SUITE / "test_workflows.py")
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    page = _FakeReservationPage(delete_succeeds)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        module.TestReservationCRUD()._ui_cleanup_reservation(page, "/plugins/netbox_kea", 1)
+    assert page.submitted, "The helper never submitted the delete; this guard would prove nothing."
+    return [str(entry.message) for entry in caught]
+
+
+def test_the_reservation_cleanup_reports_a_delete_the_server_refused():
+    """The delete view answers a refused delete with a redirect, not an error status.
+
+    It catches the Kea failure, flashes a message and still redirects, so the submit
+    alone cannot tell removal from refusal. Without the re-query the helper stays silent
+    and the identifier survives in the shared daemon, blocking the next run.
+    """
+    assert _run_reservation_cleanup(delete_succeeds=True) == []
+    assert _run_reservation_cleanup(delete_succeeds=False), (
+        "A Reservation that survived the delete produced no warning."
+    )
 
 
 #: Every external tool the integration setup script calls. Stubbed so the script can run

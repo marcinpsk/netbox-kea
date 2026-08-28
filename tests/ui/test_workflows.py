@@ -12,7 +12,7 @@ from urllib.parse import urlencode
 
 import pytest
 import requests
-from playwright.sync_api import Page, expect
+from playwright.sync_api import Locator, Page, expect
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -951,6 +951,11 @@ class TestReservationCRUD:
     def _reservation_list_url(self, plugin_base: str, server_id: int) -> str:
         return f"{plugin_base}/servers/{server_id}/reservations4/"
 
+    def _reservation_row(self, page: Page, plugin_base: str, server_id: int) -> Locator:
+        page.goto(self._reservation_list_url(plugin_base, server_id))
+        page.wait_for_load_state("networkidle")
+        return page.locator("tr", has_text=self._TEST_MAC)
+
     def _submit_form_by_field(self, page: Page, field_id: str) -> None:
         """Submit the form that contains *field_id*, waiting for the resulting navigation."""
         _submit_and_wait_nav(page, f"document.getElementById('{field_id}').closest('form').submit()")
@@ -993,9 +998,7 @@ class TestReservationCRUD:
         warning instead of raising it over the assertion that failed the test.
         """
         try:
-            page.goto(self._reservation_list_url(plugin_base, server_id))
-            page.wait_for_load_state("networkidle")
-            stale_row = page.locator("tr", has_text=self._TEST_MAC)
+            stale_row = self._reservation_row(page, plugin_base, server_id)
             if not stale_row.count():
                 return
             # get_attribute returns the raw root-relative href and this suite sets no base_url.
@@ -1008,6 +1011,8 @@ class TestReservationCRUD:
                 "document.querySelectorAll('form[method=\"post\"]')"
                 "[ document.querySelectorAll('form[method=\"post\"]').length - 1 ].submit()",
             )
+            if self._reservation_row(page, plugin_base, server_id).count():
+                warnings.warn(f"Test reservation {self._TEST_MAC} is still present after delete", stacklevel=2)
         except Exception as exc:
             warnings.warn(f"Could not remove test reservation {self._TEST_MAC}: {exc}", stacklevel=2)
 
