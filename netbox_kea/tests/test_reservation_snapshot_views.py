@@ -1,8 +1,11 @@
 # SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
 # SPDX-License-Identifier: Apache-2.0
 
+import requests
 import yaml
 from django.urls import reverse
+
+from netbox_kea.views.reservations import _RESERVATION_PAGE_SIZE
 
 from .kea_stub import _catalogue_responses, _res_get, _res_page, _reservation_mutation_commands, queued, stub_kea
 from .utils import _ViewTestBase
@@ -58,26 +61,17 @@ class TestPerServerReservationSnapshots(_ViewTestBase):
         self.assertIsNone(global_row["delete_url"])
         self.assertIsNone(global_row.get("sync_url"))
 
-    def test_an_incomplete_snapshot_warns_without_any_diagnostic(self):
-        """A bounded page that stops early is incomplete even when every record parsed.
+    def test_a_failed_page_read_warns_that_the_snapshot_is_incomplete(self):
+        """A read failure is the one path that is incomplete and carries no diagnostic.
 
-        Without the warning the reader takes a partial table for the whole Snapshot.
+        ``_parse_reservation_page`` sets ``complete`` from the diagnostics, so a page that
+        stops early with every record parsed is complete. Only the view's empty fallback
+        reports incomplete with nothing to list, which is the branch the banner guards.
         """
         responses = _catalogue_responses(4, 20, "198.18.0.0/24")
         responses.update(
             {
-                "reservation-get-page": _res_page(
-                    [
-                        {
-                            "subnet-id": 20,
-                            "hw-address": "AA-BB-CC-DD-EE-FF",
-                            "ip-address": "198.18.0.20",
-                            "hostname": "valid.example.invalid",
-                        }
-                    ],
-                    next_from=3,
-                    next_source=1,
-                ),
+                "reservation-get-page": requests.ConnectionError("kea unreachable"),
                 "lease4-get-by-state": {"result": 0, "arguments": {"leases": []}},
             }
         )
@@ -88,9 +82,45 @@ class TestPerServerReservationSnapshots(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         self.assertFalse(response.context["snapshot_complete"])
         self.assertEqual(response.context["reservation_diagnostics"], ())
+        self.assertEqual(response.context["table"].data.data, [])
         self.assertContains(response, "Snapshot is incomplete")
         self.assertNotContains(response, "diagnostic below")
         self.assertNotContains(response, "This bounded Snapshot is complete")
+        self.assertIn(
+            "Failed to load Reservations from Kea.",
+            [str(message) for message in response.context["messages"]],
+        )
+
+    def test_a_full_page_with_more_to_come_is_reported_complete(self):
+        """A filled page offers the next cursor and is still complete for this page.
+
+        The old version of the test above assumed the opposite, so pin the real contract:
+        pagination is surfaced by the next-page link, not by the completeness banner.
+        """
+        hosts = [
+            {
+                "subnet-id": 20,
+                "hw-address": f"aa:bb:cc:00:{index // 256:02x}:{index % 256:02x}",
+                "ip-address": f"198.18.0.{index + 1}",
+            }
+            for index in range(_RESERVATION_PAGE_SIZE)
+        ]
+        responses = _catalogue_responses(4, 20, "198.18.0.0/24")
+        responses.update(
+            {
+                "reservation-get-page": _res_page(hosts, next_from=3, next_source=1),
+                "lease4-get-by-state": {"result": 0, "arguments": {"leases": []}},
+            }
+        )
+
+        with stub_kea(responses):
+            response = self.client.get(self._url())
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.context["snapshot_complete"])
+        self.assertEqual(response.context["reservation_diagnostics"], ())
+        self.assertIsNotNone(response.context["next_page_url"])
+        self.assertContains(response, "This bounded Snapshot is complete")
 
     def test_scope_filter_keeps_only_global_records_on_the_current_page(self):
         responses = _catalogue_responses(4, 20, "198.18.0.0/24")
