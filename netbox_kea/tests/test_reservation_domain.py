@@ -1,3 +1,4 @@
+import itertools
 from dataclasses import replace
 from datetime import UTC, datetime
 from ipaddress import ip_address, ip_network
@@ -738,6 +739,67 @@ class TestReservationIteration(SimpleTestCase):
                 client.reservation_page(4, _catalogue(4, 20, "198.18.0.0/24"), limit=2)
 
         self.assertEqual(len(kea.bodies("reservation-get-page")), 9)
+
+    def test_an_empty_page_between_real_ones_does_not_exhaust_the_bound(self):
+        """A source transition answers empty, so it must not count towards the stall bound.
+
+        The counter used to accumulate over a whole call, so a sparse but healthy backend
+        failed with "returned only empty pages" after nine transitions, having read plenty.
+        """
+        interleaved = queued(
+            *[
+                page
+                for index in range(10)
+                for page in (
+                    _res_page([], next_from=2 * index + 1, next_source=1),
+                    _res_page(
+                        [{"subnet-id": 20, "hw-address": f"aa:bb:cc:dd:00:{index:02x}"}],
+                        next_from=2 * index + 2,
+                        next_source=1,
+                    ),
+                )
+            ]
+        )
+        client = KeaClient(url="http://kea.example.invalid", send_service=False)
+
+        with stub_kea({"reservation-get-page": interleaved}):
+            page = client.reservation_page(4, _catalogue(4, 20, "198.18.0.0/24"), limit=10)
+
+        self.assertEqual(len(page.records), 10)
+        self.assertEqual(page.diagnostics, ())
+
+    def test_bounds_a_traversal_whose_cursor_never_repeats(self):
+        """A backend that always answers a full page with a fresh cursor must not run on.
+
+        Neither the exhausted-cursor check nor the repeat check fires, so the record list
+        and the seen-cursor set would grow without end.
+        """
+        from netbox_kea.kea import _MAX_RESERVATION_SNAPSHOT_PAGES
+
+        counter = itertools.count(1)
+
+        def always_more(body):  # noqa: ARG001 - the stub passes the request body
+            index = next(counter)
+            return _res_page(
+                [
+                    {
+                        "subnet-id": 20,
+                        "hw-address": f"aa:bb:cc:{index // 65536 % 256:02x}:{index // 256 % 256:02x}:{index % 256:02x}",
+                    }
+                ],
+                next_from=index,
+                next_source=1,
+            )
+
+        client = KeaClient(url="http://kea.example.invalid", send_service=False)
+
+        with stub_kea({"reservation-get-page": always_more}):
+            snapshot = client.reservation_snapshot(4, _catalogue(4, 20, "198.18.0.0/24"), page_size=1)
+
+        self.assertFalse(snapshot.complete)
+        self.assertTrue(snapshot.traversal_truncated)
+        self.assertEqual([d.code for d in snapshot.diagnostics], ["page-limit-reached"])
+        self.assertEqual(len(snapshot.records), _MAX_RESERVATION_SNAPSHOT_PAGES)
 
     def test_preserves_records_and_reports_a_cursor_cycle_across_pages(self):
         pages = queued(
