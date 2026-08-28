@@ -352,8 +352,11 @@ class TestPerServerReservationSnapshots(_ViewTestBase):
             response = self.client.get(self._url())
 
         content = response.content.decode()
-        self.assertIn("Sync all", content)
-        token = re.search(r'hx-headers=\'{"X-CSRFToken": "([^"]*)"}\'', content)
+        # Scope to the row control's own element: a token anywhere else on the page
+        # must not satisfy a claim about this button.
+        button = re.search(r"<button[^>]*hx-post=\"[^\"]*/sync/[^\"]*\"[^>]*>", content)
+        self.assertIsNotNone(button, "The row sync control is not rendered.")
+        token = re.search(r'hx-headers=\'{"X-CSRFToken": "([^"]*)"}\'', button.group(0))
         self.assertIsNotNone(token, "The row sync control sends no CSRF header.")
         self.assertTrue(token.group(1), "The CSRF header is present but empty.")
 
