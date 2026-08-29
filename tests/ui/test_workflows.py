@@ -54,7 +54,7 @@ def _subnet_cidr_for_id(page: Page, subnet_id: int) -> str:
     """
     cidr = page.evaluate(
         """(subnetId) => {
-            const input = document.getElementById('id_subnet');
+            const input = document.querySelector('input[name="subnet_cidr"][list]');
             const datalistId = input ? input.getAttribute('list') : '';
             const datalist = datalistId ? document.getElementById(datalistId) : null;
             if (!datalist) return '';
