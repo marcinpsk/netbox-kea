@@ -283,6 +283,7 @@ class ReservationDiagnostic:
 RESERVATION_PAGE_FETCH_FAILED = "page-fetch-failed"
 RESERVATION_PAGINATION_STALLED = "pagination-stalled"
 RESERVATION_PAGE_LIMIT_REACHED = "page-limit-reached"
+RESERVATION_INVALID_IDENTIFIER = "invalid-identifier"
 TRAVERSAL_DIAGNOSTIC_CODES: frozenset[str] = frozenset(
     {RESERVATION_PAGE_FETCH_FAILED, RESERVATION_PAGINATION_STALLED, RESERVATION_PAGE_LIMIT_REACHED}
 )
@@ -505,14 +506,26 @@ def _family(value: int) -> Family:
 
 def _normalize_hex(value: Any, identifier_type: IdentifierType) -> str:
     if not isinstance(value, str) or not value:
-        raise MalformedReservation("invalid-identifier", "The Reservation identifier is invalid.", identifier_type)
+        raise MalformedReservation(
+            RESERVATION_INVALID_IDENTIFIER,
+            "The Reservation identifier is invalid.",
+            identifier_type,
+        )
     compact = re.sub(r"[:.-]", "", value)
     if not compact or len(compact) % 2 or re.fullmatch(r"[0-9A-Fa-f]+", compact) is None:
-        raise MalformedReservation("invalid-identifier", "The Reservation identifier is invalid.", identifier_type)
+        raise MalformedReservation(
+            RESERVATION_INVALID_IDENTIFIER,
+            "The Reservation identifier is invalid.",
+            identifier_type,
+        )
     octets = len(compact) // 2
     minimum, maximum = _HEX_IDENTIFIER_OCTETS[identifier_type]
     if not minimum <= octets <= maximum:
-        raise MalformedReservation("invalid-identifier", "The Reservation identifier is invalid.", identifier_type)
+        raise MalformedReservation(
+            RESERVATION_INVALID_IDENTIFIER,
+            "The Reservation identifier is invalid.",
+            identifier_type,
+        )
     return ":".join(compact[index : index + 2].lower() for index in range(0, len(compact), 2))
 
 
@@ -549,14 +562,18 @@ def _identity(raw: dict[str, Any], family: Family) -> ReservationIdentity:
     if identifier_type in _HEX_IDENTIFIERS:
         normalized = _normalize_hex(value, identifier_type)
     elif not isinstance(value, str) or not value:
-        raise MalformedReservation("invalid-identifier", "The Reservation identifier is invalid.", identifier_type)
+        raise MalformedReservation(
+            RESERVATION_INVALID_IDENTIFIER,
+            "The Reservation identifier is invalid.",
+            identifier_type,
+        )
     else:
         normalized = value
     try:
         return ReservationIdentity(identifier_type=identifier_type, value=normalized)
     except ValueError as exc:
         raise MalformedReservation(
-            "invalid-identifier",
+            RESERVATION_INVALID_IDENTIFIER,
             "The Reservation identifier is invalid.",
             identifier_type,
         ) from exc

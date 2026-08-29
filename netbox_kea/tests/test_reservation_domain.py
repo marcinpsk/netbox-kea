@@ -1,6 +1,6 @@
 import itertools
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from ipaddress import ip_address, ip_network
 from typing import get_args
 
@@ -48,7 +48,7 @@ def _catalogue(family: int, subnet_id: int, cidr: str) -> CatalogueSnapshot:
     return IdentityOnlyCatalogueSnapshot(
         server_id=1,
         family=family,
-        observed_at=datetime.now(UTC),
+        observed_at=datetime.now(timezone.utc),
         subnets=(subnet,),
         configured_subnets=(),
         diagnostics=(),

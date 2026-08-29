@@ -844,11 +844,9 @@ reservations:
 class TestMutationCapabilityGate(_ViewTestBase):
     """A direct POST must never reach Kea when no mutation capability is confirmed.
 
-    Add and Edit fail closed in ``Reservation4Form.clean`` / ``Reservation6Form.clean``
-    (forms.py:523 / :641) and Delete in its own handler, because it has no form. These
-    assert the outcome that matters at every entry point: no ``reservation-*`` mutation
-    command is issued and the operator sees the capability message, so a replayed or
-    hand-built POST cannot slip past the disabled save control.
+    Each handler must redirect before it validates a form or reads a mutation target.
+    These tests also assert that no ``reservation-*`` mutation command is issued, so a
+    replayed or hand-built POST cannot slip past the disabled save control.
     """
 
     #: ``list-commands`` without any ``reservation-*`` entry: host_cmds is not loaded.
@@ -873,34 +871,33 @@ class TestMutationCapabilityGate(_ViewTestBase):
 
     def test_add_post_is_rejected_without_mutation_capabilities(self):
         url = reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk])
+        return_url = reverse("plugins:netbox_kea:server_reservations4", args=[self.server.pk])
 
         with stub_kea(self._responses_without_mutation()) as kea:
             response = self.client.post(url, self._add_payload(), follow=True)
 
+        self.assertRedirects(response, return_url)
         self.assertNotIn("reservation-add", kea.commands())
         self.assertContains(response, "Reservation mutation capabilities are unavailable.")
 
     def test_add_post_is_rejected_when_the_capability_read_fails(self):
         url = reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk])
+        return_url = reverse("plugins:netbox_kea:server_reservations4", args=[self.server.pk])
         responses = self._responses_without_mutation()
         responses["list-commands"] = RuntimeError("capability read failed")
 
         with stub_kea(responses) as kea:
             response = self.client.post(url, self._add_payload(), follow=True)
 
+        self.assertRedirects(response, return_url)
         self.assertNotIn("reservation-add", kea.commands())
         self.assertContains(response, "Reservation mutation capabilities are unavailable.")
 
     def test_edit_post_is_rejected_without_mutation_capabilities(self):
         url = reverse("plugins:netbox_kea:server_reservation4_edit", args=[self.server.pk, 20])
+        return_url = reverse("plugins:netbox_kea:server_reservations4", args=[self.server.pk])
         query = _identity_query()
-        original = {
-            "subnet-id": 20,
-            "hw-address": "aa:bb:cc:dd:ee:ff",
-            "ip-address": "198.18.0.20",
-            "hostname": "old.example.invalid",
-        }
-        responses = {**self._responses_without_mutation(), "reservation-get": _res_get(original)}
+        responses = self._responses_without_mutation()
 
         with stub_kea(responses) as kea:
             response = self.client.post(
@@ -916,6 +913,8 @@ class TestMutationCapabilityGate(_ViewTestBase):
                 follow=True,
             )
 
+        self.assertRedirects(response, return_url)
+        self.assertNotIn("reservation-get", kea.commands())
         self.assertNotIn("reservation-update", kea.commands())
         self.assertContains(response, "Reservation mutation capabilities are unavailable.")
 

@@ -27,7 +27,7 @@ class TestPerServerReservationSnapshots(_ViewTestBase):
                 "option-data": [{"name": "domain-name-servers", "data": "198.18.0.53"}],
             },
             {"subnet-id": 20, "remote-id": "private rejected value"},
-            *[{"subnet-id": 20, "flex-id": f"page-filler-{index}"} for index in range(97)],
+            *[{"subnet-id": 20, "flex-id": f"page-filler-{index}"} for index in range(_RESERVATION_PAGE_SIZE - 3)],
         ]
         responses.update(
             {
@@ -59,7 +59,7 @@ class TestPerServerReservationSnapshots(_ViewTestBase):
         global_row = next(row for row in rows if row["scope_kind"] == "global")
         self.assertIsNone(global_row["edit_url"])
         self.assertIsNone(global_row["delete_url"])
-        self.assertIsNone(global_row.get("sync_url"))
+        self.assertIsNone(global_row["sync_url"])
 
     def test_a_failed_page_read_warns_that_the_snapshot_is_incomplete(self):
         """A read failure is the one path that is incomplete and carries no diagnostic.
@@ -373,7 +373,7 @@ class TestCombinedReservationSnapshots(_ViewTestBase):
                 "ip-addresses": ["2001:db8::20", "2001:db8::21"],
                 "prefixes": ["2001:db8:100::/56"],
             },
-            *[{"subnet-id": 30, "flex-id": f"page-filler-{index}"} for index in range(99)],
+            *[{"subnet-id": 30, "flex-id": f"page-filler-{index}"} for index in range(_RESERVATION_PAGE_SIZE - 1)],
         ]
         responses["reservation-get-page"] = _res_page(
             hosts,

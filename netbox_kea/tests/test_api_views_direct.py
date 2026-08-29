@@ -160,7 +160,7 @@ class TestLeaseSearchErrors(SimpleTestCase):
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
-class TestFetchLeasesIpAddress(SimpleTestCase):
+class TestLeaseSearchIpAddress(SimpleTestCase):
     """ip_address branch in _lease_search."""
 
     def test_result3_returns_empty(self):
@@ -187,7 +187,7 @@ class TestFetchLeasesIpAddress(SimpleTestCase):
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
-class TestFetchLeasesHwAddress(SimpleTestCase):
+class TestLeaseSearchHwAddress(SimpleTestCase):
     """hw_address branch in _lease_search."""
 
     def test_result3_returns_empty(self):
@@ -207,7 +207,7 @@ class TestFetchLeasesHwAddress(SimpleTestCase):
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
-class TestFetchLeasesDuid(SimpleTestCase):
+class TestLeaseSearchDuid(SimpleTestCase):
     """duid branch in _lease_search."""
 
     def test_result3_returns_empty(self):
@@ -236,7 +236,7 @@ class TestFetchLeasesDuid(SimpleTestCase):
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
-class TestFetchLeasesHostname(SimpleTestCase):
+class TestLeaseSearchHostname(SimpleTestCase):
     """hostname branch in _lease_search."""
 
     def test_result3_returns_empty(self):
@@ -256,7 +256,7 @@ class TestFetchLeasesHostname(SimpleTestCase):
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
-class TestFetchLeasesSubnetId(SimpleTestCase):
+class TestLeaseSearchSubnetId(SimpleTestCase):
     """subnet_id branch in _lease_search."""
 
     def test_result3_returns_empty(self):

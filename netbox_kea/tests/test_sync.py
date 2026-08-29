@@ -6,6 +6,9 @@ runs in a transaction that is rolled back afterwards.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+from typing import get_args, get_type_hints
+
 from django.test import TestCase, override_settings
 
 from .kea_stub import _typed_reservation
@@ -1371,15 +1374,21 @@ class TestCleanupStaleIpsBatch(TestCase):
     def test_the_producer_and_the_consumer_declare_the_same_record_types(self):
         """Both sync phases fill one list, so every side must name the same accepted types."""
         from netbox_kea.jobs import _sync_server_leases, _sync_server_reservations
+        from netbox_kea.models import Server
+        from netbox_kea.reservations import Reservation, ReservationSnapshot
         from netbox_kea.sync import cleanup_stale_ips_batch
 
-        consumed = cleanup_stale_ips_batch.__annotations__["synced_records"]
-        self.assertEqual(_sync_server_leases.__annotations__["all_synced"], consumed)
-        self.assertEqual(_sync_server_reservations.__annotations__["all_synced"], consumed)
+        job_types = {"Reservation": Reservation, "ReservationSnapshot": ReservationSnapshot, "Server": Server}
+        consumer_hints = get_type_hints(cleanup_stale_ips_batch)
+        lease_hints = get_type_hints(_sync_server_leases, localns=job_types)
+        reservation_hints = get_type_hints(_sync_server_reservations, localns=job_types)
+        consumed = consumer_hints["synced_records"]
+        self.assertEqual(lease_hints["all_synced"], consumed)
+        self.assertEqual(reservation_hints["all_synced"], consumed)
         # The keep-set channel carries the same records; the consumer only reads them.
-        record_types = consumed.removeprefix("list[").removesuffix("]")
-        self.assertEqual(cleanup_stale_ips_batch.__annotations__["protected_records"], f"Iterable[{record_types}]")
-        self.assertEqual(_sync_server_reservations.__annotations__["protected"], consumed)
+        record_types = get_args(consumed)[0]
+        self.assertEqual(consumer_hints["protected_records"], Iterable[record_types])
+        self.assertEqual(reservation_hints["protected"], consumed)
 
     @override_settings(PLUGINS_CONFIG=_STALE_PLUGINS_CONFIG)
     def test_batch_groups_by_address_family(self):
