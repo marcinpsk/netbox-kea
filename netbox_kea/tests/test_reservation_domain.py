@@ -11,6 +11,7 @@ from netbox_kea.kea import KeaClient
 from netbox_kea.reservations import (
     MAX_IDENTITY_LENGTH,
     ClearValue,
+    Family,
     GlobalReservationScope,
     InSubnetReservationScope,
     IPv4Reservation,
@@ -37,7 +38,7 @@ from netbox_kea.subnet_catalogue import (
 from .kea_stub import _res_get, _res_page, _typed_reservation, queued, stub_kea
 
 
-def _catalogue(family: int, subnet_id: int, cidr: str) -> CatalogueSnapshot:
+def _catalogue(family: Family, subnet_id: int, cidr: str) -> CatalogueSnapshot:
     subnet = VerifiedSubnet(
         identity=SubnetIdentity(subnet_id=subnet_id, network=ip_network(cidr)),
         configuration=None,

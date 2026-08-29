@@ -523,13 +523,16 @@ class Reservation4Form(forms.Form):
         capabilities = self.reservation_capabilities
         if capabilities is None or not capabilities.mutation_available:
             raise forms.ValidationError("Reservation mutation capabilities are unavailable.")
-        if cleaned.get("identifier_type") not in capabilities.identifiers:
+        identifier_type = cleaned.get("identifier_type")
+        if not identifier_type:
+            return cleaned
+        if identifier_type not in capabilities.identifiers:
             self.add_error("identifier_type", "This identifier is not enabled in the live Kea configuration.")
         identifier = cleaned.get("identifier", "").strip()
         if not identifier:
             return cleaned
         try:
-            cleaned["identifier"] = ReservationIdentity(cleaned.get("identifier_type", ""), identifier).value
+            cleaned["identifier"] = ReservationIdentity(identifier_type, identifier).value
         except ValueError as exc:
             self.add_error("identifier", str(exc))
         return cleaned
@@ -641,13 +644,16 @@ class Reservation6Form(forms.Form):
         capabilities = self.reservation_capabilities
         if capabilities is None or not capabilities.mutation_available:
             raise forms.ValidationError("Reservation mutation capabilities are unavailable.")
-        if cleaned.get("identifier_type") not in capabilities.identifiers:
+        identifier_type = cleaned.get("identifier_type")
+        if not identifier_type:
+            return cleaned
+        if identifier_type not in capabilities.identifiers:
             self.add_error("identifier_type", "This identifier is not enabled in the live Kea configuration.")
         identifier = cleaned.get("identifier", "").strip()
         if not identifier:
             return cleaned
         try:
-            cleaned["identifier"] = ReservationIdentity(cleaned.get("identifier_type", ""), identifier).value
+            cleaned["identifier"] = ReservationIdentity(identifier_type, identifier).value
         except ValueError as exc:
             self.add_error("identifier", str(exc))
         return cleaned

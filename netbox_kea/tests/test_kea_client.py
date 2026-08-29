@@ -3779,7 +3779,7 @@ class TestLeaseSearch(TestCase):
         self.assertEqual(result, [lease])
         self.assertEqual(kea.commands(), ["config-get", "stat-lease6-get", "lease6-get-all"])
 
-    def test_malformed_configured_subnet_network_is_rejected(self):
+    def test_malformed_configured_subnet_network_is_rejected_without_a_match(self):
         cases = (
             ("not-a-subnet-entry", "malformed Subnet entry"),
             ({"id": 21, "subnet": None}, "valid CIDR"),
@@ -3801,6 +3801,42 @@ class TestLeaseSearch(TestCase):
                 self.assertRaisesRegex(RuntimeError, message),
             ):
                 self.client.configured_subnet_id_from_cidr(6, "2001:db8::/64")
+
+    def test_matching_configured_subnet_requires_a_valid_id(self):
+        for subnet_id in (None, True, 0, "21"):
+            with (
+                self.subTest(subnet_id=subnet_id),
+                stub_kea(
+                    {
+                        "config-get": {
+                            "result": 0,
+                            "arguments": {"Dhcp6": {"subnet6": [{"id": subnet_id, "subnet": "2001:db8::/64"}]}},
+                        }
+                    }
+                ),
+                self.assertRaisesRegex(RuntimeError, "without a valid ID"),
+            ):
+                self.client.configured_subnet_id_from_cidr(6, "2001:db8::/64")
+
+    def test_malformed_unrelated_subnet_does_not_hide_matching_network(self):
+        with stub_kea(
+            {
+                "config-get": {
+                    "result": 0,
+                    "arguments": {
+                        "Dhcp6": {
+                            "subnet6": [
+                                {"id": 20, "subnet": "not-a-network"},
+                                {"id": 21, "subnet": "2001:0db8:0:0::/64"},
+                            ]
+                        }
+                    },
+                }
+            }
+        ):
+            subnet_id = self.client.configured_subnet_id_from_cidr(6, "2001:db8::/64")
+
+        self.assertEqual(subnet_id, 21)
 
     def test_explicitly_disabled_guard_skips_statistics(self):
         client = KeaClient(url="http://kea:8000", max_unpaged_leases=None)

@@ -15,6 +15,7 @@ from ..dhcp_options import DHCPOption
 from ..kea import KeaException, LeaseQueryGuardError, lease_query_guard_message
 from ..models import Server
 from ..reservation_transfer import export_reservation_document
+from ..reservations import ReservationCapabilities, ReservationSnapshot
 from ..subnet_catalogue import ConfiguredSubnet, Diagnostic, VerifiedSubnet, display
 from ..utilities import (
     export_table,
@@ -438,15 +439,40 @@ class CombinedSharedNetworks6View(_CombinedSharedNetworksView):
 
 def _fetch_reservations_from_server(
     server: "Server",
-    version: int,
+    version: Literal[4, 6],
     cursor: str | None = None,
     *,
     full_snapshot: bool = False,
-):
+) -> ReservationSnapshot:
     """Fetch one bounded page, or a complete typed Snapshot for transfer."""
     if full_snapshot:
         return _fetch_reservation_snapshot(server, version)
     return _fetch_reservation_page(server, version, cursor)
+
+
+def _reservation_mutation_server_pks(
+    request: HttpRequest,
+    server_pks: list[int],
+    *,
+    is_export: bool,
+) -> set[int]:
+    """Return selected servers where the request can expose mutation controls."""
+    if is_export:
+        return set()
+    return set(Server.objects.restrict(request.user, "change").filter(pk__in=server_pks).values_list("pk", flat=True))
+
+
+def _reservation_capability_future(
+    executor: concurrent.futures.ThreadPoolExecutor,
+    server: Server,
+    version: Literal[4, 6],
+    writable_pks: set[int],
+    snapshot: ReservationSnapshot,
+) -> dict[int, concurrent.futures.Future[ReservationCapabilities | None]]:
+    """Submit one capability read when this Snapshot can expose mutation controls."""
+    if server.pk not in writable_pks or not snapshot.records:
+        return {}
+    return {server.pk: executor.submit(_configured_capabilities, server, version)}
 
 
 class _CombinedReservationsView(_CombinedViewMixin):
@@ -469,6 +495,13 @@ class _CombinedReservationsView(_CombinedViewMixin):
         if is_export and export_format not in ("yaml", "json"):
             return HttpResponse("Reservation export format must be YAML or JSON.", status=400)
 
+        server_map = {server.pk: server for server in servers}
+        writable_pks = _reservation_mutation_server_pks(
+            request,
+            list(server_map),
+            is_export=is_export,
+        )
+        capability_futures: dict[int, concurrent.futures.Future[ReservationCapabilities | None]] = {}
         with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
             future_to_server = {
                 executor.submit(
@@ -484,13 +517,23 @@ class _CombinedReservationsView(_CombinedViewMixin):
             for future in concurrent.futures.as_completed(future_to_server):
                 server = future_to_server[future]
                 try:
-                    snapshot = future.result()
-                    snapshots[server.pk] = snapshot
-                    all_records.extend(_reservation_table_record(record, server) for record in snapshot.records)
-                    diagnostics.extend((server.name, diagnostic) for diagnostic in snapshot.diagnostics)
+                    fetched_snapshot = future.result()
+                    snapshots[server.pk] = fetched_snapshot
+                    all_records.extend(_reservation_table_record(record, server) for record in fetched_snapshot.records)
+                    diagnostics.extend((server.name, diagnostic) for diagnostic in fetched_snapshot.diagnostics)
+                    capability_futures.update(
+                        _reservation_capability_future(
+                            executor,
+                            server,
+                            self.dhcp_version,
+                            writable_pks,
+                            fetched_snapshot,
+                        )
+                    )
                 except Exception:  # noqa: BLE001, PERF203
                     logger.exception("Failed to query server %s", server.name)
                     errors.append((server.name, "Failed to query server"))
+            capabilities_by_server = {server_pk: future.result() for server_pk, future in capability_futures.items()}
 
         if is_export:
             if errors or diagnostics:
@@ -500,8 +543,8 @@ class _CombinedReservationsView(_CombinedViewMixin):
             records = tuple(
                 record
                 for server in servers
-                if (snapshot := snapshots.get(server.pk)) is not None
-                for record in snapshot.records
+                if (export_snapshot := snapshots.get(server.pk)) is not None
+                for record in export_snapshot.records
             )
             content = export_reservation_document(records, export_format)
             response = HttpResponse(
@@ -514,12 +557,6 @@ class _CombinedReservationsView(_CombinedViewMixin):
             return response
 
         # Enrich in the main thread so Django ORM queries see the test transaction.
-        server_map = {s.pk: s for s in servers}
-        writable_pks = set(
-            Server.objects.restrict(request.user, "change")
-            .filter(pk__in=list(server_map.keys()))
-            .values_list("pk", flat=True)
-        )
         mutation_unavailable_servers: list[tuple[str, str]] = []
         can_sync = request.user.has_perm("ipam.add_ipaddress") and request.user.has_perm("ipam.change_ipaddress")
         for server_pk, server in server_map.items():
@@ -527,7 +564,7 @@ class _CombinedReservationsView(_CombinedViewMixin):
             if server_records:
                 _enrich_reservations_with_badges(server_records, server, self.dhcp_version, can_sync=can_sync)
                 can_change = server_pk in writable_pks
-                capabilities = _configured_capabilities(server, self.dhcp_version) if can_change else None
+                capabilities = capabilities_by_server.get(server_pk) if can_change else None
                 can_mutate = bool(can_change and capabilities and capabilities.mutation_available)
                 if can_change and not can_mutate:
                     reason = (
@@ -564,14 +601,14 @@ class _CombinedReservationsView(_CombinedViewMixin):
         next_query.pop("page", None)
         has_next = False
         for server in servers:
-            snapshot = snapshots.get(server.pk)
+            page_snapshot = snapshots.get(server.pk)
             cursor_key = f"reservation_cursor_{server.pk}"
-            if snapshot is None:
+            if page_snapshot is None:
                 continue
-            if snapshot.next_cursor is None:
+            if page_snapshot.next_cursor is None:
                 next_query[cursor_key] = "done"
             else:
-                next_query[cursor_key] = snapshot.next_cursor
+                next_query[cursor_key] = page_snapshot.next_cursor
                 has_next = True
 
         ctx.update(

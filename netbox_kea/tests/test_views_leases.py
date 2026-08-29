@@ -27,6 +27,7 @@ import threading
 from unittest.mock import MagicMock, patch
 
 import requests
+from django.contrib.messages import get_messages
 from django.test import TestCase, override_settings
 from django.urls import reverse
 from ipam.models import IPAddress as NbIP
@@ -2977,6 +2978,29 @@ class TestExportAllDefensiveChecks(_ViewTestBase):
         with stub_kea({"lease4-get-page": page}):
             response = self.client.get(self._url(), {"export_all": "1"})
         self.assertEqual(response.status_code, 302)
+
+    def test_export_limit_refuses_a_partial_csv_and_reports_the_limit(self):
+        leases = [
+            {
+                "ip-address": f"198.18.0.{index}",
+                "hw-address": "aa:bb:cc:dd:ee:ff",
+                "subnet-id": 1,
+            }
+            for index in range(1, 4)
+        ]
+        page = {"result": 0, "arguments": {"leases": leases, "count": len(leases)}}
+
+        with (
+            patch("netbox_kea.views.leases._LEASE_EXPORT_MAX_LEASES", new=2),
+            stub_kea({"lease4-get-page": page}),
+        ):
+            response = self.client.get(self._url(), {"export_all": "1"})
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn(
+            "Export is limited to 2 leases. Narrow the lease set before exporting.",
+            [str(message) for message in get_messages(response.wsgi_request)],
+        )
 
 
 # ─────────────────────────────────────────────────────────────────────────────

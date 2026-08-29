@@ -264,6 +264,32 @@ def _configured_subnet_network(subnet: Any, version: int) -> ipaddress.IPv4Netwo
     return candidate
 
 
+def _configured_subnet_id_for_network(
+    subnet_collections: list[list[Any]],
+    version: int,
+    network: ipaddress.IPv4Network | ipaddress.IPv6Network,
+) -> int | None:
+    """Find one Subnet ID while retaining malformed-entry evidence if no match exists."""
+    malformed_entry_error: RuntimeError | None = None
+    for subnets in subnet_collections:
+        for subnet in subnets:
+            try:
+                configured_network = _configured_subnet_network(subnet, version)
+            except RuntimeError as exc:
+                if malformed_entry_error is None:
+                    malformed_entry_error = exc
+                continue
+            if configured_network != network:
+                continue
+            subnet_id = subnet.get("id")
+            if isinstance(subnet_id, bool) or not isinstance(subnet_id, int) or subnet_id < 1:
+                raise RuntimeError("config-get returned a Subnet without a valid ID.")
+            return subnet_id
+    if malformed_entry_error is not None:
+        raise malformed_entry_error
+    return None
+
+
 class KeaClient:
     """HTTP client for the Kea Control API."""
 
@@ -1072,15 +1098,7 @@ class KeaClient:
                 raise RuntimeError("config-get returned a malformed shared-network entry.")
             subnet_collections.append(shared_subnets)
 
-        for subnets in subnet_collections:
-            for subnet in subnets:
-                if _configured_subnet_network(subnet, version) != network:
-                    continue
-                subnet_id = subnet.get("id")
-                if isinstance(subnet_id, bool) or not isinstance(subnet_id, int) or subnet_id < 1:
-                    raise RuntimeError("config-get returned a Subnet without a valid ID.")
-                return subnet_id
-        return None
+        return _configured_subnet_id_for_network(subnet_collections, version, network)
 
     def subnet_add(  # noqa: C901
         self,

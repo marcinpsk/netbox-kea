@@ -350,6 +350,10 @@ class TestReservationForm4(SimpleTestCase):
         form = self._form(data)
         self.assertFalse(form.is_valid())
         self.assertIn("identifier_type", form.errors)
+        self.assertNotIn(
+            "This identifier is not enabled in the live Kea configuration.",
+            form.errors["identifier_type"],
+        )
 
     def test_missing_identifier_fails(self):
         data = self._valid_data()
@@ -439,6 +443,10 @@ class TestReservationForm4(SimpleTestCase):
         form = self._form(self._valid_data(identifier_type="not-a-real-type"))
         self.assertFalse(form.is_valid())
         self.assertIn("identifier_type", form.errors)
+        self.assertNotIn(
+            "This identifier is not enabled in the live Kea configuration.",
+            form.errors["identifier_type"],
+        )
 
     def test_identifier_errors_are_curated_validation_copy(self):
         """The domain ValueError *is* the field's validation text, so pin what reaches the page.
@@ -666,6 +674,19 @@ class TestReservationForm6(SimpleTestCase):
         form = self._form(data)
         self.assertFalse(form.is_valid())
         self.assertIn("identifier_type", form.errors)
+        self.assertNotIn(
+            "This identifier is not enabled in the live Kea configuration.",
+            form.errors["identifier_type"],
+        )
+
+    def test_invalid_identifier_type_choice_fails(self):
+        form = self._form(self._valid_data(identifier_type="not-a-real-type"))
+        self.assertFalse(form.is_valid())
+        self.assertIn("identifier_type", form.errors)
+        self.assertNotIn(
+            "This identifier is not enabled in the live Kea configuration.",
+            form.errors["identifier_type"],
+        )
 
     def test_missing_identifier_fails(self):
         data = self._valid_data()

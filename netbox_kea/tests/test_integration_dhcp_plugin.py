@@ -23,6 +23,7 @@ from netbox_kea.mappers.kea_to_dhcp import parse_dhcp_config
 from netbox_kea.reservations import (
     RESERVATION_INVALID_IDENTIFIER,
     RESERVATION_PAGE_FETCH_FAILED,
+    Family,
     ReservationDiagnostic,
     ReservationSnapshot,
 )
@@ -63,7 +64,7 @@ def _conf_v6():
     }
 
 
-def _reservation_snapshot(conf: dict, version: int, hosts: list[dict] | None = None):
+def _reservation_snapshot(conf: dict, version: Family, hosts: list[dict] | None = None) -> ReservationSnapshot:
     """Build the real typed Snapshot used by the optional adapter."""
     subnet_key = f"subnet{version}"
     entries = list(conf.get(subnet_key, []))
