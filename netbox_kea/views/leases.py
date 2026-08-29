@@ -52,6 +52,7 @@ from ._base import ConditionalLoginRequiredMixin, _KeaChangeMixin, _strip_empty_
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T", bound=BaseTable)
+_LEASE_EXPORT_MAX_LEASES = 50_000
 
 
 def _run_lease_sync_to_netbox(request: HttpRequest, lease: dict, ip_address: str) -> None:
@@ -248,10 +249,10 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
         return export_table(table, "leases.csv", use_selected_columns=request.GET["export"] == "table")
 
     def get_export_all(self, request: HttpRequest, **kwargs) -> HttpResponse:
-        """Export every lease on the server (no search filter) as a CSV download.
+        """Export a bounded complete lease collection as a CSV download.
 
-        Fetches a complete collection through the Kea client, then streams the
-        leases as a CSV file.
+        Fetches leases through the Kea client up to the export safety limit.
+        Refuses a partial export when the server has more leases than the limit.
         Requires the ``lease_cmds`` hook to be loaded on the Kea server.
         """
         instance = self.get_object(**kwargs)
@@ -260,8 +261,11 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
 
         try:
             client = instance.get_client(version=self.dhcp_version)
-            collection = client.lease_get_all(self.dhcp_version, per_page=per_page)
-            all_leases = format_leases(collection.leases)
+            collection = client.lease_get_all(
+                self.dhcp_version,
+                per_page=per_page,
+                max_leases=_LEASE_EXPORT_MAX_LEASES,
+            )
         except KeaException as exc:
             logger.exception("Failed to fetch all leases for export on server %s", instance.pk)
             messages.error(request, kea_error_hint(exc))
@@ -271,6 +275,20 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
             messages.error(request, "Failed to fetch leases for export; see server logs.")
             return redirect(request.path)
 
+        if collection.truncated:
+            logger.warning(
+                "Refused a partial DHCPv%s lease export for server %s at the %s-lease limit",
+                self.dhcp_version,
+                instance.pk,
+                _LEASE_EXPORT_MAX_LEASES,
+            )
+            messages.warning(
+                request,
+                f"Export is limited to {_LEASE_EXPORT_MAX_LEASES:,} leases. Narrow the lease set before exporting.",
+            )
+            return redirect(request.path)
+
+        all_leases = format_leases(collection.leases)
         table = self.get_table(all_leases, request)
         return export_table(table, "leases_all.csv", use_selected_columns=False)
 

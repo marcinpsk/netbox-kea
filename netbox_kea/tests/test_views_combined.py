@@ -11,11 +11,15 @@ via ``kea_stub.stub_kea``, so the combined multi-server fetch helpers exercise t
 real request/response path.
 """
 
+import threading
+
 import requests
 from django.urls import reverse
 
+from netbox_kea.views.reservations import _RESERVATION_PAGE_SIZE
+
 from .kea_stub import _catalogue_responses, _res_page, stub_kea
-from .utils import _ViewTestBase
+from .utils import _make_db_server, _ViewTestBase
 
 
 class TestFetchSharedNetworksFromServer(_ViewTestBase):
@@ -255,6 +259,38 @@ class TestCombinedReservationsShowWhatIsReserved(_ViewTestBase):
         self.assertIn("No address", body)
 
 
+class TestCombinedReservationCapabilityConcurrency(_ViewTestBase):
+    def test_writable_servers_discover_capabilities_concurrently(self):
+        second_server = _make_db_server(name="test-kea-secondary", ca_url="https://kea-secondary.example.com")
+        barrier = threading.Barrier(2)
+        completed_probes = []
+
+        def simultaneous_capability_response(_body):
+            barrier.wait(timeout=1)
+            completed_probes.append(True)
+            return {
+                "result": 0,
+                "arguments": ["reservation-get", "reservation-add", "reservation-update", "reservation-del"],
+            }
+
+        hosts = [{"subnet-id": 1, "hw-address": "aa:bb:cc:dd:ee:ff", "hostname": "printer"}]
+        responses = {
+            **_catalogue_responses(4, 1, "198.18.0.0/24"),
+            "reservation-get-page": _res_page(hosts),
+            "lease4-get-by-state": {"result": 0, "arguments": {"leases": []}},
+            "list-commands": simultaneous_capability_response,
+        }
+        url = reverse("plugins:netbox_kea:combined_reservations4")
+        url += f"?server={self.server.pk}&server={second_server.pk}"
+
+        with stub_kea(responses):
+            response = self.client.get(url)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(completed_probes), 2)
+        self.assertEqual(response.context["mutation_unavailable_servers"], [])
+
+
 class TestCombinedReservationSyncControl(_ViewTestBase):
     """The combined tab must offer the same Reservation synchronization as one server.
 
@@ -290,8 +326,8 @@ class TestCombinedReservationCursorPagination(_ViewTestBase):
     def _url(self, version=4, query=""):
         return reverse(f"plugins:netbox_kea:combined_reservations{version}") + f"?server={self.server.pk}{query}"
 
-    #: The view asks for 100 records; only a full page can carry a next cursor.
-    PAGE_SIZE = 100
+    #: Only a full page can carry a next cursor.
+    PAGE_SIZE = _RESERVATION_PAGE_SIZE
 
     def _stub(self, *, next_from=0, next_source=0, hosts=None):
         if hosts is None:

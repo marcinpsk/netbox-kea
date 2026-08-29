@@ -463,6 +463,35 @@ def _hrefs_navigated_raw(source: str) -> list[str]:
     return offenders
 
 
+@pytest.mark.parametrize(
+    ("source", "must_flag"),
+    (
+        ("def workflow(page, link):\n    page.goto(link.get_attribute('href'))\n", True),
+        ("def workflow(page, link):\n    page.goto(url=link.get_attribute(name='href'))\n", True),
+        (
+            "def workflow(page, link):\n    destination = link.get_attribute('href')\n    page.goto(destination)\n",
+            True,
+        ),
+        (
+            "async def workflow(page, link):\n    await page.goto(await link.get_attribute('href'))\n",
+            True,
+        ),
+        ("def workflow(page, link):\n    page.goto(destination := link.get_attribute('href'))\n", True),
+        ("def workflow(page, link):\n    page.goto(link.evaluate('el => el.href'))\n", False),
+        (
+            "def workflow(page, link):\n"
+            "    destination = link.get_attribute('href')\n"
+            "    destination = link.evaluate('el => el.href')\n"
+            "    page.goto(destination)\n",
+            False,
+        ),
+        ("def workflow(page, link):\n    page.goto(link.get_attribute('title'))\n", False),
+    ),
+)
+def test_raw_href_navigation_guard_classifies_supported_shapes(source, must_flag):
+    assert bool(_hrefs_navigated_raw(source)) is must_flag
+
+
 def test_browser_navigation_resolves_hrefs_before_visiting_them():
     """A root-relative href cannot be navigated to without a Playwright base_url."""
     sources = sorted(_BROWSER_SUITE.rglob("*.py"))

@@ -114,13 +114,10 @@ netbox_kea/tests/test_sync.py:0: note: By default the bodies of untyped function
 netbox_kea/tests/test_sync.py:0: note: By default the bodies of untyped functions are not checked, consider using --check-untyped-defs  [annotation-unchecked]
 netbox_kea/tests/test_sync.py:0: note: By default the bodies of untyped functions are not checked, consider using --check-untyped-defs  [annotation-unchecked]
 netbox_kea/tests/test_reservation_sync_semantics.py:0: note: By default the bodies of untyped functions are not checked, consider using --check-untyped-defs  [annotation-unchecked]
-netbox_kea/tests/test_reservation_domain.py:0: error: Argument "family" to "IdentityOnlyCatalogueSnapshot" has incompatible type "int"; expected "Literal[4, 6]"  [arg-type]
-netbox_kea/tests/test_jobs.py:0: error: Argument "family" to "IdentityOnlyCatalogueSnapshot" has incompatible type "int"; expected "Literal[4, 6]"  [arg-type]
 netbox_kea/tests/test_jobs.py:0: note: By default the bodies of untyped functions are not checked, consider using --check-untyped-defs  [annotation-unchecked]
 netbox_kea/tests/test_jobs.py:0: note: By default the bodies of untyped functions are not checked, consider using --check-untyped-defs  [annotation-unchecked]
 netbox_kea/tests/test_jobs.py:0: note: By default the bodies of untyped functions are not checked, consider using --check-untyped-defs  [annotation-unchecked]
 netbox_kea/tests/test_jobs.py:0: note: By default the bodies of untyped functions are not checked, consider using --check-untyped-defs  [annotation-unchecked]
-netbox_kea/tests/test_integration_dhcp_plugin.py:0: error: Argument "family" to "IdentityOnlyCatalogueSnapshot" has incompatible type "int"; expected "Literal[4, 6]"  [arg-type]
 netbox_kea/forms.py:0: error: Signature of "render" incompatible with supertype "django.forms.widgets.Widget"  [override]
 netbox_kea/forms.py:0: note: Superclass:
 netbox_kea/forms.py:0: note: def render(self, name: str, value: Any, attrs: dict[str, Any] | None = ..., renderer: BaseRenderer | None = ...) -> SafeString

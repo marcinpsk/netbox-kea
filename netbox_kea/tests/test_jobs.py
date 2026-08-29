@@ -33,6 +33,7 @@ from ipam.models import IPRange, Prefix
 from netbox_kea.jobs import KeaIpamSyncJob
 from netbox_kea.kea import KeaClient
 from netbox_kea.models import Server, SyncConfig
+from netbox_kea.reservations import Family, ReservationSnapshot
 from netbox_kea.subnet_catalogue import IdentityOnlyCatalogueSnapshot, SubnetIdentity, VerifiedSubnet
 
 from .kea_stub import _res_page, _reservation_family, queued, stub_kea
@@ -138,7 +139,7 @@ def _reservation_subnets(reservations: list[dict], version: int) -> list[dict]:
     return [{"id": subnet_id, "subnet": network} for subnet_id, network in sorted(subnets.items())]
 
 
-def _reservation_snapshot(reservations: list[dict], version: int):
+def _reservation_snapshot(reservations: list[dict], version: Family) -> ReservationSnapshot:
     entries = _reservation_subnets(reservations, version)
     # Identity-only: these Subnets carry no configuration, which is exactly what a
     # Reservation Scope needs to be verified.

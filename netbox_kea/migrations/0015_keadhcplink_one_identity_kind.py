@@ -3,6 +3,16 @@
 from django.db import migrations, models
 
 
+def remove_invalid_identity_links(apps, schema_editor):
+    """Remove links whose Kea target cannot be identified unambiguously."""
+    KeaDhcpLink = apps.get_model("netbox_kea", "KeaDhcpLink")
+    invalid_identity = models.Q(kea_subnet_id__isnull=True, kea_identity__isnull=True) | models.Q(
+        kea_subnet_id__isnull=False,
+        kea_identity__isnull=False,
+    )
+    KeaDhcpLink.objects.filter(invalid_identity).delete()
+
+
 class Migration(migrations.Migration):
 
     dependencies = [
@@ -11,6 +21,7 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
+        migrations.RunPython(remove_invalid_identity_links, migrations.RunPython.noop),
         migrations.AddConstraint(
             model_name='keadhcplink',
             constraint=models.CheckConstraint(condition=models.Q(models.Q(('kea_identity__isnull', True), ('kea_subnet_id__isnull', False)), models.Q(('kea_identity__isnull', False), ('kea_subnet_id__isnull', True)), _connector='OR'), name='keadhcplink_one_identity_kind'),

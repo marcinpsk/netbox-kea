@@ -8,11 +8,12 @@ All Kea HTTP calls are mocked; these tests require no running services.
 from unittest.mock import patch
 
 import requests
+from django.apps import apps as django_apps
 from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import ValidationError
 from django.core.management import call_command
 from django.db import IntegrityError, transaction
-from django.test import SimpleTestCase, TestCase, override_settings
+from django.test import SimpleTestCase, TestCase, TransactionTestCase, override_settings
 from netbox.models import NetBoxModel
 
 from netbox_kea.kea import KeaClient
@@ -843,9 +844,10 @@ class TestMigrationState(TestCase):
             self.fail("netbox_kea models changed with no matching migration. Run makemigrations.")
 
 
-class TestKeaDhcpLinkConstraintMigration(TestCase):
+class TestKeaDhcpLinkConstraintMigration(TransactionTestCase):
     """Current migrations must accept every KeaDhcpLink row a released deployment can hold."""
 
+    available_apps = tuple(app_config.name for app_config in django_apps.get_app_configs())
     _RELEASED = "0013_server_sync_dhcp_plugin_enabled_keadhcplink"
 
     def test_a_subnet_keyed_link_written_before_0014_survives_the_constraint(self):
@@ -878,3 +880,26 @@ class TestKeaDhcpLinkConstraintMigration(TestCase):
         link = KeaDhcpLink.objects.get(server=server)
         self.assertEqual(link.kea_subnet_id, 7)
         self.assertIsNone(link.kea_identity)
+
+    def test_an_identityless_link_is_removed_before_the_constraint_is_added(self):
+        from django.db import connection
+        from django.db.migrations.executor import MigrationExecutor
+
+        server = _make_db_server(name="identityless-link")
+        object_type = ContentType.objects.get_for_model(Server)
+        executor = MigrationExecutor(connection)
+        current = executor.loader.graph.leaf_nodes("netbox_kea")
+        executor.migrate([("netbox_kea", "0014_keadhcplink_kea_identity")])
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO netbox_kea_keadhcplink "
+                "(server_id, family, kea_subnet_id, kea_identity, object_type_id, object_id, created, last_synced) "
+                "VALUES (%s, 4, NULL, NULL, %s, %s, NOW(), NOW())",
+                [server.pk, object_type.pk, server.pk],
+            )
+
+        executor.loader.build_graph()
+        executor.migrate(current)
+
+        self.assertFalse(KeaDhcpLink.objects.filter(server=server).exists())
+        self.assertTrue(Server.objects.filter(pk=server.pk).exists())

@@ -15,6 +15,8 @@ import pytest
 import requests
 from playwright.sync_api import Locator, Page, expect
 
+from netbox_kea.constants import RESERVATION_SUBNET_DATALIST_ID
+
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
@@ -53,12 +55,13 @@ def _subnet_cidr_for_id(page: Page, subnet_id: int) -> str:
     subnets the live Kea happens to be configured with.
     """
     cidr = page.evaluate(
-        """(id) => {
-            const opts = [...document.querySelectorAll('#kea-reservation-subnet-cidrs option')];
-            const match = opts.find((o) => o.textContent.trim() === `id ${id}`);
+        """({subnetId, datalistId}) => {
+            const datalist = document.getElementById(datalistId);
+            const opts = [...datalist.querySelectorAll('option')];
+            const match = opts.find((o) => o.textContent.trim() === `id ${subnetId}`);
             return match ? match.value : '';
         }""",
-        subnet_id,
+        {"subnetId": subnet_id, "datalistId": RESERVATION_SUBNET_DATALIST_ID},
     )
     assert cidr, f"Subnet id {subnet_id} is not offered on the reservation add form"
     return cidr
