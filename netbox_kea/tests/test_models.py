@@ -8,7 +8,6 @@ All Kea HTTP calls are mocked; these tests require no running services.
 from unittest.mock import patch
 
 import requests
-from django.apps import apps as django_apps
 from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import ValidationError
 from django.core.management import call_command
@@ -847,8 +846,19 @@ class TestMigrationState(TestCase):
 class TestKeaDhcpLinkConstraintMigration(TransactionTestCase):
     """Current migrations must accept every KeaDhcpLink row a released deployment can hold."""
 
-    available_apps = tuple(app_config.name for app_config in django_apps.get_app_configs())
     _RELEASED = "0013_server_sync_dhcp_plugin_enabled_keadhcplink"
+
+    def _fixture_teardown(self):
+        """Flush cross-plugin foreign keys while preserving normal post-migrate setup."""
+        for database in self._databases_names(include_mirrors=False):
+            call_command(
+                "flush",
+                verbosity=0,
+                interactive=False,
+                database=database,
+                reset_sequences=False,
+                allow_cascade=True,
+            )
 
     def test_a_subnet_keyed_link_written_before_0014_survives_the_constraint(self):
         """Release 1.9.0 stops at 0013, where the only writer always sets kea_subnet_id."""
