@@ -139,7 +139,7 @@ class ServerViewSet(NetBoxModelViewSet):
         if hw_address and version != 4:
             return Response({"detail": "hw_address is only supported for DHCPv4."}, status=status.HTTP_400_BAD_REQUEST)
 
-        if subnet_id is not None:
+        if subnet_id:
             try:
                 parsed_subnet_id = int(subnet_id)
             except ValueError:

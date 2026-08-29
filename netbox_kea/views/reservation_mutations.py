@@ -49,6 +49,13 @@ FLEX_ID_DOCUMENTATION_URL = (
 )
 
 
+def _in_subnet_scope(reservation: Reservation) -> InSubnetReservationScope:
+    """Return the verified Subnet scope required by mutation routes."""
+    if not isinstance(reservation.scope, InSubnetReservationScope):
+        raise RuntimeError("Reservation mutation requires an In-Subnet Reservation.")
+    return reservation.scope
+
+
 def _options_from_formset(
     options_formset: Any,
     current: tuple[DHCPOption, ...] = (),
@@ -102,10 +109,11 @@ def _options_initial(reservation: Reservation) -> list[dict[str, Any]]:
 
 
 def _signed_fingerprint(reservation: Reservation) -> str:
+    scope = _in_subnet_scope(reservation)
     return signing.dumps(
         {
             "family": reservation.family,
-            "subnet_id": reservation.scope.subnet.subnet_id,
+            "subnet_id": scope.subnet.subnet_id,
             "identifier_type": reservation.identity.identifier_type,
             "identifier": reservation.identity.value,
             "fingerprint": reservation_fingerprint(reservation),
@@ -120,9 +128,10 @@ def _fingerprint_from_post(token: str, reservation: Reservation) -> str:
         payload = signing.loads(token, salt=_FINGERPRINT_SALT, max_age=86_400)
     except signing.BadSignature as exc:
         raise ReservationConflict("The edit fingerprint is invalid or expired.") from exc
+    scope = _in_subnet_scope(reservation)
     target = {
         "family": reservation.family,
-        "subnet_id": reservation.scope.subnet.subnet_id,
+        "subnet_id": scope.subnet.subnet_id,
         "identifier_type": reservation.identity.identifier_type,
         "identifier": reservation.identity.value,
     }
@@ -223,21 +232,24 @@ def _confirmed_side_effects(
         messages.info(request, "Kea applied the change. Configuration persistence is disabled for this server.")
     if sync_to_netbox and result.intended is not None and not result.intended.addresses:
         messages.info(request, f"Reservation {action}. Nothing to sync to NetBox because it reserves no IP address.")
-    elif (
-        sync_to_netbox
-        and result.intended is not None
-        and not (request.user.has_perm("ipam.add_ipaddress") and request.user.has_perm("ipam.change_ipaddress"))
-    ):
-        logger.warning("User %r requested Reservation IPAM sync without IPAM write permission", request.user)
-        messages.warning(
-            request, f"Reservation {action}, but it was not synced to NetBox. IPAM permission is required."
+    elif sync_to_netbox and result.intended is not None:
+        permission_checker = getattr(request.user, "has_perm", None)
+        has_ipam_write_permission = (
+            callable(permission_checker)
+            and permission_checker("ipam.add_ipaddress")
+            and permission_checker("ipam.change_ipaddress")
         )
-    elif sync_to_netbox and result.intended is not None and result.intended.addresses:
-        try:
-            sync_reservation_to_netbox(result.intended, cleanup=False, force=True)
-        except (DatabaseError, ValidationError, ValueError, requests.RequestException):
-            logger.exception("Could not synchronize a confirmed Reservation mutation to NetBox IPAM")
-            messages.warning(request, "The Reservation changed, but NetBox IPAM synchronization failed.")
+        if not has_ipam_write_permission:
+            logger.warning("User %r requested Reservation IPAM sync without IPAM write permission", request.user)
+            messages.warning(
+                request, f"Reservation {action}, but it was not synced to NetBox. IPAM permission is required."
+            )
+        else:
+            try:
+                sync_reservation_to_netbox(result.intended, cleanup=False, force=True)
+            except (DatabaseError, ValidationError, ValueError, requests.RequestException):
+                logger.exception("Could not synchronize a confirmed Reservation mutation to NetBox IPAM")
+                messages.warning(request, "The Reservation changed, but NetBox IPAM synchronization failed.")
     if result.verification == "failed":
         messages.warning(request, "Kea applied the change, but NetBox Kea could not verify the final Reservation.")
 
@@ -257,6 +269,17 @@ class _ReservationMutationView(_KeaChangeMixin, generic.ObjectView):
     dhcp_version: Literal[4, 6]
     form_class: type[forms.Reservation4Form] | type[forms.Reservation6Form]
     form_action: str
+
+    def _mutation_unavailable_response(
+        self,
+        request: HttpRequest,
+        server: Server,
+        capabilities: ReservationCapabilities | None,
+    ) -> HttpResponse | None:
+        if capabilities is not None and capabilities.mutation_available:
+            return None
+        messages.error(request, "Reservation mutation capabilities are unavailable.")
+        return redirect(reverse(f"plugins:netbox_kea:server_reservations{self.dhcp_version}", args=[server.pk]))
 
     def _form_context(
         self,
@@ -329,6 +352,9 @@ class _ReservationAddView(_ReservationMutationView):
     def post(self, request: HttpRequest, pk: int) -> HttpResponse:
         server = self.get_object(pk=pk)
         capabilities = _configured_capabilities(server, self.dhcp_version)
+        unavailable_response = self._mutation_unavailable_response(request, server, capabilities)
+        if unavailable_response is not None:
+            return unavailable_response
         form = self.form_class(data=request.POST, capabilities=capabilities)
         options_formset, options_valid = _build_reservation_options_formset(request.POST)
         if form.is_valid() and options_valid:
@@ -377,30 +403,30 @@ class _ReservationAddView(_ReservationMutationView):
             scope = InSubnetReservationScope(subnet.identity)
             identity = ReservationIdentity(cleaned_data["identifier_type"], cleaned_data["identifier"])
             if self.dhcp_version == 4:
-                addresses = (
+                ipv4_addresses = (
                     (ipaddress.IPv4Address(cleaned_data["ip_address"]),) if cleaned_data.get("ip_address") else ()
                 )
                 reservation: Reservation = IPv4Reservation(
                     scope=scope,
                     identity=identity,
-                    addresses=addresses,
+                    addresses=ipv4_addresses,
                     hostname=cleaned_data.get("hostname", ""),
                     options=options,
                 )
             else:
-                addresses = tuple(
+                ipv6_addresses = tuple(
                     ipaddress.IPv6Address(value)
                     for value in (cleaned_data.get("ip_addresses") or "").split(",")
                     if value
                 )
-                prefixes = tuple(
+                ipv6_prefixes = tuple(
                     ipaddress.IPv6Network(value) for value in (cleaned_data.get("prefixes") or "").split(",") if value
                 )
                 reservation = IPv6Reservation(
                     scope=scope,
                     identity=identity,
-                    addresses=addresses,
-                    delegated_prefixes=prefixes,
+                    addresses=ipv6_addresses,
+                    delegated_prefixes=ipv6_prefixes,
                     hostname=cleaned_data.get("hostname", ""),
                     options=options,
                 )
@@ -445,6 +471,10 @@ class _ReservationEditView(_ReservationMutationView):
         server = self.get_object(pk=pk)
         identity = _identity_from_request(request, self.dhcp_version)
         return_url = reverse(f"plugins:netbox_kea:server_reservations{self.dhcp_version}", args=[server.pk])
+        capabilities = _configured_capabilities(server, self.dhcp_version)
+        unavailable_response = self._mutation_unavailable_response(request, server, capabilities)
+        if unavailable_response is not None:
+            return unavailable_response
         try:
             current, catalogue = _load_target(server, self.dhcp_version, subnet_id, identity)
         except Http404:
@@ -453,7 +483,6 @@ class _ReservationEditView(_ReservationMutationView):
             logger.exception("Could not reload the Reservation edit target")
             messages.error(request, "The Reservation could not be reloaded. Edit stopped.")
             return redirect(return_url)
-        capabilities = _configured_capabilities(server, self.dhcp_version)
         form = self.form_class(data=request.POST, initial=self._initial(current), capabilities=capabilities)
         for field in ("subnet_cidr", "identifier_type", "identifier"):
             form.fields[field].disabled = True
@@ -486,8 +515,9 @@ class _ReservationEditView(_ReservationMutationView):
         return self._render(request, server, form, options_formset, capabilities)
 
     def _initial(self, reservation: Reservation) -> dict[str, Any]:
+        scope = _in_subnet_scope(reservation)
         initial = {
-            "subnet_cidr": reservation.scope.subnet.cidr,
+            "subnet_cidr": scope.subnet.cidr,
             "identifier_type": reservation.identity.identifier_type,
             "identifier": reservation.identity.value,
             "hostname": reservation.hostname,
@@ -512,6 +542,8 @@ class _ReservationEditView(_ReservationMutationView):
         cleaned_data: dict[str, Any],
         options: tuple[DHCPOption, ...],
     ) -> ReservationChange:
+        addresses: tuple[ipaddress.IPv4Address | ipaddress.IPv6Address, ...]
+        prefixes: tuple[ipaddress.IPv6Network, ...]
         if current.family == 4:
             addresses = (ipaddress.IPv4Address(cleaned_data["ip_address"]),) if cleaned_data.get("ip_address") else ()
             prefixes = current.delegated_prefixes
@@ -563,9 +595,9 @@ class _ReservationDeleteView(_ReservationMutationView):
         identity = _identity_from_request(request, self.dhcp_version)
         return_url = reverse(f"plugins:netbox_kea:server_reservations{self.dhcp_version}", args=[server.pk])
         capabilities = _configured_capabilities(server, self.dhcp_version)
-        if capabilities is None or not capabilities.mutation_available:
-            messages.error(request, "Reservation mutation capabilities are unavailable.")
-            return redirect(return_url)
+        unavailable_response = self._mutation_unavailable_response(request, server, capabilities)
+        if unavailable_response is not None:
+            return unavailable_response
         try:
             reservation, catalogue = _load_target(server, self.dhcp_version, subnet_id, identity)
             client = server.get_client(version=self.dhcp_version)

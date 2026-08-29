@@ -20,7 +20,12 @@ from django.utils import timezone
 
 from netbox_kea.kea import KeaClient
 from netbox_kea.mappers.kea_to_dhcp import parse_dhcp_config
-from netbox_kea.reservations import ReservationDiagnostic, ReservationSnapshot
+from netbox_kea.reservations import (
+    RESERVATION_INVALID_IDENTIFIER,
+    RESERVATION_PAGE_FETCH_FAILED,
+    ReservationDiagnostic,
+    ReservationSnapshot,
+)
 from netbox_kea.subnet_catalogue import IdentityOnlyCatalogueSnapshot, SubnetIdentity, VerifiedSubnet
 
 from .kea_stub import _res_page, stub_kea
@@ -1042,13 +1047,13 @@ class ImportSummaryCompletenessTest(SimpleTestCase):
     def test_truncated_snapshot_reports_counts_as_unread_without_quarantine(self):
         # A truncated traversal imports only part of the record set, so the counts
         # are no more complete than for a Snapshot that could not be read at all.
-        summary = self._import(self._snapshot(diagnostic_code="page-fetch-failed"))
+        summary = self._import(self._snapshot(diagnostic_code=RESERVATION_PAGE_FETCH_FAILED))
 
         self.assertTrue(summary.reservations_unread)
         self.assertEqual(summary.reservations_quarantined, 0)
 
     def test_record_quarantine_keeps_counts_read_and_counts_the_malformed_record(self):
-        summary = self._import(self._snapshot(diagnostic_code="invalid-identifier"))
+        summary = self._import(self._snapshot(diagnostic_code=RESERVATION_INVALID_IDENTIFIER))
 
         self.assertFalse(summary.reservations_unread)
         self.assertEqual(summary.reservations_quarantined, 1)

@@ -199,6 +199,16 @@ class TestLease4API(_APITestBase):
         self.assertIn("count", data)
         self.assertEqual(data["count"], 1)
 
+    def test_blank_subnet_id_does_not_override_the_ip_selector(self):
+        """An empty non-selected Subnet filter does not reject an IP search."""
+        with stub_kea({"lease4-get": _LEASE4_RESPONSE}) as kea:
+            response = self.api_client.get(
+                self._url(),
+                {"ip_address": "10.0.0.100", "subnet_id": ""},
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(kea.commands(), ["lease4-get"])
+
     def test_get_by_hw_address_returns_200(self):
         """?hw_address=aa:bb:cc:dd:ee:ff returns 200 with lease list."""
         with stub_kea({"lease4-get-by-hw-address": _LEASE4_LIST_RESPONSE}):

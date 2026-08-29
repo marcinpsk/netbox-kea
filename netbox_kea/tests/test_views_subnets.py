@@ -41,6 +41,23 @@ _STAT_ABSENT4 = {"result": 2, "text": "unknown command 'stat-lease4-get'"}
 _STAT_ABSENT6 = {"result": 2, "text": "unknown command 'stat-lease6-get'"}
 
 
+def _pool_add_registry(subnet_id: int, cidr: str) -> dict:
+    """Return the pool-add command chain for one Subnet."""
+    return {
+        "subnet4-list": _subnet_list(4, [{"id": subnet_id, "subnet": cidr}]),
+        "reservation-get-page": {"result": 3},
+        "list-commands": {
+            "result": 0,
+            "arguments": ["subnet4-pool-add", "config-get", "config-test", "config-write"],
+        },
+        "subnet4-pool-add": {"result": 0},
+        "config-get": _EMPTY_CONFIG4,
+        "config-test": {"result": 0},
+        "config-write": {"result": 0},
+        "stat-lease4-get": _STAT_ABSENT4,
+    }
+
+
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestServerSubnets4View(_ViewTestBase):
     """GET /plugins/kea/servers/<pk>/subnets4/"""
@@ -2191,21 +2208,7 @@ class TestPoolAddPostErrors(_ViewTestBase):
 
         follow=True lands on the subnets list (config-get + stat). Override a leg to drive errors.
         """
-        base = {
-            # The overlap probe reads the Subnet Catalogue first; without this the
-            # unregistered command aborts the probe before it reads any reservation.
-            "subnet4-list": _subnet_list(4, [{"id": 1, "subnet": "10.0.0.0/24"}]),
-            "reservation-get-page": {"result": 3},
-            "list-commands": {
-                "result": 0,
-                "arguments": ["subnet4-pool-add", "config-get", "config-test", "config-write"],
-            },
-            "subnet4-pool-add": {"result": 0},
-            "config-get": _EMPTY_CONFIG4,
-            "config-test": {"result": 0},
-            "config-write": {"result": 0},
-            "stat-lease4-get": _STAT_ABSENT4,
-        }
+        base = _pool_add_registry(1, "10.0.0.0/24")
         base.update(overrides)
         return stub_kea(base)
 
@@ -2578,21 +2581,7 @@ class TestSubnetViewCoverageGaps(_ViewTestBase):
 
     def _pool_add_stub(self, **overrides):
         """pool_add chain: reservation overlap probe → list-commands → subnet4-pool-add → persist + list."""
-        base = {
-            # The probe reads the Subnet catalogue first, so subnet4-list must answer or the
-            # overlap tests below exercise an unregistered-command error instead of Kea's.
-            "subnet4-list": _subnet_list(4, [{"id": 42, "subnet": "10.0.0.0/24"}]),
-            "reservation-get-page": {"result": 3},
-            "list-commands": {
-                "result": 0,
-                "arguments": ["subnet4-pool-add", "config-get", "config-test", "config-write"],
-            },
-            "subnet4-pool-add": {"result": 0},
-            "config-get": _EMPTY_CONFIG4,
-            "config-test": {"result": 0},
-            "config-write": {"result": 0},
-            "stat-lease4-get": _STAT_ABSENT4,
-        }
+        base = _pool_add_registry(42, "10.0.0.0/24")
         base.update(overrides)
         return stub_kea(base)
 
