@@ -20,13 +20,14 @@ import ipaddress
 import threading
 from collections import deque
 from contextlib import contextmanager
-from typing import Any
+from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 import requests
 
 from netbox_kea.reservations import (
     GlobalReservationScope,
+    IdentifierType,
     InSubnetReservationScope,
     IPv4Reservation,
     IPv6Reservation,
@@ -139,7 +140,10 @@ class KeaHttpStub:
     def commands(self) -> list[str]:
         """Ordered list of command names sent."""
         with self._lock:
-            return [r.get("command") for r in self.requests]
+            commands = [request.get("command") for request in self.requests]
+        if not all(isinstance(command, str) for command in commands):
+            raise AssertionError(f"Recorded a Kea request without a command: {commands!r}")
+        return cast(list[str], commands)
 
     def bodies(self, command: str) -> list[dict[str, Any]]:
         """Every request body sent for *command* (for asserting args / absence of ``service``)."""
@@ -166,7 +170,12 @@ def _reservation_family(host: dict[str, Any]) -> int:
     Delegated prefixes are DHCPv6 only, so a prefix-only fixture is v6 even when it
     carries no address at all.
     """
-    addresses = host.get("ip-addresses") or [host.get("ip-address", "")]
+    raw_addresses = host.get("ip-addresses")
+    if isinstance(raw_addresses, list):
+        addresses = [address for address in raw_addresses if isinstance(address, str)]
+    else:
+        singular = host.get("ip-address")
+        addresses = [singular] if isinstance(singular, str) else []
     if "ip-addresses" in host or host.get("prefixes"):
         return 6
     return 6 if any(":" in address for address in addresses if address) else 4
@@ -177,11 +186,12 @@ def _typed_reservation(raw: dict[str, Any], *, prefix_length: int | None = None)
     family = _reservation_family(raw)
     address_values = raw.get("ip-addresses") or ([raw["ip-address"]] if raw.get("ip-address") else [])
     addresses = tuple(ipaddress.ip_address(address) for address in address_values)
+    identity_types: tuple[IdentifierType, ...] = ("hw-address", "duid", "circuit-id", "client-id", "flex-id")
     identity_type = next(
-        (key for key in ("hw-address", "duid", "circuit-id", "client-id", "flex-id") if raw.get(key)),
+        (key for key in identity_types if raw.get(key)),
         "duid" if family == 6 else "flex-id",
     )
-    identity_value = raw.get(identity_type) or ("00:01" if family == 6 else "test-reservation")
+    identity_value = cast(str, raw.get(identity_type) or ("00:01" if family == 6 else "test-reservation"))
     if addresses:
         default_prefix = 64 if family == 6 else 24
         network = ipaddress.ip_network(f"{addresses[0]}/{prefix_length or default_prefix}", strict=False)

@@ -376,6 +376,7 @@ class TestKeaServerTabs:
     ) -> None:
         """Selecting a server and clicking 'Edit Selected' reaches /servers/edit/."""
         page.goto(f"{plugin_base}/servers/")
+        _dismiss_debug_toolbar(page)
         # Select the first row checkbox
         page.locator("table input[type=checkbox]").first.check()
         page.get_by_role("button", name=re.compile(r"edit.?selected", re.I)).click()
@@ -842,7 +843,7 @@ class TestReservationCRUD:
         derive it instead of pinning one range.
         """
         network = ipaddress.ip_network(cidr)
-        assert network.num_addresses >= abs(self._TEST_HOST_OFFSET), (
+        assert network.num_addresses > abs(self._TEST_HOST_OFFSET), (
             f"Subnet {cidr} is too small for a reservation at host offset {self._TEST_HOST_OFFSET}"
         )
         return str(network[self._TEST_HOST_OFFSET])

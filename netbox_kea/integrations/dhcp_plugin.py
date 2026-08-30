@@ -674,6 +674,7 @@ def upsert_subnet(server, dhcp_server, intent: SubnetIntent, summary: ImportSumm
                     family=intent.family,
                     kea_subnet_id=intent.kea_subnet_id,
                     defaults={
+                        "kea_identity": None,
                         "object_type": ContentType.objects.get_for_model(Subnet),
                         "object_id": subnet_obj.pk,
                     },

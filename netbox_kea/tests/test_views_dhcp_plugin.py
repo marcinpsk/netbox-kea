@@ -13,6 +13,7 @@ import re
 import unittest
 from unittest.mock import patch
 
+import requests
 from django.apps import apps
 from django.test import SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
@@ -78,15 +79,37 @@ class SyncResponseRoutingTest(SimpleTestCase):
                 _request_version(body)
 
 
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class FetchReservationSnapshotTest(TestCase):
+    """`_fetch_reservation_snapshot` distinguishes partial data from read failure."""
+
+    def _server(self):
+        return _make_db_server(name="snapshot-test", dhcp4=True, dhcp6=False)
+
+    def test_returns_an_incomplete_snapshot_when_kea_returns_one_bad_record(self):
+        responses = _sync_responses(
+            {4: {"subnet4": [{"id": 1, "subnet": "198.18.0.0/24"}]}},
+            {4: [{"subnet-id": 1, "hw-address": "aa:bb:cc:dd:ee:ff", "ip-address": "not-an-address"}]},
+        )
+
+        with stub_kea(responses):
+            snapshot = dps._fetch_reservation_snapshot(self._server(), 4)
+
+        self.assertIsNotNone(snapshot)
+        self.assertFalse(snapshot.complete)
+
+    def test_returns_none_when_the_supported_snapshot_read_fails(self):
+        responses = _sync_responses({4: {"subnet4": [{"id": 1, "subnet": "198.18.0.0/24"}]}})
+        responses["reservation-get-page"] = requests.ConnectionError("read failed")
+
+        with self.assertLogs("netbox_kea.views.dhcp_plugin_sync", level="WARNING"), stub_kea(responses):
+            snapshot = dps._fetch_reservation_snapshot(self._server(), 4)
+
+        self.assertIsNone(snapshot)
+
+
 class ExtractDhcpConfTest(SimpleTestCase):
     """`_extract_dhcp_conf` pulls the right block and *raises* on malformed shapes."""
-
-    def test_reservation_snapshot_docstring_allows_an_incomplete_snapshot(self):
-        """Document that only ``None`` means the read itself failed."""
-        docstring = dps._fetch_reservation_snapshot.__doc__ or ""
-
-        self.assertIn("incomplete", docstring)
-        self.assertIn("None", docstring)
 
     def test_extracts_dhcp4_block(self):
         resp = [{"result": 0, "arguments": {"Dhcp4": {"subnet4": []}}}]

@@ -138,6 +138,30 @@ class TestReservation4API(_APITestBase):
         response = self.api_client.get(self._url(pk=99999), {"page": "1"})
         self.assertEqual(response.status_code, 404)
 
+    def test_incomplete_tls_configuration_returns_server_error_for_every_query_mode(self):
+        """A stored Server configuration failure is not a malformed API selector."""
+        self.server.client_cert_path = "/certs/client.pem"
+        self.server.client_key_path = None
+        self.server.save(update_fields=("client_cert_path", "client_key_path"))
+        cases = (
+            {"page": "1"},
+            {
+                "scope": "in-subnet",
+                "subnet_id": "20",
+                "identifier_type": "hw-address",
+                "identifier": "aa:bb:cc:dd:ee:ff",
+            },
+            {"subnet_id": "20", "ip_address": "198.18.0.20"},
+            {"hostname": "host.example.invalid"},
+        )
+
+        for params in cases:
+            with self.subTest(params=params):
+                response = self.api_client.get(self._url(), params)
+
+                self.assertEqual(response.status_code, 500)
+                self.assertEqual(response.json()["detail"], "Invalid Kea server configuration.")
+
     def test_scoped_address_returns_the_normalized_canonical_record(self):
         responses = _catalogue_responses(4, 20, "198.18.0.0/24")
         responses["reservation-get"] = _res_get(

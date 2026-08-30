@@ -430,6 +430,16 @@ class TestSyncReservationMultiAddressV6(TestCase):
         self.assertTrue(created)
         self.assertTrue(str(ip_obj.address).startswith("10.0.0.55/"))
 
+    def test_explicit_null_ip_addresses_is_an_empty_address_list(self):
+        from netbox_kea.sync import _record_hostname_and_addresses
+
+        hostname, addresses = _record_hostname_and_addresses(
+            {"hostname": "v6host.example.invalid", "ip-addresses": None}
+        )
+
+        self.assertEqual(hostname, "v6host.example.invalid")
+        self.assertEqual(addresses, set())
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # P1 — IP Status Semantics (dhcp / reserved / active)

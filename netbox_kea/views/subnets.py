@@ -23,6 +23,7 @@ from ..utilities import (
     check_dhcp_enabled,
     export_table,
     kea_error_hint,
+    parse_pool_range,
 )
 from ._base import _KeaChangeMixin
 
@@ -251,13 +252,9 @@ def _warn_pool_reservation_overlap(
         f"The Reservation overlap check did not run. Pool {pool_str} was not checked against existing Reservations."
     )
     try:
-        from netaddr import IPAddress, IPNetwork, IPRange
+        from netaddr import IPAddress
 
-        if "-" in pool_str and "/" not in pool_str:
-            start, end = pool_str.split("-", 1)
-            pool_range: IPRange | IPNetwork = IPRange(start.strip(), end.strip())
-        else:
-            pool_range = IPNetwork(pool_str)
+        pool_range = parse_pool_range(pool_str)
 
         snapshot = client.reservation_snapshot(
             version, subnet_catalogue(server, version), page_size=200, subnet_id=subnet_id
@@ -309,7 +306,7 @@ def _warn_reservation_pool_overlap(
     pool entry.  Silently skips on any error.
     """
     try:
-        from netaddr import IPAddress, IPNetwork, IPRange
+        from netaddr import IPAddress
 
         resp = client.command(
             f"subnet{version}-get",
@@ -331,11 +328,7 @@ def _warn_reservation_pool_overlap(
             ps = pool_entry.get("pool", "")
             if not ps:
                 continue
-            if "-" in ps and "/" not in ps:
-                start, end = ps.split("-", 1)
-                pool_range: IPRange | IPNetwork = IPRange(start.strip(), end.strip())
-            else:
-                pool_range = IPNetwork(ps)
+            pool_range = parse_pool_range(ps)
             if ip in pool_range:
                 messages.warning(
                     request,

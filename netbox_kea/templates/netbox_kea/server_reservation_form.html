@@ -153,7 +153,7 @@
             <tbody id="formset-rows">
               {% for opt_form in options_formset %}
                 <tr class="formset-row">
-                  <td>{{ opt_form.name }}{% for err in opt_form.name.errors %}<div class="text-danger small">{{ err }}</div>{% endfor %}</td>
+                  <td>{{ opt_form.original_index }}{{ opt_form.name }}{% for err in opt_form.name.errors %}<div class="text-danger small">{{ err }}</div>{% endfor %}</td>
                   <td>{{ opt_form.data }}{% for err in opt_form.data.errors %}<div class="text-danger small">{{ err }}</div>{% endfor %}</td>
                   <td class="text-center">{{ opt_form.always_send }}</td>
                   <td class="text-center">{{ opt_form.DELETE }}</td>

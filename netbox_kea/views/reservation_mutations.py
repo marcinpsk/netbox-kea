@@ -62,27 +62,49 @@ def _options_from_formset(
 ) -> tuple[DHCPOption, ...]:
     """Apply visible form changes while preserving unexposed option facts."""
     options: list[DHCPOption] = []
-    for index, row in enumerate(getattr(options_formset, "cleaned_data", []) or []):
+    remaining = list(enumerate(current))
+    for row in getattr(options_formset, "cleaned_data", []) or []:
         if not row or not row.get("name") or row.get("DELETE"):
             continue
         submitted_always_send = bool(row.get("always_send"))
-        if index < len(current):
-            existing = current[index]
+        original_index = row.get("original_index")
+        existing: DHCPOption | None
+        if original_index is not None:
+            matching_position = next(
+                (
+                    position
+                    for position, (current_index, _option) in enumerate(remaining)
+                    if original_index == current_index
+                ),
+                None,
+            )
+            if matching_position is None:
+                raise ValueError("The Reservation option source does not match the current Reservation.")
+            _, existing = remaining.pop(matching_position)
             displayed_name = existing.name or (str(existing.code) if existing.code is not None else "")
-            if row["name"] == displayed_name:
-                always_send = (
-                    existing.always_send
-                    if submitted_always_send == bool(existing.always_send)
-                    else submitted_always_send
+            if row["name"] != displayed_name:
+                existing = None
+        else:
+            matching_positions = [
+                position
+                for position, (_current_index, option) in enumerate(remaining)
+                if row["name"] == (option.name or (str(option.code) if option.code is not None else ""))
+            ]
+            if len(matching_positions) > 1:
+                raise ValueError("The Reservation option name is ambiguous without its source position.")
+            existing = remaining.pop(matching_positions[0])[1] if matching_positions else None
+        if existing is not None:
+            always_send = (
+                existing.always_send if submitted_always_send == bool(existing.always_send) else submitted_always_send
+            )
+            options.append(
+                replace(
+                    existing,
+                    data=row["data"],
+                    always_send=always_send,
                 )
-                options.append(
-                    replace(
-                        existing,
-                        data=row["data"],
-                        always_send=always_send,
-                    )
-                )
-                continue
+            )
+            continue
         options.append(
             DHCPOption(
                 code=None,
@@ -100,11 +122,12 @@ def _options_from_formset(
 def _options_initial(reservation: Reservation) -> list[dict[str, Any]]:
     return [
         {
+            "original_index": index,
             "name": option.name or (str(option.code) if option.code is not None else ""),
             "data": option.data,
             "always_send": bool(option.always_send),
         }
-        for option in reservation.options
+        for index, option in enumerate(reservation.options)
     ]
 
 
@@ -441,7 +464,7 @@ class _ReservationAddView(_ReservationMutationView):
                         str(address),
                     )
             except (KeaException, requests.RequestException, RuntimeError, ValueError):
-                logger.debug("Could not check Reservation pool overlap", exc_info=True)
+                logger.warning("Could not check Reservation pool overlap", exc_info=True)
             return client.reservation_create(reservation, catalogue)
 
 

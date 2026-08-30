@@ -1,4 +1,5 @@
 import os
+import warnings
 from collections.abc import Iterator
 from functools import partial
 from urllib.parse import urlsplit
@@ -6,6 +7,17 @@ from urllib.parse import urlsplit
 import pynetbox
 import pytest
 import requests
+
+
+def _delete_created_servers(api: pynetbox.api, created_server_ids: set[int]) -> None:
+    """Delete every session-owned Server, and report failures without stopping."""
+    for server_id in sorted(created_server_ids):
+        try:  # noqa: PERF203 - each deletion needs independent best-effort cleanup
+            server = api.plugins.kea.servers.get(server_id)
+            if server is not None and server.delete() is not True:
+                raise RuntimeError("the NetBox API did not confirm deletion")
+        except Exception as exc:  # noqa: BLE001,PERF203 - cleanup must continue after each failure
+            warnings.warn(f"Could not delete test Server {server_id}: {exc}", RuntimeWarning, stacklevel=2)
 
 
 def _record_created_server_ids(
@@ -117,10 +129,7 @@ def nb_api(netbox_url: str, netbox_token: str) -> Iterator[pynetbox.api]:
 
     yield api
 
-    for server_id in sorted(created_server_ids):
-        server = api.plugins.kea.servers.get(server_id)
-        if server is not None:
-            assert server.delete() is True
+    _delete_created_servers(api, created_server_ids)
 
 
 @pytest.fixture
