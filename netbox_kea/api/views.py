@@ -28,6 +28,26 @@ from .serializers import ServerSerializer
 logger = logging.getLogger(__name__)
 
 
+class _KeaServerConfigurationError(RuntimeError):
+    """The stored Server fields cannot construct a Kea client."""
+
+
+def _reservation_client(server, version: int):
+    """Return the configured client, with configuration failures kept distinct."""
+    try:
+        return server.get_client(version=version)
+    except ValueError as exc:
+        raise _KeaServerConfigurationError from exc
+
+
+def _server_configuration_error_response(server) -> Response:
+    logger.exception("Invalid Kea configuration on server %s", server.name)
+    return Response(
+        {"detail": "Invalid Kea server configuration."},
+        status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+    )
+
+
 def _reservation_snapshot_data(snapshot: ReservationSnapshot) -> dict:
     """Return one normalized REST page without raw rejected Kea data."""
     return {
@@ -243,14 +263,16 @@ class ServerViewSet(NetBoxModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
         try:
+            client = _reservation_client(server, version)
             catalogue = subnet_catalogue(server, version)
-            client = server.get_client(version=version)
             snapshot = client.reservation_page(
                 version,
                 catalogue,
                 cursor=params.get("cursor"),
                 limit=limit,
             )
+        except _KeaServerConfigurationError:
+            return _server_configuration_error_response(server)
         except requests.RequestException:
             logger.exception("Kea connection error on server %s", server.name)
             return Response({"detail": "Could not connect to Kea server."}, status=status.HTTP_502_BAD_GATEWAY)
@@ -284,6 +306,8 @@ class ServerViewSet(NetBoxModelViewSet):
                 subnet_id = int(params.get("subnet_id", ""))
             else:
                 raise ValueError("scope must be global or in-subnet.")
+            identity = ReservationIdentity(identifier_type, identifier)
+            client = _reservation_client(server, version)
             catalogue = subnet_catalogue(server, version)
             if subnet_id is None:
                 scope: ReservationScope = GlobalReservationScope()
@@ -292,14 +316,14 @@ class ServerViewSet(NetBoxModelViewSet):
                 if subnet is None:
                     raise ValueError("The Reservation Subnet is not verified.")
                 scope = InSubnetReservationScope(subnet.identity)
-            identity = ReservationIdentity(identifier_type, identifier)
-            client = server.get_client(version=version)
             reservation = client.reservation_by_identity(version, catalogue, scope, identity)
         except MalformedReservation:
             logger.warning("Malformed exact Reservation target on server %s", server.name, exc_info=True)
             return Response(
                 {"detail": "Kea returned a malformed Reservation target."}, status=status.HTTP_502_BAD_GATEWAY
             )
+        except _KeaServerConfigurationError:
+            return _server_configuration_error_response(server)
         except requests.RequestException:
             logger.exception("Kea connection error on server %s", server.name)
             return Response({"detail": "Could not connect to Kea server."}, status=status.HTTP_502_BAD_GATEWAY)
@@ -317,12 +341,12 @@ class ServerViewSet(NetBoxModelViewSet):
         """Resolve one In-Subnet address to its canonical Reservation."""
         try:
             subnet_id = int(params.get("subnet_id", ""))
+            client = _reservation_client(server, version)
             catalogue = subnet_catalogue(server, version)
             subnet = catalogue.find_by_id(subnet_id)
             if subnet is None:
                 raise ValueError("The Reservation Subnet is not verified.")
             scope = InSubnetReservationScope(subnet.identity)
-            client = server.get_client(version=version)
             reservation = client.reservation_by_address(
                 version,
                 catalogue,
@@ -334,6 +358,8 @@ class ServerViewSet(NetBoxModelViewSet):
             return Response(
                 {"detail": "Kea returned a malformed Reservation target."}, status=status.HTTP_502_BAD_GATEWAY
             )
+        except _KeaServerConfigurationError:
+            return _server_configuration_error_response(server)
         except requests.RequestException:
             logger.exception("Kea connection error on server %s", server.name)
             return Response({"detail": "Could not connect to Kea server."}, status=status.HTTP_502_BAD_GATEWAY)
@@ -349,10 +375,14 @@ class ServerViewSet(NetBoxModelViewSet):
 
     def _reservation_hostname_response(self, server, hostname: str, version: int) -> Response:
         """Return one normalized hostname Reservation Snapshot."""
+        if not hostname:
+            return Response({"detail": "Invalid hostname selector."}, status=status.HTTP_400_BAD_REQUEST)
         try:
+            client = _reservation_client(server, version)
             catalogue = subnet_catalogue(server, version)
-            client = server.get_client(version=version)
             snapshot = client.reservations_by_hostname(version, catalogue, hostname)
+        except _KeaServerConfigurationError:
+            return _server_configuration_error_response(server)
         except requests.RequestException:
             logger.exception("Kea connection error on server %s", server.name)
             return Response({"detail": "Could not connect to Kea server."}, status=status.HTTP_502_BAD_GATEWAY)

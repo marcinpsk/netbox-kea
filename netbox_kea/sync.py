@@ -757,7 +757,7 @@ def _record_hostname_and_addresses(record: dict | Reservation) -> tuple[str, set
     """Return one record's hostname and its address strings."""
     if isinstance(record, dict):
         addresses = {record["ip-address"]} if record.get("ip-address") else set()
-        addresses |= {address for address in record.get("ip-addresses", []) if address}
+        addresses |= {address for address in (record.get("ip-addresses") or []) if address}
         return record.get("hostname", ""), addresses
     if isinstance(record, Reservation):
         return record.hostname, {str(address) for address in record.addresses}

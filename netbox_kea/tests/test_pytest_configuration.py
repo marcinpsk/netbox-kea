@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pytest
 import requests
+import yaml
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 #: The Playwright suite. It must stay inside the path the integration job runs.
@@ -27,6 +28,26 @@ _INTEGRATION_SUITE = REPOSITORY_ROOT / "tests"
 
 SERIAL_BY_DESIGN = "1"
 """The one worker count a unit-test command may request instead of ``auto``."""
+
+
+def _workflow_uv_commands(workflow: str) -> list[str]:
+    """Return each uv shell command from every workflow run step."""
+    jobs = yaml.safe_load(workflow)["jobs"]
+    scripts = (step["run"] for job in jobs.values() for step in job.get("steps", ()) if "run" in step)
+    return [
+        command.strip()
+        for script in scripts
+        for command in re.findall(r"(?:^|[|;&])\s*(uv\b[^|;&\n]*)", script.replace("\\\n", " "), re.MULTILINE)
+    ]
+
+
+def _workflow_ruff_targets(workflow: str) -> set[str]:
+    """Return the repository targets from each CI Ruff command."""
+    return {
+        match.group(1)
+        for command in _workflow_uv_commands(workflow)
+        if (match := re.search(r"\bruff (?:check|format --check) (\S+)$", command))
+    }
 
 
 def _pytest_commands(text: str) -> list[str]:
@@ -153,9 +174,11 @@ def test_ci_configuration_writer_generates_the_requested_plugins(monkeypatch, tm
 def test_integration_image_installs_the_wheel_into_the_netbox_venv():
     """The uv branch must target the same NetBox venv as the pip fallback."""
     dockerfile = (REPOSITORY_ROOT / "tests" / "docker" / "Dockerfile").read_text()
-    uv_install = next(line for line in dockerfile.splitlines() if "uv pip install" in line)
+    logical_lines = re.sub(r"[ \t]*\\\n[ \t]*", " ", dockerfile).splitlines()
+    uv_installs = [line for line in logical_lines if "uv pip install" in line]
 
-    assert "--python /opt/netbox/venv/bin/python" in uv_install
+    assert uv_installs, "The integration image no longer installs the plugin with uv."
+    assert all("--python /opt/netbox/venv/bin/python" in line for line in uv_installs)
 
 
 def test_database_jobs_use_the_shared_ci_configuration_writer():
@@ -165,10 +188,41 @@ def test_database_jobs_use_the_shared_ci_configuration_writer():
     dhcp_plugin_job = re.sub(r"[ \t]*\\\n[ \t]*", " ", _workflow_job(workflow, "dhcp-plugin-test"))
     writer = 'python "${{ github.workspace }}/scripts/write_netbox_ci_configuration.py"'
 
+    for anchor in (
+        "netbox-test-services",
+        "checkout-repository",
+        "checkout-netbox",
+        "setup-uv",
+        "setup-python",
+    ):
+        assert f"&{anchor}" in unit_test_job, anchor
+        assert f"*{anchor}" in dhcp_plugin_job, anchor
+
     assert workflow.count(writer) == 2
     assert f"{writer} --output netbox/configuration.py --plugin netbox_kea\n" in unit_test_job
     assert f"{writer} --output netbox/configuration.py --plugin netbox_kea --plugin netbox_dhcp\n" in dhcp_plugin_job
     assert "cat > netbox/configuration.py" not in workflow
+
+    uv_commands = _workflow_uv_commands(workflow)
+    assert uv_commands
+    assert all("--native-tls" in command for command in uv_commands), uv_commands
+
+
+def test_workflow_uv_command_parser_splits_pipelines():
+    """Check every uv command in one run step independently."""
+    workflow = """\
+jobs:
+  test:
+    steps:
+      - run: |
+          uv export --native-tls | \\
+            uv pip install -r /dev/stdin
+"""
+
+    assert _workflow_uv_commands(workflow) == [
+        "uv export --native-tls",
+        "uv pip install -r /dev/stdin",
+    ]
 
 
 def test_workflow_job_slice_uses_structural_job_boundaries():
@@ -184,18 +238,19 @@ def test_workflow_job_slice_uses_structural_job_boundaries():
 
 
 def test_dhcp_plugin_job_uses_the_unit_test_runtime_versions():
-    """Keep both database-backed CI jobs on the same NetBox and Python inputs."""
+    """Define each shared runtime input once, so database jobs cannot drift."""
     workflow = (REPOSITORY_ROOT / ".github/workflows/ci.yml").read_text()
     unit_test_job = _workflow_job(workflow, "unit-test")
     dhcp_plugin_job = _workflow_job(workflow, "dhcp-plugin-test")
 
     for setting in ("ref", "python-version-file"):
         pattern = rf"^\s+{setting}: (.+)$"
-        unit_value = re.search(pattern, unit_test_job, re.MULTILINE)
-        plugin_value = re.search(pattern, dhcp_plugin_job, re.MULTILINE)
-        assert unit_value is not None, (setting, unit_test_job)
-        assert plugin_value is not None, (setting, dhcp_plugin_job)
-        assert plugin_value.group(1) == unit_value.group(1), setting
+        values = re.findall(pattern, unit_test_job, re.MULTILINE)
+        assert values, (setting, workflow)
+        assert len(values) == 1, f"{setting} is repeated in the shared setup and can drift: {values}"
+        assert not re.findall(pattern, dhcp_plugin_job, re.MULTILINE), (
+            f"{setting} must come from the shared setup anchor, not a second declaration."
+        )
 
 
 def test_worker_settings_are_read_as_whole_tokens():
@@ -693,6 +748,14 @@ def test_the_compose_stack_builds_no_empty_list_element():
     )
 
 
+def test_lowercase_no_proxy_inherits_the_uppercase_proxy_list():
+    """Requests reads lowercase first, so it must retain an uppercase-only host list."""
+    compose = _COMPOSE_FILE.read_text()
+    line = next(line.strip() for line in compose.splitlines() if line.strip().startswith("no_proxy:"))
+
+    assert line.index("${no_proxy:+") < line.index("${NO_PROXY:+") < line.index("localhost")
+
+
 def _unscoped_deletes(source: str) -> list[str]:
     """Return every ``.delete()`` whose receiver or argument names a whole collection.
 
@@ -791,6 +854,42 @@ def test_created_server_tracker_records_only_successful_server_creates() -> None
     assert created_server_ids == {17, 18, 19, 23}
 
 
+def test_created_server_cleanup_warns_and_continues_after_one_delete_fails() -> None:
+    """One stale Server must not prevent cleanup of every later session-owned Server."""
+    from tests.conftest import _delete_created_servers
+
+    deleted: list[int] = []
+
+    class Server:
+        def __init__(self, identifier: int) -> None:
+            self.identifier = identifier
+
+        def delete(self) -> bool:
+            deleted.append(self.identifier)
+            if self.identifier == 17:
+                raise requests.ConnectionError("delete failed")
+            return True
+
+    class Servers:
+        @staticmethod
+        def get(identifier: int) -> Server:
+            return Server(identifier)
+
+    class API:
+        class Plugins:
+            class Kea:
+                servers = Servers()
+
+            kea = Kea()
+
+        plugins = Plugins()
+
+    with pytest.warns(RuntimeWarning, match="Server 17"):
+        _delete_created_servers(API(), {17, 18})
+
+    assert deleted == [17, 18]
+
+
 #: Type aliases that describe one shared fact and must have exactly one definition.
 #: The "Value" suffix keeps them apart from netaddr's same-named classes, which this
 #: package also imports and which are not interchangeable with the stdlib ones.
@@ -833,10 +932,10 @@ def test_ci_lints_every_file_the_pre_commit_hooks_lint():
     place that decides what is out of scope.
     """
     workflow = (REPOSITORY_ROOT / ".github/workflows/ci.yml").read_text()
-    targets = re.findall(r"run: uv run ruff (?:check|format --check) (\S+)", workflow)
+    targets = _workflow_ruff_targets(workflow)
     assert targets, "The lint job no longer runs ruff; this guard would read nothing."
-    assert set(targets) == {"."}, (
-        f"CI runs ruff over {sorted(set(targets))}, but the pre-commit hooks read every "
+    assert targets == {"."}, (
+        f"CI runs ruff over {sorted(targets)}, but the pre-commit hooks read every "
         "Python file in the repository. Narrow the scope in [tool.ruff] exclude instead."
     )
 
@@ -848,7 +947,7 @@ def test_published_docs_run_ruff_over_the_scope_ci_lints():
     must read the same files as the lint job.
     """
     workflow = (REPOSITORY_ROOT / ".github/workflows/ci.yml").read_text()
-    ci_targets = set(re.findall(r"run: uv run ruff (?:check|format --check) (\S+)", workflow))
+    ci_targets = _workflow_ruff_targets(workflow)
     assert ci_targets, "The lint job no longer runs ruff; this guard would read nothing."
 
     for name in _PUBLISHED_DOCS:
@@ -1091,6 +1190,20 @@ def test_the_reservation_cleanup_reports_a_delete_the_server_refused():
 def test_strict_reservation_cleanup_accepts_a_successful_delete():
     """Strict cleanup does not report a Reservation that the server removed."""
     assert _run_reservation_cleanup(delete_succeeds=True, strict=True) == []
+
+
+def test_reservation_workflow_rejects_an_offset_at_the_network_boundary():
+    """A negative offset equal to the Subnet size selects the network address."""
+    pytest.importorskip("playwright", reason="pytest-playwright is a dev dependency")
+    spec = importlib.util.spec_from_file_location("_kea_browser_suite_boundary", _BROWSER_SUITE / "test_workflows.py")
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    workflow = module.TestReservationCRUD()
+    workflow._TEST_HOST_OFFSET = -32
+
+    with pytest.raises(AssertionError, match="too small"):
+        workflow._test_ip("198.18.0.0/27")
 
 
 #: Every external tool the integration setup script calls. Stubbed so the script can run

@@ -13,7 +13,7 @@ from django.http import HttpResponse
 from django.shortcuts import redirect
 from django_tables2 import Table
 from django_tables2.export import TableExport
-from netaddr import AddrFormatError, IPNetwork
+from netaddr import AddrFormatError, IPNetwork, IPRange
 from utilities.views import ViewTab
 
 from . import constants
@@ -45,6 +45,14 @@ def subnet_sort_key(choice: tuple[str, Any]) -> tuple[int, Any]:
         return (0, IPNetwork(cidr))
     except (AddrFormatError, ValueError, TypeError):
         return (1, cidr)
+
+
+def parse_pool_range(pool: str) -> IPNetwork | IPRange:
+    """Return the address range represented by one Kea pool string."""
+    if "-" in pool and "/" not in pool:
+        start, end = pool.split("-", 1)
+        return IPRange(start.strip(), end.strip())
+    return IPNetwork(pool)
 
 
 def _subnet_choices_cache_key(server: Server, version: int) -> str:

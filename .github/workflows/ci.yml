@@ -15,7 +15,7 @@ jobs:
   unit-test:
     runs-on: ubuntu-latest
 
-    services:
+    services: &netbox-test-services
       postgres:
         image: postgres:16@sha256:adac386a3163424d8397b51b950187eaa661013020a1b9e0d5437a9752040f80
         env:
@@ -40,11 +40,13 @@ jobs:
           - 6379:6379
 
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - &checkout-repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
 
-      - name: Checkout NetBox
+      - &checkout-netbox
+        name: Checkout NetBox
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           repository: netbox-community/netbox
@@ -53,22 +55,24 @@ jobs:
           path: netbox
           persist-credentials: false
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9  # v9.0.0
+      - &setup-uv
+        name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d  # v10.0.1
         with:
           enable-cache: true
 
-      - name: Setup Python
+      - &setup-python
+        name: Setup Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version-file: pyproject.toml
 
       - name: Install dependencies
         run: |
-          uv export --frozen --only-group dev --no-emit-project --format requirements-txt | \
-            uv pip install --system -r /dev/stdin
-          uv pip install --system -r netbox/requirements.txt
-          uv pip install --system -e .
+          uv export --native-tls --frozen --only-group dev --no-emit-project --format requirements-txt | \
+            uv pip install --native-tls --system -r /dev/stdin
+          uv pip install --native-tls --system -r netbox/requirements.txt
+          uv pip install --native-tls --system -e .
 
       - name: Set up NetBox configuration
         working-directory: netbox/netbox
@@ -102,52 +106,13 @@ jobs:
   dhcp-plugin-test:
     runs-on: ubuntu-latest
 
-    services:
-      postgres:
-        image: postgres:16@sha256:adac386a3163424d8397b51b950187eaa661013020a1b9e0d5437a9752040f80
-        env:
-          POSTGRES_USER: netbox
-          POSTGRES_PASSWORD: netbox
-          POSTGRES_DB: netbox
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-        ports:
-          - 5432:5432
-      redis:
-        image: redis:7@sha256:d7fcf65186e011faaa401b5e6edf5147e9dd01353984c795e515f6fee7dfbe6e
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-        ports:
-          - 6379:6379
+    services: *netbox-test-services
 
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Checkout NetBox
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          repository: netbox-community/netbox
-          ref: v4.6.8
-          path: netbox
-          persist-credentials: false
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9  # v9.0.0
-        with:
-          enable-cache: true
-
-      - name: Setup Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
-        with:
-          python-version-file: pyproject.toml
+      - *checkout-repository
+      - *checkout-netbox
+      - *setup-uv
+      - *setup-python
 
       - name: Install dependencies with the supported DHCP plugin
         run: |
@@ -184,7 +149,7 @@ jobs:
           persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9  # v9.0.0
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d  # v10.0.1
         with:
           enable-cache: true
 
@@ -194,19 +159,19 @@ jobs:
           python-version-file: pyproject.toml
 
       - name: Install dev dependencies
-        run: uv sync --group dev
+        run: uv sync --native-tls --group dev
 
       - name: Ruff lint
-        run: uv run ruff check .
+        run: uv run --native-tls ruff check .
 
       - name: Ruff format check
-        run: uv run ruff format --check .
+        run: uv run --native-tls ruff format --check .
 
       - name: Type check (mypy, new errors only)
-        run: uv run scripts/mypy-gate.sh
+        run: uv run --native-tls scripts/mypy-gate.sh
 
       - name: REUSE compliance
-        run: uv run reuse lint
+        run: uv run --native-tls reuse lint
 
   opengrep:
     runs-on: ubuntu-latest
@@ -256,7 +221,7 @@ jobs:
           persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9  # v9.0.0
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d  # v10.0.1
         with:
           enable-cache: true
 
@@ -272,10 +237,10 @@ jobs:
           python-version: "3.14"
 
       - name: Ensure playwright browsers are installed
-        run: uv run playwright install --with-deps
+        run: uv run --native-tls playwright install --with-deps
 
       - name: Run uv build
-        run: uv build
+        run: uv build --native-tls
 
       - name: Run test_setup.sh
         run: ./tests/test_setup.sh
@@ -284,7 +249,7 @@ jobs:
 
       - name: Run pytest
         run: |
-          uv run pytest tests/ -p no:django --tracing=retain-on-failure -v
+          uv run --native-tls pytest tests/ -p no:django --tracing=retain-on-failure -v
 
       - name: Upload Playwright traces
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1

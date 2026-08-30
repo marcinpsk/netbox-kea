@@ -148,6 +148,7 @@ class DhcpPluginAdapterTest(TestCase):
 
         # Subnet linked by Kea identity, sharing the IPAM Prefix the sync owns.
         link = KeaDhcpLink.objects.get(server=self.server, family=4, kea_subnet_id=1)
+        self.assertIsNone(link.kea_identity)
         subnet = link.sys4_object
         self.assertIsInstance(subnet, Subnet)
         self.assertEqual(str(subnet.prefix.prefix), "10.99.0.0/24")

@@ -10,6 +10,7 @@ import yaml
 from .constants import Family, IPAddressValue
 from .dhcp_options import DHCPOption, parse_dhcp_option
 from .reservations import (
+    IdentifierType,
     InSubnetReservationScope,
     IPv4Reservation,
     IPv6Reservation,
@@ -233,8 +234,13 @@ def _parse_identity(
         diagnostics.append(_diagnostic("invalid-identity", "Identity must be an object.", position))
         return None
     _report_unknown_fields(value, _IDENTITY_FIELDS, position, diagnostics)
+    identifier_type = value.get("type")
+    identifier_value = value.get("value")
+    if not isinstance(identifier_type, str) or not isinstance(identifier_value, str):
+        diagnostics.append(_diagnostic("invalid-identity", "The Reservation Identity is invalid.", f"{position}.value"))
+        return None
     try:
-        identity = ReservationIdentity(value.get("type"), value.get("value"))
+        identity = ReservationIdentity(cast(IdentifierType, identifier_type), identifier_value)
     except (TypeError, ValueError):
         diagnostics.append(_diagnostic("invalid-identity", "The Reservation Identity is invalid.", f"{position}.value"))
         return None

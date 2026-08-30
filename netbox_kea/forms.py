@@ -2,7 +2,7 @@ from typing import Any, Literal, cast
 
 from django import forms
 from django.core.exceptions import ValidationError
-from netaddr import EUI, AddrFormatError, IPAddress, IPNetwork, IPRange, mac_unix_expanded
+from netaddr import EUI, AddrFormatError, IPAddress, IPNetwork, mac_unix_expanded
 from netbox.forms import NetBoxModelBulkEditForm, NetBoxModelFilterSetForm, NetBoxModelForm, NetBoxModelImportForm
 from utilities.forms import BOOLEAN_WITH_BLANK_CHOICES
 from utilities.forms.fields import TagFilterField
@@ -17,7 +17,7 @@ from .reservations import (
     reservation_identifier_choices,
     reservation_identifier_types,
 )
-from .utilities import is_hex_string, parse_delegated_prefixes
+from .utilities import is_hex_string, parse_delegated_prefixes, parse_pool_range
 
 
 def _validate_ip(value: str, version: int) -> str:
@@ -733,16 +733,13 @@ def _validate_pool_string(pool: str) -> None:
 
     """
     if "-" in pool and "/" not in pool:
-        parts = pool.split("-", 1)
-        if len(parts) != 2:
-            raise forms.ValidationError(f"Invalid pool range '{pool}': expected 'start-end' format.")
         try:
-            IPRange(parts[0].strip(), parts[1].strip())
+            parse_pool_range(pool)
         except (AddrFormatError, ValueError) as exc:
             raise forms.ValidationError(f"Invalid pool range '{pool}': {exc}") from exc
     elif "/" in pool:
         try:
-            IPNetwork(pool)
+            parse_pool_range(pool)
         except (AddrFormatError, ValueError) as exc:
             raise forms.ValidationError(f"Invalid pool CIDR '{pool}': {exc}") from exc
     else:
@@ -1190,7 +1187,15 @@ class SubnetOptionsForm(forms.Form):
 
 
 SubnetOptionsFormSet = forms.formset_factory(SubnetOptionsForm, extra=1, can_delete=True)
-ReservationOptionsFormSet = forms.formset_factory(SubnetOptionsForm, extra=1, can_delete=True)
+
+
+class ReservationOptionsForm(SubnetOptionsForm):
+    """One Reservation option row with its stable source position."""
+
+    original_index = forms.IntegerField(required=False, min_value=0, widget=forms.HiddenInput)
+
+
+ReservationOptionsFormSet = forms.formset_factory(ReservationOptionsForm, extra=1, can_delete=True)
 
 
 class Lease4EditForm(forms.Form):
