@@ -3351,6 +3351,14 @@ class TestLeaseGetByIp(TestCase):
     def _payload(self, mock_post):
         return mock_post.call_args.kwargs.get("json") or mock_post.call_args[1]["json"]
 
+    def test_docstring_describes_the_lease_search_contract(self):
+        """Keep the public method documentation aligned with its delegated search."""
+        docstring = KeaClient.lease_get_by_ip.__doc__ or ""
+
+        self.assertIn("first", docstring)
+        self.assertIn("ValueError", docstring)
+        self.assertNotIn("result=3", docstring)
+
     def test_v4_returns_lease_dict_when_found(self):
         """Returns the arguments dict when lease is found (result=0)."""
         with patch.object(

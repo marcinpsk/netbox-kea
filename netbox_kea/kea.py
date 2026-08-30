@@ -1749,11 +1749,11 @@ class KeaClient:
             ip_address: IP address to look up.
 
         Returns:
-            Lease dict from ``lease{v}-get`` response arguments, or ``None`` if not found
-            (result=3).
+            The first lease returned by :meth:`lease_search`, or ``None`` when no lease matches.
 
         Raises:
-            KeaException: If Kea returns any error other than "not found" (result != 0/3).
+            ValueError: If the DHCP version is invalid or the address value is empty.
+            KeaException: If the Kea lease search fails.
             RuntimeError: If Kea returns a malformed lease response.
 
         """

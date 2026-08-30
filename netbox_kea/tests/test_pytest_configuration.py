@@ -141,7 +141,20 @@ def test_ci_configuration_writer_generates_the_requested_plugins(monkeypatch, tm
     }
     assert namespace["SECRET_KEY"] == "ci-test-secret-key-not-for-production-1234567890123456"
     assert namespace["API_TOKEN_PEPPERS"] == {0: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
-    assert namespace["PLUGINS_CONFIG"] == {"netbox_kea": {"kea_timeout": 30}}
+    assert namespace["PLUGINS_CONFIG"] == {
+        "netbox_kea": {
+            "kea_timeout": 30,
+            "lease_query_max_unpaged_leases": 1000,
+        }
+    }
+
+
+def test_integration_image_installs_the_wheel_into_the_netbox_venv():
+    """The uv branch must target the same NetBox venv as the pip fallback."""
+    dockerfile = (REPOSITORY_ROOT / "tests" / "docker" / "Dockerfile").read_text()
+    uv_install = next(line for line in dockerfile.splitlines() if "uv pip install" in line)
+
+    assert "--python /opt/netbox/venv/bin/python" in uv_install
 
 
 def test_database_jobs_use_the_shared_ci_configuration_writer():
@@ -680,11 +693,11 @@ def test_the_compose_stack_builds_no_empty_list_element():
 
 
 def _unscoped_deletes(source: str) -> list[str]:
-    """Return every ``.delete()`` whose receiver names a whole collection.
+    """Return every ``.delete()`` whose receiver or argument names a whole collection.
 
-    ``x.all(...).delete()`` removes every object of that type in the target NetBox, so
-    an integration fixture pointed at a real instance destroys data it never created.
-    A receiver that filters (``.filter(...)``, ``.get(...)``) is bounded and passes.
+    ``x.all(...).delete()`` and ``x.delete(x.all(...))`` remove every object of that
+    type in the target NetBox, so an integration fixture pointed at a real instance
+    destroys data it never created. A filtered or individual target is bounded and passes.
     """
     offenders: list[str] = []
     for node in ast.walk(ast.parse(source)):
@@ -692,16 +705,20 @@ def _unscoped_deletes(source: str) -> list[str]:
             continue
         if node.func.attr != "delete":
             continue
-        receiver = node.func.value
-        if isinstance(receiver, ast.Call) and isinstance(receiver.func, ast.Attribute) and receiver.func.attr == "all":
+        targets = [node.func.value, *node.args, *(keyword.value for keyword in node.keywords)]
+        if any(
+            isinstance(target, ast.Call) and isinstance(target.func, ast.Attribute) and target.func.attr == "all"
+            for target in targets
+        ):
             offenders.append(f"line {node.lineno}")
     return offenders
 
 
-def test_the_unscoped_delete_guard_reads_the_receiver():
+def test_the_unscoped_delete_guard_reads_receiver_and_arguments():
     must_flag = (
         "nb.users.permissions.all(0).delete()",
         "nb.ipam.ip_addresses.all().delete()",
+        "api.plugins.kea.servers.delete(api.plugins.kea.servers.all())",
     )
     must_not_flag = (
         "nb.users.permissions.filter(name=user).delete()",

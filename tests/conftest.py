@@ -75,10 +75,8 @@ def nb_http(netbox_token: str) -> requests.Session:
 
 @pytest.fixture(scope="session", autouse=True)
 def nb_api(netbox_url: str, netbox_token: str) -> pynetbox.api:
-    api = pynetbox.api(netbox_url, token=netbox_token)
-    api.plugins.kea.servers.delete(api.plugins.kea.servers.all())
-
-    return api
+    """Return a client without deleting state that this test session does not own."""
+    return pynetbox.api(netbox_url, token=netbox_token)
 
 
 @pytest.fixture

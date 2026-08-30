@@ -1,4 +1,4 @@
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from django import forms
 from django.core.exceptions import ValidationError
@@ -11,7 +11,12 @@ from utilities.forms.rendering import FieldSet
 from . import constants
 from .models import Server
 from .reservation_transfer import MAX_DOCUMENT_BYTES as MAX_TRANSFER_DOCUMENT_BYTES
-from .reservations import ReservationIdentity, reservation_identifier_choices, reservation_identifier_types
+from .reservations import (
+    ReservationCapabilities,
+    ReservationIdentity,
+    reservation_identifier_choices,
+    reservation_identifier_types,
+)
 from .utilities import is_hex_string, parse_delegated_prefixes
 
 
@@ -426,22 +431,29 @@ class ReservationIdentifierSelect(forms.Select):
         return option
 
 
-def _configure_identifier_capabilities(form: forms.Form, capabilities: Any, version: int) -> None:
+def _configure_identifier_capabilities(
+    form: forms.Form,
+    capabilities: ReservationCapabilities | None,
+    version: int,
+) -> None:
     """Disable identifier choices the live Kea configuration cannot use."""
-    unavailable = (
-        dict(capabilities.unavailable_identifiers)
+    unavailable: dict[str, str] = (
+        {str(identifier): reason for identifier, reason in capabilities.unavailable_identifiers}
         if capabilities is not None
         else dict.fromkeys(reservation_identifier_types(version), "Kea capability discovery failed.")
     )
-    form.fields["identifier_type"].widget = ReservationIdentifierSelect(
-        choices=form.fields["identifier_type"].choices,
+    identifier_field = cast(forms.ChoiceField, form.fields["identifier_type"])
+    identifier_field.widget = ReservationIdentifierSelect(
+        choices=identifier_field.choices,
         unavailable=unavailable,
     )
-    form.reservation_capabilities = capabilities
+    setattr(form, "reservation_capabilities", capabilities)
 
 
 class Reservation4Form(forms.Form):
     """Form for creating or editing a DHCPv4 host reservation."""
+
+    reservation_capabilities: ReservationCapabilities | None = None
 
     subnet_cidr = forms.CharField(
         label="Subnet CIDR",
@@ -540,6 +552,8 @@ class Reservation4Form(forms.Form):
 
 class Reservation6Form(forms.Form):
     """Form for creating or editing a DHCPv6 host reservation."""
+
+    reservation_capabilities: ReservationCapabilities | None = None
 
     subnet_cidr = forms.CharField(
         label="Subnet CIDR",
