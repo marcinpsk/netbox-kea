@@ -871,10 +871,22 @@ class TestReservationCRUD:
     def _reservation_list_url(self, plugin_base: str, server_id: int) -> str:
         return f"{plugin_base}/servers/{server_id}/reservations4/"
 
-    def _reservation_row(self, page: Page, plugin_base: str, server_id: int) -> Locator:
+    def _reservation_row(
+        self,
+        page: Page,
+        plugin_base: str,
+        server_id: int,
+        identifier: str,
+        address: str,
+    ) -> Locator:
+        """Return the row with both parts of the test Reservation identity."""
         page.goto(self._reservation_list_url(plugin_base, server_id))
         page.wait_for_load_state("networkidle")
-        return page.locator("tr", has_text=self._TEST_MAC)
+        return (
+            page.locator("tr")
+            .filter(has=page.get_by_text(identifier, exact=True))
+            .filter(has=page.get_by_text(address, exact=True))
+        )
 
     def _submit_form_by_field(self, page: Page, field_id: str) -> None:
         """Submit the form that contains *field_id*, waiting for the resulting navigation."""
@@ -911,16 +923,27 @@ class TestReservationCRUD:
         if hostname:
             page.locator("#id_hostname").fill(hostname)
 
-    def _ui_cleanup_reservation(self, page: Page, plugin_base: str, server_id: int, *, strict: bool) -> None:
-        """Delete any Reservation row matching ``_TEST_MAC`` through the UI.
+    def _ui_cleanup_reservation(
+        self,
+        page: Page,
+        plugin_base: str,
+        server_id: int,
+        identifier: str,
+        address: str,
+        *,
+        strict: bool,
+    ) -> None:
+        """Delete the Reservation matching *identifier* and *address* through the UI.
 
         Safe to call twice. Strict cleanup raises failures. Lenient cleanup warns so it
         does not replace an exception that is already propagating from the test body.
         """
         try:
-            stale_row = self._reservation_row(page, plugin_base, server_id)
-            if not stale_row.count():
+            stale_row = self._reservation_row(page, plugin_base, server_id, identifier, address)
+            row_count = stale_row.count()
+            if not row_count:
                 return
+            assert row_count == 1, f"Found {row_count} Reservations matching {identifier} and {address}"
             # get_attribute returns the raw root-relative href and this suite sets no base_url.
             delete_url = stale_row.first.locator('a[href*="/delete/"]').evaluate("el => el.href")
             assert delete_url
@@ -931,54 +954,73 @@ class TestReservationCRUD:
                 "document.querySelectorAll('form[method=\"post\"]')"
                 "[ document.querySelectorAll('form[method=\"post\"]').length - 1 ].submit()",
             )
-            if self._reservation_row(page, plugin_base, server_id).count():
-                message = f"Test reservation {self._TEST_MAC} is still present after delete"
+            if self._reservation_row(page, plugin_base, server_id, identifier, address).count():
+                message = f"Test Reservation {identifier} at {address} is still present after delete"
                 if strict:
                     raise AssertionError(message)
                 warnings.warn(message, stacklevel=2)
         except Exception as exc:
             if strict:
                 raise
-            warnings.warn(f"Could not remove test reservation {self._TEST_MAC}: {exc}", stacklevel=2)
+            warnings.warn(f"Could not remove test Reservation {identifier} at {address}: {exc}", stacklevel=2)
 
-    @staticmethod
-    def _delete_reservation_if_present(page: Page, list_url: str, identifier: str) -> None:
-        """Delete the Reservation for *identifier* when a previous run left one behind."""
-        page.goto(list_url)
-        page.wait_for_load_state("networkidle")
-        stale_row = page.locator("tr", has_text=identifier)
-        if not stale_row.count():
-            return
-        # get_attribute returns the raw root-relative href and this suite sets no base_url.
-        delete_url = stale_row.first.locator('a[href*="/delete/"]').evaluate("el => el.href")
-        assert delete_url
-        page.goto(delete_url)
-        page.wait_for_load_state("networkidle")
-        _submit_and_wait_nav(
-            page,
-            "document.querySelectorAll('form[method=\"post\"]')"
-            "[ document.querySelectorAll('form[method=\"post\"]').length - 1 ].submit()",
-        )
-
-    @staticmethod
-    def _delete_netbox_ip(nb_http: requests.Session, netbox_url: str, address: str) -> None:
-        """Remove the NetBox IP this test synchronized, so the next run starts unsynchronized.
-
-        This runs against a live NetBox, so it must delete only what the test created.
-        """
+    @classmethod
+    def _netbox_ip_id(
+        cls,
+        nb_http: requests.Session,
+        netbox_url: str,
+        address: str,
+        hostname: str,
+    ) -> int | None:
+        """Return the one NetBox IP ID with the complete state-test identity."""
+        description = f"{_KEA_SYNC_DESCRIPTION_PREFIX} reservation"
         found = nb_http.get(
             f"{netbox_url}/api/ipam/ip-addresses/",
-            # `q` is a substring search over address, description and dns_name, so it can
-            # return rows this test never created. Match the exact address instead.
-            params={"address": address, "description__isw": _KEA_SYNC_DESCRIPTION_PREFIX},
+            params={"address": address, "dns_name": hostname, "description": description},
             timeout=5,
         )
         found.raise_for_status()
-        for entry in found.json().get("results", []):
-            if not str(entry.get("description", "")).startswith(_KEA_SYNC_DESCRIPTION_PREFIX):
-                warnings.warn(f"Left NetBox IP {entry.get('address')!r}: it is not a Kea-synced row", stacklevel=2)
-                continue
-            nb_http.delete(f"{netbox_url}/api/ipam/ip-addresses/{entry['id']}/", timeout=5).raise_for_status()
+        payload = found.json()
+        results = payload.get("results", [])
+        assert payload.get("count", len(results)) == len(results), "The test IP query returned an incomplete page"
+
+        matches = []
+        for entry in results:
+            entry_address = str(ipaddress.ip_interface(str(entry.get("address"))).ip)
+            if entry_address != address or entry.get("dns_name") != hostname or entry.get("description") != description:
+                raise AssertionError(f"NetBox returned IP {entry.get('id')!r} outside the test identity")
+            matches.append(entry)
+
+        assert len(matches) <= 1, f"Found {len(matches)} NetBox IPs with the complete test identity"
+        if not matches:
+            return None
+        ip_id = matches[0].get("id")
+        assert isinstance(ip_id, int) and not isinstance(ip_id, bool), f"NetBox returned invalid IP ID {ip_id!r}"
+        return ip_id
+
+    @classmethod
+    def _cleanup_netbox_ip(
+        cls,
+        nb_http: requests.Session,
+        netbox_url: str,
+        address: str,
+        hostname: str,
+        *,
+        ip_id: int | None,
+        strict: bool,
+    ) -> None:
+        """Delete the captured test IP, or discover an exact prior-run residue."""
+        try:
+            target_id = ip_id
+            if target_id is None:
+                target_id = cls._netbox_ip_id(nb_http, netbox_url, address, hostname)
+            if target_id is None:
+                return
+            nb_http.delete(f"{netbox_url}/api/ipam/ip-addresses/{target_id}/", timeout=5).raise_for_status()
+        except Exception as exc:
+            if strict:
+                raise
+            warnings.warn(f"Could not remove test NetBox IP {address}: {exc}", stacklevel=2)
 
     def test_full_crud_lifecycle(
         self,
@@ -990,10 +1032,24 @@ class TestReservationCRUD:
     ) -> None:
         """Create → verify listed → edit hostname → verify edit → delete → verify gone."""
         server_id = kea_server.id
+        add_url = self._reservation_add_url(plugin_base, server_id)
+
+        page.goto(add_url)
+        page.wait_for_load_state("networkidle")
+        _check_no_django_error(page)
+        _dismiss_debug_toolbar(page)
+        cidr = _subnet_cidr_for_id(page, self._SUBNET_ID)
+        test_ip = self._test_ip(cidr)
 
         # ---- 0. PRE-CLEAN — remove any leftover from a previous interrupted run ----
-        # Match on the identifier: the address is only known once the add form is open.
-        self._ui_cleanup_reservation(page, plugin_base, server_id, strict=True)
+        self._ui_cleanup_reservation(
+            page,
+            plugin_base,
+            server_id,
+            self._TEST_MAC,
+            test_ip,
+            strict=True,
+        )
 
         try:
             # ---- 1. CREATE ----
@@ -1002,8 +1058,6 @@ class TestReservationCRUD:
             _check_no_django_error(page)
             _dismiss_debug_toolbar(page)
 
-            cidr = _subnet_cidr_for_id(page, self._SUBNET_ID)
-            test_ip = self._test_ip(cidr)
             self._fill_reservation_form(
                 page,
                 cidr,
@@ -1058,7 +1112,14 @@ class TestReservationCRUD:
             assert test_ip not in page.content(), f"Reservation {test_ip} still visible after delete"
         finally:
             # A reservation left in live Kea blocks the next run on the same identifier.
-            self._ui_cleanup_reservation(page, plugin_base, server_id, strict=sys.exc_info()[0] is None)
+            self._ui_cleanup_reservation(
+                page,
+                plugin_base,
+                server_id,
+                self._TEST_MAC,
+                test_ip,
+                strict=sys.exc_info()[0] is None,
+            )
 
     def test_reservation_relationship_and_synchronization_state_are_definite(
         self,
@@ -1077,30 +1138,48 @@ class TestReservationCRUD:
         not synchronized until this test synchronizes it.
         """
         server_id = kea_server.id
-        list_url = self._reservation_list_url(plugin_base, server_id)
-        self._delete_reservation_if_present(page, list_url, self._STATE_MAC)
+        add_url = self._reservation_add_url(plugin_base, server_id)
 
-        page.goto(self._reservation_add_url(plugin_base, server_id))
+        page.goto(add_url)
         page.wait_for_load_state("networkidle")
         _check_no_django_error(page)
         _dismiss_debug_toolbar(page)
         cidr = _subnet_cidr_for_id(page, self._SUBNET_ID)
         test_ip = self._test_ip(cidr, self._STATE_HOST_OFFSET)
-        # A run that stopped after synchronizing leaves the NetBox IP, which would make
-        # the Not Synchronized assertion below read as already synchronized.
-        self._delete_netbox_ip(nb_http, netbox_url, test_ip)
+        self._ui_cleanup_reservation(
+            page,
+            plugin_base,
+            server_id,
+            self._STATE_MAC,
+            test_ip,
+            strict=True,
+        )
+        # A stopped run can leave this exact state-test IP in NetBox.
+        self._cleanup_netbox_ip(
+            nb_http,
+            netbox_url,
+            test_ip,
+            self._STATE_HOSTNAME,
+            ip_id=None,
+            strict=True,
+        )
+        netbox_ip_id = None
         # The Reservation lives on the live Kea, so cleanup covers every step that can
         # create it, not only the assertions after it.
         try:
+            page.goto(self._reservation_add_url(plugin_base, server_id))
+            page.wait_for_load_state("networkidle")
+            _check_no_django_error(page)
+            _dismiss_debug_toolbar(page)
             self._fill_reservation_form(page, cidr, test_ip, self._STATE_MAC, hostname=self._STATE_HOSTNAME)
             self._submit_form_by_field(page, "id_subnet_cidr")
             _check_no_django_error(page)
 
-            page.goto(list_url)
-            page.wait_for_load_state("networkidle")
+            row = self._reservation_row(page, plugin_base, server_id, self._STATE_MAC, test_ip)
             _check_no_django_error(page)
             _dismiss_debug_toolbar(page)
-            row = page.locator("tr", has_text=self._STATE_MAC).first
+            assert row.count() == 1, f"Expected one state-test Reservation at {test_ip}"
+            row = row.first
             expect(row).to_be_visible()
 
             # A definite relationship, not a missing badge: this address holds no lease.
@@ -1115,12 +1194,28 @@ class TestReservationCRUD:
             row.locator('button:has-text("Sync all")').click()
             expect(row.locator('.badge:has-text("Synchronized 1/1")')).to_be_visible()
             _assert_no_http_errors(track_http_errors)
+            netbox_ip_id = self._netbox_ip_id(nb_http, netbox_url, test_ip, self._STATE_HOSTNAME)
+            assert netbox_ip_id is not None, f"Sync did not create the state-test NetBox IP {test_ip}"
         finally:
             # Nested, so a failure removing the Reservation still removes the NetBox IP.
             try:
-                self._delete_reservation_if_present(page, list_url, self._STATE_MAC)
+                self._ui_cleanup_reservation(
+                    page,
+                    plugin_base,
+                    server_id,
+                    self._STATE_MAC,
+                    test_ip,
+                    strict=sys.exc_info()[0] is None,
+                )
             finally:
-                self._delete_netbox_ip(nb_http, netbox_url, test_ip)
+                self._cleanup_netbox_ip(
+                    nb_http,
+                    netbox_url,
+                    test_ip,
+                    self._STATE_HOSTNAME,
+                    ip_id=netbox_ip_id,
+                    strict=sys.exc_info()[0] is None,
+                )
 
     def test_add_reservation_form_loads(
         self,

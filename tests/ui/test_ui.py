@@ -1433,6 +1433,7 @@ def test_lease_pagination_location(
     requests_session.patch(
         url=f"{nb_api.base_url}/users/config/",
         json={"pagination": {"placement": placement}},
+        timeout=5,
     ).raise_for_status()
 
     search_lease(page, version, "IP Address", ip)

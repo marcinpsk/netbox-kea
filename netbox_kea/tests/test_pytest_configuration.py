@@ -1328,6 +1328,9 @@ class _FakeRowLocator:
     def first(self) -> _FakeRowLocator:
         return self
 
+    def filter(self, **_kwargs) -> _FakeRowLocator:
+        return self
+
     def locator(self, *_args, **_kwargs) -> _FakeRowLocator:
         return self
 
@@ -1359,6 +1362,9 @@ class _FakeReservationPage:
     def wait_for_url(self, *_args, **_kwargs) -> None:
         self.url = "http://netbox.invalid/reservations4/"
 
+    def get_by_text(self, *_args, **_kwargs) -> _FakeRowLocator:
+        return _FakeRowLocator(1)
+
     def locator(self, *_args, **_kwargs) -> _FakeRowLocator:
         return _FakeRowLocator(0 if (self.submitted and self.delete_succeeds) else 1)
 
@@ -1374,7 +1380,14 @@ def _run_reservation_cleanup(delete_succeeds: bool, *, strict: bool) -> list[str
     page = _FakeReservationPage(delete_succeeds)
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        module.TestReservationCRUD()._ui_cleanup_reservation(page, "/plugins/netbox_kea", 1, strict=strict)
+        module.TestReservationCRUD()._ui_cleanup_reservation(
+            page,
+            "/plugins/netbox_kea",
+            1,
+            "e2:e2:e2:e2:e2:01",
+            "198.18.0.10",
+            strict=strict,
+        )
     assert page.submitted, "The helper never submitted the delete; this guard would prove nothing."
     return [str(entry.message) for entry in caught]
 
@@ -1416,6 +1429,133 @@ def test_reservation_workflow_rejects_an_offset_at_the_network_boundary():
         workflow._test_ip("198.18.0.0/27")
 
 
+class _FakeNetBoxResponse:
+    """The response surface used by the browser suite's IP cleanup."""
+
+    def __init__(self, payload: dict | None = None):
+        self._payload = payload or {}
+
+    def json(self) -> dict:
+        return self._payload
+
+    def raise_for_status(self) -> None:
+        pass
+
+
+class _FakeNetBoxSession:
+    """Record the exact NetBox queries and deletes issued by IP cleanup."""
+
+    def __init__(self, payload: dict | None = None):
+        self.payload = payload or {"count": 0, "results": []}
+        self.get_calls: list[tuple[str, dict]] = []
+        self.delete_calls: list[tuple[str, dict]] = []
+
+    def get(self, url: str, **kwargs) -> _FakeNetBoxResponse:
+        self.get_calls.append((url, kwargs))
+        return _FakeNetBoxResponse(self.payload)
+
+    def delete(self, url: str, **kwargs) -> _FakeNetBoxResponse:
+        self.delete_calls.append((url, kwargs))
+        return _FakeNetBoxResponse()
+
+
+def _reservation_crud_class():
+    """Load and return the real browser-suite Reservation test class."""
+    pytest.importorskip("playwright", reason="pytest-playwright is a dev dependency")
+    spec = importlib.util.spec_from_file_location("_kea_browser_suite", _BROWSER_SUITE / "test_workflows.py")
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.TestReservationCRUD
+
+
+def test_netbox_ip_cleanup_deletes_the_captured_row_without_searching():
+    """Teardown owns the ID captured after sync, so it must delete only that row."""
+    session = _FakeNetBoxSession()
+
+    _reservation_crud_class()._cleanup_netbox_ip(
+        session,
+        "https://netbox.example.invalid",
+        "198.18.0.10",
+        "e2e-state-test",
+        ip_id=17,
+        strict=True,
+    )
+
+    assert session.get_calls == []
+    assert session.delete_calls == [("https://netbox.example.invalid/api/ipam/ip-addresses/17/", {"timeout": 5})]
+
+
+def test_netbox_ip_precleanup_uses_the_complete_test_identity():
+    """Prior-run cleanup may discover an ID only through every test-owned field."""
+    session = _FakeNetBoxSession(
+        {
+            "count": 1,
+            "results": [
+                {
+                    "id": 23,
+                    "address": "198.18.0.10/24",
+                    "dns_name": "e2e-state-test",
+                    "description": "Synced from Kea DHCP reservation",
+                }
+            ],
+        }
+    )
+
+    _reservation_crud_class()._cleanup_netbox_ip(
+        session,
+        "https://netbox.example.invalid",
+        "198.18.0.10",
+        "e2e-state-test",
+        ip_id=None,
+        strict=True,
+    )
+
+    assert session.get_calls == [
+        (
+            "https://netbox.example.invalid/api/ipam/ip-addresses/",
+            {
+                "params": {
+                    "address": "198.18.0.10",
+                    "dns_name": "e2e-state-test",
+                    "description": "Synced from Kea DHCP reservation",
+                },
+                "timeout": 5,
+            },
+        )
+    ]
+    assert session.delete_calls == [("https://netbox.example.invalid/api/ipam/ip-addresses/23/", {"timeout": 5})]
+
+
+def test_netbox_ip_precleanup_rejects_a_row_outside_the_test_identity():
+    """An unexpectedly broad API result must stop cleanup before any delete."""
+    session = _FakeNetBoxSession(
+        {
+            "count": 1,
+            "results": [
+                {
+                    "id": 29,
+                    "address": "198.18.0.10/24",
+                    "dns_name": "operator-owned",
+                    "description": "Synced from Kea DHCP reservation",
+                }
+            ],
+        }
+    )
+
+    with pytest.raises(AssertionError, match="outside the test identity"):
+        _reservation_crud_class()._cleanup_netbox_ip(
+            session,
+            "https://netbox.example.invalid",
+            "198.18.0.10",
+            "e2e-state-test",
+            ip_id=None,
+            strict=True,
+        )
+
+    assert session.delete_calls == []
+
+
 #: ``requests.Session`` methods the browser suite uses to reach NetBox.
 _SESSION_REQUEST_METHODS = frozenset({"get", "post", "put", "patch", "delete", "head", "options", "request"})
 
@@ -1433,7 +1573,7 @@ def _requests_without_timeout(source: str) -> list[str]:
         if node.func.attr not in _SESSION_REQUEST_METHODS:
             continue
         target = node.func.value
-        if not isinstance(target, ast.Name) or not target.id.endswith("http"):
+        if not isinstance(target, ast.Name) or not (target.id.endswith("http") or target.id == "requests_session"):
             continue
         # requests treats timeout=None as no timeout, so the keyword alone is not a bound.
         bounded = any(
@@ -1453,6 +1593,7 @@ def test_the_request_timeout_guard_reads_every_spelling():
         "nb_http.delete(url)",
         "nb_http.get(url, timeout=None)",
         "nb_http.request('GET', url)",
+        "requests_session.get(url)",
     )
     must_not_flag = (
         "nb_http.get(url, timeout=5)",
