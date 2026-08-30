@@ -7,21 +7,21 @@ import pynetbox
 import pytest
 import requests
 
-_SERVER_COLLECTION_PATH = "/api/plugins/kea/servers"
-
 
 def _record_created_server_ids(
     response: requests.Response,
     *args,
     created_server_ids: set[int],
+    netbox_url: str,
     **kwargs,
 ) -> requests.Response:
     """Record exact Server IDs from successful Pynetbox create responses."""
     request = response.request
+    server_collection_path = urlsplit(f"{netbox_url}/api/plugins/kea/servers").path.rstrip("/")
     if (
         request is None
         or request.method != "POST"
-        or urlsplit(response.url).path.rstrip("/") != _SERVER_COLLECTION_PATH
+        or urlsplit(response.url).path.rstrip("/") != server_collection_path
         or not response.ok
     ):
         return response
@@ -112,7 +112,7 @@ def nb_api(netbox_url: str, netbox_token: str) -> Iterator[pynetbox.api]:
     api = pynetbox.api(netbox_url, token=netbox_token)
     created_server_ids: set[int] = set()
     api.http_session.hooks["response"].append(
-        partial(_record_created_server_ids, created_server_ids=created_server_ids)
+        partial(_record_created_server_ids, created_server_ids=created_server_ids, netbox_url=netbox_url)
     )
 
     yield api
