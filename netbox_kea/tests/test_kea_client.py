@@ -5,6 +5,7 @@
 These tests mock all HTTP calls and require no running services.
 """
 
+from typing import get_args, get_origin, get_type_hints
 from unittest import TestCase
 from unittest.mock import MagicMock, patch
 
@@ -16,6 +17,7 @@ from netbox_kea.kea import (
     KeaConfigPersistError,
     KeaConfigTestError,
     KeaException,
+    KeaResponse,
     LeaseCollection,
     LeasePage,
     LeaseQueryGuardError,
@@ -39,6 +41,16 @@ def _mock_http_response(json_data, status_code=200):
     else:
         mock_resp.raise_for_status.return_value = None
     return mock_resp
+
+
+class TestKeaResponseContract(TestCase):
+    """Tests for the common Kea response type."""
+
+    def test_arguments_accept_command_lists(self):
+        """The response contract includes list-valued command responses."""
+        arguments_type = get_type_hints(KeaResponse)["arguments"]
+
+        self.assertIn(list, {get_origin(member) for member in get_args(arguments_type)})
 
 
 class TestKeaClientInit(TestCase):

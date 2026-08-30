@@ -648,6 +648,36 @@ class TestStatusViewNullArgs(_ViewTestBase):
             "DHCPv4 status_data must be empty/degraded when arguments is None",
         )
 
+    def test_get_ca_status_list_args_degrades_gracefully(self):
+        """The status page rejects list-valued Control Agent arguments."""
+
+        def _status(body):
+            if not body.get("service"):
+                return {"result": 0, "arguments": ["unexpected"]}
+            return _ok_status()
+
+        with _status_stub(**{"status-get": _status}):
+            response = self.client.get(self._url())
+
+        self.assertEqual(response.status_code, 200)
+        services_by_name = {service["name"]: service for service in response.context["services"]}
+        self.assertEqual(services_by_name["Control Agent"]["status_data"], {})
+
+    def test_get_dhcp_status_list_args_degrades_gracefully(self):
+        """The status page rejects list-valued DHCP daemon arguments."""
+
+        def _status(body):
+            if body.get("service"):
+                return {"result": 0, "arguments": ["unexpected"]}
+            return _ok_status()
+
+        with _status_stub(**{"status-get": _status}):
+            response = self.client.get(self._url())
+
+        self.assertEqual(response.status_code, 200)
+        services_by_name = {service["name"]: service for service in response.context["services"]}
+        self.assertEqual(services_by_name["DHCPv4"]["status_data"], {})
+
     def test_get_dhcp_status_ha_fields_included(self):
         """HA fields are present when high-availability is in status-get."""
 
@@ -706,6 +736,30 @@ class TestGetGlobalOptionsGenericException(_ViewTestBase):
         # the page must still render as 200 (degraded state, not 500).
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context["global_options"], {})
+
+    def test_list_arguments_are_ignored(self):
+        """List-valued config-get arguments do not break the status page."""
+        with _status_stub(**{"config-get": {"result": 0, "arguments": ["unexpected"]}}):
+            response = self.client.get(self._url())
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["global_options"], {})
+
+    def test_malformed_nested_arguments_are_ignored(self):
+        """Malformed DHCP blocks and option-data do not break the status page."""
+        malformed_arguments = (
+            {"Dhcp4": ["unexpected"]},
+            {"Dhcp4": {"option-data": {"unexpected": "mapping"}}},
+        )
+
+        for arguments in malformed_arguments:
+            with (
+                self.subTest(arguments=arguments),
+                _status_stub(**{"config-get": {"result": 0, "arguments": arguments}}),
+            ):
+                response = self.client.get(self._url())
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.context["global_options"], {})
 
 
 # ---------------------------------------------------------------------------
