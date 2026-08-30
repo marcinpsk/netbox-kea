@@ -842,7 +842,8 @@ class TestReservationCRUD:
     # A second identifier and address, so the state test never races the CRUD test.
     _STATE_MAC = "e2:e2:e2:e2:e2:02"
     _STATE_HOSTNAME = "e2e-state-test"
-    _STATE_HOST_OFFSET = -35
+    # The pagination fixture fills hosts 1 through 250. Use the last usable address.
+    _STATE_HOST_OFFSET = -2
 
     def _test_ip(self, cidr: str, offset: int | None = None) -> str:
         """Return the reservation address at *offset* inside *cidr*.

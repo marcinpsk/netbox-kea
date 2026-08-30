@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import warnings
+from ipaddress import ip_address
 from pathlib import Path
 
 import pytest
@@ -1427,6 +1428,17 @@ def test_reservation_workflow_rejects_an_offset_at_the_network_boundary():
 
     with pytest.raises(AssertionError, match="too small"):
         workflow._test_ip("198.18.0.0/27")
+
+
+def test_reservation_state_address_does_not_overlap_the_pagination_leases():
+    """The deterministic state case must not reuse an address from the 250-lease fixture."""
+    workflow = _reservation_crud_class()()
+    network_address = ip_address("198.18.0.0")
+    pagination_addresses = {str(network_address + host) for host in range(1, 251)}
+
+    state_address = workflow._test_ip("198.18.0.0/24", workflow._STATE_HOST_OFFSET)
+
+    assert state_address not in pagination_addresses
 
 
 class _FakeNetBoxResponse:
