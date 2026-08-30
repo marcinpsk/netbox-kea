@@ -767,18 +767,28 @@ def test_created_server_tracker_records_only_successful_server_creates() -> None
 
     created_server_ids: set[int] = set()
     cases = (
-        ("POST", "https://netbox.example.invalid/api/plugins/kea/servers/", True, {"id": 17}),
-        ("POST", "https://netbox.example.invalid/api/plugins/kea/servers/", True, [{"id": 18}, {"id": 19}]),
-        ("GET", "https://netbox.example.invalid/api/plugins/kea/servers/", True, {"id": 20}),
-        ("POST", "https://netbox.example.invalid/api/dcim/sites/", True, {"id": 21}),
-        ("POST", "https://netbox.example.invalid/api/plugins/kea/servers/", False, {"id": 22}),
+        ("https://netbox.example.invalid", "POST", "/api/plugins/kea/servers/", True, {"id": 17}),
+        (
+            "https://netbox.example.invalid",
+            "POST",
+            "/api/plugins/kea/servers/",
+            True,
+            [{"id": 18}, {"id": 19}],
+        ),
+        ("https://netbox.example.invalid/netbox", "POST", "/netbox/api/plugins/kea/servers/", True, {"id": 23}),
+        ("https://netbox.example.invalid", "GET", "/api/plugins/kea/servers/", True, {"id": 20}),
+        ("https://netbox.example.invalid", "POST", "/api/dcim/sites/", True, {"id": 21}),
+        ("https://netbox.example.invalid", "POST", "/api/plugins/kea/servers/", False, {"id": 22}),
     )
 
-    for method, url, ok, payload in cases:
-        response = Response(method, url, ok, payload)
-        assert _record_created_server_ids(response, created_server_ids=created_server_ids) is response
+    for netbox_url, method, path, ok, payload in cases:
+        response = Response(method, f"https://netbox.example.invalid{path}", ok, payload)
+        assert (
+            _record_created_server_ids(response, created_server_ids=created_server_ids, netbox_url=netbox_url)
+            is response
+        )
 
-    assert created_server_ids == {17, 18, 19}
+    assert created_server_ids == {17, 18, 19, 23}
 
 
 #: Type aliases that describe one shared fact and must have exactly one definition.
