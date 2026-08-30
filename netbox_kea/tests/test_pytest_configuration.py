@@ -16,6 +16,7 @@ import warnings
 from pathlib import Path
 
 import pytest
+import requests
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 #: The Playwright suite. It must stay inside the path the integration job runs.
@@ -747,6 +748,37 @@ def test_the_integration_suite_deletes_only_what_it_created():
             f"{path.relative_to(REPOSITORY_ROOT)} deletes a whole collection at {offenders}. "
             "Filter the queryset down to the objects the fixture created."
         )
+
+
+def test_created_server_tracker_records_only_successful_server_creates() -> None:
+    """Track exact created IDs without claiming unrelated NetBox objects."""
+    from tests.conftest import _record_created_server_ids
+
+    class Response(requests.Response):
+        def __init__(self, method: str, url: str, ok: bool, payload: object) -> None:
+            super().__init__()
+            self.request = requests.Request(method, url).prepare()
+            self.url = url
+            self.status_code = 201 if ok else 400
+            self._payload = payload
+
+        def json(self, **_kwargs) -> object:
+            return self._payload
+
+    created_server_ids: set[int] = set()
+    cases = (
+        ("POST", "https://netbox.example.invalid/api/plugins/kea/servers/", True, {"id": 17}),
+        ("POST", "https://netbox.example.invalid/api/plugins/kea/servers/", True, [{"id": 18}, {"id": 19}]),
+        ("GET", "https://netbox.example.invalid/api/plugins/kea/servers/", True, {"id": 20}),
+        ("POST", "https://netbox.example.invalid/api/dcim/sites/", True, {"id": 21}),
+        ("POST", "https://netbox.example.invalid/api/plugins/kea/servers/", False, {"id": 22}),
+    )
+
+    for method, url, ok, payload in cases:
+        response = Response(method, url, ok, payload)
+        assert _record_created_server_ids(response, created_server_ids=created_server_ids) is response
+
+    assert created_server_ids == {17, 18, 19}
 
 
 #: Type aliases that describe one shared fact and must have exactly one definition.

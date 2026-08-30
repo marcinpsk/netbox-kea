@@ -558,19 +558,33 @@ def test_server_add_delete(page: Page, plugin_base: str, kea_url: str, nb_api: p
 
 
 def test_server_bulk_delete(page: Page, plugin_base: str, nb_api: pynetbox.api, kea_url: str, kea_dhcp6_url: str):
-    nb_api.plugins.kea.servers.create(
+    existing_server = nb_api.plugins.kea.servers.create(
+        name="server-outside-selection",
+        ca_url=kea_url,
+        dhcp6_url=kea_dhcp6_url,
+        has_control_agent=False,
+    )
+    created_servers = nb_api.plugins.kea.servers.create(
         [
             {"name": "server1", "ca_url": kea_url, "dhcp6_url": kea_dhcp6_url, "has_control_agent": False},
             {"name": "server2", "ca_url": kea_url, "dhcp6_url": kea_dhcp6_url, "has_control_agent": False},
         ]
     )
 
-    page.goto(f"{plugin_base}/servers/")
-    page.get_by_role("checkbox", name="Toggle All").click()
-    page.get_by_role("button", name="Delete Selected").click()
-    page.locator('button.btn-danger[type="submit"]').click()
+    try:
+        page.goto(f"{plugin_base}/servers/")
+        for server in created_servers:
+            page.locator(f'input[name="pk"][value="{server.id}"]').check()
+        page.get_by_role("button", name="Delete Selected").click()
+        page.locator('button.btn-danger[type="submit"]').click()
 
-    assert nb_api.plugins.kea.servers.count() == 0
+        for server in created_servers:
+            assert nb_api.plugins.kea.servers.get(server.id) is None
+        assert nb_api.plugins.kea.servers.get(existing_server.id) is not None
+    finally:
+        existing_server = nb_api.plugins.kea.servers.get(existing_server.id)
+        if existing_server is not None:
+            assert existing_server.delete() is True
 
 
 def test_server_edit(page: Page, kea: KeaClient) -> None:
