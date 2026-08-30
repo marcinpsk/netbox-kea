@@ -46,7 +46,7 @@ def main() -> None:
 
     arguments.output.write_text(
         f"{_COMMON_CONFIGURATION}PLUGINS = {arguments.plugins!r}\n"
-        "PLUGINS_CONFIG = {'netbox_kea': {'kea_timeout': 30}}\n"
+        "PLUGINS_CONFIG = {'netbox_kea': {'kea_timeout': 30, 'lease_query_max_unpaged_leases': 1000}}\n"
     )
 
 

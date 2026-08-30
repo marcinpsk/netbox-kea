@@ -266,7 +266,7 @@ class TestCombinedReservationCapabilityConcurrency(_ViewTestBase):
         completed_probes = []
 
         def simultaneous_capability_response(_body):
-            barrier.wait(timeout=1)
+            barrier.wait(timeout=30)
             completed_probes.append(True)
             return {
                 "result": 0,

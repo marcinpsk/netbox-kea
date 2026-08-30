@@ -85,7 +85,7 @@ def _fetch_config_intent(server: Server, version: Family):
 
 
 def _fetch_reservation_snapshot(server: Server, version: Family):
-    """Return one complete typed Reservation Snapshot, or ``None`` after a read failure."""
+    """Return a typed Reservation Snapshot, possibly incomplete, or ``None`` after a read failure."""
     from ..subnet_catalogue import for_synchronization
 
     try:

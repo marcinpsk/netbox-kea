@@ -81,6 +81,13 @@ class SyncResponseRoutingTest(SimpleTestCase):
 class ExtractDhcpConfTest(SimpleTestCase):
     """`_extract_dhcp_conf` pulls the right block and *raises* on malformed shapes."""
 
+    def test_reservation_snapshot_docstring_allows_an_incomplete_snapshot(self):
+        """Document that only ``None`` means the read itself failed."""
+        docstring = dps._fetch_reservation_snapshot.__doc__ or ""
+
+        self.assertIn("incomplete", docstring)
+        self.assertIn("None", docstring)
+
     def test_extracts_dhcp4_block(self):
         resp = [{"result": 0, "arguments": {"Dhcp4": {"subnet4": []}}}]
         self.assertEqual(dps._extract_dhcp_conf(resp, 4), {"subnet4": []})

@@ -15,7 +15,7 @@ from ..dhcp_options import DHCPOption
 from ..kea import KeaException, LeaseQueryGuardError, lease_query_guard_message
 from ..models import Server
 from ..reservation_transfer import export_reservation_document
-from ..reservations import ReservationCapabilities, ReservationSnapshot
+from ..reservations import ReservationCapabilities, ReservationDiagnostic, ReservationSnapshot
 from ..subnet_catalogue import ConfiguredSubnet, Diagnostic, VerifiedSubnet, display
 from ..utilities import (
     export_table,
@@ -488,10 +488,10 @@ class _CombinedReservationsView(_CombinedViewMixin):
 
         all_records: list[dict[str, Any]] = []
         errors: list[tuple[str, str]] = []
-        diagnostics = []
+        diagnostics: list[tuple[str, ReservationDiagnostic]] = []
         snapshots = {}
         is_export = "export" in request.GET
-        export_format = request.GET.get("export")
+        export_format = request.GET.get("export", "")
         if is_export and export_format not in ("yaml", "json"):
             return HttpResponse("Reservation export format must be YAML or JSON.", status=400)
 
