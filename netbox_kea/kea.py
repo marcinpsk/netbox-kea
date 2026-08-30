@@ -114,7 +114,7 @@ class KeaResponse(TypedDict):
     """Typed dict representing a single Kea API response object."""
 
     result: int
-    arguments: dict[str, Any] | None
+    arguments: dict[str, Any] | list[Any] | None
     text: str | None
 
 

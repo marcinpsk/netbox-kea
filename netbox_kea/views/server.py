@@ -48,8 +48,14 @@ def _get_global_options(server: "Server") -> dict[str, dict[str, str]]:
             resp = client.command("config-get", service=[svc])
             dhcp_key = f"Dhcp{version}"
             args = resp[0].get("arguments") if isinstance(resp, list) and resp else None
-            dhcp_block = (args or {}).get(dhcp_key, {})
+            if not isinstance(args, dict):
+                continue
+            dhcp_block = args.get(dhcp_key, {})
+            if not isinstance(dhcp_block, dict):
+                continue
             option_data = dhcp_block.get("option-data", [])
+            if not isinstance(option_data, list) or any(not isinstance(option, dict) for option in option_data):
+                continue
             opts = format_option_data(option_data, version=version)
             if opts:
                 # Convert snake_case keys to "Title Case" for display
@@ -128,13 +134,13 @@ class ServerStatusView(generic.ObjectView):
         """Get the control agent status."""
         status = client.command("status-get")
         args = status[0].get("arguments") if isinstance(status, list) and status else None
-        if not args:
-            raise RuntimeError("Kea status-get returned empty arguments")
+        if not isinstance(args, dict) or not args:
+            raise RuntimeError("Kea status-get returned invalid arguments")
 
         version = client.command("version-get")
         version_args = version[0].get("arguments") if isinstance(version, list) and version else None
-        if not version_args:
-            raise RuntimeError("Kea version-get returned empty arguments")
+        if not isinstance(version_args, dict) or not version_args:
+            raise RuntimeError("Kea version-get returned invalid arguments")
 
         return {
             "PID": args.get("pid"),
@@ -165,13 +171,13 @@ class ServerStatusView(generic.ObjectView):
                 version_resp = svc_client.command("version-get", service=[svc])
 
                 args = status[0].get("arguments") if isinstance(status, list) and status else None
-                if args is None:
-                    raise RuntimeError(f"Unexpected None arguments from status-get for service {svc}")
+                if not isinstance(args, dict):
+                    raise RuntimeError(f"Unexpected arguments from status-get for service {svc}")
                 version_args = (
                     version_resp[0].get("arguments") if isinstance(version_resp, list) and version_resp else None
                 )
-                if version_args is None:
-                    raise RuntimeError(f"Unexpected None arguments from version-get for service {svc}")
+                if not isinstance(version_args, dict):
+                    raise RuntimeError(f"Unexpected arguments from version-get for service {svc}")
 
                 entry: dict[str, Any] = {
                     "PID": args.get("pid"),
