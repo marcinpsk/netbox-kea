@@ -61,17 +61,11 @@ def test_graphql(nb_api: pynetbox.api, nb_http: requests.Session, kea_server_kwa
     assert r.ok is True
 
     r_json = r.json()
-    assert r_json == {
-        "data": {
-            "server_list": [
-                {
-                    "id": str(server.id),
-                    "name": server.name,
-                    "ca_url": server.ca_url,
-                }
-            ]
-        }
-    }
+    assert {
+        "id": str(server.id),
+        "name": server.name,
+        "ca_url": server.ca_url,
+    } in r_json["data"]["server_list"]
 
     # Ensure ca_password is not a valid field
     r = nb_http.post(

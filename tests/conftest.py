@@ -1,8 +1,41 @@
 import os
+from collections.abc import Iterator
+from functools import partial
+from urllib.parse import urlsplit
 
 import pynetbox
 import pytest
 import requests
+
+_SERVER_COLLECTION_PATH = "/api/plugins/kea/servers"
+
+
+def _record_created_server_ids(
+    response: requests.Response,
+    *args,
+    created_server_ids: set[int],
+    **kwargs,
+) -> requests.Response:
+    """Record exact Server IDs from successful Pynetbox create responses."""
+    request = response.request
+    if (
+        request is None
+        or request.method != "POST"
+        or urlsplit(response.url).path.rstrip("/") != _SERVER_COLLECTION_PATH
+        or not response.ok
+    ):
+        return response
+
+    payload = response.json()
+    records = payload if isinstance(payload, list) else [payload]
+    created_server_ids.update(
+        identifier
+        for record in records
+        if isinstance(record, dict)
+        and isinstance((identifier := record.get("id")), int)
+        and not isinstance(identifier, bool)
+    )
+    return response
 
 
 @pytest.fixture(scope="session")
@@ -74,9 +107,20 @@ def nb_http(netbox_token: str) -> requests.Session:
 
 
 @pytest.fixture(scope="session", autouse=True)
-def nb_api(netbox_url: str, netbox_token: str) -> pynetbox.api:
-    """Return a client without deleting state that this test session does not own."""
-    return pynetbox.api(netbox_url, token=netbox_token)
+def nb_api(netbox_url: str, netbox_token: str) -> Iterator[pynetbox.api]:
+    """Return a client and delete only Servers that this test session created."""
+    api = pynetbox.api(netbox_url, token=netbox_token)
+    created_server_ids: set[int] = set()
+    api.http_session.hooks["response"].append(
+        partial(_record_created_server_ids, created_server_ids=created_server_ids)
+    )
+
+    yield api
+
+    for server_id in sorted(created_server_ids):
+        server = api.plugins.kea.servers.get(server_id)
+        if server is not None:
+            assert server.delete() is True
 
 
 @pytest.fixture
