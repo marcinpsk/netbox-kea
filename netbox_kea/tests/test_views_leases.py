@@ -553,6 +553,25 @@ class TestLeaseSearchPaths(_ViewTestBase):
         self.assertEqual(len({id(client) for client in created_clients}), 10)
         self.assertCountEqual([id(client) for client in closed_clients], [id(client) for client in created_clients])
 
+    @override_settings(PLUGINS_CONFIG=_UNGUARDED_PLUGINS_CONFIG)
+    def test_reservation_enrichment_closes_its_source_client(self):
+        from netbox_kea.views.leases import _enrich_leases_with_badges
+
+        real_close = KeaClient.close
+        closed_clients = []
+
+        def close_client(client):
+            real_close(client)
+            closed_clients.append(client)
+
+        with (
+            patch.object(KeaClient, "close", autospec=True, side_effect=close_client),
+            _reservation_stub(4, {"subnet4-list": self._SUBNETS4}),
+        ):
+            _enrich_leases_with_badges([{"ip_address": "", "subnet_id": 1}], self.server, 4)
+
+        self.assertEqual(len(closed_clients), 1)
+
     @override_settings(PLUGINS_CONFIG={"netbox_kea": {"kea_timeout": 30, "lease_query_max_unpaged_leases": 1000}})
     def test_search_by_subnet_id_and_state_filters_in_kea(self):
         lease = dict(self._LEASE4, state=1)

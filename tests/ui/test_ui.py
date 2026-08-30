@@ -20,6 +20,11 @@ from ..kea import KeaClient
 from .conftest import _DualEndpointKeaClient
 
 
+def test_dual_endpoint_client_rejects_multiple_services(kea_client: _DualEndpointKeaClient) -> None:
+    with pytest.raises(ValueError, match="route one service per call"):
+        kea_client.command("list-commands", service=["dhcp4", "dhcp6"])
+
+
 def _claim_netbox_ip(nb_api: pynetbox.api, address: str, **fields):
     """Create the NetBox IP for *address*, clearing any row an earlier test left behind.
 

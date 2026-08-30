@@ -110,7 +110,10 @@ class _DualEndpointKeaClient:
         self._clients = {"dhcp4": dhcp4, "dhcp6": dhcp6}
 
     def command(self, command, service=None, arguments=None, check=(0,)):
-        svc = (service or ["dhcp4"])[0]
+        services = service or ["dhcp4"]
+        if len(services) != 1:
+            raise ValueError(f"Kea 3.0 has no Control Agent: route one service per call, got {services!r}")
+        svc = services[0]
         return self._clients[svc].command(command, service=[svc], arguments=arguments, check=check)
 
 

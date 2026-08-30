@@ -101,7 +101,7 @@ def _merge_reservation_options(
     for intended_option in intended_options:
         raw_option = None
         for index, (current_option, candidate) in enumerate(remaining):
-            if current_option.match_key == intended_option.match_key:
+            if current_option.matches_intent(intended_option):
                 _, raw_option = remaining.pop(index)
                 break
         merged_option = {key: value for key, value in (raw_option or {}).items() if key not in _MANAGED_OPTION_KEYS}

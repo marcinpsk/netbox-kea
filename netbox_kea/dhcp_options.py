@@ -21,6 +21,13 @@ class DHCPOption:
         """Return the option identity within its containing configuration."""
         return self.space, self.code if self.code is not None else self.name
 
+    def matches_intent(self, intended: DHCPOption) -> bool:
+        """Return whether this resolved Option is the target of a submitted intent."""
+        same_space = self.space is None or intended.space is None or self.space == intended.space
+        if self.code is not None and intended.code is not None:
+            return same_space and self.code == intended.code
+        return same_space and self.name is not None and self.name == intended.name
+
 
 def parse_dhcp_option(entry: Any) -> DHCPOption:
     """Parse one raw Kea option-data entry.

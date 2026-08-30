@@ -995,6 +995,29 @@ class TestReservationMutation(SimpleTestCase):
         self.assertEqual(result.intended.addresses, (ip_address("198.18.0.21"),))
         self.assertEqual(result.verification, "verified")
 
+    def test_update_preserves_unknown_fields_for_a_name_only_option_change(self):
+        current_raw = self._resolved_raw()
+        current_raw["option-data"][0]["user-context"] = {"owner": "external-system"}
+        change = ReservationChange(options=SetValue(self._submitted_by_name().options))
+
+        with stub_kea(
+            {
+                **_persistence_responses(4),
+                "reservation-get": queued(_res_get(current_raw), _res_get(current_raw)),
+                "reservation-update": {"result": 0},
+            }
+        ) as kea:
+            result = self.kea.reservation_change(
+                self.reservation,
+                reservation_fingerprint(self.reservation),
+                change,
+                self.catalogue,
+            )
+
+        sent_option = kea.bodies("reservation-update")[0]["arguments"]["reservation"]["option-data"][0]
+        self.assertEqual(sent_option["user-context"], {"owner": "external-system"})
+        self.assertEqual(result.verification, "verified")
+
     def test_create_reports_failed_persistence_without_losing_applied_state(self):
         raw = {
             "subnet-id": 20,

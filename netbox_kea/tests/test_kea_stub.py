@@ -13,7 +13,7 @@ import threading
 import pytest
 import requests
 
-from netbox_kea.tests.kea_stub import KeaHttpStub, queued
+from netbox_kea.tests.kea_stub import KeaHttpStub, _reservation_family, queued
 
 
 def _call(stub, command="x"):
@@ -124,6 +124,19 @@ def test_catalogue_responses_shape():
     assert "subnet6-list" in v6
     assert v6["config-get"]["arguments"]["Dhcp6"]["subnet6"] == [{"id": 30, "subnet": "2001:db8::/64"}]
     assert v6["config-get"]["arguments"]["hash"] == "other"
+
+
+@pytest.mark.parametrize(
+    ("host", "family"),
+    (
+        ({"ip-address": "198.18.0.10"}, 4),
+        ({"ip-address": "2001:db8::10"}, 6),
+        ({"ip-addresses": ["2001:db8::10"]}, 6),
+        ({"prefixes": ["2001:db8:1::/64"]}, 6),
+    ),
+)
+def test_reservation_family_covers_each_wire_address_shape(host, family):
+    assert _reservation_family(host) == family
 
 
 def test_exception_value_is_raised():

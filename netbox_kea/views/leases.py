@@ -1157,10 +1157,18 @@ def _enrich_leases_with_badges(
     except Exception as exc:  # noqa: BLE001
         failed_ips = {lease.get("ip_address", "") for lease in leases}
         logger.warning("unexpected error during lease enrichment: %s", exc, exc_info=True)
+    finally:
+        if client is not None:
+            _close_worker_client(client)
 
     for lease in leases:
         ip = lease.get("ip_address", "")
-        subnet = catalogue.find_by_id(lease.get("subnet_id")) if catalogue is not None else None
+        subnet_id = lease.get("subnet_id")
+        subnet = (
+            catalogue.find_by_id(subnet_id)
+            if catalogue is not None and isinstance(subnet_id, int) and not isinstance(subnet_id, bool)
+            else None
+        )
         _set_lease_reservation_fields(
             lease,
             reservation_by_ip.get(ip),
