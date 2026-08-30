@@ -171,6 +171,13 @@ def test_ci_configuration_writer_generates_the_requested_plugins(monkeypatch, tm
     }
 
 
+def test_isolated_settings_define_an_api_token_pepper():
+    """Keep NetBox API test tokens usable outside the generated CI settings."""
+    from django.conf import settings
+
+    assert settings.API_TOKEN_PEPPERS
+
+
 def test_integration_image_installs_the_wheel_into_the_netbox_venv():
     """The uv branch must target the same NetBox venv as the pip fallback."""
     dockerfile = (REPOSITORY_ROOT / "tests" / "docker" / "Dockerfile").read_text()
