@@ -33,6 +33,7 @@ from ..kea import (
 from ..models import Server
 from ..reservations import (
     GlobalReservationScope,
+    IdentifierType,
     InSubnetReservationScope,
     Reservation,
     ReservationIdentity,
@@ -885,7 +886,7 @@ class ServerLease6AddView(_BaseLeaseAddView):
     _active_tab = _LEASES_TAB
 
 
-_LEASE_RESERVATION_IDENTIFIERS = {
+_LEASE_RESERVATION_IDENTIFIERS: dict[int, tuple[tuple[IdentifierType, str], ...]] = {
     4: (("hw-address", "hw_address"), ("client-id", "client_id")),
     6: (("duid", "duid"), ("hw-address", "hw_address")),
 }
