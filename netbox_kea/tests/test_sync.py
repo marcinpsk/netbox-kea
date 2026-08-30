@@ -50,11 +50,9 @@ class TestFindPrefixLength(TestCase):
 
         from netbox_kea.sync import find_prefix_length
 
-        p = Prefix.objects.create(prefix="10.50.0.0/24", status="active")
-        try:
-            self.assertEqual(find_prefix_length("10.50.0.100"), 24)
-        finally:
-            p.delete()
+        Prefix.objects.create(prefix="10.50.0.0/24", status="active")
+
+        self.assertEqual(find_prefix_length("10.50.0.100"), 24)
 
     def test_uses_longest_matching_prefix(self):
         """When a /24 and /16 both contain the IP, /24 wins."""
@@ -62,13 +60,10 @@ class TestFindPrefixLength(TestCase):
 
         from netbox_kea.sync import find_prefix_length
 
-        p16 = Prefix.objects.create(prefix="10.50.0.0/16", status="active")
-        p24 = Prefix.objects.create(prefix="10.50.1.0/24", status="active")
-        try:
-            self.assertEqual(find_prefix_length("10.50.1.5"), 24)
-        finally:
-            p16.delete()
-            p24.delete()
+        Prefix.objects.create(prefix="10.50.0.0/16", status="active")
+        Prefix.objects.create(prefix="10.50.1.0/24", status="active")
+
+        self.assertEqual(find_prefix_length("10.50.1.5"), 24)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -175,12 +170,10 @@ class TestSyncLeaseToNetbox(TestCase):
 
         from netbox_kea.sync import sync_lease_to_netbox
 
-        p = Prefix.objects.create(prefix="192.168.50.0/24", status="active")
-        try:
-            ip_obj, _, _ = sync_lease_to_netbox(self._LEASE)
-            self.assertTrue(str(ip_obj.address).endswith("/24"))
-        finally:
-            p.delete()
+        Prefix.objects.create(prefix="192.168.50.0/24", status="active")
+
+        ip_obj, _, _ = sync_lease_to_netbox(self._LEASE)
+        self.assertTrue(str(ip_obj.address).endswith("/24"))
 
     def test_description_contains_kea(self):
         from netbox_kea.sync import sync_lease_to_netbox
@@ -1713,22 +1706,18 @@ class TestResolvePrefixLength(TestCase):
 
         from netbox_kea.sync import _resolve_prefix_length
 
-        p8 = Prefix.objects.create(prefix="10.0.0.0/8", status="active")
-        try:
-            self.assertEqual(_resolve_prefix_length("10.50.1.5", 1, {1: 24}), 24)
-        finally:
-            p8.delete()
+        Prefix.objects.create(prefix="10.0.0.0/8", status="active")
+
+        self.assertEqual(_resolve_prefix_length("10.50.1.5", 1, {1: 24}), 24)
 
     def test_falls_back_to_netbox_when_subnet_id_not_in_map(self):
         from ipam.models import Prefix
 
         from netbox_kea.sync import _resolve_prefix_length
 
-        p = Prefix.objects.create(prefix="10.60.0.0/22", status="active")
-        try:
-            self.assertEqual(_resolve_prefix_length("10.60.0.5", 99, {1: 24}), 22)
-        finally:
-            p.delete()
+        Prefix.objects.create(prefix="10.60.0.0/22", status="active")
+
+        self.assertEqual(_resolve_prefix_length("10.60.0.5", 99, {1: 24}), 22)
 
     def test_falls_back_to_default_when_no_map_and_no_prefix(self):
         from netbox_kea.sync import _resolve_prefix_length
