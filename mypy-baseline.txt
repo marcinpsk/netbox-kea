@@ -174,7 +174,6 @@ netbox_kea/views/leases.py:0: error: Argument 2 to "check_dhcp_enabled" has inco
 netbox_kea/views/leases.py:0: error: Argument 2 to "check_dhcp_enabled" has incompatible type "int"; expected "Literal[6, 4]"  [arg-type]
 netbox_kea/views/leases.py:0: error: Argument 1 to "ReservationIdentity" has incompatible type "str"; expected "Literal['hw-address', 'duid', 'circuit-id', 'client-id', 'flex-id']"  [arg-type]
 netbox_kea/views/leases.py:0: error: Argument "version" to "get_client" of "Server" has incompatible type "int"; expected "Literal[4, 6] | None"  [arg-type]
-netbox_kea/views/leases.py:0: error: Argument 1 to "find_by_id" of "CatalogueSnapshot" has incompatible type "Any | None"; expected "int"  [arg-type]
 netbox_kea/views/shared_networks.py:0: error: Argument 2 to "check_dhcp_enabled" has incompatible type "int"; expected "Literal[6, 4]"  [arg-type]
 netbox_kea/views/shared_networks.py:0: error: Argument "version" to "get_client" of "Server" has incompatible type "int"; expected "Literal[4, 6] | None"  [arg-type]
 netbox_kea/views/shared_networks.py:0: error: Argument 2 to "check_dhcp_enabled" has incompatible type "int"; expected "Literal[6, 4]"  [arg-type]

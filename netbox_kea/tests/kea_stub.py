@@ -170,15 +170,10 @@ def _reservation_family(host: dict[str, Any]) -> int:
     Delegated prefixes are DHCPv6 only, so a prefix-only fixture is v6 even when it
     carries no address at all.
     """
-    raw_addresses = host.get("ip-addresses")
-    if isinstance(raw_addresses, list):
-        addresses = [address for address in raw_addresses if isinstance(address, str)]
-    else:
-        singular = host.get("ip-address")
-        addresses = [singular] if isinstance(singular, str) else []
     if "ip-addresses" in host or host.get("prefixes"):
         return 6
-    return 6 if any(":" in address for address in addresses if address) else 4
+    singular = host.get("ip-address")
+    return 6 if isinstance(singular, str) and ":" in singular else 4
 
 
 def _typed_reservation(raw: dict[str, Any], *, prefix_length: int | None = None) -> Reservation:

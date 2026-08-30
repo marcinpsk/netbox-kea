@@ -112,7 +112,7 @@ class TestSubnetCatalogue(TestCase):
         with stub_kea({"subnet4-list": _identity(4, [subnet]), "config-get": _config(4, [subnet])}):
             snapshot = display(self.server, 4)
 
-        for subnet_id in (1.0, True):
+        for subnet_id in (None, 1.0, True):
             with self.subTest(subnet_id=subnet_id):
                 self.assertIsNone(snapshot.find_by_id(subnet_id))
 

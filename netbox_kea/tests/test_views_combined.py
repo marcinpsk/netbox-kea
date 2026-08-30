@@ -290,6 +290,25 @@ class TestCombinedReservationCapabilityConcurrency(_ViewTestBase):
         self.assertEqual(len(completed_probes), 2)
         self.assertEqual(response.context["mutation_unavailable_servers"], [])
 
+    def test_unexpected_capability_failure_does_not_hide_other_reservation_data(self):
+        hosts = [{"subnet-id": 1, "hw-address": "aa:bb:cc:dd:ee:ff", "hostname": "printer"}]
+        responses = {
+            **_catalogue_responses(4, 1, "198.18.0.0/24"),
+            "reservation-get-page": _res_page(hosts),
+            "lease4-get-by-state": {"result": 0, "arguments": {"leases": []}},
+            "list-commands": TypeError("unexpected capability failure"),
+        }
+
+        with stub_kea(responses):
+            response = self.client.get(reverse("plugins:netbox_kea:combined_reservations4"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "printer")
+        self.assertEqual(
+            response.context["mutation_unavailable_servers"],
+            [(self.server.name, "Live Reservation mutation capabilities could not be confirmed.")],
+        )
+
 
 class TestCombinedReservationSyncControl(_ViewTestBase):
     """The combined tab must offer the same Reservation synchronization as one server.

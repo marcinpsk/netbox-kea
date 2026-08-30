@@ -475,6 +475,21 @@ def _reservation_capability_future(
     return {server.pk: executor.submit(_configured_capabilities, server, version)}
 
 
+def _reservation_capability_results(
+    capability_futures: dict[int, concurrent.futures.Future[ReservationCapabilities | None]],
+    server_map: dict[int, Server],
+) -> dict[int, ReservationCapabilities | None]:
+    """Collect capability reads without letting one server hide the others."""
+    capabilities_by_server: dict[int, ReservationCapabilities | None] = {}
+    for server_pk, capability_future in capability_futures.items():
+        try:
+            capabilities_by_server[server_pk] = capability_future.result()
+        except Exception:  # noqa: BLE001, PERF203
+            logger.exception("Failed to query Reservation capabilities from %s", server_map[server_pk].name)
+            capabilities_by_server[server_pk] = None
+    return capabilities_by_server
+
+
 class _CombinedReservationsView(_CombinedViewMixin):
     """Base view: fetch reservations from all selected servers concurrently."""
 
@@ -533,7 +548,7 @@ class _CombinedReservationsView(_CombinedViewMixin):
                 except Exception:  # noqa: BLE001, PERF203
                     logger.exception("Failed to query server %s", server.name)
                     errors.append((server.name, "Failed to query server"))
-            capabilities_by_server = {server_pk: future.result() for server_pk, future in capability_futures.items()}
+            capabilities_by_server = _reservation_capability_results(capability_futures, server_map)
 
         if is_export:
             if errors or diagnostics:
