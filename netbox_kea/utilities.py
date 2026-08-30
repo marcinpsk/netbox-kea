@@ -48,7 +48,14 @@ def subnet_sort_key(choice: tuple[str, Any]) -> tuple[int, Any]:
 
 
 def parse_pool_range(pool: str) -> IPNetwork | IPRange:
-    """Return the address range represented by one Kea pool string."""
+    """Return the address range represented by one Kea pool string.
+
+    A hyphenated string is a start-end range. All other strings are CIDRs.
+
+    Raises:
+        AddrFormatError: If an address is invalid, a range is reversed, or its bounds use different families.
+
+    """
     if "-" in pool and "/" not in pool:
         start, end = pool.split("-", 1)
         return IPRange(start.strip(), end.strip())
