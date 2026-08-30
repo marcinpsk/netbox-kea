@@ -1630,6 +1630,29 @@ def test_the_browser_suite_bounds_every_netbox_request():
         )
 
 
+def test_user_preference_reset_allows_for_normal_ci_load():
+    """Keep the autouse request bound above the slow response observed in CI."""
+    from tests.ui.conftest import reset_user_preferences
+
+    class LoadedSession:
+        def _response(self, timeout: int):
+            if timeout < 20:
+                raise requests.ReadTimeout("NetBox is still serving the request")
+            response = requests.Response()
+            response.status_code = 200
+            response._content = b'{"tables": {}}'
+            return response
+
+        def get(self, *, url: str, timeout: int):
+            return self._response(timeout)
+
+        def patch(self, *, url: str, json: dict, timeout: int):
+            return self._response(timeout)
+
+    api = type("API", (), {"base_url": "https://netbox.example.invalid/api"})()
+    reset_user_preferences.__wrapped__(LoadedSession(), api)
+
+
 #: Every external tool the integration setup script calls. Stubbed so the script can run
 #: in a test without a network, a Docker daemon, or a real Kea release tarball.
 _SETUP_SCRIPT_TOOLS = ("openssl", "curl", "sha256sum", "tar", "docker")

@@ -17,6 +17,8 @@ from playwright.sync_api import Page
 # This is linked from netbox_kea to avoid import errors
 from ..kea import KeaClient
 
+_USER_PREFERENCES_TIMEOUT_SECONDS = 20
+
 
 @pytest.fixture
 def requests_session(nb_api: pynetbox.api) -> requests.Session:
@@ -39,7 +41,10 @@ def clear_leases(kea_client: KeaClient) -> None:
 
 @pytest.fixture(autouse=True)
 def reset_user_preferences(requests_session: requests.Session, nb_api: pynetbox.api) -> None:
-    r = requests_session.get(url=f"{nb_api.base_url}/users/config/", timeout=5)
+    r = requests_session.get(
+        url=f"{nb_api.base_url}/users/config/",
+        timeout=_USER_PREFERENCES_TIMEOUT_SECONDS,
+    )
     r.raise_for_status()
     tables_config = r.json().get("tables", {})
 
@@ -47,14 +52,14 @@ def reset_user_preferences(requests_session: requests.Session, nb_api: pynetbox.
     requests_session.patch(
         url=f"{nb_api.base_url}/users/config/",
         json={"tables": {k: {} for k in tables_config}},
-        timeout=5,
+        timeout=_USER_PREFERENCES_TIMEOUT_SECONDS,
     ).raise_for_status()
 
     # restore pagination
     requests_session.patch(
         url=f"{nb_api.base_url}/users/config/",
         json={"pagination": {"placement": "bottom"}},
-        timeout=5,
+        timeout=_USER_PREFERENCES_TIMEOUT_SECONDS,
     ).raise_for_status()
 
 
