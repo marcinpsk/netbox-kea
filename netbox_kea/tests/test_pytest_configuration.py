@@ -46,7 +46,7 @@ def _workflow_ruff_targets(workflow: str) -> set[str]:
     return {
         match.group(1)
         for command in _workflow_uv_commands(workflow)
-        if (match := re.search(r"\bruff (?:check|format --check) (\S+)$", command))
+        if (match := re.search(r"\bruff (?:check|format --check) +(?!-)(\S+)", command))
     }
 
 
@@ -223,6 +223,19 @@ jobs:
         "uv export --native-tls",
         "uv pip install -r /dev/stdin",
     ]
+
+
+def test_workflow_ruff_target_parser_accepts_trailing_options():
+    """A valid option after the target must not hide a Ruff command."""
+    workflow = """\
+jobs:
+  lint:
+    steps:
+      - run: uv run --native-tls ruff check . --output-format=github
+      - run: uv run --native-tls ruff format --check src
+"""
+
+    assert _workflow_ruff_targets(workflow) == {".", "src"}
 
 
 def test_workflow_job_slice_uses_structural_job_boundaries():
@@ -751,8 +764,12 @@ def test_the_compose_stack_builds_no_empty_list_element():
 def test_lowercase_no_proxy_inherits_the_uppercase_proxy_list():
     """Requests reads lowercase first, so it must retain an uppercase-only host list."""
     compose = _COMPOSE_FILE.read_text()
-    line = next(line.strip() for line in compose.splitlines() if line.strip().startswith("no_proxy:"))
+    entries = [line.strip() for line in compose.splitlines() if line.strip().startswith("no_proxy:")]
+    assert entries, "The Compose stack no longer sets a lowercase no_proxy entry."
+    line = entries[0]
 
+    for token in ("${no_proxy:+", "${NO_PROXY:+", "localhost"):
+        assert token in line, (token, line)
     assert line.index("${no_proxy:+") < line.index("${NO_PROXY:+") < line.index("localhost")
 
 
