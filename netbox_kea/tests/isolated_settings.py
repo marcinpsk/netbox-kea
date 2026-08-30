@@ -34,6 +34,7 @@ if "netbox_kea" not in _plugins:
 _plugins_config = dict(getattr(_netbox_configuration, "PLUGINS_CONFIG", {}))
 _plugins_config.setdefault("netbox_kea", {"kea_timeout": 30})
 _netbox_configuration.PLUGINS_CONFIG = _plugins_config
+_netbox_configuration.API_TOKEN_PEPPERS = {0: "a" * 64}
 
 from netbox.settings import *  # noqa: E402, F403
 
