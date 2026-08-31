@@ -126,6 +126,76 @@ class TestReservationLeaseRelationship(_ViewTestBase):
         self.assertIn("q=aa%3Abb%3Acc%3Add%3Aee%3Aff", rows[0]["lease_url"])
         self.assertEqual(kea.bodies("lease4-get-by-hw-address")[0]["arguments"], {"hw-address": "aa:bb:cc:dd:ee:ff"})
 
+    def test_a_malformed_global_lease_state_reports_no_relationship(self):
+        """Only a validated Kea state can establish or reject a lease relationship."""
+        cases = [
+            ("missing", {}),
+            ("string", {"state": "0"}),
+            ("boolean", {"state": True}),
+            ("out of range", {"state": 99}),
+        ]
+
+        for label, state_fields in cases:
+            with self.subTest(state=label):
+                response, rows, _kea = self._rows(
+                    {
+                        "reservation-get-page": _res_page([{"subnet-id": 0, "hw-address": "aa:bb:cc:dd:ee:ff"}]),
+                        "lease4-get-by-hw-address": {
+                            "result": 0,
+                            "arguments": {
+                                "leases": [
+                                    {
+                                        "subnet-id": 21,
+                                        "hw-address": "AA-BB-CC-DD-EE-FF",
+                                        "ip-address": "198.18.1.20",
+                                        **state_fields,
+                                    }
+                                ]
+                            },
+                        },
+                    }
+                )
+
+                self.assertIsNone(rows[0]["has_active_lease"])
+                self.assertNotContains(response, "No Lease")
+                self.assertNotContains(response, "Active Lease")
+
+    def test_a_malformed_subnet_lease_state_reports_no_relationship(self):
+        """A filtered Subnet response still requires an assigned lease state."""
+        cases = [
+            ("missing", {}),
+            ("released", {"state": 1}),
+            ("string", {"state": "0"}),
+            ("boolean", {"state": True}),
+            ("out of range", {"state": 99}),
+        ]
+
+        for label, state_fields in cases:
+            with self.subTest(state=label):
+                response, rows, _kea = self._rows(
+                    {
+                        "reservation-get-page": _res_page(
+                            [{"subnet-id": 20, "hw-address": "aa:bb:cc:dd:ee:ff", "ip-address": "198.18.0.20"}]
+                        ),
+                        "lease4-get-by-state": _leases_per_subnet(
+                            {
+                                20: [
+                                    {
+                                        "subnet-id": 20,
+                                        "hw-address": "aa:bb:cc:dd:ee:ff",
+                                        "ip-address": "198.18.0.20",
+                                        **state_fields,
+                                    }
+                                ]
+                            }
+                        ),
+                    }
+                )
+
+                self.assertIsNone(rows[0]["has_active_lease"])
+                self.assertNotContains(response, "No Lease")
+                self.assertNotContains(response, "Active Lease")
+
     def test_a_global_reservation_never_infers_a_subnet_from_its_address(self):
         """An address must not put a Global Reservation into a Subnet lease query."""
         _response, rows, kea = self._rows(
@@ -154,7 +224,16 @@ class TestReservationLeaseRelationship(_ViewTestBase):
             {
                 "reservation-get-page": _res_page([{"subnet-id": 20, "hw-address": "aa:bb:cc:dd:ee:ff"}]),
                 "lease4-get-by-state": _leases_per_subnet(
-                    {20: [{"subnet-id": 20, "hw-address": "aa:bb:cc:dd:ee:ff", "ip-address": "198.18.0.77"}]}
+                    {
+                        20: [
+                            {
+                                "subnet-id": 20,
+                                "hw-address": "aa:bb:cc:dd:ee:ff",
+                                "ip-address": "198.18.0.77",
+                                "state": 0,
+                            }
+                        ]
+                    }
                 ),
             }
         )
@@ -177,7 +256,16 @@ class TestReservationLeaseRelationship(_ViewTestBase):
                     ]
                 ),
                 "lease6-get-by-state": _leases_per_subnet(
-                    {30: [{"subnet-id": 30, "duid": "00:01:02:04", "ip-address": "2001:db8::21"}]}
+                    {
+                        30: [
+                            {
+                                "subnet-id": 30,
+                                "duid": "00:01:02:04",
+                                "ip-address": "2001:db8::21",
+                                "state": 0,
+                            }
+                        ]
+                    }
                 ),
             },
             version=6,

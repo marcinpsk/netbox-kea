@@ -64,7 +64,9 @@ _HOOK_UNAVAILABLE = object()
 def _assigned(lease: dict[str, Any]) -> bool:
     """Return whether Kea reports this lease as assigned (state 0)."""
     state = lease.get("state")
-    return isinstance(state, int) and not isinstance(state, bool) and state == 0
+    if not isinstance(state, int) or isinstance(state, bool) or state not in constants.LEASE_STATE_LABELS:
+        raise RuntimeError("Kea returned a lease with an invalid state.")
+    return state == 0
 
 
 def _lease_facts_in_subnet(client: KeaClient, version: int, subnet_id: int) -> Any:
@@ -72,6 +74,8 @@ def _lease_facts_in_subnet(client: KeaClient, version: int, subnet_id: int) -> A
     with client.clone() as worker_client:
         try:
             leases = worker_client.lease_search(version, constants.BY_SUBNET_ID, subnet_id, state=0)
+            if not all(_assigned(lease) for lease in leases):
+                return _INDETERMINATE
         except KeaException as exc:
             return _HOOK_UNAVAILABLE if exc.response.get("result") == 2 else _INDETERMINATE
         except (LeaseQueryGuardError, requests.RequestException, RuntimeError, ValueError):
@@ -93,11 +97,12 @@ def _identity_holds_a_lease(client: KeaClient, version: int, identity: Reservati
     with client.clone() as worker_client:
         try:
             leases = worker_client.lease_search(version, selector, identity.value)
+            assigned = [_assigned(lease) for lease in leases]
         except KeaException as exc:
             return _HOOK_UNAVAILABLE if exc.response.get("result") == 2 else _INDETERMINATE
         except (LeaseQueryGuardError, requests.RequestException, RuntimeError, ValueError):
             return _INDETERMINATE
-    return any(_assigned(lease) for lease in leases)
+    return any(assigned)
 
 
 def _enrich_reservations_with_lease_status(
