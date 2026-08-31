@@ -139,7 +139,10 @@ class _BaseReservationSyncView(ConditionalLoginRequiredMixin, View):
             from ..sync import sync_reservation_to_netbox
 
             result = sync_reservation_to_netbox(reservation, cleanup=False, force=True)
-        except (KeaException, requests.RequestException, DatabaseError, RuntimeError, ValidationError, ValueError):
+        except KeaException as exc:
+            logger.exception("Kea error synchronizing a DHCPv%s Reservation", self.dhcp_version)
+            return HttpResponse(f"Reservation synchronization failed: {kea_error_hint(exc)}", status=500)
+        except (requests.RequestException, DatabaseError, RuntimeError, ValidationError, ValueError):
             logger.exception("Could not synchronize a DHCPv%s Reservation", self.dhcp_version)
             return HttpResponse("Reservation synchronization failed. See server logs.", status=500)
         return render(request, "netbox_kea/inc/reservation_sync_badge.html", {"state": result.state})
