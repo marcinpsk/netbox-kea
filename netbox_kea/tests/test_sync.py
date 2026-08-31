@@ -148,7 +148,7 @@ class TestSyncLeaseToNetbox(TestCase):
 
         sync_lease_to_netbox(self._LEASE)
         sync_lease_to_netbox(self._LEASE)
-        self.assertEqual(NbIP.objects.filter(address__startswith="192.168.50.100/").count(), 1)
+        self.assertEqual(NbIP.objects.filter(address__net_host="192.168.50.100").count(), 1)
 
     def test_updates_dns_name_on_second_call(self):
         """A second sync with a new hostname must update dns_name."""
@@ -288,7 +288,7 @@ class TestSyncReservationToNetbox(TestCase):
 
         _sync_reservation(self._RESERVATION)
         _sync_reservation(self._RESERVATION)
-        self.assertEqual(NbIP.objects.filter(address__startswith="192.168.51.200/").count(), 1)
+        self.assertEqual(NbIP.objects.filter(address__net_host="192.168.51.200").count(), 1)
 
     def test_returns_created_false_on_second_call(self):
 
@@ -404,11 +404,11 @@ class TestSyncReservationMultiAddressV6(TestCase):
         ip_obj, created, _ = _sync_reservation(reservation)
         self.assertTrue(created)
         self.assertTrue(
-            NbIP.objects.filter(address__startswith="2001:db8::1/").exists(),
+            NbIP.objects.filter(address__net_host="2001:db8::1").exists(),
             "First address must be synced",
         )
         self.assertTrue(
-            NbIP.objects.filter(address__startswith="2001:db8::2/").exists(),
+            NbIP.objects.filter(address__net_host="2001:db8::2").exists(),
             "Second address must also be synced",
         )
 
@@ -765,7 +765,7 @@ class TestCleanupStaleIps(TestCase):
         self._create_old_ip()
         count = self._call(mode="remove")
         self.assertEqual(count, 1)
-        self.assertFalse(NbIP.objects.filter(address__startswith=f"{self._OLD_IP}/").exists())
+        self.assertFalse(NbIP.objects.filter(address__net_host=self._OLD_IP).exists())
 
     def test_deprecates_stale_ip_in_deprecate_mode(self):
         from ipam.models import IPAddress as NbIP
@@ -773,7 +773,7 @@ class TestCleanupStaleIps(TestCase):
         self._create_old_ip()
         count = self._call(mode="deprecate")
         self.assertEqual(count, 1)
-        ip = NbIP.objects.get(address__startswith=f"{self._OLD_IP}/")
+        ip = NbIP.objects.get(address__net_host=self._OLD_IP)
         self.assertEqual(ip.status, "deprecated")
 
     def test_does_nothing_in_none_mode(self):
@@ -782,7 +782,7 @@ class TestCleanupStaleIps(TestCase):
         self._create_old_ip()
         count = self._call(mode="none")
         self.assertEqual(count, 0)
-        self.assertTrue(NbIP.objects.filter(address__startswith=f"{self._OLD_IP}/").exists())
+        self.assertTrue(NbIP.objects.filter(address__net_host=self._OLD_IP).exists())
 
     def test_skips_ips_without_kea_description(self):
         from ipam.models import IPAddress as NbIP
@@ -790,7 +790,7 @@ class TestCleanupStaleIps(TestCase):
         self._create_old_ip(description="Manually assigned by ops team")
         count = self._call(mode="remove")
         self.assertEqual(count, 0)
-        self.assertTrue(NbIP.objects.filter(address__startswith=f"{self._OLD_IP}/").exists())
+        self.assertTrue(NbIP.objects.filter(address__net_host=self._OLD_IP).exists())
 
     def test_skips_ips_with_different_hostname(self):
         from ipam.models import IPAddress as NbIP
@@ -805,7 +805,7 @@ class TestCleanupStaleIps(TestCase):
         )
         count = _cleanup_stale_ips(self._NEW_IP, self._HOSTNAME, mode="remove")
         self.assertEqual(count, 0)
-        self.assertTrue(NbIP.objects.filter(address__startswith=f"{self._OLD_IP}/").exists())
+        self.assertTrue(NbIP.objects.filter(address__net_host=self._OLD_IP).exists())
 
     def test_does_not_remove_current_ip(self):
         """The IP being synced is never touched by stale cleanup."""
@@ -821,7 +821,7 @@ class TestCleanupStaleIps(TestCase):
         )
         count = _cleanup_stale_ips(self._NEW_IP, self._HOSTNAME, mode="remove")
         self.assertEqual(count, 0)
-        self.assertTrue(NbIP.objects.filter(address__startswith=f"{self._NEW_IP}/").exists())
+        self.assertTrue(NbIP.objects.filter(address__net_host=self._NEW_IP).exists())
 
     def test_does_not_remove_deprecated_ips(self):
         """Already-deprecated IPs are not touched (not in (dhcp, active, reserved))."""
@@ -841,7 +841,7 @@ class TestCleanupStaleIps(TestCase):
         )
         count = self._call(mode="remove")
         self.assertEqual(count, 0)
-        self.assertTrue(NbIP.objects.filter(address__startswith="2001:db8::1/").exists())
+        self.assertTrue(NbIP.objects.filter(address__net_host="2001:db8::1").exists())
 
     def test_skips_when_no_hostname(self):
         """No hostname → no cleanup (can't match safely)."""
@@ -880,8 +880,8 @@ class TestSyncLeaseWithStaleCleanup(TestCase):
 
         self._create_old_kea_ip()
         sync_lease_to_netbox(self._LEASE_NEW)
-        self.assertFalse(NbIP.objects.filter(address__startswith=f"{self._OLD_IP}/").exists())
-        self.assertTrue(NbIP.objects.filter(address__startswith="10.40.0.20/").exists())
+        self.assertFalse(NbIP.objects.filter(address__net_host=self._OLD_IP).exists())
+        self.assertTrue(NbIP.objects.filter(address__net_host="10.40.0.20").exists())
 
     @override_settings(PLUGINS_CONFIG=_DEPRECATE_PLUGINS_CONFIG)
     def test_deprecates_old_ip_in_deprecate_mode(self):
@@ -891,7 +891,7 @@ class TestSyncLeaseWithStaleCleanup(TestCase):
 
         self._create_old_kea_ip()
         sync_lease_to_netbox(self._LEASE_NEW)
-        old = NbIP.objects.filter(address__startswith=f"{self._OLD_IP}/").first()
+        old = NbIP.objects.filter(address__net_host=self._OLD_IP).first()
         self.assertIsNotNone(old)
         self.assertEqual(old.status, "deprecated")
 
@@ -903,7 +903,7 @@ class TestSyncLeaseWithStaleCleanup(TestCase):
 
         self._create_old_kea_ip()
         sync_lease_to_netbox(self._LEASE_NEW)
-        self.assertTrue(NbIP.objects.filter(address__startswith=f"{self._OLD_IP}/").exists())
+        self.assertTrue(NbIP.objects.filter(address__net_host=self._OLD_IP).exists())
 
     @override_settings(PLUGINS_CONFIG=_STALE_PLUGINS_CONFIG)
     def test_does_not_remove_old_ip_when_no_hostname(self):
@@ -914,7 +914,7 @@ class TestSyncLeaseWithStaleCleanup(TestCase):
 
         self._create_old_kea_ip()
         sync_lease_to_netbox({"ip-address": "10.40.0.20", "hw-address": "aa:bb:cc:dd:00:01"})
-        self.assertTrue(NbIP.objects.filter(address__startswith=f"{self._OLD_IP}/").exists())
+        self.assertTrue(NbIP.objects.filter(address__net_host=self._OLD_IP).exists())
 
 
 class TestSyncReservationWithStaleCleanup(TestCase):
@@ -943,8 +943,8 @@ class TestSyncReservationWithStaleCleanup(TestCase):
 
         self._create_old_kea_ip()
         _sync_reservation(self._RESERVATION_NEW)
-        self.assertFalse(NbIP.objects.filter(address__startswith=f"{self._OLD_IP}/").exists())
-        self.assertTrue(NbIP.objects.filter(address__startswith="10.50.0.20/").exists())
+        self.assertFalse(NbIP.objects.filter(address__net_host=self._OLD_IP).exists())
+        self.assertTrue(NbIP.objects.filter(address__net_host="10.50.0.20").exists())
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1005,7 +1005,7 @@ class TestCleanupStaleIpsUnknownMode(TestCase):
         )
         count = _cleanup_stale_ips("10.30.0.99", self._HOSTNAME, mode="unknown")
         self.assertEqual(count, 0)
-        self.assertTrue(NbIP.objects.filter(address__startswith=f"{self._OLD_IP}/").exists())
+        self.assertTrue(NbIP.objects.filter(address__net_host=self._OLD_IP).exists())
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1190,10 +1190,10 @@ class TestCleanupStaleIpsBatch(TestCase):
         cleaned = cleanup_stale_ips_batch(synced)
         self.assertEqual(cleaned, 1)
         # Both synced IPs survive
-        self.assertTrue(NbIP.objects.filter(address__startswith="10.60.0.1/").exists())
-        self.assertTrue(NbIP.objects.filter(address__startswith="10.60.0.2/").exists())
+        self.assertTrue(NbIP.objects.filter(address__net_host="10.60.0.1").exists())
+        self.assertTrue(NbIP.objects.filter(address__net_host="10.60.0.2").exists())
         # Stale IP removed
-        self.assertFalse(NbIP.objects.filter(address__startswith="10.60.0.99/").exists())
+        self.assertFalse(NbIP.objects.filter(address__net_host="10.60.0.99").exists())
 
     @override_settings(PLUGINS_CONFIG=_STALE_PLUGINS_CONFIG)
     def test_batch_cleans_per_hostname(self):
@@ -1269,7 +1269,7 @@ class TestCleanupStaleIpsBatch(TestCase):
         ]
         cleaned = cleanup_stale_ips_batch(synced)
         self.assertEqual(cleaned, 0)
-        self.assertTrue(NbIP.objects.filter(address__startswith="2001:db8::1/").exists())
+        self.assertTrue(NbIP.objects.filter(address__net_host="2001:db8::1").exists())
 
     @override_settings(PLUGINS_CONFIG=_STALE_PLUGINS_CONFIG)
     def test_empty_batch_returns_zero(self):
@@ -1300,8 +1300,8 @@ class TestCleanupStaleIpsBatch(TestCase):
         cleaned = cleanup_stale_ips_batch([reservation])
 
         self.assertEqual(cleaned, 1)
-        self.assertTrue(NbIP.objects.filter(address__startswith="10.80.0.1/").exists())
-        self.assertFalse(NbIP.objects.filter(address__startswith="10.80.0.99/").exists())
+        self.assertTrue(NbIP.objects.filter(address__net_host="10.80.0.1").exists())
+        self.assertFalse(NbIP.objects.filter(address__net_host="10.80.0.99").exists())
 
     @override_settings(PLUGINS_CONFIG=_STALE_PLUGINS_CONFIG)
     def test_a_protected_record_keeps_the_address_it_reserves(self):
@@ -1333,8 +1333,8 @@ class TestCleanupStaleIpsBatch(TestCase):
         cleaned = cleanup_stale_ips_batch([synced], [skipped_global])
 
         self.assertEqual(cleaned, 1)
-        self.assertTrue(NbIP.objects.filter(address__startswith="10.81.0.2/").exists())
-        self.assertFalse(NbIP.objects.filter(address__startswith="10.81.0.99/").exists())
+        self.assertTrue(NbIP.objects.filter(address__net_host="10.81.0.2").exists())
+        self.assertFalse(NbIP.objects.filter(address__net_host="10.81.0.99").exists())
 
     @override_settings(PLUGINS_CONFIG=_STALE_PLUGINS_CONFIG)
     def test_a_protected_record_never_starts_a_cleanup_of_its_own(self):
@@ -1364,7 +1364,7 @@ class TestCleanupStaleIpsBatch(TestCase):
         cleaned = cleanup_stale_ips_batch([synced], [skipped_global])
 
         self.assertEqual(cleaned, 0)
-        self.assertTrue(NbIP.objects.filter(address__startswith="10.82.0.99/").exists())
+        self.assertTrue(NbIP.objects.filter(address__net_host="10.82.0.99").exists())
 
     @override_settings(PLUGINS_CONFIG=_STALE_PLUGINS_CONFIG)
     def test_unsupported_record_type_is_rejected(self):
@@ -1414,8 +1414,8 @@ class TestCleanupStaleIpsBatch(TestCase):
         cleaned = cleanup_stale_ips_batch(synced)
         self.assertEqual(cleaned, 2)
         # Both stale IPs cleaned
-        self.assertFalse(NbIP.objects.filter(address__startswith="10.70.0.99/").exists())
-        self.assertFalse(NbIP.objects.filter(address__startswith="2001:db8:70::99/").exists())
+        self.assertFalse(NbIP.objects.filter(address__net_host="10.70.0.99").exists())
+        self.assertFalse(NbIP.objects.filter(address__net_host="2001:db8:70::99").exists())
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1446,9 +1446,9 @@ class TestSyncCleanupParameter(TestCase):
             cleanup=False,
         )
         # Old IP preserved because cleanup=False
-        self.assertTrue(NbIP.objects.filter(address__startswith="10.70.0.10/").exists())
+        self.assertTrue(NbIP.objects.filter(address__net_host="10.70.0.10").exists())
         # New IP created
-        self.assertTrue(NbIP.objects.filter(address__startswith="10.70.0.20/").exists())
+        self.assertTrue(NbIP.objects.filter(address__net_host="10.70.0.20").exists())
 
     @override_settings(PLUGINS_CONFIG=_STALE_PLUGINS_CONFIG)
     def test_lease_sync_cleanup_true_removes_stale_ip(self):
@@ -1466,7 +1466,7 @@ class TestSyncCleanupParameter(TestCase):
         sync_lease_to_netbox(
             {"ip-address": "10.71.0.20", "hostname": "host2.example.com", "hw-address": "aa:bb:cc:dd:00:02"},
         )
-        self.assertFalse(NbIP.objects.filter(address__startswith="10.71.0.10/").exists())
+        self.assertFalse(NbIP.objects.filter(address__net_host="10.71.0.10").exists())
 
     @override_settings(PLUGINS_CONFIG=_STALE_PLUGINS_CONFIG)
     def test_reservation_sync_cleanup_false_preserves_stale_ip(self):
@@ -1484,9 +1484,9 @@ class TestSyncCleanupParameter(TestCase):
             cleanup=False,
         )
         # Old IP preserved
-        self.assertTrue(NbIP.objects.filter(address__startswith="10.72.0.10/").exists())
+        self.assertTrue(NbIP.objects.filter(address__net_host="10.72.0.10").exists())
         # New IP created
-        self.assertTrue(NbIP.objects.filter(address__startswith="10.72.0.20/").exists())
+        self.assertTrue(NbIP.objects.filter(address__net_host="10.72.0.20").exists())
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2008,7 +2008,7 @@ class TestReservationForeignIPProtection(TestCase):
         self.assertEqual(foreign.status, "active")
         self.assertEqual(foreign.description, "Router loopback")
         # New sibling created with reserved status.
-        new_ip = NbIP.objects.filter(address__startswith="2001:db8::2/").first()
+        new_ip = NbIP.objects.filter(address__net_host="2001:db8::2").first()
         self.assertIsNotNone(new_ip)
         self.assertEqual(new_ip.status, "reserved")
         self.assertEqual(conflicts, ["2001:db8::1"])
@@ -2042,7 +2042,7 @@ class TestReservationForeignIPProtection(TestCase):
 
         NbIP.objects.create(address="192.168.51.200/32", status="active", description="Router loopback")
         _sync_reservation(self._RESERVATION, force=True, subnet_prefix_map={1: 24})
-        ip_obj = NbIP.objects.get(address__startswith="192.168.51.200/")
+        ip_obj = NbIP.objects.get(address__net_host="192.168.51.200")
         self.assertEqual(str(ip_obj.address), "192.168.51.200/24")
 
 
@@ -2109,7 +2109,7 @@ class TestLeaseForeignIPProtection(TestCase):
 
         NbIP.objects.create(address="192.168.51.210/32", status="active", description="Router loopback")
         sync_lease_to_netbox(self._LEASE, force=True, subnet_prefix_map={1: 24})
-        ip_obj = NbIP.objects.get(address__startswith="192.168.51.210/")
+        ip_obj = NbIP.objects.get(address__net_host="192.168.51.210")
         self.assertEqual(str(ip_obj.address), "192.168.51.210/24")
 
 
@@ -2149,7 +2149,7 @@ class TestResolvePrefixLengthSubnetIdNormalization(TestCase):
             "cltt": 1700000000,
         }
         sync_lease_to_netbox(lease, subnet_prefix_map={1: 24})
-        ip = NbIP.objects.get(address__startswith="10.77.0.5/")
+        ip = NbIP.objects.get(address__net_host="10.77.0.5")
         self.assertEqual(str(ip.address), "10.77.0.5/24")
 
     def test_resolve_prefix_length_unparseable_subnet_id_falls_back(self):

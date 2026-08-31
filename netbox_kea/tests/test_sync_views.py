@@ -28,6 +28,7 @@ via ``kea_stub.stub_kea``:
 
 from __future__ import annotations
 
+import requests
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.db.models.signals import pre_save
@@ -37,7 +38,7 @@ from ipam.models import IPAddress as NbIP
 
 from netbox_kea.models import Server
 
-from .kea_stub import _catalogue_responses, _res_page, _reservation_mutation_commands, stub_kea
+from .kea_stub import _catalogue_responses, _res_page, _reservation_mutation_commands, queued, stub_kea
 from .utils import _PLUGINS_CONFIG
 
 User = get_user_model()
@@ -127,19 +128,19 @@ class TestLease4SyncView(_SyncViewBase):
     def test_creates_netbox_ip_on_post(self):
 
         self.client.post(self._url(), {"ip_address": "192.168.10.6", "hostname": "host-b"})
-        self.assertTrue(NbIP.objects.filter(address__startswith="192.168.10.6/").exists())
+        self.assertTrue(NbIP.objects.filter(address__net_host="192.168.10.6").exists())
 
     def test_created_ip_has_dhcp_status(self):
 
         self.client.post(self._url(), {"ip_address": "192.168.10.7", "hostname": "host-c"})
-        ip = NbIP.objects.filter(address__startswith="192.168.10.7/").first()
+        ip = NbIP.objects.filter(address__net_host="192.168.10.7").first()
         self.assertIsNotNone(ip)
         self.assertEqual(ip.status, "dhcp")
 
     def test_created_ip_has_correct_dns_name(self):
         # hostname in POST is ignored; dns_name comes from Kea lease data (mock returns "mock-host.local")
         self.client.post(self._url(), {"ip_address": "192.168.10.8", "hostname": "dns-test.local"})
-        ip = NbIP.objects.filter(address__startswith="192.168.10.8/").first()
+        ip = NbIP.objects.filter(address__net_host="192.168.10.8").first()
         self.assertEqual(ip.dns_name, "mock-host.local")
 
     def test_response_contains_ip_link(self):
@@ -163,7 +164,7 @@ class TestLease4SyncView(_SyncViewBase):
 
         self.client.post(self._url(), {"ip_address": "192.168.10.20", "hostname": "idem-host"})
         self.client.post(self._url(), {"ip_address": "192.168.10.20", "hostname": "idem-host"})
-        self.assertEqual(NbIP.objects.filter(address__startswith="192.168.10.20/").count(), 1)
+        self.assertEqual(NbIP.objects.filter(address__net_host="192.168.10.20").count(), 1)
 
     def test_returns_404_for_nonexistent_server(self):
         url = reverse("plugins:netbox_kea:server_lease4_sync", args=[99999])
@@ -208,7 +209,7 @@ class TestLease6SyncView(_SyncViewBase):
             self._url(),
             {"ip_address": "2001:db8::2", "hostname": "v6host2"},
         )
-        ip = NbIP.objects.filter(address__startswith="2001:db8::2/").first()
+        ip = NbIP.objects.filter(address__net_host="2001:db8::2").first()
         self.assertIsNotNone(ip)
         self.assertTrue(str(ip.address).endswith("/128"))
 
@@ -218,7 +219,7 @@ class TestLease6SyncView(_SyncViewBase):
             self._url(),
             {"ip_address": "2001:db8::3", "hostname": "v6host3"},
         )
-        ip = NbIP.objects.filter(address__startswith="2001:db8::3/").first()
+        ip = NbIP.objects.filter(address__net_host="2001:db8::3").first()
         self.assertEqual(ip.status, "dhcp")
 
     def test_malformed_lease_response_returns_400(self):
@@ -262,14 +263,14 @@ class TestReservation4SyncView(_SyncViewBase):
     def test_creates_ip_with_reserved_status(self):
 
         self.client.post(self._url())
-        ip = NbIP.objects.filter(address__startswith="10.0.0.50/").first()
+        ip = NbIP.objects.filter(address__net_host="10.0.0.50").first()
         self.assertIsNotNone(ip)
         self.assertEqual(ip.status, "reserved")
 
     def test_sets_dns_name(self):
         # hostname in POST is ignored; dns_name comes from Kea reservation data (mock returns "mock-res.local")
         self.client.post(self._url())
-        ip = NbIP.objects.filter(address__startswith="10.0.0.50/").first()
+        ip = NbIP.objects.filter(address__net_host="10.0.0.50").first()
         self.assertEqual(ip.dns_name, "mock-res.local")
 
     def test_response_contains_the_synchronization_badge(self):
@@ -338,7 +339,7 @@ class TestReservation6SyncView(_SyncViewBase):
     def test_creates_ip_with_reserved_status(self):
 
         self.client.post(self._url())
-        ip = NbIP.objects.filter(address__startswith="2001:db8:1::50/").first()
+        ip = NbIP.objects.filter(address__net_host="2001:db8:1::50").first()
         self.assertIsNotNone(ip)
         self.assertEqual(ip.status, "reserved")
 
@@ -386,8 +387,8 @@ class TestReservation4BulkSyncView(_SyncViewBase):
         ]
         with stub_kea({**_catalogue_responses(4, 1, "10.0.0.0/8"), "reservation-get-page": _res_page(hosts)}):
             self.client.post(self._url())
-        self.assertTrue(NbIP.objects.filter(address__startswith="10.0.11.1/").exists())
-        self.assertTrue(NbIP.objects.filter(address__startswith="10.0.11.2/").exists())
+        self.assertTrue(NbIP.objects.filter(address__net_host="10.0.11.1").exists())
+        self.assertTrue(NbIP.objects.filter(address__net_host="10.0.11.2").exists())
 
     def test_created_ips_have_reserved_status(self):
         hosts = [
@@ -400,7 +401,7 @@ class TestReservation4BulkSyncView(_SyncViewBase):
         ]
         with stub_kea({**_catalogue_responses(4, 1, "10.0.0.0/8"), "reservation-get-page": _res_page(hosts)}):
             self.client.post(self._url())
-        ip = NbIP.objects.filter(address__startswith="10.0.12.1/").first()
+        ip = NbIP.objects.filter(address__net_host="10.0.12.1").first()
         self.assertIsNotNone(ip)
         self.assertEqual(ip.status, "reserved")
 
@@ -436,13 +437,13 @@ class TestReservation4BulkSyncView(_SyncViewBase):
         with stub_kea({**_catalogue_responses(4, 1, "10.0.0.0/8"), "reservation-get-page": _res_page(hosts)}):
             self.client.post(self._url())
 
-        self.assertTrue(NbIP.objects.filter(address__startswith="10.0.13.1/").exists())
+        self.assertTrue(NbIP.objects.filter(address__net_host="10.0.13.1").exists())
         self.assertTrue(
-            NbIP.objects.filter(address__startswith="10.0.13.2/").exists(),
+            NbIP.objects.filter(address__net_host="10.0.13.2").exists(),
             "the skipped Global Reservation lost its address to stale-IP cleanup",
         )
         self.assertFalse(
-            NbIP.objects.filter(address__startswith="10.0.13.99/").exists(),
+            NbIP.objects.filter(address__net_host="10.0.13.99").exists(),
             "stale-IP cleanup did not run, so the assertions above prove nothing",
         )
 
@@ -460,6 +461,25 @@ class TestReservation4BulkSyncView(_SyncViewBase):
         )
         self.assertContains(response, "Failed to fetch reservations")
         self.assertEqual(NbIP.objects.count(), 0)
+
+    def test_distinguishes_quarantined_records_from_truncated_traversal(self):
+        from django.contrib import messages as django_messages
+
+        hosts = [
+            {"subnet-id": 1, "remote-id": "relay-value"},
+            *({"subnet-id": 0, "flex-id": f"global-{index}"} for index in range(99)),
+        ]
+        pages = queued(
+            _res_page(hosts, next_from=1, next_source=1),
+            requests.ConnectionError("next page failed"),
+        )
+        with stub_kea({**_catalogue_responses(4, 1, "10.0.0.0/8"), "reservation-get-page": pages}):
+            response = self.client.post(self._url())
+
+        message = " ".join(str(item) for item in django_messages.get_messages(response.wsgi_request))
+        self.assertIn("1 quarantined", message)
+        self.assertNotIn("2 quarantined", message)
+        self.assertIn("Reservation list was read only in part", message)
 
     def test_returns_404_for_nonexistent_server(self):
         url = reverse("plugins:netbox_kea:server_reservation4_bulk_sync", args=[99999])
@@ -543,7 +563,7 @@ class TestReservation6BulkSyncView(_SyncViewBase):
         ]
         with stub_kea({**_catalogue_responses(6, 1, "2001:db8::/32"), "reservation-get-page": _res_page(hosts)}):
             self.client.post(self._url())
-        ip = NbIP.objects.filter(address__startswith="2001:db8::1/").first()
+        ip = NbIP.objects.filter(address__net_host="2001:db8::1").first()
         self.assertIsNotNone(ip)
         self.assertEqual(ip.status, "reserved")
         self.assertIn("/32", str(ip.address))
@@ -629,7 +649,7 @@ class TestReservationBulkSyncConflictProtection(_SyncViewBase):
 
         # Foreign untouched, the other reservation claimed normally.
         self.assertEqual(NbIP.objects.get(address="10.0.20.6/32").status, "active")
-        claimed = NbIP.objects.filter(address__startswith="10.0.20.7/").first()
+        claimed = NbIP.objects.filter(address__net_host="10.0.20.7").first()
         self.assertIsNotNone(claimed)
         self.assertEqual(claimed.status, "reserved")
 
@@ -683,7 +703,7 @@ class TestReservationCheckNetboxIPView(_SyncViewBase):
 
         The DB stores ``2001:db8::5/64``; querying with the fully-expanded form
         must canonicalize to the same value so the conflict advisory still fires.
-        Without normalization the ``address__startswith`` lookup would miss it and
+        Without normalization the ``address__net_host`` lookup would miss it and
         silently suppress the warning.
         """
         NbIP.objects.create(address="2001:db8::5/64", status="active", description="Router loopback")

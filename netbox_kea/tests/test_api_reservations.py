@@ -279,7 +279,7 @@ class TestReservation4API(_APITestBase):
             ([], 502),
         )
         for page_response, expected_status in cases:
-            with self.subTest(page_response=page_response):
+            with self.subTest(page_response=repr(page_response)):
                 responses = _catalogue_responses(4, 20, "198.18.0.0/24")
                 responses["reservation-get-page"] = page_response
                 with stub_kea(responses):
@@ -415,7 +415,7 @@ class TestReservation4API(_APITestBase):
             "identifier": "aa:bb:cc:dd:ee:ff",
         }
         for reservation_response, expected_status in cases:
-            with self.subTest(reservation_response=reservation_response):
+            with self.subTest(reservation_response=repr(reservation_response)):
                 responses = _catalogue_responses(4, 20, "198.18.0.0/24")
                 responses["reservation-get"] = reservation_response
                 with stub_kea(responses):
@@ -438,7 +438,7 @@ class TestReservation4API(_APITestBase):
             ({"result": 0, "arguments": []}, 502),
         )
         for reservation_response, expected_status in cases:
-            with self.subTest(reservation_response=reservation_response):
+            with self.subTest(reservation_response=repr(reservation_response)):
                 responses = _catalogue_responses(4, 20, "198.18.0.0/24")
                 responses["reservation-get"] = reservation_response
                 with stub_kea(responses):
@@ -598,7 +598,7 @@ class TestReservation6API(_APITestBase):
             [],
         )
         for hostname_response in cases:
-            with self.subTest(hostname_response=hostname_response):
+            with self.subTest(hostname_response=repr(hostname_response)):
                 responses = _catalogue_responses(6, 10, "2001:db8::/64")
                 responses["reservation-get-by-hostname"] = hostname_response
                 with stub_kea(responses):

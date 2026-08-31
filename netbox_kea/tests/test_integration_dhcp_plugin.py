@@ -929,7 +929,7 @@ class DhcpPluginReservationSnapshotImportTest(TestCase):
         summary = self.adapter.import_server_config(self.server, intent, snapshot)
 
         self.assertEqual(summary.errors, 0, summary.warnings)
-        self.assertFalse(IPAddress.objects.filter(address__startswith="2001:db8:aa::5/").exists())
+        self.assertFalse(IPAddress.objects.filter(address__net_host="2001:db8:aa::5").exists())
 
     def test_reservation_whose_mac_row_cannot_be_written_is_skipped(self):
         """Importing it would store a row with no identifier, which no later run can match."""

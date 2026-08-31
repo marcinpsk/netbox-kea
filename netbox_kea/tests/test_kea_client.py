@@ -3491,7 +3491,7 @@ class TestLeaseSearch(TestCase):
         )
 
         for version, selector, value, state, message in cases:
-            with self.subTest(version=version, selector=selector, value=value, state=state), stub_kea({}) as kea:
+            with self.subTest(version=version, selector=selector, value=repr(value), state=state), stub_kea({}) as kea:
                 with self.assertRaisesRegex((ValueError, LeaseQueryNotMeasurable), message):
                     self.client.lease_search(version, selector, value, state=state)
                 self.assertEqual(kea.commands(), [])
@@ -3578,22 +3578,7 @@ class TestLeaseSearch(TestCase):
 
     def test_large_subnet_is_rejected_before_get_all(self):
         client = KeaClient(url="http://kea:8000", max_unpaged_leases=100)
-        stats = {
-            "result": 0,
-            "arguments": {
-                "result-set": {
-                    "columns": [
-                        "subnet-id",
-                        "total-addresses",
-                        "cumulative-assigned-addresses",
-                        "assigned-addresses",
-                        "declined-addresses",
-                    ],
-                    "rows": [[12, 256, 101, 101, 0]],
-                }
-            },
-        }
-        with stub_kea({"stat-lease4-get": stats}) as kea:
+        with stub_kea({"stat-lease4-get": _subnet_stats(4, 12, assigned=101)}) as kea:
             with self.assertRaisesRegex(LeaseQueryTooBroad, "101.*100"):
                 client.lease_search(4, "subnet_id", 12)
 

@@ -112,7 +112,16 @@ def _dev_group_requirements(pyproject: Path) -> list[str]:
 
 def _declares_package(requirements: list[str], package: str) -> bool:
     """Report whether *requirements* pins *package*, ignoring its version specifier."""
-    return any(re.split(r"[<>=!~\[;\s]", requirement, maxsplit=1)[0] == package for requirement in requirements)
+    normalized_package = re.sub(r"[-_.]+", "-", package).lower()
+    return any(
+        re.sub(r"[-_.]+", "-", re.split(r"[<>=!~\[;\s]", requirement, maxsplit=1)[0]).lower() == normalized_package
+        for requirement in requirements
+    )
+
+
+@pytest.mark.parametrize("declared_name", ["types.PyYAML", "types_PyYAML", "types-pyyaml"])
+def test_declared_package_names_use_pep_503_normalization(declared_name):
+    assert _declares_package([f"{declared_name}>=6.0"], "types-PyYAML")
 
 
 @pytest.mark.parametrize("package", REQUIRED_STUB_PACKAGES)

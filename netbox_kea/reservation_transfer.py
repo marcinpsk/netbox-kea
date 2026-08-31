@@ -365,7 +365,7 @@ def _parse_options(
             diagnostics.append(_diagnostic("duplicate-option", "The DHCP Option is duplicated.", option_position))
         else:
             seen.add(option.match_key)
-        parsed.append(option)
+            parsed.append(option)
     return tuple(parsed)
 
 

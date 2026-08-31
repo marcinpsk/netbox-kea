@@ -139,7 +139,7 @@ def get_netbox_ip(ip_str: str) -> NbIPAddress | None:
     """
     from ipam.models import IPAddress as NbIP
 
-    return NbIP.objects.filter(address__startswith=f"{ip_str}/").first()
+    return NbIP.objects.filter(address__net_host=ip_str).first()
 
 
 def bulk_fetch_netbox_ips(ip_list: list[str]) -> dict[str, NbIPAddress]:
@@ -161,7 +161,7 @@ def bulk_fetch_netbox_ips(ip_list: list[str]) -> dict[str, NbIPAddress]:
         chunk = ip_list[i : i + _CHUNK]
         query = Q()
         for ip in chunk:
-            query |= Q(address__startswith=f"{ip}/")
+            query |= Q(address__net_host=ip)
         for nb_ip in NbIP.objects.filter(query):
             host = str(nb_ip.address).split("/")[0]
             result[host] = nb_ip
@@ -315,11 +315,11 @@ def _cleanup_stale_ips(
         dns_name=hostname,
         status__in=("dhcp", "active", "reserved"),
         description__startswith="Synced from Kea DHCP",
-    ).exclude(address__startswith=f"{new_ip_str}/")
+    ).exclude(address__net_host=new_ip_str)
 
     # Also exclude sibling IPs (e.g. other addresses in the same DHCPv6 reservation).
     for exc_ip in exclude_ips or frozenset():
-        stale_qs = stale_qs.exclude(address__startswith=f"{exc_ip}/")
+        stale_qs = stale_qs.exclude(address__net_host=exc_ip)
 
     # Restrict to same IP family to avoid cross-family false positives.
     if ":" in new_ip_str:
