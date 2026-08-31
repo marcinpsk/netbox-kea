@@ -246,6 +246,7 @@ class TestPerServerReservationSnapshots(_ViewTestBase):
                                 "subnet-id": 20,
                                 "hw-address": "AA-BB-CC-DD-EE-FF",
                                 "ip-address": "198.18.0.21",
+                                "state": 0,
                             }
                         ]
                     },

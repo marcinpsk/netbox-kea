@@ -1709,7 +1709,7 @@ class TestSyncServerReservationsReturnValue(TestCase):
         self.assertFalse(ok)
         # The valid record still reached IPAM: an incomplete Snapshot is additive, not idle.
         self.assertEqual(len(all_synced), 1)
-        self.assertTrue(IPAddress.objects.filter(address__startswith="10.0.0.100/").exists())
+        self.assertTrue(IPAddress.objects.filter(address__net_host="10.0.0.100").exists())
 
     def test_address_less_reservation_is_skipped_not_an_error(self):
         """A host that reserves no address is legal Kea config, not a sync failure (#110).
