@@ -301,6 +301,19 @@ class TestReservation4SyncView(_SyncViewBase):
         self.assertContains(response, "Reservation synchronization failed", status_code=500)
         self.assertEqual(NbIP.objects.count(), 0)
 
+    def test_kea_error_returns_an_actionable_hint(self):
+        """A Kea failure explains the safe operator action instead of hiding it in logs."""
+        with stub_kea(
+            {
+                **_catalogue_responses(4, 1, "10.0.0.0/24"),
+                "reservation-get": {"result": 2, "text": "unknown command 'reservation-get'"},
+            }
+        ):
+            with self.assertLogs("netbox_kea.views.sync_views", level="ERROR"):
+                response = self.client.post(self._url())
+
+        self.assertContains(response, "The required hook library may not be loaded", status_code=500)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TestReservation6SyncView
