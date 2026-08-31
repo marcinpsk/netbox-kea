@@ -272,7 +272,7 @@ class TestKeaIpamSyncJobRun(TestCase):
             self._run()
         from ipam.models import IPAddress
 
-        self.assertTrue(IPAddress.objects.filter(address__startswith="10.0.0.1/").exists())
+        self.assertTrue(IPAddress.objects.filter(address__net_host="10.0.0.1").exists())
 
     def test_lease_ip_status_is_dhcp(self):
         """Synced lease IP has status='dhcp'."""
@@ -281,7 +281,7 @@ class TestKeaIpamSyncJobRun(TestCase):
             self._run()
         from ipam.models import IPAddress
 
-        ip = IPAddress.objects.filter(address__startswith="10.0.0.1/").first()
+        ip = IPAddress.objects.filter(address__net_host="10.0.0.1").first()
         self.assertIsNotNone(ip)
         self.assertEqual(ip.status, "dhcp")
 
@@ -292,7 +292,7 @@ class TestKeaIpamSyncJobRun(TestCase):
             self._run()
         from ipam.models import IPAddress
 
-        self.assertTrue(IPAddress.objects.filter(address__startswith="2001:db8::1/").exists())
+        self.assertTrue(IPAddress.objects.filter(address__net_host="2001:db8::1").exists())
 
     def test_dual_protocol_creates_both_v4_and_v6(self):
         """Server with dhcp4=True and dhcp6=True creates both address families."""
@@ -301,8 +301,8 @@ class TestKeaIpamSyncJobRun(TestCase):
             self._run()
         from ipam.models import IPAddress
 
-        self.assertTrue(IPAddress.objects.filter(address__startswith="10.0.0.1/").exists())
-        self.assertTrue(IPAddress.objects.filter(address__startswith="2001:db8::1/").exists())
+        self.assertTrue(IPAddress.objects.filter(address__net_host="10.0.0.1").exists())
+        self.assertTrue(IPAddress.objects.filter(address__net_host="2001:db8::1").exists())
 
     # ── reservation sync ──────────────────────────────────────────────────────
 
@@ -324,7 +324,7 @@ class TestKeaIpamSyncJobRun(TestCase):
             self._run()
         from ipam.models import IPAddress
 
-        ip = IPAddress.objects.filter(address__startswith="10.0.0.100/").first()
+        ip = IPAddress.objects.filter(address__net_host="10.0.0.100").first()
         self.assertIsNotNone(ip)
         self.assertEqual(ip.status, "reserved")
 
@@ -335,8 +335,8 @@ class TestKeaIpamSyncJobRun(TestCase):
             self._run()
         from ipam.models import IPAddress
 
-        self.assertTrue(IPAddress.objects.filter(address__startswith="10.0.0.1/").exists())
-        self.assertTrue(IPAddress.objects.filter(address__startswith="10.0.0.100/").exists())
+        self.assertTrue(IPAddress.objects.filter(address__net_host="10.0.0.1").exists())
+        self.assertTrue(IPAddress.objects.filter(address__net_host="10.0.0.100").exists())
 
     # ── disabled flags → no DB writes ────────────────────────────────────────
 
@@ -358,7 +358,7 @@ class TestKeaIpamSyncJobRun(TestCase):
             self._run()
         from ipam.models import IPAddress
 
-        self.assertFalse(IPAddress.objects.filter(address__startswith="10.0.0.1/").exists())
+        self.assertFalse(IPAddress.objects.filter(address__net_host="10.0.0.1").exists())
 
     def test_skips_reservations_when_sync_reservations_disabled(self):
         """sync_reservations_enabled=False → no reserved IPAddress created."""
@@ -378,7 +378,7 @@ class TestKeaIpamSyncJobRun(TestCase):
             self._run()
         from ipam.models import IPAddress
 
-        self.assertFalse(IPAddress.objects.filter(address__startswith="10.0.0.100/").exists())
+        self.assertFalse(IPAddress.objects.filter(address__net_host="10.0.0.100").exists())
 
     def test_no_servers_is_no_op(self):
         """No servers in DB → no IPAddress rows created."""
@@ -405,7 +405,7 @@ class TestKeaIpamSyncJobRun(TestCase):
         from ipam.models import IPAddress
 
         # server2's lease was still synced despite server1 failing.
-        self.assertTrue(IPAddress.objects.filter(address__startswith="10.0.0.1/").exists())
+        self.assertTrue(IPAddress.objects.filter(address__net_host="10.0.0.1").exists())
 
     def test_invalid_lease_page_does_not_sync_a_partial_batch(self):
         """An invalid paged response is rejected before any lease is synced."""
@@ -416,7 +416,7 @@ class TestKeaIpamSyncJobRun(TestCase):
             self._run_raises()  # errors > 0 → JobFailed
         from ipam.models import IPAddress
 
-        self.assertFalse(IPAddress.objects.filter(address__startswith="10.0.0.2/").exists())
+        self.assertFalse(IPAddress.objects.filter(address__net_host="10.0.0.2").exists())
 
     # ── idempotency ────────────────────────────────────────────────────────
 
@@ -429,7 +429,7 @@ class TestKeaIpamSyncJobRun(TestCase):
             self._run()
         from ipam.models import IPAddress
 
-        self.assertEqual(IPAddress.objects.filter(address__startswith="10.0.0.1/").count(), 1)
+        self.assertEqual(IPAddress.objects.filter(address__net_host="10.0.0.1").count(), 1)
 
     def test_second_sync_updates_existing_ip_dns_name(self):
         """A subsequent sync with a new hostname updates dns_name in place."""
@@ -441,7 +441,7 @@ class TestKeaIpamSyncJobRun(TestCase):
             self._run()
         from ipam.models import IPAddress
 
-        ip = IPAddress.objects.filter(address__startswith="10.0.0.1/").first()
+        ip = IPAddress.objects.filter(address__net_host="10.0.0.1").first()
         self.assertEqual(ip.dns_name, "updated-hostname.example.com")
 
     # ── truncation ─────────────────────────────────────────────────────────
@@ -471,7 +471,7 @@ class TestKeaIpamSyncJobRun(TestCase):
                 self._run()
         self.assertTrue(any("truncated" in msg for msg in cm.output))
         # The overflow lease past the cap was genuinely dropped, not synced.
-        self.assertFalse(IPAddress.objects.filter(address__startswith="10.0.0.2/").exists())
+        self.assertFalse(IPAddress.objects.filter(address__net_host="10.0.0.2").exists())
         # Cleanup must be skipped when fetch was truncated.
         self.assertTrue(IPAddress.objects.filter(pk=stale.pk).exists())
 
@@ -631,7 +631,7 @@ class TestKeaIpamSyncJobRun(TestCase):
             self._run()
         from ipam.models import IPAddress
 
-        self.assertFalse(IPAddress.objects.filter(address__startswith="10.0.0.1/").exists())
+        self.assertFalse(IPAddress.objects.filter(address__net_host="10.0.0.1").exists())
 
     # ── reservation pagination ────────────────────────────────────────────
 
@@ -658,8 +658,8 @@ class TestKeaIpamSyncJobRun(TestCase):
         ):
             self._run()
 
-        self.assertTrue(IPAddress.objects.filter(address__startswith="10.0.0.100/").exists())
-        self.assertTrue(IPAddress.objects.filter(address__startswith="10.0.0.101/").exists())
+        self.assertTrue(IPAddress.objects.filter(address__net_host="10.0.0.100").exists())
+        self.assertTrue(IPAddress.objects.filter(address__net_host="10.0.0.101").exists())
 
     @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG_CLEANUP)
     def test_reservation_pagination_preserves_valid_rows_before_a_later_failure(self):
@@ -696,8 +696,8 @@ class TestKeaIpamSyncJobRun(TestCase):
             with self.assertLogs("netbox_kea.jobs", level="WARNING") as logs:
                 self._run()
 
-        self.assertTrue(IPAddress.objects.filter(address__startswith="198.18.0.1/").exists())
-        self.assertTrue(IPAddress.objects.filter(address__startswith="198.18.0.100/").exists())
+        self.assertTrue(IPAddress.objects.filter(address__net_host="198.18.0.1").exists())
+        self.assertTrue(IPAddress.objects.filter(address__net_host="198.18.0.100").exists())
         self.assertTrue(IPAddress.objects.filter(pk=stale.pk).exists())
         self.assertTrue(any("Reservation Snapshot diagnostic" in message for message in logs.output))
         self.assertFalse(any("malformed Reservation" in message for message in logs.output))
@@ -719,7 +719,7 @@ class TestKeaIpamSyncJobRun(TestCase):
         self.assertTrue(any("Invalid sync_max_leases_per_server" in msg for msg in cm.output))
         from ipam.models import IPAddress
 
-        self.assertTrue(IPAddress.objects.filter(address__startswith="10.0.0.1/").exists())
+        self.assertTrue(IPAddress.objects.filter(address__net_host="10.0.0.1").exists())
 
     @override_settings(
         PLUGINS_CONFIG={
@@ -736,7 +736,7 @@ class TestKeaIpamSyncJobRun(TestCase):
         self.assertTrue(any("Negative sync_max_leases_per_server" in msg for msg in cm.output))
         from ipam.models import IPAddress
 
-        self.assertTrue(IPAddress.objects.filter(address__startswith="10.0.0.1/").exists())
+        self.assertTrue(IPAddress.objects.filter(address__net_host="10.0.0.1").exists())
 
     # ── reservation KeaException (non-result-2) ───────────────────────────
 
@@ -762,7 +762,7 @@ class TestKeaIpamSyncJobRun(TestCase):
         good_resv = {**_RESV4, "ip-address": "10.0.0.102", "hw-address": "33:44:55:66:77:88"}
         with _patch_kea(leases4=[], reservations=[bad_resv, good_resv]):
             self._run_raises()  # errors > 0 → JobFailed
-        self.assertTrue(IPAddress.objects.filter(address__startswith="10.0.0.102/").exists())
+        self.assertTrue(IPAddress.objects.filter(address__net_host="10.0.0.102").exists())
 
     # ── job metadata ─────────────────────────────────────────────────────
 
@@ -867,7 +867,7 @@ class TestKeaIpamSyncJobRun(TestCase):
                 self._run()
 
         # Lease IP still created despite the missing Kea subnet config.
-        self.assertTrue(IPAddress.objects.filter(address__startswith="10.0.0.1/").exists())
+        self.assertTrue(IPAddress.objects.filter(address__net_host="10.0.0.1").exists())
         # Fallback is surfaced to the operator.
         self.assertTrue(any("fall back to NetBox prefix matching" in m for m in cm.output))
 
@@ -899,7 +899,7 @@ class TestKeaIpamSyncJobRun(TestCase):
         with _patch_kea(leases4=[lease], responses={"config-get": config_with_subnet}):
             self._run()
 
-        ip = IPAddress.objects.get(address__startswith="10.0.0.50/")
+        ip = IPAddress.objects.get(address__net_host="10.0.0.50")
         self.assertEqual(str(ip.address), "10.0.0.50/24")
         # No NetBox Prefix was created — the mask came from config-get, not prefix matching.
         self.assertFalse(Prefix.objects.filter(prefix="10.0.0.0/24").exists())
@@ -999,8 +999,8 @@ class TestKeaIpamSyncJobKillSwitches(TestCase):
             KeaIpamSyncJob(_make_job()).run(server_pk=server2.pk)
         from ipam.models import IPAddress
 
-        self.assertTrue(IPAddress.objects.filter(address__startswith="10.0.0.20/").exists())
-        self.assertFalse(IPAddress.objects.filter(address__startswith="10.0.0.1/").exists())
+        self.assertTrue(IPAddress.objects.filter(address__net_host="10.0.0.20").exists())
+        self.assertFalse(IPAddress.objects.filter(address__net_host="10.0.0.1").exists())
 
     def test_server_pk_bypasses_per_server_sync_enabled(self):
         """run(server_pk=X) syncs server X even when its sync_enabled=False."""
@@ -1009,7 +1009,7 @@ class TestKeaIpamSyncJobKillSwitches(TestCase):
             KeaIpamSyncJob(_make_job()).run(server_pk=server.pk)
         from ipam.models import IPAddress
 
-        self.assertTrue(IPAddress.objects.filter(address__startswith="10.0.0.1/").exists())
+        self.assertTrue(IPAddress.objects.filter(address__net_host="10.0.0.1").exists())
 
     # ── job metadata (job.data) ────────────────────────────────────────────
 

@@ -1594,7 +1594,7 @@ class TestLeaseAddSyncToNetBox(_ViewTestBase):
             any("10.0.0.200" in m and "netbox" in m.lower() and "created" in m.lower() for m in msgs),
             f"Expected a NetBox sync success message, got: {msgs}",
         )
-        self.assertTrue(IPAddress.objects.filter(address__startswith="10.0.0.200/").exists())
+        self.assertTrue(IPAddress.objects.filter(address__net_host="10.0.0.200").exists())
 
 
 # ---------------------------------------------------------------------------

@@ -923,14 +923,36 @@ _SHARED_ALIASES = ("Family", "IPAddressValue", "IPNetworkValue")
 def _alias_definitions(alias: str) -> dict[str, int]:
     """Return each package module that assigns *alias* at module level, and its line."""
     found: dict[str, int] = {}
+    type_alias_node = getattr(ast, "TypeAlias", None)
     for path in sorted((REPOSITORY_ROOT / "netbox_kea").rglob("*.py")):
         if "/tests/" in path.as_posix() or "/migrations/" in path.as_posix():
             continue
         for node in ast.parse(path.read_text()).body:
-            targets = node.targets if isinstance(node, ast.Assign) else []
+            if isinstance(node, ast.Assign):
+                targets = node.targets
+            elif isinstance(node, ast.AnnAssign):
+                targets = [node.target]
+            elif type_alias_node is not None and isinstance(node, type_alias_node):
+                targets = [node.name]
+            else:
+                targets = []
             if any(isinstance(t, ast.Name) and t.id == alias for t in targets):
                 found[str(path.relative_to(REPOSITORY_ROOT))] = node.lineno
     return found
+
+
+def test_alias_definitions_include_modern_assignment_forms(tmp_path, monkeypatch):
+    package = tmp_path / "netbox_kea"
+    package.mkdir()
+    source = "Family: object = object()\n"
+    if hasattr(ast, "TypeAlias"):
+        source += "type IPAddressValue = int\n"
+    (package / "constants.py").write_text(source)
+    monkeypatch.setattr(sys.modules[__name__], "REPOSITORY_ROOT", tmp_path)
+
+    assert _alias_definitions("Family") == {"netbox_kea/constants.py": 1}
+    if hasattr(ast, "TypeAlias"):
+        assert _alias_definitions("IPAddressValue") == {"netbox_kea/constants.py": 2}
 
 
 @pytest.mark.parametrize("alias", _SHARED_ALIASES)

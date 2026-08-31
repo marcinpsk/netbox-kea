@@ -23,6 +23,7 @@ from ..reservation_transfer import (
     parse_reservation_document,
     resolve_import_proposal,
 )
+from ..reservations import TRAVERSAL_DIAGNOSTIC_CODES
 from ..subnet_catalogue import MutationScope
 from ..utilities import (
     kea_error_hint,
@@ -223,14 +224,17 @@ class _BaseBulkReservationSyncView(ConditionalLoginRequiredMixin, View):
 
         stale_msg = f", {stale_cleaned} stale cleaned" if stale_cleaned else ""
         conflict_msg = f", {conflicts_skipped} conflicts skipped" if conflicts_skipped else ""
-        incomplete_count = len(snapshot.diagnostics)
+        quarantined_count = sum(
+            diagnostic.code not in TRAVERSAL_DIAGNOSTIC_CODES for diagnostic in snapshot.diagnostics
+        )
         skip_msg = f", {skipped} not applicable" if skipped else ""
-        incomplete_msg = f", {incomplete_count} quarantined" if incomplete_count else ""
-        if errors or incomplete_count:
+        quarantined_msg = f", {quarantined_count} quarantined" if quarantined_count else ""
+        traversal_msg = ", Reservation list was read only in part" if snapshot.traversal_truncated else ""
+        if errors or quarantined_count or snapshot.traversal_truncated:
             messages.warning(
                 request,
                 f"Bulk sync: {created} created, {updated} updated, {errors} errors"
-                f"{skip_msg}{incomplete_msg}{conflict_msg}{stale_msg}.",
+                f"{skip_msg}{quarantined_msg}{traversal_msg}{conflict_msg}{stale_msg}.",
             )
         elif conflicts_skipped:
             messages.warning(
@@ -298,7 +302,7 @@ class ReservationCheckNetboxIPView(ConditionalLoginRequiredMixin, View):
         # Scope the lookup to IPs this user may view so the advisory never leaks an
         # IP's status/description/assignment to someone without IPAM access. Mirrors
         # get_netbox_ip()'s host match but adds NetBox object-level permission filtering.
-        nb_ip = NbIP.objects.restrict(request.user, "view").filter(address__startswith=f"{ip_str}/").first()
+        nb_ip = NbIP.objects.restrict(request.user, "view").filter(address__net_host=ip_str).first()
         if nb_ip is None:
             return HttpResponse("")
 

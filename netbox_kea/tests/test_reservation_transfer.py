@@ -8,6 +8,7 @@ from netbox_kea.dhcp_options import DHCPOption
 from netbox_kea.reservation_transfer import (
     MAX_DOCUMENT_BYTES,
     ReservationTransferError,
+    _parse_options,
     export_reservation_document,
     parse_reservation_document,
     resolve_import_proposal,
@@ -475,6 +476,25 @@ reservations:
             [("duplicate-option", "reservations[0].options[1]")],
         )
         self.assertEqual(result.proposals, ())
+
+    def test_duplicate_dhcp_options_are_not_retained(self):
+        diagnostics = []
+
+        options = _parse_options(
+            [
+                {"name": "domain-name", "data": "first.example.invalid"},
+                {"name": "domain-name", "data": "second.example.invalid"},
+            ],
+            "reservations[0].options",
+            diagnostics,
+        )
+
+        self.assertIsNotNone(options)
+        self.assertEqual(len(options), 1)
+        self.assertEqual(
+            [(diagnostic.code, diagnostic.source_position) for diagnostic in diagnostics],
+            [("duplicate-option", "reservations[0].options[1]")],
+        )
 
     def test_rejects_non_string_network_values_from_json(self):
         records = [
