@@ -55,6 +55,7 @@ from ipam.models import IPAddress
 
 from netbox_kea import constants
 from netbox_kea.models import Server
+from netbox_kea.reservations import ReservationSnapshot
 from netbox_kea.views.combined import _fetch_reservations_from_server
 
 from .kea_stub import _res_get, _res_page, _reservation_mutation_commands, queued, stub_kea
@@ -460,6 +461,21 @@ class TestCombinedReservations4View(_CombinedViewBase):
         self.assertEqual(document["version"], 1)
         self.assertEqual([record["hostname"] for record in document["reservations"]], ["host-v4"])
         self.assertEqual(document["reservations"][0]["addresses"], ["10.0.0.100"])
+
+    def test_export_rejects_an_incomplete_snapshot_without_diagnostics(self):
+        snapshot = ReservationSnapshot(family=4, records=(), diagnostics=(), complete=False, next_cursor=None)
+        url = reverse("plugins:netbox_kea:combined_reservations4")
+        url += f"?server={self.v4_server.pk}&export=yaml"
+
+        with patch(
+            "netbox_kea.views.combined._fetch_reservations_from_server",
+            autospec=True,
+            return_value=snapshot,
+        ):
+            response = self.client.get(url)
+
+        self.assertEqual(response.status_code, 409)
+        self.assertContains(response, "Snapshot is incomplete", status_code=409)
 
     def test_search_form_in_context(self):
         """Response context must contain search_form for the search card to render."""
@@ -1020,7 +1036,8 @@ class TestCombinedLeases4Enrichment(_CombinedViewBase):
         ):
             response = self.client.get(self._lease_url())
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "Reserved")
+        row = next(iter(response.context["table"].rows)).record
+        self.assertTrue(row["is_reserved"])
 
     def test_create_reservation_link_when_no_reservation(self):
         """A lease without a matching reservation must show a create-reservation link."""
@@ -1048,7 +1065,8 @@ class TestCombinedLeases4Enrichment(_CombinedViewBase):
         ):
             response = self.client.get(self._lease_url())
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "Sync")
+        row = next(iter(response.context["table"].rows)).record
+        self.assertTrue(row["sync_url"])
 
     def test_combined_default_columns_include_reserved_and_netbox_ip(self):
         """GlobalLeaseTable4 default columns must include reserved and netbox_ip."""
@@ -1095,7 +1113,7 @@ class TestCombinedReservations4Enrichment(_CombinedViewBase):
         with _reservation_stub(4, {"reservation-get-page": _RES_EMPTY_PAGE}):
             response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "Lease")
+        self.assertIn("lease_status", response.context["table"].columns.names())
 
     def test_netbox_ip_synced_link_when_ip_in_netbox(self):
         """The combined table shows aggregate synchronization for the Reservation."""
@@ -1161,7 +1179,8 @@ class TestCombinedLeases6Enrichment(_CombinedViewBase):
         ):
             response = self.client.get(self._lease_url())
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "Reserved")
+        row = next(iter(response.context["table"].rows)).record
+        self.assertTrue(row["is_reserved"])
 
     def test_create_reservation_link_when_no_reservation(self):
         """A v6 lease without a matching reservation must show a create-reservation link."""
@@ -1189,7 +1208,8 @@ class TestCombinedLeases6Enrichment(_CombinedViewBase):
         ):
             response = self.client.get(self._lease_url())
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "Sync")
+        row = next(iter(response.context["table"].rows)).record
+        self.assertTrue(row["sync_url"])
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)

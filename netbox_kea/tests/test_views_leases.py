@@ -865,6 +865,27 @@ class TestEnrichLeasesErrorPaths(_ViewTestBase):
                 self.assertFalse(row["is_reserved"])
                 self.assertIsNone(row["create_reservation_url"])
 
+    def test_unknown_subnet_id_keeps_netbox_sync_available(self):
+        url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+        lease = {**self._LEASE4, "subnet-id": 99}
+        with _reservation_stub(
+            4,
+            {
+                "subnet4-list": self._SUBNETS4,
+                "lease4-get": {"result": 0, "arguments": lease},
+            },
+        ) as kea:
+            response = self._htmx_get(url, {"by": "ip", "q": "10.0.0.5"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("reservation-get", kea.commands())
+        row = next(iter(response.context["table"].rows)).record
+        self.assertEqual(
+            row["sync_url"],
+            reverse("plugins:netbox_kea:server_lease4_sync", args=[self.server.pk]),
+        )
+        self.assertIsNone(row["create_reservation_url"])
+
     def test_sync_url_set_when_no_netbox_ip(self):
         """When the lease IP is absent from NetBox, sync_url must be set on the lease dict."""
         # No NbIP created → bulk_fetch_netbox_ips returns {} from the real (empty) DB.

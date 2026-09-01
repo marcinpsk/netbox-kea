@@ -543,7 +543,7 @@ class KeaDhcpLink(models.Model):
             ),
             models.CheckConstraint(
                 condition=models.Q(kea_subnet_id__isnull=False, kea_identity__isnull=True)
-                | models.Q(kea_subnet_id__isnull=True, kea_identity__isnull=False),
+                | models.Q(kea_subnet_id__isnull=True, kea_identity__gt=""),
                 name="keadhcplink_one_identity_kind",
             ),
         ]

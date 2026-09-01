@@ -973,10 +973,10 @@ def _reservation_for_lease_worker(worker_clients, version, catalogue, lease, loo
     ip = lease.get("ip_address", "")
     subnet_id = lease.get("subnet_id")
     if not ip or isinstance(subnet_id, bool) or not isinstance(subnet_id, int):
-        return ip, None, None
+        return ip, None, True
     subnet = catalogue.find_by_id(subnet_id)
     if subnet is None:
-        return ip, None, None
+        return ip, None, True
     scope = InSubnetReservationScope(subnet.identity)
     identities = _lease_reservation_identities(lease, version)
     worker_client = worker_clients.get()
@@ -1189,7 +1189,13 @@ def _enrich_leases_with_badges(
         nb_ip = nb_ips.get(ip)
         if nb_ip:
             lease["netbox_ip_url"] = nb_ip.get_absolute_url()
-        elif can_change and host_cmds_available and not lease.get("pending_ip_change") and not lease.get("stale_mac"):
+        elif (
+            ip
+            and can_change
+            and host_cmds_available
+            and not lease.get("pending_ip_change")
+            and not lease.get("stale_mac")
+        ):
             # Don't offer Sync for leases with indeterminate reservation state.
             if ip not in failed_ips:
                 lease["sync_url"] = sync_url

@@ -5,6 +5,7 @@
 All Kea HTTP calls are mocked; these tests require no running services.
 """
 
+import importlib
 from unittest.mock import patch
 
 import requests
@@ -807,6 +808,10 @@ class TestKeaDhcpLinkIdentity(TestCase):
 
         self.assertEqual(KeaDhcpLink.objects.get().kea_identity, "hw-address:aa:bb:cc:dd:ee:ff")
 
+    def test_empty_reservation_identity_is_rejected(self):
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            self._link(kea_identity="").save()
+
     def test_both_identity_kinds_are_rejected(self):
         with self.assertRaises(IntegrityError), transaction.atomic():
             self._link(kea_subnet_id=7, kea_identity="hw-address:aa:bb:cc:dd:ee:ff").save()
@@ -859,6 +864,49 @@ class TestKeaDhcpLinkConstraintMigration(TransactionTestCase):
                 reset_sequences=False,
                 allow_cascade=True,
             )
+
+    def test_data_repair_uses_the_schema_editor_database_alias(self):
+        migration = importlib.import_module("netbox_kea.migrations.0015_keadhcplink_one_identity_kind")
+
+        class RoutedQuery:
+            deleted = False
+
+            def filter(self, *_conditions):
+                return self
+
+            def delete(self):
+                self.deleted = True
+
+        class Manager:
+            alias = None
+            query = RoutedQuery()
+
+            def using(self, alias):
+                self.alias = alias
+                return self.query
+
+            def filter(self, *_conditions):
+                raise AssertionError("The migration used the default database manager.")
+
+        class HistoricalLink:
+            objects = Manager()
+
+        class HistoricalApps:
+            @staticmethod
+            def get_model(app_label, model_name):
+                self.assertEqual((app_label, model_name), ("netbox_kea", "KeaDhcpLink"))
+                return HistoricalLink
+
+        class Connection:
+            alias = "migration-target"
+
+        class SchemaEditor:
+            connection = Connection()
+
+        migration.remove_invalid_identity_links(HistoricalApps(), SchemaEditor())
+
+        self.assertEqual(HistoricalLink.objects.alias, "migration-target")
+        self.assertTrue(HistoricalLink.objects.query.deleted)
 
     def test_a_subnet_keyed_link_written_before_0014_survives_the_constraint(self):
         """Release 1.9.0 stops at 0013, where the only writer always sets kea_subnet_id."""
