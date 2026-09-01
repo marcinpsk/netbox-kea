@@ -25,6 +25,6 @@ class Migration(migrations.Migration):
         migrations.RunPython(remove_invalid_identity_links, migrations.RunPython.noop),
         migrations.AddConstraint(
             model_name='keadhcplink',
-            constraint=models.CheckConstraint(condition=models.Q(models.Q(('kea_identity__isnull', True), ('kea_subnet_id__isnull', False)), models.Q(('kea_identity__gt', ''), ('kea_subnet_id__isnull', True)), _connector='OR'), name='keadhcplink_one_identity_kind'),
+            constraint=models.CheckConstraint(condition=models.Q(models.Q(('kea_identity__isnull', True), ('kea_subnet_id__isnull', False)), models.Q(('kea_identity__gt', ''), ('kea_identity__isnull', False), ('kea_subnet_id__isnull', True)), _connector='OR'), name='keadhcplink_one_identity_kind'),
         ),
     ]
