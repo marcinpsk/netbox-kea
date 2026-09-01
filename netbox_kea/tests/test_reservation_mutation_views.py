@@ -60,10 +60,7 @@ class TestReservationMutationViews(_ViewTestBase):
     def test_capability_failure_leaves_the_add_form_visible_but_disables_save(self):
         responses = {
             "list-commands": RuntimeError("capability read failed"),
-            "subnet4-list": {
-                "result": 0,
-                "arguments": {"subnets": [{"id": 20, "subnet": "198.18.0.0/24"}]},
-            },
+            "subnet4-list": _subnet_list(4, [{"id": 20, "subnet": "198.18.0.0/24"}]),
         }
         url = reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk])
 

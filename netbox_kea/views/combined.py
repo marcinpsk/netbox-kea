@@ -551,7 +551,7 @@ class _CombinedReservationsView(_CombinedViewMixin):
             capabilities_by_server = _reservation_capability_results(capability_futures, server_map)
 
         if is_export:
-            if errors or diagnostics:
+            if errors or any(not snapshot.complete for snapshot in snapshots.values()):
                 return HttpResponse(
                     "The combined Reservation Snapshot is incomplete and cannot be exported.", status=409
                 )

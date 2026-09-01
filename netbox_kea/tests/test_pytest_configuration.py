@@ -178,6 +178,13 @@ def test_isolated_settings_define_an_api_token_pepper():
     assert settings.API_TOKEN_PEPPERS
 
 
+def test_isolated_settings_load_only_supported_test_plugins():
+    """Other shared-container plugins must not install signals in this suite."""
+    from django.conf import settings
+
+    assert set(settings.PLUGINS) <= {"netbox_kea", "netbox_dhcp"}
+
+
 def test_integration_image_installs_the_wheel_into_the_netbox_venv():
     """The uv branch must target the same NetBox venv as the pip fallback."""
     dockerfile = (REPOSITORY_ROOT / "tests" / "docker" / "Dockerfile").read_text()
@@ -1006,6 +1013,41 @@ def test_published_docs_run_ruff_over_the_scope_ci_lints():
         )
 
 
+def test_readme_documents_the_reservation_transfer_format():
+    """Operators must not be sent to the removed Reservation CSV workflow."""
+    readme = (REPOSITORY_ROOT / "README.md").read_text()
+    reservation_section = readme.split("**Host Reservations**", 1)[1].split("**Subnet Management**", 1)[0]
+
+    assert "Bulk CSV import" not in reservation_section
+    assert "YAML" in reservation_section
+    assert "JSON" in reservation_section
+
+
+def test_combined_badge_tests_inspect_the_table_state():
+    """Page chrome must not satisfy a badge or action assertion."""
+    source = (REPOSITORY_ROOT / "netbox_kea" / "tests" / "test_global_views.py").read_text()
+    targeted_tests = {
+        "test_reserved_badge_appears_when_reservation_exists",
+        "test_netbox_ip_sync_button_when_ip_not_in_netbox",
+        "test_lease_column_header_present",
+    }
+    ambiguous_text = {"Reserved", "Sync", "Lease"}
+    offenders = []
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.FunctionDef) or node.name not in targeted_tests:
+            continue
+        for inner in ast.walk(node):
+            if not isinstance(inner, ast.Call) or not isinstance(inner.func, ast.Attribute):
+                continue
+            if inner.func.attr != "assertContains" or len(inner.args) < 2:
+                continue
+            expected = inner.args[1]
+            if isinstance(expected, ast.Constant) and expected.value in ambiguous_text:
+                offenders.append(f"{node.name}:{expected.value}")
+
+    assert not offenders, f"Ambiguous combined-view assertions: {offenders}"
+
+
 def _compose_service_names(source: str) -> set[str]:
     """Return the service keys the Compose file declares."""
     body = source.split("\nservices:\n", 1)[-1]
@@ -1066,7 +1108,7 @@ def _cycle_tests_without_teardown(source: str) -> list[str]:
     """
     offenders: list[str] = []
     for node in ast.walk(ast.parse(source)):
-        if not isinstance(node, ast.FunctionDef):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
         guarded = [inner for inner in ast.walk(node) if isinstance(inner, ast.Try) and inner.finalbody]
         if _creates_live_kea_state(node.body):
@@ -1105,6 +1147,14 @@ class TestLeak:
 """
 
 
+_ASYNC_CREATION_WITHOUT_TRY = """
+class TestLeak:
+    async def test_thing_add_and_delete_cycle(self):
+        page.goto(self._reservation_add_url(base, 1))
+        await self._submit_form_by_field(page, "id_x")
+"""
+
+
 def test_the_teardown_guard_requires_creation_inside_the_try():
     """A `finally` only undoes what the matching `try` body ran.
 
@@ -1114,10 +1164,14 @@ def test_the_teardown_guard_requires_creation_inside_the_try():
     assert _cycle_tests_without_teardown(_CREATION_BEFORE_TRY) == ["test_thing_add_and_delete_cycle"]
 
 
+def test_the_teardown_guard_reads_async_tests():
+    assert _cycle_tests_without_teardown(_ASYNC_CREATION_WITHOUT_TRY) == ["test_thing_add_and_delete_cycle"]
+
+
 def _unguarded_finally_cleanups(source: str) -> list[str]:
     """Return every helper a ``finally`` block calls that can raise out of itself."""
     tree = ast.parse(source)
-    helpers = {node.name: node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)}
+    helpers = {node.name: node for node in ast.walk(tree) if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))}
     offenders: list[str] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Try) or not node.finalbody:
@@ -1148,6 +1202,21 @@ def test_every_finally_cleanup_reports_its_own_failure():
     assert "finally:" in source, "The cycle tests no longer tear down; this guard would read nothing."
     offenders = _unguarded_finally_cleanups(source)
     assert not offenders, f"{offenders} run from finally and can replace the test's own failure."
+
+
+def test_the_cleanup_guard_reads_async_helpers():
+    source = """
+async def cleanup():
+    raise RuntimeError
+
+async def test_cycle():
+    try:
+        pass
+    finally:
+        await cleanup()
+"""
+
+    assert _unguarded_finally_cleanups(source) == ["cleanup"]
 
 
 class _FakeRowLocator:

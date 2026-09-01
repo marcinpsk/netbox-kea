@@ -1,6 +1,6 @@
 import csv
 import logging
-from typing import Any
+from typing import Any, Literal
 
 import requests
 from django.contrib import messages
@@ -127,7 +127,7 @@ class ServerLease6SyncView(_BaseSyncView):
 class _BaseReservationSyncView(ConditionalLoginRequiredMixin, View):
     """Synchronize one exact typed Reservation and all its allocation addresses."""
 
-    dhcp_version: int
+    dhcp_version: Literal[4, 6]
 
     def post(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
         if not (request.user.has_perm("ipam.add_ipaddress") and request.user.has_perm("ipam.change_ipaddress")):
@@ -324,7 +324,7 @@ class ReservationCheckNetboxIPView(ConditionalLoginRequiredMixin, View):
 class _BaseBulkReservationImportView(_KeaChangeMixin, ConditionalLoginRequiredMixin, View):
     """Validate one document, then create typed Reservations until the first failure."""
 
-    dhcp_version: int
+    dhcp_version: Literal[4, 6]
     form_class: type
 
     template_name = "netbox_kea/server_reservation_bulk_import.html"

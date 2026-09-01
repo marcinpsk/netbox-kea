@@ -42,9 +42,8 @@ NetBox plugin for the [Kea DHCP](https://www.isc.org/kea/) server. Manage your D
   subnet, there being no reserved address to match on
 - Per-reservation DHCP options
 - Journal entries on add/edit/delete
-- Bulk CSV import: columns are matched by header name in any order. Each row needs
-  `subnet-id` and exactly one identifier column; the address is optional, and DHCPv6
-  rows may carry a semicolon-separated `prefixes` column
+- Validated YAML or JSON bulk transfer. Export a Complete Snapshot from one server
+  or the combined view, then import it from the matching DHCPv4 or DHCPv6 Reservations page
 
 **Subnet Management**
 - Add, edit and delete subnets (requires [`subnet_cmds`](https://kea.readthedocs.io/en/latest/arm/hooks.html#hooks-subnet-cmds) or `config-set`)
