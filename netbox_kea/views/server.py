@@ -43,7 +43,7 @@ def _get_global_options(server: "Server") -> dict[str, dict[str, str]]:
     """Return parsed global DHCP option-data for each enabled DHCP version.
 
     Calls ``config-get`` on each enabled DHCP service and extracts the
-    top-level ``option-data`` block.  Any per-service failure is silently
+    top-level ``option-data`` block.  Any per-service failure is logged and
     skipped so the status page always renders.
 
     Args:
@@ -71,10 +71,10 @@ def _get_global_options(server: "Server") -> dict[str, dict[str, str]]:
             args = _response_arguments(resp, "config-get")
             dhcp_block = args.get(dhcp_key, {})
             if not isinstance(dhcp_block, dict):
-                continue
+                raise RuntimeError(f"Kea config-get returned an invalid {dhcp_key} block")
             option_data = dhcp_block.get("option-data", [])
             if not isinstance(option_data, list) or any(not isinstance(option, dict) for option in option_data):
-                continue
+                raise RuntimeError("Kea config-get returned invalid option-data")
             opts = format_option_data(option_data, version=version)
             if opts:
                 # Convert snake_case keys to "Title Case" for display
