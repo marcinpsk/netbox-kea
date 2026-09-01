@@ -755,8 +755,8 @@ class TestGetGlobalOptionsGenericException(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context["global_options"], {})
 
-    def test_malformed_nested_arguments_are_ignored(self):
-        """Malformed DHCP blocks and option-data do not break the status page."""
+    def test_malformed_nested_arguments_warn(self):
+        """Malformed DHCP blocks and option-data log a degraded status response."""
         malformed_arguments = (
             {"Dhcp4": ["unexpected"]},
             {"Dhcp4": {"option-data": {"unexpected": "mapping"}}},
@@ -766,10 +766,12 @@ class TestGetGlobalOptionsGenericException(_ViewTestBase):
             with (
                 self.subTest(arguments=arguments),
                 _status_stub(**{"config-get": {"result": 0, "arguments": arguments}}),
+                self.assertLogs("netbox_kea.views.server", level="WARNING") as logs,
             ):
                 response = self.client.get(self._url())
                 self.assertEqual(response.status_code, 200)
                 self.assertEqual(response.context["global_options"], {})
+                self.assertIn("Unexpected error fetching global options", logs.output[0])
 
 
 # ---------------------------------------------------------------------------
