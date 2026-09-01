@@ -182,7 +182,21 @@ def test_isolated_settings_load_only_supported_test_plugins():
     """Other shared-container plugins must not install signals in this suite."""
     from django.conf import settings
 
+    assert "netbox_kea" in settings.PLUGINS
     assert set(settings.PLUGINS) <= {"netbox_kea", "netbox_dhcp"}
+
+
+def test_option_view_contracts_are_not_accepted_in_the_mypy_baseline():
+    """Keep resolved request-user, client, and DHCP-family contracts out of the baseline."""
+    forbidden = {
+        'netbox_kea/views/_base.py:0: error: "AbstractBaseUser" has no attribute "has_perm"  [attr-defined]',
+        'netbox_kea/views/options.py:0: error: Argument 2 to "check_dhcp_enabled" has incompatible type "int"; expected "Literal[6, 4]"  [arg-type]',
+        'netbox_kea/views/options.py:0: error: Item "object" of "object | Any" has no attribute "option_def_list"  [union-attr]',
+        'netbox_kea/views/options.py:0: error: Item "AbstractBaseUser" of "AbstractBaseUser | AnonymousUser" has no attribute "has_perm"  [union-attr]',
+    }
+    accepted_errors = set((REPOSITORY_ROOT / "mypy-baseline.txt").read_text().splitlines())
+
+    assert not forbidden & accepted_errors
 
 
 def test_integration_image_installs_the_wheel_into_the_netbox_venv():
