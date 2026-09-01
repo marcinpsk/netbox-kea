@@ -1,9 +1,10 @@
 import logging
 import re
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 from urllib.parse import parse_qsl, urlparse
 from urllib.parse import urlencode as _urlencode
 
+from django.contrib.auth.models import PermissionsMixin
 from django.http import Http404, HttpResponse, HttpResponseForbidden
 from django.http.request import HttpRequest
 from netbox.tables import BaseTable
@@ -59,6 +60,6 @@ class _KeaChangeMixin:
                 raise Http404
             if not Server.objects.restrict(request.user, "change").filter(pk=pk).exists():
                 return HttpResponseForbidden("You do not have permission to modify Kea server data.")
-        elif not request.user.has_perm("netbox_kea.change_server"):
+        elif not cast(PermissionsMixin, request.user).has_perm("netbox_kea.change_server"):
             return HttpResponseForbidden("You do not have permission to modify Kea server data.")
         return super().dispatch(request, *args, **kwargs)  # type: ignore[misc]

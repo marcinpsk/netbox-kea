@@ -77,7 +77,6 @@ netbox_kea/subnet_catalogue.py:0: error: Argument 2 to "_is_quarantined" has inc
 netbox_kea/subnet_catalogue.py:0: error: Argument 3 to "_is_quarantined" has incompatible type "frozenset[IPv4Network | IPv6Network]"; expected "set[IPv4Network | IPv6Network]"  [arg-type]
 netbox_kea/subnet_catalogue.py:0: error: Argument 2 to "_is_quarantined" has incompatible type "frozenset[int]"; expected "set[int]"  [arg-type]
 netbox_kea/subnet_catalogue.py:0: error: Argument 3 to "_is_quarantined" has incompatible type "frozenset[IPv4Network | IPv6Network]"; expected "set[IPv4Network | IPv6Network]"  [arg-type]
-netbox_kea/views/_base.py:0: error: "AbstractBaseUser" has no attribute "has_perm"  [attr-defined]
 netbox_kea/tests/test_templates.py:0: note: By default the bodies of untyped functions are not checked, consider using --check-untyped-defs  [annotation-unchecked]
 netbox_kea/tables.py:0: error: Signature of "render" incompatible with supertype "DurationColumn"  [override]
 netbox_kea/tables.py:0: note: Superclass:
@@ -152,9 +151,6 @@ netbox_kea/views/subnets.py:0: error: Incompatible types in assignment (expressi
 netbox_kea/views/subnets.py:0: error: Incompatible types in assignment (expression has type "None", variable has type "str")  [assignment]
 netbox_kea/views/subnets.py:0: error: "Field" has no attribute "choices"  [attr-defined]
 netbox_kea/views/subnets.py:0: error: "Field" has no attribute "choices"  [attr-defined]
-netbox_kea/views/options.py:0: error: Argument 2 to "check_dhcp_enabled" has incompatible type "int"; expected "Literal[6, 4]"  [arg-type]
-netbox_kea/views/options.py:0: error: Item "object" of "object | Any" has no attribute "option_def_list"  [union-attr]
-netbox_kea/views/options.py:0: error: Item "AbstractBaseUser" of "AbstractBaseUser | AnonymousUser" has no attribute "has_perm"  [union-attr]
 netbox_kea/views/server.py:0: error: Argument "version" to "get_client" of "Server" has incompatible type "int"; expected "Literal[4, 6] | None"  [arg-type]
 netbox_kea/views/server.py:0: error: Argument "version" to "get_client" of "Server" has incompatible type "int"; expected "Literal[4, 6] | None"  [arg-type]
 netbox_kea/views/reservations.py:0: error: Argument 1 to "ReservationIdentity" has incompatible type "str"; expected "Literal['hw-address', 'duid', 'circuit-id', 'client-id', 'flex-id']"  [arg-type]
