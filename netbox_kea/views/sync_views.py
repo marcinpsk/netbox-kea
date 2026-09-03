@@ -30,7 +30,7 @@ from ..utilities import (
     parse_lease_csv,
 )
 from ._base import ConditionalLoginRequiredMixin, _KeaChangeMixin
-from .reservation_mutations import _confirmed_side_effects, _identity_from_request, _load_target
+from .reservation_mutations import _confirmed_side_effects, _identity_from_request, _reservation_target_scope
 
 logger = logging.getLogger(__name__)
 
@@ -135,10 +135,14 @@ class _BaseReservationSyncView(ConditionalLoginRequiredMixin, View):
         server = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
         identity = _identity_from_request(request, self.dhcp_version)
         try:
-            reservation, _catalogue = _load_target(server, self.dhcp_version, subnet_id, identity)
-            from ..sync import sync_reservation_to_netbox
+            with _reservation_target_scope(server, self.dhcp_version, subnet_id, identity) as (
+                reservation,
+                _client,
+                _catalogue,
+            ):
+                from ..sync import sync_reservation_to_netbox
 
-            result = sync_reservation_to_netbox(reservation, cleanup=False, force=True)
+                result = sync_reservation_to_netbox(reservation, cleanup=False, force=True)
         except KeaException as exc:
             logger.exception("Kea error synchronizing a DHCPv%s Reservation", self.dhcp_version)
             return HttpResponse(f"Reservation synchronization failed: {kea_error_hint(exc)}", status=500)

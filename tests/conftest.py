@@ -34,11 +34,16 @@ def _record_created_server_ids(
         request is None
         or request.method != "POST"
         or urlsplit(response.url).path.rstrip("/") != server_collection_path
-        or not response.ok
+        or not 200 <= response.status_code < 300
     ):
         return response
 
-    payload = response.json()
+    if "application/json" not in response.headers.get("Content-Type", "").lower():
+        return response
+    try:
+        payload = response.json()
+    except ValueError:
+        return response
     records = payload if isinstance(payload, list) else [payload]
     created_server_ids.update(
         identifier

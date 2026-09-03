@@ -1791,7 +1791,12 @@ class TestMaskCorrection(TestCase):
             status="reserved",
             description="Synced from Kea DHCP reservation",
         )
-        reservation = {"ip-address": "192.168.10.50", "hostname": "h", "subnet-id": 1}
+        reservation = {
+            "ip-address": "192.168.10.50",
+            "flex-id": "mask-correction",
+            "hostname": "h",
+            "subnet-id": 1,
+        }
         ip_obj, created, changed = _sync_reservation(reservation, subnet_prefix_map={1: 24})
         self.assertFalse(created)
         self.assertTrue(changed)
@@ -1854,7 +1859,12 @@ class TestDescriptionSelfHeal(TestCase):
             dns_name="h",
             description="Synced from Kea DHCP lease",
         )
-        reservation = {"ip-address": "10.63.125.140", "hostname": "h", "subnet-id": 1}
+        reservation = {
+            "ip-address": "10.63.125.140",
+            "flex-id": "reservation-description",
+            "hostname": "h",
+            "subnet-id": 1,
+        }
         # Two-pass: no matching lease this run → status reserved.
         ip_obj, created, changed = _sync_reservation(reservation, lease_ips=frozenset())
         self.assertFalse(created)
@@ -1871,7 +1881,12 @@ class TestDescriptionSelfHeal(TestCase):
             dns_name="h",
             description="Synced from Kea DHCP lease",
         )
-        reservation = {"ip-address": "10.63.125.141", "hostname": "h", "subnet-id": 1}
+        reservation = {
+            "ip-address": "10.63.125.141",
+            "flex-id": "active-description",
+            "hostname": "h",
+            "subnet-id": 1,
+        }
         # Two-pass: IP also has a lease this run → status active.
         ip_obj, _, _ = _sync_reservation(reservation, lease_ips=frozenset({"10.63.125.141"}))
         self.assertEqual(ip_obj.status, "active")
@@ -1886,7 +1901,12 @@ class TestDescriptionSelfHeal(TestCase):
             dns_name="h",
             description="Customer gateway — do not touch",
         )
-        reservation = {"ip-address": "10.63.125.142", "hostname": "h", "subnet-id": 1}
+        reservation = {
+            "ip-address": "10.63.125.142",
+            "flex-id": "manual-description",
+            "hostname": "h",
+            "subnet-id": 1,
+        }
         ip_obj, _, _ = _sync_reservation(reservation, lease_ips=frozenset())
         self.assertEqual(ip_obj.description, "Customer gateway — do not touch")
 
@@ -1997,6 +2017,7 @@ class TestReservationForeignIPProtection(TestCase):
         NbIP.objects.create(address="2001:db8::1/64", status="active", description="Router loopback")
         reservation = {
             "ip-addresses": ["2001:db8::1", "2001:db8::2"],
+            "flex-id": "foreign-sibling",
             "hostname": "v6-host",
             "subnet-id": 1,
         }

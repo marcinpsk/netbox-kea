@@ -868,6 +868,7 @@ def test_created_server_tracker_records_only_successful_server_creates() -> None
             self.request = requests.Request(method, url).prepare()
             self.url = url
             self.status_code = 201 if ok else 400
+            self.headers["Content-Type"] = "application/json"
             self._payload = payload
 
         def json(self, **_kwargs) -> object:
@@ -897,6 +898,44 @@ def test_created_server_tracker_records_only_successful_server_creates() -> None
         )
 
     assert created_server_ids == {17, 18, 19, 23}
+
+
+def test_created_server_tracker_ignores_responses_without_decodable_json() -> None:
+    """The observer must not break a create request while redirects are followed."""
+    from tests.conftest import _record_created_server_ids
+
+    class Response(requests.Response):
+        def __init__(self, status_code: int, content_type: str) -> None:
+            super().__init__()
+            url = "https://netbox.example.invalid/api/plugins/kea/servers/"
+            self.request = requests.Request("POST", url).prepare()
+            self.url = url
+            self.status_code = status_code
+            self.headers["Content-Type"] = content_type
+            if 300 <= status_code < 400:
+                self.headers["Location"] = "/next"
+
+        def json(self, **_kwargs) -> object:
+            if self.is_redirect:
+                raise AssertionError("redirect response JSON must not be decoded")
+            raise ValueError("not JSON")
+
+    created_server_ids: set[int] = set()
+    for response in (
+        Response(302, "text/html"),
+        Response(302, "application/json"),
+        Response(201, "application/json"),
+    ):
+        assert (
+            _record_created_server_ids(
+                response,
+                created_server_ids=created_server_ids,
+                netbox_url="https://netbox.example.invalid",
+            )
+            is response
+        )
+
+    assert created_server_ids == set()
 
 
 def test_created_server_cleanup_warns_and_continues_after_one_delete_fails() -> None:

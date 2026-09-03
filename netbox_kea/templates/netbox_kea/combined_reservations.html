@@ -75,10 +75,11 @@
 </div>
 {% endif %}
 
-{% if not snapshot_complete and reservation_diagnostics %}
+{% if not snapshot_complete %}
 <div class="alert alert-warning mt-3" role="alert">
   <strong>Snapshot is incomplete.</strong>
   The Reservation Snapshot could not be read completely.
+  {% if reservation_diagnostics %}
   See the {{ reservation_diagnostics|length }} diagnostic{{ reservation_diagnostics|length|pluralize }} below.
   <ul class="mb-0 mt-2">
     {% for server_name, diagnostic in reservation_diagnostics %}
@@ -86,8 +87,9 @@
       <code>{{ diagnostic.source_position }}</code>: {{ diagnostic.message }}</li>
     {% endfor %}
   </ul>
+  {% endif %}
 </div>
-{% elif snapshot_complete %}
+{% else %}
 <div class="alert alert-success py-2 mt-3" role="status">
   <i class="mdi mdi-check-circle-outline" aria-hidden="true"></i>
   This bounded Snapshot is complete for the current page.

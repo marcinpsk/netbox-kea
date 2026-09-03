@@ -9,6 +9,8 @@ import requests
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.urls import reverse
 
+from netbox_kea.subnet_catalogue import display
+
 from .kea_stub import _res_get, _res_page, _reservation_mutation_commands, _subnet_list, queued, stub_kea
 from .utils import _ViewTestBase
 
@@ -366,6 +368,52 @@ class TestReservationMutationViews(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "changed after the edit form was opened")
         self.assertNotIn("reservation-update", kea.commands())
+
+    def test_edit_invalidates_a_catalogue_cached_during_the_mutation(self):
+        responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
+        current = {
+            "subnet-id": 20,
+            "hw-address": "aa:bb:cc:dd:ee:ff",
+            "hostname": "old.example.invalid",
+        }
+        intended = {**current, "hostname": "new.example.invalid"}
+        url = reverse("plugins:netbox_kea:server_reservation4_edit", args=[self.server.pk, 20])
+        query = _identity_query()
+
+        with stub_kea({**responses, "reservation-get": _res_get(current)}):
+            form_page = self.client.get(f"{url}?{query}")
+        fingerprint = form_page.context["form"].initial["managed_fingerprint"]
+        reservation_reads = 0
+
+        def reservation_get(_body):
+            nonlocal reservation_reads
+            reservation_reads += 1
+            if reservation_reads == 2:
+                display(self.server, 4)
+            return _res_get(intended if reservation_reads == 3 else current)
+
+        responses.update(
+            {
+                "reservation-get": reservation_get,
+                "reservation-update": {"result": 0},
+            }
+        )
+        with stub_kea(responses) as kea:
+            response = self.client.post(
+                f"{url}?{query}",
+                {
+                    "subnet_cidr": "198.18.0.0/24",
+                    "ip_address": "",
+                    "identifier_type": "hw-address",
+                    "identifier": "aa:bb:cc:dd:ee:ff",
+                    "hostname": "new.example.invalid",
+                    "managed_fingerprint": fingerprint,
+                },
+            )
+            display(self.server, 4)
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(kea.commands().count("config-get"), 5, kea.commands())
 
     def test_canonical_identity_route_rejects_missing_unsupported_and_malformed_identity(self):
         url = reverse("plugins:netbox_kea:server_reservation4_edit", args=[self.server.pk, 20])
@@ -826,6 +874,37 @@ class TestReservationMutationViews(_ViewTestBase):
         self.assertEqual(received[0]["dhcp_version"], 4)
         self.assertIsNotNone(received[0]["before"])
         self.assertIsNone(received[0]["after"])
+
+    def test_delete_invalidates_a_catalogue_cached_during_the_mutation(self):
+        responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
+        current = {
+            "subnet-id": 20,
+            "hw-address": "aa:bb:cc:dd:ee:ff",
+            "hostname": "old.example.invalid",
+        }
+        url = reverse("plugins:netbox_kea:server_reservation4_delete", args=[self.server.pk, 20])
+        query = _identity_query()
+        reservation_reads = 0
+
+        def reservation_get(_body):
+            nonlocal reservation_reads
+            reservation_reads += 1
+            if reservation_reads == 2:
+                display(self.server, 4)
+            return {"result": 3} if reservation_reads == 3 else _res_get(current)
+
+        responses.update(
+            {
+                "reservation-get": reservation_get,
+                "reservation-del": {"result": 0},
+            }
+        )
+        with stub_kea(responses) as kea:
+            response = self.client.post(f"{url}?{query}")
+            display(self.server, 4)
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(kea.commands().count("config-get"), 5, kea.commands())
 
     def test_delete_confirmation_redirects_when_kea_is_unreachable(self):
         responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])

@@ -364,6 +364,26 @@ class TestPerServerReservationSnapshots(_ViewTestBase):
 
 
 class TestCombinedReservationSnapshots(_ViewTestBase):
+    def test_failed_page_read_warns_that_the_combined_snapshot_is_incomplete(self):
+        responses = _catalogue_responses(4, 20, "198.18.0.0/24")
+        responses.update(
+            {
+                "reservation-get-page": requests.ConnectionError("kea unreachable"),
+                "lease4-get-by-state": {"result": 0, "arguments": {"leases": []}},
+            }
+        )
+        url = reverse("plugins:netbox_kea:combined_reservations4")
+
+        with stub_kea(responses):
+            response = self.client.get(url, {"server": self.server.pk})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.context["snapshot_complete"])
+        self.assertEqual(response.context["reservation_diagnostics"], [])
+        self.assertContains(response, "Snapshot is incomplete")
+        self.assertNotContains(response, "diagnostic below")
+        self.assertNotContains(response, "This bounded Snapshot is complete")
+
     def test_combined_view_fetches_one_bounded_page_and_offers_the_next_cursor(self):
         responses = _catalogue_responses(6, 30, "2001:db8::/64")
         hosts = [

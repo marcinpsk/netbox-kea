@@ -182,11 +182,10 @@ def _typed_reservation(raw: dict[str, Any], *, prefix_length: int | None = None)
     address_values = raw.get("ip-addresses") or ([raw["ip-address"]] if raw.get("ip-address") else [])
     addresses = tuple(ipaddress.ip_address(address) for address in address_values)
     identity_types: tuple[IdentifierType, ...] = ("hw-address", "duid", "circuit-id", "client-id", "flex-id")
-    identity_type = next(
-        (key for key in identity_types if raw.get(key)),
-        "duid" if family == 6 else "flex-id",
-    )
-    identity_value = cast(str, raw.get(identity_type) or ("00:01" if family == 6 else "test-reservation"))
+    identity_type = next((key for key in identity_types if raw.get(key)), None)
+    if identity_type is None:
+        raise AssertionError(f"Reservation fixture carries no supported identifier: {raw!r}")
+    identity_value = cast(str, raw[identity_type])
     if addresses:
         default_prefix = 64 if family == 6 else 24
         network = ipaddress.ip_network(f"{addresses[0]}/{prefix_length or default_prefix}", strict=False)

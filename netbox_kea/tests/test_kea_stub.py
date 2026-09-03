@@ -13,7 +13,7 @@ import threading
 import pytest
 import requests
 
-from netbox_kea.tests.kea_stub import KeaHttpStub, _reservation_family, queued
+from netbox_kea.tests.kea_stub import KeaHttpStub, _reservation_family, _typed_reservation, queued
 
 
 def _call(stub, command="x"):
@@ -137,6 +137,18 @@ def test_catalogue_responses_shape():
 )
 def test_reservation_family_covers_each_wire_address_shape(host, family):
     assert _reservation_family(host) == family
+
+
+@pytest.mark.parametrize(
+    "host",
+    (
+        {"subnet-id": 20, "remote-id": "relay-value"},
+        {"subnet-id": 20},
+    ),
+)
+def test_typed_reservation_rejects_a_fixture_without_a_supported_identity(host):
+    with pytest.raises(AssertionError, match="no supported identifier"):
+        _typed_reservation(host)
 
 
 def test_exception_value_is_raised():
