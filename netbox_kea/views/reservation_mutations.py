@@ -1,5 +1,7 @@
 import ipaddress
 import logging
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import replace
 from typing import Any, Literal
 
@@ -15,7 +17,7 @@ from netbox.views import generic
 
 from .. import constants, forms
 from ..dhcp_options import DHCPOption
-from ..kea import KeaException
+from ..kea import KeaClient, KeaException
 from ..models import Server
 from ..reservations import (
     ClearValue,
@@ -34,7 +36,7 @@ from ..reservations import (
     reservation_identifier_types,
 )
 from ..signals import reservation_created, reservation_deleted, reservation_updated
-from ..subnet_catalogue import MutationScope
+from ..subnet_catalogue import CatalogueSnapshot, MutationScope
 from ..sync import sync_reservation_to_netbox
 from ..utilities import fetch_subnet_choices, kea_error_hint
 from ._base import _KeaChangeMixin
@@ -181,12 +183,14 @@ def _identity_from_request(request: HttpRequest, version: Literal[4, 6]) -> Rese
         raise BadRequest(f"Invalid DHCPv{version} Reservation Identity.") from exc
 
 
-def _load_target(
+@contextmanager
+def _reservation_target_scope(
     server: Server,
     version: Literal[4, 6],
     subnet_id: int,
     identity: ReservationIdentity,
-) -> tuple[Reservation, Any]:
+) -> Iterator[tuple[Reservation, KeaClient, CatalogueSnapshot]]:
+    """Keep one Reservation target and its Catalogue Snapshot live through mutation."""
     with MutationScope(server, version) as mutation_scope:
         subnet = mutation_scope.find_by_id(subnet_id)
         if subnet is None:
@@ -197,9 +201,20 @@ def _load_target(
             raise RuntimeError("The Subnet Catalogue is unavailable.")
         client = server.get_client(version=version)
         reservation = client.reservation_by_identity(version, catalogue, scope, identity)
-    if reservation is None:
-        raise Http404("Reservation not found.")
-    return reservation, catalogue
+        if reservation is None:
+            raise Http404("Reservation not found.")
+        yield reservation, client, catalogue
+
+
+def _load_target(
+    server: Server,
+    version: Literal[4, 6],
+    subnet_id: int,
+    identity: ReservationIdentity,
+) -> Reservation:
+    """Return one validated Reservation without exposing its expired Catalogue Snapshot."""
+    with _reservation_target_scope(server, version, subnet_id, identity) as (reservation, _client, _catalogue):
+        return reservation
 
 
 def _journal_mutation(
@@ -475,7 +490,7 @@ class _ReservationEditView(_ReservationMutationView):
         server = self.get_object(pk=pk)
         identity = _identity_from_request(request, self.dhcp_version)
         try:
-            reservation, _catalogue = _load_target(server, self.dhcp_version, subnet_id, identity)
+            reservation = _load_target(server, self.dhcp_version, subnet_id, identity)
         except (KeaException, requests.RequestException, RuntimeError, ValueError):
             logger.exception("Could not load the Reservation edit target")
             messages.error(request, "The Reservation could not be loaded. See server logs.")
@@ -499,42 +514,45 @@ class _ReservationEditView(_ReservationMutationView):
         if unavailable_response is not None:
             return unavailable_response
         try:
-            current, catalogue = _load_target(server, self.dhcp_version, subnet_id, identity)
+            with _reservation_target_scope(server, self.dhcp_version, subnet_id, identity) as (
+                current,
+                client,
+                catalogue,
+            ):
+                form = self.form_class(data=request.POST, initial=self._initial(current), capabilities=capabilities)
+                for field in ("subnet_cidr", "identifier_type", "identifier"):
+                    form.fields[field].disabled = True
+                options_formset, options_valid = _build_reservation_options_formset(request.POST)
+                if form.is_valid() and options_valid:
+                    try:
+                        fingerprint = _fingerprint_from_post(form.cleaned_data["managed_fingerprint"], current)
+                        change = self._change(
+                            current, form.cleaned_data, _options_from_formset(options_formset, current.options)
+                        )
+                        result = client.reservation_change(current, fingerprint, change, catalogue)
+                        _confirmed_side_effects(
+                            request,
+                            server,
+                            "updated",
+                            result,
+                            sync_to_netbox=bool(form.cleaned_data.get("sync_to_netbox")),
+                        )
+                        messages.success(request, "Reservation updated.")
+                        return redirect(return_url)
+                    except ReservationConflict as exc:
+                        form.add_error(None, f"{exc} Reload the form before you try again.")
+                    except KeaException as exc:
+                        logger.exception("Kea rejected a Reservation update")
+                        messages.error(request, kea_error_hint(exc))
+                    except (requests.RequestException, RuntimeError, ValueError):
+                        logger.exception("Could not update the Reservation")
+                        messages.error(request, "The Reservation could not be updated. See server logs.")
         except Http404:
             raise
         except (KeaException, requests.RequestException, RuntimeError, ValueError):
             logger.exception("Could not reload the Reservation edit target")
             messages.error(request, "The Reservation could not be reloaded. Edit stopped.")
             return redirect(return_url)
-        form = self.form_class(data=request.POST, initial=self._initial(current), capabilities=capabilities)
-        for field in ("subnet_cidr", "identifier_type", "identifier"):
-            form.fields[field].disabled = True
-        options_formset, options_valid = _build_reservation_options_formset(request.POST)
-        if form.is_valid() and options_valid:
-            try:
-                fingerprint = _fingerprint_from_post(form.cleaned_data["managed_fingerprint"], current)
-                change = self._change(
-                    current, form.cleaned_data, _options_from_formset(options_formset, current.options)
-                )
-                client = server.get_client(version=self.dhcp_version)
-                result = client.reservation_change(current, fingerprint, change, catalogue)
-                _confirmed_side_effects(
-                    request,
-                    server,
-                    "updated",
-                    result,
-                    sync_to_netbox=bool(form.cleaned_data.get("sync_to_netbox")),
-                )
-                messages.success(request, "Reservation updated.")
-                return redirect(return_url)
-            except ReservationConflict as exc:
-                form.add_error(None, f"{exc} Reload the form before you try again.")
-            except KeaException as exc:
-                logger.exception("Kea rejected a Reservation update")
-                messages.error(request, kea_error_hint(exc))
-            except (requests.RequestException, RuntimeError, ValueError):
-                logger.exception("Could not update the Reservation")
-                messages.error(request, "The Reservation could not be updated. See server logs.")
         return self._render(request, server, form, options_formset, capabilities)
 
     def _initial(self, reservation: Reservation) -> dict[str, Any]:
@@ -593,7 +611,7 @@ class _ReservationDeleteView(_ReservationMutationView):
         server = self.get_object(pk=pk)
         identity = _identity_from_request(request, self.dhcp_version)
         try:
-            reservation, _catalogue = _load_target(server, self.dhcp_version, subnet_id, identity)
+            reservation = _load_target(server, self.dhcp_version, subnet_id, identity)
         except Http404:
             raise
         except (KeaException, requests.RequestException, RuntimeError, ValueError):
@@ -622,11 +640,14 @@ class _ReservationDeleteView(_ReservationMutationView):
         if unavailable_response is not None:
             return unavailable_response
         try:
-            reservation, catalogue = _load_target(server, self.dhcp_version, subnet_id, identity)
-            client = server.get_client(version=self.dhcp_version)
-            result = client.reservation_delete(reservation, catalogue)
-            _confirmed_side_effects(request, server, "deleted", result)
-            messages.success(request, "Reservation deleted.")
+            with _reservation_target_scope(server, self.dhcp_version, subnet_id, identity) as (
+                reservation,
+                client,
+                catalogue,
+            ):
+                result = client.reservation_delete(reservation, catalogue)
+                _confirmed_side_effects(request, server, "deleted", result)
+                messages.success(request, "Reservation deleted.")
         except ReservationConflict:
             messages.error(request, "The Reservation changed or no longer exists.")
         except KeaException as exc:
