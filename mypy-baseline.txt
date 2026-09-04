@@ -153,7 +153,6 @@ netbox_kea/views/subnets.py:0: error: "Field" has no attribute "choices"  [attr-
 netbox_kea/views/subnets.py:0: error: "Field" has no attribute "choices"  [attr-defined]
 netbox_kea/views/server.py:0: error: Argument "version" to "get_client" of "Server" has incompatible type "int"; expected "Literal[4, 6] | None"  [arg-type]
 netbox_kea/views/server.py:0: error: Argument "version" to "get_client" of "Server" has incompatible type "int"; expected "Literal[4, 6] | None"  [arg-type]
-netbox_kea/views/reservations.py:0: error: Argument 1 to "ReservationIdentity" has incompatible type "str"; expected "Literal['hw-address', 'duid', 'circuit-id', 'client-id', 'flex-id']"  [arg-type]
 netbox_kea/views/reservations.py:0: error: Argument "version" to "get_client" of "Server" has incompatible type "int"; expected "Literal[4, 6] | None"  [arg-type]
 netbox_kea/views/reservations.py:0: error: Argument "version" to "get_client" of "Server" has incompatible type "int"; expected "Literal[4, 6] | None"  [arg-type]
 netbox_kea/views/reservations.py:0: error: Argument "version" to "get_client" of "Server" has incompatible type "int"; expected "Literal[4, 6] | None"  [arg-type]
