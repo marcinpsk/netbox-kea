@@ -6,6 +6,7 @@ daemons, and one Server object joining them. Keeping the harness here is what le
 """
 
 import os
+import warnings
 from typing import Any
 
 import pynetbox
@@ -168,6 +169,16 @@ def netbox_user_permissions() -> list[dict[str, list[Any]]]:
     return [{"actions": [], "object_types": []}]
 
 
+def _delete_created_login_objects(objects: list[Any]) -> None:
+    """Delete every fixture-owned login object without stopping after one failure."""
+    for obj in objects:
+        try:  # noqa: PERF203 - each deletion needs independent best-effort cleanup
+            if obj.delete() is not True:
+                raise RuntimeError("the NetBox API did not confirm deletion")
+        except Exception as exc:  # noqa: BLE001,PERF203 - cleanup must continue after each failure
+            warnings.warn(f"Could not delete test login object {obj}: {exc}", RuntimeWarning, stacklevel=2)
+
+
 @pytest.fixture(scope="function", autouse=True)
 def netbox_login(
     page: Page,
@@ -201,5 +212,4 @@ def netbox_login(
 
     yield
 
-    for obj in to_delete:
-        assert obj.delete()
+    _delete_created_login_objects(to_delete)

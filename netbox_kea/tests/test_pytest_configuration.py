@@ -974,6 +974,31 @@ def test_created_server_cleanup_warns_and_continues_after_one_delete_fails() -> 
     assert deleted == [17, 18]
 
 
+def test_created_login_cleanup_warns_and_continues_after_one_delete_fails() -> None:
+    """One failed login-object delete must not leave later fixture-owned objects behind."""
+    from tests.ui.conftest import _delete_created_login_objects
+
+    deleted: list[str] = []
+
+    class LoginObject:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def delete(self) -> bool:
+            deleted.append(self.name)
+            if self.name == "permission":
+                raise requests.ConnectionError("delete failed")
+            return True
+
+        def __str__(self) -> str:
+            return self.name
+
+    with pytest.warns(RuntimeWarning, match="permission"):
+        _delete_created_login_objects([LoginObject("permission"), LoginObject("user")])
+
+    assert deleted == ["permission", "user"]
+
+
 #: Type aliases that describe one shared fact and must have exactly one definition.
 #: The "Value" suffix keeps them apart from netaddr's same-named classes, which this
 #: package also imports and which are not interchangeable with the stdlib ones.

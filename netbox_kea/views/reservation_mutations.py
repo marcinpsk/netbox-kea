@@ -66,9 +66,8 @@ def _options_from_formset(
     options: list[DHCPOption] = []
     remaining = list(enumerate(current))
     for row in getattr(options_formset, "cleaned_data", []) or []:
-        if not row or not row.get("name") or row.get("DELETE"):
+        if not row:
             continue
-        submitted_always_send = bool(row.get("always_send"))
         original_index = row.get("original_index")
         existing: DHCPOption | None
         if original_index is not None:
@@ -83,10 +82,16 @@ def _options_from_formset(
             if matching_position is None:
                 raise ValueError("The Reservation option source does not match the current Reservation.")
             _, existing = remaining.pop(matching_position)
+            if row.get("DELETE"):
+                continue
+            if not row.get("name"):
+                continue
             displayed_name = existing.name or (str(existing.code) if existing.code is not None else "")
             if row["name"] != displayed_name:
                 existing = None
         else:
+            if not row.get("name") or row.get("DELETE"):
+                continue
             matching_positions = [
                 position
                 for position, (_current_index, option) in enumerate(remaining)
@@ -95,6 +100,7 @@ def _options_from_formset(
             if len(matching_positions) > 1:
                 raise ValueError("The Reservation option name is ambiguous without its source position.")
             existing = remaining.pop(matching_positions[0])[1] if matching_positions else None
+        submitted_always_send = bool(row.get("always_send"))
         if existing is not None:
             always_send = (
                 existing.always_send if submitted_always_send == bool(existing.always_send) else submitted_always_send

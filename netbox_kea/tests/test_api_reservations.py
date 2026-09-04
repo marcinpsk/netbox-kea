@@ -18,6 +18,7 @@ from django.urls import reverse
 from rest_framework.test import APIClient
 
 from netbox_kea.models import Server
+from netbox_kea.subnet_catalogue import invalidate
 
 from .kea_stub import _catalogue_responses, _res_get, _res_page, stub_kea
 
@@ -56,6 +57,8 @@ class _APITestBase(TestCase):
         self.server = _make_server()
         # Reused test server IDs otherwise serve another test's cached Catalogue
         # snapshot: the DB rolls back per test, the cache backend does not.
+        invalidate(self.server, 4)
+        invalidate(self.server, 6)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

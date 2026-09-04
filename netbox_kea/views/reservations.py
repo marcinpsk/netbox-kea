@@ -24,6 +24,7 @@ from ..kea import KeaClient, KeaException, LeaseQueryGuardError
 from ..models import Server
 from ..reservation_transfer import export_reservation_document
 from ..reservations import (
+    IdentifierType,
     InSubnetReservationScope,
     Reservation,
     ReservationCapabilities,
@@ -36,7 +37,7 @@ from ..utilities import OptionalViewTab
 
 logger = logging.getLogger(__name__)
 
-_LEASE_IDENTIFIER_KEYS: dict[int, tuple[str, ...]] = {
+_LEASE_IDENTIFIER_KEYS: dict[int, tuple[IdentifierType, ...]] = {
     4: ("hw-address", "client-id"),
     6: ("duid", "hw-address"),
 }

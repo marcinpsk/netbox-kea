@@ -919,6 +919,13 @@ class TestKeaDhcpLinkConstraintMigration(TransactionTestCase):
         # Target the newest migration on disk, so a later one cannot narrow this cover.
         current = executor.loader.graph.leaf_nodes("netbox_kea")
         self.assertEqual(len(current), 1, f"netbox_kea migrations must have one leaf, found {current}.")
+
+        def restore_migration_state():
+            restore = MigrationExecutor(connection)
+            restore.loader.build_graph()
+            restore.migrate(current)
+
+        self.addCleanup(restore_migration_state)
         executor.migrate([("netbox_kea", self._RELEASED)])
         with connection.cursor() as cursor:
             cursor.execute(
@@ -947,6 +954,13 @@ class TestKeaDhcpLinkConstraintMigration(TransactionTestCase):
         object_type = ContentType.objects.get_for_model(Server)
         executor = MigrationExecutor(connection)
         current = executor.loader.graph.leaf_nodes("netbox_kea")
+
+        def restore_migration_state():
+            restore = MigrationExecutor(connection)
+            restore.loader.build_graph()
+            restore.migrate(current)
+
+        self.addCleanup(restore_migration_state)
         executor.migrate([("netbox_kea", "0014_keadhcplink_kea_identity")])
         with connection.cursor() as cursor:
             cursor.execute(

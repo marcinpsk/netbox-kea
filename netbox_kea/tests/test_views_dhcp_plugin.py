@@ -66,7 +66,10 @@ def _sync_responses(
 
     responses: dict = {"config-get": config_get, "reservation-get-page": reservation_get_page}
     for version, conf in conf_by_version.items():
-        responses[f"subnet{version}-list"] = _subnet_list(version, conf.get(f"subnet{version}", []))
+        subnets = list(conf.get(f"subnet{version}", []))
+        for shared_network in conf.get("shared-networks", []):
+            subnets.extend(shared_network.get(f"subnet{version}", []))
+        responses[f"subnet{version}-list"] = _subnet_list(version, subnets)
     return responses
 
 
@@ -77,6 +80,20 @@ class SyncResponseRoutingTest(SimpleTestCase):
         for body in invalid_bodies:
             with self.subTest(body=body), self.assertRaises(AssertionError):
                 _request_version(body)
+
+    def test_sync_responses_lists_shared_network_member_subnets(self):
+        top_level = {"id": 1, "subnet": "198.18.0.0/24"}
+        member = {"id": 2, "subnet": "198.18.1.0/24"}
+        responses = _sync_responses(
+            {
+                4: {
+                    "subnet4": [top_level],
+                    "shared-networks": [{"name": "example", "subnet4": [member]}],
+                }
+            }
+        )
+
+        self.assertEqual(responses["subnet4-list"]["arguments"]["subnets"], [top_level, member])
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)

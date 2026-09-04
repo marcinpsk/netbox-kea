@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 
 import requests
 
+from netbox_kea import constants
 from netbox_kea.kea import (
     AmbiguousConfigSetError,
     KeaClient,
@@ -3363,13 +3364,25 @@ class TestLeaseGetByIp(TestCase):
     def _payload(self, mock_post):
         return mock_post.call_args.kwargs.get("json") or mock_post.call_args[1]["json"]
 
-    def test_docstring_describes_the_lease_search_contract(self):
-        """Keep the public method documentation aligned with its delegated search."""
-        docstring = KeaClient.lease_get_by_ip.__doc__ or ""
+    def test_rejects_an_invalid_version_or_empty_address(self):
+        for version, address in ((5, "192.168.1.10"), (4, "")):
+            with self.subTest(version=version, address=address), self.assertRaises(ValueError):
+                self.client.lease_get_by_ip(version=version, ip_address=address)
 
-        self.assertIn("first", docstring)
-        self.assertIn("ValueError", docstring)
-        self.assertNotIn("result=3", docstring)
+    def test_returns_the_first_lease_from_the_delegated_search(self):
+        leases = [{"ip-address": "192.168.1.10"}, {"ip-address": "192.168.1.11"}]
+
+        class SearchClient(KeaClient):
+            def lease_search(self, version, selector, value, *, state=None):
+                self.search = (version, selector, value, state)
+                return leases
+
+        client = SearchClient(url="http://kea:8000")
+
+        result = client.lease_get_by_ip(version=4, ip_address="192.168.1.10")
+
+        self.assertIs(result, leases[0])
+        self.assertEqual(client.search, (4, constants.BY_IP, "192.168.1.10", None))
 
     def test_v4_returns_lease_dict_when_found(self):
         """Returns the arguments dict when lease is found (result=0)."""

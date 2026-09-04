@@ -737,6 +737,61 @@ class TestReservationMutationViews(_ViewTestBase):
         sent = kea.bodies("reservation-update")[0]["arguments"]["reservation"]
         self.assertEqual(sent["option-data"], [replacement])
 
+    def test_edit_does_not_reuse_metadata_from_a_deleted_option(self):
+        responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
+        current_option = {
+            "name": "vendor-option",
+            "code": 224,
+            "space": "vendor-example",
+            "data": "old-value",
+            "csv-format": False,
+            "never-send": True,
+        }
+        replacement = {"name": "vendor-option", "data": "new-value"}
+        current = {
+            "subnet-id": 20,
+            "hw-address": "aa:bb:cc:dd:ee:ff",
+            "option-data": [current_option],
+        }
+        intended = {**current, "option-data": [replacement]}
+        url = reverse("plugins:netbox_kea:server_reservation4_edit", args=[self.server.pk, 20])
+        query = _identity_query()
+        with stub_kea({**responses, "reservation-get": _res_get(current)}):
+            form_page = self.client.get(f"{url}?{query}")
+        fingerprint = form_page.context["form"].initial["managed_fingerprint"]
+
+        with stub_kea(
+            {
+                **responses,
+                "reservation-get": queued(_res_get(current), _res_get(current), _res_get(intended)),
+                "reservation-update": {"result": 0},
+            }
+        ) as kea:
+            response = self.client.post(
+                f"{url}?{query}",
+                {
+                    "subnet_cidr": "198.18.0.0/24",
+                    "ip_address": "",
+                    "identifier_type": "hw-address",
+                    "identifier": "aa:bb:cc:dd:ee:ff",
+                    "managed_fingerprint": fingerprint,
+                    "options-TOTAL_FORMS": "2",
+                    "options-INITIAL_FORMS": "1",
+                    "options-MIN_NUM_FORMS": "0",
+                    "options-MAX_NUM_FORMS": "1000",
+                    "options-0-original_index": "0",
+                    "options-0-name": "vendor-option",
+                    "options-0-data": "old-value",
+                    "options-0-DELETE": "on",
+                    "options-1-name": "vendor-option",
+                    "options-1-data": "new-value",
+                },
+            )
+
+        self.assertEqual(response.status_code, 302)
+        sent = kea.bodies("reservation-update")[0]["arguments"]["reservation"]
+        self.assertEqual(sent["option-data"], [replacement])
+
     def test_edit_preserves_option_spaces_when_duplicate_names_are_reordered(self):
         responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
         first = {
