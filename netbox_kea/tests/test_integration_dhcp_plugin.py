@@ -931,9 +931,10 @@ class DhcpPluginReservationSnapshotImportTest(TestCase):
         self.assertEqual(summary.errors, 0, summary.warnings)
         self.assertFalse(IPAddress.objects.filter(address__net_host="2001:db8:aa::5").exists())
 
-    def test_reservation_whose_mac_row_cannot_be_written_is_skipped(self):
-        """Importing it would store a row with no identifier, which no later run can match."""
+    def test_reservation_whose_mac_row_cannot_be_written_rolls_back_its_ip(self):
+        """A MAC write failure must not commit the reservation's earlier IP write."""
         from django.db.utils import OperationalError
+        from ipam.models import IPAddress
 
         HostReservation = apps.get_model(DHCP_PLUGIN, "HostReservation")
         conf = {"subnet4": [{"id": 7, "subnet": "10.43.0.0/24"}]}
@@ -946,11 +947,14 @@ class DhcpPluginReservationSnapshotImportTest(TestCase):
             second = self.adapter.import_server_config(self.server, intent, snapshot)
 
         self.assertEqual(HostReservation.objects.count(), 0)
+        self.assertFalse(IPAddress.objects.filter(address__net_host="10.43.0.50").exists())
         self.assertEqual(first.reservations_created, 0)
         self.assertFalse(first.reservations_unread)
-        self.assertEqual(first.reservations_skipped, 1)
+        self.assertEqual(first.errors, 1, first.warnings)
+        self.assertEqual(first.reservations_skipped, 0)
+        self.assertEqual(second.errors, 1, second.warnings)
         self.assertTrue(
-            any("hardware address could not be resolved" in warning for warning in second.warnings),
+            any("could not be imported" in warning for warning in second.warnings),
             second.warnings,
         )
 

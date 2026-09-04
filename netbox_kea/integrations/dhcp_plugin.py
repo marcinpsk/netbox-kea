@@ -843,15 +843,7 @@ def _upsert_reservation(reservation, subnet_obj, server, dhcp_server, custom_def
             # Inside the try so a resolver failure is counted per-reservation, not fatal.
             ipv4_ip, ipv6_ips, mac_obj = _ensure_reservation_addresses(reservation, summary)
             if reservation.identity.identifier_type == "hw-address" and mac_obj is None:
-                # Importing it would write a row with no identifier, which matches nothing
-                # on the next run and duplicates instead.
-                summary.reservations_skipped += 1
-                summary.warn(
-                    f"reservation {reservation.identity.value} in {scope}: the hardware address "
-                    "could not be resolved, skipped"
-                )
-                return
-            # After the hardware-address skip, so a skipped reservation creates no Prefix.
+                raise RuntimeError("The reservation hardware address could not be resolved.")
             delegated_prefixes = _ensure_delegated_prefixes(reservation, server.sync_vrf)
             linked = None if subnet_obj is not None else _linked_reservation(server, reservation)
             if linked is not None:
