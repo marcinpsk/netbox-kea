@@ -1697,10 +1697,17 @@ class TestSyncPoolToNetboxIPRange(TestCase):
         self.assertNotIn("None", str(range_obj.end_address))
 
     def test_ipv6_cidr_pool_too_large_returns_sentinel(self):
-        """A /64 IPv6 CIDR pool spans 2^64 addresses — too large for PostgreSQL bigint; returns _POOL_TOO_LARGE."""
+        """A /64 IPv6 CIDR pool is too large for NetBox's IPRange size field."""
         from netbox_kea.sync import _POOL_TOO_LARGE
 
         result = self._sync("2001:db8::/64", "2001:db8::/48")
+        self.assertIs(result, _POOL_TOO_LARGE)
+
+    def test_ipv6_cidr_pool_exceeding_integer_returns_sentinel(self):
+        """A pool larger than PostgreSQL integer must not reach IPRange.save()."""
+        from netbox_kea.sync import _POOL_TOO_LARGE
+
+        result = self._sync("2001:db8:1::/80", "2001:db8:1::/64")
         self.assertIs(result, _POOL_TOO_LARGE)
 
     def test_returns_three_tuple(self):
