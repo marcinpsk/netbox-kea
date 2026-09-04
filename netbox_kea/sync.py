@@ -761,8 +761,13 @@ def sync_reservation_to_netbox(
 def _record_hostname_and_addresses(record: dict | Reservation) -> tuple[str, set[str]]:
     """Return one record's hostname and its address strings."""
     if isinstance(record, dict):
+        raw_addresses = record.get("ip-addresses")
+        if raw_addresses is None:
+            raw_addresses = []
+        if not isinstance(raw_addresses, list) or any(not isinstance(address, str) for address in raw_addresses):
+            raise RuntimeError("Kea record ip-addresses must be a list of strings or null.")
         addresses = {record["ip-address"]} if record.get("ip-address") else set()
-        addresses |= {address for address in (record.get("ip-addresses") or []) if address}
+        addresses.update(address for address in raw_addresses if address)
         return record.get("hostname", ""), addresses
     if isinstance(record, Reservation):
         return record.hostname, {str(address) for address in record.addresses}

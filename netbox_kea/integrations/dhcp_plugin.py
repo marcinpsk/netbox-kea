@@ -50,6 +50,7 @@ import logging
 from dataclasses import dataclass, field
 
 from django.apps import apps
+from django.db import transaction
 
 from ..dhcp_options import DHCPOption
 from ..mappers.kea_to_dhcp import (
@@ -838,51 +839,52 @@ def _upsert_reservation(reservation, subnet_obj, server, dhcp_server, custom_def
         scope_name = f"{dhcp_server.name} DHCPv{reservation.family}"
 
     try:
-        # Inside the try so a resolver failure is counted per-reservation, not fatal.
-        ipv4_ip, ipv6_ips, mac_obj = _ensure_reservation_addresses(reservation, summary)
-        if reservation.identity.identifier_type == "hw-address" and mac_obj is None:
-            # Importing it would write a row with no identifier, which matches nothing
-            # on the next run and duplicates instead.
-            summary.reservations_skipped += 1
-            summary.warn(
-                f"reservation {reservation.identity.value} in {scope}: the hardware address "
-                "could not be resolved, skipped"
-            )
-            return
-        # After the hardware-address skip, so a skipped reservation creates no Prefix.
-        delegated_prefixes = _ensure_delegated_prefixes(reservation, server.sync_vrf)
-        linked = None if subnet_obj is not None else _linked_reservation(server, reservation)
-        if linked is not None:
-            obj = linked
-        elif subnet_obj is not None:
-            obj = _find_reservation(base, reservation, mac_obj)
-        else:
-            # Adopt a Global row imported before the link carried the family, so an
-            # upgrade relinks that row instead of duplicating it.
-            obj = _find_reservation(_unlinked(base), reservation, mac_obj)
-        created = obj is None
-        if obj is None:
-            obj = HostReservation(
-                subnet=subnet_obj,
-                dhcp_server=None if subnet_obj is not None else dhcp_server,
-                name=_reservation_name(scope_name, reservation),
-            )
-        elif linked is None and subnet_obj is None:
-            # Newly adopted: take the family-qualified name so the other family is free
-            # to create its own row under the unique-name constraint.
-            obj.name = _reservation_name(scope_name, reservation)
-        obj.hostname = reservation.hostname or None
-        _apply_reservation_identifier(obj, reservation, mac_obj)
-        # One row holds one family. _ensure_reservation_addresses returns the other
-        # family empty, which also splits a row an earlier import merged.
-        obj.ipv4_address = ipv4_ip
-        obj.save()
-        # set() unconditionally so re-importing a reservation that dropped its IPv6
-        # addresses or prefixes clears the stale M2M relations (empty list = clear).
-        obj.ipv6_addresses.set(ipv6_ips)
-        obj.ipv6_prefixes.set(delegated_prefixes)
-        if subnet_obj is None:
-            _link_reservation(server, reservation, obj)
+        with transaction.atomic():
+            # Inside the try so a resolver failure is counted per-reservation, not fatal.
+            ipv4_ip, ipv6_ips, mac_obj = _ensure_reservation_addresses(reservation, summary)
+            if reservation.identity.identifier_type == "hw-address" and mac_obj is None:
+                # Importing it would write a row with no identifier, which matches nothing
+                # on the next run and duplicates instead.
+                summary.reservations_skipped += 1
+                summary.warn(
+                    f"reservation {reservation.identity.value} in {scope}: the hardware address "
+                    "could not be resolved, skipped"
+                )
+                return
+            # After the hardware-address skip, so a skipped reservation creates no Prefix.
+            delegated_prefixes = _ensure_delegated_prefixes(reservation, server.sync_vrf)
+            linked = None if subnet_obj is not None else _linked_reservation(server, reservation)
+            if linked is not None:
+                obj = linked
+            elif subnet_obj is not None:
+                obj = _find_reservation(base, reservation, mac_obj)
+            else:
+                # Adopt a Global row imported before the link carried the family, so an
+                # upgrade relinks that row instead of duplicating it.
+                obj = _find_reservation(_unlinked(base), reservation, mac_obj)
+            created = obj is None
+            if obj is None:
+                obj = HostReservation(
+                    subnet=subnet_obj,
+                    dhcp_server=None if subnet_obj is not None else dhcp_server,
+                    name=_reservation_name(scope_name, reservation),
+                )
+            elif linked is None and subnet_obj is None:
+                # Newly adopted: take the family-qualified name so the other family is free
+                # to create its own row under the unique-name constraint.
+                obj.name = _reservation_name(scope_name, reservation)
+            obj.hostname = reservation.hostname or None
+            _apply_reservation_identifier(obj, reservation, mac_obj)
+            # One row holds one family. _ensure_reservation_addresses returns the other
+            # family empty, which also splits a row an earlier import merged.
+            obj.ipv4_address = ipv4_ip
+            obj.save()
+            # set() unconditionally so re-importing a reservation that dropped its IPv6
+            # addresses or prefixes clears the stale M2M relations (empty list = clear).
+            obj.ipv6_addresses.set(ipv6_ips)
+            obj.ipv6_prefixes.set(delegated_prefixes)
+            if subnet_obj is None:
+                _link_reservation(server, reservation, obj)
         if created:
             summary.reservations_created += 1
         else:
