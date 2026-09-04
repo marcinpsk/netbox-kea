@@ -951,10 +951,10 @@ def _reservation_for_lease_worker(worker_clients, version, catalogue, lease, loo
     ip = lease.get("ip_address", "")
     subnet_id = lease.get("subnet_id")
     if not ip or isinstance(subnet_id, bool) or not isinstance(subnet_id, int):
-        return ip, None, True
+        return ip, None, None
     subnet = catalogue.find_by_id(subnet_id)
     if subnet is None:
-        return ip, None, True
+        return ip, None, None
     scope = InSubnetReservationScope(subnet.identity)
     identities = lease_identities(lease, version)
     worker_client = worker_clients.get()

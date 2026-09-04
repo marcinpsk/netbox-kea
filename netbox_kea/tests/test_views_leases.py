@@ -864,8 +864,9 @@ class TestEnrichLeasesErrorPaths(_ViewTestBase):
                 row = next(iter(response.context["table"].rows)).record
                 self.assertFalse(row["is_reserved"])
                 self.assertIsNone(row["create_reservation_url"])
+                self.assertIsNone(row.get("sync_url"))
 
-    def test_unknown_subnet_id_keeps_netbox_sync_available(self):
+    def test_unknown_subnet_id_keeps_reservation_dependent_actions_unavailable(self):
         url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
         lease = {**self._LEASE4, "subnet-id": 99}
         with _reservation_stub(
@@ -880,10 +881,7 @@ class TestEnrichLeasesErrorPaths(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         self.assertNotIn("reservation-get", kea.commands())
         row = next(iter(response.context["table"].rows)).record
-        self.assertEqual(
-            row["sync_url"],
-            reverse("plugins:netbox_kea:server_lease4_sync", args=[self.server.pk]),
-        )
+        self.assertIsNone(row.get("sync_url"))
         self.assertIsNone(row["create_reservation_url"])
 
     def test_sync_url_set_when_no_netbox_ip(self):

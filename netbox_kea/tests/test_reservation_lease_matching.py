@@ -85,6 +85,22 @@ class TestReservationLeaseRelationship(_ViewTestBase):
         self.assertIsNone(rows[0]["has_active_lease"])
         self.assertNotContains(response, "No Lease")
 
+    def test_an_unexpected_worker_failure_is_logged_at_exception_level(self):
+        """An unexpected enrichment failure is visible without DEBUG logging."""
+        with self.assertLogs("netbox_kea.views.reservations", level="ERROR") as logs:
+            response, rows, _kea = self._rows(
+                {
+                    "reservation-get-page": _res_page(
+                        [{"subnet-id": 20, "hw-address": "aa:bb:cc:dd:ee:ff", "ip-address": "198.18.0.20"}]
+                    ),
+                    "lease4-get-by-state": TypeError("unexpected worker failure"),
+                }
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(rows[0]["has_active_lease"])
+        self.assertIn("Reservation lease enrichment failed", logs.output[0])
+
     def test_equal_identity_in_another_subnet_is_not_an_active_lease(self):
         """A lease with the same hardware address in another Subnet is a different host."""
         _response, rows, _kea = self._rows(
