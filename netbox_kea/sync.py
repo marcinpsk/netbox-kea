@@ -766,7 +766,10 @@ def _record_hostname_and_addresses(record: dict | Reservation) -> tuple[str, set
             raw_addresses = []
         if not isinstance(raw_addresses, list) or any(not isinstance(address, str) for address in raw_addresses):
             raise RuntimeError("Kea record ip-addresses must be a list of strings or null.")
-        addresses = {record["ip-address"]} if record.get("ip-address") else set()
+        raw_address = record.get("ip-address")
+        if raw_address is not None and not isinstance(raw_address, str):
+            raise RuntimeError("Kea record ip-address must be a string or null.")
+        addresses = {raw_address} if raw_address else set()
         addresses.update(address for address in raw_addresses if address)
         return record.get("hostname", ""), addresses
     if isinstance(record, Reservation):
