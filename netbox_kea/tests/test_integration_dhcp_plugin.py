@@ -990,6 +990,43 @@ class DhcpPluginReservationSnapshotImportTest(TestCase):
             ),
         )
 
+    def test_failed_reservation_write_rolls_back_its_delegated_prefix(self):
+        """A valid name collision after Prefix creation must leave no partial IPAM row."""
+        from ipam.models import Prefix
+
+        HostReservation = apps.get_model(DHCP_PLUGIN, "HostReservation")
+        conf = {"subnet6": [{"id": 6, "subnet": "2001:db8:6::/64"}]}
+        common_duid = ["aa"] * 83
+        first_duid = ":".join([*common_duid, "01"])
+        colliding_duid = ":".join([*common_duid, "02"])
+        intent = parse_dhcp_config(conf, 6)
+
+        first = self.adapter.import_server_config(
+            self.server,
+            intent,
+            _reservation_snapshot(conf, 6, [{"subnet-id": 6, "duid": first_duid}]),
+        )
+        collision = self.adapter.import_server_config(
+            self.server,
+            intent,
+            _reservation_snapshot(
+                conf,
+                6,
+                [
+                    {
+                        "subnet-id": 6,
+                        "duid": colliding_duid,
+                        "prefixes": ["2001:db8:face::/56"],
+                    }
+                ],
+            ),
+        )
+
+        self.assertEqual(first.errors, 0, first.warnings)
+        self.assertEqual(HostReservation.objects.count(), 1)
+        self.assertEqual(collision.errors, 1, collision.warnings)
+        self.assertFalse(Prefix.objects.filter(prefix="2001:db8:face::/56").exists())
+
     def test_global_reservation_keeps_its_delegated_prefixes(self):
         """A delegated prefix carries its own length, so no Subnet has to supply one."""
         HostReservation = apps.get_model(DHCP_PLUGIN, "HostReservation")

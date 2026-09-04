@@ -440,6 +440,18 @@ class TestSyncReservationMultiAddressV6(TestCase):
         self.assertEqual(hostname, "v6host.example.invalid")
         self.assertEqual(addresses, set())
 
+    def test_malformed_ip_addresses_are_rejected_before_building_the_keep_set(self):
+        from netbox_kea.sync import _record_hostname_and_addresses
+
+        malformed_values = (
+            "2001:db8::10",
+            {"address": "2001:db8::10"},
+            ["2001:db8::10", 42],
+        )
+        for value in malformed_values:
+            with self.subTest(value=value), self.assertRaisesRegex(RuntimeError, "ip-addresses.*list of strings"):
+                _record_hostname_and_addresses({"hostname": "v6host.example.invalid", "ip-addresses": value})
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # P1 — IP Status Semantics (dhcp / reserved / active)

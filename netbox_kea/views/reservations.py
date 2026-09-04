@@ -152,7 +152,7 @@ def _enrich_reservations_with_lease_status(
                 else:
                     identity_facts[identity_futures[future]] = future.result()
     except Exception:
-        logger.debug("Reservation lease enrichment failed", exc_info=True)
+        logger.exception("Reservation lease enrichment failed")
         return
 
     observations = (*subnet_facts.values(), *identity_facts.values())
