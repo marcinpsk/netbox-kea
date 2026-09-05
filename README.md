@@ -83,7 +83,7 @@ NetBox plugin for the [Kea DHCP](https://www.isc.org/kea/) server. Manage your D
 
 ## Requirements
 
-- NetBox 4.3 – 4.6
+- NetBox 4.3 – 4.7
 - Kea 3.0+ (recommended) — the plugin connects directly to each daemon's built-in HTTP control socket (`kea-dhcp4` / `kea-dhcp6`). The [Kea Control Agent](https://kea.readthedocs.io/en/latest/arm/agent.html) was deprecated in Kea 2.7 and removed in 3.0; on Kea < 3.0, point the server URL at the Control Agent instead.
 - [`lease_cmds`](https://kea.readthedocs.io/en/latest/arm/hooks.html#hooks-lease-cmds) hook library (for lease search and management)
 - [`stat_cmds`](https://kea.readthedocs.io/en/latest/arm/hooks.html#hooks-stat-cmds) hook library (for guarded Subnet lease searches unless `lease_query_max_unpaged_leases` is `0`)
@@ -103,7 +103,7 @@ The plugin degrades gracefully when optional hooks are absent — tabs for unava
 
 | netbox-kea-ng | NetBox | Kea |
 |---|---|---|
-| 1.x | 4.3 – 4.6 | 3.0+ recommended (2.4+ via Control Agent) |
+| 1.x | 4.3 – 4.7 | 3.0+ recommended (2.4+ via Control Agent) |
 
 On Kea 3.0+ the plugin talks directly to each DHCP daemon's HTTP control socket; on Kea < 3.0 it connects through the (now-deprecated) Control Agent. CI tests against **Kea 3.2.0** using the `memfile` lease database.
 

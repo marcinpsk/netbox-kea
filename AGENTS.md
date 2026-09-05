@@ -104,7 +104,7 @@ the integration job executes.
   `netbox_kea/tests/query_counts.json` describes that release only (see "Query-count
   baselines"). Bump the constant, the CI `ref`, and the baselines in one change.
 - **Compatibility matrix**: runs the integration suite (`test_setup.sh`) against
-  NetBox v4.3 (floor), v4.6 (ceiling), and the dev snapshot (allowed to fail).
+  NetBox v4.3 (floor), v4.7 (ceiling), and the dev snapshot (allowed to fail).
 - Playwright traces on failure are uploaded as artifacts.
 
 Ruff is configured in `pyproject.toml`: line length 120, max complexity 15,

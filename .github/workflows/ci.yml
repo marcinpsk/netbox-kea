@@ -51,7 +51,7 @@ jobs:
         with:
           repository: netbox-community/netbox
           # Keep it equal to QUERY_COUNT_NETBOX_VERSION in netbox_kea/tests/conftest.py;
-          ref: v4.6.8
+          ref: v4.7.0
           path: netbox
           persist-credentials: false
 
@@ -119,7 +119,7 @@ jobs:
           uv export --native-tls --frozen --only-group dev --no-emit-project --format requirements-txt | \
             uv pip install --native-tls --system -r /dev/stdin
           uv pip install --native-tls --system -r netbox/requirements.txt
-          uv pip install --native-tls --system -e . "netbox-plugin-dhcp==0.1.10"
+          uv pip install --native-tls --system -e . "netbox-plugin-dhcp==0.2.0"
 
       - name: Set up NetBox configuration
         working-directory: netbox/netbox
@@ -206,7 +206,7 @@ jobs:
           # minor. NetBox can break at minors, but the ends keep the middle low-risk
           # while cutting CI cost; bump the ceiling when a new stable ships.
           - netbox: v4.3        # floor — minimum supported NetBox
-          - netbox: v4.6        # ceiling — latest stable NetBox
+          - netbox: v4.7        # ceiling — latest stable NetBox
           # NetBox develop branch (unreleased "main"); allowed to fail so upstream
           # churn gives early signal without blocking merges (see continue-on-error).
           - netbox: snapshot
