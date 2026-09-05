@@ -108,11 +108,18 @@ def test_documented_unit_test_targets_are_shell_safe():
     )
 
 
+def _prose_paragraphs(markdown: str) -> list[str]:
+    """Return each prose paragraph on one line, with fenced code blocks removed."""
+    without_code = re.sub(r"```.*?```", "", markdown, flags=re.DOTALL)
+    return [re.sub(r"\s+", " ", block).strip() for block in re.split(r"\n\s*\n", without_code)]
+
+
 def test_documented_test_database_is_not_presented_as_a_ci_default():
     """CI sets a job-specific database name, so the local example is not a CI default.
 
     A reader who trusts the label runs against a database CI never creates, and the
-    drift stays invisible until someone compares the two files.
+    drift stays invisible until someone compares the two files. The check reads whole
+    sentences rather than one phrasing, so a reworded claim cannot slip past it.
     """
     agents = (REPOSITORY_ROOT / "AGENTS.md").read_text()
     workflow = (REPOSITORY_ROOT / ".github" / "workflows" / "ci.yml").read_text()
@@ -122,10 +129,18 @@ def test_documented_test_database_is_not_presented_as_a_ci_default():
     documented = set(re.findall(r"TEST_DB_NAME=(\S+)", agents))
     assert documented, "AGENTS.md documents no TEST_DB_NAME; this guard would pass without reading anything."
 
+    introductions = [block for block in _prose_paragraphs(agents) if "TEST_DB_NAME" in block]
+    assert introductions, "No AGENTS.md prose introduces TEST_DB_NAME; this guard would read nothing."
+
     local_only = sorted(documented - ci_databases)
-    claim = re.search(r"[^.\n]*\bdefaults CI uses\b[^.\n]*\.", agents)
-    assert not (claim and local_only), (
-        f"AGENTS.md states {claim.group(0).strip()!r} while CI uses {sorted(ci_databases)}; "
+    claims = [
+        sentence.strip()
+        for block in introductions
+        for sentence in re.split(r"(?<=\.)\s+", block)
+        if re.search(r"\bCI\b", sentence) and re.search(r"\bdefaults?\b", sentence, re.IGNORECASE)
+    ]
+    assert not (claims and local_only), (
+        f"AGENTS.md ties CI to a default in {claims} while CI uses {sorted(ci_databases)}; "
         f"{local_only} exist only on a developer machine."
     )
 
