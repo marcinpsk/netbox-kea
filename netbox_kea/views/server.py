@@ -9,7 +9,7 @@ from utilities.views import ViewTab, register_model_view
 
 from .. import forms, tables
 from ..filtersets import ServerFilterSet
-from ..kea import KeaClient, KeaException
+from ..kea import KeaClient, KeaException, KeaResponse
 from ..models import Server
 from ..utilities import (
     format_duration,
@@ -18,11 +18,32 @@ from ..utilities import (
 logger = logging.getLogger(__name__)
 
 
+def _response_arguments(response: list[KeaResponse], command: str, *, require_nonempty: bool = False) -> dict:
+    """Return one validated Kea arguments mapping."""
+    if not response or not isinstance(response[0], dict):
+        raise RuntimeError(f"Kea {command} returned an invalid response entry")
+    arguments = response[0].get("arguments")
+    if not isinstance(arguments, dict) or (require_nonempty and not arguments):
+        raise RuntimeError(f"Kea {command} returned invalid arguments")
+    return arguments
+
+
+def _status_duration(arguments: dict[str, Any], field: str) -> str:
+    """Format one non-negative integer duration from a Kea status response."""
+    value = arguments.get(field, 0)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise RuntimeError(f"Kea status-get returned an invalid {field}")
+    formatted = format_duration(value)
+    if formatted is None:
+        raise RuntimeError(f"Kea status-get could not format {field}")
+    return formatted
+
+
 def _get_global_options(server: "Server") -> dict[str, dict[str, str]]:
     """Return parsed global DHCP option-data for each enabled DHCP version.
 
     Calls ``config-get`` on each enabled DHCP service and extracts the
-    top-level ``option-data`` block.  Any per-service failure is silently
+    top-level ``option-data`` block.  Any per-service failure is logged and
     skipped so the status page always renders.
 
     Args:
@@ -47,16 +68,20 @@ def _get_global_options(server: "Server") -> dict[str, dict[str, str]]:
             client = server.get_client(version=version)
             resp = client.command("config-get", service=[svc])
             dhcp_key = f"Dhcp{version}"
-            args = resp[0].get("arguments") if isinstance(resp, list) and resp else None
-            dhcp_block = (args or {}).get(dhcp_key, {})
+            args = _response_arguments(resp, "config-get")
+            dhcp_block = args.get(dhcp_key, {})
+            if not isinstance(dhcp_block, dict):
+                raise RuntimeError(f"Kea config-get returned an invalid {dhcp_key} block")
             option_data = dhcp_block.get("option-data", [])
+            if not isinstance(option_data, list) or any(not isinstance(option, dict) for option in option_data):
+                raise RuntimeError("Kea config-get returned invalid option-data")
             opts = format_option_data(option_data, version=version)
             if opts:
                 # Convert snake_case keys to "Title Case" for display
                 result[label] = {k.replace("_", " ").title(): v for k, v in opts.items()}
         except KeaException:  # noqa: PERF203
             logger.debug("config-get failed for %s (%s) — skipping global options", label, svc)
-        except (requests.RequestException, ValueError):
+        except (requests.RequestException, RuntimeError, ValueError):
             logger.warning("Unexpected error fetching global options for %s (%s)", label, svc, exc_info=True)
     return result
 
@@ -127,19 +152,15 @@ class ServerStatusView(generic.ObjectView):
     def _get_ca_status(self, client: KeaClient) -> dict[str, Any]:
         """Get the control agent status."""
         status = client.command("status-get")
-        args = status[0].get("arguments") if isinstance(status, list) and status else None
-        if not args:
-            raise RuntimeError("Kea status-get returned empty arguments")
+        args = _response_arguments(status, "status-get", require_nonempty=True)
 
         version = client.command("version-get")
-        version_args = version[0].get("arguments") if isinstance(version, list) and version else None
-        if not version_args:
-            raise RuntimeError("Kea version-get returned empty arguments")
+        version_args = _response_arguments(version, "version-get", require_nonempty=True)
 
         return {
             "PID": args.get("pid"),
-            "Uptime": format_duration(int(args.get("uptime", 0))),
-            "Time since reload": format_duration(int(args.get("reload", 0))),
+            "Uptime": _status_duration(args, "uptime"),
+            "Time since reload": _status_duration(args, "reload"),
             "Version": version_args.get("extended", "unknown"),
         }
 
@@ -164,19 +185,13 @@ class ServerStatusView(generic.ObjectView):
                 status = svc_client.command("status-get", service=[svc])
                 version_resp = svc_client.command("version-get", service=[svc])
 
-                args = status[0].get("arguments") if isinstance(status, list) and status else None
-                if args is None:
-                    raise RuntimeError(f"Unexpected None arguments from status-get for service {svc}")
-                version_args = (
-                    version_resp[0].get("arguments") if isinstance(version_resp, list) and version_resp else None
-                )
-                if version_args is None:
-                    raise RuntimeError(f"Unexpected None arguments from version-get for service {svc}")
+                args = _response_arguments(status, f"status-get for service {svc}")
+                version_args = _response_arguments(version_resp, f"version-get for service {svc}")
 
                 entry: dict[str, Any] = {
                     "PID": args.get("pid"),
-                    "Uptime": format_duration(args["uptime"]) if "uptime" in args else "",
-                    "Time since reload": format_duration(int(args["reload"])) if "reload" in args else "",
+                    "Uptime": _status_duration(args, "uptime") if "uptime" in args else "",
+                    "Time since reload": _status_duration(args, "reload") if "reload" in args else "",
                     "Version": version_args.get("extended"),
                 }
 

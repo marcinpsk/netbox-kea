@@ -40,7 +40,7 @@ _LEASE6_RESPONSE = [
 
 User = get_user_model()
 
-_PLUGINS_CONFIG = {"netbox_kea": {"kea_timeout": 30}}
+_PLUGINS_CONFIG = {"netbox_kea": {"kea_timeout": 30, "lease_query_max_unpaged_leases": 0}}
 
 _LEASE4_RESPONSE = [
     {
@@ -172,6 +172,12 @@ class TestLease4API(_APITestBase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("subnet_id", response.json()["detail"])
 
+    def test_duid_returns_400(self):
+        """DHCPv4 rejects the DHCPv6-only DUID selector."""
+        response = self.api_client.get(self._url(), {"duid": "00:01:02:03"})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("DHCPv6", response.json()["detail"])
+
     def test_nonexistent_server_returns_404(self):
         """Non-existent server PK returns HTTP 404."""
         url = reverse("plugins-api:netbox_kea-api:server-leases4", args=[99999])
@@ -192,6 +198,16 @@ class TestLease4API(_APITestBase):
         self.assertIn("results", data)
         self.assertIn("count", data)
         self.assertEqual(data["count"], 1)
+
+    def test_blank_subnet_id_does_not_override_the_ip_selector(self):
+        """An empty non-selected Subnet filter does not reject an IP search."""
+        with stub_kea({"lease4-get": _LEASE4_RESPONSE}) as kea:
+            response = self.api_client.get(
+                self._url(),
+                {"ip_address": "10.0.0.100", "subnet_id": ""},
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(kea.commands(), ["lease4-get"])
 
     def test_get_by_hw_address_returns_200(self):
         """?hw_address=aa:bb:cc:dd:ee:ff returns 200 with lease list."""
@@ -257,6 +273,12 @@ class TestLease6API(_APITestBase):
         response = self.api_client.get(self._url(), {"subnet_id": "not-a-number"})
         self.assertEqual(response.status_code, 400)
         self.assertIn("subnet_id", response.json()["detail"])
+
+    def test_hardware_address_returns_400(self):
+        """DHCPv6 rejects the DHCPv4-only hardware-address selector."""
+        response = self.api_client.get(self._url(), {"hw_address": "aa:bb:cc:dd:ee:ff"})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("DHCPv4", response.json()["detail"])
 
     def test_nonexistent_server_returns_404(self):
         """Non-existent server PK returns HTTP 404."""

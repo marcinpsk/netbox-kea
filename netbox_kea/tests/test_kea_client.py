@@ -5,22 +5,31 @@
 These tests mock all HTTP calls and require no running services.
 """
 
+from typing import get_args, get_origin, get_type_hints
 from unittest import TestCase
 from unittest.mock import MagicMock, patch
 
 import requests
 
+from netbox_kea import constants
 from netbox_kea.kea import (
     AmbiguousConfigSetError,
     KeaClient,
     KeaConfigPersistError,
     KeaConfigTestError,
     KeaException,
+    KeaResponse,
+    LeaseCollection,
+    LeasePage,
+    LeaseQueryGuardError,
+    LeaseQueryNotMeasurable,
+    LeaseQueryPreflightUnavailable,
+    LeaseQueryTooBroad,
     PartialPersistError,
     check_response,
-    iter_reservations,
+    lease_query_guard_message,
 )
-from netbox_kea.tests.kea_stub import stub_kea
+from netbox_kea.tests.kea_stub import _subnet_stats, stub_kea
 
 
 def _mock_http_response(json_data, status_code=200):
@@ -33,6 +42,16 @@ def _mock_http_response(json_data, status_code=200):
     else:
         mock_resp.raise_for_status.return_value = None
     return mock_resp
+
+
+class TestKeaResponseContract(TestCase):
+    """Tests for the common Kea response type."""
+
+    def test_arguments_accept_command_lists(self):
+        """The response contract includes list-valued command responses."""
+        arguments_type = get_type_hints(KeaResponse)["arguments"]
+
+        self.assertIn(list, {get_origin(member) for member in get_args(arguments_type)})
 
 
 class TestKeaClientInit(TestCase):
@@ -348,390 +367,6 @@ class TestGetAvailableCommands(TestCase):
         self.assertIsInstance(result, set)
         sent_json = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get("json")
         self.assertEqual(sent_json["service"], ["dhcp6"])
-
-
-class TestReservationGetPage(TestCase):
-    """Tests for KeaClient.reservation_get_page(service, source_index, from_index, limit) -> tuple[list, int, int]."""
-
-    def setUp(self):
-        self.client = KeaClient(url="http://kea:8000")
-
-    def _patched_post(self, json_data):
-        return patch.object(self.client._session, "post", return_value=_mock_http_response(json_data))
-
-    def test_returns_hosts_and_next_pagination(self):
-        hosts = [{"subnet-id": 1, "ip-address": "192.168.1.100", "hw-address": "aa:bb:cc:dd:ee:ff"}]
-        # Simulate a full page (1 host, limit=1) so next pagination is returned.
-        resp = [
-            {
-                "result": 0,
-                "arguments": {
-                    "count": 1,
-                    "hosts": hosts,
-                    "next": {"source-index": 1, "from": 1},
-                },
-            }
-        ]
-        with self._patched_post(resp):
-            result_hosts, next_from, next_src = self.client.reservation_get_page("dhcp4", limit=1)
-        self.assertEqual(result_hosts, hosts)
-        self.assertEqual(next_from, 1)
-        self.assertEqual(next_src, 1)
-
-    def test_returns_next_cursor_regardless_of_page_size(self):
-        """Kea's next cursor is always read from the response, even on a partial page."""
-        hosts = [{"subnet-id": 1, "ip-address": "192.168.1.100", "hw-address": "aa:bb:cc:dd:ee:ff"}]
-        resp = [
-            {
-                "result": 0,
-                "arguments": {
-                    "count": 1,
-                    "hosts": hosts,
-                    "next": {"source-index": 1, "from": 1},
-                },
-            }
-        ]
-        with self._patched_post(resp):
-            # limit=100 but only 1 host returned — cursor still read from Kea's next field
-            result_hosts, next_from, next_src = self.client.reservation_get_page("dhcp4", limit=100)
-        self.assertEqual(result_hosts, hosts)
-        self.assertEqual(next_from, 1)
-        self.assertEqual(next_src, 1)
-
-    def test_sends_correct_arguments_defaults(self):
-        resp = [
-            {
-                "result": 0,
-                "arguments": {"count": 0, "hosts": [], "next": {"source-index": 0, "from": 0}},
-            }
-        ]
-        with patch.object(self.client._session, "post", return_value=_mock_http_response(resp)) as mock_post:
-            self.client.reservation_get_page("dhcp4")
-        sent_json = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get("json")
-        self.assertEqual(sent_json["command"], "reservation-get-page")
-        self.assertEqual(sent_json["service"], ["dhcp4"])
-        self.assertEqual(sent_json["arguments"]["source-index"], 0)
-        self.assertEqual(sent_json["arguments"]["from"], 0)
-        self.assertEqual(sent_json["arguments"]["limit"], 100)
-        self.assertNotIn("count", sent_json["arguments"])
-        self.assertNotIn("index", sent_json["arguments"])
-
-    def test_sends_correct_custom_arguments(self):
-        resp = [
-            {
-                "result": 0,
-                "arguments": {"count": 0, "hosts": [], "next": {"source-index": 1, "from": 75}},
-            }
-        ]
-        with patch.object(self.client._session, "post", return_value=_mock_http_response(resp)) as mock_post:
-            self.client.reservation_get_page("dhcp4", source_index=1, from_index=50, limit=25)
-        sent_json = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get("json")
-        self.assertEqual(sent_json["arguments"]["source-index"], 1)
-        self.assertEqual(sent_json["arguments"]["from"], 50)
-        self.assertEqual(sent_json["arguments"]["limit"], 25)
-
-    def test_result_3_returns_empty_tuple(self):
-        resp = [{"result": 3, "text": "0 IPv4 host(s) found."}]
-        with self._patched_post(resp):
-            result_hosts, next_from, next_src = self.client.reservation_get_page("dhcp4")
-        self.assertEqual(result_hosts, [])
-        self.assertEqual(next_from, 0)
-        self.assertEqual(next_src, 0)
-
-    def test_result_1_raises_kea_exception(self):
-        resp = [{"result": 1, "text": "Command not supported by the server"}]
-        with self._patched_post(resp):
-            with self.assertRaises(KeaException):
-                self.client.reservation_get_page("dhcp4")
-
-    def test_result_2_raises_kea_exception(self):
-        resp = [{"result": 2, "text": "unknown command 'reservation-get-page'"}]
-        with self._patched_post(resp):
-            with self.assertRaises(KeaException):
-                self.client.reservation_get_page("dhcp4")
-
-
-class TestIterReservations(TestCase):
-    """The module-level ``iter_reservations`` pages until Kea's cursor resets — and bails on a stall."""
-
-    class _ScriptedClient:
-        """Minimal stand-in exposing ``reservation_get_page`` with scripted pages.
-
-        Each page is ``(hosts, next_from, next_source)``; ``iter_reservations`` only
-        calls ``reservation_get_page``, so a tiny fake exercises the real loop logic.
-        """
-
-        def __init__(self, pages):
-            self._pages = pages
-            self.calls = 0
-
-        def reservation_get_page(self, service, *, source_index=0, from_index=0, limit=100):
-            page = self._pages[self.calls]
-            self.calls += 1
-            return page
-
-    def test_pages_until_cursor_resets(self):
-        client = self._ScriptedClient(
-            [
-                ([{"id": 1}], 1, 0),  # full page → advance
-                ([{"id": 2}], 0, 0),  # cursor reset → stop after yielding
-            ]
-        )
-        hosts = list(iter_reservations(client, "dhcp4"))
-        self.assertEqual([h["id"] for h in hosts], [1, 2])
-        self.assertEqual(client.calls, 2)
-
-    def test_empty_page_terminates(self):
-        client = self._ScriptedClient([([], 0, 0)])
-        self.assertEqual(list(iter_reservations(client, "dhcp4")), [])
-        self.assertEqual(client.calls, 1)
-
-    def test_stalled_cursor_raises_instead_of_looping(self):
-        # A non-empty page whose cursor never advances would loop forever without
-        # the guard. The script is capped so an unfixed (looping) impl raises
-        # IndexError rather than hanging; the fixed impl raises RuntimeError first.
-        client = self._ScriptedClient(
-            [
-                ([{"id": 1}], 5, 2),  # advance to (from=5, source=2)
-                ([{"id": 2}], 5, 2),  # SAME cursor → stall → must raise
-                ([{"id": 3}], 5, 2),  # only reached by a buggy looping impl
-            ]
-        )
-        with self.assertRaises(RuntimeError):
-            list(iter_reservations(client, "dhcp4"))
-
-
-class TestReservationAdd(TestCase):
-    """Tests for KeaClient.reservation_add(service, reservation) -> None."""
-
-    def setUp(self):
-        self.client = KeaClient(url="http://kea:8000")
-
-    def _patched_post(self, json_data):
-        return patch.object(self.client._session, "post", return_value=_mock_http_response(json_data))
-
-    def test_sends_correct_command_and_payload(self):
-        reservation = {
-            "subnet-id": 1,
-            "hw-address": "aa:bb:cc:dd:ee:ff",
-            "ip-address": "192.168.1.100",
-            "hostname": "testhost.example.com",
-        }
-        resp = [{"result": 0, "text": "Host added."}]
-        with patch.object(self.client._session, "post", return_value=_mock_http_response(resp)) as mock_post:
-            self.client.reservation_add("dhcp4", reservation)
-        sent_json = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get("json")
-        self.assertEqual(sent_json["command"], "reservation-add")
-        self.assertEqual(sent_json["service"], ["dhcp4"])
-        self.assertEqual(sent_json["arguments"]["reservation"], reservation)
-
-    def test_returns_none_on_success(self):
-        reservation = {"subnet-id": 1, "ip-address": "192.168.1.100"}
-        resp = [{"result": 0, "text": "Host added."}]
-        with self._patched_post(resp):
-            result = self.client.reservation_add("dhcp4", reservation)
-        self.assertIsNone(result)
-
-    def test_raises_kea_exception_on_error(self):
-        reservation = {"subnet-id": 1, "ip-address": "192.168.1.100"}
-        resp = [{"result": 1, "text": "failed to add host: conflicts with existing reservation"}]
-        with self._patched_post(resp):
-            with self.assertRaises(KeaException):
-                self.client.reservation_add("dhcp4", reservation)
-
-
-class TestReservationUpdate(TestCase):
-    """Tests for KeaClient.reservation_update(service, reservation) -> None."""
-
-    def setUp(self):
-        self.client = KeaClient(url="http://kea:8000")
-
-    def _patched_post(self, json_data):
-        return patch.object(self.client._session, "post", return_value=_mock_http_response(json_data))
-
-    def test_sends_correct_command_and_payload(self):
-        reservation = {
-            "subnet-id": 1,
-            "hw-address": "aa:bb:cc:dd:ee:ff",
-            "ip-address": "192.168.1.100",
-            "hostname": "updated-host.example.com",
-        }
-        resp = [{"result": 0, "text": "Host updated."}]
-        with patch.object(self.client._session, "post", return_value=_mock_http_response(resp)) as mock_post:
-            self.client.reservation_update("dhcp4", reservation)
-        sent_json = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get("json")
-        self.assertEqual(sent_json["command"], "reservation-update")
-        self.assertEqual(sent_json["service"], ["dhcp4"])
-        self.assertEqual(sent_json["arguments"]["reservation"], reservation)
-
-    def test_returns_none_on_success(self):
-        reservation = {"subnet-id": 1, "ip-address": "192.168.1.100"}
-        resp = [{"result": 0, "text": "Host updated."}]
-        with self._patched_post(resp):
-            result = self.client.reservation_update("dhcp4", reservation)
-        self.assertIsNone(result)
-
-    def test_raises_kea_exception_on_error(self):
-        reservation = {"subnet-id": 1, "ip-address": "192.168.1.100"}
-        resp = [{"result": 1, "text": "failed to update host: host not found"}]
-        with self._patched_post(resp):
-            with self.assertRaises(KeaException):
-                self.client.reservation_update("dhcp4", reservation)
-
-
-class TestReservationDel(TestCase):
-    """Tests for KeaClient.reservation_del(service, subnet_id, ip_address, identifier_type, identifier) -> None."""
-
-    def setUp(self):
-        self.client = KeaClient(url="http://kea:8000")
-
-    def _patched_post(self, json_data):
-        return patch.object(self.client._session, "post", return_value=_mock_http_response(json_data))
-
-    def test_sends_del_by_ip_address(self):
-        resp = [{"result": 0, "text": "Host deleted."}]
-        with patch.object(self.client._session, "post", return_value=_mock_http_response(resp)) as mock_post:
-            self.client.reservation_del("dhcp4", subnet_id=1, ip_address="192.168.1.100")
-        sent_json = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get("json")
-        self.assertEqual(sent_json["command"], "reservation-del")
-        self.assertEqual(sent_json["service"], ["dhcp4"])
-        self.assertEqual(sent_json["arguments"]["subnet-id"], 1)
-        self.assertEqual(sent_json["arguments"]["ip-address"], "192.168.1.100")
-        self.assertNotIn("identifier-type", sent_json["arguments"])
-
-    def test_sends_del_by_identifier_type_and_identifier(self):
-        resp = [{"result": 0, "text": "Host deleted."}]
-        with patch.object(self.client._session, "post", return_value=_mock_http_response(resp)) as mock_post:
-            self.client.reservation_del(
-                "dhcp4",
-                subnet_id=1,
-                identifier_type="hw-address",
-                identifier="aa:bb:cc:dd:ee:ff",
-            )
-        sent_json = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get("json")
-        self.assertEqual(sent_json["arguments"]["subnet-id"], 1)
-        self.assertEqual(sent_json["arguments"]["identifier-type"], "hw-address")
-        self.assertEqual(sent_json["arguments"]["identifier"], "aa:bb:cc:dd:ee:ff")
-        self.assertNotIn("ip-address", sent_json["arguments"])
-
-    def test_raises_value_error_without_ip_or_identifier(self):
-        with self.assertRaises(ValueError):
-            self.client.reservation_del("dhcp4", subnet_id=1)
-
-    def test_returns_none_on_success(self):
-        resp = [{"result": 0, "text": "Host deleted."}]
-        with self._patched_post(resp):
-            result = self.client.reservation_del("dhcp4", subnet_id=1, ip_address="192.168.1.100")
-        self.assertIsNone(result)
-
-    def test_raises_kea_exception_on_error(self):
-        resp = [{"result": 1, "text": "Host not found."}]
-        with self._patched_post(resp):
-            with self.assertRaises(KeaException):
-                self.client.reservation_del("dhcp4", subnet_id=1, ip_address="192.168.1.100")
-
-    def test_sends_ipv6_del_by_ip_address(self):
-        resp = [{"result": 0, "text": "Host deleted."}]
-        with patch.object(self.client._session, "post", return_value=_mock_http_response(resp)) as mock_post:
-            self.client.reservation_del("dhcp6", subnet_id=2, ip_address="2001:db8::100")
-        sent_json = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get("json")
-        self.assertEqual(sent_json["service"], ["dhcp6"])
-        self.assertEqual(sent_json["arguments"]["ip-address"], "2001:db8::100")
-
-    def test_raises_value_error_when_both_ip_and_identifier_type_given(self):
-        """Providing both ip_address and identifier_type raises ValueError (mutually exclusive)."""
-        with self.assertRaises(ValueError):
-            self.client.reservation_del(
-                "dhcp4",
-                subnet_id=1,
-                ip_address="192.168.1.100",
-                identifier_type="hw-address",
-                identifier="aa:bb:cc:dd:ee:ff",
-            )
-
-    def test_raises_value_error_when_identifier_type_given_without_identifier(self):
-        """Providing identifier_type without identifier raises ValueError."""
-        with self.assertRaises(ValueError):
-            self.client.reservation_del("dhcp4", subnet_id=1, identifier_type="hw-address")
-
-
-class TestReservationGet(TestCase):
-    """Tests for KeaClient.reservation_get(service, subnet_id, ip_address, identifier_type, identifier) -> dict | None."""
-
-    def setUp(self):
-        self.client = KeaClient(url="http://kea:8000")
-
-    def _patched_post(self, json_data):
-        return patch.object(self.client._session, "post", return_value=_mock_http_response(json_data))
-
-    def test_returns_host_dict_on_result_0(self):
-        host = {
-            "subnet-id": 1,
-            "ip-address": "192.168.1.100",
-            "hw-address": "aa:bb:cc:dd:ee:ff",
-            "hostname": "testhost.example.com",
-        }
-        # Kea returns the host dict directly in "arguments" (no nested "host" key)
-        resp = [{"result": 0, "arguments": host}]
-        with self._patched_post(resp):
-            result = self.client.reservation_get("dhcp4", subnet_id=1, ip_address="192.168.1.100")
-        self.assertEqual(result, host)
-
-    def test_returns_none_on_result_3_not_found(self):
-        resp = [{"result": 3, "text": "Host not found."}]
-        with self._patched_post(resp):
-            result = self.client.reservation_get("dhcp4", subnet_id=1, ip_address="192.168.1.100")
-        self.assertIsNone(result)
-
-    def test_sends_correct_command_by_ip_address(self):
-        resp = [{"result": 3, "text": "Host not found."}]
-        with patch.object(self.client._session, "post", return_value=_mock_http_response(resp)) as mock_post:
-            self.client.reservation_get("dhcp4", subnet_id=1, ip_address="192.168.1.100")
-        sent_json = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get("json")
-        self.assertEqual(sent_json["command"], "reservation-get")
-        self.assertEqual(sent_json["service"], ["dhcp4"])
-        self.assertEqual(sent_json["arguments"]["subnet-id"], 1)
-        self.assertEqual(sent_json["arguments"]["ip-address"], "192.168.1.100")
-
-    def test_sends_correct_command_by_identifier(self):
-        resp = [{"result": 3, "text": "Host not found."}]
-        with patch.object(self.client._session, "post", return_value=_mock_http_response(resp)) as mock_post:
-            self.client.reservation_get(
-                "dhcp4",
-                subnet_id=1,
-                identifier_type="hw-address",
-                identifier="aa:bb:cc:dd:ee:ff",
-            )
-        sent_json = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get("json")
-        self.assertEqual(sent_json["arguments"]["identifier-type"], "hw-address")
-        self.assertEqual(sent_json["arguments"]["identifier"], "aa:bb:cc:dd:ee:ff")
-
-    def test_raises_kea_exception_on_result_1(self):
-        resp = [{"result": 1, "text": "Command failed."}]
-        with self._patched_post(resp):
-            with self.assertRaises(KeaException):
-                self.client.reservation_get("dhcp4", subnet_id=1, ip_address="192.168.1.100")
-
-    def test_raises_value_error_when_both_ip_and_identifier_type_given(self):
-        """Providing both ip_address and identifier_type raises ValueError (mutually exclusive)."""
-        with self.assertRaises(ValueError):
-            self.client.reservation_get(
-                "dhcp4",
-                subnet_id=1,
-                ip_address="192.168.1.100",
-                identifier_type="hw-address",
-                identifier="aa:bb:cc:dd:ee:ff",
-            )
-
-    def test_raises_value_error_with_neither_ip_nor_identifier(self):
-        """Providing neither ip_address nor identifier_type+identifier raises ValueError."""
-        with self.assertRaises(ValueError):
-            self.client.reservation_get("dhcp4", subnet_id=1)
-
-    def test_raises_value_error_when_identifier_type_given_without_identifier(self):
-        """Providing identifier_type without identifier raises ValueError."""
-        with self.assertRaises(ValueError):
-            self.client.reservation_get("dhcp4", subnet_id=1, identifier_type="hw-address")
 
 
 # ---------------------------------------------------------------------------
@@ -3729,6 +3364,26 @@ class TestLeaseGetByIp(TestCase):
     def _payload(self, mock_post):
         return mock_post.call_args.kwargs.get("json") or mock_post.call_args[1]["json"]
 
+    def test_rejects_an_invalid_version_or_empty_address(self):
+        for version, address in ((5, "192.168.1.10"), (4, "")):
+            with self.subTest(version=version, address=address), self.assertRaises(ValueError):
+                self.client.lease_get_by_ip(version=version, ip_address=address)
+
+    def test_returns_the_first_lease_from_the_delegated_search(self):
+        leases = [{"ip-address": "192.168.1.10"}, {"ip-address": "192.168.1.11"}]
+
+        class SearchClient(KeaClient):
+            def lease_search(self, version, selector, value, *, state=None):
+                self.search = (version, selector, value, state)
+                return leases
+
+        client = SearchClient(url="http://kea:8000")
+
+        result = client.lease_get_by_ip(version=4, ip_address="192.168.1.10")
+
+        self.assertIs(result, leases[0])
+        self.assertEqual(client.search, (4, constants.BY_IP, "192.168.1.10", None))
+
     def test_v4_returns_lease_dict_when_found(self):
         """Returns the arguments dict when lease is found (result=0)."""
         with patch.object(
@@ -3807,119 +3462,413 @@ class TestLeaseGetByIp(TestCase):
         self.assertIsNone(result)
 
 
-# ---------------------------------------------------------------------------
-# TestReservationGetByIp
-# ---------------------------------------------------------------------------
+class TestLeaseQueryGuardMessage(TestCase):
+    """Tests for safe user guidance from rejected lease queries."""
+
+    def test_each_guard_failure_has_actionable_guidance(self):
+        cases = (
+            (LeaseQueryNotMeasurable(2), 2, "cannot safely measure"),
+            (LeaseQueryPreflightUnavailable(), None, "stat_cmds"),
+            (LeaseQueryTooBroad(101, 100), None, "Select the Active or Declined state"),
+            (LeaseQueryTooBroad(101, 100), 0, "exact IP or client identifier"),
+            (LeaseQueryGuardError(), None, "more specific search"),
+        )
+
+        for error, state, expected in cases:
+            with self.subTest(error=type(error).__name__, state=state):
+                self.assertIn(expected, lease_query_guard_message(error, state))
 
 
-class TestReservationGetByIp(TestCase):
-    """Tests for KeaClient.reservation_get_by_ip()."""
+class TestLeaseSearch(TestCase):
+    """Tests for KeaClient.lease_search()."""
 
     def setUp(self):
         self.client = KeaClient(url="http://kea:8000")
 
-    def _payload(self, mock_post, call_index):
-        return (
-            mock_post.call_args_list[call_index].kwargs.get("json") or mock_post.call_args_list[call_index][1]["json"]
+    @patch("requests.Session.post")
+    def test_rejects_selector_that_the_address_family_does_not_support(self, mock_post):
+        with self.assertRaisesRegex(ValueError, "duid.*DHCPv4"):
+            self.client.lease_search(version=4, selector="duid", value="01:02:03:04")
+
+        mock_post.assert_not_called()
+
+    def test_rejects_invalid_query_parameters_before_any_request(self):
+        cases = (
+            (5, "ip", "198.18.0.10", None, "version must be 4 or 6"),
+            (4, "subnet", "", None, "non-empty CIDR"),
+            (4, "hostname", "host.example.invalid", 0, "state can only"),
+            (4, "hostname", "", None, "non-empty string"),
+            (4, "subnet_id", True, None, "positive integer"),
+            (4, "subnet_id", 1.5, None, "positive integer"),
+            (4, "subnet_id", object(), None, "positive integer"),
         )
 
-    _LIST4_RESP = [{"result": 0, "arguments": {"subnets": [{"id": 1, "subnet": "10.0.0.0/24"}]}}]
-    _LIST6_RESP = [{"result": 0, "arguments": {"subnets": [{"id": 5, "subnet": "2001:db8::/64"}]}}]
-    _RESERVATION_FOUND = [
-        {
-            "result": 0,
-            "arguments": {
-                "ip-address": "10.0.0.5",
-                "hw-address": "aa:bb:cc:00:00:01",
-                "hostname": "myhost",
-                "subnet-id": 1,
-            },
-        }
-    ]
-    _RESERVATION_NOT_FOUND = [{"result": 3, "text": "Host not found."}]
+        for version, selector, value, state, message in cases:
+            with self.subTest(version=version, selector=selector, value=repr(value), state=state), stub_kea({}) as kea:
+                with self.assertRaisesRegex((ValueError, LeaseQueryNotMeasurable), message):
+                    self.client.lease_search(version, selector, value, state=state)
+                self.assertEqual(kea.commands(), [])
 
-    def test_returns_reservation_when_ip_in_subnet(self):
-        """Returns the reservation dict when the IP is in a matching subnet."""
-        with patch.object(
-            self.client._session,
-            "post",
-            side_effect=_side_effects(self._LIST4_RESP, self._RESERVATION_FOUND),
+    def test_hardware_address_search_returns_matching_leases(self):
+        lease = {"ip-address": "198.18.0.10", "hw-address": "aa:bb:cc:dd:ee:ff"}
+        with stub_kea(
+            {
+                "lease4-get-by-hw-address": {
+                    "result": 0,
+                    "arguments": {"leases": [lease]},
+                }
+            }
+        ) as kea:
+            result = self.client.lease_search(
+                version=4,
+                selector="hw",
+                value="aa:bb:cc:dd:ee:ff",
+            )
+
+        self.assertEqual(result, [lease])
+        self.assertEqual(
+            kea.bodies("lease4-get-by-hw-address")[0]["arguments"],
+            {"hw-address": "aa:bb:cc:dd:ee:ff"},
+        )
+
+    def test_supported_selectors_map_to_one_canonical_kea_command(self):
+        cases = (
+            (4, "ip", "198.18.0.10", "lease4-get", {"ip-address": "198.18.0.10"}, False),
+            (
+                4,
+                "hostname",
+                "host.example.invalid",
+                "lease4-get-by-hostname",
+                {"hostname": "host.example.invalid"},
+                True,
+            ),
+            (4, "client_id", "01:aa:bb", "lease4-get-by-client-id", {"client-id": "01:aa:bb"}, True),
+            (4, "subnet_id", 12, "lease4-get-all", {"subnets": [12]}, True),
+            (6, "ip", "2001:db8::10", "lease6-get", {"ip-address": "2001:db8::10"}, False),
+            (
+                6,
+                "hostname",
+                "host.example.invalid",
+                "lease6-get-by-hostname",
+                {"hostname": "host.example.invalid"},
+                True,
+            ),
+            (6, "duid", "00:01:02:03", "lease6-get-by-duid", {"duid": "00:01:02:03"}, True),
+            (6, "subnet_id", "13", "lease6-get-all", {"subnets": [13]}, True),
+        )
+
+        for version, selector, value, command, arguments, multiple in cases:
+            lease = {"ip-address": "198.18.0.10" if version == 4 else "2001:db8::10"}
+            response_arguments = {"leases": [lease]} if multiple else lease
+            responses = {command: {"result": 0, "arguments": response_arguments}}
+            if selector == "subnet_id":
+                responses[f"stat-lease{version}-get"] = _subnet_stats(version, int(value))
+            with (
+                self.subTest(version=version, selector=selector),
+                stub_kea(responses) as kea,
+            ):
+                result = self.client.lease_search(version, selector, value)
+                self.assertEqual(result, [lease])
+                self.assertEqual(kea.bodies(command)[0]["arguments"], arguments)
+
+    def test_not_found_returns_empty_collection(self):
+        with stub_kea({"lease6-get-by-hostname": {"result": 3, "text": "not found"}}):
+            result = self.client.lease_search(6, "hostname", "missing.example.invalid")
+
+        self.assertEqual(result, [])
+
+    def test_malformed_lease_collection_is_rejected(self):
+        with stub_kea(
+            {
+                "lease4-get-by-hostname": {
+                    "result": 0,
+                    "arguments": {"leases": "not-a-list"},
+                }
+            }
         ):
-            result = self.client.reservation_get_by_ip(4, "10.0.0.5")
-        self.assertIsNotNone(result)
-        self.assertEqual(result["ip-address"], "10.0.0.5")
+            with self.assertRaisesRegex(RuntimeError, "malformed leases collection"):
+                self.client.lease_search(4, "hostname", "host.example.invalid")
 
-    def test_returns_none_when_ip_not_in_any_subnet(self):
-        """Returns None when no subnet CIDR contains the IP — no reservation-get is called."""
-        with patch.object(
-            self.client._session,
-            "post",
-            side_effect=_side_effects(self._LIST4_RESP),
-        ) as mock_post:
-            result = self.client.reservation_get_by_ip(4, "192.168.99.1")
-        self.assertIsNone(result)
-        self.assertEqual(len(mock_post.call_args_list), 1)  # only subnet4-list called
+    def test_large_subnet_is_rejected_before_get_all(self):
+        client = KeaClient(url="http://kea:8000", max_unpaged_leases=100)
+        with stub_kea({"stat-lease4-get": _subnet_stats(4, 12, assigned=101)}) as kea:
+            with self.assertRaisesRegex(LeaseQueryTooBroad, "101.*100"):
+                client.lease_search(4, "subnet_id", 12)
 
-    def test_returns_none_when_reservation_not_found_in_subnet(self):
-        """Returns None when subnet matches the IP but reservation-get returns result=3."""
-        with patch.object(
-            self.client._session,
-            "post",
-            side_effect=_side_effects(self._LIST4_RESP, self._RESERVATION_NOT_FOUND),
+        self.assertEqual(kea.commands(), ["stat-lease4-get"])
+
+    def test_state_qualifier_uses_the_subnet_scoped_state_command(self):
+        client = KeaClient(url="http://kea:8000", max_unpaged_leases=100)
+        lease = {"ip-address": "198.18.0.10", "state": 1}
+        with stub_kea(
+            {
+                "stat-lease4-get": _subnet_stats(4, 12, assigned=201, declined=1),
+                "lease4-get-by-state": {"result": 0, "arguments": {"leases": [lease]}},
+            }
+        ) as kea:
+            result = client.lease_search(4, "subnet_id", 12, state=1)
+
+        self.assertEqual(result, [lease])
+        self.assertEqual(kea.commands(), ["stat-lease4-get", "lease4-get-by-state"])
+        self.assertEqual(
+            kea.bodies("lease4-get-by-state")[0]["arguments"],
+            {"subnet-id": 12, "state": 1},
+        )
+
+    def test_unmeasured_subnet_state_is_rejected_before_any_request(self):
+        with stub_kea({}) as kea:
+            with self.assertRaisesRegex(LeaseQueryNotMeasurable, "state 2"):
+                self.client.lease_search(4, "subnet_id", 12, state=2)
+
+        self.assertEqual(kea.commands(), [])
+
+    def test_missing_statistics_hook_fails_closed(self):
+        with stub_kea({"stat-lease4-get": {"result": 2, "text": "unknown command"}}) as kea:
+            with self.assertRaises(LeaseQueryPreflightUnavailable):
+                self.client.lease_search(4, "subnet_id", 12)
+
+        self.assertEqual(kea.commands(), ["stat-lease4-get"])
+
+    def test_unmeasured_subnet_fails_closed_instead_of_counting_zero(self):
+        """Refuse the unpaged query when Kea reports no statistics for the Subnet.
+
+        An empty statistics answer says the Subnet was not measured, not that it holds no
+        leases, so reading it as zero would send exactly the unbounded query the guard
+        exists to stop.
+        """
+        columns = ["subnet-id", "assigned-addresses", "declined-addresses"]
+        cases = (
+            ("empty result", {"result": 3, "text": "no statistics"}),
+            (
+                "another Subnet only",
+                {"result": 0, "arguments": {"result-set": {"columns": columns, "rows": [[13, 1, 0]]}}},
+            ),
+        )
+
+        for label, response in cases:
+            with self.subTest(response=label), stub_kea({"stat-lease4-get": response}) as kea:
+                with self.assertRaises(LeaseQueryPreflightUnavailable) as ctx:
+                    self.client.lease_search(4, "subnet_id", 12)
+
+                self.assertEqual(ctx.exception.reason, "statistics")
+                self.assertIn("stat_cmds", lease_query_guard_message(ctx.exception, None))
+                self.assertEqual(kea.commands(), ["stat-lease4-get"])
+
+    def test_missing_state_command_fails_closed_when_guard_is_enabled(self):
+        client = KeaClient(url="http://kea:8000", max_unpaged_leases=100)
+        with stub_kea(
+            {
+                "stat-lease4-get": _subnet_stats(4, 12),
+                "lease4-get-by-state": {"result": 2, "text": "unknown command"},
+            }
         ):
-            result = self.client.reservation_get_by_ip(4, "10.0.0.99")
-        self.assertIsNone(result)
+            with self.assertRaises(LeaseQueryPreflightUnavailable) as ctx:
+                client.lease_search(4, "subnet_id", 12, state=0)
 
-    def test_v4_calls_subnet4_list_and_dhcp4_service(self):
-        """Uses subnet4-list and dhcp4 service for version=4."""
-        with patch.object(
-            self.client._session,
-            "post",
-            side_effect=_side_effects(self._LIST4_RESP, self._RESERVATION_FOUND),
-        ) as mock_post:
-            self.client.reservation_get_by_ip(4, "10.0.0.5")
-        first = self._payload(mock_post, 0)
-        self.assertEqual(first["command"], "subnet4-list")
-        self.assertEqual(first["service"], ["dhcp4"])
+        self.assertIn("3.1.5", lease_query_guard_message(ctx.exception, 0))
 
-    def test_v6_calls_subnet6_list_and_dhcp6_service(self):
-        """Uses subnet6-list and dhcp6 service for version=6."""
-        res6_found = [{"result": 0, "arguments": {"ip-addresses": ["2001:db8::1"], "subnet-id": 5}}]
-        with patch.object(
-            self.client._session,
-            "post",
-            side_effect=_side_effects(self._LIST6_RESP, res6_found),
-        ) as mock_post:
-            self.client.reservation_get_by_ip(6, "2001:db8::1")
-        first = self._payload(mock_post, 0)
-        self.assertEqual(first["command"], "subnet6-list")
-        self.assertEqual(first["service"], ["dhcp6"])
+    def test_missing_state_command_falls_back_only_when_guard_is_disabled(self):
+        client = KeaClient(url="http://kea:8000", max_unpaged_leases=None)
+        active = {"ip-address": "198.18.0.10", "state": 0}
+        declined = {"ip-address": "198.18.0.11", "state": 1}
+        with stub_kea(
+            {
+                "lease4-get-by-state": {"result": 2, "text": "unknown command"},
+                "lease4-get-all": {"result": 0, "arguments": {"leases": [active, declined]}},
+            }
+        ) as kea:
+            result = client.lease_search(4, "subnet_id", 12, state=0)
 
-    def test_reservation_get_called_with_correct_subnet_id(self):
-        """Calls reservation-get with the subnet-id of the matching subnet."""
-        with patch.object(
-            self.client._session,
-            "post",
-            side_effect=_side_effects(self._LIST4_RESP, self._RESERVATION_FOUND),
-        ) as mock_post:
-            self.client.reservation_get_by_ip(4, "10.0.0.5")
-        second = self._payload(mock_post, 1)
-        self.assertEqual(second["command"], "reservation-get")
-        self.assertEqual(second["arguments"]["subnet-id"], 1)
-        self.assertEqual(second["arguments"]["ip-address"], "10.0.0.5")
+        self.assertEqual(result, [active])
+        self.assertEqual(kea.commands(), ["lease4-get-by-state", "lease4-get-all"])
 
-    def test_propagates_kea_exception_from_subnet_list(self):
-        """Propagates KeaException when subnet4-list itself fails."""
-        error_resp = [{"result": 1, "text": "command not supported"}]
-        with patch.object(
-            self.client._session,
-            "post",
-            return_value=_mock_http_response(error_resp),
+    def test_state_fallback_rejects_a_lease_without_state(self):
+        client = KeaClient(url="http://kea:8000", max_unpaged_leases=None)
+        with stub_kea(
+            {
+                "lease4-get-by-state": {"result": 2, "text": "unknown command"},
+                "lease4-get-all": {
+                    "result": 0,
+                    "arguments": {"leases": [{"ip-address": "198.18.0.10"}]},
+                },
+            }
         ):
-            from netbox_kea.kea import KeaException
+            with self.assertRaisesRegex(RuntimeError, "invalid state"):
+                client.lease_search(4, "subnet_id", 12, state=0)
 
+    def test_non_hook_statistics_error_propagates(self):
+        with stub_kea({"stat-lease4-get": {"result": 1, "text": "database failure"}}):
             with self.assertRaises(KeaException):
-                self.client.reservation_get_by_ip(4, "10.0.0.5")
+                self.client.lease_search(4, "subnet_id", 12)
+
+    def test_malformed_statistics_are_rejected(self):
+        columns = ["subnet-id", "assigned-addresses", "declined-addresses"]
+        cases = (
+            ([], "malformed response"),
+            ({"result": 0, "arguments": {}}, "malformed statistics"),
+            (
+                {"result": 0, "arguments": {"result-set": {"columns": ["subnet-id"], "rows": [[12]]}}},
+                "omitted required statistics columns",
+            ),
+            (
+                {"result": 0, "arguments": {"result-set": {"columns": columns, "rows": [[]]}}},
+                "malformed statistics row",
+            ),
+            (
+                {"result": 0, "arguments": {"result-set": {"columns": columns, "rows": [[12, True, 0]]}}},
+                "invalid lease count",
+            ),
+            (
+                {"result": 0, "arguments": {"result-set": {"columns": columns, "rows": [[12, 0, 1]]}}},
+                "inconsistent lease counts",
+            ),
+        )
+
+        for response, message in cases:
+            with self.subTest(message=message), stub_kea({"stat-lease4-get": response}):
+                with self.assertRaisesRegex(RuntimeError, message):
+                    self.client.lease_search(4, "subnet_id", 12)
+
+    def test_v6_delegated_prefixes_contribute_to_the_guard(self):
+        client = KeaClient(url="http://kea:8000", max_unpaged_leases=100)
+        with stub_kea({"stat-lease6-get": _subnet_stats(6, 12, assigned=0, declined=0, assigned_pds=101)}) as kea:
+            with self.assertRaisesRegex(LeaseQueryTooBroad, "101.*100"):
+                client.lease_search(6, "subnet_id", 12, state=0)
+
+        self.assertEqual(kea.commands(), ["stat-lease6-get"])
+
+    def test_subnet_cidr_resolves_to_id_before_guarded_query(self):
+        lease = {"ip-address": "198.18.0.10", "state": 0}
+        with stub_kea(
+            {
+                "config-get": {
+                    "result": 0,
+                    "arguments": {"Dhcp4": {"subnet4": [{"id": 12, "subnet": "198.18.0.0/24"}]}},
+                },
+                "stat-lease4-get": _subnet_stats(4, 12, assigned=1),
+                "lease4-get-by-state": {"result": 0, "arguments": {"leases": [lease]}},
+            }
+        ) as kea:
+            result = self.client.lease_search(4, "subnet", "198.18.0.0/24", state=0)
+
+        self.assertEqual(result, [lease])
+        self.assertEqual(
+            kea.commands(),
+            ["config-get", "stat-lease4-get", "lease4-get-by-state"],
+        )
+
+    def test_subnet_cidr_resolves_a_shared_network_member(self):
+        with stub_kea(
+            {
+                "config-get": {
+                    "result": 0,
+                    "arguments": {
+                        "Dhcp4": {
+                            "subnet4": [],
+                            "shared-networks": [{"name": "access", "subnet4": [{"id": 12, "subnet": "198.18.0.0/24"}]}],
+                        }
+                    },
+                },
+                "stat-lease4-get": _subnet_stats(4, 12, assigned=0),
+                "lease4-get-all": {"result": 3},
+            }
+        ) as kea:
+            result = self.client.lease_search(4, "subnet", "198.18.0.0/24")
+
+        self.assertEqual(result, [])
+        self.assertEqual(kea.commands(), ["config-get", "stat-lease4-get", "lease4-get-all"])
+
+    def test_subnet_cidr_matches_equivalent_configured_network_text(self):
+        lease = {"ip-address": "2001:db8::10", "state": 0}
+        with stub_kea(
+            {
+                "config-get": {
+                    "result": 0,
+                    "arguments": {
+                        "Dhcp6": {"subnet6": [{"id": 21, "subnet": "2001:0db8:0:0::/64"}]},
+                    },
+                },
+                "stat-lease6-get": _subnet_stats(6, 21, assigned=1),
+                "lease6-get-all": {"result": 0, "arguments": {"leases": [lease]}},
+            }
+        ) as kea:
+            result = self.client.lease_search(6, "subnet", "2001:db8::/64")
+
+        self.assertEqual(result, [lease])
+        self.assertEqual(kea.commands(), ["config-get", "stat-lease6-get", "lease6-get-all"])
+
+    def test_malformed_configured_subnet_network_is_rejected_without_a_match(self):
+        cases = (
+            ("not-a-subnet-entry", "malformed Subnet entry"),
+            ({"id": 21, "subnet": None}, "valid CIDR"),
+            ({"id": 21, "subnet": "not-a-network"}, "valid CIDR"),
+            ({"id": 21, "subnet": "198.18.0.0/24"}, "IPv4 Subnet in Dhcp6"),
+        )
+
+        for configured_subnet, message in cases:
+            with (
+                self.subTest(configured_subnet=configured_subnet),
+                stub_kea(
+                    {
+                        "config-get": {
+                            "result": 0,
+                            "arguments": {"Dhcp6": {"subnet6": [configured_subnet]}},
+                        }
+                    }
+                ),
+                self.assertRaisesRegex(RuntimeError, message),
+            ):
+                self.client.configured_subnet_id_from_cidr(6, "2001:db8::/64")
+
+    def test_matching_configured_subnet_requires_a_valid_id(self):
+        for subnet_id in (None, True, 0, "21"):
+            with (
+                self.subTest(subnet_id=subnet_id),
+                stub_kea(
+                    {
+                        "config-get": {
+                            "result": 0,
+                            "arguments": {"Dhcp6": {"subnet6": [{"id": subnet_id, "subnet": "2001:db8::/64"}]}},
+                        }
+                    }
+                ),
+                self.assertRaisesRegex(RuntimeError, "without a valid ID"),
+            ):
+                self.client.configured_subnet_id_from_cidr(6, "2001:db8::/64")
+
+    def test_malformed_unrelated_subnet_does_not_hide_matching_network(self):
+        with stub_kea(
+            {
+                "config-get": {
+                    "result": 0,
+                    "arguments": {
+                        "Dhcp6": {
+                            "subnet6": [
+                                {"id": 20, "subnet": "not-a-network"},
+                                {"id": 21, "subnet": "2001:0db8:0:0::/64"},
+                            ]
+                        }
+                    },
+                }
+            }
+        ):
+            subnet_id = self.client.configured_subnet_id_from_cidr(6, "2001:db8::/64")
+
+        self.assertEqual(subnet_id, 21)
+
+    def test_explicitly_disabled_guard_skips_statistics(self):
+        client = KeaClient(url="http://kea:8000", max_unpaged_leases=None)
+        lease = {"ip-address": "198.18.0.10", "state": 0}
+        with stub_kea({"lease4-get-all": {"result": 0, "arguments": {"leases": [lease]}}}) as kea:
+            result = client.lease_search(4, "subnet_id", 12)
+
+        self.assertEqual(result, [lease])
+        self.assertEqual(kea.commands(), ["lease4-get-all"])
+
+
+# ---------------------------------------------------------------------------
+# TestReservationGetByIp
+# ---------------------------------------------------------------------------
 
 
 # ---------------------------------------------------------------------------
@@ -5010,6 +4959,126 @@ class TestConfigGetShapeGuard(TestCase):
             self.client.option_def_del(version=4, code=200, space="dhcp4")
 
 
+class TestLeaseGetPage(TestCase):
+    """Tests for KeaClient.lease_get_page()."""
+
+    def setUp(self):
+        self.client = KeaClient(url="http://kea:8000")
+
+    def test_explicit_cursor_is_sent_without_assuming_backend_order(self):
+        first = {"ip-address": "198.18.1.10"}
+        second = {"ip-address": "198.18.2.10"}
+        with stub_kea(
+            {
+                "lease4-get-page": {
+                    "result": 0,
+                    "arguments": {"leases": [first, second], "count": 2},
+                }
+            }
+        ) as kea:
+            result = self.client.lease_get_page(
+                version=4,
+                limit=10,
+                cursor="198.18.0.255",
+            )
+
+        self.assertEqual(result, LeasePage(leases=[first, second], next_cursor=None))
+        self.assertEqual(kea.bodies("lease4-get-page")[0]["arguments"]["from"], "198.18.0.255")
+
+    def test_full_page_returns_last_address_as_next_cursor(self):
+        leases = [{"ip-address": "2001:db8::10"}, {"ip-address": "2001:db8::20"}]
+        with stub_kea(
+            {
+                "lease6-get-page": {
+                    "result": 0,
+                    "arguments": {"leases": leases, "count": 2},
+                }
+            }
+        ):
+            result = self.client.lease_get_page(version=6, limit=2)
+
+        self.assertEqual(result, LeasePage(leases=leases, next_cursor="2001:db8::20"))
+
+    def test_rejects_cursor_from_another_address_family_without_request(self):
+        with patch("requests.Session.post") as mock_post:
+            with self.assertRaisesRegex(ValueError, "IPv6.*DHCPv4"):
+                self.client.lease_get_page(
+                    version=4,
+                    limit=10,
+                    cursor="2001:db8::1",
+                )
+
+        mock_post.assert_not_called()
+
+    def test_rejects_invalid_page_parameters_without_request(self):
+        cases = (
+            ((5,), {"limit": 10}, "version must be 4 or 6"),
+            ((4,), {"limit": False}, "positive integer"),
+            ((4,), {"limit": 10, "cursor": "not-an-address"}, "Invalid DHCPv4 lease cursor"),
+        )
+
+        for args, kwargs, message in cases:
+            with self.subTest(args=args, kwargs=kwargs), stub_kea({}) as kea:
+                with self.assertRaisesRegex(ValueError, message):
+                    self.client.lease_get_page(*args, **kwargs)
+                self.assertEqual(kea.commands(), [])
+
+    def test_rejects_invalid_addresses_in_a_partial_page(self):
+        cases = (
+            ("not-an-address", "invalid ip-address"),
+            ("2001:db8::1", "wrong address family"),
+        )
+
+        for address, message in cases:
+            with (
+                self.subTest(address=address),
+                stub_kea(
+                    {
+                        "lease4-get-page": {
+                            "result": 0,
+                            "arguments": {"leases": [{"ip-address": address}], "count": 1},
+                        }
+                    }
+                ),
+                self.assertRaisesRegex(RuntimeError, message),
+            ):
+                self.client.lease_get_page(version=4, limit=2)
+
+    def test_rejects_invalid_final_address_in_a_full_page(self):
+        cases = (
+            ("not-an-address", "invalid final ip-address"),
+            ("2001:db8::1", "final lease for the wrong address family"),
+        )
+
+        for address, message in cases:
+            with (
+                self.subTest(address=address),
+                stub_kea(
+                    {
+                        "lease4-get-page": {
+                            "result": 0,
+                            "arguments": {"leases": [{"ip-address": address}], "count": 1},
+                        }
+                    }
+                ),
+                self.assertRaisesRegex(RuntimeError, message),
+            ):
+                self.client.lease_get_page(version=4, limit=1)
+
+    def test_rejects_count_that_does_not_match_the_lease_collection(self):
+        """Kea defines count as the number of leases in the returned page."""
+        with stub_kea(
+            {
+                "lease4-get-page": {
+                    "result": 0,
+                    "arguments": {"leases": [{"ip-address": "198.18.0.10"}], "count": 0},
+                }
+            }
+        ):
+            with self.assertRaisesRegex(RuntimeError, "count"):
+                self.client.lease_get_page(version=4, limit=10)
+
+
 class TestLeaseGetAllPagination(TestCase):
     """Tests for KeaClient.lease_get_all() pagination and edge-case handling."""
 
@@ -5026,12 +5095,32 @@ class TestLeaseGetAllPagination(TestCase):
         """Kea returns result=3 (no more leases)."""
         return _mock_http_response([{"result": 3}])
 
+    def test_rejects_invalid_addresses_in_a_partial_page(self):
+        cases = (
+            ("not-an-address", "invalid ip-address"),
+            ("2001:db8::1", "wrong address family"),
+        )
+
+        for address, message in cases:
+            with (
+                self.subTest(address=address),
+                stub_kea(
+                    {
+                        "lease4-get-page": {
+                            "result": 0,
+                            "arguments": {"leases": [{"ip-address": address}], "count": 1},
+                        }
+                    }
+                ),
+                self.assertRaisesRegex(RuntimeError, message),
+            ):
+                self.client.lease_get_all(version=4, per_page=2)
+
     @patch("requests.Session.post")
     def test_empty_page_breaks_loop(self, mock_post):
-        """An empty page list causes the loop to break instead of advancing cursor."""
-        # First call: empty page with count=250 (would normally continue)
+        """An empty successful page causes the loop to stop."""
         mock_post.side_effect = [
-            self._page_response(leases=[], count=250),
+            self._page_response(leases=[], count=0),
         ]
         leases, truncated = self.client.lease_get_all(version=4)
         self.assertEqual(leases, [])
@@ -5076,6 +5165,45 @@ class TestLeaseGetAllPagination(TestCase):
         self.assertTrue(truncated)
 
     @patch("requests.Session.post")
+    def test_exact_max_leases_on_final_page_is_not_truncated(self, mock_post):
+        """An exact result limit is complete when Kea marks the page as final."""
+        leases = [{"ip-address": f"10.0.0.{i}"} for i in range(1, 4)]
+        mock_post.return_value = self._page_response(leases=leases, count=3)
+
+        collection = self.client.lease_get_all(version=4, per_page=10, max_leases=3)
+
+        self.assertEqual(collection, LeaseCollection(leases=leases, truncated=False))
+
+    @patch("requests.Session.post")
+    def test_exact_max_leases_on_full_final_page_is_not_truncated(self, mock_post):
+        """An exact full-page limit probes for overflow before reporting truncation."""
+        leases = [{"ip-address": "10.0.0.1"}, {"ip-address": "10.0.0.2"}]
+        mock_post.side_effect = [
+            self._page_response(leases=leases, count=2),
+            self._no_leases_response(),
+        ]
+
+        collection = self.client.lease_get_all(version=4, per_page=2, max_leases=2)
+
+        self.assertEqual(collection, LeaseCollection(leases=leases, truncated=False))
+        self.assertEqual(mock_post.call_count, 2)
+
+    @patch("requests.Session.post")
+    def test_exact_max_leases_on_full_page_reports_confirmed_overflow(self, mock_post):
+        """A probe that finds another lease confirms the collection is truncated."""
+        leases = [{"ip-address": "10.0.0.1"}, {"ip-address": "10.0.0.2"}]
+        mock_post.side_effect = [
+            self._page_response(leases=leases, count=2),
+            self._page_response(leases=[{"ip-address": "10.0.0.3"}], count=1),
+        ]
+
+        collection = self.client.lease_get_all(version=4, per_page=2, max_leases=2)
+
+        self.assertEqual(collection, LeaseCollection(leases=leases, truncated=True))
+        probe_payload = mock_post.call_args_list[1].kwargs["json"]
+        self.assertEqual(probe_payload["arguments"], {"from": "10.0.0.2", "limit": 1})
+
+    @patch("requests.Session.post")
     def test_multi_page_aggregates_leases(self, mock_post):
         """Two pages of leases are combined, and the cursor advances to the last IP on page 1."""
         page1 = [{"ip-address": "10.0.0.1"}, {"ip-address": "10.0.0.2"}]
@@ -5092,6 +5220,18 @@ class TestLeaseGetAllPagination(TestCase):
         second_payload = mock_post.call_args_list[1].kwargs["json"]
         self.assertEqual(first_payload["arguments"]["from"], "0.0.0.0")
         self.assertEqual(second_payload["arguments"]["from"], "10.0.0.2")
+
+    def test_rejects_a_cursor_that_does_not_advance(self):
+        page = {
+            "result": 0,
+            "arguments": {"leases": [{"ip-address": "198.18.0.10"}], "count": 1},
+        }
+
+        with stub_kea({"lease4-get-page": page}) as kea:
+            with self.assertRaisesRegex(RuntimeError, "Lease page cursor did not advance"):
+                self.client.lease_get_all(version=4, per_page=1)
+
+        self.assertEqual(len(kea.bodies("lease4-get-page")), 2)
 
     def test_per_page_zero_raises_value_error(self):
         """per_page < 1 → ValueError before any HTTP call is made."""
@@ -5208,83 +5348,6 @@ class TestGetAvailableCommandsMalformed(TestCase):
                 self.client.get_available_commands("dhcp4")
 
 
-class TestReservationGetByIpMalformedSubnets(TestCase):
-    """reservation_get_by_ip skips subnets with bad CIDRs or missing 'id' (lines 332-333, 337)."""
-
-    def setUp(self):
-        self.client = KeaClient(url="http://kea:8000")
-
-    _RESERVATION_FOUND = [{"result": 0, "arguments": {"ip-address": "10.0.0.5", "subnet-id": 1}}]
-    _RESERVATION_NOT_FOUND = [{"result": 3, "text": "Host not found."}]
-
-    def _subnet_list_resp(self, subnets):
-        return [{"result": 0, "arguments": {"subnets": subnets}}]
-
-    def test_subnet_missing_subnet_key_is_skipped(self):
-        """Subnet without 'subnet' key triggers KeyError → continue (lines 332-333)."""
-        subnets = [
-            {"id": 99},  # no 'subnet' key → KeyError → skipped
-            {"subnet": "10.0.0.0/24", "id": 1},  # valid subnet found after
-        ]
-        with patch.object(
-            self.client._session,
-            "post",
-            side_effect=_side_effects(self._subnet_list_resp(subnets), self._RESERVATION_FOUND),
-        ):
-            result = self.client.reservation_get_by_ip(4, "10.0.0.5")
-        self.assertIsNotNone(result)
-
-    def test_subnet_invalid_cidr_is_skipped(self):
-        """Subnet with unparseable CIDR triggers ValueError → continue (lines 332-333)."""
-        subnets = [
-            {"subnet": "not-a-cidr", "id": 99},  # ValueError → skipped
-            {"subnet": "10.0.0.0/24", "id": 1},
-        ]
-        with patch.object(
-            self.client._session,
-            "post",
-            side_effect=_side_effects(self._subnet_list_resp(subnets), self._RESERVATION_FOUND),
-        ):
-            result = self.client.reservation_get_by_ip(4, "10.0.0.5")
-        self.assertIsNotNone(result)
-
-    def test_matching_subnet_without_id_is_skipped(self):
-        """Subnet matches the IP but has no 'id' key → skipped (line 337), returns None."""
-        subnets = [
-            {"subnet": "10.0.0.0/24"},  # matches 10.0.0.5 but no 'id' → skipped
-        ]
-        with patch.object(
-            self.client._session,
-            "post",
-            return_value=_mock_http_response(self._subnet_list_resp(subnets)),
-        ):
-            result = self.client.reservation_get_by_ip(4, "10.0.0.5")
-        self.assertIsNone(result)
-
-    def test_non_integer_id_is_skipped_and_the_scan_continues(self):
-        """A present but unusable id must be skipped like a missing one, not sent to Kea.
-
-        Both entries contain the address. Sending ``"subnet-id": "99"`` makes Kea reject
-        the command, which raises and aborts the scan before the valid subnet is tried.
-        """
-        for bad_id in ("99", True, None, 1.5):
-            with self.subTest(bad_id=bad_id):
-                subnets = [
-                    {"subnet": "10.0.0.0/25", "id": bad_id},  # contains .5, unusable id
-                    {"subnet": "10.0.0.0/24", "id": 1},  # contains .5, valid
-                ]
-                with patch.object(
-                    self.client._session,
-                    "post",
-                    side_effect=_side_effects(self._subnet_list_resp(subnets), self._RESERVATION_FOUND),
-                ) as mock_post:
-                    result = self.client.reservation_get_by_ip(4, "10.0.0.5")
-                self.assertIsNotNone(result)
-                # The reservation-get must carry the valid id, never the unusable one.
-                second = mock_post.call_args_list[1].kwargs["json"]
-                self.assertEqual(second["arguments"]["subnet-id"], 1)
-
-
 class TestNetworkUpdateClearInterface(TestCase):
     """network_update with interface='' removes the interface key (line 563)."""
 
@@ -5385,16 +5448,16 @@ class TestLeaseUpdateGuards(TestCase):
 
 
 class TestLeaseGetByIpNonDictArguments(TestCase):
-    """lease_get_by_ip raises ValueError when result=0 but arguments is not a dict (line 991)."""
+    """lease_get_by_ip uses the canonical lease-search response validation."""
 
     def setUp(self):
         self.client = KeaClient(url="http://kea:8000")
 
-    def test_non_dict_arguments_raises_value_error(self):
-        """result=0 with non-dict (e.g. None) arguments raises ValueError."""
+    def test_non_dict_arguments_raises_runtime_error(self):
+        """A result with null arguments is a malformed Kea response."""
         resp = [{"result": 0, "arguments": None}]
         with patch.object(self.client._session, "post", return_value=_mock_http_response(resp)):
-            with self.assertRaises(ValueError):
+            with self.assertRaises(RuntimeError):
                 self.client.lease_get_by_ip(version=4, ip_address="10.0.0.1")
 
 

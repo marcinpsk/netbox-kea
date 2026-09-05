@@ -1,61 +1,33 @@
 # SPDX-FileCopyrightText: 2025 Marcin Zieba <marcinpsk@gmail.com>
 # SPDX-License-Identifier: Apache-2.0
-"""REST API tests for the reservation endpoints on ServerViewSet.
+"""REST API tests for the normalized Reservation actions on ServerViewSet.
 
 These tests cover:
 - GET /api/plugins/netbox-kea/servers/{pk}/reservations4/
 - GET /api/plugins/netbox-kea/servers/{pk}/reservations6/
 
-These tests drive the **real** ``KeaClient``; only the HTTP boundary is stubbed
-via ``kea_stub.stub_kea``. The reservation endpoints issue ``reservation-get``
-(lookup by ip/hw/duid + subnet) or ``reservation-get-page`` (paginated, subnet-id
-only); the request payloads are exercised and asserted.
+These tests drive the real ``KeaClient`` and stub only its HTTP boundary. Each
+request selects one bounded page, exact identity, scoped address, or hostname
+query. The tests assert the normalized family-neutral response.
 """
 
+import requests
 from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
 from django.urls import reverse
 from rest_framework.test import APIClient
 
 from netbox_kea.models import Server
+from netbox_kea.subnet_catalogue import invalidate
 
-from .kea_stub import _res_page, queued, stub_kea
+from .kea_stub import _catalogue_responses, _res_get, _res_page, stub_kea
 
 User = get_user_model()
 
 _PLUGINS_CONFIG = {"netbox_kea": {"kea_timeout": 30}}
 
-# Single reservation returned by reservation-get (result=0, arguments has the host dict)
-_RESERVATION4_RESPONSE = [
-    {
-        "result": 0,
-        "arguments": {
-            "ip-address": "10.0.0.50",
-            "hw-address": "aa:bb:cc:dd:ee:ff",
-            "subnet-id": 1,
-            "hostname": "reserved.example.com",
-        },
-    }
-]
-
 # Not found — reservation-get result=3
 _RESERVATION_NOT_FOUND = [{"result": 3, "text": "Host not found."}]
-
-# reservation-get-page returns a "hosts" list under arguments (shared page shape).
-_RESERVATION4_PAGE_RESPONSE = _res_page(
-    [{"ip-address": "10.0.0.50", "hw-address": "aa:bb:cc:dd:ee:ff", "subnet-id": 1, "hostname": "reserved.example.com"}]
-)
-
-_RESERVATION6_SINGLE = [
-    {
-        "result": 0,
-        "arguments": {
-            "ip-addresses": ["2001:db8::50"],
-            "duid": "00:01:02:03",
-            "subnet-id": 10,
-        },
-    }
-]
 
 
 def _make_server(**kwargs):
@@ -83,6 +55,10 @@ class _APITestBase(TestCase):
         self.api_client = APIClient()
         self.api_client.force_authenticate(user=self.user)
         self.server = _make_server()
+        # Reused test server IDs otherwise serve another test's cached Catalogue
+        # snapshot: the DB rolls back per test, the cache backend does not.
+        invalidate(self.server, 4)
+        invalidate(self.server, 6)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -127,62 +103,140 @@ class TestReservation4API(_APITestBase):
         self.assertEqual(response.status_code, 400)
 
     def test_non_integer_subnet_id_returns_400(self):
-        """?subnet_id=foo returns HTTP 400."""
-        response = self.api_client.get(self._url(), {"subnet_id": "foo"})
+        response = self.api_client.get(self._url(), {"ip_address": "198.18.0.20", "subnet_id": "foo"})
         self.assertEqual(response.status_code, 400)
-        self.assertIn("subnet_id", response.json()["detail"])
+        self.assertIn("Invalid scoped address", response.json()["detail"])
+
+    def test_conflicting_selectors_return_400_without_a_kea_request(self):
+        with stub_kea({}) as kea:
+            response = self.api_client.get(
+                self._url(),
+                {
+                    "ip_address": "10.0.0.50",
+                    "subnet_id": "1",
+                    "hostname": "host.example.invalid",
+                },
+            )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("exactly one", response.json()["detail"])
+        self.assertEqual(kea.commands(), [])
+
+    def test_query_modes_reject_parameters_from_another_mode(self):
+        cases = (
+            {"page": "1", "subnet_id": "20"},
+            {"hostname": "host.example.invalid", "scope": "global"},
+        )
+
+        for params in cases:
+            with self.subTest(params=params), stub_kea({}) as kea:
+                response = self.api_client.get(self._url(), params)
+
+                self.assertEqual(response.status_code, 400)
+                self.assertIn("exactly one", response.json()["detail"])
+                self.assertEqual(kea.commands(), [])
 
     def test_server_not_found_returns_404(self):
         """Non-existent server PK returns HTTP 404."""
-        response = self.api_client.get(self._url(pk=99999), {"subnet_id": "1"})
+        response = self.api_client.get(self._url(pk=99999), {"page": "1"})
         self.assertEqual(response.status_code, 404)
 
-    def test_get_by_ip_and_subnet_returns_200(self):
-        """?ip_address=10.0.0.50&subnet_id=1 returns 200 with reservation data."""
-        with stub_kea({"reservation-get": _RESERVATION4_RESPONSE}):
-            response = self.api_client.get(self._url(), {"ip_address": "10.0.0.50", "subnet_id": "1"})
+    def test_incomplete_tls_configuration_returns_server_error_for_every_query_mode(self):
+        """A stored Server configuration failure is not a malformed API selector."""
+        self.server.client_cert_path = "/certs/client.pem"
+        self.server.client_key_path = None
+        self.server.save(update_fields=("client_cert_path", "client_key_path"))
+        cases = (
+            {"page": "1"},
+            {
+                "scope": "in-subnet",
+                "subnet_id": "20",
+                "identifier_type": "hw-address",
+                "identifier": "aa:bb:cc:dd:ee:ff",
+            },
+            {"subnet_id": "20", "ip_address": "198.18.0.20"},
+            {"hostname": "host.example.invalid"},
+        )
+
+        for params in cases:
+            with self.subTest(params=params):
+                response = self.api_client.get(self._url(), params)
+
+                self.assertEqual(response.status_code, 500)
+                self.assertEqual(response.json()["detail"], "Invalid Kea server configuration.")
+
+    def test_scoped_address_returns_the_normalized_canonical_record(self):
+        responses = _catalogue_responses(4, 20, "198.18.0.0/24")
+        responses["reservation-get"] = _res_get(
+            {
+                "subnet-id": 20,
+                "client-id": "01-AA-BB-CC-DD-EE-FF",
+                "ip-address": "198.18.0.20",
+            }
+        )
+
+        with stub_kea(responses) as kea:
+            response = self.api_client.get(
+                self._url(),
+                {"ip_address": "198.18.0.20", "subnet_id": "20"},
+            )
+
         self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json()["results"][0]["identity"],
+            {"type": "client-id", "value": "01:aa:bb:cc:dd:ee:ff"},
+        )
+        self.assertEqual(response.json()["results"][0]["addresses"], ["198.18.0.20"])
+        self.assertEqual(kea.commands(), ["subnet4-list", "config-get", "reservation-get"])
 
-    def test_get_by_ip_and_subnet_returns_count_and_results(self):
-        """Response includes 'count' and 'results' keys."""
-        with stub_kea({"reservation-get": _RESERVATION4_RESPONSE}):
-            response = self.api_client.get(self._url(), {"ip_address": "10.0.0.50", "subnet_id": "1"})
-        data = response.json()
-        self.assertIn("count", data)
-        self.assertIn("results", data)
-        self.assertEqual(data["count"], 1)
-
-    def test_get_by_hw_address_and_subnet_returns_200(self):
-        """?hw_address=aa:bb&subnet_id=1 returns 200."""
-        with stub_kea({"reservation-get": _RESERVATION4_RESPONSE}):
+    def test_legacy_hw_address_selector_is_rejected_without_a_kea_request(self):
+        with stub_kea({}) as kea:
             response = self.api_client.get(self._url(), {"hw_address": "aa:bb:cc:dd:ee:ff", "subnet_id": "1"})
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(kea.commands(), [])
 
-    def test_get_by_subnet_id_uses_get_page(self):
-        """?subnet_id=1 (no IP/hw) drives reservation-get-page and returns results."""
-        with stub_kea({"reservation-get-page": _RESERVATION4_PAGE_RESPONSE}) as kea:
-            response = self.api_client.get(self._url(), {"subnet_id": "1"})
+    def test_exact_identity_returns_normalized_record(self):
+        responses = _catalogue_responses(4, 20, "198.18.0.0/24")
+        responses["reservation-get"] = _res_get(
+            {
+                "subnet-id": 20,
+                "hw-address": "AA-BB-CC-DD-EE-FF",
+                "ip-address": "198.18.0.20",
+            }
+        )
+
+        with stub_kea(responses) as kea:
+            response = self.api_client.get(
+                self._url(),
+                {
+                    "scope": "in-subnet",
+                    "subnet_id": "20",
+                    "identifier_type": "hw-address",
+                    "identifier": "AA-BB-CC-DD-EE-FF",
+                },
+            )
+
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["count"], 1)
-        self.assertIn("reservation-get-page", kea.commands())
-
-    def test_get_by_subnet_id_paginates_all_pages(self):
-        """?subnet_id=1 fetches ALL pages from reservation-get-page, not just the first."""
-        page1 = _res_page(
-            [{"ip-address": "10.0.0.51", "hw-address": "aa:bb:cc:dd:ee:01", "subnet-id": 1}],
-            next_from=1,  # not exhausted
+        self.assertEqual(
+            response.json()["results"][0]["identity"],
+            {"type": "hw-address", "value": "aa:bb:cc:dd:ee:ff"},
         )
-        page2 = _res_page([{"ip-address": "10.0.0.52", "hw-address": "aa:bb:cc:dd:ee:02", "subnet-id": 1}])  # exhausted
-        with stub_kea({"reservation-get-page": queued(page1, page2)}) as kea:
+        self.assertEqual(response.json()["results"][0]["scope"]["subnet"]["cidr"], "198.18.0.0/24")
+        self.assertEqual(kea.commands(), ["subnet4-list", "config-get", "reservation-get"])
+
+    def test_subnet_only_selector_is_rejected_without_unbounded_iteration(self):
+        with stub_kea({}) as kea:
             response = self.api_client.get(self._url(), {"subnet_id": "1"})
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["count"], 2)
-        self.assertEqual(len(kea.bodies("reservation-get-page")), 2)
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(kea.commands(), [])
 
     def test_not_found_returns_empty_results(self):
         """When reservation-get returns not-found (result 3), results is empty with count=0."""
-        with stub_kea({"reservation-get": _RESERVATION_NOT_FOUND}):
-            response = self.api_client.get(self._url(), {"ip_address": "10.0.0.99", "subnet_id": "1"})
+        responses = _catalogue_responses(4, 20, "198.18.0.0/24")
+        responses["reservation-get"] = _RESERVATION_NOT_FOUND
+        with stub_kea(responses):
+            response = self.api_client.get(self._url(), {"ip_address": "198.18.0.99", "subnet_id": "20"})
         self.assertEqual(response.status_code, 200)
         data = response.json()
         self.assertEqual(data["count"], 0)
@@ -190,17 +244,222 @@ class TestReservation4API(_APITestBase):
 
     def test_kea_connection_error_returns_502(self):
         """When Kea is unreachable, returns HTTP 502."""
-        import requests as rq
-
-        with stub_kea({"reservation-get": rq.ConnectionError("refused")}):
-            response = self.api_client.get(self._url(), {"ip_address": "10.0.0.1", "subnet_id": "1"})
+        responses = _catalogue_responses(4, 20, "198.18.0.0/24")
+        responses["reservation-get"] = requests.ConnectionError("refused")
+        with stub_kea(responses):
+            response = self.api_client.get(self._url(), {"ip_address": "198.18.0.20", "subnet_id": "20"})
         self.assertEqual(response.status_code, 502)
 
     def test_uses_dhcp4_service(self):
         """The v4 endpoint issues reservation-get to service='dhcp4'."""
-        with stub_kea({"reservation-get": _RESERVATION4_RESPONSE}) as kea:
-            self.api_client.get(self._url(), {"ip_address": "10.0.0.50", "subnet_id": "1"})
+        responses = _catalogue_responses(4, 20, "198.18.0.0/24")
+        responses["reservation-get"] = _res_get(
+            {"subnet-id": 20, "hw-address": "aa:bb:cc:dd:ee:ff", "ip-address": "198.18.0.20"}
+        )
+        with stub_kea(responses) as kea:
+            self.api_client.get(self._url(), {"ip_address": "198.18.0.20", "subnet_id": "20"})
         self.assertEqual(kea.bodies("reservation-get")[0]["service"], ["dhcp4"])
+
+    def test_page_rejects_invalid_limits_without_a_kea_request(self):
+        with stub_kea({}) as kea:
+            for limit in ("not-an-integer", "0", "501"):
+                with self.subTest(limit=limit):
+                    response = self.api_client.get(self._url(), {"page": "1", "limit": limit})
+                    self.assertEqual(response.status_code, 400)
+        self.assertEqual(kea.commands(), [])
+
+    def test_page_rejects_an_invalid_cursor_after_catalogue_validation(self):
+        responses = _catalogue_responses(4, 20, "198.18.0.0/24")
+        with stub_kea(responses) as kea:
+            response = self.api_client.get(self._url(), {"page": "1", "cursor": "invalid"})
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(kea.commands(), ["subnet4-list", "config-get"])
+
+    def test_page_maps_connection_kea_and_malformed_errors(self):
+        cases = (
+            (requests.ConnectionError("refused"), 502),
+            ({"result": 1, "text": "failed"}, 502),
+            ([], 502),
+        )
+        for page_response, expected_status in cases:
+            with self.subTest(page_response=repr(page_response)):
+                responses = _catalogue_responses(4, 20, "198.18.0.0/24")
+                responses["reservation-get-page"] = page_response
+                with stub_kea(responses):
+                    response = self.api_client.get(self._url(), {"page": "1"})
+                self.assertEqual(response.status_code, expected_status)
+
+    def test_all_query_modes_map_request_exceptions_to_502(self):
+        cases = (
+            ("page", "reservation-get-page", {"page": "1"}),
+            (
+                "identity",
+                "reservation-get",
+                {
+                    "scope": "in-subnet",
+                    "subnet_id": "20",
+                    "identifier_type": "hw-address",
+                    "identifier": "aa:bb:cc:dd:ee:ff",
+                },
+            ),
+            ("address", "reservation-get", {"ip_address": "198.18.0.20", "subnet_id": "20"}),
+            ("hostname", "reservation-get-by-hostname", {"hostname": "host.example.invalid"}),
+        )
+
+        for query_mode, command, params in cases:
+            with self.subTest(query_mode=query_mode):
+                responses = _catalogue_responses(4, 20, "198.18.0.0/24")
+                responses[command] = requests.TooManyRedirects("redirect loop")
+                with stub_kea(responses):
+                    response = self.api_client.get(self._url(), params)
+                self.assertEqual(response.status_code, 502)
+
+    def test_a_value_error_transport_failure_is_not_reported_as_a_bad_selector(self):
+        """A malformed Kea body is an upstream failure, not an invalid client selector."""
+        cases = (
+            (
+                "identity",
+                {
+                    "scope": "in-subnet",
+                    "subnet_id": "20",
+                    "identifier_type": "hw-address",
+                    "identifier": "aa:bb:cc:dd:ee:ff",
+                },
+            ),
+            ("address", {"ip_address": "198.18.0.20", "subnet_id": "20"}),
+        )
+
+        for query_mode, params in cases:
+            with self.subTest(query_mode=query_mode):
+                responses = _catalogue_responses(4, 20, "198.18.0.0/24")
+                # JSONDecodeError subclasses both RequestException and ValueError.
+                responses["reservation-get"] = requests.exceptions.JSONDecodeError("bad", "doc", 0)
+                with stub_kea(responses):
+                    response = self.api_client.get(self._url(), params)
+                self.assertEqual(response.status_code, 502)
+
+    def test_identity_requires_both_parts_and_a_valid_scope(self):
+        with stub_kea({}) as kea:
+            response = self.api_client.get(self._url(), {"identifier_type": "hw-address"})
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(kea.commands(), [])
+
+        for params in (
+            {"scope": "other", "identifier_type": "hw-address", "identifier": "aa:bb:cc:dd:ee:ff"},
+            {
+                "scope": "in-subnet",
+                "subnet_id": "21",
+                "identifier_type": "hw-address",
+                "identifier": "aa:bb:cc:dd:ee:ff",
+            },
+            {"scope": "global", "identifier_type": "hw-address", "identifier": "invalid"},
+        ):
+            with self.subTest(params=params):
+                responses = _catalogue_responses(4, 20, "198.18.0.0/24")
+                with stub_kea(responses):
+                    response = self.api_client.get(self._url(), params)
+                self.assertEqual(response.status_code, 400)
+
+    def test_global_identity_returns_normalized_options(self):
+        responses = _catalogue_responses(4, 20, "198.18.0.0/24")
+        responses["reservation-get"] = _res_get(
+            {
+                "subnet-id": 0,
+                "flex-id": "global-client",
+                "option-data": [{"name": "domain-name", "data": "example.invalid"}],
+            }
+        )
+        with stub_kea(responses):
+            response = self.api_client.get(
+                self._url(),
+                {"scope": "global", "identifier_type": "flex-id", "identifier": "global-client"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        record = response.json()["results"][0]
+        self.assertEqual(record["scope"], {"type": "global"})
+        self.assertEqual(record["options"][0]["name"], "domain-name")
+
+    def test_global_identity_rejects_a_subnet_id(self):
+        params = {
+            "scope": "global",
+            "subnet_id": "20",
+            "identifier_type": "flex-id",
+            "identifier": "global-client",
+        }
+
+        with stub_kea({}) as kea:
+            response = self.api_client.get(self._url(), params)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Invalid Reservation identity", response.json()["detail"])
+        self.assertEqual(kea.commands(), [])
+
+    def test_identity_maps_malformed_connection_kea_and_runtime_errors(self):
+        cases = (
+            (
+                _res_get(
+                    {
+                        "subnet-id": 20,
+                        "hw-address": "aa:bb:cc:dd:ee:ff",
+                        "client-id": "01:02",
+                    }
+                ),
+                502,
+            ),
+            (requests.ConnectionError("refused"), 502),
+            ({"result": 1, "text": "failed"}, 502),
+            ({"result": 0, "arguments": []}, 502),
+        )
+        params = {
+            "scope": "in-subnet",
+            "subnet_id": "20",
+            "identifier_type": "hw-address",
+            "identifier": "aa:bb:cc:dd:ee:ff",
+        }
+        for reservation_response, expected_status in cases:
+            with self.subTest(reservation_response=repr(reservation_response)):
+                responses = _catalogue_responses(4, 20, "198.18.0.0/24")
+                responses["reservation-get"] = reservation_response
+                with stub_kea(responses):
+                    response = self.api_client.get(self._url(), params)
+                self.assertEqual(response.status_code, expected_status)
+
+    def test_address_maps_malformed_kea_and_runtime_errors(self):
+        cases = (
+            (
+                _res_get(
+                    {
+                        "subnet-id": 20,
+                        "hw-address": "aa:bb:cc:dd:ee:ff",
+                        "ip-address": "198.18.0.21",
+                    }
+                ),
+                502,
+            ),
+            ({"result": 1, "text": "failed"}, 502),
+            ({"result": 0, "arguments": []}, 502),
+        )
+        for reservation_response, expected_status in cases:
+            with self.subTest(reservation_response=repr(reservation_response)):
+                responses = _catalogue_responses(4, 20, "198.18.0.0/24")
+                responses["reservation-get"] = reservation_response
+                with stub_kea(responses):
+                    response = self.api_client.get(
+                        self._url(),
+                        {"ip_address": "198.18.0.20", "subnet_id": "20"},
+                    )
+                self.assertEqual(response.status_code, expected_status)
+
+    def test_address_rejects_an_unverified_subnet(self):
+        responses = _catalogue_responses(4, 20, "198.18.0.0/24")
+        with stub_kea(responses) as kea:
+            response = self.api_client.get(
+                self._url(),
+                {"ip_address": "198.18.1.20", "subnet_id": "21"},
+            )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(kea.commands(), ["subnet4-list", "config-get"])
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -221,25 +480,130 @@ class TestReservation6API(_APITestBase):
         self.assertEqual(response.status_code, 400)
 
     def test_non_integer_subnet_id_returns_400(self):
-        """?subnet_id=not-a-number returns HTTP 400."""
-        response = self.api_client.get(self._url(), {"subnet_id": "not-a-number"})
+        response = self.api_client.get(self._url(), {"ip_address": "2001:db8::20", "subnet_id": "not-a-number"})
         self.assertEqual(response.status_code, 400)
-        self.assertIn("subnet_id", response.json()["detail"])
+        self.assertIn("Invalid scoped address", response.json()["detail"])
 
-    def test_get_by_ip_and_subnet_returns_200(self):
-        """?ip_address=2001:db8::50&subnet_id=10 returns 200."""
-        with stub_kea({"reservation-get": _RESERVATION6_SINGLE}):
-            response = self.api_client.get(self._url(), {"ip_address": "2001:db8::50", "subnet_id": "10"})
-        self.assertEqual(response.status_code, 200)
-
-    def test_get_by_duid_and_subnet_returns_200(self):
-        """?duid=00:01:02:03&subnet_id=10 returns 200."""
-        with stub_kea({"reservation-get": _RESERVATION6_SINGLE}):
+    def test_legacy_duid_selector_is_rejected_without_a_kea_request(self):
+        with stub_kea({}) as kea:
             response = self.api_client.get(self._url(), {"duid": "00:01:02:03", "subnet_id": "10"})
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(kea.commands(), [])
+
+    def test_bounded_page_returns_normalized_snapshot(self):
+        responses = {
+            **_catalogue_responses(6, 10, "2001:db8::/64"),
+            "reservation-get-page": _res_page(
+                [
+                    {
+                        "subnet-id": 10,
+                        "duid": "00-01-02-03",
+                        "ip-addresses": ["2001:db8::20", "2001:db8::10"],
+                        "prefixes": ["2001:db8:100::/56"],
+                        "hostname": "host.example.invalid",
+                    },
+                    {"subnet-id": 10, "remote-id": "relay-value"},
+                ],
+                next_from=2,
+                next_source=1,
+            ),
+        }
+
+        with stub_kea(responses) as kea:
+            response = self.api_client.get(self._url(), {"page": "1", "limit": "2"})
+
         self.assertEqual(response.status_code, 200)
+        self.assertEqual(kea.commands(), ["subnet6-list", "config-get", "reservation-get-page"])
+        self.assertEqual(
+            response.json(),
+            {
+                "count": 1,
+                "results": [
+                    {
+                        "family": 6,
+                        "scope": {
+                            "type": "in-subnet",
+                            "subnet": {"id": 10, "cidr": "2001:db8::/64"},
+                        },
+                        "identity": {"type": "duid", "value": "00:01:02:03"},
+                        "addresses": ["2001:db8::20", "2001:db8::10"],
+                        "delegated_prefixes": ["2001:db8:100::/56"],
+                        "hostname": "host.example.invalid",
+                        "options": [],
+                    }
+                ],
+                "diagnostics": [
+                    {
+                        "code": "unsupported-identifier",
+                        "message": (
+                            "Relay remote ID is not a native Reservation Identity. "
+                            "Configure the Kea Flex ID hook instead."
+                        ),
+                        "source_position": "hosts[1].remote-id",
+                    }
+                ],
+                "complete": False,
+                "next_cursor": "WzEsMl0",
+            },
+        )
+
+    def test_hostname_returns_a_normalized_snapshot(self):
+        responses = _catalogue_responses(6, 10, "2001:db8::/64")
+        responses["reservation-get-by-hostname"] = {
+            "result": 0,
+            "arguments": {
+                "hosts": [
+                    {
+                        "subnet-id": 10,
+                        "duid": "00-01-02-03",
+                        "ip-addresses": ["2001:db8::20"],
+                        "hostname": "host.example.invalid",
+                    },
+                    {
+                        "subnet-id": 10,
+                        "duid": "00-01-02-04",
+                        "hostname": "different.example.invalid",
+                    },
+                ]
+            },
+        }
+
+        with stub_kea(responses) as kea:
+            response = self.api_client.get(self._url(), {"hostname": "host.example.invalid"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["count"], 1)
+        self.assertEqual(response.json()["results"][0]["identity"], {"type": "duid", "value": "00:01:02:03"})
+        self.assertEqual(
+            response.json()["diagnostics"],
+            [
+                {
+                    "code": "target-mismatch",
+                    "message": "Kea returned a Reservation that does not match the requested hostname.",
+                    "source_position": "hosts[1].hostname",
+                }
+            ],
+        )
+        self.assertFalse(response.json()["complete"])
+        self.assertEqual(kea.commands(), ["subnet6-list", "config-get", "reservation-get-by-hostname"])
 
     def test_uses_dhcp6_service(self):
-        """The v6 endpoint issues reservation-get to service='dhcp6'."""
-        with stub_kea({"reservation-get": _RESERVATION6_SINGLE}) as kea:
-            self.api_client.get(self._url(), {"ip_address": "2001:db8::50", "subnet_id": "10"})
-        self.assertEqual(kea.bodies("reservation-get")[0]["service"], ["dhcp6"])
+        responses = _catalogue_responses(6, 10, "2001:db8::/64")
+        responses["reservation-get-by-hostname"] = {"result": 3}
+        with stub_kea(responses) as kea:
+            self.api_client.get(self._url(), {"hostname": "host.example.invalid"})
+        self.assertEqual(kea.bodies("reservation-get-by-hostname")[0]["service"], ["dhcp6"])
+
+    def test_hostname_maps_connection_kea_and_malformed_errors(self):
+        cases = (
+            requests.ConnectionError("refused"),
+            {"result": 1, "text": "failed"},
+            [],
+        )
+        for hostname_response in cases:
+            with self.subTest(hostname_response=repr(hostname_response)):
+                responses = _catalogue_responses(6, 10, "2001:db8::/64")
+                responses["reservation-get-by-hostname"] = hostname_response
+                with stub_kea(responses):
+                    response = self.api_client.get(self._url(), {"hostname": "host.example.invalid"})
+                self.assertEqual(response.status_code, 502)

@@ -12,8 +12,8 @@ from django.test import TestCase, override_settings
 
 from netbox_kea.models import Server
 
-# Minimal PLUGINS_CONFIG so server.get_client() can read kea_timeout.
-_PLUGINS_CONFIG = {"netbox_kea": {"kea_timeout": 30}}
+# Minimal PLUGINS_CONFIG for tests that do not exercise the Subnet lease-query guard.
+_PLUGINS_CONFIG = {"netbox_kea": {"kea_timeout": 30, "lease_query_max_unpaged_leases": 0}}
 
 User = get_user_model()
 
@@ -40,28 +40,6 @@ def _make_db_server(**kwargs) -> Server:
     }
     defaults.update(kwargs)
     return Server.objects.create(**defaults)
-
-
-def _drop_subnet_choices_cache(test_case, server) -> None:
-    """Delete *server*'s cached subnet choices and Catalogue snapshots.
-
-    Every view that renders the lease search or the reservation add form calls
-    ``fetch_subnet_choices()``, which writes into the *shared* cache backend. Each test
-    builds its own Server, but reused test IDs can otherwise retain a result for the
-    whole TTL. The Subnet Catalogue uses a separate key for complete display snapshots.
-    """
-    from django.core.cache import cache
-
-    from netbox_kea.subnet_catalogue import invalidate
-    from netbox_kea.utilities import _subnet_choices_cache_key
-
-    def _drop():
-        for version in (4, 6):
-            cache.delete(_subnet_choices_cache_key(server, version))
-            invalidate(server, version)
-
-    _drop()
-    test_case.addCleanup(_drop)
 
 
 def _kea_command_side_effect(cmd, service=None, arguments=None, check=None):
@@ -95,7 +73,6 @@ class _ViewTestBase(TestCase):
         )
         self.client.force_login(self.user)
         self.server = _make_db_server()
-        _drop_subnet_choices_cache(self, self.server)
 
     def _assert_no_none_pk_redirect(self, response):
         """Assert that a redirect URL never contains the string ``None`` as a pk."""

@@ -2,7 +2,10 @@
 version: "3.4"
 services:
   netbox: &netbox
-    build: .
+    build:
+      context: .
+      secrets:
+        - host_ca
     depends_on:
       - postgres
       - redis
@@ -10,7 +13,7 @@ services:
     # Use 999 for compatibility with nginx unit and granian
     user: "999:root"
     ports:
-      - 8000:8080
+      - ${NETBOX_PORT:-8000}:8080
     healthcheck:
       start_period: 300s
       timeout: 3s
@@ -25,6 +28,7 @@ services:
       GRAPHQL_ENABLED: "true"
       HOUSEKEEPING_INTERVAL: 86400
       METRICS_ENABLED: "false"
+      NO_PROXY: "${NO_PROXY:+${NO_PROXY},}localhost,127.0.0.1,postgres,redis,redis-cache,kea-dhcp4,kea-dhcp6,nginx"
       REDIS_CACHE_DATABASE: 1
       REDIS_CACHE_HOST: redis-cache
       REDIS_CACHE_INSECURE_SKIP_TLS_VERIFY: "false"
@@ -36,6 +40,7 @@ services:
       REDIS_PASSWORD: &redis_password H733Kdjndks81
       REDIS_SSL: "false"
       SECRET_KEY: "r(m)9nLGnz$$(_q3N4z1k(EFsMCjjjzx08x9VhNVcfd%6RF#r!6DE@+V5Zk2X"
+      no_proxy: "${no_proxy:+${no_proxy},}${NO_PROXY:+${NO_PROXY},}localhost,127.0.0.1,postgres,redis,redis-cache,kea-dhcp4,kea-dhcp6,nginx"
       API_TOKEN_PEPPER_1: "G_^mFD_N5RTksrO#hiyCVWiS_^OTpuY6#D(NCYH2-CS+pjqrdc"
       WEBHOOKS_ENABLED: "true"
       SKIP_SUPERUSER: "false"
@@ -45,6 +50,11 @@ services:
       LOGLEVEL: DEBUG
       DEBUG: "true"
       DB_WAIT_DEBUG: "1"
+      # netbox-docker defaults granian's backpressure to the worker count (4),
+      # about 64x below granian's own backlog/workers default. granian 2.8 spreads
+      # connections unevenly across workers, and with so few slots per worker a
+      # request can wait 20-30s behind a busy one. Raise it to restore concurrency.
+      GRANIAN_BACKPRESSURE: "${GRANIAN_BACKPRESSURE:-256}"
     volumes:
       - ./plugins.py:/etc/netbox/config/plugins.py:z,ro
       - ./certs:/certs/:ro
@@ -124,3 +134,7 @@ volumes:
     driver: local
   netbox-redis-data:
     driver: local
+
+secrets:
+  host_ca:
+    file: ${SSL_CERT_FILE:-/etc/ssl/certs/ca-certificates.crt}

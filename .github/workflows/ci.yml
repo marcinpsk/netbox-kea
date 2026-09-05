@@ -15,7 +15,7 @@ jobs:
   unit-test:
     runs-on: ubuntu-latest
 
-    services:
+    services: &netbox-test-services
       postgres:
         image: postgres:16@sha256:adac386a3163424d8397b51b950187eaa661013020a1b9e0d5437a9752040f80
         env:
@@ -40,69 +40,45 @@ jobs:
           - 6379:6379
 
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - &checkout-repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
 
-      - name: Checkout NetBox
+      - &checkout-netbox
+        name: Checkout NetBox
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           repository: netbox-community/netbox
           # Keep it equal to QUERY_COUNT_NETBOX_VERSION in netbox_kea/tests/conftest.py;
-          ref: v4.6.8
+          ref: v4.7.0
           path: netbox
           persist-credentials: false
 
-      - name: Install uv
+      - &setup-uv
+        name: Install uv
         uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d  # v10.0.1
         with:
           enable-cache: true
 
-      - name: Setup Python
+      - &setup-python
+        name: Setup Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version-file: pyproject.toml
 
       - name: Install dependencies
         run: |
-          uv export --frozen --only-group dev --no-emit-project --format requirements-txt | \
-            uv pip install --system -r /dev/stdin
-          uv pip install --system -r netbox/requirements.txt
-          uv pip install --system -e .
+          uv export --native-tls --frozen --only-group dev --no-emit-project --format requirements-txt | \
+            uv pip install --native-tls --system -r /dev/stdin
+          uv pip install --native-tls --system -r netbox/requirements.txt
+          uv pip install --native-tls --system -e .
 
       - name: Set up NetBox configuration
         working-directory: netbox/netbox
         run: |
-          cat > netbox/configuration.py << 'EOF'
-          import os
-
-          ALLOWED_HOSTS = ['*']
-          DATABASE = {
-              'NAME': 'netbox',
-              'USER': 'netbox',
-              'PASSWORD': 'netbox',
-              'HOST': 'localhost',
-              'PORT': '',
-              'CONN_MAX_AGE': 300,
-              'ENGINE': 'django.db.backends.postgresql'
-          }
-          REDIS = {
-              'tasks': {
-                  'HOST': os.environ.get('REDIS_HOST', 'localhost'),
-                  'PORT': 6379,
-                  'DATABASE': int(os.environ.get('REDIS_DATABASE', '0')),
-              },
-              'caching': {
-                  'HOST': os.environ.get('REDIS_CACHE_HOST', 'localhost'),
-                  'PORT': 6379,
-                  'DATABASE': int(os.environ.get('REDIS_CACHE_DATABASE', '1')),
-              },
-          }
-          SECRET_KEY = 'ci-test-secret-key-not-for-production-1234567890123456'
-          API_TOKEN_PEPPERS = {0: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'}
-          PLUGINS = ['netbox_kea']
-          PLUGINS_CONFIG = {'netbox_kea': {'kea_timeout': 30}}
-          EOF
+          python "${{ github.workspace }}/scripts/write_netbox_ci_configuration.py" \
+            --output netbox/configuration.py --plugin netbox_kea
 
       - name: Run unit tests with coverage
         working-directory: netbox/netbox
@@ -127,6 +103,44 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           fail_ci_if_error: false
 
+  dhcp-plugin-test:
+    runs-on: ubuntu-latest
+
+    services: *netbox-test-services
+
+    steps:
+      - *checkout-repository
+      - *checkout-netbox
+      - *setup-uv
+      - *setup-python
+
+      - name: Install dependencies with the supported DHCP plugin
+        run: |
+          uv export --native-tls --frozen --only-group dev --no-emit-project --format requirements-txt | \
+            uv pip install --native-tls --system -r /dev/stdin
+          uv pip install --native-tls --system -r netbox/requirements.txt
+          uv pip install --native-tls --system -e . "netbox-plugin-dhcp==0.2.0"
+
+      - name: Set up NetBox configuration
+        working-directory: netbox/netbox
+        run: |
+          python "${{ github.workspace }}/scripts/write_netbox_ci_configuration.py" \
+            --output netbox/configuration.py --plugin netbox_kea --plugin netbox_dhcp
+
+      - name: Run DHCP plugin adapter tests
+        working-directory: netbox/netbox
+        env:
+          TEST_DB_NAME: test_netbox_kea_dhcp_plugin_ci
+          TEST_REDIS_HOST: localhost
+        run: |
+          pytest ${{ github.workspace }}/netbox_kea/tests/test_integration_dhcp_plugin.py \
+            --override-ini="DJANGO_SETTINGS_MODULE=netbox_kea.tests.isolated_settings" \
+            --override-ini="pythonpath=${{ github.workspace }}/netbox/netbox" \
+            -n 1 \
+            --maxschedchunk=1 \
+            --reuse-db \
+            --no-header -q
+
   lint:
     runs-on: ubuntu-latest
     steps:
@@ -145,16 +159,19 @@ jobs:
           python-version-file: pyproject.toml
 
       - name: Install dev dependencies
-        run: uv sync --group dev
+        run: uv sync --native-tls --group dev
 
       - name: Ruff lint
-        run: uv run ruff check netbox_kea/
+        run: uv run --native-tls ruff check .
 
       - name: Ruff format check
-        run: uv run ruff format --check netbox_kea/
+        run: uv run --native-tls ruff format --check .
+
+      - name: Type check (mypy, new errors only)
+        run: uv run --native-tls scripts/mypy-gate.sh
 
       - name: REUSE compliance
-        run: uv run reuse lint
+        run: uv run --native-tls reuse lint
 
   opengrep:
     runs-on: ubuntu-latest
@@ -189,7 +206,7 @@ jobs:
           # minor. NetBox can break at minors, but the ends keep the middle low-risk
           # while cutting CI cost; bump the ceiling when a new stable ships.
           - netbox: v4.3        # floor — minimum supported NetBox
-          - netbox: v4.6        # ceiling — latest stable NetBox
+          - netbox: v4.7        # ceiling — latest stable NetBox
           # NetBox develop branch (unreleased "main"); allowed to fail so upstream
           # churn gives early signal without blocking merges (see continue-on-error).
           - netbox: snapshot
@@ -220,10 +237,10 @@ jobs:
           python-version: "3.14"
 
       - name: Ensure playwright browsers are installed
-        run: uv run playwright install --with-deps
+        run: uv run --native-tls playwright install --with-deps
 
       - name: Run uv build
-        run: uv build
+        run: uv build --native-tls
 
       - name: Run test_setup.sh
         run: ./tests/test_setup.sh
@@ -232,7 +249,7 @@ jobs:
 
       - name: Run pytest
         run: |
-          uv run pytest tests/ -p no:django --tracing=retain-on-failure -v
+          uv run --native-tls pytest tests/ -p no:django --tracing=retain-on-failure -v
 
       - name: Upload Playwright traces
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1

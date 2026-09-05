@@ -29,9 +29,9 @@ run concurrently) are:
 
 * dashboard: none — the overview never calls Kea.
 * status badge: ``version-get`` per enabled protocol (Online iff it doesn't raise).
-* reservations: ``reservation-get-page`` (drained via ``iter_reservations``) then,
-  when any reservations are found, ``lease{v}-get-all`` per unique subnet for the
-  active-lease badge (NetBox IPAM badges hit the DB, not Kea).
+* reservations: one bounded ``reservation-get-page`` call then, when records exist,
+  ``lease{v}-get-by-state`` per unique subnet for the active-lease badge and
+  ``list-commands`` plus ``config-get`` to confirm mutation capabilities.
 * leases (q + by): ``lease{v}-get`` (by IP) or ``lease{v}-get-by-<field>`` then,
   per lease, ``reservation-get`` (by IP, then by MAC) for the reservation badge.
 * leases (state only, no q): ``lease{v}-get-page`` (enumerate) + the same badge
@@ -44,16 +44,22 @@ instance for a command (the stub raises it at the boundary), so the per-server
 error handling runs through the real client instead of a mocked ``side_effect``.
 """
 
+import json
+from unittest.mock import patch
+
 import requests
+import yaml
 from django.test import TestCase, override_settings
 from django.urls import reverse
 from ipam.models import IPAddress
 
 from netbox_kea import constants
 from netbox_kea.models import Server
+from netbox_kea.reservations import ReservationSnapshot
+from netbox_kea.views.combined import _fetch_reservations_from_server
 
-from .kea_stub import _res_get, _res_page, stub_kea
-from .utils import _PLUGINS_CONFIG, User, _drop_subnet_choices_cache, _make_db_server
+from .kea_stub import _res_get, _res_page, _reservation_mutation_commands, queued, stub_kea
+from .utils import _PLUGINS_CONFIG, User, _make_db_server
 
 # ---------------------------------------------------------------------------
 # Kea response fixtures
@@ -181,6 +187,11 @@ def _subnet_responses(version, *, config=None, subnets=None, stat=_STAT_EMPTY):
     }
 
 
+def _reservation_stub(version, responses):
+    """Stub a Reservation request with the required Subnet catalogue sources."""
+    return stub_kea({**_subnet_responses(version), "list-commands": _reservation_mutation_commands(), **responses})
+
+
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class _CombinedViewBase(TestCase):
     """Create superuser + one v4-only, one v6-only, one dual-stack server."""
@@ -195,8 +206,6 @@ class _CombinedViewBase(TestCase):
         self.v4_server = _make_db_server(name="v4-server", dhcp4=True, dhcp6=False, has_control_agent=False)
         self.v6_server = _make_db_server(name="v6-server", dhcp4=False, dhcp6=True, has_control_agent=False)
         self.dual_server = _make_db_server(name="dual-server", dhcp4=True, dhcp6=True, has_control_agent=False)
-        for server in (self.v4_server, self.v6_server, self.dual_server):
-            _drop_subnet_choices_cache(self, server)
 
 
 # ---------------------------------------------------------------------------
@@ -340,7 +349,7 @@ class TestCombinedReservations4View(_CombinedViewBase):
     """GET /plugins/kea/combined/reservations4/ — all DHCPv4 reservations."""
 
     def test_get_returns_200(self):
-        with stub_kea({"reservation-get-page": _RES_EMPTY_PAGE}):
+        with _reservation_stub(4, {"reservation-get-page": _RES_EMPTY_PAGE}):
             url = reverse("plugins:netbox_kea:combined_reservations4")
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
@@ -354,8 +363,8 @@ class TestCombinedReservations4View(_CombinedViewBase):
 
     def test_queries_all_v4_servers(self):
         """Without a server filter, every dhcp4-enabled server is queried."""
-        with stub_kea(
-            {"reservation-get-page": _res_page([dict(_MOCK_RESERVATION_V4)]), "lease4-get-all": _LEASE_NONE}
+        with _reservation_stub(
+            4, {"reservation-get-page": _res_page([dict(_MOCK_RESERVATION_V4)]), "lease4-get-by-state": _LEASE_NONE}
         ) as kea:
             url = reverse("plugins:netbox_kea:combined_reservations4")
             self.client.get(url)
@@ -364,14 +373,16 @@ class TestCombinedReservations4View(_CombinedViewBase):
 
     def test_server_filter_limits_queried_servers(self):
         """?server=<pk> filters down to exactly that one server."""
-        with stub_kea({"reservation-get-page": _RES_EMPTY_PAGE}) as kea:
+        with _reservation_stub(4, {"reservation-get-page": _RES_EMPTY_PAGE}) as kea:
             url = reverse("plugins:netbox_kea:combined_reservations4") + f"?server={self.v4_server.pk}"
             self.client.get(url)
         self.assertEqual(kea.commands().count("reservation-get-page"), 1)
 
     def test_results_include_server_name(self):
         """Each row in the merged table must carry the originating server name."""
-        with stub_kea({"reservation-get-page": _res_page([dict(_MOCK_RESERVATION_V4)]), "lease4-get-all": _LEASE_NONE}):
+        with _reservation_stub(
+            4, {"reservation-get-page": _res_page([dict(_MOCK_RESERVATION_V4)]), "lease4-get-by-state": _LEASE_NONE}
+        ):
             url = reverse("plugins:netbox_kea:combined_reservations4") + f"?server={self.v4_server.pk}"
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
@@ -379,37 +390,96 @@ class TestCombinedReservations4View(_CombinedViewBase):
 
     def test_unreachable_server_returns_200_with_warning(self):
         """A server that raises an exception must not cause a 500."""
-        with stub_kea({"reservation-get-page": requests.ConnectionError("refused")}):
+        with _reservation_stub(4, {"reservation-get-page": requests.ConnectionError("refused")}):
             url = reverse("plugins:netbox_kea:combined_reservations4")
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
 
+    def test_page_diagnostic_uses_neutral_incomplete_snapshot_alert(self):
+        hosts = [
+            {"subnet-id": 0, "flex-id": f"global-{index}", "hostname": f"host-{index}.example.invalid"}
+            for index in range(100)
+        ]
+        first_page = _res_page(
+            hosts,
+            next_from=100,
+            next_source=1,
+        )
+        url = reverse("plugins:netbox_kea:combined_reservations4") + f"?server={self.v4_server.pk}"
+
+        def fetch_full_snapshot(server, version, cursor=None, **_kwargs):
+            return _fetch_reservations_from_server(server, version, cursor, full_snapshot=True)
+
+        with (
+            patch(
+                "netbox_kea.views.combined._fetch_reservations_from_server",
+                autospec=True,
+                side_effect=fetch_full_snapshot,
+            ),
+            _reservation_stub(
+                4,
+                {
+                    "reservation-get-page": queued(first_page, requests.ConnectionError("page failed")),
+                },
+            ),
+        ):
+            response = self.client.get(url)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Snapshot is incomplete.")
+        self.assertContains(response, "The Reservation Snapshot could not be read completely.")
+        self.assertContains(response, "See the 1 diagnostic below.")
+        self.assertContains(response, "page-fetch-failed")
+        self.assertNotContains(response, "malformed Reservation")
+
     def test_no_v4_servers_returns_200_empty_table(self):
         """If no dhcp4-enabled servers exist, the view renders with an empty table (no Kea traffic)."""
         Server.objects.filter(dhcp4=True).update(dhcp4=False)
-        with stub_kea({}) as kea:
+        with _reservation_stub(4, {}) as kea:
             url = reverse("plugins:netbox_kea:combined_reservations4")
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(kea.commands(), [])
 
     def test_context_active_tab(self):
-        with stub_kea({"reservation-get-page": _RES_EMPTY_PAGE}):
+        with _reservation_stub(4, {"reservation-get-page": _RES_EMPTY_PAGE}):
             url = reverse("plugins:netbox_kea:combined_reservations4")
             response = self.client.get(url)
         self.assertEqual(response.context["active_tab"], "reservations4")
 
-    def test_export_returns_csv(self):
-        """?export=table returns a CSV download of the v4 reservations table."""
-        with stub_kea({"reservation-get-page": _res_page([dict(_MOCK_RESERVATION_V4)]), "lease4-get-all": _LEASE_NONE}):
-            url = reverse("plugins:netbox_kea:combined_reservations4") + f"?server={self.v4_server.pk}&export=table"
+    def test_export_returns_yaml(self):
+        """?export=yaml returns a structured v4 Reservation document."""
+        with _reservation_stub(
+            4, {"reservation-get-page": _res_page([dict(_MOCK_RESERVATION_V4)]), "lease4-get-by-state": _LEASE_NONE}
+        ):
+            url = reverse("plugins:netbox_kea:combined_reservations4") + f"?server={self.v4_server.pk}&export=yaml"
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
-        self.assertIn("text/csv", response.get("Content-Type", ""))
+        self.assertIn("application/yaml", response.get("Content-Type", ""))
+        # A serializer that emits an empty or wrong-shaped document passes a header check.
+        document = yaml.safe_load(response.content.decode())
+        self.assertEqual(document["version"], 1)
+        self.assertEqual([record["hostname"] for record in document["reservations"]], ["host-v4"])
+        self.assertEqual(document["reservations"][0]["addresses"], ["10.0.0.100"])
+
+    def test_export_rejects_an_incomplete_snapshot_without_diagnostics(self):
+        snapshot = ReservationSnapshot(family=4, records=(), diagnostics=(), complete=False, next_cursor=None)
+        url = reverse("plugins:netbox_kea:combined_reservations4")
+        url += f"?server={self.v4_server.pk}&export=yaml"
+
+        with patch(
+            "netbox_kea.views.combined._fetch_reservations_from_server",
+            autospec=True,
+            return_value=snapshot,
+        ):
+            response = self.client.get(url)
+
+        self.assertEqual(response.status_code, 409)
+        self.assertContains(response, "Snapshot is incomplete", status_code=409)
 
     def test_search_form_in_context(self):
         """Response context must contain search_form for the search card to render."""
-        with stub_kea({"reservation-get-page": _RES_EMPTY_PAGE}):
+        with _reservation_stub(4, {"reservation-get-page": _RES_EMPTY_PAGE}):
             url = reverse("plugins:netbox_kea:combined_reservations4")
             response = self.client.get(url)
         self.assertIn("search_form", response.context)
@@ -420,7 +490,9 @@ class TestCombinedReservations4View(_CombinedViewBase):
         rec_nomatch = dict(_MOCK_RESERVATION_V4)
         rec_nomatch["hostname"] = "other-host"
         rec_nomatch["ip-address"] = "10.0.0.200"
-        with stub_kea({"reservation-get-page": _res_page([rec_match, rec_nomatch]), "lease4-get-all": _LEASE_NONE}):
+        with _reservation_stub(
+            4, {"reservation-get-page": _res_page([rec_match, rec_nomatch]), "lease4-get-by-state": _LEASE_NONE}
+        ):
             url = reverse("plugins:netbox_kea:combined_reservations4") + f"?server={self.v4_server.pk}&q=host-v4"
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
@@ -433,7 +505,7 @@ class TestCombinedReservations4View(_CombinedViewBase):
         rec2 = dict(_MOCK_RESERVATION_V4)
         rec2["ip-address"] = "10.0.0.200"
         rec2["hostname"] = "other"
-        with stub_kea({"reservation-get-page": _res_page([rec, rec2]), "lease4-get-all": _LEASE_NONE}):
+        with _reservation_stub(4, {"reservation-get-page": _res_page([rec, rec2]), "lease4-get-by-state": _LEASE_NONE}):
             url = reverse("plugins:netbox_kea:combined_reservations4") + f"?server={self.v4_server.pk}&q=10.0.0.100"
             response = self.client.get(url)
         self.assertContains(response, "10.0.0.100")
@@ -445,7 +517,32 @@ class TestCombinedReservations4View(_CombinedViewBase):
         rec2 = dict(_MOCK_RESERVATION_V4)
         rec2["subnet-id"] = 2
         rec2["ip-address"] = "10.0.0.200"
-        with stub_kea({"reservation-get-page": _res_page([rec1, rec2]), "lease4-get-all": _LEASE_NONE}):
+        # Both Catalogue sources share this list, so identity and configuration cannot drift apart.
+        two_subnets = [{"id": 1, "subnet": "10.0.0.0/25"}, {"id": 2, "subnet": "10.0.0.128/25"}]
+        subnets = {
+            "result": 0,
+            "arguments": {"subnets": [{**subnet, "shared-network-name": None} for subnet in two_subnets]},
+        }
+        config = [
+            {
+                "result": 0,
+                "arguments": {
+                    "Dhcp4": {
+                        "subnet4": two_subnets,
+                        "shared-networks": [],
+                    }
+                },
+            }
+        ]
+        with _reservation_stub(
+            4,
+            {
+                "subnet4-list": subnets,
+                "config-get": config,
+                "reservation-get-page": _res_page([rec1, rec2]),
+                "lease4-get-by-state": _LEASE_NONE,
+            },
+        ):
             url = reverse("plugins:netbox_kea:combined_reservations4") + f"?server={self.v4_server.pk}&subnet_id=2"
             response = self.client.get(url)
         self.assertNotContains(response, "10.0.0.100")
@@ -453,7 +550,9 @@ class TestCombinedReservations4View(_CombinedViewBase):
 
     def test_search_no_match_returns_empty_table(self):
         """?q=zzz with no matching records renders an empty table (no 500)."""
-        with stub_kea({"reservation-get-page": _res_page([dict(_MOCK_RESERVATION_V4)]), "lease4-get-all": _LEASE_NONE}):
+        with _reservation_stub(
+            4, {"reservation-get-page": _res_page([dict(_MOCK_RESERVATION_V4)]), "lease4-get-by-state": _LEASE_NONE}
+        ):
             url = reverse("plugins:netbox_kea:combined_reservations4") + f"?server={self.v4_server.pk}&q=zzz-no-match"
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
@@ -469,7 +568,7 @@ class TestCombinedReservations6View(_CombinedViewBase):
     """GET /plugins/kea/combined/reservations6/ — all DHCPv6 reservations."""
 
     def test_get_returns_200(self):
-        with stub_kea({"reservation-get-page": _RES_EMPTY_PAGE}):
+        with _reservation_stub(6, {"reservation-get-page": _RES_EMPTY_PAGE}):
             url = reverse("plugins:netbox_kea:combined_reservations6")
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
@@ -482,36 +581,42 @@ class TestCombinedReservations6View(_CombinedViewBase):
         self.assertIn("login", response.url)
 
     def test_queries_all_v6_servers(self):
-        with stub_kea(
-            {"reservation-get-page": _res_page([dict(_MOCK_RESERVATION_V6)]), "lease6-get-all": _LEASE_NONE}
+        with _reservation_stub(
+            6, {"reservation-get-page": _res_page([dict(_MOCK_RESERVATION_V6)]), "lease6-get-by-state": _LEASE_NONE}
         ) as kea:
             url = reverse("plugins:netbox_kea:combined_reservations6")
             self.client.get(url)
         self.assertGreaterEqual(kea.commands().count("reservation-get-page"), 2)
 
     def test_server_filter_limits_queried_servers(self):
-        with stub_kea({"reservation-get-page": _RES_EMPTY_PAGE}) as kea:
+        with _reservation_stub(6, {"reservation-get-page": _RES_EMPTY_PAGE}) as kea:
             url = reverse("plugins:netbox_kea:combined_reservations6") + f"?server={self.v6_server.pk}"
             self.client.get(url)
         self.assertEqual(kea.commands().count("reservation-get-page"), 1)
 
     def test_unreachable_server_returns_200_with_warning(self):
-        with stub_kea({"reservation-get-page": requests.ConnectionError("refused")}):
+        with _reservation_stub(6, {"reservation-get-page": requests.ConnectionError("refused")}):
             url = reverse("plugins:netbox_kea:combined_reservations6")
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
 
-    def test_export_returns_csv(self):
-        """?export=table returns a CSV download of the v6 reservations table."""
-        with stub_kea({"reservation-get-page": _res_page([dict(_MOCK_RESERVATION_V6)]), "lease6-get-all": _LEASE_NONE}):
-            url = reverse("plugins:netbox_kea:combined_reservations6") + f"?server={self.v6_server.pk}&export=table"
+    def test_export_returns_json(self):
+        """?export=json returns a structured v6 Reservation document."""
+        with _reservation_stub(
+            6, {"reservation-get-page": _res_page([dict(_MOCK_RESERVATION_V6)]), "lease6-get-by-state": _LEASE_NONE}
+        ):
+            url = reverse("plugins:netbox_kea:combined_reservations6") + f"?server={self.v6_server.pk}&export=json"
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
-        self.assertIn("text/csv", response.get("Content-Type", ""))
+        self.assertIn("application/json", response.get("Content-Type", ""))
+        document = json.loads(response.content.decode())
+        self.assertEqual(document["version"], 1)
+        self.assertEqual([record["hostname"] for record in document["reservations"]], ["host-v6"])
+        self.assertEqual(document["reservations"][0]["addresses"], ["2001:db8::1"])
 
     def test_search_form_in_context(self):
         """Response context must contain search_form."""
-        with stub_kea({"reservation-get-page": _RES_EMPTY_PAGE}):
+        with _reservation_stub(6, {"reservation-get-page": _RES_EMPTY_PAGE}):
             url = reverse("plugins:netbox_kea:combined_reservations6")
             response = self.client.get(url)
         self.assertIn("search_form", response.context)
@@ -525,7 +630,9 @@ class TestCombinedReservations6View(_CombinedViewBase):
             "ip-addresses": ["2001:db8::2"],
             "hostname": "other-v6",
         }
-        with stub_kea({"reservation-get-page": _res_page([rec_match, rec_nomatch]), "lease6-get-all": _LEASE_NONE}):
+        with _reservation_stub(
+            6, {"reservation-get-page": _res_page([rec_match, rec_nomatch]), "lease6-get-by-state": _LEASE_NONE}
+        ):
             url = reverse("plugins:netbox_kea:combined_reservations6") + f"?server={self.v6_server.pk}&q=host-v6"
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
@@ -541,7 +648,7 @@ class TestCombinedReservations6View(_CombinedViewBase):
             "ip-addresses": ["2001:db8::99"],
             "hostname": "other",
         }
-        with stub_kea({"reservation-get-page": _res_page([rec, rec2]), "lease6-get-all": _LEASE_NONE}):
+        with _reservation_stub(6, {"reservation-get-page": _res_page([rec, rec2]), "lease6-get-by-state": _LEASE_NONE}):
             url = reverse("plugins:netbox_kea:combined_reservations6") + f"?server={self.v6_server.pk}&q=00:01:aa:bb"
             response = self.client.get(url)
         self.assertContains(response, "00:01:aa:bb")
@@ -894,7 +1001,7 @@ class TestCombinedSubnets6View(_CombinedViewBase):
 
 
 _MOCK_LEASE_V4_ENRICHMENT = {
-    "ip-address": "10.20.0.5",
+    "ip-address": "10.0.0.5",
     "hw-address": "aa:bb:cc:dd:ee:01",
     "subnet-id": 1,
     "hostname": "enriched-host",
@@ -906,7 +1013,7 @@ _MOCK_LEASE_V4_ENRICHMENT = {
 _MOCK_RESERVATION_ENRICHED = {
     "subnet-id": 1,
     "hw-address": "aa:bb:cc:dd:ee:01",
-    "ip-address": "10.20.0.5",
+    "ip-address": "10.0.0.5",
     "hostname": "enriched-host",
 }
 
@@ -915,46 +1022,55 @@ _MOCK_RESERVATION_ENRICHED = {
 class TestCombinedLeases4Enrichment(_CombinedViewBase):
     """Combined DHCPv4 lease view must include the same badge enrichment as per-server view."""
 
-    def _lease_url(self, q="10.20.0.5", by="ip"):
+    def _lease_url(self, q="10.0.0.5", by="ip"):
         return reverse("plugins:netbox_kea:combined_leases4") + f"?q={q}&by={by}&server={self.v4_server.pk}"
 
     def test_reserved_badge_appears_when_reservation_exists(self):
         """A lease with a matching reservation must show the 'Reserved' badge."""
-        with stub_kea(
+        with _reservation_stub(
+            4,
             {
                 "lease4-get": _lease_one(_MOCK_LEASE_V4_ENRICHMENT),
                 "reservation-get": _res_get(_MOCK_RESERVATION_ENRICHED),
-            }
+            },
         ):
             response = self.client.get(self._lease_url())
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "Reserved")
+        row = next(iter(response.context["table"].rows)).record
+        self.assertTrue(row["is_reserved"])
 
     def test_create_reservation_link_when_no_reservation(self):
         """A lease without a matching reservation must show a create-reservation link."""
-        with stub_kea({"lease4-get": _lease_one(_MOCK_LEASE_V4_ENRICHMENT), "reservation-get": _RES_NOT_FOUND}):
+        with _reservation_stub(
+            4, {"lease4-get": _lease_one(_MOCK_LEASE_V4_ENRICHMENT), "reservation-get": _RES_NOT_FOUND}
+        ):
             response = self.client.get(self._lease_url())
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "reservations4/add")
 
     def test_netbox_ip_synced_link_when_ip_in_netbox(self):
         """When the lease IP exists in NetBox IPAM, a 'Synced' link must appear."""
-        IPAddress.objects.create(address="10.20.0.5/32")
-        with stub_kea({"lease4-get": _lease_one(_MOCK_LEASE_V4_ENRICHMENT), "reservation-get": _RES_NOT_FOUND}):
+        IPAddress.objects.create(address="10.0.0.5/32")
+        with _reservation_stub(
+            4, {"lease4-get": _lease_one(_MOCK_LEASE_V4_ENRICHMENT), "reservation-get": _RES_NOT_FOUND}
+        ):
             response = self.client.get(self._lease_url())
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Synced")
 
     def test_netbox_ip_sync_button_when_ip_not_in_netbox(self):
         """When the lease IP is not in NetBox IPAM, a 'Sync' button must appear."""
-        with stub_kea({"lease4-get": _lease_one(_MOCK_LEASE_V4_ENRICHMENT), "reservation-get": _RES_NOT_FOUND}):
+        with _reservation_stub(
+            4, {"lease4-get": _lease_one(_MOCK_LEASE_V4_ENRICHMENT), "reservation-get": _RES_NOT_FOUND}
+        ):
             response = self.client.get(self._lease_url())
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "Sync")
+        row = next(iter(response.context["table"].rows)).record
+        self.assertTrue(row["sync_url"])
 
     def test_combined_default_columns_include_reserved_and_netbox_ip(self):
         """GlobalLeaseTable4 default columns must include reserved and netbox_ip."""
-        with stub_kea({"lease4-get": _LEASE_NONE}):
+        with _reservation_stub(4, {"lease4-get": _LEASE_NONE}):
             response = self.client.get(self._lease_url(q="nomatch"))
         self.assertEqual(response.status_code, 200)
         # Column headers should appear
@@ -971,11 +1087,12 @@ class TestCombinedReservations4Enrichment(_CombinedViewBase):
 
     def test_active_lease_badge_when_lease_exists(self):
         """A reservation with an active lease must show 'Active Lease' badge."""
-        with stub_kea(
+        with _reservation_stub(
+            4,
             {
                 "reservation-get-page": _res_page([dict(_MOCK_RESERVATION_ENRICHED)]),
-                "lease4-get-all": _leases([{"ip-address": "10.20.0.5"}]),
-            }
+                "lease4-get-by-state": _leases([{"ip-address": "10.0.0.5"}]),
+            },
         ):
             response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
@@ -983,8 +1100,9 @@ class TestCombinedReservations4Enrichment(_CombinedViewBase):
 
     def test_no_lease_badge_when_no_active_lease(self):
         """A reservation without active lease must show 'No Lease' badge."""
-        with stub_kea(
-            {"reservation-get-page": _res_page([dict(_MOCK_RESERVATION_ENRICHED)]), "lease4-get-all": _leases([])}
+        with _reservation_stub(
+            4,
+            {"reservation-get-page": _res_page([dict(_MOCK_RESERVATION_ENRICHED)]), "lease4-get-by-state": _leases([])},
         ):
             response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
@@ -992,25 +1110,27 @@ class TestCombinedReservations4Enrichment(_CombinedViewBase):
 
     def test_lease_column_header_present(self):
         """GlobalReservationTable4 must render a 'Lease' column header."""
-        with stub_kea({"reservation-get-page": _RES_EMPTY_PAGE}):
+        with _reservation_stub(4, {"reservation-get-page": _RES_EMPTY_PAGE}):
             response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "Lease")
+        self.assertIn("lease_status", response.context["table"].columns.names())
 
     def test_netbox_ip_synced_link_when_ip_in_netbox(self):
-        """Reservation IP in NetBox IPAM → 'Synced' link in combined table."""
-        IPAddress.objects.create(address="10.20.0.5/32")
-        with stub_kea(
-            {"reservation-get-page": _res_page([dict(_MOCK_RESERVATION_ENRICHED)]), "lease4-get-all": _leases([])}
+        """The combined table shows aggregate synchronization for the Reservation."""
+        IPAddress.objects.create(address="10.0.0.5/32")
+        with _reservation_stub(
+            4,
+            {"reservation-get-page": _res_page([dict(_MOCK_RESERVATION_ENRICHED)]), "lease4-get-by-state": _leases([])},
         ):
             response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "Synced")
+        self.assertContains(response, "Synchronized 1/1")
 
     def test_edit_action_links_use_server_pk(self):
         """Each combined reservation row must have an edit link pointing to the correct server."""
-        with stub_kea(
-            {"reservation-get-page": _res_page([dict(_MOCK_RESERVATION_ENRICHED)]), "lease4-get-all": _leases([])}
+        with _reservation_stub(
+            4,
+            {"reservation-get-page": _res_page([dict(_MOCK_RESERVATION_ENRICHED)]), "lease4-get-by-state": _leases([])},
         ):
             response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
@@ -1050,19 +1170,23 @@ class TestCombinedLeases6Enrichment(_CombinedViewBase):
 
     def test_reserved_badge_appears_when_reservation_exists(self):
         """A v6 lease with a matching reservation must show the 'Reserved' badge."""
-        with stub_kea(
+        with _reservation_stub(
+            6,
             {
                 "lease6-get": _lease_one(_MOCK_LEASE_V6_ENRICHMENT),
                 "reservation-get": _res_get(_MOCK_RESERVATION_V6_ENRICHED),
-            }
+            },
         ):
             response = self.client.get(self._lease_url())
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "Reserved")
+        row = next(iter(response.context["table"].rows)).record
+        self.assertTrue(row["is_reserved"])
 
     def test_create_reservation_link_when_no_reservation(self):
         """A v6 lease without a matching reservation must show a create-reservation link."""
-        with stub_kea({"lease6-get": _lease_one(_MOCK_LEASE_V6_ENRICHMENT), "reservation-get": _RES_NOT_FOUND}):
+        with _reservation_stub(
+            6, {"lease6-get": _lease_one(_MOCK_LEASE_V6_ENRICHMENT), "reservation-get": _RES_NOT_FOUND}
+        ):
             response = self.client.get(self._lease_url())
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "reservations6/add")
@@ -1070,17 +1194,22 @@ class TestCombinedLeases6Enrichment(_CombinedViewBase):
     def test_netbox_ip_synced_link_when_ip_in_netbox(self):
         """When the v6 lease IP exists in NetBox IPAM, a 'Synced' link must appear."""
         IPAddress.objects.create(address="2001:db8::5/128")
-        with stub_kea({"lease6-get": _lease_one(_MOCK_LEASE_V6_ENRICHMENT), "reservation-get": _RES_NOT_FOUND}):
+        with _reservation_stub(
+            6, {"lease6-get": _lease_one(_MOCK_LEASE_V6_ENRICHMENT), "reservation-get": _RES_NOT_FOUND}
+        ):
             response = self.client.get(self._lease_url())
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Synced")
 
     def test_netbox_ip_sync_button_when_ip_not_in_netbox(self):
         """When the v6 lease IP is not in NetBox IPAM, a 'Sync' button must appear."""
-        with stub_kea({"lease6-get": _lease_one(_MOCK_LEASE_V6_ENRICHMENT), "reservation-get": _RES_NOT_FOUND}):
+        with _reservation_stub(
+            6, {"lease6-get": _lease_one(_MOCK_LEASE_V6_ENRICHMENT), "reservation-get": _RES_NOT_FOUND}
+        ):
             response = self.client.get(self._lease_url())
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "Sync")
+        row = next(iter(response.context["table"].rows)).record
+        self.assertTrue(row["sync_url"])
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
@@ -1092,11 +1221,12 @@ class TestCombinedReservations6Enrichment(_CombinedViewBase):
 
     def test_active_lease_badge_when_lease_exists(self):
         """A v6 reservation with an active lease must show 'Active Lease' badge."""
-        with stub_kea(
+        with _reservation_stub(
+            6,
             {
                 "reservation-get-page": _res_page([dict(_MOCK_RESERVATION_V6_ENRICHED)]),
-                "lease6-get-all": _leases([{"ip-address": "2001:db8::5"}]),
-            }
+                "lease6-get-by-state": _leases([{"ip-address": "2001:db8::5"}]),
+            },
         ):
             response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
@@ -1104,11 +1234,12 @@ class TestCombinedReservations6Enrichment(_CombinedViewBase):
 
     def test_no_lease_badge_when_no_active_lease(self):
         """A v6 reservation without active lease must show 'No Lease' badge."""
-        with stub_kea(
+        with _reservation_stub(
+            6,
             {
                 "reservation-get-page": _res_page([dict(_MOCK_RESERVATION_V6_ENRICHED)]),
-                "lease6-get-all": _leases([]),
-            }
+                "lease6-get-by-state": _leases([]),
+            },
         ):
             response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
@@ -1116,11 +1247,12 @@ class TestCombinedReservations6Enrichment(_CombinedViewBase):
 
     def test_edit_action_links_use_server_pk(self):
         """Each combined v6 reservation row must have an edit link pointing to the correct server."""
-        with stub_kea(
+        with _reservation_stub(
+            6,
             {
                 "reservation-get-page": _res_page([dict(_MOCK_RESERVATION_V6_ENRICHED)]),
-                "lease6-get-all": _leases([]),
-            }
+                "lease6-get-by-state": _leases([]),
+            },
         ):
             response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)

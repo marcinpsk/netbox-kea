@@ -28,7 +28,7 @@ from netbox_kea.tests.parallel import MAX_PARALLEL_WORKERS, isolated_test_databa
 logger = logging.getLogger(__name__)
 
 #: NetBox release that ``netbox_kea/tests/query_counts.json`` was recorded against.
-QUERY_COUNT_NETBOX_VERSION = "4.6.8"
+QUERY_COUNT_NETBOX_VERSION = "4.7.0"
 
 #: Where NetBox binds the context manager the baselines are asserted through.
 QUERY_COUNT_ASSERTION_SITES = ("utilities.testing.api", "utilities.testing.views")

@@ -1,8 +1,8 @@
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from django import forms
 from django.core.exceptions import ValidationError
-from netaddr import EUI, AddrFormatError, IPAddress, IPNetwork, IPRange, mac_unix_expanded
+from netaddr import EUI, AddrFormatError, IPAddress, IPNetwork, mac_unix_expanded
 from netbox.forms import NetBoxModelBulkEditForm, NetBoxModelFilterSetForm, NetBoxModelForm, NetBoxModelImportForm
 from utilities.forms import BOOLEAN_WITH_BLANK_CHOICES
 from utilities.forms.fields import TagFilterField
@@ -10,7 +10,14 @@ from utilities.forms.rendering import FieldSet
 
 from . import constants
 from .models import Server
-from .utilities import is_hex_string, parse_delegated_prefixes, validate_reservation_identifier
+from .reservation_transfer import MAX_DOCUMENT_BYTES as MAX_TRANSFER_DOCUMENT_BYTES
+from .reservations import (
+    ReservationCapabilities,
+    ReservationIdentity,
+    reservation_identifier_choices,
+    reservation_identifier_types,
+)
+from .utilities import is_hex_string, parse_delegated_prefixes, parse_pool_range
 
 
 def _validate_ip(value: str, version: int) -> str:
@@ -287,16 +294,22 @@ class BaseLeasesSarchForm(forms.Form):
 
         page = cleaned_data["page"]
         if page:
-            if by not in (constants.BY_SUBNET, ""):
+            if by == "":
+                try:
+                    page_ip = IPAddress(page, version=ip_version)
+                    cleaned_data["page"] = str(page_ip)
+                except (AddrFormatError, TypeError, ValueError) as e:
+                    raise ValidationError({"page": "Invalid IP."}) from e
+            elif by in (constants.BY_SUBNET, constants.BY_SUBNET_ID):
+                try:
+                    page_number = int(page)
+                except (TypeError, ValueError) as e:
+                    raise ValidationError({"page": "Subnet page must be a positive integer."}) from e
+                if page_number < 1:
+                    raise ValidationError({"page": "Subnet page must be a positive integer."})
+                cleaned_data["page"] = page_number
+            else:
                 raise ValidationError({"page": "page is only supported with subnet or all-leases search."})
-            try:
-                page_ip = IPAddress(page, version=ip_version)
-                if by == constants.BY_SUBNET and page_ip not in cleaned_data["q"]:
-                    raise ValidationError({"page": "page is not in the given subnet"})
-
-                cleaned_data["page"] = str(page_ip)
-            except AddrFormatError as e:
-                raise ValidationError({"page": "Invalid IP."}) from e
 
         return cleaned_data
 
@@ -394,19 +407,53 @@ class Lease4DeleteForm(BaseLeaseDeleteForm):
 
 
 def _identifier_type_choices(version: int) -> list[tuple[str, str]]:
-    """Offer exactly the identifier types the CSV importer and the URLs accept."""
-    return [
-        (name, constants.RESERVATION_IDENTIFIER_LABELS[name])
-        for name in constants.RESERVATION_IDENTIFIER_TYPES[version]
-    ]
+    """Offer exactly the identifier types the Reservation domain accepts."""
+    return list(reservation_identifier_choices(version))
 
 
 _IDENTIFIER_TYPE_CHOICES_V4 = _identifier_type_choices(4)
 _IDENTIFIER_TYPE_CHOICES_V6 = _identifier_type_choices(6)
 
 
+class ReservationIdentifierSelect(forms.Select):
+    """Disable identifier choices that the live Kea configuration cannot use."""
+
+    def __init__(self, *args, unavailable: dict[str, str] | None = None, **kwargs):
+        self.unavailable = unavailable or {}
+        super().__init__(*args, **kwargs)
+
+    def create_option(self, name, value, label, selected, index, subindex=None, attrs=None):
+        """Add disabled state and a concise reason to unavailable options."""
+        option = super().create_option(name, value, label, selected, index, subindex, attrs)
+        if value in self.unavailable:
+            option["attrs"]["disabled"] = True
+            option["attrs"]["title"] = self.unavailable[value]
+        return option
+
+
+def _configure_identifier_capabilities(
+    form: forms.Form,
+    capabilities: ReservationCapabilities | None,
+    version: int,
+) -> None:
+    """Disable identifier choices the live Kea configuration cannot use."""
+    unavailable: dict[str, str] = (
+        {str(identifier): reason for identifier, reason in capabilities.unavailable_identifiers}
+        if capabilities is not None
+        else dict.fromkeys(reservation_identifier_types(version), "Kea capability discovery failed.")
+    )
+    identifier_field = cast(forms.ChoiceField, form.fields["identifier_type"])
+    identifier_field.widget = ReservationIdentifierSelect(
+        choices=identifier_field.choices,
+        unavailable=unavailable,
+    )
+    setattr(form, "reservation_capabilities", capabilities)
+
+
 class Reservation4Form(forms.Form):
     """Form for creating or editing a DHCPv4 host reservation."""
+
+    reservation_capabilities: ReservationCapabilities | None = None
 
     subnet_cidr = forms.CharField(
         label="Subnet CIDR",
@@ -441,6 +488,13 @@ class Reservation4Form(forms.Form):
         required=False,
         help_text="Create or update an IPAddress in NetBox with status=reserved.",
     )
+    managed_fingerprint = forms.CharField(required=False, widget=forms.HiddenInput())
+
+    def __init__(self, *args, **kwargs):
+        """Apply live DHCPv4 Reservation identifier capabilities."""
+        capabilities = kwargs.pop("capabilities", None)
+        super().__init__(*args, **kwargs)
+        _configure_identifier_capabilities(self, capabilities, 4)
 
     def clean_subnet_cidr(self) -> str:
         """Validate the value is a valid IPv4 subnet CIDR.
@@ -478,11 +532,19 @@ class Reservation4Form(forms.Form):
         cleaned = super().clean()
         if not cleaned:
             return cleaned
+        capabilities = self.reservation_capabilities
+        if capabilities is None or not capabilities.mutation_available:
+            raise forms.ValidationError("Reservation mutation capabilities are unavailable.")
+        identifier_type = cleaned.get("identifier_type")
+        if not identifier_type:
+            return cleaned
+        if identifier_type not in capabilities.identifiers:
+            self.add_error("identifier_type", "This identifier is not enabled in the live Kea configuration.")
         identifier = cleaned.get("identifier", "").strip()
         if not identifier:
             return cleaned
         try:
-            validate_reservation_identifier(cleaned.get("identifier_type", ""), identifier)
+            cleaned["identifier"] = ReservationIdentity(identifier_type, identifier).value
         except ValueError as exc:
             self.add_error("identifier", str(exc))
         return cleaned
@@ -490,6 +552,8 @@ class Reservation4Form(forms.Form):
 
 class Reservation6Form(forms.Form):
     """Form for creating or editing a DHCPv6 host reservation."""
+
+    reservation_capabilities: ReservationCapabilities | None = None
 
     subnet_cidr = forms.CharField(
         label="Subnet CIDR",
@@ -529,6 +593,13 @@ class Reservation6Form(forms.Form):
         required=False,
         help_text="Create or update an IPAddress in NetBox with status=reserved.",
     )
+    managed_fingerprint = forms.CharField(required=False, widget=forms.HiddenInput())
+
+    def __init__(self, *args, **kwargs):
+        """Apply live DHCPv6 Reservation identifier capabilities."""
+        capabilities = kwargs.pop("capabilities", None)
+        super().__init__(*args, **kwargs)
+        _configure_identifier_capabilities(self, capabilities, 6)
 
     def clean_subnet_cidr(self) -> str:
         """Validate the value is a valid IPv6 subnet CIDR.
@@ -572,7 +643,7 @@ class Reservation6Form(forms.Form):
         return ",".join(cleaned)
 
     def clean_prefixes(self) -> str:
-        """Validate the delegated-prefix list with the validator the CSV importer uses."""
+        """Validate the delegated-prefix list with the shared domain validator."""
         try:
             prefixes = parse_delegated_prefixes(self.cleaned_data.get("prefixes") or "")
         except ValueError as exc:
@@ -584,11 +655,19 @@ class Reservation6Form(forms.Form):
         cleaned = super().clean()
         if not cleaned:
             return cleaned
+        capabilities = self.reservation_capabilities
+        if capabilities is None or not capabilities.mutation_available:
+            raise forms.ValidationError("Reservation mutation capabilities are unavailable.")
+        identifier_type = cleaned.get("identifier_type")
+        if not identifier_type:
+            return cleaned
+        if identifier_type not in capabilities.identifiers:
+            self.add_error("identifier_type", "This identifier is not enabled in the live Kea configuration.")
         identifier = cleaned.get("identifier", "").strip()
         if not identifier:
             return cleaned
         try:
-            validate_reservation_identifier(cleaned.get("identifier_type", ""), identifier)
+            cleaned["identifier"] = ReservationIdentity(identifier_type, identifier).value
         except ValueError as exc:
             self.add_error("identifier", str(exc))
         return cleaned
@@ -654,16 +733,13 @@ def _validate_pool_string(pool: str) -> None:
 
     """
     if "-" in pool and "/" not in pool:
-        parts = pool.split("-", 1)
-        if len(parts) != 2:
-            raise forms.ValidationError(f"Invalid pool range '{pool}': expected 'start-end' format.")
         try:
-            IPRange(parts[0].strip(), parts[1].strip())
+            parse_pool_range(pool)
         except (AddrFormatError, ValueError) as exc:
             raise forms.ValidationError(f"Invalid pool range '{pool}': {exc}") from exc
     elif "/" in pool:
         try:
-            IPNetwork(pool, implicit_prefix=False)
+            parse_pool_range(pool)
         except (AddrFormatError, ValueError) as exc:
             raise forms.ValidationError(f"Invalid pool CIDR '{pool}': {exc}") from exc
     else:
@@ -947,13 +1023,21 @@ class ReservationSearchForm(forms.Form):
         required=False,
         label="Search",
         widget=forms.TextInput(attrs={"placeholder": "IP, hostname, or identifier"}),
-        help_text="Case-insensitive search across IP address, hostname, and hardware address / DUID.",
+        help_text=(
+            "Case-insensitive search across addresses, hostname, Reservation Identity, and DHCP Option name or data."
+        ),
     )
     subnet_id = forms.IntegerField(
         required=False,
         label="Subnet ID",
         min_value=1,
         help_text="Filter to a specific Kea subnet ID.",
+    )
+    scope = forms.ChoiceField(
+        required=False,
+        label="Scope",
+        choices=(("", "All scopes"), ("global", "Global"), ("in-subnet", "In-Subnet")),
+        help_text="Filter the current bounded page by Reservation Scope.",
     )
 
 
@@ -1003,33 +1087,57 @@ class DHCPDisableForm(forms.Form):
 
 
 class _BaseBulkReservationImportForm(forms.Form):
-    """Base class for bulk reservation CSV import forms."""
+    """Accept one explicit YAML or JSON Reservation document."""
 
-    csv_file = forms.FileField(
-        label="CSV file",
-        help_text="Upload a UTF-8 CSV file. Lines starting with '#' are skipped.",
+    # Django's DATA_UPLOAD_MAX_MEMORY_SIZE does not cover file uploads, so reject an
+    # oversized upload here instead of reading all of it into memory for the parser.
+    MAX_DOCUMENT_BYTES = MAX_TRANSFER_DOCUMENT_BYTES
+
+    format = forms.ChoiceField(
+        choices=(("yaml", "YAML"), ("json", "JSON")),
+        initial="yaml",
+        help_text="Select the document syntax. Format detection is not automatic.",
+    )
+    document = forms.CharField(
+        required=False,
+        label="Document",
+        widget=forms.Textarea(attrs={"rows": 16, "spellcheck": "false"}),
+        help_text="Paste one complete Reservation transfer document.",
+    )
+    document_file = forms.FileField(
+        required=False,
+        label="Document file",
+        help_text="Upload one UTF-8 YAML or JSON document.",
     )
 
+    def clean(self):
+        """Require exactly one document source and decode uploads as UTF-8."""
+        cleaned_data = super().clean()
+        document = cleaned_data.get("document")
+        document_file = cleaned_data.get("document_file")
+        if document and document_file:
+            raise forms.ValidationError("Paste a document or upload a document file, but do not use both.")
+        if not document and not document_file:
+            raise forms.ValidationError("Paste a document or upload a document file.")
+        if document_file is not None:
+            if document_file.size > self.MAX_DOCUMENT_BYTES:
+                raise forms.ValidationError(
+                    f"The document file must not exceed {self.MAX_DOCUMENT_BYTES // (1024 * 1024)} MB."
+                )
+            try:
+                document = document_file.read().decode("utf-8-sig")
+            except UnicodeDecodeError as exc:
+                raise forms.ValidationError("The document file must use UTF-8 encoding.") from exc
+        cleaned_data["document"] = document
+        return cleaned_data
 
-class Reservation4BulkImportForm(_BaseBulkReservationImportForm):
-    """Bulk import form for DHCPv4 reservations.
 
-    Required columns: ``subnet-id`` plus exactly one of ``hw-address``,
-    ``client-id``, ``circuit-id``, ``flex-id``, ``remote-id``.
-    Optional: ``ip-address``, ``hostname``.  See
-    :py:func:`~netbox_kea.utilities.parse_reservation_csv`.
-    """
+class Reservation4ImportForm(_BaseBulkReservationImportForm):
+    """Import normalized DHCPv4 Reservation documents."""
 
 
-class Reservation6BulkImportForm(_BaseBulkReservationImportForm):
-    """Bulk import form for DHCPv6 reservations.
-
-    Required columns: ``subnet-id`` plus exactly one of ``duid``, ``hw-address``,
-    ``client-id``, ``flex-id``, ``remote-id``.
-    Optional: ``ip-addresses``, ``prefixes``, ``hostname`` — both address and prefix
-    cells take several semicolon-separated values.  See
-    :py:func:`~netbox_kea.utilities.parse_reservation_csv`.
-    """
+class Reservation6ImportForm(_BaseBulkReservationImportForm):
+    """Import normalized DHCPv6 Reservation documents."""
 
 
 class _BaseBulkLeaseImportForm(forms.Form):
@@ -1079,7 +1187,15 @@ class SubnetOptionsForm(forms.Form):
 
 
 SubnetOptionsFormSet = forms.formset_factory(SubnetOptionsForm, extra=1, can_delete=True)
-ReservationOptionsFormSet = forms.formset_factory(SubnetOptionsForm, extra=1, can_delete=True)
+
+
+class ReservationOptionsForm(SubnetOptionsForm):
+    """One Reservation option row with its stable source position."""
+
+    original_index = forms.IntegerField(required=False, min_value=0, widget=forms.HiddenInput)
+
+
+ReservationOptionsFormSet = forms.formset_factory(ReservationOptionsForm, extra=1, can_delete=True)
 
 
 class Lease4EditForm(forms.Form):

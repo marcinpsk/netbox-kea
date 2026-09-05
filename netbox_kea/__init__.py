@@ -17,6 +17,7 @@ class NetBoxKeaConfig(PluginConfig):
     base_url = "kea"
     default_settings = {
         "kea_timeout": 30,
+        "lease_query_max_unpaged_leases": 1000,
         # stale_ip_cleanup: "remove" (delete stale IPs), "deprecate" (set status=deprecated), "none" (skip cleanup)
         "stale_ip_cleanup": "remove",
         # Background IPAM sync settings (Kea → NetBox via django-rq)

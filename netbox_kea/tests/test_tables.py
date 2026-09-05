@@ -112,3 +112,53 @@ class TestGlobalSubnetTableInheritance(TestCase):
         from netbox_kea.tables import GlobalSubnetTable4, GlobalSubnetTable6
 
         self.assertTrue(issubclass(GlobalSubnetTable6, GlobalSubnetTable4))
+
+
+class TestReservationSyncCell(TestCase):
+    """The sync cell must branch on the stable state code, as the HTMX include does.
+
+    ``_enrich_reservations_with_badges`` stores only the typed state, so a cell that
+    compared display text would render every row as Unknown.
+    """
+
+    def _row(self, state) -> dict:
+        """One row in the shape the reservation views build (``views/reservations.py``)."""
+        return {
+            "subnet_id": 1,
+            "ip_address": "198.18.0.10",
+            "sync_state": state,
+            "sync_synchronized": state.synchronized,
+            "sync_total": state.total,
+            "sync_reason": state.reason,
+            "netbox_ip_url": "/ipam/ip-addresses/1/",
+            "sync_url": None,
+        }
+
+    def _render(self, state, column: str = "netbox_ip"):
+        from netbox_kea.tables import ReservationTable4
+
+        table = ReservationTable4([self._row(state)])
+        return str(table.rows[0].get_cell(column))
+
+    def test_every_state_renders_its_own_badge(self):
+        from netbox_kea.reservations import ReservationSynchronizationState
+
+        cases = (
+            (ReservationSynchronizationState.from_counts(2, 2), "Synchronized 2/2"),
+            (ReservationSynchronizationState.from_counts(1, 2), "Partially Synchronized 1/2"),
+            (ReservationSynchronizationState.from_counts(0, 2), "Not Synchronized 0/2"),
+            (ReservationSynchronizationState.not_applicable("Global Scope"), "Not Applicable"),
+            (ReservationSynchronizationState.unknown(1, "IPAM state unreadable"), "Unknown"),
+        )
+
+        for state, expected in cases:
+            with self.subTest(code=state.code):
+                self.assertIn(expected, self._render(state))
+
+    def test_the_subnet_id_cell_reads_the_key_the_views_build(self):
+        """Pin the row key. Kea sends ``subnet-id``; every view row carries ``subnet_id``."""
+        from netbox_kea.reservations import ReservationSynchronizationState
+
+        state = ReservationSynchronizationState.from_counts(1, 1)
+
+        self.assertIn("1", self._render(state, column="subnet_id"))

@@ -32,7 +32,7 @@ NetBox plugin for the [Kea DHCP](https://www.isc.org/kea/) server. Manage your D
 ### Additions in this fork
 
 **Host Reservations**
-- Full CRUD for DHCPv4 and DHCPv6 reservations via [`host_cmds`](https://kea.readthedocs.io/en/latest/arm/hooks.html#host-cmds) and [`subnet_cmds`](https://kea.readthedocs.io/en/latest/arm/hooks.html#subnet-cmds) hooks
+- Full CRUD for DHCPv4 and DHCPv6 reservations via [`host_cmds`](https://kea.readthedocs.io/en/latest/arm/hooks.html#hooks-host-cmds) and [`subnet_cmds`](https://kea.readthedocs.io/en/latest/arm/hooks.html#hooks-subnet-cmds) hooks
 - Identifier types: hw-address (v4), DUID (v6), client-id, flex-id, circuit-id, remote-id
 - Reservations that reserve no address — an identifier-only host (hostname, options or
   client classes only) and a DHCPv6 host that only delegates prefixes. Both are listed,
@@ -42,12 +42,11 @@ NetBox plugin for the [Kea DHCP](https://www.isc.org/kea/) server. Manage your D
   subnet, there being no reserved address to match on
 - Per-reservation DHCP options
 - Journal entries on add/edit/delete
-- Bulk CSV import: columns are matched by header name in any order. Each row needs
-  `subnet-id` and exactly one identifier column; the address is optional, and DHCPv6
-  rows may carry a semicolon-separated `prefixes` column
+- Validated YAML or JSON bulk transfer. Export a Complete Snapshot from one server
+  or the combined view, then import it from the matching DHCPv4 or DHCPv6 Reservations page
 
 **Subnet Management**
-- Add, edit and delete subnets (requires [`subnet_cmds`](https://kea.readthedocs.io/en/latest/arm/hooks.html#subnet-cmds) or `config-set`)
+- Add, edit and delete subnets (requires [`subnet_cmds`](https://kea.readthedocs.io/en/latest/arm/hooks.html#hooks-subnet-cmds) or `config-set`)
 - Pool management (add/delete pools per subnet)
 - Shared network management (add/edit/delete)
 - Per-subnet and global DHCP option editing
@@ -84,15 +83,18 @@ NetBox plugin for the [Kea DHCP](https://www.isc.org/kea/) server. Manage your D
 
 ## Requirements
 
-- NetBox 4.3 – 4.6
+- NetBox 4.3 – 4.7
 - Kea 3.0+ (recommended) — the plugin connects directly to each daemon's built-in HTTP control socket (`kea-dhcp4` / `kea-dhcp6`). The [Kea Control Agent](https://kea.readthedocs.io/en/latest/arm/agent.html) was deprecated in Kea 2.7 and removed in 3.0; on Kea < 3.0, point the server URL at the Control Agent instead.
-- [`lease_cmds`](https://kea.readthedocs.io/en/latest/arm/hooks.html#lease-cmds-lease-commands-for-easier-lease-management) hook library (for lease search and management)
-- [`host_cmds`](https://kea.readthedocs.io/en/latest/arm/hooks.html#host-cmds) hook library (optional, for reservation management — also requires `subnet_cmds` to resolve a reservation's subnet from its CIDR)
-- [`subnet_cmds`](https://kea.readthedocs.io/en/latest/arm/hooks.html#subnet-cmds) hook library (optional, for subnet add/edit/delete, reservation management, and the subnet suggestions on the lease search and reservation forms)
+- [`lease_cmds`](https://kea.readthedocs.io/en/latest/arm/hooks.html#hooks-lease-cmds) hook library (for lease search and management)
+- [`stat_cmds`](https://kea.readthedocs.io/en/latest/arm/hooks.html#hooks-stat-cmds) hook library (for guarded Subnet lease searches unless `lease_query_max_unpaged_leases` is `0`)
+- Kea 3.1.5+ for guarded state-filtered Subnet lease searches. On Kea 3.0 through 3.1.4, setting
+  `lease_query_max_unpaged_leases` to `0` permits an unbounded compatibility query that NetBox filters locally.
+- [`host_cmds`](https://kea.readthedocs.io/en/latest/arm/hooks.html#hooks-host-cmds) hook library (optional, for reservation management — also requires `subnet_cmds` to resolve a reservation's subnet from its CIDR)
+- [`subnet_cmds`](https://kea.readthedocs.io/en/latest/arm/hooks.html#hooks-subnet-cmds) hook library (optional, for subnet add/edit/delete, reservation management, and the subnet suggestions on the lease search and reservation forms)
 
 The plugin degrades gracefully when optional hooks are absent — tabs for unavailable features are hidden automatically. Two pages offer the server's configured subnets as suggestions and read them through `subnet_cmds`; without that hook each says so in a banner rather than silently offering nothing:
 
-- **Lease search** keeps working: the Search field offers no subnet suggestions, so type a subnet CIDR or ID.
+- **Lease search** keeps working: the Search field offers no subnet suggestions, so type an exact configured subnet CIDR or ID.
 - **Add reservation** cannot save, because resolving the entered CIDR to a Kea subnet ID needs `subnet_cmds`. Load the hook first.
 
 ---
@@ -101,7 +103,7 @@ The plugin degrades gracefully when optional hooks are absent — tabs for unava
 
 | netbox-kea-ng | NetBox | Kea |
 |---|---|---|
-| 1.x | 4.3 – 4.6 | 3.0+ recommended (2.4+ via Control Agent) |
+| 1.x | 4.3 – 4.7 | 3.0+ recommended (2.4+ via Control Agent) |
 
 On Kea 3.0+ the plugin talks directly to each DHCP daemon's HTTP control socket; on Kea < 3.0 it connects through the (now-deprecated) Control Agent. CI tests against **Kea 3.2.0** using the `memfile` lease database.
 
@@ -131,6 +133,7 @@ Optionally configure plugin settings (see [Configuration](#configuration)):
 PLUGINS_CONFIG = {
     "netbox_kea": {
         "kea_timeout": 30,
+        "lease_query_max_unpaged_leases": 1000,
         "sync_interval_minutes": 5,
         "sync_leases_enabled": True,
         "sync_reservations_enabled": True,
@@ -167,6 +170,7 @@ All settings are under `PLUGINS_CONFIG["netbox_kea"]`:
 | Setting | Default | Description |
 |---|---|---|
 | `kea_timeout` | `30` | HTTP request timeout in seconds for Kea API calls |
+| `lease_query_max_unpaged_leases` | `1000` | Reject an unpaged Subnet lease query when its Kea statistics count exceeds this limit. Set to `0` to disable this safety check |
 | `stale_ip_cleanup` | `"remove"` | What to do with stale IPs after sync: `"remove"` (delete), `"deprecate"` (set status=deprecated), `"none"` (skip) |
 | `sync_interval_minutes` | `5` | How often the background sync job runs (minutes). Also editable via NetBox admin → Jobs |
 | `sync_leases_enabled` | `True` | Sync active DHCP leases to NetBox IPAM |
@@ -174,6 +178,14 @@ All settings are under `PLUGINS_CONFIG["netbox_kea"]`:
 | `sync_prefixes_enabled` | `True` | Sync Kea subnets to NetBox IPAM as IP Prefixes |
 | `sync_ip_ranges_enabled` | `True` | Sync Kea pools to NetBox IPAM as IP Ranges |
 | `sync_max_leases_per_server` | `50000` | Hard cap on leases fetched per server per sync run. Set to `0` for no limit |
+
+Subnet lease searches use `stat-lease4-get` or `stat-lease6-get` before an
+unpaged lease command. Kea statistics can reject a query that is already too
+large. They cannot prove that an unqualified query is below the limit because
+stored expired states are not included in all statistics. Select Active or
+Declined to narrow a large query. Other states require an exact IP address or
+client identifier search. The guard fails closed when the `stat_cmds` hook is
+not available. Set the limit to `0` only when you accept unbounded responses.
 
 ---
 
@@ -323,14 +335,14 @@ You can substitute `{{ object.name|lower }}` with a custom field: `{{ object.cf.
 uv sync
 
 # Lint
-uv run ruff check netbox_kea/
-uv run ruff format --check netbox_kea/
+uv run ruff check .
+uv run ruff format --check .
 
 # REUSE compliance check
 uv run reuse lint
 
 # Format
-uv run ruff format netbox_kea/
+uv run ruff format .
 
 # Install pre-commit hooks
 uv run pre-commit install
@@ -338,8 +350,8 @@ uv run pre-commit install
 # Build wheel (required before integration tests)
 uv build
 
-# Run unit tests inside the devcontainer with a dedicated test Redis host
-TEST_DB_NAME=test_netbox_kea_review TEST_REDIS_HOST=netbox-kea-review-redis \
+# Run unit tests; both variables are required (see AGENTS.md for picking values)
+TEST_DB_NAME=test_netbox_kea_local TEST_REDIS_HOST=localhost \
   uv run --native-tls pytest --reuse-db -n auto --maxschedchunk=1 -q
 
 # Run integration tests (requires Docker — see tests/test_setup.sh)

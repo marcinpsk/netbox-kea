@@ -22,7 +22,7 @@ from netbox_kea.subnet_catalogue import (
     mutation,
 )
 from netbox_kea.tests.kea_stub import _subnet_list, queued, stub_kea
-from netbox_kea.tests.utils import _PLUGINS_CONFIG, _drop_subnet_choices_cache, _make_db_server
+from netbox_kea.tests.utils import _PLUGINS_CONFIG, _make_db_server
 
 
 def _identity(version, subnets, *, result=0):
@@ -50,7 +50,6 @@ def _config(version, subnets, *, shared_networks=None, config_hash="hash-a", res
 class TestSubnetCatalogue(TestCase):
     def setUp(self):
         self.server = _make_db_server()
-        _drop_subnet_choices_cache(self, self.server)
 
     def test_display_reconciles_typed_configuration(self):
         identities = _identity(
@@ -107,6 +106,15 @@ class TestSubnetCatalogue(TestCase):
         self.assertEqual(standalone.configuration.options[0].name, "domain-name-servers")
         self.assertEqual(standalone.configuration.settings.valid_lifetime, 3600)
         self.assertEqual(standalone.configuration.settings.ddns_qualifying_suffix, "example.invalid")
+
+    def test_find_by_id_rejects_non_integer_values(self):
+        subnet = {"id": 1, "subnet": "198.18.1.0/24"}
+        with stub_kea({"subnet4-list": _identity(4, [subnet]), "config-get": _config(4, [subnet])}):
+            snapshot = display(self.server, 4)
+
+        for subnet_id in (None, 1.0, True):
+            with self.subTest(subnet_id=subnet_id):
+                self.assertIsNone(snapshot.find_by_id(subnet_id))
 
     def test_display_reconciles_typed_dhcpv6_configuration(self):
         identities = _identity(

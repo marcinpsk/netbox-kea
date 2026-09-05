@@ -24,13 +24,15 @@ routing — see "Protocol-aware / direct-daemon client" below.
 ```bash
 uv sync                                    # install dev dependencies (activates .venv via .envrc)
 uv build                                   # build wheel (required before integration tests)
-uv run ruff check netbox_kea/              # lint
-uv run ruff format --check netbox_kea/     # check formatting
-uv run ruff format netbox_kea/             # auto-format
+uv run ruff check .                        # lint
+uv run ruff format --check .               # check formatting
+uv run ruff format .                       # auto-format
 uv run reuse lint                          # SPDX/REUSE compliance
 uv run pre-commit install --install-hooks  # install pre-commit hooks (incl. pre-push opengrep)
 ./scripts/opengrep-scan.sh                 # custom opengrep ruleset gate (pre-push + CI)
 ./scripts/opengrep-test.sh                 # opengrep rule tests
+uv run ./scripts/mypy-gate.sh              # type check, new errors only (pre-push + CI)
+uv run ./scripts/mypy-gate.sh --sync       # rewrite mypy-baseline.txt after fixing errors
 ```
 
 ### Unit tests (`netbox_kea/tests/`)
@@ -49,10 +51,16 @@ any machine. Always use xdist, including for focused tests. A serial run can cle
 Redis database 1, which the shared manual verification environment uses as its
 default cache.
 
+`TEST_DB_NAME` must start with `test_`; `TEST_REDIS_HOST` names a Redis reachable
+from the run. Both are required. The values below are the defaults CI uses. Change
+them to something only this task holds when another project shares the host: a shared
+database is rebuilt by whichever suite runs `--create-db` next, and a shared Redis is
+written to by every worker.
+
 ```bash
-TEST_DB_NAME=test_netbox_kea_review TEST_REDIS_HOST=netbox-kea-review-redis \
+TEST_DB_NAME=test_netbox_kea_local TEST_REDIS_HOST=localhost \
   uv run --native-tls pytest --reuse-db -n auto --maxschedchunk=1
-TEST_DB_NAME=test_netbox_kea_review TEST_REDIS_HOST=netbox-kea-review-redis \
+TEST_DB_NAME=test_netbox_kea_local TEST_REDIS_HOST=localhost \
   uv run --native-tls pytest --reuse-db -n auto --maxschedchunk=1 netbox_kea/tests/test_views_leases.py -v
 ```
 
@@ -67,15 +75,27 @@ TEST_DB_NAME=test_netbox_kea_review TEST_REDIS_HOST=netbox-kea-review-redis \
 uv run --native-tls pytest -p no:django tests/ --tracing=retain-on-failure -v --cov=netbox_kea --cov-report=xml
 ```
 
+The `host_ca` build secret defaults to `/etc/ssl/certs/ca-certificates.crt`. Compose
+reads that path before the build starts, so set `SSL_CERT_FILE` to the local CA bundle
+on any host that keeps it elsewhere (for example `/etc/pki/tls/certs/ca-bundle.crt`).
+
 The compose stack runs: NetBox, netbox-worker, postgres, redis, nginx (basic-auth
 + TLS), and **kea-dhcp4 / kea-dhcp6 as direct daemons** (no Control Agent). The
 daemons run with `-X` because Kea 3.2.0 refuses to start with an unsecured HTTP
 control socket; the sockets are loopback-bound with nginx terminating auth in front.
 
-### E2E tests
+### Browser tests (`tests/ui/`, Docker required)
 
-Playwright end-to-end tests live in `e2e/` and are separate from both unit and
-integration tests.
+Playwright tests are part of the integration suite: one run over `tests/` covers both,
+against the same compose stack. `tests/ui/conftest.py` holds the one browser harness
+both modules share: login, the Server object, a real `KeaClient` on each daemon's
+loopback socket, and HTTP-error tracking. `test_ui.py` covers tables,
+search, and permissions; `test_workflows.py` covers navigation, badge enrichment, and
+CRUD lifecycles.
+
+They used to live in a top-level `e2e/` directory that no workflow named, so they never
+ran anywhere. `test_pytest_configuration.py` now asserts the suite stays inside the path
+the integration job executes.
 
 ### CI
 
@@ -84,7 +104,7 @@ integration tests.
   `netbox_kea/tests/query_counts.json` describes that release only (see "Query-count
   baselines"). Bump the constant, the CI `ref`, and the baselines in one change.
 - **Compatibility matrix**: runs the integration suite (`test_setup.sh`) against
-  NetBox v4.3 (floor), v4.6 (ceiling), and the dev snapshot (allowed to fail).
+  NetBox v4.3 (floor), v4.7 (ceiling), and the dev snapshot (allowed to fail).
 - Playwright traces on failure are uploaded as artifacts.
 
 Ruff is configured in `pyproject.toml`: line length 120, max complexity 15,
@@ -227,6 +247,24 @@ resort, reserved for true external boundaries you cannot run locally.
   parser can't hide behind a `MagicMock`. Register responses by command name (dict /
   list / `queued(...)` / a `(body) -> payload` callable / an exception instance raised
   at the boundary). Patching is at the class level so it also covers `clone()`.
+- **Type-check gate.** `scripts/mypy-gate.sh` (+ `test_mypy_gate.py`, a pre-push hook,
+  the CI `lint` job) type-checks `netbox_kea/` and fails only on errors that are absent
+  from `mypy-baseline.txt`. It exists to catch annotation drift between a producer and
+  its consumer: a `list[dict | Reservation]` passed to a `list[Reservation]` parameter is
+  an error because `list` is invariant, and that reached review once already. NetBox is
+  deliberately **not** installed for this gate, so NetBox objects are `Any`; every
+  first-party signature and call site is still checked, and no upstream NetBox release
+  can break the gate. Unlike the mock-discipline baseline, `mypy-baseline.txt` is **not**
+  empty: it records the errors that already existed when the gate was added. Fix one and
+  run `--sync` to shrink it; never `--sync` to silence a new error. The baseline matches
+  on error text, not line number, so edits above an error do not force a resync.
+  **Always run the gate through `uv run`**, so the locked dev group is active. `django-stubs`
+  is a dev dependency, and mypy resolves Django imports through its stubs only when it is
+  installed; a baseline generated without it misses ~95 findings and CI then fails on a
+  clean checkout. A resolved baseline error does not fail the gate (`--allow-unsynced`),
+  so fixing types never breaks the build, and a mypy exit status above 1 fails loudly
+  rather than filtering an empty report into a false pass.
+
 - **Mock-discipline gate.** `netbox_kea/tests/mock_discipline.py` (+
   `test_mock_discipline.py`, a pre-commit hook) flags new spec-less
   `MagicMock`/`Mock`, and new `patch("netbox_kea…")` / `patch.object(<our class>, …)`
@@ -249,7 +287,7 @@ resort, reserved for true external boundaries you cannot run locally.
   those stay `stub_kea`-driven.
 - **Query-count baselines.** The list-view mixins assert an exact SQL query count
   against `netbox_kea/tests/query_counts.json` to catch N+1 drift. Record/update with
-  `TEST_DB_NAME=test_netbox_kea_review TEST_REDIS_HOST=netbox-kea-review-redis \
+  `TEST_DB_NAME=test_netbox_kea_local TEST_REDIS_HOST=localhost \
   UPDATE_QUERY_COUNTS=1 uv run --native-tls pytest -n 1 ...`, then commit the file. One xdist
   worker prevents concurrent writes and keeps Redis isolated. A count is a fact about
   one NetBox release, not about the plugin alone: NetBox re-records its own baselines on
