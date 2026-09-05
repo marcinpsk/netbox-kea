@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import warnings
+from ipaddress import ip_address
 from pathlib import Path
 
 import pytest
@@ -1297,6 +1298,23 @@ async def test_cycle():
     assert _unguarded_finally_cleanups(source) == ["cleanup"]
 
 
+def test_the_browser_suite_mirrors_the_kea_sync_description_prefix():
+    """The browser cleanup deletes by this prefix, so a drift would widen what it removes.
+
+    ``tests/ui`` cannot import the package, so the literal is duplicated there. This is
+    the check that keeps the copy honest.
+    """
+    from netbox_kea.sync import _KEA_DESC_PREFIX
+
+    source = (_BROWSER_SUITE / "test_workflows.py").read_text()
+    match = re.search(r'^_KEA_SYNC_DESCRIPTION_PREFIX = "([^"]*)"$', source, re.MULTILINE)
+    assert match, "The browser suite no longer defines _KEA_SYNC_DESCRIPTION_PREFIX."
+    assert match.group(1) == _KEA_DESC_PREFIX, (
+        f"The browser suite mirrors {match.group(1)!r} but netbox_kea/sync.py writes "
+        f"{_KEA_DESC_PREFIX!r}. Its NetBox cleanup would match the wrong rows."
+    )
+
+
 class _FakeRowLocator:
     """The subset of the Playwright Locator API the reservation cleanup helper uses."""
 
@@ -1309,6 +1327,9 @@ class _FakeRowLocator:
 
     @property
     def first(self) -> _FakeRowLocator:
+        return self
+
+    def filter(self, **_kwargs) -> _FakeRowLocator:
         return self
 
     def locator(self, *_args, **_kwargs) -> _FakeRowLocator:
@@ -1342,6 +1363,9 @@ class _FakeReservationPage:
     def wait_for_url(self, *_args, **_kwargs) -> None:
         self.url = "http://netbox.invalid/reservations4/"
 
+    def get_by_text(self, *_args, **_kwargs) -> _FakeRowLocator:
+        return _FakeRowLocator(1)
+
     def locator(self, *_args, **_kwargs) -> _FakeRowLocator:
         return _FakeRowLocator(0 if (self.submitted and self.delete_succeeds) else 1)
 
@@ -1357,7 +1381,14 @@ def _run_reservation_cleanup(delete_succeeds: bool, *, strict: bool) -> list[str
     page = _FakeReservationPage(delete_succeeds)
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        module.TestReservationCRUD()._ui_cleanup_reservation(page, "/plugins/netbox_kea", 1, strict=strict)
+        module.TestReservationCRUD()._ui_cleanup_reservation(
+            page,
+            "/plugins/netbox_kea",
+            1,
+            "e2:e2:e2:e2:e2:01",
+            "198.18.0.10",
+            strict=strict,
+        )
     assert page.submitted, "The helper never submitted the delete; this guard would prove nothing."
     return [str(entry.message) for entry in caught]
 
@@ -1397,6 +1428,229 @@ def test_reservation_workflow_rejects_an_offset_at_the_network_boundary():
 
     with pytest.raises(AssertionError, match="too small"):
         workflow._test_ip("198.18.0.0/27")
+
+
+def test_reservation_state_address_does_not_overlap_the_pagination_leases():
+    """The deterministic state case must not reuse an address from the 250-lease fixture."""
+    workflow = _reservation_crud_class()()
+    network_address = ip_address("198.18.0.0")
+    pagination_addresses = {str(network_address + host) for host in range(1, 251)}
+
+    state_address = workflow._test_ip("198.18.0.0/24", workflow._STATE_HOST_OFFSET)
+
+    assert state_address not in pagination_addresses
+
+
+class _FakeNetBoxResponse:
+    """The response surface used by the browser suite's IP cleanup."""
+
+    def __init__(self, payload: dict | None = None):
+        self._payload = payload or {}
+
+    def json(self) -> dict:
+        return self._payload
+
+    def raise_for_status(self) -> None:
+        pass
+
+
+class _FakeNetBoxSession:
+    """Record the exact NetBox queries and deletes issued by IP cleanup."""
+
+    def __init__(self, payload: dict | None = None):
+        self.payload = payload or {"count": 0, "results": []}
+        self.get_calls: list[tuple[str, dict]] = []
+        self.delete_calls: list[tuple[str, dict]] = []
+
+    def get(self, url: str, **kwargs) -> _FakeNetBoxResponse:
+        self.get_calls.append((url, kwargs))
+        return _FakeNetBoxResponse(self.payload)
+
+    def delete(self, url: str, **kwargs) -> _FakeNetBoxResponse:
+        self.delete_calls.append((url, kwargs))
+        return _FakeNetBoxResponse()
+
+
+def _reservation_crud_class():
+    """Load and return the real browser-suite Reservation test class."""
+    pytest.importorskip("playwright", reason="pytest-playwright is a dev dependency")
+    spec = importlib.util.spec_from_file_location("_kea_browser_suite", _BROWSER_SUITE / "test_workflows.py")
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.TestReservationCRUD
+
+
+def test_netbox_ip_cleanup_deletes_the_captured_row_without_searching():
+    """Teardown owns the ID captured after sync, so it must delete only that row."""
+    session = _FakeNetBoxSession()
+
+    _reservation_crud_class()._cleanup_netbox_ip(
+        session,
+        "https://netbox.example.invalid",
+        "198.18.0.10",
+        "e2e-state-test",
+        ip_id=17,
+        strict=True,
+    )
+
+    assert session.get_calls == []
+    assert session.delete_calls == [("https://netbox.example.invalid/api/ipam/ip-addresses/17/", {"timeout": 5})]
+
+
+def test_netbox_ip_precleanup_uses_the_complete_test_identity():
+    """Prior-run cleanup may discover an ID only through every test-owned field."""
+    session = _FakeNetBoxSession(
+        {
+            "count": 1,
+            "results": [
+                {
+                    "id": 23,
+                    "address": "198.18.0.10/24",
+                    "dns_name": "e2e-state-test",
+                    "description": "Synced from Kea DHCP reservation",
+                }
+            ],
+        }
+    )
+
+    _reservation_crud_class()._cleanup_netbox_ip(
+        session,
+        "https://netbox.example.invalid",
+        "198.18.0.10",
+        "e2e-state-test",
+        ip_id=None,
+        strict=True,
+    )
+
+    assert session.get_calls == [
+        (
+            "https://netbox.example.invalid/api/ipam/ip-addresses/",
+            {
+                "params": {
+                    "address": "198.18.0.10",
+                    "dns_name": "e2e-state-test",
+                    "description": "Synced from Kea DHCP reservation",
+                },
+                "timeout": 5,
+            },
+        )
+    ]
+    assert session.delete_calls == [("https://netbox.example.invalid/api/ipam/ip-addresses/23/", {"timeout": 5})]
+
+
+def test_netbox_ip_precleanup_rejects_a_row_outside_the_test_identity():
+    """An unexpectedly broad API result must stop cleanup before any delete."""
+    session = _FakeNetBoxSession(
+        {
+            "count": 1,
+            "results": [
+                {
+                    "id": 29,
+                    "address": "198.18.0.10/24",
+                    "dns_name": "operator-owned",
+                    "description": "Synced from Kea DHCP reservation",
+                }
+            ],
+        }
+    )
+
+    with pytest.raises(AssertionError, match="outside the test identity"):
+        _reservation_crud_class()._cleanup_netbox_ip(
+            session,
+            "https://netbox.example.invalid",
+            "198.18.0.10",
+            "e2e-state-test",
+            ip_id=None,
+            strict=True,
+        )
+
+    assert session.delete_calls == []
+
+
+#: ``requests.Session`` methods the browser suite uses to reach NetBox.
+_SESSION_REQUEST_METHODS = frozenset({"get", "post", "put", "patch", "delete", "head", "options", "request"})
+
+
+def _requests_without_timeout(source: str) -> list[str]:
+    """Return the ``requests.Session`` calls in *source* that pass no timeout.
+
+    A session carries no default timeout, so one of these against a hung NetBox blocks
+    the whole run: cleanup helpers run in ``finally`` and never time out on their own.
+    """
+    offenders: list[str] = []
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+            continue
+        if node.func.attr not in _SESSION_REQUEST_METHODS:
+            continue
+        target = node.func.value
+        if not isinstance(target, ast.Name) or not (target.id.endswith("http") or target.id == "requests_session"):
+            continue
+        # requests treats timeout=None as no timeout, so the keyword alone is not a bound.
+        bounded = any(
+            keyword.arg == "timeout" and not (isinstance(keyword.value, ast.Constant) and keyword.value.value is None)
+            for keyword in node.keywords
+        )
+        if bounded:
+            continue
+        offenders.append(f"{target.id}.{node.func.attr} at line {node.lineno}")
+    return offenders
+
+
+def test_the_request_timeout_guard_reads_every_spelling():
+    """Table-test the guard itself: a guard that reports clean while missing the pattern is worse than none."""
+    must_flag = (
+        "nb_http.get(url)",
+        "nb_http.delete(url)",
+        "nb_http.get(url, timeout=None)",
+        "nb_http.request('GET', url)",
+        "requests_session.get(url)",
+    )
+    must_not_flag = (
+        "nb_http.get(url, timeout=5)",
+        "nb_http.get(url, timeout=TIMEOUT)",
+        "nb_http.json()",
+        "page.get(url)",
+    )
+    for source in must_flag:
+        assert _requests_without_timeout(source), f"the guard missed {source!r}"
+    for source in must_not_flag:
+        assert not _requests_without_timeout(source), f"the guard wrongly flagged {source!r}"
+
+
+def test_the_browser_suite_bounds_every_netbox_request():
+    sources = sorted(_BROWSER_SUITE.rglob("*.py"))
+    assert sources, "The browser suite moved; this guard would pass without reading anything."
+    for path in sources:
+        offenders = _requests_without_timeout(path.read_text())
+        assert not offenders, (
+            f"{path.name} calls NetBox without a timeout at {offenders}. "
+            "A requests.Session has no default timeout, so a hung NetBox blocks the run."
+        )
+
+
+def test_user_preference_reset_allows_for_normal_ci_load():
+    """Keep the autouse request bound above the slow response observed in CI."""
+    from tests.ui.conftest import reset_user_preferences
+
+    class LoadedSession:
+        def _response(self, timeout: int):
+            if timeout < 20:
+                raise requests.ReadTimeout("NetBox is still serving the request")
+            response = requests.Response()
+            response.status_code = 200
+            response._content = b'{"tables": {}}'
+            return response
+
+        def get(self, *, url: str, timeout: int):
+            return self._response(timeout)
+
+        def patch(self, *, url: str, json: dict, timeout: int):
+            return self._response(timeout)
+
+    api = type("API", (), {"base_url": "https://netbox.example.invalid/api"})()
+    reset_user_preferences.__wrapped__(LoadedSession(), api)
 
 
 #: Every external tool the integration setup script calls. Stubbed so the script can run

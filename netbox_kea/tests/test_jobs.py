@@ -139,11 +139,30 @@ def _reservation_subnets(reservations: list[dict], version: int) -> list[dict]:
     return [{"id": subnet_id, "subnet": network} for subnet_id, network in sorted(subnets.items())]
 
 
-def _reservation_snapshot(reservations: list[dict], version: Family) -> ReservationSnapshot:
+#: The Reservation page size ``KeaIpamSyncJob`` asks for. ``reservation_page`` only
+#: reports a next cursor once a page fills it, so a partial traversal needs a full page.
+_JOB_RESERVATION_PAGE_SIZE = 100
+_PAGE_HOSTNAME = "reserved1"
+
+
+def _full_reservation_page() -> list[dict]:
+    """Return one full page of valid DHCPv4 Reservations that share a hostname."""
+    return [
+        {
+            "ip-address": f"10.0.0.{100 + index}",
+            "hw-address": f"11:22:33:44:00:{index:02x}",
+            "hostname": _PAGE_HOSTNAME,
+            "subnet-id": 1,
+        }
+        for index in range(_JOB_RESERVATION_PAGE_SIZE)
+    ]
+
+
+def _reservation_catalogue(reservations: list[dict], version: Family) -> IdentityOnlyCatalogueSnapshot:
     entries = _reservation_subnets(reservations, version)
     # Identity-only: these Subnets carry no configuration, which is exactly what a
     # Reservation Scope needs to be verified.
-    catalogue = IdentityOnlyCatalogueSnapshot(
+    return IdentityOnlyCatalogueSnapshot(
         server_id=1,
         family=version,
         observed_at=timezone.now(),
@@ -162,12 +181,30 @@ def _reservation_snapshot(reservations: list[dict], version: Family) -> Reservat
         consistent=True,
         configuration_hash=None,
     )
+
+
+def _reservation_snapshot(reservations: list[dict], version: Family) -> ReservationSnapshot:
+    catalogue = _reservation_catalogue(reservations, version)
     hosts = [host for host in reservations if _reservation_family(host) == version]
     client = KeaClient(url="http://kea.example.invalid", send_service=False)
     with stub_kea({"reservation-get-page": _res_page(hosts)}):
         # The method the job itself calls, so the double cannot differ from production in
         # traversal state. Page size is bound to the fixture, so a larger fixture cannot
         # silently truncate.
+        return client.reservation_snapshot(version, catalogue, page_size=max(len(hosts), 1))
+
+
+def _incomplete_reservation_snapshot(reservations: list[dict], version: Family) -> ReservationSnapshot:
+    """Return a Snapshot whose page traversal stopped before Kea was exhausted.
+
+    The diagnostic comes from the real traversal, so the test cannot claim an
+    incomplete Snapshot the production code would never build.
+    """
+    hosts = [host for host in reservations if _reservation_family(host) == version]
+    catalogue = _reservation_catalogue(reservations, version)
+    client = KeaClient(url="http://kea.example.invalid", send_service=False)
+    first_page = _res_page(hosts, next_from=99, next_source=1)
+    with stub_kea({"reservation-get-page": queued(first_page, RuntimeError("page fetch failed"))}):
         return client.reservation_snapshot(version, catalogue, page_size=max(len(hosts), 1))
 
 
@@ -620,6 +657,45 @@ class TestKeaIpamSyncJobRun(TestCase):
         bad_lease = {**_LEASE4, "ip-address": "not-an-ip"}
         with _patch_kea(leases4=[bad_lease]):
             self._run_raises()
+        self.assertTrue(IPAddress.objects.filter(pk=stale.pk).exists())
+
+    @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG_CLEANUP)
+    def test_an_incomplete_snapshot_syncs_valid_records_but_preserves_stale_ips(self):
+        """Kea did not show every Reservation, so the run is additive only.
+
+        The records Kea did return are still valid and are synchronized. The keep-set
+        they form is not complete, so stale cleanup must not delete anything.
+        """
+        from ipam.models import IPAddress
+
+        self._make_db_server(dhcp6=False)
+        stale = IPAddress.objects.create(
+            address="10.0.0.99/32",
+            status="reserved",
+            dns_name=_PAGE_HOSTNAME,
+            description="Synced from Kea DHCP (reserved)",
+        )
+
+        # A full page yields a cursor; the page it points at never arrives.
+        hosts = _full_reservation_page()
+        with _patch_kea(
+            leases4=[_LEASE4],
+            reservations=hosts,
+            responses={
+                "reservation-get-page": queued(
+                    _res_page(hosts, next_from=len(hosts), next_source=1),
+                    RuntimeError("page fetch failed"),
+                )
+            },
+        ):
+            with self.assertLogs("netbox_kea.jobs", level="WARNING"):
+                self._run()
+
+        addresses = sorted(str(ip.address) for ip in IPAddress.objects.all())
+        self.assertTrue(
+            any(address.startswith("10.0.0.100/") for address in addresses),
+            f"The valid Reservations were not synchronized; NetBox holds {addresses}",
+        )
         self.assertTrue(IPAddress.objects.filter(pk=stale.pk).exists())
 
     # ── per-server sync_enabled toggle ────────────────────────────────────
@@ -1616,6 +1692,24 @@ class TestSyncServerReservationsReturnValue(TestCase):
         self.assertFalse(ok)
         self.assertEqual(stats["errors"], 1)
         self.assertEqual(stats["skipped"], 0)
+
+    def test_an_incomplete_snapshot_is_never_safe_for_cleanup(self):
+        """An unfinished page traversal cannot produce a complete keep-set."""
+        from ipam.models import IPAddress
+
+        from netbox_kea.jobs import _sync_server_reservations
+
+        stats = self._stats()
+        all_synced = []
+        snapshot = _incomplete_reservation_snapshot([_RESV4], 4)
+
+        ok = _sync_server_reservations(self._server(), snapshot, stats=stats, all_synced=all_synced, protected=[])
+
+        self.assertFalse(snapshot.complete)
+        self.assertFalse(ok)
+        # The valid record still reached IPAM: an incomplete Snapshot is additive, not idle.
+        self.assertEqual(len(all_synced), 1)
+        self.assertTrue(IPAddress.objects.filter(address__net_host="10.0.0.100").exists())
 
     def test_address_less_reservation_is_skipped_not_an_error(self):
         """A host that reserves no address is legal Kea config, not a sync failure (#110).

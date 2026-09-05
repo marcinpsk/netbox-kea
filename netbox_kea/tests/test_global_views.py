@@ -1091,7 +1091,7 @@ class TestCombinedReservations4Enrichment(_CombinedViewBase):
             4,
             {
                 "reservation-get-page": _res_page([dict(_MOCK_RESERVATION_ENRICHED)]),
-                "lease4-get-by-state": _leases([{"ip-address": "10.0.0.5"}]),
+                "lease4-get-by-state": _leases([{"ip-address": "10.0.0.5", "state": 0}]),
             },
         ):
             response = self.client.get(self._url())
@@ -1225,7 +1225,7 @@ class TestCombinedReservations6Enrichment(_CombinedViewBase):
             6,
             {
                 "reservation-get-page": _res_page([dict(_MOCK_RESERVATION_V6_ENRICHED)]),
-                "lease6-get-by-state": _leases([{"ip-address": "2001:db8::5"}]),
+                "lease6-get-by-state": _leases([{"ip-address": "2001:db8::5", "state": 0}]),
             },
         ):
             response = self.client.get(self._url())

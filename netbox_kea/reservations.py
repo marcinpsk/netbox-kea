@@ -4,7 +4,7 @@ import hashlib
 import ipaddress
 import json
 import re
-from collections.abc import Collection
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Generic, Literal, TypeVar, cast
 
@@ -20,6 +20,12 @@ ReservationQueryMode = Literal["page", "identity", "address", "hostname"]
 _IDENTIFIERS: dict[Family, tuple[IdentifierType, ...]] = {
     4: ("hw-address", "duid", "circuit-id", "client-id", "flex-id"),
     6: ("duid", "hw-address", "flex-id"),
+}
+# A Kea lease carries only these identifier types, so a circuit-id or flex-id
+# Reservation can never be matched from a lease record.
+_LEASE_IDENTIFIERS: dict[Family, tuple[IdentifierType, ...]] = {
+    4: ("hw-address", "client-id"),
+    6: ("duid", "hw-address"),
 }
 _IDENTIFIER_LABELS: dict[IdentifierType, str] = {
     "hw-address": "Hardware Address",
@@ -78,6 +84,29 @@ def reservation_identifier_types(family: int) -> tuple[IdentifierType, ...]:
     if family not in (4, 6):
         raise ValueError(f"family must be 4 or 6, got {family!r}")
     return _IDENTIFIERS[cast(Family, family)]
+
+
+def lease_identities(lease: Mapping[str, Any], family: int) -> tuple[ReservationIdentity, ...]:
+    """Return the normalized Reservation Identities one Kea lease carries, in match order.
+
+    Both Kea's own spelling (``hw-address``) and the template-safe spelling
+    (``hw_address``) are accepted, so lease enrichment and Reservation enrichment
+    read one rule set instead of one each.
+    """
+    if family not in (4, 6):
+        raise ValueError(f"family must be 4 or 6, got {family!r}")
+    identities: list[ReservationIdentity] = []
+    for identifier_type in _LEASE_IDENTIFIERS[cast(Family, family)]:
+        value = lease.get(identifier_type) or lease.get(identifier_type.replace("-", "_"))
+        if not value:
+            continue
+        try:
+            identity = ReservationIdentity(identifier_type, value)
+        except ValueError:
+            continue
+        if identity not in identities:
+            identities.append(identity)
+    return tuple(identities)
 
 
 def reservation_identifier_choices(family: int) -> tuple[tuple[IdentifierType, str], ...]:

@@ -440,6 +440,25 @@ class TestSyncReservationMultiAddressV6(TestCase):
         self.assertEqual(hostname, "v6host.example.invalid")
         self.assertEqual(addresses, set())
 
+    def test_malformed_ip_addresses_are_rejected_before_building_the_keep_set(self):
+        from netbox_kea.sync import _record_hostname_and_addresses
+
+        malformed_values = (
+            "2001:db8::10",
+            {"address": "2001:db8::10"},
+            ["2001:db8::10", 42],
+        )
+        for value in malformed_values:
+            with self.subTest(value=value), self.assertRaisesRegex(RuntimeError, "ip-addresses.*list of strings"):
+                _record_hostname_and_addresses({"hostname": "v6host.example.invalid", "ip-addresses": value})
+
+    def test_malformed_ip_address_is_rejected_before_building_the_keep_set(self):
+        from netbox_kea.sync import _record_hostname_and_addresses
+
+        for value in ({"address": "198.18.0.10"}, ["198.18.0.10"], 42):
+            with self.subTest(value=value), self.assertRaisesRegex(RuntimeError, "ip-address.*string or null"):
+                _record_hostname_and_addresses({"hostname": "host.example.invalid", "ip-address": value})
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # P1 — IP Status Semantics (dhcp / reserved / active)
@@ -1678,10 +1697,17 @@ class TestSyncPoolToNetboxIPRange(TestCase):
         self.assertNotIn("None", str(range_obj.end_address))
 
     def test_ipv6_cidr_pool_too_large_returns_sentinel(self):
-        """A /64 IPv6 CIDR pool spans 2^64 addresses — too large for PostgreSQL bigint; returns _POOL_TOO_LARGE."""
+        """A /64 IPv6 CIDR pool is too large for NetBox's IPRange size field."""
         from netbox_kea.sync import _POOL_TOO_LARGE
 
         result = self._sync("2001:db8::/64", "2001:db8::/48")
+        self.assertIs(result, _POOL_TOO_LARGE)
+
+    def test_ipv6_cidr_pool_exceeding_integer_returns_sentinel(self):
+        """A pool larger than PostgreSQL integer must not reach IPRange.save()."""
+        from netbox_kea.sync import _POOL_TOO_LARGE
+
+        result = self._sync("2001:db8:1::/80", "2001:db8:1::/64")
         self.assertIs(result, _POOL_TOO_LARGE)
 
     def test_returns_three_tuple(self):
