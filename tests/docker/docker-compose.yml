@@ -50,6 +50,11 @@ services:
       LOGLEVEL: DEBUG
       DEBUG: "true"
       DB_WAIT_DEBUG: "1"
+      # netbox-docker defaults granian's backpressure to the worker count (4),
+      # about 64x below granian's own backlog/workers default. granian 2.8 spreads
+      # connections unevenly across workers, and with so few slots per worker a
+      # request can wait 20-30s behind a busy one. Raise it to restore concurrency.
+      GRANIAN_BACKPRESSURE: "${GRANIAN_BACKPRESSURE:-256}"
     volumes:
       - ./plugins.py:/etc/netbox/config/plugins.py:z,ro
       - ./certs:/certs/:ro
