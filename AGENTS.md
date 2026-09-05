@@ -52,10 +52,10 @@ Redis database 1, which the shared manual verification environment uses as its
 default cache.
 
 `TEST_DB_NAME` must start with `test_`; `TEST_REDIS_HOST` names a Redis reachable
-from the run. Both are required. The values below are the defaults CI uses. Change
-them to something only this task holds when another project shares the host: a shared
-database is rebuilt by whichever suite runs `--create-db` next, and a shared Redis is
-written to by every worker.
+from the run. Both are required. The values below are recommended local defaults. CI
+sets its own database name for each job. Change them to something only this task holds
+when another project shares the host: a shared database is rebuilt by whichever suite
+runs `--create-db` next, and a shared Redis is written to by every worker.
 
 ```bash
 TEST_DB_NAME=test_netbox_kea_local TEST_REDIS_HOST=localhost \

@@ -108,6 +108,28 @@ def test_documented_unit_test_targets_are_shell_safe():
     )
 
 
+def test_documented_test_database_is_not_presented_as_a_ci_default():
+    """CI sets a job-specific database name, so the local example is not a CI default.
+
+    A reader who trusts the label runs against a database CI never creates, and the
+    drift stays invisible until someone compares the two files.
+    """
+    agents = (REPOSITORY_ROOT / "AGENTS.md").read_text()
+    workflow = (REPOSITORY_ROOT / ".github" / "workflows" / "ci.yml").read_text()
+
+    ci_databases = set(re.findall(r"TEST_DB_NAME:\s*(\S+)", workflow))
+    assert ci_databases, "ci.yml sets no TEST_DB_NAME; this guard would pass without reading anything."
+    documented = set(re.findall(r"TEST_DB_NAME=(\S+)", agents))
+    assert documented, "AGENTS.md documents no TEST_DB_NAME; this guard would pass without reading anything."
+
+    local_only = sorted(documented - ci_databases)
+    claim = re.search(r"[^.\n]*\bdefaults CI uses\b[^.\n]*\.", agents)
+    assert not (claim and local_only), (
+        f"AGENTS.md states {claim.group(0).strip()!r} while CI uses {sorted(ci_databases)}; "
+        f"{local_only} exist only on a developer machine."
+    )
+
+
 def test_published_docs_name_no_machine_specific_resource():
     """Docs ship to readers who do not have this host's containers or databases.
 
