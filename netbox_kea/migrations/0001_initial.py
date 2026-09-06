@@ -10,7 +10,12 @@ class Migration(migrations.Migration):
     initial = True
 
     dependencies = [
-        ('extras', '0092_delete_jobresult'),
+        # The migration that creates extras.Tag and extras.TaggedItem, which the
+        # TaggableManager below needs. Django originally generated a dependency on
+        # extras.0092_delete_jobresult, simply the newest extras migration in 2023;
+        # NetBox has since squashed it away, leaving a node that only resolves
+        # because a squash remaps it. Present in every supported NetBox release.
+        ('extras', '0001_squashed'),
     ]
 
     operations = [
