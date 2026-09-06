@@ -142,3 +142,48 @@ def test_active_worker_uses_private_database_targets(settings):
     assert settings.RQ_QUEUES["default"]["DB"] == tasks_database
     assert settings.CACHES["default"]["LOCATION"].endswith(f"/{cache_database}")
     assert apps.is_installed("netbox_kea")
+
+
+def _collect_only(*extra_args: str) -> subprocess.CompletedProcess:
+    """Run pytest over this module far enough to settle its worker count."""
+    return subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            str(Path(__file__).resolve()),
+            "--collect-only",
+            "-q",
+            "-p",
+            "no:cacheprovider",
+            *extra_args,
+        ],
+        cwd=REPOSITORY_ROOT,
+        capture_output=True,
+        check=False,
+        env=os.environ.copy(),
+        text=True,
+        timeout=300,
+    )
+
+
+def test_explicit_worker_count_above_the_ceiling_is_rejected():
+    """A hand-picked `-n` beyond the ceiling must fail loudly, not silently misbehave.
+
+    `pytest_xdist_auto_num_workers` only caps `auto`. An explicit count sails past it,
+    and the workers above the ceiling get no private Redis databases: the run then
+    reports hundreds of setup errors that read like real failures. Refusing the
+    invocation costs one line; diagnosing that run costs an afternoon.
+    """
+    result = _collect_only("-n", str(MAX_PARALLEL_WORKERS * 2))
+
+    output = result.stdout + result.stderr
+    assert result.returncode != 0, output
+    assert str(MAX_PARALLEL_WORKERS) in output, output
+
+
+def test_the_ceiling_itself_is_still_accepted():
+    """The cap is a limit, not an off-by-one: exactly MAX_PARALLEL_WORKERS must run."""
+    result = _collect_only("-n", str(MAX_PARALLEL_WORKERS))
+
+    assert result.returncode == 0, result.stdout + result.stderr

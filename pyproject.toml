@@ -140,6 +140,10 @@ max-complexity = 15
 pythonpath = ["/opt/netbox/netbox"]
 DJANGO_SETTINGS_MODULE = "netbox_kea.tests.isolated_settings"
 testpaths = ["netbox_kea/tests"]
+# Unit-suite flags must NOT go here. `addopts` applies to the integration suite too,
+# which runs with `-p no:django`, and `--reuse-db` is a pytest-django option: it
+# becomes "unrecognized arguments" and the whole job fails. Keep the worker count and
+# --reuse-db in the documented commands; conftest rejects a count it cannot serve.
 addopts = "--ignore=tests/docker"
 
 [tool.mypy]

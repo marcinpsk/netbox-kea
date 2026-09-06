@@ -92,6 +92,23 @@ def pytest_xdist_auto_num_workers(config) -> int:
     return min(detected_num_workers(config), MAX_PARALLEL_WORKERS)
 
 
+def pytest_configure(config) -> None:
+    """Refuse a hand-picked worker count the isolation cannot serve.
+
+    ``pytest_xdist_auto_num_workers`` only caps ``auto``. An explicit ``-n`` sails
+    past it, and every worker above the ceiling gets no private Redis databases, so
+    the run reports hundreds of setup errors that read like real test failures.
+    ``auto`` and ``logical`` stay xdist's decision, capped by the hook.
+    """
+    requested = getattr(config.option, "numprocesses", None)
+    if not isinstance(requested, int) or requested <= MAX_PARALLEL_WORKERS:
+        return
+    raise pytest.UsageError(
+        f"-n {requested} exceeds the isolation limit: at most {MAX_PARALLEL_WORKERS} "
+        "pytest workers get private PostgreSQL and Redis databases. Use -n auto."
+    )
+
+
 def pytest_sessionstart(session) -> None:
     """Require xdist before tests can touch shared NetBox services."""
     config = session.config
