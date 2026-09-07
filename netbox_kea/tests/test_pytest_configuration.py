@@ -114,6 +114,24 @@ def _prose_paragraphs(markdown: str) -> list[str]:
     return [re.sub(r"\s+", " ", block).strip() for block in re.split(r"\n\s*\n", without_code)]
 
 
+def _ci_default_claims(agents: str, ci_databases: set[str]) -> tuple[list[str], list[str]]:
+    """Return the sentences tying CI to a local-only database, and those database names."""
+    documented = set(re.findall(r"TEST_DB_NAME=(\S+)", agents))
+    local_only = sorted(documented - ci_databases)
+    introductions = [block for block in _prose_paragraphs(agents) if "TEST_DB_NAME" in block]
+    claims = [
+        sentence.strip()
+        for block in introductions
+        for sentence in re.split(r"(?<=\.)\s+", block)
+        if re.search(r"\bCI\b", sentence) and re.search(r"\bdefaults?\b", sentence, re.IGNORECASE)
+    ]
+    # A sentence tying CI to a default must name the database CI uses. Pairing any claim
+    # with a non-empty local_only rejects a correct sentence; requiring the local value
+    # instead accepts a vague one ("CI uses the same default."), which names nothing.
+    offending = [sentence for sentence in claims if not any(value in sentence for value in ci_databases)]
+    return offending, local_only
+
+
 def test_documented_test_database_is_not_presented_as_a_ci_default():
     """CI sets a job-specific database name, so the local example is not a CI default.
 
@@ -132,17 +150,39 @@ def test_documented_test_database_is_not_presented_as_a_ci_default():
     introductions = [block for block in _prose_paragraphs(agents) if "TEST_DB_NAME" in block]
     assert introductions, "No AGENTS.md prose introduces TEST_DB_NAME; this guard would read nothing."
 
-    local_only = sorted(documented - ci_databases)
-    claims = [
-        sentence.strip()
-        for block in introductions
-        for sentence in re.split(r"(?<=\.)\s+", block)
-        if re.search(r"\bCI\b", sentence) and re.search(r"\bdefaults?\b", sentence, re.IGNORECASE)
-    ]
-    assert not (claims and local_only), (
-        f"AGENTS.md ties CI to a default in {claims} while CI uses {sorted(ci_databases)}; "
+    offending, local_only = _ci_default_claims(agents, ci_databases)
+    assert not offending, (
+        f"AGENTS.md ties CI to a local default in {offending} while CI uses {sorted(ci_databases)}; "
         f"{local_only} exist only on a developer machine."
     )
+
+
+def test_the_ci_default_guard_reads_the_value_each_claim_names():
+    """Fail a claim only for the value it actually names.
+
+    ``local_only`` is non-empty whenever AGENTS.md documents any value CI does not
+    use, which is the normal state. Pairing it with any CI-and-default sentence made
+    the guard reject a correct sentence naming only the CI database.
+    """
+    ci_databases = {"test_netbox_kea_ci"}
+    correct = "Set TEST_DB_NAME=test_netbox_kea_local for a local run. CI defaults to test_netbox_kea_ci for every job."
+
+    offending, local_only = _ci_default_claims(correct, ci_databases)
+
+    assert local_only == ["test_netbox_kea_local"], "the guard must still have a local-only value to catch"
+    assert offending == [], "a sentence naming only the CI database is not a conflicting claim"
+
+    wrong = correct.replace("CI defaults to test_netbox_kea_ci", "CI defaults to test_netbox_kea_local")
+
+    offending, _ = _ci_default_claims(wrong, ci_databases)
+
+    assert offending == ["CI defaults to test_netbox_kea_local for every job."]
+
+    vague = correct.replace("CI defaults to test_netbox_kea_ci for every job.", "CI uses the same default.")
+
+    offending, _ = _ci_default_claims(vague, ci_databases)
+
+    assert offending == ["CI uses the same default."], "a claim naming no database must not pass"
 
 
 def test_published_docs_name_no_machine_specific_resource():
