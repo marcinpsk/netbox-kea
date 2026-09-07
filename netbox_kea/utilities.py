@@ -4,7 +4,7 @@ import ipaddress
 import logging
 import re
 from collections.abc import Callable
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Literal
 
 import requests
@@ -141,10 +141,10 @@ def _enrich_lease(now: datetime, lease: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(cltt, int) or not isinstance(valid_lft, int):
         logger.warning("Unexpected non-integer cltt/valid_lft in lease: %s", lease.get("ip_address", "?"))
         return lease
-    expires_at = datetime.fromtimestamp(cltt + valid_lft)
+    expires_at = datetime.fromtimestamp(cltt + valid_lft, tz=timezone.utc)
     lease["expires_at"] = expires_at
     lease["expires_in"] = max(0, int((expires_at - now).total_seconds()))
-    lease["cltt"] = datetime.fromtimestamp(cltt)
+    lease["cltt"] = datetime.fromtimestamp(cltt, tz=timezone.utc)
 
     # F10: set expiry_class based on how close the lease is to expiring.
     if expires_at < now:
@@ -157,7 +157,7 @@ def _enrich_lease(now: datetime, lease: dict[str, Any]) -> dict[str, Any]:
 
 def format_leases(leases: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Enrich a list of raw Kea lease dicts with expiry metadata."""
-    now = datetime.now()
+    now = datetime.now(tz=timezone.utc)
     return [_enrich_lease(now, ls) for ls in leases]
 
 
