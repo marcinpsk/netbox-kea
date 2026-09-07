@@ -75,7 +75,8 @@ def reservation_query_mode(parameter_names: Collection[str]) -> ReservationQuery
 
 def reservation_identifier_types(family: int) -> tuple[IdentifierType, ...]:
     """Return the ordered native Reservation Identity types for one family."""
-    if family not in (4, 6):
+    # bool is an int subclass and 4.0 == 4, so membership alone accepts both.
+    if not isinstance(family, int) or isinstance(family, bool) or family not in (4, 6):
         raise ValueError(f"family must be 4 or 6, got {family!r}")
     return _IDENTIFIERS[cast(Family, family)]
 

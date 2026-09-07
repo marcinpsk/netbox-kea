@@ -27,6 +27,7 @@ from netbox_kea.reservations import (
     SynchronizationLabel,
     apply_reservation_change,
     reservation_fingerprint,
+    reservation_identifier_types,
 )
 from netbox_kea.subnet_catalogue import (
     CatalogueSnapshot,
@@ -66,6 +67,23 @@ def _persistence_responses(version: int) -> dict:
         "config-test": {"result": 0},
         "config-write": {"result": 0},
     }
+
+
+class TestReservationIdentifierTypes(SimpleTestCase):
+    def test_the_shared_lookup_rejects_a_family_that_is_not_an_integer(self):
+        """`4.0 == 4`, so an equality-only membership test accepts a float family.
+
+        This lookup is the shared entry point every caller reaches, so the guard
+        belongs here rather than at each call site, where the copies would drift.
+        """
+        for family in (4.0, 6.0, "4", True, None):
+            with self.subTest(family=family), self.assertRaisesMessage(ValueError, "family must be 4 or 6"):
+                reservation_identifier_types(family)
+
+    def test_the_shared_lookup_still_accepts_both_real_families(self):
+        for family in (4, 6):
+            with self.subTest(family=family):
+                self.assertTrue(reservation_identifier_types(family))
 
 
 class TestReservationIdentity(SimpleTestCase):
