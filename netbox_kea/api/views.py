@@ -299,7 +299,9 @@ class ServerViewSet(NetBoxModelViewSet):
         try:
             scope_name = params.get("scope")
             if scope_name == "global":
-                if "subnet_id" in params:
+                # An empty value is an unset form field, not a Subnet selection. Read every
+                # repeat: get() returns the last one, so a trailing empty would cancel a real one.
+                if any(params.getlist("subnet_id")):
                     raise ValueError("A Global Reservation query cannot select a Subnet.")
                 subnet_id = None
             elif scope_name == "in-subnet":

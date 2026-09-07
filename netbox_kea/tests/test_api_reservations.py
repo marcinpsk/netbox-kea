@@ -395,6 +395,55 @@ class TestReservation4API(_APITestBase):
         self.assertIn("Invalid Reservation identity", response.json()["detail"])
         self.assertEqual(kea.commands(), [])
 
+    def test_global_identity_ignores_an_empty_subnet_id(self):
+        """An empty selector is absent, not a Subnet selection.
+
+        A client that builds its query string from a form sends ``subnet_id=`` for an
+        unset field, and ``"subnet_id" in params`` is true for that empty value, so the
+        Global query was refused over a Subnet it never selected.
+        """
+        responses = _catalogue_responses(4, 20, "198.18.0.0/24")
+        responses["reservation-get"] = _res_get(
+            {
+                "subnet-id": 0,
+                "flex-id": "global-client",
+                "option-data": [{"name": "domain-name", "data": "example.invalid"}],
+            }
+        )
+        with stub_kea(responses):
+            response = self.api_client.get(
+                self._url(),
+                {
+                    "scope": "global",
+                    "subnet_id": "",
+                    "identifier_type": "flex-id",
+                    "identifier": "global-client",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(response.json()["results"][0]["scope"], {"type": "global"})
+
+    def test_global_identity_rejects_a_repeated_subnet_id_whose_last_value_is_empty(self):
+        """A trailing empty repeat must not cancel a real Subnet selection.
+
+        ``QueryDict.get`` returns the last value, so reading the value alone would let
+        ``subnet_id=20&subnet_id=`` through as a Global query.
+        """
+        params = {
+            "scope": "global",
+            "subnet_id": ["20", ""],
+            "identifier_type": "flex-id",
+            "identifier": "global-client",
+        }
+
+        with stub_kea({}) as kea:
+            response = self.api_client.get(self._url(), params)
+
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn("Invalid Reservation identity", response.json()["detail"])
+        self.assertEqual(kea.commands(), [])
+
     def test_identity_maps_malformed_connection_kea_and_runtime_errors(self):
         cases = (
             (
