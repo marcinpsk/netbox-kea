@@ -1,6 +1,6 @@
 import json
 import logging
-import os
+from pathlib import Path
 from typing import Literal
 
 import requests
@@ -293,9 +293,9 @@ class Server(JobsMixin, NetBoxModel):
                 {"client_cert_path": "Client certificate and client private key must be used together."}
             )
 
-        if self.client_cert_path and not os.path.isfile(self.client_cert_path):
+        if self.client_cert_path and not Path(self.client_cert_path).is_file():
             raise ValidationError({"client_cert_path": "Client certificate doesn't exist."})
-        if self.client_key_path and not os.path.isfile(self.client_key_path):
+        if self.client_key_path and not Path(self.client_key_path).is_file():
             raise ValidationError({"client_key_path": "Client private key doesn't exist."})
 
         if self.ca_file_path and not self.ssl_verify:

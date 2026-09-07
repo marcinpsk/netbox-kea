@@ -99,9 +99,9 @@ class _ViewTestBase(TestCase):
         factory = RequestFactory()
         request = factory.get("/")
         request.user = self.user
-        setattr(request, "session", "session")
+        request.session = "session"
         storage = FallbackStorage(request)
-        setattr(request, "_messages", storage)
+        request._messages = storage
         return request
 
     @staticmethod

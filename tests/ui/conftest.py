@@ -162,7 +162,7 @@ def track_http_errors(page: Page) -> list[tuple[int, str]]:
     """
     errors: list[tuple[int, str]] = []
 
-    def _on_response(response):  # noqa: ANN001
+    def _on_response(response):
         if response.status >= 400:
             errors.append((response.status, response.url))
 
@@ -178,7 +178,7 @@ def netbox_user_permissions() -> list[dict[str, list[Any]]]:
 def _delete_created_login_objects(objects: list[Any]) -> None:
     """Delete every fixture-owned login object without stopping after one failure."""
     for obj in objects:
-        try:  # noqa: PERF203 - each deletion needs independent best-effort cleanup
+        try:
             if obj.delete() is not True:
                 raise RuntimeError("the NetBox API did not confirm deletion")
         except Exception as exc:  # noqa: BLE001,PERF203 - cleanup must continue after each failure

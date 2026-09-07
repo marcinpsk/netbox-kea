@@ -165,7 +165,7 @@ class TestSubnetEnrichment(_ViewTestBase):
             self.assertIn("_subnet_sort_key", row, "Missing _subnet_sort_key in subnet row")
             self.assertIsInstance(row["_subnet_sort_key"], int)
         # Verify value: 10.0.0.0/24 → network address int
-        first_row = list(table.data)[0]
+        first_row = next(iter(table.data))
         expected = int(ipaddress.ip_network("10.0.0.0/24").network_address)
         self.assertEqual(first_row["_subnet_sort_key"], expected)
 
@@ -2405,10 +2405,17 @@ class TestSubnetAddPostNetworkErrors(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
 
     def test_subnet_add_kea_exception_redirects(self):
-        """A Kea-reported failure from subnet_add flashes the Kea hint and redirects."""
+        """A Kea-reported failure from subnet_add flashes the Kea hint and redirects.
+
+        The status alone would also match success, so the error message is asserted too.
+        """
         with self._add_stub(_EMPTY_CONFIG4, **{"subnet4-add": {"result": 1, "text": "bad subnet"}}):
-            response = self.client.post(self._url(), self._post_data())
-        self.assertEqual(response.status_code, 302)
+            response = self.client.post(self._url(), self._post_data(), follow=True)
+        self.assertEqual(response.redirect_chain[-1][1], 302)
+        msgs = list(response.context["messages"])
+        errors = [m for m in msgs if m.level == django_messages.ERROR]
+        self.assertTrue(errors, msgs)
+        self.assertIn("Kea reported an error", str(errors[0]))
 
     def test_subnet_add_no_id_with_network_shows_warning(self):
         """When subnet_add returns no id, network assignment is skipped with a warning."""
@@ -2633,7 +2640,7 @@ class TestSubnetViewCoverageGaps(_ViewTestBase):
         table = response.context["table"]
         self.assertEqual(len(table.data), 1)
         # No utilisation columns should be present
-        self.assertNotIn("utilization", list(table.data)[0])
+        self.assertNotIn("utilization", next(iter(table.data)))
 
     def test_stats_type_error_still_renders_subnets(self):
         """When stat-lease4-get raises TypeError, subnets render without utilisation."""
@@ -2675,7 +2682,7 @@ class TestSubnetViewCoverageGaps(_ViewTestBase):
         table = response.context["table"]
         # Only subnet with id=2 should appear; id=[1,2,3] is skipped
         self.assertEqual(len(table.data), 1)
-        self.assertEqual(list(table.data)[0]["id"], 2)
+        self.assertEqual(next(iter(table.data))["id"], 2)
 
     def test_subnet_with_dict_id_is_skipped(self):
         """Subnet with id={"nested": "dict"} must be skipped (non-scalar ID)."""
@@ -2696,7 +2703,7 @@ class TestSubnetViewCoverageGaps(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         table = response.context["table"]
         self.assertEqual(len(table.data), 1)
-        self.assertEqual(list(table.data)[0]["id"], 5)
+        self.assertEqual(next(iter(table.data))["id"], 5)
 
     # ── 4. _subnet_to_row with malformed CIDR (~lines 60-62) ────────────
 
@@ -2716,7 +2723,7 @@ class TestSubnetViewCoverageGaps(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         table = response.context["table"]
         self.assertEqual(len(table.data), 1)
-        self.assertEqual(list(table.data)[0]["subnet"], "192.168.1.0/24")
+        self.assertEqual(next(iter(table.data))["subnet"], "192.168.1.0/24")
 
     def test_subnet_with_empty_cidr_is_skipped(self):
         """Subnet with subnet='' must be skipped (ValueError from ip_network)."""
@@ -2734,7 +2741,7 @@ class TestSubnetViewCoverageGaps(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         table = response.context["table"]
         self.assertEqual(len(table.data), 1)
-        self.assertEqual(list(table.data)[0]["id"], 2)
+        self.assertEqual(next(iter(table.data))["id"], 2)
 
     # ── 5. Subnet edit POST error paths (~lines 963-1010) ────────────────
 

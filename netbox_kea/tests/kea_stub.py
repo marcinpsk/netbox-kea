@@ -267,7 +267,9 @@ def _leases_per_subnet(leases_by_subnet: dict[Any, list[dict[str, Any]]]):
     return _respond
 
 
-def _subnet_list(version: int, subnets: list[dict[str, Any]]) -> dict[str, Any]:  # noqa: ARG001 - version kept for call-site symmetry with _subnet_get
+def _subnet_list(
+    version: int, subnets: list[dict[str, Any]]
+) -> dict[str, Any]:  # version kept for symmetry with _subnet_get
     """A ``subnet{v}-list`` payload, the ``subnet_cmds`` source every subnet lookup reads.
 
     Used by Subnet catalogue and Reservation form tests. *subnets* is the list of
@@ -353,7 +355,7 @@ def stub_kea(responses: dict[str, Any]):
     """
     stub = KeaHttpStub(responses)
 
-    def _post(self, url, **kwargs):  # noqa: ANN001 - mirrors requests.Session.post(self, url, ...)
+    def _post(self, url, **kwargs):  # mirrors requests.Session.post(self, url, ...)
         return stub(url, **kwargs)
 
     with patch("netbox_kea.kea.requests.Session.post", new=_post):

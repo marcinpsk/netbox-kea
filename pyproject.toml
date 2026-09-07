@@ -88,15 +88,38 @@ exclude = [
 
 [tool.ruff.lint]
 select = [
+  "A",     # flake8-builtins
+  "ASYNC", # flake8-async
+  "B",     # flake8-bugbear
+  "BLE",   # flake8-blind-except
   "C4",    # flake8-comprehensions
   "C901",  # mccabe complexity
   "D",     # pydocstyle
+  "DJ",    # flake8-django
+  "DTZ",   # flake8-datetimez
   "E",
   "F",
+  "FLY",   # flynt
+  "FURB",  # refurb
+  "G",     # flake8-logging-format
   "I",
+  "ICN",   # flake8-import-conventions
+  "ISC",   # flake8-implicit-str-concat
+  "LOG",   # flake8-logging
   "PERF",  # perflint
+  "PIE",   # flake8-pie
+  "PLC",   # pylint convention
+  "PLE",   # pylint error
+  "PLW",   # pylint warning
+  "PTH",   # flake8-use-pathlib
   "RET",   # flake8-return
+  "RSE",   # flake8-raise
+  "RUF",   # ruff-specific
   "S",     # flake8-bandit (security smells)
+  "SIM",   # flake8-simplify
+  "T10",   # flake8-debugger
+  "T20",   # flake8-print
+  "TRY",   # tryceratops
   "UP",
   "W",
 ]
@@ -120,6 +143,26 @@ ignore = [
   "COM819",
   "ISC001",
   "ISC002",
+  # Lazy imports are load-order discipline here: importing NetBox/Django models at
+  # module scope runs before the app registry is ready.
+  "PLC0415",
+  # Long messages passed straight to raise. The message is the useful part.
+  "TRY003",
+  # Django Meta/table class attributes are mutable class-level by design.
+  "RUF012",
+  # Demands TypeError for bad input types. This code raises ValueError for a bad
+  # value regardless of type, which the callers and forms depend on.
+  "TRY004",
+  # Views raise ValueError inside the try so that one handler renders the 400,
+  # alongside the ValueError int() raises on its own. Splitting those raises into
+  # inner functions would fragment a deliberate pattern.
+  "TRY301",
+  # En dash in numeric ranges ("1-1440") and the multiplication sign are intended.
+  "RUF001",
+  "RUF002",
+  # Every CharField below is null=True to match an existing column. Changing them
+  # needs a data migration, tracked separately.
+  "DJ001",
 ]
 
 [tool.ruff.lint.mccabe]
@@ -128,13 +171,18 @@ max-complexity = 15
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"]
 "*/migrations/*.py" = ["D"]
-# Test code: bandit/security smells (asserts, hardcoded test creds, bind-all,
-# try/except/pass in helpers) are expected fixtures, not production risks.
-"*/tests/*.py" = ["D", "S"]
-"tests/*.py" = ["D", "S"]
-"tests/ui/*.py" = ["D", "S"]
-".devcontainer/**/*.py" = ["D", "C4", "S"]
+# Test code: asserts, hardcoded test creds and subprocess calls are expected
+# fixtures. Named individually rather than ignoring all of S, so a real security
+# smell in a test helper is still reported.
+"*/tests/*.py" = ["D", "S101", "S105", "S106", "S603", "S607", "SIM117", "B018", "PTH", "T20"]
+"tests/*.py" = ["D", "S101", "S105", "S106", "S603", "S607", "SIM117", "B018", "PTH", "T20"]
+"tests/ui/*.py" = ["D", "S101", "S105", "S106", "S603", "S607", "SIM117", "B018", "PTH", "T20"]
+".devcontainer/**/*.py" = ["D", "C4", "S108", "S110", "S310", "T20", "PTH", "B904"]
 "netbox_kea/forms.py" = ["C901"]  # upstream complex validation logic
+# NetBox's JobLogHandler records LogRecord.msg and drops LogRecord.args, so lazy
+# %-formatting would write literal "%s" into the user-visible job log. self.logger
+# calls in a JobRunner must interpolate eagerly. See TestJobLogRendersValues.
+"netbox_kea/jobs.py" = ["G004", "TRY401"]
 
 [tool.pytest.ini_options]
 pythonpath = ["/opt/netbox/netbox"]

@@ -290,7 +290,7 @@ class TestReservation4SyncView(_SyncViewBase):
         DatabaseError, so it escaped this handler while both sibling handlers caught it.
         """
 
-        def reject(sender, **kwargs):  # noqa: ARG001
+        def reject(sender, **kwargs):
             raise ValidationError("dns_name is not valid for the configured zone.")
 
         pre_save.connect(reject, sender=NbIP)

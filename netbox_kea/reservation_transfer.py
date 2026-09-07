@@ -373,18 +373,19 @@ def _parse_options(
         return None
     parsed: list[DHCPOption] = []
     seen: set[tuple[str | None, int | str | None]] = set()
-    for index, raw in enumerate(value):
+    for index, entry in enumerate(value):
         option_position = f"{position}[{index}]"
-        if isinstance(raw, dict):
-            _report_unknown_fields(raw, _OPTION_FIELDS, option_position, diagnostics)
+        raw = entry
+        if isinstance(entry, dict):
+            _report_unknown_fields(entry, _OPTION_FIELDS, option_position, diagnostics)
             raw = {
-                "code": raw.get("code"),
-                "name": raw.get("name"),
-                "space": raw.get("space"),
-                "data": raw.get("data", ""),
-                "csv-format": raw.get("csv_format"),
-                "always-send": raw.get("always_send"),
-                "never-send": raw.get("never_send"),
+                "code": entry.get("code"),
+                "name": entry.get("name"),
+                "space": entry.get("space"),
+                "data": entry.get("data", ""),
+                "csv-format": entry.get("csv_format"),
+                "always-send": entry.get("always_send"),
+                "never-send": entry.get("never_send"),
             }
         try:
             option = parse_dhcp_option(raw)
