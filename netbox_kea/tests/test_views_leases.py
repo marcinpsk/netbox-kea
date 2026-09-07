@@ -361,6 +361,25 @@ class TestLeaseSearchPaths(_ViewTestBase):
         self.assertEqual(body["arguments"]["hw-address"], "aa:bb:cc:dd:ee:ff")
         self.assertEqual(body["service"], ["dhcp4"])
 
+    @override_settings(PLUGINS_CONFIG={"netbox_kea": {"kea_timeout": 30, "lease_query_max_unpaged_leases": 100}})
+    def test_a_guard_rejected_subnet_query_renders_the_bound_form(self):
+        """The guard handler reads `form` and `form.cleaned_data`, so both must be bound.
+
+        No other test drives this handler, and `form` was assigned inside the same `try`
+        the handler serves. Any lease query added above that assignment would turn this
+        into an UnboundLocalError instead of a rendered form error.
+        """
+        with stub_kea(
+            {
+                "subnet4-list": self._SUBNETS4,
+                "stat-lease4-get": {"result": 3},
+            }
+        ):
+            response = self._htmx_get(self._url4(), {"by": "subnet_id", "q": "1"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Load the stat_cmds hook")
+
     def test_search_by_hostname_sends_correct_command(self):
         """BY_HOSTNAME must call lease4-get-by-hostname with hostname argument."""
         with stub_kea(
