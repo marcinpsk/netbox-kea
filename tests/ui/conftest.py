@@ -188,28 +188,31 @@ def netbox_login(
     netbox_user_permissions: list[dict[str, list[Any]]],
     nb_api: pynetbox.api,
 ):
-    to_delete = []
-    if netbox_username != "admin":
-        nb_api.users.users.filter(username=netbox_username).delete()
-        # Only what a previous interrupted run left under this name. Deleting every
-        # ObjectPermission would wipe the target NetBox if NETBOX_URL is not disposable.
-        nb_api.users.permissions.filter(name=netbox_username).delete()
-        user = nb_api.users.users.create(username=netbox_username, password=netbox_password)
-        to_delete.append(user)
-        for permission in netbox_user_permissions:
-            p = nb_api.users.permissions.create(
-                name=netbox_username,
-                actions=permission["actions"],
-                object_types=permission["object_types"],
-                users=[user.id],
-            )
-            to_delete.append(p)
+    to_delete: list[Any] = []
+    # Cleanup runs from finally: a raise before the yield would otherwise leak the user
+    # and its permissions into a NETBOX_URL that may not be disposable.
+    try:
+        if netbox_username != "admin":
+            nb_api.users.users.filter(username=netbox_username).delete()
+            # Only what a previous interrupted run left under this name. Deleting every
+            # ObjectPermission would wipe the target NetBox if NETBOX_URL is not disposable.
+            nb_api.users.permissions.filter(name=netbox_username).delete()
+            user = nb_api.users.users.create(username=netbox_username, password=netbox_password)
+            to_delete.append(user)
+            for permission in netbox_user_permissions:
+                p = nb_api.users.permissions.create(
+                    name=netbox_username,
+                    actions=permission["actions"],
+                    object_types=permission["object_types"],
+                    users=[user.id],
+                )
+                to_delete.append(p)
 
-    page.goto(f"{netbox_url}/login/")
-    page.get_by_label("Username").fill(netbox_username)
-    page.get_by_label("Password").fill(netbox_password)
-    page.get_by_role("button", name="Sign In").click()
+        page.goto(f"{netbox_url}/login/")
+        page.get_by_label("Username").fill(netbox_username)
+        page.get_by_label("Password").fill(netbox_password)
+        page.get_by_role("button", name="Sign In").click()
 
-    yield
-
-    _delete_created_login_objects(to_delete)
+        yield
+    finally:
+        _delete_created_login_objects(to_delete)
