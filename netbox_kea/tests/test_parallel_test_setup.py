@@ -146,6 +146,9 @@ def test_active_worker_uses_private_database_targets(settings):
 
 def _collect_only(*extra_args: str) -> subprocess.CompletedProcess:
     """Run pytest over this module far enough to settle its worker count."""
+    # Hand the child the parent's resolved path; `pythonpath` in pyproject is CI-overridden.
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = os.pathsep.join(str(Path(entry or Path.cwd()).resolve()) for entry in sys.path)
     return subprocess.run(
         [
             sys.executable,
@@ -161,7 +164,7 @@ def _collect_only(*extra_args: str) -> subprocess.CompletedProcess:
         cwd=REPOSITORY_ROOT,
         capture_output=True,
         check=False,
-        env=os.environ.copy(),
+        env=environment,
         text=True,
         timeout=300,
     )
@@ -179,7 +182,7 @@ def test_explicit_worker_count_above_the_ceiling_is_rejected():
 
     output = result.stdout + result.stderr
     assert result.returncode != 0, output
-    assert str(MAX_PARALLEL_WORKERS) in output, output
+    assert f"exceeds the isolation limit: at most {MAX_PARALLEL_WORKERS} " in output, output
 
 
 def test_the_ceiling_itself_is_still_accepted():
