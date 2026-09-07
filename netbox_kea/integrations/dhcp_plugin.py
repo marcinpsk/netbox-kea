@@ -260,10 +260,11 @@ def _create_custom_option_def(def_intent: OptionDefIntent, family: int, dhcp_ser
         )
         obj.save()
         summary.option_defs_created += 1
-        return obj
     except Exception as exc:  # noqa: BLE001 — a bad definition must not abort the import
         summary.warn(f"option-def code={def_intent.code}: {exc}")
         return None
+    else:
+        return obj
 
 
 def _resolve_option_definition(opt: DHCPOption, family: int, dhcp_server, custom_defs, summary):
@@ -423,13 +424,15 @@ _COMMON_FIELDS: tuple[tuple[str, str, object], ...] = (
     ("boot-file-name", "boot_file_name", None),
 )
 
-_SUBNET_FIELDS: tuple[tuple[str, str, object], ...] = _COMMON_FIELDS + (
+_SUBNET_FIELDS: tuple[tuple[str, str, object], ...] = (
+    *_COMMON_FIELDS,
     ("relay", "relay", _relay_to_str),
     ("interface-id", "interface_id", None),
     ("rapid-commit", "rapid_commit", None),
 )
 
-_SERVER_FIELDS: tuple[tuple[str, str, object], ...] = _COMMON_FIELDS + (
+_SERVER_FIELDS: tuple[tuple[str, str, object], ...] = (
+    *_COMMON_FIELDS,
     ("decline-probation-period", "decline_probation_period", None),
     ("host-reservation-identifiers", "host_reservation_identifiers", _hr_identifiers),
     ("echo-client-id", "echo_client_id", None),
@@ -851,7 +854,7 @@ def _upsert_reservation(reservation, subnet_obj, server, dhcp_server, custom_def
             summary.reservations_created += 1
         else:
             summary.reservations_updated += 1
-    except Exception:  # noqa: BLE001
+    except Exception:
         summary.errors += 1
         logger.exception("Could not import reservation %s in %s", reservation.identity.value, scope)
         summary.warn(f"reservation {reservation.identity.value} in {scope} could not be imported. See server logs.")

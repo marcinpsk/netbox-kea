@@ -6,6 +6,8 @@ All Kea HTTP calls are mocked; these tests require no running services.
 """
 
 import importlib
+import tempfile
+from pathlib import Path
 from unittest.mock import patch
 
 import requests
@@ -340,19 +342,23 @@ class TestServerCleanFieldValidation(SimpleTestCase):
         self.assertIn("ca_file_path", ctx.exception.message_dict)
 
     @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
-    @patch("netbox_kea.models.os.path.isfile", return_value=False, autospec=True)
-    def test_nonexistent_cert_path_raises(self, _mock_isfile):
-        server = _make_server(client_cert_path="/missing.pem", client_key_path="/key.pem")
-        with self.assertRaises(ValidationError) as ctx:
-            server.clean()
+    def test_nonexistent_cert_path_raises(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = str(Path(tmp) / "missing.pem")
+            server = _make_server(client_cert_path=missing, client_key_path=missing)
+            with self.assertRaises(ValidationError) as ctx:
+                server.clean()
         self.assertIn("client_cert_path", ctx.exception.message_dict)
 
     @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
-    @patch("netbox_kea.models.os.path.isfile", side_effect=lambda p: p != "/missing-key.pem", autospec=True)
-    def test_nonexistent_key_path_raises(self, _mock_isfile):
-        server = _make_server(client_cert_path="/cert.pem", client_key_path="/missing-key.pem")
-        with self.assertRaises(ValidationError) as ctx:
-            server.clean()
+    def test_nonexistent_key_path_raises(self):
+        """A cert that exists plus a key that does not must name the key field."""
+        with tempfile.TemporaryDirectory() as tmp:
+            cert = Path(tmp) / "cert.pem"
+            cert.write_text("")
+            server = _make_server(client_cert_path=str(cert), client_key_path=str(Path(tmp) / "missing-key.pem"))
+            with self.assertRaises(ValidationError) as ctx:
+                server.clean()
         self.assertIn("client_key_path", ctx.exception.message_dict)
 
 

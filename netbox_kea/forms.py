@@ -430,7 +430,7 @@ class ReservationIdentifierSelect(forms.Select):
 
 
 def _configure_identifier_capabilities(
-    form: forms.Form,
+    form: "Reservation4Form | Reservation6Form",
     capabilities: ReservationCapabilities | None,
     version: int,
 ) -> None:
@@ -445,7 +445,7 @@ def _configure_identifier_capabilities(
         choices=identifier_field.choices,
         unavailable=unavailable,
     )
-    setattr(form, "reservation_capabilities", capabilities)
+    form.reservation_capabilities = capabilities
 
 
 class Reservation4Form(forms.Form):
@@ -627,8 +627,8 @@ class Reservation6Form(forms.Form):
         """Validate every entry is a valid IPv6 address; blank reserves no address."""
         val = self.cleaned_data.get("ip_addresses") or ""
         cleaned: list[str] = []
-        for raw in val.split(","):
-            raw = raw.strip()
+        for entry in val.split(","):
+            raw = entry.strip()
             if not raw:
                 continue
             try:
@@ -801,7 +801,7 @@ class _SubnetBaseForm(forms.Form):
         help_text="Domain suffix appended to hostnames before sending DDNS updates (e.g. example.com.).",
     )
 
-    def clean_pools(self) -> list[str]:  # noqa: D102
+    def clean_pools(self) -> list[str]:
         value = self.cleaned_data["pools"].strip()
         if not value:
             return []
@@ -816,7 +816,7 @@ class _SubnetBaseForm(forms.Form):
                 normalized.append(pool)
         return normalized
 
-    def clean_gateway(self) -> str:  # noqa: D102
+    def clean_gateway(self) -> str:
         import ipaddress
 
         value = self.cleaned_data["gateway"].strip()
@@ -828,7 +828,7 @@ class _SubnetBaseForm(forms.Form):
             raise forms.ValidationError(f"Invalid gateway IP address: {exc}") from exc
         return value
 
-    def clean_dns_servers(self) -> list[str]:  # noqa: D102
+    def clean_dns_servers(self) -> list[str]:
         import ipaddress
 
         value = self.cleaned_data["dns_servers"].strip()
@@ -842,7 +842,7 @@ class _SubnetBaseForm(forms.Form):
                 raise forms.ValidationError(f"Invalid DNS server IP address: '{entry}'") from exc
         return entries
 
-    def clean_ntp_servers(self) -> list[str]:  # noqa: D102
+    def clean_ntp_servers(self) -> list[str]:
         value = self.cleaned_data["ntp_servers"].strip()
         if not value:
             return []

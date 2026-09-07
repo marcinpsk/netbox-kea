@@ -376,7 +376,7 @@ class KeaClient:
         command: str,
         service: list[str] | None = None,
         arguments: dict[str, Any] | None = None,
-        check: None | Sequence[int] = (0,),
+        check: Sequence[int] | None = (0,),
     ) -> list[KeaResponse]:
         """Send a command to the Kea API and return the response list.
 
@@ -442,7 +442,7 @@ class KeaClient:
             return
         try:
             self._on_config_change()
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.exception("Configuration changed for %s, but cache invalidation failed", service)
 
     def _config_mutation_command(

@@ -12,7 +12,7 @@ from netbox.tables import BaseTable
 from ..models import Server
 
 try:
-    from utilities.views import ConditionalLoginRequiredMixin  # noqa: F401
+    from utilities.views import ConditionalLoginRequiredMixin
 except ImportError:
     from django.contrib.auth.mixins import (  # noqa: F401
         LoginRequiredMixin as ConditionalLoginRequiredMixin,  # type: ignore[assignment]

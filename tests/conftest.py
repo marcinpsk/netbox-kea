@@ -24,7 +24,7 @@ class TimeoutSession(requests.Session):
 def _delete_created_servers(api: pynetbox.api, created_server_ids: set[int]) -> None:
     """Delete every session-owned Server, and report failures without stopping."""
     for server_id in sorted(created_server_ids):
-        try:  # noqa: PERF203 - each deletion needs independent best-effort cleanup
+        try:
             server = api.plugins.kea.servers.get(server_id)
             if server is not None and server.delete() is not True:
                 raise RuntimeError("the NetBox API did not confirm deletion")

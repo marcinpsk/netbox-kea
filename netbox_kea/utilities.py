@@ -1,3 +1,4 @@
+import contextlib
 import csv
 import io
 import ipaddress
@@ -124,10 +125,8 @@ def _enrich_lease(now: datetime, lease: dict[str, Any]) -> dict[str, Any]:
 
     # F1: inject numeric sort key so django-tables2 sorts IPs as integers, not strings.
     if ip_str := lease.get("ip_address"):
-        try:
+        with contextlib.suppress(ValueError):
             lease["_ip_sort_key"] = int(ipaddress.ip_address(ip_str))
-        except ValueError:
-            pass
 
     # F10: default expiry CSS class; updated below once we know the expiry time.
     lease["expiry_class"] = ""
@@ -426,10 +425,7 @@ def parse_lease_csv(version: int, content: str) -> list[dict[str, Any]]:
         ValueError: If a required field is missing or empty for any row.
 
     """
-    if version == 4:
-        required = {"ip-address"}
-    else:
-        required = {"ip-address", "duid", "iaid"}
+    required = {"ip-address"} if version == 4 else {"ip-address", "duid", "iaid"}
 
     content = content.lstrip("\ufeff")
     reader = csv.DictReader(
@@ -448,8 +444,8 @@ def parse_lease_csv(version: int, content: str) -> list[dict[str, Any]]:
 
         try:
             addr = ipaddress.ip_address(row["ip-address"])
-        except ValueError:
-            raise ValueError(f"Row {row_num}: invalid IP address '{row['ip-address']}'")
+        except ValueError as exc:
+            raise ValueError(f"Row {row_num}: invalid IP address '{row['ip-address']}'") from exc
         if addr.version != version:
             raise ValueError(f"Row {row_num}: '{row['ip-address']}' is not an IPv{version} address")
 
