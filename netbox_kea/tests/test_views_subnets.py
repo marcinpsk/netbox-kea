@@ -2396,13 +2396,19 @@ class TestSubnetAddPostNetworkErrors(_ViewTestBase):
         """A transport error from subnet_add re-renders the form."""
         with self._add_stub(_EMPTY_CONFIG4, **{"subnet4-add": requests.ConnectionError("down")}):
             response = self.client.post(self._url(), self._post_data())
-        self.assertIn(response.status_code, [200, 302])
+        self.assertEqual(response.status_code, 200)
 
     def test_subnet_add_generic_exception_rerenders(self):
         """A generic (ValueError) failure from subnet_add re-renders the form."""
         with self._add_stub(_EMPTY_CONFIG4, **{"subnet4-add": ValueError("unexpected")}):
             response = self.client.post(self._url(), self._post_data())
-        self.assertIn(response.status_code, [200, 302])
+        self.assertEqual(response.status_code, 200)
+
+    def test_subnet_add_kea_exception_redirects(self):
+        """A Kea-reported failure from subnet_add flashes the Kea hint and redirects."""
+        with self._add_stub(_EMPTY_CONFIG4, **{"subnet4-add": {"result": 1, "text": "bad subnet"}}):
+            response = self.client.post(self._url(), self._post_data())
+        self.assertEqual(response.status_code, 302)
 
     def test_subnet_add_no_id_with_network_shows_warning(self):
         """When subnet_add returns no id, network assignment is skipped with a warning."""
