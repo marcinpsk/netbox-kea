@@ -182,7 +182,7 @@ max-complexity = 15
 # NetBox's JobLogHandler records LogRecord.msg and drops LogRecord.args, so lazy
 # %-formatting would write literal "%s" into the user-visible job log. self.logger
 # calls in a JobRunner must interpolate eagerly. See TestJobLogRendersValues.
-"netbox_kea/jobs.py" = ["G004", "TRY401"]
+"netbox_kea/jobs.py" = ["G004"]
 
 [tool.pytest.ini_options]
 pythonpath = ["/opt/netbox/netbox"]

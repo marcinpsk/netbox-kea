@@ -805,8 +805,8 @@ class KeaIpamSyncJob(JobRunner):
                         server_stats,
                         conflict_ips=conflict_ips,
                     )
-                except Exception as exc:
-                    self.logger.exception(f"Unhandled error syncing server {server.name}: {exc}")
+                except Exception:
+                    self.logger.exception(f"Unhandled error syncing server {server.name}; see server logs")
                     server_stats["errors"] += 1
 
                 self.logger.info(

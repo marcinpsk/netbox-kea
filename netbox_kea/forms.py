@@ -802,6 +802,7 @@ class _SubnetBaseForm(forms.Form):
     )
 
     def clean_pools(self) -> list[str]:
+        """Validate each pool line and normalise the range separator spacing."""
         value = self.cleaned_data["pools"].strip()
         if not value:
             return []
@@ -817,6 +818,7 @@ class _SubnetBaseForm(forms.Form):
         return normalized
 
     def clean_gateway(self) -> str:
+        """Validate the gateway is an IP address; blank means no gateway."""
         import ipaddress
 
         value = self.cleaned_data["gateway"].strip()
@@ -829,6 +831,7 @@ class _SubnetBaseForm(forms.Form):
         return value
 
     def clean_dns_servers(self) -> list[str]:
+        """Split the comma-separated list and validate every DNS server address."""
         import ipaddress
 
         value = self.cleaned_data["dns_servers"].strip()
@@ -843,6 +846,7 @@ class _SubnetBaseForm(forms.Form):
         return entries
 
     def clean_ntp_servers(self) -> list[str]:
+        """Split the comma-separated list and validate every NTP server address."""
         value = self.cleaned_data["ntp_servers"].strip()
         if not value:
             return []
