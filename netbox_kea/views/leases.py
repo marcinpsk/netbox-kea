@@ -309,21 +309,23 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
         if not request.htmx:
             return super().get(request, **kwargs)
 
-        try:
-            form = self._make_search_form(instance, request.GET)
-            if not form.is_valid():
-                table = self.get_table([], request)
-                return render(
-                    request,
-                    "netbox_kea/server_dhcp_leases_htmx.html",
-                    {
-                        "is_embedded": False,
-                        "form": form,
-                        "table": table,
-                        "paginate": False,
-                    },
-                )
+        # Outside the try: the LeaseQueryGuardError handler below reads both `form` and
+        # `form.cleaned_data`, so neither may depend on how far into the try we got.
+        form = self._make_search_form(instance, request.GET)
+        if not form.is_valid():
+            table = self.get_table([], request)
+            return render(
+                request,
+                "netbox_kea/server_dhcp_leases_htmx.html",
+                {
+                    "is_embedded": False,
+                    "form": form,
+                    "table": table,
+                    "paginate": False,
+                },
+            )
 
+        try:
             by = form.cleaned_data["by"]
             q = form.cleaned_data["q"]
             state_filter: int | None = form.cleaned_data.get("state")
