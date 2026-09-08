@@ -162,9 +162,6 @@ ignore = [
   # En dash in numeric ranges ("1-1440") and the multiplication sign are intended.
   "RUF001",
   "RUF002",
-  # Every CharField below is null=True to match an existing column. Changing them
-  # needs a data migration, tracked separately.
-  "DJ001",
 ]
 
 [tool.ruff.lint.mccabe]
