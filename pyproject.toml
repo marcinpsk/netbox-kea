@@ -55,7 +55,9 @@ dev = [
   "pytest-playwright>=0.6.0,<0.10.0",
   "pynetbox>=7.3.0,<7.9.0",
   "django-stubs[compatible-mypy]>=5.0.0,<7.0.0",
-  "ruff>=0.8.0",
+  # Pinned exactly: the ruff-pre-commit rev must name this same version, and a range
+  # would let dependabot move the lock file out from under it. See test_lint_pins.py.
+  "ruff==0.16.4",
   "reuse",
   "pre-commit",
   "python-semantic-release",
