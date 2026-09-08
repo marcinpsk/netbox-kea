@@ -180,7 +180,7 @@ class TestReservation4API(_APITestBase):
     def test_incomplete_tls_configuration_returns_server_error_for_every_query_mode(self):
         """A stored Server configuration failure is not a malformed API selector."""
         self.server.client_cert_path = "/certs/client.pem"
-        self.server.client_key_path = None
+        self.server.client_key_path = ""  # the column is NOT NULL; "" is the unset state
         self.server.save(update_fields=("client_cert_path", "client_key_path"))
         cases = (
             {"page": "1"},
