@@ -848,7 +848,10 @@ class _SubnetBaseForm(forms.Form):
     def clean_ntp_servers(self) -> list[str]:
         """Split the comma-separated list and drop blank entries.
 
-        This does not validate the entries, unlike clean_dns_servers alongside it.
+        Entries are deliberately not validated as IP addresses: this field accepts a
+        hostname, as its help text says and test_ntp_servers_cleaned_as_list asserts.
+        SharedNetworkEditForm.clean_ntp_servers writes the same Kea option and does
+        require an address.
         """
         value = self.cleaned_data["ntp_servers"].strip()
         if not value:
