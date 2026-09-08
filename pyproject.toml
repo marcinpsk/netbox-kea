@@ -55,8 +55,9 @@ dev = [
   "pytest-playwright>=0.6.0,<0.10.0",
   "pynetbox>=7.3.0,<7.9.0",
   "django-stubs[compatible-mypy]>=5.0.0,<7.0.0",
-  # Pinned exactly: the ruff-pre-commit rev must name this same version, and a range
-  # would let dependabot move the lock file out from under it. See test_lint_pins.py.
+  # This pin plus uv.lock is the only place a ruff version appears: the commit hook and
+  # CI both resolve it through `uv run`. Exact, not a range, so a dependabot bump updates
+  # this line as well as the lock rather than the lock alone. See test_lint_pins.py.
   "ruff==0.16.4",
   "reuse",
   "pre-commit",
