@@ -122,6 +122,42 @@ class TestReservation4API(_APITestBase):
         self.assertIn("exactly one", response.json()["detail"])
         self.assertEqual(kea.commands(), [])
 
+    def test_an_empty_selector_does_not_select_its_query_mode(self):
+        """A client that always emits `cursor=` must still be able to run another query.
+
+        Mode selection is by presence, so an empty `cursor=` used to add the page mode
+        and make the request ambiguous before identity validation ever ran.
+        """
+        responses = _catalogue_responses(4, 20, "198.18.0.0/24")
+        responses["reservation-get-by-hostname"] = {
+            "result": 0,
+            "arguments": {
+                "hosts": [
+                    {
+                        "subnet-id": 20,
+                        "hw-address": "aa:bb:cc:dd:ee:ff",
+                        "ip-address": "198.18.0.20",
+                        "hostname": "host.example.invalid",
+                    }
+                ]
+            },
+        }
+
+        with stub_kea(responses) as kea:
+            response = self.api_client.get(self._url(), {"cursor": "", "hostname": "host.example.invalid"})
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertIn("reservation-get-by-hostname", kea.commands())
+
+    def test_a_repeated_selector_whose_last_value_is_empty_still_selects_its_mode(self):
+        """`QueryDict.get` returns the last value, so reading it alone would drop `page=1`."""
+        with stub_kea({}) as kea:
+            response = self.api_client.get(self._url(), {"page": ["1", ""], "hostname": "host.example.invalid"})
+
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn("exactly one", response.json()["detail"])
+        self.assertEqual(kea.commands(), [])
+
     def test_query_modes_reject_parameters_from_another_mode(self):
         cases = (
             {"page": "1", "subnet_id": "20"},

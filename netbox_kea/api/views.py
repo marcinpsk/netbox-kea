@@ -234,7 +234,8 @@ class ServerViewSet(NetBoxModelViewSet):
         hostname = params.get("hostname")
 
         try:
-            query_mode = reservation_query_mode(params.keys())
+            # Selectors need a value, but getlist: `page=1&page=` must still select page.
+            query_mode = reservation_query_mode([name for name in params if any(params.getlist(name))])
         except ValueError:
             return Response(
                 {"detail": "Select exactly one Reservation query: page, identity, scoped address, or hostname."},
