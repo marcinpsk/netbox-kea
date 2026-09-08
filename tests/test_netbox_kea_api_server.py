@@ -322,7 +322,9 @@ def test_server_api_changelog_password_censored(
         )
     )
     assert changelog_create["prechange_data"] == {}
-    assert changelog_create["postchange_data"]["ca_password"] is None
+    # An unset password is "" and is deliberately left uncensored: stamping it would
+    # tell an operator a password exists where none does.
+    assert changelog_create["postchange_data"]["ca_password"] == ""
 
     # Cannot update through pynetbox since the ca_password field is write only.
     def update_ca_password(ca_password: str | None) -> None:
@@ -343,7 +345,7 @@ def test_server_api_changelog_password_censored(
             action="update",
         )
     )
-    assert changelog_update0["prechange_data"]["ca_password"] is None
+    assert changelog_update0["prechange_data"]["ca_password"] == ""
     assert changelog_update0["postchange_data"]["ca_password"] == "***CHANGED***"
 
     # Update the password
@@ -360,7 +362,8 @@ def test_server_api_changelog_password_censored(
     assert changelog_update1["prechange_data"]["ca_password"] == "********"
     assert changelog_update1["postchange_data"]["ca_password"] == "***CHANGED***"
 
-    # Remove the password
+    # Remove the password. This sends an explicit JSON null, which the serializer
+    # reads as "" so a pre-0016 client keeps working against the NOT NULL column.
     update_ca_password(None)
     changelog_update2 = dict(
         object_changes.get(
@@ -371,7 +374,7 @@ def test_server_api_changelog_password_censored(
         )
     )
     assert changelog_update2["prechange_data"]["ca_password"] == "********"
-    assert changelog_update2["postchange_data"]["ca_password"] is None
+    assert changelog_update2["postchange_data"]["ca_password"] == ""
 
     # Delete the server
     assert server.delete() is True
@@ -382,5 +385,5 @@ def test_server_api_changelog_password_censored(
             action="delete",
         )
     )
-    assert changelog_delete["prechange_data"]["ca_password"] is None
+    assert changelog_delete["prechange_data"]["ca_password"] == ""
     assert changelog_delete["postchange_data"] == {}

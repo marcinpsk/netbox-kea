@@ -548,6 +548,16 @@ class TestServerToObjectchangePasswordCensoring(TestCase):
         self.assertEqual(result.prechange_data["ca_password"], CENSOR_TOKEN)
         self.assertEqual(result.postchange_data["ca_password"], "")
 
+    def test_delete_of_a_server_without_a_password_reports_blank(self):
+        """The delete snapshot must not imply a password existed.
+
+        This is the last of the four changelog states the black-box suite asserts.
+        """
+        server = self._make_server(ca_password="")
+        server.snapshot()
+        result = server.to_objectchange("delete")
+        self.assertEqual(result.prechange_data["ca_password"], "")
+
     def test_no_prechange_data_does_not_raise(self):
         """to_objectchange("create") has no _prechange_snapshot → prechange_data is None,
         postchange password is masked as CENSOR_TOKEN_CHANGED (nothing to compare against)."""
