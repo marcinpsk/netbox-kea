@@ -18,9 +18,9 @@ repos:
         args: [--fix=lf]
 
   # Python code quality
-  # Keep this rev equal to the ruff version in uv.lock: CI runs `uv run ruff`, so a
-  # drift makes the commit gate and the CI gate demand contradictory things (v0.15.8
-  # wanted a BLE001 noqa that 0.16.4 then reports as an unused RUF100).
+  # This rev, the pyproject dev pin and uv.lock must name one version; test_lint_pins.py
+  # fails when they drift. CI runs `uv run ruff`, so a mismatch makes the commit gate and
+  # the CI gate demand contradictory things.
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.16.4
     hooks:
