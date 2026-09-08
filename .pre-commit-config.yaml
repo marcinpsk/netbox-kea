@@ -17,22 +17,30 @@ repos:
       - id: mixed-line-ending
         args: [--fix=lf]
 
-  # Python code quality
-  # This rev, the pyproject dev pin and uv.lock must name one version; test_lint_pins.py
-  # fails when they drift. CI runs `uv run ruff`, so a mismatch makes the commit gate and
-  # the CI gate demand contradictory things.
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.16.4
-    hooks:
-      - id: ruff-check
-        args: [--fix, --exit-non-zero-on-fix]
-      - id: ruff-format
-
-  # In-house test-quality guard: flag new spec-less MagicMock/Mock used as object
-  # stand-ins (see netbox_kea/tests/mock_discipline.py). Stdlib-only; scans the whole
-  # netbox_kea/tests/ tree. Existing usages are grandfathered in the baseline file.
   - repo: local
     hooks:
+      # Python code quality. Run through uv so the version comes from uv.lock, the same
+      # place CI resolves it. A pinned rev here would be a second source that dependabot
+      # never updates, so every bump would land with the two gates on different ruff
+      # versions. pyproject [dependency-groups].dev plus uv.lock is the only source;
+      # test_lint_pins.py holds that. `force-exclude` is on in pyproject, so the
+      # filenames pre-commit passes still honour the exclude list.
+      - id: ruff-check
+        name: ruff check
+        entry: uv run --native-tls ruff check --fix --exit-non-zero-on-fix
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
+      - id: ruff-format
+        name: ruff format
+        entry: uv run --native-tls ruff format
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
+
+      # In-house test-quality guard: flag new spec-less MagicMock/Mock used as object
+      # stand-ins (see netbox_kea/tests/mock_discipline.py). Stdlib-only; scans the whole
+      # netbox_kea/tests/ tree. Existing usages are grandfathered in the baseline file.
       - id: mock-discipline
         name: mock-discipline (no new spec-less MagicMock/Mock)
         entry: python3 netbox_kea/tests/mock_discipline.py
