@@ -6,6 +6,7 @@ daemons, and one Server object joining them. Keeping the harness here is what le
 """
 
 import os
+import uuid
 import warnings
 from typing import Any
 
@@ -62,8 +63,10 @@ def kea_server(nb_api: pynetbox.api, kea_url: str, kea_dhcp6_url: str):
 
     Kea 3.0 has no Control Agent, so each daemon gets its own URL.
     """
+    # Server.name is unique and a killed run never reaches the cleanup below, so a
+    # fixed name makes the next session fail on a leftover row. Name it per run.
     server = nb_api.plugins.kea.servers.create(
-        name="test", ca_url=kea_url, dhcp6_url=kea_dhcp6_url, has_control_agent=False
+        name=f"test-{uuid.uuid4().hex[:8]}", ca_url=kea_url, dhcp6_url=kea_dhcp6_url, has_control_agent=False
     )
     try:
         yield server
