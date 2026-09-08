@@ -1000,6 +1000,18 @@ class TestServerSubnet4AddViewSharedNetwork(_ViewTestBase):
         self.assertIn("subnet4-add", kea.commands())
         self.assertNotIn("network4-subnet-add", kea.commands())
 
+    def test_post_rejects_ntp_hostname_without_subnet_add(self):
+        data = self._valid_post_data()
+        data["ntp_servers"] = "ntp.example.com"
+        with self._add_stub() as kea:
+            response = self.client.post(self._url(), data)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.context["form"].errors["ntp_servers"],
+            ["Invalid NTP server IP address: 'ntp.example.com'"],
+        )
+        self.assertNotIn("subnet4-add", kea.commands())
+
 
 # ---------------------------------------------------------------------------
 # Tests for _get_network_choices — None/missing arguments handling

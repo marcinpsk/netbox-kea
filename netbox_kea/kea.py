@@ -1120,7 +1120,7 @@ class KeaClient:
             pools: Optional list of initial pool ranges (e.g. ``["10.0.0.100-10.0.0.200"]``).
             gateway: Optional default gateway IP (sets option ``routers``; DHCPv4 only).
             dns_servers: Optional list of DNS server IPs.
-            ntp_servers: Optional list of NTP server hostnames/IPs.
+            ntp_servers: Optional list of NTP server IPs (option 42 / 31 are address arrays).
             ddns_qualifying_suffix: Optional DDNS qualifying suffix for dynamic DNS updates.
 
         Raises:
@@ -1412,7 +1412,7 @@ class KeaClient:
                 ``[]`` = explicitly clear all pools.
             gateway: Default gateway IP (option ``routers``, DHCPv4 only).
             dns_servers: List of DNS server IP strings.
-            ntp_servers: List of NTP server hostnames/IPs.
+            ntp_servers: List of NTP server IP strings.
             ddns_qualifying_suffix: DDNS qualifying suffix.  ``None`` = omit (Kea keeps
                 existing); ``""`` = explicitly clear; a value sets it.
             valid_lft: Preferred lease lifetime in seconds.

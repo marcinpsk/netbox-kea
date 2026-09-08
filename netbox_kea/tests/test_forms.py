@@ -752,7 +752,7 @@ class TestSubnetEditForm(SimpleTestCase):
             pools="10.0.0.100-10.0.0.200",
             gateway="10.0.0.1",
             dns_servers="8.8.8.8, 1.1.1.1",
-            ntp_servers="pool.ntp.org",
+            ntp_servers="192.0.2.123",
             valid_lft="3600",
             min_valid_lft="1800",
             max_valid_lft="7200",
@@ -789,11 +789,20 @@ class TestSubnetEditForm(SimpleTestCase):
         self.assertTrue(form.is_valid(), form.errors)
         self.assertEqual(form.cleaned_data["dns_servers"], ["8.8.8.8", "1.1.1.1"])
 
-    def test_ntp_servers_cleaned_as_list(self):
-        """clean_ntp_servers returns a list of hostname/IP strings."""
-        form = self._form(ntp_servers="pool.ntp.org, time.google.com")
-        self.assertTrue(form.is_valid(), form.errors)
-        self.assertEqual(form.cleaned_data["ntp_servers"], ["pool.ntp.org", "time.google.com"])
+    def test_ntp_servers_validated_as_addresses(self):
+        """Option 42 and its v6 counterpart are address arrays: Kea rejects a hostname."""
+        for subnet, value, expected in (
+            ("192.0.2.0/24", " 192.0.2.123, , 192.0.2.124, ", ["192.0.2.123", "192.0.2.124"]),
+            ("2001:db8::/64", " 2001:db8::123, , 2001:db8::124, ", ["2001:db8::123", "2001:db8::124"]),
+        ):
+            with self.subTest(subnet=subnet):
+                form = self._form(subnet_cidr=subnet, ntp_servers=value)
+                self.assertTrue(form.is_valid(), form.errors)
+                self.assertEqual(form.cleaned_data["ntp_servers"], expected)
+
+                form = self._form(subnet_cidr=subnet, ntp_servers="ntp.example.com")
+                self.assertFalse(form.is_valid())
+                self.assertEqual(form.errors["ntp_servers"], ["Invalid NTP server IP address: 'ntp.example.com'"])
 
 
 # ---------------------------------------------------------------------------
@@ -1055,6 +1064,31 @@ class TestSubnetAddFormSharedNetwork(SimpleTestCase):
         form = SubnetAddForm(data={"subnet": "10.0.0.0/24", "shared_network": ""})
         self.assertTrue(form.is_valid(), form.errors)
         self.assertNotIn("shared_network", form.errors)
+
+
+class TestSubnetAddFormAddressFamily(SimpleTestCase):
+    """Option 6 and option 42 are arrays of the subnet's own family; Kea rejects a mismatch."""
+
+    def _form(self, **overrides):
+        from netbox_kea.forms import SubnetAddForm
+
+        data = {"subnet": "192.0.2.0/24", "shared_network": ""}
+        data.update(overrides)
+        return SubnetAddForm(data=data)
+
+    def test_rejects_mismatched_dns_and_ntp_addresses(self):
+        for field, label in (("dns_servers", "DNS server"), ("ntp_servers", "NTP server")):
+            with self.subTest(field=field):
+                form = self._form(**{field: "2001:db8::123"})
+                self.assertFalse(form.is_valid())
+                self.assertEqual(
+                    form.errors[field],
+                    [f"{label} '2001:db8::123' must be an IPv4 address to match the subnet family."],
+                )
+
+    def test_accepts_matching_addresses(self):
+        form = self._form(dns_servers="192.0.2.53", ntp_servers="192.0.2.123")
+        self.assertTrue(form.is_valid(), form.errors)
 
 
 # ---------------------------------------------------------------------------

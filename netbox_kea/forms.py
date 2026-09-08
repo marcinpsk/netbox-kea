@@ -1,3 +1,4 @@
+import ipaddress
 from typing import Any, Literal, cast
 
 from django import forms
@@ -18,6 +19,17 @@ from .reservations import (
     reservation_identifier_types,
 )
 from .utilities import is_hex_string, parse_delegated_prefixes, parse_pool_range
+
+
+def _parse_ip_address_list(value: str, error_message: str) -> list[str]:
+    """Split a comma-separated address list and validate each nonempty entry."""
+    entries = [entry.strip() for entry in value.split(",") if entry.strip()]
+    for entry in entries:
+        try:
+            ipaddress.ip_address(entry)
+        except ValueError as exc:  # noqa: PERF203
+            raise forms.ValidationError(error_message.format(entry=entry)) from exc
+    return entries
 
 
 def _validate_ip(value: str, version: int) -> str:
@@ -502,8 +514,6 @@ class Reservation4Form(forms.Form):
         (e.g. "1") when that lookup fails, which isn't a CIDR and would
         otherwise fail this check even though the value is never user input.
         """
-        import ipaddress
-
         value = self.cleaned_data.get("subnet_cidr", "").strip()
         if self.fields["subnet_cidr"].disabled:
             return value
@@ -607,8 +617,6 @@ class Reservation6Form(forms.Form):
         (e.g. "1") when that lookup fails, which isn't a CIDR and would
         otherwise fail this check even though the value is never user input.
         """
-        import ipaddress
-
         value = self.cleaned_data.get("subnet_cidr", "").strip()
         if self.fields["subnet_cidr"].disabled:
             return value
@@ -792,7 +800,7 @@ class _SubnetBaseForm(forms.Form):
         label="NTP servers",
         required=False,
         max_length=255,
-        help_text="Comma-separated IP addresses or hostnames.",
+        help_text="Comma-separated IP addresses.",
     )
     ddns_qualifying_suffix = forms.CharField(
         label="DDNS qualifying suffix",
@@ -819,8 +827,6 @@ class _SubnetBaseForm(forms.Form):
 
     def clean_gateway(self) -> str:
         """Validate the gateway is an IP address; blank means no gateway."""
-        import ipaddress
-
         value = self.cleaned_data["gateway"].strip()
         if not value:
             return ""
@@ -832,31 +838,11 @@ class _SubnetBaseForm(forms.Form):
 
     def clean_dns_servers(self) -> list[str]:
         """Split the comma-separated list and validate every DNS server address."""
-        import ipaddress
-
-        value = self.cleaned_data["dns_servers"].strip()
-        if not value:
-            return []
-        entries = [s.strip() for s in value.split(",") if s.strip()]
-        for entry in entries:
-            try:
-                ipaddress.ip_address(entry)
-            except ValueError as exc:  # noqa: PERF203
-                raise forms.ValidationError(f"Invalid DNS server IP address: '{entry}'") from exc
-        return entries
+        return _parse_ip_address_list(self.cleaned_data["dns_servers"], "Invalid DNS server IP address: '{entry}'")
 
     def clean_ntp_servers(self) -> list[str]:
-        """Split the comma-separated list and drop blank entries.
-
-        Entries are deliberately not validated as IP addresses: this field accepts a
-        hostname, as its help text says and test_ntp_servers_cleaned_as_list asserts.
-        SharedNetworkEditForm.clean_ntp_servers writes the same Kea option and does
-        require an address.
-        """
-        value = self.cleaned_data["ntp_servers"].strip()
-        if not value:
-            return []
-        return [s.strip() for s in value.split(",") if s.strip()]
+        """Split the comma-separated list and validate every NTP server address."""
+        return _parse_ip_address_list(self.cleaned_data["ntp_servers"], "Invalid NTP server IP address: '{entry}'")
 
 
 class SubnetAddForm(_SubnetBaseForm):
@@ -892,8 +878,6 @@ class SubnetAddForm(_SubnetBaseForm):
     ]
 
     def clean_subnet(self) -> str:  # noqa: D102
-        import ipaddress
-
         value = self.cleaned_data["subnet"].strip()
         try:
             ipaddress.ip_network(value, strict=True)
@@ -906,8 +890,6 @@ class SubnetAddForm(_SubnetBaseForm):
         cleaned = super().clean()
         if not cleaned:
             return cleaned
-        import ipaddress
-
         subnet_str = cleaned.get("subnet", "")
         try:
             subnet_net = ipaddress.ip_network(subnet_str, strict=False)
@@ -931,17 +913,21 @@ class SubnetAddForm(_SubnetBaseForm):
                         f"Gateway must be an IPv{subnet_version} address to match the subnet family.",
                     )
 
-        dns_servers = cleaned.get("dns_servers") or []
-        if isinstance(dns_servers, list):
-            for dns in dns_servers:
+        # Both options are address arrays of the subnet's own family, so Kea rejects a
+        # mismatch at apply time. Only the add form knows the family; see SubnetEditForm.
+        for field, label in (("dns_servers", "DNS server"), ("ntp_servers", "NTP server")):
+            addresses = cleaned.get(field) or []
+            if not isinstance(addresses, list):
+                continue
+            for address in addresses:
                 try:
-                    dns_version = ipaddress.ip_address(dns).version
+                    version = ipaddress.ip_address(address).version
                 except ValueError:
                     continue
-                if dns_version != subnet_version:
+                if version != subnet_version:
                     self.add_error(
-                        "dns_servers",
-                        f"DNS server '{dns}' must be an IPv{subnet_version} address to match the subnet family.",
+                        field,
+                        f"{label} '{address}' must be an IPv{subnet_version} address to match the subnet family.",
                     )
                     break
 
@@ -1423,48 +1409,21 @@ class SharedNetworkEditForm(forms.Form):
 
     def clean_relay_addresses(self) -> str:
         """Validate each relay IP."""
-        import ipaddress
-
-        raw = self.cleaned_data.get("relay_addresses", "").strip()
-        if not raw:
-            return raw
-        entries = [s.strip() for s in raw.split(",") if s.strip()]
-        for entry in entries:
-            try:
-                ipaddress.ip_address(entry)
-            except ValueError as exc:  # noqa: PERF203
-                raise forms.ValidationError(f"'{entry}' is not a valid IP address.") from exc
-        return ",".join(entries)
+        return ",".join(
+            _parse_ip_address_list(self.cleaned_data.get("relay_addresses", ""), "'{entry}' is not a valid IP address.")
+        )
 
     def clean_dns_servers(self) -> str:
         """Validate each DNS server IP address."""
-        import ipaddress
-
-        raw = self.cleaned_data.get("dns_servers", "").strip()
-        if not raw:
-            return raw
-        entries = [s.strip() for s in raw.split(",") if s.strip()]
-        for entry in entries:
-            try:
-                ipaddress.ip_address(entry)
-            except ValueError as exc:  # noqa: PERF203
-                raise forms.ValidationError(f"Invalid DNS server IP address: '{entry}'") from exc
-        return ",".join(entries)
+        return ",".join(
+            _parse_ip_address_list(self.cleaned_data.get("dns_servers", ""), "Invalid DNS server IP address: '{entry}'")
+        )
 
     def clean_ntp_servers(self) -> str:
         """Validate each NTP server IP address."""
-        import ipaddress
-
-        raw = self.cleaned_data.get("ntp_servers", "").strip()
-        if not raw:
-            return raw
-        entries = [s.strip() for s in raw.split(",") if s.strip()]
-        for entry in entries:
-            try:
-                ipaddress.ip_address(entry)
-            except ValueError as exc:  # noqa: PERF203
-                raise forms.ValidationError(f"Invalid NTP server IP address: '{entry}'") from exc
-        return ",".join(entries)
+        return ",".join(
+            _parse_ip_address_list(self.cleaned_data.get("ntp_servers", ""), "Invalid NTP server IP address: '{entry}'")
+        )
 
 
 # ---------------------------------------------------------------------------
