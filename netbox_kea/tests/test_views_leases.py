@@ -28,11 +28,11 @@ from unittest.mock import MagicMock, patch
 
 import requests
 from django.contrib.messages import get_messages
-from django.test import TestCase, override_settings
+from django.test import SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
 from ipam.models import IPAddress as NbIP
 
-from netbox_kea.kea import KeaClient
+from netbox_kea.kea import KeaClient, KeaException
 from netbox_kea.models import Server
 from netbox_kea.utilities import _subnet_choices_cache_key, fetch_subnet_choices, subnet_sort_key
 
@@ -3581,3 +3581,40 @@ class TestLeaseSearchSubnetCombobox(_ViewTestBase):
         self.assertIn("subnet_cmds", body)
         self.assertIn("hook library is not loaded", body)
         self.assertNotIn("kea-lease-subnet-cidrs", body)
+
+
+class TestIdentityLookupMemoization(SimpleTestCase):
+    """`_IdentityLookups` promises to call each lookup at most once."""
+
+    def _lookups(self):
+        from netbox_kea.views.leases import _IdentityLookups
+
+        return _IdentityLookups()
+
+    def test_a_successful_lookup_runs_once(self):
+        calls = []
+
+        def lookup():
+            calls.append(1)
+
+        lookups = self._lookups()
+        for _ in range(3):
+            # None is a real cached outcome: no reservation matches this identity.
+            self.assertIsNone(lookups.resolve(("global", "aa:bb"), lookup))
+
+        self.assertEqual(len(calls), 1)
+
+    def test_a_failing_lookup_runs_once_and_replays_its_error(self):
+        """Leases share identities, so a failing lookup must not be reissued per lease."""
+        calls = []
+
+        def lookup():
+            calls.append(1)
+            raise KeaException({"result": 1, "text": "reservation-get failed"})
+
+        lookups = self._lookups()
+        for _ in range(3):
+            with self.assertRaises(KeaException):
+                lookups.resolve(("global", "aa:bb"), lookup)
+
+        self.assertEqual(len(calls), 1, "the failing lookup was reissued for a repeated identity")
