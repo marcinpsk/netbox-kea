@@ -89,7 +89,11 @@ class _Page:
 
 
 def _drive(api: _Api, page: _Page):
-    fixture_function = getattr(ui_conftest.netbox_login, "__wrapped__", ui_conftest.netbox_login)
+    # pytest 8.4+ wraps a fixture in FixtureFunctionDefinition. Ask it for the
+    # function before falling back to the dunder, which is not part of its contract.
+    fixture = ui_conftest.netbox_login
+    unwrap = getattr(fixture, "_get_wrapped_function", None)
+    fixture_function = unwrap() if unwrap is not None else getattr(fixture, "__wrapped__", fixture)
     return fixture_function(
         page=page,
         netbox_url="http://netbox.invalid",
