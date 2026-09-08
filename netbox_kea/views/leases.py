@@ -920,14 +920,26 @@ class _IdentityLookups:
         self._registry = threading.Lock()
         self._locks: dict[Any, threading.Lock] = {}
         self._results: dict[Any, Reservation | None] = {}
+        self._failures: dict[Any, Exception] = {}
 
     def resolve(self, key: Any, lookup: Callable[[], Reservation | None]) -> Reservation | None:
-        """Return the memoized result for *key*, calling *lookup* at most once."""
+        """Return the memoized result for *key*, calling *lookup* at most once.
+
+        A failure is memoized and replayed: leases repeat identities, so re-raising the
+        stored exception keeps every caller's "indeterminate" answer without reissuing a
+        query that already failed for this page.
+        """
         with self._registry:
             entry = self._locks.setdefault(key, threading.Lock())
         with entry:
+            if key in self._failures:
+                raise self._failures[key]
             if key not in self._results:
-                self._results[key] = lookup()
+                try:
+                    self._results[key] = lookup()
+                except Exception as exc:
+                    self._failures[key] = exc
+                    raise
             return self._results[key]
 
 
