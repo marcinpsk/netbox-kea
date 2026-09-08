@@ -846,7 +846,10 @@ class _SubnetBaseForm(forms.Form):
         return entries
 
     def clean_ntp_servers(self) -> list[str]:
-        """Split the comma-separated list and validate every NTP server address."""
+        """Split the comma-separated list and drop blank entries.
+
+        This does not validate the entries, unlike clean_dns_servers alongside it.
+        """
         value = self.cleaned_data["ntp_servers"].strip()
         if not value:
             return []
