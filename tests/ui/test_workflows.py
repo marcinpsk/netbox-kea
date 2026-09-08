@@ -27,6 +27,11 @@ def _check_no_django_error(page: Page) -> None:
     assert "Page not found" not in title, f"Django 404 at {page.url}"
 
 
+def _dismiss_debug_toolbar(page: Page) -> None:
+    """Remove the Django Debug Toolbar overlay so it doesn't intercept clicks."""
+    page.evaluate("() => { const el = document.getElementById('djDebug'); if (el) el.remove(); }")
+
+
 def _submit_and_wait_nav(page: Page, js: str) -> None:
     """Run a form-submitting JS snippet and wait for the resulting navigation.
 
@@ -196,8 +201,7 @@ class TestServerList:
         _assert_no_none_pk(page)
         assert "/servers/import" in page.url, f"Expected import URL, got {page.url}"
 
-        http_404 = [e for e in track_http_errors if e[0] == 404]
-        assert not http_404, f"Got 404 navigating to import page: {http_404}"
+        _assert_no_http_errors(track_http_errors)
 
 
 # ---------------------------------------------------------------------------
@@ -244,6 +248,8 @@ class TestAddServerForm:
         _check_no_django_error(page)
         # Either stayed on /add/ or back on add form — never on /servers/None
         assert "servers/None" not in page.url
+        # An invalid form re-renders with 200, so any 4xx/5xx here is a real fault.
+        _assert_no_http_errors(track_http_errors)
 
 
 # ---------------------------------------------------------------------------
@@ -719,11 +725,6 @@ class TestBadgeEnrichment:
 # ---------------------------------------------------------------------------
 # Lease search modes (live Kea)
 # ---------------------------------------------------------------------------
-
-
-def _dismiss_debug_toolbar(page: Page) -> None:
-    """Remove the Django Debug Toolbar overlay so it doesn't intercept clicks."""
-    page.evaluate("() => { const el = document.getElementById('djDebug'); if (el) el.remove(); }")
 
 
 class TestLeaseSearchModes:
