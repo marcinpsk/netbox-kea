@@ -18,9 +18,6 @@ from playwright.sync_api import Page
 # This is linked from netbox_kea to avoid import errors
 from ..kea import KeaClient
 
-# Server.name is unique and a killed run never reaches a fixture's cleanup, so every
-# fixture below names its Server per run and checks it still exists before deleting.
-
 
 @pytest.fixture
 def requests_session(nb_api: pynetbox.api) -> requests.Session:
@@ -65,6 +62,9 @@ def kea_server(nb_api: pynetbox.api, kea_url: str, kea_dhcp6_url: str):
     """Create the one Server every browser test drives, and delete it afterwards.
 
     Kea 3.0 has no Control Agent, so each daemon gets its own URL.
+
+    Server.name is unique and a killed run never reaches the cleanup, so every Server
+    fixture here names its row per run and checks it still exists before deleting.
     """
     server = nb_api.plugins.kea.servers.create(
         name=f"test-{uuid.uuid4().hex[:8]}", ca_url=kea_url, dhcp6_url=kea_dhcp6_url, has_control_agent=False
