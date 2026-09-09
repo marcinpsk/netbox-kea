@@ -276,6 +276,34 @@ def test_option_view_contracts_are_not_accepted_in_the_mypy_baseline():
     assert not forbidden & accepted_errors
 
 
+def _is_deterministic_name(node) -> bool:
+    """True when *node* evaluates to the same Server name on every run.
+
+    A bare constant is the obvious case. An f-string built only from constants is the
+    same hazard wearing a different spelling, so it counts too.
+    """
+    if isinstance(node, ast.Constant):
+        return True
+    if isinstance(node, ast.JoinedStr):
+        # An interpolation is deterministic when the thing it interpolates is.
+        return all(
+            isinstance(part, ast.Constant)
+            or (isinstance(part, ast.FormattedValue) and _is_deterministic_name(part.value))
+            for part in node.values
+        )
+    return False
+
+
+def test_the_fixed_name_guard_reads_every_spelling():
+    """Table-test the guard: one that misses the pattern it exists to catch is worse than none."""
+    must_flag = ('"kea-server"', 'f"kea-server"', 'f"kea-{1}-server"')
+    must_not_flag = ('f"kea-{uuid4()}"', 'f"kea-{run_id}"', "make_name()", "run_name")
+    for source in must_flag:
+        assert _is_deterministic_name(ast.parse(source, mode="eval").body), f"the guard missed {source}"
+    for source in must_not_flag:
+        assert not _is_deterministic_name(ast.parse(source, mode="eval").body), f"the guard wrongly flagged {source}"
+
+
 def test_no_browser_fixture_creates_a_server_with_a_fixed_name():
     """`Server.name` is unique, so a killed run must not poison the next one.
 
@@ -298,7 +326,7 @@ def test_no_browser_fixture_creates_a_server_with_a_fixed_name():
     for call in server_creates:
         name = next((kw.value for kw in call.keywords if kw.arg == "name"), None)
         assert name is not None, "a browser fixture creates a Server without naming it."
-        assert not isinstance(name, ast.Constant), (
+        assert not _is_deterministic_name(name), (
             f"a browser fixture names its Server with the constant {getattr(name, 'value', name)!r}. "
             "Server.name is unique, so an interrupted run leaves that row behind and breaks the next session."
         )
