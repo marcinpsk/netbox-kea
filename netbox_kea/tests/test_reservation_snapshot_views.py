@@ -15,6 +15,19 @@ class TestPerServerReservationSnapshots(_ViewTestBase):
     def _url(self, version: int = 4) -> str:
         return reverse(f"plugins:netbox_kea:server_reservations{version}", args=[self.server.pk])
 
+    def test_an_unavailable_hook_does_not_also_report_an_unreadable_snapshot(self):
+        """One cause must produce one banner: the empty snapshot is not a partial read."""
+        responses = _catalogue_responses(4, 20, "198.18.0.0/24")
+        responses.update({"reservation-get-page": {"result": 2, "text": "command not supported"}})
+
+        with stub_kea(responses):
+            response = self.client.get(self._url())
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "hook library is not loaded")
+        self.assertNotContains(response, "Snapshot is incomplete")
+        self.assertNotContains(response, "This bounded Snapshot is complete")
+
     def test_renders_valid_records_scope_and_incomplete_diagnostics_from_one_page(self):
         responses = _catalogue_responses(4, 20, "198.18.0.0/24")
         hosts = [

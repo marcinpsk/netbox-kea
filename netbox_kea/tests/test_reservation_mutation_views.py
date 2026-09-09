@@ -193,6 +193,40 @@ class TestReservationMutationViews(_ViewTestBase):
         self.assertEqual(response.status_code, 302)
         self.assertTrue(any("overlap" in message.lower() for message in logs.output))
 
+    def test_a_journal_validation_error_does_not_lose_the_applied_creation(self):
+        """A save signal can raise ValidationError, which is not a ValueError the view catches."""
+        from django.contrib.messages import get_messages
+        from django.core.exceptions import ValidationError
+        from django.db.models.signals import post_save
+        from extras.models import JournalEntry
+
+        responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
+        raw = {"subnet-id": 20, "hw-address": "aa:bb:cc:dd:ee:ff", "ip-address": "198.18.0.20"}
+        responses.update({"reservation-add": {"result": 0}, "reservation-get": _res_get(raw)})
+
+        def reject(sender, **kwargs):
+            raise ValidationError("journal rejected by a save signal")
+
+        post_save.connect(reject, sender=JournalEntry)
+        try:
+            with stub_kea(responses) as kea:
+                response = self.client.post(
+                    reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk]),
+                    {
+                        "subnet_cidr": "198.18.0.0/24",
+                        "ip_address": "198.18.0.20",
+                        "identifier_type": "hw-address",
+                        "identifier": "aa:bb:cc:dd:ee:ff",
+                    },
+                )
+        finally:
+            post_save.disconnect(reject, sender=JournalEntry)
+
+        # Kea applied the create, so the operator must be told it happened.
+        self.assertEqual(kea.commands().count("reservation-add"), 1)
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("Reservation created.", [str(message) for message in get_messages(response.wsgi_request)])
+
     def test_create_reports_failed_persistence_after_confirmed_application(self):
         from django.contrib.messages import get_messages
         from extras.models import JournalEntry

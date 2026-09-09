@@ -304,6 +304,29 @@ def test_no_browser_fixture_creates_a_server_with_a_fixed_name():
         )
 
 
+def test_the_pynetbox_client_bounds_every_request_it_makes():
+    """`nb_api` reaches NetBox through pynetbox, which never passes a timeout of its own.
+
+    The browser suite creates, reads and deletes Servers through `nb_api.plugins.kea…`,
+    including in fixture teardown. A bare `requests.Session` has no default timeout, so a
+    hung NetBox blocks the run. The per-call guard cannot see these paths, because
+    pynetbox accepts no timeout argument: the bound has to live on the shared session.
+    """
+    source = (REPOSITORY_ROOT / "tests" / "conftest.py").read_text()
+    tree = ast.parse(source)
+
+    assigns_session = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Attribute) and target.attr == "http_session" for target in node.targets)
+    ]
+    assert assigns_session, (
+        "tests/conftest.py leaves pynetbox's default http_session in place, so every "
+        "nb_api call is unbounded. Assign a session that supplies a default timeout."
+    )
+
+
 def test_integration_image_installs_the_wheel_into_the_netbox_venv():
     """The uv branch must target the same NetBox venv as the pip fallback."""
     dockerfile = (REPOSITORY_ROOT / "tests" / "docker" / "Dockerfile").read_text()

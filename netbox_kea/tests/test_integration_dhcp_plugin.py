@@ -184,6 +184,36 @@ class DhcpPluginAdapterTest(TestCase):
         self.assertIsNone(res.ipv4_address)
         self.assertIn(IPAddress.objects.get(address="2001:db8:99::50/64"), res.ipv6_addresses.all())
 
+    def test_delegated_prefixes_are_reported_rather_than_dropped_silently(self):
+        """The import writes no ipv6_prefixes, so the operator must at least be told."""
+        conf = {
+            "subnet6": [
+                {
+                    "id": 1,
+                    "subnet": "2001:db8:99::/64",
+                    "pools": [],
+                    "reservations": [
+                        {
+                            "duid": "01:02:03:04:06",
+                            "ip-addresses": [],
+                            "prefixes": ["2001:db8:aa::/56"],
+                            "hostname": "pd6",
+                        }
+                    ],
+                }
+            ]
+        }
+        summary = self.adapter.import_server_config(
+            self.server, parse_dhcp_config(conf, 6), _reservation_snapshot(conf, 6)
+        )
+
+        self.assertEqual(summary.errors, 0, summary.warnings)
+        self.assertEqual(summary.delegated_prefixes_skipped, 1)
+        self.assertTrue(
+            any("2001:db8:aa::/56" in warning for warning in summary.warnings),
+            summary.warnings,
+        )
+
     # ── the subnet_id decoupling (decision 5) ────────────────────────────────
 
     def test_dualstack_v4_and_v6_subnet_id_1_both_import_without_collision(self):
