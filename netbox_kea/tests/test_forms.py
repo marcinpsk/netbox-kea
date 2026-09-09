@@ -1091,6 +1091,74 @@ class TestSubnetAddFormAddressFamily(SimpleTestCase):
         self.assertTrue(form.is_valid(), form.errors)
 
 
+class TestSubnetEditFormAddressFamily(SimpleTestCase):
+    """The edit form carries the subnet CIDR in a hidden field, so it can check the family too."""
+
+    def _form(self, **overrides):
+        from netbox_kea.forms import SubnetEditForm
+
+        data = {"subnet_cidr": "192.0.2.0/24"}
+        data.update(overrides)
+        return SubnetEditForm(data=data)
+
+    def test_rejects_mismatched_dns_and_ntp_addresses(self):
+        for field, label in (("dns_servers", "DNS server"), ("ntp_servers", "NTP server")):
+            with self.subTest(field=field):
+                form = self._form(**{field: "2001:db8::123"})
+                self.assertFalse(form.is_valid())
+                self.assertEqual(
+                    form.errors[field],
+                    [f"{label} '2001:db8::123' must be an IPv4 address to match the subnet family."],
+                )
+
+    def test_rejects_mismatched_dns_and_ntp_addresses_on_v6(self):
+        for field, label in (("dns_servers", "DNS server"), ("ntp_servers", "NTP server")):
+            with self.subTest(field=field):
+                form = self._form(subnet_cidr="2001:db8::/64", **{field: "192.0.2.53"})
+                self.assertFalse(form.is_valid())
+                self.assertEqual(
+                    form.errors[field],
+                    [f"{label} '192.0.2.53' must be an IPv6 address to match the subnet family."],
+                )
+
+    def test_rejects_mismatched_gateway(self):
+        form = self._form(gateway="2001:db8::1")
+        self.assertFalse(form.is_valid())
+        self.assertEqual(form.errors["gateway"], ["Gateway must be an IPv4 address to match the subnet family."])
+
+    def test_rejects_gateway_on_v6_subnet(self):
+        form = self._form(subnet_cidr="2001:db8::/64", gateway="2001:db8::1")
+        self.assertFalse(form.is_valid())
+        self.assertEqual(form.errors["gateway"], ["Gateway is not allowed for IPv6 subnets."])
+
+    def test_rejects_subnet_cidr_that_is_not_a_network(self):
+        """The hidden field is client-supplied and goes straight to subnet{v}-update."""
+        form = self._form(subnet_cidr="not-a-subnet")
+        self.assertFalse(form.is_valid())
+        self.assertIn("subnet_cidr", form.errors)
+
+    def test_accepts_a_prefix_with_host_bits_set(self):
+        """Kea allows it and reports it back; the add form still rejects it as a typo."""
+        from netbox_kea.forms import SubnetAddForm
+
+        form = self._form(subnet_cidr="10.0.0.5/24", dns_servers="10.0.0.53")
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.cleaned_data["subnet_cidr"], "10.0.0.5/24")
+
+        add = SubnetAddForm(data={"subnet": "10.0.0.5/24", "shared_network": ""})
+        self.assertFalse(add.is_valid())
+        self.assertIn("subnet", add.errors)
+
+    def test_accepts_matching_addresses(self):
+        for subnet, gateway, dns, ntp in (
+            ("192.0.2.0/24", "192.0.2.1", "192.0.2.53", "192.0.2.123"),
+            ("2001:db8::/64", "", "2001:db8::53", "2001:db8::123"),
+        ):
+            with self.subTest(subnet=subnet):
+                form = self._form(subnet_cidr=subnet, gateway=gateway, dns_servers=dns, ntp_servers=ntp)
+                self.assertTrue(form.is_valid(), form.errors)
+
+
 # ---------------------------------------------------------------------------
 # SharedNetworkEditForm
 # ---------------------------------------------------------------------------

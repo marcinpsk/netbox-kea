@@ -21,9 +21,13 @@
           {% csrf_token %}
           {{ form.subnet_cidr }}
 
-          {% if form.non_field_errors %}
+          {% if form.non_field_errors or form.subnet_cidr.errors %}
             <div class="alert alert-danger">
               {% for error in form.non_field_errors %}
+                <div>{{ error }}</div>
+              {% endfor %}
+              {# subnet_cidr is a hidden input, so its errors have nowhere else to render. #}
+              {% for error in form.subnet_cidr.errors %}
                 <div>{{ error }}</div>
               {% endfor %}
             </div>

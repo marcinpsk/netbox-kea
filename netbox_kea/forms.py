@@ -32,6 +32,16 @@ def _parse_ip_address_list(value: str, error_message: str) -> list[str]:
     return entries
 
 
+def _validate_subnet_cidr(value: str, *, strict: bool) -> str:
+    """Validate a subnet CIDR and return it stripped, never normalised."""
+    value = value.strip()
+    try:
+        ipaddress.ip_network(value, strict=strict)
+    except ValueError as exc:
+        raise forms.ValidationError(f"Invalid subnet CIDR: {exc}") from exc
+    return value
+
+
 def _validate_ip(value: str, version: int) -> str:
     """Validate that *value* is a single IP address matching *version* (4 or 6)."""
     try:
@@ -778,6 +788,8 @@ class _SubnetBaseForm(forms.Form):
     Subclasses add identity fields (subnet CIDR / ID for add; hidden CIDR for edit).
     """
 
+    subnet_field: str
+
     pools = forms.CharField(
         label="Pools",
         required=False,
@@ -844,9 +856,59 @@ class _SubnetBaseForm(forms.Form):
         """Split the comma-separated list and validate every NTP server address."""
         return _parse_ip_address_list(self.cleaned_data["ntp_servers"], "Invalid NTP server IP address: '{entry}'")
 
+    def clean(self) -> dict[str, Any] | None:
+        """Validate that gateway, DNS and NTP servers match the subnet's IP family."""
+        cleaned = super().clean()
+        if not cleaned:
+            return cleaned
+        subnet_str = cleaned.get(self.subnet_field, "")
+        try:
+            subnet_net = ipaddress.ip_network(subnet_str, strict=False)
+        except ValueError:
+            return cleaned
+
+        subnet_version = subnet_net.version
+
+        gateway = cleaned.get("gateway", "")
+        if gateway:
+            if subnet_version == 6:
+                self.add_error("gateway", "Gateway is not allowed for IPv6 subnets.")
+            else:
+                try:
+                    gw_version = ipaddress.ip_address(gateway).version
+                except ValueError:
+                    gw_version = None
+                if gw_version and gw_version != subnet_version:
+                    self.add_error(
+                        "gateway",
+                        f"Gateway must be an IPv{subnet_version} address to match the subnet family.",
+                    )
+
+        # Both options are address arrays of the subnet's own family, so Kea rejects a
+        # mismatch at apply time.
+        for field, label in (("dns_servers", "DNS server"), ("ntp_servers", "NTP server")):
+            addresses = cleaned.get(field) or []
+            if not isinstance(addresses, list):
+                continue
+            for address in addresses:
+                try:
+                    version = ipaddress.ip_address(address).version
+                except ValueError:
+                    continue
+                if version != subnet_version:
+                    self.add_error(
+                        field,
+                        f"{label} '{address}' must be an IPv{subnet_version} address to match the subnet family.",
+                    )
+                    break
+
+        return cleaned
+
 
 class SubnetAddForm(_SubnetBaseForm):
     """Form for adding a new DHCP subnet to Kea."""
+
+    subnet_field = "subnet"
 
     subnet = forms.CharField(
         label="Subnet CIDR",
@@ -877,61 +939,9 @@ class SubnetAddForm(_SubnetBaseForm):
         "ddns_qualifying_suffix",
     ]
 
-    def clean_subnet(self) -> str:  # noqa: D102
-        value = self.cleaned_data["subnet"].strip()
-        try:
-            ipaddress.ip_network(value, strict=True)
-        except ValueError as exc:
-            raise forms.ValidationError(f"Invalid subnet CIDR: {exc}") from exc
-        return value
-
-    def clean(self) -> dict[str, Any] | None:
-        """Validate that gateway and DNS servers belong to the same IP family as the subnet."""
-        cleaned = super().clean()
-        if not cleaned:
-            return cleaned
-        subnet_str = cleaned.get("subnet", "")
-        try:
-            subnet_net = ipaddress.ip_network(subnet_str, strict=False)
-        except ValueError:
-            return cleaned
-
-        subnet_version = subnet_net.version
-
-        gateway = cleaned.get("gateway", "")
-        if gateway:
-            if subnet_version == 6:
-                self.add_error("gateway", "Gateway is not allowed for IPv6 subnets.")
-            else:
-                try:
-                    gw_version = ipaddress.ip_address(gateway).version
-                except ValueError:
-                    gw_version = None
-                if gw_version and gw_version != subnet_version:
-                    self.add_error(
-                        "gateway",
-                        f"Gateway must be an IPv{subnet_version} address to match the subnet family.",
-                    )
-
-        # Both options are address arrays of the subnet's own family, so Kea rejects a
-        # mismatch at apply time. Only the add form knows the family; see SubnetEditForm.
-        for field, label in (("dns_servers", "DNS server"), ("ntp_servers", "NTP server")):
-            addresses = cleaned.get(field) or []
-            if not isinstance(addresses, list):
-                continue
-            for address in addresses:
-                try:
-                    version = ipaddress.ip_address(address).version
-                except ValueError:
-                    continue
-                if version != subnet_version:
-                    self.add_error(
-                        field,
-                        f"{label} '{address}' must be an IPv{subnet_version} address to match the subnet family.",
-                    )
-                    break
-
-        return cleaned
+    def clean_subnet(self) -> str:
+        """Reject host bits here: this CIDR is typed by the user for a subnet being created."""
+        return _validate_subnet_cidr(self.cleaned_data["subnet"], strict=True)
 
 
 class SubnetEditForm(_SubnetBaseForm):
@@ -944,6 +954,8 @@ class SubnetEditForm(_SubnetBaseForm):
     ``shared_network`` choices are set dynamically by the view at render time.
     ``current_network`` is a hidden field tracking the network before any change.
     """
+
+    subnet_field = "subnet_cidr"
 
     subnet_cidr = forms.CharField(widget=forms.HiddenInput())
     valid_lft = forms.IntegerField(
@@ -999,6 +1011,10 @@ class SubnetEditForm(_SubnetBaseForm):
         "ddns_qualifying_suffix",
         "current_network",
     ]
+
+    def clean_subnet_cidr(self) -> str:
+        """Accept host bits here: Kea allows them, so this CIDR is echoed back from its config."""
+        return _validate_subnet_cidr(self.cleaned_data["subnet_cidr"], strict=False)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
