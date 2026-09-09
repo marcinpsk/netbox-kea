@@ -93,7 +93,6 @@ class ImportSummary:
     client_classes_updated: int = 0
     shared_networks_deferred: int = 0
     foreign_addresses_skipped: int = 0
-    delegated_prefixes_skipped: int = 0
     # True when the Reservation Snapshot traversal could not read every record.
     reservations_unread: bool = False
     errors: int = 0
@@ -170,13 +169,6 @@ def _ensure_reservation_addresses(reservation: Reservation, summary: ImportSumma
     Returns ``(ipv4_ip, ipv6_ips, mac_obj)``.
     """
     from ..sync import get_netbox_ip, sync_reservation_to_netbox
-
-    if reservation.delegated_prefixes:
-        summary.delegated_prefixes_skipped += len(reservation.delegated_prefixes)
-        summary.warn(
-            f"reservation {reservation.identity.value}: delegated prefix(es) "
-            f"{', '.join(str(prefix) for prefix in reservation.delegated_prefixes)} skipped"
-        )
 
     conflicts: list[str] = []
     sync_reservation_to_netbox(reservation, cleanup=False, conflicts=conflicts)
