@@ -8,6 +8,18 @@ import pynetbox
 import pytest
 import requests
 
+REQUEST_TIMEOUT = 20
+
+
+class TimeoutSession(requests.Session):
+    """Apply a default timeout to requests made through the API client."""
+
+    def request(self, method, url, **kwargs):
+        """Bound requests that do not specify a timeout."""
+        if kwargs.get("timeout") is None:
+            kwargs["timeout"] = REQUEST_TIMEOUT
+        return super().request(method, url, **kwargs)
+
 
 def _delete_created_servers(api: pynetbox.api, created_server_ids: set[int]) -> None:
     """Delete every session-owned Server, and report failures without stopping."""
@@ -127,6 +139,7 @@ def nb_http(netbox_token: str) -> requests.Session:
 def nb_api(netbox_url: str, netbox_token: str) -> Iterator[pynetbox.api]:
     """Return a client and delete only Servers that this test session created."""
     api = pynetbox.api(netbox_url, token=netbox_token)
+    api.http_session = TimeoutSession()
     created_server_ids: set[int] = set()
     api.http_session.hooks["response"].append(
         partial(_record_created_server_ids, created_server_ids=created_server_ids, netbox_url=netbox_url)

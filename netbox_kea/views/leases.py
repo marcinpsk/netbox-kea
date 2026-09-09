@@ -337,9 +337,7 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
                     form.cleaned_data["page"],
                     per_page=get_paginate_count(request),
                 )
-                paginate = True
             else:
-                paginate = is_subnet_search
                 next_page = None
                 state_in_kea = state_filter if is_subnet_search else None
                 leases = self.get_leases(
@@ -364,7 +362,7 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
 
             table = self.get_table(leases, request)
             visible_leases = leases
-            if is_subnet_search:
+            if by != "":
                 visible_leases = [row.record for row in table.paginated_rows]
                 next_page = table.page.next_page_number() if table.page.has_next() else None
 
@@ -399,7 +397,7 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
                     "form": form,
                     "table": table,
                     "next_page": next_page,
-                    "paginate": paginate,
+                    "paginate": True,
                     "page_lengths": EnhancedPaginator.default_page_lengths,
                 },
             )

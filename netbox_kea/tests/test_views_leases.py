@@ -380,6 +380,32 @@ class TestLeaseSearchPaths(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Load the stat_cmds hook")
 
+    def test_a_large_hostname_result_enriches_only_the_rendered_page(self):
+        """`lease*-get-by-hostname` takes no limit, so the whole result set was enriched.
+
+        `configure()` already paginates the table, so the extra rows were never rendered:
+        the run paid one reservation lookup per lease to enrich rows nobody sees, and the
+        paginator stayed hidden, so those rows could not be reached at all.
+        """
+        leases = [dict(self._LEASE4, **{"ip-address": f"10.0.0.{n}"}) for n in range(1, 61)]
+        responses = {
+            "subnet4-list": self._SUBNETS4,
+            "lease4-get-by-hostname": self._multi(leases),
+            "reservation-get": self._NO_RESERVATION,
+        }
+
+        with stub_kea(responses):
+            response = self._htmx_get(self._url4(), {"by": "hostname", "q": "search-host"})
+
+        self.assertEqual(response.status_code, 200)
+        rendered = len(response.context["table"].paginated_rows)
+        self.assertLess(rendered, len(leases), "the table must paginate a result set this large")
+        # Enrichment stamps can_delete on every lease it touches, so this counts its input.
+        enriched = [row for row in response.context["table"].data.data if "can_delete" in row]
+        self.assertEqual(len(enriched), rendered)
+        # Rows are being withheld, so the paginator has to be offered.
+        self.assertTrue(response.context["paginate"])
+
     def test_search_by_hostname_sends_correct_command(self):
         """BY_HOSTNAME must call lease4-get-by-hostname with hostname argument."""
         with stub_kea(

@@ -242,7 +242,7 @@ def _journal_mutation(
                 f"{reservation.identity.value}; {addresses}"
             ),
         )
-    except (ImportError, DatabaseError):
+    except (ImportError, DatabaseError, ValidationError):
         logger.exception("Could not record the confirmed Reservation mutation in the journal")
 
 
