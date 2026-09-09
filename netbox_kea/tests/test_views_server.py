@@ -719,6 +719,31 @@ class TestStatusViewNullArgs(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "HA")
 
+    def test_truthy_non_mapping_ha_peers_do_not_break_the_status_page(self):
+        """`or {}` only replaces a falsy peer, so a truthy non-mapping still reached .get()."""
+
+        def _status(body):
+            svc = body.get("service")
+            if svc and "dhcp" in svc[0]:
+                return {
+                    "result": 0,
+                    "arguments": {
+                        "pid": 1,
+                        "uptime": 100,
+                        "reload": 0,
+                        "high-availability": [
+                            {"ha-mode": "load-balancing", "ha-servers": {"local": "primary", "remote": ["secondary"]}}
+                        ],
+                    },
+                }
+            return {"result": 0, "arguments": {"pid": 1, "uptime": 100, "reload": 0}}
+
+        stub = {"status-get": _status, "version-get": {"result": 0, "arguments": {"extended": "2.4.1"}}}
+        with _status_stub(**stub):
+            response = self.client.get(self._url())
+
+        self.assertEqual(response.status_code, 200)
+
 
 # ---------------------------------------------------------------------------
 # _get_global_options — generic exception handler

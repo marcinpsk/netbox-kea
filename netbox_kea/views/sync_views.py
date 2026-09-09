@@ -408,8 +408,17 @@ class _BaseBulkReservationImportView(_KeaChangeMixin, ConditionalLoginRequiredMi
                     "message": "The Reservation could not be created. See server logs.",
                 }
                 break
-            _confirmed_side_effects(request, instance, "created", mutation_result)
             created += 1
+            try:
+                _confirmed_side_effects(request, instance, "created", mutation_result)
+            except (ValidationError, ValueError, RuntimeError, requests.RequestException):  # noqa: PERF203
+                logger.exception("Side effects failed for created Reservation document entry %s", index)
+                failure = {
+                    "position": f"reservations[{index}]",
+                    "message": "The Reservation was created, but a follow-up action failed. See server logs.",
+                    "applied": True,
+                }
+                break
         return created, failure
 
     def _execute_import(self, request, instance, proposals):
@@ -463,7 +472,7 @@ class _BaseBulkReservationImportView(_KeaChangeMixin, ConditionalLoginRequiredMi
         if diagnostics:
             return self._render(request, instance, form, self._diagnostic_result(diagnostics))
 
-        failed = 1 if failure is not None else 0
+        failed = 1 if failure is not None and not failure.get("applied", False) else 0
         result = {
             "created": created,
             "failed": failed,
