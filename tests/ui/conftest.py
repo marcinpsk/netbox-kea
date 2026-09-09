@@ -18,6 +18,9 @@ from playwright.sync_api import Page
 # This is linked from netbox_kea to avoid import errors
 from ..kea import KeaClient
 
+# Server.name is unique and a killed run never reaches a fixture's cleanup, so every
+# fixture below names its Server per run and checks it still exists before deleting.
+
 
 @pytest.fixture
 def requests_session(nb_api: pynetbox.api) -> requests.Session:
@@ -63,8 +66,6 @@ def kea_server(nb_api: pynetbox.api, kea_url: str, kea_dhcp6_url: str):
 
     Kea 3.0 has no Control Agent, so each daemon gets its own URL.
     """
-    # Server.name is unique and a killed run never reaches the cleanup below, so a
-    # fixed name makes the next session fail on a leftover row. Name it per run.
     server = nb_api.plugins.kea.servers.create(
         name=f"test-{uuid.uuid4().hex[:8]}", ca_url=kea_url, dhcp6_url=kea_dhcp6_url, has_control_agent=False
     )
@@ -86,25 +87,27 @@ def with_test_server(kea_server, page: Page, netbox_login: None, plugin_base: st
 @pytest.fixture
 def with_test_server_only6(nb_api: pynetbox.api, kea_dhcp6_url: str, page: Page, netbox_login: None, plugin_base: str):
     server = nb_api.plugins.kea.servers.create(
-        name="only6", ca_url=kea_dhcp6_url, dhcp4=False, dhcp6=True, has_control_agent=False
+        name=f"only6-{uuid.uuid4().hex[:8]}", ca_url=kea_dhcp6_url, dhcp4=False, dhcp6=True, has_control_agent=False
     )
     try:
         page.goto(f"{plugin_base}/servers/{server.id}/")
         yield
     finally:
-        server.delete()
+        if nb_api.plugins.kea.servers.get(server.id) is not None:
+            server.delete()
 
 
 @pytest.fixture
 def with_test_server_only4(nb_api: pynetbox.api, kea_url: str, page: Page, netbox_login: None, plugin_base: str):
     server = nb_api.plugins.kea.servers.create(
-        name="only4", ca_url=kea_url, dhcp4=True, dhcp6=False, has_control_agent=False
+        name=f"only4-{uuid.uuid4().hex[:8]}", ca_url=kea_url, dhcp4=True, dhcp6=False, has_control_agent=False
     )
     try:
         page.goto(f"{plugin_base}/servers/{server.id}/")
         yield
     finally:
-        server.delete()
+        if nb_api.plugins.kea.servers.get(server.id) is not None:
+            server.delete()
 
 
 class _DualEndpointKeaClient:

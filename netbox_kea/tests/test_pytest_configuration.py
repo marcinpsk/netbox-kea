@@ -276,27 +276,31 @@ def test_option_view_contracts_are_not_accepted_in_the_mypy_baseline():
     assert not forbidden & accepted_errors
 
 
-def test_the_browser_server_fixture_does_not_use_a_fixed_name():
+def test_no_browser_fixture_creates_a_server_with_a_fixed_name():
     """`Server.name` is unique, so a killed run must not poison the next one.
 
-    The fixture's cleanup does not run when the process is killed. A constant name then
-    leaves a row that makes every later session fail on a duplicate name.
+    A fixture's cleanup does not run when the process is killed. A constant name then
+    leaves a row that makes every later session fail on a duplicate name. This covers
+    every fixture in the module, not just `kea_server`: naming one of them per run and
+    leaving its siblings constant fixes one instance of the hazard, not the hazard.
     """
     tree = ast.parse((_BROWSER_SUITE / "conftest.py").read_text())
-    fixture = next(node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name == "kea_server")
     creates = [
         node
-        for node in ast.walk(fixture)
+        for node in ast.walk(tree)
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "create"
     ]
+    server_creates = [call for call in creates if any(kw.arg == "ca_url" for kw in call.keywords)]
 
-    assert creates, "kea_server no longer creates a Server; update this guard."
-    for call in creates:
+    assert len(server_creates) >= 3, (
+        f"expected every Server-creating browser fixture to be found, got {len(server_creates)}; update this guard."
+    )
+    for call in server_creates:
         name = next((kw.value for kw in call.keywords if kw.arg == "name"), None)
-        assert name is not None, "kea_server creates a Server without naming it."
+        assert name is not None, "a browser fixture creates a Server without naming it."
         assert not isinstance(name, ast.Constant), (
-            "kea_server names the Server with a constant. Server.name is unique, so an "
-            "interrupted run leaves that row behind and breaks the next session."
+            f"a browser fixture names its Server with the constant {getattr(name, 'value', name)!r}. "
+            "Server.name is unique, so an interrupted run leaves that row behind and breaks the next session."
         )
 
 
