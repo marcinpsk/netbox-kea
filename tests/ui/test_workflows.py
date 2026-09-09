@@ -110,7 +110,7 @@ def _tail_container_logs(service: str = "netbox", lines: int = 30) -> str:
             stderr=subprocess.STDOUT,
             timeout=5,
         ).decode()
-    except Exception:
+    except Exception:  # noqa: BLE001 - diagnostics only; never fail a test
         return ""
 
 
@@ -159,7 +159,7 @@ class TestServerList:
         page.goto(f"{plugin_base}/servers/")
         _check_no_django_error(page)
 
-        button = page.get_by_role("button", name=re.compile(label, re.I))
+        button = page.get_by_role("button", name=re.compile(label, re.IGNORECASE))
         expect(button).to_be_visible()
         if button.is_disabled():
             assert page.locator(f'button[name="{action}"]:not([disabled])').count() == 0
@@ -287,7 +287,7 @@ class TestKeaServerTabs:
         page.goto(f"{plugin_base}/servers/{server_id}/status/")
         _check_no_django_error(page)
         # Status tab should surface daemon version / uptime data from Kea
-        expect(page.get_by_text(re.compile(r"version|uptime|pid", re.I)).first).to_be_visible()
+        expect(page.get_by_text(re.compile(r"version|uptime|pid", re.IGNORECASE)).first).to_be_visible()
         _assert_no_http_errors(track_http_errors)
 
         # The helper returns "" for every failure, so an empty result proves nothing.
@@ -385,7 +385,7 @@ class TestKeaServerTabs:
         _dismiss_debug_toolbar(page)
         # Select the first row checkbox
         page.locator("table input[type=checkbox]").first.check()
-        page.get_by_role("button", name=re.compile(r"edit.?selected", re.I)).click()
+        page.get_by_role("button", name=re.compile(r"edit.?selected", re.IGNORECASE)).click()
         page.wait_for_load_state("networkidle")
 
         _assert_no_none_pk(page)

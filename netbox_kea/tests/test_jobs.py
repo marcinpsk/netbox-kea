@@ -20,7 +20,8 @@ appropriate seam.
 from __future__ import annotations
 
 import ipaddress
-from contextlib import contextmanager
+import re
+from contextlib import contextmanager, suppress
 from unittest.mock import MagicMock, patch
 
 import requests
@@ -247,16 +248,16 @@ class TestKeaIpamSyncJobRun(TestCase):
     def _run(self) -> MagicMock:
         """Run the job, swallowing JobFailed; return the mock job object."""
         job = _make_job()
-        try:
+        with suppress(JobFailed):
             KeaIpamSyncJob(job).run()
-        except JobFailed:
-            pass
         return job
 
-    def _run_raises(self) -> None:
-        """Run the job and assert that JobFailed is raised."""
+    def _run_raises(self) -> MagicMock:
+        """Run the job, assert JobFailed is raised, and return the mock job object."""
+        job = _make_job()
         with self.assertRaises(JobFailed):
-            KeaIpamSyncJob(_make_job()).run()
+            KeaIpamSyncJob(job).run()
+        return job
 
     def _make_db_server(self, **kwargs):
         from netbox_kea.tests.utils import _make_db_server
@@ -793,10 +794,8 @@ class TestKeaIpamSyncJobRun(TestCase):
         IPAddress.objects.create(address="10.0.0.100/32", status="active", description="Router loopback")
         with _patch_kea(leases4=[], reservations=[_RESV4]):
             mock_job = _make_job()
-            try:
+            with suppress(JobFailed):
                 KeaIpamSyncJob(mock_job).run()
-            except JobFailed:
-                pass
 
         # Foreign IP left exactly as the operator set it.
         ip = IPAddress.objects.get(address="10.0.0.100/32")
@@ -822,10 +821,8 @@ class TestKeaIpamSyncJobRun(TestCase):
         lease_for_same_ip = {**_LEASE4, "ip-address": "10.0.0.100", "hostname": "reserved1"}
         with _patch_kea(leases4=[lease_for_same_ip], reservations=[_RESV4]):
             mock_job = _make_job()
-            try:
+            with suppress(JobFailed):
                 KeaIpamSyncJob(mock_job).run()
-            except JobFailed:
-                pass
 
         entry = next(e for e in mock_job.data["summary"] if e["name"] == "kea-dupe")
         self.assertEqual(entry["conflicts"], 1)
@@ -934,8 +931,54 @@ class TestKeaIpamSyncJobRun(TestCase):
                     "netbox_kea.sync.cleanup_stale_ips_batch", side_effect=RuntimeError("db gone"), autospec=True
                 ):
                     with self.assertLogs("netbox.jobs", level="ERROR") as cm:
-                        self._run_raises()
+                        job = self._run_raises()
         self.assertTrue(any("Unhandled error syncing server" in msg for msg in cm.output))
+
+        # This entry is on an exception path a clean run never reaches, so it is the
+        # one self.logger call TestJobLogRendersValues cannot see. See that class for
+        # why eager formatting is required.
+        from core.dataclasses import JobLogEntry
+
+        entries = [JobLogEntry.from_logrecord(call.args[0]).message for call in job.log.call_args_list]
+        failures = [m for m in entries if "Unhandled error syncing server" in m]
+        self.assertTrue(failures, entries)
+        self.assertNotIn("%s", failures[0])
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestJobLogRendersValues(TestCase):
+    """The job log must show real values, never unsubstituted format placeholders.
+
+    NetBox's JobLogEntry.from_logrecord stores ``record.msg`` and drops
+    ``record.args``, so a ``self.logger`` call using lazy %-formatting would put a
+    literal "%s" in front of the user. Every self.logger call in jobs.py therefore
+    has to interpolate eagerly. ruff's G004 asks for the opposite and is disabled
+    for jobs.py in pyproject.toml; this test is what makes that safe.
+    """
+
+    def _job_log_messages(self) -> list[str]:
+        """Run the job and render its records exactly as NetBox would."""
+        from core.dataclasses import JobLogEntry
+
+        from netbox_kea.tests.utils import _make_db_server
+
+        _make_db_server(name="kea-logfmt")
+        job = _make_job()
+        with suppress(JobFailed), _patch_kea(leases4=[_LEASE4]):
+            KeaIpamSyncJob(job).run()
+        return [JobLogEntry.from_logrecord(call.args[0]).message for call in job.log.call_args_list]
+
+    def test_no_unsubstituted_placeholders(self):
+        """No rendered entry may still contain a %-placeholder."""
+        messages = self._job_log_messages()
+        self.assertTrue(messages, "the job logged nothing, so this test proves nothing")
+        offenders = [m for m in messages if re.search(r"%[srd]", m)]
+        self.assertEqual(offenders, [], f"job log entries kept a format placeholder: {offenders}")
+
+    def test_server_name_reaches_the_job_log(self):
+        """The server name must appear as a value, which only eager formatting gives."""
+        messages = self._job_log_messages()
+        self.assertTrue(any("kea-logfmt" in m for m in messages), messages)
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
@@ -948,10 +991,8 @@ class TestKeaIpamSyncJobKillSwitches(TestCase):
 
     def _run(self) -> MagicMock:
         job = _make_job()
-        try:
+        with suppress(JobFailed):
             KeaIpamSyncJob(job).run()
-        except JobFailed:
-            pass
         return job
 
     def _make_db_server(self, **kwargs):

@@ -6,6 +6,8 @@ All Kea HTTP calls are mocked; these tests require no running services.
 """
 
 import importlib
+import tempfile
+from pathlib import Path
 from unittest.mock import patch
 
 import requests
@@ -340,19 +342,23 @@ class TestServerCleanFieldValidation(SimpleTestCase):
         self.assertIn("ca_file_path", ctx.exception.message_dict)
 
     @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
-    @patch("netbox_kea.models.os.path.isfile", return_value=False, autospec=True)
-    def test_nonexistent_cert_path_raises(self, _mock_isfile):
-        server = _make_server(client_cert_path="/missing.pem", client_key_path="/key.pem")
-        with self.assertRaises(ValidationError) as ctx:
-            server.clean()
+    def test_nonexistent_cert_path_raises(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = str(Path(tmp) / "missing.pem")
+            server = _make_server(client_cert_path=missing, client_key_path=missing)
+            with self.assertRaises(ValidationError) as ctx:
+                server.clean()
         self.assertIn("client_cert_path", ctx.exception.message_dict)
 
     @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
-    @patch("netbox_kea.models.os.path.isfile", side_effect=lambda p: p != "/missing-key.pem", autospec=True)
-    def test_nonexistent_key_path_raises(self, _mock_isfile):
-        server = _make_server(client_cert_path="/cert.pem", client_key_path="/missing-key.pem")
-        with self.assertRaises(ValidationError) as ctx:
-            server.clean()
+    def test_nonexistent_key_path_raises(self):
+        """A cert that exists plus a key that does not must name the key field."""
+        with tempfile.TemporaryDirectory() as tmp:
+            cert = Path(tmp) / "cert.pem"
+            cert.write_text("")
+            server = _make_server(client_cert_path=str(cert), client_key_path=str(Path(tmp) / "missing-key.pem"))
+            with self.assertRaises(ValidationError) as ctx:
+                server.clean()
         self.assertIn("client_key_path", ctx.exception.message_dict)
 
 
@@ -505,6 +511,52 @@ class TestServerToObjectchangePasswordCensoring(TestCase):
         server.ca_password = "new-secret"
         result = server.to_objectchange("update")
         self.assertEqual(result.prechange_data["ca_password"], CENSOR_TOKEN)
+
+    def test_unset_password_is_not_masked(self):
+        """An empty password must stay empty, not read as a secret in the change log.
+
+        The columns are NOT NULL, so an unset password is "" rather than None.
+        Stamping CENSOR_TOKEN on it would tell an operator a password exists.
+        """
+        from netbox.constants import CENSOR_TOKEN, CENSOR_TOKEN_CHANGED
+
+        server = self._make_server(ca_password="")
+        server.snapshot()
+        result = server.to_objectchange("update")
+        self.assertEqual(result.prechange_data["ca_password"], "")
+        self.assertNotIn(result.postchange_data["ca_password"], (CENSOR_TOKEN, CENSOR_TOKEN_CHANGED))
+
+    def test_setting_a_password_on_an_empty_field_reads_as_changed(self):
+        """Going from unset to set must still be reported as a change."""
+        from netbox.constants import CENSOR_TOKEN_CHANGED
+
+        server = self._make_server(ca_password="")
+        server.snapshot()
+        server.ca_password = "new-secret"
+        result = server.to_objectchange("update")
+        self.assertEqual(result.prechange_data["ca_password"], "")
+        self.assertEqual(result.postchange_data["ca_password"], CENSOR_TOKEN_CHANGED)
+
+    def test_clearing_a_password_shows_the_removal(self):
+        """Set -> blank must censor the old value and leave the new one visibly empty."""
+        from netbox.constants import CENSOR_TOKEN
+
+        server = self._make_server(ca_password="old-secret")
+        server.snapshot()
+        server.ca_password = ""
+        result = server.to_objectchange("update")
+        self.assertEqual(result.prechange_data["ca_password"], CENSOR_TOKEN)
+        self.assertEqual(result.postchange_data["ca_password"], "")
+
+    def test_delete_of_a_server_without_a_password_reports_blank(self):
+        """The delete snapshot must not imply a password existed.
+
+        This is the last of the four changelog states the black-box suite asserts.
+        """
+        server = self._make_server(ca_password="")
+        server.snapshot()
+        result = server.to_objectchange("delete")
+        self.assertEqual(result.prechange_data["ca_password"], "")
 
     def test_no_prechange_data_does_not_raise(self):
         """to_objectchange("create") has no _prechange_snapshot → prechange_data is None,
@@ -907,6 +959,47 @@ class TestKeaDhcpLinkConstraintMigration(TransactionTestCase):
 
         self.assertEqual(HistoricalLink.objects.alias, "migration-target")
         self.assertTrue(HistoricalLink.objects.query.deleted)
+
+    def test_0016_replaces_null_credentials_with_blanks(self):
+        """A row holding real NULLs, written before 0016, must survive the NOT NULL change.
+
+        Rolls the schema back to 0015 so the columns are genuinely nullable, writes NULLs
+        through raw SQL, then migrates forward and reads the values back.
+        """
+        from django.db import connection
+        from django.db.migrations.executor import MigrationExecutor
+
+        migration_0016 = importlib.import_module("netbox_kea.migrations.0016_charfield_blank_not_null")
+        fields = migration_0016.OPTIONAL_TEXT_FIELDS
+
+        executor = MigrationExecutor(connection)
+        current = executor.loader.graph.leaf_nodes("netbox_kea")
+        self.assertEqual(len(current), 1, f"netbox_kea migrations must have one leaf, found {current}.")
+
+        def restore_migration_state():
+            restore = MigrationExecutor(connection)
+            restore.loader.build_graph()
+            restore.migrate(current)
+
+        self.addCleanup(restore_migration_state)
+
+        server = _make_db_server(name="null-credentials")
+        executor.migrate([("netbox_kea", "0015_keadhcplink_one_identity_kind")])
+
+        columns = ", ".join(f"{field} = NULL" for field in fields)
+        with connection.cursor() as cursor:
+            # The interpolated names are the migration's own constant tuple, not input.
+            cursor.execute(f"UPDATE netbox_kea_server SET {columns} WHERE id = %s", [server.pk])  # noqa: S608
+            cursor.execute(f"SELECT {fields[0]} FROM netbox_kea_server WHERE id = %s", [server.pk])  # noqa: S608
+            self.assertIsNone(cursor.fetchone()[0], "the rollback did not leave a genuinely nullable column")
+
+        forward = MigrationExecutor(connection)
+        forward.loader.build_graph()
+        forward.migrate(current)
+
+        server.refresh_from_db()
+        for field in fields:
+            self.assertEqual(getattr(server, field), "", f"{field} was not blanked by 0016")
 
     def test_a_subnet_keyed_link_written_before_0014_survives_the_constraint(self):
         """Release 1.9.0 stops at 0013, where the only writer always sets kea_subnet_id."""

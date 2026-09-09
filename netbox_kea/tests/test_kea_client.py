@@ -5213,7 +5213,7 @@ class TestLeaseGetAllPagination(TestCase):
         # Verify the second request used the last IP of page 1 as cursor
         first_payload = mock_post.call_args_list[0].kwargs["json"]
         second_payload = mock_post.call_args_list[1].kwargs["json"]
-        self.assertEqual(first_payload["arguments"]["from"], "0.0.0.0")
+        self.assertEqual(first_payload["arguments"]["from"], "0.0.0.0")  # noqa: S104 - Kea sentinel value, not a bind address
         self.assertEqual(second_payload["arguments"]["from"], "10.0.0.2")
 
     def test_rejects_a_cursor_that_does_not_advance(self):

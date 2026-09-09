@@ -628,7 +628,7 @@ class DhcpPluginClientClassImportTest(TestCase):
 
     def _conf(self):
         return {
-            "next-server": "0.0.0.0",
+            "next-server": "0.0.0.0",  # noqa: S104 - Kea sentinel value, not a bind address
             "client-classes": [
                 {
                     "name": "voip",

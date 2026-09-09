@@ -113,7 +113,7 @@ def _enrich_reservations_with_lease_status(
                     indeterminate.add(subnet_id)
                 else:
                     lease_ips[subnet_id], lease_identities[subnet_id] = result
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.debug("Reservation lease enrichment failed", exc_info=True)
         return
 

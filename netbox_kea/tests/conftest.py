@@ -51,7 +51,7 @@ def query_counts_are_comparable(running_version: str, *, update_mode: bool) -> b
 
 
 @contextmanager
-def _skip_query_count_assertion(test_case, name):  # noqa: ARG001 - matches the NetBox signature
+def _skip_query_count_assertion(test_case, name):
     yield
 
 
@@ -124,7 +124,7 @@ def _prepopulate_url_resolver() -> None:
         from django.urls import get_resolver
 
         get_resolver()._populate()
-    except Exception:  # noqa: BLE001 — best effort; never block the test session
+    except Exception:
         logger.exception("Failed to pre-populate Django URL resolver")
 
 

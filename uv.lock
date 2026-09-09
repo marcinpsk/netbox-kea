@@ -948,7 +948,7 @@ dev = [
     { name = "pytest-xdist", specifier = ">=3.8.0,<4.0.0" },
     { name = "python-semantic-release" },
     { name = "reuse" },
-    { name = "ruff", specifier = ">=0.8.0" },
+    { name = "ruff", specifier = "==0.16.4" },
     { name = "tblib", specifier = ">=3.0.0,<4.0.0" },
     { name = "tomli", marker = "python_full_version < '3.11'", specifier = ">=2.0.0" },
     { name = "types-netaddr", specifier = ">=1.0.0,<2.0.0" },

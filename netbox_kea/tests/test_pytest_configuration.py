@@ -800,10 +800,12 @@ def _hrefs_navigated_raw(source: str) -> list[str]:
         ("def workflow(page, link):\n    page.goto(destination := link.get_attribute('href'))\n", True),
         ("def workflow(page, link):\n    page.goto(link.evaluate('el => el.href'))\n", False),
         (
-            "def workflow(page, link):\n"
-            "    destination = link.get_attribute('href')\n"
-            "    destination = link.evaluate('el => el.href')\n"
-            "    page.goto(destination)\n",
+            (
+                "def workflow(page, link):\n"
+                "    destination = link.get_attribute('href')\n"
+                "    destination = link.evaluate('el => el.href')\n"
+                "    page.goto(destination)\n"
+            ),
             False,
         ),
         ("def workflow(page, link):\n    page.goto(link.get_attribute('title'))\n", False),

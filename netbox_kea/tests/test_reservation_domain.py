@@ -797,7 +797,7 @@ class TestReservationIteration(SimpleTestCase):
 
         counter = itertools.count(1)
 
-        def always_more(body):  # noqa: ARG001 - the stub passes the request body
+        def always_more(body):
             index = next(counter)
             return _res_page(
                 [

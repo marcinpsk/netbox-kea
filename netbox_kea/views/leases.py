@@ -406,7 +406,6 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
             # push verbatim; sending the stripped URL as HX-Push-Url overrides
             # that so the address bar always shows the clean URL.
             response["HX-Push-Url"] = stripped_return_url
-            return response
         except LeaseQueryGuardError as exc:
             logger.info("Rejected unsafe Subnet lease query on server %s: %s", instance.pk, exc)
             form.add_error("state", lease_query_guard_message(exc, form.cleaned_data.get("state")))
@@ -429,6 +428,8 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
                 "netbox_kea/exception_htmx.html",
                 {"error_id": error_id},
             )
+        else:
+            return response
 
 
 # Single consolidated "Leases" tab shared by the v4 and v6 leases views. Only
@@ -553,7 +554,7 @@ class BaseServerLeasesDeleteView(GetReturnURLMixin, generic.ObjectView, metaclas
             except KeaException as exc:  # noqa: PERF203
                 logger.exception("Kea error deleting lease %s on server %s", ip, instance.pk)
                 messages.error(request, f"Error deleting lease {ip}: {kea_error_hint(exc)}")
-            except (requests.RequestException, ValueError):  # noqa: PERF203
+            except (requests.RequestException, ValueError):
                 logger.exception("Error deleting lease %s on server %s", ip, instance.pk)
                 messages.error(request, f"Error deleting lease {ip}: see server logs for details.")
 
@@ -945,7 +946,7 @@ def _close_worker_client(client: KeaClient) -> None:
     """Close one worker client, reporting a failure instead of raising it."""
     try:
         client.close()
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.warning("Could not close a Reservation worker Kea client", exc_info=True)
 
 
@@ -1004,7 +1005,6 @@ def _reservation_for_lease_worker(worker_clients, version, catalogue, lease, loo
                 )
                 if reservation is not None:
                     return ip, reservation, True
-        return ip, None, True
     except KeaException as exc:
         if exc.response.get("result") == 2:
             return ip, None, False
@@ -1013,6 +1013,8 @@ def _reservation_for_lease_worker(worker_clients, version, catalogue, lease, loo
     except (requests.RequestException, RuntimeError, ValueError):
         logger.debug("Reservation lookup failed for lease %s", ip, exc_info=True)
         return ip, None, None
+    else:
+        return ip, None, True
 
 
 def _fetch_reservations_for_leases(
@@ -1167,7 +1169,7 @@ def _enrich_leases_with_badges(
         else:
             failed_ips = {lease.get("ip_address", "") for lease in leases}
             logger.warning("reservation lookup failed during lease enrichment: %s", exc)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         failed_ips = {lease.get("ip_address", "") for lease in leases}
         logger.warning("unexpected error during lease enrichment: %s", exc, exc_info=True)
     finally:
@@ -1201,16 +1203,16 @@ def _enrich_leases_with_badges(
         nb_ip = nb_ips.get(ip)
         if nb_ip:
             lease["netbox_ip_url"] = nb_ip.get_absolute_url()
+        # Don't offer Sync for leases with indeterminate reservation state.
         elif (
             ip
             and can_change
             and host_cmds_available
             and not lease.get("pending_ip_change")
             and not lease.get("stale_mac")
+            and ip not in failed_ips
         ):
-            # Don't offer Sync for leases with indeterminate reservation state.
-            if ip not in failed_ips:
-                lease["sync_url"] = sync_url
+            lease["sync_url"] = sync_url
         if ip and can_change:
             lease["edit_url"] = reverse(edit_url_name, args=[server.pk, ip])
         lease["can_delete"] = can_delete
