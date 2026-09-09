@@ -237,7 +237,12 @@ jobs:
           python-version: "3.14"
 
       - name: Ensure playwright browsers are installed
-        run: uv run --native-tls playwright install --with-deps
+        # --with-deps runs apt-get update, which fails the job on any broken source the
+        # runner image carries. Playwright downloads its own Chromium, so Google's Chrome
+        # repository is never needed here and its outages must not reach this suite.
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list /etc/apt/sources.list.d/google-chrome.sources
+          uv run --native-tls playwright install --with-deps
 
       - name: Run uv build
         run: uv build --native-tls

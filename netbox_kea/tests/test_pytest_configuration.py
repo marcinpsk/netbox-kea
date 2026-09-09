@@ -516,6 +516,26 @@ def test_the_browser_suite_runs_in_the_integration_job():
     )
 
 
+def test_the_browser_install_does_not_read_the_google_chrome_apt_source():
+    """`--with-deps` runs `apt-get update`, so every apt source on the runner can fail the job.
+
+    The runner image ships Google's Chrome repository. On 2026-09-09 it served a Release
+    file newer than its Packages.gz, and `apt-get update` failed the hash check, so all
+    three browser jobs died before pytest started on every open branch. Playwright
+    downloads its own Chromium, so that source is never needed here.
+    """
+    workflow = (REPOSITORY_ROOT / ".github/workflows/ci.yml").read_text()
+    steps = [step for step in workflow.split("- name:") if "playwright install" in step]
+    assert steps, "no workflow step installs the Playwright browsers any more; update this guard."
+    for step in steps:
+        if "--with-deps" not in step:
+            continue
+        assert "google-chrome" in step, (
+            "a Playwright step runs --with-deps without first dropping the Google Chrome apt "
+            "source, so an inconsistent third-party repository can fail the browser jobs."
+        )
+
+
 def test_documented_integration_commands_disable_pytest_django():
     """Keep integration commands independent from the unit-test Django settings."""
     for relative_path in ("AGENTS.md", "README.md"):
