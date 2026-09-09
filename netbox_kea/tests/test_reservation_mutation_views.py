@@ -1121,6 +1121,49 @@ reservations:
         )
         self.assertFalse(IPAddress.objects.filter(address="198.18.0.20/24").exists())
 
+    def test_a_failing_side_effect_still_reports_the_applied_creation(self):
+        """The Reservation is already in Kea when the side effect runs, so it must be counted."""
+        from django.core.exceptions import ValidationError
+
+        document = """version: 1
+reservations:
+  - family: 4
+    scope: {type: in-subnet, subnet: {cidr: 198.18.0.0/24}}
+    identity: {type: hw-address, value: "aa:bb:cc:dd:ee:01"}
+    addresses: [198.18.0.20]
+    delegated_prefixes: []
+    hostname: applied.example.invalid
+    options: []
+"""
+        raw = {
+            "subnet-id": 20,
+            "hw-address": "aa:bb:cc:dd:ee:01",
+            "ip-address": "198.18.0.20",
+            "hostname": "applied.example.invalid",
+        }
+        responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
+        responses.update({"reservation-add": {"result": 0}, "reservation-get": _res_get(raw)})
+
+        def fail_side_effects(*_args, **_kwargs):
+            raise ValidationError("journal entry rejected")
+
+        with (
+            patch("netbox_kea.views.sync_views._confirmed_side_effects", fail_side_effects),
+            stub_kea(responses) as kea,
+        ):
+            response = self.client.post(self._url(), {"format": "yaml", "document": document})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("reservation-add", kea.commands())
+        result = response.context["result"]
+        # The Kea write succeeded, so the entry counts as created, not as failed;
+        # counting it both ways would exceed the document total.
+        self.assertEqual(result["created"], 1)
+        self.assertEqual(result["failed"], 0)
+        self.assertEqual(result["not_attempted"], 0)
+        self.assertEqual(result["created"] + result["failed"] + result["not_attempted"], result["total"])
+        self.assertEqual(result["failure"]["position"], "reservations[0]")
+
     def test_import_stops_after_first_kea_failure_and_emits_only_confirmed_signal(self):
         document = """version: 1
 reservations:

@@ -207,8 +207,12 @@ class ServerStatusView(generic.ObjectView):
                     ha_servers = ha[0].get("ha-servers") or {}
                     if not isinstance(ha_servers, dict):
                         ha_servers = {}
-                    ha_local = ha_servers.get("local") or {}
-                    ha_remote = ha_servers.get("remote") or {}
+                    ha_local = ha_servers.get("local")
+                    ha_remote = ha_servers.get("remote")
+                    if not isinstance(ha_local, dict):
+                        ha_local = {}
+                    if not isinstance(ha_remote, dict):
+                        ha_remote = {}
                     entry.update(
                         {
                             "HA mode": ha[0].get("ha-mode"),

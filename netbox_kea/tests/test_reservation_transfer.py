@@ -183,6 +183,34 @@ reservations:
                 with self.assertRaisesRegex(ReservationTransferError, "not valid syntax"):
                     parse_reservation_document(document, format_name)
 
+    def test_rejects_duplicate_mapping_keys_in_both_formats(self):
+        """A repeated key silently keeps the last value, so an unknown-field report cannot see it."""
+        documents = {
+            "json": '{"version": 1, "version": 2, "reservations": []}',
+            "yaml": "version: 1\nversion: 2\nreservations: []\n",
+        }
+        for format_name, document in documents.items():
+            with self.subTest(format_name=format_name):
+                with self.assertRaisesRegex(ReservationTransferError, "duplicate"):
+                    parse_reservation_document(document, format_name)
+
+    def test_rejects_duplicate_keys_nested_inside_a_reservation(self):
+        """The envelope is not the only place a shadowed key changes what gets imported."""
+        documents = {
+            "json": '{"version": 1, "reservations": [{"identity": {"a": 1}, "identity": {"b": 2}}]}',
+            "yaml": "version: 1\nreservations:\n  - identity: {a: 1}\n    identity: {b: 2}\n",
+        }
+        for format_name, document in documents.items():
+            with self.subTest(format_name=format_name):
+                with self.assertRaisesRegex(ReservationTransferError, "duplicate"):
+                    parse_reservation_document(document, format_name)
+
+    def test_rejects_duplicate_yaml_merge_keys(self):
+        document = "<<: {version: 1}\n<<: {reservations: []}\n"
+
+        with self.assertRaisesRegex(ReservationTransferError, "duplicate.*<<"):
+            parse_reservation_document(document, "yaml")
+
     def test_rejects_a_yaml_document_that_exceeds_the_parser_recursion_limit(self):
         document = "[" * 10_000 + "]" * 10_000
 

@@ -118,6 +118,36 @@ class _NoAliasLoader(yaml.SafeLoader):
             raise ReservationTransferError("The transfer document must not use YAML aliases.")
         return super().compose_node(parent, index)
 
+    def flatten_mapping(self, node: Any) -> None:
+        """Reject repeated merge keys before the safe loader removes them."""
+        merge_seen = False
+        for key_node, _ in node.value:
+            if key_node.tag == "tag:yaml.org,2002:merge":
+                if merge_seen:
+                    raise ReservationTransferError("The transfer document contains duplicate key '<<'.")
+                merge_seen = True
+        super().flatten_mapping(node)
+
+    def construct_mapping(self, node: Any, deep: bool = False) -> dict[Any, Any]:
+        """Construct a safe mapping and reject repeated keys."""
+        mapping = super().construct_mapping(node, deep=deep)
+        keys = set()
+        for key_node, _ in node.value:
+            key = self.construct_object(key_node, deep=deep)
+            if key in keys:
+                raise ReservationTransferError(f"The transfer document contains duplicate key {key!r}.")
+            keys.add(key)
+        return mapping
+
+
+def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ReservationTransferError(f"The transfer document contains duplicate key {key!r}.")
+        result[key] = value
+    return result
+
 
 def _load_document(document: str, format_name: str) -> Any:
     if len(document.encode("utf-8")) > MAX_DOCUMENT_BYTES:
@@ -126,11 +156,11 @@ def _load_document(document: str, format_name: str) -> Any:
         )
     try:
         if format_name == "json":
-            return json.loads(document)
+            return json.loads(document, object_pairs_hook=_unique_json_object)
         if format_name == "yaml":
             return yaml.load(document, Loader=_NoAliasLoader)  # noqa: S506  # _NoAliasLoader extends SafeLoader
     except ReservationTransferError:
-        raise  # the alias guard already reports precisely; it is a ValueError subclass.
+        raise  # Loader guards already report precise errors.
     except (yaml.YAMLError, RecursionError, ValueError) as exc:
         # json.loads raises a plain ValueError for an oversized integer literal, not
         # JSONDecodeError, and the caller only handles ReservationTransferError.
