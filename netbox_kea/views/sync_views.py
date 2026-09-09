@@ -411,7 +411,7 @@ class _BaseBulkReservationImportView(_KeaChangeMixin, ConditionalLoginRequiredMi
             created += 1
             try:
                 _confirmed_side_effects(request, instance, "created", mutation_result)
-            except (ValidationError, ValueError, RuntimeError, requests.RequestException):  # noqa: PERF203
+            except (ValidationError, ValueError, RuntimeError, requests.RequestException):
                 logger.exception("Side effects failed for created Reservation document entry %s", index)
                 failure = {
                     "position": f"reservations[{index}]",
