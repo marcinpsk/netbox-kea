@@ -516,6 +516,34 @@ def test_the_browser_suite_runs_in_the_integration_job():
     )
 
 
+def _drops_chrome_source_before_installing(run: str) -> bool:
+    """True when *run* removes the Google Chrome apt source before installing browsers.
+
+    Order is the whole point, and so is reading commands rather than prose: a comment
+    naming the source, or a removal that runs afterwards, leaves the job just as exposed.
+    """
+    commands = [line.split("#", 1)[0].strip() for line in run.splitlines()]
+    removal = next(
+        (i for i, line in enumerate(commands) if line.startswith("sudo rm") and "google-chrome" in line),
+        None,
+    )
+    install = next((i for i, line in enumerate(commands) if "playwright install" in line), None)
+    return removal is not None and install is not None and removal < install
+
+
+def test_the_chrome_source_guard_reads_order_and_not_prose():
+    """Table-test the guard: it must fail for a removal that cannot protect the install."""
+    good = "sudo rm -f /etc/apt/sources.list.d/google-chrome.list\nuv run playwright install --with-deps"
+    assert _drops_chrome_source_before_installing(good)
+    for bad in (
+        "uv run playwright install --with-deps\nsudo rm -f /etc/apt/sources.list.d/google-chrome.list",
+        "# drop the google-chrome source one day\nuv run playwright install --with-deps",
+        "uv run playwright install --with-deps",
+        "sudo rm -f /etc/apt/sources.list.d/google-chrome.list",
+    ):
+        assert not _drops_chrome_source_before_installing(bad), f"the guard accepted {bad!r}"
+
+
 def test_the_browser_install_does_not_read_the_google_chrome_apt_source():
     """`--with-deps` runs `apt-get update`, so every apt source on the runner can fail the job.
 
@@ -524,13 +552,20 @@ def test_the_browser_install_does_not_read_the_google_chrome_apt_source():
     three browser jobs died before pytest started on every open branch. Playwright
     downloads its own Chromium, so that source is never needed here.
     """
-    workflow = (REPOSITORY_ROOT / ".github/workflows/ci.yml").read_text()
-    steps = [step for step in workflow.split("- name:") if "playwright install" in step]
+    import yaml
+
+    workflow = yaml.safe_load((REPOSITORY_ROOT / ".github/workflows/ci.yml").read_text())
+    steps = [
+        step
+        for job in workflow["jobs"].values()
+        for step in job.get("steps", [])
+        if "playwright install" in str(step.get("run", ""))
+    ]
     assert steps, "no workflow step installs the Playwright browsers any more; update this guard."
     for step in steps:
-        if "--with-deps" not in step:
+        if "--with-deps" not in step["run"]:
             continue
-        assert "google-chrome" in step, (
+        assert _drops_chrome_source_before_installing(step["run"]), (
             "a Playwright step runs --with-deps without first dropping the Google Chrome apt "
             "source, so an inconsistent third-party repository can fail the browser jobs."
         )
