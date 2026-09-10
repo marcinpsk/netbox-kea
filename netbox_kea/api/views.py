@@ -254,8 +254,11 @@ class ServerViewSet(NetBoxModelViewSet):
 
     def _reservation_page_response(self, server, params, version: int) -> Response:
         """Return one validated and normalized bounded Reservation page."""
+        # An empty value is what an unset form field posts, and the mode selector above
+        # already ignores one, so the reader must ignore it too instead of failing.
+        raw_limit = params.get("limit", "")
         try:
-            limit = int(params.get("limit", 100))
+            limit = int(raw_limit) if raw_limit else 100
         except (TypeError, ValueError):
             return Response({"detail": "limit must be an integer."}, status=status.HTTP_400_BAD_REQUEST)
         if not 1 <= limit <= 500:
@@ -269,7 +272,7 @@ class ServerViewSet(NetBoxModelViewSet):
             snapshot = client.reservation_page(
                 version,
                 catalogue,
-                cursor=params.get("cursor"),
+                cursor=params.get("cursor") or None,
                 limit=limit,
             )
         except _KeaServerConfigurationError:

@@ -304,6 +304,29 @@ class TestReservation4API(_APITestBase):
                     self.assertEqual(response.status_code, 400)
         self.assertEqual(kea.commands(), [])
 
+    def test_page_treats_an_empty_limit_as_absent(self):
+        """`?page=1&limit=` is the shape an unset form field posts.
+
+        The query-mode selector already ignores a parameter whose values are all empty,
+        so the page reader must ignore the same one instead of answering 400.
+        """
+        responses = _catalogue_responses(4, 20, "198.18.0.0/24")
+        responses["reservation-get-page"] = _res_page([])
+        with stub_kea(responses) as kea:
+            response = self.api_client.get(self._url(), {"page": "1", "limit": ""})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(kea.bodies("reservation-get-page")[0]["arguments"]["limit"], 100)
+
+    def test_page_treats_an_empty_cursor_as_absent(self):
+        """`?page=1&cursor=` reaches the reader the same way an empty limit does."""
+        responses = _catalogue_responses(4, 20, "198.18.0.0/24")
+        responses["reservation-get-page"] = _res_page([])
+        with stub_kea(responses):
+            response = self.api_client.get(self._url(), {"page": "1", "cursor": ""})
+
+        self.assertEqual(response.status_code, 200)
+
     def test_page_rejects_an_invalid_cursor_after_catalogue_validation(self):
         responses = _catalogue_responses(4, 20, "198.18.0.0/24")
         with stub_kea(responses) as kea:
