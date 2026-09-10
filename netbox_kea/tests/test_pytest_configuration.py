@@ -375,6 +375,41 @@ def _session_constructions(tree: ast.AST) -> list[str]:
     return built
 
 
+#: The requests module functions that open a connection.
+_REQUESTS_VERBS = ("request", "get", "post", "put", "patch", "delete", "head", "options")
+
+
+def _unbounded_requests_calls(tree: ast.AST) -> list[str]:
+    """Return every bare ``requests.<verb>(...)`` call in *tree* that names no timeout."""
+    unbounded = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+            continue
+        target = node.func
+        if not isinstance(target.value, ast.Name) or target.value.id != "requests":
+            continue
+        if target.attr in _REQUESTS_VERBS and not any(kw.arg == "timeout" for kw in node.keywords):
+            unbounded.append(f"requests.{target.attr} at line {node.lineno}")
+    return unbounded
+
+
+def test_no_integration_suite_request_is_left_unbounded():
+    """A module-level `requests.post` bypasses the shared session entirely.
+
+    `netbox_token` provisions the API token this way, and the autouse `nb_api` fixture
+    depends on it, so an unbounded call there hangs setup for the whole run before any
+    session exists to bound it.
+    """
+    for name in _SESSION_MODULES:
+        tree = ast.parse((REPOSITORY_ROOT / name).read_text())
+        unbounded = _unbounded_requests_calls(tree)
+
+        assert not unbounded, (
+            f"{name} calls {unbounded} without a timeout. A call that does not go through "
+            "TimeoutSession has to name REQUEST_TIMEOUT itself."
+        )
+
+
 def test_every_integration_suite_session_applies_the_shared_timeout():
     """A session without a default timeout lets a hung NetBox block the whole run.
 
