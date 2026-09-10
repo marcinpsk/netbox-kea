@@ -123,7 +123,7 @@ def kea_server_kwargs(kea_url: str, kea_dhcp6_url: str) -> dict:
 
 @pytest.fixture(scope="session")
 def nb_http(netbox_token: str) -> requests.Session:
-    s = requests.Session()
+    s = TimeoutSession()
     auth_prefix = "Bearer" if netbox_token.startswith("nbt_") else "Token"
     s.headers.update(
         {
