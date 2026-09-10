@@ -2010,6 +2010,31 @@ def test_user_preference_reset_allows_for_normal_ci_load():
     reset_user_preferences.__wrapped__(LoadedSession(), api)
 
 
+def test_every_user_preferences_call_uses_the_established_bound():
+    """A tighter ad-hoc bound on `/users/config/` fails a valid run under CI load.
+
+    The regression above pins `_USER_PREFERENCES_TIMEOUT_SECONDS` as the one bound that
+    endpoint tolerates, so every caller must name it instead of a number of its own.
+    """
+    checked = 0
+    for path in sorted(_BROWSER_SUITE.rglob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text())):
+            if not isinstance(node, ast.Call):
+                continue
+            url = next((keyword.value for keyword in node.keywords if keyword.arg == "url"), None)
+            if url is None or "/users/config/" not in ast.unparse(url):
+                continue
+            checked += 1
+            timeout = next((keyword.value for keyword in node.keywords if keyword.arg == "timeout"), None)
+            named = isinstance(timeout, ast.Name) and timeout.id == "_USER_PREFERENCES_TIMEOUT_SECONDS"
+            assert named, (
+                f"{path.name} line {node.lineno} bounds /users/config/ with "
+                f"{ast.unparse(timeout) if timeout is not None else 'nothing'}. Name "
+                "_USER_PREFERENCES_TIMEOUT_SECONDS: CI has been seen to answer it slowly."
+            )
+    assert checked, "The browser suite reads no user preferences; this guard would read nothing."
+
+
 #: Every external tool the integration setup script calls. Stubbed so the script can run
 #: in a test without a network, a Docker daemon, or a real Kea release tarball.
 _SETUP_SCRIPT_TOOLS = ("openssl", "curl", "sha256sum", "tar", "docker")

@@ -15,12 +15,14 @@ import pytest
 import requests
 from playwright.sync_api import Page
 
-from ..conftest import TimeoutSession
+from ..conftest import REQUEST_TIMEOUT, TimeoutSession
 
 # This is linked from netbox_kea to avoid import errors
 from ..kea import KeaClient
 
-_USER_PREFERENCES_TIMEOUT_SECONDS = 20
+#: `/users/config/` is bounded like every other NetBox call, and CI has been seen to
+#: answer it slowly, so the browser suite states the shared bound rather than its own.
+_USER_PREFERENCES_TIMEOUT_SECONDS = REQUEST_TIMEOUT
 
 
 @pytest.fixture
