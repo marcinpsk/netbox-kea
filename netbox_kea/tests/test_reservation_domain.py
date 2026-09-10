@@ -1036,6 +1036,64 @@ class TestReservationMutation(SimpleTestCase):
         self.assertEqual(sent_option["user-context"], {"owner": "external-system"})
         self.assertEqual(result.verification, "verified")
 
+    def test_update_matches_an_option_in_its_own_space_before_a_space_less_one(self):
+        """Kea may omit `space`, and a space-less Option must not absorb another space's intent.
+
+        Both raw Options carry code 6. Taking the first match would copy the extension
+        fields of the space-less Option onto an intent that names `dhcp4`.
+        """
+        space_less = {
+            "code": 6,
+            "name": "domain-name-servers",
+            "data": "198.18.0.53",
+            "csv-format": True,
+            "always-send": False,
+            "never-send": False,
+            "user-context": {"owner": "space-less"},
+        }
+        in_space = {**space_less, "space": "dhcp4", "user-context": {"owner": "dhcp4"}}
+        current_raw = {
+            "subnet-id": 20,
+            "hw-address": "aa:bb:cc:dd:ee:ff",
+            "ip-address": "198.18.0.20",
+            "hostname": "old.example.invalid",
+            "option-data": [space_less, in_space],
+        }
+        options = (
+            DHCPOption(
+                code=6,
+                name="domain-name-servers",
+                space=None,
+                data="198.18.0.53",
+                csv_format=True,
+                always_send=False,
+                never_send=False,
+            ),
+            DHCPOption(
+                code=6,
+                name="domain-name-servers",
+                space="dhcp4",
+                data="198.18.0.53",
+                csv_format=True,
+                always_send=False,
+                never_send=False,
+            ),
+        )
+        target = replace(self.reservation, options=options)
+        change = ReservationChange(options=SetValue((options[1],)))
+
+        with stub_kea(
+            {
+                **_persistence_responses(4),
+                "reservation-get": queued(_res_get(current_raw), _res_get(current_raw)),
+                "reservation-update": {"result": 0},
+            }
+        ) as kea:
+            self.kea.reservation_change(target, reservation_fingerprint(target), change, self.catalogue)
+
+        sent = kea.bodies("reservation-update")[0]["arguments"]["reservation"]["option-data"]
+        self.assertEqual([option["user-context"] for option in sent], [{"owner": "dhcp4"}])
+
     def test_create_reports_failed_persistence_without_losing_applied_state(self):
         raw = {
             "subnet-id": 20,

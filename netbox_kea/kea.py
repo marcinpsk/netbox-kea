@@ -90,6 +90,22 @@ def _reservation_scope_subnet_id(scope: ReservationScope) -> int:
     raise ValueError("Unsupported Reservation Scope.")
 
 
+def _take_matching_raw_option(
+    remaining: list[tuple[DHCPOption, dict[str, Any]]], intended_option: DHCPOption
+) -> dict[str, Any] | None:
+    """Remove and return the raw Option that *intended_option* targets.
+
+    An exact space match wins. Kea may omit the space, and such an Option matches any
+    space, so it is claimed only once no exact match is left: taking it first lets the
+    Option listed earliest absorb an intent that belongs to another space.
+    """
+    for exact_space in (True, False):
+        for index, (current_option, _raw_option) in enumerate(remaining):
+            if current_option.matches_intent(intended_option, exact_space=exact_space):
+                return remaining.pop(index)[1]
+    return None
+
+
 def _merge_reservation_options(
     raw_options: list[dict[str, Any]],
     current_options: tuple[DHCPOption, ...],
@@ -99,11 +115,7 @@ def _merge_reservation_options(
     remaining = list(zip(current_options, raw_options, strict=True))
     merged_options: list[dict[str, Any]] = []
     for intended_option in intended_options:
-        raw_option = None
-        for index, (current_option, candidate) in enumerate(remaining):
-            if current_option.matches_intent(intended_option):
-                _, raw_option = remaining.pop(index)
-                break
+        raw_option = _take_matching_raw_option(remaining, intended_option)
         merged_option = {key: value for key, value in (raw_option or {}).items() if key not in _MANAGED_OPTION_KEYS}
         merged_option.update(_option_data(intended_option))
         merged_options.append(merged_option)
