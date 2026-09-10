@@ -380,7 +380,7 @@ _REQUESTS_VERBS = ("request", "get", "post", "put", "patch", "delete", "head", "
 
 
 def _unbounded_requests_calls(tree: ast.AST) -> list[str]:
-    """Return every bare ``requests.<verb>(...)`` call in *tree* that names no timeout."""
+    """Return every bare ``requests.<verb>(...)`` call in *tree* that no timeout bounds."""
     unbounded = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
@@ -388,9 +388,36 @@ def _unbounded_requests_calls(tree: ast.AST) -> list[str]:
         target = node.func
         if not isinstance(target.value, ast.Name) or target.value.id != "requests":
             continue
-        if target.attr in _REQUESTS_VERBS and not any(kw.arg == "timeout" for kw in node.keywords):
+        if target.attr not in _REQUESTS_VERBS:
+            continue
+        # requests reads timeout=None as "wait forever", so the keyword alone is no bound.
+        bounded = any(
+            keyword.arg == "timeout" and not (isinstance(keyword.value, ast.Constant) and keyword.value.value is None)
+            for keyword in node.keywords
+        )
+        if not bounded:
             unbounded.append(f"requests.{target.attr} at line {node.lineno}")
     return unbounded
+
+
+def test_the_unbounded_request_guard_reads_every_spelling():
+    """Table-test the guard: one that reports clean while missing the pattern is worse than none."""
+    must_flag = (
+        'requests.get("https://example.invalid")',
+        'requests.get("https://example.invalid", timeout=None)',
+        'requests.post("https://example.invalid", json={})',
+        'requests.request("GET", "https://example.invalid")',
+    )
+    must_not_flag = (
+        'requests.get("https://example.invalid", timeout=5)',
+        'requests.get("https://example.invalid", timeout=REQUEST_TIMEOUT)',
+        'session.get("https://example.invalid")',
+        "requests.Session()",
+    )
+    for source in must_flag:
+        assert _unbounded_requests_calls(ast.parse(source)), f"the guard missed {source!r}"
+    for source in must_not_flag:
+        assert not _unbounded_requests_calls(ast.parse(source)), f"the guard wrongly flagged {source!r}"
 
 
 def test_no_integration_suite_request_is_left_unbounded():
