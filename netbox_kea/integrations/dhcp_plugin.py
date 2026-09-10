@@ -17,7 +17,9 @@ v1 scope (import + diff, read-only against Kea):
 * **Host reservations** come from the shared typed Reservation Snapshot. The
   adapter never parses raw ``reservation-get-page`` records. Valid records import
   even when the snapshot quarantines other records. A Global Reservation skips the
-  IPAM sync, so the import creates no address rows for it.
+  IPAM sync, so the import creates no address rows for it and reports every reserved
+  address it could not attach.  Delegated prefixes carry their own length, so they
+  import as shared ``ipam.Prefix`` rows for every Scope.
 * Subnet identity is tracked in :class:`netbox_kea.models.KeaDhcpLink` keyed by
   ``(server, family, kea_subnet_id)`` — Kea's subnet-id is unique only per
   ``(server, protocol)`` and cannot live in the plugin's globally-unique
@@ -48,6 +50,7 @@ import logging
 from dataclasses import dataclass, field
 
 from django.apps import apps
+from django.db import transaction
 
 from ..dhcp_options import DHCPOption
 from ..mappers.kea_to_dhcp import (
@@ -93,6 +96,9 @@ class ImportSummary:
     client_classes_updated: int = 0
     shared_networks_deferred: int = 0
     foreign_addresses_skipped: int = 0
+    # Reserved addresses with no NetBox IP to attach. A Global Reservation has no
+    # Subnet to size an address from, so the import never creates one for it.
+    addresses_unattached: int = 0
     # True when the Reservation Snapshot traversal could not read every record.
     reservations_unread: bool = False
     errors: int = 0
@@ -125,16 +131,18 @@ def _link_model():
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def _ensure_prefix(cidr: str, vrf):
+def _ensure_prefix(cidr: str, vrf, description: str | None = None):
     """Get/create the shared ``ipam.Prefix`` for *cidr* via the IPAM sync helper.
 
     Refreshes the instance from the DB so ``.prefix`` is a ``netaddr.IPNetwork`` and
     not the raw string assigned on create — ``netbox_dhcp`` validators (e.g.
     ``Pool.clean``/``Subnet.clean``) do geometric containment checks that require it.
     """
-    from ..sync import sync_subnet_to_netbox_prefix
+    from ..sync import KEA_SUBNET_PREFIX_DESCRIPTION, sync_subnet_to_netbox_prefix
 
-    prefix_obj, _created, _updated = sync_subnet_to_netbox_prefix(cidr, vrf=vrf)
+    prefix_obj, _created, _updated = sync_subnet_to_netbox_prefix(
+        cidr, vrf=vrf, description=description or KEA_SUBNET_PREFIX_DESCRIPTION
+    )
     prefix_obj.refresh_from_db()
     return prefix_obj
 
@@ -168,33 +176,59 @@ def _ensure_reservation_addresses(reservation: Reservation, summary: ImportSumma
 
     Returns ``(ipv4_ip, ipv6_ips, mac_obj)``.
     """
-    from ..sync import get_netbox_ip, sync_reservation_to_netbox
+    from ..sync import get_netbox_ip, is_kea_managed_ip, sync_reservation_to_netbox
 
     conflicts: list[str] = []
     sync_reservation_to_netbox(reservation, cleanup=False, conflicts=conflicts)
+    # sync_reservation_to_netbox returns Not Applicable for a Global Scope, so its own
+    # foreign-address guard never ran and this loop applies it.
+    is_global = isinstance(reservation.scope, GlobalReservationScope)
+
+    ipv4_ip = None
+    ipv6_ips = []
+    unattached: list[str] = []
+    for address in reservation.addresses:
+        addr = str(address)
+        ip_obj = get_netbox_ip(addr)
+        if ip_obj is None:
+            unattached.append(addr)
+            continue
+        if is_global and not is_kea_managed_ip(ip_obj):
+            conflicts.append(addr)
+        if ":" in addr:
+            ipv6_ips.append(ip_obj)
+        else:
+            ipv4_ip = ip_obj
     if conflicts:
         summary.foreign_addresses_skipped += len(conflicts)
         summary.warn(
             f"reservation {reservation.identity.value}: manually curated NetBox IP(s) "
             f"{', '.join(conflicts)} left unchanged"
         )
-
-    ipv4_ip = None
-    ipv6_ips = []
-    for address in reservation.addresses:
-        addr = str(address)
-        ip_obj = get_netbox_ip(addr)
-        if ip_obj is None:
-            continue
-        if ":" in addr:
-            ipv6_ips.append(ip_obj)
-        else:
-            ipv4_ip = ip_obj
+    if unattached:
+        summary.addresses_unattached += len(unattached)
+        summary.warn(
+            f"reservation {reservation.identity.value}: reserved address(es) "
+            f"{', '.join(unattached)} have no NetBox IP and were not attached"
+        )
 
     identity = reservation.identity
     is_hardware = identity.identifier_type == "hw-address"
     mac_obj = _resolve_mac(identity.value, reservation.hostname) if is_hardware else None
     return ipv4_ip, ipv6_ips, mac_obj
+
+
+def _ensure_delegated_prefixes(reservation: Reservation, vrf) -> list:
+    """Return the shared ``ipam.Prefix`` rows for the Reservation's delegated prefixes.
+
+    A delegated prefix carries its own length, so a Global Reservation keeps its
+    prefixes even though it has no Subnet to size an address from.
+    """
+    from ..sync import KEA_DELEGATED_PREFIX_DESCRIPTION
+
+    return [
+        _ensure_prefix(str(prefix), vrf, KEA_DELEGATED_PREFIX_DESCRIPTION) for prefix in reservation.delegated_prefixes
+    ]
 
 
 def _resolve_mac(hw_address: str | None, hostname: str = ""):
@@ -805,48 +839,44 @@ def _upsert_reservation(reservation, subnet_obj, server, dhcp_server, custom_def
         scope_name = f"{dhcp_server.name} DHCPv{reservation.family}"
 
     try:
-        # Inside the try so a resolver failure is counted per-reservation, not fatal.
-        ipv4_ip, ipv6_ips, mac_obj = _ensure_reservation_addresses(reservation, summary)
-        if reservation.identity.identifier_type == "hw-address" and mac_obj is None:
-            # Importing it would write a row with no identifier, which matches nothing
-            # on the next run and duplicates instead.
-            summary.reservations_skipped += 1
-            summary.warn(
-                f"reservation {reservation.identity.value} in {scope}: the hardware address "
-                "could not be resolved, skipped"
-            )
-            return
-        linked = None if subnet_obj is not None else _linked_reservation(server, reservation)
-        if linked is not None:
-            obj = linked
-        elif subnet_obj is not None:
-            obj = _find_reservation(base, reservation, mac_obj)
-        else:
-            # Adopt a Global row imported before the link carried the family, so an
-            # upgrade relinks that row instead of duplicating it.
-            obj = _find_reservation(_unlinked(base), reservation, mac_obj)
-        created = obj is None
-        if obj is None:
-            obj = HostReservation(
-                subnet=subnet_obj,
-                dhcp_server=None if subnet_obj is not None else dhcp_server,
-                name=_reservation_name(scope_name, reservation),
-            )
-        elif linked is None and subnet_obj is None:
-            # Newly adopted: take the family-qualified name so the other family is free
-            # to create its own row under the unique-name constraint.
-            obj.name = _reservation_name(scope_name, reservation)
-        obj.hostname = reservation.hostname or None
-        _apply_reservation_identifier(obj, reservation, mac_obj)
-        # One row holds one family. _ensure_reservation_addresses returns the other
-        # family empty, which also splits a row an earlier import merged.
-        obj.ipv4_address = ipv4_ip
-        obj.save()
-        # set() unconditionally so re-importing a reservation that dropped its
-        # IPv6 addresses clears the stale M2M relations (empty list = clear).
-        obj.ipv6_addresses.set(ipv6_ips)
-        if subnet_obj is None:
-            _link_reservation(server, reservation, obj)
+        with transaction.atomic():
+            # Inside the try so a resolver failure is counted per-reservation, not fatal.
+            ipv4_ip, ipv6_ips, mac_obj = _ensure_reservation_addresses(reservation, summary)
+            if reservation.identity.identifier_type == "hw-address" and mac_obj is None:
+                raise RuntimeError("The reservation hardware address could not be resolved.")
+            delegated_prefixes = _ensure_delegated_prefixes(reservation, server.sync_vrf)
+            linked = None if subnet_obj is not None else _linked_reservation(server, reservation)
+            if linked is not None:
+                obj = linked
+            elif subnet_obj is not None:
+                obj = _find_reservation(base, reservation, mac_obj)
+            else:
+                # Adopt a Global row imported before the link carried the family, so an
+                # upgrade relinks that row instead of duplicating it.
+                obj = _find_reservation(_unlinked(base), reservation, mac_obj)
+            created = obj is None
+            if obj is None:
+                obj = HostReservation(
+                    subnet=subnet_obj,
+                    dhcp_server=None if subnet_obj is not None else dhcp_server,
+                    name=_reservation_name(scope_name, reservation),
+                )
+            elif linked is None and subnet_obj is None:
+                # Newly adopted: take the family-qualified name so the other family is free
+                # to create its own row under the unique-name constraint.
+                obj.name = _reservation_name(scope_name, reservation)
+            obj.hostname = reservation.hostname or None
+            _apply_reservation_identifier(obj, reservation, mac_obj)
+            # One row holds one family. _ensure_reservation_addresses returns the other
+            # family empty, which also splits a row an earlier import merged.
+            obj.ipv4_address = ipv4_ip
+            obj.save()
+            # set() unconditionally so re-importing a reservation that dropped its IPv6
+            # addresses or prefixes clears the stale M2M relations (empty list = clear).
+            obj.ipv6_addresses.set(ipv6_ips)
+            obj.ipv6_prefixes.set(delegated_prefixes)
+            if subnet_obj is None:
+                _link_reservation(server, reservation, obj)
         if created:
             summary.reservations_created += 1
         else:

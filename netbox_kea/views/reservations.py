@@ -5,8 +5,9 @@
 from __future__ import annotations
 
 import concurrent.futures
+import ipaddress
 import logging
-from typing import Any, Literal
+from typing import Any, Literal, cast
 from urllib.parse import urlencode
 
 import requests
@@ -24,23 +25,19 @@ from ..kea import KeaClient, KeaException, LeaseQueryGuardError
 from ..models import Server
 from ..reservation_transfer import export_reservation_document
 from ..reservations import (
-    IdentifierType,
     InSubnetReservationScope,
     Reservation,
     ReservationCapabilities,
     ReservationIdentity,
     ReservationSnapshot,
     ReservationSynchronizationState,
+    lease_identities,
 )
 from ..subnet_catalogue import display as subnet_catalogue
 from ..utilities import OptionalViewTab
 
 logger = logging.getLogger(__name__)
 
-_LEASE_IDENTIFIER_KEYS: dict[int, tuple[IdentifierType, ...]] = {
-    4: ("hw-address", "client-id"),
-    6: ("duid", "hw-address"),
-}
 _RESERVATION_PAGE_SIZE = 100
 
 
@@ -56,19 +53,56 @@ def _build_reservation_options_formset(post_data: Any) -> tuple[Any, bool]:
     return forms.ReservationOptionsFormSet(prefix="options"), True
 
 
-def _normalized_lease_identifiers(lease: dict[str, Any], version: int) -> set[tuple[str, str]]:
-    """Return the supported normalized identities carried by one lease."""
-    identities: set[tuple[str, str]] = set()
-    for identifier_type in _LEASE_IDENTIFIER_KEYS[version]:
-        value = lease.get(identifier_type)
-        if not value:
-            continue
+#: One Subnet observation: its assigned lease addresses and normalized lease identities.
+_SubnetLeaseFacts = tuple[set[str], set[ReservationIdentity]]
+#: A lookup that Kea could not answer. Distinct from a confirmed empty result.
+_INDETERMINATE = object()
+#: The lease hook is absent, so no Reservation on this Server has an observable lease.
+_HOOK_UNAVAILABLE = object()
+
+
+def _assigned(lease: dict[str, Any]) -> bool:
+    """Return whether Kea reports this lease as assigned (state 0)."""
+    state = lease.get("state")
+    if not isinstance(state, int) or isinstance(state, bool) or state not in constants.LEASE_STATE_LABELS:
+        raise RuntimeError("Kea returned a lease with an invalid state.")
+    return state == 0
+
+
+def _lease_facts_in_subnet(client: KeaClient, version: int, subnet_id: int) -> Any:
+    """Observe every assigned lease in one Subnet, or report why it could not be read."""
+    with client.clone() as worker_client:
         try:
-            identity = ReservationIdentity(identifier_type, value)
-        except ValueError:
-            continue
-        identities.add((identity.identifier_type, identity.value))
-    return identities
+            leases = worker_client.lease_search(version, constants.BY_SUBNET_ID, subnet_id, state=0)
+            if not all(_assigned(lease) for lease in leases):
+                return _INDETERMINATE
+        except KeaException as exc:
+            return _HOOK_UNAVAILABLE if exc.response.get("result") == 2 else _INDETERMINATE
+        except (LeaseQueryGuardError, requests.RequestException, RuntimeError, ValueError):
+            return _INDETERMINATE
+    addresses = {lease["ip-address"] for lease in leases if isinstance(lease.get("ip-address"), str)}
+    identities = {identity for lease in leases for identity in lease_identities(lease, version)}
+    return addresses, identities
+
+
+def _identity_holds_a_lease(client: KeaClient, version: int, identity: ReservationIdentity) -> Any:
+    """Ask Kea whether one identity holds an assigned lease in any Subnet.
+
+    A Global Reservation has no Subnet, so its address cannot imply one. Only a
+    Subnet-free identity query can answer it.
+    """
+    selector = constants.LEASE_SELECTOR_BY_IDENTIFIER[version].get(identity.identifier_type)
+    if selector is None:
+        return _INDETERMINATE
+    with client.clone() as worker_client:
+        try:
+            leases = worker_client.lease_search(version, selector, identity.value)
+            assigned = [_assigned(lease) for lease in leases]
+        except KeaException as exc:
+            return _HOOK_UNAVAILABLE if exc.response.get("result") == 2 else _INDETERMINATE
+        except (LeaseQueryGuardError, requests.RequestException, RuntimeError, ValueError):
+            return _INDETERMINATE
+    return any(assigned)
 
 
 def _enrich_reservations_with_lease_status(
@@ -76,63 +110,93 @@ def _enrich_reservations_with_lease_status(
     reservations: list[dict[str, Any]],
     version: int,
 ) -> None:
-    """Add active-lease state to rows that retain their typed Reservation value."""
-    scoped_rows = [row for row in reservations if isinstance(row["reservation"].scope, InSubnetReservationScope)]
-    subnet_ids = {row["reservation"].scope.subnet.subnet_id for row in scoped_rows}
-    if not subnet_ids:
-        return
+    """Report one lease relationship per Reservation, and none where Kea could not be read.
 
-    lease_ips: dict[int, set[str]] = {}
-    lease_identities: dict[int, set[tuple[str, str]]] = {}
-    indeterminate: set[int] = set()
-    hook_unavailable = False
-
-    def fetch(subnet_id: int):
-        with client.clone() as worker_client:
-            try:
-                leases = worker_client.lease_search(version, constants.BY_SUBNET_ID, subnet_id, state=0)
-            except KeaException as exc:
-                return None if exc.response.get("result") == 2 else False
-            except (LeaseQueryGuardError, requests.RequestException, RuntimeError, ValueError):
-                return False
-        addresses = {lease["ip-address"] for lease in leases if isinstance(lease.get("ip-address"), str)}
-        identities: set[tuple[str, str]] = set()
-        for lease in leases:
-            identities.update(_normalized_lease_identifiers(lease, version))
-        return addresses, identities
-
-    try:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(subnet_ids), 10)) as executor:
-            futures = {executor.submit(fetch, subnet_id): subnet_id for subnet_id in subnet_ids}
-            for future in concurrent.futures.as_completed(futures):
-                subnet_id = futures[future]
-                result = future.result()
-                if result is None:
-                    hook_unavailable = True
-                elif result is False:
-                    indeterminate.add(subnet_id)
-                else:
-                    lease_ips[subnet_id], lease_identities[subnet_id] = result
-    except Exception:  # noqa: BLE001
-        logger.debug("Reservation lease enrichment failed", exc_info=True)
-        return
-
-    if hook_unavailable:
-        return
+    Rows arrive with ``has_active_lease`` at ``None``, which renders no badge. Only a
+    complete observation replaces it with a definite answer, so an unreadable Kea never
+    renders as a confirmed "No Lease".
+    """
+    scoped_rows: list[tuple[dict[str, Any], InSubnetReservationScope]] = []
+    global_rows: list[dict[str, Any]] = []
     for row in reservations:
+        scope = row["reservation"].scope
+        if isinstance(scope, InSubnetReservationScope):
+            scoped_rows.append((row, scope))
+        else:
+            global_rows.append(row)
+    subnet_ids = {scope.subnet.subnet_id for _row, scope in scoped_rows}
+    identities = {row["reservation"].identity for row in global_rows}
+    if not subnet_ids and not identities:
+        return
+
+    subnet_facts: dict[int, Any] = {}
+    identity_facts: dict[ReservationIdentity, Any] = {}
+    lookups = len(subnet_ids) + len(identities)
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(lookups, 10)) as executor:
+            subnet_futures = {
+                executor.submit(_lease_facts_in_subnet, client, version, subnet_id): subnet_id
+                for subnet_id in subnet_ids
+            }
+            identity_futures = {
+                executor.submit(_identity_holds_a_lease, client, version, identity): identity for identity in identities
+            }
+            for future in concurrent.futures.as_completed([*subnet_futures, *identity_futures]):
+                if future in subnet_futures:
+                    subnet_facts[subnet_futures[future]] = future.result()
+                else:
+                    identity_facts[identity_futures[future]] = future.result()
+    except Exception:  # noqa: BLE001
+        logger.exception("Reservation lease enrichment failed")
+        return
+
+    observations = (*subnet_facts.values(), *identity_facts.values())
+    if any(observation is _HOOK_UNAVAILABLE for observation in observations):
+        return
+
+    for row, scope in scoped_rows:
         reservation: Reservation = row["reservation"]
-        if not isinstance(reservation.scope, InSubnetReservationScope):
-            row["has_active_lease"] = None
+        facts = subnet_facts.get(scope.subnet.subnet_id, _INDETERMINATE)
+        if facts is _INDETERMINATE:
             continue
-        subnet_id = reservation.scope.subnet.subnet_id
-        if subnet_id in indeterminate:
+        addresses, subnet_identities = cast(_SubnetLeaseFacts, facts)
+        matched = next((address for address in reservation.addresses if str(address) in addresses), None)
+        if matched is None and reservation.identity not in subnet_identities:
+            row["has_active_lease"] = False
             continue
-        identity_key = (reservation.identity.identifier_type, reservation.identity.value)
-        address_matches = any(str(address) in lease_ips.get(subnet_id, ()) for address in reservation.addresses)
-        identity_matches = reservation.identity.identifier_type in _LEASE_IDENTIFIER_KEYS[
-            version
-        ] and identity_key in lease_identities.get(subnet_id, ())
-        row["has_active_lease"] = address_matches or identity_matches
+        row["has_active_lease"] = True
+        row["lease_url"] = _lease_search_url(reservation, row["server_pk"], version, matched)
+    for row in global_rows:
+        reservation = row["reservation"]
+        holds_a_lease = identity_facts.get(reservation.identity, _INDETERMINATE)
+        if holds_a_lease is _INDETERMINATE:
+            continue
+        row["has_active_lease"] = bool(holds_a_lease)
+        if holds_a_lease:
+            row["lease_url"] = _lease_search_url(reservation, row["server_pk"], version, None)
+
+
+def _lease_search_url(
+    reservation: Reservation,
+    server_pk: int,
+    version: int,
+    address: ipaddress.IPv4Address | ipaddress.IPv6Address | None,
+) -> str | None:
+    """Return the lease search that finds the lease this Reservation matched.
+
+    An addressless or multi-address Reservation has no single address to search by, so
+    the identity that matched selects the route instead.
+    """
+    if address is not None:
+        selector, value = constants.BY_IP, str(address)
+    elif identity_selector := constants.LEASE_SELECTOR_BY_IDENTIFIER[version].get(reservation.identity.identifier_type):
+        selector, value = identity_selector, reservation.identity.value
+    elif isinstance(reservation.scope, InSubnetReservationScope):
+        selector, value = constants.BY_SUBNET, reservation.scope.subnet.cidr
+    else:
+        return None
+    base = reverse(f"plugins:netbox_kea:server_leases{version}", args=[server_pk])
+    return f"{base}?{urlencode({'by': selector, 'q': value})}"
 
 
 def _filter_reservations(
@@ -177,6 +241,9 @@ def _reservation_table_record(reservation: Reservation, server: Server) -> dict[
     record = {
         "family": reservation.family,
         "scope_kind": scope_kind,
+        # Set by lease enrichment. None means Kea was not read, so no badge renders.
+        "has_active_lease": None,
+        "lease_url": None,
         "subnet_id": subnet_id,
         "subnet_cidr": subnet_cidr,
         "identifier_type": reservation.identity.identifier_type,

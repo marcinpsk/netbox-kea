@@ -422,6 +422,13 @@ class SummaryProblemsTest(SimpleTestCase):
         self.assertEqual(len(problems), 1)
         self.assertIn("3 manually curated NetBox IP(s) were left unchanged.", problems[0])
 
+    def test_unattached_reserved_addresses_are_reported(self):
+        """A dropped address is a lossy import, so it must not pass as a clean one."""
+        problems = dps._summary_problems(self._summary(addresses_unattached=2))
+
+        self.assertEqual(len(problems), 1)
+        self.assertIn("2 reserved address(es) were not attached", problems[0])
+
     def test_skipped_reservations_do_not_report_a_host_cmds_problem(self):
         problems = dps._summary_problems(self._summary(reservations_skipped=1))
 
