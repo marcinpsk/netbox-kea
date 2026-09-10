@@ -30,24 +30,34 @@ SERIAL_BY_DESIGN = "1"
 """The one worker count a unit-test command may request instead of ``auto``."""
 
 
+#: One uv invocation inside a shell script or a documented code block.
+_UV_COMMAND = re.compile(r"(?:^|[|;&])\s*(uv\b[^|;&\n]*)", re.MULTILINE)
+#: The repository target of one Ruff command. Flags may sit between ``uv run`` and the
+#: tool name (CI passes ``--native-tls``), so the target must be read past them. One
+#: pattern serves CI and the published docs, which is what makes the two comparable.
+_RUFF_TARGET = re.compile(r"\bruff (?:check|format)(?: --check)? +(?!-)(\S+)")
+
+
+def _uv_commands(script: str) -> list[str]:
+    """Return each uv invocation in one shell script or document."""
+    return [command.strip() for command in _UV_COMMAND.findall(script.replace("\\\n", " "))]
+
+
+def _ruff_targets_in(commands: list[str]) -> set[str]:
+    """Return the repository target of every Ruff command in *commands*."""
+    return {match.group(1) for command in commands if (match := _RUFF_TARGET.search(command))}
+
+
 def _workflow_uv_commands(workflow: str) -> list[str]:
     """Return each uv shell command from every workflow run step."""
     jobs = yaml.safe_load(workflow)["jobs"]
     scripts = (step["run"] for job in jobs.values() for step in job.get("steps", ()) if "run" in step)
-    return [
-        command.strip()
-        for script in scripts
-        for command in re.findall(r"(?:^|[|;&])\s*(uv\b[^|;&\n]*)", script.replace("\\\n", " "), re.MULTILINE)
-    ]
+    return [command for script in scripts for command in _uv_commands(script)]
 
 
 def _workflow_ruff_targets(workflow: str) -> set[str]:
     """Return the repository targets from each CI Ruff command."""
-    return {
-        match.group(1)
-        for command in _workflow_uv_commands(workflow)
-        if (match := re.search(r"\bruff (?:check|format --check) +(?!-)(\S+)", command))
-    }
+    return _ruff_targets_in(_workflow_uv_commands(workflow))
 
 
 def _pytest_commands(text: str) -> list[str]:
@@ -1355,6 +1365,16 @@ def test_ci_lints_every_file_the_pre_commit_hooks_lint():
     )
 
 
+@pytest.mark.parametrize("command", ("uv run ruff check .", "uv run --native-tls ruff check ."))
+def test_the_ruff_target_reader_looks_past_flags_before_the_tool(command):
+    """CI runs Ruff as `uv run --native-tls ruff`, and the docs may adopt that shape.
+
+    A reader anchored on `uv run ruff` finds nothing in the CI shape, so the comparison
+    below would fail on a documentation change that is in fact correct.
+    """
+    assert _ruff_targets_in([command]) == {"."}
+
+
 def test_published_docs_run_ruff_over_the_scope_ci_lints():
     """A narrower documented scope lets a contributor pass locally and fail CI.
 
@@ -1366,19 +1386,26 @@ def test_published_docs_run_ruff_over_the_scope_ci_lints():
     assert ci_targets, "The lint job no longer runs ruff; this guard would read nothing."
 
     for name in _PUBLISHED_DOCS:
-        documented = re.findall(
-            r"uv run ruff (?:check|format)(?: --check)? (\S+)", (REPOSITORY_ROOT / name).read_text()
-        )
+        documented = _ruff_targets_in(_uv_commands((REPOSITORY_ROOT / name).read_text()))
         assert documented, f"{name} documents no ruff command; this guard would read nothing."
-        assert set(documented) == ci_targets, (
-            f"{name} runs ruff over {sorted(set(documented))}, but CI reads {sorted(ci_targets)}."
+        assert documented == ci_targets, (
+            f"{name} runs ruff over {sorted(documented)}, but CI reads {sorted(ci_targets)}."
         )
 
 
 def test_readme_documents_the_reservation_transfer_format():
-    """Operators must not be sent to the removed Reservation CSV workflow."""
+    """Operators must not be sent to the removed Reservation CSV workflow.
+
+    Both markers are asserted first: without the closing one the split runs to the end
+    of the file, and the assertions below can then pass on unrelated sections.
+    """
     readme = (REPOSITORY_ROOT / "README.md").read_text()
-    reservation_section = readme.split("**Host Reservations**", 1)[1].split("**Subnet Management**", 1)[0]
+    start, end = "**Host Reservations**", "**Subnet Management**"
+    for marker in (start, end):
+        assert marker in readme, f"README.md no longer holds {marker!r}, so this guard would read the wrong section."
+
+    reservation_section = readme.split(start, 1)[1].split(end, 1)[0]
+    assert reservation_section.strip(), "The Host Reservations section is empty; this guard would read nothing."
 
     assert "Bulk CSV import" not in reservation_section
     assert "YAML" in reservation_section
