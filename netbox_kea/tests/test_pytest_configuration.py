@@ -296,18 +296,29 @@ def _is_deterministic_name(node) -> bool:
         return True
     if isinstance(node, ast.JoinedStr):
         # An interpolation is deterministic when the thing it interpolates is.
-        return all(
-            isinstance(part, ast.Constant)
-            or (isinstance(part, ast.FormattedValue) and _is_deterministic_name(part.value))
-            for part in node.values
+        return all(_is_deterministic_name(part) for part in node.values)
+    if isinstance(node, ast.FormattedValue):
+        # The format spec is an f-string of its own, so a per-run value can hide there.
+        return _is_deterministic_name(node.value) and (
+            node.format_spec is None or _is_deterministic_name(node.format_spec)
         )
+    if isinstance(node, (ast.BinOp, ast.UnaryOp)):
+        # A literal-only operator is a constant wearing arithmetic.
+        operands = (node.left, node.right) if isinstance(node, ast.BinOp) else (node.operand,)
+        return all(_is_deterministic_name(operand) for operand in operands)
     return False
 
 
 def test_the_fixed_name_guard_reads_every_spelling():
     """Table-test the guard: one that misses the pattern it exists to catch is worse than none."""
-    must_flag = ('"kea-server"', 'f"kea-server"', 'f"kea-{1}-server"')
-    must_not_flag = ('f"kea-{uuid4()}"', 'f"kea-{run_id}"', "make_name()", "run_name")
+    must_flag = ('"kea-server"', 'f"kea-server"', 'f"kea-{1}-server"', 'f"kea-{1 + 2}"')
+    must_not_flag = (
+        'f"kea-{uuid4()}"',
+        'f"kea-{run_id}"',
+        'f"kea-{1:{run_id}}"',
+        "make_name()",
+        "run_name",
+    )
     for source in must_flag:
         assert _is_deterministic_name(ast.parse(source, mode="eval").body), f"the guard missed {source}"
     for source in must_not_flag:
