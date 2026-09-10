@@ -332,26 +332,99 @@ def test_no_browser_fixture_creates_a_server_with_a_fixed_name():
         )
 
 
+#: Every integration-suite module that builds an HTTP session for the NetBox API.
+_SESSION_MODULES = ("tests/conftest.py", "tests/ui/conftest.py")
+
+
+def _session_constructions(tree: ast.AST) -> list[str]:
+    """Return the callee name of every ``*Session(...)`` construction in *tree*."""
+    built = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if isinstance(func, ast.Attribute):
+            name = func.attr
+        elif isinstance(func, ast.Name):
+            name = func.id
+        else:
+            continue
+        if name.endswith("Session"):
+            built.append(name)
+    return built
+
+
+def test_every_integration_suite_session_applies_the_shared_timeout():
+    """A session without a default timeout lets a hung NetBox block the whole run.
+
+    pynetbox accepts no timeout argument, and the browser suite reaches
+    ``/users/config/`` through a second session, so a per-call guard cannot see either
+    path. The bound has to live on the session, which makes a bare ``requests.Session``
+    the defect. Naming the shared class is what keeps every call site bounded.
+    """
+    for name in _SESSION_MODULES:
+        tree = ast.parse((REPOSITORY_ROOT / name).read_text())
+        built = _session_constructions(tree)
+
+        assert built, f"{name} builds no HTTP session; this guard would read nothing."
+        assert set(built) == {"TimeoutSession"}, (
+            f"{name} builds {sorted(set(built))}. A bare requests.Session has no default "
+            "timeout, so its requests can hang forever. Use the shared TimeoutSession."
+        )
+
+
 def test_the_pynetbox_client_bounds_every_request_it_makes():
     """`nb_api` reaches NetBox through pynetbox, which never passes a timeout of its own.
 
     The browser suite creates, reads and deletes Servers through `nb_api.plugins.kea…`,
-    including in fixture teardown. A bare `requests.Session` has no default timeout, so a
-    hung NetBox blocks the run. The per-call guard cannot see these paths, because
-    pynetbox accepts no timeout argument: the bound has to live on the shared session.
+    including in fixture teardown, so the bound has to live on the shared session.
     """
-    source = (REPOSITORY_ROOT / "tests" / "conftest.py").read_text()
-    tree = ast.parse(source)
+    tree = ast.parse((REPOSITORY_ROOT / "tests" / "conftest.py").read_text())
 
-    assigns_session = [
-        node
+    assigned = [
+        node.value
         for node in ast.walk(tree)
         if isinstance(node, ast.Assign)
         and any(isinstance(target, ast.Attribute) and target.attr == "http_session" for target in node.targets)
     ]
-    assert assigns_session, (
+    assert assigned, (
         "tests/conftest.py leaves pynetbox's default http_session in place, so every "
         "nb_api call is unbounded. Assign a session that supplies a default timeout."
+    )
+    assert all(
+        isinstance(value, ast.Call) and isinstance(value.func, ast.Name) and value.func.id == "TimeoutSession"
+        for value in assigned
+    ), "tests/conftest.py assigns pynetbox a session that supplies no default timeout."
+
+
+def test_the_shared_session_bounds_a_request_that_names_no_timeout(monkeypatch) -> None:
+    """The class the guards above require must really supply the default.
+
+    Naming ``TimeoutSession`` proves nothing on its own: this drives the real class and
+    records what it hands to ``requests``, so an emptied ``request()`` fails here.
+    """
+    pytest.importorskip("pynetbox", reason="the integration suite is a dev dependency")
+    spec = importlib.util.spec_from_file_location(
+        "_kea_integration_conftest", REPOSITORY_ROOT / "tests" / "conftest.py"
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    sent: list[object] = []
+
+    def _capture(self, method, url, **kwargs):
+        sent.append(kwargs.get("timeout"))
+        return "captured"
+
+    monkeypatch.setattr(requests.Session, "request", _capture)
+    session = module.TimeoutSession()
+    session.get("http://netbox.invalid/api/")
+    session.patch("http://netbox.invalid/api/", timeout=1)
+
+    assert sent == [module.REQUEST_TIMEOUT, 1], (
+        f"TimeoutSession sent {sent}. It must default an unset timeout to REQUEST_TIMEOUT "
+        "and leave an explicit one alone."
     )
 
 

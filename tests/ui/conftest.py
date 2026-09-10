@@ -15,13 +15,15 @@ import pytest
 import requests
 from playwright.sync_api import Page
 
+from ..conftest import TimeoutSession
+
 # This is linked from netbox_kea to avoid import errors
 from ..kea import KeaClient
 
 
 @pytest.fixture
 def requests_session(nb_api: pynetbox.api) -> requests.Session:
-    s = requests.Session()
+    s = TimeoutSession()
     s.headers.update(
         {
             "Authorization": f"Token {nb_api.token}",
