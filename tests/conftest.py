@@ -83,6 +83,7 @@ def netbox_token(netbox_url: str) -> str:
     resp = requests.post(
         f"{netbox_url}/api/users/tokens/provision/",
         json={"username": "admin", "password": "admin"},
+        timeout=REQUEST_TIMEOUT,
     )
     resp.raise_for_status()
 
