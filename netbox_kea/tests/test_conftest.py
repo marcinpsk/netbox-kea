@@ -51,7 +51,14 @@ def test_prepopulation_runs_after_db_unblock_not_in_pytest_configure():
 
     from netbox_kea.tests import conftest as cf
 
-    assert not hasattr(cf, "pytest_configure"), "prepopulation must not run in pytest_configure (DB is blocked there)"
+    # The invariant is about DB access, not about the hook existing: pytest_configure
+    # is also where a worker-count check belongs, and that touches no database.
+    if hasattr(cf, "pytest_configure"):
+        configure_source = inspect.getsource(cf.pytest_configure)
+        assert "_prepopulate_url_resolver" not in configure_source, (
+            "prepopulation must not run in pytest_configure (DB is blocked there)"
+        )
+        assert "setup_databases" not in configure_source, "pytest_configure must not touch the database"
     assert "_prepopulate_url_resolver()" in inspect.getsource(cf.django_db_setup)
 
 

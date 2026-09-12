@@ -10,7 +10,9 @@ class Migration(migrations.Migration):
     initial = True
 
     dependencies = [
-        ('extras', '0092_delete_jobresult'),
+        # __first__ preserves app ordering through re-squashes; it guarantees the
+        # first migration has run, not that Tag exists.
+        ('extras', '__first__'),
     ]
 
     operations = [

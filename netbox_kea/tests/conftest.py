@@ -92,6 +92,23 @@ def pytest_xdist_auto_num_workers(config) -> int:
     return min(detected_num_workers(config), MAX_PARALLEL_WORKERS)
 
 
+def pytest_configure(config) -> None:
+    """Refuse a hand-picked worker count the isolation cannot serve.
+
+    ``pytest_xdist_auto_num_workers`` only caps ``auto``. An explicit ``-n`` sails
+    past it, and every worker above the ceiling gets no private Redis databases, so
+    the run reports hundreds of setup errors that read like real test failures.
+    ``auto`` and ``logical`` stay xdist's decision, capped by the hook.
+    """
+    requested = getattr(config.option, "numprocesses", None)
+    if not isinstance(requested, int) or requested <= MAX_PARALLEL_WORKERS:
+        return
+    raise pytest.UsageError(
+        f"-n {requested} exceeds the isolation limit: at most {MAX_PARALLEL_WORKERS} "
+        "pytest workers get private PostgreSQL and Redis databases. Use -n auto."
+    )
+
+
 def pytest_sessionstart(session) -> None:
     """Require xdist before tests can touch shared NetBox services."""
     config = session.config
@@ -128,6 +145,21 @@ def _prepopulate_url_resolver() -> None:
         logger.exception("Failed to pre-populate Django URL resolver")
 
 
+def database_lifecycle(config) -> tuple[bool, bool]:
+    """Return (keep the database at setup, tear it down at the end).
+
+    Mirrors pytest-django, which reads the flag pair with two *different*
+    expressions: ``keepdb`` is ``reuse_db and not create_db``, while the
+    teardown branch tests ``reuse_db`` alone. Passing one combined value to both
+    loses "rebuild and keep" (``--reuse-db --create-db``), which is how a
+    database whose migrations were rebased is repaired without paying for the
+    rebuild twice.
+    """
+    reuse_db = config.getvalue("reuse_db")
+    create_db = config.getvalue("create_db")
+    return (reuse_db and not create_db), (not reuse_db)
+
+
 @pytest.fixture(scope="session")
 def django_db_setup(request, django_test_environment, django_db_blocker):
     """Use a plugin-specific test DB name to avoid conflicts with other plugins
@@ -144,7 +176,7 @@ def django_db_setup(request, django_test_environment, django_db_blocker):
 
     settings.DATABASES["default"].setdefault("TEST", {})["NAME"] = _test_database_name()
 
-    keepdb = request.config.getvalue("reuse_db") and not request.config.getvalue("create_db")
+    keepdb, teardown_at_end = database_lifecycle(request.config)
     verbosity = request.config.option.verbose
 
     with django_db_blocker.unblock():
@@ -156,7 +188,7 @@ def django_db_setup(request, django_test_environment, django_db_blocker):
 
     yield
 
-    if not keepdb:
+    if teardown_at_end:
         with django_db_blocker.unblock():
             teardown_databases(db_cfg, verbosity=verbosity)
 
