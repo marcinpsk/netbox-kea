@@ -13,6 +13,7 @@ import re
 import unittest
 from unittest.mock import patch
 
+import requests
 from django.apps import apps
 from django.test import SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
@@ -21,7 +22,7 @@ from django.utils import timezone
 from netbox_kea.kea import KeaClient, KeaException
 from netbox_kea.views import dhcp_plugin_sync as dps
 
-from .kea_stub import _res_page, stub_kea
+from .kea_stub import _res_page, _subnet_list, stub_kea
 from .utils import _make_db_server
 
 DHCP_PLUGIN = "netbox_dhcp"
@@ -63,7 +64,13 @@ def _sync_responses(
             return {"result": 2, "text": "command not supported"}
         return _res_page(hosts.get(_request_version(body), []))
 
-    return {"config-get": config_get, "reservation-get-page": reservation_get_page}
+    responses: dict = {"config-get": config_get, "reservation-get-page": reservation_get_page}
+    for version, conf in conf_by_version.items():
+        subnets = list(conf.get(f"subnet{version}", []))
+        for shared_network in conf.get("shared-networks", []):
+            subnets.extend(shared_network.get(f"subnet{version}", []))
+        responses[f"subnet{version}-list"] = _subnet_list(version, subnets)
+    return responses
 
 
 class SyncResponseRoutingTest(SimpleTestCase):
@@ -73,6 +80,49 @@ class SyncResponseRoutingTest(SimpleTestCase):
         for body in invalid_bodies:
             with self.subTest(body=body), self.assertRaises(AssertionError):
                 _request_version(body)
+
+    def test_sync_responses_lists_shared_network_member_subnets(self):
+        top_level = {"id": 1, "subnet": "198.18.0.0/24"}
+        member = {"id": 2, "subnet": "198.18.1.0/24"}
+        responses = _sync_responses(
+            {
+                4: {
+                    "subnet4": [top_level],
+                    "shared-networks": [{"name": "example", "subnet4": [member]}],
+                }
+            }
+        )
+
+        self.assertEqual(responses["subnet4-list"]["arguments"]["subnets"], [top_level, member])
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class FetchReservationSnapshotTest(TestCase):
+    """`_fetch_reservation_snapshot` distinguishes partial data from read failure."""
+
+    def _server(self):
+        return _make_db_server(name="snapshot-test", dhcp4=True, dhcp6=False)
+
+    def test_returns_an_incomplete_snapshot_when_kea_returns_one_bad_record(self):
+        responses = _sync_responses(
+            {4: {"subnet4": [{"id": 1, "subnet": "198.18.0.0/24"}]}},
+            {4: [{"subnet-id": 1, "hw-address": "aa:bb:cc:dd:ee:ff", "ip-address": "not-an-address"}]},
+        )
+
+        with stub_kea(responses):
+            snapshot = dps._fetch_reservation_snapshot(self._server(), 4)
+
+        self.assertIsNotNone(snapshot)
+        self.assertFalse(snapshot.complete)
+
+    def test_returns_none_when_the_supported_snapshot_read_fails(self):
+        responses = _sync_responses({4: {"subnet4": [{"id": 1, "subnet": "198.18.0.0/24"}]}})
+        responses["reservation-get-page"] = requests.ConnectionError("read failed")
+
+        with self.assertLogs("netbox_kea.views.dhcp_plugin_sync", level="WARNING"), stub_kea(responses):
+            snapshot = dps._fetch_reservation_snapshot(self._server(), 4)
+
+        self.assertIsNone(snapshot)
 
 
 class ExtractDhcpConfTest(SimpleTestCase):
@@ -324,3 +374,57 @@ class SyncNowErrorHandlingTest(TestCase):
             resp = self.client.post(self.url, follow=True)
         self.assertEqual(resp.status_code, 200)
         self.assertContains(resp, "An internal error occurred")
+
+
+class SummaryProblemsTest(SimpleTestCase):
+    """Every non-zero problem count must be reported, not only the first one.
+
+    The view used an ``if/elif/elif`` chain, so an unread Snapshot hid the
+    quarantine and error counts and the operator saw an incomplete picture.
+    """
+
+    def _summary(self, **counts):
+        from netbox_kea.integrations.dhcp_plugin import ImportSummary
+
+        return ImportSummary(**counts)
+
+    def test_no_problems_yields_no_notes(self):
+        self.assertEqual(dps._summary_problems(self._summary()), [])
+
+    def test_unknown_summary_field_is_rejected(self):
+        with self.assertRaises(TypeError):
+            self._summary(not_a_field=1)
+
+    def test_every_non_zero_count_is_reported_together(self):
+        problems = dps._summary_problems(self._summary(reservations_unread=True, reservations_quarantined=2, errors=3))
+
+        self.assertEqual(len(problems), 3)
+        joined = " ".join(problems)
+        self.assertIn("host_cmds", joined)
+        self.assertIn("2 malformed reservation(s) were quarantined.", joined)
+        self.assertIn("3 errors occurred.", joined)
+
+    def test_quarantine_count_is_reported_alongside_an_unread_snapshot(self):
+        problems = dps._summary_problems(self._summary(reservations_unread=True, reservations_quarantined=5))
+
+        self.assertEqual(len(problems), 2)
+        self.assertIn("5 malformed reservation(s) were quarantined.", " ".join(problems))
+
+    def test_error_count_is_reported_alongside_quarantined_reservations(self):
+        problems = dps._summary_problems(self._summary(reservations_quarantined=1, errors=4))
+
+        self.assertEqual(len(problems), 2)
+        self.assertIn("4 errors occurred.", " ".join(problems))
+
+    def test_skipped_foreign_addresses_are_reported(self):
+        problems = dps._summary_problems(self._summary(foreign_addresses_skipped=3))
+
+        self.assertEqual(len(problems), 1)
+        self.assertIn("3 manually curated NetBox IP(s) were left unchanged.", problems[0])
+
+    def test_skipped_reservations_do_not_report_a_host_cmds_problem(self):
+        problems = dps._summary_problems(self._summary(reservations_skipped=1))
+
+        self.assertEqual(len(problems), 1)
+        self.assertIn("1 reservation(s) were skipped after they were read.", problems[0])
+        self.assertNotIn("host_cmds", problems[0])

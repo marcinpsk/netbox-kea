@@ -21,7 +21,7 @@ from django.urls import reverse
 
 from netbox_kea.models import Server
 
-from .kea_stub import _subnet_list, stub_kea
+from .kea_stub import _reservation_mutation_commands, _subnet_list, stub_kea
 from .utils import _PLUGINS_CONFIG, User
 
 # Distinct URLs so we can tell which one was selected.
@@ -64,6 +64,7 @@ def _dual_url_stub():
     return stub_kea(
         {
             "config-get": _config_get,
+            "list-commands": _reservation_mutation_commands(),
             "subnet4-list": _subnet_list(4, []),
             "subnet6-list": _subnet_list(6, []),
             "stat-lease4-get": {"result": 2, "text": "unknown command"},
@@ -73,6 +74,8 @@ def _dual_url_stub():
             "reservation-get-page": {"result": 3},
             "lease4-get-all": {"result": 0, "arguments": {"leases": []}},
             "lease6-get-all": {"result": 0, "arguments": {"leases": []}},
+            "lease4-get-by-state": {"result": 0, "arguments": {"leases": []}},
+            "lease6-get-by-state": {"result": 0, "arguments": {"leases": []}},
         }
     )
 

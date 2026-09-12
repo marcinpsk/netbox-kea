@@ -16,13 +16,26 @@ threads used by the reservation/lease-enrichment views.
 
 from __future__ import annotations
 
+import ipaddress
 import threading
 from collections import deque
 from contextlib import contextmanager
-from typing import Any
+from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 import requests
+
+from netbox_kea.reservations import (
+    GlobalReservationScope,
+    IdentifierType,
+    InSubnetReservationScope,
+    IPv4Reservation,
+    IPv6Reservation,
+    Reservation,
+    ReservationIdentity,
+    ReservationScope,
+)
+from netbox_kea.subnet_catalogue import SubnetIdentity
 
 
 def _http_response(payload: Any, status: int = 200) -> MagicMock:
@@ -127,7 +140,10 @@ class KeaHttpStub:
     def commands(self) -> list[str]:
         """Ordered list of command names sent."""
         with self._lock:
-            return [r.get("command") for r in self.requests]
+            commands = [request.get("command") for request in self.requests]
+        if not all(isinstance(command, str) for command in commands):
+            raise AssertionError(f"Recorded a Kea request without a command: {commands!r}")
+        return cast(list[str], commands)
 
     def bodies(self, command: str) -> list[dict[str, Any]]:
         """Every request body sent for *command* (for asserting args / absence of ``service``)."""
@@ -148,11 +164,65 @@ class KeaHttpStub:
 #     drift across the test modules that register them) ---
 
 
+def _reservation_family(host: dict[str, Any]) -> int:
+    """Return the DHCP family one legacy wire reservation fixture describes.
+
+    Delegated prefixes are DHCPv6 only, so a prefix-only fixture is v6 even when it
+    carries no address at all.
+    """
+    if "ip-addresses" in host or host.get("prefixes"):
+        return 6
+    singular = host.get("ip-address")
+    return 6 if isinstance(singular, str) and ":" in singular else 4
+
+
+def _typed_reservation(raw: dict[str, Any], *, prefix_length: int | None = None) -> Reservation:
+    """Convert one legacy wire reservation fixture into the domain value."""
+    family = _reservation_family(raw)
+    address_values = raw.get("ip-addresses") or ([raw["ip-address"]] if raw.get("ip-address") else [])
+    addresses = tuple(ipaddress.ip_address(address) for address in address_values)
+    identity_types: tuple[IdentifierType, ...] = ("hw-address", "duid", "circuit-id", "client-id", "flex-id")
+    identity_type = next((key for key in identity_types if raw.get(key)), None)
+    if identity_type is None:
+        raise AssertionError(f"Reservation fixture carries no supported identifier: {raw!r}")
+    identity_value = cast(str, raw[identity_type])
+    if addresses:
+        default_prefix = 64 if family == 6 else 24
+        network = ipaddress.ip_network(f"{addresses[0]}/{prefix_length or default_prefix}", strict=False)
+    else:
+        network = ipaddress.ip_network("2001:db8::/64" if family == 6 else "198.18.0.0/24")
+    subnet_id = int(raw.get("subnet-id", 1))
+    scope: ReservationScope = (
+        GlobalReservationScope()
+        if subnet_id == 0
+        else InSubnetReservationScope(SubnetIdentity(subnet_id=subnet_id, network=network))
+    )
+    common = {
+        "scope": scope,
+        "identity": ReservationIdentity(identity_type, identity_value),
+        "addresses": addresses,
+        "hostname": raw.get("hostname", ""),
+    }
+    if family == 4:
+        return IPv4Reservation(**common)
+    return IPv6Reservation(
+        **common,
+        delegated_prefixes=tuple(ipaddress.IPv6Network(prefix) for prefix in raw.get("prefixes", [])),
+    )
+
+
+def _reservation_mutation_commands() -> dict[str, Any]:
+    """A ``list-commands`` payload that confirms every Reservation mutation command."""
+    return {
+        "result": 0,
+        "arguments": ["reservation-get", "reservation-add", "reservation-update", "reservation-del"],
+    }
+
+
 def _res_page(hosts: Any, *, next_from: int = 0, next_source: int = 0) -> dict[str, Any]:
     """A ``reservation-get-page`` payload: *hosts* plus Kea's pagination cursor.
 
-    ``next_from``/``next_source`` both 0 marks the source exhausted, so
-    ``iter_reservations`` stops after this page.
+    ``next_from`` and ``next_source`` both 0 mark the Snapshot source exhausted.
     """
     return {"result": 0, "arguments": {"hosts": list(hosts), "next": {"from": next_from, "source-index": next_source}}}
 
@@ -179,15 +249,16 @@ def _subnet_get(
 
 
 def _leases_per_subnet(leases_by_subnet: dict[Any, list[dict[str, Any]]]):
-    """A ``lease{v}-get-all`` responder that answers only for the subnets it was asked about.
+    """A Subnet lease responder that answers only for the Subnet it was asked about.
 
-    Kea scopes ``lease{v}-get-all`` to ``arguments.subnets``, so a stub returning the same
-    leases whatever was requested cannot show whether the caller keeps per-subnet state.
+    Kea scopes ``get-all`` with ``subnets`` and ``get-by-state`` with ``subnet-id``.
+    A stub that always returns the same leases cannot show whether the caller keeps per-Subnet state.
     Subnets with no leases get Kea's empty-result code 3.
     """
 
     def _respond(body: dict[str, Any]) -> dict[str, Any]:
-        requested = body.get("arguments", {}).get("subnets") or []
+        arguments = body.get("arguments", {})
+        requested = arguments.get("subnets") or [arguments.get("subnet-id")]
         leases = [lease for sid in requested for lease in leases_by_subnet.get(sid, [])]
         if not leases:
             return {"result": 3}
@@ -199,12 +270,75 @@ def _leases_per_subnet(leases_by_subnet: dict[Any, list[dict[str, Any]]]):
 def _subnet_list(version: int, subnets: list[dict[str, Any]]) -> dict[str, Any]:  # noqa: ARG001 - version kept for call-site symmetry with _subnet_get
     """A ``subnet{v}-list`` payload, the ``subnet_cmds`` source every subnet lookup reads.
 
-    Needed by ``reservation_get_by_ip`` (candidate subnets for an IP) and by every
-    reservation add-form render (the Subnet CIDR ``<datalist>`` and the CIDR the POST
-    resolves against). *subnets* is the list of subnet dicts (each
+    Used by Subnet catalogue and Reservation form tests. *subnets* is the list of
+    subnet dicts (each
     ``{"id": …, "subnet": <cidr>}``) Kea reports.
     """
     return {"result": 0, "arguments": {"subnets": list(subnets)}}
+
+
+def _subnet_stats(
+    version: int,
+    subnet_id: int,
+    *,
+    assigned: int = 1,
+    declined: int = 0,
+    assigned_pds: int = 0,
+) -> dict[str, Any]:
+    """A ``stat-lease{v}-get`` payload, the only measurement the lease-query guard reads.
+
+    The client rejects a ``result-set`` that omits a required column, so the column set
+    lives here once: DHCPv4 counts addresses, DHCPv6 also counts prefix delegations.
+    """
+    if version == 4:
+        columns = ["subnet-id", "assigned-addresses", "declined-addresses"]
+        row = [subnet_id, assigned, declined]
+    else:
+        columns = ["subnet-id", "assigned-nas", "declined-addresses", "assigned-pds"]
+        row = [subnet_id, assigned, declined, assigned_pds]
+    return {"result": 0, "arguments": {"result-set": {"columns": columns, "rows": [row]}}}
+
+
+def _catalogue_responses(
+    version: int,
+    subnet_id: int,
+    cidr: str,
+    *,
+    config_hash: str = "shared-catalogue",
+) -> dict[str, Any]:
+    """Every response one Subnet Catalogue read of a single subnet needs.
+
+    Registers ``list-commands`` too, because the Reservation pages probe mutation
+    capabilities from the same server. A registered response is only ever returned
+    when the code under test actually issues that command, so the extra entry cannot
+    change what :meth:`KeaHttpStub.commands` records.
+    """
+    return _catalogue_responses_for_subnets(version, [{"id": subnet_id, "subnet": cidr}], config_hash=config_hash)
+
+
+def _catalogue_responses_for_subnets(
+    version: int,
+    subnets: list[dict[str, Any]],
+    *,
+    config_hash: str = "shared-catalogue",
+) -> dict[str, Any]:
+    """The same Catalogue responses for an explicit *subnets* list.
+
+    Callers that already carry their own ``subnet{v}-list`` reach the Catalogue shape
+    through this entry point, so it stays defined once.
+    """
+    subnets = list(subnets)
+    return {
+        f"subnet{version}-list": _subnet_list(version, subnets),
+        "list-commands": _reservation_mutation_commands(),
+        "config-get": {
+            "result": 0,
+            "arguments": {
+                f"Dhcp{version}": {f"subnet{version}": subnets, "shared-networks": []},
+                "hash": config_hash,
+            },
+        },
+    }
 
 
 @contextmanager

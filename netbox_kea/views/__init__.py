@@ -52,8 +52,6 @@ from .leases import (  # noqa: F401
     ServerLeases6View,
     _add_lease_journal,
     _enrich_leases_with_badges,
-    _fetch_reservation_by_ip,
-    _fetch_reservation_by_ip_for_leases,
 )
 
 # Options / option-def views + badge + IP panel
@@ -71,27 +69,22 @@ from .options import (  # noqa: F401
     ServerSubnet4OptionsEditView,
     ServerSubnet6OptionsEditView,
 )
-
-# Reservation list/add/edit/delete views + helpers
-from .reservations import (  # noqa: F401
+from .reservation_mutations import (  # noqa: F401
     ServerReservation4AddView,
-    ServerReservation4DeleteByIdentifierView,
     ServerReservation4DeleteView,
-    ServerReservation4EditByIdentifierView,
     ServerReservation4EditView,
     ServerReservation6AddView,
-    ServerReservation6DeleteByIdentifierView,
     ServerReservation6DeleteView,
-    ServerReservation6EditByIdentifierView,
     ServerReservation6EditView,
+)
+
+# Reservation list views + helpers
+from .reservations import (  # noqa: F401
     ServerReservations4View,
     ServerReservations6View,
-    _add_reservation_journal,
     _build_reservation_options_formset,
     _enrich_reservations_with_badges,
-    _enrich_reservations_with_lease_status,
     _filter_reservations,
-    _get_reservation_identifier,
 )
 
 # Server CRUD views

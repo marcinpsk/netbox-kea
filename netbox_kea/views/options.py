@@ -1,10 +1,11 @@
 import logging
 from contextlib import contextmanager
-from typing import Any
+from typing import Any, Literal, cast
 from urllib.parse import urlencode as _urlencode
 
 import requests
 from django.contrib import messages
+from django.contrib.auth.models import PermissionsMixin
 from django.http import HttpResponse
 from django.http.request import HttpRequest
 from django.shortcuts import get_object_or_404, redirect, render
@@ -444,14 +445,13 @@ class BaseServerOptionDefView(ConditionalLoginRequiredMixin, View):
     Subclasses set ``dhcp_version`` to 4 or 6.
     """
 
-    dhcp_version: int
+    dhcp_version: Literal[4, 6]
 
     def get(self, request: HttpRequest, pk: int) -> HttpResponse:
         """Render the option-def list."""
         server = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
         if resp := check_dhcp_enabled(server, self.dhcp_version):
             return resp
-        client: object | None = None
         try:
             client = server.get_client(version=self.dhcp_version)
         except (KeaException, requests.RequestException, ValueError):
@@ -467,7 +467,7 @@ class BaseServerOptionDefView(ConditionalLoginRequiredMixin, View):
             options_load_error = True
         # Annotate each entry with a pre-built delete URL so templates don't
         # need to construct dynamic URL names.
-        can_change = request.user.has_perm("netbox_kea.change_server")
+        can_change = cast(PermissionsMixin, request.user).has_perm("netbox_kea.change_server")
         enriched_defs = []
         for opt in option_defs:
             entry = dict(opt)

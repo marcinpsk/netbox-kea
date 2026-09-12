@@ -7,22 +7,20 @@ from collections import defaultdict
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Literal, Protocol, TypeVar
+from typing import Any, Protocol, TypeVar
 
 import requests
 from django.core.cache import cache
 from django.utils import timezone
 
 from . import constants
+from .constants import Family, IPAddressValue, IPNetworkValue
+from .dhcp_options import DHCPOption, parse_dhcp_option
 from .kea import KeaClient, KeaException
 from .models import Server
 from .utilities import kea_error_hint
 
 logger = logging.getLogger(__name__)
-
-Family = Literal[4, 6]
-IPAddress = ipaddress.IPv4Address | ipaddress.IPv6Address
-IPNetwork = ipaddress.IPv4Network | ipaddress.IPv6Network
 
 # Kea requires subnet IDs greater than zero and less than UINT32_MAX.
 MIN_SUBNET_ID = 1
@@ -56,7 +54,7 @@ class SubnetIdentity:
     """The canonical CIDR and Kea ID of one Subnet."""
 
     subnet_id: int
-    network: IPNetwork
+    network: IPNetworkValue
 
     @property
     def cidr(self) -> str:
@@ -79,7 +77,7 @@ class NewSubnetIdentity:
     """A live-verified Subnet identity that is available for creation."""
 
     subnet_id: int
-    network: IPNetwork
+    network: IPNetworkValue
 
     @property
     def cidr(self) -> str:
@@ -98,26 +96,13 @@ class SharedNetworkMembership:
 class Pool:
     """One normalized inclusive allocation range within a Subnet."""
 
-    start: IPAddress
-    end: IPAddress
+    start: IPAddressValue
+    end: IPAddressValue
 
     @property
     def range(self) -> str:
         """Return the normalized explicit range text."""
         return f"{self.start}-{self.end}"
-
-
-@dataclass(frozen=True)
-class SubnetOption:
-    """One validated option declared locally on a Subnet."""
-
-    code: int | None
-    name: str | None
-    space: str | None
-    data: str
-    csv_format: bool | None
-    always_send: bool | None
-    never_send: bool | None
 
 
 @dataclass(frozen=True)
@@ -137,7 +122,7 @@ class SubnetSettings:
     pd_allocator: str | None = None
     ddns_qualifying_suffix: str | None = None
     interface_id: str | None = None
-    relay_addresses: tuple[IPAddress, ...] = ()
+    relay_addresses: tuple[IPAddressValue, ...] = ()
     client_classes: tuple[str, ...] = ()
     require_client_classes: tuple[str, ...] = ()
 
@@ -147,7 +132,7 @@ class SubnetConfiguration:
     """Validated full configuration facts for one Subnet."""
 
     pools: tuple[Pool, ...]
-    options: tuple[SubnetOption, ...]
+    options: tuple[DHCPOption, ...]
     settings: SubnetSettings
 
 
@@ -165,7 +150,7 @@ class VerifiedSubnet:
         return self.identity.subnet_id
 
     @property
-    def network(self) -> IPNetwork:
+    def network(self) -> IPNetworkValue:
         """Return the canonical IP network."""
         return self.identity.network
 
@@ -215,6 +200,8 @@ class CatalogueSnapshot:
 
     def find_by_id(self, subnet_id: int) -> VerifiedSubnet | None:
         """Return the verified Subnet with an exact Kea ID, if present."""
+        if isinstance(subnet_id, bool) or not isinstance(subnet_id, int):
+            return None
         return next((subnet for subnet in self.subnets if subnet.subnet_id == subnet_id), None)
 
     def find_by_cidr(self, cidr: str) -> VerifiedSubnet | None:
@@ -265,7 +252,7 @@ class _IdentityObservation:
     available: bool
     complete: bool
     quarantined_ids: frozenset[int] = frozenset()
-    quarantined_networks: frozenset[IPNetwork] = frozenset()
+    quarantined_networks: frozenset[IPNetworkValue] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -276,7 +263,7 @@ class _ConfigurationObservation:
     complete: bool
     configuration_hash: str | None = None
     quarantined_ids: frozenset[int] = frozenset()
-    quarantined_networks: frozenset[IPNetwork] = frozenset()
+    quarantined_networks: frozenset[IPNetworkValue] = frozenset()
 
 
 def _validate_family(family: int) -> Family:
@@ -285,7 +272,7 @@ def _validate_family(family: int) -> Family:
     return family
 
 
-def _network(value: str, family: Family) -> IPNetwork:
+def _network(value: str, family: Family) -> IPNetworkValue:
     if not isinstance(value, str) or not value:
         raise ValueError("Subnet CIDR must be a non-empty string.")
     network_class = ipaddress.IPv4Network if family == 4 else ipaddress.IPv6Network
@@ -451,9 +438,9 @@ def _parse_identity(
 
 def _quarantine_collisions(
     facts: list[_CollisionFactT], source: str
-) -> tuple[list[_CollisionFactT], list[Diagnostic], set[int], set[IPNetwork]]:
+) -> tuple[list[_CollisionFactT], list[Diagnostic], set[int], set[IPNetworkValue]]:
     ids: dict[int, list[_CollisionFactT]] = defaultdict(list)
-    networks: dict[IPNetwork, list[_CollisionFactT]] = defaultdict(list)
+    networks: dict[IPNetworkValue, list[_CollisionFactT]] = defaultdict(list)
     for fact in facts:
         ids[fact.identity.subnet_id].append(fact)
         networks[fact.identity.network].append(fact)
@@ -665,7 +652,7 @@ def _parse_configured_fact(
 
 def _parse_pools(
     entries: Any,
-    subnet: IPNetwork,
+    subnet: IPNetworkValue,
     path: str,
     diagnostics: list[Diagnostic],
 ) -> tuple[Pool, ...]:
@@ -687,7 +674,7 @@ def _parse_pools(
     return tuple(pools)
 
 
-def _parse_pool(value: Any, subnet: IPNetwork) -> Pool:
+def _parse_pool(value: Any, subnet: IPNetworkValue) -> Pool:
     if not isinstance(value, str) or not value.strip():
         raise ValueError("Pool must be a non-empty string.")
     value = value.strip()
@@ -708,7 +695,7 @@ def _parse_pool(value: Any, subnet: IPNetwork) -> Pool:
     return Pool(start=start, end=end)
 
 
-def _parse_options(entries: Any, path: str, diagnostics: list[Diagnostic]) -> tuple[SubnetOption, ...]:
+def _parse_options(entries: Any, path: str, diagnostics: list[Diagnostic]) -> tuple[DHCPOption, ...]:
     if not isinstance(entries, list):
         diagnostics.append(
             _diagnostic(
@@ -716,48 +703,18 @@ def _parse_options(entries: Any, path: str, diagnostics: list[Diagnostic]) -> tu
             )
         )
         return ()
-    options: list[SubnetOption] = []
+    options: list[DHCPOption] = []
     for index, entry in enumerate(entries):
         option_path = f"{path}.option-data[{index}]"
-        option = _parse_option(entry)
-        if option is None:
+        try:
+            option = parse_dhcp_option(entry)
+        except ValueError:
             diagnostics.append(
                 _diagnostic("invalid-option", "Kea returned an invalid Subnet option.", "configuration", option_path)
             )
             continue
         options.append(option)
     return tuple(options)
-
-
-def _parse_option(entry: Any) -> SubnetOption | None:
-    if not isinstance(entry, dict):
-        return None
-    code = entry.get("code")
-    if code is not None and (isinstance(code, bool) or not isinstance(code, int) or not 0 <= code <= 65_535):
-        return None
-    name = entry.get("name")
-    if name is not None and (not isinstance(name, str) or not name):
-        return None
-    if code is None and name is None:
-        return None
-    space = entry.get("space")
-    if space is not None and (not isinstance(space, str) or not space):
-        return None
-    data = entry.get("data", "")
-    if not isinstance(data, str):
-        return None
-    flags = [entry.get("csv-format"), entry.get("always-send"), entry.get("never-send")]
-    if any(flag is not None and not isinstance(flag, bool) for flag in flags):
-        return None
-    return SubnetOption(
-        code=code,
-        name=name,
-        space=space,
-        data=data,
-        csv_format=flags[0],
-        always_send=flags[1],
-        never_send=flags[2],
-    )
 
 
 def _parse_settings(
@@ -827,7 +784,7 @@ def _relay_addresses(
     family: Family,
     path: str,
     diagnostics: list[Diagnostic],
-) -> tuple[IPAddress, ...]:
+) -> tuple[IPAddressValue, ...]:
     if value is None:
         return ()
     if not isinstance(value, dict) or not isinstance(value.get("ip-addresses"), list):
@@ -835,7 +792,7 @@ def _relay_addresses(
             _diagnostic("invalid-setting", "Kea returned invalid relay addresses.", "configuration", f"{path}.relay")
         )
         return ()
-    addresses: list[IPAddress] = []
+    addresses: list[IPAddressValue] = []
     for address in value["ip-addresses"]:
         if not isinstance(address, str):
             diagnostics.append(
@@ -918,7 +875,7 @@ def _string_tuple(
     return tuple(value)
 
 
-def _network_sort_key(network: IPNetwork) -> tuple[int, int, int]:
+def _network_sort_key(network: IPNetworkValue) -> tuple[int, int, int]:
     return network.version, int(network.network_address), network.prefixlen
 
 
@@ -1003,7 +960,7 @@ def _observe(server: Server, family: Family) -> tuple[_IdentityObservation, _Con
 def _cross_source_conflicts(
     identity: _IdentityObservation,
     configuration: _ConfigurationObservation,
-) -> tuple[set[int], set[IPNetwork]]:
+) -> tuple[set[int], set[IPNetworkValue]]:
     identity_by_id = {fact.identity.subnet_id: fact.identity.network for fact in identity.facts}
     configuration_by_id = {fact.identity.subnet_id: fact.identity.network for fact in configuration.facts}
     identity_by_network = {fact.identity.network: fact.identity.subnet_id for fact in identity.facts}
@@ -1149,7 +1106,7 @@ def _reconcile(
     )
 
 
-def _is_quarantined(identity: SubnetIdentity, ids: set[int], networks: set[IPNetwork]) -> bool:
+def _is_quarantined(identity: SubnetIdentity, ids: set[int], networks: set[IPNetworkValue]) -> bool:
     return identity.subnet_id in ids or identity.network in networks
 
 

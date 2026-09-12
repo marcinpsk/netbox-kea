@@ -29,7 +29,7 @@ from django.contrib import messages as django_messages
 from django.test import override_settings
 from django.urls import reverse
 
-from .kea_stub import queued, stub_kea
+from .kea_stub import _res_page, _subnet_list, queued, stub_kea
 from .utils import _PLUGINS_CONFIG, _make_db_server, _ViewTestBase
 
 # Shared stub responses for the subnet list/table views, which issue config-get
@@ -39,6 +39,23 @@ _EMPTY_CONFIG4 = {"result": 0, "arguments": {"Dhcp4": {"subnet4": [], "shared-ne
 _EMPTY_CONFIG6 = {"result": 0, "arguments": {"Dhcp6": {"subnet6": [], "shared-networks": []}}}
 _STAT_ABSENT4 = {"result": 2, "text": "unknown command 'stat-lease4-get'"}
 _STAT_ABSENT6 = {"result": 2, "text": "unknown command 'stat-lease6-get'"}
+
+
+def _pool_add_registry(subnet_id: int, cidr: str) -> dict:
+    """Return the pool-add command chain for one Subnet."""
+    return {
+        "subnet4-list": _subnet_list(4, [{"id": subnet_id, "subnet": cidr}]),
+        "reservation-get-page": {"result": 3},
+        "list-commands": {
+            "result": 0,
+            "arguments": ["subnet4-pool-add", "config-get", "config-test", "config-write"],
+        },
+        "subnet4-pool-add": {"result": 0},
+        "config-get": _EMPTY_CONFIG4,
+        "config-test": {"result": 0},
+        "config-write": {"result": 0},
+        "stat-lease4-get": _STAT_ABSENT4,
+    }
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
@@ -2191,18 +2208,7 @@ class TestPoolAddPostErrors(_ViewTestBase):
 
         follow=True lands on the subnets list (config-get + stat). Override a leg to drive errors.
         """
-        base = {
-            "reservation-get-page": {"result": 3},
-            "list-commands": {
-                "result": 0,
-                "arguments": ["subnet4-pool-add", "config-get", "config-test", "config-write"],
-            },
-            "subnet4-pool-add": {"result": 0},
-            "config-get": _EMPTY_CONFIG4,
-            "config-test": {"result": 0},
-            "config-write": {"result": 0},
-            "stat-lease4-get": _STAT_ABSENT4,
-        }
+        base = _pool_add_registry(1, "10.0.0.0/24")
         base.update(overrides)
         return stub_kea(base)
 
@@ -2211,6 +2217,54 @@ class TestPoolAddPostErrors(_ViewTestBase):
         with self._pool_add_stub(**{"config-write": {"result": 1, "text": "disk full"}}):
             response = self.client.post(self._url(), {"pool": "10.0.0.10-10.0.0.20"}, follow=True)
         self.assertEqual(response.status_code, 200)
+
+    def test_the_overlap_probe_asks_kea_for_one_subnet(self):
+        """The probe needs one subnet, so it must not page through the whole server.
+
+        ``reservation-get-page`` takes an optional ``subnet-id``. Without it Kea returns
+        every reservation on the server and the view filters them client-side.
+        """
+        with self._pool_add_stub() as kea:
+            response = self.client.post(self._url(subnet_id=1), {"pool": "10.0.0.10-10.0.0.20"}, follow=True)
+
+        self.assertEqual(response.status_code, 200)
+        probe = kea.bodies("reservation-get-page")
+        self.assertTrue(probe)
+        self.assertEqual(probe[0]["arguments"]["subnet-id"], 1)
+
+    def test_incomplete_reservation_snapshot_is_reported(self):
+        """Say so when the overlap check could not read every reservation.
+
+        `reservation_snapshot` does not raise once a page has succeeded: it quarantines
+        the rest as diagnostics. Reading only `snapshot.records` then produces no
+        warning, which the operator reads as "no overlapping reservation".
+        """
+        quarantined = _res_page([{"subnet-id": 1, "remote-id": "relay-value"}])
+
+        with self._pool_add_stub(**{"reservation-get-page": quarantined}) as kea:
+            response = self.client.post(self._url(), {"pool": "10.0.0.10-10.0.0.20"}, follow=True)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "incomplete list")
+        self.assertIn("subnet4-pool-add", kea.commands())
+
+    def test_failed_overlap_probe_logs_its_traceback(self):
+        """Record why the overlap warning was skipped, and keep the pool add working.
+
+        The probe swallows every exception to stay non-blocking, so without the traceback
+        an operator cannot tell a Kea read failure from a genuinely empty overlap.
+        """
+        malformed_probe = {"result": 0, "arguments": {"hosts": None, "next": {"from": 0, "source-index": 0}}}
+
+        with self._pool_add_stub(**{"reservation-get-page": malformed_probe}) as kea:
+            with self.assertLogs("netbox_kea.views.subnets", level="WARNING") as logs:
+                response = self.client.post(self._url(), {"pool": "10.0.0.10-10.0.0.20"}, follow=True)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("subnet4-pool-add", kea.commands())
+        overlap_records = [record for record in logs.records if "overlap" in record.getMessage()]
+        self.assertTrue(overlap_records)
+        self.assertIsNotNone(overlap_records[0].exc_info)
 
     def test_kea_exception_shows_error(self):
         """A KeaException (subnet4-pool-add result 1) from pool_add shows a Kea error, no 500."""
@@ -2527,18 +2581,7 @@ class TestSubnetViewCoverageGaps(_ViewTestBase):
 
     def _pool_add_stub(self, **overrides):
         """pool_add chain: reservation overlap probe → list-commands → subnet4-pool-add → persist + list."""
-        base = {
-            "reservation-get-page": {"result": 3},
-            "list-commands": {
-                "result": 0,
-                "arguments": ["subnet4-pool-add", "config-get", "config-test", "config-write"],
-            },
-            "subnet4-pool-add": {"result": 0},
-            "config-get": _EMPTY_CONFIG4,
-            "config-test": {"result": 0},
-            "config-write": {"result": 0},
-            "stat-lease4-get": _STAT_ABSENT4,
-        }
+        base = _pool_add_registry(42, "10.0.0.0/24")
         base.update(overrides)
         return stub_kea(base)
 
@@ -2739,24 +2782,28 @@ class TestSubnetViewCoverageGaps(_ViewTestBase):
             "plugins:netbox_kea:server_subnet4_pool_delete", args=[self.server.pk, 42, "10.0.0.100-10.0.0.200"]
         )
 
-    def test_pool_add_reservation_lookup_failure_suppresses_warning(self):
-        """A reservation overlap probe failing (result 2 → KeaException) is suppressed; pool_add succeeds."""
-        with self._pool_add_stub(**{"reservation-get-page": {"result": 2, "text": "host_cmds not loaded"}}):
-            response = self.client.post(self._pool_add_url(), {"pool": "10.0.0.100-10.0.0.200"}, follow=True)
+    def test_pool_add_reservation_lookup_failure_warns_that_the_check_did_not_run(self):
+        """A Kea contract error must tell the operator that no overlap check ran."""
+        with self.assertLogs("netbox_kea.views.subnets", level="WARNING") as logs:
+            with self._pool_add_stub(**{"reservation-get-page": {"result": 2, "text": "host_cmds not loaded"}}):
+                response = self.client.post(self._pool_add_url(), {"pool": "10.0.0.100-10.0.0.200"}, follow=True)
         self.assertEqual(response.status_code, 200)
         msgs = list(response.context["messages"])
-        # success message present, but no overlap warning
         self.assertTrue(any(m.level == django_messages.SUCCESS for m in msgs))
-        self.assertFalse(any("overlaps" in m.message.lower() for m in msgs))
+        self.assertTrue(any("overlap check did not run" in m.message.lower() for m in msgs))
+        overlap_records = [record for record in logs.records if "overlap" in record.getMessage()]
+        self.assertTrue(overlap_records, logs.output)
+        self.assertEqual(overlap_records[0].levelname, "WARNING", logs.output)
+        self.assertIsNotNone(overlap_records[0].exc_info)
 
-    def test_pool_add_reservation_lookup_request_exception_suppresses_warning(self):
-        """A reservation overlap probe raising a transport error is suppressed; pool_add succeeds."""
+    def test_pool_add_reservation_lookup_request_exception_warns_that_the_check_did_not_run(self):
+        """A transport error must tell the operator that no overlap check ran."""
         with self._pool_add_stub(**{"reservation-get-page": requests.RequestException("timeout")}):
             response = self.client.post(self._pool_add_url(), {"pool": "10.0.0.100-10.0.0.200"}, follow=True)
         self.assertEqual(response.status_code, 200)
         msgs = list(response.context["messages"])
         self.assertTrue(any(m.level == django_messages.SUCCESS for m in msgs))
-        self.assertFalse(any("overlaps" in m.message.lower() for m in msgs))
+        self.assertTrue(any("overlap check did not run" in m.message.lower() for m in msgs))
 
     def test_pool_add_kea_exception_shows_error(self):
         """A KeaException (subnet4-pool-add result 1) on pool_add must show an error."""

@@ -11,15 +11,17 @@ via ``kea_stub.stub_kea``, so the combined multi-server fetch helpers exercise t
 real request/response path.
 """
 
+import threading
+
 import requests
-from django.test import override_settings
 from django.urls import reverse
 
-from .kea_stub import _res_page, queued, stub_kea
-from .utils import _PLUGINS_CONFIG, _ViewTestBase
+from netbox_kea.views.reservations import _RESERVATION_PAGE_SIZE
+
+from .kea_stub import _catalogue_responses, _res_page, stub_kea
+from .utils import _make_db_server, _ViewTestBase
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestFetchSharedNetworksFromServer(_ViewTestBase):
     """_fetch_shared_networks_from_server with null config-get arguments raises RuntimeError."""
 
@@ -36,7 +38,6 @@ class TestFetchSharedNetworksFromServer(_ViewTestBase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestCombinedResponseShapeGuards(_ViewTestBase):
     """An empty Kea response list must raise RuntimeError before indexing ``resp[0]``.
 
@@ -76,7 +77,6 @@ class TestCombinedResponseShapeGuards(_ViewTestBase):
                 _fetch_shared_networks_from_server(self.server, 4)
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestCombinedSubnetDiagnostics(_ViewTestBase):
     def test_complete_catalogue_is_reused_for_unchanged_requests(self):
         url = reverse("plugins:netbox_kea:combined_subnets4") + f"?server={self.server.pk}"
@@ -130,7 +130,10 @@ class TestCombinedSubnetDiagnostics(_ViewTestBase):
             subnets, diagnostics = _fetch_subnets_from_server(self.server, 4)
 
         self.assertEqual(subnets, [])
-        self.assertTrue(diagnostics)
+        # Assert the diagnostic itself: assertTrue(diagnostics) also passed when the
+        # catalogue reported unavailable instead of a confirmed-empty identity, or
+        # when a different code was emitted.
+        self.assertIn("malformed-configuration-response", [diagnostic.code for diagnostic in diagnostics])
 
     def test_incomplete_catalogue_explains_omitted_facts(self):
         responses = {
@@ -188,43 +191,6 @@ class TestCombinedSubnetDiagnostics(_ViewTestBase):
         self.assertContains(response, "Kea returned an invalid Pool.", count=1)
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
-class TestCombinedReservationsMultiPage(_ViewTestBase):
-    """Combined reservations must follow reservation-get-page across multiple pages."""
-
-    def _url(self):
-        return reverse("plugins:netbox_kea:combined_reservations4") + f"?server={self.server.pk}"
-
-    def test_multi_page_pagination_followed(self):
-        """from/source-index advance across pages until the cursor is exhausted."""
-        page1 = {
-            "result": 0,
-            "arguments": {
-                "hosts": [{"subnet-id": 1, "ip-address": "10.0.0.1", "hw-address": "aa:bb:cc:dd:ee:01"}],
-                "next": {"from": 1, "source-index": 1},  # not exhausted
-            },
-        }
-        page2 = {
-            "result": 0,
-            "arguments": {
-                "hosts": [{"subnet-id": 1, "ip-address": "10.0.0.2", "hw-address": "aa:bb:cc:dd:ee:02"}],
-                "next": {"from": 0, "source-index": 0},  # exhausted
-            },
-        }
-        stub = {
-            "reservation-get-page": queued(page1, page2),
-            # active-lease badge enrichment queries lease4-get-all per unique subnet
-            "lease4-get-all": {"result": 0, "arguments": {"leases": []}},
-        }
-        with stub_kea(stub) as kea:
-            response = self.client.get(self._url())
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(len(kea.bodies("reservation-get-page")), 2)
-        self.assertIn(b"10.0.0.1", response.content)
-        self.assertIn(b"10.0.0.2", response.content)
-
-
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestCombinedReservationsWithoutAddress(_ViewTestBase):
     """The global reservations tab hits the same address-less crash as the per-server tab (#110)."""
 
@@ -233,19 +199,30 @@ class TestCombinedReservationsWithoutAddress(_ViewTestBase):
 
     def test_v4_identifier_only_reservation_renders(self):
         page = _res_page([{"subnet-id": 3742, "hw-address": "aa:bb:cc:dd:ee:ff", "hostname": "printer-1"}])
-        with stub_kea({"reservation-get-page": page, "lease4-get-all": {"result": 0, "arguments": {"leases": []}}}):
+        with stub_kea(
+            {
+                **_catalogue_responses(4, 3742, "198.18.0.0/24"),
+                "reservation-get-page": page,
+                "lease4-get-by-state": {"result": 0, "arguments": {"leases": []}},
+            }
+        ):
             response = self.client.get(self._url(4))
         self.assertEqual(response.status_code, 200)
         self.assertIn(b"printer-1", response.content)
 
     def test_v6_prefix_only_reservation_renders(self):
         page = _res_page([{"subnet-id": 12, "duid": "00:01:00:01:12:34", "prefixes": ["2001:db8:1::/64"]}])
-        with stub_kea({"reservation-get-page": page, "lease6-get-all": {"result": 0, "arguments": {"leases": []}}}):
+        with stub_kea(
+            {
+                **_catalogue_responses(6, 12, "2001:db8::/48"),
+                "reservation-get-page": page,
+                "lease6-get-by-state": {"result": 0, "arguments": {"leases": []}},
+            }
+        ):
             response = self.client.get(self._url(6))
         self.assertEqual(response.status_code, 200)
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestCombinedReservationsShowWhatIsReserved(_ViewTestBase):
     """The global tab shows the identifier and prefixes an address-less host reserves.
 
@@ -258,9 +235,11 @@ class TestCombinedReservationsShowWhatIsReserved(_ViewTestBase):
         return base + query
 
     def _stub(self, hosts, version=4):
+        cidr = "198.18.0.0/24" if version == 4 else "2001:db8::/48"
         return {
+            **_catalogue_responses(version, hosts[0]["subnet-id"], cidr),
             "reservation-get-page": _res_page(hosts),
-            f"lease{version}-get-all": {"result": 0, "arguments": {"leases": []}},
+            f"lease{version}-get-by-state": {"result": 0, "arguments": {"leases": []}},
         }
 
     def test_v4_flex_id_row_shows_the_identifier_and_its_type(self):
@@ -279,23 +258,197 @@ class TestCombinedReservationsShowWhatIsReserved(_ViewTestBase):
         self.assertIn("2001:db8:1::/64", body)
         self.assertIn("No address", body)
 
-    def test_csv_export_renders_every_row(self):
-        """Export goes through the real ?export path, so a missing accessor would raise."""
-        hosts = [
-            {"subnet-id": 1, "hw-address": "aa:bb:cc:dd:ee:01", "ip-address": "10.0.0.1"},
-            {"subnet-id": 1, "flex-id": "vendor-42", "hostname": "kiosk"},
-        ]
-        with stub_kea(self._stub(hosts)):
-            response = self.client.get(self._url(4, "&export"))
-        self.assertEqual(response.status_code, 200)
-        body = response.content.decode()
-        self.assertIn("10.0.0.1", body)
-        self.assertIn("vendor-42", body)
-        self.assertEqual(len([line for line in body.splitlines() if line.strip()]), 3)  # header + 2 rows
 
-    def test_v6_csv_export_carries_prefixes(self):
-        hosts = [{"subnet-id": 12, "duid": "00:01:00:01:12:34", "prefixes": ["2001:db8:1::/64"]}]
-        with stub_kea(self._stub(hosts, version=6)):
-            response = self.client.get(self._url(6, "&export"))
+class TestCombinedReservationCapabilityConcurrency(_ViewTestBase):
+    def test_writable_servers_discover_capabilities_concurrently(self):
+        second_server = _make_db_server(name="test-kea-secondary", ca_url="https://kea-secondary.example.com")
+        barrier = threading.Barrier(2)
+        completed_probes = []
+
+        def simultaneous_capability_response(_body):
+            barrier.wait(timeout=30)
+            completed_probes.append(True)
+            return {
+                "result": 0,
+                "arguments": ["reservation-get", "reservation-add", "reservation-update", "reservation-del"],
+            }
+
+        hosts = [{"subnet-id": 1, "hw-address": "aa:bb:cc:dd:ee:ff", "hostname": "printer"}]
+        responses = {
+            **_catalogue_responses(4, 1, "198.18.0.0/24"),
+            "reservation-get-page": _res_page(hosts),
+            "lease4-get-by-state": {"result": 0, "arguments": {"leases": []}},
+            "list-commands": simultaneous_capability_response,
+        }
+        url = reverse("plugins:netbox_kea:combined_reservations4")
+        url += f"?server={self.server.pk}&server={second_server.pk}"
+
+        with stub_kea(responses):
+            response = self.client.get(url)
+
         self.assertEqual(response.status_code, 200)
-        self.assertIn("2001:db8:1::/64", response.content.decode())
+        self.assertEqual(len(completed_probes), 2)
+        self.assertEqual(response.context["mutation_unavailable_servers"], [])
+
+    def test_unexpected_capability_failure_does_not_hide_other_reservation_data(self):
+        hosts = [{"subnet-id": 1, "hw-address": "aa:bb:cc:dd:ee:ff", "hostname": "printer"}]
+        responses = {
+            **_catalogue_responses(4, 1, "198.18.0.0/24"),
+            "reservation-get-page": _res_page(hosts),
+            "lease4-get-by-state": {"result": 0, "arguments": {"leases": []}},
+            "list-commands": TypeError("unexpected capability failure"),
+        }
+
+        with stub_kea(responses):
+            response = self.client.get(reverse("plugins:netbox_kea:combined_reservations4"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "printer")
+        self.assertEqual(
+            response.context["mutation_unavailable_servers"],
+            [(self.server.name, "Live Reservation mutation capabilities could not be confirmed.")],
+        )
+
+
+class TestCombinedReservationSyncControl(_ViewTestBase):
+    """The combined tab must offer the same Reservation synchronization as one server.
+
+    The table cell renders the Sync all button only from ``sync_url``, which the
+    enrichment sets only for a caller that passes ``can_sync``. The combined view left
+    it out, so the button never rendered there.
+    """
+
+    def _url(self, version=4):
+        return reverse(f"plugins:netbox_kea:combined_reservations{version}") + f"?server={self.server.pk}"
+
+    def test_unsynchronized_row_offers_the_sync_control(self):
+        hosts = [{"subnet-id": 1, "hw-address": "aa:bb:cc:00:00:01", "ip-address": "198.18.0.10"}]
+        stub = {
+            **_catalogue_responses(4, 1, "198.18.0.0/24"),
+            "reservation-get-page": _res_page(hosts),
+            "lease4-get-by-state": {"result": 0, "arguments": {"leases": []}},
+        }
+
+        with stub_kea(stub):
+            response = self.client.get(self._url(4))
+
+        body = response.content.decode()
+        sync_url = reverse("plugins:netbox_kea:server_reservation4_sync", args=[self.server.pk, 1])
+        self.assertIn("Not Synchronized", body)
+        self.assertIn(sync_url, body)
+        self.assertIn("Sync all", body)
+
+
+class TestCombinedReservationCursorPagination(_ViewTestBase):
+    """The Next page link must carry the encoded per-server cursor, not just exist."""
+
+    def _url(self, version=4, query=""):
+        return reverse(f"plugins:netbox_kea:combined_reservations{version}") + f"?server={self.server.pk}{query}"
+
+    #: Only a full page can carry a next cursor.
+    PAGE_SIZE = _RESERVATION_PAGE_SIZE
+
+    def _stub(self, *, next_from=0, next_source=0, hosts=None):
+        if hosts is None:
+            hosts = [
+                {
+                    "subnet-id": 1,
+                    "hw-address": f"aa:bb:cc:00:{index // 256:02x}:{index % 256:02x}",
+                    "ip-address": f"198.18.{index // 256}.{index % 256}",
+                }
+                for index in range(self.PAGE_SIZE)
+            ]
+        return {
+            **_catalogue_responses(4, 1, "198.18.0.0/16"),
+            "reservation-get-page": _res_page(hosts, next_from=next_from, next_source=next_source),
+            "lease4-get-by-state": {"result": 0, "arguments": {"leases": []}},
+        }
+
+    def test_next_page_url_carries_the_encoded_cursor(self):
+        # Kea's two-part cursor (source-index 1, from 5) as one opaque base64url token.
+        with stub_kea(self._stub(next_from=5, next_source=1)) as kea:
+            response = self.client.get(self._url())
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(kea.bodies("reservation-get-page")), 1)
+        next_page_url = response.context["next_page_url"]
+        self.assertIsNotNone(next_page_url)
+        self.assertIn(f"reservation_cursor_{self.server.pk}=WzEsNV0", next_page_url)
+        self.assertContains(response, "Next page")
+
+    def test_the_cursor_round_trips_to_the_next_reservation_page_request(self):
+        with stub_kea(self._stub(next_from=5, next_source=1)):
+            first = self.client.get(self._url())
+        next_page_url = first.context["next_page_url"]
+
+        # A short terminal page ends the traversal on the second request.
+        terminal = [{"subnet-id": 1, "hw-address": "aa:bb:cc:dd:ee:ff", "ip-address": "198.18.9.9"}]
+        with stub_kea(self._stub(hosts=terminal)) as kea:
+            second = self.client.get(next_page_url)
+
+        self.assertEqual(second.status_code, 200)
+        body = kea.bodies("reservation-get-page")[0]
+        # The decoded cursor must reach Kea as its native from/source-index pair.
+        self.assertEqual(body["arguments"]["from"], 5)
+        self.assertEqual(body["arguments"]["source-index"], 1)
+
+    def test_an_exhausted_source_offers_no_next_page(self):
+        terminal = [{"subnet-id": 1, "hw-address": "aa:bb:cc:dd:ee:ff", "ip-address": "198.18.9.9"}]
+        with stub_kea(self._stub(hosts=terminal)):
+            response = self.client.get(self._url())
+
+        self.assertIsNone(response.context["next_page_url"])
+        self.assertNotContains(response, "Next page")
+
+
+class TestReservationIdentifierColumns(_ViewTestBase):
+    """A typed identifier column must stay empty for every other identifier type.
+
+    The reservation row carries one ``identifier`` plus its ``identifier_type``, so a
+    column bound straight to ``identifier`` showed a client-id under "Hardware
+    Address" and a hw-address under "DUID".
+    """
+
+    def _stub(self, hosts, version=4):
+        cidr = "198.18.0.0/24" if version == 4 else "2001:db8::/48"
+        return {
+            **_catalogue_responses(version, 1, cidr),
+            "reservation-get-page": _res_page(hosts),
+            f"lease{version}-get-by-state": {"result": 0, "arguments": {"leases": []}},
+        }
+
+    def _table(self, version, hosts):
+        url = reverse(f"plugins:netbox_kea:combined_reservations{version}") + f"?server={self.server.pk}"
+        with stub_kea(self._stub(hosts, version=version)):
+            response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        return response.context["table"]
+
+    def _cell(self, table, column_name):
+        row = next(iter(table.rows))
+        return str(row.get_cell(column_name))
+
+    def test_v4_hw_address_column_is_empty_for_a_client_id_reservation(self):
+        table = self._table(4, [{"subnet-id": 1, "client-id": "01aabbccddeeff", "hostname": "kiosk"}])
+        # The domain value normalizes a client-id to colon-separated octets.
+        normalized = "01:aa:bb:cc:dd:ee:ff"
+
+        self.assertNotIn(normalized, self._cell(table, "hw_address"))
+        self.assertIn(normalized, self._cell(table, "identifier"))
+        self.assertIn("client-id", self._cell(table, "identifier"))
+
+    def test_v4_hw_address_column_shows_a_hw_address_reservation(self):
+        table = self._table(4, [{"subnet-id": 1, "hw-address": "aa:bb:cc:dd:ee:ff", "hostname": "printer"}])
+
+        self.assertIn("aa:bb:cc:dd:ee:ff", self._cell(table, "hw_address"))
+
+    def test_v6_duid_column_is_empty_for_a_hw_address_reservation(self):
+        table = self._table(6, [{"subnet-id": 1, "hw-address": "aa:bb:cc:dd:ee:ff", "hostname": "sensor"}])
+
+        self.assertNotIn("aa:bb:cc:dd:ee:ff", self._cell(table, "duid"))
+        self.assertIn("aa:bb:cc:dd:ee:ff", self._cell(table, "identifier"))
+
+    def test_v6_duid_column_shows_a_duid_reservation(self):
+        table = self._table(6, [{"subnet-id": 1, "duid": "00:01:00:01:12:34", "hostname": "laptop"}])
+
+        self.assertIn("00:01:00:01:12:34", self._cell(table, "duid"))

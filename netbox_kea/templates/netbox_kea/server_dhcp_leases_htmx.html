@@ -24,7 +24,7 @@
           <i class="mdi mdi-alert-circle-outline me-2" aria-hidden="true"></i>
           <div>
             The <code>subnet_cmds</code> hook library is not loaded on this Kea server, so the Search
-            field cannot offer the configured subnets. Searching still works: type a subnet CIDR or ID.
+            field cannot offer the configured subnets. Searching still works: type an exact configured subnet CIDR or ID.
           </div>
         </div>
         {% endif %}
@@ -53,7 +53,7 @@
           function syncSubnetCombobox() {
             if (by.value === "subnet") {
               q.setAttribute("list", "kea-lease-subnet-cidrs");
-              q.setAttribute("placeholder", "Select or type a subnet (CIDR)");
+              q.setAttribute("placeholder", "Select or type an exact subnet CIDR");
             } else if (by.value === "subnet_id") {
               q.setAttribute("list", "kea-lease-subnet-ids");
               q.setAttribute("placeholder", "Select or type a subnet ID");

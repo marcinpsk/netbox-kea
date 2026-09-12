@@ -38,8 +38,32 @@ An inclusive address range within a Subnet from which Kea can allocate leases. K
 _Avoid_: Range
 
 **DHCP Option**:
-A DHCP configuration value identified by an option space and code or name. Its declaration scope determines which clients receive it.
-_Avoid_: Option, option-data
+A DHCP parameter assignment identified by an option space and a code or name. It includes encoded data and Kea delivery flags. Its declaration scope determines which clients receive it. The same value semantics apply wherever Kea assigns the option.
+_Avoid_: Option, option-data, Subnet option, reservation option
+
+**Reservation**:
+A Kea host-specific DHCP configuration for exactly one Reservation Identity. It can reserve no address, one IPv4 address, or multiple IPv6 addresses and delegated prefixes.
+_Avoid_: Host record, static lease
+
+**Reservation Identity**:
+Within a Server and address family, the Reservation Scope together with exactly one Kea identifier type and value. All three parts are necessary. The identifier type and value alone do not identify a Reservation, because the same identifier can name one Global and one In-Subnet Reservation.
+_Avoid_: Identifier priority, reservation key
+
+**Reservation Scope**:
+The place where Kea applies a Reservation. It is either Global or one specific Subnet.
+_Avoid_: Subnet ID, reservation location
+
+**Reservation Snapshot**:
+A time-bounded observation of Reservations for one Server, address family, and requested scope. An Incomplete Reservation Snapshot preserves valid Reservations and identifies records that could not be interpreted.
+_Avoid_: Reservation response, host list
+
+**Reservation Synchronization State**:
+The relationship between all addresses in one Reservation and their corresponding NetBox IP addresses. It is Not Applicable, Not Synchronized, Partially Synchronized, Synchronized, or Unknown.
+_Avoid_: Lease status, sync badge
+
+**Reservation Transfer Document**:
+A YAML or JSON document that represents one or more Reservations with explicit Reservation Scope. The same structure supports export and proposed creation. The complete document must be valid before any creation starts.
+_Avoid_: CSV import, CSV export, Kea payload
 
 **Subnet Settings**:
 The typed DHCP behavior that Kea currently applies to a Subnet after inheritance, such as lease timers, allocator selection, relay data, class restrictions, and DDNS settings. It does not state where a value was declared.

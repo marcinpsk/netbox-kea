@@ -21,9 +21,10 @@ from netbox.views import generic
 from utilities.views import register_model_view
 
 from ..integrations import dhcp_plugin
-from ..kea import KeaException, iter_reservations
-from ..mappers.kea_to_dhcp import parse_dhcp_config, parse_reservations_page
+from ..kea import KeaException
+from ..mappers.kea_to_dhcp import parse_dhcp_config
 from ..models import Server
+from ..reservations import Family
 from ..utilities import OptionalViewTab
 
 logger = logging.getLogger(__name__)
@@ -34,9 +35,9 @@ def _tab_enabled(server: Server) -> bool:
     return dhcp_plugin.is_available() and server.sync_dhcp_plugin_enabled
 
 
-def _enabled_versions(server: Server) -> list[int]:
+def _enabled_versions(server: Server) -> list[Family]:
     """Return the DHCP protocol versions enabled on *server* (4 and/or 6)."""
-    versions = []
+    versions: list[Family] = []
     if server.dhcp4:
         versions.append(4)
     if server.dhcp6:
@@ -64,14 +65,12 @@ def _extract_dhcp_conf(resp, version: int) -> dict | None:
     return conf if isinstance(conf, dict) else None
 
 
-def _fetch_config_intent(server: Server, version: int, *, with_reservations: bool = False):
+def _fetch_config_intent(server: Server, version: Family):
     """Read live ``config-get`` for one version and parse it to intent (read-only).
 
-    ``config-get`` is issued exactly once here.  When *with_reservations* is set, the
-    DB-backed host reservations are also drained (``reservation-get-page``) **on the
-    same client** and attached to the intent — they never appear in ``config-get``
-    when a hosts database is used.  Returns the :class:`ServerConfigIntent`, or
-    ``None`` if Kea could not be read.
+    ``config-get`` is issued exactly once here. Reservations use their separate
+    typed Snapshot read. Returns the :class:`ServerConfigIntent`, or ``None`` if
+    Kea could not be read.
     """
     try:
         client = server.get_client(version=version)
@@ -82,29 +81,48 @@ def _fetch_config_intent(server: Server, version: int, *, with_reservations: boo
         return None
     if conf is None:
         return None
-    intent = parse_dhcp_config(conf, version)
-    if with_reservations:
-        pages, available = _fetch_reservation_pages(client, version, server)
-        intent.page_reservations = pages
-        intent.reservations_unavailable = not available
-    return intent
+    return parse_dhcp_config(conf, version)
 
 
-def _fetch_reservation_pages(client, version: int, server: Server) -> tuple[dict, bool]:
-    """Drain DB-backed host reservations via ``reservation-get-page``, grouped by subnet-id.
+def _fetch_reservation_snapshot(server: Server, version: Family):
+    """Return a typed Reservation Snapshot, possibly incomplete, or ``None`` after a read failure."""
+    from ..subnet_catalogue import for_synchronization
 
-    Returns ``({}, False)`` (and logs) when the ``host_cmds`` hook is absent or Kea
-    cannot be read — a missing hosts backend is not a hard error for the import, but
-    the ``False`` lets the caller report that DB-backed reservations may be missing.
-    """
     try:
-        hosts = list(iter_reservations(client, f"dhcp{version}"))
-    except (KeaException, requests.RequestException, ValueError):
+        client = server.get_client(version=version)
+        catalogue = for_synchronization(server, version)
+        return client.reservation_snapshot(version, catalogue)
+    except (KeaException, requests.RequestException, RuntimeError, ValueError):
         logger.warning(
-            "DHCP-plugin sync: reservation-get-page failed for %s (v%s)", server.name, version, exc_info=True
+            "DHCP-plugin sync: Reservation Snapshot failed for %s (v%s)", server.name, version, exc_info=True
         )
-        return {}, False
-    return parse_reservations_page(hosts, version), True
+        return None
+
+
+def _summary_problems(summary) -> list[str]:
+    """Return one note per non-zero problem count in *summary*.
+
+    Every note is reported together: an if/elif chain hid the later counts whenever
+    an earlier one was set, so one import could look cleaner than it was.
+    """
+    problems = []
+    if summary.reservations_unread:
+        problems.append(
+            "The Reservation Snapshot could not be read in full. "
+            "Check that the host_cmds hook is loaded. Reservation counts may be incomplete."
+        )
+    if summary.reservations_quarantined:
+        problems.append(f"{summary.reservations_quarantined} malformed reservation(s) were quarantined.")
+    if summary.reservations_skipped:
+        problems.append(f"{summary.reservations_skipped} reservation(s) were skipped after they were read.")
+    if summary.foreign_addresses_skipped:
+        problems.append(
+            f"{summary.foreign_addresses_skipped} manually curated NetBox IP(s) were left unchanged. "
+            "Use the per-reservation Sync to claim one."
+        )
+    if summary.errors:
+        problems.append(f"{summary.errors} errors occurred. See the logs.")
+    return problems
 
 
 def run_dhcp_plugin_import(server: Server) -> list[tuple[int, object]]:
@@ -114,10 +132,11 @@ def run_dhcp_plugin_import(server: Server) -> list[tuple[int, object]]:
     """
     results: list[tuple[int, object]] = []
     for version in _enabled_versions(server):
-        intent = _fetch_config_intent(server, version, with_reservations=True)
+        intent = _fetch_config_intent(server, version)
         if intent is None:
             continue
-        results.append((version, dhcp_plugin.import_server_config(server, intent)))
+        snapshot = _fetch_reservation_snapshot(server, version)
+        results.append((version, dhcp_plugin.import_server_config(server, intent, snapshot)))
     return results
 
 
@@ -164,7 +183,7 @@ def compute_drift(server: Server) -> dict:
                     "cidr": subnet.cidr,
                     "status": "imported" if subnet.kea_subnet_id in links else "new",
                     "pools": len(subnet.pools),
-                    "reservations": len(subnet.reservations),
+                    "reservations": "Not scanned",
                 }
             )
         for sid, link in sorted(links.items()):
@@ -276,14 +295,9 @@ class ServerDhcpPluginSyncNowView(View):
                 )
             if notes:
                 text += f" ({'; '.join(notes)})"
-            if summary.reservations_unread:
-                messages.warning(
-                    request,
-                    f"{text} — DB-backed host reservations could not be read "
-                    "(is the host_cmds hook loaded?); reservation counts may be incomplete.",
-                )
-            elif summary.errors:
-                messages.warning(request, f"{text} — {summary.errors} errors (see logs).")
+            problems = _summary_problems(summary)
+            if problems:
+                messages.warning(request, f"{text}. {' '.join(problems)}")
             else:
                 messages.success(request, text + ".")
         return redirect

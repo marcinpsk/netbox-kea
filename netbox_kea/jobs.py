@@ -37,6 +37,7 @@ from netbox.jobs import JobRunner, system_job
 
 if TYPE_CHECKING:
     from .models import Server
+    from .reservations import Reservation, ReservationSnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -59,62 +60,57 @@ def _get_plugin_config() -> dict[str, Any]:
     return config
 
 
-def _prefetch_reservation_ips(server: Server, version: int) -> frozenset[str] | None:
-    """Page through all reservations and return the set of IP addresses.
+class _SnapshotSkipped:
+    """Sentinel type for a Reservation Snapshot that Kea cannot serve at all."""
 
-    Used for two-pass idempotent sync: by knowing all reservation IPs *before*
-    the lease sync, the lease sync can compute the correct final status in a
-    single write without intermediate state changes.
+    __slots__ = ()
 
-    Returns a ``frozenset`` of IP address strings on success, or ``None`` when
-    the fetch fails (e.g. host_cmds hook not loaded or network error) — callers
-    should fall back to single-pass mode when ``None`` is returned.
-    """
-    from .kea import KeaException, iter_reservations
 
-    service = f"dhcp{version}"
-    ips: set[str] = set()
+#: Kea reports result 2 when host_cmds is not loaded. Reservations are then not a
+#: feature of this server, so the phase is skipped instead of counted as an error.
+SNAPSHOT_SKIPPED = _SnapshotSkipped()
+
+
+def _fetch_reservation_snapshot(server: Server, version: int) -> ReservationSnapshot | _SnapshotSkipped | None:
+    """Return a typed Reservation Snapshot, SNAPSHOT_SKIPPED, or None after a failure."""
+    from .kea import KeaException
+    from .subnet_catalogue import CatalogueUnavailable, for_synchronization
 
     try:
         client = server.get_client(version=version)
-        for r in iter_reservations(client, service):
-            if not isinstance(r, dict):
-                continue
-            ip = r.get("ip-address")
-            if ip:
-                ips.add(ip)
-            for addr in r.get("ip-addresses") or []:
-                if addr:
-                    ips.add(addr)
-    except KeaException as exc:
-        if exc.response.get("result") == 2:
-            logger.debug(
-                "Server %s (v%s): host_cmds not loaded — two-pass reservation pre-fetch skipped",
-                server.name,
-                version,
-            )
-        else:
-            logger.debug(
-                "Server %s (v%s): Kea error during reservation pre-fetch — falling back to single-pass mode: %s",
-                server.name,
-                version,
-                exc,
-            )
-        return None
-    except Exception as exc:  # noqa: BLE001
-        logger.debug(
-            "Server %s (v%s): error during reservation pre-fetch — falling back to single-pass mode: %s",
+        catalogue = for_synchronization(server, version)
+    except CatalogueUnavailable as exc:
+        logger.warning(
+            "Server %s (v%s): Subnet Catalogue unavailable for Reservation Snapshot: %s",
             server.name,
             version,
             exc,
         )
         return None
+    except Exception:  # noqa: BLE001
+        # exc_info, because the job continues and the traceback is the only record.
+        logger.warning("Server %s (v%s): Reservation Snapshot failed", server.name, version, exc_info=True)
+        return None
 
-    return frozenset(ips)
+    try:
+        return client.reservation_snapshot(version, catalogue)
+    except KeaException as exc:
+        if exc.response.get("result") == 2:
+            logger.warning("Server %s (v%s): host_cmds is unavailable; Reservation sync skipped", server.name, version)
+            return SNAPSHOT_SKIPPED
+        logger.warning("Server %s (v%s): Reservation Snapshot failed", server.name, version, exc_info=True)
+        return None
+    except Exception:  # noqa: BLE001
+        logger.warning("Server %s (v%s): Reservation Snapshot failed", server.name, version, exc_info=True)
+        return None
 
 
-#: Identifier keys a Kea host reservation may carry, in the order they are reported.
-_IDENTIFIER_KEYS = ("hw-address", "duid", "client-id", "circuit-id", "flex-id", "remote-id")
+def _reservation_snapshot_ips(snapshot: ReservationSnapshot | _SnapshotSkipped | None) -> frozenset[str] | None:
+    """Return all Snapshot addresses only when the traversal and every record are complete."""
+    if snapshot is None or isinstance(snapshot, _SnapshotSkipped) or not snapshot.complete:
+        return None
+    return frozenset(str(address) for reservation in snapshot.records for address in reservation.addresses)
+
 
 #: How many per-row reservation sync failures to log in full per server/version
 #: before suppressing the rest.  The error count in the summary stays exact.
@@ -123,15 +119,6 @@ _ROW_ERROR_LOG_LIMIT = 10
 #: How many conflicting IPs to name in the job summary and log line.  A bare count
 #: tells an operator nothing about which manually-curated IPs the sync left alone.
 _CONFLICT_SAMPLE_SIZE = 20
-
-
-def _identifier_type(reservation: dict) -> str:
-    """Return which identifier key *reservation* carries, for log lines.
-
-    Only the key name is returned — a ``flex-id`` value can hold operator-defined
-    client data and does not belong in the job log.
-    """
-    return next((key for key in _IDENTIFIER_KEYS if reservation.get(key)), "none")
 
 
 def _canonical_ip(ip_str: str) -> str:
@@ -166,7 +153,7 @@ def _sync_server_leases(
     *,
     max_leases: int,
     stats: dict[str, int],
-    all_synced: list[dict],
+    all_synced: list[dict | Reservation],
     reservation_ips: frozenset[str] | None = None,
     subnet_prefix_map: dict[int, int] | None = None,
     conflict_ips: set[str] | None = None,
@@ -185,7 +172,9 @@ def _sync_server_leases(
 
     try:
         client = server.get_client(version=version)
-        raw_leases, truncated = client.lease_get_all(version=version, max_leases=max_leases or None)
+        collection = client.lease_get_all(version=version, max_leases=max_leases or None)
+        raw_leases = collection.leases
+        truncated = collection.truncated
     except Exception as exc:  # noqa: BLE001
         logger.warning("Failed to fetch leases from server %s (v%s): %s", server.name, version, exc)
         stats["errors"] += 1
@@ -238,30 +227,31 @@ def _sync_server_leases(
 
 def _sync_server_reservations(
     server: Server,
-    version: int,
+    snapshot: ReservationSnapshot | _SnapshotSkipped | None,
     *,
     stats: dict[str, int],
-    all_synced: list[dict],
+    all_synced: list[dict | Reservation],
+    protected: list[dict | Reservation],
     lease_ips: frozenset[str] | None = None,
-    subnet_prefix_map: dict[int, int] | None = None,
     conflict_ips: set[str] | None = None,
 ) -> bool:
-    """Fetch all reservations from *server* for *version* and upsert into NetBox IPAM.
+    """Synchronize all valid records in one typed Reservation Snapshot.
 
     Reservations that reserve no address — an identifier-only DHCPv4 host, or a
     DHCPv6 host that only delegates prefixes — are counted in ``stats["skipped"]``
     and left out of *all_synced*.  They are legal Kea configuration with nothing to
     write to IPAM, so treating them as errors failed the whole job (issue #110).
 
+    A skipped Global Reservation still owns its addresses, so it joins *protected*:
+    stale-IP cleanup must keep them when another record shares its hostname.
+
     Returns ``True`` when all reservation pages were fetched successfully,
     ``False`` when the sync was skipped (e.g. host_cmds not loaded) or failed.
     A ``False`` return means *all_synced* may be incomplete and cleanup must be
-    skipped.
+    skipped.  Only a genuine failure counts an error; ``SNAPSHOT_SKIPPED`` does not.
     """
-    from .kea import KeaException, iter_reservations
     from .sync import sync_reservation_to_netbox
 
-    service = f"dhcp{version}"
     processed = 0
     skipped = 0
     row_errors_logged = 0
@@ -269,90 +259,75 @@ def _sync_server_reservations(
     # Foreign (manually-curated) NetBox IPs skipped to avoid overwriting them.
     conflicts: list[str] = []
 
-    try:
-        client = server.get_client(version=version)
-        for reservation in iter_reservations(client, service):
-            # Mirrors the manual bulk-sync view, which already skips these rows.
-            if not reservation.get("ip-address") and not reservation.get("ip-addresses"):
-                skipped += 1
-                stats["skipped"] = stats.get("skipped", 0) + 1
-                continue
-            try:
-                _ip, created, changed = sync_reservation_to_netbox(
-                    reservation,
-                    cleanup=False,
-                    lease_ips=lease_ips,
-                    subnet_prefix_map=subnet_prefix_map,
-                    conflicts=conflicts,
-                )
-                all_synced.append(reservation)
-                processed += 1
-                if created:
-                    stats["created"] += 1
-                elif changed:
-                    stats["updated"] += 1
-            except Exception as exc:  # noqa: BLE001, PERF203
-                ip = reservation.get("ip-address") or (reservation.get("ip-addresses") or ["?"])[0] or "?"
-                # Warning, not debug: a per-row failure is the only thing standing
-                # between the operator and a job that fails with an opaque count.
-                # The identifier *type* is enough to locate the row — the value can
-                # be an operator-defined flex-id, so it is not logged.  Capped so a
-                # systematically broken source cannot flood the job log.
-                if row_errors_logged < _ROW_ERROR_LOG_LIMIT:
-                    row_errors_logged += 1
-                    logger.warning(
-                        "Failed to sync reservation %s (server %s, v%s, subnet-id %s, id-type %s): %s",
-                        ip,
-                        server.name,
-                        version,
-                        reservation.get("subnet-id", "?"),
-                        _identifier_type(reservation),
-                        type(exc).__name__,
-                    )
-                    logger.debug("Reservation sync traceback for %s", ip, exc_info=True)
-                elif row_errors_logged == _ROW_ERROR_LOG_LIMIT:
-                    row_errors_logged += 1
-                    logger.warning(
-                        "Server %s (v%s): further per-reservation sync failures suppressed"
-                        " (first %d logged); see the final error count.",
-                        server.name,
-                        version,
-                        _ROW_ERROR_LOG_LIMIT,
-                    )
-                stats["errors"] += 1
-                had_errors = True
-    except KeaException as exc:
-        if exc.response.get("result") == 2:
-            logger.warning(
-                "Server %s (v%s): host_cmds hook not loaded — reservation sync skipped",
-                server.name,
-                version,
-            )
-            return False
-        logger.warning("Failed to fetch reservations from server %s (v%s): %s", server.name, version, exc)
+    if isinstance(snapshot, _SnapshotSkipped):
+        return False
+    if snapshot is None:
         stats["errors"] += 1
         return False
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Unexpected error fetching reservations from server %s (v%s): %s", server.name, version, exc)
-        stats["errors"] += 1
-        return False
-    finally:
-        # In a ``finally`` so a mid-pagination failure does not discard the rows
-        # already processed: the summary must not report zero conflicts for a page
-        # that was fetched and synced before page 2 failed.
-        _record_conflicts(stats, conflicts, conflict_ips)
-        if skipped:
-            logger.info(
-                "Server %s (v%s): skipped %d reservation(s) with no address (nothing to sync to IPAM)",
-                server.name,
-                version,
-                skipped,
-            )
+    if snapshot.diagnostics:
+        stats["errors"] += len(snapshot.diagnostics)
+        logger.warning(
+            "Server %s (v%s): reported %d Reservation Snapshot diagnostic(s)",
+            server.name,
+            snapshot.family,
+            len(snapshot.diagnostics),
+        )
 
-    logger.info("Server %s (v%s): synced %d reservations", server.name, version, processed)
+    for reservation in snapshot.records:
+        scope = reservation.scope
+        if scope.kind == "global" or not reservation.addresses:
+            skipped += 1
+            stats["skipped"] = stats.get("skipped", 0) + 1
+            protected.append(reservation)
+            continue
+        try:
+            result = sync_reservation_to_netbox(
+                reservation,
+                cleanup=False,
+                lease_ips=lease_ips,
+                conflicts=conflicts,
+            )
+            all_synced.append(reservation)
+            processed += 1
+            stats["created"] += result.created
+            stats["updated"] += result.changed
+        except Exception as exc:  # noqa: BLE001, PERF203
+            if row_errors_logged < _ROW_ERROR_LOG_LIMIT:
+                row_errors_logged += 1
+                logger.warning(
+                    "Failed to sync Reservation (server %s, v%s, subnet-id %s, id-type %s): %s",
+                    server.name,
+                    reservation.family,
+                    scope.subnet.subnet_id,
+                    reservation.identity.identifier_type,
+                    type(exc).__name__,
+                )
+                logger.debug("Reservation sync traceback", exc_info=True)
+            elif row_errors_logged == _ROW_ERROR_LOG_LIMIT:
+                row_errors_logged += 1
+                logger.warning(
+                    "Server %s (v%s): further per-Reservation sync failures suppressed"
+                    " (first %d logged); see the final error count.",
+                    server.name,
+                    reservation.family,
+                    _ROW_ERROR_LOG_LIMIT,
+                )
+            stats["errors"] += 1
+            had_errors = True
+
+    _record_conflicts(stats, conflicts, conflict_ips)
+    if skipped:
+        logger.info(
+            "Server %s (v%s): skipped %d Global or addressless Reservation(s)",
+            server.name,
+            snapshot.family,
+            skipped,
+        )
+
+    logger.info("Server %s (v%s): synced %d Reservations", server.name, snapshot.family, processed)
     # Mirror the lease path: a per-row failure must not leave cleanup_safe=True,
     # or stale cleanup runs with an incomplete keep-set and may delete live IPs.
-    return not had_errors
+    return snapshot.complete and not had_errors
 
 
 def _sync_subnet_entry(
@@ -537,7 +512,9 @@ def _sync_one_server(
     """
     from .sync import cleanup_stale_ips_batch
 
-    all_synced: list[dict] = []
+    all_synced: list[dict | Reservation] = []
+    # Records the job deliberately did not write, whose addresses cleanup must keep.
+    protected: list[dict | Reservation] = []
     if conflict_ips is None:
         conflict_ips = set()
     # Cleanup is only safe when both sources contributed, otherwise we risk
@@ -561,20 +538,17 @@ def _sync_one_server(
         # If config-get failed but we're still syncing leases/reservations, masks
         # degrade to NetBox prefix matching (then /32|/128). Surface that so an
         # operator can tell why a mask looks wrong without it being a hard error.
-        if subnets is None and (sync_leases or sync_reservations):
+        if subnets is None and sync_leases:
             logger.info(
-                "Server %s (v%s): config-get unavailable — lease/reservation masks fall back to NetBox prefix matching",
+                "Server %s (v%s): config-get unavailable; lease masks fall back to NetBox prefix matching",
                 server.name,
                 version,
             )
 
-        # Two-pass idempotent sync: pre-fetch reservation IPs so the lease sync
-        # can determine the correct final status without intermediate DB writes.
-        # Only pre-fetch when both sources will be synced this run; otherwise
-        # fall back to single-pass mode (None → uses current_status heuristics).
-        pre_reservation_ips: frozenset[str] | None = None
-        if sync_leases and sync_reservations:
-            pre_reservation_ips = _prefetch_reservation_ips(server, version)
+        reservation_snapshot = _fetch_reservation_snapshot(server, version) if sync_reservations else None
+        pre_reservation_ips = (
+            _reservation_snapshot_ips(reservation_snapshot) if sync_leases and sync_reservations else None
+        )
 
         lease_ips_set: frozenset[str] = frozenset()
         lease_phase_ok = False
@@ -597,11 +571,11 @@ def _sync_one_server(
             # None tells reservation sync to use single-pass fallback mode.
             cleanup_safe &= _sync_server_reservations(
                 server,
-                version,
+                reservation_snapshot,
                 stats=stats,
                 all_synced=all_synced,
+                protected=protected,
                 lease_ips=lease_ips_set if lease_phase_ok else None,
-                subnet_prefix_map=subnet_prefix_map,
                 conflict_ips=conflict_ips,
             )
 
@@ -631,7 +605,7 @@ def _sync_one_server(
         )
 
     if all_synced and stats["errors"] == 0 and cleanup_safe:
-        cleanup_stale_ips_batch(all_synced)
+        cleanup_stale_ips_batch(all_synced, protected)
     elif all_synced:
         logger.warning(
             "Server %s: skipping stale-IP cleanup (errors=%d, prefix_errors=%d, cleanup_safe=%s)",
