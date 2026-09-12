@@ -6,7 +6,7 @@ SPDX-License-Identifier: Apache-2.0
 # opengrep ruleset
 
 Custom [opengrep](https://github.com/opengrep/opengrep) rules that encode this
-project's `CLAUDE.md` security/correctness invariants as machine-checked gates,
+project's `AGENTS.md` security/correctness invariants as machine-checked gates,
 so the same classes of bug stop coming back review after review.
 
 ## Why opengrep (and not just ruff / CodeQL)
@@ -17,23 +17,19 @@ so the same classes of bug stop coming back review after review.
 - **opengrep** fills the gap: cheap, readable YAML patterns for *our* invariants
   — and it is the same engine **CodeRabbit** runs.
 
-## Relationship to CodeRabbit (these run *on top* of CR's defaults)
+## Relationship to CodeRabbit
 
-CodeRabbit auto-detects an opengrep config **only** when it is named
-`opengrep.yml` / `semgrep.yml` (and a few variants) — and when it finds one it
-runs *that* **instead of** its default packs. We deliberately do **not** use
-those names: the ruleset lives at **`.opengrep/kea-rules.yaml`**, so CodeRabbit
-keeps running its own default opengrep packs, and these custom rules are enforced
-*additionally* by the **pre-push hook** and the **CI `opengrep` job**. Net result:
-CR's broad coverage **plus** our project-specific rules.
+CodeRabbit skips its OpenGrep analysis when it detects OpenGrep in CI.
+The custom rules run locally through the **pre-commit hook**. Keep OpenGrep
+out of CI so CodeRabbit can run its own analysis on pull requests.
 
 ## Layout
 
 | Path | Purpose |
 | --- | --- |
-| `.opengrep/kea-rules.yaml` | The ruleset. **Single source of truth.** Used by the pre-push hook and CI; intentionally not named so CodeRabbit auto-detects it. |
+| `.opengrep/kea-rules.yaml` | The ruleset. **Single source of truth.** Used by the pre-commit hook. |
 | `.opengrep/tests/*.py` | Annotated rule-test fixtures (`# ruleid:` must match, `# ok:` must not). |
-| `scripts/opengrep-scan.sh` | Scan the source tree; used by the pre-push hook and CI. Exits non-zero on any finding. |
+| `scripts/opengrep-scan.sh` | Scan the source tree; used by the pre-commit hook. Exits non-zero on any finding. |
 | `scripts/opengrep-test.sh` | Run the rule-tests against the ruleset. |
 
 ## Rules
@@ -47,7 +43,7 @@ CR's broad coverage **plus** our project-specific rules.
 ## Running locally
 
 ```bash
-# Scan (same as the pre-push hook):
+# Scan (same as the pre-commit hook):
 ./scripts/opengrep-scan.sh
 
 # Run the rule-tests:
@@ -58,17 +54,18 @@ Both scripts find opengrep via `$OPENGREP_BIN`, then `PATH`, then
 `~/.local/opt/opengrep/bin`. Install opengrep from
 <https://github.com/opengrep/opengrep> (or set `OPENGREP_BIN`).
 
-## How it gates pushes
+## How it gates commits
 
-The `opengrep` hook in `.pre-commit-config.yaml` runs at the **pre-push** stage
-(not on every commit). Install the hook types once:
+The `opengrep` hook in `.pre-commit-config.yaml` runs at the **pre-commit** stage
+when Python files, `.opengrep/`, OpenGrep scripts, or the hook configuration change.
+It scans the whole package. Install the hook types once:
 
 ```bash
-uv run pre-commit install --install-hooks
+uv run --native-tls pre-commit install --install-hooks
 ```
 
-CI runs the same rules in the `opengrep` job (`.github/workflows/ci.yml`), so a
-`--no-verify` push is still caught.
+The custom OpenGrep gate runs locally only. A commit made with `--no-verify`
+bypasses it.
 
 ## Suppressing a true exception
 

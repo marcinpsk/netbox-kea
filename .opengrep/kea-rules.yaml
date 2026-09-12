@@ -1,12 +1,9 @@
 # SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
 # SPDX-License-Identifier: Apache-2.0
 #
-# Custom opengrep ruleset encoding the project's CLAUDE.md security/correctness
-# invariants. These run ON TOP OF CodeRabbit's default opengrep packs: the file
-# is intentionally NOT named opengrep.yml / at the repo root, so CodeRabbit does
-# NOT treat it as its config (which would replace its default ruleset). Instead
-# these rules are enforced by the local pre-push hook and the CI opengrep job
-# (scripts/opengrep-scan.sh), while CodeRabbit keeps running its own packs.
+# Custom opengrep ruleset encoding the project's AGENTS.md security/correctness
+# invariants. The local pre-commit hook runs these rules through
+# scripts/opengrep-scan.sh.
 #
 # Rule-test fixtures live in .opengrep/tests/; run them with scripts/opengrep-test.sh.
 rules:

@@ -2,9 +2,8 @@
 # SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
 # SPDX-License-Identifier: Apache-2.0
 #
-# Run the repo's custom opengrep ruleset (.opengrep/rules) over the source tree.
-# Used by the pre-push hook and CI to catch CLAUDE.md rule violations locally,
-# before CodeRabbit's opengrep pass flags them on the PR.
+# Run the repo's custom opengrep ruleset (.opengrep/kea-rules.yaml) over the source tree.
+# Used by the pre-commit hook to catch AGENTS.md rule violations locally.
 #
 # Locates opengrep via (1) $OPENGREP_BIN, (2) PATH, (3) the default user install
 # dir (~/.local/opt/opengrep/bin), so it works even when opengrep is not on PATH.

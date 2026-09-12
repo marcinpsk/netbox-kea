@@ -81,10 +81,9 @@ repos:
         additional_dependencies: [reuse]
         pass_filenames: false
 
-  # Custom opengrep ruleset (.opengrep/kea-rules.yaml) — enforce CLAUDE.md
-  # security/correctness invariants before pushing. These run on top of
-  # CodeRabbit's default opengrep packs (CI mirrors this in the `opengrep` job).
-  # Runs on pre-push (not every commit) and scans the whole package. Requires
+  # Custom opengrep ruleset (.opengrep/kea-rules.yaml): enforce AGENTS.md
+  # security/correctness invariants at pre-commit and scan the whole package.
+  # Run for Python changes and changes to the rules or hook configuration. Requires
   # opengrep (https://github.com/opengrep/opengrep) on PATH or at
   # ~/.local/opt/opengrep/bin; set OPENGREP_BIN to override the binary location.
   - repo: local
@@ -94,8 +93,8 @@ repos:
         entry: scripts/opengrep-scan.sh
         language: script
         pass_filenames: false
-        stages: [pre-push]
-        types: [python]
+        stages: [pre-commit]
+        files: (\.pyi?$|^\.opengrep/|^scripts/opengrep-.*\.sh$|^\.pre-commit-config\.yaml$)
 
 # Configuration
 default_install_hook_types: [pre-commit, commit-msg, pre-push]
