@@ -802,7 +802,7 @@ class TestSubnetAdd(TestCase):
                 subnet_cidr="10.99.0.0/24",
                 gateway="10.99.0.1",
                 dns_servers=["8.8.8.8", "8.8.4.4"],
-                ntp_servers=["pool.ntp.org"],
+                ntp_servers=["10.99.0.123"],
             )
         add_call = next(
             c.kwargs.get("json") or c[1]["json"]
@@ -812,7 +812,7 @@ class TestSubnetAdd(TestCase):
         opts = {o["name"]: o["data"] for o in add_call["arguments"]["subnet4"][0]["option-data"]}
         self.assertEqual(opts["routers"], "10.99.0.1")
         self.assertIn("8.8.8.8", opts["domain-name-servers"])
-        self.assertIn("pool.ntp.org", opts["ntp-servers"])
+        self.assertIn("10.99.0.123", opts["ntp-servers"])
 
     def test_subnet_add_calls_config_write(self):
         """config-write is called after subnet4-add."""
@@ -915,7 +915,7 @@ class TestSubnetAdd(TestCase):
                 version=6,
                 subnet_cidr="2001:db8:99::/48",
                 dns_servers=["2001:4860:4860::8888"],
-                ntp_servers=["ntp.example.com"],
+                ntp_servers=["2001:db8:99::123"],
             )
         add_call = next(
             c.kwargs.get("json") or c[1]["json"]

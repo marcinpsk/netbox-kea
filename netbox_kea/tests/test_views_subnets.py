@@ -1000,6 +1000,18 @@ class TestServerSubnet4AddViewSharedNetwork(_ViewTestBase):
         self.assertIn("subnet4-add", kea.commands())
         self.assertNotIn("network4-subnet-add", kea.commands())
 
+    def test_post_rejects_ntp_hostname_without_subnet_add(self):
+        data = self._valid_post_data()
+        data["ntp_servers"] = "ntp.example.com"
+        with self._add_stub() as kea:
+            response = self.client.post(self._url(), data)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.context["form"].errors["ntp_servers"],
+            ["Invalid NTP server IP address: 'ntp.example.com'"],
+        )
+        self.assertNotIn("subnet4-add", kea.commands())
+
 
 # ---------------------------------------------------------------------------
 # Tests for _get_network_choices — None/missing arguments handling
@@ -1712,6 +1724,59 @@ class TestFetchSubnetsFromServer(_ViewTestBase):
 # ---------------------------------------------------------------------------
 # Subnet edit — _form_initial with ntp/dns + lease time fields
 # ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestSubnetEditNonCanonicalCidr(_ViewTestBase):
+    """Kea accepts a prefix with host bits set and returns it as configured, so editing must too."""
+
+    _CIDR = "10.0.0.5/24"
+
+    def _url(self, subnet_id=42):
+        return reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, subnet_id])
+
+    def _stub(self, **overrides):
+        live = {
+            "result": 0,
+            "arguments": {"subnet4": [{"id": 42, "subnet": self._CIDR, "pools": [], "option-data": []}]},
+        }
+        base = {
+            "config-get": {
+                "result": 0,
+                "arguments": {"Dhcp4": {"subnet4": [{"id": 42, "subnet": self._CIDR}], "shared-networks": []}},
+            },
+            "subnet4-get": live,
+            "subnet4-update": {"result": 0},
+            "config-test": {"result": 0},
+            "config-write": {"result": 0},
+        }
+        base.update(overrides)
+        return stub_kea(base)
+
+    def test_round_trip_preserves_the_configured_prefix(self):
+        """GET then POST must reach subnet4-update with the prefix Kea reported, unmodified."""
+        with self._stub():
+            get_response = self.client.get(self._url())
+        self.assertEqual(get_response.status_code, 200)
+        self.assertEqual(get_response.context["form"].initial["subnet_cidr"], self._CIDR)
+
+        with self._stub() as kea:
+            post_response = self.client.post(
+                self._url(), {"subnet_cidr": self._CIDR, "valid_lft": "7200", "shared_network": ""}
+            )
+        self.assertEqual(post_response.status_code, 302)
+        self.assertIn("subnet4-update", kea.commands())
+        self.assertEqual(kea.bodies("subnet4-update")[0]["arguments"]["subnet4"][0]["subnet"], self._CIDR)
+
+    def test_a_rejected_cidr_is_shown_to_the_user(self):
+        """A hidden field whose errors are never rendered is a dead end, not a validation message."""
+        with self._stub() as kea:
+            response = self.client.post(
+                self._url(), {"subnet_cidr": "not-a-subnet", "valid_lft": "7200", "shared_network": ""}
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("subnet4-update", kea.commands())
+        self.assertContains(response, "Invalid subnet CIDR")
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
