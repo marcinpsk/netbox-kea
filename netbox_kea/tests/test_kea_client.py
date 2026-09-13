@@ -3599,21 +3599,25 @@ class TestLeaseSearch(TestCase):
 
     def test_state_qualifier_uses_the_subnet_scoped_state_command(self):
         client = KeaClient(url="http://kea:8000", max_unpaged_leases=100)
-        lease = {"ip-address": "198.18.0.10", "state": 1}
-        with stub_kea(
-            {
-                "stat-lease4-get": _subnet_stats(4, 12, assigned=201, declined=1),
-                "lease4-get-by-state": {"result": 0, "arguments": {"leases": [lease]}},
-            }
-        ) as kea:
-            result = client.lease_search(4, "subnet_id", 12, state=1)
+        for version in (4, 6):
+            lease = {"ip-address": "198.18.0.10" if version == 4 else "2001:db8::10", "state": 1}
+            with (
+                self.subTest(version=version),
+                stub_kea(
+                    {
+                        f"stat-lease{version}-get": _subnet_stats(version, 12, assigned=201, declined=1),
+                        f"lease{version}-get-by-state": {"result": 0, "arguments": {"leases": [lease]}},
+                    }
+                ) as kea,
+            ):
+                result = client.lease_search(version, "subnet_id", 12, state=1)
 
-        self.assertEqual(result, [lease])
-        self.assertEqual(kea.commands(), ["stat-lease4-get", "lease4-get-by-state"])
-        self.assertEqual(
-            kea.bodies("lease4-get-by-state")[0]["arguments"],
-            {"subnet-id": 12, "state": 1},
-        )
+                self.assertEqual(result, [lease])
+                self.assertEqual(kea.commands(), [f"stat-lease{version}-get", f"lease{version}-get-by-state"])
+                self.assertEqual(
+                    kea.bodies(f"lease{version}-get-by-state")[0]["arguments"],
+                    {"subnet-id": 12, "state": 1},
+                )
 
     def test_unmeasured_subnet_state_is_rejected_before_any_request(self):
         with stub_kea({}) as kea:
@@ -3654,47 +3658,56 @@ class TestLeaseSearch(TestCase):
                 self.assertIn("stat_cmds", lease_query_guard_message(ctx.exception, None))
                 self.assertEqual(kea.commands(), ["stat-lease4-get"])
 
-    def test_missing_state_command_fails_closed_when_guard_is_enabled(self):
-        client = KeaClient(url="http://kea:8000", max_unpaged_leases=100)
+    def test_missing_state_command_fails_closed_when_unmeasured(self):
+        client = KeaClient(url="http://kea:8000", max_unpaged_leases=None)
         with stub_kea(
             {
-                "stat-lease4-get": _subnet_stats(4, 12),
                 "lease4-get-by-state": {"result": 2, "text": "unknown command"},
             }
-        ):
+        ) as kea:
             with self.assertRaises(LeaseQueryPreflightUnavailable) as ctx:
                 client.lease_search(4, "subnet_id", 12, state=0)
 
         self.assertIn("3.1.5", lease_query_guard_message(ctx.exception, 0))
+        self.assertEqual(kea.commands(), ["lease4-get-by-state"])
 
-    def test_missing_state_command_falls_back_only_when_guard_is_disabled(self):
-        client = KeaClient(url="http://kea:8000", max_unpaged_leases=None)
-        active = {"ip-address": "198.18.0.10", "state": 0}
-        declined = {"ip-address": "198.18.0.11", "state": 1}
+    def test_missing_state_command_does_not_fetch_unmeasured_retained_rows(self):
+        for version in (4, 6):
+            for limit in (100, None):
+                with self.subTest(version=version, limit=limit):
+                    client = KeaClient(url="http://kea:8000", max_unpaged_leases=limit)
+                    active = {"ip-address": "198.18.0.1" if version == 4 else "2001:db8::1", "state": 0}
+                    retained = [
+                        {"ip-address": f"198.18.1.{index}" if version == 4 else f"2001:db8:1::{index:x}", "state": 2}
+                        for index in range(1, 201)
+                    ]
+                    commands = [f"stat-lease{version}-get"] if limit is not None else []
+                    commands.append(f"lease{version}-get-by-state")
+                    with stub_kea(
+                        {
+                            f"stat-lease{version}-get": _subnet_stats(version, 12, assigned=1),
+                            f"lease{version}-get-by-state": {"result": 2, "text": "unknown command"},
+                            f"lease{version}-get-all": {"result": 0, "arguments": {"leases": [active, *retained]}},
+                        }
+                    ) as kea:
+                        try:
+                            with self.assertRaises(LeaseQueryPreflightUnavailable) as ctx:
+                                client.lease_search(version, "subnet_id", 12, state=0)
+                            self.assertEqual(ctx.exception.reason, "state-command")
+                        finally:
+                            self.assertEqual(kea.commands(), commands)
+
+    def test_missing_state_command_fails_closed_when_only_filtered_count_is_bounded(self):
+        client = KeaClient(url="http://kea:8000", max_unpaged_leases=100)
         with stub_kea(
             {
+                "stat-lease4-get": _subnet_stats(4, 12, assigned=201, declined=1),
                 "lease4-get-by-state": {"result": 2, "text": "unknown command"},
-                "lease4-get-all": {"result": 0, "arguments": {"leases": [active, declined]}},
             }
         ) as kea:
-            result = client.lease_search(4, "subnet_id", 12, state=0)
-
-        self.assertEqual(result, [active])
-        self.assertEqual(kea.commands(), ["lease4-get-by-state", "lease4-get-all"])
-
-    def test_state_fallback_rejects_a_lease_without_state(self):
-        client = KeaClient(url="http://kea:8000", max_unpaged_leases=None)
-        with stub_kea(
-            {
-                "lease4-get-by-state": {"result": 2, "text": "unknown command"},
-                "lease4-get-all": {
-                    "result": 0,
-                    "arguments": {"leases": [{"ip-address": "198.18.0.10"}]},
-                },
-            }
-        ):
-            with self.assertRaisesRegex(RuntimeError, "invalid state"):
-                client.lease_search(4, "subnet_id", 12, state=0)
+            with self.assertRaises(LeaseQueryPreflightUnavailable):
+                client.lease_search(4, "subnet_id", 12, state=1)
+        self.assertEqual(kea.commands(), ["stat-lease4-get", "lease4-get-by-state"])
 
     def test_non_hook_statistics_error_propagates(self):
         with stub_kea({"stat-lease4-get": {"result": 1, "text": "database failure"}}):

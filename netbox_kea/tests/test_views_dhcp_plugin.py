@@ -400,7 +400,9 @@ class SummaryProblemsTest(SimpleTestCase):
 
         self.assertEqual(len(problems), 3)
         joined = " ".join(problems)
-        self.assertIn("host_cmds", joined)
+        self.assertNotIn("host_cmds", joined)
+        self.assertIn("Check Snapshot diagnostics and logs", problems[0])
+        self.assertIn("Reservation counts may be incomplete", joined)
         self.assertIn("2 malformed reservation(s) were quarantined.", joined)
         self.assertIn("3 errors occurred.", joined)
 

@@ -109,7 +109,7 @@ def _summary_problems(summary) -> list[str]:
     if summary.reservations_unread:
         problems.append(
             "The Reservation Snapshot could not be read in full. "
-            "Check that the host_cmds hook is loaded. Reservation counts may be incomplete."
+            "Check Snapshot diagnostics and logs for read or validation errors. Reservation counts may be incomplete."
         )
     if summary.reservations_quarantined:
         problems.append(f"{summary.reservations_quarantined} malformed reservation(s) were quarantined.")

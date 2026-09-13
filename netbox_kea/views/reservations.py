@@ -290,9 +290,6 @@ def _enrich_reservations_with_badges(
         else:
             state = reservation_synchronization_state(reservation, synchronized)
         row["sync_state"] = state
-        row["sync_synchronized"] = state.synchronized
-        row["sync_total"] = state.total
-        row["sync_reason"] = state.reason
         matched = [
             netbox_ips[str(address)]
             for address in reservation.addresses

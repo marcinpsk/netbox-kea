@@ -127,9 +127,6 @@ class TestReservationSyncCell(TestCase):
             "subnet_id": 1,
             "ip_address": "198.18.0.10",
             "sync_state": state,
-            "sync_synchronized": state.synchronized,
-            "sync_total": state.total,
-            "sync_reason": state.reason,
             "netbox_ip_url": "/ipam/ip-addresses/1/",
             "sync_url": None,
         }

@@ -688,6 +688,18 @@ class TestStatusViewNullArgs(_ViewTestBase):
         self.assertTrue(services_by_name)
         self.assertTrue(all(not service["status_data"] for service in services_by_name.values()))
 
+    def test_missing_status_durations_are_blank(self):
+        with _status_stub(**{"status-get": {"result": 0, "arguments": {"pid": 42}}}):
+            response = self.client.get(self._url())
+
+        self.assertEqual(response.status_code, 200)
+        services = {service["name"]: service for service in response.context["services"]}
+        for name in ("Control Agent", "DHCPv4"):
+            with self.subTest(service=name):
+                self.assertEqual(services[name]["status_data"]["PID"], 42)
+                self.assertEqual(services[name]["status_data"]["Uptime"], "")
+                self.assertEqual(services[name]["status_data"]["Time since reload"], "")
+
     def test_get_dhcp_status_ha_fields_included(self):
         """HA fields are present when high-availability is in status-get."""
 

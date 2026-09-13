@@ -149,7 +149,17 @@ class _BaseReservationSyncView(ConditionalLoginRequiredMixin, View):
         except (requests.RequestException, DatabaseError, RuntimeError, ValidationError, ValueError):
             logger.exception("Could not synchronize a DHCPv%s Reservation", self.dhcp_version)
             return HttpResponse("Reservation synchronization failed. See server logs.", status=500)
-        return render(request, "netbox_kea/inc/reservation_sync_badge.html", {"state": result.state})
+        return render(
+            request,
+            "netbox_kea/inc/reservation_sync_badge.html",
+            {
+                "record": {
+                    "sync_state": result.state,
+                    "netbox_ip_url": result.primary.get_absolute_url() if result.primary else "",
+                    "sync_url": None,
+                }
+            },
+        )
 
 
 class ServerReservation4SyncView(_BaseReservationSyncView):

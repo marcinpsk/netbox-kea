@@ -645,30 +645,6 @@ _RESERVATION_OPTIONS_CELL = (
     "{% endfor %}"
 )
 
-# Branch on the stable state code, the same key the HTMX sync response compares in
-# inc/reservation_sync_badge.html, so a changed display label cannot split the two.
-_RESERVATION_SYNC_CELL = (
-    "{% if record.sync_state.code == 'synchronized' %}"
-    '<a href="{{ record.netbox_ip_url }}" class="badge text-bg-success text-decoration-none"'
-    ' title="{{ record.sync_synchronized }} of {{ record.sync_total }} addresses synchronized">'
-    "{{ record.sync_state.label }} {{ record.sync_synchronized }}/{{ record.sync_total }}</a>"
-    "{% elif record.sync_state.code == 'partially-synchronized' %}"
-    '<span class="badge text-bg-warning">{{ record.sync_state.label }} '
-    "{{ record.sync_synchronized }}/{{ record.sync_total }}</span> "
-    "{% elif record.sync_state.code == 'not-synchronized' %}"
-    '<span class="badge text-bg-secondary">{{ record.sync_state.label }} 0/{{ record.sync_total }}</span> '
-    "{% elif record.sync_state.code == 'not-applicable' %}"
-    '<span class="badge text-bg-secondary" title="{{ record.sync_reason }}">{{ record.sync_state.label }}</span>'
-    "{% else %}"
-    '<span class="badge text-bg-warning" title="{{ record.sync_reason }}">Unknown</span>'
-    "{% endif %}"
-    "{% if record.sync_url %}"
-    '<button type="button" hx-post="{{ record.sync_url }}" hx-target="closest td" hx-swap="innerHTML"'
-    ' class="badge text-bg-primary border-0 ms-1" style="cursor:pointer">'
-    '<i class="mdi mdi-sync"></i> Sync all</button>'
-    "{% endif %}"
-)
-
 
 class ReservationTable4(GenericTable):
     """Table for DHCPv4 host reservations returned from the Kea API."""
@@ -702,7 +678,7 @@ class ReservationTable4(GenericTable):
     netbox_ip = tables.TemplateColumn(
         verbose_name="NetBox IP",
         orderable=False,
-        template_code=_RESERVATION_SYNC_CELL,
+        template_name="netbox_kea/inc/reservation_sync_badge.html",
     )
     actions = ActionsColumn(RESERVATION_ACTIONS)
 
@@ -772,7 +748,7 @@ class ReservationTable6(GenericTable):
     netbox_ip = tables.TemplateColumn(
         verbose_name="NetBox IP",
         orderable=False,
-        template_code=_RESERVATION_SYNC_CELL,
+        template_name="netbox_kea/inc/reservation_sync_badge.html",
     )
     actions = ActionsColumn(RESERVATION_ACTIONS)
 

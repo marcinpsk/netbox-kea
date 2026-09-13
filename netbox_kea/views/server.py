@@ -30,7 +30,9 @@ def _response_arguments(response: list[KeaResponse], command: str, *, require_no
 
 def _status_duration(arguments: dict[str, Any], field: str) -> str:
     """Format one non-negative integer duration from a Kea status response."""
-    value = arguments.get(field, 0)
+    if field not in arguments:
+        return ""
+    value = arguments[field]
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise RuntimeError(f"Kea status-get returned an invalid {field}")
     formatted = format_duration(value)
@@ -190,8 +192,8 @@ class ServerStatusView(generic.ObjectView):
 
                 entry: dict[str, Any] = {
                     "PID": args.get("pid"),
-                    "Uptime": _status_duration(args, "uptime") if "uptime" in args else "",
-                    "Time since reload": _status_duration(args, "reload") if "reload" in args else "",
+                    "Uptime": _status_duration(args, "uptime"),
+                    "Time since reload": _status_duration(args, "reload"),
                     "Version": version_args.get("extended"),
                 }
 

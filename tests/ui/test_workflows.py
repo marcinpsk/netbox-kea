@@ -972,7 +972,8 @@ class TestReservationCRUD:
             page.goto(self._reservation_list_url(plugin_base, server_id))
             page.wait_for_load_state("networkidle")
             _check_no_django_error(page)
-            expect(page.get_by_text(test_ip)).to_be_visible()
+            row = page.locator("tr").filter(has=page.get_by_text(self._TEST_MAC, exact=True))
+            expect(row.get_by_text(test_ip, exact=True)).to_be_visible()
 
             # ---- 3. EDIT ----
             page.goto(self._reservation_edit_url(plugin_base, server_id, self._SUBNET_ID, self._TEST_MAC))
@@ -988,8 +989,9 @@ class TestReservationCRUD:
             # ---- 4. VERIFY EDIT — reload list and confirm hostname changed ----
             page.goto(self._reservation_list_url(plugin_base, server_id))
             page.wait_for_load_state("networkidle")
-            expect(page.get_by_text(test_ip)).to_be_visible()
-            expect(page.get_by_text(self._TEST_HOSTNAME_EDITED)).to_be_visible()
+            row = page.locator("tr").filter(has=page.get_by_text(self._TEST_MAC, exact=True))
+            expect(row.get_by_text(test_ip, exact=True)).to_be_visible()
+            expect(row.get_by_text(self._TEST_HOSTNAME_EDITED, exact=True)).to_be_visible()
 
             # ---- 5. DELETE ----
             page.goto(self._reservation_delete_url(plugin_base, server_id, self._SUBNET_ID, self._TEST_MAC))

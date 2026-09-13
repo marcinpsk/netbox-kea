@@ -277,6 +277,9 @@ class TestReservation4SyncView(_SyncViewBase):
     def test_response_contains_the_synchronization_badge(self):
         response = self.client.post(self._url())
         self.assertContains(response, "Synchronized 1/1")
+        ip = NbIP.objects.get(address__net_host="10.0.0.50")
+        self.assertContains(response, f'href="{ip.get_absolute_url()}"')
+        self.assertNotContains(response, "hx-post")
 
     def test_returns_400_when_identity_missing(self):
         response = self.client.post(self._url(include_identity=False))
