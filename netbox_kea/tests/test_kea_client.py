@@ -1376,11 +1376,11 @@ class TestSubnetUpdate(TestCase):
                 _SUBNET4_GET, _SUBNET_UPDATE_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _CONFIG_WRITE_RESP
             ),
         ) as mock_post:
-            self.client.subnet_update(version=4, subnet_id=42, subnet_cidr="192.168.1.0/24")
+            self.client.subnet_update(version=4, subnet_id=1, subnet_cidr="10.0.0.0/24")
         payload = self._update_payload(mock_post)
         subnet_obj = payload["arguments"]["subnet4"][0]
-        self.assertEqual(subnet_obj["id"], 42)
-        self.assertEqual(subnet_obj["subnet"], "192.168.1.0/24")
+        self.assertEqual(subnet_obj["id"], 1)
+        self.assertEqual(subnet_obj["subnet"], "10.0.0.0/24")
 
     def test_includes_pools_when_provided(self):
         """Pools are formatted as [{"pool": "..."}, ...] in the subnet object."""

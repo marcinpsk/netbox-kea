@@ -1778,6 +1778,21 @@ class TestSubnetEditNonCanonicalCidr(_ViewTestBase):
         self.assertNotIn("subnet4-update", kea.commands())
         self.assertContains(response, "Invalid subnet CIDR")
 
+    def test_a_forged_cidr_cannot_replace_the_live_subnet(self):
+        live = {"id": 42, "subnet": "198.18.0.5/24", "pools": [], "option-data": []}
+        with self._stub(
+            **{
+                "config-get": {"result": 0, "arguments": {"Dhcp4": {"subnet4": [live], "shared-networks": []}}},
+                "subnet4-get": {"result": 0, "arguments": {"subnet4": [live]}},
+            }
+        ) as kea:
+            response = self.client.post(
+                self._url(), {"subnet_cidr": "198.18.1.0/24", "valid_lft": "7200", "shared_network": ""}
+            )
+        self.assertEqual(kea.commands(), ["config-get", "subnet4-get"])
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Failed to update subnet")
+
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestSubnetEditFormInitialFields(_ViewTestBase):
