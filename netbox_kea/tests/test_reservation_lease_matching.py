@@ -5,7 +5,7 @@ import requests
 from django.test import SimpleTestCase
 from django.urls import reverse
 
-from netbox_kea.reservations import ReservationIdentity, lease_identities
+from netbox_kea.reservations import ReservationIdentity, lease_identifier_types, lease_identities
 
 from .kea_stub import _catalogue_responses_for_subnets, _leases_per_subnet, _res_page, stub_kea
 from .utils import _ViewTestBase
@@ -40,6 +40,16 @@ class TestSharedLeaseIdentityRules(SimpleTestCase):
     def test_a_malformed_identifier_is_dropped_instead_of_matching(self):
         self.assertEqual(lease_identities({"hw-address": "not-a-mac"}, 4), ())
 
+    def test_lease_identifier_types_validate_the_family(self):
+        self.assertEqual(lease_identifier_types(4), ("hw-address", "client-id"))
+        self.assertEqual(lease_identifier_types(6), ("duid", "hw-address"))
+        for family in (True, False, 4.0, 6.0, "4", 5):
+            with self.subTest(family=family):
+                with self.assertRaises(ValueError):
+                    lease_identifier_types(family)
+                with self.assertRaises(ValueError):
+                    lease_identities({}, family)
+
 
 class TestReservationLeaseRelationship(_ViewTestBase):
     """The Reservation table reports one lease relationship per complete Reservation."""
@@ -54,6 +64,49 @@ class TestReservationLeaseRelationship(_ViewTestBase):
             response = self.client.get(self._url(version))
         self.assertEqual(response.status_code, 200)
         return response, response.context["table"].data.data, kea
+
+    def test_unobservable_scoped_identities_leave_the_lease_relationship_indeterminate(self):
+        for version, identifier_type, identifier in (
+            (4, "duid", "00:01:02:03"),
+            (4, "circuit-id", "port-7"),
+            (4, "flex-id", "port-7"),
+            (6, "flex-id", "port-7"),
+        ):
+            with self.subTest(version=version, identifier_type=identifier_type):
+                subnet_id = 20 if version == 4 else 30
+                response, rows, _kea = self._rows(
+                    {
+                        "reservation-get-page": _res_page([{"subnet-id": subnet_id, identifier_type: identifier}]),
+                        f"lease{version}-get-by-state": _leases_per_subnet({subnet_id: []}),
+                    },
+                    version=version,
+                    subnets=_SUBNETS4 if version == 4 else _SUBNETS6,
+                )
+                self.assertIsNone(rows[0]["has_active_lease"])
+                self.assertNotContains(response, "No Lease")
+
+    def test_an_unobservable_identity_can_still_match_by_address(self):
+        response, rows, _kea = self._rows(
+            {
+                "reservation-get-page": _res_page(
+                    [{"subnet-id": 20, "flex-id": "port-7", "ip-address": "198.18.0.20"}]
+                ),
+                "lease4-get-by-state": _leases_per_subnet(
+                    {
+                        20: [
+                            {
+                                "subnet-id": 20,
+                                "hw-address": "aa:bb:cc:dd:ee:ff",
+                                "ip-address": "198.18.0.20",
+                                "state": 0,
+                            }
+                        ],
+                    }
+                ),
+            }
+        )
+        self.assertIs(rows[0]["has_active_lease"], True)
+        self.assertContains(response, "Active Lease")
 
     def test_an_unreadable_lease_observation_reports_no_relationship(self):
         """A failed lease query is unknown, not a confirmed absence of a lease."""

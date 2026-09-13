@@ -87,6 +87,12 @@ def reservation_identifier_types(family: int) -> tuple[IdentifierType, ...]:
     return _IDENTIFIERS[cast(Family, family)]
 
 
+def lease_identifier_types(family: int) -> tuple[IdentifierType, ...]:
+    """Return the ordered Identity types that a lease can carry for one family."""
+    reservation_identifier_types(family)
+    return _LEASE_IDENTIFIERS[cast(Family, family)]
+
+
 def lease_identities(lease: Mapping[str, Any], family: int) -> tuple[ReservationIdentity, ...]:
     """Return the normalized Reservation Identities one Kea lease carries, in match order.
 
@@ -94,10 +100,8 @@ def lease_identities(lease: Mapping[str, Any], family: int) -> tuple[Reservation
     (``hw_address``) are accepted, so lease enrichment and Reservation enrichment
     read one rule set instead of one each.
     """
-    if family not in (4, 6):
-        raise ValueError(f"family must be 4 or 6, got {family!r}")
     identities: list[ReservationIdentity] = []
-    for identifier_type in _LEASE_IDENTIFIERS[cast(Family, family)]:
+    for identifier_type in lease_identifier_types(family):
         value = lease.get(identifier_type) or lease.get(identifier_type.replace("-", "_"))
         if not value:
             continue

@@ -35,6 +35,7 @@ from ..reservations import (
     ReservationIdentity,
     ReservationSnapshot,
     ReservationSynchronizationState,
+    lease_identifier_types,
     lease_identities,
 )
 from ..subnet_catalogue import display as subnet_catalogue
@@ -167,7 +168,8 @@ def _enrich_reservations_with_lease_status(
         addresses, subnet_identities = cast(_SubnetLeaseFacts, facts)
         matched = next((address for address in reservation.addresses if str(address) in addresses), None)
         if matched is None and reservation.identity not in subnet_identities:
-            row["has_active_lease"] = False
+            if reservation.identity.identifier_type in lease_identifier_types(version):
+                row["has_active_lease"] = False
             continue
         row["has_active_lease"] = True
         row["lease_url"] = _lease_search_url(reservation, row["server_pk"], version, matched)
