@@ -87,8 +87,7 @@ NetBox plugin for the [Kea DHCP](https://www.isc.org/kea/) server. Manage your D
 - Kea 3.0+ (recommended) — the plugin connects directly to each daemon's built-in HTTP control socket (`kea-dhcp4` / `kea-dhcp6`). The [Kea Control Agent](https://kea.readthedocs.io/en/latest/arm/agent.html) was deprecated in Kea 2.7 and removed in 3.0; on Kea < 3.0, point the server URL at the Control Agent instead.
 - [`lease_cmds`](https://kea.readthedocs.io/en/latest/arm/hooks.html#hooks-lease-cmds) hook library (for lease search and management)
 - [`stat_cmds`](https://kea.readthedocs.io/en/latest/arm/hooks.html#hooks-stat-cmds) hook library (for guarded Subnet lease searches unless `lease_query_max_unpaged_leases` is `0`)
-- Kea 3.1.5+ for guarded state-filtered Subnet lease searches. On Kea 3.0 through 3.1.4, setting
-  `lease_query_max_unpaged_leases` to `0` permits an unbounded compatibility query that NetBox filters locally.
+- Kea 3.1.5+ for state-filtered Subnet lease searches. Earlier releases do not provide the scoped state commands, so these searches fail closed.
 - [`host_cmds`](https://kea.readthedocs.io/en/latest/arm/hooks.html#hooks-host-cmds) hook library (optional, for reservation management — also requires `subnet_cmds` to resolve a reservation's subnet from its CIDR)
 - [`subnet_cmds`](https://kea.readthedocs.io/en/latest/arm/hooks.html#hooks-subnet-cmds) hook library (optional, for subnet add/edit/delete, reservation management, and the subnet suggestions on the lease search and reservation forms)
 
@@ -185,7 +184,9 @@ large. They cannot prove that an unqualified query is below the limit because
 stored expired states are not included in all statistics. Select Active or
 Declined to narrow a large query. Other states require an exact IP address or
 client identifier search. The guard fails closed when the `stat_cmds` hook is
-not available. Set the limit to `0` only when you accept unbounded responses.
+not available. State-filtered searches also fail closed when Kea does not
+support the scoped state commands. Set the limit to `0` only when you accept
+unbounded responses.
 
 ---
 
