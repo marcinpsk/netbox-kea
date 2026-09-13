@@ -2,6 +2,7 @@ import itertools
 from dataclasses import replace
 from datetime import datetime, timezone
 from ipaddress import ip_address, ip_network
+from pathlib import Path
 from typing import get_args
 
 from django.test import SimpleTestCase
@@ -67,6 +68,21 @@ def _persistence_responses(version: int) -> dict:
         "config-test": {"result": 0},
         "config-write": {"result": 0},
     }
+
+
+class TestReservationSnapshotGlossary(SimpleTestCase):
+    def test_snapshot_definition_distinguishes_page_reads_from_parsing_failures(self):
+        context = (Path(__file__).resolve().parents[2] / "CONTEXT.md").read_text(encoding="utf-8")
+        definition = " ".join(
+            context.split("**Reservation Snapshot**:\n", 1)[1].split("\n_Avoid_:", 1)[0].split()
+        ).lower()
+
+        for statement in (
+            "failed or bounded page reads can make it incomplete without a record diagnostic",
+            "parsing failures identify records that could not be interpreted",
+        ):
+            with self.subTest(statement=statement):
+                self.assertIn(statement, definition)
 
 
 class TestReservationIdentifierTypes(SimpleTestCase):

@@ -54,7 +54,7 @@ The place where Kea applies a Reservation. It is either Global or one specific S
 _Avoid_: Subnet ID, reservation location
 
 **Reservation Snapshot**:
-A time-bounded observation of Reservations for one Server, address family, and requested scope. An Incomplete Reservation Snapshot preserves valid Reservations and identifies records that could not be interpreted.
+A time-bounded observation of Reservations for one Server, address family, and requested scope. An Incomplete Reservation Snapshot preserves valid Reservations; failed or bounded page reads can make it incomplete without a record diagnostic, while parsing failures identify records that could not be interpreted.
 _Avoid_: Reservation response, host list
 
 **Reservation Synchronization State**:
