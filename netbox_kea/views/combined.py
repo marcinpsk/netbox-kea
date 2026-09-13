@@ -443,11 +443,12 @@ def _fetch_reservations_from_server(
     cursor: str | None = None,
     *,
     full_snapshot: bool = False,
+    filters: dict[str, Any] | None = None,
 ) -> ReservationSnapshot:
     """Fetch one bounded page, or a complete typed Snapshot for transfer."""
     if full_snapshot:
         return _fetch_reservation_snapshot(server, version)
-    return _fetch_reservation_page(server, version, cursor)
+    return _fetch_reservation_page(server, version, cursor, **(filters or {}))
 
 
 def _reservation_mutation_server_pks(
@@ -506,6 +507,8 @@ class _CombinedReservationsView(_CombinedViewMixin):
         diagnostics: list[tuple[str, ReservationDiagnostic]] = []
         snapshots = {}
         is_export = "export" in request.GET
+        search_form = forms.ReservationSearchForm(request.GET or None)
+        filters = search_form.cleaned_data if search_form.is_valid() else {}
         export_format = request.GET.get("export", "")
         if is_export and export_format not in ("yaml", "json"):
             return HttpResponse("Reservation export format must be YAML or JSON.", status=400)
@@ -525,6 +528,7 @@ class _CombinedReservationsView(_CombinedViewMixin):
                     self.dhcp_version,
                     None if is_export else request.GET.get(f"reservation_cursor_{server.pk}"),
                     full_snapshot=is_export,
+                    filters=filters,
                 ): server
                 for server in servers
                 if is_export or request.GET.get(f"reservation_cursor_{server.pk}") != "done"
@@ -598,7 +602,6 @@ class _CombinedReservationsView(_CombinedViewMixin):
                     can_change=can_mutate,
                 )
 
-        search_form = forms.ReservationSearchForm(request.GET or None)
         if search_form.is_valid():
             all_records = _filter_reservations(
                 all_records,
@@ -609,7 +612,14 @@ class _CombinedReservationsView(_CombinedViewMixin):
             )
 
         table_cls = tables.GlobalReservationTable4 if self.dhcp_version == 4 else tables.GlobalReservationTable6
-        table = table_cls(all_records, user=request.user)
+        table = table_cls(
+            all_records,
+            user=request.user,
+            empty_text="No matches in this search batch."
+            if any(filters.values())
+            and (errors or any(snapshot.next_cursor or not snapshot.complete for snapshot in snapshots.values()))
+            else None,
+        )
         table.configure(request)
 
         next_query = request.GET.copy()

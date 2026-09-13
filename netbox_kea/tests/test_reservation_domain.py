@@ -708,6 +708,25 @@ class TestReservationHostname(SimpleTestCase):
 
 
 class TestReservationIteration(SimpleTestCase):
+    def test_raw_page_cap_preserves_a_short_or_empty_page_cursor(self):
+        for hosts in ([], [{"subnet-id": 20, "flex-id": "printer"}]):
+            with (
+                self.subTest(hosts=hosts),
+                stub_kea(
+                    {
+                        "reservation-get-page": queued(_res_page(hosts, next_from=7, next_source=1), _res_page([])),
+                    }
+                ) as kea,
+            ):
+                client = KeaClient(url="http://kea:8000")
+                snapshot = client.reservation_page(4, _catalogue(4, 20, "198.18.0.0/24"), max_raw_pages=1)
+                self.assertEqual(len(kea.bodies("reservation-get-page")), 1)
+                self.assertIsNotNone(snapshot.next_cursor)
+                client.reservation_page(
+                    4, _catalogue(4, 20, "198.18.0.0/24"), cursor=snapshot.next_cursor, max_raw_pages=1
+                )
+                self.assertEqual(kea.bodies("reservation-get-page")[-1]["arguments"]["from"], 7)
+
     def test_rejects_an_unsupported_snapshot_family(self):
         client = KeaClient(url="http://kea.example.invalid", send_service=False)
 

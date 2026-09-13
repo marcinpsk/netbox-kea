@@ -1014,7 +1014,7 @@ class ReservationSearchForm(forms.Form):
     """Search form for filtering reservations on the per-server reservation tabs.
 
     All fields are optional — submitting an empty form shows all reservations.
-    Client-side filtering is applied to the already-fetched reservation list.
+    Filtered searches scan bounded batches and retain a cursor for continuation.
     """
 
     q = forms.CharField(
@@ -1035,7 +1035,7 @@ class ReservationSearchForm(forms.Form):
         required=False,
         label="Scope",
         choices=(("", "All scopes"), ("global", "Global"), ("in-subnet", "In-Subnet")),
-        help_text="Filter the current bounded page by Reservation Scope.",
+        help_text="Search a bounded batch by Reservation Scope. Continue with Next page if more records remain.",
     )
 
 

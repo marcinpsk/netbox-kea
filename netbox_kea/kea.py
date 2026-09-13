@@ -611,17 +611,23 @@ class KeaClient:
         cursor: str | None = None,
         limit: int = 100,
         subnet_id: int | None = None,
+        max_raw_pages: int | None = None,
     ) -> ReservationSnapshot:
-        """Return one bounded, typed Reservation Snapshot, optionally for one subnet."""
+        """Return a typed page, retaining its cursor when ``max_raw_pages`` stops filling it."""
         if version not in (4, 6):
             raise ValueError(f"version must be 4 or 6, got {version!r}")
         if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
             raise ValueError("limit must be a positive integer.")
+        if max_raw_pages is not None and (
+            isinstance(max_raw_pages, bool) or not isinstance(max_raw_pages, int) or max_raw_pages < 1
+        ):
+            raise ValueError("max_raw_pages must be a positive integer.")
         source_index, from_index = _decode_reservation_cursor(cursor)
         hosts: list[dict[str, Any]] = []
         next_source, next_from = source_index, from_index
         seen_cursors = {(next_source, next_from)}
         empty_pages = 0
+        raw_pages = 0
         while len(hosts) < limit:
             remaining = limit - len(hosts)
             page, candidate_from, candidate_source = self._reservation_raw_page(
@@ -631,6 +637,7 @@ class KeaClient:
                 limit=remaining,
                 subnet_id=subnet_id,
             )
+            raw_pages += 1
             if len(page) > remaining:
                 raise RuntimeError("reservation-get-page exceeded the requested page limit.")
             hosts.extend(page)
@@ -650,7 +657,7 @@ class KeaClient:
             if candidate in seen_cursors:
                 raise RuntimeError("Reservation page cursor did not advance.")
             next_source, next_from = candidate
-            if len(hosts) == limit:
+            if len(hosts) == limit or (max_raw_pages is not None and raw_pages >= max_raw_pages):
                 next_cursor = _encode_reservation_cursor(next_source, next_from)
                 break
             seen_cursors.add(candidate)

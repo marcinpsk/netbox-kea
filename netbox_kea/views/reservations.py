@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import logging
+from dataclasses import replace
 from typing import Any, Literal
 from urllib.parse import urlencode
 
@@ -24,10 +25,13 @@ from ..kea import KeaClient, KeaException, LeaseQueryGuardError
 from ..models import Server
 from ..reservation_transfer import export_reservation_document
 from ..reservations import (
+    RESERVATION_PAGE_FETCH_FAILED,
+    RESERVATION_PAGE_LIMIT_REACHED,
     IdentifierType,
     InSubnetReservationScope,
     Reservation,
     ReservationCapabilities,
+    ReservationDiagnostic,
     ReservationIdentity,
     ReservationSnapshot,
     ReservationSynchronizationState,
@@ -42,6 +46,7 @@ _LEASE_IDENTIFIER_KEYS: dict[int, tuple[IdentifierType, ...]] = {
     6: ("duid", "hw-address"),
 }
 _RESERVATION_PAGE_SIZE = 100
+_RESERVATION_SEARCH_PAGE_LIMIT = 5
 
 
 def _build_reservation_options_formset(post_data: Any) -> tuple[Any, bool]:
@@ -145,22 +150,29 @@ def _filter_reservations(
     """Filter normalized typed Reservation rows in memory."""
     if version not in (4, 6):
         raise ValueError("Reservation family must be 4 or 6.")
-    result = reservations
-    if subnet_id is not None:
-        result = [row for row in result if row["subnet_id"] == subnet_id]
-    if scope:
-        result = [row for row in result if row["scope_kind"] == scope]
-    if not q:
-        return result
+    return [row for row in reservations if _reservation_matches(row["reservation"], q, subnet_id, scope)]
+
+
+def _reservation_matches(reservation: Reservation, q: str, subnet_id: int | None, scope: str) -> bool:
+    """Apply the same substring, Subnet, and Scope predicates before presentation."""
+    in_subnet = isinstance(reservation.scope, InSubnetReservationScope)
+    record_subnet_id = (
+        reservation.scope.subnet.subnet_id if isinstance(reservation.scope, InSubnetReservationScope) else 0
+    )
+    if subnet_id is not None and record_subnet_id != subnet_id:
+        return False
+    if scope and scope != ("in-subnet" if in_subnet else "global"):
+        return False
     query = q.casefold()
-    return [
-        row
-        for row in result
-        if any(query in address.casefold() for address in row["ip_addresses"])
-        or query in row["hostname"].casefold()
-        or query in row["identifier"].casefold()
-        or any(query in (option.name or "").casefold() or query in option.data.casefold() for option in row["options"])
-    ]
+    return (
+        not query
+        or any(query in str(address).casefold() for address in reservation.addresses)
+        or query in reservation.hostname.casefold()
+        or query in reservation.identity.value.casefold()
+        or any(
+            query in (option.name or "").casefold() or query in option.data.casefold() for option in reservation.options
+        )
+    )
 
 
 def _reservation_table_record(reservation: Reservation, server: Server) -> dict[str, Any]:
@@ -200,10 +212,73 @@ def _empty_reservation_snapshot(version: Literal[4, 6]) -> ReservationSnapshot:
     return ReservationSnapshot(family=version, records=(), diagnostics=(), complete=False, next_cursor=None)
 
 
-def _fetch_reservation_page(server: Server, version: int, cursor: str | None) -> ReservationSnapshot:
+def _fetch_reservation_page(
+    server: Server,
+    version: Literal[4, 6],
+    cursor: str | None,
+    *,
+    q: str = "",
+    subnet_id: int | None = None,
+    scope: str = "",
+) -> ReservationSnapshot:
+    """Return a browse page or scan a bounded batch until a filtered page matches."""
+    if subnet_id is not None and subnet_id > 0 and scope == "global":
+        return replace(_empty_reservation_snapshot(version), complete=True)
     catalogue = subnet_catalogue(server, version)
+    read_subnet_id = 0 if scope == "global" else subnet_id
+    if read_subnet_id is not None and read_subnet_id > 0 and catalogue.find_by_id(read_subnet_id) is None:
+        if catalogue.identity_complete and catalogue.consistent:
+            return replace(_empty_reservation_snapshot(version), complete=True)
+        read_subnet_id = None
     client = server.get_client(version=version)
-    return client.reservation_page(version, catalogue, cursor=cursor, limit=_RESERVATION_PAGE_SIZE)
+    if not q and subnet_id is None and not scope:
+        return client.reservation_page(version, catalogue, cursor=cursor, limit=_RESERVATION_PAGE_SIZE)
+    diagnostics = []
+    complete = True
+    for page_index in range(_RESERVATION_SEARCH_PAGE_LIMIT):
+        try:
+            page = client.reservation_page(
+                version,
+                catalogue,
+                cursor=cursor,
+                limit=_RESERVATION_PAGE_SIZE,
+                subnet_id=read_subnet_id,
+                max_raw_pages=1,
+            )
+        except (KeaException, requests.RequestException, RuntimeError, ValueError):
+            if page_index == 0:
+                raise
+            logger.exception("Failed to continue DHCPv%s Reservation search", version)
+            diagnostics.append(
+                ReservationDiagnostic(
+                    code=RESERVATION_PAGE_FETCH_FAILED,
+                    message="Search is incomplete because a Reservation page could not be read. Retry with Next page.",
+                    source_position="search",
+                )
+            )
+            return ReservationSnapshot(
+                family=version, records=(), diagnostics=tuple(diagnostics), complete=False, next_cursor=cursor
+            )
+        matches = tuple(record for record in page.records if _reservation_matches(record, q, subnet_id, scope))
+        diagnostics.extend(page.diagnostics)
+        complete = complete and page.complete
+        cursor = page.next_cursor
+        if cursor is not None and page_index + 1 == _RESERVATION_SEARCH_PAGE_LIMIT:
+            complete = False
+            diagnostics.append(
+                ReservationDiagnostic(
+                    code=RESERVATION_PAGE_LIMIT_REACHED,
+                    message=(
+                        "Search is incomplete. The search batch limit was reached. Additional Reservations may remain. "
+                        f"At most {_RESERVATION_SEARCH_PAGE_LIMIT * _RESERVATION_PAGE_SIZE} Reservations per server were inspected. "
+                        "Narrow the filters or continue with Next page."
+                    ),
+                    source_position="search",
+                )
+            )
+        if matches or cursor is None or page_index + 1 == _RESERVATION_SEARCH_PAGE_LIMIT:
+            break
+    return replace(page, records=matches, diagnostics=tuple(diagnostics), complete=complete)
 
 
 def _fetch_reservation_snapshot(server: Server, version: int) -> ReservationSnapshot:
@@ -323,9 +398,11 @@ def _reservation_list_context(
 ) -> dict[str, Any]:
     """Fetch and present one bounded typed Reservation page."""
     hook_available = True
+    search_form = forms.ReservationSearchForm(request.GET or None)
+    filters = search_form.cleaned_data if search_form.is_valid() else {}
     snapshot = _empty_reservation_snapshot(version)
     try:
-        snapshot = _fetch_reservation_page(server, version, request.GET.get("cursor"))
+        snapshot = _fetch_reservation_page(server, version, request.GET.get("cursor"), **filters)
     except KeaException as exc:
         if exc.response.get("result") == 2:
             hook_available = False
@@ -337,7 +414,6 @@ def _reservation_list_context(
         messages.error(request, "Failed to load Reservations from Kea.")
 
     reservations = [_reservation_table_record(record, server) for record in snapshot.records]
-    search_form = forms.ReservationSearchForm(request.GET or None)
     if search_form.is_valid():
         reservations = _filter_reservations(
             reservations,
@@ -364,7 +440,13 @@ def _reservation_list_context(
     _attach_reservation_action_urls(reservations, server.pk, version, can_change=can_mutate)
 
     table_class = tables.ReservationTable4 if version == 4 else tables.ReservationTable6
-    table = table_class(reservations, user=request.user)
+    table = table_class(
+        reservations,
+        user=request.user,
+        empty_text="No matches in this search batch."
+        if any(filters.values()) and (snapshot.next_cursor or not snapshot.complete)
+        else None,
+    )
     table.configure(request)
     return {
         "table": table,

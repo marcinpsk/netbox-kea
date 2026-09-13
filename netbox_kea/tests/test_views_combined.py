@@ -18,7 +18,7 @@ from django.urls import reverse
 
 from netbox_kea.views.reservations import _RESERVATION_PAGE_SIZE
 
-from .kea_stub import _catalogue_responses, _res_page, stub_kea
+from .kea_stub import _catalogue_responses, _res_page, queued, stub_kea
 from .utils import _make_db_server, _ViewTestBase
 
 
@@ -399,6 +399,134 @@ class TestCombinedReservationCursorPagination(_ViewTestBase):
 
         self.assertIsNone(response.context["next_page_url"])
         self.assertNotContains(response, "Next page")
+
+    def test_substring_search_finds_a_reservation_after_the_first_page(self):
+        responses = self._stub(next_from=100, next_source=1)
+        matching_host = {
+            "subnet-id": 1,
+            "hw-address": "aa:bb:cc:dd:ee:ff",
+            "ip-address": "198.18.9.9",
+            "hostname": "printer-needle-office",
+        }
+        responses["reservation-get-page"] = queued(responses["reservation-get-page"], _res_page([matching_host]))
+        with stub_kea(responses):
+            response = self.client.get(self._url(query="&q=needle"))
+
+        self.assertContains(response, "printer-needle-office")
+
+    def test_search_limits_each_batch_and_can_continue_after_no_matches(self):
+        responses = self._stub()
+        pages = [self._stub(next_from=index * 100, next_source=index)["reservation-get-page"] for index in range(1, 6)]
+        match = {"subnet-id": 1, "flex-id": "later-printer", "hostname": "printer-needle-office"}
+        responses["reservation-get-page"] = queued(*pages, _res_page([match]))
+        with stub_kea(responses) as kea:
+            first = self.client.get(self._url(query="&q=needle"))
+            self.assertEqual(len(kea.bodies("reservation-get-page")), 5)
+            self.assertNotContains(first, "printer-needle-office")
+            self.assertContains(first, "Additional Reservations may remain.")
+            self.assertContains(first, "Search is incomplete.")
+            self.assertContains(first, "At most 500 Reservations per server were inspected.")
+            self.assertContains(first, "Narrow the filters or continue with Next page.")
+            self.assertNotContains(first, "No reservations found.")
+            continuation = first.context["next_page_url"]
+            self.assertIsNotNone(continuation)
+            second = self.client.get(continuation)
+        self.assertContains(second, "printer-needle-office")
+        self.assertEqual(kea.bodies("reservation-get-page")[-1]["arguments"]["from"], 500)
+        self.assertEqual(kea.bodies("reservation-get-page")[-1]["arguments"]["source-index"], 5)
+
+    def test_a_full_batch_cursor_does_not_claim_that_more_records_exist(self):
+        responses = self._stub()
+        pages = [self._stub(next_from=index * 100, next_source=1)["reservation-get-page"] for index in range(1, 6)]
+        responses["reservation-get-page"] = queued(*pages, _res_page([]))
+        with stub_kea(responses) as kea:
+            first = self.client.get(self._url(query="&q=needle"))
+            self.assertEqual(len(kea.bodies("reservation-get-page")), 5)
+            self.assertContains(first, "Additional Reservations may remain.")
+            self.assertNotContains(first, "More Reservations remain.")
+            second = self.client.get(first.context["next_page_url"])
+        self.assertContains(second, "No reservations found.")
+        self.assertIsNone(second.context["next_page_url"])
+
+    def test_a_subnet_confirmed_absent_is_an_empty_complete_server_result(self):
+        from netbox_kea.views.reservations import _fetch_reservation_page
+
+        responses = {
+            **_catalogue_responses(4, 30, "198.18.30.0/24"),
+            "reservation-get-page": {"result": 1, "text": "subnet 20 is not configured"},
+        }
+        with stub_kea(responses) as kea:
+            snapshot = _fetch_reservation_page(self.server, 4, None, subnet_id=20)
+        self.assertEqual(snapshot.records, ())
+        self.assertTrue(snapshot.complete)
+        self.assertEqual(kea.bodies("reservation-get-page"), [])
+
+    def test_an_uncertain_subnet_absence_uses_a_bounded_unscoped_read(self):
+        from netbox_kea.views.reservations import _fetch_reservation_page
+
+        def page(body):
+            if "subnet-id" in body["arguments"]:
+                return {"result": 1, "text": "subnet 20 is not configured"}
+            return _res_page([])
+
+        responses = {
+            **_catalogue_responses(4, 30, "198.18.30.0/24"),
+            "subnet4-list": requests.ConnectionError("identity unavailable"),
+            "reservation-get-page": page,
+        }
+        with stub_kea(responses) as kea:
+            snapshot = _fetch_reservation_page(self.server, 4, None, subnet_id=20)
+        self.assertEqual(snapshot.records, ())
+        self.assertEqual(len(kea.bodies("reservation-get-page")), 1)
+        self.assertNotIn("subnet-id", kea.bodies("reservation-get-page")[0]["arguments"])
+
+    def test_a_quarantined_subnet_is_not_treated_as_confirmed_absent(self):
+        from netbox_kea.views.reservations import _fetch_reservation_page
+
+        responses = _catalogue_responses(4, 20, "198.18.20.0/24")
+        responses["config-get"] = {
+            "result": 0,
+            "arguments": {"Dhcp4": {"subnet4": [{"id": 20, "subnet": "198.18.30.0/24"}], "shared-networks": []}},
+        }
+        responses["reservation-get-page"] = _res_page([{"subnet-id": 20, "flex-id": "quarantined-printer"}])
+        with stub_kea(responses) as kea:
+            snapshot = _fetch_reservation_page(self.server, 4, None, subnet_id=20)
+        self.assertEqual(len(kea.bodies("reservation-get-page")), 1)
+        self.assertNotIn("subnet-id", kea.bodies("reservation-get-page")[0]["arguments"])
+        self.assertFalse(snapshot.complete)
+        self.assertIn("unverified-scope", [diagnostic.code for diagnostic in snapshot.diagnostics])
+
+    def test_exhausted_search_can_report_no_matches_without_a_limit_warning(self):
+        with stub_kea(self._stub(hosts=[])):
+            response = self.client.get(self._url(query="&q=needle"))
+        self.assertContains(response, "No reservations found.")
+        self.assertNotContains(response, "Search is incomplete.")
+        self.assertIsNone(response.context["next_page_url"])
+
+    def test_a_match_on_the_fifth_page_still_warns_if_more_records_remain(self):
+        responses = self._stub()
+        pages = [self._stub(next_from=index * 100, next_source=1)["reservation-get-page"] for index in range(1, 6)]
+        pages[-1]["arguments"]["hosts"][0]["hostname"] = "office-needle-printer"
+        responses["reservation-get-page"] = queued(*pages)
+        with stub_kea(responses):
+            response = self.client.get(self._url(query="&q=needle"))
+        self.assertContains(response, "office-needle-printer")
+        self.assertContains(response, "Search is incomplete.")
+        self.assertContains(response, "At most 500 Reservations per server were inspected.")
+        self.assertIsNotNone(response.context["next_page_url"])
+
+    def test_subnet_and_global_filters_reach_the_kea_page_request(self):
+        for query, subnet_id in (("&subnet_id=1", 1), ("&scope=global", 0)):
+            with self.subTest(query=query), stub_kea(self._stub(hosts=[])) as kea:
+                response = self.client.get(self._url(query=query))
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(kea.bodies("reservation-get-page")[0]["arguments"]["subnet-id"], subnet_id)
+
+    def test_global_scope_with_an_in_subnet_filter_needs_no_reservation_pages(self):
+        with stub_kea(self._stub(hosts=[])) as kea:
+            response = self.client.get(self._url(query="&scope=global&subnet_id=1"))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(kea.bodies("reservation-get-page"), [])
 
 
 class TestReservationIdentifierColumns(_ViewTestBase):

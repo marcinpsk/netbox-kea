@@ -15,6 +15,63 @@ class TestPerServerReservationSnapshots(_ViewTestBase):
     def _url(self, version: int = 4) -> str:
         return reverse(f"plugins:netbox_kea:server_reservations{version}", args=[self.server.pk])
 
+    def test_substring_search_continues_past_a_nonmatching_page(self):
+        responses = _catalogue_responses(4, 20, "198.18.0.0/24")
+        first = [{"subnet-id": 20, "flex-id": f"unrelated-{index}"} for index in range(100)]
+        match = {"subnet-id": 20, "flex-id": "printer", "hostname": "office-needle-printer"}
+        responses["reservation-get-page"] = queued(_res_page(first, next_from=100, next_source=1), _res_page([match]))
+        with stub_kea(responses):
+            response = self.client.get(self._url() + "?q=needle")
+        self.assertContains(response, "office-needle-printer")
+
+    def test_search_preserves_earlier_diagnostics_when_a_later_read_fails(self):
+        responses = _catalogue_responses(4, 20, "198.18.0.0/24")
+        first = [{"subnet-id": 20, "flex-id": "printer", "hostname": 42}]
+        responses["reservation-get-page"] = queued(
+            _res_page(first, next_from=7, next_source=2),
+            requests.ConnectionError("private failure detail"),
+            _res_page([{"subnet-id": 20, "flex-id": "office", "hostname": "office-needle-printer"}]),
+        )
+        with stub_kea(responses) as kea:
+            response = self.client.get(self._url() + "?q=needle")
+            self.assertIsNotNone(response.context["next_page_url"])
+            retried = self.client.get(response.context["next_page_url"])
+        self.assertContains(response, "invalid-hostname")
+        self.assertContains(response, "page-fetch-failed")
+        self.assertNotContains(response, "private failure detail")
+        self.assertIsNotNone(response.context["next_page_url"])
+        self.assertFalse(response.context["snapshot_complete"])
+        self.assertContains(retried, "office-needle-printer")
+        failed_arguments, retried_arguments = [body["arguments"] for body in kea.bodies("reservation-get-page")[1:]]
+        self.assertEqual(retried_arguments, failed_arguments)
+        self.assertEqual(retried_arguments["from"], 7)
+        self.assertEqual(retried_arguments["source-index"], 2)
+
+    def test_search_preserves_earlier_diagnostics_when_a_later_page_matches(self):
+        responses = _catalogue_responses(4, 20, "198.18.0.0/24")
+        first = [{"subnet-id": 20, "flex-id": "printer", "hostname": 42}]
+        match = {"subnet-id": 20, "flex-id": "office", "hostname": "office-needle-printer"}
+        responses["reservation-get-page"] = queued(_res_page(first, next_from=7, next_source=1), _res_page([match]))
+        with stub_kea(responses):
+            response = self.client.get(self._url() + "?q=needle")
+        self.assertContains(response, "invalid-hostname")
+        self.assertContains(response, "office-needle-printer")
+        self.assertFalse(response.context["snapshot_complete"])
+
+    def test_empty_advancing_pages_stop_with_a_visible_search_limit_warning(self):
+        responses = _catalogue_responses(4, 20, "198.18.0.0/24")
+        responses["reservation-get-page"] = queued(
+            *[_res_page([], next_from=index, next_source=1) for index in range(1, 6)]
+        )
+        with stub_kea(responses) as kea:
+            response = self.client.get(self._url() + "?q=needle")
+        self.assertEqual(len(kea.bodies("reservation-get-page")), 5)
+        self.assertContains(response, "Search is incomplete.")
+        self.assertContains(response, "At most 500 Reservations per server were inspected.")
+        self.assertContains(response, "Narrow the filters or continue with Next page.")
+        self.assertNotContains(response, "No reservations found.")
+        self.assertIsNotNone(response.context["next_page_url"])
+
     def test_an_unavailable_hook_does_not_also_report_an_unreadable_snapshot(self):
         """One cause must produce one banner: the empty snapshot is not a partial read."""
         responses = _catalogue_responses(4, 20, "198.18.0.0/24")
