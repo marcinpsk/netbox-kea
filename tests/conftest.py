@@ -1,16 +1,80 @@
 import os
+import warnings
+from collections.abc import Iterator
+from functools import partial
+from urllib.parse import urlsplit
 
 import pynetbox
 import pytest
 import requests
 
+REQUEST_TIMEOUT = 20
+
+
+class TimeoutSession(requests.Session):
+    """Apply a default timeout to requests made through the API client."""
+
+    def request(self, method, url, **kwargs):
+        """Bound requests that do not specify a timeout."""
+        if kwargs.get("timeout") is None:
+            kwargs["timeout"] = REQUEST_TIMEOUT
+        return super().request(method, url, **kwargs)
+
+
+def _delete_created_servers(api: pynetbox.api, created_server_ids: set[int]) -> None:
+    """Delete every session-owned Server, and report failures without stopping."""
+    for server_id in sorted(created_server_ids):
+        try:  # noqa: PERF203 - each deletion needs independent best-effort cleanup
+            server = api.plugins.kea.servers.get(server_id)
+            if server is not None and server.delete() is not True:
+                raise RuntimeError("the NetBox API did not confirm deletion")
+        except Exception as exc:  # noqa: BLE001,PERF203 - cleanup must continue after each failure
+            warnings.warn(f"Could not delete test Server {server_id}: {exc}", RuntimeWarning, stacklevel=2)
+
+
+def _record_created_server_ids(
+    response: requests.Response,
+    *args,
+    created_server_ids: set[int],
+    netbox_url: str,
+    **kwargs,
+) -> requests.Response:
+    """Record exact Server IDs from successful Pynetbox create responses."""
+    request = response.request
+    server_collection_path = urlsplit(f"{netbox_url}/api/plugins/kea/servers").path.rstrip("/")
+    if (
+        request is None
+        or request.method != "POST"
+        or urlsplit(response.url).path.rstrip("/") != server_collection_path
+        or not 200 <= response.status_code < 300
+    ):
+        return response
+
+    if "application/json" not in response.headers.get("Content-Type", "").lower():
+        return response
+    try:
+        payload = response.json()
+    except ValueError:
+        return response
+    records = payload if isinstance(payload, list) else [payload]
+    created_server_ids.update(
+        identifier
+        for record in records
+        if isinstance(record, dict)
+        and isinstance((identifier := record.get("id")), int)
+        and not isinstance(identifier, bool)
+    )
+    return response
+
 
 @pytest.fixture(scope="session")
 def netbox_url() -> str:
     # Overridable so the harness can be published on another port when 8000 is taken.
-    # A blank NETBOX_URL means "unset", and a trailing slash would double up the / in
-    # every f-string that appends a path.
-    url = os.environ.get("NETBOX_URL", "").strip() or "http://localhost:8000"
+    # NETBOX_PORT is what Compose publishes on, so fall back to it before assuming 8000.
+    # A blank value means "unset", and a trailing slash would double up the / in every
+    # f-string that appends a path.
+    port = os.environ.get("NETBOX_PORT", "").strip() or "8000"
+    url = os.environ.get("NETBOX_URL", "").strip() or f"http://localhost:{port}"
     return url.rstrip("/")
 
 
@@ -19,6 +83,7 @@ def netbox_token(netbox_url: str) -> str:
     resp = requests.post(
         f"{netbox_url}/api/users/tokens/provision/",
         json={"username": "admin", "password": "admin"},
+        timeout=REQUEST_TIMEOUT,
     )
     resp.raise_for_status()
 
@@ -42,12 +107,12 @@ def netbox_password() -> str:
 def kea_url() -> str:
     # Kea 3.0: no Control Agent — the DHCPv4 daemon's own HTTP control socket.
     # Used as ca_url / DHCPv4 endpoint; pair with kea_dhcp6_url for the v6 daemon.
-    return "http://kea-dhcp4:8000"
+    return os.environ.get("KEA_DHCP4_URL", "").strip() or "http://kea-dhcp4:8000"
 
 
 @pytest.fixture(scope="session")
 def kea_dhcp6_url() -> str:
-    return "http://kea-dhcp6:8000"
+    return os.environ.get("KEA_DHCP6_URL", "").strip() or "http://kea-dhcp6:8000"
 
 
 @pytest.fixture(scope="session")
@@ -59,7 +124,7 @@ def kea_server_kwargs(kea_url: str, kea_dhcp6_url: str) -> dict:
 
 @pytest.fixture(scope="session")
 def nb_http(netbox_token: str) -> requests.Session:
-    s = requests.Session()
+    s = TimeoutSession()
     auth_prefix = "Bearer" if netbox_token.startswith("nbt_") else "Token"
     s.headers.update(
         {
@@ -72,11 +137,18 @@ def nb_http(netbox_token: str) -> requests.Session:
 
 
 @pytest.fixture(scope="session", autouse=True)
-def nb_api(netbox_url: str, netbox_token: str) -> pynetbox.api:
+def nb_api(netbox_url: str, netbox_token: str) -> Iterator[pynetbox.api]:
+    """Return a client and delete only Servers that this test session created."""
     api = pynetbox.api(netbox_url, token=netbox_token)
-    api.plugins.kea.servers.delete(api.plugins.kea.servers.all())
+    api.http_session = TimeoutSession()
+    created_server_ids: set[int] = set()
+    api.http_session.hooks["response"].append(
+        partial(_record_created_server_ids, created_server_ids=created_server_ids, netbox_url=netbox_url)
+    )
 
-    return api
+    yield api
+
+    _delete_created_servers(api, created_server_ids)
 
 
 @pytest.fixture

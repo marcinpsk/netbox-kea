@@ -10,12 +10,10 @@ from __future__ import annotations
 
 from django.test import SimpleTestCase
 
+from netbox_kea.dhcp_options import DHCPOption
 from netbox_kea.mappers.kea_to_dhcp import (
-    RESERVATION_IDENTIFIER_TYPES,
     OptionDefIntent,
-    OptionIntent,
     parse_dhcp_config,
-    parse_reservations_page,
 )
 
 
@@ -89,96 +87,6 @@ class TestParseDhcpConfigPools(SimpleTestCase):
         self.assertEqual(parse_dhcp_config(conf, 4).subnets[0].pools, ())
 
 
-class TestParseDhcpConfigReservations(SimpleTestCase):
-    def test_v4_reservation_hw_address_and_ip(self):
-        conf = {
-            "subnet4": [
-                {
-                    "id": 1,
-                    "subnet": "10.0.0.0/24",
-                    "reservations": [
-                        {"hw-address": "00:11:22:33:44:55", "ip-address": "10.0.0.50", "hostname": "host-a"}
-                    ],
-                }
-            ]
-        }
-        res = parse_dhcp_config(conf, 4).subnets[0].reservations[0]
-        self.assertEqual(res.identifier_type, "hw-address")
-        self.assertEqual(res.identifier, "00:11:22:33:44:55")
-        self.assertEqual(res.ip_address, "10.0.0.50")
-        self.assertEqual(res.hostname, "host-a")
-        self.assertEqual(res.all_addresses, ("10.0.0.50",))
-        self.assertEqual(res.match_key, ("hw-address", "00:11:22:33:44:55"))
-
-    def test_v6_reservation_duid_addresses_and_prefixes(self):
-        conf = {
-            "subnet6": [
-                {
-                    "id": 1,
-                    "subnet": "2001:db8::/64",
-                    "reservations": [
-                        {
-                            "duid": "01:02:03:04",
-                            "ip-addresses": ["2001:db8::5", "2001:db8::6"],
-                            "prefixes": ["2001:db8:1::/48"],
-                            "hostname": "host-v6",
-                        }
-                    ],
-                }
-            ]
-        }
-        res = parse_dhcp_config(conf, 6).subnets[0].reservations[0]
-        self.assertEqual(res.identifier_type, "duid")
-        self.assertIsNone(res.ip_address)
-        self.assertEqual(res.ip_addresses, ("2001:db8::5", "2001:db8::6"))
-        self.assertEqual(res.prefixes, ("2001:db8:1::/48",))
-        self.assertEqual(res.all_addresses, ("2001:db8::5", "2001:db8::6"))
-
-    def test_identifier_priority_prefers_hw_address_over_others(self):
-        # hw-address comes first in Kea's priority order even if others are present.
-        conf = {
-            "subnet4": [
-                {
-                    "id": 1,
-                    "subnet": "10.0.0.0/24",
-                    "reservations": [
-                        {"client-id": "aa:bb", "hw-address": "00:11:22:33:44:55", "ip-address": "10.0.0.9"}
-                    ],
-                }
-            ]
-        }
-        res = parse_dhcp_config(conf, 4).subnets[0].reservations[0]
-        self.assertEqual(res.identifier_type, "hw-address")
-
-    def test_identifier_priority_order_matches_constant(self):
-        # circuit-id wins only when hw-address and duid are absent.
-        conf = {
-            "subnet4": [
-                {
-                    "id": 1,
-                    "subnet": "10.0.0.0/24",
-                    "reservations": [{"flex-id": "f", "circuit-id": "c", "ip-address": "10.0.0.9"}],
-                }
-            ]
-        }
-        res = parse_dhcp_config(conf, 4).subnets[0].reservations[0]
-        # circuit-id precedes flex-id in the documented order.
-        self.assertLess(
-            RESERVATION_IDENTIFIER_TYPES.index("circuit-id"),
-            RESERVATION_IDENTIFIER_TYPES.index("flex-id"),
-        )
-        self.assertEqual(res.identifier_type, "circuit-id")
-
-    def test_reservation_without_identifier_has_none_key(self):
-        conf = {
-            "subnet4": [
-                {"id": 1, "subnet": "10.0.0.0/24", "reservations": [{"ip-address": "10.0.0.9", "hostname": "h"}]}
-            ]
-        }
-        res = parse_dhcp_config(conf, 4).subnets[0].reservations[0]
-        self.assertEqual(res.match_key, (None, None))
-
-
 class TestParseDhcpConfigOptions(SimpleTestCase):
     def test_subnet_options_normalized(self):
         conf = {
@@ -193,10 +101,70 @@ class TestParseDhcpConfigOptions(SimpleTestCase):
             ]
         }
         opt = parse_dhcp_config(conf, 4).subnets[0].options[0]
+        self.assertIsInstance(opt, DHCPOption)
         self.assertEqual(
-            opt, OptionIntent(code=3, name="routers", space="dhcp4", data="10.0.0.1", csv_format=None, always_send=True)
+            opt,
+            DHCPOption(
+                code=3,
+                name="routers",
+                space="dhcp4",
+                data="10.0.0.1",
+                csv_format=None,
+                always_send=True,
+                never_send=None,
+            ),
         )
         self.assertEqual(opt.match_key, ("dhcp4", 3))
+
+    def test_discarded_option_entry_is_logged(self):
+        """Leave a record of an entry the mapper drops.
+
+        `upsert_options` only warns about options it receives, so a discarded entry would
+        otherwise disappear and an operator could not explain the missing option.
+        """
+        conf = {
+            "subnet4": [
+                {
+                    "id": 1,
+                    "subnet": "10.0.0.0/24",
+                    "option-data": [
+                        {"code": 3, "name": "routers", "data": "10.0.0.1", "space": "dhcp4"},
+                        {"code": "not-a-code", "data": "10.0.0.2", "space": "dhcp4"},
+                    ],
+                }
+            ]
+        }
+
+        with self.assertLogs("netbox_kea.mappers.kea_to_dhcp", level="WARNING") as logs:
+            options = parse_dhcp_config(conf, 4).subnets[0].options
+
+        self.assertEqual([option.code for option in options], [3])
+        self.assertIn("Discarded an invalid option-data entry", "\n".join(logs.output))
+
+    def test_non_list_option_collection_is_logged_and_dropped(self):
+        conf = {
+            "subnet4": [
+                {
+                    "id": 1,
+                    "subnet": "198.18.0.0/24",
+                    "option-data": {"code": 3, "data": "198.18.0.1", "space": "dhcp4"},
+                }
+            ]
+        }
+
+        with self.assertLogs("netbox_kea.mappers.kea_to_dhcp", level="WARNING") as logs:
+            options = parse_dhcp_config(conf, 4).subnets[0].options
+
+        self.assertEqual(options, ())
+        self.assertIn("Discarded a non-list option-data collection", "\n".join(logs.output))
+
+    def test_absent_option_collection_is_not_logged(self):
+        conf = {"subnet4": [{"id": 1, "subnet": "198.18.0.0/24"}]}
+
+        with self.assertNoLogs("netbox_kea.mappers.kea_to_dhcp", level="WARNING"):
+            options = parse_dhcp_config(conf, 4).subnets[0].options
+
+        self.assertEqual(options, ())
 
     def test_option_match_key_falls_back_to_name_without_code(self):
         conf = {
@@ -385,46 +353,6 @@ class TestParseDhcpConfigClientClasses(SimpleTestCase):
 
     def test_no_client_classes_yields_empty(self):
         self.assertEqual(parse_dhcp_config({"subnet4": []}, 4).client_classes, [])
-
-
-class TestParseReservationsPage(SimpleTestCase):
-    """DB-backed reservation pages (reservation-get-page) group by Kea subnet-id."""
-
-    def test_groups_by_subnet_id(self):
-        hosts = [
-            {"subnet-id": 1, "hw-address": "aa:bb:cc:dd:ee:01", "ip-address": "10.0.0.5", "hostname": "h1"},
-            {"subnet-id": 1, "hw-address": "aa:bb:cc:dd:ee:02", "ip-address": "10.0.0.6"},
-            {"subnet-id": 2, "hw-address": "aa:bb:cc:dd:ee:03", "ip-address": "10.0.1.5"},
-        ]
-        grouped = parse_reservations_page(hosts, 4)
-        self.assertEqual(set(grouped), {1, 2})
-        self.assertEqual(len(grouped[1]), 2)
-        self.assertEqual(grouped[1][0].identifier, "aa:bb:cc:dd:ee:01")
-        self.assertEqual(grouped[1][0].ip_address, "10.0.0.5")
-        self.assertEqual(grouped[1][0].family, 4)
-
-    def test_missing_subnet_id_groups_as_global_zero(self):
-        hosts = [{"hw-address": "aa:bb:cc:dd:ee:01", "ip-address": "10.0.0.5"}]
-        self.assertEqual(set(parse_reservations_page(hosts, 4)), {0})
-
-    def test_unparseable_subnet_id_groups_as_zero(self):
-        hosts = [{"subnet-id": "x", "hw-address": "aa:bb:cc:dd:ee:01", "ip-address": "10.0.0.5"}]
-        self.assertEqual(set(parse_reservations_page(hosts, 4)), {0})
-
-    def test_non_dict_entries_skipped(self):
-        hosts = ["nope", None, {"subnet-id": 1, "hw-address": "aa:bb:cc:dd:ee:01", "ip-address": "10.0.0.5"}]
-        grouped = parse_reservations_page(hosts, 4)
-        self.assertEqual(set(grouped), {1})
-        self.assertEqual(len(grouped[1]), 1)
-
-    def test_non_list_returns_empty(self):
-        self.assertEqual(parse_reservations_page("nope", 4), {})
-
-    def test_v6_addresses_parsed(self):
-        hosts = [{"subnet-id": 3, "duid": "01:02:03", "ip-addresses": ["2001:db8::5"], "hostname": "h6"}]
-        res = parse_reservations_page(hosts, 6)[3][0]
-        self.assertEqual(res.identifier_type, "duid")
-        self.assertEqual(res.ip_addresses, ("2001:db8::5",))
 
 
 class TestParseDhcpConfigRobustness(SimpleTestCase):

@@ -16,12 +16,41 @@ from __future__ import annotations
 
 import importlib.util
 import logging
+from collections.abc import Iterable
+from dataclasses import dataclass
+from functools import cached_property
 from typing import TYPE_CHECKING
+
+from .reservations import (
+    GlobalReservationScope,
+    InSubnetReservationScope,
+    Reservation,
+    ReservationSynchronizationState,
+)
 
 if TYPE_CHECKING:
     from ipam.models import IPAddress as NbIPAddress
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class ReservationSyncResult:
+    """Aggregate result for one typed Reservation synchronization."""
+
+    reservation: Reservation
+    primary: NbIPAddress | None
+    created: int
+    changed: int
+
+    @cached_property
+    def state(self) -> ReservationSynchronizationState:
+        """Read the synchronization state on first access.
+
+        Reading it costs one IPAM query for the addresses just written, and a bulk
+        synchronization uses only the counts, so it stays unread there.
+        """
+        return reservation_synchronization_state(self.reservation)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -110,7 +139,7 @@ def get_netbox_ip(ip_str: str) -> NbIPAddress | None:
     """
     from ipam.models import IPAddress as NbIP
 
-    return NbIP.objects.filter(address__startswith=f"{ip_str}/").first()
+    return NbIP.objects.filter(address__net_host=ip_str).first()
 
 
 def bulk_fetch_netbox_ips(ip_list: list[str]) -> dict[str, NbIPAddress]:
@@ -132,7 +161,7 @@ def bulk_fetch_netbox_ips(ip_list: list[str]) -> dict[str, NbIPAddress]:
         chunk = ip_list[i : i + _CHUNK]
         query = Q()
         for ip in chunk:
-            query |= Q(address__startswith=f"{ip}/")
+            query |= Q(address__net_host=ip)
         for nb_ip in NbIP.objects.filter(query):
             host = str(nb_ip.address).split("/")[0]
             result[host] = nb_ip
@@ -286,11 +315,11 @@ def _cleanup_stale_ips(
         dns_name=hostname,
         status__in=("dhcp", "active", "reserved"),
         description__startswith="Synced from Kea DHCP",
-    ).exclude(address__startswith=f"{new_ip_str}/")
+    ).exclude(address__net_host=new_ip_str)
 
     # Also exclude sibling IPs (e.g. other addresses in the same DHCPv6 reservation).
     for exc_ip in exclude_ips or frozenset():
-        stale_qs = stale_qs.exclude(address__startswith=f"{exc_ip}/")
+        stale_qs = stale_qs.exclude(address__net_host=exc_ip)
 
     # Restrict to same IP family to avoid cross-family false positives.
     if ":" in new_ip_str:
@@ -323,26 +352,26 @@ def _cleanup_stale_ips(
     return count
 
 
-def _sync_mac_address(hw_address: str, hostname: str = "") -> None:
-    """Create or update a NetBox ``MACAddress`` entry for *hw_address*.
+def _sync_mac_address(hw_address: str, hostname: str = ""):
+    """Create or update a NetBox ``MACAddress`` entry for *hw_address* and return it.
 
     When *hostname* is provided the ``description`` field is annotated with
     a ``dhcp_hostname: {hostname}`` token (smart append/replace that preserves
     any existing manual description text when the MAC has an assigned interface).
 
-    Silently skipped on NetBox versions older than 4.1 where the
-    ``dcim.MACAddress`` model does not exist.  All other errors are caught and
-    logged at DEBUG level so MAC sync failures never surface to the user.
+    Returns ``None`` when no row can exist: NetBox older than 4.1 has no
+    ``dcim.MACAddress`` model, and a malformed address or a database error is caught
+    and logged at DEBUG level so MAC sync failures never surface to the user.
     """
     try:
         from dcim.models import MACAddress
     except ImportError:
-        return  # NetBox < 4.1 — MACAddress model not available
+        return None  # NetBox < 4.1 — MACAddress model not available
     try:
         from netaddr import EUI, AddrFormatError, mac_unix_expanded
     except ImportError:
         logger.debug("netaddr not available — skipping MAC sync for %s", hw_address)
-        return
+        return None
     try:
         from django.db.utils import IntegrityError, OperationalError, ProgrammingError
 
@@ -350,12 +379,14 @@ def _sync_mac_address(hw_address: str, hostname: str = "") -> None:
         mac_obj, _ = MACAddress.objects.get_or_create(mac_address=mac_str)
         if hostname and _update_mac_description(mac_obj, hostname):
             mac_obj.save()
+        return mac_obj
     except (ProgrammingError, OperationalError, IntegrityError):
         logger.debug("DB error while syncing MAC address %s to NetBox DCIM", hw_address, exc_info=True)
     except AddrFormatError:
         logger.debug("Invalid MAC address format %r — skipping DCIM MAC sync", hw_address, exc_info=True)
     except Exception:  # noqa: BLE001 — unexpected errors from MACAddress model
         logger.debug("Failed to sync MAC address %s to NetBox DCIM", hw_address, exc_info=True)
+    return None
 
 
 _KEA_DESC_PREFIX = "Synced from Kea DHCP"
@@ -557,26 +588,57 @@ def sync_lease_to_netbox(
     return ip_obj, created, changed
 
 
+def reservation_synchronization_state(
+    reservation: Reservation,
+    synchronized_addresses: frozenset[str] | None = None,
+) -> ReservationSynchronizationState:
+    """Observe one aggregate NetBox synchronization state for a Reservation."""
+    if isinstance(reservation.scope, GlobalReservationScope):
+        return ReservationSynchronizationState.not_applicable(
+            "Global Reservations are not synchronized to NetBox IPAM."
+        )
+    if not reservation.addresses:
+        return ReservationSynchronizationState.not_applicable(
+            "The Reservation has no allocation address to synchronize."
+        )
+    from django.db import DatabaseError
+
+    try:
+        addresses = [str(address) for address in reservation.addresses]
+        if synchronized_addresses is None:
+            found = bulk_fetch_netbox_ips(addresses)
+            synchronized_addresses = frozenset(
+                address for address in addresses if address in found and is_kea_managed_ip(found[address])
+            )
+        synchronized = sum(1 for address in addresses if address in synchronized_addresses)
+    except DatabaseError:
+        logger.exception("Could not determine the Reservation synchronization state")
+        return ReservationSynchronizationState.unknown(
+            len(reservation.addresses),
+            "NetBox IPAM state could not be read.",
+        )
+    return ReservationSynchronizationState.from_counts(synchronized, len(addresses))
+
+
 def sync_reservation_to_netbox(
-    reservation: dict,
+    reservation: Reservation,
     *,
     cleanup: bool = True,
     lease_ips: frozenset[str] | None = None,
-    subnet_prefix_map: dict[int, int] | None = None,
     force: bool = False,
     conflicts: list[str] | None = None,
-) -> tuple[NbIPAddress, bool, bool]:
-    """Create or update a NetBox IPAddress from a Kea reservation dictionary.
+) -> ReservationSyncResult:
+    """Synchronize every allocation address in one typed In-Subnet Reservation.
 
     The ``status`` is set to ``"reserved"`` and ``dns_name`` to the
     reservation hostname.
 
     For DHCPv6 reservations with multiple ``ip-addresses``, all addresses are
-    synced.  The first address is returned as the primary ``(ip_object, created)``
-    result.
+    synced.  The result carries the first synchronized address as ``primary``, the
+    aggregate ``state``, and the ``created``/``changed`` counts.
 
     Args:
-        reservation: Raw Kea reservation dictionary.
+        reservation: Typed Reservation domain value.
         cleanup:     When ``True`` (default), call :func:`_cleanup_stale_ips`
                      for the hostname after syncing.  Set to ``False`` in batch
                      operations where the caller will perform a single cleanup
@@ -586,9 +648,6 @@ def sync_reservation_to_netbox(
                      status computation — ``"active"`` if the IP also has a lease,
                      ``"reserved"`` otherwise.  Pass ``None`` (default) to use
                      single-pass fallback mode.
-        subnet_prefix_map: Optional ``{subnet-id: prefix_len}`` map built from the
-                     Kea config.  Used to resolve the authoritative mask and to
-                     correct legacy ``/32`` rows on existing Kea-synced IPs.
         force:       When ``False`` (default), any address whose existing NetBox IP
                      is *foreign* (manually curated — see :func:`is_kea_managed_ip`)
                      is skipped and left untouched; sibling addresses in the same
@@ -598,31 +657,33 @@ def sync_reservation_to_netbox(
                      skipped because ``force`` is ``False`` is appended so callers
                      (bulk views / background job) can report a conflict count.
 
-    Raises ``ValueError`` when the reservation contains no IP address.
-
-    Returns ``(ip_object, created, changed)`` where *created* is ``True`` if
-    any address was created for the first time and *changed* is ``True`` when
-    any address was saved (created or modified).
+    Global and addressless Reservations return Not Applicable without a write.
 
     """
     from ipam.models import IPAddress as NbIP
 
-    primary_ip: str = reservation.get("ip-address") or ((reservation.get("ip-addresses") or [""])[0])
-    if not primary_ip:
-        raise ValueError("Reservation has no ip-address or ip-addresses field.")
+    # Both Not Applicable cases follow from the scope and the address tuple alone, so
+    # test them directly instead of reading a state the caller may never look at.
+    if isinstance(reservation.scope, GlobalReservationScope) or not reservation.addresses:
+        return ReservationSyncResult(
+            reservation=reservation,
+            primary=None,
+            created=0,
+            changed=0,
+        )
+    if not isinstance(reservation.scope, InSubnetReservationScope):
+        raise ValueError("Reservation synchronization requires an In-Subnet Scope.")
 
-    hostname: str = reservation.get("hostname", "")
-    subnet_id = reservation.get("subnet-id")
-    all_ips: list[str] = [primary_ip]
-    if "ip-addresses" in reservation and len(reservation["ip-addresses"]) > 1:
-        all_ips = reservation["ip-addresses"]
+    hostname = reservation.hostname
+    all_ips = [str(address) for address in reservation.addresses]
+    primary_ip = all_ips[0]
+    prefix_len = reservation.scope.subnet.network.prefixlen
 
     primary_obj: NbIPAddress | None = None
-    any_created = False
-    any_changed = False
+    created_count = 0
+    changed_count = 0
 
     for ip_str in all_ips:
-        prefix_len = _resolve_prefix_length(ip_str, subnet_id, subnet_prefix_map)
         ip_obj = get_netbox_ip(ip_str)
         if ip_obj is None:
             ip_obj = NbIP(address=f"{ip_str}/{prefix_len}")
@@ -663,8 +724,8 @@ def sync_reservation_to_netbox(
 
         if primary_obj is None:
             primary_obj = ip_obj
-        any_created = any_created or created
-        any_changed = any_changed or changed or created
+        created_count += int(created)
+        changed_count += int(changed and not created)
 
     # Cleanup stale IPs outside the loop — exclude ALL IPs in this reservation
     # so sibling addresses (DHCPv6 multi-address) are never treated as stale.
@@ -676,11 +737,15 @@ def sync_reservation_to_netbox(
             exclude_ips=frozenset(all_ips),
         )
 
-    hw_address = reservation.get("hw-address")
-    if hw_address:
-        _sync_mac_address(hw_address, hostname)
+    if reservation.identity.identifier_type == "hw-address":
+        _sync_mac_address(reservation.identity.value, hostname)
 
-    return primary_obj, any_created, any_changed  # type: ignore[return-value]
+    return ReservationSyncResult(
+        reservation=reservation,
+        primary=primary_obj,
+        created=created_count,
+        changed=changed_count,
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -688,7 +753,31 @@ def sync_reservation_to_netbox(
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def cleanup_stale_ips_batch(synced_records: list[dict]) -> int:
+def _record_hostname_and_addresses(record: dict | Reservation) -> tuple[str, set[str]]:
+    """Return one record's hostname and its address strings."""
+    if isinstance(record, dict):
+        addresses = {record["ip-address"]} if record.get("ip-address") else set()
+        addresses |= {address for address in (record.get("ip-addresses") or []) if address}
+        return record.get("hostname", ""), addresses
+    if isinstance(record, Reservation):
+        return record.hostname, {str(address) for address in record.addresses}
+    raise TypeError(f"cleanup_stale_ips_batch accepts a raw lease dict or a Reservation, not {type(record).__name__}")
+
+
+def _index_by_hostname(records: Iterable[dict | Reservation], index: dict[tuple[str, int], set[str]]) -> None:
+    """Add each record's addresses to *index* under (hostname, family)."""
+    for record in records:
+        hostname, addresses = _record_hostname_and_addresses(record)
+        if not hostname:
+            continue
+        for address in addresses:
+            index.setdefault((hostname, 6 if ":" in address else 4), set()).add(address)
+
+
+def cleanup_stale_ips_batch(
+    synced_records: list[dict | Reservation],
+    protected_records: Iterable[dict | Reservation] = (),
+) -> int:
     """Run stale-IP cleanup once per hostname using the full keep-set.
 
     When multiple records share a hostname (e.g., two leases assigned to the
@@ -698,10 +787,12 @@ def cleanup_stale_ips_batch(synced_records: list[dict]) -> int:
     with the complete ``exclude_ips`` set so no sibling is removed.
 
     Args:
-        synced_records: A list of raw Kea dicts (leases or reservations) that
-            were synced in this batch.  Each dict must have an ``"ip-address"``
-            (or ``"ip-addresses"`` for multi-address reservations) and
-            optionally a ``"hostname"`` field.
+        synced_records: Typed Reservations or raw lease records synchronized in
+            this batch.
+        protected_records: Records the caller deliberately did not synchronize,
+            for example a Global Reservation. Their addresses join the keep-set
+            but never trigger a cleanup of their own, so a hostname the batch
+            never touched cannot lose an IP.
 
     Returns the total number of stale IPs cleaned up across all hostnames.
 
@@ -710,27 +801,19 @@ def cleanup_stale_ips_batch(synced_records: list[dict]) -> int:
     if mode == "none":
         return 0
 
-    # Build (hostname, family) → {IPs} mapping so each address family
-    # is cleaned independently (prevents wrong family filter).
+    # Build (hostname, family) → {IPs} mappings so each address family is cleaned
+    # independently (prevents wrong family filter). The keep-set is the wider of the
+    # two: a protected record must not become a cleanup target.
     hostname_ips: dict[tuple[str, int], set[str]] = {}
-    for record in synced_records:
-        hostname = record.get("hostname", "")
-        if not hostname:
-            continue
-        ips: set[str] = set()
-        if "ip-address" in record and record["ip-address"]:
-            ips.add(record["ip-address"])
-        for addr in record.get("ip-addresses", []):
-            if addr:
-                ips.add(addr)
-        for ip in ips:
-            family = 6 if ":" in ip else 4
-            hostname_ips.setdefault((hostname, family), set()).add(ip)
+    _index_by_hostname(synced_records, hostname_ips)
 
     # No cleanup candidates → skip the protected-ID lookup entirely. Computing it
     # here would trigger a full reservation-table scan for a no-op batch.
     if not hostname_ips:
         return 0
+
+    keep_ips: dict[tuple[str, int], set[str]] = {key: set(ips) for key, ips in hostname_ips.items()}
+    _index_by_hostname(protected_records, keep_ips)
 
     # Compute the DHCP-plugin protected-IP set once for the whole batch instead of
     # rescanning the reservation tables inside every per-hostname cleanup call.
@@ -739,13 +822,14 @@ def cleanup_stale_ips_batch(synced_records: list[dict]) -> int:
     protected_ids = dhcp_plugin.sys4_referenced_ip_ids() if dhcp_plugin.is_available() else set()
 
     total_cleaned = 0
-    for (hostname, _family), all_ips in hostname_ips.items():
+    for key, all_ips in hostname_ips.items():
+        hostname, _family = key
         primary_ip = next(iter(all_ips))
         total_cleaned += _cleanup_stale_ips(
             primary_ip,
             hostname,
             mode=mode,
-            exclude_ips=frozenset(all_ips),
+            exclude_ips=frozenset(keep_ips[key]),
             protected_ids=protected_ids,
         )
 

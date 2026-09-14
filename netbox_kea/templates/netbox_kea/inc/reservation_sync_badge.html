@@ -1,0 +1,22 @@
+{% with state=record.sync_state %}
+{% if state.code == "synchronized" %}
+<a href="{{ record.netbox_ip_url }}" class="badge text-bg-success text-decoration-none" title="{{ state.synchronized }} of {{ state.total }} addresses synchronized">
+  <i class="mdi mdi-check-circle-outline" aria-hidden="true"></i> {{ state.label }} {{ state.synchronized }}/{{ state.total }}
+</a>
+{% elif state.code == "partially-synchronized" %}
+<span class="badge text-bg-warning" title="{{ state.synchronized }} of {{ state.total }} addresses synchronized">
+  {{ state.label }} {{ state.synchronized }}/{{ state.total }}
+</span>
+{% elif state.code == "not-synchronized" %}
+<span class="badge text-bg-secondary">{{ state.label }} 0/{{ state.total }}</span>
+{% elif state.code == "not-applicable" %}
+<span class="badge text-bg-secondary" title="{{ state.reason }}">{{ state.label }}</span>
+{% else %}
+<span class="badge text-bg-warning" title="{{ state.reason }}">Unknown</span>
+{% endif %}
+{% if record.sync_url %}
+<button type="button" hx-post="{{ record.sync_url }}" hx-target="closest td" hx-swap="innerHTML"
+  class="badge text-bg-primary border-0 ms-1" style="cursor:pointer">
+  <i class="mdi mdi-sync"></i> Sync all</button>
+{% endif %}
+{% endwith %}

@@ -28,12 +28,16 @@ os.environ["REDIS_CACHE_DATABASE"] = str(_cache_redis_database)
 
 from netbox import configuration as _netbox_configuration  # noqa: E402
 
-_plugins = list(getattr(_netbox_configuration, "PLUGINS", []))
-if "netbox_kea" not in _plugins:
-    _netbox_configuration.PLUGINS = [*_plugins, "netbox_kea"]
-_plugins_config = dict(getattr(_netbox_configuration, "PLUGINS_CONFIG", {}))
+_configured_plugins = set(getattr(_netbox_configuration, "PLUGINS", []))
+_plugins = ["netbox_kea", *(plugin for plugin in ("netbox_dhcp",) if plugin in _configured_plugins)]
+_netbox_configuration.PLUGINS = _plugins
+_configured_plugins_config = dict(getattr(_netbox_configuration, "PLUGINS_CONFIG", {}))
+_plugins_config = {
+    plugin: _configured_plugins_config[plugin] for plugin in _plugins if plugin in _configured_plugins_config
+}
 _plugins_config.setdefault("netbox_kea", {"kea_timeout": 30})
 _netbox_configuration.PLUGINS_CONFIG = _plugins_config
+_netbox_configuration.API_TOKEN_PEPPERS = {0: "a" * 64}
 
 from netbox.settings import *  # noqa: E402, F403
 

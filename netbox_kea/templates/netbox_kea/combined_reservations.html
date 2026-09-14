@@ -24,10 +24,15 @@
         {% if search_form.subnet_id.errors %}<div class="invalid-feedback d-block">{{ search_form.subnet_id.errors.as_text }}</div>{% endif %}
       </div>
       <div class="col-auto">
+        <label for="id_scope" class="form-label">{{ search_form.scope.label }}</label>
+        {{ search_form.scope }}
+        {% if search_form.scope.errors %}<div class="invalid-feedback d-block">{{ search_form.scope.errors.as_text }}</div>{% endif %}
+      </div>
+      <div class="col-auto">
         <button type="submit" class="btn btn-primary btn-sm">
           <i class="mdi mdi-magnify"></i> Filter
         </button>
-        {% if request.GET.q or request.GET.subnet_id %}
+        {% if request.GET.q or request.GET.subnet_id or request.GET.scope %}
         <a href="{{ request.path }}{% if server_qs %}?{{ server_qs }}{% endif %}"
            class="btn btn-outline-secondary btn-sm">
           <i class="mdi mdi-close"></i> Clear
@@ -38,7 +43,8 @@
             <i class="mdi mdi-download"></i> Export
           </button>
           <ul class="dropdown-menu dropdown-menu-end">
-            <li><a class="dropdown-item" href="?{% if request.GET.urlencode %}{{ request.GET.urlencode }}&{% endif %}export=table">Current View (CSV)</a></li>
+            <li><a class="dropdown-item" href="?{% if server_qs %}{{ server_qs }}&amp;{% endif %}export=yaml">Complete Snapshots (YAML)</a></li>
+            <li><a class="dropdown-item" href="?{% if server_qs %}{{ server_qs }}&amp;{% endif %}export=json">Complete Snapshots (JSON)</a></li>
           </ul>
         </div>
       </div>
@@ -57,6 +63,47 @@
 </div>
 {% endif %}
 
+{% if mutation_unavailable_servers %}
+<div class="alert alert-warning mt-3" role="alert">
+  <strong>Mutation controls are unavailable for some servers.</strong>
+  Existing Reservations remain visible for read-only use.
+  <ul class="mb-0 mt-1">
+    {% for name, reason in mutation_unavailable_servers %}
+    <li><strong>{{ name }}</strong>: {{ reason }}</li>
+    {% endfor %}
+  </ul>
+</div>
+{% endif %}
+
+{% if not snapshot_complete %}
+<div class="alert alert-warning mt-3" role="alert">
+  <strong>Snapshot is incomplete.</strong>
+  The Reservation Snapshot could not be read completely.
+  {% if reservation_diagnostics %}
+  See the {{ reservation_diagnostics|length }} diagnostic{{ reservation_diagnostics|length|pluralize }} below.
+  <ul class="mb-0 mt-2">
+    {% for server_name, diagnostic in reservation_diagnostics %}
+    <li><strong>{{ server_name }}</strong>: <code>{{ diagnostic.code }}</code> at
+      <code>{{ diagnostic.source_position }}</code>: {{ diagnostic.message }}</li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+</div>
+{% else %}
+<div class="alert alert-success py-2 mt-3" role="status">
+  <i class="mdi mdi-check-circle-outline" aria-hidden="true"></i>
+  This bounded Snapshot is complete for the current page.
+</div>
+{% endif %}
+
 {% render_table table %}
+
+{% if next_page_url %}
+<div class="d-flex justify-content-end mt-3">
+  <a href="{{ next_page_url }}" class="btn btn-outline-primary btn-sm">
+    Next page <i class="mdi mdi-chevron-right" aria-hidden="true"></i>
+  </a>
+</div>
+{% endif %}
 
 {% endblock tab_content %}

@@ -395,8 +395,8 @@ class BaseLeaseTable(GenericTable):
         verbose_name="Reserved",
         orderable=False,
         template_code=(
-            "{% if record.is_reserved and record.reservation_url %}"
-            "{% if record.can_change_reservation %}"
+            "{% if record.is_reserved %}"
+            "{% if record.can_change_reservation and record.reservation_url %}"
             '<a href="{{ record.reservation_url }}" class="badge text-bg-success text-decoration-none">'
             "Reserved</a>"
             "{% else %}"
@@ -568,6 +568,19 @@ _IDENTIFIER_CELL = (
     "{% endif %}"
 )
 
+#: A reservation row carries one ``identifier`` plus its ``identifier_type``, so the
+#: protocol-specific columns must stay empty for every other identifier type.
+_HW_ADDRESS_CELL = (
+    '{% if record.identifier_type == "hw-address" %}'
+    '<span class="font-monospace">{{ record.identifier }}</span>'
+    "{% endif %}"
+)
+_DUID_CELL = (
+    '{% if record.identifier_type == "duid" %}'
+    '<span class="font-monospace text-break">{{ record.identifier }}</span>'
+    "{% endif %}"
+)
+
 #: Address cell for reservations that may reserve no address at all.
 _RESERVATION_ADDRESS_CELL = (
     "{% if record.ip_address %}"
@@ -592,12 +605,57 @@ _RESERVATION_PREFIXES_CELL = (
     "{% endfor %}"
 )
 
+_RESERVATION_SCOPE_CELL = (
+    "{% if record.scope_kind == 'global' %}"
+    '<span class="badge text-bg-primary">Global</span>'
+    "{% else %}"
+    '<span class="font-monospace">{{ record.subnet_cidr }}</span>'
+    '<br><span class="text-muted small">Subnet ID {{ record.subnet_id }}</span>'
+    "{% endif %}"
+)
+
+_RESERVATION_OPTIONS_CELL = (
+    "{% for option in record.options %}"
+    "{% if option.space %}"
+    '<span class="font-monospace text-muted">{{ option.space }}</span> / '
+    "{% endif %}"
+    "{% if option.name %}"
+    '<span class="font-monospace">{{ option.name }}</span>'
+    '{% if option.code is not None %} <span class="text-muted">(Code {{ option.code }})</span>{% endif %}'
+    "{% else %}"
+    '<span class="font-monospace">Code {{ option.code }}</span>'
+    "{% endif %}"
+    ": {{ option.data }}"
+    "{% if option.csv_format is not None or option.always_send is not None or option.never_send is not None %}"
+    '<br><span class="text-muted small">'
+    "{% if option.csv_format is not None %}"
+    "<span class=\"me-2\">CSV format: {{ option.csv_format|yesno:'Yes,No' }}</span>"
+    "{% endif %}"
+    "{% if option.always_send is not None %}"
+    "<span class=\"me-2\">Always send: {{ option.always_send|yesno:'Yes,No' }}</span>"
+    "{% endif %}"
+    "{% if option.never_send is not None %}"
+    "<span>Never send: {{ option.never_send|yesno:'Yes,No' }}</span>"
+    "{% endif %}"
+    "</span>"
+    "{% endif %}"
+    "{% if not forloop.last %}<br>{% endif %}"
+    "{% empty %}"
+    '<span class="text-muted">None</span>'
+    "{% endfor %}"
+)
+
 
 class ReservationTable4(GenericTable):
     """Table for DHCPv4 host reservations returned from the Kea API."""
 
-    subnet_id = tables.Column(verbose_name="Subnet ID", accessor="subnet-id")
-    hw_address = MonospaceColumn(verbose_name="Hardware Address", accessor="hw-address")
+    scope = tables.TemplateColumn(verbose_name="Scope", orderable=False, template_code=_RESERVATION_SCOPE_CELL)
+    subnet_id = tables.Column(verbose_name="Subnet ID")
+    hw_address = tables.TemplateColumn(
+        verbose_name="Hardware Address",
+        order_by="identifier",
+        template_code=_HW_ADDRESS_CELL,
+    )
     identifier = tables.TemplateColumn(
         verbose_name="Identifier",
         orderable=False,
@@ -609,6 +667,9 @@ class ReservationTable4(GenericTable):
         template_code=_RESERVATION_ADDRESS_CELL,
     )
     hostname = tables.Column(verbose_name="Hostname")
+    options = tables.TemplateColumn(
+        verbose_name="DHCP Options", orderable=False, template_code=_RESERVATION_OPTIONS_CELL
+    )
     lease_status = tables.TemplateColumn(
         verbose_name="Lease",
         orderable=False,
@@ -617,33 +678,20 @@ class ReservationTable4(GenericTable):
     netbox_ip = tables.TemplateColumn(
         verbose_name="NetBox IP",
         orderable=False,
-        template_code=(
-            "{% if record.netbox_ip_url %}"
-            '<a href="{{ record.netbox_ip_url }}" class="badge text-bg-success text-decoration-none">'
-            '<i class="mdi mdi-link-variant"></i> Synced</a> '
-            "{% endif %}"
-            "{% if record.sync_url %}"
-            '<button type="button"'
-            ' hx-post="{{ record.sync_url }}"'
-            ' hx-vals=\'{"ip_address":"{{ record.ip_address|escapejs }}","hostname":"{{ record.hostname|default:""|escapejs }}"}\''
-            ' hx-target="closest td"'
-            ' hx-swap="innerHTML"'
-            ' class="badge text-bg-secondary border-0"'
-            ' style="cursor:pointer">'
-            '<i class="mdi mdi-sync"></i> Sync</button>'
-            "{% endif %}"
-        ),
+        template_name="netbox_kea/inc/reservation_sync_badge.html",
     )
     actions = ActionsColumn(RESERVATION_ACTIONS)
 
     class Meta(GenericTable.Meta):
         empty_text = "No reservations found."
         fields = (
+            "scope",
             "subnet_id",
             "hw_address",
             "identifier",
             "ip_address",
             "hostname",
+            "options",
             "lease_status",
             "netbox_ip",
             "actions",
@@ -651,10 +699,11 @@ class ReservationTable4(GenericTable):
         # ``identifier`` replaces ``hw_address`` by default: it shows the same value
         # for a MAC-keyed host and an actual value for every other identifier type.
         default_columns = (
-            "subnet_id",
+            "scope",
             "identifier",
             "ip_address",
             "hostname",
+            "options",
             "lease_status",
             "netbox_ip",
             "actions",
@@ -664,8 +713,13 @@ class ReservationTable4(GenericTable):
 class ReservationTable6(GenericTable):
     """Table for DHCPv6 host reservations returned from the Kea API."""
 
-    subnet_id = tables.Column(verbose_name="Subnet ID", accessor="subnet-id")
-    duid = MonospaceColumn(verbose_name="DUID")
+    scope = tables.TemplateColumn(verbose_name="Scope", orderable=False, template_code=_RESERVATION_SCOPE_CELL)
+    subnet_id = tables.Column(verbose_name="Subnet ID")
+    duid = tables.TemplateColumn(
+        verbose_name="DUID",
+        order_by="identifier",
+        template_code=_DUID_CELL,
+    )
     identifier = tables.TemplateColumn(
         verbose_name="Identifier",
         orderable=False,
@@ -673,7 +727,7 @@ class ReservationTable6(GenericTable):
     )
     ip_addresses = tables.TemplateColumn(
         verbose_name="IPv6 Addresses",
-        accessor="ip-addresses",
+        accessor="ip_addresses",
         order_by="_ip_sort_key",
         template_code=_RESERVATION_ADDRESSES_CELL,
     )
@@ -683,6 +737,9 @@ class ReservationTable6(GenericTable):
         template_code=_RESERVATION_PREFIXES_CELL,
     )
     hostname = tables.Column(verbose_name="Hostname")
+    options = tables.TemplateColumn(
+        verbose_name="DHCP Options", orderable=False, template_code=_RESERVATION_OPTIONS_CELL
+    )
     lease_status = tables.TemplateColumn(
         verbose_name="Lease",
         orderable=False,
@@ -691,34 +748,21 @@ class ReservationTable6(GenericTable):
     netbox_ip = tables.TemplateColumn(
         verbose_name="NetBox IP",
         orderable=False,
-        template_code=(
-            "{% if record.netbox_ip_url %}"
-            '<a href="{{ record.netbox_ip_url }}" class="badge text-bg-success text-decoration-none">'
-            '<i class="mdi mdi-link-variant"></i> Synced</a> '
-            "{% endif %}"
-            "{% if record.sync_url %}"
-            '<button type="button"'
-            ' hx-post="{{ record.sync_url }}"'
-            ' hx-vals=\'{"ip_address":"{{ record.ip_address|escapejs }}","hostname":"{{ record.hostname|default:""|escapejs }}"}\''
-            ' hx-target="closest td"'
-            ' hx-swap="innerHTML"'
-            ' class="badge text-bg-secondary border-0"'
-            ' style="cursor:pointer">'
-            '<i class="mdi mdi-sync"></i> Sync</button>'
-            "{% endif %}"
-        ),
+        template_name="netbox_kea/inc/reservation_sync_badge.html",
     )
     actions = ActionsColumn(RESERVATION_ACTIONS)
 
     class Meta(GenericTable.Meta):
         empty_text = "No reservations found."
         fields = (
+            "scope",
             "subnet_id",
             "duid",
             "identifier",
             "ip_addresses",
             "prefixes",
             "hostname",
+            "options",
             "lease_status",
             "netbox_ip",
             "actions",
@@ -726,11 +770,12 @@ class ReservationTable6(GenericTable):
         # ``identifier`` replaces ``duid`` by default for the same reason as v4, and
         # ``prefixes`` is the only thing a prefix-delegation-only host reserves.
         default_columns = (
-            "subnet_id",
+            "scope",
             "identifier",
             "ip_addresses",
             "prefixes",
             "hostname",
+            "options",
             "lease_status",
             "netbox_ip",
             "actions",
