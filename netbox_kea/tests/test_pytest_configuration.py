@@ -2276,34 +2276,167 @@ def test_the_browser_suite_bounds_every_netbox_request():
         )
 
 
-def test_user_preference_reset_allows_for_normal_ci_load():
-    """Keep the autouse request bound above the slow response observed in CI."""
+@pytest.mark.django_db
+@pytest.mark.parametrize(("cookie_name", "base_path"), [("csrftoken", ""), ("netbox_csrf", "/netbox")])
+def test_user_preference_reset_uses_the_browser_login_identity(settings, cookie_name, base_path):
+    import inspect
+    from types import SimpleNamespace
+    from urllib.parse import urlsplit
+
+    from django.contrib.auth import get_user_model
+    from django.http import HttpRequest
+    from django.middleware.csrf import get_token
+    from django.test import Client
+
     from tests.ui.conftest import reset_user_preferences
 
-    class LoadedSession:
+    settings.CSRF_COOKIE_NAME = cookie_name
+    netbox_url = f"https://netbox.example.invalid{base_path}"
+    users = get_user_model()
+    owner = users.objects.create_user(username="preference-api-owner")
+    browser_user = users.objects.create_user(username="preference-browser-user")
+    initial = {"tables": {"ReservationTable4": {"columns": ["hostname"]}}, "pagination": {"placement": "top"}}
+    sessions = []
+    for user in (owner, browser_user):
+        client = Client(enforce_csrf_checks=True)
+        client.force_login(user)
+        csrf_request = HttpRequest()
+        csrf = get_token(csrf_request)
+        client.cookies[cookie_name] = csrf_request.META["CSRF_COOKIE"]
+        response = client.patch("/api/users/config/", initial, content_type="application/json", HTTP_X_CSRFTOKEN=csrf)
+        assert response.status_code == 200, response.content
+        sessions.append(client)
+
+    class ConfigRequestContext:
+        """Adapt HTTP clients to the real NetBox view without a live server."""
+
+        def __init__(self, client, headers):
+            self.client = client
+            self.headers = headers
+
+        def _response(self, response, fail_on_status_code):
+            result = requests.Response()
+            result.status_code = response.status_code
+            result._content = response.content
+            if fail_on_status_code:
+                result.raise_for_status()
+            return result
+
+        def get(self, *, url, timeout, fail_on_status_code=False):
+            assert urlsplit(url).path == f"{base_path}/api/users/config/"
+            return self._response(self.client.get("/api/users/config/"), fail_on_status_code)
+
+        def patch(self, *, url, timeout, json=None, data=None, headers=None, fail_on_status_code=False):
+            assert urlsplit(url).path == f"{base_path}/api/users/config/"
+            response = self.client.patch(
+                "/api/users/config/",
+                json if json is not None else data,
+                content_type="application/json",
+                headers=self.headers if headers is None else headers,
+            )
+            return self._response(response, fail_on_status_code)
+
+    owner_session, browser_session = sessions
+    api_session = ConfigRequestContext(owner_session, {"X-CSRFToken": owner_session.cookies[cookie_name].value})
+    context = ConfigRequestContext(browser_session, {})
+    with pytest.raises(requests.HTTPError) as rejected:
+        context.patch(
+            url=f"{netbox_url}/api/users/config/",
+            data={"tables": {}},
+            timeout=20_000,
+            fail_on_status_code=True,
+        )
+    assert rejected.value.response.status_code == 403
+    browser_page = browser_session.get("/")
+    assert browser_page.status_code == 200
+    token = re.search(r'window\.CSRF_TOKEN = "([^"]+)"', browser_page.content.decode())
+    assert token is not None
+
+    def evaluate(expression):
+        assert expression == "window.CSRF_TOKEN"
+        return token.group(1)
+
+    page = SimpleNamespace(
+        evaluate=evaluate,
+        context=SimpleNamespace(
+            request=context,
+            cookies=lambda urls: [
+                {"name": name, "value": cookie.value} for name, cookie in browser_session.cookies.items()
+            ],
+        ),
+    )
+    dependencies = {
+        "requests_session": api_session,
+        "nb_api": SimpleNamespace(base_url=f"{netbox_url}/api"),
+        "page": page,
+        "netbox_login": None,
+        "netbox_url": netbox_url,
+    }
+    reset = reset_user_preferences.__wrapped__
+    reset(**{name: dependencies[name] for name in inspect.signature(reset).parameters})
+
+    assert browser_session.get("/api/users/config/").json() == {
+        "tables": {"ReservationTable4": {}},
+        "pagination": {"placement": "bottom"},
+    }
+    assert owner_session.get("/api/users/config/").json() == initial
+
+
+@pytest.mark.parametrize("token", [None, "", 123])
+def test_user_preference_reset_rejects_a_missing_page_token(token):
+    from types import SimpleNamespace
+
+    from tests.ui.conftest import reset_user_preferences
+
+    class RequestContext:
+        def get(self, **kwargs):
+            return SimpleNamespace(json=lambda: {"tables": {}})
+
+        def patch(self, **kwargs):
+            raise AssertionError("Preferences must not change without a page CSRF token.")
+
+    page = SimpleNamespace(
+        evaluate=lambda expression: token,
+        context=SimpleNamespace(
+            request=RequestContext(), cookies=lambda urls: [{"name": "csrftoken", "value": "test-token"}]
+        ),
+    )
+    with pytest.raises(RuntimeError, match="CSRF token"):
+        reset_user_preferences.__wrapped__(page, None, "https://netbox.example.invalid")
+
+
+def test_user_preference_reset_allows_for_normal_ci_load():
+    """Keep the autouse request bound above the slow response observed in CI."""
+    from types import SimpleNamespace
+
+    from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+
+    from tests.ui.conftest import reset_user_preferences
+
+    class LoadedRequestContext:
         def _response(self, timeout: int):
-            if timeout < 20:
-                raise requests.ReadTimeout("NetBox is still serving the request")
-            response = requests.Response()
-            response.status_code = 200
-            response._content = b'{"tables": {}}'
-            return response
+            if timeout < 20_000:
+                raise PlaywrightTimeoutError("NetBox is still serving the request")
+            return SimpleNamespace(json=lambda: {"tables": {}})
 
-        def get(self, *, url: str, timeout: int):
+        def get(self, *, url: str, timeout: int, fail_on_status_code: bool):
             return self._response(timeout)
 
-        def patch(self, *, url: str, json: dict, timeout: int):
+        def patch(self, *, url: str, data: dict, headers: dict, timeout: int, fail_on_status_code: bool):
             return self._response(timeout)
 
-    api = type("API", (), {"base_url": "https://netbox.example.invalid/api"})()
-    reset_user_preferences.__wrapped__(LoadedSession(), api)
+    page = SimpleNamespace(
+        evaluate=lambda expression: "test-token",
+        context=SimpleNamespace(request=LoadedRequestContext()),
+    )
+    reset_user_preferences.__wrapped__(page, None, "https://netbox.example.invalid")
 
 
 def test_every_user_preferences_call_uses_the_established_bound():
     """A tighter ad-hoc bound on `/users/config/` fails a valid run under CI load.
 
-    The regression above pins `_USER_PREFERENCES_TIMEOUT_SECONDS` as the one bound that
-    endpoint tolerates, so every caller must name it instead of a number of its own.
+    Requests uses seconds and Playwright uses milliseconds. Both constants derive
+    from the shared request bound, so callers must use the unit their client expects.
     """
     checked = 0
     for path in sorted(_BROWSER_SUITE.rglob("*.py")):
@@ -2315,11 +2448,14 @@ def test_every_user_preferences_call_uses_the_established_bound():
                 continue
             checked += 1
             timeout = next((keyword.value for keyword in node.keywords if keyword.arg == "timeout"), None)
-            named = isinstance(timeout, ast.Name) and timeout.id == "_USER_PREFERENCES_TIMEOUT_SECONDS"
+            client = ast.unparse(node.func.value) if isinstance(node.func, ast.Attribute) else ""
+            unit = "MILLISECONDS" if client == "page.context.request" else "SECONDS"
+            bound = f"_USER_PREFERENCES_TIMEOUT_{unit}"
+            named = isinstance(timeout, ast.Name) and timeout.id == bound
             assert named, (
                 f"{path.name} line {node.lineno} bounds /users/config/ with "
                 f"{ast.unparse(timeout) if timeout is not None else 'nothing'}. Name "
-                "_USER_PREFERENCES_TIMEOUT_SECONDS: CI has been seen to answer it slowly."
+                f"{bound}: CI has been seen to answer it slowly."
             )
     assert checked, "The browser suite reads no user preferences; this guard would read nothing."
 
