@@ -106,7 +106,7 @@ class TestReservationIdentity(SimpleTestCase):
     def test_the_identity_length_bound_covers_every_identifier_type(self):
         """KeaDhcpLink sizes its identity column from this bound, so it must hold."""
         longest = {
-            "hw-address": "ab" * 6,
+            "hw-address": "ab" * 20,
             "duid": "ab" * 128,
             "client-id": "ab" * 128,
             "circuit-id": "c" * 255,
@@ -143,6 +143,11 @@ class TestReservationIdentity(SimpleTestCase):
             ReservationIdentity("duid", ":".join(["ab"] * 129))
         with self.assertRaises(ValueError):
             ReservationIdentity("client-id", "ab")
+
+    def test_rejects_empty_and_oversized_hardware_addresses(self):
+        for value in ("", "ab" * 21):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                ReservationIdentity("hw-address", value)
 
     def test_rejects_unsupported_and_empty_identifiers(self):
         for identifier_type, value in (("remote-id", "relay"), ("flex-id", ""), ("duid", "not-hex")):
@@ -394,6 +399,19 @@ class TestReservationPage(SimpleTestCase):
         self.assertEqual(reservation.identity, ReservationIdentity("circuit-id", "opaque value"))
         self.assertEqual(reservation.addresses, ())
         self.assertEqual(reservation.delegated_prefixes, ())
+
+    def test_preserves_hardware_addresses_of_supported_lengths(self):
+        for family, cidr in ((4, "198.18.0.0/24"), (6, "2001:db8::/64")):
+            for octets in (1, 6, 8, 20):
+                with self.subTest(family=family, octets=octets):
+                    raw = {"subnet-id": 10, "hw-address": "AB" * octets}
+                    with stub_kea({"reservation-get-page": _res_page([raw])}):
+                        snapshot = self.kea.reservation_page(family, _catalogue(family, 10, cidr))
+
+                    self.assertEqual(snapshot.diagnostics, ())
+                    self.assertEqual(len(snapshot.records), 1)
+                    self.assertEqual(snapshot.records[0].identity.identifier_type, "hw-address")
+                    self.assertEqual(snapshot.records[0].identity.value, ":".join(["ab"] * octets))
 
     def test_the_fixture_helper_scopes_subnet_id_zero_like_the_parser(self):
         """A subnet-id 0 fixture must not enter the in-subnet path the parser rejects."""

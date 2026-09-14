@@ -29,7 +29,7 @@ _IDENTIFIER_LABELS: dict[IdentifierType, str] = {
     "flex-id": "Flex ID",
 }
 _HEX_IDENTIFIER_OCTETS: dict[IdentifierType, tuple[int, int]] = {
-    "hw-address": (6, 6),
+    "hw-address": (1, 20),
     "duid": (1, 128),
     "client-id": (2, 128),
 }
