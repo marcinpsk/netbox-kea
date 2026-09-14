@@ -264,7 +264,7 @@ class ServerDhcpPluginSyncNowView(View):
             logger.exception("DHCP-plugin import failed for server %s (Kea read/validation)", server.name)
             messages.error(request, "An internal error occurred during the DHCP-plugin import.")
             return redirect
-        except Exception:  # noqa: BLE001 — DB/unexpected errors are logged here, never leaked as a 500 traceback
+        except Exception:
             logger.exception("DHCP-plugin import failed for server %s", server.name)
             messages.error(request, "An internal error occurred during the DHCP-plugin import.")
             return redirect

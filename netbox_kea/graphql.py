@@ -28,15 +28,13 @@ from . import models
 class ServerType(NetBoxObjectType):
     """GraphQL type for the Server model."""
 
-    pass
-
 
 @strawberry.type
 class Query:
     """GraphQL root query type exposing Kea server objects."""
 
     @strawberry.field
-    def server(self, id: int, info: strawberry.types.Info) -> ServerType:
+    def server(self, id: int, info: strawberry.types.Info) -> ServerType:  # noqa: A002 - published GraphQL argument name
         """Return a single Server by primary key."""
         return models.Server.objects.restrict(info.context.request.user, "view").get(pk=id)
 

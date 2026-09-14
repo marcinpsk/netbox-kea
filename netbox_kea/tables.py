@@ -106,7 +106,7 @@ SUBNET_ACTIONS = """<span class="btn-group dropdown">
     {% endif %}
   </ul>
 </span>
-"""  # noqa: E501
+"""
 
 
 LEASE_ACTIONS = """<span class="btn-group dropdown">
@@ -170,7 +170,7 @@ LEASE_ACTIONS = """<span class="btn-group dropdown">
         {% endif %}
     </ul>
 </span>
-"""  # noqa: E501
+"""
 
 
 class DurationColumn(tables.Column):

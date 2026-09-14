@@ -59,7 +59,7 @@ class NetBoxKeaConfig(PluginConfig):
 
             if KeaIpamSyncJob in registry["system_jobs"]:
                 registry["system_jobs"][KeaIpamSyncJob]["interval"] = interval
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.warning(
                 "Failed to apply netbox_kea sync interval override; using decorator default.",
                 exc_info=True,

@@ -18,7 +18,9 @@ from pathlib import Path
 
 import pytest
 import requests
+import tree_sitter_bash
 import yaml
+from tree_sitter import Language, Parser
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 #: The Playwright suite. It must stay inside the path the integration job runs.
@@ -713,32 +715,225 @@ def test_the_browser_suite_runs_in_the_integration_job():
     )
 
 
-def _drops_chrome_source_before_installing(run: str) -> bool:
-    """True when *run* removes the Google Chrome apt source before installing browsers.
+_CHROME_LIST = "/etc/apt/sources.list.d/google-chrome.list"
+_CHROME_SOURCES = "/etc/apt/sources.list.d/google-chrome.sources"
+_CHROME_REMOVAL = f"sudo rm -f {_CHROME_LIST} {_CHROME_SOURCES}"
+_BROWSER_INSTALL = "uv run --native-tls playwright install --with-deps"
 
-    Order is the whole point, and so is reading commands rather than prose: a comment
-    naming the source, or a removal that runs afterwards, leaves the job just as exposed.
-    """
-    commands = [line.split("#", 1)[0].strip() for line in run.splitlines()]
-    removal = next(
-        (i for i, line in enumerate(commands) if line.startswith("sudo rm") and "google-chrome" in line),
-        None,
+
+def _drops_chrome_source_before_installing(run: str) -> bool:
+    """Accept only a source removal followed by foreground browser installers."""
+    source = run.encode("utf-8")
+    if any(byte not in (9, 10) and not 32 <= byte <= 126 for byte in source):
+        return False
+    root = Parser(Language(tree_sitter_bash.language())).parse(source).root_node
+    pending = [root]
+    while pending:
+        node = pending.pop()
+        if node.has_error or node.is_missing:
+            return False
+        pending.extend(node.children)
+
+    removals = (
+        ["sudo", "rm", "-f", _CHROME_LIST, _CHROME_SOURCES],
+        ["sudo", "rm", "-f", _CHROME_SOURCES, _CHROME_LIST],
     )
-    install = next((i for i, line in enumerate(commands) if "playwright install" in line), None)
-    return removal is not None and install is not None and removal < install
+    installers = [
+        [*prefix, "playwright", "install", "--with-deps"]
+        for prefix in ([], ["uv", "run"], ["uv", "run", "--native-tls"])
+    ]
+    removed = installed = False
+    end = 0
+    for node in root.children:
+        if source[end : node.start_byte].strip(b" \t\n"):
+            return False
+        end = node.end_byte
+        if node.type == "comment" or (node.type == ";" and not node.is_named):
+            continue
+        if node.type != "command":
+            return False
+        try:
+            tokens = shlex.split(source[node.start_byte : node.end_byte].decode("utf-8"), comments=False, posix=True)
+        except ValueError:
+            return False
+        if tokens in removals and not removed:
+            removed = True
+        elif tokens in installers and removed:
+            installed = True
+        else:
+            return False
+    return installed and not source[end:].strip(b" \t\n")
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        f"cat <<'EOF'\n{_CHROME_REMOVAL}\nEOF\n{_BROWSER_INSTALL}",
+        f"printf '%s' 'multiline\nquote'\n{_CHROME_REMOVAL}\n{_BROWSER_INSTALL}",
+        f"unused() {{\n{_CHROME_REMOVAL}\n}}\n{_BROWSER_INSTALL}",
+        f"{_CHROME_REMOVAL}\f\n{_BROWSER_INSTALL}",
+        f"{_CHROME_REMOVAL}\n{_BROWSER_INSTALL}\f",
+        f"{_CHROME_REMOVAL}\r\n{_BROWSER_INSTALL}",
+        f"{_CHROME_REMOVAL};;\n{_BROWSER_INSTALL}",
+        f"{_CHROME_REMOVAL} &\n{_BROWSER_INSTALL}",
+        f"{_CHROME_REMOVAL}#suffix\n{_BROWSER_INSTALL}",
+        f"{_CHROME_REMOVAL}\n{_BROWSER_INSTALL}#suffix",
+    ],
+    ids=[
+        "heredoc",
+        "multiline-quote",
+        "uncalled-function",
+        "removal-form-feed",
+        "install-form-feed",
+        "carriage-return",
+        "double-semicolon",
+        "background",
+        "source-suffix",
+        "install-suffix",
+    ],
+)
+def test_chrome_source_guard_rejects_non_executable_or_changed_words(script):
+    assert not _drops_chrome_source_before_installing(script)
 
 
 def test_the_chrome_source_guard_reads_order_and_not_prose():
     """Table-test the guard: it must fail for a removal that cannot protect the install."""
-    good = "sudo rm -f /etc/apt/sources.list.d/google-chrome.list\nuv run playwright install --with-deps"
-    assert _drops_chrome_source_before_installing(good)
-    for bad in (
-        "uv run playwright install --with-deps\nsudo rm -f /etc/apt/sources.list.d/google-chrome.list",
-        "# drop the google-chrome source one day\nuv run playwright install --with-deps",
+    for install in (
+        "playwright install --with-deps",
         "uv run playwright install --with-deps",
-        "sudo rm -f /etc/apt/sources.list.d/google-chrome.list",
+        "uv run --native-tls playwright install --with-deps",
+    ):
+        good = f"{_CHROME_REMOVAL}\n{install}"
+        assert _drops_chrome_source_before_installing(good)
+    for bad in (
+        f"{_CHROME_REMOVAL}\necho '{_BROWSER_INSTALL}'",
+        f"{_CHROME_REMOVAL}\nprintf '%s' '{_BROWSER_INSTALL}'",
+        f"{_CHROME_REMOVAL}\n# {_BROWSER_INSTALL}",
+        f"{_CHROME_REMOVAL}\nremember {_BROWSER_INSTALL} later",
+        f"{_CHROME_REMOVAL}\nuv run echo playwright install --with-deps",
+        f"{_CHROME_REMOVAL}\nuv run --directory playwright install --with-deps",
+        f"{_BROWSER_INSTALL}\n{_CHROME_REMOVAL}",
+        f"# {_CHROME_REMOVAL}\n{_BROWSER_INSTALL}",
+        _BROWSER_INSTALL,
+        _CHROME_REMOVAL,
     ):
         assert not _drops_chrome_source_before_installing(bad), f"the guard accepted {bad!r}"
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        f" \t{_CHROME_REMOVAL}\n\n\t{_BROWSER_INSTALL}\n",
+        f"{_CHROME_REMOVAL}\n{_BROWSER_INSTALL}".replace(" ", "\t"),
+        f"{_CHROME_REMOVAL}; {_BROWSER_INSTALL}",
+        f"# remove sources\n{_CHROME_REMOVAL} # source removal\n{_BROWSER_INSTALL} # install\n",
+        f"sudo rm -f {_CHROME_SOURCES} {_CHROME_LIST}\n{_BROWSER_INSTALL}",
+        f"{_CHROME_REMOVAL}\nplaywright install --with-deps\n{_BROWSER_INSTALL}",
+    ],
+)
+def test_chrome_source_guard_accepts_supported_shell_separators(script):
+    assert _drops_chrome_source_before_installing(script)
+
+
+@pytest.mark.parametrize("suffix", ["\r", "\f", "#suffix"])
+@pytest.mark.parametrize(
+    "word",
+    [
+        "sudo",
+        "rm",
+        "-f",
+        _CHROME_LIST,
+        _CHROME_SOURCES,
+        "uv",
+        "run",
+        "--native-tls",
+        "playwright",
+        "install",
+        "--with-deps",
+    ],
+)
+def test_chrome_source_guard_rejects_changed_required_words(word, suffix):
+    script = f"{_CHROME_REMOVAL}\n{_BROWSER_INSTALL}"
+    assert not _drops_chrome_source_before_installing(script.replace(word, word + suffix))
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        f"sudo rm -f {_CHROME_LIST}\n{_BROWSER_INSTALL}",
+        f"sudo rm -f {_CHROME_SOURCES}\n{_BROWSER_INSTALL}",
+        f"{_CHROME_REMOVAL}\nuv run --native-tls playwright install",
+        f"{_BROWSER_INSTALL}\n{_CHROME_REMOVAL}\n{_BROWSER_INSTALL}",
+        f"{_CHROME_REMOVAL}\n{_BROWSER_INSTALL}\n'",
+        f"{_CHROME_REMOVAL}\n{_BROWSER_INSTALL}\n)",
+        f"{_CHROME_REMOVAL} && {_BROWSER_INSTALL}",
+        f"{_CHROME_REMOVAL} | {_BROWSER_INSTALL}",
+        f"({_CHROME_REMOVAL})\n{_BROWSER_INSTALL}",
+        f"{{ {_CHROME_REMOVAL}; }}\n{_BROWSER_INSTALL}",
+        f"{_CHROME_REMOVAL} >/dev/null\n{_BROWSER_INSTALL}",
+        f"FLAG=value {_CHROME_REMOVAL}\n{_BROWSER_INSTALL}",
+        f"{_CHROME_REMOVAL}\n{_BROWSER_INSTALL}\x00",
+        f"{_CHROME_REMOVAL}\n{_BROWSER_INSTALL}\N{NO-BREAK SPACE}",
+    ],
+)
+def test_chrome_source_guard_rejects_incomplete_or_unsupported_scripts(script):
+    assert not _drops_chrome_source_before_installing(script)
+
+
+def _assert_browser_install_step_is_guarded(workflow: dict) -> None:
+    """Bind the shell proof to the unconditional browser-install step and default shell."""
+    job = workflow["jobs"]["test"]
+    for scope in (workflow, job):
+        assert "shell" not in scope.get("defaults", {}).get("run", {}), (
+            "browser installation must use the default shell"
+        )
+    steps = [step for step in job["steps"] if step.get("name") == "Ensure playwright browsers are installed"]
+    assert len(steps) == 1, "expected exactly one named browser-install step"
+    step = steps[0]
+    assert "shell" not in step and "if" not in step, (
+        "browser installation must run unconditionally in the default shell"
+    )
+    assert isinstance(step.get("run"), str), "browser-install run must be a string"
+    assert _drops_chrome_source_before_installing(step["run"]), "browser install must first remove both Chrome sources"
+
+
+@pytest.mark.parametrize("scope", ["workflow", "job", "step"])
+def test_browser_install_guard_rejects_shell_overrides(scope):
+    workflow = yaml.safe_load((REPOSITORY_ROOT / ".github/workflows/ci.yml").read_text())
+    job = workflow["jobs"]["test"]
+    step = next(step for step in job["steps"] if step.get("name") == "Ensure playwright browsers are installed")
+    if scope == "step":
+        step["shell"] = "bash -n {0}"
+    else:
+        target = workflow if scope == "workflow" else job
+        target["defaults"] = {"run": {"shell": "bash -n {0}"}}
+    with pytest.raises(AssertionError, match="default shell"):
+        _assert_browser_install_step_is_guarded(workflow)
+
+
+@pytest.mark.parametrize(
+    "change", ["missing", "renamed", "duplicate", "non-string", "no-run", "conditional", "unsafe-run"]
+)
+def test_browser_install_guard_requires_one_unconditional_executable_step(change):
+    workflow = yaml.safe_load((REPOSITORY_ROOT / ".github/workflows/ci.yml").read_text())
+    steps = workflow["jobs"]["test"]["steps"]
+    step = next(step for step in steps if step.get("name") == "Ensure playwright browsers are installed")
+    if change == "missing":
+        steps.remove(step)
+    elif change == "renamed":
+        step["name"] = "Browser setup"
+    elif change == "duplicate":
+        steps.append(dict(step))
+    elif change == "non-string":
+        step["run"] = 42
+    elif change == "no-run":
+        del step["run"]
+    elif change == "conditional":
+        step["if"] = "false"
+    else:
+        step["run"] = f"{_CHROME_REMOVAL}\necho '{_BROWSER_INSTALL}'"
+    with pytest.raises(AssertionError):
+        _assert_browser_install_step_is_guarded(workflow)
 
 
 def test_the_browser_install_does_not_read_the_google_chrome_apt_source():
@@ -749,23 +944,8 @@ def test_the_browser_install_does_not_read_the_google_chrome_apt_source():
     three browser jobs died before pytest started on every open branch. Playwright
     downloads its own Chromium, so that source is never needed here.
     """
-    import yaml
-
     workflow = yaml.safe_load((REPOSITORY_ROOT / ".github/workflows/ci.yml").read_text())
-    steps = [
-        step
-        for job in workflow["jobs"].values()
-        for step in job.get("steps", [])
-        if "playwright install" in str(step.get("run", ""))
-    ]
-    assert steps, "no workflow step installs the Playwright browsers any more; update this guard."
-    for step in steps:
-        if "--with-deps" not in step["run"]:
-            continue
-        assert _drops_chrome_source_before_installing(step["run"]), (
-            "a Playwright step runs --with-deps without first dropping the Google Chrome apt "
-            "source, so an inconsistent third-party repository can fail the browser jobs."
-        )
+    _assert_browser_install_step_is_guarded(workflow)
 
 
 def test_documented_integration_commands_disable_pytest_django():
@@ -997,10 +1177,12 @@ def _hrefs_navigated_raw(source: str) -> list[str]:
         ("def workflow(page, link):\n    page.goto(destination := link.get_attribute('href'))\n", True),
         ("def workflow(page, link):\n    page.goto(link.evaluate('el => el.href'))\n", False),
         (
-            "def workflow(page, link):\n"
-            "    destination = link.get_attribute('href')\n"
-            "    destination = link.evaluate('el => el.href')\n"
-            "    page.goto(destination)\n",
+            (
+                "def workflow(page, link):\n"
+                "    destination = link.get_attribute('href')\n"
+                "    destination = link.evaluate('el => el.href')\n"
+                "    page.goto(destination)\n"
+            ),
             False,
         ),
         ("def workflow(page, link):\n    page.goto(link.get_attribute('title'))\n", False),

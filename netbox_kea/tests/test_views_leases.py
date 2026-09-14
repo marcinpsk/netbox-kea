@@ -1143,7 +1143,7 @@ class TestLeaseExportAll(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         pages = kea.bodies("lease4-get-page")
         self.assertEqual(len(pages), 1)
-        self.assertEqual(pages[0]["arguments"]["from"], "0.0.0.0")
+        self.assertEqual(pages[0]["arguments"]["from"], "0.0.0.0")  # noqa: S104 - Kea sentinel value, not a bind address
 
 
 # TestLeaseEditView
@@ -2307,7 +2307,7 @@ class TestGetLeasesPageAllLeasesMode(_ViewTestBase):
         with stub_kea({"subnet4-list": self._SUBNETS4, "lease4-get-page": self._EMPTY_PAGE}) as kea:
             response = self.client.get(self._url4(), {"by": ""}, HTTP_HX_REQUEST="true")
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(kea.bodies("lease4-get-page")[0]["arguments"]["from"], "0.0.0.0")
+        self.assertEqual(kea.bodies("lease4-get-page")[0]["arguments"]["from"], "0.0.0.0")  # noqa: S104 - Kea sentinel value, not a bind address
 
     def test_all_leases_v6_starts_from_unspecified_address(self):
         """``by=""`` on the v6 view must call lease6-get-page with ``from="::"``."""
