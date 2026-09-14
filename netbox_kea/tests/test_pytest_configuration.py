@@ -9,6 +9,7 @@ import importlib.util
 import os
 import re
 import runpy
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -652,6 +653,49 @@ def test_every_unit_test_command_declares_auto_workers():
         assert "auto" in workers, (relative_path, workers)
 
 
+def _pytest_collection_targets(command: str) -> list[str]:
+    """Return collection paths, excluding values of options used by our CI commands."""
+    value_options = {"--rootdir", "-p", "-n", "-W", "--cov", "--cov-report", "--tracing"}
+    tokens = iter(shlex.split(command)[1:])
+    targets = []
+    positional_only = False
+    for token in tokens:
+        if token == "--":
+            positional_only = True
+        elif not positional_only and token in value_options:
+            next(tokens, None)
+        elif (positional_only or not token.startswith("-")) and (REPOSITORY_ROOT / token).exists():
+            targets.append(token)
+    return targets
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        ("pytest netbox_kea/tests --rootdir .", False),
+        ("pytest netbox_kea/tests --rootdir=.", False),
+        ("pytest --rootdir . netbox_kea/tests", False),
+        ("pytest tests/ --rootdir .", True),
+        ("pytest --rootdir=. tests/", True),
+        ('pytest "tests/" -v', True),
+        ("pytest -p no:django tests/ --tracing=retain-on-failure --cov=netbox_kea --cov-report=xml", True),
+    ],
+)
+def test_browser_collection_guard_excludes_option_values(command, expected):
+    targets = _pytest_collection_targets(command)
+    assert any(_BROWSER_SUITE.is_relative_to(REPOSITORY_ROOT / target) for target in targets) is expected
+
+
+def test_ci_jobs_share_the_uv_setup_step():
+    workflow = yaml.safe_load((REPOSITORY_ROOT / ".github/workflows/ci.yml").read_text())
+    steps = [
+        next(step for step in workflow["jobs"][job]["steps"] if step.get("name") == "Install uv")
+        for job in ("unit-test", "dhcp-plugin-test")
+    ]
+    assert steps[0] is steps[1]
+    assert steps[0]["uses"].startswith("astral-sh/setup-uv@")
+
+
 def test_the_browser_suite_runs_in_the_integration_job():
     """The Playwright suite must sit inside the path CI actually executes.
 
@@ -662,10 +706,7 @@ def test_the_browser_suite_runs_in_the_integration_job():
     integration_job = _workflow_job(workflow, "test")
     commands = _pytest_commands(integration_job)
     assert commands, "The integration job no longer runs pytest."
-    # Every token that names a real path, so option order cannot change the answer.
-    targets = [
-        token for token in commands[0].split()[1:] if not token.startswith("-") and (REPOSITORY_ROOT / token).exists()
-    ]
+    targets = _pytest_collection_targets(commands[0])
     assert any(_BROWSER_SUITE.is_relative_to(REPOSITORY_ROOT / target) for target in targets), (
         f"The integration job runs `pytest` over {targets}, which does not contain "
         f"{_BROWSER_SUITE.relative_to(REPOSITORY_ROOT)}."
