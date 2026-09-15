@@ -459,6 +459,45 @@ def test_every_integration_suite_session_applies_the_shared_timeout():
         )
 
 
+@pytest.mark.parametrize("fixture_name", ["requests_session", "kea_client"])
+@pytest.mark.parametrize("body_fails", [False, True])
+def test_browser_client_fixtures_close_owned_sessions(monkeypatch, fixture_name, body_fails):
+    import inspect
+    from types import SimpleNamespace
+
+    from tests.ui import conftest as harness
+
+    instances = []
+    base = harness.TimeoutSession if fixture_name == "requests_session" else harness.KeaClient
+
+    class TrackingClient(base):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.close_count = 0
+            instances.append(self)
+
+        def close(self):
+            self.close_count += 1
+            super().close()
+
+    monkeypatch.setattr(
+        harness, "TimeoutSession" if fixture_name == "requests_session" else "KeaClient", TrackingClient
+    )
+    fixture = getattr(harness, fixture_name).__wrapped__
+    result = fixture(SimpleNamespace(token="test-token")) if fixture_name == "requests_session" else fixture()
+    if inspect.isgenerator(result):
+        next(result)
+        assert all(client.close_count == 0 for client in instances)
+        if body_fails:
+            with pytest.raises(RuntimeError, match="test body failed"):
+                result.throw(RuntimeError("test body failed"))
+        else:
+            with pytest.raises(StopIteration):
+                next(result)
+    assert len(instances) == (1 if fixture_name == "requests_session" else 2)
+    assert [client.close_count for client in instances] == [1] * len(instances)
+
+
 def test_the_pynetbox_client_bounds_every_request_it_makes():
     """`nb_api` reaches NetBox through pynetbox, which never passes a timeout of its own.
 

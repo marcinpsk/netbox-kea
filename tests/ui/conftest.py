@@ -8,6 +8,7 @@ daemons, and one Server object joining them. Keeping the harness here is what le
 import os
 import uuid
 import warnings
+from collections.abc import Iterator
 from typing import Any
 
 import pynetbox
@@ -22,16 +23,16 @@ from ..kea import KeaClient
 
 
 @pytest.fixture
-def requests_session(nb_api: pynetbox.api) -> requests.Session:
-    s = TimeoutSession()
-    s.headers.update(
-        {
-            "Authorization": f"Token {nb_api.token}",
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-        }
-    )
-    return s
+def requests_session(nb_api: pynetbox.api) -> Iterator[requests.Session]:
+    with TimeoutSession() as s:
+        s.headers.update(
+            {
+                "Authorization": f"Token {nb_api.token}",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            }
+        )
+        yield s
 
 
 @pytest.fixture(autouse=True)
@@ -127,14 +128,15 @@ class _DualEndpointKeaClient:
 
 
 @pytest.fixture
-def kea_client() -> _DualEndpointKeaClient:
+def kea_client() -> Iterator[_DualEndpointKeaClient]:
     # Kea 3.0: two daemons, each on its own host-exposed HTTP control socket. These are
     # the host side of the same daemons KEA_DHCP4_URL/KEA_DHCP6_URL name for NetBox, so
     # a run that moves one must move the other or the two drive different daemons.
-    return _DualEndpointKeaClient(
-        KeaClient(os.environ.get("KEA_DHCP4_CONTROL_URL", "").strip() or "http://127.0.0.1:8001"),
-        KeaClient(os.environ.get("KEA_DHCP6_CONTROL_URL", "").strip() or "http://127.0.0.1:8003"),
-    )
+    with (
+        KeaClient(os.environ.get("KEA_DHCP4_CONTROL_URL", "").strip() or "http://127.0.0.1:8001") as dhcp4,
+        KeaClient(os.environ.get("KEA_DHCP6_CONTROL_URL", "").strip() or "http://127.0.0.1:8003") as dhcp6,
+    ):
+        yield _DualEndpointKeaClient(dhcp4, dhcp6)
 
 
 @pytest.fixture
