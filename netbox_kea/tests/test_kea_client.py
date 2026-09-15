@@ -4530,6 +4530,50 @@ _SUBNET6_GET_WITH_DNS_RESP = [{"result": 0, "arguments": {"subnet6": [_LIVE_SUBN
 _SUBNET_UPDATE_OK_V6 = [{"result": 0, "arguments": {}, "text": "IPv6 subnet updated"}]
 
 
+class TestSubnetUpdateIdentity(TestCase):
+    def test_a_numeric_live_cidr_cannot_mutate_the_subnet(self):
+        response = {"result": 0, "arguments": {"subnet4": [{"id": 7, "subnet": 3323068416}]}}
+        with KeaClient(url="http://kea.example.invalid") as client, stub_kea({"subnet4-get": response}) as stub:
+            with self.assertRaises(RuntimeError):
+                client.subnet_update(4, 7, "198.18.0.0/32", valid_lft=7200)
+        self.assertEqual(stub.commands(), ["subnet4-get"])
+
+    def test_equivalent_ipv6_spellings_preserve_the_live_cidr(self):
+        for live, requested in (
+            ("2001:0DB8:0000:0000:0000:0000:0000:0000/64", "2001:db8::/64"),
+            ("2001:db8::/64", "2001:0db8:0000:0000::/64"),
+            ("2001:db8::/64", "2001:db8::1/64"),
+        ):
+            with self.subTest(live=live, requested=requested):
+                responses = {
+                    "subnet6-get": {"result": 0, "arguments": {"subnet6": [{"id": 7, "subnet": live}]}},
+                    "subnet6-update": {"result": 0},
+                    "config-get": {"result": 0, "arguments": {"Dhcp6": {}}},
+                    "config-test": {"result": 0},
+                    "config-write": {"result": 0},
+                }
+                with KeaClient(url="http://kea.example.invalid") as client, stub_kea(responses) as stub:
+                    client.subnet_update(6, 7, requested, valid_lft=7200)
+                update = stub.bodies("subnet6-update")[0]
+                self.assertEqual(update["arguments"]["subnet6"][0]["subnet"], live)
+                self.assertEqual(update["arguments"]["subnet6"][0]["valid-lft"], 7200)
+                self.assertEqual(stub.commands()[-1], "config-write")
+
+    def test_different_or_invalid_cidrs_cannot_mutate_the_subnet(self):
+        for live, requested in (
+            ("2001:db8::/64", "2001:db8:1::/64"),
+            ("2001:db8::/64", "2001:db8::/48"),
+            ("2001:db8::/64", "not-a-network"),
+            ("not-a-network", "2001:db8::/64"),
+        ):
+            with self.subTest(live=live, requested=requested):
+                response = {"result": 0, "arguments": {"subnet6": [{"id": 7, "subnet": live}]}}
+                with KeaClient(url="http://kea.example.invalid") as client, stub_kea({"subnet6-get": response}) as stub:
+                    with self.assertRaises(ValueError):
+                        client.subnet_update(6, 7, requested, valid_lft=7200)
+                self.assertEqual(stub.commands(), ["subnet6-get"])
+
+
 class TestSubnetUpdateMerge(TestCase):
     """Tests for KeaClient.subnet_update() — verifies read-modify-write merge behaviour."""
 

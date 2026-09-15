@@ -1053,7 +1053,7 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
                     "tab": self.tab,
                 },
             )
-        except ValueError:
+        except (ValueError, RuntimeError):
             logger.exception("Failed to update subnet %s on server %s", subnet_id, pk)
             messages.error(request, "Failed to update subnet: see server logs for details.")
             return render(

@@ -1454,6 +1454,23 @@ class TestSubnetEditPostExceptions(_ViewTestBase):
             response = self.client.post(self._url(), _SUBNET4_EDIT_POST)
         self.assertEqual(response.status_code, 200)
 
+    def test_post_malformed_live_cidr_rerenders_without_mutation(self):
+        cidr = "198.18.0.0/32"
+        config = {"subnet4": [{"id": 42, "subnet": cidr}], "shared-networks": []}
+        for live in ({"id": 42, "subnet": 3323068416}, {"id": 42}):
+            with self.subTest(live=live):
+                responses = {
+                    "config-get": {"result": 0, "arguments": {"Dhcp4": config}},
+                    "subnet4-get": {"result": 0, "arguments": {"subnet4": [live]}},
+                }
+                with stub_kea(responses) as kea:
+                    response = self.client.post(
+                        self._url(), {"subnet_cidr": cidr, "valid_lft": "7200", "shared_network": ""}
+                    )
+                self.assertContains(response, "Failed to update subnet: see server logs for details.")
+                self.assertNotContains(response, "non-string")
+                self.assertEqual(kea.commands(), ["config-get", "subnet4-get"])
+
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestSubnetEditNetworkDelPartialPersist(_ViewTestBase):

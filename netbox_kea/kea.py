@@ -1450,7 +1450,10 @@ class KeaClient:
         # object, so we must send ALL fields to avoid silently clearing relay, allocator,
         # client-class, reservations, and any option-data not managed by this form.
         subnet_def = self.subnet_get(version, subnet_id)
-        if subnet_def.get("subnet") != subnet_cidr:
+        live_cidr = subnet_def.get("subnet")
+        if not isinstance(live_cidr, str):
+            raise RuntimeError(f"subnet{version}-get returned a non-string 'subnet' field for id={subnet_id}")
+        if ipaddress.ip_network(live_cidr, strict=False) != ipaddress.ip_network(subnet_cidr, strict=False):
             raise ValueError("Subnet CIDR does not match the live subnet.")
         subnet_def.pop("metadata", None)  # Kea adds a read-only metadata key in some responses
 
