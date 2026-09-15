@@ -93,24 +93,29 @@ def lease_identifier_types(family: int) -> tuple[IdentifierType, ...]:
     return _LEASE_IDENTIFIERS[cast(Family, family)]
 
 
-def lease_identities(lease: Mapping[str, Any], family: int) -> tuple[ReservationIdentity, ...]:
+def lease_identities(lease: Mapping[str, Any], family: int, *, strict: bool = False) -> tuple[ReservationIdentity, ...]:
     """Return the normalized Reservation Identities one Kea lease carries, in match order.
 
     Both Kea's own spelling (``hw-address``) and the template-safe spelling
     (``hw_address``) are accepted, so lease enrichment and Reservation enrichment
     read one rule set instead of one each.
+    Strict observations reject present malformed identifiers instead of dropping them.
     """
     identities: list[ReservationIdentity] = []
     for identifier_type in lease_identifier_types(family):
-        value = lease.get(identifier_type) or lease.get(identifier_type.replace("-", "_"))
-        if not value:
-            continue
-        try:
-            identity = ReservationIdentity(identifier_type, value)
-        except ValueError:
-            continue
-        if identity not in identities:
-            identities.append(identity)
+        keys = (identifier_type, identifier_type.replace("-", "_"))
+        values = [lease[key] for key in keys if key in lease] if strict else [lease.get(keys[0]) or lease.get(keys[1])]
+        for value in values:
+            if not strict and not value:
+                continue
+            try:
+                identity = ReservationIdentity(identifier_type, value)
+            except ValueError as exc:
+                if strict:
+                    raise RuntimeError(f"Kea returned a lease with an invalid {identifier_type}.") from exc
+                continue
+            if identity not in identities:
+                identities.append(identity)
     return tuple(identities)
 
 

@@ -82,12 +82,12 @@ def _lease_facts_in_subnet(client: KeaClient, version: int, subnet_id: int) -> A
             leases = worker_client.lease_search(version, constants.BY_SUBNET_ID, subnet_id, state=0)
             if not all(_assigned(lease) for lease in leases):
                 return _INDETERMINATE
+            addresses = {lease["ip-address"] for lease in leases if isinstance(lease.get("ip-address"), str)}
+            identities = {identity for lease in leases for identity in lease_identities(lease, version, strict=True)}
         except KeaException as exc:
             return _HOOK_UNAVAILABLE if exc.response.get("result") == 2 else _INDETERMINATE
         except (LeaseQueryGuardError, requests.RequestException, RuntimeError, ValueError):
             return _INDETERMINATE
-    addresses = {lease["ip-address"] for lease in leases if isinstance(lease.get("ip-address"), str)}
-    identities = {identity for lease in leases for identity in lease_identities(lease, version)}
     return addresses, identities
 
 

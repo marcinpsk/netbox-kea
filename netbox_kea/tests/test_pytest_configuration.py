@@ -2405,10 +2405,18 @@ def test_user_preference_reset_rejects_a_missing_page_token(token):
         reset_user_preferences.__wrapped__(page, None, "https://netbox.example.invalid")
 
 
+def test_user_preference_load_guard_skips_without_playwright(monkeypatch):
+    monkeypatch.setitem(sys.modules, "playwright", None)
+    monkeypatch.setitem(sys.modules, "playwright.sync_api", None)
+    with pytest.raises(pytest.skip.Exception, match="pytest-playwright is a dev dependency"):
+        test_user_preference_reset_allows_for_normal_ci_load()
+
+
 def test_user_preference_reset_allows_for_normal_ci_load():
     """Keep the autouse request bound above the slow response observed in CI."""
     from types import SimpleNamespace
 
+    pytest.importorskip("playwright", reason="pytest-playwright is a dev dependency")
     from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
     from tests.ui.conftest import reset_user_preferences

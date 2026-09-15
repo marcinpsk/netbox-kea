@@ -123,6 +123,30 @@ class TestReservationLeaseRelationship(_ViewTestBase):
         self.assertNotContains(response, "No Lease")
         self.assertNotContains(response, "Active Lease")
 
+    def test_a_malformed_subnet_lease_identity_reports_no_relationship(self):
+        for identifier in ("not-a-mac", "", False):
+            with self.subTest(identifier=identifier):
+                response, rows, _kea = self._rows(
+                    {
+                        "reservation-get-page": _res_page([{"subnet-id": 20, "hw-address": "aa:bb:cc:dd:ee:ff"}]),
+                        "lease4-get-by-state": _leases_per_subnet(
+                            {
+                                20: [
+                                    {
+                                        "subnet-id": 20,
+                                        "hw-address": identifier,
+                                        "ip-address": "198.18.0.20",
+                                        "state": 0,
+                                    }
+                                ]
+                            }
+                        ),
+                    }
+                )
+                self.assertIsNone(rows[0]["has_active_lease"])
+                self.assertNotContains(response, "No Lease")
+                self.assertNotContains(response, "Active Lease")
+
     def test_a_missing_lease_hook_reports_no_relationship(self):
         """Without lease_cmds the plugin cannot observe leases, so it must claim nothing."""
         response, rows, _kea = self._rows(
