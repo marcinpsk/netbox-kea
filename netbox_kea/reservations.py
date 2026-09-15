@@ -4,7 +4,7 @@ import hashlib
 import ipaddress
 import json
 import re
-from collections.abc import Collection
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Generic, Literal, TypeVar, cast
 
@@ -20,6 +20,12 @@ ReservationQueryMode = Literal["page", "identity", "address", "hostname"]
 _IDENTIFIERS: dict[Family, tuple[IdentifierType, ...]] = {
     4: ("hw-address", "duid", "circuit-id", "client-id", "flex-id"),
     6: ("duid", "hw-address", "flex-id"),
+}
+# A Kea lease carries only these identifier types, so a circuit-id or flex-id
+# Reservation can never be matched from a lease record.
+_LEASE_IDENTIFIERS: dict[Family, tuple[IdentifierType, ...]] = {
+    4: ("hw-address", "client-id"),
+    6: ("duid", "hw-address"),
 }
 _IDENTIFIER_LABELS: dict[IdentifierType, str] = {
     "hw-address": "Hardware Address",
@@ -79,6 +85,44 @@ def reservation_identifier_types(family: int) -> tuple[IdentifierType, ...]:
     if not isinstance(family, int) or isinstance(family, bool) or family not in (4, 6):
         raise ValueError(f"family must be 4 or 6, got {family!r}")
     return _IDENTIFIERS[cast(Family, family)]
+
+
+def lease_identifier_types(family: int) -> tuple[IdentifierType, ...]:
+    """Return the ordered Identity types that a lease can carry for one family."""
+    reservation_identifier_types(family)
+    return _LEASE_IDENTIFIERS[cast(Family, family)]
+
+
+def lease_identities(lease: Mapping[str, Any], family: int, *, strict: bool = False) -> tuple[ReservationIdentity, ...]:
+    """Return the normalized Reservation Identities one Kea lease carries, in match order.
+
+    Both Kea's own spelling (``hw-address``) and the template-safe spelling
+    (``hw_address``) are accepted, so lease enrichment and Reservation enrichment
+    read one rule set instead of one each.
+    Strict observations reject present malformed identifiers instead of dropping them.
+    """
+    identities: list[ReservationIdentity] = []
+    for identifier_type in lease_identifier_types(family):
+        keys = (identifier_type, identifier_type.replace("-", "_"))
+        values = [lease[key] for key in keys if key in lease] if strict else [lease.get(keys[0]) or lease.get(keys[1])]
+        observed: ReservationIdentity | None = None
+        for value in values:
+            if not strict and not value:
+                continue
+            try:
+                if not isinstance(value, str):
+                    raise ValueError("Reservation identifier value must be a string.")
+                identity = ReservationIdentity(identifier_type, value)
+            except ValueError as exc:
+                if strict:
+                    raise RuntimeError(f"Kea returned a lease with an invalid {identifier_type}.") from exc
+                continue
+            if strict and observed is not None and identity != observed:
+                raise RuntimeError(f"Kea returned a lease with conflicting {identifier_type} aliases.")
+            observed = identity
+            if identity not in identities:
+                identities.append(identity)
+    return tuple(identities)
 
 
 def reservation_identifier_choices(family: int) -> tuple[tuple[IdentifierType, str], ...]:

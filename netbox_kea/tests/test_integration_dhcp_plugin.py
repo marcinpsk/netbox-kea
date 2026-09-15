@@ -931,9 +931,10 @@ class DhcpPluginReservationSnapshotImportTest(TestCase):
         self.assertEqual(summary.errors, 0, summary.warnings)
         self.assertFalse(IPAddress.objects.filter(address__net_host="2001:db8:aa::5").exists())
 
-    def test_reservation_whose_mac_row_cannot_be_written_is_skipped(self):
-        """Importing it would store a row with no identifier, which no later run can match."""
+    def test_reservation_whose_mac_row_cannot_be_written_rolls_back_its_ip(self):
+        """A MAC write failure must not commit the reservation's earlier IP write."""
         from django.db.utils import OperationalError
+        from ipam.models import IPAddress
 
         HostReservation = apps.get_model(DHCP_PLUGIN, "HostReservation")
         conf = {"subnet4": [{"id": 7, "subnet": "10.43.0.0/24"}]}
@@ -946,12 +947,184 @@ class DhcpPluginReservationSnapshotImportTest(TestCase):
             second = self.adapter.import_server_config(self.server, intent, snapshot)
 
         self.assertEqual(HostReservation.objects.count(), 0)
+        self.assertFalse(IPAddress.objects.filter(address__net_host="10.43.0.50").exists())
         self.assertEqual(first.reservations_created, 0)
         self.assertFalse(first.reservations_unread)
-        self.assertEqual(first.reservations_skipped, 1)
+        self.assertEqual(first.errors, 1, first.warnings)
+        self.assertEqual(first.reservations_skipped, 0)
+        self.assertEqual(second.errors, 1, second.warnings)
         self.assertTrue(
-            any("hardware address could not be resolved" in warning for warning in second.warnings),
+            any("could not be imported" in warning for warning in second.warnings),
             second.warnings,
+        )
+
+    def test_delegated_prefixes_import_as_shared_ipam_prefixes(self):
+        """A DHCPv6 Reservation delegates prefixes, and the plugin models them."""
+        from ipam.models import Prefix
+
+        HostReservation = apps.get_model(DHCP_PLUGIN, "HostReservation")
+
+        conf = {"subnet6": [{"id": 3, "subnet": "2001:db8:3::/64"}]}
+        hosts = [
+            {
+                "subnet-id": 3,
+                "duid": "01:02:03:04:05:06",
+                "ip-addresses": ["2001:db8:3::5"],
+                "prefixes": ["2001:db8:beef::/56", "2001:db8:cafe::/56"],
+                "hostname": "pd-host",
+            }
+        ]
+        summary = self.adapter.import_server_config(
+            self.server, parse_dhcp_config(conf, 6), _reservation_snapshot(conf, 6, hosts)
+        )
+
+        self.assertEqual(summary.errors, 0, summary.warnings)
+        res = HostReservation.objects.get(hostname="pd-host")
+        self.assertCountEqual(
+            [str(prefix.prefix) for prefix in res.ipv6_prefixes.all()],
+            ["2001:db8:beef::/56", "2001:db8:cafe::/56"],
+        )
+        # The same IPAM rows the rest of the plugin reads, not private copies.
+        self.assertEqual(
+            set(res.ipv6_prefixes.values_list("pk", flat=True)),
+            set(
+                Prefix.objects.filter(prefix__in=["2001:db8:beef::/56", "2001:db8:cafe::/56"]).values_list(
+                    "pk", flat=True
+                )
+            ),
+        )
+
+    def test_failed_reservation_write_rolls_back_its_delegated_prefix(self):
+        """A valid name collision after Prefix creation must leave no partial IPAM row."""
+        from ipam.models import Prefix
+
+        HostReservation = apps.get_model(DHCP_PLUGIN, "HostReservation")
+        conf = {"subnet6": [{"id": 6, "subnet": "2001:db8:6::/64"}]}
+        common_duid = ["aa"] * 83
+        first_duid = ":".join([*common_duid, "01"])
+        colliding_duid = ":".join([*common_duid, "02"])
+        intent = parse_dhcp_config(conf, 6)
+
+        first = self.adapter.import_server_config(
+            self.server,
+            intent,
+            _reservation_snapshot(conf, 6, [{"subnet-id": 6, "duid": first_duid}]),
+        )
+        collision = self.adapter.import_server_config(
+            self.server,
+            intent,
+            _reservation_snapshot(
+                conf,
+                6,
+                [
+                    {
+                        "subnet-id": 6,
+                        "duid": colliding_duid,
+                        "prefixes": ["2001:db8:face::/56"],
+                    }
+                ],
+            ),
+        )
+
+        self.assertEqual(first.errors, 0, first.warnings)
+        self.assertEqual(HostReservation.objects.count(), 1)
+        self.assertEqual(collision.errors, 1, collision.warnings)
+        self.assertFalse(Prefix.objects.filter(prefix="2001:db8:face::/56").exists())
+
+    def test_global_reservation_keeps_its_delegated_prefixes(self):
+        """A delegated prefix carries its own length, so no Subnet has to supply one."""
+        HostReservation = apps.get_model(DHCP_PLUGIN, "HostReservation")
+
+        conf = {"subnet6": []}
+        hosts = [{"subnet-id": 0, "duid": "01:02:03:0b", "prefixes": ["2001:db8:d00d::/56"], "hostname": "g6-pd"}]
+        summary = self.adapter.import_server_config(
+            self.server, parse_dhcp_config(conf, 6), _reservation_snapshot(conf, 6, hosts)
+        )
+
+        self.assertEqual(summary.errors, 0, summary.warnings)
+        res = HostReservation.objects.get(hostname="g6-pd")
+        self.assertIsNone(res.subnet)
+        self.assertEqual([str(prefix.prefix) for prefix in res.ipv6_prefixes.all()], ["2001:db8:d00d::/56"])
+
+    def test_reimport_clears_dropped_delegated_prefixes(self):
+        """Kea no longer delegates the prefix, so the imported record must not keep it."""
+        HostReservation = apps.get_model(DHCP_PLUGIN, "HostReservation")
+
+        conf = {"subnet6": [{"id": 4, "subnet": "2001:db8:4::/64"}]}
+        identity = {"subnet-id": 4, "duid": "01:02:03:04:05:07", "hostname": "pd-dropped"}
+        intent = parse_dhcp_config(conf, 6)
+
+        self.adapter.import_server_config(
+            self.server, intent, _reservation_snapshot(conf, 6, [{**identity, "prefixes": ["2001:db8:f00d::/56"]}])
+        )
+        second = self.adapter.import_server_config(self.server, intent, _reservation_snapshot(conf, 6, [identity]))
+
+        self.assertEqual(second.errors, 0, second.warnings)
+        res = HostReservation.objects.get(hostname="pd-dropped")
+        self.assertEqual(list(res.ipv6_prefixes.all()), [])
+
+    def test_skipped_reservation_leaves_no_delegated_prefix_behind(self):
+        """The record never imports, so its prefixes must not appear in IPAM either."""
+        from django.db.utils import OperationalError
+        from ipam.models import Prefix
+
+        conf = {"subnet6": [{"id": 5, "subnet": "2001:db8:5::/64"}]}
+        hosts = [
+            {
+                "subnet-id": 5,
+                "hw-address": "aa:bb:cc:dd:ee:50",
+                "prefixes": ["2001:db8:dead::/56"],
+                "hostname": "pd-skipped",
+            }
+        ]
+
+        with patch("dcim.models.MACAddress.objects.get_or_create", side_effect=OperationalError("no MAC row")):
+            summary = self.adapter.import_server_config(
+                self.server, parse_dhcp_config(conf, 6), _reservation_snapshot(conf, 6, hosts)
+            )
+
+        self.assertEqual(summary.reservations_created, 0)
+        self.assertFalse(Prefix.objects.filter(prefix="2001:db8:dead::/56").exists())
+
+    def test_global_reservation_reports_a_curated_address_it_attaches(self):
+        """A Global Scope skips the sync's own guard, so the import must apply it here."""
+        from ipam.models import IPAddress
+
+        HostReservation = apps.get_model(DHCP_PLUGIN, "HostReservation")
+        curated = IPAddress.objects.create(
+            address="10.0.0.12/32",
+            status="active",
+            description="Held for the console server by NetOps",
+        )
+        conf = {"subnet4": []}
+        hosts = [{"subnet-id": 0, "hw-address": "aa:bb:cc:dd:ee:ab", "ip-address": "10.0.0.12", "hostname": "g4-cur"}]
+        summary = self.adapter.import_server_config(
+            self.server, parse_dhcp_config(conf, 4), _reservation_snapshot(conf, 4, hosts)
+        )
+
+        curated.refresh_from_db()
+        self.assertEqual(curated.description, "Held for the console server by NetOps")
+        self.assertEqual(curated.status, "active")
+        self.assertEqual(HostReservation.objects.get(hostname="g4-cur").ipv4_address, curated)
+        self.assertEqual(summary.foreign_addresses_skipped, 1)
+        self.assertTrue(any("10.0.0.12" in warning for warning in summary.warnings), summary.warnings)
+
+    def test_global_reservation_reports_the_address_it_cannot_attach(self):
+        """A Global Reservation has no Subnet to size an address from, so the address is lost."""
+        HostReservation = apps.get_model(DHCP_PLUGIN, "HostReservation")
+
+        conf = {"subnet4": []}
+        hosts = [{"subnet-id": 0, "hw-address": "aa:bb:cc:dd:ee:aa", "ip-address": "10.0.0.11", "hostname": "g4-addr"}]
+        summary = self.adapter.import_server_config(
+            self.server, parse_dhcp_config(conf, 4), _reservation_snapshot(conf, 4, hosts)
+        )
+
+        self.assertEqual(summary.errors, 0, summary.warnings)
+        self.assertIsNone(HostReservation.objects.get(hostname="g4-addr").ipv4_address)
+        self.assertEqual(summary.addresses_unattached, 1)
+        self.assertTrue(
+            any("10.0.0.11" in warning for warning in summary.warnings),
+            summary.warnings,
         )
 
 

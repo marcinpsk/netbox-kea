@@ -88,6 +88,13 @@ repos:
   # ~/.local/opt/opengrep/bin; set OPENGREP_BIN to override the binary location.
   - repo: local
     hooks:
+      - id: opengrep-rule-tests
+        name: opengrep rule-tests
+        entry: scripts/opengrep-test.sh
+        language: script
+        pass_filenames: false
+        stages: [pre-commit]
+        files: ^\.opengrep/
       - id: opengrep
         name: opengrep (custom Kea rules)
         entry: scripts/opengrep-scan.sh
