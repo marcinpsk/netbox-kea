@@ -401,7 +401,7 @@ class TestSyncReservationMultiAddressV6(TestCase):
             "hostname": "v6host.example.com",
             "subnet-id": 1,
         }
-        ip_obj, created, _ = _sync_reservation(reservation)
+        _ip_obj, created, _ = _sync_reservation(reservation)
         self.assertTrue(created)
         self.assertTrue(
             NbIP.objects.filter(address__net_host="2001:db8::1").exists(),
@@ -1564,7 +1564,7 @@ class TestSyncSubnetToNetboxPrefix(TestCase):
     def test_creates_prefix_on_first_call(self):
         from ipam.models import Prefix
 
-        prefix_obj, created, did_update = self._sync("10.0.0.0/24")
+        _prefix_obj, created, did_update = self._sync("10.0.0.0/24")
         self.assertTrue(created)
         self.assertFalse(did_update)
         self.assertEqual(Prefix.objects.filter(prefix="10.0.0.0/24").count(), 1)
@@ -1572,7 +1572,7 @@ class TestSyncSubnetToNetboxPrefix(TestCase):
     def test_idempotent_on_second_call(self):
         """Second call returns existing object without changing it."""
         self._sync("10.1.0.0/24")
-        prefix_obj, created, did_update = self._sync("10.1.0.0/24")
+        _prefix_obj, created, did_update = self._sync("10.1.0.0/24")
         self.assertFalse(created)
         self.assertFalse(did_update)
 
@@ -1604,7 +1604,7 @@ class TestSyncSubnetToNetboxPrefix(TestCase):
     def test_ipv6_prefix(self):
         from ipam.models import Prefix
 
-        prefix_obj, created, _ = self._sync("2001:db8::/48")
+        _prefix_obj, created, _ = self._sync("2001:db8::/48")
         self.assertTrue(created)
         self.assertTrue(Prefix.objects.filter(prefix="2001:db8::/48").exists())
 
@@ -1631,7 +1631,7 @@ class TestSyncPoolToNetboxIPRange(TestCase):
 
         result = self._sync("192.168.1.50-192.168.1.100", "192.168.1.0/24")
         self.assertIsNotNone(result)
-        range_obj, created, did_update = result
+        _range_obj, created, did_update = result
         self.assertTrue(created)
         self.assertFalse(did_update)
         self.assertEqual(IPRange.objects.filter(start_address="192.168.1.50/24").count(), 1)
@@ -1639,7 +1639,7 @@ class TestSyncPoolToNetboxIPRange(TestCase):
     def test_creates_range_for_cidr_pool(self):
         result = self._sync("192.168.1.128/25", "192.168.1.0/24")
         self.assertIsNotNone(result)
-        range_obj, created, _ = result
+        _range_obj, created, _ = result
         self.assertTrue(created)
 
     def test_idempotent_on_second_call(self):

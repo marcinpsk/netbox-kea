@@ -322,10 +322,8 @@ def _cleanup_stale_ips(
         stale_qs = stale_qs.exclude(address__net_host=exc_ip)
 
     # Restrict to same IP family to avoid cross-family false positives.
-    if ":" in new_ip_str:
-        stale_qs = stale_qs.filter(address__contains=":")
-    else:
-        stale_qs = stale_qs.exclude(address__contains=":")
+    is_v6 = ":" in new_ip_str
+    stale_qs = stale_qs.filter(address__contains=":") if is_v6 else stale_qs.exclude(address__contains=":")
 
     # Never touch IPs the NetBox DHCP plugin references: deleting one would violate
     # its PROTECT FKs and deprecating/blanking one would corrupt an authored
@@ -379,13 +377,14 @@ def _sync_mac_address(hw_address: str, hostname: str = ""):
         mac_obj, _ = MACAddress.objects.get_or_create(mac_address=mac_str)
         if hostname and _update_mac_description(mac_obj, hostname):
             mac_obj.save()
-        return mac_obj
     except (ProgrammingError, OperationalError, IntegrityError):
         logger.debug("DB error while syncing MAC address %s to NetBox DCIM", hw_address, exc_info=True)
     except AddrFormatError:
         logger.debug("Invalid MAC address format %r — skipping DCIM MAC sync", hw_address, exc_info=True)
-    except Exception:  # noqa: BLE001 — unexpected errors from MACAddress model
+    except Exception:
         logger.debug("Failed to sync MAC address %s to NetBox DCIM", hw_address, exc_info=True)
+    else:
+        return mac_obj
     return None
 
 

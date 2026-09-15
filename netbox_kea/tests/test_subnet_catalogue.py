@@ -870,7 +870,7 @@ class TestSubnetCatalogue(TestCase):
         self.assertEqual(snapshot.subnet_choices, (("198.18.1.0/24", 1),))
 
     def test_display_reports_client_construction_failure(self):
-        self.server.client_cert_path = "/tmp/netbox-kea-client.crt"
+        self.server.client_cert_path = "/tmp/netbox-kea-client.crt"  # noqa: S108 - path is never created, only assigned
         self.server.client_key_path = ""
 
         with stub_kea({}) as kea:

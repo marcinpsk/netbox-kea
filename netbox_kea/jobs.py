@@ -87,7 +87,7 @@ def _fetch_reservation_snapshot(server: Server, version: int) -> ReservationSnap
             exc,
         )
         return None
-    except Exception:  # noqa: BLE001
+    except Exception:
         # exc_info, because the job continues and the traceback is the only record.
         logger.warning("Server %s (v%s): Reservation Snapshot failed", server.name, version, exc_info=True)
         return None
@@ -100,7 +100,7 @@ def _fetch_reservation_snapshot(server: Server, version: int) -> ReservationSnap
             return SNAPSHOT_SKIPPED
         logger.warning("Server %s (v%s): Reservation Snapshot failed", server.name, version, exc_info=True)
         return None
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.warning("Server %s (v%s): Reservation Snapshot failed", server.name, version, exc_info=True)
         return None
 
@@ -211,7 +211,7 @@ def _sync_server_leases(
                 stats["created"] += 1
             elif changed:
                 stats["updated"] += 1
-        except Exception:  # noqa: BLE001, PERF203
+        except Exception:  # noqa: PERF203
             logger.debug(
                 "Failed to sync lease %s from server %s",
                 lease.get("ip-address", "?"),
@@ -291,7 +291,7 @@ def _sync_server_reservations(
             processed += 1
             stats["created"] += result.created
             stats["updated"] += result.changed
-        except Exception as exc:  # noqa: BLE001, PERF203
+        except Exception as exc:
             if row_errors_logged < _ROW_ERROR_LOG_LIMIT:
                 row_errors_logged += 1
                 logger.warning(
@@ -352,7 +352,7 @@ def _sync_subnet_entry(
                 stats["created"] += 1
             elif did_update:
                 stats["updated"] += 1
-        except Exception:  # noqa: BLE001, PERF203
+        except Exception:
             logger.exception("Failed to sync prefix %s from server %s", subnet_cidr, server_name)
             stats["prefix_errors"] += 1
 
@@ -380,7 +380,7 @@ def _sync_subnet_entry(
                         stats["created"] += 1
                     elif did_update:
                         stats["updated"] += 1
-            except Exception:  # noqa: BLE001, PERF203
+            except Exception:
                 logger.exception("Failed to sync pool %s from server %s", pool_str, server_name)
                 stats["prefix_errors"] += 1
 
@@ -699,7 +699,7 @@ class KeaIpamSyncJob(JobRunner):
                     except NoSuchJobError:
                         db_job.delete()
                         deleted += 1
-                except Exception:  # noqa: BLE001
+                except Exception:
                     logger.debug(
                         "netbox_kea: skipping ghost-job check for record %r due to per-record error.",
                         getattr(db_job, "pk", None),
@@ -712,7 +712,7 @@ class KeaIpamSyncJob(JobRunner):
                     "RQ counterpart. Periodic IPAM sync will resume now.",
                     deleted,
                 )
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.warning(
                 "netbox_kea: ghost-job self-heal skipped (DB or Redis not available at scheduling time).",
                 exc_info=True,
@@ -751,10 +751,8 @@ class KeaIpamSyncJob(JobRunner):
                 return
 
             server_pk = kwargs.get("server_pk")
-            if server_pk is not None:
-                servers = list(Server.objects.filter(pk=server_pk))
-            else:
-                servers = list(Server.objects.all())
+            server_qs = Server.objects.filter(pk=server_pk) if server_pk is not None else Server.objects.all()
+            servers = list(server_qs)
 
             if not servers:
                 self.logger.info("No Kea servers configured — nothing to sync.")
@@ -807,8 +805,8 @@ class KeaIpamSyncJob(JobRunner):
                         server_stats,
                         conflict_ips=conflict_ips,
                     )
-                except Exception as exc:  # noqa: BLE001, PERF203
-                    self.logger.error(f"Unhandled error syncing server {server.name}: {exc}", exc_info=True)
+                except Exception:
+                    self.logger.exception(f"Unhandled error syncing server {server.name}; see server logs")
                     server_stats["errors"] += 1
 
                 self.logger.info(
@@ -843,7 +841,7 @@ class KeaIpamSyncJob(JobRunner):
                 f" conflicts={total['conflicts']} skipped={total['skipped']}"
             )
             if total["errors"] > 0 or total["prefix_errors"] > 0:
-                raise JobFailed()
+                raise JobFailed
         finally:
             if not isinstance(self.job.data, dict):
                 self.job.data = {}

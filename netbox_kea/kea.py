@@ -376,7 +376,7 @@ class KeaClient:
         command: str,
         service: list[str] | None = None,
         arguments: dict[str, Any] | None = None,
-        check: None | Sequence[int] = (0,),
+        check: Sequence[int] | None = (0,),
     ) -> list[KeaResponse]:
         """Send a command to the Kea API and return the response list.
 
@@ -442,7 +442,7 @@ class KeaClient:
             return
         try:
             self._on_config_change()
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.exception("Configuration changed for %s, but cache invalidation failed", service)
 
     def _config_mutation_command(
@@ -1139,7 +1139,7 @@ class KeaClient:
             pools: Optional list of initial pool ranges (e.g. ``["10.0.0.100-10.0.0.200"]``).
             gateway: Optional default gateway IP (sets option ``routers``; DHCPv4 only).
             dns_servers: Optional list of DNS server IPs.
-            ntp_servers: Optional list of NTP server hostnames/IPs.
+            ntp_servers: Optional list of NTP server IPs (option 42 / 31 are address arrays).
             ddns_qualifying_suffix: Optional DDNS qualifying suffix for dynamic DNS updates.
 
         Raises:
@@ -1431,7 +1431,7 @@ class KeaClient:
                 ``[]`` = explicitly clear all pools.
             gateway: Default gateway IP (option ``routers``, DHCPv4 only).
             dns_servers: List of DNS server IP strings.
-            ntp_servers: List of NTP server hostnames/IPs.
+            ntp_servers: List of NTP server IP strings.
             ddns_qualifying_suffix: DDNS qualifying suffix.  ``None`` = omit (Kea keeps
                 existing); ``""`` = explicitly clear; a value sets it.
             valid_lft: Preferred lease lifetime in seconds.
@@ -1450,11 +1450,15 @@ class KeaClient:
         # object, so we must send ALL fields to avoid silently clearing relay, allocator,
         # client-class, reservations, and any option-data not managed by this form.
         subnet_def = self.subnet_get(version, subnet_id)
+        live_cidr = subnet_def.get("subnet")
+        if not isinstance(live_cidr, str):
+            raise RuntimeError(f"subnet{version}-get returned a non-string 'subnet' field for id={subnet_id}")
+        if ipaddress.ip_network(live_cidr, strict=False) != ipaddress.ip_network(subnet_cidr, strict=False):
+            raise ValueError("Subnet CIDR does not match the live subnet.")
         subnet_def.pop("metadata", None)  # Kea adds a read-only metadata key in some responses
 
-        # Identity: always authoritative from params
+        # Keep the CIDR returned by Kea; edits cannot change the subnet identity.
         subnet_def["id"] = subnet_id
-        subnet_def["subnet"] = subnet_cidr
 
         # option-data: preserve entries NOT owned by this form (e.g. domain-name, tftp-server)
         # while replacing/adding/removing the ones the form manages.

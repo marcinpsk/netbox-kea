@@ -273,7 +273,7 @@ class _CombinedSubnetsView(_CombinedViewMixin):
                         (server.name, message)
                         for message in dict.fromkeys(diagnostic.message for diagnostic in diagnostics)
                     )
-                except Exception:  # noqa: BLE001, PERF203
+                except Exception:
                     logger.exception("Failed to query server %s", server.name)
                     errors.append((server.name, "Failed to query server"))
 
@@ -393,7 +393,7 @@ class _CombinedSharedNetworksView(_CombinedViewMixin):
                 server = future_to_server[future]
                 try:
                     all_networks.extend(future.result())
-                except Exception:  # noqa: BLE001, PERF203
+                except Exception:
                     logger.exception("Failed to query server %s", server.name)
                     errors.append((server.name, "Failed to query server"))
 
@@ -485,7 +485,7 @@ def _reservation_capability_results(
     for server_pk, capability_future in capability_futures.items():
         try:
             capabilities_by_server[server_pk] = capability_future.result()
-        except Exception:  # noqa: BLE001, PERF203
+        except Exception:  # noqa: PERF203
             logger.exception("Failed to query Reservation capabilities from %s", server_map[server_pk].name)
             capabilities_by_server[server_pk] = None
     return capabilities_by_server
@@ -549,7 +549,7 @@ class _CombinedReservationsView(_CombinedViewMixin):
                             fetched_snapshot,
                         )
                     )
-                except Exception:  # noqa: BLE001, PERF203
+                except Exception:
                     logger.exception("Failed to query server %s", server.name)
                     errors.append((server.name, "Failed to query server"))
             capabilities_by_server = _reservation_capability_results(capability_futures, server_map)
@@ -735,9 +735,9 @@ class _CombinedLeasesView(_CombinedViewMixin):
                     server = future_to_server[future]
                     try:
                         all_leases.extend(future.result())
-                    except LeaseQueryGuardError as exc:  # noqa: PERF203
+                    except LeaseQueryGuardError as exc:
                         errors.append((server.name, lease_query_guard_message(exc, state_filter)))
-                    except Exception:  # noqa: BLE001, PERF203
+                    except Exception:
                         logger.exception("Failed to query server %s", server.name)
                         errors.append((server.name, "Failed to query server"))
         else:
@@ -753,7 +753,7 @@ class _CombinedLeasesView(_CombinedViewMixin):
                         all_leases.extend(leases)
                         if was_truncated:
                             truncated_servers.append(server.name)
-                    except Exception:  # noqa: BLE001, PERF203
+                    except Exception:
                         logger.exception("Failed to query server %s", server.name)
                         errors.append((server.name, "Failed to query server"))
 

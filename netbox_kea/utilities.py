@@ -1,10 +1,11 @@
+import contextlib
 import csv
 import io
 import ipaddress
 import logging
 import re
 from collections.abc import Callable
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Literal
 
 import requests
@@ -124,10 +125,8 @@ def _enrich_lease(now: datetime, lease: dict[str, Any]) -> dict[str, Any]:
 
     # F1: inject numeric sort key so django-tables2 sorts IPs as integers, not strings.
     if ip_str := lease.get("ip_address"):
-        try:
+        with contextlib.suppress(ValueError):
             lease["_ip_sort_key"] = int(ipaddress.ip_address(ip_str))
-        except ValueError:
-            pass
 
     # F10: default expiry CSS class; updated below once we know the expiry time.
     lease["expiry_class"] = ""
@@ -141,10 +140,10 @@ def _enrich_lease(now: datetime, lease: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(cltt, int) or not isinstance(valid_lft, int):
         logger.warning("Unexpected non-integer cltt/valid_lft in lease: %s", lease.get("ip_address", "?"))
         return lease
-    expires_at = datetime.fromtimestamp(cltt + valid_lft)
+    expires_at = datetime.fromtimestamp(cltt + valid_lft, tz=timezone.utc)
     lease["expires_at"] = expires_at
     lease["expires_in"] = max(0, int((expires_at - now).total_seconds()))
-    lease["cltt"] = datetime.fromtimestamp(cltt)
+    lease["cltt"] = datetime.fromtimestamp(cltt, tz=timezone.utc)
 
     # F10: set expiry_class based on how close the lease is to expiring.
     if expires_at < now:
@@ -157,7 +156,7 @@ def _enrich_lease(now: datetime, lease: dict[str, Any]) -> dict[str, Any]:
 
 def format_leases(leases: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Enrich a list of raw Kea lease dicts with expiry metadata."""
-    now = datetime.now()
+    now = datetime.now(tz=timezone.utc)
     return [_enrich_lease(now, ls) for ls in leases]
 
 
@@ -426,10 +425,7 @@ def parse_lease_csv(version: int, content: str) -> list[dict[str, Any]]:
         ValueError: If a required field is missing or empty for any row.
 
     """
-    if version == 4:
-        required = {"ip-address"}
-    else:
-        required = {"ip-address", "duid", "iaid"}
+    required = {"ip-address"} if version == 4 else {"ip-address", "duid", "iaid"}
 
     content = content.lstrip("\ufeff")
     reader = csv.DictReader(
@@ -448,8 +444,8 @@ def parse_lease_csv(version: int, content: str) -> list[dict[str, Any]]:
 
         try:
             addr = ipaddress.ip_address(row["ip-address"])
-        except ValueError:
-            raise ValueError(f"Row {row_num}: invalid IP address '{row['ip-address']}'")
+        except ValueError as exc:
+            raise ValueError(f"Row {row_num}: invalid IP address '{row['ip-address']}'") from exc
         if addr.version != version:
             raise ValueError(f"Row {row_num}: '{row['ip-address']}' is not an IPv{version} address")
 

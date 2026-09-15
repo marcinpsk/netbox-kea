@@ -338,6 +338,43 @@ class FetchConfigIntentTest(TestCase):
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class FetchConfigCollectionsTest(SimpleTestCase):
+    def test_malformed_collections_are_logged_as_read_failures(self):
+        from netbox_kea.models import Server
+
+        server = Server(name="config-shape-test", ca_url="http://kea.example.invalid")
+        for version in (4, 6):
+            for conf in (
+                {f"subnet{version}": 1},
+                {"client-classes": 1},
+                {"shared-networks": 1},
+                {"shared-networks": [{"name": "test-network", f"subnet{version}": 1}]},
+            ):
+                with self.subTest(version=version, conf=conf):
+                    response = {"result": 0, "arguments": {f"Dhcp{version}": conf}}
+                    with stub_kea({"config-get": response}), self.assertLogs(dps.logger, level="WARNING"):
+                        self.assertIsNone(dps._fetch_config_intent(server, version))
+
+    def test_valid_entries_survive_malformed_neighbors(self):
+        from netbox_kea.models import Server
+
+        server = Server(name="config-shape-test", ca_url="http://kea.example.invalid")
+        conf = {
+            "subnet4": [None, {}, {"id": 1, "subnet": "198.18.0.0/24"}],
+            "client-classes": [None, {}, {"name": "test-class"}],
+            "shared-networks": [
+                None,
+                {},
+                {"name": "test-network", "subnet4": [None, {"id": 2, "subnet": "198.18.1.0/24"}]},
+            ],
+        }
+        with stub_kea({"config-get": {"result": 0, "arguments": {"Dhcp4": conf}}}):
+            intent = dps._fetch_config_intent(server, 4)
+        self.assertEqual([subnet.kea_subnet_id for subnet in intent.subnets], [1, 2])
+        self.assertEqual([entry.name for entry in intent.client_classes], ["test-class"])
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class SyncNowErrorHandlingTest(TestCase):
     """The sync action follows the exception contract and never leaks a traceback."""
 

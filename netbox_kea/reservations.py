@@ -720,7 +720,6 @@ def _parse_record_at(
                 "Kea returned a Reservation that does not match the requested hostname.",
                 "hostname",
             )
-        return reservation, None
     except MalformedReservation as exc:
         suffix = f".{exc.field}" if exc.field else ""
         return None, ReservationDiagnostic(
@@ -728,6 +727,8 @@ def _parse_record_at(
             message=str(exc),
             source_position=f"hosts[{index}]{suffix}",
         )
+    else:
+        return reservation, None
 
 
 def _parse_reservation_page(
