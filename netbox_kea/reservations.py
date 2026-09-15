@@ -105,6 +105,7 @@ def lease_identities(lease: Mapping[str, Any], family: int, *, strict: bool = Fa
     for identifier_type in lease_identifier_types(family):
         keys = (identifier_type, identifier_type.replace("-", "_"))
         values = [lease[key] for key in keys if key in lease] if strict else [lease.get(keys[0]) or lease.get(keys[1])]
+        observed: ReservationIdentity | None = None
         for value in values:
             if not strict and not value:
                 continue
@@ -114,6 +115,9 @@ def lease_identities(lease: Mapping[str, Any], family: int, *, strict: bool = Fa
                 if strict:
                     raise RuntimeError(f"Kea returned a lease with an invalid {identifier_type}.") from exc
                 continue
+            if strict and observed is not None and identity != observed:
+                raise RuntimeError(f"Kea returned a lease with conflicting {identifier_type} aliases.")
+            observed = identity
             if identity not in identities:
                 identities.append(identity)
     return tuple(identities)
