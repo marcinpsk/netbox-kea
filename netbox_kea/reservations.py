@@ -110,6 +110,8 @@ def lease_identities(lease: Mapping[str, Any], family: int, *, strict: bool = Fa
             if not strict and not value:
                 continue
             try:
+                if not isinstance(value, str):
+                    raise ValueError("Reservation identifier value must be a string.")
                 identity = ReservationIdentity(identifier_type, value)
             except ValueError as exc:
                 if strict:
