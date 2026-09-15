@@ -53,6 +53,17 @@ def _locked_version() -> str:
     raise AssertionError("ruff is absent from the lock file")
 
 
+def _runs_ruff_through_uv(command: list[str]) -> bool:
+    """Require Ruff as uv's executable after the flags used by this repository."""
+    if command[:2] != ["uv", "run"]:
+        return False
+    arguments = iter(command[2:])
+    executable = next(arguments, None)
+    while executable == "--native-tls":
+        executable = next(arguments, None)
+    return executable == "ruff"
+
+
 def _local_ruff_hooks(text: str | None = None) -> dict[str, list[str]]:
     """Return each local ruff hook's command, having checked it runs through uv."""
     config = yaml.safe_load(PRE_COMMIT.read_text(encoding="utf-8") if text is None else text)
@@ -79,8 +90,7 @@ def _local_ruff_hooks(text: str | None = None) -> dict[str, list[str]]:
     commands = {}
     for hook_id, hook in hooks.items():
         command = shlex.split(hook["entry"])
-        assert command[:2] == ["uv", "run"], f"the {hook_id} hook must run ruff through uv: {hook['entry']!r}"
-        assert "ruff" in command, f"the {hook_id} hook does not run ruff: {hook['entry']!r}"
+        assert _runs_ruff_through_uv(command), f"the {hook_id} hook must run ruff through uv: {hook['entry']!r}"
         assert hook["language"] == "system", f"the {hook_id} hook must use the system language"
         commands[hook_id] = command
     return commands
@@ -121,7 +131,73 @@ def test_ci_runs_ruff_through_uv():
     ]
     assert runs, "no workflow runs ruff"
     for run in runs:
-        assert re.match(r"uv run\b", run.strip()), f"a workflow runs ruff outside uv: {run!r}"
+        _assert_workflow_runs_ruff_through_uv(run)
+
+
+def _assert_workflow_runs_ruff_through_uv(run: str) -> None:
+    commands: list[list[str]] = []
+    for line in run.replace("\\\n", " ").splitlines():
+        commands.append([])
+        lexer = shlex.shlex(line, posix=True, punctuation_chars=";&|")
+        lexer.whitespace_split = True
+        for token in lexer:
+            if set(token) <= set(";&|"):
+                commands.append([])
+            else:
+                commands[-1].append(token)
+    ruff_commands = [command for command in commands if "ruff" in command]
+    assert ruff_commands, f"a workflow does not run ruff: {run!r}"
+    for command in ruff_commands:
+        assert _runs_ruff_through_uv(command), f"a workflow runs ruff outside uv: {run!r}"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "uv run echo ruff",
+        "uv run echo\nruff",
+        "uv run true; ruff check .",
+        "uv run true && ruff check .",
+        "uv run ruff check . && ruff format .",
+        "uv run ruff check . # check\nruff format .",
+    ],
+)
+def test_workflow_rejects_ruff_outside_the_uv_executable(command):
+    with pytest.raises(AssertionError):
+        _assert_workflow_runs_ruff_through_uv(command)
+
+
+@pytest.mark.parametrize(
+    "command", ["uv run echo ruff", "uv run echo\nruff", "uv run true; ruff", "uv run true && ruff"]
+)
+def test_hook_rejects_ruff_outside_the_uv_executable(command):
+    config = {
+        "repos": [
+            {
+                "repo": "local",
+                "hooks": [
+                    {"id": "ruff-check", "entry": command, "language": "system"},
+                    {"id": "ruff-format", "entry": "uv run --native-tls ruff format", "language": "system"},
+                ],
+            }
+        ]
+    }
+    with pytest.raises(AssertionError):
+        _local_ruff_hooks(yaml.safe_dump(config))
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "uv run ruff check .",
+        "uv run --native-tls ruff format --check .",
+        "uv run ruff check . && uv run --native-tls ruff format .",
+        "uv run ruff check . # check\nuv run ruff format .",
+        "uv run --native-tls \\\nruff check .",
+    ],
+)
+def test_workflow_accepts_ruff_as_the_uv_executable(command):
+    _assert_workflow_runs_ruff_through_uv(command)
 
 
 def test_a_ranged_dev_dependency_is_rejected():
