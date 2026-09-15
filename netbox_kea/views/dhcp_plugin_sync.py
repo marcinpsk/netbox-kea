@@ -76,12 +76,10 @@ def _fetch_config_intent(server: Server, version: Family):
         client = server.get_client(version=version)
         resp = client.command("config-get", service=[f"dhcp{version}"])
         conf = _extract_dhcp_conf(resp, version)
+        return parse_dhcp_config(conf, version) if conf is not None else None
     except (KeaException, requests.RequestException, ValueError, RuntimeError):
         logger.warning("DHCP-plugin sync: config-get failed for %s (v%s)", server.name, version, exc_info=True)
         return None
-    if conf is None:
-        return None
-    return parse_dhcp_config(conf, version)
 
 
 def _fetch_reservation_snapshot(server: Server, version: Family):
