@@ -1,7 +1,6 @@
 import json
 import logging
 from pathlib import Path
-from typing import Literal
 
 import requests
 from django.conf import settings
@@ -14,6 +13,7 @@ from netbox.constants import CENSOR_TOKEN, CENSOR_TOKEN_CHANGED
 from netbox.models import NetBoxModel
 from netbox.models.features import JobsMixin
 
+from .constants import Family
 from .kea import KeaClient, KeaException
 from .reservations import MAX_IDENTITY_LENGTH
 
@@ -226,7 +226,7 @@ class Server(JobsMixin, NetBoxModel):
         """Return the detail URL for this server."""
         return reverse("plugins:netbox_kea:server", args=[self.pk])
 
-    def get_client(self, version: Literal[4, 6] | None = None) -> KeaClient:
+    def get_client(self, version: Family | None = None) -> KeaClient:
         """Return a configured KeaClient, targeting the protocol-specific URL and credentials when available.
 
         The ``service`` command argument is sent only when this server is fronted by

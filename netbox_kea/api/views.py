@@ -8,9 +8,9 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 
 from .. import constants, filtersets, models
+from ..constants import Family
 from ..kea import KeaException, LeaseQueryGuardError, lease_query_guard_message
 from ..reservations import (
-    Family,
     GlobalReservationScope,
     InSubnetReservationScope,
     MalformedReservation,

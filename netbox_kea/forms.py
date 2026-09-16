@@ -1,5 +1,5 @@
 import ipaddress
-from typing import Any, Literal, cast
+from typing import Any, cast
 
 from django import forms
 from django.core.exceptions import ValidationError
@@ -10,6 +10,7 @@ from utilities.forms.fields import TagFilterField
 from utilities.forms.rendering import FieldSet
 
 from . import constants
+from .constants import Family
 from .models import Server
 from .reservation_transfer import MAX_DOCUMENT_BYTES as MAX_TRANSFER_DOCUMENT_BYTES
 from .reservations import (
@@ -42,7 +43,7 @@ def _validate_subnet_cidr(value: str, *, strict: bool) -> str:
     return value
 
 
-def _validate_ip(value: str, version: int) -> str:
+def _validate_ip(value: str, version: Family) -> str:
     """Validate that *value* is a single IP address matching *version* (4 or 6)."""
     try:
         addr = IPAddress(value)
@@ -378,7 +379,7 @@ class Leases6SearchForm(BaseLeasesSarchForm):
 class MultipleIPField(forms.MultipleChoiceField):
     """Form field accepting a list of IP addresses validated against a specific IP version."""
 
-    def __init__(self, version: Literal[6, 4], *args, **kwargs) -> None:
+    def __init__(self, version: Family, *args, **kwargs) -> None:
         """Initialise with the required IP *version* (4 or 6)."""
         self._version = version
         super().__init__(*args, widget=forms.MultipleHiddenInput, **kwargs)
@@ -426,7 +427,7 @@ class Lease4DeleteForm(BaseLeaseDeleteForm):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def _identifier_type_choices(version: int) -> list[tuple[str, str]]:
+def _identifier_type_choices(version: Family) -> list[tuple[str, str]]:
     """Offer exactly the identifier types the Reservation domain accepts."""
     return list(reservation_identifier_choices(version))
 
@@ -454,7 +455,7 @@ class ReservationIdentifierSelect(forms.Select):
 def _configure_identifier_capabilities(
     form: "Reservation4Form | Reservation6Form",
     capabilities: ReservationCapabilities | None,
-    version: int,
+    version: Family,
 ) -> None:
     """Disable identifier choices the live Kea configuration cannot use."""
     unavailable: dict[str, str] = (

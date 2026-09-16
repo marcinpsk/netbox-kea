@@ -10,12 +10,12 @@ import requests
 from requests.models import HTTPBasicAuth
 
 from . import constants
+from .constants import Family
 from .dhcp_options import DHCPOption
 from .reservations import (
     RESERVATION_PAGE_FETCH_FAILED,
     RESERVATION_PAGE_LIMIT_REACHED,
     RESERVATION_PAGINATION_STALLED,
-    Family,
     GlobalReservationScope,
     IdentifierType,
     InSubnetReservationScope,

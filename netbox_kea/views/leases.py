@@ -24,6 +24,7 @@ from utilities.paginator import EnhancedPaginator, get_paginate_count
 from utilities.views import GetReturnURLMixin, register_model_view
 
 from .. import constants, forms, tables
+from ..constants import Family
 from ..kea import (
     KeaClient,
     KeaException,
@@ -603,7 +604,7 @@ class _BaseLeaseEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin, View):
     Subclasses must set ``dhcp_version`` and ``form_class``.
     """
 
-    dhcp_version: int
+    dhcp_version: Family
     form_class: type
 
     def _get_server(self, pk: int) -> Server:
@@ -729,7 +730,7 @@ class _BaseLeaseAddView(_KeaChangeMixin, generic.ObjectView):
 
     queryset = Server.objects.all()
     template_name = "netbox_kea/server_lease_add.html"
-    dhcp_version: int
+    dhcp_version: Family
     form_class: type
     # Use _active_tab (not `tab`) so model_view_tabs does not register this as a
     # duplicate navigation entry — the add view URL resolves with pk-only, which
@@ -997,7 +998,7 @@ def _reservation_for_lease_worker(worker_clients, version, catalogue, lease, loo
 
 def _fetch_reservations_for_leases(
     client: KeaClient,
-    version: int,
+    version: Family,
     catalogue,
     leases: list[dict[str, Any]],
 ) -> tuple[dict[str, Reservation], bool, set[str]]:
@@ -1048,7 +1049,7 @@ def _set_lease_reservation_fields(
     lease: dict[str, Any],
     reservation: Reservation | None,
     server_pk: int,
-    version: int,
+    version: Family,
     subnet_cidr: str | None,
     host_cmds_available: bool,
     failed_ips: set[str],
@@ -1114,7 +1115,7 @@ def _set_lease_reservation_fields(
 
 
 def _enrich_leases_with_badges(
-    leases: list[dict[str, Any]], server: "Server", version: int, can_delete: bool = False, can_change: bool = False
+    leases: list[dict[str, Any]], server: "Server", version: Family, can_delete: bool = False, can_change: bool = False
 ) -> None:
     """In-place: add reservation and NetBox IPAM badge fields to lease dicts.
 

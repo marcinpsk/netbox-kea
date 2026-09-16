@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 
 from django.http import HttpResponse
 
+from netbox_kea.constants import Family
 from netbox_kea.models import Server
 from netbox_kea.utilities import (
     _enrich_lease,
@@ -678,7 +679,7 @@ class TestLeaseStateEnrich(TestCase):
 class TestParseLeaseCsv(TestCase):
     """parse_lease_csv(version, csv_text) → list[dict] ready for lease_add."""
 
-    def _parse(self, content: str, version: int = 4) -> list:
+    def _parse(self, content: str, version: Family = 4) -> list:
         from netbox_kea.utilities import parse_lease_csv
 
         return parse_lease_csv(version, content)

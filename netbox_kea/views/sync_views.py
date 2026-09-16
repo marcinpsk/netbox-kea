@@ -1,6 +1,6 @@
 import csv
 import logging
-from typing import Any, Literal
+from typing import Any
 
 import requests
 from django.contrib import messages
@@ -15,6 +15,7 @@ from netaddr import AddrFormatError, IPAddress
 from utilities.views import register_model_view
 
 from .. import forms
+from ..constants import Family
 from ..kea import KeaException
 from ..models import Server
 from ..reservation_transfer import (
@@ -129,7 +130,7 @@ class ServerLease6SyncView(_BaseSyncView):
 class _BaseReservationSyncView(ConditionalLoginRequiredMixin, View):
     """Synchronize one exact typed Reservation and all its allocation addresses."""
 
-    dhcp_version: Literal[4, 6]
+    dhcp_version: Family
 
     def post(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
         if not (request.user.has_perm("ipam.add_ipaddress") and request.user.has_perm("ipam.change_ipaddress")):
@@ -179,7 +180,7 @@ class ServerReservation6SyncView(_BaseReservationSyncView):
 class _BaseBulkReservationSyncView(ConditionalLoginRequiredMixin, View):
     """Fetch one full typed Snapshot and synchronize every valid Reservation."""
 
-    dhcp_version: int = 4  # overridden in subclasses
+    dhcp_version: Family = 4  # overridden in subclasses
 
     def post(self, request: HttpRequest, pk: int) -> HttpResponse:
         if not (request.user.has_perm("ipam.add_ipaddress") and request.user.has_perm("ipam.change_ipaddress")):
@@ -340,7 +341,7 @@ class ReservationCheckNetboxIPView(ConditionalLoginRequiredMixin, View):
 class _BaseBulkReservationImportView(_KeaChangeMixin, ConditionalLoginRequiredMixin, View):
     """Validate one document, then create typed Reservations until the first failure."""
 
-    dhcp_version: Literal[4, 6]
+    dhcp_version: Family
     form_class: type
 
     template_name = "netbox_kea/server_reservation_bulk_import.html"
@@ -522,7 +523,7 @@ class _BaseBulkLeaseImportView(_KeaChangeMixin, ConditionalLoginRequiredMixin, V
     **POST**: parse CSV → loop :meth:`KeaClient.lease_add` → show summary.
     """
 
-    dhcp_version: int
+    dhcp_version: Family
     form_class: type
 
     template_name = "netbox_kea/server_lease_bulk_import.html"

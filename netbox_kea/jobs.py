@@ -37,7 +37,11 @@ from netbox.jobs import JobRunner, system_job
 
 if TYPE_CHECKING:
     from .models import Server
-    from .reservations import Reservation, ReservationSnapshot
+
+# Runtime import: get_type_hints() resolves this module's annotations, so a
+# TYPE_CHECKING-only Family would make that fail with NameError.
+from .constants import Family
+from .reservations import Reservation, ReservationSnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +75,7 @@ class _SnapshotSkipped:
 SNAPSHOT_SKIPPED = _SnapshotSkipped()
 
 
-def _fetch_reservation_snapshot(server: Server, version: int) -> ReservationSnapshot | _SnapshotSkipped | None:
+def _fetch_reservation_snapshot(server: Server, version: Family) -> ReservationSnapshot | _SnapshotSkipped | None:
     """Return a typed Reservation Snapshot, SNAPSHOT_SKIPPED, or None after a failure."""
     from .kea import KeaException
     from .subnet_catalogue import CatalogueUnavailable, for_synchronization
@@ -149,7 +153,7 @@ def _record_conflicts(stats: dict[str, int], conflicts: list[str], conflict_ips:
 
 def _sync_server_leases(
     server: Server,
-    version: int,
+    version: Family,
     *,
     max_leases: int,
     stats: dict[str, int],
@@ -385,7 +389,7 @@ def _sync_subnet_entry(
                 stats["prefix_errors"] += 1
 
 
-def _fetch_kea_subnets(server: Server, version: int) -> list[dict] | None:
+def _fetch_kea_subnets(server: Server, version: Family) -> list[dict] | None:
     """Fetch and merge the full subnet list (incl. shared-network subnets) via ``config-get``.
 
     Returns the list of subnet dicts on success (possibly empty), or ``None``
@@ -463,7 +467,7 @@ def _build_subnet_prefix_map(subnets: list[dict] | None) -> dict[int, int]:
 
 def _sync_server_prefixes_and_ranges(
     server: Server,
-    version: int,
+    version: Family,
     *,
     subnets: list[dict] | None,
     sync_prefixes: bool,
@@ -520,7 +524,8 @@ def _sync_one_server(
     # Cleanup is only safe when both sources contributed, otherwise we risk
     # removing IPs that exist in the source we didn't sync.
     cleanup_safe = sync_leases and sync_reservations
-    for version, enabled in ((4, server.dhcp4), (6, server.dhcp6)):
+    versions: tuple[tuple[Family, bool], ...] = ((4, server.dhcp4), (6, server.dhcp6))
+    for version, enabled in versions:
         if not enabled:
             continue
 

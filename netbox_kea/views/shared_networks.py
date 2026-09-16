@@ -13,6 +13,7 @@ from netbox.views import generic
 from utilities.views import register_model_view
 
 from .. import forms, tables
+from ..constants import Family
 from ..kea import KeaClient, KeaException, PartialPersistError
 from ..models import Server
 from ..utilities import (
@@ -36,7 +37,7 @@ class BaseServerSharedNetworksView(generic.ObjectChildrenView):
     table = tables.SharedNetworkTable
     queryset = Server.objects.all()
     template_name = "netbox_kea/server_shared_networks.html"
-    dhcp_version: int
+    dhcp_version: Family
 
     def get_children(self, request: HttpRequest, parent: Server) -> list[dict[str, Any]]:
         """Fetch shared-networks from config-get and return one dict per network."""
@@ -149,7 +150,7 @@ class BaseServerSharedNetworkAddView(_KeaChangeMixin, ConditionalLoginRequiredMi
     Subclasses set ``dhcp_version`` to 4 or 6.
     """
 
-    dhcp_version: int
+    dhcp_version: Family
 
     def _success_url(self, server: Server) -> str:
         return reverse(f"plugins:netbox_kea:server_shared_networks{self.dhcp_version}", args=[server.pk])
@@ -230,7 +231,7 @@ class BaseServerSharedNetworkDeleteView(_KeaChangeMixin, ConditionalLoginRequire
     belonged to the deleted network fall back to the global address pool.
     """
 
-    dhcp_version: int
+    dhcp_version: Family
 
     def _success_url(self, server: Server) -> str:
         return reverse(f"plugins:netbox_kea:server_shared_networks{self.dhcp_version}", args=[server.pk])
@@ -295,7 +296,7 @@ class BaseServerSharedNetworkEditView(_KeaChangeMixin, ConditionalLoginRequiredM
     cycle because there is no free ``network{v}-update`` Kea hook command.
     """
 
-    dhcp_version: int
+    dhcp_version: Family
 
     def _success_url(self, server: Server) -> str:
         return reverse(f"plugins:netbox_kea:server_shared_networks{self.dhcp_version}", args=[server.pk])

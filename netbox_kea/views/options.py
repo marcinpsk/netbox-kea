@@ -1,6 +1,6 @@
 import logging
 from contextlib import contextmanager
-from typing import Any, Literal, cast
+from typing import Any, cast
 from urllib.parse import urlencode as _urlencode
 
 import requests
@@ -14,6 +14,7 @@ from django.views import View
 from utilities.views import register_model_view
 
 from .. import forms
+from ..constants import Family
 from ..kea import KeaConfigTestError, KeaException, PartialPersistError
 from ..models import Server
 from ..utilities import (
@@ -34,7 +35,7 @@ logger = logging.getLogger(__name__)
 _CONFIG_TAB = OptionalViewTab(label="Config", weight=1050, is_enabled=lambda s: s.dhcp4 or s.dhcp6)
 
 
-def config_nav_context(server_pk: int, section: str, dhcp_version: int) -> dict[str, Any]:
+def config_nav_context(server_pk: int, section: str, dhcp_version: Family) -> dict[str, Any]:
     """Build context for the Config tab's section+family toggle nav.
 
     ``section`` is ``"options"`` (server option-data editor) or ``"option_def"``
@@ -98,7 +99,7 @@ class _BaseSubnetOptionsEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin,
     config-test → config-write).
     """
 
-    dhcp_version: int = 4
+    dhcp_version: Family = 4
 
     def _get_subnet_from_config(self, client, subnet_id: int) -> dict | None:
         """Fetch config and return the subnet dict, or None if not found or on error."""
@@ -243,7 +244,7 @@ class _BaseServerOptionsEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin,
     → config-write).
     """
 
-    dhcp_version: int = 4
+    dhcp_version: Family = 4
 
     def _get_options_from_config(self, client) -> list[dict] | None:
         """Fetch config and return the server-level option-data list, or None on error."""
@@ -445,7 +446,7 @@ class BaseServerOptionDefView(ConditionalLoginRequiredMixin, View):
     Subclasses set ``dhcp_version`` to 4 or 6.
     """
 
-    dhcp_version: Literal[4, 6]
+    dhcp_version: Family
 
     def get(self, request: HttpRequest, pk: int) -> HttpResponse:
         """Render the option-def list."""
@@ -520,7 +521,7 @@ class BaseServerOptionDefAddView(_KeaChangeMixin, ConditionalLoginRequiredMixin,
     Subclasses set ``dhcp_version`` to 4 or 6.
     """
 
-    dhcp_version: int
+    dhcp_version: Family
 
     def _success_url(self, server: Server) -> str:
         return reverse(f"plugins:netbox_kea:server_option_def{self.dhcp_version}", args=[server.pk])
@@ -594,7 +595,7 @@ class BaseServerOptionDefDeleteView(_KeaChangeMixin, ConditionalLoginRequiredMix
     The option code and space are passed as URL kwargs.
     """
 
-    dhcp_version: int
+    dhcp_version: Family
 
     def _success_url(self, server: Server) -> str:
         return reverse(f"plugins:netbox_kea:server_option_def{self.dhcp_version}", args=[server.pk])

@@ -20,11 +20,11 @@ from django.views import View
 from netbox.views import generic
 from utilities.views import register_model_view
 
+from ..constants import Family
 from ..integrations import dhcp_plugin
 from ..kea import KeaException
 from ..mappers.kea_to_dhcp import parse_dhcp_config
 from ..models import Server
-from ..reservations import Family
 from ..utilities import OptionalViewTab
 
 logger = logging.getLogger(__name__)
@@ -45,7 +45,7 @@ def _enabled_versions(server: Server) -> list[Family]:
     return versions
 
 
-def _extract_dhcp_conf(resp, version: int) -> dict | None:
+def _extract_dhcp_conf(resp, version: Family) -> dict | None:
     """Pull the ``Dhcp4``/``Dhcp6`` block out of a ``config-get`` response, or ``None``.
 
     Raises ``RuntimeError`` on a malformed response *shape* so a protocol/contract

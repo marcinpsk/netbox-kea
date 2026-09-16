@@ -14,6 +14,7 @@ from utilities.htmx import htmx_partial
 from utilities.views import register_model_view
 
 from .. import forms, tables
+from ..constants import Family
 from ..kea import KeaClient, KeaException, PartialPersistError
 from ..models import Server
 from ..reservations import InSubnetReservationScope
@@ -39,7 +40,7 @@ _POOL_RE = re.compile(r"^[0-9a-fA-F.:/-]{3,100}$")
 _SUBNETS_TAB = OptionalViewTab(label="Subnets", weight=1020, is_enabled=lambda s: s.dhcp4 or s.dhcp6)
 
 
-def subnets_nav_context(server_pk: int, section: str, dhcp_version: int) -> dict[str, Any]:
+def subnets_nav_context(server_pk: int, section: str, dhcp_version: Family) -> dict[str, Any]:
     """Build context for the Subnets/Shared-Networks section+family toggle nav.
 
     ``section`` is ``"subnets"`` or ``"shared_networks"``. Returns the shared tab
@@ -239,7 +240,7 @@ def _warn_pool_reservation_overlap(
     request: HttpRequest,
     server: Server,
     client: "KeaClient",
-    version: int,
+    version: Family,
     subnet_id: int,
     pool_str: str,
 ) -> None:
@@ -296,7 +297,7 @@ def _warn_pool_reservation_overlap(
 def _warn_reservation_pool_overlap(
     request: HttpRequest,
     client: "KeaClient",
-    version: int,
+    version: Family,
     subnet_id: int,
     ip_str: str,
 ) -> None:
@@ -345,7 +346,7 @@ class _BasePoolAddView(_KeaChangeMixin, generic.ObjectView):
 
     queryset = Server.objects.all()
     template_name = "netbox_kea/server_pool_add.html"
-    dhcp_version: int  # set on subclasses
+    dhcp_version: Family  # set on subclasses
 
     def _subnets_url(self, pk: int) -> str:
         return reverse(f"plugins:netbox_kea:server_subnets{self.dhcp_version}", args=[pk])
@@ -427,7 +428,7 @@ class _BasePoolDeleteView(_KeaChangeMixin, generic.ObjectView):
 
     queryset = Server.objects.all()
     template_name = "netbox_kea/server_pool_delete.html"
-    dhcp_version: int
+    dhcp_version: Family
 
     def _subnets_url(self, pk: int) -> str:
         return reverse(f"plugins:netbox_kea:server_subnets{self.dhcp_version}", args=[pk])
@@ -503,7 +504,7 @@ class _BaseSubnetAddView(_KeaChangeMixin, generic.ObjectView):
 
     queryset = Server.objects.all()
     template_name = "netbox_kea/server_subnet_add.html"
-    dhcp_version: int
+    dhcp_version: Family
 
     def _subnets_url(self, pk: int) -> str:
         return reverse(f"plugins:netbox_kea:server_subnets{self.dhcp_version}", args=[pk])
@@ -724,7 +725,7 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
 
     queryset = Server.objects.all()
     template_name = "netbox_kea/server_subnet_edit.html"
-    dhcp_version: int
+    dhcp_version: Family
 
     def _subnets_url(self, pk: int) -> str:
         return reverse(f"plugins:netbox_kea:server_subnets{self.dhcp_version}", args=[pk])
@@ -1156,7 +1157,7 @@ class _BaseSubnetDeleteView(_KeaChangeMixin, generic.ObjectView):
 
     queryset = Server.objects.all()
     template_name = "netbox_kea/server_subnet_delete.html"
-    dhcp_version: int
+    dhcp_version: Family
 
     def _subnets_url(self, pk: int) -> str:
         return reverse(f"plugins:netbox_kea:server_subnets{self.dhcp_version}", args=[pk])
@@ -1238,7 +1239,7 @@ class _BaseSubnetWipeView(_KeaChangeMixin, generic.ObjectView):
 
     queryset = Server.objects.all()
     template_name = "netbox_kea/server_subnet_wipe.html"
-    dhcp_version: int
+    dhcp_version: Family
 
     def _subnets_url(self, pk: int) -> str:
         return reverse(f"plugins:netbox_kea:server_subnets{self.dhcp_version}", args=[pk])

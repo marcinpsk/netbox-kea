@@ -8,7 +8,7 @@ import concurrent.futures
 import ipaddress
 import logging
 from dataclasses import replace
-from typing import Any, Literal, cast
+from typing import Any, cast
 from urllib.parse import urlencode
 
 import requests
@@ -22,6 +22,7 @@ from netbox.views import generic
 from utilities.views import register_model_view
 
 from .. import constants, forms, tables
+from ..constants import Family
 from ..kea import KeaClient, KeaException, LeaseQueryGuardError
 from ..models import Server
 from ..reservation_transfer import export_reservation_document
@@ -75,7 +76,7 @@ def _assigned(lease: dict[str, Any]) -> bool:
     return state == 0
 
 
-def _lease_facts_in_subnet(client: KeaClient, version: int, subnet_id: int) -> Any:
+def _lease_facts_in_subnet(client: KeaClient, version: Family, subnet_id: int) -> Any:
     """Observe every assigned lease in one Subnet, or report why it could not be read."""
     with client.clone() as worker_client:
         try:
@@ -91,7 +92,7 @@ def _lease_facts_in_subnet(client: KeaClient, version: int, subnet_id: int) -> A
     return addresses, identities
 
 
-def _identity_holds_a_lease(client: KeaClient, version: int, identity: ReservationIdentity) -> Any:
+def _identity_holds_a_lease(client: KeaClient, version: Family, identity: ReservationIdentity) -> Any:
     """Ask Kea whether one identity holds an assigned lease in any Subnet.
 
     A Global Reservation has no Subnet, so its address cannot imply one. Only a
@@ -114,7 +115,7 @@ def _identity_holds_a_lease(client: KeaClient, version: int, identity: Reservati
 def _enrich_reservations_with_lease_status(
     client: KeaClient,
     reservations: list[dict[str, Any]],
-    version: int,
+    version: Family,
 ) -> None:
     """Report one lease relationship per Reservation, and none where Kea could not be read.
 
@@ -186,7 +187,7 @@ def _enrich_reservations_with_lease_status(
 def _lease_search_url(
     reservation: Reservation,
     server_pk: int,
-    version: int,
+    version: Family,
     address: ipaddress.IPv4Address | ipaddress.IPv6Address | None,
 ) -> str | None:
     """Return the lease search that finds the lease this Reservation matched.
@@ -210,7 +211,7 @@ def _filter_reservations(
     reservations: list[dict[str, Any]],
     q: str,
     subnet_id: int | None,
-    version: int,
+    version: Family,
     scope: str = "",
 ) -> list[dict[str, Any]]:
     """Filter normalized typed Reservation rows in memory."""
@@ -277,13 +278,13 @@ def _reservation_table_record(reservation: Reservation, server: Server) -> dict[
     return record
 
 
-def _empty_reservation_snapshot(version: Literal[4, 6]) -> ReservationSnapshot:
+def _empty_reservation_snapshot(version: Family) -> ReservationSnapshot:
     return ReservationSnapshot(family=version, records=(), diagnostics=(), complete=False, next_cursor=None)
 
 
 def _fetch_reservation_page(
     server: Server,
-    version: Literal[4, 6],
+    version: Family,
     cursor: str | None,
     *,
     q: str = "",
@@ -350,13 +351,13 @@ def _fetch_reservation_page(
     return replace(page, records=matches, diagnostics=tuple(diagnostics), complete=complete)
 
 
-def _fetch_reservation_snapshot(server: Server, version: int) -> ReservationSnapshot:
+def _fetch_reservation_snapshot(server: Server, version: Family) -> ReservationSnapshot:
     catalogue = subnet_catalogue(server, version)
     client = server.get_client(version=version)
     return client.reservation_snapshot(version, catalogue, page_size=_RESERVATION_PAGE_SIZE)
 
 
-def _configured_capabilities(server: Server, version: Literal[4, 6]) -> ReservationCapabilities | None:
+def _configured_capabilities(server: Server, version: Family) -> ReservationCapabilities | None:
     """Return confirmed live mutation capabilities without affecting read-only display."""
     try:
         client = server.get_client(version=version)
@@ -378,7 +379,7 @@ def _next_reservation_page_url(request: HttpRequest, cursor: str | None) -> str 
 def _attach_reservation_action_urls(
     reservations: list[dict[str, Any]],
     server_pk: int,
-    version: int,
+    version: Family,
     *,
     can_change: bool,
 ) -> None:
@@ -403,7 +404,7 @@ def _attach_reservation_action_urls(
 def _enrich_reservations_with_badges(
     reservations: list[dict[str, Any]],
     server: Server,
-    version: int,
+    version: Family,
     can_sync: bool = False,
 ) -> None:
     """Add active-lease and aggregate NetBox synchronization state to typed rows."""
@@ -463,7 +464,7 @@ def _enrich_reservations_with_badges(
 def _reservation_list_context(
     request: HttpRequest,
     server: Server,
-    version: Literal[4, 6],
+    version: Family,
 ) -> dict[str, Any]:
     """Fetch and present one bounded typed Reservation page."""
     hook_available = True
@@ -539,7 +540,7 @@ def _reservation_list_context(
     }
 
 
-def _reservation_export_response(request: HttpRequest, server: Server, version: Literal[4, 6]) -> HttpResponse:
+def _reservation_export_response(request: HttpRequest, server: Server, version: Family) -> HttpResponse:
     """Export a full typed Snapshot only when its traversal is complete."""
     format_name = request.GET.get("export")
     if format_name not in ("yaml", "json"):
