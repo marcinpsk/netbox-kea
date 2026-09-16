@@ -16,10 +16,15 @@ import pytest
 import requests
 from playwright.sync_api import Page
 
-from ..conftest import TimeoutSession
+from ..conftest import REQUEST_TIMEOUT, TimeoutSession
 
 # This is linked from netbox_kea to avoid import errors
 from ..kea import KeaClient
+
+#: `/users/config/` is bounded like every other NetBox call, and CI has been seen to
+#: answer it slowly, so the browser suite states the shared bound rather than its own.
+_USER_PREFERENCES_TIMEOUT_SECONDS = REQUEST_TIMEOUT
+_USER_PREFERENCES_TIMEOUT_MILLISECONDS = _USER_PREFERENCES_TIMEOUT_SECONDS * 1000
 
 
 @pytest.fixture
@@ -42,22 +47,34 @@ def clear_leases(kea_client: KeaClient) -> None:
 
 
 @pytest.fixture(autouse=True)
-def reset_user_preferences(requests_session: requests.Session, nb_api: pynetbox.api) -> None:
-    r = requests_session.get(url=f"{nb_api.base_url}/users/config/")
-    r.raise_for_status()
+def reset_user_preferences(page: Page, netbox_login: None, netbox_url: str) -> None:
+    csrf_token = page.evaluate("window.CSRF_TOKEN")
+    if not isinstance(csrf_token, str) or not csrf_token:
+        raise RuntimeError("The authenticated NetBox page did not provide a CSRF token.")
+    r = page.context.request.get(
+        url=f"{netbox_url}/api/users/config/",
+        timeout=_USER_PREFERENCES_TIMEOUT_MILLISECONDS,
+        fail_on_status_code=True,
+    )
     tables_config = r.json().get("tables", {})
+    headers = {"X-CSRFToken": csrf_token, "Referer": f"{netbox_url}/"}
 
-    # pynetbox doesn't support this endpoint
-    requests_session.patch(
-        url=f"{nb_api.base_url}/users/config/",
-        json={"tables": {k: {} for k in tables_config}},
-    ).raise_for_status()
+    page.context.request.patch(
+        url=f"{netbox_url}/api/users/config/",
+        data={"tables": {k: {} for k in tables_config}},
+        headers=headers,
+        timeout=_USER_PREFERENCES_TIMEOUT_MILLISECONDS,
+        fail_on_status_code=True,
+    )
 
     # restore pagination
-    requests_session.patch(
-        url=f"{nb_api.base_url}/users/config/",
-        json={"pagination": {"placement": "bottom"}},
-    ).raise_for_status()
+    page.context.request.patch(
+        url=f"{netbox_url}/api/users/config/",
+        data={"pagination": {"placement": "bottom"}},
+        headers=headers,
+        timeout=_USER_PREFERENCES_TIMEOUT_MILLISECONDS,
+        fail_on_status_code=True,
+    )
 
 
 @pytest.fixture

@@ -17,7 +17,7 @@ from .. import constants
 from ..kea import KeaClient
 
 # This is linked from netbox_kea to avoid import errors
-from .conftest import _DualEndpointKeaClient
+from .conftest import _USER_PREFERENCES_TIMEOUT_SECONDS, _DualEndpointKeaClient
 
 
 def test_dual_endpoint_client_rejects_multiple_services(kea_client: _DualEndpointKeaClient) -> None:
@@ -1431,6 +1431,7 @@ def test_lease_pagination_location(
     requests_session.patch(
         url=f"{nb_api.base_url}/users/config/",
         json={"pagination": {"placement": placement}},
+        timeout=_USER_PREFERENCES_TIMEOUT_SECONDS,
     ).raise_for_status()
 
     search_lease(page, version, "IP Address", ip)
