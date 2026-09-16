@@ -1176,6 +1176,15 @@ class TestCleanupStaleIpsBatch(TestCase):
     _KEA_DESC = "Synced from Kea DHCP lease"
 
     @override_settings(PLUGINS_CONFIG=_STALE_PLUGINS_CONFIG)
+    def test_batch_rejects_malformed_hostname(self):
+        from netbox_kea.sync import cleanup_stale_ips_batch
+
+        for hostname in (["host.example.invalid"], {"name": "host.example.invalid"}):
+            with self.subTest(hostname=hostname):
+                with self.assertRaisesRegex(RuntimeError, "hostname"):
+                    cleanup_stale_ips_batch([{"hostname": hostname, "ip-address": "198.18.0.20"}])
+
+    @override_settings(PLUGINS_CONFIG=_STALE_PLUGINS_CONFIG)
     def test_batch_protects_sibling_ips_with_same_hostname(self):
         """Two records with the same hostname: batch cleanup excludes both IPs."""
         from ipam.models import IPAddress as NbIP

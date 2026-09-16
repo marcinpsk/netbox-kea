@@ -168,7 +168,7 @@ def _enrich_reservations_with_lease_status(
         addresses, subnet_identities = cast(_SubnetLeaseFacts, facts)
         matched = next((address for address in reservation.addresses if str(address) in addresses), None)
         if matched is None and reservation.identity not in subnet_identities:
-            if reservation.identity.identifier_type in lease_identifier_types(version):
+            if reservation.addresses or reservation.identity.identifier_type in lease_identifier_types(version):
                 row["has_active_lease"] = False
             continue
         row["has_active_lease"] = True

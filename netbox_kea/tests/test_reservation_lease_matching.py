@@ -108,6 +108,20 @@ class TestReservationLeaseRelationship(_ViewTestBase):
         self.assertIs(rows[0]["has_active_lease"], True)
         self.assertContains(response, "Active Lease")
 
+    def test_address_bearing_unobservable_identity_reports_no_lease_for_empty_subnet(self):
+        for identifier_type in ("flex-id", "circuit-id"):
+            with self.subTest(identifier_type=identifier_type):
+                response, rows, _kea = self._rows(
+                    {
+                        "reservation-get-page": _res_page(
+                            [{"subnet-id": 20, identifier_type: "port-7", "ip-address": "198.18.0.20"}]
+                        ),
+                        "lease4-get-by-state": _leases_per_subnet({20: []}),
+                    }
+                )
+                self.assertIs(rows[0]["has_active_lease"], False)
+                self.assertContains(response, "No Lease")
+
     def test_an_unreadable_lease_observation_reports_no_relationship(self):
         """A failed lease query is unknown, not a confirmed absence of a lease."""
         response, rows, _kea = self._rows(

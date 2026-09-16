@@ -493,6 +493,16 @@ def _apply_ip_mask(ip_obj: NbIPAddress, ip_str: str, prefix_len: int, *, force: 
     return True
 
 
+def _record_hostname(record: dict) -> str:
+    """Validate a raw Kea record's optional hostname before synchronization."""
+    hostname = record.get("hostname")
+    if hostname is None:
+        return ""
+    if not isinstance(hostname, str):
+        raise RuntimeError("Kea record hostname must be a string or null.")
+    return hostname
+
+
 def sync_lease_to_netbox(
     lease: dict,
     *,
@@ -546,7 +556,7 @@ def sync_lease_to_netbox(
     from ipam.models import IPAddress as NbIP
 
     ip_str: str = lease["ip-address"]
-    hostname: str = lease.get("hostname", "")
+    hostname = _record_hostname(lease)
     subnet_id = lease.get("subnet-id")
     prefix_len = _resolve_prefix_length(ip_str, subnet_id, subnet_prefix_map)
 
@@ -770,7 +780,7 @@ def _record_hostname_and_addresses(record: dict | Reservation) -> tuple[str, set
             raise RuntimeError("Kea record ip-address must be a string or null.")
         addresses = {raw_address} if raw_address else set()
         addresses.update(address for address in raw_addresses if address)
-        return record.get("hostname", ""), addresses
+        return _record_hostname(record), addresses
     if isinstance(record, Reservation):
         return record.hostname, {str(address) for address in record.addresses}
     raise TypeError(f"cleanup_stale_ips_batch accepts a raw lease dict or a Reservation, not {type(record).__name__}")

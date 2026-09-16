@@ -36,6 +36,7 @@ out of CI so CodeRabbit can run its own analysis on pull requests.
 
 | Rule id | Severity | Catches |
 | --- | --- | --- |
+| `kea-sync-hostname-unvalidated` | error | Raw hostname reads in lease sync and cleanup indexing that bypass the shared string-or-null validator. |
 | `kea-get-client-missing-version` | warning | `server.get_client()` without `version=` (wrong daemon on dual-URL servers). |
 | `kea-exception-detail-in-response` | error | `str(exc)` / f-string of a caught exception leaked into `messages.*` / HTTP / DRF responses. |
 | `kea-command-result-indexed-without-guard` | error | `client.command(...)[0]` indexed directly, before validating the response shape. |

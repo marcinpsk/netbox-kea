@@ -303,6 +303,27 @@ class TestKeaIpamSyncJobRun(TestCase):
 
     # ── basic lease sync ──────────────────────────────────────────────────────
 
+    def test_malformed_foreign_lease_hostname_is_excluded_from_keep_set(self):
+        from netbox_kea.jobs import _sync_server_leases
+
+        server = self._make_db_server()
+        foreign = NbIP.objects.create(address="198.18.0.20/32", status="active", description="Manual address")
+        for hostname in (["host.example.invalid"], {"name": "host.example.invalid"}):
+            with self.subTest(hostname=hostname):
+                lease = {"ip-address": "198.18.0.20", "subnet-id": 1, "hostname": hostname}
+                stats = {"created": 0, "updated": 0, "errors": 0, "conflicts": 0}
+                all_synced = []
+                with _patch_kea(leases4=[lease]):
+                    complete, lease_ips = _sync_server_leases(
+                        server, 4, max_leases=0, stats=stats, all_synced=all_synced, subnet_prefix_map={1: 24}
+                    )
+                self.assertEqual(all_synced, [])
+                self.assertFalse(complete)
+                self.assertEqual(lease_ips, frozenset())
+                self.assertEqual(stats["errors"], 1)
+                foreign.refresh_from_db()
+                self.assertEqual(foreign.description, "Manual address")
+
     def test_creates_ip_from_lease(self):
         """Lease sync creates an IPAddress row in the real DB."""
         self._make_db_server()

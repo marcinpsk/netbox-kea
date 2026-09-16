@@ -7,6 +7,27 @@
 #
 # Rule-test fixtures live in .opengrep/tests/; run them with scripts/opengrep-test.sh.
 rules:
+  - id: kea-sync-hostname-unvalidated
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Read raw sync hostnames through _record_hostname() so malformed values
+      cannot enter the complete keep-set or become cleanup keys.
+    metadata:
+      category: correctness
+      confidence: HIGH
+    patterns:
+      - pattern-either:
+          - pattern-inside: |
+              def sync_lease_to_netbox(...):
+                  ...
+          - pattern-inside: |
+              def _record_hostname_and_addresses(...):
+                  ...
+      - pattern-either:
+          - pattern: $RECORD.get("hostname", ...)
+          - pattern: $RECORD["hostname"]
+
   - id: kea-get-client-missing-version
     languages: [python]
     severity: WARNING
