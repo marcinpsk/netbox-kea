@@ -94,7 +94,7 @@ repos:
         language: script
         pass_filenames: false
         stages: [pre-commit]
-        files: ^\.opengrep/
+        files: (^\.opengrep/|^scripts/opengrep-test\.sh$|^\.pre-commit-config\.yaml$)
       - id: opengrep
         name: opengrep (custom Kea rules)
         entry: scripts/opengrep-scan.sh
