@@ -10,13 +10,17 @@ import subprocess
 import sys
 import warnings
 from collections.abc import Iterator
+from typing import TYPE_CHECKING
 from urllib.parse import parse_qs, urlencode, urlparse
 
 import pytest
 import requests
 from playwright.sync_api import Locator, Page, expect
 
-from .conftest import _DualEndpointKeaClient
+if TYPE_CHECKING:
+    # The unit suite execs this file standalone, where a relative import has no
+    # package to resolve against. Keep every cross-module import behind this guard.
+    from .conftest import _DualEndpointKeaClient
 
 #: Mirrors ``_KEA_DESC_PREFIX`` in netbox_kea/sync.py. This suite cannot import the
 #: package (it needs Django), so a guard in the unit suite keeps the two in step.
@@ -596,7 +600,7 @@ _RESERVED_SUBNET_ID = 1
 
 
 @pytest.fixture
-def reserved_lease4(kea_client: _DualEndpointKeaClient, clear_leases: None) -> Iterator[str]:
+def reserved_lease4(kea_client: "_DualEndpointKeaClient", clear_leases: None) -> Iterator[str]:
     """Seed an active lease on a reserved address and yield that address.
 
     Depends on ``clear_leases`` because that fixture is autouse and wipes every lease;

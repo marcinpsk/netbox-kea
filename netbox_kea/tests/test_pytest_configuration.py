@@ -2560,3 +2560,95 @@ def test_the_setup_script_refuses_an_ambiguous_wheel_set(wheel_names):
 
         assert result.returncode == 1, result.stdout
         assert "Expected exactly one wheel" in result.stderr, result.stderr
+
+
+# ---------------------------------------------------------------------------
+# Standalone-loaded files must not use runtime relative imports
+# ---------------------------------------------------------------------------
+
+
+def _resolve_path_expression(node: ast.expr) -> Path | None:
+    """Resolve a ``ROOT / "a" / "b"`` expression to a path, or None if unrecognised."""
+    if isinstance(node, ast.Name):
+        value = globals().get(node.id)
+        return value if isinstance(value, Path) else None
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return Path(node.value)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+        left = _resolve_path_expression(node.left)
+        right = _resolve_path_expression(node.right)
+        return left / right if left is not None and right is not None else None
+    return None
+
+
+def _standalone_loaded_files() -> list[Path]:
+    """Return every file this module execs with ``spec_from_file_location``."""
+    tree = ast.parse(Path(__file__).read_text())
+    found = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
+        if name != "spec_from_file_location":
+            continue
+        assert len(node.args) >= 2, f"line {node.lineno}: spec_from_file_location without a path argument."
+        path = _resolve_path_expression(node.args[1])
+        assert path is not None, (
+            f"line {node.lineno}: this guard cannot resolve the loaded path. "
+            "Extend _resolve_path_expression rather than leaving the file unguarded."
+        )
+        found.add(path)
+    assert found, "no spec_from_file_location call was found; this guard has stopped reading its own source."
+    return sorted(found)
+
+
+def _is_type_checking_test(node: ast.expr) -> bool:
+    """Report whether *node* is the ``TYPE_CHECKING`` test of an ``if`` statement."""
+    if isinstance(node, ast.Name):
+        return node.id == "TYPE_CHECKING"
+    return isinstance(node, ast.Attribute) and node.attr == "TYPE_CHECKING"
+
+
+def _runtime_relative_imports(tree: ast.Module) -> list[str]:
+    """Return every relative import in *tree* that runs at import time."""
+    deferred = {
+        node
+        for statement in ast.walk(tree)
+        if isinstance(statement, ast.If) and _is_type_checking_test(statement.test)
+        for node in ast.walk(statement)
+    }
+    return [
+        f"line {node.lineno}: from {'.' * node.level}{node.module or ''}"
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.level > 0 and node not in deferred
+    ]
+
+
+@pytest.mark.parametrize("loaded", _standalone_loaded_files(), ids=lambda path: path.name)
+def test_a_standalone_loaded_file_has_no_runtime_relative_import(loaded: Path):
+    """``spec_from_file_location`` gives a module no package, so ``from .x`` raises there.
+
+    The tests below exec browser-suite files that way to drive their pure helpers without
+    a Playwright session. A relative import added to one of those files fails every such
+    test with an obscure ImportError, which is what happened once already. This names the
+    constraint instead, and unlike those tests it needs no browser dependency to run.
+    """
+    offenders = _runtime_relative_imports(ast.parse(loaded.read_text()))
+
+    assert not offenders, (
+        f"{loaded.relative_to(REPOSITORY_ROOT)} imports relatively at runtime: {'; '.join(offenders)}. "
+        "The unit suite execs this file standalone, where that raises "
+        "'attempted relative import with no known parent package'. "
+        "Move the import into an 'if TYPE_CHECKING:' block and quote the annotation."
+    )
+
+
+def test_the_relative_import_guard_reads_both_import_forms():
+    """The guard must flag a runtime relative import and clear a deferred one."""
+    flagged = _runtime_relative_imports(ast.parse("from .conftest import Thing\n"))
+    assert len(flagged) == 1, f"the guard missed a runtime relative import: {flagged}"
+
+    deferred = "from typing import TYPE_CHECKING\n\nif TYPE_CHECKING:\n    from .conftest import Thing\n"
+    assert _runtime_relative_imports(ast.parse(deferred)) == []
+    assert _runtime_relative_imports(ast.parse("from pathlib import Path\n")) == []
