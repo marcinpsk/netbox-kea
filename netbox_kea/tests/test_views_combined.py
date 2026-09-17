@@ -26,7 +26,7 @@ class TestFetchSharedNetworksFromServer(_ViewTestBase):
     """_fetch_shared_networks_from_server with null config-get arguments raises RuntimeError."""
 
     def test_null_config_raises_runtime_error(self):
-        from netbox_kea.views import _fetch_shared_networks_from_server
+        from netbox_kea.views.combined import _fetch_shared_networks_from_server
 
         with stub_kea({"config-get": [{"result": 0, "arguments": None}]}):
             with self.assertRaises(RuntimeError):
@@ -56,21 +56,21 @@ class TestCombinedResponseShapeGuards(_ViewTestBase):
 
     def test_leases_empty_response_raises_runtime_error(self):
         from netbox_kea import constants
-        from netbox_kea.views import _fetch_leases_from_server
+        from netbox_kea.views.combined import _fetch_leases_from_server
 
         with stub_kea({"lease4-get": []}):
             with self.assertRaises(RuntimeError):
                 _fetch_leases_from_server(self.server, "10.0.0.1", constants.BY_IP, 4)
 
     def test_all_leases_empty_response_raises_runtime_error(self):
-        from netbox_kea.views import _fetch_all_leases_from_server
+        from netbox_kea.views.combined import _fetch_all_leases_from_server
 
         with stub_kea({"lease4-get-page": []}):
             with self.assertRaises(RuntimeError):
                 _fetch_all_leases_from_server(self.server, 4)
 
     def test_shared_networks_empty_response_raises_runtime_error(self):
-        from netbox_kea.views import _fetch_shared_networks_from_server
+        from netbox_kea.views.combined import _fetch_shared_networks_from_server
 
         with stub_kea({"config-get": []}):
             with self.assertRaises(RuntimeError):
@@ -118,7 +118,7 @@ class TestCombinedSubnetDiagnostics(_ViewTestBase):
         self.assertNotContains(response, "Failed to query server")
 
     def test_empty_config_response_preserves_confirmed_empty_identity(self):
-        from netbox_kea.views import _fetch_subnets_from_server
+        from netbox_kea.views.combined import _fetch_subnets_from_server
 
         with stub_kea(
             {

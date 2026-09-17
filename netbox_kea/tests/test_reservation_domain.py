@@ -1,3 +1,4 @@
+import ast
 import itertools
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -5,6 +6,7 @@ from ipaddress import ip_address, ip_network
 from pathlib import Path
 from typing import get_args
 
+import yaml
 from django.test import SimpleTestCase
 
 from netbox_kea.dhcp_options import DHCPOption, parse_dhcp_options
@@ -38,6 +40,8 @@ from netbox_kea.subnet_catalogue import (
 )
 
 from .kea_stub import _res_get, _res_page, _typed_reservation, queued, stub_kea
+
+_REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _catalogue(family: Family, subnet_id: int, cidr: str) -> CatalogueSnapshot:
@@ -1423,3 +1427,62 @@ class TestSynchronizationLabel(SimpleTestCase):
         for label in get_args(SynchronizationLabel):
             with self.subTest(label=label):
                 self.assertTrue(ReservationSynchronizationState(label=label, synchronized=0, total=0).code)
+
+
+class TestRawRecordBoundary(SimpleTestCase):
+    """Guard the boundary ADR 0001 records: only the adapters see raw Kea records.
+
+    The OpenGrep rule states the same invariant but runs from pre-commit, so this
+    reads the rule's own allowed paths and enforces them in CI rather than
+    restating them.
+    """
+
+    RULE_ID = "kea-reservation-command-outside-adapter"
+
+    def _allowed_paths(self) -> list[str]:
+        ruleset = yaml.safe_load((_REPOSITORY_ROOT / ".opengrep" / "kea-rules.yaml").read_text(encoding="utf-8"))
+        rules = [rule for rule in ruleset["rules"] if rule["id"] == self.RULE_ID]
+        self.assertEqual(len(rules), 1, f"{self.RULE_ID} is missing from the OpenGrep ruleset.")
+        return rules[0]["paths"]["exclude"]
+
+    @staticmethod
+    def _reservation_commands(tree: ast.AST) -> list[str]:
+        """Return every ``*.command("reservation-...")`` name called in *tree*."""
+        return [
+            node.args[0].value
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "command"
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and isinstance(node.args[0].value, str)
+            and node.args[0].value.startswith("reservation-")
+        ]
+
+    def test_only_the_adapter_sends_a_reservation_command(self):
+        allowed = self._allowed_paths()
+        offenders = []
+        for source in sorted((_REPOSITORY_ROOT / "netbox_kea").rglob("*.py")):
+            relative = source.relative_to(_REPOSITORY_ROOT)
+            if any(relative.full_match(pattern) for pattern in allowed):
+                continue
+            offenders.extend(
+                f"{relative.as_posix()}: {command}"
+                for command in self._reservation_commands(ast.parse(source.read_text(encoding="utf-8")))
+            )
+
+        self.assertEqual(
+            offenders,
+            [],
+            "A reservation-* command outside the adapters hands raw Kea records to a consumer that "
+            f"cannot read their keys. See docs/adr/0001 and the {self.RULE_ID} OpenGrep rule. Found: {offenders}",
+        )
+
+    def test_the_boundary_scanner_sees_a_reservation_command(self):
+        """The scanner must find the call it looks for, and ignore the ones it must not."""
+        found = self._reservation_commands(
+            ast.parse('client.command("reservation-get-page", service=["dhcp4"])\nclient.command("config-get")\n')
+        )
+
+        self.assertEqual(found, ["reservation-get-page"])

@@ -256,7 +256,7 @@ _KNOWN_CODES_V6: dict[int, str] = {
 }
 
 
-def format_option_data(option_list: list[dict[str, Any]], version: Family = 4) -> dict[str, str]:
+def format_option_data(option_list: list[dict[str, Any]], version: Family) -> dict[str, str]:
     """Parse a Kea ``option-data`` list into a friendly ``{name: value}`` dict.
 
     Well-known DHCP option codes are mapped to canonical names using a
@@ -267,7 +267,8 @@ def format_option_data(option_list: list[dict[str, Any]], version: Family = 4) -
 
     Args:
         option_list: Raw ``option-data`` list from a Kea response.
-        version: DHCP version (4 or 6). Defaults to 4 for backward compatibility.
+        version: DHCP version (4 or 6). v4 and v6 reuse option codes with different
+            meanings, so the caller must say which family the list came from.
 
     Returns:
         A ``{field_name: value_str}`` dict suitable for template rendering.

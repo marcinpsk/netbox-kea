@@ -39,6 +39,7 @@ path = [
     "CHANGELOG.md",
     "AGENTS.md",
     "docs/agents/**",
+    "docs/adr/**",
     ".github/workflows/codeql.yml",
     ".envrc.example",
     ".devcontainer/**",

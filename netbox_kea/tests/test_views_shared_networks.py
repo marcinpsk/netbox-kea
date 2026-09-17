@@ -762,7 +762,7 @@ class TestSharedNetworksTabDisabled(_ViewTestBase):
         """dhcp4=False → get_children returns [] immediately (defensive guard, no Kea)."""
         from django.test import RequestFactory
 
-        from netbox_kea.views import ServerSharedNetworks4View
+        from netbox_kea.views.shared_networks import ServerSharedNetworks4View
 
         server = _make_db_server(name="no-dhcp4-children", dhcp4=False, dhcp6=True)
         view = ServerSharedNetworks4View()
