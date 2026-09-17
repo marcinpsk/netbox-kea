@@ -8,6 +8,7 @@ daemons, and one Server object joining them. Keeping the harness here is what le
 import os
 import uuid
 import warnings
+from collections.abc import Iterator
 from typing import Any
 
 import pynetbox
@@ -15,23 +16,28 @@ import pytest
 import requests
 from playwright.sync_api import Page
 
-from ..conftest import TimeoutSession
+from ..conftest import REQUEST_TIMEOUT, TimeoutSession
 
 # This is linked from netbox_kea to avoid import errors
 from ..kea import KeaClient
 
+#: `/users/config/` is bounded like every other NetBox call, and CI has been seen to
+#: answer it slowly, so the browser suite states the shared bound rather than its own.
+_USER_PREFERENCES_TIMEOUT_SECONDS = REQUEST_TIMEOUT
+_USER_PREFERENCES_TIMEOUT_MILLISECONDS = _USER_PREFERENCES_TIMEOUT_SECONDS * 1000
+
 
 @pytest.fixture
-def requests_session(nb_api: pynetbox.api) -> requests.Session:
-    s = TimeoutSession()
-    s.headers.update(
-        {
-            "Authorization": f"Token {nb_api.token}",
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-        }
-    )
-    return s
+def requests_session(nb_api: pynetbox.api) -> Iterator[requests.Session]:
+    with TimeoutSession() as s:
+        s.headers.update(
+            {
+                "Authorization": f"Token {nb_api.token}",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            }
+        )
+        yield s
 
 
 @pytest.fixture(autouse=True)
@@ -41,22 +47,34 @@ def clear_leases(kea_client: KeaClient) -> None:
 
 
 @pytest.fixture(autouse=True)
-def reset_user_preferences(requests_session: requests.Session, nb_api: pynetbox.api) -> None:
-    r = requests_session.get(url=f"{nb_api.base_url}/users/config/")
-    r.raise_for_status()
+def reset_user_preferences(page: Page, netbox_login: None, netbox_url: str) -> None:
+    csrf_token = page.evaluate("window.CSRF_TOKEN")
+    if not isinstance(csrf_token, str) or not csrf_token:
+        raise RuntimeError("The authenticated NetBox page did not provide a CSRF token.")
+    r = page.context.request.get(
+        url=f"{netbox_url}/api/users/config/",
+        timeout=_USER_PREFERENCES_TIMEOUT_MILLISECONDS,
+        fail_on_status_code=True,
+    )
     tables_config = r.json().get("tables", {})
+    headers = {"X-CSRFToken": csrf_token, "Referer": f"{netbox_url}/"}
 
-    # pynetbox doesn't support this endpoint
-    requests_session.patch(
-        url=f"{nb_api.base_url}/users/config/",
-        json={"tables": {k: {} for k in tables_config}},
-    ).raise_for_status()
+    page.context.request.patch(
+        url=f"{netbox_url}/api/users/config/",
+        data={"tables": {k: {} for k in tables_config}},
+        headers=headers,
+        timeout=_USER_PREFERENCES_TIMEOUT_MILLISECONDS,
+        fail_on_status_code=True,
+    )
 
     # restore pagination
-    requests_session.patch(
-        url=f"{nb_api.base_url}/users/config/",
-        json={"pagination": {"placement": "bottom"}},
-    ).raise_for_status()
+    page.context.request.patch(
+        url=f"{netbox_url}/api/users/config/",
+        data={"pagination": {"placement": "bottom"}},
+        headers=headers,
+        timeout=_USER_PREFERENCES_TIMEOUT_MILLISECONDS,
+        fail_on_status_code=True,
+    )
 
 
 @pytest.fixture
@@ -127,14 +145,15 @@ class _DualEndpointKeaClient:
 
 
 @pytest.fixture
-def kea_client() -> _DualEndpointKeaClient:
+def kea_client() -> Iterator[_DualEndpointKeaClient]:
     # Kea 3.0: two daemons, each on its own host-exposed HTTP control socket. These are
     # the host side of the same daemons KEA_DHCP4_URL/KEA_DHCP6_URL name for NetBox, so
     # a run that moves one must move the other or the two drive different daemons.
-    return _DualEndpointKeaClient(
-        KeaClient(os.environ.get("KEA_DHCP4_CONTROL_URL", "").strip() or "http://127.0.0.1:8001"),
-        KeaClient(os.environ.get("KEA_DHCP6_CONTROL_URL", "").strip() or "http://127.0.0.1:8003"),
-    )
+    with (
+        KeaClient(os.environ.get("KEA_DHCP4_CONTROL_URL", "").strip() or "http://127.0.0.1:8001") as dhcp4,
+        KeaClient(os.environ.get("KEA_DHCP6_CONTROL_URL", "").strip() or "http://127.0.0.1:8003") as dhcp6,
+    ):
+        yield _DualEndpointKeaClient(dhcp4, dhcp6)
 
 
 @pytest.fixture
@@ -164,7 +183,7 @@ def track_http_errors(page: Page) -> list[tuple[int, str]]:
     """
     errors: list[tuple[int, str]] = []
 
-    def _on_response(response):  # noqa: ANN001
+    def _on_response(response):
         if response.status >= 400:
             errors.append((response.status, response.url))
 
@@ -180,7 +199,7 @@ def netbox_user_permissions() -> list[dict[str, list[Any]]]:
 def _delete_created_login_objects(objects: list[Any]) -> None:
     """Delete every fixture-owned login object without stopping after one failure."""
     for obj in objects:
-        try:  # noqa: PERF203 - each deletion needs independent best-effort cleanup
+        try:
             if obj.delete() is not True:
                 raise RuntimeError("the NetBox API did not confirm deletion")
         except Exception as exc:  # noqa: BLE001,PERF203 - cleanup must continue after each failure

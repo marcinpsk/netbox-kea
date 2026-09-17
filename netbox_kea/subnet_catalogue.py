@@ -267,9 +267,12 @@ class _ConfigurationObservation:
 
 
 def _validate_family(family: int) -> Family:
-    if family not in (4, 6):
-        raise ValueError(f"family must be 4 or 6, got {family!r}")
-    return family
+    # Return the literals themselves; mypy cannot narrow int through `in (4, 6)`.
+    if family == 4:
+        return 4
+    if family == 6:
+        return 6
+    raise ValueError(f"family must be 4 or 6, got {family!r}")
 
 
 def _network(value: str, family: Family) -> IPNetworkValue:

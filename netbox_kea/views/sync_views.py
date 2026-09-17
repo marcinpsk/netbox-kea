@@ -1,6 +1,6 @@
 import csv
 import logging
-from typing import Any, Literal
+from typing import Any
 
 import requests
 from django.contrib import messages
@@ -15,6 +15,7 @@ from netaddr import AddrFormatError, IPAddress
 from utilities.views import register_model_view
 
 from .. import forms
+from ..constants import Family
 from ..kea import KeaException
 from ..models import Server
 from ..reservation_transfer import (
@@ -75,7 +76,7 @@ class _BaseSyncView(ConditionalLoginRequiredMixin, View):
             {"nb_ip": nb_ip},
         )
 
-    def _fetch_live_data(self, server: "Server", ip_str: str) -> "dict | None":  # noqa: ARG002
+    def _fetch_live_data(self, server: "Server", ip_str: str) -> "dict | None":
         """Fetch live data for *ip_str* from Kea.  Subclasses override for protocol-specific lookup.
 
         Returns ``None`` when live fetch is not implemented or fails.
@@ -93,10 +94,11 @@ class ServerLease4SyncView(_BaseSyncView):
         try:
             client = server.get_client(version=4)
             lease = client.lease_get_by_ip(4, ip_str)
-            return lease if lease else None
         except (KeaException, requests.RequestException, RuntimeError, ValueError):
             logger.exception("Failed to fetch live lease4 data for %s", ip_str)
             return None
+        else:
+            return lease or None
 
     def _sync(self, data: dict):
         from ..sync import sync_lease_to_netbox
@@ -112,10 +114,11 @@ class ServerLease6SyncView(_BaseSyncView):
         try:
             client = server.get_client(version=6)
             lease = client.lease_get_by_ip(6, ip_str)
-            return lease if lease else None
         except (KeaException, requests.RequestException, RuntimeError, ValueError):
             logger.exception("Failed to fetch live lease6 data for %s", ip_str)
             return None
+        else:
+            return lease or None
 
     def _sync(self, data: dict):
         from ..sync import sync_lease_to_netbox
@@ -127,7 +130,7 @@ class ServerLease6SyncView(_BaseSyncView):
 class _BaseReservationSyncView(ConditionalLoginRequiredMixin, View):
     """Synchronize one exact typed Reservation and all its allocation addresses."""
 
-    dhcp_version: Literal[4, 6]
+    dhcp_version: Family
 
     def post(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
         if not (request.user.has_perm("ipam.add_ipaddress") and request.user.has_perm("ipam.change_ipaddress")):
@@ -177,7 +180,7 @@ class ServerReservation6SyncView(_BaseReservationSyncView):
 class _BaseBulkReservationSyncView(ConditionalLoginRequiredMixin, View):
     """Fetch one full typed Snapshot and synchronize every valid Reservation."""
 
-    dhcp_version: int = 4  # overridden in subclasses
+    dhcp_version: Family = 4  # overridden in subclasses
 
     def post(self, request: HttpRequest, pk: int) -> HttpResponse:
         if not (request.user.has_perm("ipam.add_ipaddress") and request.user.has_perm("ipam.change_ipaddress")):
@@ -338,7 +341,7 @@ class ReservationCheckNetboxIPView(ConditionalLoginRequiredMixin, View):
 class _BaseBulkReservationImportView(_KeaChangeMixin, ConditionalLoginRequiredMixin, View):
     """Validate one document, then create typed Reservations until the first failure."""
 
-    dhcp_version: Literal[4, 6]
+    dhcp_version: Family
     form_class: type
 
     template_name = "netbox_kea/server_reservation_bulk_import.html"
@@ -407,11 +410,11 @@ class _BaseBulkReservationImportView(_KeaChangeMixin, ConditionalLoginRequiredMi
         for index, reservation in enumerate(reservations):
             try:
                 mutation_result = client.reservation_create(reservation, catalogue)
-            except KeaException as exc:  # noqa: PERF203
+            except KeaException as exc:
                 logger.exception("Kea rejected Reservation document entry %s", index)
                 failure = {"position": f"reservations[{index}]", "message": kea_error_hint(exc)}
                 break
-            except (requests.RequestException, RuntimeError, ValueError):  # noqa: PERF203
+            except (requests.RequestException, RuntimeError, ValueError):
                 logger.exception("Reservation document entry %s failed", index)
                 failure = {
                     "position": f"reservations[{index}]",
@@ -520,7 +523,7 @@ class _BaseBulkLeaseImportView(_KeaChangeMixin, ConditionalLoginRequiredMixin, V
     **POST**: parse CSV → loop :meth:`KeaClient.lease_add` → show summary.
     """
 
-    dhcp_version: int
+    dhcp_version: Family
     form_class: type
 
     template_name = "netbox_kea/server_lease_bulk_import.html"
@@ -626,7 +629,7 @@ class _BaseBulkLeaseImportView(_KeaChangeMixin, ConditionalLoginRequiredMixin, V
             except ValueError:
                 logger.exception("Data error importing lease row %s", row)
                 error_rows.append({"row": row, "error": "Invalid response from Kea — could not parse server reply."})
-            except Exception:  # noqa: BLE001 — intentionally catch all to surface per-row errors without aborting import
+            except Exception:
                 logger.exception("Unexpected error importing lease row %s", row)
                 error_rows.append({"row": row, "error": "An unexpected error occurred."})
 

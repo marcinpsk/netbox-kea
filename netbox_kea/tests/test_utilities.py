@@ -2,12 +2,13 @@
 # SPDX-License-Identifier: Apache-2.0
 """Unit tests for netbox_kea.utilities — pure helper functions."""
 
-from datetime import datetime
+from datetime import datetime, timezone
 from unittest import TestCase
 from unittest.mock import MagicMock, patch
 
 from django.http import HttpResponse
 
+from netbox_kea.constants import Family
 from netbox_kea.models import Server
 from netbox_kea.utilities import (
     _enrich_lease,
@@ -53,7 +54,7 @@ class TestEnrichLease(TestCase):
     """Tests for _enrich_lease()."""
 
     def _now(self):
-        return datetime(2024, 1, 1, 12, 0, 0)
+        return datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
 
     def test_missing_cltt_and_valid_lft_adds_state_label(self):
         lease = {"ip_address": "10.0.0.1"}
@@ -106,12 +107,22 @@ class TestFormatLeases(TestCase):
         for lease in result:
             self.assertIn("expires_at", lease)
 
+    def test_timestamps_are_utc_aware(self):
+        """Kea reports cltt as a Unix epoch, so both derived times must be aware UTC.
+
+        A naive value is rendered verbatim by the table columns, so on a server whose
+        local zone is not the NetBox display zone the lease times are silently wrong.
+        """
+        [lease] = format_leases([{"cltt": 0, "valid_lft": 3600}])
+        self.assertEqual(lease["cltt"], datetime(1970, 1, 1, 0, 0, 0, tzinfo=timezone.utc))
+        self.assertEqual(lease["expires_at"], datetime(1970, 1, 1, 1, 0, 0, tzinfo=timezone.utc))
+
 
 class TestEnrichLeaseIPSortKey(TestCase):
     """F1: _enrich_lease() must inject _ip_sort_key for numeric IP sort in tables."""
 
     def _now(self):
-        return datetime(2024, 1, 1, 12, 0, 0)
+        return datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
 
     def test_adds_ip_sort_key_for_ipv4(self):
         """IPv4 lease gets _ip_sort_key equal to the integer representation of the address."""
@@ -158,7 +169,7 @@ class TestEnrichLeaseExpiryClass(TestCase):
     """F10: _enrich_lease() must inject expiry_class for visual lease state indicators."""
 
     def _now(self):
-        return datetime(2024, 1, 1, 12, 0, 0)
+        return datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
 
     def test_expired_lease_has_danger_class(self):
         """Lease whose expiry is in the past gets 'text-danger'."""
@@ -668,7 +679,7 @@ class TestLeaseStateEnrich(TestCase):
 class TestParseLeaseCsv(TestCase):
     """parse_lease_csv(version, csv_text) → list[dict] ready for lease_add."""
 
-    def _parse(self, content: str, version: int = 4) -> list:
+    def _parse(self, content: str, version: Family = 4) -> list:
         from netbox_kea.utilities import parse_lease_csv
 
         return parse_lease_csv(version, content)
@@ -885,12 +896,12 @@ class TestEnrichLeaseInvalidIp(TestCase):
     """_enrich_lease: invalid ip_address must not add _ip_sort_key."""
 
     def test_invalid_ip_no_ip_sort_key(self):
-        from datetime import datetime
+        from datetime import datetime, timezone
 
         from netbox_kea.utilities import _enrich_lease
 
         lease = {"ip-address": "not-an-ip", "state": 0}
-        result = _enrich_lease(datetime(2024, 1, 1), lease)
+        result = _enrich_lease(datetime(2024, 1, 1, tzinfo=timezone.utc), lease)
         self.assertNotIn("_ip_sort_key", result)
 
 
@@ -898,22 +909,22 @@ class TestEnrichLeaseNonIntCltt(TestCase):
     """_enrich_lease: non-integer cltt/valid_lft must warn and return early."""
 
     def test_non_int_cltt_returns_without_expires(self):
-        from datetime import datetime
+        from datetime import datetime, timezone
 
         from netbox_kea.utilities import _enrich_lease
 
         lease = {"ip-address": "10.0.0.1", "cltt": "not-an-int", "valid_lft": 3600, "state": 0}
-        result = _enrich_lease(datetime(2024, 1, 1), lease)
+        result = _enrich_lease(datetime(2024, 1, 1, tzinfo=timezone.utc), lease)
         self.assertNotIn("expires_at", result)
         self.assertNotIn("expires_in", result)
 
     def test_non_int_valid_lft_returns_without_expires(self):
-        from datetime import datetime
+        from datetime import datetime, timezone
 
         from netbox_kea.utilities import _enrich_lease
 
         lease = {"ip-address": "10.0.0.1", "cltt": 1000, "valid_lft": "bad", "state": 0}
-        result = _enrich_lease(datetime(2024, 1, 1), lease)
+        result = _enrich_lease(datetime(2024, 1, 1, tzinfo=timezone.utc), lease)
         self.assertNotIn("expires_at", result)
         self.assertNotIn("expires_in", result)
 

@@ -28,8 +28,8 @@ uv run ruff check .                        # lint
 uv run ruff format --check .               # check formatting
 uv run ruff format .                       # auto-format
 uv run reuse lint                          # SPDX/REUSE compliance
-uv run pre-commit install --install-hooks  # install pre-commit hooks (incl. pre-push opengrep)
-./scripts/opengrep-scan.sh                 # custom opengrep ruleset gate (pre-push + CI)
+uv run --native-tls pre-commit install --install-hooks  # install configured hook types
+./scripts/opengrep-scan.sh                 # custom opengrep ruleset gate (pre-commit only)
 ./scripts/opengrep-test.sh                 # opengrep rule tests
 uv run ./scripts/mypy-gate.sh              # type check, new errors only (pre-push + CI)
 uv run ./scripts/mypy-gate.sh --sync       # rewrite mypy-baseline.txt after fixing errors
@@ -196,9 +196,9 @@ Order: `AmbiguousConfigSetError` → `PartialPersistError` → `KeaException`.
 ## Security & Code Quality Rules
 
 Several of these are machine-enforced by the custom opengrep ruleset in
-`.opengrep/kea-rules.yaml` (see `.opengrep/README.md`) — run on pre-push and in CI,
-in addition to CodeRabbit's default opengrep packs. When a rule below has a matching
-opengrep rule, a violation fails the gate before review.
+`.opengrep/kea-rules.yaml` (see `.opengrep/README.md`). The pre-commit hook runs
+these rules locally. Keep OpenGrep out of CI so CodeRabbit can run its own analysis.
+When a rule below has a matching opengrep rule, a violation fails the local hook.
 
 - **Never leak exception details to HTTP responses.** Use `logger.exception()`
   server-side and return a generic message like `"An internal error occurred"`.

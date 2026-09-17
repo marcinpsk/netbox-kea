@@ -8,6 +8,7 @@ from netbox.views import generic
 from utilities.views import ViewTab, register_model_view
 
 from .. import forms, tables
+from ..constants import Family
 from ..filtersets import ServerFilterSet
 from ..kea import KeaClient, KeaException, KeaResponse
 from ..models import Server
@@ -58,7 +59,7 @@ def _get_global_options(server: "Server") -> dict[str, dict[str, str]]:
     """
     from ..utilities import format_option_data
 
-    svc_map: dict[str, tuple[str, int]] = {}
+    svc_map: dict[str, tuple[str, Family]] = {}
     if server.dhcp4:
         svc_map["DHCPv4"] = ("dhcp4", 4)
     if server.dhcp6:
@@ -174,15 +175,14 @@ class ServerStatusView(generic.ObjectView):
         """
         resp: dict[str, dict[str, Any]] = {}
         service_names = {"dhcp6": "DHCPv6", "dhcp4": "DHCPv4"}
-        services = []
+        services: list[tuple[str, Family]] = []
         if server.dhcp6:
-            services.append("dhcp6")
+            services.append(("dhcp6", 6))
         if server.dhcp4:
-            services.append("dhcp4")
+            services.append(("dhcp4", 4))
 
-        for svc in services:
+        for svc, version in services:
             try:
-                version = int(svc[-1])
                 svc_client = server.get_client(version=version)
                 status = svc_client.command("status-get", service=[svc])
                 version_resp = svc_client.command("version-get", service=[svc])

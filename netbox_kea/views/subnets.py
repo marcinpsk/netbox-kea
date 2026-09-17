@@ -14,6 +14,7 @@ from utilities.htmx import htmx_partial
 from utilities.views import register_model_view
 
 from .. import forms, tables
+from ..constants import Family
 from ..kea import KeaClient, KeaException, PartialPersistError
 from ..models import Server
 from ..reservations import InSubnetReservationScope
@@ -39,7 +40,7 @@ _POOL_RE = re.compile(r"^[0-9a-fA-F.:/-]{3,100}$")
 _SUBNETS_TAB = OptionalViewTab(label="Subnets", weight=1020, is_enabled=lambda s: s.dhcp4 or s.dhcp6)
 
 
-def subnets_nav_context(server_pk: int, section: str, dhcp_version: int) -> dict[str, Any]:
+def subnets_nav_context(server_pk: int, section: str, dhcp_version: Family) -> dict[str, Any]:
     """Build context for the Subnets/Shared-Networks section+family toggle nav.
 
     ``section`` is ``"subnets"`` or ``"shared_networks"``. Returns the shared tab
@@ -158,7 +159,7 @@ class BaseServerDHCPSubnetsView(generic.ObjectChildrenView):
             for s in subnet_list:
                 if s["id"] in stats:
                     s.update(stats[s["id"]])
-        except (KeaException, requests.RequestException, ValueError, TypeError, KeyError):  # noqa: BLE001
+        except (KeaException, requests.RequestException, ValueError, TypeError, KeyError):
             logger.debug("stat_cmds hook unavailable or failed", exc_info=True)
 
         return subnet_list
@@ -239,7 +240,7 @@ def _warn_pool_reservation_overlap(
     request: HttpRequest,
     server: Server,
     client: "KeaClient",
-    version: int,
+    version: Family,
     subnet_id: int,
     pool_str: str,
 ) -> None:
@@ -288,7 +289,7 @@ def _warn_pool_reservation_overlap(
     except (KeaException, requests.RequestException, RuntimeError, ValueError):
         logger.warning("Could not check Pool and Reservation overlap for subnet %s", subnet_id, exc_info=True)
         messages.warning(request, check_failed_message)
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.exception("Failed to check pool/reservation overlap for subnet %s", subnet_id)
         messages.warning(request, check_failed_message)
 
@@ -296,7 +297,7 @@ def _warn_pool_reservation_overlap(
 def _warn_reservation_pool_overlap(
     request: HttpRequest,
     client: "KeaClient",
-    version: int,
+    version: Family,
     subnet_id: int,
     ip_str: str,
 ) -> None:
@@ -336,7 +337,7 @@ def _warn_reservation_pool_overlap(
                     "Kea allows this — reservations take priority over pool allocation.",
                 )
                 break
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.exception("Failed to check reservation/pool overlap for %s in subnet %s", ip_str, subnet_id)
 
 
@@ -345,7 +346,7 @@ class _BasePoolAddView(_KeaChangeMixin, generic.ObjectView):
 
     queryset = Server.objects.all()
     template_name = "netbox_kea/server_pool_add.html"
-    dhcp_version: int  # set on subclasses
+    dhcp_version: Family  # set on subclasses
 
     def _subnets_url(self, pk: int) -> str:
         return reverse(f"plugins:netbox_kea:server_subnets{self.dhcp_version}", args=[pk])
@@ -427,7 +428,7 @@ class _BasePoolDeleteView(_KeaChangeMixin, generic.ObjectView):
 
     queryset = Server.objects.all()
     template_name = "netbox_kea/server_pool_delete.html"
-    dhcp_version: int
+    dhcp_version: Family
 
     def _subnets_url(self, pk: int) -> str:
         return reverse(f"plugins:netbox_kea:server_subnets{self.dhcp_version}", args=[pk])
@@ -503,7 +504,7 @@ class _BaseSubnetAddView(_KeaChangeMixin, generic.ObjectView):
 
     queryset = Server.objects.all()
     template_name = "netbox_kea/server_subnet_add.html"
-    dhcp_version: int
+    dhcp_version: Family
 
     def _subnets_url(self, pk: int) -> str:
         return reverse(f"plugins:netbox_kea:server_subnets{self.dhcp_version}", args=[pk])
@@ -688,7 +689,7 @@ class _BaseSubnetAddView(_KeaChangeMixin, generic.ObjectView):
                     "tab": self.tab,
                 },
             )
-        except (KeaException, requests.RequestException, ValueError):
+        except ValueError:
             logger.exception("Failed to add subnet %s", cd.get("subnet"))
             messages.error(request, "Failed to add subnet: see server logs for details.")
             return render(
@@ -724,7 +725,7 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
 
     queryset = Server.objects.all()
     template_name = "netbox_kea/server_subnet_edit.html"
-    dhcp_version: int
+    dhcp_version: Family
 
     def _subnets_url(self, pk: int) -> str:
         return reverse(f"plugins:netbox_kea:server_subnets{self.dhcp_version}", args=[pk])
@@ -963,9 +964,7 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
         form = forms.SubnetEditForm(request.POST)
         form.fields["shared_network"].choices = network_choices
         if not form.is_valid():
-            display_network = (
-                form.data["shared_network"] if "shared_network" in form.data else (server_current_network or "")
-            )
+            display_network = form.data.get("shared_network", server_current_network or "")
             initial = {k: v for k, v in form.data.items() if k in form.fields}
             inherited_options = (
                 self._get_inherited_options(dhcp_conf, display_network, initial)
@@ -993,9 +992,7 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
         new_network = cd.get("shared_network", "")
 
         # Pre-compute inherited_options for error branches that re-render the form.
-        display_network = (
-            form.data["shared_network"] if "shared_network" in form.data else (server_current_network or "")
-        )
+        display_network = form.data.get("shared_network", server_current_network or "")
         initial = {k: v for k, v in form.data.items() if k in form.fields}
         inherited_options = (
             self._get_inherited_options(dhcp_conf, display_network, initial)
@@ -1057,7 +1054,7 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
                     "tab": self.tab,
                 },
             )
-        except (KeaException, requests.RequestException, ValueError):
+        except (ValueError, RuntimeError):
             logger.exception("Failed to update subnet %s on server %s", subnet_id, pk)
             messages.error(request, "Failed to update subnet: see server logs for details.")
             return render(
@@ -1092,7 +1089,7 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
                         # add succeeded but del failed — only rollback if mutation is NOT already live
                         if isinstance(del_exc, PartialPersistError):
                             # del is live (running config changed); do not rollback
-                            raise del_exc
+                            raise
                         if isinstance(del_exc, KeaException) and new_network:
                             # Kea definitively rejected the del — safe to rollback the add
                             try:
@@ -1114,7 +1111,7 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
                                 pk,
                                 exc_info=True,
                             )
-                        raise del_exc
+                        raise
                 if add_partial_error is not None:
                     raise add_partial_error
             except PartialPersistError as exc:
@@ -1135,7 +1132,7 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
             except requests.RequestException:
                 logger.exception("Transport error changing network for subnet %s on server %s", subnet_id, pk)
                 messages.error(request, "Transport error communicating with Kea during network assignment.")
-            except (KeaException, requests.RequestException, ValueError):
+            except ValueError:
                 logger.exception("Unexpected error changing network for subnet %s on server %s", subnet_id, pk)
                 messages.error(request, "An internal error occurred during network assignment.")
         return redirect(return_url)
@@ -1160,7 +1157,7 @@ class _BaseSubnetDeleteView(_KeaChangeMixin, generic.ObjectView):
 
     queryset = Server.objects.all()
     template_name = "netbox_kea/server_subnet_delete.html"
-    dhcp_version: int
+    dhcp_version: Family
 
     def _subnets_url(self, pk: int) -> str:
         return reverse(f"plugins:netbox_kea:server_subnets{self.dhcp_version}", args=[pk])
@@ -1217,7 +1214,7 @@ class _BaseSubnetDeleteView(_KeaChangeMixin, generic.ObjectView):
         except requests.RequestException:
             logger.exception("Failed to delete subnet %s (network error)", subnet_id)
             messages.error(request, "Network error communicating with Kea: see server logs.")
-        except (KeaException, requests.RequestException, ValueError):
+        except ValueError:
             logger.exception("Failed to delete subnet %s", subnet_id)
             messages.error(request, "Failed to delete subnet: see server logs for details.")
         return redirect(return_url)
@@ -1242,7 +1239,7 @@ class _BaseSubnetWipeView(_KeaChangeMixin, generic.ObjectView):
 
     queryset = Server.objects.all()
     template_name = "netbox_kea/server_subnet_wipe.html"
-    dhcp_version: int
+    dhcp_version: Family
 
     def _subnets_url(self, pk: int) -> str:
         return reverse(f"plugins:netbox_kea:server_subnets{self.dhcp_version}", args=[pk])
@@ -1303,7 +1300,7 @@ class _BaseSubnetWipeView(_KeaChangeMixin, generic.ObjectView):
         except requests.RequestException:
             logger.exception("Failed to wipe leases in subnet %s (network error)", subnet_id)
             messages.error(request, "Network error communicating with Kea: see server logs.")
-        except (KeaException, requests.RequestException, ValueError):
+        except ValueError:
             logger.exception("Failed to wipe leases in subnet %s", subnet_id)
             messages.error(request, "Failed to wipe leases: see server logs for details.")
         return redirect(return_url)

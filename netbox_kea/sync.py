@@ -322,10 +322,8 @@ def _cleanup_stale_ips(
         stale_qs = stale_qs.exclude(address__net_host=exc_ip)
 
     # Restrict to same IP family to avoid cross-family false positives.
-    if ":" in new_ip_str:
-        stale_qs = stale_qs.filter(address__contains=":")
-    else:
-        stale_qs = stale_qs.exclude(address__contains=":")
+    is_v6 = ":" in new_ip_str
+    stale_qs = stale_qs.filter(address__contains=":") if is_v6 else stale_qs.exclude(address__contains=":")
 
     # Never touch IPs the NetBox DHCP plugin references: deleting one would violate
     # its PROTECT FKs and deprecating/blanking one would corrupt an authored
@@ -379,17 +377,23 @@ def _sync_mac_address(hw_address: str, hostname: str = ""):
         mac_obj, _ = MACAddress.objects.get_or_create(mac_address=mac_str)
         if hostname and _update_mac_description(mac_obj, hostname):
             mac_obj.save()
-        return mac_obj
     except (ProgrammingError, OperationalError, IntegrityError):
         logger.debug("DB error while syncing MAC address %s to NetBox DCIM", hw_address, exc_info=True)
     except AddrFormatError:
         logger.debug("Invalid MAC address format %r — skipping DCIM MAC sync", hw_address, exc_info=True)
-    except Exception:  # noqa: BLE001 — unexpected errors from MACAddress model
+    except Exception:
         logger.debug("Failed to sync MAC address %s to NetBox DCIM", hw_address, exc_info=True)
+    else:
+        return mac_obj
     return None
 
 
 _KEA_DESC_PREFIX = "Synced from Kea DHCP"
+
+#: The note this module writes on a Prefix it creates for a Kea subnet.
+KEA_SUBNET_PREFIX_DESCRIPTION = f"{_KEA_DESC_PREFIX} subnet"
+#: The note for a Prefix created from a Reservation's delegated prefix.
+KEA_DELEGATED_PREFIX_DESCRIPTION = f"{_KEA_DESC_PREFIX} delegated prefix"
 
 
 def _is_kea_managed_description(description: str | None) -> bool:
@@ -489,6 +493,16 @@ def _apply_ip_mask(ip_obj: NbIPAddress, ip_str: str, prefix_len: int, *, force: 
     return True
 
 
+def _record_hostname(record: dict) -> str:
+    """Validate a raw Kea record's optional hostname before synchronization."""
+    hostname = record.get("hostname")
+    if hostname is None:
+        return ""
+    if not isinstance(hostname, str):
+        raise RuntimeError("Kea record hostname must be a string or null.")
+    return hostname
+
+
 def sync_lease_to_netbox(
     lease: dict,
     *,
@@ -542,7 +556,7 @@ def sync_lease_to_netbox(
     from ipam.models import IPAddress as NbIP
 
     ip_str: str = lease["ip-address"]
-    hostname: str = lease.get("hostname", "")
+    hostname = _record_hostname(lease)
     subnet_id = lease.get("subnet-id")
     prefix_len = _resolve_prefix_length(ip_str, subnet_id, subnet_prefix_map)
 
@@ -756,9 +770,17 @@ def sync_reservation_to_netbox(
 def _record_hostname_and_addresses(record: dict | Reservation) -> tuple[str, set[str]]:
     """Return one record's hostname and its address strings."""
     if isinstance(record, dict):
-        addresses = {record["ip-address"]} if record.get("ip-address") else set()
-        addresses |= {address for address in (record.get("ip-addresses") or []) if address}
-        return record.get("hostname", ""), addresses
+        raw_addresses = record.get("ip-addresses")
+        if raw_addresses is None:
+            raw_addresses = []
+        if not isinstance(raw_addresses, list) or any(not isinstance(address, str) for address in raw_addresses):
+            raise RuntimeError("Kea record ip-addresses must be a list of strings or null.")
+        raw_address = record.get("ip-address")
+        if raw_address is not None and not isinstance(raw_address, str):
+            raise RuntimeError("Kea record ip-address must be a string or null.")
+        addresses = {raw_address} if raw_address else set()
+        addresses.update(address for address in raw_addresses if address)
+        return _record_hostname(record), addresses
     if isinstance(record, Reservation):
         return record.hostname, {str(address) for address in record.addresses}
     raise TypeError(f"cleanup_stale_ips_batch accepts a raw lease dict or a Reservation, not {type(record).__name__}")
@@ -841,19 +863,20 @@ def cleanup_stale_ips_batch(
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def sync_subnet_to_netbox_prefix(subnet_cidr: str, vrf=None) -> tuple:
-    """Create or update a NetBox Prefix from a Kea subnet CIDR string.
+def sync_subnet_to_netbox_prefix(cidr: str, vrf=None, description: str = KEA_SUBNET_PREFIX_DESCRIPTION) -> tuple:
+    """Create or update a NetBox Prefix from a Kea CIDR string.
 
     Behaviour:
     - If a Prefix with this CIDR already exists (in *vrf*), it is returned
       as-is (idempotent).  The description is set only when the existing
       object has an empty description, to avoid overwriting operator notes.
-    - Otherwise a new active Prefix is created with description
-      ``"Synced from Kea DHCP subnet"``.
+    - Otherwise a new active Prefix is created with *description*.
 
     Args:
-        subnet_cidr: CIDR notation, e.g. ``"192.168.10.0/24"`` or ``"2001:db8::/48"``.
+        cidr: CIDR notation, e.g. ``"192.168.10.0/24"`` or ``"2001:db8::/48"``.
         vrf: NetBox VRF instance to assign the prefix to.  ``None`` means the global VRF.
+        description: The note for a Prefix this call creates, or for an existing one that
+            carries none.
 
     Returns ``(prefix_object, created, did_update)`` where *created* is ``True`` for new
     objects and *did_update* is ``True`` when an existing object's description was set.
@@ -862,13 +885,13 @@ def sync_subnet_to_netbox_prefix(subnet_cidr: str, vrf=None) -> tuple:
     from ipam.models import Prefix
 
     prefix_obj, created = Prefix.objects.get_or_create(
-        prefix=subnet_cidr,
+        prefix=cidr,
         vrf=vrf,
-        defaults={"status": "active", "description": "Synced from Kea DHCP subnet"},
+        defaults={"status": "active", "description": description},
     )
     did_update = False
     if not created and not prefix_obj.description:
-        prefix_obj.description = "Synced from Kea DHCP subnet"
+        prefix_obj.description = description
         prefix_obj.save(update_fields=["description"])
         did_update = True
     return prefix_obj, created, did_update
@@ -904,7 +927,7 @@ def _parse_pool_range(pool_str: str, subnet_prefix_len: int) -> tuple[str, str] 
 
 
 # Sentinel returned by sync_pool_to_netbox_ip_range when the pool is intentionally
-# skipped because its size exceeds the PostgreSQL bigint limit.  Callers must check
+# skipped because its size exceeds the PostgreSQL integer limit. Callers must check
 # `result is _POOL_TOO_LARGE` and treat it as a no-op (not an error).
 _POOL_TOO_LARGE: object = object()
 
@@ -924,7 +947,7 @@ def sync_pool_to_netbox_ip_range(pool_str: str, subnet_cidr: str, vrf=None) -> t
     * ``(ip_range_object, created, did_update)`` — pool was synced successfully.
     * ``None`` — pool string could not be parsed; caller should treat as an error.
     * :data:`_POOL_TOO_LARGE` sentinel — pool was intentionally skipped because its
-      size exceeds the PostgreSQL bigint limit; callers should treat this as a no-op,
+      size exceeds the PostgreSQL integer limit; callers should treat this as a no-op,
       not an error.
 
     """
@@ -944,10 +967,10 @@ def sync_pool_to_netbox_ip_range(pool_str: str, subnet_cidr: str, vrf=None) -> t
     start_addr = IPNetwork(start_addr_str)
     end_addr = IPNetwork(end_addr_str)
 
-    # Guard against IPv6 ranges that overflow PostgreSQL bigint (max 2^63-1).
-    # An IPRange row stores a `size` column; ranges spanning 2^63+ addresses cannot be persisted.
-    _PG_BIGINT_MAX = 9_223_372_036_854_775_807
-    if int(end_addr.ip - start_addr.ip) + 1 > _PG_BIGINT_MAX:
+    # NetBox stores IPRange.size in a PostgreSQL integer column (max 2^31-1).
+    # Reject a larger pool before IPRange.save() raises NumericValueOutOfRange.
+    _PG_INTEGER_MAX = 2_147_483_647
+    if int(end_addr.ip - start_addr.ip) + 1 > _PG_INTEGER_MAX:
         logger.debug("Skipping pool %r: range too large to store as NetBox IPRange", pool_str)
         return _POOL_TOO_LARGE
 

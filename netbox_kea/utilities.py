@@ -1,11 +1,12 @@
+import contextlib
 import csv
 import io
 import ipaddress
 import logging
 import re
 from collections.abc import Callable
-from datetime import datetime
-from typing import Any, Literal
+from datetime import datetime, timezone
+from typing import Any
 
 import requests
 from django.core.cache import cache
@@ -17,6 +18,7 @@ from netaddr import AddrFormatError, IPNetwork, IPRange
 from utilities.views import ViewTab
 
 from . import constants
+from .constants import Family
 from .kea import KeaException
 from .models import Server
 
@@ -62,7 +64,7 @@ def parse_pool_range(pool: str) -> IPNetwork | IPRange:
     return IPNetwork(pool)
 
 
-def _subnet_choices_cache_key(server: Server, version: int) -> str:
+def _subnet_choices_cache_key(server: Server, version: Family) -> str:
     """Cache key for one server's subnet list, scoped per DHCP version.
 
     A dual-stack server routes v4 and v6 to different daemons with different subnets,
@@ -71,7 +73,7 @@ def _subnet_choices_cache_key(server: Server, version: int) -> str:
     return f"netbox_kea:subnet_choices:{server.pk}:{version}"
 
 
-def fetch_subnet_choices(server: Server, version: int) -> tuple[list[tuple[str, int]], bool]:
+def fetch_subnet_choices(server: Server, version: Family) -> tuple[list[tuple[str, int]], bool]:
     """Return ``(choices, subnet_cmds_available)`` for the server's subnet datalists.
 
     ``choices`` is ``[(cidr, subnet_id), ...]`` in network order. Both datalists that
@@ -124,10 +126,8 @@ def _enrich_lease(now: datetime, lease: dict[str, Any]) -> dict[str, Any]:
 
     # F1: inject numeric sort key so django-tables2 sorts IPs as integers, not strings.
     if ip_str := lease.get("ip_address"):
-        try:
+        with contextlib.suppress(ValueError):
             lease["_ip_sort_key"] = int(ipaddress.ip_address(ip_str))
-        except ValueError:
-            pass
 
     # F10: default expiry CSS class; updated below once we know the expiry time.
     lease["expiry_class"] = ""
@@ -141,10 +141,10 @@ def _enrich_lease(now: datetime, lease: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(cltt, int) or not isinstance(valid_lft, int):
         logger.warning("Unexpected non-integer cltt/valid_lft in lease: %s", lease.get("ip_address", "?"))
         return lease
-    expires_at = datetime.fromtimestamp(cltt + valid_lft)
+    expires_at = datetime.fromtimestamp(cltt + valid_lft, tz=timezone.utc)
     lease["expires_at"] = expires_at
     lease["expires_in"] = max(0, int((expires_at - now).total_seconds()))
-    lease["cltt"] = datetime.fromtimestamp(cltt)
+    lease["cltt"] = datetime.fromtimestamp(cltt, tz=timezone.utc)
 
     # F10: set expiry_class based on how close the lease is to expiring.
     if expires_at < now:
@@ -157,7 +157,7 @@ def _enrich_lease(now: datetime, lease: dict[str, Any]) -> dict[str, Any]:
 
 def format_leases(leases: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Enrich a list of raw Kea lease dicts with expiry metadata."""
-    now = datetime.now()
+    now = datetime.now(tz=timezone.utc)
     return [_enrich_lease(now, ls) for ls in leases]
 
 
@@ -256,7 +256,7 @@ _KNOWN_CODES_V6: dict[int, str] = {
 }
 
 
-def format_option_data(option_list: list[dict[str, Any]], version: int = 4) -> dict[str, str]:
+def format_option_data(option_list: list[dict[str, Any]], version: Family = 4) -> dict[str, str]:
     """Parse a Kea ``option-data`` list into a friendly ``{name: value}`` dict.
 
     Well-known DHCP option codes are mapped to canonical names using a
@@ -289,7 +289,7 @@ def format_option_data(option_list: list[dict[str, Any]], version: int = 4) -> d
     return result
 
 
-def parse_subnet_stats(stat_response: list[dict[str, Any]], version: int) -> dict[int, dict[str, Any]]:
+def parse_subnet_stats(stat_response: list[dict[str, Any]], version: Family) -> dict[int, dict[str, Any]]:
     """Parse a ``stat-lease{4|6}-get`` response into a per-subnet stats dict.
 
     Args:
@@ -349,7 +349,7 @@ def parse_subnet_stats(stat_response: list[dict[str, Any]], version: int) -> dic
     return stats
 
 
-def check_dhcp_enabled(instance: Server, version: Literal[6, 4]) -> HttpResponse | None:
+def check_dhcp_enabled(instance: Server, version: Family) -> HttpResponse | None:
     """Return a redirect to the server detail page if the requested DHCP version is disabled, else ``None``."""
     if (version == 6 and instance.dhcp6) or (version == 4 and instance.dhcp4):
         return None
@@ -403,7 +403,7 @@ def _parse_int_row_field(row: dict, field: str, row_num: int) -> int:
         raise ValueError(f"Row {row_num}: '{field}' must be an integer, got '{row.get(field, '')}'") from None
 
 
-def parse_lease_csv(version: int, content: str) -> list[dict[str, Any]]:
+def parse_lease_csv(version: Family, content: str) -> list[dict[str, Any]]:
     """Parse a CSV string into a list of lease dicts ready for ``lease_add``.
 
     Strips UTF-8 BOM, skips blank lines and lines starting with ``#``.
@@ -426,10 +426,7 @@ def parse_lease_csv(version: int, content: str) -> list[dict[str, Any]]:
         ValueError: If a required field is missing or empty for any row.
 
     """
-    if version == 4:
-        required = {"ip-address"}
-    else:
-        required = {"ip-address", "duid", "iaid"}
+    required = {"ip-address"} if version == 4 else {"ip-address", "duid", "iaid"}
 
     content = content.lstrip("\ufeff")
     reader = csv.DictReader(
@@ -448,8 +445,8 @@ def parse_lease_csv(version: int, content: str) -> list[dict[str, Any]]:
 
         try:
             addr = ipaddress.ip_address(row["ip-address"])
-        except ValueError:
-            raise ValueError(f"Row {row_num}: invalid IP address '{row['ip-address']}'")
+        except ValueError as exc:
+            raise ValueError(f"Row {row_num}: invalid IP address '{row['ip-address']}'") from exc
         if addr.version != version:
             raise ValueError(f"Row {row_num}: '{row['ip-address']}' is not an IPv{version} address")
 

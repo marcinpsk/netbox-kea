@@ -20,7 +20,8 @@ appropriate seam.
 from __future__ import annotations
 
 import ipaddress
-from contextlib import contextmanager
+import re
+from contextlib import contextmanager, suppress
 from unittest.mock import MagicMock, patch
 
 import requests
@@ -139,11 +140,30 @@ def _reservation_subnets(reservations: list[dict], version: int) -> list[dict]:
     return [{"id": subnet_id, "subnet": network} for subnet_id, network in sorted(subnets.items())]
 
 
-def _reservation_snapshot(reservations: list[dict], version: Family) -> ReservationSnapshot:
+#: The Reservation page size ``KeaIpamSyncJob`` asks for. ``reservation_page`` only
+#: reports a next cursor once a page fills it, so a partial traversal needs a full page.
+_JOB_RESERVATION_PAGE_SIZE = 100
+_PAGE_HOSTNAME = "reserved1"
+
+
+def _full_reservation_page() -> list[dict]:
+    """Return one full page of valid DHCPv4 Reservations that share a hostname."""
+    return [
+        {
+            "ip-address": f"10.0.0.{100 + index}",
+            "hw-address": f"11:22:33:44:00:{index:02x}",
+            "hostname": _PAGE_HOSTNAME,
+            "subnet-id": 1,
+        }
+        for index in range(_JOB_RESERVATION_PAGE_SIZE)
+    ]
+
+
+def _reservation_catalogue(reservations: list[dict], version: Family) -> IdentityOnlyCatalogueSnapshot:
     entries = _reservation_subnets(reservations, version)
     # Identity-only: these Subnets carry no configuration, which is exactly what a
     # Reservation Scope needs to be verified.
-    catalogue = IdentityOnlyCatalogueSnapshot(
+    return IdentityOnlyCatalogueSnapshot(
         server_id=1,
         family=version,
         observed_at=timezone.now(),
@@ -162,12 +182,30 @@ def _reservation_snapshot(reservations: list[dict], version: Family) -> Reservat
         consistent=True,
         configuration_hash=None,
     )
+
+
+def _reservation_snapshot(reservations: list[dict], version: Family) -> ReservationSnapshot:
+    catalogue = _reservation_catalogue(reservations, version)
     hosts = [host for host in reservations if _reservation_family(host) == version]
     client = KeaClient(url="http://kea.example.invalid", send_service=False)
     with stub_kea({"reservation-get-page": _res_page(hosts)}):
         # The method the job itself calls, so the double cannot differ from production in
         # traversal state. Page size is bound to the fixture, so a larger fixture cannot
         # silently truncate.
+        return client.reservation_snapshot(version, catalogue, page_size=max(len(hosts), 1))
+
+
+def _incomplete_reservation_snapshot(reservations: list[dict], version: Family) -> ReservationSnapshot:
+    """Return a Snapshot whose page traversal stopped before Kea was exhausted.
+
+    The diagnostic comes from the real traversal, so the test cannot claim an
+    incomplete Snapshot the production code would never build.
+    """
+    hosts = [host for host in reservations if _reservation_family(host) == version]
+    catalogue = _reservation_catalogue(reservations, version)
+    client = KeaClient(url="http://kea.example.invalid", send_service=False)
+    first_page = _res_page(hosts, next_from=99, next_source=1)
+    with stub_kea({"reservation-get-page": queued(first_page, RuntimeError("page fetch failed"))}):
         return client.reservation_snapshot(version, catalogue, page_size=max(len(hosts), 1))
 
 
@@ -247,16 +285,16 @@ class TestKeaIpamSyncJobRun(TestCase):
     def _run(self) -> MagicMock:
         """Run the job, swallowing JobFailed; return the mock job object."""
         job = _make_job()
-        try:
+        with suppress(JobFailed):
             KeaIpamSyncJob(job).run()
-        except JobFailed:
-            pass
         return job
 
-    def _run_raises(self) -> None:
-        """Run the job and assert that JobFailed is raised."""
+    def _run_raises(self) -> MagicMock:
+        """Run the job, assert JobFailed is raised, and return the mock job object."""
+        job = _make_job()
         with self.assertRaises(JobFailed):
-            KeaIpamSyncJob(_make_job()).run()
+            KeaIpamSyncJob(job).run()
+        return job
 
     def _make_db_server(self, **kwargs):
         from netbox_kea.tests.utils import _make_db_server
@@ -264,6 +302,27 @@ class TestKeaIpamSyncJobRun(TestCase):
         return _make_db_server(**kwargs)
 
     # ── basic lease sync ──────────────────────────────────────────────────────
+
+    def test_malformed_foreign_lease_hostname_is_excluded_from_keep_set(self):
+        from netbox_kea.jobs import _sync_server_leases
+
+        server = self._make_db_server()
+        foreign = NbIP.objects.create(address="198.18.0.20/32", status="active", description="Manual address")
+        for hostname in (["host.example.invalid"], {"name": "host.example.invalid"}):
+            with self.subTest(hostname=hostname):
+                lease = {"ip-address": "198.18.0.20", "subnet-id": 1, "hostname": hostname}
+                stats = {"created": 0, "updated": 0, "errors": 0, "conflicts": 0}
+                all_synced = []
+                with _patch_kea(leases4=[lease]):
+                    complete, lease_ips = _sync_server_leases(
+                        server, 4, max_leases=0, stats=stats, all_synced=all_synced, subnet_prefix_map={1: 24}
+                    )
+                self.assertEqual(all_synced, [])
+                self.assertFalse(complete)
+                self.assertEqual(lease_ips, frozenset())
+                self.assertEqual(stats["errors"], 1)
+                foreign.refresh_from_db()
+                self.assertEqual(foreign.description, "Manual address")
 
     def test_creates_ip_from_lease(self):
         """Lease sync creates an IPAddress row in the real DB."""
@@ -622,6 +681,45 @@ class TestKeaIpamSyncJobRun(TestCase):
             self._run_raises()
         self.assertTrue(IPAddress.objects.filter(pk=stale.pk).exists())
 
+    @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG_CLEANUP)
+    def test_an_incomplete_snapshot_syncs_valid_records_but_preserves_stale_ips(self):
+        """Kea did not show every Reservation, so the run is additive only.
+
+        The records Kea did return are still valid and are synchronized. The keep-set
+        they form is not complete, so stale cleanup must not delete anything.
+        """
+        from ipam.models import IPAddress
+
+        self._make_db_server(dhcp6=False)
+        stale = IPAddress.objects.create(
+            address="10.0.0.99/32",
+            status="reserved",
+            dns_name=_PAGE_HOSTNAME,
+            description="Synced from Kea DHCP (reserved)",
+        )
+
+        # A full page yields a cursor; the page it points at never arrives.
+        hosts = _full_reservation_page()
+        with _patch_kea(
+            leases4=[_LEASE4],
+            reservations=hosts,
+            responses={
+                "reservation-get-page": queued(
+                    _res_page(hosts, next_from=len(hosts), next_source=1),
+                    RuntimeError("page fetch failed"),
+                )
+            },
+        ):
+            with self.assertLogs("netbox_kea.jobs", level="WARNING"):
+                self._run()
+
+        addresses = sorted(str(ip.address) for ip in IPAddress.objects.all())
+        self.assertTrue(
+            any(address.startswith("10.0.0.100/") for address in addresses),
+            f"The valid Reservations were not synchronized; NetBox holds {addresses}",
+        )
+        self.assertTrue(IPAddress.objects.filter(pk=stale.pk).exists())
+
     # ── per-server sync_enabled toggle ────────────────────────────────────
 
     def test_per_server_sync_enabled_false_skips_server(self):
@@ -793,10 +891,8 @@ class TestKeaIpamSyncJobRun(TestCase):
         IPAddress.objects.create(address="10.0.0.100/32", status="active", description="Router loopback")
         with _patch_kea(leases4=[], reservations=[_RESV4]):
             mock_job = _make_job()
-            try:
+            with suppress(JobFailed):
                 KeaIpamSyncJob(mock_job).run()
-            except JobFailed:
-                pass
 
         # Foreign IP left exactly as the operator set it.
         ip = IPAddress.objects.get(address="10.0.0.100/32")
@@ -822,10 +918,8 @@ class TestKeaIpamSyncJobRun(TestCase):
         lease_for_same_ip = {**_LEASE4, "ip-address": "10.0.0.100", "hostname": "reserved1"}
         with _patch_kea(leases4=[lease_for_same_ip], reservations=[_RESV4]):
             mock_job = _make_job()
-            try:
+            with suppress(JobFailed):
                 KeaIpamSyncJob(mock_job).run()
-            except JobFailed:
-                pass
 
         entry = next(e for e in mock_job.data["summary"] if e["name"] == "kea-dupe")
         self.assertEqual(entry["conflicts"], 1)
@@ -934,8 +1028,54 @@ class TestKeaIpamSyncJobRun(TestCase):
                     "netbox_kea.sync.cleanup_stale_ips_batch", side_effect=RuntimeError("db gone"), autospec=True
                 ):
                     with self.assertLogs("netbox.jobs", level="ERROR") as cm:
-                        self._run_raises()
+                        job = self._run_raises()
         self.assertTrue(any("Unhandled error syncing server" in msg for msg in cm.output))
+
+        # This entry is on an exception path a clean run never reaches, so it is the
+        # one self.logger call TestJobLogRendersValues cannot see. See that class for
+        # why eager formatting is required.
+        from core.dataclasses import JobLogEntry
+
+        entries = [JobLogEntry.from_logrecord(call.args[0]).message for call in job.log.call_args_list]
+        failures = [m for m in entries if "Unhandled error syncing server" in m]
+        self.assertTrue(failures, entries)
+        self.assertNotIn("%s", failures[0])
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestJobLogRendersValues(TestCase):
+    """The job log must show real values, never unsubstituted format placeholders.
+
+    NetBox's JobLogEntry.from_logrecord stores ``record.msg`` and drops
+    ``record.args``, so a ``self.logger`` call using lazy %-formatting would put a
+    literal "%s" in front of the user. Every self.logger call in jobs.py therefore
+    has to interpolate eagerly. ruff's G004 asks for the opposite and is disabled
+    for jobs.py in pyproject.toml; this test is what makes that safe.
+    """
+
+    def _job_log_messages(self) -> list[str]:
+        """Run the job and render its records exactly as NetBox would."""
+        from core.dataclasses import JobLogEntry
+
+        from netbox_kea.tests.utils import _make_db_server
+
+        _make_db_server(name="kea-logfmt")
+        job = _make_job()
+        with suppress(JobFailed), _patch_kea(leases4=[_LEASE4]):
+            KeaIpamSyncJob(job).run()
+        return [JobLogEntry.from_logrecord(call.args[0]).message for call in job.log.call_args_list]
+
+    def test_no_unsubstituted_placeholders(self):
+        """No rendered entry may still contain a %-placeholder."""
+        messages = self._job_log_messages()
+        self.assertTrue(messages, "the job logged nothing, so this test proves nothing")
+        offenders = [m for m in messages if re.search(r"%[srd]", m)]
+        self.assertEqual(offenders, [], f"job log entries kept a format placeholder: {offenders}")
+
+    def test_server_name_reaches_the_job_log(self):
+        """The server name must appear as a value, which only eager formatting gives."""
+        messages = self._job_log_messages()
+        self.assertTrue(any("kea-logfmt" in m for m in messages), messages)
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
@@ -948,10 +1088,8 @@ class TestKeaIpamSyncJobKillSwitches(TestCase):
 
     def _run(self) -> MagicMock:
         job = _make_job()
-        try:
+        with suppress(JobFailed):
             KeaIpamSyncJob(job).run()
-        except JobFailed:
-            pass
         return job
 
     def _make_db_server(self, **kwargs):
@@ -1616,6 +1754,24 @@ class TestSyncServerReservationsReturnValue(TestCase):
         self.assertFalse(ok)
         self.assertEqual(stats["errors"], 1)
         self.assertEqual(stats["skipped"], 0)
+
+    def test_an_incomplete_snapshot_is_never_safe_for_cleanup(self):
+        """An unfinished page traversal cannot produce a complete keep-set."""
+        from ipam.models import IPAddress
+
+        from netbox_kea.jobs import _sync_server_reservations
+
+        stats = self._stats()
+        all_synced = []
+        snapshot = _incomplete_reservation_snapshot([_RESV4], 4)
+
+        ok = _sync_server_reservations(self._server(), snapshot, stats=stats, all_synced=all_synced, protected=[])
+
+        self.assertFalse(snapshot.complete)
+        self.assertFalse(ok)
+        # The valid record still reached IPAM: an incomplete Snapshot is additive, not idle.
+        self.assertEqual(len(all_synced), 1)
+        self.assertTrue(IPAddress.objects.filter(address__net_host="10.0.0.100").exists())
 
     def test_address_less_reservation_is_skipped_not_an_error(self):
         """A host that reserves no address is legal Kea config, not a sync failure (#110).

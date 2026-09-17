@@ -16,6 +16,7 @@ from django.urls import reverse
 from netbox.views import generic
 
 from .. import constants, forms
+from ..constants import Family
 from ..dhcp_options import DHCPOption
 from ..kea import KeaClient, KeaException
 from ..models import Server
@@ -174,7 +175,7 @@ def _fingerprint_from_post(token: str, reservation: Reservation) -> str:
     return fingerprint
 
 
-def _identity_from_request(request: HttpRequest, version: Literal[4, 6]) -> ReservationIdentity:
+def _identity_from_request(request: HttpRequest, version: Family) -> ReservationIdentity:
     types = request.GET.getlist("identifier_type")
     values = request.GET.getlist("identifier")
     if len(types) != 1 or len(values) != 1:
@@ -192,7 +193,7 @@ def _identity_from_request(request: HttpRequest, version: Literal[4, 6]) -> Rese
 @contextmanager
 def _reservation_target_scope(
     server: Server,
-    version: Literal[4, 6],
+    version: Family,
     subnet_id: int,
     identity: ReservationIdentity,
 ) -> Iterator[tuple[Reservation, KeaClient, CatalogueSnapshot]]:
@@ -214,7 +215,7 @@ def _reservation_target_scope(
 
 def _load_target(
     server: Server,
-    version: Literal[4, 6],
+    version: Family,
     subnet_id: int,
     identity: ReservationIdentity,
 ) -> Reservation:
@@ -310,7 +311,7 @@ class _ReservationMutationView(_KeaChangeMixin, generic.ObjectView):
     queryset = Server.objects.all()
     tab = _RESERVATIONS_TAB
     template_name = "netbox_kea/server_reservation_form.html"
-    dhcp_version: Literal[4, 6]
+    dhcp_version: Family
     form_class: type[forms.Reservation4Form] | type[forms.Reservation6Form]
     form_action: str
 

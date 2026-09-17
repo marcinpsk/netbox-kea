@@ -17,7 +17,7 @@ from .. import constants
 from ..kea import KeaClient
 
 # This is linked from netbox_kea to avoid import errors
-from .conftest import _DualEndpointKeaClient
+from .conftest import _USER_PREFERENCES_TIMEOUT_SECONDS, _DualEndpointKeaClient
 
 
 def test_dual_endpoint_client_rejects_multiple_services(kea_client: _DualEndpointKeaClient) -> None:
@@ -731,7 +731,7 @@ def test_dhcp_subnets_export_csv(
         assert len(have_rows) == len(expected_data), (
             f"CSV row count mismatch: got {len(have_rows)}, expected {len(expected_data)}"
         )
-        for actual, expected in zip(have_rows, expected_data):
+        for actual, expected in zip(have_rows, expected_data, strict=False):
             for key, val in expected.items():
                 assert actual.get(key) == val, f"CSV row mismatch: {key}: got {actual.get(key)!r}, expected {val!r}"
 
@@ -978,7 +978,7 @@ def test_dhcp_export_csv_all(
     want_rows = sorted(leases, key=lambda x: x["ip-address"])
 
     assert len(have_rows) == len(want_rows)
-    for have_dict, want_dict in zip(have_rows, want_rows):
+    for have_dict, want_dict in zip(have_rows, want_rows, strict=False):
         for have_key, want_key in check_fields:
             assert have_dict[have_key] == str(want_dict[want_key])
 
@@ -1431,6 +1431,7 @@ def test_lease_pagination_location(
     requests_session.patch(
         url=f"{nb_api.base_url}/users/config/",
         json={"pagination": {"placement": placement}},
+        timeout=_USER_PREFERENCES_TIMEOUT_SECONDS,
     ).raise_for_status()
 
     search_lease(page, version, "IP Address", ip)
@@ -1456,7 +1457,7 @@ def test_lease_pagination_location(
             case "bottom":
                 assert count_y > table_y
             case _:
-                assert False
+                raise AssertionError(f"unexpected placement {placement!r}")
 
 
 def test_dhcpv6_lease_long_duid(page: Page, kea: KeaClient, with_test_server_only6: None) -> None:

@@ -1,4 +1,5 @@
-from typing import Any, Literal, cast
+import ipaddress
+from typing import Any, cast
 
 from django import forms
 from django.core.exceptions import ValidationError
@@ -9,6 +10,7 @@ from utilities.forms.fields import TagFilterField
 from utilities.forms.rendering import FieldSet
 
 from . import constants
+from .constants import Family
 from .models import Server
 from .reservation_transfer import MAX_DOCUMENT_BYTES as MAX_TRANSFER_DOCUMENT_BYTES
 from .reservations import (
@@ -20,7 +22,28 @@ from .reservations import (
 from .utilities import is_hex_string, parse_delegated_prefixes, parse_pool_range
 
 
-def _validate_ip(value: str, version: int) -> str:
+def _parse_ip_address_list(value: str, error_message: str) -> list[str]:
+    """Split a comma-separated address list and validate each nonempty entry."""
+    entries = [entry.strip() for entry in value.split(",") if entry.strip()]
+    for entry in entries:
+        try:
+            ipaddress.ip_address(entry)
+        except ValueError as exc:  # noqa: PERF203
+            raise forms.ValidationError(error_message.format(entry=entry)) from exc
+    return entries
+
+
+def _validate_subnet_cidr(value: str, *, strict: bool) -> str:
+    """Validate a subnet CIDR and return it stripped, never normalised."""
+    value = value.strip()
+    try:
+        ipaddress.ip_network(value, strict=strict)
+    except ValueError as exc:
+        raise forms.ValidationError(f"Invalid subnet CIDR: {exc}") from exc
+    return value
+
+
+def _validate_ip(value: str, version: Family) -> str:
     """Validate that *value* is a single IP address matching *version* (4 or 6)."""
     try:
         addr = IPAddress(value)
@@ -356,7 +379,7 @@ class Leases6SearchForm(BaseLeasesSarchForm):
 class MultipleIPField(forms.MultipleChoiceField):
     """Form field accepting a list of IP addresses validated against a specific IP version."""
 
-    def __init__(self, version: Literal[6, 4], *args, **kwargs) -> None:
+    def __init__(self, version: Family, *args, **kwargs) -> None:
         """Initialise with the required IP *version* (4 or 6)."""
         self._version = version
         super().__init__(*args, widget=forms.MultipleHiddenInput, **kwargs)
@@ -404,7 +427,7 @@ class Lease4DeleteForm(BaseLeaseDeleteForm):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def _identifier_type_choices(version: int) -> list[tuple[str, str]]:
+def _identifier_type_choices(version: Family) -> list[tuple[str, str]]:
     """Offer exactly the identifier types the Reservation domain accepts."""
     return list(reservation_identifier_choices(version))
 
@@ -430,9 +453,9 @@ class ReservationIdentifierSelect(forms.Select):
 
 
 def _configure_identifier_capabilities(
-    form: forms.Form,
+    form: "Reservation4Form | Reservation6Form",
     capabilities: ReservationCapabilities | None,
-    version: int,
+    version: Family,
 ) -> None:
     """Disable identifier choices the live Kea configuration cannot use."""
     unavailable: dict[str, str] = (
@@ -445,7 +468,7 @@ def _configure_identifier_capabilities(
         choices=identifier_field.choices,
         unavailable=unavailable,
     )
-    setattr(form, "reservation_capabilities", capabilities)
+    form.reservation_capabilities = capabilities
 
 
 class Reservation4Form(forms.Form):
@@ -502,8 +525,6 @@ class Reservation4Form(forms.Form):
         (e.g. "1") when that lookup fails, which isn't a CIDR and would
         otherwise fail this check even though the value is never user input.
         """
-        import ipaddress
-
         value = self.cleaned_data.get("subnet_cidr", "").strip()
         if self.fields["subnet_cidr"].disabled:
             return value
@@ -607,8 +628,6 @@ class Reservation6Form(forms.Form):
         (e.g. "1") when that lookup fails, which isn't a CIDR and would
         otherwise fail this check even though the value is never user input.
         """
-        import ipaddress
-
         value = self.cleaned_data.get("subnet_cidr", "").strip()
         if self.fields["subnet_cidr"].disabled:
             return value
@@ -627,8 +646,8 @@ class Reservation6Form(forms.Form):
         """Validate every entry is a valid IPv6 address; blank reserves no address."""
         val = self.cleaned_data.get("ip_addresses") or ""
         cleaned: list[str] = []
-        for raw in val.split(","):
-            raw = raw.strip()
+        for entry in val.split(","):
+            raw = entry.strip()
             if not raw:
                 continue
             try:
@@ -770,6 +789,8 @@ class _SubnetBaseForm(forms.Form):
     Subclasses add identity fields (subnet CIDR / ID for add; hidden CIDR for edit).
     """
 
+    subnet_field: str
+
     pools = forms.CharField(
         label="Pools",
         required=False,
@@ -792,7 +813,7 @@ class _SubnetBaseForm(forms.Form):
         label="NTP servers",
         required=False,
         max_length=255,
-        help_text="Comma-separated IP addresses or hostnames.",
+        help_text="Comma-separated IP addresses.",
     )
     ddns_qualifying_suffix = forms.CharField(
         label="DDNS qualifying suffix",
@@ -801,7 +822,8 @@ class _SubnetBaseForm(forms.Form):
         help_text="Domain suffix appended to hostnames before sending DDNS updates (e.g. example.com.).",
     )
 
-    def clean_pools(self) -> list[str]:  # noqa: D102
+    def clean_pools(self) -> list[str]:
+        """Validate each pool line and normalise the range separator spacing."""
         value = self.cleaned_data["pools"].strip()
         if not value:
             return []
@@ -816,9 +838,8 @@ class _SubnetBaseForm(forms.Form):
                 normalized.append(pool)
         return normalized
 
-    def clean_gateway(self) -> str:  # noqa: D102
-        import ipaddress
-
+    def clean_gateway(self) -> str:
+        """Validate the gateway is an IP address; blank means no gateway."""
         value = self.cleaned_data["gateway"].strip()
         if not value:
             return ""
@@ -828,29 +849,67 @@ class _SubnetBaseForm(forms.Form):
             raise forms.ValidationError(f"Invalid gateway IP address: {exc}") from exc
         return value
 
-    def clean_dns_servers(self) -> list[str]:  # noqa: D102
-        import ipaddress
+    def clean_dns_servers(self) -> list[str]:
+        """Split the comma-separated list and validate every DNS server address."""
+        return _parse_ip_address_list(self.cleaned_data["dns_servers"], "Invalid DNS server IP address: '{entry}'")
 
-        value = self.cleaned_data["dns_servers"].strip()
-        if not value:
-            return []
-        entries = [s.strip() for s in value.split(",") if s.strip()]
-        for entry in entries:
-            try:
-                ipaddress.ip_address(entry)
-            except ValueError as exc:  # noqa: PERF203
-                raise forms.ValidationError(f"Invalid DNS server IP address: '{entry}'") from exc
-        return entries
+    def clean_ntp_servers(self) -> list[str]:
+        """Split the comma-separated list and validate every NTP server address."""
+        return _parse_ip_address_list(self.cleaned_data["ntp_servers"], "Invalid NTP server IP address: '{entry}'")
 
-    def clean_ntp_servers(self) -> list[str]:  # noqa: D102
-        value = self.cleaned_data["ntp_servers"].strip()
-        if not value:
-            return []
-        return [s.strip() for s in value.split(",") if s.strip()]
+    def clean(self) -> dict[str, Any] | None:
+        """Validate that gateway, DNS and NTP servers match the subnet's IP family."""
+        cleaned = super().clean()
+        if not cleaned:
+            return cleaned
+        subnet_str = cleaned.get(self.subnet_field, "")
+        try:
+            subnet_net = ipaddress.ip_network(subnet_str, strict=False)
+        except ValueError:
+            return cleaned
+
+        subnet_version = subnet_net.version
+
+        gateway = cleaned.get("gateway", "")
+        if gateway:
+            if subnet_version == 6:
+                self.add_error("gateway", "Gateway is not allowed for IPv6 subnets.")
+            else:
+                try:
+                    gw_version = ipaddress.ip_address(gateway).version
+                except ValueError:
+                    gw_version = None
+                if gw_version and gw_version != subnet_version:
+                    self.add_error(
+                        "gateway",
+                        f"Gateway must be an IPv{subnet_version} address to match the subnet family.",
+                    )
+
+        # Both options are address arrays of the subnet's own family, so Kea rejects a
+        # mismatch at apply time.
+        for field, label in (("dns_servers", "DNS server"), ("ntp_servers", "NTP server")):
+            addresses = cleaned.get(field) or []
+            if not isinstance(addresses, list):
+                continue
+            for address in addresses:
+                try:
+                    version = ipaddress.ip_address(address).version
+                except ValueError:
+                    continue
+                if version != subnet_version:
+                    self.add_error(
+                        field,
+                        f"{label} '{address}' must be an IPv{subnet_version} address to match the subnet family.",
+                    )
+                    break
+
+        return cleaned
 
 
 class SubnetAddForm(_SubnetBaseForm):
     """Form for adding a new DHCP subnet to Kea."""
+
+    subnet_field = "subnet"
 
     subnet = forms.CharField(
         label="Subnet CIDR",
@@ -881,61 +940,9 @@ class SubnetAddForm(_SubnetBaseForm):
         "ddns_qualifying_suffix",
     ]
 
-    def clean_subnet(self) -> str:  # noqa: D102
-        import ipaddress
-
-        value = self.cleaned_data["subnet"].strip()
-        try:
-            ipaddress.ip_network(value, strict=True)
-        except ValueError as exc:
-            raise forms.ValidationError(f"Invalid subnet CIDR: {exc}") from exc
-        return value
-
-    def clean(self) -> dict[str, Any] | None:
-        """Validate that gateway and DNS servers belong to the same IP family as the subnet."""
-        cleaned = super().clean()
-        if not cleaned:
-            return cleaned
-        import ipaddress
-
-        subnet_str = cleaned.get("subnet", "")
-        try:
-            subnet_net = ipaddress.ip_network(subnet_str, strict=False)
-        except ValueError:
-            return cleaned
-
-        subnet_version = subnet_net.version
-
-        gateway = cleaned.get("gateway", "")
-        if gateway:
-            if subnet_version == 6:
-                self.add_error("gateway", "Gateway is not allowed for IPv6 subnets.")
-            else:
-                try:
-                    gw_version = ipaddress.ip_address(gateway).version
-                except ValueError:
-                    gw_version = None
-                if gw_version and gw_version != subnet_version:
-                    self.add_error(
-                        "gateway",
-                        f"Gateway must be an IPv{subnet_version} address to match the subnet family.",
-                    )
-
-        dns_servers = cleaned.get("dns_servers") or []
-        if isinstance(dns_servers, list):
-            for dns in dns_servers:
-                try:
-                    dns_version = ipaddress.ip_address(dns).version
-                except ValueError:
-                    continue
-                if dns_version != subnet_version:
-                    self.add_error(
-                        "dns_servers",
-                        f"DNS server '{dns}' must be an IPv{subnet_version} address to match the subnet family.",
-                    )
-                    break
-
-        return cleaned
+    def clean_subnet(self) -> str:
+        """Reject host bits here: this CIDR is typed by the user for a subnet being created."""
+        return _validate_subnet_cidr(self.cleaned_data["subnet"], strict=True)
 
 
 class SubnetEditForm(_SubnetBaseForm):
@@ -948,6 +955,8 @@ class SubnetEditForm(_SubnetBaseForm):
     ``shared_network`` choices are set dynamically by the view at render time.
     ``current_network`` is a hidden field tracking the network before any change.
     """
+
+    subnet_field = "subnet_cidr"
 
     subnet_cidr = forms.CharField(widget=forms.HiddenInput())
     valid_lft = forms.IntegerField(
@@ -1003,6 +1012,10 @@ class SubnetEditForm(_SubnetBaseForm):
         "ddns_qualifying_suffix",
         "current_network",
     ]
+
+    def clean_subnet_cidr(self) -> str:
+        """Accept host bits here: Kea allows them, so this CIDR is echoed back from its config."""
+        return _validate_subnet_cidr(self.cleaned_data["subnet_cidr"], strict=False)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1413,48 +1426,21 @@ class SharedNetworkEditForm(forms.Form):
 
     def clean_relay_addresses(self) -> str:
         """Validate each relay IP."""
-        import ipaddress
-
-        raw = self.cleaned_data.get("relay_addresses", "").strip()
-        if not raw:
-            return raw
-        entries = [s.strip() for s in raw.split(",") if s.strip()]
-        for entry in entries:
-            try:
-                ipaddress.ip_address(entry)
-            except ValueError as exc:  # noqa: PERF203
-                raise forms.ValidationError(f"'{entry}' is not a valid IP address.") from exc
-        return ",".join(entries)
+        return ",".join(
+            _parse_ip_address_list(self.cleaned_data.get("relay_addresses", ""), "'{entry}' is not a valid IP address.")
+        )
 
     def clean_dns_servers(self) -> str:
         """Validate each DNS server IP address."""
-        import ipaddress
-
-        raw = self.cleaned_data.get("dns_servers", "").strip()
-        if not raw:
-            return raw
-        entries = [s.strip() for s in raw.split(",") if s.strip()]
-        for entry in entries:
-            try:
-                ipaddress.ip_address(entry)
-            except ValueError as exc:  # noqa: PERF203
-                raise forms.ValidationError(f"Invalid DNS server IP address: '{entry}'") from exc
-        return ",".join(entries)
+        return ",".join(
+            _parse_ip_address_list(self.cleaned_data.get("dns_servers", ""), "Invalid DNS server IP address: '{entry}'")
+        )
 
     def clean_ntp_servers(self) -> str:
         """Validate each NTP server IP address."""
-        import ipaddress
-
-        raw = self.cleaned_data.get("ntp_servers", "").strip()
-        if not raw:
-            return raw
-        entries = [s.strip() for s in raw.split(",") if s.strip()]
-        for entry in entries:
-            try:
-                ipaddress.ip_address(entry)
-            except ValueError as exc:  # noqa: PERF203
-                raise forms.ValidationError(f"Invalid NTP server IP address: '{entry}'") from exc
-        return ",".join(entries)
+        return ",".join(
+            _parse_ip_address_list(self.cleaned_data.get("ntp_servers", ""), "Invalid NTP server IP address: '{entry}'")
+        )
 
 
 # ---------------------------------------------------------------------------

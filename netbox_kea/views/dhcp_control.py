@@ -10,6 +10,7 @@ from django.urls import reverse
 from netbox.views import generic
 
 from .. import forms
+from ..constants import Family
 from ..kea import KeaException
 from ..models import Server
 from ..utilities import (
@@ -24,7 +25,7 @@ class _BaseServerDHCPEnableView(_KeaChangeMixin, generic.ObjectView):
     """Confirmation view to re-enable a Kea DHCP service that was previously disabled."""
 
     queryset = Server.objects.all()
-    dhcp_version: int
+    dhcp_version: Family
     template_name = "netbox_kea/server_dhcp_enable.html"
 
     def get_extra_context(self, request: HttpRequest, instance: Server) -> dict[str, Any]:
@@ -61,7 +62,7 @@ class _BaseServerDHCPDisableView(_KeaChangeMixin, generic.ObjectView):
     """Confirmation form to temporarily disable a Kea DHCP service."""
 
     queryset = Server.objects.all()
-    dhcp_version: int
+    dhcp_version: Family
     template_name = "netbox_kea/server_dhcp_disable.html"
 
     def get_extra_context(self, request: HttpRequest, instance: Server) -> dict[str, Any]:

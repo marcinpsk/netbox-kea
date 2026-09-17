@@ -1,6 +1,6 @@
 import concurrent.futures
 import logging
-from typing import Any, Literal
+from typing import Any
 from urllib.parse import urlencode as _urlencode
 
 import requests
@@ -11,6 +11,7 @@ from django.urls import reverse
 from django.views import View
 
 from .. import constants, forms, tables
+from ..constants import Family
 from ..dhcp_options import DHCPOption
 from ..kea import KeaException, LeaseQueryGuardError, lease_query_guard_message
 from ..models import Server
@@ -54,7 +55,7 @@ def _fetch_leases_from_server(
     server: Server,
     q: Any,
     by: str,
-    version: int,
+    version: Family,
     *,
     state: int | None = None,
 ) -> list[dict[str, Any]]:
@@ -69,7 +70,7 @@ def _fetch_leases_from_server(
 
 
 def _fetch_all_leases_from_server(
-    server: "Server", version: int, max_leases: int = 1000
+    server: "Server", version: Family, max_leases: int = 1000
 ) -> tuple[list[dict[str, Any]], bool]:
     """Enumerate all leases on *server* through the Kea client.
 
@@ -121,7 +122,7 @@ class _CombinedViewMixin(ConditionalLoginRequiredMixin, View):
             "active_tab": self.active_tab,
         }
 
-    def _get_servers(self, request: HttpRequest, dhcp_version: int) -> list["Server"]:
+    def _get_servers(self, request: HttpRequest, dhcp_version: Family) -> list["Server"]:
         """Return servers to query: selected ones if ?server= provided, else all dhcp-flagged."""
         dhcp_kwarg = f"dhcp{dhcp_version}"
         server_id_strs = request.GET.getlist("server")
@@ -191,7 +192,7 @@ def _option_payload(option: DHCPOption) -> dict[str, Any]:
 def _catalogue_subnet_row(
     subnet: VerifiedSubnet | ConfiguredSubnet,
     server: Server,
-    version: int,
+    version: Family,
 ) -> dict[str, Any]:
     """Build one combined-table row from a typed catalogue subnet."""
     from ..utilities import format_option_data
@@ -220,7 +221,7 @@ def _catalogue_subnet_row(
 
 def _fetch_subnets_from_server(
     server: "Server",
-    version: int,
+    version: Family,
 ) -> tuple[list[dict[str, Any]], tuple[Diagnostic, ...]]:
     """Fetch safe Subnet Catalogue facts for one server and tag them for the combined table."""
     snapshot = display(server, version)
@@ -252,7 +253,7 @@ class _CombinedSubnetsView(_CombinedViewMixin):
     """Base view: fetch subnets from all selected servers concurrently."""
 
     template_name = "netbox_kea/combined_subnets.html"
-    dhcp_version: int = 4
+    dhcp_version: Family = 4
 
     def get(self, request: HttpRequest) -> HttpResponse:
         """Merge subnet lists from all queried servers into one table."""
@@ -273,7 +274,7 @@ class _CombinedSubnetsView(_CombinedViewMixin):
                         (server.name, message)
                         for message in dict.fromkeys(diagnostic.message for diagnostic in diagnostics)
                     )
-                except Exception:  # noqa: BLE001, PERF203
+                except Exception:
                     logger.exception("Failed to query server %s", server.name)
                     errors.append((server.name, "Failed to query server"))
 
@@ -331,7 +332,7 @@ class CombinedSubnets6View(_CombinedSubnetsView):
     active_tab = "subnets6"
 
 
-def _fetch_shared_networks_from_server(server: "Server", version: int) -> list[dict[str, Any]]:
+def _fetch_shared_networks_from_server(server: "Server", version: Family) -> list[dict[str, Any]]:
     """Fetch all shared networks from a single server's config-get and tag with server info."""
     client = server.get_client(version=version)
     config = client.command("config-get", service=[f"dhcp{version}"])
@@ -375,7 +376,7 @@ class _CombinedSharedNetworksView(_CombinedViewMixin):
     """Base view: fetch shared networks from all selected servers concurrently."""
 
     template_name = "netbox_kea/combined_shared_networks.html"
-    dhcp_version: int = 4
+    dhcp_version: Family = 4
 
     def get(self, request: HttpRequest) -> HttpResponse:
         """Merge shared network lists from all queried servers into one table."""
@@ -393,7 +394,7 @@ class _CombinedSharedNetworksView(_CombinedViewMixin):
                 server = future_to_server[future]
                 try:
                     all_networks.extend(future.result())
-                except Exception:  # noqa: BLE001, PERF203
+                except Exception:
                     logger.exception("Failed to query server %s", server.name)
                     errors.append((server.name, "Failed to query server"))
 
@@ -439,7 +440,7 @@ class CombinedSharedNetworks6View(_CombinedSharedNetworksView):
 
 def _fetch_reservations_from_server(
     server: "Server",
-    version: Literal[4, 6],
+    version: Family,
     cursor: str | None = None,
     *,
     full_snapshot: bool = False,
@@ -466,7 +467,7 @@ def _reservation_mutation_server_pks(
 def _reservation_capability_future(
     executor: concurrent.futures.ThreadPoolExecutor,
     server: Server,
-    version: Literal[4, 6],
+    version: Family,
     writable_pks: set[int],
     snapshot: ReservationSnapshot,
 ) -> dict[int, concurrent.futures.Future[ReservationCapabilities | None]]:
@@ -485,7 +486,7 @@ def _reservation_capability_results(
     for server_pk, capability_future in capability_futures.items():
         try:
             capabilities_by_server[server_pk] = capability_future.result()
-        except Exception:  # noqa: BLE001, PERF203
+        except Exception:  # noqa: PERF203
             logger.exception("Failed to query Reservation capabilities from %s", server_map[server_pk].name)
             capabilities_by_server[server_pk] = None
     return capabilities_by_server
@@ -495,7 +496,7 @@ class _CombinedReservationsView(_CombinedViewMixin):
     """Base view: fetch reservations from all selected servers concurrently."""
 
     template_name = "netbox_kea/combined_reservations.html"
-    dhcp_version: Literal[4, 6] = 4
+    dhcp_version: Family = 4
 
     def get(self, request: HttpRequest) -> HttpResponse:
         """Merge reservation lists from all queried servers into one table."""
@@ -549,7 +550,7 @@ class _CombinedReservationsView(_CombinedViewMixin):
                             fetched_snapshot,
                         )
                     )
-                except Exception:  # noqa: BLE001, PERF203
+                except Exception:
                     logger.exception("Failed to query server %s", server.name)
                     errors.append((server.name, "Failed to query server"))
             capabilities_by_server = _reservation_capability_results(capability_futures, server_map)
@@ -670,7 +671,7 @@ class _CombinedLeasesView(_CombinedViewMixin):
     """Base view: broadcast a lease search query across multiple Kea servers."""
 
     template_name = "netbox_kea/combined_leases.html"
-    dhcp_version: int = 4
+    dhcp_version: Family = 4
 
     def get(self, request: HttpRequest) -> HttpResponse:
         """Render the search form or, when a query is supplied, merge results."""
@@ -735,25 +736,26 @@ class _CombinedLeasesView(_CombinedViewMixin):
                     server = future_to_server[future]
                     try:
                         all_leases.extend(future.result())
-                    except LeaseQueryGuardError as exc:  # noqa: PERF203
+                    except LeaseQueryGuardError as exc:
                         errors.append((server.name, lease_query_guard_message(exc, state_filter)))
-                    except Exception:  # noqa: BLE001, PERF203
+                    except Exception:
                         logger.exception("Failed to query server %s", server.name)
                         errors.append((server.name, "Failed to query server"))
         else:
             # State-only filter: enumerate all leases via get-page (capped per server).
             with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-                future_to_server = {
+                # A distinct name: these futures yield (leases, truncated), not a bare list.
+                paged_future_to_server = {
                     executor.submit(_fetch_all_leases_from_server, s, self.dhcp_version): s for s in servers
                 }
-                for future in concurrent.futures.as_completed(future_to_server):
-                    server = future_to_server[future]
+                for paged_future in concurrent.futures.as_completed(paged_future_to_server):
+                    server = paged_future_to_server[paged_future]
                     try:
-                        leases, was_truncated = future.result()
+                        leases, was_truncated = paged_future.result()
                         all_leases.extend(leases)
                         if was_truncated:
                             truncated_servers.append(server.name)
-                    except Exception:  # noqa: BLE001, PERF203
+                    except Exception:
                         logger.exception("Failed to query server %s", server.name)
                         errors.append((server.name, "Failed to query server"))
 

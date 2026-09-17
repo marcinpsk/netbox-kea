@@ -401,7 +401,7 @@ class TestSyncReservationMultiAddressV6(TestCase):
             "hostname": "v6host.example.com",
             "subnet-id": 1,
         }
-        ip_obj, created, _ = _sync_reservation(reservation)
+        _ip_obj, created, _ = _sync_reservation(reservation)
         self.assertTrue(created)
         self.assertTrue(
             NbIP.objects.filter(address__net_host="2001:db8::1").exists(),
@@ -439,6 +439,25 @@ class TestSyncReservationMultiAddressV6(TestCase):
 
         self.assertEqual(hostname, "v6host.example.invalid")
         self.assertEqual(addresses, set())
+
+    def test_malformed_ip_addresses_are_rejected_before_building_the_keep_set(self):
+        from netbox_kea.sync import _record_hostname_and_addresses
+
+        malformed_values = (
+            "2001:db8::10",
+            {"address": "2001:db8::10"},
+            ["2001:db8::10", 42],
+        )
+        for value in malformed_values:
+            with self.subTest(value=value), self.assertRaisesRegex(RuntimeError, "ip-addresses.*list of strings"):
+                _record_hostname_and_addresses({"hostname": "v6host.example.invalid", "ip-addresses": value})
+
+    def test_malformed_ip_address_is_rejected_before_building_the_keep_set(self):
+        from netbox_kea.sync import _record_hostname_and_addresses
+
+        for value in ({"address": "198.18.0.10"}, ["198.18.0.10"], 42):
+            with self.subTest(value=value), self.assertRaisesRegex(RuntimeError, "ip-address.*string or null"):
+                _record_hostname_and_addresses({"hostname": "host.example.invalid", "ip-address": value})
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1157,6 +1176,15 @@ class TestCleanupStaleIpsBatch(TestCase):
     _KEA_DESC = "Synced from Kea DHCP lease"
 
     @override_settings(PLUGINS_CONFIG=_STALE_PLUGINS_CONFIG)
+    def test_batch_rejects_malformed_hostname(self):
+        from netbox_kea.sync import cleanup_stale_ips_batch
+
+        for hostname in (["host.example.invalid"], {"name": "host.example.invalid"}):
+            with self.subTest(hostname=hostname):
+                with self.assertRaisesRegex(RuntimeError, "hostname"):
+                    cleanup_stale_ips_batch([{"hostname": hostname, "ip-address": "198.18.0.20"}])
+
+    @override_settings(PLUGINS_CONFIG=_STALE_PLUGINS_CONFIG)
     def test_batch_protects_sibling_ips_with_same_hostname(self):
         """Two records with the same hostname: batch cleanup excludes both IPs."""
         from ipam.models import IPAddress as NbIP
@@ -1564,7 +1592,7 @@ class TestSyncSubnetToNetboxPrefix(TestCase):
     def test_creates_prefix_on_first_call(self):
         from ipam.models import Prefix
 
-        prefix_obj, created, did_update = self._sync("10.0.0.0/24")
+        _prefix_obj, created, did_update = self._sync("10.0.0.0/24")
         self.assertTrue(created)
         self.assertFalse(did_update)
         self.assertEqual(Prefix.objects.filter(prefix="10.0.0.0/24").count(), 1)
@@ -1572,7 +1600,7 @@ class TestSyncSubnetToNetboxPrefix(TestCase):
     def test_idempotent_on_second_call(self):
         """Second call returns existing object without changing it."""
         self._sync("10.1.0.0/24")
-        prefix_obj, created, did_update = self._sync("10.1.0.0/24")
+        _prefix_obj, created, did_update = self._sync("10.1.0.0/24")
         self.assertFalse(created)
         self.assertFalse(did_update)
 
@@ -1604,7 +1632,7 @@ class TestSyncSubnetToNetboxPrefix(TestCase):
     def test_ipv6_prefix(self):
         from ipam.models import Prefix
 
-        prefix_obj, created, _ = self._sync("2001:db8::/48")
+        _prefix_obj, created, _ = self._sync("2001:db8::/48")
         self.assertTrue(created)
         self.assertTrue(Prefix.objects.filter(prefix="2001:db8::/48").exists())
 
@@ -1631,7 +1659,7 @@ class TestSyncPoolToNetboxIPRange(TestCase):
 
         result = self._sync("192.168.1.50-192.168.1.100", "192.168.1.0/24")
         self.assertIsNotNone(result)
-        range_obj, created, did_update = result
+        _range_obj, created, did_update = result
         self.assertTrue(created)
         self.assertFalse(did_update)
         self.assertEqual(IPRange.objects.filter(start_address="192.168.1.50/24").count(), 1)
@@ -1639,7 +1667,7 @@ class TestSyncPoolToNetboxIPRange(TestCase):
     def test_creates_range_for_cidr_pool(self):
         result = self._sync("192.168.1.128/25", "192.168.1.0/24")
         self.assertIsNotNone(result)
-        range_obj, created, _ = result
+        _range_obj, created, _ = result
         self.assertTrue(created)
 
     def test_idempotent_on_second_call(self):
@@ -1678,10 +1706,17 @@ class TestSyncPoolToNetboxIPRange(TestCase):
         self.assertNotIn("None", str(range_obj.end_address))
 
     def test_ipv6_cidr_pool_too_large_returns_sentinel(self):
-        """A /64 IPv6 CIDR pool spans 2^64 addresses — too large for PostgreSQL bigint; returns _POOL_TOO_LARGE."""
+        """A /64 IPv6 CIDR pool is too large for NetBox's IPRange size field."""
         from netbox_kea.sync import _POOL_TOO_LARGE
 
         result = self._sync("2001:db8::/64", "2001:db8::/48")
+        self.assertIs(result, _POOL_TOO_LARGE)
+
+    def test_ipv6_cidr_pool_exceeding_integer_returns_sentinel(self):
+        """A pool larger than PostgreSQL integer must not reach IPRange.save()."""
+        from netbox_kea.sync import _POOL_TOO_LARGE
+
+        result = self._sync("2001:db8:1::/80", "2001:db8:1::/64")
         self.assertIs(result, _POOL_TOO_LARGE)
 
     def test_returns_three_tuple(self):

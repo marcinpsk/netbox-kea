@@ -287,6 +287,14 @@ def _client_class_intent(raw: dict, family: int) -> ClientClassIntent | None:
     )
 
 
+def _config_collection(conf: dict, key: str) -> list:
+    """Read an optional config collection and reject a malformed container."""
+    collection = conf.get(key, [])
+    if not isinstance(collection, list):
+        raise RuntimeError(f"Malformed Kea config: {key!r} must be a list")
+    return collection
+
+
 def parse_dhcp_config(conf: dict, version: int) -> ServerConfigIntent:
     """Parse a Kea ``Dhcp4``/``Dhcp6`` config block into a :class:`ServerConfigIntent`.
 
@@ -294,6 +302,7 @@ def parse_dhcp_config(conf: dict, version: int) -> ServerConfigIntent:
     nested in a ``shared-networks`` entry carry that network's name.  Malformed
     entries (non-dicts, subnets without a CIDR) are skipped rather than raising,
     so a partially-malformed live config still imports what it can.
+    Malformed subnet, shared-network, and client-class containers raise RuntimeError.
     """
     if version not in (4, 6):
         raise ValueError(f"version must be 4 or 6, got {version!r}")
@@ -308,17 +317,17 @@ def parse_dhcp_config(conf: dict, version: int) -> ServerConfigIntent:
     result.option_defs = _option_defs(conf.get("option-def"))
     result.global_settings = _settings(conf)
 
-    for raw_cc in conf.get("client-classes") or []:
+    for raw_cc in _config_collection(conf, "client-classes"):
         cc = _client_class_intent(raw_cc, family)
         if cc is not None:
             result.client_classes.append(cc)
 
-    for raw in conf.get(subnet_key) or []:
+    for raw in _config_collection(conf, subnet_key):
         subnet = _subnet_intent(raw, family, shared_network=None)
         if subnet is not None:
             result.subnets.append(subnet)
 
-    for raw_net in conf.get("shared-networks") or []:
+    for raw_net in _config_collection(conf, "shared-networks"):
         if not isinstance(raw_net, dict):
             continue
         name = raw_net.get("name")
@@ -327,7 +336,7 @@ def parse_dhcp_config(conf: dict, version: int) -> ServerConfigIntent:
         result.shared_networks.append(
             SharedNetworkIntent(name=name, family=family, options=_options(raw_net.get("option-data")))
         )
-        for raw in raw_net.get(subnet_key) or []:
+        for raw in _config_collection(raw_net, subnet_key):
             subnet = _subnet_intent(raw, family, shared_network=name)
             if subnet is not None:
                 result.subnets.append(subnet)

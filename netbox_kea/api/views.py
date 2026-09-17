@@ -8,9 +8,9 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 
 from .. import constants, filtersets, models
+from ..constants import Family
 from ..kea import KeaException, LeaseQueryGuardError, lease_query_guard_message
 from ..reservations import (
-    Family,
     GlobalReservationScope,
     InSubnetReservationScope,
     MalformedReservation,
@@ -41,7 +41,8 @@ def _reservation_client(server, version: int):
 
 
 def _server_configuration_error_response(server) -> Response:
-    logger.exception("Invalid Kea configuration on server %s", server.name)
+    # Only ever called from an except block, so exc_info is live.
+    logger.exception("Invalid Kea configuration on server %s", server.name)  # noqa: LOG004
     return Response(
         {"detail": "Invalid Kea server configuration."},
         status=status.HTTP_500_INTERNAL_SERVER_ERROR,

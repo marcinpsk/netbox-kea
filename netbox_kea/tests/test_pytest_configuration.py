@@ -14,11 +14,14 @@ import subprocess
 import sys
 import tempfile
 import warnings
+from ipaddress import ip_address
 from pathlib import Path
 
 import pytest
 import requests
+import tree_sitter_bash
 import yaml
+from tree_sitter import Language, Parser
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 #: The Playwright suite. It must stay inside the path the integration job runs.
@@ -457,6 +460,45 @@ def test_every_integration_suite_session_applies_the_shared_timeout():
         )
 
 
+@pytest.mark.parametrize("fixture_name", ["requests_session", "kea_client"])
+@pytest.mark.parametrize("body_fails", [False, True])
+def test_browser_client_fixtures_close_owned_sessions(monkeypatch, fixture_name, body_fails):
+    import inspect
+    from types import SimpleNamespace
+
+    from tests.ui import conftest as harness
+
+    instances = []
+    base = harness.TimeoutSession if fixture_name == "requests_session" else harness.KeaClient
+
+    class TrackingClient(base):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.close_count = 0
+            instances.append(self)
+
+        def close(self):
+            self.close_count += 1
+            super().close()
+
+    monkeypatch.setattr(
+        harness, "TimeoutSession" if fixture_name == "requests_session" else "KeaClient", TrackingClient
+    )
+    fixture = getattr(harness, fixture_name).__wrapped__
+    result = fixture(SimpleNamespace(token="test-token")) if fixture_name == "requests_session" else fixture()
+    if inspect.isgenerator(result):
+        next(result)
+        assert all(client.close_count == 0 for client in instances)
+        if body_fails:
+            with pytest.raises(RuntimeError, match="test body failed"):
+                result.throw(RuntimeError("test body failed"))
+        else:
+            with pytest.raises(StopIteration):
+                next(result)
+    assert len(instances) == (1 if fixture_name == "requests_session" else 2)
+    assert [client.close_count for client in instances] == [1] * len(instances)
+
+
 def test_the_pynetbox_client_bounds_every_request_it_makes():
     """`nb_api` reaches NetBox through pynetbox, which never passes a timeout of its own.
 
@@ -713,32 +755,225 @@ def test_the_browser_suite_runs_in_the_integration_job():
     )
 
 
-def _drops_chrome_source_before_installing(run: str) -> bool:
-    """True when *run* removes the Google Chrome apt source before installing browsers.
+_CHROME_LIST = "/etc/apt/sources.list.d/google-chrome.list"
+_CHROME_SOURCES = "/etc/apt/sources.list.d/google-chrome.sources"
+_CHROME_REMOVAL = f"sudo rm -f {_CHROME_LIST} {_CHROME_SOURCES}"
+_BROWSER_INSTALL = "uv run --native-tls playwright install --with-deps"
 
-    Order is the whole point, and so is reading commands rather than prose: a comment
-    naming the source, or a removal that runs afterwards, leaves the job just as exposed.
-    """
-    commands = [line.split("#", 1)[0].strip() for line in run.splitlines()]
-    removal = next(
-        (i for i, line in enumerate(commands) if line.startswith("sudo rm") and "google-chrome" in line),
-        None,
+
+def _drops_chrome_source_before_installing(run: str) -> bool:
+    """Accept only a source removal followed by foreground browser installers."""
+    source = run.encode("utf-8")
+    if any(byte not in (9, 10) and not 32 <= byte <= 126 for byte in source):
+        return False
+    root = Parser(Language(tree_sitter_bash.language())).parse(source).root_node
+    pending = [root]
+    while pending:
+        node = pending.pop()
+        if node.has_error or node.is_missing:
+            return False
+        pending.extend(node.children)
+
+    removals = (
+        ["sudo", "rm", "-f", _CHROME_LIST, _CHROME_SOURCES],
+        ["sudo", "rm", "-f", _CHROME_SOURCES, _CHROME_LIST],
     )
-    install = next((i for i, line in enumerate(commands) if "playwright install" in line), None)
-    return removal is not None and install is not None and removal < install
+    installers = [
+        [*prefix, "playwright", "install", "--with-deps"]
+        for prefix in ([], ["uv", "run"], ["uv", "run", "--native-tls"])
+    ]
+    removed = installed = False
+    end = 0
+    for node in root.children:
+        if source[end : node.start_byte].strip(b" \t\n"):
+            return False
+        end = node.end_byte
+        if node.type == "comment" or (node.type == ";" and not node.is_named):
+            continue
+        if node.type != "command":
+            return False
+        try:
+            tokens = shlex.split(source[node.start_byte : node.end_byte].decode("utf-8"), comments=False, posix=True)
+        except ValueError:
+            return False
+        if tokens in removals and not removed:
+            removed = True
+        elif tokens in installers and removed:
+            installed = True
+        else:
+            return False
+    return installed and not source[end:].strip(b" \t\n")
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        f"cat <<'EOF'\n{_CHROME_REMOVAL}\nEOF\n{_BROWSER_INSTALL}",
+        f"printf '%s' 'multiline\nquote'\n{_CHROME_REMOVAL}\n{_BROWSER_INSTALL}",
+        f"unused() {{\n{_CHROME_REMOVAL}\n}}\n{_BROWSER_INSTALL}",
+        f"{_CHROME_REMOVAL}\f\n{_BROWSER_INSTALL}",
+        f"{_CHROME_REMOVAL}\n{_BROWSER_INSTALL}\f",
+        f"{_CHROME_REMOVAL}\r\n{_BROWSER_INSTALL}",
+        f"{_CHROME_REMOVAL};;\n{_BROWSER_INSTALL}",
+        f"{_CHROME_REMOVAL} &\n{_BROWSER_INSTALL}",
+        f"{_CHROME_REMOVAL}#suffix\n{_BROWSER_INSTALL}",
+        f"{_CHROME_REMOVAL}\n{_BROWSER_INSTALL}#suffix",
+    ],
+    ids=[
+        "heredoc",
+        "multiline-quote",
+        "uncalled-function",
+        "removal-form-feed",
+        "install-form-feed",
+        "carriage-return",
+        "double-semicolon",
+        "background",
+        "source-suffix",
+        "install-suffix",
+    ],
+)
+def test_chrome_source_guard_rejects_non_executable_or_changed_words(script):
+    assert not _drops_chrome_source_before_installing(script)
 
 
 def test_the_chrome_source_guard_reads_order_and_not_prose():
     """Table-test the guard: it must fail for a removal that cannot protect the install."""
-    good = "sudo rm -f /etc/apt/sources.list.d/google-chrome.list\nuv run playwright install --with-deps"
-    assert _drops_chrome_source_before_installing(good)
-    for bad in (
-        "uv run playwright install --with-deps\nsudo rm -f /etc/apt/sources.list.d/google-chrome.list",
-        "# drop the google-chrome source one day\nuv run playwright install --with-deps",
+    for install in (
+        "playwright install --with-deps",
         "uv run playwright install --with-deps",
-        "sudo rm -f /etc/apt/sources.list.d/google-chrome.list",
+        "uv run --native-tls playwright install --with-deps",
+    ):
+        good = f"{_CHROME_REMOVAL}\n{install}"
+        assert _drops_chrome_source_before_installing(good)
+    for bad in (
+        f"{_CHROME_REMOVAL}\necho '{_BROWSER_INSTALL}'",
+        f"{_CHROME_REMOVAL}\nprintf '%s' '{_BROWSER_INSTALL}'",
+        f"{_CHROME_REMOVAL}\n# {_BROWSER_INSTALL}",
+        f"{_CHROME_REMOVAL}\nremember {_BROWSER_INSTALL} later",
+        f"{_CHROME_REMOVAL}\nuv run echo playwright install --with-deps",
+        f"{_CHROME_REMOVAL}\nuv run --directory playwright install --with-deps",
+        f"{_BROWSER_INSTALL}\n{_CHROME_REMOVAL}",
+        f"# {_CHROME_REMOVAL}\n{_BROWSER_INSTALL}",
+        _BROWSER_INSTALL,
+        _CHROME_REMOVAL,
     ):
         assert not _drops_chrome_source_before_installing(bad), f"the guard accepted {bad!r}"
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        f" \t{_CHROME_REMOVAL}\n\n\t{_BROWSER_INSTALL}\n",
+        f"{_CHROME_REMOVAL}\n{_BROWSER_INSTALL}".replace(" ", "\t"),
+        f"{_CHROME_REMOVAL}; {_BROWSER_INSTALL}",
+        f"# remove sources\n{_CHROME_REMOVAL} # source removal\n{_BROWSER_INSTALL} # install\n",
+        f"sudo rm -f {_CHROME_SOURCES} {_CHROME_LIST}\n{_BROWSER_INSTALL}",
+        f"{_CHROME_REMOVAL}\nplaywright install --with-deps\n{_BROWSER_INSTALL}",
+    ],
+)
+def test_chrome_source_guard_accepts_supported_shell_separators(script):
+    assert _drops_chrome_source_before_installing(script)
+
+
+@pytest.mark.parametrize("suffix", ["\r", "\f", "#suffix"])
+@pytest.mark.parametrize(
+    "word",
+    [
+        "sudo",
+        "rm",
+        "-f",
+        _CHROME_LIST,
+        _CHROME_SOURCES,
+        "uv",
+        "run",
+        "--native-tls",
+        "playwright",
+        "install",
+        "--with-deps",
+    ],
+)
+def test_chrome_source_guard_rejects_changed_required_words(word, suffix):
+    script = f"{_CHROME_REMOVAL}\n{_BROWSER_INSTALL}"
+    assert not _drops_chrome_source_before_installing(script.replace(word, word + suffix))
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        f"sudo rm -f {_CHROME_LIST}\n{_BROWSER_INSTALL}",
+        f"sudo rm -f {_CHROME_SOURCES}\n{_BROWSER_INSTALL}",
+        f"{_CHROME_REMOVAL}\nuv run --native-tls playwright install",
+        f"{_BROWSER_INSTALL}\n{_CHROME_REMOVAL}\n{_BROWSER_INSTALL}",
+        f"{_CHROME_REMOVAL}\n{_BROWSER_INSTALL}\n'",
+        f"{_CHROME_REMOVAL}\n{_BROWSER_INSTALL}\n)",
+        f"{_CHROME_REMOVAL} && {_BROWSER_INSTALL}",
+        f"{_CHROME_REMOVAL} | {_BROWSER_INSTALL}",
+        f"({_CHROME_REMOVAL})\n{_BROWSER_INSTALL}",
+        f"{{ {_CHROME_REMOVAL}; }}\n{_BROWSER_INSTALL}",
+        f"{_CHROME_REMOVAL} >/dev/null\n{_BROWSER_INSTALL}",
+        f"FLAG=value {_CHROME_REMOVAL}\n{_BROWSER_INSTALL}",
+        f"{_CHROME_REMOVAL}\n{_BROWSER_INSTALL}\x00",
+        f"{_CHROME_REMOVAL}\n{_BROWSER_INSTALL}\N{NO-BREAK SPACE}",
+    ],
+)
+def test_chrome_source_guard_rejects_incomplete_or_unsupported_scripts(script):
+    assert not _drops_chrome_source_before_installing(script)
+
+
+def _assert_browser_install_step_is_guarded(workflow: dict) -> None:
+    """Bind the shell proof to the unconditional browser-install step and default shell."""
+    job = workflow["jobs"]["test"]
+    for scope in (workflow, job):
+        assert "shell" not in scope.get("defaults", {}).get("run", {}), (
+            "browser installation must use the default shell"
+        )
+    steps = [step for step in job["steps"] if step.get("name") == "Ensure playwright browsers are installed"]
+    assert len(steps) == 1, "expected exactly one named browser-install step"
+    step = steps[0]
+    assert "shell" not in step and "if" not in step, (
+        "browser installation must run unconditionally in the default shell"
+    )
+    assert isinstance(step.get("run"), str), "browser-install run must be a string"
+    assert _drops_chrome_source_before_installing(step["run"]), "browser install must first remove both Chrome sources"
+
+
+@pytest.mark.parametrize("scope", ["workflow", "job", "step"])
+def test_browser_install_guard_rejects_shell_overrides(scope):
+    workflow = yaml.safe_load((REPOSITORY_ROOT / ".github/workflows/ci.yml").read_text())
+    job = workflow["jobs"]["test"]
+    step = next(step for step in job["steps"] if step.get("name") == "Ensure playwright browsers are installed")
+    if scope == "step":
+        step["shell"] = "bash -n {0}"
+    else:
+        target = workflow if scope == "workflow" else job
+        target["defaults"] = {"run": {"shell": "bash -n {0}"}}
+    with pytest.raises(AssertionError, match="default shell"):
+        _assert_browser_install_step_is_guarded(workflow)
+
+
+@pytest.mark.parametrize(
+    "change", ["missing", "renamed", "duplicate", "non-string", "no-run", "conditional", "unsafe-run"]
+)
+def test_browser_install_guard_requires_one_unconditional_executable_step(change):
+    workflow = yaml.safe_load((REPOSITORY_ROOT / ".github/workflows/ci.yml").read_text())
+    steps = workflow["jobs"]["test"]["steps"]
+    step = next(step for step in steps if step.get("name") == "Ensure playwright browsers are installed")
+    if change == "missing":
+        steps.remove(step)
+    elif change == "renamed":
+        step["name"] = "Browser setup"
+    elif change == "duplicate":
+        steps.append(dict(step))
+    elif change == "non-string":
+        step["run"] = 42
+    elif change == "no-run":
+        del step["run"]
+    elif change == "conditional":
+        step["if"] = "false"
+    else:
+        step["run"] = f"{_CHROME_REMOVAL}\necho '{_BROWSER_INSTALL}'"
+    with pytest.raises(AssertionError):
+        _assert_browser_install_step_is_guarded(workflow)
 
 
 def test_the_browser_install_does_not_read_the_google_chrome_apt_source():
@@ -749,23 +984,8 @@ def test_the_browser_install_does_not_read_the_google_chrome_apt_source():
     three browser jobs died before pytest started on every open branch. Playwright
     downloads its own Chromium, so that source is never needed here.
     """
-    import yaml
-
     workflow = yaml.safe_load((REPOSITORY_ROOT / ".github/workflows/ci.yml").read_text())
-    steps = [
-        step
-        for job in workflow["jobs"].values()
-        for step in job.get("steps", [])
-        if "playwright install" in str(step.get("run", ""))
-    ]
-    assert steps, "no workflow step installs the Playwright browsers any more; update this guard."
-    for step in steps:
-        if "--with-deps" not in step["run"]:
-            continue
-        assert _drops_chrome_source_before_installing(step["run"]), (
-            "a Playwright step runs --with-deps without first dropping the Google Chrome apt "
-            "source, so an inconsistent third-party repository can fail the browser jobs."
-        )
+    _assert_browser_install_step_is_guarded(workflow)
 
 
 def test_documented_integration_commands_disable_pytest_django():
@@ -997,10 +1217,12 @@ def _hrefs_navigated_raw(source: str) -> list[str]:
         ("def workflow(page, link):\n    page.goto(destination := link.get_attribute('href'))\n", True),
         ("def workflow(page, link):\n    page.goto(link.evaluate('el => el.href'))\n", False),
         (
-            "def workflow(page, link):\n"
-            "    destination = link.get_attribute('href')\n"
-            "    destination = link.evaluate('el => el.href')\n"
-            "    page.goto(destination)\n",
+            (
+                "def workflow(page, link):\n"
+                "    destination = link.get_attribute('href')\n"
+                "    destination = link.evaluate('el => el.href')\n"
+                "    page.goto(destination)\n"
+            ),
             False,
         ),
         ("def workflow(page, link):\n    page.goto(link.get_attribute('title'))\n", False),
@@ -1722,6 +1944,23 @@ async def test_cycle():
     assert _unguarded_finally_cleanups(source) == ["cleanup"]
 
 
+def test_the_browser_suite_mirrors_the_kea_sync_description_prefix():
+    """The browser cleanup deletes by this prefix, so a drift would widen what it removes.
+
+    ``tests/ui`` cannot import the package, so the literal is duplicated there. This is
+    the check that keeps the copy honest.
+    """
+    from netbox_kea.sync import _KEA_DESC_PREFIX
+
+    source = (_BROWSER_SUITE / "test_workflows.py").read_text()
+    match = re.search(r'^_KEA_SYNC_DESCRIPTION_PREFIX = "([^"]*)"$', source, re.MULTILINE)
+    assert match, "The browser suite no longer defines _KEA_SYNC_DESCRIPTION_PREFIX."
+    assert match.group(1) == _KEA_DESC_PREFIX, (
+        f"The browser suite mirrors {match.group(1)!r} but netbox_kea/sync.py writes "
+        f"{_KEA_DESC_PREFIX!r}. Its NetBox cleanup would match the wrong rows."
+    )
+
+
 class _FakeRowLocator:
     """The subset of the Playwright Locator API the reservation cleanup helper uses."""
 
@@ -1734,6 +1973,9 @@ class _FakeRowLocator:
 
     @property
     def first(self) -> _FakeRowLocator:
+        return self
+
+    def filter(self, **_kwargs) -> _FakeRowLocator:
         return self
 
     def locator(self, *_args, **_kwargs) -> _FakeRowLocator:
@@ -1767,6 +2009,9 @@ class _FakeReservationPage:
     def wait_for_url(self, *_args, **_kwargs) -> None:
         self.url = "http://netbox.invalid/reservations4/"
 
+    def get_by_text(self, *_args, **_kwargs) -> _FakeRowLocator:
+        return _FakeRowLocator(1)
+
     def locator(self, *_args, **_kwargs) -> _FakeRowLocator:
         return _FakeRowLocator(0 if (self.submitted and self.delete_succeeds) else 1)
 
@@ -1782,7 +2027,14 @@ def _run_reservation_cleanup(delete_succeeds: bool, *, strict: bool) -> list[str
     page = _FakeReservationPage(delete_succeeds)
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        module.TestReservationCRUD()._ui_cleanup_reservation(page, "/plugins/netbox_kea", 1, strict=strict)
+        module.TestReservationCRUD()._ui_cleanup_reservation(
+            page,
+            "/plugins/netbox_kea",
+            1,
+            "e2:e2:e2:e2:e2:01",
+            "198.18.0.10",
+            strict=strict,
+        )
     assert page.submitted, "The helper never submitted the delete; this guard would prove nothing."
     return [str(entry.message) for entry in caught]
 
@@ -1822,6 +2074,398 @@ def test_reservation_workflow_rejects_an_offset_at_the_network_boundary():
 
     with pytest.raises(AssertionError, match="too small"):
         workflow._test_ip("198.18.0.0/27")
+
+
+def test_reservation_state_address_does_not_overlap_the_pagination_leases():
+    """The deterministic state case must not reuse an address from the 250-lease fixture."""
+    workflow = _reservation_crud_class()()
+    network_address = ip_address("198.18.0.0")
+    pagination_addresses = {str(network_address + host) for host in range(1, 251)}
+
+    state_address = workflow._test_ip("198.18.0.0/24", workflow._STATE_HOST_OFFSET)
+
+    assert state_address not in pagination_addresses
+
+
+class _FakeNetBoxResponse:
+    """The response surface used by the browser suite's IP cleanup."""
+
+    def __init__(self, payload: dict | None = None):
+        self._payload = payload or {}
+
+    def json(self) -> dict:
+        return self._payload
+
+    def raise_for_status(self) -> None:
+        pass
+
+
+class _FakeNetBoxSession:
+    """Record the exact NetBox queries and deletes issued by IP cleanup."""
+
+    def __init__(self, payload: dict | None = None):
+        self.payload = payload or {"count": 0, "results": []}
+        self.get_calls: list[tuple[str, dict]] = []
+        self.delete_calls: list[tuple[str, dict]] = []
+
+    def get(self, url: str, **kwargs) -> _FakeNetBoxResponse:
+        self.get_calls.append((url, kwargs))
+        return _FakeNetBoxResponse(self.payload)
+
+    def delete(self, url: str, **kwargs) -> _FakeNetBoxResponse:
+        self.delete_calls.append((url, kwargs))
+        return _FakeNetBoxResponse()
+
+
+def _reservation_crud_class():
+    """Load and return the real browser-suite Reservation test class."""
+    pytest.importorskip("playwright", reason="pytest-playwright is a dev dependency")
+    spec = importlib.util.spec_from_file_location("_kea_browser_suite", _BROWSER_SUITE / "test_workflows.py")
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.TestReservationCRUD
+
+
+def test_netbox_ip_cleanup_deletes_the_captured_row_without_searching():
+    """Teardown owns the ID captured after sync, so it must delete only that row."""
+    session = _FakeNetBoxSession()
+
+    _reservation_crud_class()._cleanup_netbox_ip(
+        session,
+        "https://netbox.example.invalid",
+        "198.18.0.10",
+        "e2e-state-test",
+        ip_id=17,
+        strict=True,
+    )
+
+    assert session.get_calls == []
+    assert session.delete_calls == [("https://netbox.example.invalid/api/ipam/ip-addresses/17/", {"timeout": 5})]
+
+
+def test_netbox_ip_precleanup_uses_the_complete_test_identity():
+    """Prior-run cleanup may discover an ID only through every test-owned field."""
+    session = _FakeNetBoxSession(
+        {
+            "count": 1,
+            "results": [
+                {
+                    "id": 23,
+                    "address": "198.18.0.10/24",
+                    "dns_name": "e2e-state-test",
+                    "description": "Synced from Kea DHCP reservation",
+                }
+            ],
+        }
+    )
+
+    _reservation_crud_class()._cleanup_netbox_ip(
+        session,
+        "https://netbox.example.invalid",
+        "198.18.0.10",
+        "e2e-state-test",
+        ip_id=None,
+        strict=True,
+    )
+
+    assert session.get_calls == [
+        (
+            "https://netbox.example.invalid/api/ipam/ip-addresses/",
+            {
+                "params": {
+                    "address": "198.18.0.10",
+                    "dns_name": "e2e-state-test",
+                    "description": "Synced from Kea DHCP reservation",
+                },
+                "timeout": 5,
+            },
+        )
+    ]
+    assert session.delete_calls == [("https://netbox.example.invalid/api/ipam/ip-addresses/23/", {"timeout": 5})]
+
+
+def test_netbox_ip_precleanup_rejects_a_row_outside_the_test_identity():
+    """An unexpectedly broad API result must stop cleanup before any delete."""
+    session = _FakeNetBoxSession(
+        {
+            "count": 1,
+            "results": [
+                {
+                    "id": 29,
+                    "address": "198.18.0.10/24",
+                    "dns_name": "operator-owned",
+                    "description": "Synced from Kea DHCP reservation",
+                }
+            ],
+        }
+    )
+
+    with pytest.raises(AssertionError, match="outside the test identity"):
+        _reservation_crud_class()._cleanup_netbox_ip(
+            session,
+            "https://netbox.example.invalid",
+            "198.18.0.10",
+            "e2e-state-test",
+            ip_id=None,
+            strict=True,
+        )
+
+    assert session.delete_calls == []
+
+
+#: ``requests.Session`` methods the browser suite uses to reach NetBox.
+_SESSION_REQUEST_METHODS = frozenset({"get", "post", "put", "patch", "delete", "head", "options", "request"})
+
+
+def _requests_without_timeout(source: str) -> list[str]:
+    """Return the ``requests.Session`` calls in *source* that pass no timeout.
+
+    A session carries no default timeout, so one of these against a hung NetBox blocks
+    the whole run: cleanup helpers run in ``finally`` and never time out on their own.
+    """
+    offenders: list[str] = []
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+            continue
+        if node.func.attr not in _SESSION_REQUEST_METHODS:
+            continue
+        target = node.func.value
+        if not isinstance(target, ast.Name) or not (target.id.endswith("http") or target.id == "requests_session"):
+            continue
+        # requests treats timeout=None as no timeout, so the keyword alone is not a bound.
+        bounded = any(
+            keyword.arg == "timeout" and not (isinstance(keyword.value, ast.Constant) and keyword.value.value is None)
+            for keyword in node.keywords
+        )
+        if bounded:
+            continue
+        offenders.append(f"{target.id}.{node.func.attr} at line {node.lineno}")
+    return offenders
+
+
+def test_the_request_timeout_guard_reads_every_spelling():
+    """Table-test the guard itself: a guard that reports clean while missing the pattern is worse than none."""
+    must_flag = (
+        "nb_http.get(url)",
+        "nb_http.delete(url)",
+        "nb_http.get(url, timeout=None)",
+        "nb_http.request('GET', url)",
+        "requests_session.get(url)",
+    )
+    must_not_flag = (
+        "nb_http.get(url, timeout=5)",
+        "nb_http.get(url, timeout=TIMEOUT)",
+        "nb_http.json()",
+        "page.get(url)",
+    )
+    for source in must_flag:
+        assert _requests_without_timeout(source), f"the guard missed {source!r}"
+    for source in must_not_flag:
+        assert not _requests_without_timeout(source), f"the guard wrongly flagged {source!r}"
+
+
+def test_the_browser_suite_bounds_every_netbox_request():
+    sources = sorted(_BROWSER_SUITE.rglob("*.py"))
+    assert sources, "The browser suite moved; this guard would pass without reading anything."
+    for path in sources:
+        offenders = _requests_without_timeout(path.read_text())
+        assert not offenders, (
+            f"{path.name} calls NetBox without a timeout at {offenders}. "
+            "A requests.Session has no default timeout, so a hung NetBox blocks the run."
+        )
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(("cookie_name", "base_path"), [("csrftoken", ""), ("netbox_csrf", "/netbox")])
+def test_user_preference_reset_uses_the_browser_login_identity(settings, cookie_name, base_path):
+    import inspect
+    from types import SimpleNamespace
+    from urllib.parse import urlsplit
+
+    from django.contrib.auth import get_user_model
+    from django.http import HttpRequest
+    from django.middleware.csrf import get_token
+    from django.test import Client
+
+    from tests.ui.conftest import reset_user_preferences
+
+    settings.CSRF_COOKIE_NAME = cookie_name
+    netbox_url = f"https://netbox.example.invalid{base_path}"
+    users = get_user_model()
+    owner = users.objects.create_user(username="preference-api-owner")
+    browser_user = users.objects.create_user(username="preference-browser-user")
+    initial = {"tables": {"ReservationTable4": {"columns": ["hostname"]}}, "pagination": {"placement": "top"}}
+    sessions = []
+    for user in (owner, browser_user):
+        client = Client(enforce_csrf_checks=True)
+        client.force_login(user)
+        csrf_request = HttpRequest()
+        csrf = get_token(csrf_request)
+        client.cookies[cookie_name] = csrf_request.META["CSRF_COOKIE"]
+        response = client.patch("/api/users/config/", initial, content_type="application/json", HTTP_X_CSRFTOKEN=csrf)
+        assert response.status_code == 200, response.content
+        sessions.append(client)
+
+    class ConfigRequestContext:
+        """Adapt HTTP clients to the real NetBox view without a live server."""
+
+        def __init__(self, client, headers):
+            self.client = client
+            self.headers = headers
+
+        def _response(self, response, fail_on_status_code):
+            result = requests.Response()
+            result.status_code = response.status_code
+            result._content = response.content
+            if fail_on_status_code:
+                result.raise_for_status()
+            return result
+
+        def get(self, *, url, timeout, fail_on_status_code=False):
+            assert urlsplit(url).path == f"{base_path}/api/users/config/"
+            return self._response(self.client.get("/api/users/config/"), fail_on_status_code)
+
+        def patch(self, *, url, timeout, json=None, data=None, headers=None, fail_on_status_code=False):
+            assert urlsplit(url).path == f"{base_path}/api/users/config/"
+            response = self.client.patch(
+                "/api/users/config/",
+                json if json is not None else data,
+                content_type="application/json",
+                headers=self.headers if headers is None else headers,
+            )
+            return self._response(response, fail_on_status_code)
+
+    owner_session, browser_session = sessions
+    api_session = ConfigRequestContext(owner_session, {"X-CSRFToken": owner_session.cookies[cookie_name].value})
+    context = ConfigRequestContext(browser_session, {})
+    with pytest.raises(requests.HTTPError) as rejected:
+        context.patch(
+            url=f"{netbox_url}/api/users/config/",
+            data={"tables": {}},
+            timeout=20_000,
+            fail_on_status_code=True,
+        )
+    assert rejected.value.response.status_code == 403
+    browser_page = browser_session.get("/")
+    assert browser_page.status_code == 200
+    token = re.search(r'window\.CSRF_TOKEN = "([^"]+)"', browser_page.content.decode())
+    assert token is not None
+
+    def evaluate(expression):
+        assert expression == "window.CSRF_TOKEN"
+        return token.group(1)
+
+    page = SimpleNamespace(
+        evaluate=evaluate,
+        context=SimpleNamespace(
+            request=context,
+            cookies=lambda urls: [
+                {"name": name, "value": cookie.value} for name, cookie in browser_session.cookies.items()
+            ],
+        ),
+    )
+    dependencies = {
+        "requests_session": api_session,
+        "nb_api": SimpleNamespace(base_url=f"{netbox_url}/api"),
+        "page": page,
+        "netbox_login": None,
+        "netbox_url": netbox_url,
+    }
+    reset = reset_user_preferences.__wrapped__
+    reset(**{name: dependencies[name] for name in inspect.signature(reset).parameters})
+
+    assert browser_session.get("/api/users/config/").json() == {
+        "tables": {"ReservationTable4": {}},
+        "pagination": {"placement": "bottom"},
+    }
+    assert owner_session.get("/api/users/config/").json() == initial
+
+
+@pytest.mark.parametrize("token", [None, "", 123])
+def test_user_preference_reset_rejects_a_missing_page_token(token):
+    from types import SimpleNamespace
+
+    from tests.ui.conftest import reset_user_preferences
+
+    class RequestContext:
+        def get(self, **kwargs):
+            return SimpleNamespace(json=lambda: {"tables": {}})
+
+        def patch(self, **kwargs):
+            raise AssertionError("Preferences must not change without a page CSRF token.")
+
+    page = SimpleNamespace(
+        evaluate=lambda expression: token,
+        context=SimpleNamespace(
+            request=RequestContext(), cookies=lambda urls: [{"name": "csrftoken", "value": "test-token"}]
+        ),
+    )
+    with pytest.raises(RuntimeError, match="CSRF token"):
+        reset_user_preferences.__wrapped__(page, None, "https://netbox.example.invalid")
+
+
+def test_user_preference_load_guard_skips_without_playwright(monkeypatch):
+    monkeypatch.setitem(sys.modules, "playwright", None)
+    monkeypatch.setitem(sys.modules, "playwright.sync_api", None)
+    with pytest.raises(pytest.skip.Exception, match="pytest-playwright is a dev dependency"):
+        test_user_preference_reset_allows_for_normal_ci_load()
+
+
+def test_user_preference_reset_allows_for_normal_ci_load():
+    """Keep the autouse request bound above the slow response observed in CI."""
+    from types import SimpleNamespace
+
+    pytest.importorskip("playwright", reason="pytest-playwright is a dev dependency")
+    from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+
+    from tests.ui.conftest import reset_user_preferences
+
+    class LoadedRequestContext:
+        def _response(self, timeout: int):
+            if timeout < 20_000:
+                raise PlaywrightTimeoutError("NetBox is still serving the request")
+            return SimpleNamespace(json=lambda: {"tables": {}})
+
+        def get(self, *, url: str, timeout: int, fail_on_status_code: bool):
+            return self._response(timeout)
+
+        def patch(self, *, url: str, data: dict, headers: dict, timeout: int, fail_on_status_code: bool):
+            return self._response(timeout)
+
+    page = SimpleNamespace(
+        evaluate=lambda expression: "test-token",
+        context=SimpleNamespace(request=LoadedRequestContext()),
+    )
+    reset_user_preferences.__wrapped__(page, None, "https://netbox.example.invalid")
+
+
+def test_every_user_preferences_call_uses_the_established_bound():
+    """A tighter ad-hoc bound on `/users/config/` fails a valid run under CI load.
+
+    Requests uses seconds and Playwright uses milliseconds. Both constants derive
+    from the shared request bound, so callers must use the unit their client expects.
+    """
+    checked = 0
+    for path in sorted(_BROWSER_SUITE.rglob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text())):
+            if not isinstance(node, ast.Call):
+                continue
+            url = next((keyword.value for keyword in node.keywords if keyword.arg == "url"), None)
+            if url is None or "/users/config/" not in ast.unparse(url):
+                continue
+            checked += 1
+            timeout = next((keyword.value for keyword in node.keywords if keyword.arg == "timeout"), None)
+            client = ast.unparse(node.func.value) if isinstance(node.func, ast.Attribute) else ""
+            unit = "MILLISECONDS" if client == "page.context.request" else "SECONDS"
+            bound = f"_USER_PREFERENCES_TIMEOUT_{unit}"
+            named = isinstance(timeout, ast.Name) and timeout.id == bound
+            assert named, (
+                f"{path.name} line {node.lineno} bounds /users/config/ with "
+                f"{ast.unparse(timeout) if timeout is not None else 'nothing'}. Name "
+                f"{bound}: CI has been seen to answer it slowly."
+            )
+    assert checked, "The browser suite reads no user preferences; this guard would read nothing."
 
 
 #: Every external tool the integration setup script calls. Stubbed so the script can run

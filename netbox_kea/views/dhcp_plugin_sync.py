@@ -20,11 +20,11 @@ from django.views import View
 from netbox.views import generic
 from utilities.views import register_model_view
 
+from ..constants import Family
 from ..integrations import dhcp_plugin
 from ..kea import KeaException
 from ..mappers.kea_to_dhcp import parse_dhcp_config
 from ..models import Server
-from ..reservations import Family
 from ..utilities import OptionalViewTab
 
 logger = logging.getLogger(__name__)
@@ -45,7 +45,7 @@ def _enabled_versions(server: Server) -> list[Family]:
     return versions
 
 
-def _extract_dhcp_conf(resp, version: int) -> dict | None:
+def _extract_dhcp_conf(resp, version: Family) -> dict | None:
     """Pull the ``Dhcp4``/``Dhcp6`` block out of a ``config-get`` response, or ``None``.
 
     Raises ``RuntimeError`` on a malformed response *shape* so a protocol/contract
@@ -76,12 +76,10 @@ def _fetch_config_intent(server: Server, version: Family):
         client = server.get_client(version=version)
         resp = client.command("config-get", service=[f"dhcp{version}"])
         conf = _extract_dhcp_conf(resp, version)
+        return parse_dhcp_config(conf, version) if conf is not None else None
     except (KeaException, requests.RequestException, ValueError, RuntimeError):
         logger.warning("DHCP-plugin sync: config-get failed for %s (v%s)", server.name, version, exc_info=True)
         return None
-    if conf is None:
-        return None
-    return parse_dhcp_config(conf, version)
 
 
 def _fetch_reservation_snapshot(server: Server, version: Family):
@@ -119,6 +117,11 @@ def _summary_problems(summary) -> list[str]:
         problems.append(
             f"{summary.foreign_addresses_skipped} manually curated NetBox IP(s) were left unchanged. "
             "Use the per-reservation Sync to claim one."
+        )
+    if summary.addresses_unattached:
+        problems.append(
+            f"{summary.addresses_unattached} reserved address(es) were not attached because no NetBox IP "
+            "holds them. A Global Reservation has no Subnet to size an address from."
         )
     if summary.errors:
         problems.append(f"{summary.errors} errors occurred. See the logs.")
@@ -264,7 +267,7 @@ class ServerDhcpPluginSyncNowView(View):
             logger.exception("DHCP-plugin import failed for server %s (Kea read/validation)", server.name)
             messages.error(request, "An internal error occurred during the DHCP-plugin import.")
             return redirect
-        except Exception:  # noqa: BLE001 — DB/unexpected errors are logged here, never leaked as a 500 traceback
+        except Exception:
             logger.exception("DHCP-plugin import failed for server %s", server.name)
             messages.error(request, "An internal error occurred during the DHCP-plugin import.")
             return redirect

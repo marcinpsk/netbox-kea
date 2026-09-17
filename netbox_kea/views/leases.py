@@ -24,6 +24,7 @@ from utilities.paginator import EnhancedPaginator, get_paginate_count
 from utilities.views import GetReturnURLMixin, register_model_view
 
 from .. import constants, forms, tables
+from ..constants import Family
 from ..kea import (
     KeaClient,
     KeaException,
@@ -33,10 +34,9 @@ from ..kea import (
 from ..models import Server
 from ..reservations import (
     GlobalReservationScope,
-    IdentifierType,
     InSubnetReservationScope,
     Reservation,
-    ReservationIdentity,
+    lease_identities,
 )
 from ..signals import lease_added, leases_deleted
 from ..sync import sync_lease_to_netbox
@@ -406,7 +406,6 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
             # push verbatim; sending the stripped URL as HX-Push-Url overrides
             # that so the address bar always shows the clean URL.
             response["HX-Push-Url"] = stripped_return_url
-            return response
         except LeaseQueryGuardError as exc:
             logger.info("Rejected unsafe Subnet lease query on server %s: %s", instance.pk, exc)
             form.add_error("state", lease_query_guard_message(exc, form.cleaned_data.get("state")))
@@ -429,6 +428,8 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
                 "netbox_kea/exception_htmx.html",
                 {"error_id": error_id},
             )
+        else:
+            return response
 
 
 # Single consolidated "Leases" tab shared by the v4 and v6 leases views. Only
@@ -553,7 +554,7 @@ class BaseServerLeasesDeleteView(GetReturnURLMixin, generic.ObjectView, metaclas
             except KeaException as exc:  # noqa: PERF203
                 logger.exception("Kea error deleting lease %s on server %s", ip, instance.pk)
                 messages.error(request, f"Error deleting lease {ip}: {kea_error_hint(exc)}")
-            except (requests.RequestException, ValueError):  # noqa: PERF203
+            except (requests.RequestException, ValueError):
                 logger.exception("Error deleting lease %s on server %s", ip, instance.pk)
                 messages.error(request, f"Error deleting lease {ip}: see server logs for details.")
 
@@ -603,7 +604,7 @@ class _BaseLeaseEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin, View):
     Subclasses must set ``dhcp_version`` and ``form_class``.
     """
 
-    dhcp_version: int
+    dhcp_version: Family
     form_class: type
 
     def _get_server(self, pk: int) -> Server:
@@ -729,7 +730,7 @@ class _BaseLeaseAddView(_KeaChangeMixin, generic.ObjectView):
 
     queryset = Server.objects.all()
     template_name = "netbox_kea/server_lease_add.html"
-    dhcp_version: int
+    dhcp_version: Family
     form_class: type
     # Use _active_tab (not `tab`) so model_view_tabs does not register this as a
     # duplicate navigation entry — the add view URL resolves with pk-only, which
@@ -886,27 +887,6 @@ class ServerLease6AddView(_BaseLeaseAddView):
     _active_tab = _LEASES_TAB
 
 
-_LEASE_RESERVATION_IDENTIFIERS: dict[int, tuple[tuple[IdentifierType, str], ...]] = {
-    4: (("hw-address", "hw_address"), ("client-id", "client_id")),
-    6: (("duid", "duid"), ("hw-address", "hw_address")),
-}
-
-
-def _lease_reservation_identities(lease: dict[str, Any], version: int) -> tuple[ReservationIdentity, ...]:
-    identities = []
-    for identifier_type, lease_key in _LEASE_RESERVATION_IDENTIFIERS[version]:
-        value = lease.get(lease_key)
-        if not value:
-            continue
-        try:
-            identity = ReservationIdentity(identifier_type, value)
-        except ValueError:
-            continue
-        if identity not in identities:
-            identities.append(identity)
-    return tuple(identities)
-
-
 class _IdentityLookups:
     """Resolve each ``(Scope, Identity)`` Reservation lookup once for a whole lease page.
 
@@ -945,7 +925,7 @@ def _close_worker_client(client: KeaClient) -> None:
     """Close one worker client, reporting a failure instead of raising it."""
     try:
         client.close()
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.warning("Could not close a Reservation worker Kea client", exc_info=True)
 
 
@@ -985,12 +965,12 @@ def _reservation_for_lease_worker(worker_clients, version, catalogue, lease, loo
     ip = lease.get("ip_address", "")
     subnet_id = lease.get("subnet_id")
     if not ip or isinstance(subnet_id, bool) or not isinstance(subnet_id, int):
-        return ip, None, True
+        return ip, None, None
     subnet = catalogue.find_by_id(subnet_id)
     if subnet is None:
-        return ip, None, True
+        return ip, None, None
     scope = InSubnetReservationScope(subnet.identity)
-    identities = _lease_reservation_identities(lease, version)
+    identities = lease_identities(lease, version)
     worker_client = worker_clients.get()
     try:
         reservation = worker_client.reservation_by_address(version, catalogue, scope, ip)
@@ -1004,7 +984,6 @@ def _reservation_for_lease_worker(worker_clients, version, catalogue, lease, loo
                 )
                 if reservation is not None:
                     return ip, reservation, True
-        return ip, None, True
     except KeaException as exc:
         if exc.response.get("result") == 2:
             return ip, None, False
@@ -1013,11 +992,13 @@ def _reservation_for_lease_worker(worker_clients, version, catalogue, lease, loo
     except (requests.RequestException, RuntimeError, ValueError):
         logger.debug("Reservation lookup failed for lease %s", ip, exc_info=True)
         return ip, None, None
+    else:
+        return ip, None, True
 
 
 def _fetch_reservations_for_leases(
     client: KeaClient,
-    version: int,
+    version: Family,
     catalogue,
     leases: list[dict[str, Any]],
 ) -> tuple[dict[str, Reservation], bool, set[str]]:
@@ -1068,7 +1049,7 @@ def _set_lease_reservation_fields(
     lease: dict[str, Any],
     reservation: Reservation | None,
     server_pk: int,
-    version: int,
+    version: Family,
     subnet_cidr: str | None,
     host_cmds_available: bool,
     failed_ips: set[str],
@@ -1099,12 +1080,13 @@ def _set_lease_reservation_fields(
             and all(str(address) != ip for address in reservation.addresses)
         ):
             lease["pending_ip_change"] = True
-            lease["pending_reservation_ip"] = str(reservation.addresses[0])
+            # Every reserved address, because the domain names no primary one.
+            lease["pending_reservation_ip"] = ", ".join(str(address) for address in reservation.addresses)
         if (
             ip in {str(address) for address in reservation.addresses}
             and reservation.identity.identifier_type == "hw-address"
         ):
-            lease_hw = _lease_reservation_identities(lease, version)
+            lease_hw = lease_identities(lease, version)
             lease_hw_value = next(
                 (identity.value for identity in lease_hw if identity.identifier_type == "hw-address"), ""
             )
@@ -1124,7 +1106,7 @@ def _set_lease_reservation_fields(
         "ip_addresses" if version == 6 else "ip_address": ip,
         "hostname": lease.get("hostname", ""),
     }
-    identities = _lease_reservation_identities(lease, version)
+    identities = lease_identities(lease, version)
     if identities:
         params["identifier_type"] = identities[0].identifier_type
         params["identifier"] = identities[0].value
@@ -1133,7 +1115,7 @@ def _set_lease_reservation_fields(
 
 
 def _enrich_leases_with_badges(
-    leases: list[dict[str, Any]], server: "Server", version: int, can_delete: bool = False, can_change: bool = False
+    leases: list[dict[str, Any]], server: "Server", version: Family, can_delete: bool = False, can_change: bool = False
 ) -> None:
     """In-place: add reservation and NetBox IPAM badge fields to lease dicts.
 
@@ -1167,7 +1149,7 @@ def _enrich_leases_with_badges(
         else:
             failed_ips = {lease.get("ip_address", "") for lease in leases}
             logger.warning("reservation lookup failed during lease enrichment: %s", exc)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         failed_ips = {lease.get("ip_address", "") for lease in leases}
         logger.warning("unexpected error during lease enrichment: %s", exc, exc_info=True)
     finally:
@@ -1201,16 +1183,16 @@ def _enrich_leases_with_badges(
         nb_ip = nb_ips.get(ip)
         if nb_ip:
             lease["netbox_ip_url"] = nb_ip.get_absolute_url()
+        # Don't offer Sync for leases with indeterminate reservation state.
         elif (
             ip
             and can_change
             and host_cmds_available
             and not lease.get("pending_ip_change")
             and not lease.get("stale_mac")
+            and ip not in failed_ips
         ):
-            # Don't offer Sync for leases with indeterminate reservation state.
-            if ip not in failed_ips:
-                lease["sync_url"] = sync_url
+            lease["sync_url"] = sync_url
         if ip and can_change:
             lease["edit_url"] = reverse(edit_url_name, args=[server.pk, ip])
         lease["can_delete"] = can_delete

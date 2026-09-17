@@ -1,7 +1,6 @@
 import json
 import logging
-import os
-from typing import Literal
+from pathlib import Path
 
 import requests
 from django.conf import settings
@@ -14,6 +13,7 @@ from netbox.constants import CENSOR_TOKEN, CENSOR_TOKEN_CHANGED
 from netbox.models import NetBoxModel
 from netbox.models.features import JobsMixin
 
+from .constants import Family
 from .kea import KeaClient, KeaException
 from .reservations import MAX_IDENTITY_LENGTH
 
@@ -67,43 +67,43 @@ class Server(JobsMixin, NetBoxModel):
         help_text="Default endpoint URL (Kea Control Agent or single DHCP daemon).",
     )
     ca_username = models.CharField(
-        null=True,
         blank=True,
+        default="",
         max_length=255,
         verbose_name="CA Username",
         help_text="Username for the Kea Control Agent (or default for all daemons).",
     )
     ca_password = models.CharField(
-        null=True,
         blank=True,
+        default="",
         max_length=255,
         verbose_name="CA Password",
         help_text="Password for the Kea Control Agent (or default for all daemons).",
     )
     dhcp4_username = models.CharField(
-        null=True,
         blank=True,
+        default="",
         max_length=255,
         verbose_name="DHCPv4 Username",
         help_text="Username for the DHCPv4 daemon. Only used when DHCPv4 URL is configured; falls back to CA credentials otherwise.",
     )
     dhcp4_password = models.CharField(
-        null=True,
         blank=True,
+        default="",
         max_length=255,
         verbose_name="DHCPv4 Password",
         help_text="Password for the DHCPv4 daemon. Only used when DHCPv4 URL is configured; falls back to CA credentials otherwise.",
     )
     dhcp6_username = models.CharField(
-        null=True,
         blank=True,
+        default="",
         max_length=255,
         verbose_name="DHCPv6 Username",
         help_text="Username for the DHCPv6 daemon. Only used when DHCPv6 URL is configured; falls back to CA credentials otherwise.",
     )
     dhcp6_password = models.CharField(
-        null=True,
         blank=True,
+        default="",
         max_length=255,
         verbose_name="DHCPv6 Password",
         help_text="Password for the DHCPv6 daemon. Only used when DHCPv6 URL is configured; falls back to CA credentials otherwise.",
@@ -115,22 +115,22 @@ class Server(JobsMixin, NetBoxModel):
     )
     client_cert_path = models.CharField(
         max_length=4096,
-        null=True,
         blank=True,
+        default="",
         verbose_name="Client Certificate",
         help_text="Optional client certificate.",
     )
     client_key_path = models.CharField(
         max_length=4096,
-        null=True,
         blank=True,
+        default="",
         verbose_name="Private Key",
         help_text="Optional client key.",
     )
     ca_file_path = models.CharField(
         max_length=4096,
-        null=True,
         blank=True,
+        default="",
         verbose_name="CA File Path",
         help_text="The specific CA certificate file to use for SSL verification.",
     )
@@ -139,15 +139,15 @@ class Server(JobsMixin, NetBoxModel):
     dhcp4_url = models.CharField(
         verbose_name="DHCPv4 URL",
         max_length=255,
-        null=True,
         blank=True,
+        default="",
         help_text="Direct URL for the DHCPv4 daemon. Overrides Server URL for DHCPv4 connections.",
     )
     dhcp6_url = models.CharField(
         verbose_name="DHCPv6 URL",
         max_length=255,
-        null=True,
         blank=True,
+        default="",
         help_text="Direct URL for the DHCPv6 daemon. Overrides Server URL for DHCPv6 connections.",
     )
     has_control_agent = models.BooleanField(
@@ -226,7 +226,7 @@ class Server(JobsMixin, NetBoxModel):
         """Return the detail URL for this server."""
         return reverse("plugins:netbox_kea:server", args=[self.pk])
 
-    def get_client(self, version: Literal[4, 6] | None = None) -> KeaClient:
+    def get_client(self, version: Family | None = None) -> KeaClient:
         """Return a configured KeaClient, targeting the protocol-specific URL and credentials when available.
 
         The ``service`` command argument is sent only when this server is fronted by
@@ -293,9 +293,9 @@ class Server(JobsMixin, NetBoxModel):
                 {"client_cert_path": "Client certificate and client private key must be used together."}
             )
 
-        if self.client_cert_path and not os.path.isfile(self.client_cert_path):
+        if self.client_cert_path and not Path(self.client_cert_path).is_file():
             raise ValidationError({"client_cert_path": "Client certificate doesn't exist."})
-        if self.client_key_path and not os.path.isfile(self.client_key_path):
+        if self.client_key_path and not Path(self.client_key_path).is_file():
             raise ValidationError({"client_key_path": "Client private key doesn't exist."})
 
         if self.ca_file_path and not self.ssl_verify:
@@ -334,14 +334,16 @@ class Server(JobsMixin, NetBoxModel):
 
         prechange_data = objectchange.prechange_data or {}
         original_pre_passwords = {f: prechange_data.get(f) for f in password_fields}
+        # Censor a set password only. An unset one is "" and must stay "", or the change
+        # log tells an operator a password exists where none does.
         for field in password_fields:
-            if field in prechange_data and prechange_data[field] is not None:
+            if prechange_data.get(field):
                 prechange_data[field] = CENSOR_TOKEN
 
         if post_data := objectchange.postchange_data:
             for field in password_fields:
                 post_password = post_data.get(field)
-                if field in post_data and post_password is not None:
+                if post_password:
                     post_data[field] = (
                         CENSOR_TOKEN_CHANGED if post_password != original_pre_passwords[field] else CENSOR_TOKEN
                     )
@@ -504,7 +506,10 @@ class KeaDhcpLink(models.Model):
         blank=True,
         help_text="Kea subnet-id for subnet links; null for objects without a Kea subnet-id.",
     )
-    kea_identity = models.CharField(
+    # NULL is a distinct state here, not "empty": it means Kea identifies this link by
+    # subnet-id. keadhcplink_one_identity_kind requires NULL or a value greater than "",
+    # so "" would satisfy neither branch. Do not collapse it to a blank default.
+    kea_identity = models.CharField(  # noqa: DJ001
         max_length=MAX_IDENTITY_LENGTH,
         null=True,
         blank=True,

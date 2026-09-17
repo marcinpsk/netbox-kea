@@ -802,7 +802,7 @@ class TestSubnetAdd(TestCase):
                 subnet_cidr="10.99.0.0/24",
                 gateway="10.99.0.1",
                 dns_servers=["8.8.8.8", "8.8.4.4"],
-                ntp_servers=["pool.ntp.org"],
+                ntp_servers=["10.99.0.123"],
             )
         add_call = next(
             c.kwargs.get("json") or c[1]["json"]
@@ -812,7 +812,7 @@ class TestSubnetAdd(TestCase):
         opts = {o["name"]: o["data"] for o in add_call["arguments"]["subnet4"][0]["option-data"]}
         self.assertEqual(opts["routers"], "10.99.0.1")
         self.assertIn("8.8.8.8", opts["domain-name-servers"])
-        self.assertIn("pool.ntp.org", opts["ntp-servers"])
+        self.assertIn("10.99.0.123", opts["ntp-servers"])
 
     def test_subnet_add_calls_config_write(self):
         """config-write is called after subnet4-add."""
@@ -915,7 +915,7 @@ class TestSubnetAdd(TestCase):
                 version=6,
                 subnet_cidr="2001:db8:99::/48",
                 dns_servers=["2001:4860:4860::8888"],
-                ntp_servers=["ntp.example.com"],
+                ntp_servers=["2001:db8:99::123"],
             )
         add_call = next(
             c.kwargs.get("json") or c[1]["json"]
@@ -1376,11 +1376,11 @@ class TestSubnetUpdate(TestCase):
                 _SUBNET4_GET, _SUBNET_UPDATE_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _CONFIG_WRITE_RESP
             ),
         ) as mock_post:
-            self.client.subnet_update(version=4, subnet_id=42, subnet_cidr="192.168.1.0/24")
+            self.client.subnet_update(version=4, subnet_id=1, subnet_cidr="10.0.0.0/24")
         payload = self._update_payload(mock_post)
         subnet_obj = payload["arguments"]["subnet4"][0]
-        self.assertEqual(subnet_obj["id"], 42)
-        self.assertEqual(subnet_obj["subnet"], "192.168.1.0/24")
+        self.assertEqual(subnet_obj["id"], 1)
+        self.assertEqual(subnet_obj["subnet"], "10.0.0.0/24")
 
     def test_includes_pools_when_provided(self):
         """Pools are formatted as [{"pool": "..."}, ...] in the subnet object."""
@@ -4530,6 +4530,50 @@ _SUBNET6_GET_WITH_DNS_RESP = [{"result": 0, "arguments": {"subnet6": [_LIVE_SUBN
 _SUBNET_UPDATE_OK_V6 = [{"result": 0, "arguments": {}, "text": "IPv6 subnet updated"}]
 
 
+class TestSubnetUpdateIdentity(TestCase):
+    def test_a_numeric_live_cidr_cannot_mutate_the_subnet(self):
+        response = {"result": 0, "arguments": {"subnet4": [{"id": 7, "subnet": 3323068416}]}}
+        with KeaClient(url="http://kea.example.invalid") as client, stub_kea({"subnet4-get": response}) as stub:
+            with self.assertRaises(RuntimeError):
+                client.subnet_update(4, 7, "198.18.0.0/32", valid_lft=7200)
+        self.assertEqual(stub.commands(), ["subnet4-get"])
+
+    def test_equivalent_ipv6_spellings_preserve_the_live_cidr(self):
+        for live, requested in (
+            ("2001:0DB8:0000:0000:0000:0000:0000:0000/64", "2001:db8::/64"),
+            ("2001:db8::/64", "2001:0db8:0000:0000::/64"),
+            ("2001:db8::/64", "2001:db8::1/64"),
+        ):
+            with self.subTest(live=live, requested=requested):
+                responses = {
+                    "subnet6-get": {"result": 0, "arguments": {"subnet6": [{"id": 7, "subnet": live}]}},
+                    "subnet6-update": {"result": 0},
+                    "config-get": {"result": 0, "arguments": {"Dhcp6": {}}},
+                    "config-test": {"result": 0},
+                    "config-write": {"result": 0},
+                }
+                with KeaClient(url="http://kea.example.invalid") as client, stub_kea(responses) as stub:
+                    client.subnet_update(6, 7, requested, valid_lft=7200)
+                update = stub.bodies("subnet6-update")[0]
+                self.assertEqual(update["arguments"]["subnet6"][0]["subnet"], live)
+                self.assertEqual(update["arguments"]["subnet6"][0]["valid-lft"], 7200)
+                self.assertEqual(stub.commands()[-1], "config-write")
+
+    def test_different_or_invalid_cidrs_cannot_mutate_the_subnet(self):
+        for live, requested in (
+            ("2001:db8::/64", "2001:db8:1::/64"),
+            ("2001:db8::/64", "2001:db8::/48"),
+            ("2001:db8::/64", "not-a-network"),
+            ("not-a-network", "2001:db8::/64"),
+        ):
+            with self.subTest(live=live, requested=requested):
+                response = {"result": 0, "arguments": {"subnet6": [{"id": 7, "subnet": live}]}}
+                with KeaClient(url="http://kea.example.invalid") as client, stub_kea({"subnet6-get": response}) as stub:
+                    with self.assertRaises(ValueError):
+                        client.subnet_update(6, 7, requested, valid_lft=7200)
+                self.assertEqual(stub.commands(), ["subnet6-get"])
+
+
 class TestSubnetUpdateMerge(TestCase):
     """Tests for KeaClient.subnet_update() — verifies read-modify-write merge behaviour."""
 
@@ -5226,7 +5270,7 @@ class TestLeaseGetAllPagination(TestCase):
         # Verify the second request used the last IP of page 1 as cursor
         first_payload = mock_post.call_args_list[0].kwargs["json"]
         second_payload = mock_post.call_args_list[1].kwargs["json"]
-        self.assertEqual(first_payload["arguments"]["from"], "0.0.0.0")
+        self.assertEqual(first_payload["arguments"]["from"], "0.0.0.0")  # noqa: S104 - Kea sentinel value, not a bind address
         self.assertEqual(second_payload["arguments"]["from"], "10.0.0.2")
 
     def test_rejects_a_cursor_that_does_not_advance(self):
