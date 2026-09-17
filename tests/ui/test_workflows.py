@@ -1349,8 +1349,10 @@ class TestReservationCRUD:
                 document.querySelectorAll('a[href*="reservations4"][href*="/edit/"]')
             ).map(a => a.href)"""
         )
-        if not hrefs:
-            pytest.skip("No existing reservations to edit on live server")
+        assert hrefs, (
+            "subnets4 config in tests/docker/kea_configs/kea-dhcp4.conf reserves hosts, so the "
+            "reservations4 page must offer an edit link; none rendered"
+        )
 
         page.goto(hrefs[0])
         page.wait_for_load_state("networkidle")
@@ -1382,8 +1384,10 @@ class TestReservationCRUD:
                 document.querySelectorAll('a[href*="reservations4"][href*="/delete/"]')
             ).map(a => a.href)"""
         )
-        if not hrefs:
-            pytest.skip("No existing reservations to delete on live server")
+        assert hrefs, (
+            "tests/docker/kea_configs/kea-dhcp4.conf reserves hosts, so the reservations4 page "
+            "must offer a delete link; none rendered"
+        )
 
         page.goto(hrefs[0])
         page.wait_for_load_state("networkidle")
@@ -1445,8 +1449,10 @@ class TestPoolManagement:
         _dismiss_debug_toolbar(page)
 
         hrefs = page.evaluate("() => Array.from(document.querySelectorAll('a[href*=\"pools/add\"]')).map(a => a.href)")
-        if not hrefs:
-            pytest.skip("No add-pool links found on subnets4 page")
+        assert hrefs, (
+            "tests/docker/kea_configs/kea-dhcp4.conf defines subnets, so the subnets4 page must "
+            "offer an add-pool link; none rendered"
+        )
 
         page.goto(hrefs[0])
         page.wait_for_load_state("networkidle")
@@ -1477,8 +1483,10 @@ class TestPoolManagement:
                 document.querySelectorAll('a[href*="pools/"][href*="/delete/"]')
             ).map(a => a.href)"""
         )
-        if not hrefs:
-            pytest.skip("No delete-pool links found — no pools on live server")
+        assert hrefs, (
+            "tests/docker/kea_configs/kea-dhcp4.conf defines a pool in every subnet, so the "
+            "subnets4 page must offer a delete-pool link; none rendered"
+        )
 
         page.goto(hrefs[0])
         page.wait_for_load_state("networkidle")
@@ -1525,13 +1533,17 @@ class TestPoolManagement:
         _dismiss_debug_toolbar(page)
 
         row_data = self._discover_first_subnet(page)
-        if not row_data or not row_data.get("subnet"):
-            pytest.skip("No subnets with add-pool buttons found on live server")
+        assert row_data and row_data.get("subnet"), (
+            "tests/docker/kea_configs/kea-dhcp4.conf defines subnets, so the subnets4 page must "
+            "show a subnet row with an add-pool link; none rendered"
+        )
 
         net = ipaddress.IPv4Network(row_data["subnet"], strict=False)
         host_count = net.num_addresses - 2
-        if host_count < 15:
-            pytest.skip(f"Subnet {row_data['subnet']} too small for test pool")
+        assert host_count >= 15, (
+            f"Subnet {row_data['subnet']} has {host_count} hosts; the config's subnets are /24, so "
+            "a subnet too small for the test pool means the config changed"
+        )
 
         start_addr = ipaddress.IPv4Address(int(net.broadcast_address) - 10)
         end_addr = ipaddress.IPv4Address(int(net.broadcast_address) - 6)
