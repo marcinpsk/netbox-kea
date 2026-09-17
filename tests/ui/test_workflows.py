@@ -9,11 +9,14 @@ import re
 import subprocess
 import sys
 import warnings
-from urllib.parse import urlencode
+from collections.abc import Iterator
+from urllib.parse import parse_qs, urlencode, urlparse
 
 import pytest
 import requests
 from playwright.sync_api import Locator, Page, expect
+
+from .conftest import _DualEndpointKeaClient
 
 #: Mirrors ``_KEA_DESC_PREFIX`` in netbox_kea/sync.py. This suite cannot import the
 #: package (it needs Django), so a guard in the unit suite keeps the two in step.
@@ -581,6 +584,59 @@ class TestCombinedViewsWithKea:
 # ---------------------------------------------------------------------------
 
 
+#: A reservation the test Kea already holds in its static config
+#: (``tests/docker/kea_configs/kea-dhcp4.conf``): this hardware address reserves this
+#: address inside subnet 192.0.2.0/24. Badge assertions need a lease on a *reserved*
+#: address, and reusing the configured pair avoids declaring a second reservation.
+#: These constants still copy the config, so ``reserved_lease4`` reads the reservation
+#: back from Kea and fails there if the two ever drift.
+_RESERVED_IP4 = "192.0.2.201"
+_RESERVED_MAC4 = "1a:1b:1c:1d:1e:1f"
+_RESERVED_SUBNET_ID = 1
+
+
+@pytest.fixture
+def reserved_lease4(kea_client: _DualEndpointKeaClient, clear_leases: None) -> Iterator[str]:
+    """Seed an active lease on a reserved address and yield that address.
+
+    Depends on ``clear_leases`` because that fixture is autouse and wipes every lease;
+    without the dependency the seeded lease is not ordered after the wipe.
+    """
+    # Fail here, not on a badge locator, if the Kea config stops reserving this pair:
+    # the lease would still add (the address is in-subnet) and every badge assertion
+    # would fail pointing at the badge code instead of at the config.
+    reserved = kea_client.command(
+        "reservation-get",
+        service=["dhcp4"],
+        arguments={"subnet-id": _RESERVED_SUBNET_ID, "identifier-type": "hw-address", "identifier": _RESERVED_MAC4},
+        check=(0, 3),
+    )[0]
+    assert reserved["result"] == 0, (
+        f"kea-dhcp4.conf no longer reserves {_RESERVED_MAC4}; update _RESERVED_MAC4/_RESERVED_IP4"
+    )
+    assert reserved["arguments"]["ip-address"] == _RESERVED_IP4, (
+        f"{_RESERVED_MAC4} now reserves {reserved['arguments']['ip-address']}, not {_RESERVED_IP4}"
+    )
+    kea_client.command(
+        "lease4-add",
+        service=["dhcp4"],
+        arguments={
+            "ip-address": _RESERVED_IP4,
+            "hw-address": _RESERVED_MAC4,
+            "hostname": "reserved-client",
+        },
+    )
+    try:
+        yield _RESERVED_IP4
+    finally:
+        kea_client.command(
+            "lease4-del",
+            service=["dhcp4"],
+            arguments={"ip-address": _RESERVED_IP4},
+            check=(0, 3),
+        )
+
+
 class TestBadgeEnrichment:
     """Badge enrichment rendering against live Kea servers.
 
@@ -593,26 +649,27 @@ class TestBadgeEnrichment:
         netbox_login: None,
         plugin_base: str,
         kea_server,
+        reserved_lease4: str,
         track_http_errors: list,
     ) -> None:
         """A lease with a matching reservation must show the 'Reserved' badge on the leases page."""
         server_id = kea_server.id
-        # Use a search query to trigger table rendering; even with no results headers must be visible
-        page.goto(f"{plugin_base}/servers/{server_id}/leases4/?q=192.0.2.1&by=ip")
+        page.goto(f"{plugin_base}/servers/{server_id}/leases4/?q={reserved_lease4}&by=ip")
         page.wait_for_load_state("networkidle")
         _check_no_django_error(page)
         _assert_no_http_errors(track_http_errors)
 
-        # The 'Reserved' column header must always be present regardless of data
         expect(page.locator("th", has_text="Reserved").first).to_be_visible()
 
-        # A plain span is the correct render for a global or non-editable reservation
-        # (see netbox_kea/tables.py), so only the linked variant carries a contract.
-        reserved_links = page.locator('a.badge:has-text("Reserved")')
-        if reserved_links.count() > 0:
-            # Spot-check first link href points to a reservation URL
-            href = reserved_links.first.get_attribute("href")
-            assert href and "reservations4" in href, f"Reserved badge link href does not point to reservations: {href}"
+        # The seeded lease sits on a configured reservation, so the row must exist and
+        # carry the badge. The logged-in user may change the server, so the badge is the
+        # linked variant (netbox_kea/tables.py gates the link on can_change_reservation).
+        row = page.locator("table.object-list > tbody > tr").filter(has_text=reserved_lease4)
+        expect(row).to_have_count(1)
+        reserved_link = row.locator('a.badge:has-text("Reserved")')
+        expect(reserved_link).to_have_count(1)
+        href = reserved_link.get_attribute("href")
+        assert href and "reservations4" in href, f"Reserved badge link href does not point to reservations: {href}"
 
     def test_active_lease_badge_is_link_on_reservations4_page(
         self,
@@ -620,6 +677,7 @@ class TestBadgeEnrichment:
         netbox_login: None,
         plugin_base: str,
         kea_server,
+        reserved_lease4: str,
         track_http_errors: list,
     ) -> None:
         """'Active Lease' badges on the reservations4 page must be clickable links."""
@@ -643,12 +701,18 @@ class TestBadgeEnrichment:
             f"Found {no_lease_links.count()} linked 'No Lease' badge(s); they must be plain spans"
         )
 
-        # If Active Lease badges exist, their href must point to the lease search
-        active_links = page.locator('a.badge:has-text("Active Lease")')
-        if active_links.count() > 0:
-            href = active_links.first.get_attribute("href")
-            assert href and "leases4" in href, f"Active Lease link href does not point to leases4: {href}"
-            assert "?q=" in href, f"Active Lease link missing ?q= query param: {href}"
+        # The seeded lease is on a reserved address, so that reservation's row must
+        # report an Active Lease and link to the search that finds it.
+        row = page.locator("table.object-list > tbody > tr").filter(has_text=_RESERVED_MAC4)
+        expect(row).to_have_count(1)
+        active_link = row.locator('a.badge:has-text("Active Lease")')
+        expect(active_link).to_have_count(1)
+        href = active_link.get_attribute("href")
+        assert href and "leases4" in href, f"Active Lease link href does not point to leases4: {href}"
+        # Parse rather than match a substring: the view emits `?by=ip&q=...`, so the
+        # earlier `"?q=" in href` check was false for every real link it never ran on.
+        query = parse_qs(urlparse(href).query)
+        assert query.get("q") == [reserved_lease4], f"Active Lease link does not search the leased address: {href}"
 
     def test_active_lease_link_navigates_to_lease_search(
         self,
@@ -656,6 +720,7 @@ class TestBadgeEnrichment:
         netbox_login: None,
         plugin_base: str,
         kea_server,
+        reserved_lease4: str,
         track_http_errors: list,
     ) -> None:
         """Clicking an 'Active Lease' badge navigates to the lease search page without errors."""
@@ -664,15 +729,22 @@ class TestBadgeEnrichment:
         page.wait_for_load_state("networkidle")
         _check_no_django_error(page)
 
-        active_links = page.locator('a.badge:has-text("Active Lease")')
-        if active_links.count() == 0:
-            pytest.skip("No 'Active Lease' badges present; skipping click test")
+        # Click the badge belonging to the seeded reservation, not whichever renders
+        # first: a wrong-but-valid lease URL must not pass.
+        row = page.locator("table.object-list > tbody > tr").filter(has_text=_RESERVED_MAC4)
+        expect(row).to_have_count(1)
+        active_link = row.locator('a.badge:has-text("Active Lease")')
+        expect(active_link).to_have_count(1)
 
-        active_links.first.click()
+        active_link.click()
         page.wait_for_load_state("networkidle")
 
         _check_no_django_error(page)
         assert "leases4" in page.url, f"Expected leases4 URL after click, got: {page.url}"
+        assert parse_qs(urlparse(page.url).query).get("q") == [reserved_lease4], (
+            f"Active Lease badge did not navigate to the search for {reserved_lease4}: {page.url}"
+        )
+        expect(page.locator("table.object-list > tbody > tr").filter(has_text=reserved_lease4)).to_have_count(1)
         _assert_no_http_errors(track_http_errors)
 
     def test_combined_reservations4_active_lease_badge_is_link(
@@ -681,6 +753,7 @@ class TestBadgeEnrichment:
         netbox_login: None,
         plugin_base: str,
         kea_server,
+        reserved_lease4: str,
         track_http_errors: list,
     ) -> None:
         """Combined reservations4 'Active Lease' badges must also be <a> links."""
@@ -694,36 +767,51 @@ class TestBadgeEnrichment:
             f"Found {active_spans.count()} non-link 'Active Lease' badge(s) in combined view"
         )
 
+        # Without a seeded lease every reservation reports "No Lease", so the span check
+        # above holds with zero badges of either kind. Assert the link positively too.
+        #
+        # This view aggregates every registered Server, and the suite's servers all
+        # address the same Kea daemon, so the reservation renders once per Server and
+        # the row count is whatever else the session has registered. Assert that every
+        # row for this reservation carries the badge instead of pinning a count.
+        rows = page.locator("table.object-list > tbody > tr").filter(has_text=_RESERVED_MAC4)
+        expect(rows.first).to_be_visible()
+        expect(rows.locator('a.badge:has-text("Active Lease")')).to_have_count(rows.count())
+
     def test_netbox_ip_synced_badge_or_sync_button_present_on_leases4(
         self,
         page: Page,
         netbox_login: None,
         plugin_base: str,
         kea_server,
+        reserved_lease4: str,
         track_http_errors: list,
     ) -> None:
-        """Combined leases4 'NetBox IP' column header is always present after a search.
+        """Combined leases4 must render a NetBox IP enrichment widget for a real lease row.
 
         The combined view uses GlobalLeaseTable4 which has no saved per-user column config,
-        so 'NetBox IP' is reliably visible. If lease rows are present, we also verify the
-        enrichment widgets (Synced badge or Sync button) appear in the NetBox IP column.
+        so 'NetBox IP' is reliably visible.
         """
         # Combined view correctly shows all default columns (no saved user preferences)
-        page.goto(f"{plugin_base}/combined/leases4/?q=192.0.2.1&by=ip")
+        page.goto(f"{plugin_base}/combined/leases4/?q={reserved_lease4}&by=ip")
         page.wait_for_load_state("networkidle")
         _check_no_django_error(page)
         _assert_no_http_errors(track_http_errors)
 
-        # Column header must always be present after a query (even with 0 results)
         expect(page.locator("th", has_text="NetBox IP").first).to_be_visible()
 
-        # If real lease rows exist, at least one NetBox IP widget must be present
-        real_rows = [r for r in page.locator("tbody tr").all() if "No leases found" not in r.text_content()]
-        if real_rows:
-            synced_badges = page.locator('a.badge:has-text("Synced")')
-            sync_buttons = page.locator('button.badge:has-text("Sync")')
-            total = synced_badges.count() + sync_buttons.count()
-            assert total > 0, f"Leases4 table has {len(real_rows)} rows but no 'Synced' or 'Sync' widgets"
+        # The seeded lease guarantees a row, so the widget assertion is unconditional:
+        # the IP is either already in NetBox IPAM (Synced) or offered for sync (Sync).
+        #
+        # Combined views aggregate every registered Server and the suite's servers all
+        # address the same Kea daemon, so this lease renders once per Server. Assert a
+        # widget on every row for it rather than pinning a row count.
+        rows = page.locator("table.object-list > tbody > tr").filter(has_text=reserved_lease4)
+        expect(rows.first).to_be_visible()
+        # Row-scoped: a page-wide count lets another row's widget mask a regression
+        # that drops this one's.
+        widgets = rows.locator('a.badge:has-text("Synced"), button.badge:has-text("Sync")')
+        expect(widgets).to_have_count(rows.count())
 
 
 # ---------------------------------------------------------------------------
