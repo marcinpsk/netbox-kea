@@ -70,7 +70,7 @@ class TestServerSubnets4View(_ViewTestBase):
 
     def test_get_sets_tab_in_context(self):
         """F2: GET response must include 'tab' in context for tab bar highlighting."""
-        from netbox_kea.views import ServerDHCP4SubnetsView
+        from netbox_kea.views.subnets import ServerDHCP4SubnetsView
 
         url = reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk])
         with stub_kea({"config-get": _EMPTY_CONFIG4, "stat-lease4-get": _STAT_ABSENT4}):
@@ -103,7 +103,7 @@ class TestServerSubnets6View(_ViewTestBase):
         v4 and v6 subnets now render under the single shared 'Subnets' tab
         (owned by ServerDHCP4SubnetsView); the v6 view injects it via context.
         """
-        from netbox_kea.views import ServerDHCP4SubnetsView
+        from netbox_kea.views.subnets import ServerDHCP4SubnetsView
 
         url = reverse("plugins:netbox_kea:server_subnets6", args=[self.server.pk])
         with stub_kea({"config-get": _EMPTY_CONFIG6, "stat-lease6-get": _STAT_ABSENT6}):
@@ -1586,7 +1586,7 @@ class TestFetchSubnetsFromServer(_ViewTestBase):
 
     def _run(self, responses):
         """Call _fetch_subnets_from_server against a real client with the given stubbed responses."""
-        from netbox_kea.views import _fetch_subnets_from_server
+        from netbox_kea.views.combined import _fetch_subnets_from_server
 
         with stub_kea(responses):
             subnets, _diagnostics = _fetch_subnets_from_server(self.server, version=4)

@@ -1897,7 +1897,7 @@ class TestJournalHelperEdgeCases(_ViewTestBase):
 
     def test_lease_journal_multiple_ips(self):
         """_add_lease_journal with a list of IP addresses uses the 'N lease(s)' branch."""
-        from netbox_kea.views import _add_lease_journal
+        from netbox_kea.views.leases import _add_lease_journal
 
         with patch("extras.models.JournalEntry.objects.create", autospec=True) as mock_create:
             mock_create.return_value = None
@@ -1916,7 +1916,7 @@ class TestJournalHelperEdgeCases(_ViewTestBase):
         """ImportError inside _add_lease_journal is swallowed."""
         import sys
 
-        from netbox_kea.views import _add_lease_journal
+        from netbox_kea.views.leases import _add_lease_journal
 
         with patch.dict(sys.modules, {"extras.models": None}):
             _add_lease_journal(self.server, self.user, "created", ip_addresses=["10.0.0.1"])
@@ -1925,7 +1925,7 @@ class TestJournalHelperEdgeCases(_ViewTestBase):
         """OperationalError inside _add_lease_journal is swallowed."""
         from django.db import OperationalError
 
-        from netbox_kea.views import _add_lease_journal
+        from netbox_kea.views.leases import _add_lease_journal
 
         with patch(
             "extras.models.JournalEntry.objects.create",
@@ -2064,7 +2064,7 @@ class TestFetchLeasesFromServer(_ViewTestBase):
     """Lines 3423-3452: _fetch_leases_from_server with various search branches."""
 
     def _call(self, by, q="aa:bb:cc:dd:ee:ff", version=4, resp=None):
-        from netbox_kea.views import _fetch_leases_from_server
+        from netbox_kea.views.combined import _fetch_leases_from_server
 
         if resp is None:
             address = "10.0.0.1" if version == 4 else "2001:db8::1"
@@ -2119,7 +2119,7 @@ class TestFetchLeasesFromServer(_ViewTestBase):
 
     def test_null_args_raises_runtime_error(self):
         from netbox_kea import constants
-        from netbox_kea.views import _fetch_leases_from_server
+        from netbox_kea.views.combined import _fetch_leases_from_server
 
         with stub_kea({"lease4-get-by-hostname": {"result": 0, "arguments": None}}):
             with self.assertRaises(RuntimeError):
@@ -2136,7 +2136,7 @@ class TestFetchLeasesFromServer(_ViewTestBase):
     @override_settings(PLUGINS_CONFIG={"netbox_kea": {"kea_timeout": 30, "lease_query_max_unpaged_leases": 100}})
     def test_subnet_state_is_applied_by_kea(self):
         from netbox_kea import constants
-        from netbox_kea.views import _fetch_leases_from_server
+        from netbox_kea.views.combined import _fetch_leases_from_server
 
         stats = _subnet_stats(4, 1, assigned=501, declined=1)
         response = {
@@ -2169,7 +2169,7 @@ class TestFetchAllLeasesFromServer(_ViewTestBase):
     """Lines 3497-3509: _fetch_all_leases_from_server pagination and truncation."""
 
     def _run(self, responses, max_leases=1000):
-        from netbox_kea.views import _fetch_all_leases_from_server
+        from netbox_kea.views.combined import _fetch_all_leases_from_server
 
         # Each element of *responses* is a one-service Kea reply list; unwrap to the
         # single dict and feed them as a FIFO on lease4-get-page (the last repeats).
@@ -2349,7 +2349,7 @@ class TestGetLeasesCoverage(_ViewTestBase):
 
     def test_invalid_by_raises_value_error(self):
         """An invalid search selector must fail before a Kea request."""
-        from netbox_kea.views import ServerLeases4View
+        from netbox_kea.views.leases import ServerLeases4View
 
         view = ServerLeases4View()
         client = KeaClient(url="https://kea.example.com")
