@@ -836,12 +836,12 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
                 initial["ntp_servers"] = data
 
         # Lease lifetimes
-        if subnet.get("valid-lft") is not None:
-            initial["valid_lft"] = subnet["valid-lft"]
-        if subnet.get("min-valid-lft") is not None:
-            initial["min_valid_lft"] = subnet["min-valid-lft"]
-        if subnet.get("max-valid-lft") is not None:
-            initial["max_valid_lft"] = subnet["max-valid-lft"]
+        if subnet.get("valid-lifetime") is not None:
+            initial["valid_lft"] = subnet["valid-lifetime"]
+        if subnet.get("min-valid-lifetime") is not None:
+            initial["min_valid_lft"] = subnet["min-valid-lifetime"]
+        if subnet.get("max-valid-lifetime") is not None:
+            initial["max_valid_lft"] = subnet["max-valid-lifetime"]
         if subnet.get("renew-timer") is not None:
             initial["renew_timer"] = subnet["renew-timer"]
         if subnet.get("rebind-timer") is not None:
