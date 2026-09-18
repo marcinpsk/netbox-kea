@@ -2726,7 +2726,9 @@ _VERSION_COMPARISONS = {
 def _floor_takes_body(test: ast.expr, floor: tuple[int, int]) -> bool | None:
     """Report whether *floor* runs the body of a ``sys.version_info`` comparison.
 
-    Returns None for anything but a plain ``sys.version_info <op> (major, minor)``, so an
+    Compares the oldest release of *floor* as the five-field tuple ``sys.version_info``
+    really is, so ``> (3, 10)`` and ``!= (3, 10)`` come out true the way they do on 3.10.0.
+    Returns None for anything but a plain ``sys.version_info <op> (int, ...)``, so an
     unreadable test clears nothing rather than clearing an arm no one has reasoned about.
     """
     if not (isinstance(test, ast.Compare) and len(test.ops) == 1 and len(test.comparators) == 1):
@@ -2740,7 +2742,12 @@ def _floor_takes_body(test: ast.expr, floor: tuple[int, int]) -> bool | None:
     if len(parts) != len(right.elts) or not all(isinstance(part, int) for part in parts):
         return None
     compare = _VERSION_COMPARISONS.get(type(test.ops[0]))
-    return None if compare is None else bool(compare(floor, tuple(parts)))
+    if compare is None:
+        return None
+    try:
+        return bool(compare((*floor, 0, "final", 0), tuple(parts)))
+    except TypeError:
+        return None  # the literal mixes types with the releaselevel field; clear nothing
 
 
 def _unguarded_new_stdlib_imports(tree: ast.Module, floor: tuple[int, int]) -> list[str]:
@@ -2799,7 +2806,16 @@ _IMPORTS_THE_FLOOR_REACHES = {
     "an inverted comparison, whose body is the arm 3.10 runs": (
         "import sys\n\nif sys.version_info < (3, 11):\n    import tomllib\n"
     ),
+    "a strict > against the floor, which 3.10.0 already satisfies": (
+        "import sys\n\nif sys.version_info > (3, 10):\n    import tomllib\n"
+    ),
+    "a != against the floor, which every 3.10 release satisfies": (
+        "import sys\n\nif sys.version_info != (3, 10):\n    import tomllib\n"
+    ),
     "a test this guard cannot read": "import sys\n\nif supports(sys.version_info):\n    import tomllib\n",
+    "a literal that would compare an int with the releaselevel field": (
+        "import sys\n\nif sys.version_info >= (3, 10, 0, 1):\n    import tomllib\n"
+    ),
 }
 #: Sources the floor guard must clear: 3.10 runs the other arm, or the module is older.
 _IMPORTS_THE_FLOOR_SKIPS = {
@@ -2808,6 +2824,9 @@ _IMPORTS_THE_FLOOR_SKIPS = {
     ),
     "an inverted fallback": (
         "import sys\n\nif sys.version_info < (3, 11):\n    import tomli\nelse:\n    import tomllib\n"
+    ),
+    "an == against the floor, which no 3.10 release satisfies": (
+        "import sys\n\nif sys.version_info == (3, 10):\n    import tomllib\n"
     ),
     "a module the floor ships": "import re\n",
 }
