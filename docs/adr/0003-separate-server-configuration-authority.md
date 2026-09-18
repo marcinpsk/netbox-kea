@@ -1,8 +1,9 @@
-# ADR 0003: Separate the Server Configuration authority from the Subnet Catalogue
+---
+status: accepted
+date: 2026-09-18
+---
 
-Date: 2026-09-18
-
-Status: Accepted
+# Separate the Server Configuration authority from the Subnet Catalogue
 
 ## Context
 

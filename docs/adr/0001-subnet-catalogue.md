@@ -1,8 +1,12 @@
-# ADR 0001: Use a Subnet Catalogue
+---
+status: accepted
+date: 2026-08-13
+---
 
-Date: 2026-08-13
+# Use a Subnet Catalogue
 
-Status: Accepted. Amended 2026-09-18 by ADR 0003.
+_Amended 2026-09-18 by ADR 0003, which moves the `config-get` parse to the Server Configuration module
+and lets the cache admit an Incomplete Catalogue Snapshot._
 
 ## Context
 

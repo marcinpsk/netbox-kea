@@ -1,8 +1,9 @@
-# ADR 0002: Concentrate Reservation Record Semantics
+---
+status: accepted
+date: 2026-08-13
+---
 
-Date: 2026-08-13
-
-Status: Accepted
+# Concentrate Reservation record semantics
 
 ## Context
 
