@@ -1829,9 +1829,9 @@ class TestSubnetEditFormInitialFields(_ViewTestBase):
                         "subnet": "10.0.0.0/24",
                         "pools": [],
                         "option-data": [{"name": "ntp-servers", "data": "10.0.0.1"}],
-                        "valid-lft": 3600,
-                        "min-valid-lft": 1800,
-                        "max-valid-lft": 7200,
+                        "valid-lifetime": 3600,
+                        "min-valid-lifetime": 1800,
+                        "max-valid-lifetime": 7200,
                         "renew-timer": 900,
                         "rebind-timer": 1500,
                     }
@@ -2982,3 +2982,86 @@ class TestPersistConfigBanner(_ViewTestBase):
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Configuration persistence is disabled.")
+
+
+# ---------------------------------------------------------------------------
+# Kea subnet lifetime parameter names (#175)
+#
+# Kea's subnet-scope parameters are valid-lifetime / min-valid-lifetime /
+# max-valid-lifetime.  ``valid-lft`` is a *lease* field, and Kea 3.2.0 rejects
+# it inside a subnet definition with "spurious 'valid-lft' parameter".
+# ---------------------------------------------------------------------------
+
+_SUBNET4_GET_LIFETIMES = {
+    "result": 0,
+    "arguments": {
+        "subnet4": [
+            {
+                "id": 42,
+                "subnet": "10.0.0.0/24",
+                "pools": [],
+                "option-data": [],
+                "valid-lifetime": 3600,
+                "min-valid-lifetime": 1800,
+                "max-valid-lifetime": 7200,
+            }
+        ]
+    },
+}
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestSubnetLifetimeKeaParameterNames(_ViewTestBase):
+    """The subnet edit path must use Kea's subnet lifetime parameter names."""
+
+    def _url(self, subnet_id=42):
+        return reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, subnet_id])
+
+    def test_post_sends_kea_subnet_lifetime_parameter_names(self):
+        """subnet4-update must carry valid-lifetime, never the valid-lft lease field."""
+        stub = {
+            "config-get": _CONFIG4_NO_NETWORKS[0],
+            "subnet4-get": _SUBNET4_GET_LIFETIMES,
+            "subnet4-update": {"result": 0},
+            "config-test": {"result": 0},
+            "config-write": {"result": 0},
+        }
+        with stub_kea(stub) as kea:
+            response = self.client.post(
+                self._url(),
+                {
+                    "subnet_cidr": "10.0.0.0/24",
+                    "pools": "",
+                    "gateway": "",
+                    "dns_servers": "",
+                    "ntp_servers": "",
+                    "shared_network": "",
+                    "current_network": "",
+                    "valid_lft": "4000",
+                    "min_valid_lft": "2000",
+                    "max_valid_lft": "8000",
+                },
+            )
+        self.assertIn(response.status_code, (200, 302))
+        bodies = kea.bodies("subnet4-update")
+        self.assertTrue(bodies, "no subnet4-update request was sent")
+        sent = bodies[0]["arguments"]["subnet4"][0]
+        self.assertEqual(sent.get("valid-lifetime"), 4000)
+        self.assertEqual(sent.get("min-valid-lifetime"), 2000)
+        self.assertEqual(sent.get("max-valid-lifetime"), 8000)
+        for lease_field in ("valid-lft", "min-valid-lft", "max-valid-lft"):
+            self.assertNotIn(
+                lease_field,
+                sent,
+                f"Kea rejects {lease_field!r} in a subnet definition as a spurious parameter",
+            )
+
+    def test_get_prefills_from_kea_subnet_lifetime_parameter_names(self):
+        """The edit form must prefill from valid-lifetime, which is what subnet4-get returns."""
+        with stub_kea({"subnet4-get": _SUBNET4_GET_LIFETIMES, "config-get": _CONFIG4_NO_NETWORKS[0]}):
+            response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 200)
+        initial = response.context["form"].initial
+        self.assertEqual(initial.get("valid_lft"), 3600)
+        self.assertEqual(initial.get("min_valid_lft"), 1800)
+        self.assertEqual(initial.get("max_valid_lft"), 7200)

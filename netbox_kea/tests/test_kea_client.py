@@ -1478,7 +1478,7 @@ class TestSubnetUpdate(TestCase):
             self.client.subnet_update(version=4, subnet_id=1, subnet_cidr="10.0.0.0/24", valid_lft=7200)
         payload = self._update_payload(mock_post)
         subnet_obj = payload["arguments"]["subnet4"][0]
-        self.assertEqual(subnet_obj["valid-lft"], 7200)
+        self.assertEqual(subnet_obj["valid-lifetime"], 7200)
 
     def test_calls_config_write_after_update(self):
         """config-write is called after subnet{v}-update to persist the change."""
@@ -1588,7 +1588,7 @@ class TestSubnetUpdate(TestCase):
         self.assertEqual(opt["data"], "10.0.0.1")
 
     def test_sends_min_valid_lft_when_provided(self):
-        """subnet_update must include min-valid-lft when min_valid_lft is given."""
+        """subnet_update must include min-valid-lifetime when min_valid_lft is given."""
         with patch.object(
             self.client._session,
             "post",
@@ -1599,10 +1599,10 @@ class TestSubnetUpdate(TestCase):
             self.client.subnet_update(version=4, subnet_id=1, subnet_cidr="10.0.0.0/24", min_valid_lft=300)
         payload = self._update_payload(mock_post)
         subnet_obj = payload["arguments"]["subnet4"][0]
-        self.assertEqual(subnet_obj["min-valid-lft"], 300)
+        self.assertEqual(subnet_obj["min-valid-lifetime"], 300)
 
     def test_sends_max_valid_lft_when_provided(self):
-        """subnet_update must include max-valid-lft when max_valid_lft is given."""
+        """subnet_update must include max-valid-lifetime when max_valid_lft is given."""
         with patch.object(
             self.client._session,
             "post",
@@ -1613,7 +1613,7 @@ class TestSubnetUpdate(TestCase):
             self.client.subnet_update(version=4, subnet_id=1, subnet_cidr="10.0.0.0/24", max_valid_lft=7200)
         payload = self._update_payload(mock_post)
         subnet_obj = payload["arguments"]["subnet4"][0]
-        self.assertEqual(subnet_obj["max-valid-lft"], 7200)
+        self.assertEqual(subnet_obj["max-valid-lifetime"], 7200)
 
     def test_sends_ddns_qualifying_suffix_when_provided(self):
         """ddns-qualifying-suffix is included in the payload when provided."""
@@ -4328,7 +4328,7 @@ _SUBNET4_GET_FULL_RESP = [
                     "pools": [{"pool": "10.0.0.100-10.0.0.200"}],
                     "option-data": [{"name": "routers", "data": "10.0.0.1"}],
                     "relay": {"ip-addresses": ["10.0.0.254"]},
-                    "valid-lft": 3600,
+                    "valid-lifetime": 3600,
                 }
             ]
         },
@@ -4512,7 +4512,7 @@ _LIVE_SUBNET4_WITH_RELAY = {
         {"name": "routers", "data": "10.0.0.1"},
         {"name": "domain-name", "data": "old.example.com"},  # NOT managed — must be preserved
     ],
-    "valid-lft": 7200,
+    "valid-lifetime": 7200,
 }
 _SUBNET4_GET_WITH_RELAY_RESP = [{"result": 0, "arguments": {"subnet4": [_LIVE_SUBNET4_WITH_RELAY]}}]
 _SUBNET_UPDATE_OK = [{"result": 0, "arguments": {}, "text": "IPv4 subnet updated"}]
@@ -4524,7 +4524,7 @@ _LIVE_SUBNET6_WITH_DNS = {
         {"name": "dns-servers", "data": "2001:4860:4860::8888"},
         {"name": "domain-search", "data": "example.com"},  # NOT managed — must be preserved
     ],
-    "valid-lft": 3600,
+    "valid-lifetime": 3600,
 }
 _SUBNET6_GET_WITH_DNS_RESP = [{"result": 0, "arguments": {"subnet6": [_LIVE_SUBNET6_WITH_DNS]}}]
 _SUBNET_UPDATE_OK_V6 = [{"result": 0, "arguments": {}, "text": "IPv6 subnet updated"}]
@@ -4556,7 +4556,7 @@ class TestSubnetUpdateIdentity(TestCase):
                     client.subnet_update(6, 7, requested, valid_lft=7200)
                 update = stub.bodies("subnet6-update")[0]
                 self.assertEqual(update["arguments"]["subnet6"][0]["subnet"], live)
-                self.assertEqual(update["arguments"]["subnet6"][0]["valid-lft"], 7200)
+                self.assertEqual(update["arguments"]["subnet6"][0]["valid-lifetime"], 7200)
                 self.assertEqual(stub.commands()[-1], "config-write")
 
     def test_different_or_invalid_cidrs_cannot_mutate_the_subnet(self):
@@ -4638,14 +4638,14 @@ class TestSubnetUpdateMerge(TestCase):
         self.assertNotIn("routers", names)
 
     def test_overrides_valid_lft_when_provided(self):
-        """subnet_update must set valid-lft to the new value when provided."""
+        """subnet_update must set valid-lifetime to the new value when provided."""
         sent = self._run_update(valid_lft=1800)
-        self.assertEqual(sent.get("valid-lft"), 1800)
+        self.assertEqual(sent.get("valid-lifetime"), 1800)
 
     def test_keeps_live_valid_lft_when_none(self):
-        """subnet_update must keep the live valid-lft when the caller passes None."""
+        """subnet_update must keep the live valid-lifetime when the caller passes None."""
         sent = self._run_update(valid_lft=None)
-        self.assertEqual(sent.get("valid-lft"), 7200)  # from live subnet
+        self.assertEqual(sent.get("valid-lifetime"), 7200)  # from live subnet
 
     def test_pools_replaced_when_provided(self):
         """subnet_update must replace pools when argument is not None."""
