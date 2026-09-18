@@ -2248,6 +2248,25 @@ class TestLeaseBulkImportEdgeCases(_ViewTestBase):
         response = self.client.post(self._url(), {})
         self.assertEqual(response.status_code, 200)
 
+    def test_a_file_that_is_not_utf8_is_reported_on_the_field(self):
+        """The view reads the uploaded file itself, so a bad encoding stops there.
+
+        Nothing else covered that read, so a change to where the view takes the file
+        from could have broken the decode path without any test noticing.
+        """
+        import io
+
+        csv_file = io.BytesIO(b"ip-address\n10.0.0.\xff1")
+        csv_file.name = "leases.csv"
+
+        # An empty registry proves the view rejects the file before any Kea command.
+        with stub_kea({}) as kea:
+            response = self.client.post(self._url(), {"csv_file": csv_file})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(kea.commands(), [])
+        self.assertContains(response, "File must be UTF-8 encoded.")
+
     @patch("netbox_kea.views.sync_views.parse_lease_csv", autospec=True)
     def test_parse_error_shows_form_error(self, mock_parse):
         """Lines 4617-4619: ValueError from parse_lease_csv adds generic form error (no raw exception text)."""
