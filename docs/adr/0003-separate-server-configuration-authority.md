@@ -136,8 +136,10 @@ rejected alternative below.
 
 The order is fixed. The foundation lands first and changes no caller.
 
-1. The module, the Catalogue rewiring, `identity` on Configured Subnet, accessors that search both collections,
-   incomplete caching, and the generation move.
+1. The module, the Catalogue rewiring, `identity` on Configured Subnet, display accessors that search
+   both collections, incomplete caching, and the generation move. Only display accessors widen. Every
+   mutation lookup stays live and returns a Verified Subnet or nothing, because a Configured Subnet
+   carries no verified identity and cannot authorize a write.
 2. `views/subnets.py`, with the shared row builder moved to `views/_base.py`.
 3. `views/shared_networks.py` and the combined Shared Network view.
 4. `views/options.py` and `views/server.py`.

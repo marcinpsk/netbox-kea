@@ -2249,10 +2249,11 @@ class TestLeaseBulkImportEdgeCases(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
 
     def test_a_file_that_is_not_utf8_is_reported_on_the_field(self):
-        """The view reads the uploaded file itself, so a bad encoding stops there.
+        """A file the view cannot decode is reported on the field, not raised.
 
-        Nothing else covered that read, so a change to where the view takes the file
-        from could have broken the decode path without any test noticing.
+        Nothing covered this branch before. It does not discriminate where the view
+        takes the file from, because a plain FileField hands back the same
+        UploadedFile either way; it covers the read and decode the view does with it.
         """
         import io
 
