@@ -22,8 +22,8 @@ The canonical CIDR and Kea subnet ID that identify one Subnet within a Server an
 _Avoid_: Subnet key
 
 **Shared Network**:
-A named Kea grouping whose Subnets share configuration. It carries its own settings and DHCP Options, and it
-can exist with no member Subnets.
+A named Kea grouping whose Subnets share configuration. It carries its own settings and DHCP Option values, and
+it can exist with no member Subnets.
 _Avoid_: Network, subnet group
 
 **DHCP Link**:
@@ -105,7 +105,7 @@ _Avoid_: option-def, custom option
 
 **Server Configuration**:
 The complete declared DHCP configuration that one Server applies for one address family. It includes Subnets,
-Shared Networks, server-global DHCP Options, and Option Definitions.
+Shared Networks, server-global DHCP Option values, and Option Definitions.
 _Avoid_: Raw config, config-get response
 
 **Server Configuration Snapshot**:
