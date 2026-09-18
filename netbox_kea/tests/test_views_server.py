@@ -853,7 +853,7 @@ class TestKeaChangeMixinNoPk(_ViewTestBase):
         from django.test import RequestFactory
         from django.views import View
 
-        from netbox_kea.views import _KeaChangeMixin
+        from netbox_kea.views._base import _KeaChangeMixin
 
         class _MinimalView(_KeaChangeMixin, View):
             def get(self, request, **kwargs):

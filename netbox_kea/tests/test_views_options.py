@@ -453,7 +453,7 @@ class TestServerOptionDef4ListView(_ViewTestBase):
 
     def test_get_sets_tab_in_context(self):
         """F2: GET response must include 'tab' in context for tab bar highlighting."""
-        from netbox_kea.views import ServerOptionDef4View
+        from netbox_kea.views.options import ServerOptionDef4View
 
         with stub_kea({"config-get": _option_def_config(_OPTION_DEF_LIST_V4)}):
             response = self.client.get(self._url())
