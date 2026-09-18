@@ -148,6 +148,14 @@ jobs:
         with:
           persist-credentials: false
 
+      # Before the venv exists, so the glob cannot reach a dependency's own Markdown.
+      # --offline checks the links that live in this repository and skips every URL,
+      # which keeps the job independent of whether an external site is up.
+      - name: Documentation links
+        uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8  # v2.9.0
+        with:
+          args: "--offline --no-progress './**/*.md'"
+
       - name: Install uv
         uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4  # v10.1.0
         with:
