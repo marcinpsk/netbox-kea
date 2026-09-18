@@ -2611,12 +2611,17 @@ def _is_type_checking_test(node: ast.expr) -> bool:
 
 
 def _runtime_relative_imports(tree: ast.Module) -> list[str]:
-    """Return every relative import in *tree* that runs at import time."""
+    """Return every relative import in *tree* that a standalone load can execute.
+
+    Only the *body* of an ``if TYPE_CHECKING:`` block never runs. Its ``else`` branch
+    runs instead, and a function body runs when the caller drives the module's helpers.
+    """
     deferred = {
         node
         for statement in ast.walk(tree)
         if isinstance(statement, ast.If) and _is_type_checking_test(statement.test)
-        for node in ast.walk(statement)
+        for deferred_statement in statement.body
+        for node in ast.walk(deferred_statement)
     }
     return [
         f"line {node.lineno}: from {'.' * node.level}{node.module or ''}"
@@ -2644,11 +2649,124 @@ def test_a_standalone_loaded_file_has_no_runtime_relative_import(loaded: Path):
     )
 
 
-def test_the_relative_import_guard_reads_both_import_forms():
-    """The guard must flag a runtime relative import and clear a deferred one."""
-    flagged = _runtime_relative_imports(ast.parse("from .conftest import Thing\n"))
-    assert len(flagged) == 1, f"the guard missed a runtime relative import: {flagged}"
+#: Sources the guard must flag, keyed by what makes each one execute in a standalone load.
+_EXECUTING_RELATIVE_IMPORTS = {
+    "module level": "from .conftest import Thing\n",
+    "the else branch of a TYPE_CHECKING block": (
+        "from typing import TYPE_CHECKING\n\nif TYPE_CHECKING:\n    Thing = object\nelse:\n"
+        "    from .conftest import Thing\n"
+    ),
+    "a function body the unit suite calls": "def cleanup():\n    from .conftest import Thing\n\n    return Thing\n",
+}
+#: Sources the guard must clear: only a TYPE_CHECKING body never executes.
+_DEFERRED_OR_ABSOLUTE_IMPORTS = {
+    "the body of a TYPE_CHECKING block": (
+        "from typing import TYPE_CHECKING\n\nif TYPE_CHECKING:\n    from .conftest import Thing\n"
+    ),
+    "an absolute import": "from pathlib import Path\n",
+}
 
-    deferred = "from typing import TYPE_CHECKING\n\nif TYPE_CHECKING:\n    from .conftest import Thing\n"
-    assert _runtime_relative_imports(ast.parse(deferred)) == []
-    assert _runtime_relative_imports(ast.parse("from pathlib import Path\n")) == []
+
+@pytest.mark.parametrize("source", _EXECUTING_RELATIVE_IMPORTS.values(), ids=_EXECUTING_RELATIVE_IMPORTS)
+def test_the_relative_import_guard_flags_every_import_a_standalone_load_can_run(source):
+    """Only a TYPE_CHECKING body is safe. An else branch and a function body both run.
+
+    The tests above exec a module and then call helpers out of it, so a relative import
+    inside a function raises as surely as one at module level: later, and with the same
+    unresolvable package.
+    """
+    assert len(_runtime_relative_imports(ast.parse(source))) == 1
+
+
+@pytest.mark.parametrize("source", _DEFERRED_OR_ABSOLUTE_IMPORTS.values(), ids=_DEFERRED_OR_ABSOLUTE_IMPORTS)
+def test_the_relative_import_guard_clears_an_import_no_standalone_load_runs(source):
+    assert _runtime_relative_imports(ast.parse(source)) == []
+
+
+# ---------------------------------------------------------------------------
+# Imports must exist on the oldest supported Python
+# ---------------------------------------------------------------------------
+
+#: Standard-library modules added after the oldest Python this package supports, and the
+#: version that added each one. An import of one of these belongs under a
+#: ``sys.version_info`` branch whose other arm names the backport the dev group ships.
+#: Add an entry when the tree reaches for a newer module; raising the floor retires it.
+_STDLIB_ADDED_IN = {"tomllib": (3, 11)}
+
+
+def _declared_python_floor() -> tuple[int, int]:
+    """Return the lowest Python version ``requires-python`` accepts."""
+    source = (REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    found = re.search(r'^requires-python\s*=\s*">=(\d+)\.(\d+)"', source, re.MULTILINE)
+    assert found, "pyproject declares no requires-python floor for this guard to read."
+    return int(found.group(1)), int(found.group(2))
+
+
+def _is_version_info_test(node: ast.expr) -> bool:
+    """Report whether *node* tests ``sys.version_info``."""
+    return any(
+        (isinstance(inner, ast.Attribute) and inner.attr == "version_info")
+        or (isinstance(inner, ast.Name) and inner.id == "version_info")
+        for inner in ast.walk(node)
+    )
+
+
+def _unguarded_new_stdlib_imports(tree: ast.Module, floor: tuple[int, int]) -> list[str]:
+    """Return every import of a module *floor* does not ship, outside a version branch.
+
+    Both arms of a ``sys.version_info`` branch count as guarded, unlike the TYPE_CHECKING
+    walk above: the backport import lives in the ``else`` arm, and clearing it is the point.
+    """
+    guarded = {
+        node
+        for statement in ast.walk(tree)
+        if isinstance(statement, ast.If) and _is_version_info_test(statement.test)
+        for node in ast.walk(statement)
+    }
+    offenders: list[str] = []
+    for node in ast.walk(tree):
+        if node in guarded:
+            continue
+        if isinstance(node, ast.Import):
+            names = [alias.name for alias in node.names]
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            names = [node.module]
+        else:
+            continue
+        offenders.extend(f"line {node.lineno}: {name}" for name in names if _STDLIB_ADDED_IN.get(name, floor) > floor)
+    return offenders
+
+
+def test_no_module_imports_a_standard_library_module_the_floor_lacks():
+    """`requires-python` promises 3.10, and the dev group ships tomli to keep that promise.
+
+    A bare ``import tomllib`` runs here, where CI uses a newer interpreter, and raises
+    ModuleNotFoundError on the oldest interpreter the package claims to support.
+    """
+    floor = _declared_python_floor()
+    offenders = []
+    for source in sorted((REPOSITORY_ROOT / "netbox_kea").rglob("*.py")):
+        relative = source.relative_to(REPOSITORY_ROOT).as_posix()
+        found = _unguarded_new_stdlib_imports(ast.parse(source.read_text(encoding="utf-8")), floor)
+        offenders.extend(f"{relative}: {entry}" for entry in found)
+
+    assert not offenders, (
+        f"these imports need Python newer than the declared floor {floor[0]}.{floor[1]}: {offenders}. "
+        "Put the import under a sys.version_info branch whose other arm names the backport."
+    )
+
+
+def test_the_floor_import_guard_reads_both_import_forms():
+    """The guard must flag either import spelling and clear a version-guarded one."""
+    floor = (3, 10)
+    assert len(_unguarded_new_stdlib_imports(ast.parse("import tomllib\n"), floor)) == 1
+    assert len(_unguarded_new_stdlib_imports(ast.parse("from tomllib import loads\n"), floor)) == 1
+    assert _unguarded_new_stdlib_imports(ast.parse("import re\n"), floor) == []
+
+    fallback = "import sys\n\nif sys.version_info >= (3, 11):\n    import tomllib\nelse:\n    import tomli\n"
+    assert _unguarded_new_stdlib_imports(ast.parse(fallback), floor) == []
+
+
+def test_the_floor_guard_reads_the_declared_floor():
+    """A guard that read no floor would accept anything."""
+    assert _declared_python_floor() >= (3, 10)
