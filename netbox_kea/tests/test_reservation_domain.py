@@ -1431,7 +1431,7 @@ class TestSynchronizationLabel(SimpleTestCase):
 
 
 class TestRawRecordBoundary(SimpleTestCase):
-    """Guard the boundary ADR 0001 records: only the adapters see raw Kea records.
+    """Guard the boundary ADR 0004 records: only the adapters see raw Kea records.
 
     The OpenGrep rule states the same invariant but runs from pre-commit, so this
     reads the rule's own allowed paths and enforces them in CI rather than
@@ -1481,7 +1481,7 @@ class TestRawRecordBoundary(SimpleTestCase):
             offenders,
             [],
             "A reservation-* command outside the adapters hands raw Kea records to a consumer that "
-            f"cannot read their keys. See docs/adr/0001 and the {self.RULE_ID} OpenGrep rule. Found: {offenders}",
+            f"cannot read their keys. See docs/adr/0004 and the {self.RULE_ID} OpenGrep rule. Found: {offenders}",
         )
 
     def test_the_boundary_scanner_sees_both_command_spellings(self) -> None:
