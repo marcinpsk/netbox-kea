@@ -1434,9 +1434,9 @@ class KeaClient:
             ntp_servers: List of NTP server IP strings.
             ddns_qualifying_suffix: DDNS qualifying suffix.  ``None`` = omit (Kea keeps
                 existing); ``""`` = explicitly clear; a value sets it.
-            valid_lft: Preferred lease lifetime in seconds.
-            min_valid_lft: Minimum lease lifetime in seconds.
-            max_valid_lft: Maximum lease lifetime in seconds.
+            valid_lft: Preferred lease lifetime in seconds (sent as ``valid-lifetime``).
+            min_valid_lft: Minimum lease lifetime in seconds (sent as ``min-valid-lifetime``).
+            max_valid_lft: Maximum lease lifetime in seconds (sent as ``max-valid-lifetime``).
             renew_timer: T1 renew timer in seconds (sent as ``renew-timer``).
             rebind_timer: T2 rebind timer in seconds (sent as ``rebind-timer``).
 
@@ -1502,10 +1502,11 @@ class KeaClient:
 
         # Lifetime / timer fields: override only when explicitly provided, otherwise
         # the live value (already present in subnet_def from subnet_get) is kept.
+        # Subnet scope uses `*-lifetime`; `valid-lft` is a lease field Kea rejects here.
         for value, kea_key in [
-            (valid_lft, "valid-lft"),
-            (min_valid_lft, "min-valid-lft"),
-            (max_valid_lft, "max-valid-lft"),
+            (valid_lft, "valid-lifetime"),
+            (min_valid_lft, "min-valid-lifetime"),
+            (max_valid_lft, "max-valid-lifetime"),
             (renew_timer, "renew-timer"),
             (rebind_timer, "rebind-timer"),
         ]:
