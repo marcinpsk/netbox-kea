@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import operator
 import os
 import re
 import runpy
@@ -2711,18 +2712,53 @@ def _is_version_info_test(node: ast.expr) -> bool:
     )
 
 
+#: How each comparison operator decides a ``sys.version_info`` branch.
+_VERSION_COMPARISONS = {
+    ast.Lt: operator.lt,
+    ast.LtE: operator.le,
+    ast.Gt: operator.gt,
+    ast.GtE: operator.ge,
+    ast.Eq: operator.eq,
+    ast.NotEq: operator.ne,
+}
+
+
+def _floor_takes_body(test: ast.expr, floor: tuple[int, int]) -> bool | None:
+    """Report whether *floor* runs the body of a ``sys.version_info`` comparison.
+
+    Returns None for anything but a plain ``sys.version_info <op> (major, minor)``, so an
+    unreadable test clears nothing rather than clearing an arm no one has reasoned about.
+    """
+    if not (isinstance(test, ast.Compare) and len(test.ops) == 1 and len(test.comparators) == 1):
+        return None
+    if not _is_version_info_test(test.left):
+        return None
+    right = test.comparators[0]
+    if not isinstance(right, ast.Tuple):
+        return None
+    parts = [element.value for element in right.elts if isinstance(element, ast.Constant)]
+    if len(parts) != len(right.elts) or not all(isinstance(part, int) for part in parts):
+        return None
+    compare = _VERSION_COMPARISONS.get(type(test.ops[0]))
+    return None if compare is None else bool(compare(floor, tuple(parts)))
+
+
 def _unguarded_new_stdlib_imports(tree: ast.Module, floor: tuple[int, int]) -> list[str]:
     """Return every import of a module *floor* does not ship, outside a version branch.
 
-    Both arms of a ``sys.version_info`` branch count as guarded, unlike the TYPE_CHECKING
-    walk above: the backport import lives in the ``else`` arm, and clearing it is the point.
+    A ``sys.version_info`` branch clears only the arm *floor* does not run. The arm it does
+    run stays in scope, so an inverted test such as ``if sys.version_info < (3, 11)`` is
+    still reported: that arm is the one 3.10 executes.
     """
-    guarded = {
-        node
-        for statement in ast.walk(tree)
-        if isinstance(statement, ast.If) and _is_version_info_test(statement.test)
-        for node in ast.walk(statement)
-    }
+    guarded: set[ast.AST] = set()
+    for statement in ast.walk(tree):
+        if not isinstance(statement, ast.If) or not _is_version_info_test(statement.test):
+            continue
+        takes_body = _floor_takes_body(statement.test, floor)
+        if takes_body is None:
+            continue
+        skipped = statement.orelse if takes_body else statement.body
+        guarded.update(node for entry in skipped for node in ast.walk(entry))
     offenders: list[str] = []
     for node in ast.walk(tree):
         if node in guarded:
@@ -2756,15 +2792,36 @@ def test_no_module_imports_a_standard_library_module_the_floor_lacks():
     )
 
 
-def test_the_floor_import_guard_reads_both_import_forms():
-    """The guard must flag either import spelling and clear a version-guarded one."""
-    floor = (3, 10)
-    assert len(_unguarded_new_stdlib_imports(ast.parse("import tomllib\n"), floor)) == 1
-    assert len(_unguarded_new_stdlib_imports(ast.parse("from tomllib import loads\n"), floor)) == 1
-    assert _unguarded_new_stdlib_imports(ast.parse("import re\n"), floor) == []
+#: Sources the floor guard must flag, keyed by why Python 3.10 still reaches the import.
+_IMPORTS_THE_FLOOR_REACHES = {
+    "a bare import": "import tomllib\n",
+    "the from spelling": "from tomllib import loads\n",
+    "an inverted comparison, whose body is the arm 3.10 runs": (
+        "import sys\n\nif sys.version_info < (3, 11):\n    import tomllib\n"
+    ),
+    "a test this guard cannot read": "import sys\n\nif supports(sys.version_info):\n    import tomllib\n",
+}
+#: Sources the floor guard must clear: 3.10 runs the other arm, or the module is older.
+_IMPORTS_THE_FLOOR_SKIPS = {
+    "the documented fallback": (
+        "import sys\n\nif sys.version_info >= (3, 11):\n    import tomllib\nelse:\n    import tomli\n"
+    ),
+    "an inverted fallback": (
+        "import sys\n\nif sys.version_info < (3, 11):\n    import tomli\nelse:\n    import tomllib\n"
+    ),
+    "a module the floor ships": "import re\n",
+}
 
-    fallback = "import sys\n\nif sys.version_info >= (3, 11):\n    import tomllib\nelse:\n    import tomli\n"
-    assert _unguarded_new_stdlib_imports(ast.parse(fallback), floor) == []
+
+@pytest.mark.parametrize("source", _IMPORTS_THE_FLOOR_REACHES.values(), ids=_IMPORTS_THE_FLOOR_REACHES)
+def test_the_floor_import_guard_flags_an_import_the_floor_reaches(source):
+    """Only the arm the floor skips is cleared, and an unreadable test clears nothing."""
+    assert len(_unguarded_new_stdlib_imports(ast.parse(source), (3, 10))) == 1
+
+
+@pytest.mark.parametrize("source", _IMPORTS_THE_FLOOR_SKIPS.values(), ids=_IMPORTS_THE_FLOOR_SKIPS)
+def test_the_floor_import_guard_clears_an_import_the_floor_skips(source):
+    assert _unguarded_new_stdlib_imports(ast.parse(source), (3, 10)) == []
 
 
 def test_the_floor_guard_reads_the_declared_floor():
