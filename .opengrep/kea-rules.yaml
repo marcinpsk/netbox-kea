@@ -132,6 +132,8 @@ rules:
       exclude:
         - "**/tests/**"
         - "**/migrations/**"
-        - "**/kea.py"
+        - "netbox_kea/kea.py"
     patterns:
-      - pattern: $C.command("=~/^reservation-/", ...)
+      - pattern-either:
+          - pattern: $C.command("=~/^reservation-/", ...)
+          - pattern: $C.command(command="=~/^reservation-/", ...)

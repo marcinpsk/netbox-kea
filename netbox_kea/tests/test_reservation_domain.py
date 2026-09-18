@@ -2,6 +2,7 @@ import ast
 import itertools
 from dataclasses import replace
 from datetime import datetime, timezone
+from fnmatch import fnmatch
 from ipaddress import ip_address, ip_network
 from pathlib import Path
 from typing import get_args
@@ -1446,29 +1447,33 @@ class TestRawRecordBoundary(SimpleTestCase):
         return rules[0]["paths"]["exclude"]
 
     @staticmethod
-    def _reservation_commands(tree: ast.AST) -> list[str]:
-        """Return every ``*.command("reservation-...")`` name called in *tree*."""
-        return [
-            node.args[0].value
-            for node in ast.walk(tree)
-            if isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and node.func.attr == "command"
-            and node.args
-            and isinstance(node.args[0], ast.Constant)
-            and isinstance(node.args[0].value, str)
-            and node.args[0].value.startswith("reservation-")
-        ]
+    def _command_name(call: ast.Call) -> str | None:
+        """Return the literal command name *call* sends, positionally or as ``command=``."""
+        if not (isinstance(call.func, ast.Attribute) and call.func.attr == "command"):
+            return None
+        named = next((keyword.value for keyword in call.keywords if keyword.arg == "command"), None)
+        argument = call.args[0] if call.args else named
+        if isinstance(argument, ast.Constant) and isinstance(argument.value, str):
+            return argument.value
+        return None
 
-    def test_only_the_adapter_sends_a_reservation_command(self):
+    @classmethod
+    def _reservation_commands(cls, tree: ast.AST) -> list[str]:
+        """Return every ``reservation-*`` command name called in *tree*."""
+        names = (cls._command_name(node) for node in ast.walk(tree) if isinstance(node, ast.Call))
+        return [name for name in names if name is not None and name.startswith("reservation-")]
+
+    def test_only_the_adapter_sends_a_reservation_command(self) -> None:
         allowed = self._allowed_paths()
-        offenders = []
+        offenders: list[str] = []
         for source in sorted((_REPOSITORY_ROOT / "netbox_kea").rglob("*.py")):
-            relative = source.relative_to(_REPOSITORY_ROOT)
-            if any(relative.full_match(pattern) for pattern in allowed):
+            relative = source.relative_to(_REPOSITORY_ROOT).as_posix()
+            # fnmatch, not Path.full_match: that arrived in 3.13 and this package
+            # supports 3.10. fnmatch's "*" spans "/", which is what these globs want.
+            if any(fnmatch(relative, pattern) for pattern in allowed):
                 continue
             offenders.extend(
-                f"{relative.as_posix()}: {command}"
+                f"{relative}: {command}"
                 for command in self._reservation_commands(ast.parse(source.read_text(encoding="utf-8")))
             )
 
@@ -1479,10 +1484,13 @@ class TestRawRecordBoundary(SimpleTestCase):
             f"cannot read their keys. See docs/adr/0001 and the {self.RULE_ID} OpenGrep rule. Found: {offenders}",
         )
 
-    def test_the_boundary_scanner_sees_a_reservation_command(self):
-        """The scanner must find the call it looks for, and ignore the ones it must not."""
-        found = self._reservation_commands(
-            ast.parse('client.command("reservation-get-page", service=["dhcp4"])\nclient.command("config-get")\n')
+    def test_the_boundary_scanner_sees_both_command_spellings(self) -> None:
+        """The scanner must find either spelling, and ignore the calls it must not."""
+        source = (
+            'client.command("reservation-get-page", service=["dhcp4"])\n'
+            'client.command(command="reservation-get", service=["dhcp4"])\n'
+            'client.command("config-get")\n'
+            'client.command(command="lease4-get-all")\n'
         )
 
-        self.assertEqual(found, ["reservation-get-page"])
+        self.assertEqual(self._reservation_commands(ast.parse(source)), ["reservation-get-page", "reservation-get"])

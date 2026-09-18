@@ -25,7 +25,7 @@ class TestViewsPackageImportsEveryModule(SimpleTestCase):
             for alias in node.names
         }
 
-    def test_the_package_imports_every_view_module(self):
+    def test_the_package_imports_every_view_module(self) -> None:
         """A module the package skips never runs its register_model_view decorators.
 
         urls.py asks get_model_urls for the Server tabs, which only knows the views that
@@ -43,11 +43,11 @@ class TestViewsPackageImportsEveryModule(SimpleTestCase):
             "register_model_view decorators never run and their Server tabs disappear.",
         )
 
-    def test_the_package_imports_nothing_that_is_gone(self):
+    def test_the_package_imports_nothing_that_is_gone(self) -> None:
         """A name left behind after a module is deleted breaks the package import."""
         self.assertEqual(sorted(self._imported_names() - self._module_names()), [])
 
-    def test_the_guard_reads_a_real_module_list(self):
+    def test_the_guard_reads_a_real_module_list(self) -> None:
         """Two empty sets would make the tests above pass without checking anything."""
         self.assertGreater(len(self._module_names()), 5)
         self.assertEqual(self._imported_names(), self._module_names())

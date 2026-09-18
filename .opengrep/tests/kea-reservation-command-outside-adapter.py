@@ -20,6 +20,11 @@ def bad_reads_one_reservation_by_hostname(client):
     return client.command("reservation-get-by-hostname", service=["dhcp4"])
 
 
+def bad_names_the_command_by_keyword(client):
+    # ruleid: kea-reservation-command-outside-adapter
+    return client.command(command="reservation-get", service=["dhcp4"])
+
+
 def ok_reads_the_configuration(client):
     # ok: kea-reservation-command-outside-adapter
     return client.command("config-get", service=["dhcp4"])
