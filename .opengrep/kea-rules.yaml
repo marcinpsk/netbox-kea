@@ -113,3 +113,27 @@ rules:
         - "**/migrations/**"
     patterns:
       - pattern: $C.command(...)[0]
+
+  - id: kea-reservation-command-outside-adapter
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Only netbox_kea/kea.py may send a reservation-* command. Its results are raw
+      Kea Reservation records, whose keys only netbox_kea/reservations.py knows how
+      to read. Every other module consumes the typed Reservation, ReservationIdentity
+      and ReservationScope values those two build, so raw Reservation keys cannot
+      spread back out of the private adapters.
+    metadata:
+      category: correctness
+      confidence: HIGH
+      references:
+        - "CONTEXT.md: Reservation, Reservation Identity, Reservation Scope"
+    paths:
+      exclude:
+        - "**/tests/**"
+        - "**/migrations/**"
+        - "netbox_kea/kea.py"
+    patterns:
+      - pattern-either:
+          - pattern: $C.command("=~/^reservation-/", ...)
+          - pattern: $C.command(command="=~/^reservation-/", ...)
