@@ -564,7 +564,7 @@ class _BaseBulkLeaseImportView(_KeaChangeMixin, ConditionalLoginRequiredMixin, V
                 },
             )
 
-        csv_file = request.FILES["csv_file"]
+        csv_file = form.cleaned_data["csv_file"]
         try:
             content = csv_file.read().decode("utf-8-sig")
         except UnicodeDecodeError:

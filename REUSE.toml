@@ -39,6 +39,8 @@ path = [
     "CHANGELOG.md",
     "AGENTS.md",
     "docs/agents/**",
+    "docs/adr/**",
+    "docs/kea-shared-network-dhcp-plugin-brief.md",
     ".github/workflows/codeql.yml",
     ".envrc.example",
     ".devcontainer/**",
