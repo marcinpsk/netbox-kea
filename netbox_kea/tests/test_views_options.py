@@ -36,7 +36,7 @@ from django.contrib import messages as django_messages
 from django.test import override_settings
 from django.urls import reverse
 
-from .kea_stub import stub_kea
+from .kea_stub import queued, stub_kea
 from .utils import _PLUGINS_CONFIG, _make_db_server, _ViewTestBase
 
 # ---------------------------------------------------------------------------
@@ -79,6 +79,10 @@ _OPTIONS_CONFIG_GET_V6 = [
         },
     }
 ]
+
+_SUBNET4_REDIRECT_IDENTITY = {
+    "subnet4-list": {"result": 0, "arguments": {"subnets": [{"id": 42, "subnet": "10.0.0.0/24"}]}},
+}
 
 _SERVER_OPTIONS_CONFIG_GET = [
     {
@@ -929,7 +933,7 @@ class TestKeaConfigTestErrorHandling(_ViewTestBase):
     def test_subnet_options_config_test_error_shows_message(self):
         """POST to subnet options edit shows the config-test error message."""
         url = reverse("plugins:netbox_kea:server_subnet4_options_edit", args=[self.server.pk, 42])
-        with _persist_stub(_OPTIONS_CONFIG_GET, **self._CONFIG_TEST_FAILS):
+        with _persist_stub(_OPTIONS_CONFIG_GET, **_SUBNET4_REDIRECT_IDENTITY, **self._CONFIG_TEST_FAILS):
             response = self.client.post(
                 url,
                 {
@@ -999,7 +1003,13 @@ class TestSubnetOptionsPartialPersistError(_ViewTestBase):
     def test_partial_persist_error_shows_warning(self):
         """A config-write failure on a persisting op surfaces a warning (change unpersisted)."""
         url = reverse("plugins:netbox_kea:server_subnet4_options_edit", args=[self.server.pk, 42])
-        with _persist_stub(_OPTIONS_CONFIG_GET, **{"config-write": {"result": 1, "text": "write failed"}}):
+        applied_config = copy.deepcopy(_OPTIONS_CONFIG_GET)
+        applied_config[0]["arguments"]["Dhcp4"]["subnet4"][0]["option-data"] = [{"name": "routers", "data": "10.0.0.1"}]
+        with _persist_stub(
+            queued(_OPTIONS_CONFIG_GET, applied_config),
+            **_SUBNET4_REDIRECT_IDENTITY,
+            **{"config-write": {"result": 1, "text": "write failed"}},
+        ):
             response = self.client.post(
                 url,
                 {
@@ -1024,11 +1034,32 @@ class TestSubnetOptionsTransportError(_ViewTestBase):
     """POST to subnet options edit: config-get raises ConnectionError → transport error message."""
 
     def test_connection_error_shows_transport_message(self):
-        """A transport error surfaces a generic message and never leaks the internal URL."""
+        """A persistent transport failure redirects and reports the mutation error."""
         url = reverse("plugins:netbox_kea:server_subnet4_options_edit", args=[self.server.pk, 42])
-        with stub_kea({"config-get": requests.ConnectionError(f"{_SENTINEL_URL} refused connection")}):
+        with _persist_stub(
+            requests.ConnectionError(f"{_SENTINEL_URL} refused connection"),
+            **_SUBNET4_REDIRECT_IDENTITY,
+        ):
             response = self.client.post(url, {"form-TOTAL_FORMS": "0", "form-INITIAL_FORMS": "0"}, follow=True)
         self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.redirect_chain)
+        self.assertNotContains(response, "DDNS: recovered.example.invalid")
+        msgs = [str(m) for m in response.context["messages"]]
+        self.assertTrue(any("transport error" in m.lower() for m in msgs))
+        self.assertFalse(any(_SENTINEL_URL.lower() in m.lower() for m in msgs))
+
+    def test_connection_error_recovers_for_redirect_display(self):
+        """A transport error surfaces a generic message and never leaks the internal URL."""
+        url = reverse("plugins:netbox_kea:server_subnet4_options_edit", args=[self.server.pk, 42])
+        recovered = copy.deepcopy(_OPTIONS_CONFIG_GET)
+        recovered[0]["arguments"]["Dhcp4"]["subnet4"][0]["ddns-qualifying-suffix"] = "recovered.example.invalid"
+        with _persist_stub(
+            queued(requests.ConnectionError(f"{_SENTINEL_URL} refused connection"), recovered),
+            **_SUBNET4_REDIRECT_IDENTITY,
+        ):
+            response = self.client.post(url, {"form-TOTAL_FORMS": "0", "form-INITIAL_FORMS": "0"}, follow=True)
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "DDNS: recovered.example.invalid")
         msgs = [str(m) for m in response.context["messages"]]
         self.assertTrue(any("transport error" in m.lower() for m in msgs))
         self.assertFalse(any(_SENTINEL_URL.lower() in m.lower() for m in msgs))
@@ -1039,11 +1070,26 @@ class TestSubnetOptionsValueError(_ViewTestBase):
     """POST to subnet options edit: config-get raises ValueError → invalid config message."""
 
     def test_value_error_shows_invalid_config_message(self):
-        """A ValueError surfaces a generic message and never leaks its detail."""
+        """A persistent parse failure redirects and reports the mutation error."""
         url = reverse("plugins:netbox_kea:server_subnet4_options_edit", args=[self.server.pk, 42])
-        with stub_kea({"config-get": ValueError("bad config")}):
+        with _persist_stub(ValueError("bad config"), **_SUBNET4_REDIRECT_IDENTITY):
             response = self.client.post(url, {"form-TOTAL_FORMS": "0", "form-INITIAL_FORMS": "0"}, follow=True)
         self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.redirect_chain)
+        self.assertNotContains(response, "DDNS: recovered.example.invalid")
+        msgs = [str(m) for m in response.context["messages"]]
+        self.assertTrue(any("invalid kea client configuration" in m.lower() for m in msgs))
+        self.assertFalse(any("bad config" in m.lower() for m in msgs))
+
+    def test_value_error_recovers_for_redirect_display(self):
+        """A ValueError surfaces a generic message and never leaks its detail."""
+        url = reverse("plugins:netbox_kea:server_subnet4_options_edit", args=[self.server.pk, 42])
+        recovered = copy.deepcopy(_OPTIONS_CONFIG_GET)
+        recovered[0]["arguments"]["Dhcp4"]["subnet4"][0]["ddns-qualifying-suffix"] = "recovered.example.invalid"
+        with _persist_stub(queued(ValueError("bad config"), recovered), **_SUBNET4_REDIRECT_IDENTITY):
+            response = self.client.post(url, {"form-TOTAL_FORMS": "0", "form-INITIAL_FORMS": "0"}, follow=True)
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "DDNS: recovered.example.invalid")
         msgs = [str(m) for m in response.context["messages"]]
         self.assertTrue(any("invalid kea client configuration" in m.lower() for m in msgs))
         self.assertFalse(any("bad config" in m.lower() for m in msgs))

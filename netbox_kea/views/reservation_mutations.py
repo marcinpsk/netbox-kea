@@ -39,10 +39,9 @@ from ..reservations import (
 from ..signals import reservation_created, reservation_deleted, reservation_updated
 from ..subnet_catalogue import CatalogueSnapshot, MutationScope
 from ..sync import sync_reservation_to_netbox
-from ..utilities import fetch_subnet_choices, kea_error_hint
+from ..utilities import fetch_subnet_choices, kea_error_hint, parse_pool_range
 from ._base import _KeaChangeMixin
 from .reservations import _RESERVATIONS_TAB, _build_reservation_options_formset, _configured_capabilities
-from .subnets import _warn_reservation_pool_overlap
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +49,53 @@ _FINGERPRINT_SALT = "netbox_kea.reservation-managed-facts"
 FLEX_ID_DOCUMENTATION_URL = (
     "https://kea.readthedocs.io/en/latest/arm/hooks.html#flex-id-flexible-identifiers-for-host-reservations"
 )
+
+
+def _warn_reservation_pool_overlap(
+    request: HttpRequest,
+    client: "KeaClient",
+    version: Family,
+    subnet_id: int,
+    ip_str: str,
+) -> None:
+    """Add a non-blocking warning if *ip_str* falls within an existing pool in *subnet_id*.
+
+    Fetches the subnet configuration via ``subnet{version}-get`` and checks each
+    pool entry.  Silently skips on any error.
+    """
+    try:
+        from netaddr import IPAddress
+
+        resp = client.command(
+            f"subnet{version}-get",
+            service=[f"dhcp{version}"],
+            arguments={"id": subnet_id},
+        )
+        if not resp or not isinstance(resp[0], dict):
+            return
+        arguments = resp[0].get("arguments")
+        if not isinstance(arguments, dict):
+            return
+        subnet_list = arguments.get(f"subnet{version}", [])
+        if not isinstance(subnet_list, list) or not subnet_list:
+            return
+        subnet = subnet_list[0] if isinstance(subnet_list[0], dict) else {}
+        ip = IPAddress(ip_str)
+
+        for pool_entry in subnet.get("pools") or []:
+            ps = pool_entry.get("pool", "")
+            if not ps:
+                continue
+            pool_range = parse_pool_range(ps)
+            if ip in pool_range:
+                messages.warning(
+                    request,
+                    f"IP {ip_str} is within existing pool {ps}. "
+                    "Kea allows this — reservations take priority over pool allocation.",
+                )
+                break
+    except Exception:
+        logger.exception("Failed to check reservation/pool overlap for %s in subnet %s", ip_str, subnet_id)
 
 
 def _in_subnet_scope(reservation: Reservation) -> InSubnetReservationScope:

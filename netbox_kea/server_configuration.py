@@ -83,6 +83,7 @@ class DeclaredSubnet:
     declared_subnet_id: int | None
     configuration: SubnetConfiguration
     shared_network_name: str | None
+    complete: bool
 
 
 @dataclass(frozen=True)
@@ -129,6 +130,20 @@ class ServerConfigurationSnapshot:
     _membership_complete: tuple[bool, ...] = ()
     # Every server-global option-data entry parsed.
     global_options_complete: bool = False
+    # Collection and member shapes, string names, and valid member IDs unique across Shared Networks.
+    shared_networks_complete: bool = False
+
+    def subnet_with_membership(self, subnet_id: int) -> DeclaredSubnet | None:
+        """Return a unique declaration with known Shared Network membership."""
+        matches = [
+            (index, subnet) for index, subnet in enumerate(self.subnets) if subnet.declared_subnet_id == subnet_id
+        ]
+        if len(matches) != 1:
+            return None
+        index, subnet = matches[0]
+        if index >= len(self._membership_complete) or not self._membership_complete[index]:
+            return None
+        return subnet
 
 
 def _validate_family(family: int) -> Family:
@@ -144,7 +159,7 @@ def _network(value: Any, family: Family) -> IPNetworkValue:
     if not isinstance(value, str) or not value:
         raise ValueError("Subnet CIDR must be a non-empty string.")
     network_class = ipaddress.IPv4Network if family == 4 else ipaddress.IPv6Network
-    return network_class(value, strict=True)
+    return network_class(value, strict=False)
 
 
 def _generation_key(server: Server, family: Family) -> str:
@@ -284,8 +299,10 @@ def _parse_configuration(
             facts.append(fact)
             membership_complete.append(True)
 
+    shared_networks_complete = True
     shared_networks = configuration.get("shared-networks", [])
     if not isinstance(shared_networks, list):
+        shared_networks_complete = False
         diagnostics.append(
             _diagnostic(
                 "invalid-shared-network-collection",
@@ -296,9 +313,11 @@ def _parse_configuration(
         )
         shared_networks = []
     shared_names = _shared_network_names(shared_networks)
+    shared_subnet_ids: set[int] = set()
     for index, shared_network in enumerate(shared_networks):
         path = f"shared-networks[{index}]"
         if not isinstance(shared_network, dict):
+            shared_networks_complete = False
             diagnostics.append(
                 _diagnostic(
                     "invalid-shared-network", "Kea returned a non-object Shared Network.", "configuration", path
@@ -306,6 +325,7 @@ def _parse_configuration(
             )
             continue
         name = shared_network.get("name")
+        shared_networks_complete &= isinstance(name, str)
         valid_name = isinstance(name, str) and bool(name) and shared_names.get(name) == 1
         if not valid_name:
             diagnostics.append(
@@ -319,6 +339,7 @@ def _parse_configuration(
             name = None
         members = shared_network.get(subnet_key, [])
         if not isinstance(members, list):
+            shared_networks_complete = False
             diagnostics.append(
                 _diagnostic(
                     "invalid-subnet-collection",
@@ -328,6 +349,9 @@ def _parse_configuration(
                 )
             )
             members = []
+        shared_networks_complete &= _shared_member_ids_complete(
+            members, shared_subnet_ids, f"{path}.{subnet_key}", diagnostics
+        )
         member_cidrs: list[str] = []
         for member_index, entry in enumerate(members):
             fact = _parse_configured_fact(
@@ -336,6 +360,7 @@ def _parse_configuration(
                 name,
                 f"{path}.{subnet_key}[{member_index}]",
                 diagnostics,
+                require_id=True,
             )
             if fact is not None:
                 facts.append(fact)
@@ -377,6 +402,7 @@ def _parse_configuration(
         configuration_hash=configuration_hash,
         _membership_complete=tuple(membership_complete),
         global_options_complete=global_options_complete,
+        shared_networks_complete=shared_networks_complete,
     )
 
 
@@ -388,16 +414,52 @@ def _shared_network_names(entries: list[Any]) -> dict[str, int]:
     return names
 
 
+def _valid_subnet_id(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and 1 <= value <= 4_294_967_294
+
+
+def _shared_member_ids_complete(
+    members: list[Any], seen_ids: set[int], path: str, diagnostics: list[Diagnostic]
+) -> bool:
+    complete = True
+    for index, entry in enumerate(members):
+        if not isinstance(entry, dict) or not _valid_subnet_id(entry.get("id")):
+            complete = False
+            continue
+        subnet_id = entry["id"]
+        if subnet_id in seen_ids:
+            complete = False
+            diagnostics.append(
+                _diagnostic(
+                    "duplicate-subnet-id",
+                    "Kea returned a duplicate Shared Network subnet ID.",
+                    "configuration",
+                    f"{path}[{index}].id",
+                )
+            )
+        seen_ids.add(subnet_id)
+    return complete
+
+
 def _parse_configured_fact(
     entry: Any,
     family: Family,
     shared_network_name: str | None,
     path: str,
     diagnostics: list[Diagnostic],
+    *,
+    require_id: bool = False,
 ) -> DeclaredSubnet | None:
+    diagnostic_count = len(diagnostics)
     if not isinstance(entry, dict):
         diagnostics.append(_diagnostic("invalid-subnet", "Kea returned a non-object Subnet.", "configuration", path))
         return None
+    subnet_id = entry.get("id")
+    if (require_id or subnet_id is not None) and not _valid_subnet_id(subnet_id):
+        diagnostics.append(
+            _diagnostic("invalid-subnet-id", "Kea returned an invalid subnet ID.", "configuration", f"{path}.id")
+        )
+        subnet_id = None
     try:
         network = _network(entry.get("subnet"), family)
     except ValueError:
@@ -405,14 +467,6 @@ def _parse_configured_fact(
             _diagnostic("invalid-subnet-cidr", "Kea returned an invalid Subnet CIDR.", "configuration", path)
         )
         return None
-    subnet_id = entry.get("id")
-    if subnet_id is not None and (
-        isinstance(subnet_id, bool) or not isinstance(subnet_id, int) or not 1 <= subnet_id <= 4_294_967_294
-    ):
-        diagnostics.append(
-            _diagnostic("invalid-subnet-id", "Kea returned an invalid subnet ID.", "configuration", f"{path}.id")
-        )
-        subnet_id = None
     return DeclaredSubnet(
         declared_cidr=str(network),
         declared_subnet_id=subnet_id,
@@ -422,7 +476,24 @@ def _parse_configured_fact(
             options=_parse_options(entry.get("option-data", []), path, diagnostics),
             settings=_parse_settings(entry, family, path, diagnostics),
         ),
+        complete=len(diagnostics) == diagnostic_count,
     )
+
+
+def subnet_for_display(server: Server, family: int, subnet_id: int) -> DeclaredSubnet | None:
+    """Read one Subnet for form display without authorizing a mutation."""
+    validated_family = _validate_family(family)
+    try:
+        client = server.get_client(version=validated_family)
+        entry = client.subnet_get(validated_family, subnet_id)
+    except (KeaException, OSError, ValueError, RuntimeError, TypeError):
+        logger.warning("Subnet display read failed for DHCPv%s", family, exc_info=True)
+        return None
+    diagnostics: list[Diagnostic] = []
+    subnet = _parse_configured_fact(entry, validated_family, None, f"subnet{family}", diagnostics)
+    if diagnostics or subnet is None or subnet.declared_subnet_id != subnet_id:
+        return None
+    return subnet
 
 
 def _parse_pools(
