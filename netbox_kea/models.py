@@ -268,7 +268,7 @@ class Server(JobsMixin, NetBoxModel):
             password = self.ca_password or None
 
         if version in (4, 6):
-            from .subnet_catalogue import invalidate
+            from .server_configuration import invalidate
 
             def on_config_change() -> None:
                 invalidate(self, version)

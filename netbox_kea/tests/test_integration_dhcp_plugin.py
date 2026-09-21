@@ -91,6 +91,8 @@ def _reservation_snapshot(conf: dict, version: Family, hosts: list[dict] | None 
         subnets=verified,
         configured_subnets=(),
         diagnostics=(),
+        identity_available=True,
+        configuration_available=False,
         identity_complete=True,
         configuration_complete=False,
         consistent=True,

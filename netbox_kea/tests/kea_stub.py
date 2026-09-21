@@ -17,11 +17,12 @@ threads used by the reservation/lease-enrichment views.
 from __future__ import annotations
 
 import ipaddress
+import json
 import threading
 from collections import deque
 from contextlib import contextmanager
 from typing import Any, cast
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import requests
 
@@ -38,16 +39,15 @@ from netbox_kea.reservations import (
 from netbox_kea.subnet_catalogue import SubnetIdentity
 
 
-def _http_response(payload: Any, status: int = 200) -> MagicMock:
-    """Build a spec'd ``requests.Response`` returning *payload* from ``.json()``."""
-    resp = MagicMock(spec=requests.Response)
-    resp.status_code = status
-    resp.json.return_value = payload
-    if status >= 400:
-        resp.raise_for_status.side_effect = requests.HTTPError(f"HTTP {status}")
-    else:
-        resp.raise_for_status.return_value = None
-    return resp
+def _http_response(payload: Any, status: int = 200, url: str = "") -> requests.Response:
+    """Build a concrete ``requests.Response`` with a JSON body."""
+    response = requests.Response()
+    response.status_code = status
+    response.url = url
+    response.encoding = "utf-8"
+    response.headers["Content-Type"] = "application/json"
+    response._content = json.dumps(payload).encode(response.encoding)
+    return response
 
 
 def _is_exc(obj: Any) -> bool:
@@ -118,7 +118,7 @@ class KeaHttpStub:
         self._urls: list[str] = []
         self._lock = threading.Lock()
 
-    def __call__(self, url: str, **kwargs: Any) -> MagicMock:
+    def __call__(self, url: str, **kwargs: Any) -> requests.Response:
         body = kwargs.get("json") or {}
         with self._lock:
             self.requests.append(body)
@@ -134,7 +134,7 @@ class KeaHttpStub:
             spec = spec(body)
         if _is_exc(spec):
             raise spec() if isinstance(spec, type) else spec
-        return _http_response(spec if isinstance(spec, list) else [spec])
+        return _http_response(spec if isinstance(spec, list) else [spec], url=url)
 
     # --- assertion helpers ---
     def commands(self) -> list[str]:

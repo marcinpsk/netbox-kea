@@ -177,6 +177,8 @@ def _reservation_catalogue(reservations: list[dict], version: Family) -> Identit
         ),
         configured_subnets=(),
         diagnostics=(),
+        identity_available=True,
+        configuration_available=False,
         identity_complete=True,
         configuration_complete=False,
         consistent=True,
