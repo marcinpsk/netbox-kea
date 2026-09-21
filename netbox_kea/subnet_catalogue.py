@@ -2,23 +2,31 @@ from __future__ import annotations
 
 import ipaddress
 import logging
-import secrets
 from collections import defaultdict
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Protocol, TypeVar
+from typing import TYPE_CHECKING, Any, Protocol, TypeVar
 
 import requests
 from django.core.cache import cache
 from django.utils import timezone
 
-from . import constants
-from .constants import Family, IPAddressValue, IPNetworkValue
-from .dhcp_options import DHCPOption, parse_dhcp_option
+from . import constants, server_configuration
+from .constants import Family, IPNetworkValue
 from .kea import KeaClient, KeaException
-from .models import Server
-from .utilities import kea_error_hint
+
+if TYPE_CHECKING:
+    from .models import Server
+from .server_configuration import (
+    Diagnostic,
+    Pool,
+    SubnetConfiguration,
+    SubnetSettings,
+    invalidate,
+)
+
+__all__ = ["Diagnostic", "Pool", "SubnetConfiguration", "SubnetSettings", "invalidate"]
 
 logger = logging.getLogger(__name__)
 
@@ -37,16 +45,6 @@ class SubnetIdentityConflict(ValueError):
 
 class SubnetIdExhausted(RuntimeError):
     """Raised when no valid Kea subnet ID remains for automatic allocation."""
-
-
-@dataclass(frozen=True)
-class Diagnostic:
-    """One safe explanation for omitted or incomplete catalogue facts."""
-
-    code: str
-    message: str
-    source: str
-    path: str = ""
 
 
 @dataclass(frozen=True)
@@ -93,50 +91,6 @@ class SharedNetworkMembership:
 
 
 @dataclass(frozen=True)
-class Pool:
-    """One normalized inclusive allocation range within a Subnet."""
-
-    start: IPAddressValue
-    end: IPAddressValue
-
-    @property
-    def range(self) -> str:
-        """Return the normalized explicit range text."""
-        return f"{self.start}-{self.end}"
-
-
-@dataclass(frozen=True)
-class SubnetSettings:
-    """Effective typed DHCP settings that the repository currently consumes."""
-
-    valid_lifetime: int | None = None
-    min_valid_lifetime: int | None = None
-    max_valid_lifetime: int | None = None
-    preferred_lifetime: int | None = None
-    min_preferred_lifetime: int | None = None
-    max_preferred_lifetime: int | None = None
-    offer_lifetime: int | None = None
-    renew_timer: int | None = None
-    rebind_timer: int | None = None
-    allocator: str | None = None
-    pd_allocator: str | None = None
-    ddns_qualifying_suffix: str | None = None
-    interface_id: str | None = None
-    relay_addresses: tuple[IPAddressValue, ...] = ()
-    client_classes: tuple[str, ...] = ()
-    require_client_classes: tuple[str, ...] = ()
-
-
-@dataclass(frozen=True)
-class SubnetConfiguration:
-    """Validated full configuration facts for one Subnet."""
-
-    pools: tuple[Pool, ...]
-    options: tuple[DHCPOption, ...]
-    settings: SubnetSettings
-
-
-@dataclass(frozen=True)
 class VerifiedSubnet:
     """A unique Subnet identity with optional full configuration facts."""
 
@@ -168,6 +122,16 @@ class ConfiguredSubnet:
     configuration: SubnetConfiguration
     shared_network: SharedNetworkMembership | None
 
+    @property
+    def identity(self) -> SubnetIdentity:
+        """Return the declared identity for display without verifying it."""
+        return self.candidate_identity
+
+    @property
+    def cidr(self) -> str:
+        """Return the canonical declared CIDR text."""
+        return self.identity.cidr
+
 
 @dataclass(frozen=True)
 class CatalogueSnapshot:
@@ -179,15 +143,24 @@ class CatalogueSnapshot:
     subnets: tuple[VerifiedSubnet, ...]
     configured_subnets: tuple[ConfiguredSubnet, ...]
     diagnostics: tuple[Diagnostic, ...]
+    identity_available: bool
+    configuration_available: bool
     identity_complete: bool
     configuration_complete: bool
     consistent: bool
     configuration_hash: str | None
+    subnet_cmds_available: bool = True
+
+    def _display_subnets(self) -> tuple[VerifiedSubnet | ConfiguredSubnet, ...]:
+        return (*self.subnets, *self.configured_subnets)
 
     @property
     def subnet_choices(self) -> tuple[tuple[str, int], ...]:
         """Return verified identities in network order for user choices."""
-        return tuple((subnet.cidr, subnet.subnet_id) for subnet in self.subnets)
+        return tuple(
+            (subnet.identity.cidr, subnet.identity.subnet_id)
+            for subnet in sorted(self._display_subnets(), key=lambda subnet: _network_sort_key(subnet.identity.network))
+        )
 
     @property
     def unavailable(self) -> bool:
@@ -198,16 +171,19 @@ class CatalogueSnapshot:
             and (not (self.identity_complete or self.configuration_complete) or not self.consistent)
         )
 
-    def find_by_id(self, subnet_id: int) -> VerifiedSubnet | None:
+    def find_by_id(self, subnet_id: int) -> VerifiedSubnet | ConfiguredSubnet | None:
         """Return the verified Subnet with an exact Kea ID, if present."""
         if isinstance(subnet_id, bool) or not isinstance(subnet_id, int):
             return None
-        return next((subnet for subnet in self.subnets if subnet.subnet_id == subnet_id), None)
+        return next(
+            (subnet for subnet in self._display_subnets() if subnet.identity.subnet_id == subnet_id),
+            None,
+        )
 
-    def find_by_cidr(self, cidr: str) -> VerifiedSubnet | None:
+    def find_by_cidr(self, cidr: str) -> VerifiedSubnet | ConfiguredSubnet | None:
         """Return the verified Subnet with an exact canonical CIDR, if present."""
         network = _network(cidr, self.family)
-        return next((subnet for subnet in self.subnets if subnet.network == network), None)
+        return next((subnet for subnet in self._display_subnets() if subnet.identity.network == network), None)
 
 
 @dataclass(frozen=True)
@@ -251,6 +227,7 @@ class _IdentityObservation:
     diagnostics: tuple[Diagnostic, ...]
     available: bool
     complete: bool
+    subnet_cmds_available: bool = True
     quarantined_ids: frozenset[int] = frozenset()
     quarantined_networks: frozenset[IPNetworkValue] = frozenset()
 
@@ -282,23 +259,8 @@ def _network(value: str, family: Family) -> IPNetworkValue:
     return network_class(value, strict=True)
 
 
-def _generation_key(server: Server, family: Family) -> str:
-    return f"netbox_kea:subnet_catalogue:v1:{_require_persisted_server(server)}:{family}:generation"
-
-
-def _cache_generation(server: Server, family: Family) -> str:
-    key = _generation_key(server, family)
-    generation = cache.get(key)
-    if isinstance(generation, str):
-        return generation
-    candidate = secrets.token_hex(16)
-    cache.add(key, candidate, timeout=None)
-    generation = cache.get(key)
-    return generation if isinstance(generation, str) else candidate
-
-
 def _cache_key(server: Server, family: Family, generation: str | None = None) -> str:
-    generation = generation or _cache_generation(server, family)
+    generation = generation or server_configuration._cache_generation(server, family)
     return f"netbox_kea:subnet_catalogue:v1:{_require_persisted_server(server)}:{family}:snapshot:{generation}"
 
 
@@ -308,20 +270,15 @@ def _require_persisted_server(server: Server) -> int:
     return server.pk
 
 
-def invalidate(server: Server, family: int) -> None:
-    """Discard the cached Complete snapshot after a configuration change."""
-    validated_family = _validate_family(family)
-    cache.set(_generation_key(server, validated_family), secrets.token_hex(16), timeout=None)
-
-
 def _diagnostic(code: str, message: str, source: str, path: str = "") -> Diagnostic:
     return Diagnostic(code=code, message=message, source=source, path=path)
 
 
-def _unavailable_identity(code: str, message: str) -> _IdentityObservation:
+def _unavailable_identity(code: str, message: str, *, subnet_cmds_available: bool = True) -> _IdentityObservation:
     return _IdentityObservation(
         facts=(),
         diagnostics=(_diagnostic(code, message, "identity"),),
+        subnet_cmds_available=subnet_cmds_available,
         available=False,
         complete=False,
     )
@@ -344,6 +301,7 @@ def _read_identity(client: KeaClient, family: Family) -> _IdentityObservation:
             return _unavailable_identity(
                 "identity-command-unavailable",
                 f"Kea does not provide subnet{family}-list.",
+                subnet_cmds_available=False,
             )
         logger.warning("Subnet identity read failed for DHCPv%s", family, exc_info=True)
         return _unavailable_identity("identity-unavailable", "Kea subnet identity facts are unavailable.")
@@ -475,406 +433,32 @@ def _quarantine_collisions(
     return kept, diagnostics, quarantined_ids, quarantined_networks
 
 
-def _read_configuration(client: KeaClient, family: Family) -> _ConfigurationObservation:
-    try:
-        response = client.command("config-get", service=[f"dhcp{family}"])
-    except KeaException as exc:
-        logger.warning("Subnet configuration read failed for DHCPv%s", family, exc_info=True)
-        return _unavailable_configuration(
-            "configuration-unavailable",
-            f"Kea Subnet configuration facts are unavailable. {kea_error_hint(exc)}",
-        )
-    except (requests.RequestException, ValueError, RuntimeError):
-        logger.warning("Subnet configuration read failed for DHCPv%s", family, exc_info=True)
-        return _unavailable_configuration(
-            "configuration-unavailable",
-            "Kea Subnet configuration facts are unavailable.",
-        )
-
-    if not response or not isinstance(response[0], dict):
-        return _unavailable_configuration(
-            "malformed-configuration-response",
-            "Kea returned a malformed configuration response.",
-        )
-    arguments = response[0].get("arguments")
-    if not isinstance(arguments, dict):
-        return _unavailable_configuration(
-            "malformed-configuration-response",
-            "Kea returned malformed configuration arguments.",
-        )
-    configuration = arguments.get(f"Dhcp{family}")
-    if not isinstance(configuration, dict):
-        return _unavailable_configuration(
-            "malformed-configuration-response",
-            f"Kea did not return a Dhcp{family} configuration object.",
-        )
-    configuration_hash = arguments.get("hash")
-    if not isinstance(configuration_hash, str) or not configuration_hash:
-        configuration_hash = None
-    return _parse_configuration(configuration, family, configuration_hash)
-
-
-def _parse_configuration(
-    configuration: dict[str, Any],
-    family: Family,
-    configuration_hash: str | None,
-) -> _ConfigurationObservation:
-    diagnostics: list[Diagnostic] = []
+def _configuration_observation(snapshot: server_configuration.ServerConfigurationSnapshot) -> _ConfigurationObservation:
+    diagnostics = list(snapshot.diagnostics)
     facts: list[_ConfiguredFact] = []
-    subnet_key = f"subnet{family}"
-
-    standalone = configuration.get(subnet_key, [])
-    if not isinstance(standalone, list):
-        diagnostics.append(
-            _diagnostic(
-                "invalid-subnet-collection",
-                f"Kea returned a non-list {subnet_key} collection.",
-                "configuration",
-                subnet_key,
-            )
-        )
-        standalone = []
-    for index, entry in enumerate(standalone):
-        fact = _parse_configured_fact(
-            entry,
-            family,
-            None,
-            True,
-            f"{subnet_key}[{index}]",
-            diagnostics,
-        )
-        if fact is not None:
-            facts.append(fact)
-
-    shared_networks = configuration.get("shared-networks", [])
-    if not isinstance(shared_networks, list):
-        diagnostics.append(
-            _diagnostic(
-                "invalid-shared-network-collection",
-                "Kea returned a non-list Shared Network collection.",
-                "configuration",
-                "shared-networks",
-            )
-        )
-        shared_networks = []
-    shared_names = _shared_network_names(shared_networks)
-    for index, shared_network in enumerate(shared_networks):
-        path = f"shared-networks[{index}]"
-        if not isinstance(shared_network, dict):
-            diagnostics.append(
-                _diagnostic(
-                    "invalid-shared-network", "Kea returned a non-object Shared Network.", "configuration", path
-                )
-            )
+    for declared, membership_complete in zip(snapshot.subnets, snapshot._membership_complete, strict=True):
+        if declared.declared_subnet_id is None:
+            diagnostics.append(_diagnostic("invalid-subnet-id", "Kea did not declare a subnet ID.", "configuration"))
             continue
-        name = shared_network.get("name")
-        valid_name = isinstance(name, str) and bool(name) and shared_names.get(name) == 1
-        if not valid_name:
-            diagnostics.append(
-                _diagnostic(
-                    "invalid-shared-network",
-                    "Kea returned an invalid or duplicate Shared Network name.",
-                    "configuration",
-                    f"{path}.name",
-                )
+        facts.append(
+            _ConfiguredFact(
+                identity=SubnetIdentity(declared.declared_subnet_id, _network(declared.declared_cidr, snapshot.family)),
+                configuration=declared.configuration,
+                shared_network_name=declared.shared_network_name,
+                membership_complete=membership_complete,
             )
-            name = None
-        members = shared_network.get(subnet_key, [])
-        if not isinstance(members, list):
-            diagnostics.append(
-                _diagnostic(
-                    "invalid-subnet-collection",
-                    f"Kea returned a non-list {subnet_key} collection.",
-                    "configuration",
-                    f"{path}.{subnet_key}",
-                )
-            )
-            continue
-        for member_index, entry in enumerate(members):
-            fact = _parse_configured_fact(
-                entry,
-                family,
-                name,
-                valid_name,
-                f"{path}.{subnet_key}[{member_index}]",
-                diagnostics,
-            )
-            if fact is not None:
-                facts.append(fact)
-
-    kept, collision_diagnostics, quarantined_ids, quarantined_networks = _quarantine_collisions(
-        facts,
-        "configuration",
-    )
-    diagnostics.extend(collision_diagnostics)
+        )
+    kept, collisions, ids, networks = _quarantine_collisions(facts, "configuration")
+    diagnostics.extend(collisions)
     return _ConfigurationObservation(
         facts=tuple(kept),
         diagnostics=tuple(diagnostics),
-        available=True,
-        complete=not diagnostics,
-        configuration_hash=configuration_hash,
-        quarantined_ids=frozenset(quarantined_ids),
-        quarantined_networks=frozenset(quarantined_networks),
+        available=snapshot.available,
+        complete=snapshot.complete and not diagnostics,
+        configuration_hash=snapshot.configuration_hash,
+        quarantined_ids=frozenset(ids),
+        quarantined_networks=frozenset(networks),
     )
-
-
-def _shared_network_names(entries: list[Any]) -> dict[str, int]:
-    names: dict[str, int] = defaultdict(int)
-    for entry in entries:
-        if isinstance(entry, dict) and isinstance(entry.get("name"), str) and entry["name"]:
-            names[entry["name"]] += 1
-    return names
-
-
-def _parse_configured_fact(
-    entry: Any,
-    family: Family,
-    shared_network_name: str | None,
-    membership_complete: bool,
-    path: str,
-    diagnostics: list[Diagnostic],
-) -> _ConfiguredFact | None:
-    identity = _parse_identity(entry, family, "configuration", path, diagnostics)
-    if identity is None:
-        return None
-    diagnostic_count = len(diagnostics)
-    pools = _parse_pools(entry.get("pools", []), identity.network, path, diagnostics)
-    options = _parse_options(entry.get("option-data", []), path, diagnostics)
-    settings = _parse_settings(entry, family, path, diagnostics)
-    # Nested errors intentionally do not discard the otherwise valid Subnet.
-    if len(diagnostics) > diagnostic_count:
-        logger.debug("Omitted invalid nested Subnet facts at %s", path)
-    return _ConfiguredFact(
-        identity=identity,
-        configuration=SubnetConfiguration(pools=pools, options=options, settings=settings),
-        shared_network_name=shared_network_name,
-        membership_complete=membership_complete,
-    )
-
-
-def _parse_pools(
-    entries: Any,
-    subnet: IPNetworkValue,
-    path: str,
-    diagnostics: list[Diagnostic],
-) -> tuple[Pool, ...]:
-    if not isinstance(entries, list):
-        diagnostics.append(
-            _diagnostic("invalid-pool-collection", "Kea returned a non-list Pool collection.", "configuration", path)
-        )
-        return ()
-    pools: list[Pool] = []
-    for index, entry in enumerate(entries):
-        pool_path = f"{path}.pools[{index}]"
-        raw_pool = entry.get("pool") if isinstance(entry, dict) else None
-        try:
-            pool = _parse_pool(raw_pool, subnet)
-        except (TypeError, ValueError):
-            diagnostics.append(_diagnostic("invalid-pool", "Kea returned an invalid Pool.", "configuration", pool_path))
-            continue
-        pools.append(pool)
-    return tuple(pools)
-
-
-def _parse_pool(value: Any, subnet: IPNetworkValue) -> Pool:
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError("Pool must be a non-empty string.")
-    value = value.strip()
-    if "/" in value:
-        pool_network = ipaddress.ip_network(value, strict=True)
-        if pool_network.version != subnet.version or not pool_network.subnet_of(subnet):
-            raise ValueError("Pool prefix is outside its Subnet.")
-        return Pool(start=pool_network.network_address, end=pool_network.broadcast_address)
-    parts = [part.strip() for part in value.split("-")]
-    if len(parts) != 2 or not all(parts):
-        raise ValueError("Pool range must have two endpoints.")
-    start = ipaddress.ip_address(parts[0])
-    end = ipaddress.ip_address(parts[1])
-    if start.version != subnet.version or end.version != subnet.version:
-        raise ValueError("Pool address family does not match its Subnet.")
-    if start > end or start not in subnet or end not in subnet:
-        raise ValueError("Pool range is outside its Subnet.")
-    return Pool(start=start, end=end)
-
-
-def _parse_options(entries: Any, path: str, diagnostics: list[Diagnostic]) -> tuple[DHCPOption, ...]:
-    if not isinstance(entries, list):
-        diagnostics.append(
-            _diagnostic(
-                "invalid-option-collection", "Kea returned a non-list option collection.", "configuration", path
-            )
-        )
-        return ()
-    options: list[DHCPOption] = []
-    for index, entry in enumerate(entries):
-        option_path = f"{path}.option-data[{index}]"
-        try:
-            option = parse_dhcp_option(entry)
-        except ValueError:
-            diagnostics.append(
-                _diagnostic("invalid-option", "Kea returned an invalid Subnet option.", "configuration", option_path)
-            )
-            continue
-        options.append(option)
-    return tuple(options)
-
-
-def _parse_settings(
-    entry: dict[str, Any],
-    family: Family,
-    path: str,
-    diagnostics: list[Diagnostic],
-) -> SubnetSettings:
-    return SubnetSettings(
-        valid_lifetime=_optional_nonnegative_int(entry, "valid-lifetime", path, diagnostics),
-        min_valid_lifetime=_optional_nonnegative_int(entry, "min-valid-lifetime", path, diagnostics),
-        max_valid_lifetime=_optional_nonnegative_int(entry, "max-valid-lifetime", path, diagnostics),
-        preferred_lifetime=_optional_nonnegative_int(entry, "preferred-lifetime", path, diagnostics),
-        min_preferred_lifetime=_optional_nonnegative_int(entry, "min-preferred-lifetime", path, diagnostics),
-        max_preferred_lifetime=_optional_nonnegative_int(entry, "max-preferred-lifetime", path, diagnostics),
-        offer_lifetime=_optional_nonnegative_int(entry, "offer-lifetime", path, diagnostics),
-        renew_timer=_optional_nonnegative_int(entry, "renew-timer", path, diagnostics),
-        rebind_timer=_optional_nonnegative_int(entry, "rebind-timer", path, diagnostics),
-        allocator=_optional_string(entry, "allocator", path, diagnostics),
-        pd_allocator=_optional_string(entry, "pd-allocator", path, diagnostics),
-        ddns_qualifying_suffix=_optional_string(entry, "ddns-qualifying-suffix", path, diagnostics, allow_empty=True),
-        interface_id=_optional_string(entry, "interface-id", path, diagnostics),
-        relay_addresses=_relay_addresses(entry.get("relay"), family, path, diagnostics),
-        client_classes=_client_classes(entry, path, diagnostics),
-        require_client_classes=_additional_classes(entry, path, diagnostics),
-    )
-
-
-def _optional_nonnegative_int(
-    entry: dict[str, Any],
-    key: str,
-    path: str,
-    diagnostics: list[Diagnostic],
-) -> int | None:
-    if key not in entry:
-        return None
-    value = entry[key]
-    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        diagnostics.append(
-            _diagnostic("invalid-setting", f"Kea returned an invalid {key} setting.", "configuration", f"{path}.{key}")
-        )
-        return None
-    return value
-
-
-def _optional_string(
-    entry: dict[str, Any],
-    key: str,
-    path: str,
-    diagnostics: list[Diagnostic],
-    *,
-    allow_empty: bool = False,
-) -> str | None:
-    if key not in entry:
-        return None
-    value = entry[key]
-    if not isinstance(value, str) or (not allow_empty and not value):
-        diagnostics.append(
-            _diagnostic("invalid-setting", f"Kea returned an invalid {key} setting.", "configuration", f"{path}.{key}")
-        )
-        return None
-    return value
-
-
-def _relay_addresses(
-    value: Any,
-    family: Family,
-    path: str,
-    diagnostics: list[Diagnostic],
-) -> tuple[IPAddressValue, ...]:
-    if value is None:
-        return ()
-    if not isinstance(value, dict) or not isinstance(value.get("ip-addresses"), list):
-        diagnostics.append(
-            _diagnostic("invalid-setting", "Kea returned invalid relay addresses.", "configuration", f"{path}.relay")
-        )
-        return ()
-    addresses: list[IPAddressValue] = []
-    for address in value["ip-addresses"]:
-        if not isinstance(address, str):
-            diagnostics.append(
-                _diagnostic(
-                    "invalid-setting",
-                    "Kea returned an invalid relay address.",
-                    "configuration",
-                    f"{path}.relay.ip-addresses",
-                )
-            )
-            continue
-        try:
-            parsed = ipaddress.ip_address(address)
-        except (TypeError, ValueError):
-            diagnostics.append(
-                _diagnostic(
-                    "invalid-setting",
-                    "Kea returned an invalid relay address.",
-                    "configuration",
-                    f"{path}.relay.ip-addresses",
-                )
-            )
-            continue
-        if parsed.version != family:
-            diagnostics.append(
-                _diagnostic(
-                    "invalid-setting",
-                    "Kea returned a relay address for the wrong family.",
-                    "configuration",
-                    f"{path}.relay.ip-addresses",
-                )
-            )
-            continue
-        addresses.append(parsed)
-    return tuple(addresses)
-
-
-def _additional_classes(
-    entry: dict[str, Any],
-    path: str,
-    diagnostics: list[Diagnostic],
-) -> tuple[str, ...]:
-    """Read the additional-class list, preferring the current Kea key.
-
-    Kea 3.0 renamed ``require-client-classes`` to ``evaluate-additional-classes`` and
-    refuses a configuration that sets both, so ``config-get`` returns exactly one of
-    them. Kea before 3.0 returns only the old name.
-    """
-    if "evaluate-additional-classes" in entry:
-        return _string_tuple(entry, "evaluate-additional-classes", path, diagnostics)
-    return _string_tuple(entry, "require-client-classes", path, diagnostics)
-
-
-def _client_classes(
-    entry: dict[str, Any],
-    path: str,
-    diagnostics: list[Diagnostic],
-) -> tuple[str, ...]:
-    """Read client restrictions, preferring the current list-valued Kea key."""
-    if "client-classes" in entry:
-        return _string_tuple(entry, "client-classes", path, diagnostics)
-    legacy = _optional_string(entry, "client-class", path, diagnostics)
-    return (legacy,) if legacy is not None else ()
-
-
-def _string_tuple(
-    entry: dict[str, Any],
-    key: str,
-    path: str,
-    diagnostics: list[Diagnostic],
-) -> tuple[str, ...]:
-    if key not in entry:
-        return ()
-    value = entry[key]
-    if not isinstance(value, list) or any(not isinstance(item, str) or not item for item in value):
-        diagnostics.append(
-            _diagnostic("invalid-setting", f"Kea returned an invalid {key} setting.", "configuration", f"{path}.{key}")
-        )
-        return ()
-    return tuple(value)
 
 
 def _network_sort_key(network: IPNetworkValue) -> tuple[int, int, int]:
@@ -927,8 +511,12 @@ def _disagreement_is_only_collisions(
     )
 
 
-def _observe_once(client: KeaClient, family: Family) -> tuple[_IdentityObservation, _ConfigurationObservation]:
-    return _read_identity(client, family), _read_configuration(client, family)
+def _observe_once(
+    server: Server, client: KeaClient, family: Family
+) -> tuple[_IdentityObservation, _ConfigurationObservation]:
+    return _read_identity(client, family), _configuration_observation(
+        server_configuration.for_verification(server, family)
+    )
 
 
 def _observe(server: Server, family: Family) -> tuple[_IdentityObservation, _ConfigurationObservation, str | None]:
@@ -945,11 +533,11 @@ def _observe(server: Server, family: Family) -> tuple[_IdentityObservation, _Con
             None,
         )
 
-    identity, configuration = _observe_once(client, family)
+    identity, configuration = _observe_once(server, client, family)
     if not _observations_disagree(identity, configuration):
         return identity, configuration, None
     first_hash = configuration.configuration_hash
-    identity, configuration = _observe_once(client, family)
+    identity, configuration = _observe_once(server, client, family)
     if not _observations_disagree(identity, configuration):
         return identity, configuration, None
     if first_hash and configuration.configuration_hash and first_hash != configuration.configuration_hash:
@@ -1101,10 +689,13 @@ def _reconcile(
         subnets=tuple(subnets),
         configured_subnets=tuple(configured_subnets),
         diagnostics=tuple(diagnostics),
+        identity_available=identity.available,
+        configuration_available=configuration.available,
         identity_complete=identity.complete,
         configuration_complete=configuration.complete,
         consistent=consistent,
         configuration_hash=configuration.configuration_hash,
+        subnet_cmds_available=identity.subnet_cmds_available,
     )
 
 
@@ -1137,19 +728,16 @@ def _read_live(server: Server, family: Family) -> CatalogueSnapshot:
 
 
 def display(server: Server, family: int) -> CatalogueSnapshot:
-    """Return a cached Complete or live Incomplete snapshot for presentation.
-
-    Only Complete snapshots enter the interactive cache. A failed or incomplete
-    observation is retried on the next call.
-    """
+    """Return a cached Complete or Incomplete snapshot for presentation."""
     validated_family = _validate_family(family)
-    generation = _cache_generation(server, validated_family)
+    generation = server_configuration._cache_generation(server, validated_family)
     key = _cache_key(server, validated_family, generation)
     cached = cache.get(key)
-    if isinstance(cached, CompleteCatalogueSnapshot):
+    if isinstance(cached, CatalogueSnapshot):
         return cached
     snapshot = _read_live(server, validated_family)
-    if isinstance(snapshot, CompleteCatalogueSnapshot):
+    # Cache when either source was available; retry only when both observations failed.
+    if snapshot.identity_available or snapshot.configuration_available:
         cache.set(key, snapshot, constants.SUBNET_CHOICES_TTL)
     return snapshot
 
@@ -1203,7 +791,7 @@ class MutationScope(AbstractContextManager["MutationScope"]):
         """Return one exact Verified Subnet, or confirm its absence safely."""
         snapshot = self._require_snapshot()
         subnet = snapshot.find_by_id(subnet_id)
-        if subnet is not None:
+        if isinstance(subnet, VerifiedSubnet):
             return subnet
         self._require_complete_identity("Subnet absence cannot be confirmed from an incomplete identity observation.")
         return None
@@ -1212,7 +800,7 @@ class MutationScope(AbstractContextManager["MutationScope"]):
         """Return one exact Verified Subnet, or confirm its absence safely."""
         snapshot = self._require_snapshot()
         subnet = snapshot.find_by_cidr(cidr)
-        if subnet is not None:
+        if isinstance(subnet, VerifiedSubnet):
             return subnet
         self._require_complete_identity("Subnet absence cannot be confirmed from an incomplete identity observation.")
         return None

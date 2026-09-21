@@ -13,7 +13,7 @@ import threading
 import pytest
 import requests
 
-from netbox_kea.tests.kea_stub import KeaHttpStub, _reservation_family, _typed_reservation, queued
+from netbox_kea.tests.kea_stub import KeaHttpStub, _http_response, _reservation_family, _typed_reservation, queued
 
 
 def _call(stub, command="x"):
@@ -24,6 +24,21 @@ def test_dict_payload_is_wrapped_in_single_entry_list():
     """A dict value is the single ``.json()`` entry (Kea returns a list)."""
     stub = KeaHttpStub({"x": {"result": 0}})
     assert _call(stub) == [{"result": 0}]
+
+
+def test_http_boundary_returns_concrete_requests_responses():
+    stub = KeaHttpStub({"x": {"result": 0}})
+    response = stub("https://kea.example.invalid/", json={"command": "x"})
+
+    assert type(response) is requests.Response
+    assert response.url == "https://kea.example.invalid/"
+    assert response.json() == [{"result": 0}]
+    response.raise_for_status()
+
+    failed = _http_response([{"result": 1}], status=503, url="https://kea.example.invalid/")
+    with pytest.raises(requests.HTTPError) as error:
+        failed.raise_for_status()
+    assert error.value.response is failed
 
 
 def test_plain_multi_entry_list_returned_verbatim():

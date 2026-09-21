@@ -60,6 +60,8 @@ def _catalogue(family: Family, subnet_id: int, cidr: str) -> CatalogueSnapshot:
         subnets=(subnet,),
         configured_subnets=(),
         diagnostics=(),
+        identity_available=True,
+        configuration_available=False,
         identity_complete=True,
         configuration_complete=False,
         consistent=True,

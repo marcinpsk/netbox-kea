@@ -411,6 +411,7 @@ class TestSubnetCatalogue(TestCase):
         )
 
         for responses, expected_codes in cases:
+            invalidate(self.server, 4)
             with self.subTest(expected_codes=expected_codes), stub_kea(responses):
                 snapshot = display(self.server, 4)
                 self.assertIsInstance(snapshot, IncompleteCatalogueSnapshot)
@@ -746,9 +747,12 @@ class TestSubnetCatalogue(TestCase):
 
         with stub_kea({"subnet4-list": identities, "config-get": configuration}):
             snapshot = display(self.server, 4)
+            cached = display(self.server, 4)
 
         self.assertIsInstance(snapshot, IncompleteCatalogueSnapshot)
         self.assertFalse(snapshot.subnets)
+        self.assertTrue(snapshot.unavailable)
+        self.assertTrue(cached.unavailable)
         self.assertIn("identity-configuration-disagreement", {diagnostic.code for diagnostic in snapshot.diagnostics})
 
     def test_identity_missing_from_complete_configuration_remains_visible(self):
@@ -1009,3 +1013,75 @@ class TestSubnetCatalogue(TestCase):
 
         self.assertEqual(kea.commands().count("subnet4-list"), 4)
         self.assertEqual(kea.commands().count("config-get"), 4)
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestCatalogueConfigurationRegressions(TestCase):
+    def setUp(self):
+        self.server = _make_db_server()
+
+    def test_find_by_id_without_subnet_cmds(self):
+        subnet = {"id": 1, "subnet": "198.18.1.0/24"}
+        with stub_kea({"subnet4-list": _identity(4, [], result=2), "config-get": _config(4, [subnet])}):
+            snapshot = display(self.server, 4)
+        self.assertIsNotNone(snapshot.find_by_id(1))
+        self.assertEqual(snapshot.find_by_id(1).identity.cidr, "198.18.1.0/24")
+        self.assertEqual(snapshot.find_by_cidr("198.18.1.0/24"), snapshot.find_by_id(1))
+        self.assertEqual(snapshot.subnet_choices, (("198.18.1.0/24", 1),))
+        self.assertFalse(snapshot.subnet_cmds_available)
+
+    def test_display_caches_snapshot_with_invalid_pool(self):
+        subnet = {"id": 1, "subnet": "198.18.1.0/24", "pools": [{"pool": "invalid"}]}
+        with stub_kea({"subnet4-list": _identity(4, [subnet]), "config-get": _config(4, [subnet])}) as kea:
+            first = display(self.server, 4)
+            second = display(self.server, 4)
+        self.assertFalse(first.configuration_complete)
+        self.assertEqual(second, first)
+        self.assertEqual(kea.commands(), ["subnet4-list", "config-get"])
+
+    def test_display_caches_empty_incomplete_snapshot_from_available_sources(self):
+        responses = {"subnet4-list": _identity(4, []), "config-get": _config(4, [], shared_networks=[False])}
+        with stub_kea(responses) as kea:
+            first = display(self.server, 4)
+            second = display(self.server, 4)
+        self.assertIsInstance(first, IncompleteCatalogueSnapshot)
+        self.assertEqual(first.subnet_choices, ())
+        self.assertEqual(second, first)
+        self.assertEqual(kea.commands(), ["subnet4-list", "config-get"])
+
+    def test_configured_display_identity_cannot_authorize_mutation(self):
+        subnet = {"id": 1, "subnet": "198.18.1.0/24"}
+        with stub_kea({"subnet4-list": _identity(4, [], result=2), "config-get": _config(4, [subnet])}):
+            with mutation(self.server, 4) as scope:
+                with self.assertRaises(CatalogueUnavailable):
+                    scope.find_by_id(1)
+                with self.assertRaises(CatalogueUnavailable):
+                    scope.find_by_cidr("198.18.1.0/24")
+            with self.assertRaises(CatalogueUnavailable):
+                for_synchronization(self.server, 4)
+
+    def test_unrelated_invalid_shared_network_does_not_hide_membership_conflict(self):
+        subnet = {"id": 1, "subnet": "198.18.1.0/24"}
+        identity = dict(subnet, **{"shared-network-name": "access"})
+        responses = {
+            "subnet4-list": _identity(4, [identity]),
+            "config-get": _config(4, [subnet], shared_networks=[False]),
+        }
+        with stub_kea(responses):
+            snapshot = display(self.server, 4)
+            self.assertIsNone(snapshot.find_by_id(1))
+            self.assertFalse(snapshot.consistent)
+            with mutation(self.server, 4) as scope:
+                with self.assertRaises(CatalogueUnavailable):
+                    scope.find_by_id(1)
+
+    def test_empty_configuration_without_subnet_commands_is_cached(self):
+        responses = {"subnet4-list": _identity(4, [], result=2), "config-get": _config(4, [])}
+        with stub_kea(responses) as kea:
+            first = display(self.server, 4)
+            second = display(self.server, 4)
+        self.assertIsInstance(first, ConfigurationOnlyCatalogueSnapshot)
+        self.assertEqual(first.subnet_choices, ())
+        self.assertFalse(first.subnet_cmds_available)
+        self.assertEqual(second, first)
+        self.assertEqual(kea.commands(), ["subnet4-list", "config-get"])

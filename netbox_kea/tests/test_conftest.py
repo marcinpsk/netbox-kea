@@ -9,6 +9,8 @@ from unittest.mock import patch
 from django.test import SimpleTestCase, TestCase, override_settings
 
 from netbox_kea.tests.conftest import _prepopulate_url_resolver, _test_database_name
+from netbox_kea.tests.kea_stub import queued, stub_kea
+from netbox_kea.tests.utils import _PLUGINS_CONFIG, _make_db_server
 
 
 class TestPrepopulateUrlResolver(SimpleTestCase):
@@ -131,3 +133,30 @@ class TestPluginCacheHygieneReachesDjangoTestCases(TestCase):
             "The autouse cache cleanup did not run for a Django TestCase; every view base "
             "would then have to clear the plugin cache itself.",
         )
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestServerConfigurationCacheHygiene(TestCase):
+    def test_cleanup_drops_a_populated_configuration_snapshot(self):
+        from netbox_kea import server_configuration
+        from netbox_kea.tests.conftest import _drop_plugin_cache_entries
+
+        server = _make_db_server()
+
+        def response(cidr):
+            return {
+                "result": 0,
+                "arguments": {
+                    "Dhcp4": {"subnet4": [{"id": 1, "subnet": cidr}]},
+                    "hash": cidr,
+                },
+            }
+
+        with stub_kea({"config-get": queued(response("198.18.1.0/24"), response("198.18.2.0/24"))}) as kea:
+            first = server_configuration.display(server, 4)
+            _drop_plugin_cache_entries()
+            second = server_configuration.display(server, 4)
+
+        self.assertEqual(first.subnets[0].declared_cidr, "198.18.1.0/24")
+        self.assertEqual(second.subnets[0].declared_cidr, "198.18.2.0/24")
+        self.assertEqual(kea.commands(), ["config-get", "config-get"])
