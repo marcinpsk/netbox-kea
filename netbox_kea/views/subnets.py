@@ -736,7 +736,7 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
             key = f"subnet{self.dhcp_version}"
             client = server.get_client(version=self.dhcp_version)
             resp = client.command(
-                f"{key}-get",
+                f"subnet{self.dhcp_version}-get",
                 service=[f"dhcp{self.dhcp_version}"],
                 arguments={"id": subnet_id},
             )

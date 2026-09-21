@@ -337,14 +337,13 @@ def _unavailable_configuration(code: str, message: str) -> _ConfigurationObserva
 
 
 def _read_identity(client: KeaClient, family: Family) -> _IdentityObservation:
-    command = f"subnet{family}-list"
     try:
-        response = client.command(command, service=[f"dhcp{family}"], check=(0, 3))
+        response = client.command(f"subnet{family}-list", service=[f"dhcp{family}"], check=(0, 3))
     except KeaException as exc:
         if exc.response.get("result") == 2:
             return _unavailable_identity(
                 "identity-command-unavailable",
-                f"Kea does not provide {command}.",
+                f"Kea does not provide subnet{family}-list.",
             )
         logger.warning("Subnet identity read failed for DHCPv%s", family, exc_info=True)
         return _unavailable_identity("identity-unavailable", "Kea subnet identity facts are unavailable.")

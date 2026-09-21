@@ -1439,29 +1439,82 @@ class TestRawRecordBoundary(SimpleTestCase):
     """
 
     RULE_ID = "kea-reservation-command-outside-adapter"
+    PREFIX = "reservation-"
 
     def _allowed_paths(self) -> list[str]:
         ruleset = yaml.safe_load((_REPOSITORY_ROOT / ".opengrep" / "kea-rules.yaml").read_text(encoding="utf-8"))
         rules = [rule for rule in ruleset["rules"] if rule["id"] == self.RULE_ID]
         self.assertEqual(len(rules), 1, f"{self.RULE_ID} is missing from the OpenGrep ruleset.")
+        # The whole `paths` mapping is pinned, not just `exclude`: one line added to the
+        # ruleset would otherwise switch off the OpenGrep rule and this CI guard together,
+        # silently, and an `include:` narrows OpenGrep just as an `exclude:` widens it.
+        # Moving the boundary is a decision, so make it edit this test too.
+        self.assertEqual(
+            {key: sorted(value) for key, value in rules[0]["paths"].items()},
+            {"exclude": ["**/migrations/**", "**/tests/**", "netbox_kea/kea.py"]},
+            "The reservation boundary moved. Only netbox_kea/kea.py may read raw Kea "
+            "reservation records; see docs/adr/0004 before changing this rule's paths.",
+        )
         return rules[0]["paths"]["exclude"]
 
     @staticmethod
-    def _command_name(call: ast.Call) -> str | None:
-        """Return the literal command name *call* sends, positionally or as ``command=``."""
-        if not (isinstance(call.func, ast.Attribute) and call.func.attr == "command"):
-            return None
+    def _is_command_call(call: ast.Call) -> bool:
+        return isinstance(call.func, ast.Attribute) and call.func.attr == "command"
+
+    @staticmethod
+    def _command_argument(call: ast.Call) -> ast.expr | None:
+        """Return the expression *call* sends as the command, positionally or as ``command=``."""
         named = next((keyword.value for keyword in call.keywords if keyword.arg == "command"), None)
-        argument = call.args[0] if call.args else named
-        if isinstance(argument, ast.Constant) and isinstance(argument.value, str):
-            return argument.value
-        return None
+        return call.args[0] if call.args else named
+
+    @classmethod
+    def _known_prefix(cls, node: ast.expr | None) -> tuple[str, bool]:
+        """Return how much of *node*'s string value the call site shows, and whether that is all of it.
+
+        The expression alone, never a name: resolving one needs scope analysis, and a
+        name map that ignores scope reads a parameter or a loop variable as some
+        unrelated assignment, which is how a guard like this fails open.  ``("", False)``
+        means nothing is known, which every unsupported form returns.
+        """
+        if isinstance(node, ast.Constant):
+            return (node.value, True) if isinstance(node.value, str) else ("", False)
+        if isinstance(node, ast.JoinedStr):
+            known = ""
+            for part in node.values:
+                prefix, exact = cls._known_prefix(part)
+                known += prefix
+                if not exact:
+                    return known, False
+            return known, True
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            left, exact = cls._known_prefix(node.left)
+            if not exact:
+                return left, False
+            right, exact = cls._known_prefix(node.right)
+            return left + right, exact
+        return "", False
 
     @classmethod
     def _reservation_commands(cls, tree: ast.AST) -> list[str]:
-        """Return every ``reservation-*`` command name called in *tree*."""
-        names = (cls._command_name(node) for node in ast.walk(tree) if isinstance(node, ast.Call))
-        return [name for name in names if name is not None and name.startswith("reservation-")]
+        """Return every command call in *tree* that can send a ``reservation-*`` command.
+
+        Fails closed: a command this cannot read at the call site could name anything, so
+        it is reported rather than skipped.  ``client.command(f"reservation-{op}")`` and
+        ``client.command(chosen)`` are both cases a literal-only scanner missed.
+        """
+        found: list[str] = []
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call) and cls._is_command_call(node)):
+                continue
+            argument = cls._command_argument(node)
+            prefix, exact = cls._known_prefix(argument)
+            if exact:
+                if prefix.startswith(cls.PREFIX):
+                    found.append(f"{prefix} (line {node.lineno})")
+            elif prefix.startswith(cls.PREFIX) or cls.PREFIX.startswith(prefix):
+                shown = ast.unparse(argument) if argument is not None else "<no command argument>"
+                found.append(f"{shown} (line {node.lineno})")
+        return found
 
     def test_only_the_adapter_sends_a_reservation_command(self) -> None:
         allowed = self._allowed_paths()
@@ -1481,8 +1534,66 @@ class TestRawRecordBoundary(SimpleTestCase):
             offenders,
             [],
             "A reservation-* command outside the adapters hands raw Kea records to a consumer that "
-            f"cannot read their keys. See docs/adr/0004 and the {self.RULE_ID} OpenGrep rule. Found: {offenders}",
+            "cannot read their keys. A command this cannot read at the call site is reported too: "
+            "write the name as a literal or an f-string whose leading text is visible. "
+            f"See docs/adr/0004 and the {self.RULE_ID} OpenGrep rule. Found: {offenders}",
         )
+
+    def test_the_scanner_sees_a_reservation_command_built_at_run_time(self) -> None:
+        """A literal-only scanner let ``f"reservation-{op}"`` through the CI guard."""
+        source = (
+            'client.command(f"reservation-{operation}", service=["dhcp4"])\n'
+            'client.command("reservation-" + operation)\n'
+            'name = f"reservation-{operation}"\n'
+            "client.command(name)\n"
+        )
+
+        self.assertEqual(
+            self._reservation_commands(ast.parse(source)),
+            [
+                "f'reservation-{operation}' (line 1)",
+                "'reservation-' + operation (line 2)",
+                "name (line 4)",
+            ],
+        )
+
+    def test_the_scanner_reports_a_command_it_cannot_resolve(self) -> None:
+        """An unresolved command could be any command, so the guard fails closed."""
+        source = "client.command(chosen_command, service=['dhcp4'])\nclient.command(f'{prefix}-get')\n"
+
+        self.assertEqual(
+            self._reservation_commands(ast.parse(source)),
+            ["chosen_command (line 1)", "f'{prefix}-get' (line 2)"],
+        )
+
+    def test_the_scanner_leaves_a_resolvable_non_reservation_command_alone(self) -> None:
+        """Fail-closed must not mean flagging every f-string: these cannot be reservation-*."""
+        source = (
+            'client.command(f"subnet{version}-list")\n'
+            'client.command(f"stat-lease{version}-get")\n'
+            'client.command("lease" + str(version) + "-del")\n'
+        )
+
+        self.assertEqual(self._reservation_commands(ast.parse(source)), [])
+
+    def test_the_scanner_reads_no_name_through_an_assignment(self) -> None:
+        """Resolving a name needs scope analysis; a map that skips it fails open.
+
+        Every binding below puts a reservation command in ``command`` at run time while
+        an unrelated module-level ``command = "config-get"`` is in scope. A scanner that
+        answered from that assignment map cleared all five.
+        """
+        for label, binding in (
+            ("parameter", "def send(client, command):\n    client.command(command)\n"),
+            ("for target", "for command in ops:\n    client.command(command)\n"),
+            ("with as", "with chosen() as command:\n    client.command(command)\n"),
+            ("walrus", "if (command := ops[0]):\n    client.command(command)\n"),
+            ("tuple", "command, service = ops\nclient.command(command)\n"),
+        ):
+            with self.subTest(label):
+                source = 'command = "config-get"\n' + binding
+
+                self.assertEqual(len(self._reservation_commands(ast.parse(source))), 1, label)
 
     def test_the_boundary_scanner_sees_both_command_spellings(self) -> None:
         """The scanner must find either spelling, and ignore the calls it must not."""
@@ -1493,4 +1604,7 @@ class TestRawRecordBoundary(SimpleTestCase):
             'client.command(command="lease4-get-all")\n'
         )
 
-        self.assertEqual(self._reservation_commands(ast.parse(source)), ["reservation-get-page", "reservation-get"])
+        self.assertEqual(
+            self._reservation_commands(ast.parse(source)),
+            ["reservation-get-page (line 1)", "reservation-get (line 2)"],
+        )
