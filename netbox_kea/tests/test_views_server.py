@@ -206,6 +206,20 @@ class TestServerEditView(_ViewTestBase):
         response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
 
+    def test_get_offers_no_help_link_this_plugin_cannot_serve(self):
+        """NetBox renders a Help button for any NetBoxModel, whether or not docs shipped.
+
+        `generic/object_edit.html` gates it on `settings.DOCS_ROOT and object.docs_url`,
+        and `NetBoxModel.docs_url` is an unconditional f-string, so the button pointed at
+        /static/docs/models/netbox_kea/server/, which this package does not ship.
+        """
+        for name, args in (("server_edit", [self.server.pk]), ("server_add", [])):
+            with self.subTest(name):
+                response = self.client.get(reverse(f"plugins:netbox_kea:{name}", args=args))
+
+                self.assertEqual(response.status_code, 200)
+                self.assertNotContains(response, "/static/docs/models/netbox_kea/")
+
     def test_get_nonexistent_returns_404(self):
         url = reverse("plugins:netbox_kea:server_edit", args=[99999])
         response = self.client.get(url)

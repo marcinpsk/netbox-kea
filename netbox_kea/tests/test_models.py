@@ -9,8 +9,11 @@ import importlib
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
+from urllib.parse import urlparse
 
 import requests
+from django.apps import apps
+from django.conf import settings
 from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import ValidationError
 from django.core.management import call_command
@@ -18,6 +21,7 @@ from django.db import IntegrityError, transaction
 from django.test import SimpleTestCase, TestCase, TransactionTestCase, override_settings
 from netbox.models import NetBoxModel
 
+import netbox_kea
 from netbox_kea.kea import KeaClient
 from netbox_kea.models import KeaDhcpLink, Server, SyncConfig, _get_kea_timeout, _get_max_unpaged_leases
 from netbox_kea.reservations import MAX_IDENTITY_LENGTH
@@ -1068,3 +1072,43 @@ class TestKeaDhcpLinkConstraintMigration(TransactionTestCase):
 
         self.assertFalse(KeaDhcpLink.objects.filter(server=server).exists())
         self.assertTrue(Server.objects.filter(pk=server.pk).exists())
+
+
+class TestNoModelAdvertisesDocsItDoesNotShip(SimpleTestCase):
+    """NetBox renders a Help button for any NetBoxModel, shipped docs or not.
+
+    `generic/object_edit.html` gates it on `settings.DOCS_ROOT and object.docs_url`, and
+    `NetBoxModel.docs_url` builds the URL from the app label unconditionally, so it is
+    never empty. Core models ship a page under that path; a plugin model does not, and the
+    button lands on a 404.
+
+    NetBox's plugin documentation offers three answers, and all three pass here: return
+    None to hide the button, return an absolute URL somebody else serves (its example is
+    ReadTheDocs), or ship the page. Only a static path this package does not ship fails.
+    """
+
+    def test_every_model_either_suppresses_the_help_button_or_ships_its_page(self):
+        package = Path(netbox_kea.__file__).parent
+        offenders = []
+        for model in apps.get_app_config("netbox_kea").get_models():
+            if not issubclass(model, NetBoxModel):
+                continue
+            url = model().docs_url
+            # None hides the button, and an absolute URL is served somewhere this
+            # package cannot check. Only a local static path is ours to ship.
+            if url is None or urlparse(url).scheme:
+                continue
+            if not url.startswith(settings.STATIC_URL):
+                offenders.append(f"{model.__name__} advertises {url}, which is neither absolute nor static")
+                continue
+            page = package / "static" / url.removeprefix(settings.STATIC_URL).strip("/") / "index.html"
+            if not page.is_file():
+                offenders.append(f"{model.__name__} advertises {url}, but {page} does not exist")
+
+        self.assertEqual(offenders, [], offenders)
+
+    def test_the_scan_reads_a_real_model_list(self):
+        """No NetBoxModel found would make the test above pass without checking anything."""
+        models = [m for m in apps.get_app_config("netbox_kea").get_models() if issubclass(m, NetBoxModel)]
+
+        self.assertIn(Server, models)

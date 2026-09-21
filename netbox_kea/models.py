@@ -226,6 +226,15 @@ class Server(JobsMixin, NetBoxModel):
         """Return the detail URL for this server."""
         return reverse("plugins:netbox_kea:server", args=[self.pk])
 
+    @property
+    def docs_url(self) -> str | None:
+        """Suppress NetBox's Help button, which this package ships no page for.
+
+        NetBoxModel builds the URL from the app label unconditionally, so the button
+        renders for a plugin model too and lands on a 404.
+        """
+        return None
+
     def get_client(self, version: Family | None = None) -> KeaClient:
         """Return a configured KeaClient, targeting the protocol-specific URL and credentials when available.
 
