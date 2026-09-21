@@ -101,6 +101,12 @@ class TestServerDetailView(_ViewTestBase):
         response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
 
+    def test_get_shows_the_control_agent_url(self):
+        """The panel read object.server_url, a field renamed to ca_url, so it rendered blank."""
+        url = reverse("plugins:netbox_kea:server", args=[self.server.pk])
+
+        self.assertContains(self.client.get(url), self.server.ca_url)
+
     def test_get_nonexistent_returns_404(self):
         url = reverse("plugins:netbox_kea:server", args=[99999])
         response = self.client.get(url)
@@ -251,6 +257,34 @@ class TestServerEditView(_ViewTestBase):
         self._assert_redirect_to_integer_pk(response)
         # Must redirect to THIS server's pk, not some other.
         self.assertIn(str(self.server.pk), response.url)
+
+    def test_post_turns_on_the_dhcp_plugin_sync_toggle(self):
+        """The whole edit flow must be able to set it: form -> view -> database row."""
+        self.assertFalse(self.server.sync_dhcp_plugin_enabled)
+        url = reverse("plugins:netbox_kea:server_edit", args=[self.server.pk])
+
+        with stub_kea({"version-get": _VERSION_OK}):
+            response = self.client.post(
+                url,
+                {
+                    "name": self.server.name,
+                    "ca_url": self.server.ca_url,
+                    "dhcp4": True,
+                    "dhcp6": False,
+                    "ssl_verify": True,
+                    "has_control_agent": True,
+                    "sync_dhcp_plugin_enabled": True,
+                },
+            )
+
+        self.assertEqual(response.status_code, 302)
+        self.server.refresh_from_db()
+        self.assertTrue(self.server.sync_dhcp_plugin_enabled)
+
+    def test_get_renders_the_dhcp_plugin_sync_checkbox(self):
+        url = reverse("plugins:netbox_kea:server_edit", args=[self.server.pk])
+
+        self.assertContains(self.client.get(url), 'name="sync_dhcp_plugin_enabled"')
 
 
 # ─────────────────────────────────────────────────────────────────────────────

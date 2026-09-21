@@ -93,6 +93,7 @@ class ServerForm(NetBoxModelForm):
             "sync_vrf",
             name="IPAM Sync",
         ),
+        FieldSet("sync_dhcp_plugin_enabled", name="DHCP Plugin"),
         FieldSet("persist_config", name="Configuration"),
     )
 
@@ -129,6 +130,7 @@ class ServerForm(NetBoxModelForm):
             "sync_prefixes_enabled",
             "sync_ip_ranges_enabled",
             "sync_vrf",
+            "sync_dhcp_plugin_enabled",
             "persist_config",
             "tags",
         )

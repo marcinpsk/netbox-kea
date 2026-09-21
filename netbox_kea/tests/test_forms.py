@@ -10,6 +10,7 @@ from django.test import SimpleTestCase, TestCase
 
 from netbox_kea import constants
 from netbox_kea.forms import Leases4SearchForm, Leases6SearchForm, MultipleIPField, PoolAddForm, ServerForm
+from netbox_kea.models import Server
 from netbox_kea.reservations import ReservationCapabilities, reservation_identifier_types
 
 
@@ -261,6 +262,26 @@ class TestServerFormFields(TestCase):
 
         form = ServerForm()
         self.assertIsInstance(form.fields["dhcp6_password"].widget, forms.PasswordInput)
+
+    def test_server_form_offers_every_editable_server_field(self):
+        """A model field no form lists can only be set through the ORM.
+
+        sync_dhcp_plugin_enabled shipped that way: the model, the migration and the
+        DHCP-plugin tab gate all read it, but nothing rendered it, so no operator could
+        turn the tab on. custom_field_data is NetBox's own JSON store, which
+        NetBoxModelForm renders from the CustomField rows rather than as a model field.
+        """
+        editable = {
+            field.name
+            for field in Server._meta.get_fields()
+            if getattr(field, "editable", False) and not field.auto_created
+        }
+
+        self.assertEqual(editable - set(ServerForm.Meta.fields), {"custom_field_data"})
+
+    def test_server_form_has_the_dhcp_plugin_sync_toggle(self):
+        form = ServerForm()
+        self.assertIn("sync_dhcp_plugin_enabled", form.fields)
 
     def test_server_form_has_per_protocol_credential_fields(self):
         form = ServerForm()
