@@ -2608,7 +2608,12 @@ def _is_type_checking_test(node: ast.expr) -> bool:
     """Report whether *node* is the ``TYPE_CHECKING`` test of an ``if`` statement."""
     if isinstance(node, ast.Name):
         return node.id == "TYPE_CHECKING"
-    return isinstance(node, ast.Attribute) and node.attr == "TYPE_CHECKING"
+    return (
+        isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "typing"
+        and node.attr == "TYPE_CHECKING"
+    )
 
 
 def _runtime_relative_imports(tree: ast.Module) -> list[str]:
@@ -2657,6 +2662,7 @@ _EXECUTING_RELATIVE_IMPORTS = {
         "from typing import TYPE_CHECKING\n\nif TYPE_CHECKING:\n    Thing = object\nelse:\n"
         "    from .conftest import Thing\n"
     ),
+    "an unrelated TYPE_CHECKING attribute": "if runtime.TYPE_CHECKING:\n    from .conftest import Thing\n",
     "a function body the unit suite calls": "def cleanup():\n    from .conftest import Thing\n\n    return Thing\n",
 }
 #: Sources the guard must clear: only a TYPE_CHECKING body never executes.
@@ -2664,6 +2670,7 @@ _DEFERRED_OR_ABSOLUTE_IMPORTS = {
     "the body of a TYPE_CHECKING block": (
         "from typing import TYPE_CHECKING\n\nif TYPE_CHECKING:\n    from .conftest import Thing\n"
     ),
+    "the typing.TYPE_CHECKING body": "import typing\n\nif typing.TYPE_CHECKING:\n    from .conftest import Thing\n",
     "an absolute import": "from pathlib import Path\n",
 }
 
@@ -2704,11 +2711,14 @@ def _declared_python_floor() -> tuple[int, int]:
 
 
 def _is_version_info_test(node: ast.expr) -> bool:
-    """Report whether *node* tests ``sys.version_info``."""
-    return any(
-        (isinstance(inner, ast.Attribute) and inner.attr == "version_info")
-        or (isinstance(inner, ast.Name) and inner.id == "version_info")
-        for inner in ast.walk(node)
+    """Report whether *node* is exactly ``version_info`` or ``sys.version_info``."""
+    if isinstance(node, ast.Name):
+        return node.id == "version_info"
+    return (
+        isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "sys"
+        and node.attr == "version_info"
     )
 
 
@@ -2759,7 +2769,7 @@ def _unguarded_new_stdlib_imports(tree: ast.Module, floor: tuple[int, int]) -> l
     """
     guarded: set[ast.AST] = set()
     for statement in ast.walk(tree):
-        if not isinstance(statement, ast.If) or not _is_version_info_test(statement.test):
+        if not isinstance(statement, ast.If):
             continue
         takes_body = _floor_takes_body(statement.test, floor)
         if takes_body is None:
@@ -2813,6 +2823,9 @@ _IMPORTS_THE_FLOOR_REACHES = {
         "import sys\n\nif sys.version_info != (3, 10):\n    import tomllib\n"
     ),
     "a test this guard cannot read": "import sys\n\nif supports(sys.version_info):\n    import tomllib\n",
+    "a compound left operand at the declared floor": (
+        "import sys\n\nif supports(sys.version_info) >= (3, 10):\n    import tomli\nelse:\n    import tomllib\n"
+    ),
     "a literal that would compare an int with the releaselevel field": (
         "import sys\n\nif sys.version_info >= (3, 10, 0, 1):\n    import tomllib\n"
     ),
