@@ -3,10 +3,11 @@ from typing import Any, cast
 
 from django import forms
 from django.core.exceptions import ValidationError
+from ipam.models import VRF
 from netaddr import EUI, AddrFormatError, IPAddress, IPNetwork, mac_unix_expanded
 from netbox.forms import NetBoxModelBulkEditForm, NetBoxModelFilterSetForm, NetBoxModelForm, NetBoxModelImportForm
 from utilities.forms import BOOLEAN_WITH_BLANK_CHOICES
-from utilities.forms.fields import TagFilterField
+from utilities.forms.fields import CSVModelChoiceField, TagFilterField
 from utilities.forms.rendering import FieldSet
 
 from . import constants
@@ -96,13 +97,6 @@ class ServerForm(NetBoxModelForm):
         FieldSet("sync_dhcp_plugin_enabled", name="DHCP Plugin"),
         FieldSet("persist_config", name="Configuration"),
     )
-
-    def __init__(self, *args, **kwargs):
-        """Initialise dynamic form fields whose querysets must be evaluated per request."""
-        super().__init__(*args, **kwargs)
-        from ipam.models import VRF
-
-        self.fields["sync_vrf"].queryset = VRF.objects.all()
 
     class Meta:
         model = Server
@@ -207,8 +201,66 @@ class ServerBulkEditForm(NetBoxModelBulkEditForm):
     nullable_fields: list[str] = []
 
 
+class CSVDefaultedBooleanField(forms.BooleanField):
+    """A CSV boolean whose absent or blank column leaves the model default alone.
+
+    An unchecked HTML checkbox sends nothing, so Django's checkbox widget reports
+    every absent value as False and ``construct_instance`` writes that False over
+    the model default. A plain widget reports an absent column as omitted instead.
+    """
+
+    widget = forms.TextInput
+
+    def __init__(self, **kwargs):
+        super().__init__(required=False, **kwargs)
+
+    def to_python(self, value):
+        """Return None for an absent or blank column; otherwise parse as Django does."""
+        if value in self.empty_values:
+            return None
+        return super().to_python(value)
+
+
 class ServerImportForm(NetBoxModelImportForm):
     """CSV/YAML bulk-import form for Server objects."""
+
+    #: Booleans an omitted column must leave alone. See CSVDefaultedBooleanField.
+    DEFAULTED_BOOLEANS = (
+        "ssl_verify",
+        "dhcp4",
+        "dhcp6",
+        "has_control_agent",
+        "sync_enabled",
+        "sync_leases_enabled",
+        "sync_reservations_enabled",
+        "sync_prefixes_enabled",
+        "sync_ip_ranges_enabled",
+        "sync_dhcp_plugin_enabled",
+        "persist_config",
+    )
+
+    sync_vrf = CSVModelChoiceField(
+        label="Sync VRF",
+        queryset=VRF.objects.all(),
+        to_field_name="name",
+        required=False,
+        help_text="VRF to assign to synced Prefixes and IP Ranges, by name.",
+    )
+
+    def __init__(self, *args, **kwargs):
+        """Retype the defaulted booleans so an omitted column stays omitted."""
+        super().__init__(*args, **kwargs)
+        for name in self.DEFAULTED_BOOLEANS:
+            field = self.fields[name]
+            self.fields[name] = CSVDefaultedBooleanField(label=field.label, help_text=field.help_text)
+
+    def clean(self):
+        """Drop every unset defaulted boolean so ``construct_instance`` skips it."""
+        cleaned_data = super().clean()
+        for name in self.DEFAULTED_BOOLEANS:
+            if cleaned_data.get(name) is None:
+                cleaned_data.pop(name, None)
+        return cleaned_data
 
     class Meta:
         model = Server
@@ -222,11 +274,22 @@ class ServerImportForm(NetBoxModelImportForm):
             "dhcp6_username",
             "dhcp6_password",
             "ssl_verify",
+            "client_cert_path",
+            "client_key_path",
+            "ca_file_path",
             "dhcp4",
             "dhcp6",
             "dhcp4_url",
             "dhcp6_url",
             "has_control_agent",
+            "sync_enabled",
+            "sync_leases_enabled",
+            "sync_reservations_enabled",
+            "sync_prefixes_enabled",
+            "sync_ip_ranges_enabled",
+            "sync_dhcp_plugin_enabled",
+            "sync_vrf",
+            "persist_config",
         )
 
 

@@ -9,7 +9,14 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import SimpleTestCase, TestCase
 
 from netbox_kea import constants
-from netbox_kea.forms import Leases4SearchForm, Leases6SearchForm, MultipleIPField, PoolAddForm, ServerForm
+from netbox_kea.forms import (
+    Leases4SearchForm,
+    Leases6SearchForm,
+    MultipleIPField,
+    PoolAddForm,
+    ServerForm,
+    ServerImportForm,
+)
 from netbox_kea.models import Server
 from netbox_kea.reservations import ReservationCapabilities, reservation_identifier_types
 
@@ -279,6 +286,14 @@ class TestServerFormFields(TestCase):
 
         self.assertEqual(editable - set(ServerForm.Meta.fields), {"custom_field_data"})
 
+    def test_server_form_sync_vrf_offers_every_vrf(self):
+        """The field is generated from the FK, so its queryset must need no fixing up."""
+        from ipam.models import VRF
+
+        vrf = VRF.objects.create(name="edit-form-vrf")
+
+        self.assertIn(vrf, ServerForm().fields["sync_vrf"].queryset)
+
     def test_server_form_has_the_dhcp_plugin_sync_toggle(self):
         form = ServerForm()
         self.assertIn("sync_dhcp_plugin_enabled", form.fields)
@@ -287,6 +302,35 @@ class TestServerFormFields(TestCase):
         form = ServerForm()
         for field in ("dhcp4_username", "dhcp4_password", "dhcp6_username", "dhcp6_password"):
             self.assertIn(field, form.fields, f"Missing field: {field}")
+
+
+class TestServerImportFormFields(TestCase):
+    """ServerImportForm must reach every field an operator can set in the edit form."""
+
+    def test_import_form_offers_every_editable_server_field(self):
+        """A field the import form omits cannot be set by CSV, only row by row in the UI.
+
+        The sync fields shipped that way: the import form stopped at
+        has_control_agent, so a bulk-imported server always landed on the model
+        defaults. custom_field_data is NetBox's own JSON store, which
+        NetBoxModelImportForm renders from the CustomField rows.
+        """
+        editable = {
+            field.name
+            for field in Server._meta.get_fields()
+            if getattr(field, "editable", False) and not field.auto_created
+        }
+
+        self.assertEqual(editable - set(ServerImportForm().fields), {"custom_field_data"})
+
+    def test_import_form_matches_the_sync_vrf_by_name(self):
+        """CSV carries names, not primary keys."""
+        from ipam.models import VRF
+
+        vrf = VRF.objects.create(name="import-form-vrf")
+        field = ServerImportForm().fields["sync_vrf"]
+
+        self.assertEqual(field.to_python("import-form-vrf"), vrf)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

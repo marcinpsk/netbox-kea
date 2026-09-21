@@ -413,6 +413,70 @@ class TestServerBulkImportView(_ViewTestBase):
             "Expected duplicate name error in form",
         )
 
+    def test_post_csv_sets_the_sync_fields(self):
+        """Every sync column must survive the import, including the VRF matched by name.
+
+        The import form listed none of them, so a bulk-imported server silently kept
+        the model defaults and no CSV column could change that.
+        """
+        from ipam.models import VRF
+
+        vrf = VRF.objects.create(name="csv-sync-vrf")
+        url = reverse("plugins:netbox_kea:server_bulk_import")
+        csv_data = (
+            "name,ca_url,sync_enabled,sync_leases_enabled,sync_reservations_enabled,"
+            "sync_prefixes_enabled,sync_ip_ranges_enabled,sync_dhcp_plugin_enabled,"
+            "persist_config,sync_vrf\r\n"
+            "csv-sync-server,https://csv-sync.example.com,false,false,false,false,false,true,false,csv-sync-vrf\r\n"
+        )
+
+        with stub_kea({"version-get": _VERSION_OK}):
+            response = self.client.post(url, {"data": csv_data, "format": "csv", "csv_delimiter": ","})
+
+        self.assertIn(response.status_code, [200, 302])
+        server = Server.objects.get(name="csv-sync-server")
+        self.assertFalse(server.sync_enabled)
+        self.assertFalse(server.sync_leases_enabled)
+        self.assertFalse(server.sync_reservations_enabled)
+        self.assertFalse(server.sync_prefixes_enabled)
+        self.assertFalse(server.sync_ip_ranges_enabled)
+        self.assertTrue(server.sync_dhcp_plugin_enabled)
+        self.assertFalse(server.persist_config)
+        self.assertEqual(server.sync_vrf, vrf)
+
+    def test_post_csv_keeps_accepting_the_0_and_1_boolean_spelling(self):
+        """Retyping the boolean columns must not narrow what a CSV may say."""
+        url = reverse("plugins:netbox_kea:server_bulk_import")
+        csv_data = (
+            "name,ca_url,dhcp4,dhcp6,sync_enabled,sync_dhcp_plugin_enabled\r\n"
+            "csv-numeric-server,https://csv-numeric.example.com,1,0,0,1\r\n"
+        )
+
+        with stub_kea({"version-get": _VERSION_OK}):
+            response = self.client.post(url, {"data": csv_data, "format": "csv", "csv_delimiter": ","})
+
+        self.assertIn(response.status_code, [200, 302])
+        server = Server.objects.get(name="csv-numeric-server")
+        self.assertTrue(server.dhcp4)
+        self.assertFalse(server.dhcp6)
+        self.assertFalse(server.sync_enabled)
+        self.assertTrue(server.sync_dhcp_plugin_enabled)
+
+    def test_post_csv_without_the_sync_columns_keeps_the_model_defaults(self):
+        """Adding the columns must not make them mandatory."""
+        url = reverse("plugins:netbox_kea:server_bulk_import")
+        csv_data = "name,ca_url\r\ncsv-default-server,https://csv-default.example.com\r\n"
+
+        with stub_kea({"version-get": _VERSION_OK}):
+            response = self.client.post(url, {"data": csv_data, "format": "csv", "csv_delimiter": ","})
+
+        self.assertIn(response.status_code, [200, 302])
+        server = Server.objects.get(name="csv-default-server")
+        self.assertTrue(server.sync_enabled)
+        self.assertFalse(server.sync_dhcp_plugin_enabled)
+        self.assertTrue(server.persist_config)
+        self.assertIsNone(server.sync_vrf)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Phase 7c: Global DHCP options on the server status tab
