@@ -78,6 +78,46 @@ class TestCombinedResponseShapeGuards(_ViewTestBase):
 
 
 class TestCombinedSubnetDiagnostics(_ViewTestBase):
+    def _subnet_actions_response(self, *, verified=True, writable=True):
+        if not writable:
+            from django.contrib.contenttypes.models import ContentType
+            from users.models import ObjectPermission
+
+            self.user.is_superuser = False
+            self.user.save()
+            permission = ObjectPermission.objects.create(name="view-subnet-server", actions=["view"])
+            permission.object_types.add(ContentType.objects.get_for_model(type(self.server)))
+            permission.users.add(self.user)
+        responses = _catalogue_responses(4, 7, "198.18.0.0/24")
+        responses["stat-lease4-get"] = {"result": 2, "text": "unsupported"}
+        if not verified:
+            responses["subnet4-list"] = {"result": 2, "text": "unsupported"}
+        with stub_kea(responses):
+            return self.client.get(reverse("plugins:netbox_kea:combined_subnets4"), {"server": self.server.pk})
+
+    def test_writable_verified_subnet_offers_options_and_identity_actions(self):
+        response = self._subnet_actions_response()
+        self.assertEqual(response.status_code, 200)
+        for action in ("options_edit", "wipe_leases"):
+            url = reverse(f"plugins:netbox_kea:server_subnet4_{action}", args=[self.server.pk, 7])
+            self.assertTrue(f'href="{url}"' in response.content.decode(), f"Missing {action} action")
+
+    def test_writable_configured_subnet_offers_options_without_identity_actions(self):
+        response = self._subnet_actions_response(verified=False)
+        self.assertEqual(response.status_code, 200)
+        options_url = reverse("plugins:netbox_kea:server_subnet4_options_edit", args=[self.server.pk, 7])
+        self.assertTrue(f'href="{options_url}"' in response.content.decode(), "Missing options action")
+        wipe_url = reverse("plugins:netbox_kea:server_subnet4_wipe_leases", args=[self.server.pk, 7])
+        self.assertNotContains(response, f'href="{wipe_url}"')
+
+    def test_readonly_subnet_has_no_mutation_actions(self):
+        response = self._subnet_actions_response(writable=False)
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "198.18.0.0/24")
+        for action in ("options_edit", "wipe_leases"):
+            url = reverse(f"plugins:netbox_kea:server_subnet4_{action}", args=[self.server.pk, 7])
+            self.assertNotContains(response, f'href="{url}"')
+
     def test_complete_catalogue_is_reused_for_unchanged_requests(self):
         url = reverse("plugins:netbox_kea:combined_subnets4") + f"?server={self.server.pk}"
         identity = {"result": 0, "arguments": {"subnets": [{"id": 1, "subnet": "198.18.1.0/24"}]}}
@@ -116,10 +156,10 @@ class TestCombinedSubnetDiagnostics(_ViewTestBase):
         self.assertContains(response, "Kea subnet identity facts are unavailable.")
         self.assertContains(response, "Kea Subnet configuration facts are unavailable.")
         self.assertNotContains(response, "Failed to query server")
+        self.assertTrue(response.context["errors"])
+        self.assertContains(response, "alert-danger")
 
     def test_empty_config_response_preserves_confirmed_empty_identity(self):
-        from netbox_kea.views.combined import _fetch_subnets_from_server
-
         with stub_kea(
             {
                 "subnet4-list": {"result": 3, "text": "no subnets"},
@@ -127,13 +167,12 @@ class TestCombinedSubnetDiagnostics(_ViewTestBase):
                 "stat-lease4-get": {"result": 2, "text": "unknown command"},
             }
         ):
-            subnets, diagnostics = _fetch_subnets_from_server(self.server, 4)
+            response = self.client.get(reverse("plugins:netbox_kea:combined_subnets4"), {"server": self.server.pk})
 
-        self.assertEqual(subnets, [])
-        # Assert the diagnostic itself: assertTrue(diagnostics) also passed when the
-        # catalogue reported unavailable instead of a confirmed-empty identity, or
-        # when a different code was emitted.
-        self.assertIn("malformed-configuration-response", [diagnostic.code for diagnostic in diagnostics])
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(list(response.context["table"].data), [])
+        self.assertEqual(response.context["errors"], [])
+        self.assertContains(response, "alert-warning")
 
     def test_incomplete_catalogue_explains_omitted_facts(self):
         responses = {
@@ -159,6 +198,8 @@ class TestCombinedSubnetDiagnostics(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "198.18.0.0/24")
         self.assertContains(response, "Kea returned a non-list Pool collection.")
+        self.assertEqual(response.context["errors"], [])
+        self.assertContains(response, "alert-warning")
 
     def test_repeated_catalogue_diagnostics_render_once(self):
         responses = {

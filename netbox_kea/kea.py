@@ -2366,13 +2366,19 @@ class KeaClient:
             service=[service],
             arguments={"id": subnet_id},
         )
+        if not isinstance(resp, list) or not resp or not isinstance(resp[0], dict):
+            raise RuntimeError(f"subnet{version}-get returned an invalid response envelope")
         args = resp[0].get("arguments") or {}
-        subnets = args.get(subnet_key, []) if isinstance(args, dict) else []
+        if not isinstance(args, dict) or not isinstance(args.get(subnet_key, []), list):
+            raise RuntimeError(f"subnet{version}-get returned an invalid subnet collection")
+        subnets = args.get(subnet_key, [])
         if not subnets:
             raise KeaException(
                 {"result": 3, "text": f"subnet{version}-get returned no subnet for id={subnet_id}", "arguments": None},
                 index=0,
             )
+        if not isinstance(subnets[0], dict):
+            raise RuntimeError(f"subnet{version}-get returned an invalid subnet")
         return dict(subnets[0])
 
     def _find_subnet_id_by_cidr(self, version: int, cidr: str) -> int | None:
