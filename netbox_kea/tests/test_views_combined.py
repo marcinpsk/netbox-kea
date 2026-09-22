@@ -176,6 +176,8 @@ class TestCombinedSharedNetworkDiagnostics(_ViewTestBase):
             [(self.server.name, "Kea Subnet configuration facts are unavailable.")],
         )
         self.assertNotContains(response, "Failed to query server")
+        self.assertContains(response, "alert-danger")
+        self.assertNotContains(response, "alert-warning")
 
     def test_non_object_family_configuration_is_reported_without_a_server_error(self):
         with stub_kea({"config-get": {"result": 0, "arguments": {"Dhcp4": []}}}):
@@ -205,6 +207,8 @@ class TestCombinedSharedNetworkDiagnostics(_ViewTestBase):
             response.context["warnings"],
             [(self.server.name, "Kea returned a non-object Shared Network.")],
         )
+        self.assertContains(response, "alert-warning")
+        self.assertNotContains(response, "alert-danger")
 
     def test_writable_server_offers_shared_network_actions(self):
         responses = _catalogue_responses_for_subnets(4, [], shared_networks=[{"name": "clients", "subnet4": []}])

@@ -4,7 +4,7 @@
 {% block tab_content %}
 
 {% if errors %}
-<div class="alert alert-warning mt-3">
+<div class="alert alert-danger mt-3">
   <strong>Some servers could not be reached:</strong>
   <ul class="mb-0 mt-1">
     {% for name, msg in errors %}
