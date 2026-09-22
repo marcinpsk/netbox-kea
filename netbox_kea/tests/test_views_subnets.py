@@ -624,6 +624,35 @@ class TestServerSubnet4EditView(_ViewTestBase):
             response = self.client.get(self._url())
         self.assertEqual(response.context["form"].initial.get("dns_servers", ""), "")
 
+    def test_get_prefills_one_router_but_leaves_a_router_array_out(self):
+        for data, expected in (("10.0.0.1", "10.0.0.1"), ("10.0.0.1, 10.0.0.2", "")):
+            subnet = deepcopy(_SUBNET4_GET_FULL[0])
+            subnet["arguments"]["subnet4"][0]["option-data"] = [{"code": 3, "data": data}]
+            with self.subTest(data=data), self._get_stub(subnet=subnet):
+                response = self.client.get(self._url())
+            self.assertEqual(response.context["form"].initial.get("gateway", ""), expected)
+
+    def test_get_prefills_membership_from_the_live_declaration_when_the_target_is_incomplete(self):
+        """An incomplete live declaration still decides membership; the cached catalogue never does."""
+        with stub_kea({**_ABSENT_READ_HOOKS, "config-get": _CONFIG4_NO_NETWORKS[0]}):
+            self.client.get(reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk]))
+        target = {"id": 42, "subnet": "10.0.0.0/24", "pools": [{"pool": "invalid"}]}
+        live = {"result": 0, "arguments": {"subnet4": [{**target, "pools": []}]}}
+        member = {
+            "result": 0,
+            "arguments": {"Dhcp4": {"subnet4": [], "shared-networks": [{"name": "clients", "subnet4": [target]}]}},
+        }
+        with stub_kea(
+            {
+                "subnet4-list": _subnet_list(4, [{"id": 42, "subnet": "10.0.0.0/24"}]),
+                "subnet4-get": live,
+                "config-get": member,
+            }
+        ):
+            response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["form"].initial["shared_network"], "clients")
+
     def test_get_reads_the_live_configuration_on_every_visit(self):
         """The edit form is a read-modify-write prefill, so it must not serve the display cache."""
         with self._get_stub() as kea:

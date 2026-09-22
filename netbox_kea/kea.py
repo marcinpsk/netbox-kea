@@ -334,13 +334,15 @@ def _replace_managed_option(
     code: int,
     canonical: str,
     data: str | None,
+    *,
+    single_value: bool = False,
 ) -> list[dict[str, Any]]:
     """Set one form-managed option to *data*, or remove it when *data* is empty.
 
     The form edits the value only. Delivery flags stay as they are. An entry the
-    form cannot show (never-send, no data, or binary-encoded) is kept when the
-    field is empty. Form text is CSV, so a new value drops a csv-format flag that
-    described the old encoding.
+    form cannot show (never-send, no data, binary-encoded, or a list where the
+    form holds one value) is kept when the field is empty. Form text is CSV, so a
+    new value drops a csv-format flag that described the old encoding.
     """
     is_managed = _managed_option_matcher(version, names, code)
     existing = next((option for option in options if is_managed(option)), None)
@@ -352,7 +354,10 @@ def _replace_managed_option(
         replacement["data"] = data
         return [*kept, replacement]
     if existing is not None and (
-        existing.get("never-send") or "data" not in existing or existing.get("csv-format") is False
+        existing.get("never-send")
+        or "data" not in existing
+        or existing.get("csv-format") is False
+        or (single_value and "," in str(existing.get("data", "")))
     ):
         return [*kept, existing]
     return kept
@@ -1519,7 +1524,7 @@ class KeaClient:
         # option-data: replace only the entries this form manages; keep every other entry.
         options = list(subnet_def.get("option-data") or [])
         if version == 4:
-            options = _replace_managed_option(options, 4, {"routers"}, 3, "routers", gateway)
+            options = _replace_managed_option(options, 4, {"routers"}, 3, "routers", gateway, single_value=True)
         options = _replace_managed_option(
             options,
             version,

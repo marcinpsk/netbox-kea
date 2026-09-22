@@ -4616,6 +4616,11 @@ class TestSubnetUpdateMerge(TestCase):
         binary = [{"code": 6, "data": "0A000035", "csv-format": False}]
         self.assertEqual(self._update_options(binary, dns_servers=[]), binary)
 
+    def test_an_empty_gateway_keeps_a_router_array(self):
+        """The gateway field holds one address, so a router list is kept, not deleted."""
+        routers = [{"code": 3, "data": "10.0.0.1, 10.0.0.2"}]
+        self.assertEqual(self._update_options(routers, gateway=""), routers)
+
     def test_a_changed_value_drops_the_old_encoding_flag(self):
         """Form text is CSV, so csv-format false no longer describes the new value."""
         existing = [{"code": 6, "data": "0A000035", "csv-format": False}]

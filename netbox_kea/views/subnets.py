@@ -614,16 +614,15 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
     def get(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
         server = self.get_object(pk=pk)
         snapshot = subnet_catalogue(server, self.dhcp_version)
-        subnet = snapshot.find_by_id(subnet_id)
         configuration = server_configuration.for_verification(server, self.dhcp_version)
         configured_target = configuration.subnet_with_membership(subnet_id)
         subnet_configuration = None
         subnet_cidr = ""
-        display_network = subnet.shared_network.name if subnet and subnet.shared_network else ""
+        # Membership comes from the live declaration alone, never from the cached catalogue.
+        display_network = configured_target.shared_network_name or "" if configured_target is not None else ""
         if configured_target is not None and configured_target.complete:
             subnet_configuration = configured_target.configuration
             subnet_cidr = configured_target.declared_cidr
-            display_network = configured_target.shared_network_name or ""
         if subnet_configuration is None:
             declaration = server_configuration.subnet_for_display(server, self.dhcp_version, subnet_id)
             if declaration is not None:

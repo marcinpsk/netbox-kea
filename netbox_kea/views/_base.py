@@ -160,8 +160,13 @@ def _form_option_field(option: DHCPOption, version: Family) -> str | None:
     if option.space not in (None, f"dhcp{version}") or option.client_classes or option.csv_format is False:
         return None
     if option.code is not None:
-        return _FORM_OPTION_CODES[version].get(option.code)
-    return _FORM_OPTION_NAMES.get(option.name or "")
+        field = _FORM_OPTION_CODES[version].get(option.code)
+    else:
+        field = _FORM_OPTION_NAMES.get(option.name or "")
+    # The gateway field holds one address; a router array has no form representation.
+    if field == "gateway" and "," in option.data:
+        return None
+    return field
 
 
 def _subnet_option_fields(options: tuple[DHCPOption, ...], version: Family) -> dict[str, str]:
