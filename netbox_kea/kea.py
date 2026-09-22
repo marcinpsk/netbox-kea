@@ -1418,32 +1418,26 @@ class KeaClient:
             else:
                 network.pop("relay", None)
         if dns_servers is not None or ntp_servers is not None:
-            is_dns = _managed_option_matcher(version, {"domain-name-servers", "dns-servers"}, 6 if version == 4 else 23)
-            is_ntp = _managed_option_matcher(version, {"ntp-servers", "sntp-servers"}, 42 if version == 4 else 31)
-            existing_options = network.get("option-data") or []
-            existing_dns = next((option for option in existing_options if is_dns(option)), None)
-            existing_ntp = next((option for option in existing_options if is_ntp(option)), None)
-            preserved_options = [
-                option
-                for option in existing_options
-                if (not is_dns(option) or dns_servers is None) and (not is_ntp(option) or ntp_servers is None)
-            ]
-            new_options: list[dict[str, Any]] = []
-            if dns_servers:
-                dns_option = (
-                    dict(existing_dns)
-                    if existing_dns
-                    else {"name": "domain-name-servers" if version == 4 else "dns-servers"}
+            options = list(network.get("option-data") or [])
+            if dns_servers is not None:
+                options = _replace_managed_option(
+                    options,
+                    version,
+                    {"domain-name-servers", "dns-servers"},
+                    6 if version == 4 else 23,
+                    "domain-name-servers" if version == 4 else "dns-servers",
+                    ",".join(dns_servers),
                 )
-                dns_option["data"] = ",".join(dns_servers)
-                new_options.append(dns_option)
-            if ntp_servers:
-                ntp_option = (
-                    dict(existing_ntp) if existing_ntp else {"name": "ntp-servers" if version == 4 else "sntp-servers"}
+            if ntp_servers is not None:
+                options = _replace_managed_option(
+                    options,
+                    version,
+                    {"ntp-servers", "sntp-servers"},
+                    42 if version == 4 else 31,
+                    "ntp-servers" if version == 4 else "sntp-servers",
+                    ",".join(ntp_servers),
                 )
-                ntp_option["data"] = ",".join(ntp_servers)
-                new_options.append(ntp_option)
-            network["option-data"] = preserved_options + new_options
+            network["option-data"] = options
 
         self._apply_config(service, config)
 

@@ -518,6 +518,16 @@ class TestServerSharedNetwork4EditView(_ViewTestBase):
             ],
         )
 
+    def test_an_unrelated_save_keeps_a_dns_suppression_entry(self):
+        """A never-send entry shows no value in the form, so an empty field must not delete it."""
+        config = _sn_config(4, "prod-net", option_data=[{"code": 6, "never-send": True}])
+        with _edit_stub(config) as kea:
+            response = self.client.get(self._url())
+            self.assertEqual(response.context["form"].initial["dns_servers"], "")
+            self.client.post(self._url(), self._post_data(description="Renamed"))
+
+        self.assertEqual(_written_sn(kea)["option-data"], [{"code": 6, "never-send": True}])
+
     def test_null_option_data_refuses_the_edit_form_and_the_update(self):
         """A network whose option-data failed to parse is not editable through this form."""
         config = _sn_config(4, "prod-net", option_data=None)
