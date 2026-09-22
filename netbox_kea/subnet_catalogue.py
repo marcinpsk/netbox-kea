@@ -261,7 +261,7 @@ def _network(value: str, family: Family) -> IPNetworkValue:
 
 def _cache_key(server: Server, family: Family, generation: str | None = None) -> str:
     generation = generation or server_configuration._cache_generation(server, family)
-    return f"netbox_kea:subnet_catalogue:v1:{_require_persisted_server(server)}:{family}:snapshot:{generation}"
+    return f"{constants.SUBNET_CATALOGUE_CACHE_PREFIX}v1:{_require_persisted_server(server)}:{family}:snapshot:{generation}"
 
 
 def _require_persisted_server(server: Server) -> int:
@@ -738,7 +738,7 @@ def display(server: Server, family: int) -> CatalogueSnapshot:
     snapshot = _read_live(server, validated_family)
     # Cache when either source was available; retry only when both observations failed.
     if snapshot.identity_available or snapshot.configuration_available:
-        cache.set(key, snapshot, constants.SUBNET_CHOICES_TTL)
+        cache.set(key, snapshot, constants.DISPLAY_SNAPSHOT_TTL)
     return snapshot
 
 

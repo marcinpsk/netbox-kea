@@ -311,7 +311,7 @@ class BaseLeasesSarchForm(forms.Form):
     def __init__(
         self,
         *args,
-        subnet_choices: list[tuple[str, int]] | None = None,
+        subnet_choices: tuple[tuple[str, int], ...] = (),
         subnet_cmds_available: bool = True,
         **kwargs,
     ) -> None:
@@ -324,7 +324,7 @@ class BaseLeasesSarchForm(forms.Form):
         not loaded, which the template reports instead of showing an empty combobox.
         """
         super().__init__(*args, **kwargs)
-        self.subnet_choices: list[tuple[str, int]] = subnet_choices or []
+        self.subnet_choices = subnet_choices
         self.subnet_cmds_available = subnet_cmds_available
 
     def clean(self) -> dict[str, Any] | None:
@@ -600,9 +600,7 @@ class Reservation4Form(forms.Form):
             network = ipaddress.IPv4Network(value, strict=True)
         except ValueError as exc:
             raise forms.ValidationError("Enter a valid IPv4 subnet CIDR (e.g. 10.0.0.0/24).") from exc
-        # Kea reports subnets in canonical form; subnet_id_from_cidr() matches by
-        # exact string, so a non-canonical but valid input (e.g. a netmask like
-        # "/255.255.255.0" instead of "/24") would otherwise never match.
+        # Use the canonical CIDR form accepted by configured_subnet_id_from_cidr().
         return str(network)
 
     def clean_ip_address(self) -> str:
@@ -703,9 +701,7 @@ class Reservation6Form(forms.Form):
             network = ipaddress.IPv6Network(value, strict=True)
         except ValueError as exc:
             raise forms.ValidationError("Enter a valid IPv6 subnet CIDR (e.g. 2001:db8::/48).") from exc
-        # Kea reports subnets in canonical (compressed) form; subnet_id_from_cidr()
-        # matches by exact string, so a valid but expanded address (e.g.
-        # "2001:0db8:0000:.../32") would otherwise never match.
+        # Use the canonical CIDR form accepted by configured_subnet_id_from_cidr().
         return str(network)
 
     def clean_ip_addresses(self) -> str:

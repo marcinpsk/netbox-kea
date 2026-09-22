@@ -23,6 +23,7 @@ from unittest.mock import patch
 
 import pytest
 
+from netbox_kea import constants
 from netbox_kea.tests.parallel import MAX_PARALLEL_WORKERS, isolated_test_database_name
 
 logger = logging.getLogger(__name__)
@@ -195,9 +196,8 @@ def django_db_setup(request, django_test_environment, django_db_blocker):
 
 #: The plugin's own cache key prefixes. Each is keyed on a Server ID.
 _PLUGIN_CACHE_PATTERNS = (
-    "netbox_kea:server_configuration:*",
-    "netbox_kea:subnet_catalogue:*",
-    "netbox_kea:subnet_choices:*",
+    f"{constants.SERVER_CONFIGURATION_CACHE_PREFIX}*",
+    f"{constants.SUBNET_CATALOGUE_CACHE_PREFIX}*",
 )
 
 
