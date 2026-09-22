@@ -254,6 +254,12 @@ class TestKeaClientInit(TestCase):
 class TestKeaException(TestCase):
     """Tests for KeaException initialisation and message formatting."""
 
+    def test_unsupported_command_flag_matches_result(self):
+        for result in (0, 1, 2, 3):
+            with self.subTest(result=result):
+                exc = KeaException({"result": result, "text": "command outcome"})
+                self.assertEqual(exc.unsupported_command, result == 2)
+
     def test_default_message_includes_result_code(self):
         resp = {"result": 1, "text": "command rejected"}
         exc = KeaException(resp, index=0)
