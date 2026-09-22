@@ -273,7 +273,7 @@ class BaseServerSharedNetworkEditView(_KeaChangeMixin, ConditionalLoginRequiredM
         )
         network = next((network for network in configuration.shared_networks if network.name == network_name), None)
 
-        if network is None:
+        if not configuration.shared_networks_complete or network is None:
             messages.error(request, f"Shared network '{network_name}' not found or could not be retrieved.")
             return redirect(self._success_url(server))
 

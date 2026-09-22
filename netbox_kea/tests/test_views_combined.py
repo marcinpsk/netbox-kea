@@ -206,6 +206,30 @@ class TestCombinedSharedNetworkDiagnostics(_ViewTestBase):
             [(self.server.name, "Kea returned a non-object Shared Network.")],
         )
 
+    def test_writable_server_offers_shared_network_actions(self):
+        responses = _catalogue_responses_for_subnets(4, [], shared_networks=[{"name": "clients", "subnet4": []}])
+        with stub_kea(responses):
+            response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'aria-label="Edit clients"')
+        self.assertContains(response, 'aria-label="Delete clients"')
+
+    def test_readonly_server_hides_shared_network_actions(self):
+        from django.contrib.contenttypes.models import ContentType
+        from users.models import ObjectPermission
+
+        self.user.is_superuser = False
+        self.user.save()
+        permission = ObjectPermission.objects.create(name="view-shared-network-server", actions=["view"])
+        permission.object_types.add(ContentType.objects.get_for_model(type(self.server)))
+        permission.users.add(self.user)
+        responses = _catalogue_responses_for_subnets(4, [], shared_networks=[{"name": "clients", "subnet4": []}])
+        with stub_kea(responses):
+            response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "clients")
+        self.assertNotContains(response, 'aria-label="Edit clients"')
+
 
 class TestCombinedReservationsWithoutAddress(_ViewTestBase):
     """The global reservations tab hits the same address-less crash as the per-server tab (#110)."""

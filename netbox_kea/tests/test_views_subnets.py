@@ -2249,16 +2249,16 @@ class TestGetNetworkDataUnnamedNetwork(_ViewTestBase):
 
 
 # ---------------------------------------------------------------------------
-# _fetch_network — non-dict args (lines 1462-1463)
+# Shared Network edit GET: config-get with non-dict arguments
 # ---------------------------------------------------------------------------
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestFetchNetworkNonDictArgs(_ViewTestBase):
-    """Lines 1462-1463: config-get returns non-dict args → log warning + return {}."""
+    """config-get returning non-dict arguments makes the edit GET redirect."""
 
     def test_get_non_dict_args_redirects(self):
-        """config-get returning arguments=None → _fetch_network returns {} → redirect."""
+        """config-get returning arguments=None is an unavailable snapshot, so GET redirects."""
         url = reverse(
             "plugins:netbox_kea:server_shared_network4_edit",
             args=[self.server.pk, "test-net"],

@@ -170,6 +170,15 @@ class TestServerSharedNetworks4View(_ViewTestBase):
             response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
         self.assertNotContains(response, "net-alpha")
+        self.assertEqual(list(response.context["messages"]), [])
+
+    def test_kea_error_shows_diagnostic_and_keeps_page_available(self):
+        with stub_kea({"config-get": {"result": 1, "text": "config-get failed"}}):
+            response = self.client.get(self._url())
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Kea Subnet configuration facts are unavailable.")
+        self.assertTrue(any(message.level == django_messages.ERROR for message in response.context["messages"]))
 
     def test_unreachable_server_shows_diagnostic_and_keeps_page_available(self):
         with stub_kea({"config-get": requests.ConnectionError("unreachable")}):
@@ -260,6 +269,13 @@ class TestServerSharedNetworks6View(_ViewTestBase):
         with stub_kea({"config-get": _SHARED_NETWORKS_CONFIG_V6}):
             response = self.client.get(self._url())
         self.assertContains(response, "net-beta")
+
+    def test_non_object_family_configuration_shows_diagnostic_instead_of_raising(self):
+        with stub_kea({"config-get": {"result": 0, "arguments": {"Dhcp6": []}}}):
+            response = self.client.get(self._url())
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Kea did not return a Dhcp6 configuration object.")
 
     def test_shows_subnet_cidrs(self):
         with stub_kea({"config-get": _SHARED_NETWORKS_CONFIG_V6}):
@@ -658,6 +674,19 @@ class TestSharedNetworkEditSnapshotFailures(_ViewTestBase):
         """GET must redirect when config-get returns a KeaException (result 1)."""
         with stub_kea({"config-get": {"result": 1, "text": "err"}}):
             response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 302)
+
+    def test_get_redirects_when_shared_network_collection_is_incomplete(self):
+        """GET must not offer a form that POST refuses."""
+        responses = _catalogue_responses_for_subnets(
+            4,
+            [],
+            shared_networks=[{"name": "prod-net", "subnet4": []}, None],
+        )
+
+        with stub_kea(responses):
+            response = self.client.get(self._url())
+
         self.assertEqual(response.status_code, 302)
 
     def test_post_aborts_when_reload_returns_empty(self):

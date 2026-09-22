@@ -268,6 +268,11 @@ class _CombinedSharedNetworksView(_CombinedViewMixin):
         all_networks: list[dict[str, Any]] = []
         errors: list[tuple[str, str]] = []
         warnings: list[tuple[str, str]] = []
+        writable_pks = set(
+            Server.objects.restrict(request.user, "change")
+            .filter(pk__in=[s.pk for s in servers])
+            .values_list("pk", flat=True)
+        )
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
             future_to_server = {executor.submit(server_configuration.display, s, self.dhcp_version): s for s in servers}
@@ -286,7 +291,7 @@ class _CombinedSharedNetworksView(_CombinedViewMixin):
                                 network,
                                 server,
                                 self.dhcp_version,
-                                can_change=False,
+                                can_change=server.pk in writable_pks,
                                 include_server_name=True,
                             )
                             for network in snapshot.shared_networks
@@ -294,15 +299,6 @@ class _CombinedSharedNetworksView(_CombinedViewMixin):
                 except Exception:
                     logger.exception("Failed to query server %s", server.name)
                     errors.append((server.name, "Failed to query server"))
-
-        # Annotate can_change per server so SharedNetworkTable.actions renders correctly.
-        writable_pks = set(
-            Server.objects.restrict(request.user, "change")
-            .filter(pk__in=[s.pk for s in servers])
-            .values_list("pk", flat=True)
-        )
-        for network in all_networks:
-            network.setdefault("can_change", network.get("server_pk") in writable_pks)
 
         table = tables.GlobalSharedNetworkTable(all_networks, user=request.user)
         table.configure(request)
