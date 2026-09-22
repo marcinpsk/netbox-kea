@@ -477,7 +477,8 @@ class TestServerSharedNetwork4EditView(_ViewTestBase):
             response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
 
-    def test_get_reuses_cached_server_configuration(self):
+    def test_get_reads_the_live_configuration_even_when_the_display_cache_is_warm(self):
+        """The edit form is a read-modify-write prefill, so it must not serve the display cache."""
         responses = _catalogue_responses_for_subnets(
             4,
             [],
@@ -485,12 +486,50 @@ class TestServerSharedNetwork4EditView(_ViewTestBase):
         )
 
         with stub_kea(responses) as kea:
+            self.client.get(reverse("plugins:netbox_kea:server_shared_networks4", args=[self.server.pk]))
             first = self.client.get(self._url())
             second = self.client.get(self._url())
 
         self.assertEqual(first.status_code, 200)
         self.assertEqual(second.status_code, 200)
-        self.assertEqual(kea.commands().count("config-get"), 1)
+        self.assertEqual(kea.commands().count("config-get"), 3)
+
+    def test_get_prefills_a_code_only_dns_option_and_an_unrelated_save_keeps_it(self):
+        """A DNS option written by code must round-trip through the form."""
+        config = _sn_config(
+            4,
+            "prod-net",
+            option_data=[
+                {"code": 6, "data": "198.18.0.53"},
+                {"name": "domain-name-servers", "space": "vendor-4491", "data": "198.18.0.99"},
+            ],
+        )
+        with _edit_stub(config) as kea:
+            response = self.client.get(self._url())
+            initial = response.context["form"].initial
+            self.assertEqual(initial["dns_servers"], "198.18.0.53")
+            self.client.post(self._url(), self._post_data(description="Renamed", dns_servers=initial["dns_servers"]))
+
+        self.assertEqual(
+            _written_sn(kea)["option-data"],
+            [
+                {"name": "domain-name-servers", "space": "vendor-4491", "data": "198.18.0.99"},
+                {"code": 6, "data": "198.18.0.53"},
+            ],
+        )
+
+    def test_null_option_data_refuses_the_edit_form_and_the_update(self):
+        """A network whose option-data failed to parse is not editable through this form."""
+        config = _sn_config(4, "prod-net", option_data=None)
+        config["arguments"]["Dhcp4"]["shared-networks"][0]["option-data"] = None
+        with _edit_stub(config) as kea:
+            get = self.client.get(self._url())
+            post = self.client.post(self._url(), self._post_data(description="Renamed"))
+
+        self.assertEqual(get.status_code, 302)
+        self.assertEqual(post.status_code, 200)
+        self.assertContains(post, "Could not reload")
+        self.assertNotIn("config-set", kea.commands())
 
     def test_post_valid_calls_network_update_and_redirects(self):
         """POST with valid data runs the read-modify-write cycle and redirects."""

@@ -1420,7 +1420,7 @@ class KeaClient:
         if dns_servers is not None or ntp_servers is not None:
             is_dns = _managed_option_matcher(version, {"domain-name-servers", "dns-servers"}, 6 if version == 4 else 23)
             is_ntp = _managed_option_matcher(version, {"ntp-servers", "sntp-servers"}, 42 if version == 4 else 31)
-            existing_options = network.get("option-data", [])
+            existing_options = network.get("option-data") or []
             existing_dns = next((option for option in existing_options if is_dns(option)), None)
             existing_ntp = next((option for option in existing_options if is_ntp(option)), None)
             preserved_options = [

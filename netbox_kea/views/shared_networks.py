@@ -265,7 +265,7 @@ class BaseServerSharedNetworkEditView(_KeaChangeMixin, ConditionalLoginRequiredM
     def get(self, request: HttpRequest, pk: int, network_name: str) -> HttpResponse:
         """Render the edit form pre-populated with current values."""
         server = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
-        configuration = server_configuration.display(server, self.dhcp_version)
+        configuration = server_configuration.for_verification(server, self.dhcp_version)
         _diagnostic_messages(
             request,
             configuration.diagnostics,
@@ -273,11 +273,11 @@ class BaseServerSharedNetworkEditView(_KeaChangeMixin, ConditionalLoginRequiredM
         )
         network = next((network for network in configuration.shared_networks if network.name == network_name), None)
 
-        if not configuration.shared_networks_complete or network is None:
+        if not configuration.shared_networks_complete or network is None or not network.complete:
             messages.error(request, f"Shared network '{network_name}' not found or could not be retrieved.")
             return redirect(self._success_url(server))
 
-        option_fields = _subnet_option_fields(network.options)
+        option_fields = _subnet_option_fields(network.options, self.dhcp_version)
         initial: dict[str, Any] = {
             "name": network_name,
             "description": network.description or "",
@@ -333,7 +333,12 @@ class BaseServerSharedNetworkEditView(_KeaChangeMixin, ConditionalLoginRequiredM
             messages.ERROR if not configuration.available else messages.WARNING,
         )
         network = next((network for network in configuration.shared_networks if network.name == network_name), None)
-        if not configuration.available or not configuration.shared_networks_complete or network is None:
+        if (
+            not configuration.available
+            or not configuration.shared_networks_complete
+            or network is None
+            or not network.complete
+        ):
             logger.warning(
                 "Failed to reload current Shared Network %r on server %s. The update was aborted.",
                 network_name,
