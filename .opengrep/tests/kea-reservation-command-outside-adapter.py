@@ -35,6 +35,6 @@ def ok_reads_leases(client):
     return client.command("lease4-get-all", service=["dhcp4"])
 
 
-def ok_consumes_the_typed_adapter(client, family, scope, catalogue):
+def ok_consumes_the_typed_adapter(client, family, catalogue):
     # ok: kea-reservation-command-outside-adapter
-    return client.reservation_snapshot(family, scope, catalogue)
+    return client.reservation_snapshot(family, catalogue)
