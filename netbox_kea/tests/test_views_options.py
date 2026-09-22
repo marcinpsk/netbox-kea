@@ -97,11 +97,6 @@ _OPTION_DEF_LIST_EMPTY: list = []
 _CONFIG_OK = {"result": 0}
 
 
-def _subnet_display_response(version, subnet):
-    """Return one full Subnet response for the presentation read."""
-    return {"result": 0, "arguments": {f"subnet{version}": [subnet]}}
-
-
 def _option_def_config(defs, version=4):
     """Return one Server Configuration response with Option Definitions."""
     return [_catalogue_responses_for_subnets(version, [], option_definitions=tuple(defs))["config-get"]]
@@ -171,13 +166,13 @@ class TestSubnetOptionsView(_ViewTestBase):
 
     def test_get_returns_200(self):
         """GET returns 200 OK."""
-        with stub_kea({"subnet4-get": _subnet_display_response(4, _SUBNET4)}):
+        with stub_kea(_catalogue_responses_for_subnets(4, [_SUBNET4])):
             response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
 
     def test_get_prefills_existing_options(self):
         """GET pre-populates formset with existing option-data from config-get."""
-        with stub_kea({"subnet4-get": _subnet_display_response(4, _SUBNET4)}):
+        with stub_kea(_catalogue_responses_for_subnets(4, [_SUBNET4])):
             response = self.client.get(self._url())
         content = response.content.decode()
         self.assertIn("domain-name-servers", content)
@@ -189,7 +184,7 @@ class TestSubnetOptionsView(_ViewTestBase):
             "subnet": "10.0.0.0/24",
             "option-data": [{"code": 222, "data": "opaque", "always-send": True}],
         }
-        with stub_kea({"subnet4-get": _subnet_display_response(4, subnet)}):
+        with stub_kea(_catalogue_responses_for_subnets(4, [subnet])):
             response = self.client.get(self._url())
 
         self.assertEqual(response.status_code, 200)
@@ -197,6 +192,41 @@ class TestSubnetOptionsView(_ViewTestBase):
             response.context["formset"].initial,
             [{"name": "", "data": "opaque", "always_send": True}],
         )
+
+    def test_get_renders_without_the_subnet_cmds_hook(self):
+        """The editor reads the configuration snapshot, so a missing hook does not block it."""
+        responses = _catalogue_responses_for_subnets(4, [_SUBNET4])
+        responses["subnet4-get"] = {"result": 2, "text": "'subnet4-get' command not supported."}
+        with stub_kea(responses) as kea:
+            response = self.client.get(self._url())
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("8.8.8.8", response.content.decode())
+        self.assertNotIn("subnet4-get", kea.commands())
+
+    def test_get_incomplete_subnet_warns_and_renders_valid_options(self):
+        subnet = {
+            "id": 42,
+            "subnet": "10.0.0.0/24",
+            "option-data": [{"name": "routers", "data": "10.0.0.1"}, {"data": "no identity"}],
+        }
+        with stub_kea(_catalogue_responses_for_subnets(4, [subnet])):
+            response = self.client.get(self._url())
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.context["formset"].initial,
+            [{"name": "routers", "data": "10.0.0.1", "always_send": False}],
+        )
+        self.assertTrue(any(message.level == django_messages.WARNING for message in response.context["messages"]))
+
+    def test_get_unavailable_configuration_shows_diagnostic_and_redirects(self):
+        with stub_kea({"config-get": requests.ConnectionError("unreachable")}):
+            response = self.client.get(self._url())
+
+        self.assertEqual(response.status_code, 302)
+        texts = [str(message) for message in django_messages.get_messages(response.wsgi_request)]
+        self.assertIn("Kea Subnet configuration facts are unavailable.", texts)
 
     def test_post_calls_subnet_update_options(self):
         """POST with valid formset runs the read-modify-write and redirects."""
@@ -258,7 +288,7 @@ class TestSubnetOptionsView(_ViewTestBase):
 
     def test_get_v6_returns_200(self):
         """GET for DHCPv6 subnet options returns 200 OK."""
-        with stub_kea({"subnet6-get": _subnet_display_response(6, _SUBNET6)}):
+        with stub_kea(_catalogue_responses_for_subnets(6, [_SUBNET6])):
             response = self.client.get(self._url(version=6, subnet_id=42))
         self.assertEqual(response.status_code, 200)
         self.assertIn("dns-servers", response.content.decode())
@@ -771,7 +801,7 @@ class TestSubnetOptionsPostInvalid(_ViewTestBase):
     def test_post_invalid_formset_rerenders(self):
         """POST with an invalid formset must re-render 200 without mutating."""
         subnet = {"id": 42, "subnet": "10.0.0.0/24", "option-data": []}
-        with stub_kea({"subnet4-get": _subnet_display_response(4, subnet)}) as kea:
+        with stub_kea(_catalogue_responses_for_subnets(4, [subnet])) as kea:
             response = self.client.post(
                 self._url(),
                 {
@@ -952,14 +982,18 @@ class TestSubnetOptionsSharedNetwork(_ViewTestBase):
 
     def test_get_subnet_in_shared_network(self):
         """A subnet found inside a shared-network is located and rendered."""
-        with stub_kea({"subnet4-get": _subnet_display_response(4, self._SUBNET)}):
+        with stub_kea(
+            _catalogue_responses_for_subnets(4, [], shared_networks=[{"name": "sn", "subnet4": [self._SUBNET]}])
+        ):
             response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "10.99.0.0/24")
 
     def test_post_invalid_formset_rerenders(self):
         """Invalid formset re-renders the form (subnet inside shared-networks), no mutation."""
-        with stub_kea({"subnet4-get": _subnet_display_response(4, self._SUBNET)}) as kea:
+        with stub_kea(
+            _catalogue_responses_for_subnets(4, [], shared_networks=[{"name": "sn", "subnet4": [self._SUBNET]}])
+        ) as kea:
             response = self.client.post(self._url(), {"form-0-name": "dns-servers"})
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "10.99.0.0/24")
@@ -1187,6 +1221,29 @@ class TestServerOptionsPartialPersistError(_ViewTestBase):
             "DHCPv4 server options updated.",
             [str(message) for message in msgs if message.level == django_messages.SUCCESS],
         )
+
+    def test_lost_config_set_reply_is_not_reported_as_applied(self):
+        url = reverse("plugins:netbox_kea:server_dhcp4_options_edit", args=[self.server.pk])
+        with _persist_stub(_SERVER_OPTIONS_CONFIG_GET, **{"config-set": requests.ConnectionError("reply lost")}) as kea:
+            response = self.client.post(
+                url,
+                {
+                    "form-TOTAL_FORMS": "1",
+                    "form-INITIAL_FORMS": "0",
+                    "form-MIN_NUM_FORMS": "0",
+                    "form-MAX_NUM_FORMS": "1000",
+                    "form-0-name": "routers",
+                    "form-0-data": "10.0.0.1",
+                    "form-0-always_send": "",
+                    "form-0-DELETE": "",
+                },
+                follow=True,
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("config-write", kea.commands())
+        texts = [str(message) for message in response.context["messages"]]
+        self.assertFalse(any("applied" in text for text in texts), texts)
+        self.assertIn("Kea did not confirm the change. Check the server configuration before retrying.", texts)
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)

@@ -2,6 +2,7 @@ import logging
 from typing import Any
 
 import requests
+from django.contrib import messages
 from django.http.request import HttpRequest
 from django.urls import reverse
 from netbox.views import generic
@@ -16,6 +17,7 @@ from ..utilities import (
     format_duration,
 )
 from ._base import _option_payload
+from .subnets import _diagnostic_messages
 
 logger = logging.getLogger(__name__)
 
@@ -43,13 +45,14 @@ def _status_duration(arguments: dict[str, Any], field: str) -> str:
     return formatted
 
 
-def _get_global_options(server: "Server") -> dict[str, dict[str, str]]:
+def _get_global_options(request: HttpRequest, server: "Server") -> dict[str, dict[str, str]]:
     """Return formatted global DHCP Options for each enabled DHCP version.
 
     Any per-service failure is logged and skipped so the status page always
     renders.
 
     Args:
+        request: The request that receives the snapshot diagnostics as messages.
         server: The Kea :class:`Server` to query.
 
     Returns:
@@ -70,6 +73,9 @@ def _get_global_options(server: "Server") -> dict[str, dict[str, str]]:
         try:
             snapshot = server_configuration.display(server, version)
             diagnostics = "; ".join(diagnostic.message for diagnostic in snapshot.diagnostics)
+            _diagnostic_messages(
+                request, snapshot.diagnostics, messages.WARNING if snapshot.available else messages.ERROR
+            )
             if not snapshot.available:
                 logger.warning("Global DHCP Options are unavailable for %s: %s", label, diagnostics)
                 continue
@@ -283,6 +289,6 @@ class ServerStatusView(generic.ObjectView):
         can_change = Server.objects.restrict(request.user, "change").filter(pk=instance.pk).exists()
         return {
             "services": services,
-            "global_options": _get_global_options(instance),
+            "global_options": _get_global_options(request, instance),
             "can_change_server": can_change,
         }

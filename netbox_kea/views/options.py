@@ -16,7 +16,7 @@ from utilities.views import register_model_view
 from .. import forms, server_configuration
 from ..constants import Family
 from ..dhcp_options import DHCPOption
-from ..kea import KeaConfigTestError, KeaException, PartialPersistError
+from ..kea import AmbiguousConfigSetError, KeaConfigTestError, KeaException, PartialPersistError
 from ..models import Server
 from ..utilities import (
     OptionalViewTab,
@@ -28,11 +28,7 @@ from .subnets import _SUBNETS_TAB, _diagnostic_messages
 
 logger = logging.getLogger(__name__)
 
-# Single consolidated "Config" tab covering server DHCP Options and custom
-# Option Definitions for both protocols. Owned by ServerOptionDef4View; the other
-# views inject it via config_nav_context(). Two in-page toggles select the section
-# (Server Options or Option Definitions) and family (v4 or v6) across the
-# four underlying URLs, which are unchanged.
+# One Config tab for both sections and both families; ServerOptionDef4View owns it.
 _CONFIG_TAB = OptionalViewTab(label="Config", weight=1050, is_enabled=lambda s: s.dhcp4 or s.dhcp6)
 
 
@@ -74,6 +70,9 @@ def _kea_options_mutation(request: HttpRequest, subject: str):
     """
     try:
         yield
+    except AmbiguousConfigSetError as exc:
+        logger.warning("Options mutation for %s has no confirmed config-set reply: %s", subject, exc)
+        messages.warning(request, "Kea did not confirm the change. Check the server configuration before retrying.")
     except PartialPersistError as exc:
         logger.warning("Options mutation applied but config-write failed for %s: %s", subject, exc)
         messages.warning(request, "Change applied but may not survive a Kea restart (config-write failed).")
@@ -96,9 +95,18 @@ class _BaseSubnetOptionsEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin,
 
     dhcp_version: Family = 4
 
-    def _get_subnet_from_config(self, server: Server, subnet_id: int) -> server_configuration.DeclaredSubnet | None:
-        """Return the typed Subnet facts used to display the editor."""
-        return server_configuration.subnet_for_display(server, self.dhcp_version, subnet_id)
+    def _get_subnet_from_config(
+        self, request: HttpRequest, server: Server, subnet_id: int
+    ) -> server_configuration.DeclaredSubnet | None:
+        """Return the one declared Subnet with this ID from the presentation snapshot."""
+        snapshot = server_configuration.display(server, self.dhcp_version)
+        _diagnostic_messages(
+            request,
+            snapshot.diagnostics,
+            messages.WARNING if snapshot.available else messages.ERROR,
+        )
+        matches = [subnet for subnet in snapshot.subnets if subnet.declared_subnet_id == subnet_id]
+        return matches[0] if len(matches) == 1 else None
 
     def get(self, request, pk: int, subnet_id: int):
         server = get_object_or_404(
@@ -106,7 +114,7 @@ class _BaseSubnetOptionsEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin,
             pk=pk,
         )
         return_url = reverse(f"plugins:netbox_kea:server_subnets{self.dhcp_version}", args=[pk])
-        subnet = self._get_subnet_from_config(server, subnet_id)
+        subnet = self._get_subnet_from_config(request, server, subnet_id)
         if subnet is None:
             messages.error(request, "Could not load subnet configuration from Kea. The form cannot be displayed.")
             return redirect(return_url)
@@ -146,7 +154,7 @@ class _BaseSubnetOptionsEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin,
         formset = forms.SubnetOptionsFormSet(request.POST)
         if not formset.is_valid():
             subnet_cidr = ""
-            subnet = self._get_subnet_from_config(server, subnet_id)
+            subnet = self._get_subnet_from_config(request, server, subnet_id)
             if subnet is not None:
                 subnet_cidr = subnet.declared_cidr
             return render(

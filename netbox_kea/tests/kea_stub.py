@@ -20,6 +20,7 @@ import ipaddress
 import json
 import threading
 from collections import deque
+from collections.abc import Sequence
 from contextlib import contextmanager
 from typing import Any, cast
 from unittest.mock import patch
@@ -331,6 +332,7 @@ def _catalogue_responses_for_subnets(
     subnets: list[dict[str, Any]],
     *,
     config_hash: str = "shared-catalogue",
+    shared_networks: Sequence[Any] = (),
     global_options: tuple[dict[str, Any], ...] = (),
     option_definitions: tuple[dict[str, Any], ...] = (),
 ) -> dict[str, Any]:
@@ -340,7 +342,7 @@ def _catalogue_responses_for_subnets(
     through this entry point, so it stays defined once.
     """
     subnets = list(subnets)
-    configuration: dict[str, Any] = {f"subnet{version}": subnets, "shared-networks": []}
+    configuration: dict[str, Any] = {f"subnet{version}": subnets, "shared-networks": list(shared_networks)}
     if global_options:
         configuration["option-data"] = list(global_options)
     if option_definitions:

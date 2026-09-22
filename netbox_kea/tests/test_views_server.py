@@ -25,6 +25,7 @@ connectivity checks.
 from unittest.mock import patch
 
 import requests
+from django.contrib import messages as django_messages
 from django.contrib.contenttypes.models import ContentType
 from django.test import override_settings
 from django.urls import reverse
@@ -915,6 +916,26 @@ class TestGetGlobalOptionsGenericException(_ViewTestBase):
                 self.assertEqual(response.status_code, 200)
                 self.assertEqual(response.context["global_options"], {})
                 self.assertIn("Global DHCP Options", logs.output[0])
+
+    def test_unavailable_family_configuration_is_shown_as_an_error(self):
+        with _status_stub(**{"config-get": {"result": 0, "arguments": {"Dhcp4": ["unexpected"]}}}):
+            response = self.client.get(self._url())
+
+        self.assertEqual(response.status_code, 200)
+        errors = [str(m) for m in response.context["messages"] if m.level == django_messages.ERROR]
+        self.assertIn("Kea did not return a Dhcp4 configuration object.", errors)
+
+    def test_incomplete_global_options_render_valid_values_with_a_warning(self):
+        config = _catalogue_responses_for_subnets(
+            4, [], global_options=({"code": 15, "name": "domain-name", "data": "example.com"}, {"data": "x"})
+        )["config-get"]
+        with _status_stub(**{"config-get": config}):
+            response = self.client.get(self._url())
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["global_options"]["DHCPv4"], {"Domain Name": "example.com"})
+        warnings = [str(m) for m in response.context["messages"] if m.level == django_messages.WARNING]
+        self.assertTrue(warnings, list(response.context["messages"]))
 
 
 # ---------------------------------------------------------------------------
