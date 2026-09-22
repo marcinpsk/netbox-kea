@@ -14,6 +14,17 @@
 </div>
 {% endif %}
 
+{% if warnings %}
+<div class="alert alert-warning mt-3">
+  <strong>Some server data is incomplete:</strong>
+  <ul class="mb-0 mt-1">
+    {% for name, msg in warnings %}
+    <li><strong>{{ name }}</strong>: {{ msg }}</li>
+    {% endfor %}
+  </ul>
+</div>
+{% endif %}
+
 <div class="card mb-3">
   <div class="card-header d-flex justify-content-between align-items-center">
     <strong><i class="mdi mdi-lan"></i> DHCPv{{ dhcp_version }} Shared Networks</strong>

@@ -1375,11 +1375,13 @@ class KeaClient:
         description: str | None = None,
         interface: str | None = None,
         relay_addresses: list[str] | None = None,
-        options: list[dict] | None = None,
+        dns_servers: list[str] | None = None,
+        ntp_servers: list[str] | None = None,
     ) -> None:
         """Update a shared network's properties via config-get → config-test → config-set → config-write.
 
-        Only provided (non-None) fields are modified; others are left unchanged.
+        Only provided (non-None) fields are modified; others are left unchanged. DNS
+        and NTP updates preserve all unmanaged DHCP Options and existing option metadata.
         Raises ``KeaException`` if *name* is not found in the config.
         Raises ``KeaConfigTestError`` if config-test validation fails.
         Raises ``PartialPersistError`` if config-write fails after a successful config-set (change
@@ -1415,8 +1417,34 @@ class KeaClient:
                 network["relay"] = {"ip-addresses": relay_addresses}
             else:
                 network.pop("relay", None)
-        if options is not None:
-            network["option-data"] = options
+        if dns_servers is not None or ntp_servers is not None:
+            dns_names = {"domain-name-servers", "dns-servers"}
+            ntp_names = {"ntp-servers", "sntp-servers"}
+            existing_options = network.get("option-data", [])
+            existing_dns = next((option for option in existing_options if option.get("name") in dns_names), None)
+            existing_ntp = next((option for option in existing_options if option.get("name") in ntp_names), None)
+            preserved_options = [
+                option
+                for option in existing_options
+                if (option.get("name") not in dns_names or dns_servers is None)
+                and (option.get("name") not in ntp_names or ntp_servers is None)
+            ]
+            new_options: list[dict[str, Any]] = []
+            if dns_servers:
+                dns_option = (
+                    dict(existing_dns)
+                    if existing_dns
+                    else {"name": "domain-name-servers" if version == 4 else "dns-servers"}
+                )
+                dns_option["data"] = ",".join(dns_servers)
+                new_options.append(dns_option)
+            if ntp_servers:
+                ntp_option = (
+                    dict(existing_ntp) if existing_ntp else {"name": "ntp-servers" if version == 4 else "sntp-servers"}
+                )
+                ntp_option["data"] = ",".join(ntp_servers)
+                new_options.append(ntp_option)
+            network["option-data"] = preserved_options + new_options
 
         self._apply_config(service, config)
 

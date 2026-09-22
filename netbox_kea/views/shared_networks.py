@@ -1,6 +1,5 @@
 import logging
 from typing import Any
-from urllib.parse import urlencode as _urlencode
 
 import requests
 from django.contrib import messages
@@ -12,15 +11,21 @@ from django.views import View
 from netbox.views import generic
 from utilities.views import register_model_view
 
-from .. import forms, tables
+from .. import forms, server_configuration, tables
 from ..constants import Family
-from ..kea import KeaClient, KeaException, PartialPersistError
+from ..kea import KeaException, PartialPersistError
 from ..models import Server
 from ..utilities import (
     check_dhcp_enabled,
     kea_error_hint,
 )
-from ._base import ConditionalLoginRequiredMixin, _KeaChangeMixin
+from ._base import (
+    ConditionalLoginRequiredMixin,
+    _diagnostic_messages,
+    _KeaChangeMixin,
+    _shared_network_row,
+    _subnet_option_fields,
+)
 from .subnets import _SUBNETS_TAB, subnets_nav_context
 
 logger = logging.getLogger(__name__)
@@ -40,60 +45,20 @@ class BaseServerSharedNetworksView(generic.ObjectChildrenView):
     dhcp_version: Family
 
     def get_children(self, request: HttpRequest, parent: Server) -> list[dict[str, Any]]:
-        """Fetch shared-networks from config-get and return one dict per network."""
+        """Return Shared Network rows from the Server Configuration snapshot."""
         if check_dhcp_enabled(parent, self.dhcp_version) is not None:
             return []
-        try:
-            client = parent.get_client(version=self.dhcp_version)
-            config = client.command("config-get", service=[f"dhcp{self.dhcp_version}"])
-        except KeaException:
-            logger.debug("Failed to fetch config-get for shared networks on server %s", parent.pk)
+        snapshot = server_configuration.display(parent, self.dhcp_version)
+        _diagnostic_messages(
+            request, snapshot.diagnostics, messages.ERROR if not snapshot.available else messages.WARNING
+        )
+        if not snapshot.available:
+            messages.error(request, "Failed to load Shared Network configuration from Kea.")
             return []
-        except (requests.RequestException, ValueError):
-            logger.debug("Transport error fetching config-get for shared networks on server %s", parent.pk)
-            return []
-        if not config or not isinstance(config[0], dict):
-            return []
-        args = config[0].get("arguments")
-        if not isinstance(args, dict):
-            return []
-        dhcp_conf = args.get(f"Dhcp{self.dhcp_version}", {})
         can_change = Server.objects.restrict(request.user, "change").filter(pk=parent.pk).exists()
-        result = []
-        for sn in dhcp_conf.get("shared-networks", []):
-            if not isinstance(sn, dict):
-                logger.warning("Skipping non-dict shared-network entry on server %s", parent.pk)
-                continue
-            subnets = sn.get(f"subnet{self.dhcp_version}", [])
-            if not isinstance(subnets, list):
-                subnets = []
-            subnet_links = [
-                {
-                    "cidr": s["subnet"],
-                    "url": (
-                        reverse(
-                            f"plugins:netbox_kea:server_leases{self.dhcp_version}",
-                            args=[parent.pk],
-                        )
-                        + "?"
-                        + _urlencode({"by": "subnet", "q": s["subnet"]})
-                    ),
-                }
-                for s in subnets
-                if isinstance(s, dict) and s.get("subnet")
-            ]
-            result.append(
-                {
-                    "name": sn.get("name", ""),
-                    "description": sn.get("description", ""),
-                    "subnet_count": len(subnets),
-                    "subnet_links": subnet_links,
-                    "server_pk": parent.pk,
-                    "dhcp_version": self.dhcp_version,
-                    "can_change": can_change,
-                }
-            )
-        return result
+        return [
+            _shared_network_row(network, parent, self.dhcp_version, can_change) for network in snapshot.shared_networks
+        ]
 
     def get(self, request: HttpRequest, **kwargs: Any) -> HttpResponse:
         """Handle GET: check DHCP enabled, then render shared-network table."""
@@ -290,65 +255,37 @@ class ServerSharedNetwork4DeleteView(BaseServerSharedNetworkDeleteView):
 
 
 class BaseServerSharedNetworkEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin, View):
-    """Edit a shared network's description, interface, relay, and option-data.
-
-    Shared network updates require a config-get → modify → config-test → config-write
-    cycle because there is no free ``network{v}-update`` Kea hook command.
-    """
+    """Edit a Shared Network's managed configuration fields."""
 
     dhcp_version: Family
 
     def _success_url(self, server: Server) -> str:
         return reverse(f"plugins:netbox_kea:server_shared_networks{self.dhcp_version}", args=[server.pk])
 
-    def _fetch_network(self, client: "KeaClient", network_name: str) -> dict:
-        """Return the shared-network dict from config-get, or {} if not found."""
-        try:
-            resp = client.command("config-get", service=[f"dhcp{self.dhcp_version}"])
-            if isinstance(resp, list) and resp and isinstance(resp[0], dict):
-                args = resp[0].get("arguments")
-            elif isinstance(resp, dict):
-                args = resp.get("arguments")
-            else:
-                logger.warning("config-get returned unexpected response shape for dhcp%s", self.dhcp_version)
-                return {}
-            if not isinstance(args, dict):
-                logger.warning("config-get returned unexpected arguments for dhcp%s", self.dhcp_version)
-                return {}
-            dhcp_key = f"Dhcp{self.dhcp_version}"
-            for sn in args.get(dhcp_key, {}).get("shared-networks", []):
-                if sn.get("name") == network_name:
-                    return sn
-        except (KeaException, requests.RequestException):
-            logger.exception("Failed to fetch config-get for shared network edit on server")
-        return {}
-
     def get(self, request: HttpRequest, pk: int, network_name: str) -> HttpResponse:
         """Render the edit form pre-populated with current values."""
         server = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
-        try:
-            client = server.get_client(version=self.dhcp_version)
-        except ValueError:
-            logger.exception("Failed to create Kea client for shared network edit on server %s", server.pk)
-            messages.error(request, "Failed to connect to Kea: see server logs.")
-            return redirect(self._success_url(server))
-        network = self._fetch_network(client, network_name)
+        configuration = server_configuration.display(server, self.dhcp_version)
+        _diagnostic_messages(
+            request,
+            configuration.diagnostics,
+            messages.ERROR if not configuration.available else messages.WARNING,
+        )
+        network = next((network for network in configuration.shared_networks if network.name == network_name), None)
 
-        if not network:
+        if network is None:
             messages.error(request, f"Shared network '{network_name}' not found or could not be retrieved.")
             return redirect(self._success_url(server))
 
-        initial: dict[str, Any] = {"name": network_name}
-        initial["description"] = network.get("description", "")
-        initial["interface"] = network.get("interface", "")
-        relay = network.get("relay", {})
-        initial["relay_addresses"] = ", ".join(relay.get("ip-addresses", []))
-        for opt in network.get("option-data", []):
-            opt_name = opt.get("name", "")
-            if opt_name in ("domain-name-servers", "dns-servers"):
-                initial["dns_servers"] = opt.get("data", "")
-            elif opt_name in ("ntp-servers", "sntp-servers"):
-                initial["ntp_servers"] = opt.get("data", "")
+        option_fields = _subnet_option_fields(network.options)
+        initial: dict[str, Any] = {
+            "name": network_name,
+            "description": network.description or "",
+            "interface": network.interface or "",
+            "relay_addresses": ", ".join(str(address) for address in network.relay_addresses),
+            "dns_servers": option_fields.get("dns_servers", ""),
+            "ntp_servers": option_fields.get("ntp_servers", ""),
+        }
 
         form = forms.SharedNetworkEditForm(initial=initial)
         return render(
@@ -386,30 +323,19 @@ class BaseServerSharedNetworkEditView(_KeaChangeMixin, ConditionalLoginRequiredM
         relay_addresses = (
             [s.strip() for s in cd["relay_addresses"].split(",") if s.strip()] if cd["relay_addresses"] else []
         )
+        dns_servers = [address for address in cd["dns_servers"].split(",") if address]
+        ntp_servers = [address for address in cd["ntp_servers"].split(",") if address]
 
-        # Preserve option-data entries that are not DNS/NTP — we only manage those
-        # two via the form and must not silently drop unrelated options on save.
-        try:
-            client = server.get_client(version=self.dhcp_version)
-        except ValueError:
-            logger.exception("Failed to create Kea client for shared network update on server %s", server.pk)
-            messages.error(request, "Failed to connect to Kea: see server logs.")
-            return render(
-                request,
-                "netbox_kea/server_shared_network_edit.html",
-                {
-                    "object": server,
-                    "form": form,
-                    "network_name": network_name,
-                    "dhcp_version": self.dhcp_version,
-                    "cancel_url": self._success_url(server),
-                    "tab": self.tab,
-                },
-            )
-        existing_network = self._fetch_network(client, network_name)
-        if not existing_network:
+        configuration = server_configuration.for_verification(server, self.dhcp_version)
+        _diagnostic_messages(
+            request,
+            configuration.diagnostics,
+            messages.ERROR if not configuration.available else messages.WARNING,
+        )
+        network = next((network for network in configuration.shared_networks if network.name == network_name), None)
+        if not configuration.available or not configuration.shared_networks_complete or network is None:
             logger.warning(
-                "Failed to reload current shared-network %r on server %s — aborting update to preserve option-data",
+                "Failed to reload current Shared Network %r on server %s. The update was aborted.",
                 network_name,
                 server.pk,
             )
@@ -426,40 +352,17 @@ class BaseServerSharedNetworkEditView(_KeaChangeMixin, ConditionalLoginRequiredM
                     "tab": self.tab,
                 },
             )
-        preserved_options: list[dict] = [
-            opt
-            for opt in existing_network.get("option-data", [])
-            if opt.get("name") not in ("domain-name-servers", "dns-servers", "ntp-servers", "sntp-servers")
-        ]
-
-        options: list[dict] = list(preserved_options)
-        if cd.get("dns_servers"):
-            dns_name = "domain-name-servers" if self.dhcp_version == 4 else "dns-servers"
-            dns_aliases = ("domain-name-servers", "dns-servers")
-            existing_dns = next(
-                (o for o in existing_network.get("option-data", []) if o.get("name") in dns_aliases), None
-            )
-            new_dns = dict(existing_dns) if existing_dns else {"name": dns_name}
-            new_dns["data"] = cd["dns_servers"]
-            options.append(new_dns)
-        if cd.get("ntp_servers"):
-            ntp_name = "ntp-servers" if self.dhcp_version == 4 else "sntp-servers"
-            ntp_aliases = ("ntp-servers", "sntp-servers")
-            existing_ntp = next(
-                (o for o in existing_network.get("option-data", []) if o.get("name") in ntp_aliases), None
-            )
-            new_ntp = dict(existing_ntp) if existing_ntp else {"name": ntp_name}
-            new_ntp["data"] = cd["ntp_servers"]
-            options.append(new_ntp)
 
         try:
+            client = server.get_client(version=self.dhcp_version)
             client.network_update(
                 version=self.dhcp_version,
                 name=network_name,
                 description=cd.get("description") or "",
                 interface=cd.get("interface") or "",
                 relay_addresses=relay_addresses,
-                options=options,
+                dns_servers=dns_servers,
+                ntp_servers=ntp_servers,
             )
             messages.success(request, f"Shared network '{network_name}' updated.")
         except PartialPersistError:

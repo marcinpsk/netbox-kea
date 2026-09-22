@@ -157,6 +157,10 @@ def test_catalogue_responses_shape():
     assert configured["option-data"] == list(options)
     assert configured["option-def"] == list(definitions)
 
+    shared_networks = [{"name": "clients", "subnet4": []}]
+    with_networks = _catalogue_responses_for_subnets(4, [], shared_networks=shared_networks)
+    assert with_networks["config-get"]["arguments"]["Dhcp4"]["shared-networks"] == shared_networks
+
 
 @pytest.mark.parametrize(
     ("host", "family"),

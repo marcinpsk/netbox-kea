@@ -3183,29 +3183,92 @@ class TestNetworkUpdate(TestCase):
             # The other network's relay must be untouched.
             self.assertIn("relay", other)
 
-    def test_updates_options_in_payload(self):
-        """options list is written to 'option-data' on the network in config-test and config-set payloads."""
-        new_options = [{"name": "domain-name-servers", "data": "8.8.8.8"}]
+    def test_replaces_managed_options_and_preserves_unmanaged_entries(self):
+        """DNS and NTP updates preserve unrelated DHCP Options and existing DNS metadata."""
+        config_with_options = [
+            {
+                "result": 0,
+                "arguments": {
+                    "Dhcp4": {
+                        "shared-networks": [
+                            {
+                                "name": "prod-net",
+                                "option-data": [
+                                    {"name": "dns-servers", "data": "192.0.2.53", "always-send": True},
+                                    {"name": "sntp-servers", "data": "192.0.2.123"},
+                                    {"name": "vendor-specific", "data": "deadbeef"},
+                                ],
+                                "subnet4": [],
+                            },
+                            {"name": "other-net", "option-data": [], "subnet4": []},
+                        ],
+                        "subnet4": [],
+                    }
+                },
+            }
+        ]
         with patch.object(
             self.client._session,
             "post",
             side_effect=_side_effects(
-                _CONFIG_GET_WITH_SHARED_NETWORK,
+                config_with_options,
                 _CONFIG_TEST_OK_RESP,
                 _CONFIG_SET_OK_RESP,
                 _CONFIG_WRITE_RESP,
             ),
         ) as mock_post:
-            self.client.network_update(version=4, name="prod-net", options=new_options)
+            self.client.network_update(
+                version=4,
+                name="prod-net",
+                dns_servers=["198.18.0.53", "198.18.0.54"],
+                ntp_servers=[],
+            )
         payloads = self._payloads(mock_post)
         for cmd in ("config-test", "config-set"):
             payload = next(p for p in payloads if p["command"] == cmd)
             networks = payload["arguments"]["Dhcp4"]["shared-networks"]
             target = next(n for n in networks if n["name"] == "prod-net")
             other = next(n for n in networks if n["name"] == "other-net")
-            self.assertEqual(target["option-data"], new_options)
-            # The other network's option-data must be untouched.
-            self.assertNotEqual(other.get("option-data"), new_options)
+            self.assertEqual(
+                target["option-data"],
+                [
+                    {"name": "vendor-specific", "data": "deadbeef"},
+                    {
+                        "name": "dns-servers",
+                        "data": "198.18.0.53,198.18.0.54",
+                        "always-send": True,
+                    },
+                ],
+            )
+            self.assertEqual(other["option-data"], [])
+
+    def test_adds_family_specific_v6_option_names(self):
+        config = [
+            {
+                "result": 0,
+                "arguments": {"Dhcp6": {"shared-networks": [{"name": "prod-net", "subnet6": []}]}},
+            }
+        ]
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(config, _CONFIG_TEST_OK_RESP, _CONFIG_SET_OK_RESP, _CONFIG_WRITE_RESP),
+        ) as mock_post:
+            self.client.network_update(
+                version=6,
+                name="prod-net",
+                dns_servers=["2001:db8::53"],
+                ntp_servers=["2001:db8::123"],
+            )
+
+        payload = next(p for p in self._payloads(mock_post) if p["command"] == "config-set")
+        self.assertEqual(
+            payload["arguments"]["Dhcp6"]["shared-networks"][0]["option-data"],
+            [
+                {"name": "dns-servers", "data": "2001:db8::53"},
+                {"name": "sntp-servers", "data": "2001:db8::123"},
+            ],
+        )
 
     def test_config_test_failure_raises_kea_config_test_error(self):
         """Non-2 config-test failure raises KeaConfigTestError (not PartialPersistError)."""
