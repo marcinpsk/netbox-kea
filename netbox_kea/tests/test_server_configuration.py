@@ -58,8 +58,32 @@ class TestServerConfiguration(TestCase):
         self.assertEqual(access.member_cidrs, ("198.18.1.0/24",))
         self.assertEqual(snapshot.subnets[0].shared_network_name, "access")
         self.assertEqual(snapshot.option_definitions[0].record_types, ("uint16", "string"))
+        self.assertTrue(snapshot.global_options_complete)
+        self.assertTrue(empty.complete)
+        self.assertTrue(access.complete)
         self.assertIsNone(snapshot.option_definitions[0].encapsulate)
         self.assertEqual(kea.commands(), ["config-get"])
+
+    def test_per_collection_completeness_survives_one_invalid_entry(self):
+        configuration = {
+            "option-data": [{"code": 6, "data": "198.18.0.53"}, {"data": "no identity"}],
+            "shared-networks": [
+                {"name": "broken", "option-data": None, "subnet4": []},
+                {"name": "fine", "subnet4": [{"id": 7, "subnet": "198.18.7.0/24"}]},
+            ],
+        }
+        with stub_kea({"config-get": self.response(configuration)}):
+            snapshot = server_configuration.display(self.server, 4)
+
+        self.assertTrue(snapshot.available)
+        self.assertFalse(snapshot.complete)
+        self.assertFalse(snapshot.global_options_complete)
+        self.assertEqual([option.code for option in snapshot.global_options], [6])
+        self.assertEqual(len(snapshot.shared_networks), 2, snapshot.diagnostics)
+        broken, fine = snapshot.shared_networks
+        self.assertFalse(broken.complete)
+        self.assertEqual(broken.options, ())
+        self.assertTrue(fine.complete)
 
     def test_invalid_facts_survive_and_cache(self):
         configuration = {

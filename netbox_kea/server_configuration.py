@@ -95,6 +95,7 @@ class SharedNetwork:
     relay_addresses: tuple[IPAddressValue, ...]
     options: tuple[DHCPOption, ...]
     member_cidrs: tuple[str, ...]
+    complete: bool
 
 
 @dataclass(frozen=True)
@@ -126,6 +127,8 @@ class ServerConfigurationSnapshot:
     available: bool
     complete: bool
     _membership_complete: tuple[bool, ...] = ()
+    # Every server-global option-data entry parsed.
+    global_options_complete: bool = False
 
 
 def _validate_family(family: int) -> Family:
@@ -339,18 +342,26 @@ def _parse_configuration(
                 membership_complete.append(valid_name)
                 member_cidrs.append(fact.declared_cidr)
         if valid_name and isinstance(name, str):
+            network_diagnostics = len(diagnostics)
+            description = _optional_string(shared_network, "description", path, diagnostics, allow_empty=True)
+            interface = _optional_string(shared_network, "interface", path, diagnostics)
+            relay_addresses = _relay_addresses(shared_network.get("relay"), family, path, diagnostics)
+            network_options = _parse_options(shared_network.get("option-data", []), path, diagnostics)
             networks.append(
                 SharedNetwork(
                     name=name,
-                    description=_optional_string(shared_network, "description", path, diagnostics, allow_empty=True),
-                    interface=_optional_string(shared_network, "interface", path, diagnostics),
-                    relay_addresses=_relay_addresses(shared_network.get("relay"), family, path, diagnostics),
-                    options=_parse_options(shared_network.get("option-data", []), path, diagnostics),
+                    description=description,
+                    interface=interface,
+                    relay_addresses=relay_addresses,
+                    options=network_options,
                     member_cidrs=tuple(member_cidrs),
+                    complete=len(diagnostics) == network_diagnostics,
                 )
             )
 
+    global_diagnostics = len(diagnostics)
     options = _parse_options(configuration.get("option-data", []), f"Dhcp{family}", diagnostics)
+    global_options_complete = len(diagnostics) == global_diagnostics
     definitions = _parse_definitions(configuration.get("option-def", []), family, diagnostics)
     return ServerConfigurationSnapshot(
         server_id=server.pk,
@@ -365,6 +376,7 @@ def _parse_configuration(
         complete=not diagnostics,
         configuration_hash=configuration_hash,
         _membership_complete=tuple(membership_complete),
+        global_options_complete=global_options_complete,
     )
 
 
