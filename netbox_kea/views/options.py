@@ -13,8 +13,9 @@ from django.urls import reverse
 from django.views import View
 from utilities.views import register_model_view
 
-from .. import forms
+from .. import forms, server_configuration
 from ..constants import Family
+from ..dhcp_options import DHCPOption
 from ..kea import KeaConfigTestError, KeaException, PartialPersistError
 from ..models import Server
 from ..utilities import (
@@ -23,14 +24,14 @@ from ..utilities import (
     kea_error_hint,
 )
 from ._base import ConditionalLoginRequiredMixin, _KeaChangeMixin
-from .subnets import _SUBNETS_TAB
+from .subnets import _SUBNETS_TAB, _diagnostic_messages
 
 logger = logging.getLogger(__name__)
 
-# Single consolidated "Config" tab covering server-level option-data AND custom
-# option definitions for both protocols. Owned by ServerOptionDef4View; the other
-# views inject it via config_nav_context(). Two in-page toggles — section
-# (Server Options | Option Definitions) and family (v4 | v6) — switch between the
+# Single consolidated "Config" tab covering server DHCP Options and custom
+# Option Definitions for both protocols. Owned by ServerOptionDef4View; the other
+# views inject it via config_nav_context(). Two in-page toggles select the section
+# (Server Options or Option Definitions) and family (v4 or v6) across the
 # four underlying URLs, which are unchanged.
 _CONFIG_TAB = OptionalViewTab(label="Config", weight=1050, is_enabled=lambda s: s.dhcp4 or s.dhcp6)
 
@@ -38,8 +39,7 @@ _CONFIG_TAB = OptionalViewTab(label="Config", weight=1050, is_enabled=lambda s: 
 def config_nav_context(server_pk: int, section: str, dhcp_version: Family) -> dict[str, Any]:
     """Build context for the Config tab's section+family toggle nav.
 
-    ``section`` is ``"options"`` (server option-data editor) or ``"option_def"``
-    (custom option definitions list).
+    ``section`` selects the server DHCP Option editor or the Option Definition list.
     """
     options_name = "server_dhcp{}_options_edit"
     optiondef_name = "server_option_def{}"
@@ -76,10 +76,10 @@ def _kea_options_mutation(request: HttpRequest, subject: str):
         yield
     except PartialPersistError as exc:
         logger.warning("Options mutation applied but config-write failed for %s: %s", subject, exc)
-        messages.warning(request, kea_error_hint(exc))
+        messages.warning(request, "Change applied but may not survive a Kea restart (config-write failed).")
     except KeaConfigTestError:
         logger.warning("Config-test rejected options changes for %s", subject)
-        messages.error(request, "Config validation failed — no changes were applied.")
+        messages.error(request, "Config validation failed. No changes were applied.")
     except KeaException as exc:
         logger.exception("Kea error during options mutation for %s", subject)
         messages.error(request, kea_error_hint(exc))
@@ -92,36 +92,13 @@ def _kea_options_mutation(request: HttpRequest, subject: str):
 
 
 class _BaseSubnetOptionsEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin, View):
-    """GET/POST view for editing option-data of a single subnet.
-
-    Loads the current options from Kea via ``config-get``, renders a formset,
-    and on POST validates + saves via ``subnet_update_options`` (config-get →
-    config-test → config-write).
-    """
+    """GET/POST view for editing the DHCP Options of one Subnet."""
 
     dhcp_version: Family = 4
 
-    def _get_subnet_from_config(self, client, subnet_id: int) -> dict | None:
-        """Fetch config and return the subnet dict, or None if not found or on error."""
-        service = f"dhcp{self.dhcp_version}"
-        dhcp_key = f"Dhcp{self.dhcp_version}"
-        subnet_key = f"subnet{self.dhcp_version}"
-        try:
-            resp = client.command("config-get", service=[service])
-        except (KeaException, requests.RequestException, ValueError):
-            logger.exception("Failed to fetch config-get for subnet options (subnet %s)", subnet_id)
-            return None
-        config = (
-            resp[0].get("arguments") if isinstance(resp, list) and resp and isinstance(resp[0], dict) else None
-        ) or {}
-        for s in config.get(dhcp_key, {}).get(subnet_key, []):
-            if s.get("id") == subnet_id:
-                return s
-        for sn in config.get(dhcp_key, {}).get("shared-networks", []):
-            for s in sn.get(subnet_key, []):
-                if s.get("id") == subnet_id:
-                    return s
-        return None
+    def _get_subnet_from_config(self, server: Server, subnet_id: int) -> server_configuration.DeclaredSubnet | None:
+        """Return the typed Subnet facts used to display the editor."""
+        return server_configuration.subnet_for_display(server, self.dhcp_version, subnet_id)
 
     def get(self, request, pk: int, subnet_id: int):
         server = get_object_or_404(
@@ -129,23 +106,17 @@ class _BaseSubnetOptionsEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin,
             pk=pk,
         )
         return_url = reverse(f"plugins:netbox_kea:server_subnets{self.dhcp_version}", args=[pk])
-        try:
-            client = server.get_client(version=self.dhcp_version)
-        except (KeaException, requests.RequestException, ValueError):
-            logger.exception("Failed to get Kea client for server %s", pk)
-            messages.error(request, "An internal error occurred.")
-            return redirect(return_url)
-        subnet = self._get_subnet_from_config(client, subnet_id)
+        subnet = self._get_subnet_from_config(server, subnet_id)
         if subnet is None:
             messages.error(request, "Could not load subnet configuration from Kea. The form cannot be displayed.")
             return redirect(return_url)
         initial = [
             {
-                "name": opt.get("name", ""),
-                "data": opt.get("data", ""),
-                "always_send": opt.get("always-send", False),
+                "name": opt.name or "",
+                "data": opt.data,
+                "always_send": bool(opt.always_send),
             }
-            for opt in subnet.get("option-data", [])
+            for opt in subnet.configuration.options
         ]
         formset = forms.SubnetOptionsFormSet(initial=initial)
         return render(
@@ -155,7 +126,7 @@ class _BaseSubnetOptionsEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin,
                 "object": server,
                 "server": server,
                 "subnet_id": subnet_id,
-                "subnet_cidr": subnet.get("subnet", ""),
+                "subnet_cidr": subnet.declared_cidr,
                 "dhcp_version": self.dhcp_version,
                 "formset": formset,
                 "return_url": return_url,
@@ -175,13 +146,9 @@ class _BaseSubnetOptionsEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin,
         formset = forms.SubnetOptionsFormSet(request.POST)
         if not formset.is_valid():
             subnet_cidr = ""
-            try:
-                client = server.get_client(version=self.dhcp_version)
-                subnet = self._get_subnet_from_config(client, subnet_id)
-                if subnet:
-                    subnet_cidr = subnet.get("subnet", "")
-            except (KeaException, requests.RequestException, ValueError):
-                logger.exception("Failed to get Kea client for server %s while re-rendering form", pk)
+            subnet = self._get_subnet_from_config(server, subnet_id)
+            if subnet is not None:
+                subnet_cidr = subnet.declared_cidr
             return render(
                 request,
                 "netbox_kea/server_subnet_options_edit.html",
@@ -197,14 +164,9 @@ class _BaseSubnetOptionsEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin,
                 },
             )
 
-        options = []
-        for f in formset.forms:
-            if not f.cleaned_data or f.cleaned_data.get("DELETE"):
-                continue
-            opt: dict = {"name": f.cleaned_data["name"], "data": f.cleaned_data["data"]}
-            if f.cleaned_data.get("always_send"):
-                opt["always-send"] = True
-            options.append(opt)
+        options = [
+            form.cleaned_data for form in formset.forms if form.cleaned_data and not form.cleaned_data.get("DELETE")
+        ]
 
         with _kea_options_mutation(request, f"subnet {subnet_id} on server {pk}"):
             client = server.get_client(version=self.dhcp_version)
@@ -218,14 +180,14 @@ class _BaseSubnetOptionsEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin,
 
 
 class ServerSubnet4OptionsEditView(_BaseSubnetOptionsEditView):
-    """Edit option-data for a DHCPv4 subnet."""
+    """Edit DHCP Options for a DHCPv4 Subnet."""
 
     dhcp_version = 4
     tab = _SUBNETS_TAB
 
 
 class ServerSubnet6OptionsEditView(_BaseSubnetOptionsEditView):
-    """Edit option-data for a DHCPv6 subnet."""
+    """Edit DHCP Options for a DHCPv6 Subnet."""
 
     dhcp_version = 6
     tab = _SUBNETS_TAB
@@ -237,50 +199,34 @@ class ServerSubnet6OptionsEditView(_BaseSubnetOptionsEditView):
 
 
 class _BaseServerOptionsEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin, View):
-    """GET/POST view for editing server-level (global) option-data.
-
-    Loads current server options from ``config-get``, renders a formset, and on
-    POST validates + saves via ``server_update_options`` (config-get → config-test
-    → config-write).
-    """
+    """GET/POST view for editing server-global DHCP Options."""
 
     dhcp_version: Family = 4
 
-    def _get_options_from_config(self, client) -> list[dict] | None:
-        """Fetch config and return the server-level option-data list, or None on error."""
-        service = f"dhcp{self.dhcp_version}"
-        dhcp_key = f"Dhcp{self.dhcp_version}"
-        try:
-            resp = client.command("config-get", service=[service])
-        except (KeaException, requests.RequestException, ValueError):
-            logger.exception("Failed to fetch config-get for server options (version %s)", self.dhcp_version)
-            return None
-        config = (
-            resp[0].get("arguments") if isinstance(resp, list) and resp and isinstance(resp[0], dict) else None
-        ) or {}
-        return config.get(dhcp_key, {}).get("option-data", [])
+    def _get_options_from_config(self, request: HttpRequest, server: Server) -> tuple[DHCPOption, ...] | None:
+        """Return valid server DHCP Options from the presentation snapshot."""
+        snapshot = server_configuration.display(server, self.dhcp_version)
+        _diagnostic_messages(
+            request,
+            snapshot.diagnostics,
+            messages.WARNING if snapshot.available else messages.ERROR,
+        )
+        return snapshot.global_options if snapshot.available else None
 
     def get(self, request, pk: int):
         server = get_object_or_404(
             Server.objects.restrict(request.user, "change"),
             pk=pk,
         )
-        client: object | None = None
-        try:
-            client = server.get_client(version=self.dhcp_version)
-        except (KeaException, requests.RequestException, ValueError):
-            logger.exception("Failed to get Kea client for server %s", pk)
-            messages.error(request, "An internal error occurred.")
-            return redirect(reverse("plugins:netbox_kea:server", args=[pk]))
-        existing = self._get_options_from_config(client)
+        existing = self._get_options_from_config(request, server)
         if existing is None:
             messages.error(request, "Could not load server options from Kea. The form cannot be displayed.")
             return redirect(reverse("plugins:netbox_kea:server", args=[pk]))
         initial = [
             {
-                "name": opt.get("name", ""),
-                "data": opt.get("data", ""),
-                "always_send": opt.get("always-send", False),
+                "name": opt.name or "",
+                "data": opt.data,
+                "always_send": bool(opt.always_send),
             }
             for opt in existing
         ]
@@ -317,14 +263,9 @@ class _BaseServerOptionsEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin,
                 },
             )
 
-        options = []
-        for f in formset.forms:
-            if not f.cleaned_data or f.cleaned_data.get("DELETE"):
-                continue
-            opt: dict = {"name": f.cleaned_data["name"], "data": f.cleaned_data["data"]}
-            if f.cleaned_data.get("always_send"):
-                opt["always-send"] = True
-            options.append(opt)
+        options = [
+            form.cleaned_data for form in formset.forms if form.cleaned_data and not form.cleaned_data.get("DELETE")
+        ]
 
         with _kea_options_mutation(request, f"dhcp{self.dhcp_version} server options on server {pk}"):
             client = server.get_client(version=self.dhcp_version)
@@ -334,13 +275,13 @@ class _BaseServerOptionsEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin,
 
 
 class ServerDHCP4OptionsEditView(_BaseServerOptionsEditView):
-    """Edit server-level option-data for DHCPv4."""
+    """Edit server-global DHCP Options for DHCPv4."""
 
     dhcp_version = 4
 
 
 class ServerDHCP6OptionsEditView(_BaseServerOptionsEditView):
-    """Edit server-level option-data for DHCPv6."""
+    """Edit server-global DHCP Options for DHCPv6."""
 
     dhcp_version = 6
 
@@ -436,12 +377,12 @@ class CombinedServerStatusBadgeView(ConditionalLoginRequiredMixin, View):
 
 
 # ---------------------------------------------------------------------------
-# option-def views
+# Option Definition views
 # ---------------------------------------------------------------------------
 
 
 class BaseServerOptionDefView(ConditionalLoginRequiredMixin, View):
-    """List option-def entries for a Kea server.
+    """List Option Definitions for a Kea Server.
 
     Subclasses set ``dhcp_version`` to 4 or 6.
     """
@@ -449,33 +390,35 @@ class BaseServerOptionDefView(ConditionalLoginRequiredMixin, View):
     dhcp_version: Family
 
     def get(self, request: HttpRequest, pk: int) -> HttpResponse:
-        """Render the option-def list."""
+        """Render the Option Definition list."""
         server = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
         if resp := check_dhcp_enabled(server, self.dhcp_version):
             return resp
-        try:
-            client = server.get_client(version=self.dhcp_version)
-        except (KeaException, requests.RequestException, ValueError):
-            logger.exception("Failed to get Kea client for server %s", pk)
-            messages.error(request, "An internal error occurred.")
-            return redirect(reverse("plugins:netbox_kea:server", args=[pk]))
-        try:
-            option_defs = client.option_def_list(version=self.dhcp_version)
-            options_load_error = False
-        except (KeaException, requests.RequestException, ValueError):
-            logger.exception("Failed to fetch option-def list for server %s", pk)
-            option_defs = []
-            options_load_error = True
-        # Annotate each entry with a pre-built delete URL so templates don't
-        # need to construct dynamic URL names.
+        snapshot = server_configuration.display(server, self.dhcp_version)
+        _diagnostic_messages(
+            request,
+            snapshot.diagnostics,
+            messages.WARNING if snapshot.available else messages.ERROR,
+        )
+        option_defs = snapshot.option_definitions if snapshot.available else ()
+        options_load_error = not snapshot.available
+        # Add delete URLs here because templates do not construct dynamic URL names.
         can_change = cast(PermissionsMixin, request.user).has_perm("netbox_kea.change_server")
         enriched_defs = []
         for opt in option_defs:
-            entry = dict(opt)
+            entry = {
+                "code": opt.code,
+                "name": opt.name,
+                "space": opt.space,
+                "type": opt.type,
+                "array": opt.array,
+                "encapsulate": opt.encapsulate,
+                "record_types": opt.record_types,
+            }
             if can_change:
                 entry["delete_url"] = reverse(
                     f"plugins:netbox_kea:server_option_def{self.dhcp_version}_delete",
-                    args=[server.pk, opt["code"], opt["space"]],
+                    args=[server.pk, opt.code, opt.space],
                 )
             enriched_defs.append(entry)
         ctx: dict[str, Any] = {
@@ -495,14 +438,14 @@ class BaseServerOptionDefView(ConditionalLoginRequiredMixin, View):
 
 @register_model_view(Server, "option_def6")
 class ServerOptionDef6View(BaseServerOptionDefView):
-    """DHCPv6 option-def view (rendered under the shared Config tab)."""
+    """DHCPv6 Option Definition view under the shared Config tab."""
 
     dhcp_version = 6
 
 
 @register_model_view(Server, "option_def4")
 class ServerOptionDef4View(BaseServerOptionDefView):
-    """DHCPv4 option-def view; owns the shared Config tab."""
+    """DHCPv4 Option Definition view that owns the shared Config tab."""
 
     tab = _CONFIG_TAB
     dhcp_version = 4
@@ -527,7 +470,7 @@ class BaseServerOptionDefAddView(_KeaChangeMixin, ConditionalLoginRequiredMixin,
         return reverse(f"plugins:netbox_kea:server_option_def{self.dhcp_version}", args=[server.pk])
 
     def get(self, request: HttpRequest, pk: int) -> HttpResponse:
-        """Render the add option-def form."""
+        """Render the add Option Definition form."""
         server = get_object_or_404(Server.objects.restrict(request.user, "change"), pk=pk)
         form = forms.OptionDefForm(initial={"space": f"dhcp{self.dhcp_version}"})
         return render(
@@ -568,7 +511,7 @@ class BaseServerOptionDefAddView(_KeaChangeMixin, ConditionalLoginRequiredMixin,
         }
         if form.cleaned_data.get("array"):
             option_def["array"] = True
-        with _kea_options_mutation(request, f"option-def add on server {server}"):
+        with _kea_options_mutation(request, f"Option Definition add on server {server}"):
             client = server.get_client(version=self.dhcp_version)
             client.option_def_add(version=self.dhcp_version, option_def=option_def)
             messages.success(request, f"Option definition '{option_def['name']}' (code {option_def['code']}) added.")
@@ -620,7 +563,7 @@ class BaseServerOptionDefDeleteView(_KeaChangeMixin, ConditionalLoginRequiredMix
     def post(self, request: HttpRequest, pk: int, code: int, space: str) -> HttpResponse:
         """Delete the option definition."""
         server = get_object_or_404(Server.objects.restrict(request.user, "change"), pk=pk)
-        with _kea_options_mutation(request, f"option-def del code={code} space={space} on server {server}"):
+        with _kea_options_mutation(request, f"Option Definition delete code={code} space={space} on server {server}"):
             client = server.get_client(version=self.dhcp_version)
             client.option_def_del(version=self.dhcp_version, code=code, space=space)
             messages.success(request, f"Option definition code={code} space={space} deleted.")

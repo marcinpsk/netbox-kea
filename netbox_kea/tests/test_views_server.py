@@ -31,7 +31,7 @@ from django.urls import reverse
 
 from netbox_kea.models import Server
 
-from .kea_stub import stub_kea
+from .kea_stub import _catalogue_responses_for_subnets, stub_kea
 from .utils import _PLUGINS_CONFIG, User, _make_db_server, _ViewTestBase
 
 # ---------------------------------------------------------------------------
@@ -59,8 +59,7 @@ def _config_get_empty(body):
     """A ``config-get`` payload with no global option-data, for the queried service."""
     svc = (body.get("service") or [""])[0]
     version = 6 if svc == "dhcp6" else 4
-    key = f"Dhcp{version}"
-    return {"result": 0, "arguments": {key: {"option-data": [], f"subnet{version}": [], "shared-networks": []}}}
+    return _catalogue_responses_for_subnets(version, [])["config-get"]
 
 
 def _status_stub(**overrides):
@@ -482,31 +481,22 @@ class TestServerBulkImportView(_ViewTestBase):
 # Phase 7c: Global DHCP options on the server status tab
 # ─────────────────────────────────────────────────────────────────────────────
 
-_CONFIG_WITH_OPTIONS_V4 = {
-    "option-data": [
-        {"code": 6, "name": "domain-name-servers", "data": "8.8.8.8, 8.8.4.4"},
-        {"code": 15, "name": "domain-name", "data": "example.com"},
-    ],
-    "subnet4": [],
-    "shared-networks": [],
-}
+_GLOBAL_OPTIONS_V4 = (
+    {"code": 6, "name": "domain-name-servers", "data": "8.8.8.8, 8.8.4.4"},
+    {"code": 15, "name": "domain-name", "data": "example.com"},
+)
 
 
 def _config_get_with_options(body):
     """A ``config-get`` payload carrying global option-data for the queried service."""
     svc = (body.get("service") or [""])[0]
     if svc == "dhcp6":
-        return {
-            "result": 0,
-            "arguments": {
-                "Dhcp6": {
-                    "option-data": [{"code": 23, "name": "dns-servers", "data": "2001:db8::1"}],
-                    "subnet6": [],
-                    "shared-networks": [],
-                }
-            },
-        }
-    return {"result": 0, "arguments": {"Dhcp4": _CONFIG_WITH_OPTIONS_V4}}
+        return _catalogue_responses_for_subnets(
+            6,
+            [],
+            global_options=({"code": 23, "name": "dns-servers", "data": "2001:db8::1"},),
+        )["config-get"]
+    return _catalogue_responses_for_subnets(4, [], global_options=_GLOBAL_OPTIONS_V4)["config-get"]
 
 
 def _global_options_stub(**overrides):
@@ -556,10 +546,14 @@ class TestServerStatusGlobalOptions(_ViewTestBase):
         """If ``config-get`` raises, the status page must still return 200 (graceful degradation)."""
         # config-get result 1 → real KeaException → _get_global_options swallows it → {}.
         url = reverse("plugins:netbox_kea:server_status", args=[self.server.pk])
-        with _global_options_stub(**{"config-get": {"result": 1, "text": "internal error"}}):
+        with (
+            _global_options_stub(**{"config-get": {"result": 1, "text": "internal error"}}),
+            self.assertLogs("netbox_kea.views.server", level="WARNING") as logs,
+        ):
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context["global_options"], {})
+        self.assertTrue(any("configuration facts are unavailable" in entry for entry in logs.output))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -920,7 +914,7 @@ class TestGetGlobalOptionsGenericException(_ViewTestBase):
                 response = self.client.get(self._url())
                 self.assertEqual(response.status_code, 200)
                 self.assertEqual(response.context["global_options"], {})
-                self.assertIn("Unexpected error fetching global options", logs.output[0])
+                self.assertIn("Global DHCP Options", logs.output[0])
 
 
 # ---------------------------------------------------------------------------
