@@ -134,6 +134,8 @@ class KeaHttpStub:
             spec = spec(body)
         if _is_exc(spec):
             raise spec() if isinstance(spec, type) else spec
+        if isinstance(spec, requests.Response):
+            return spec
         return _http_response(spec if isinstance(spec, list) else [spec], url=url)
 
     # --- assertion helpers ---

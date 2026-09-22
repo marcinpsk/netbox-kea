@@ -13,7 +13,15 @@ import threading
 import pytest
 import requests
 
-from netbox_kea.tests.kea_stub import KeaHttpStub, _http_response, _reservation_family, _typed_reservation, queued
+from netbox_kea.kea import KeaClient
+from netbox_kea.tests.kea_stub import (
+    KeaHttpStub,
+    _http_response,
+    _reservation_family,
+    _typed_reservation,
+    queued,
+    stub_kea,
+)
 
 
 def _call(stub, command="x"):
@@ -27,17 +35,15 @@ def test_dict_payload_is_wrapped_in_single_entry_list():
 
 
 def test_http_boundary_returns_concrete_requests_responses():
-    stub = KeaHttpStub({"x": {"result": 0}})
-    response = stub("https://kea.example.invalid/", json={"command": "x"})
-
-    assert type(response) is requests.Response
-    assert response.url == "https://kea.example.invalid/"
-    assert response.json() == [{"result": 0}]
-    response.raise_for_status()
+    """The real KeaClient decodes a stubbed success and raises on a stubbed HTTP error."""
+    client = KeaClient(url="https://kea.example.invalid/")
+    with stub_kea({"x": {"result": 0}}) as stub:
+        assert client.command("x", service=["dhcp4"]) == [{"result": 0}]
+    assert stub.urls() == ["https://kea.example.invalid/"]
 
     failed = _http_response([{"result": 1}], status=503, url="https://kea.example.invalid/")
-    with pytest.raises(requests.HTTPError) as error:
-        failed.raise_for_status()
+    with stub_kea({"x": failed}), pytest.raises(requests.HTTPError) as error:
+        client.command("x", service=["dhcp4"])
     assert error.value.response is failed
 
 

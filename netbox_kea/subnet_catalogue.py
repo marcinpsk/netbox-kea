@@ -156,7 +156,7 @@ class CatalogueSnapshot:
 
     @property
     def subnet_choices(self) -> tuple[tuple[str, int], ...]:
-        """Return verified identities in network order for user choices."""
+        """Return verified and configured identities in network order for user choices."""
         return tuple(
             (subnet.identity.cidr, subnet.identity.subnet_id)
             for subnet in sorted(self._display_subnets(), key=lambda subnet: _network_sort_key(subnet.identity.network))
@@ -172,7 +172,7 @@ class CatalogueSnapshot:
         )
 
     def find_by_id(self, subnet_id: int) -> VerifiedSubnet | ConfiguredSubnet | None:
-        """Return the verified Subnet with an exact Kea ID, if present."""
+        """Return the verified or configured Subnet with an exact Kea ID, if present."""
         if isinstance(subnet_id, bool) or not isinstance(subnet_id, int):
             return None
         return next(
@@ -181,7 +181,7 @@ class CatalogueSnapshot:
         )
 
     def find_by_cidr(self, cidr: str) -> VerifiedSubnet | ConfiguredSubnet | None:
-        """Return the verified Subnet with an exact canonical CIDR, if present."""
+        """Return the verified or configured Subnet with an exact canonical CIDR, if present."""
         network = _network(cidr, self.family)
         return next((subnet for subnet in self._display_subnets() if subnet.identity.network == network), None)
 
