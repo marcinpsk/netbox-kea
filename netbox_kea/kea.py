@@ -1418,16 +1418,15 @@ class KeaClient:
             else:
                 network.pop("relay", None)
         if dns_servers is not None or ntp_servers is not None:
-            dns_names = {"domain-name-servers", "dns-servers"}
-            ntp_names = {"ntp-servers", "sntp-servers"}
+            is_dns = _managed_option_matcher(version, {"domain-name-servers", "dns-servers"}, 6 if version == 4 else 23)
+            is_ntp = _managed_option_matcher(version, {"ntp-servers", "sntp-servers"}, 42 if version == 4 else 31)
             existing_options = network.get("option-data", [])
-            existing_dns = next((option for option in existing_options if option.get("name") in dns_names), None)
-            existing_ntp = next((option for option in existing_options if option.get("name") in ntp_names), None)
+            existing_dns = next((option for option in existing_options if is_dns(option)), None)
+            existing_ntp = next((option for option in existing_options if is_ntp(option)), None)
             preserved_options = [
                 option
                 for option in existing_options
-                if (option.get("name") not in dns_names or dns_servers is None)
-                and (option.get("name") not in ntp_names or ntp_servers is None)
+                if (not is_dns(option) or dns_servers is None) and (not is_ntp(option) or ntp_servers is None)
             ]
             new_options: list[dict[str, Any]] = []
             if dns_servers:

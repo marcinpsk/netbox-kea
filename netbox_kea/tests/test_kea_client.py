@@ -3242,6 +3242,45 @@ class TestNetworkUpdate(TestCase):
             )
             self.assertEqual(other["option-data"], [])
 
+    def test_matches_managed_options_by_space_and_code(self):
+        """A custom-space option keeps its managed name; a code-only DNS entry is replaced, not duplicated."""
+        config = [
+            {
+                "result": 0,
+                "arguments": {
+                    "Dhcp4": {
+                        "shared-networks": [
+                            {
+                                "name": "prod-net",
+                                "option-data": [
+                                    {"name": "domain-name-servers", "space": "vendor-4491", "data": "192.0.2.9"},
+                                    {"code": 6, "data": "192.0.2.53"},
+                                    {"code": 42, "space": "dhcp4", "data": "192.0.2.123"},
+                                ],
+                                "subnet4": [],
+                            }
+                        ],
+                        "subnet4": [],
+                    }
+                },
+            }
+        ]
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(config, _CONFIG_TEST_OK_RESP, _CONFIG_SET_OK_RESP, _CONFIG_WRITE_RESP),
+        ) as mock_post:
+            self.client.network_update(version=4, name="prod-net", dns_servers=["198.18.0.53"], ntp_servers=[])
+
+        payload = next(p for p in self._payloads(mock_post) if p["command"] == "config-set")
+        self.assertEqual(
+            payload["arguments"]["Dhcp4"]["shared-networks"][0]["option-data"],
+            [
+                {"name": "domain-name-servers", "space": "vendor-4491", "data": "192.0.2.9"},
+                {"code": 6, "data": "198.18.0.53"},
+            ],
+        )
+
     def test_adds_family_specific_v6_option_names(self):
         config = [
             {
