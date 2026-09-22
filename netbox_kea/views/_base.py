@@ -138,16 +138,36 @@ def _enrich_subnet_statistics(rows: list[dict[str, Any]], server: Server, versio
         logger.debug("stat_cmds hook unavailable or failed", exc_info=True)
 
 
-def _subnet_option_fields(options: tuple[DHCPOption, ...]) -> dict[str, str]:
+_FORM_OPTION_NAMES = {
+    "routers": "gateway",
+    "domain-name-servers": "dns_servers",
+    "dns-servers": "dns_servers",
+    "ntp-servers": "ntp_servers",
+    "sntp-servers": "ntp_servers",
+}
+_FORM_OPTION_CODES: dict[Family, dict[int, str]] = {
+    4: {3: "gateway", 6: "dns_servers", 42: "ntp_servers"},
+    6: {23: "dns_servers", 31: "ntp_servers"},
+}
+
+
+def _form_option_field(option: DHCPOption, version: Family) -> str | None:
+    """Return the form field a default-space option maps to, by code first."""
+    if option.space not in (None, f"dhcp{version}"):
+        return None
+    if option.code is not None:
+        return _FORM_OPTION_CODES[version].get(option.code)
+    return _FORM_OPTION_NAMES.get(option.name or "")
+
+
+def _subnet_option_fields(options: tuple[DHCPOption, ...], version: Family) -> dict[str, str]:
     """Project DHCP Option values onto the Subnet form fields."""
-    fields = {
-        "routers": "gateway",
-        "domain-name-servers": "dns_servers",
-        "dns-servers": "dns_servers",
-        "ntp-servers": "ntp_servers",
-        "sntp-servers": "ntp_servers",
-    }
-    return {fields[option.name]: option.data for option in options if option.name is not None and option.name in fields}
+    fields: dict[str, str] = {}
+    for option in options:
+        field = _form_option_field(option, version)
+        if field is not None:
+            fields[field] = option.data
+    return fields
 
 
 def _unsupported_command(exc: KeaException) -> bool:

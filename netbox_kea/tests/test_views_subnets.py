@@ -573,6 +573,26 @@ class TestServerSubnet4EditView(_ViewTestBase):
         self.assertContains(response, "10.0.0.0/24")
         self.assertContains(response, "10.0.0.100-10.0.0.200")
 
+    def test_get_prefills_a_code_only_dns_option(self):
+        """A DNS option written by code renders in the form so a save does not drop it."""
+        subnet = deepcopy(_SUBNET4_GET_FULL[0])
+        subnet["arguments"]["subnet4"][0]["option-data"] = [
+            {"code": 6, "data": "10.0.0.53"},
+            {"name": "domain-name-servers", "space": "vendor-4491", "data": "10.0.0.99"},
+        ]
+        with self._get_stub(subnet=subnet):
+            response = self.client.get(self._url())
+        self.assertEqual(response.context["form"].initial["dns_servers"], "10.0.0.53")
+
+    def test_get_reads_the_live_configuration_on_every_visit(self):
+        """The edit form is a read-modify-write prefill, so it must not serve the display cache."""
+        with self._get_stub() as kea:
+            self.client.get(self._url())
+            first = kea.commands().count("config-get")
+            self.client.get(self._url())
+            second = kea.commands().count("config-get")
+        self.assertGreaterEqual(second - first, 1)
+
     def test_get_when_subnet_fetch_fails_redirects_with_error(self):
         """GET must redirect to the subnet list when the subnet-get Kea call fails."""
         with stub_kea(

@@ -204,7 +204,8 @@ class TestSubnetOptionsView(_ViewTestBase):
         self.assertIn("8.8.8.8", response.content.decode())
         self.assertNotIn("subnet4-get", kea.commands())
 
-    def test_get_incomplete_subnet_warns_and_renders_valid_options(self):
+    def test_get_refuses_an_incomplete_subnet_instead_of_offering_a_filtered_list(self):
+        """Saving a filtered list would delete the entry the parser omitted."""
         subnet = {
             "id": 42,
             "subnet": "10.0.0.0/24",
@@ -213,12 +214,17 @@ class TestSubnetOptionsView(_ViewTestBase):
         with stub_kea(_catalogue_responses_for_subnets(4, [subnet])):
             response = self.client.get(self._url())
 
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(
-            response.context["formset"].initial,
-            [{"name": "routers", "data": "10.0.0.1", "always_send": False}],
-        )
-        self.assertTrue(any(message.level == django_messages.WARNING for message in response.context["messages"]))
+        self.assertEqual(response.status_code, 302)
+        texts = [str(message) for message in django_messages.get_messages(response.wsgi_request)]
+        self.assertIn("Could not load subnet configuration from Kea. The form cannot be displayed.", texts)
+
+    def test_get_reads_the_live_configuration_even_when_the_display_cache_is_warm(self):
+        with stub_kea(_catalogue_responses_for_subnets(4, [_SUBNET4])) as kea:
+            self.client.get(reverse("plugins:netbox_kea:server_option_def4", args=[self.server.pk]))
+            self.client.get(self._url())
+            self.client.get(self._url())
+
+        self.assertEqual(kea.commands().count("config-get"), 3)
 
     def test_get_unavailable_configuration_shows_diagnostic_and_redirects(self):
         with stub_kea({"config-get": requests.ConnectionError("unreachable")}):
@@ -365,7 +371,8 @@ class TestServerOptionsView(_ViewTestBase):
         self.assertIn("Could not load server options from Kea. The form cannot be displayed.", message_text)
         self.assertTrue(any("configuration facts are unavailable" in message for message in message_text))
 
-    def test_get_incomplete_snapshot_warns_and_renders_valid_options(self):
+    def test_get_refuses_incomplete_options_instead_of_offering_a_filtered_list(self):
+        """Saving a filtered list would delete the entry the parser omitted."""
         responses = _catalogue_responses_for_subnets(
             4,
             [],
@@ -377,15 +384,18 @@ class TestServerOptionsView(_ViewTestBase):
         with stub_kea(responses):
             response = self.client.get(self._url())
 
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(
-            response.context["formset"].initial,
-            [{"name": "domain-name-servers", "data": "198.18.0.53", "always_send": False}],
-        )
-        warnings = [
-            str(message) for message in response.context["messages"] if message.level == django_messages.WARNING
-        ]
-        self.assertTrue(any("invalid Subnet option" in message for message in warnings))
+        self.assertEqual(response.status_code, 302)
+        texts = [str(message) for message in django_messages.get_messages(response.wsgi_request)]
+        self.assertIn("Could not load server options from Kea. The form cannot be displayed.", texts)
+        self.assertTrue(any("invalid Subnet option" in text for text in texts))
+
+    def test_get_reads_the_live_configuration_even_when_the_display_cache_is_warm(self):
+        with stub_kea(_catalogue_responses_for_subnets(4, [])) as kea:
+            self.client.get(reverse("plugins:netbox_kea:server_option_def4", args=[self.server.pk]))
+            self.client.get(self._url())
+            self.client.get(self._url())
+
+        self.assertEqual(kea.commands().count("config-get"), 3)
 
     def test_get_non_object_family_configuration_redirects_without_500(self):
         with stub_kea({"config-get": {"result": 0, "arguments": {"Dhcp4": []}}}):

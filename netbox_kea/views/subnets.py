@@ -392,14 +392,14 @@ def _inherited_subnet_options(
     """Return option hints not overridden by the Subnet form."""
     inherited = {
         field: {"value": value, "source": "global"}
-        for field, value in _subnet_option_fields(snapshot.global_options).items()
+        for field, value in _subnet_option_fields(snapshot.global_options, snapshot.family).items()
     }
     network = next((network for network in snapshot.shared_networks if network.name == current_network), None)
     if network is not None:
         inherited.update(
             {
                 field: {"value": value, "source": f"shared-network: {current_network}"}
-                for field, value in _subnet_option_fields(network.options).items()
+                for field, value in _subnet_option_fields(network.options, snapshot.family).items()
             }
         )
     return {field: hint for field, hint in inherited.items() if not form_values.get(field)}
@@ -615,7 +615,7 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
         server = self.get_object(pk=pk)
         snapshot = subnet_catalogue(server, self.dhcp_version)
         subnet = snapshot.find_by_id(subnet_id)
-        configuration = server_configuration.display(server, self.dhcp_version)
+        configuration = server_configuration.for_verification(server, self.dhcp_version)
         configured_target = configuration.subnet_with_membership(subnet_id)
         subnet_configuration = None
         subnet_cidr = ""
@@ -644,7 +644,7 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
         initial = {
             "subnet_cidr": subnet_cidr,
             "pools": "\n".join(pool.range for pool in subnet_configuration.pools),
-            **_subnet_option_fields(subnet_configuration.options),
+            **_subnet_option_fields(subnet_configuration.options, self.dhcp_version),
             "valid_lft": settings.valid_lifetime,
             "min_valid_lft": settings.min_valid_lifetime,
             "max_valid_lft": settings.max_valid_lifetime,

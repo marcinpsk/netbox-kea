@@ -98,15 +98,17 @@ class _BaseSubnetOptionsEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin,
     def _get_subnet_from_config(
         self, request: HttpRequest, server: Server, subnet_id: int
     ) -> server_configuration.DeclaredSubnet | None:
-        """Return the one declared Subnet with this ID from the presentation snapshot."""
-        snapshot = server_configuration.display(server, self.dhcp_version)
+        """Return the one complete declared Subnet with this ID from a live read."""
+        snapshot = server_configuration.for_verification(server, self.dhcp_version)
         _diagnostic_messages(
             request,
             snapshot.diagnostics,
             messages.WARNING if snapshot.available else messages.ERROR,
         )
         matches = [subnet for subnet in snapshot.subnets if subnet.declared_subnet_id == subnet_id]
-        return matches[0] if len(matches) == 1 else None
+        if len(matches) != 1 or not matches[0].complete:
+            return None
+        return matches[0]
 
     def get(self, request, pk: int, subnet_id: int):
         server = get_object_or_404(
@@ -212,14 +214,14 @@ class _BaseServerOptionsEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin,
     dhcp_version: Family = 4
 
     def _get_options_from_config(self, request: HttpRequest, server: Server) -> tuple[DHCPOption, ...] | None:
-        """Return valid server DHCP Options from the presentation snapshot."""
-        snapshot = server_configuration.display(server, self.dhcp_version)
+        """Return the complete server DHCP Option list from a live read, or None."""
+        snapshot = server_configuration.for_verification(server, self.dhcp_version)
         _diagnostic_messages(
             request,
             snapshot.diagnostics,
             messages.WARNING if snapshot.available else messages.ERROR,
         )
-        return snapshot.global_options if snapshot.available else None
+        return snapshot.global_options if snapshot.available and snapshot.global_options_complete else None
 
     def get(self, request, pk: int):
         server = get_object_or_404(
