@@ -528,6 +528,17 @@ class TestServerSharedNetwork4EditView(_ViewTestBase):
 
         self.assertEqual(_written_sn(kea)["option-data"], [{"code": 6, "never-send": True}])
 
+    def test_an_unrelated_save_keeps_never_send_next_to_a_value(self):
+        """The form edits the DNS value only; a delivery flag beside it survives an unchanged save."""
+        option = {"code": 6, "data": "198.18.0.53", "never-send": True}
+        with _edit_stub(_sn_config(4, "prod-net", option_data=[option])) as kea:
+            response = self.client.get(self._url())
+            initial = response.context["form"].initial
+            self.assertEqual(initial["dns_servers"], "198.18.0.53")
+            self.client.post(self._url(), self._post_data(description="Renamed", dns_servers=initial["dns_servers"]))
+
+        self.assertEqual(_written_sn(kea)["option-data"], [option])
+
     def test_null_option_data_refuses_the_edit_form_and_the_update(self):
         """A network whose option-data failed to parse is not editable through this form."""
         config = _sn_config(4, "prod-net", option_data=None)
