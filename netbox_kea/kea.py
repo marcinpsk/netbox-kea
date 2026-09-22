@@ -314,6 +314,45 @@ def _serialize_option_form_rows(rows: list[dict[str, Any]]) -> list[dict[str, An
     ]
 
 
+def _managed_option_matcher(version: int, names: set[str], code: int) -> Callable[[dict[str, Any]], bool]:
+    """Return a predicate for one managed option in the family's default space."""
+
+    def matches(option: dict[str, Any]) -> bool:
+        if option.get("space") not in (None, f"dhcp{version}"):
+            return False
+        if option.get("code") is not None:
+            return option.get("code") == code
+        return option.get("name") in names
+
+    return matches
+
+
+def _replace_managed_option(
+    options: list[dict[str, Any]],
+    version: int,
+    names: set[str],
+    code: int,
+    canonical: str,
+    data: str | None,
+) -> list[dict[str, Any]]:
+    """Set one form-managed option to *data*, or remove it when *data* is empty.
+
+    A suppression entry (never-send, or no data) shows no value in the form, so an
+    empty field keeps it instead of deleting it.
+    """
+    is_managed = _managed_option_matcher(version, names, code)
+    existing = next((option for option in options if is_managed(option)), None)
+    kept = [option for option in options if not is_managed(option)]
+    if data:
+        replacement = dict(existing) if existing else {"name": canonical}
+        replacement.pop("never-send", None)
+        replacement["data"] = data
+        return [*kept, replacement]
+    if existing is not None and (existing.get("never-send") or "data" not in existing):
+        return [*kept, existing]
+    return kept
+
+
 class KeaClient:
     """HTTP client for the Kea Control API."""
 
@@ -1472,34 +1511,27 @@ class KeaClient:
         # Keep the CIDR returned by Kea; edits cannot change the subnet identity.
         subnet_def["id"] = subnet_id
 
-        # option-data: preserve entries NOT owned by this form (e.g. domain-name, tftp-server)
-        # while replacing/adding/removing the ones the form manages.
-        _managed_option_names = {
-            "routers",
-            "domain-name-servers",
-            "dns-servers",
-            "ntp-servers",
-            "sntp-servers",
-        }
-        preserved_opts = [o for o in subnet_def.get("option-data", []) if o.get("name") not in _managed_option_names]
-        new_opts: list[dict[str, str]] = []
-        if gateway and version == 4:
-            new_opts.append({"name": "routers", "data": gateway})
-        if dns_servers:
-            new_opts.append(
-                {
-                    "name": "domain-name-servers" if version == 4 else "dns-servers",
-                    "data": ", ".join(dns_servers),
-                }
-            )
-        if ntp_servers:
-            new_opts.append(
-                {
-                    "name": "ntp-servers" if version == 4 else "sntp-servers",
-                    "data": ", ".join(ntp_servers),
-                }
-            )
-        subnet_def["option-data"] = preserved_opts + new_opts
+        # option-data: replace only the entries this form manages; keep every other entry.
+        options = list(subnet_def.get("option-data") or [])
+        if version == 4:
+            options = _replace_managed_option(options, 4, {"routers"}, 3, "routers", gateway)
+        options = _replace_managed_option(
+            options,
+            version,
+            {"domain-name-servers", "dns-servers"},
+            6 if version == 4 else 23,
+            "domain-name-servers" if version == 4 else "dns-servers",
+            ", ".join(dns_servers or []),
+        )
+        options = _replace_managed_option(
+            options,
+            version,
+            {"ntp-servers", "sntp-servers"},
+            42 if version == 4 else 31,
+            "ntp-servers" if version == 4 else "sntp-servers",
+            ", ".join(ntp_servers or []),
+        )
+        subnet_def["option-data"] = options
 
         # ddns-qualifying-suffix: None = omit (Kea keeps existing); "" = explicitly clear; a value sets it.
         if ddns_qualifying_suffix is not None:

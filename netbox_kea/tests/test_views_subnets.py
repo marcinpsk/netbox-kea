@@ -414,6 +414,17 @@ class TestServerSubnet4WipeView(_ViewTestBase):
         self.assertContains(response, "10.0.0.0/24")
         self.assertContains(response, "42")
 
+    def test_get_names_the_live_subnet_not_the_cached_one(self):
+        """The confirmation must describe what the POST will act on, so it reads live."""
+        cached = {"result": 0, "arguments": {"subnet4": [{"id": 42, "subnet": "10.0.0.0/24"}]}}
+        live = {"result": 0, "arguments": {"subnet4": [{"id": 42, "subnet": "10.9.0.0/24"}]}}
+        with stub_kea({**_ABSENT_READ_HOOKS, **_edit_responses(4, cached, _EMPTY_CONFIG4)}):
+            self.client.get(reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk]))
+        with stub_kea(_edit_responses(4, live, _EMPTY_CONFIG4)):
+            response = self.client.get(self._url())
+        self.assertContains(response, "10.9.0.0/24")
+        self.assertNotContains(response, "10.0.0.0/24")
+
     def test_get_shows_form_when_subnet_fetch_fails(self):
         """GET must still return 200 even when the subnet-get Kea call fails."""
         with stub_kea({**_ABSENT_READ_HOOKS, "config-get": {"result": 1, "text": "unavailable"}}):

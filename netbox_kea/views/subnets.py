@@ -894,12 +894,12 @@ class _BaseSubnetDeleteView(_KeaChangeMixin, generic.ObjectView):
 
     def get(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
         server = self.get_object(pk=pk)
-        snapshot = subnet_catalogue(server, self.dhcp_version)
+        configuration = server_configuration.for_verification(server, self.dhcp_version)
         _diagnostic_messages(
-            request, snapshot.diagnostics, messages.ERROR if snapshot.unavailable else messages.WARNING
+            request, configuration.diagnostics, messages.WARNING if configuration.available else messages.ERROR
         )
-        subnet = snapshot.find_by_id(subnet_id)
-        subnet_cidr = subnet.cidr if subnet is not None else ""
+        declared = [subnet for subnet in configuration.subnets if subnet.declared_subnet_id == subnet_id]
+        subnet_cidr = declared[0].declared_cidr if len(declared) == 1 else ""
         return render(
             request,
             self.template_name,
@@ -965,12 +965,12 @@ class _BaseSubnetWipeView(_KeaChangeMixin, generic.ObjectView):
 
     def get(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
         server = self.get_object(pk=pk)
-        snapshot = subnet_catalogue(server, self.dhcp_version)
+        configuration = server_configuration.for_verification(server, self.dhcp_version)
         _diagnostic_messages(
-            request, snapshot.diagnostics, messages.ERROR if snapshot.unavailable else messages.WARNING
+            request, configuration.diagnostics, messages.WARNING if configuration.available else messages.ERROR
         )
-        subnet = snapshot.find_by_id(subnet_id)
-        subnet_cidr = subnet.cidr if subnet is not None else ""
+        declared = [subnet for subnet in configuration.subnets if subnet.declared_subnet_id == subnet_id]
+        subnet_cidr = declared[0].declared_cidr if len(declared) == 1 else ""
         return render(
             request,
             self.template_name,

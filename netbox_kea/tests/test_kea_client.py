@@ -4539,6 +4539,46 @@ class TestSubnetUpdateMerge(TestCase):
     def setUp(self):
         self.client = KeaClient(url="http://kea:8000")
 
+    def test_code_only_and_suppression_options_round_trip(self):
+        """A DNS option written by code is replaced, not duplicated; a never-send entry survives an empty field."""
+        subnet_get = [
+            {
+                "result": 0,
+                "arguments": {
+                    "subnet4": [
+                        {
+                            "id": 42,
+                            "subnet": "10.0.0.0/24",
+                            "option-data": [
+                                {"code": 6, "data": "10.0.0.53", "always-send": True},
+                                {"code": 42, "never-send": True},
+                                {"name": "domain-name-servers", "space": "vendor-4491", "data": "10.0.0.99"},
+                            ],
+                        }
+                    ]
+                },
+            }
+        ]
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(subnet_get, _SUBNET_UPDATE_OK, _CONFIG_GET_RUNNING_RESP, _OK, _OK),
+        ) as mock_post:
+            self.client.subnet_update(
+                version=4, subnet_id=42, subnet_cidr="10.0.0.0/24", dns_servers=["10.0.0.53"], ntp_servers=[]
+            )
+        update_call = next(
+            c.kwargs["json"] for c in mock_post.call_args_list if c.kwargs["json"]["command"] == "subnet4-update"
+        )
+        self.assertEqual(
+            update_call["arguments"]["subnet4"][0]["option-data"],
+            [
+                {"name": "domain-name-servers", "space": "vendor-4491", "data": "10.0.0.99"},
+                {"code": 6, "data": "10.0.0.53", "always-send": True},
+                {"code": 42, "never-send": True},
+            ],
+        )
+
     def _run_update(self, **kwargs):
         """Run subnet_update with sensible defaults, returning the args sent to subnet4-update."""
         with patch.object(
