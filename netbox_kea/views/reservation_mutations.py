@@ -70,8 +70,9 @@ def _warn_reservation_pool_overlap(
             f"subnet{version}-get",
             service=[f"dhcp{version}"],
             arguments={"id": subnet_id},
+            check=(0, 2, 3),
         )
-        if not resp or not isinstance(resp[0], dict):
+        if not resp or not isinstance(resp[0], dict) or resp[0].get("result") != 0:
             return
         arguments = resp[0].get("arguments")
         if not isinstance(arguments, dict):

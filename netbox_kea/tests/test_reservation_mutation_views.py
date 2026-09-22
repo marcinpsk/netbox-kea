@@ -105,6 +105,35 @@ class TestReservationMutationViews(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Configuration persistence is disabled.")
 
+    def test_create_skips_the_pool_overlap_check_without_an_error_log(self):
+        """An absent subnet_cmds hook or subnet is an optional check, not an error."""
+        raw = {"subnet-id": 20, "hw-address": "aa:bb:cc:dd:ee:ff", "ip-address": "198.18.0.20"}
+        for result in (2, 3):
+            responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
+            responses.update(
+                {
+                    "subnet4-get": {"result": result, "text": "not available"},
+                    "reservation-add": {"result": 0},
+                    "reservation-get": _res_get(raw),
+                }
+            )
+            with (
+                self.subTest(result=result),
+                stub_kea(responses) as kea,
+                self.assertNoLogs("netbox_kea.views.reservation_mutations", level="ERROR"),
+            ):
+                response = self.client.post(
+                    reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk]),
+                    {
+                        "subnet_cidr": "198.18.0.0/24",
+                        "ip_address": raw["ip-address"],
+                        "identifier_type": "hw-address",
+                        "identifier": "AA-BB-CC-DD-EE-FF",
+                    },
+                )
+            self.assertEqual(response.status_code, 302)
+            self.assertIn("reservation-add", kea.commands())
+
     def test_create_uses_the_typed_operation_and_emits_one_typed_signal(self):
         responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
         raw = {
