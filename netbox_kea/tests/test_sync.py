@@ -2190,7 +2190,7 @@ class TestResolvePrefixLengthSubnetIdNormalization(TestCase):
     def test_string_subnet_id_still_hits_prefix_map_end_to_end(self):
         """A string-valued 'subnet-id' must still match the authoritative Kea mask.
 
-        _build_subnet_prefix_map keys by int(sid); a raw string id would miss it and
+        Catalogue identities use integer keys; a raw string ID would miss the map and
         fall back to NetBox/default, persisting the wrong prefix.
         """
         from ipam.models import IPAddress as NbIP

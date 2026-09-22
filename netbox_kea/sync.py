@@ -118,9 +118,7 @@ def _resolve_prefix_length(
     covering prefix (e.g. a ``/8`` but no ``/24``) or no prefix at all.
     """
     if subnet_prefix_map and subnet_id is not None:
-        # The map is int-keyed (see _build_subnet_prefix_map); a string-valued
-        # "subnet-id" from a Kea record must be normalized or it silently misses
-        # the authoritative mask and falls back to a (possibly wrong) NetBox/default.
+        # Catalogue identities use integer IDs; normalize the record ID before lookup.
         try:
             subnet_key = int(subnet_id)
         except (TypeError, ValueError):
@@ -974,11 +972,17 @@ def sync_pool_to_netbox_ip_range(pool_str: str, subnet_cidr: str, vrf=None) -> t
         logger.debug("Skipping pool %r: range too large to store as NetBox IPRange", pool_str)
         return _POOL_TOO_LARGE
 
+    # A pool is identified by its endpoints and VRF, independent of stored prefix lengths.
     range_obj, created = IPRange.objects.get_or_create(
-        start_address=start_addr,
-        end_address=end_addr,
+        start_address__net_host=str(start_addr.ip),
+        end_address__net_host=str(end_addr.ip),
         vrf=vrf,
-        defaults={"status": "active", "description": "Synced from Kea DHCP pool"},
+        defaults={
+            "start_address": start_addr,
+            "end_address": end_addr,
+            "status": "active",
+            "description": "Synced from Kea DHCP pool",
+        },
     )
     did_update = False
     if not created and not range_obj.description:

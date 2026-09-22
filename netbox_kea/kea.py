@@ -2469,6 +2469,11 @@ class KeaException(Exception):
         message = f"{msg}: {self.response.get('text')}"
         super().__init__(message)
 
+    @property
+    def unsupported_command(self) -> bool:
+        """Return whether Kea rejected an unsupported command."""
+        return self.response.get("result") == 2
+
 
 class KeaConfigTestError(KeaException):
     """Raised when ``config-test`` fails before any mutation has been applied.

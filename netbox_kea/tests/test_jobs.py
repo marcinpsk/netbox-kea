@@ -1,20 +1,10 @@
 # SPDX-FileCopyrightText: 2025 Marcin Zieba <marcinpsk@gmail.com>
 # SPDX-License-Identifier: Apache-2.0
-"""Tests for netbox_kea/jobs.py — KeaIpamSyncJob.
+"""Exercise the sync job through real ORM writes and a Kea HTTP transport stub.
 
-Design principle
-----------------
-``TestKeaIpamSyncJobRun`` and ``TestKeaIpamSyncJobKillSwitches`` use the *real*
-Django ORM and the real ``sync_*`` helpers.  Only the three Kea HTTP methods
-(``command``, ``lease_get_all``, ``reservation-get-page``) are stubbed at the transport boundary. These
-are the true external boundary (a third-party network service we cannot run in
-unit tests).  Asserting against real ``IPAddress`` rows means a
-``MagicMock``-green test cannot mask a broken production code path.
-
-Helper/dispatcher tests (``TestSyncSubnetEntry``, ``TestFetchKeaSubnets``, …)
-remain as ``SimpleTestCase`` because they test a single function's stats
-accounting or JSON-parsing logic, and patching their immediate callees is the
-appropriate seam.
+Job tests assert IPAddress, Prefix, IPRange and summary results. Catalogue parsing
+and malformed wire shapes belong to the catalogue and configuration tests. Pure
+configuration and scheduling helpers retain focused SimpleTestCase coverage.
 """
 
 from __future__ import annotations
@@ -27,17 +17,13 @@ from unittest.mock import MagicMock, patch
 import requests
 from core.exceptions import JobFailed
 from django.test import SimpleTestCase, TestCase, override_settings
-from django.utils import timezone
 from ipam.models import IPAddress as NbIP
 from ipam.models import IPRange, Prefix
 
 from netbox_kea.jobs import KeaIpamSyncJob
-from netbox_kea.kea import KeaClient
-from netbox_kea.models import Server, SyncConfig
-from netbox_kea.reservations import Family, ReservationSnapshot
-from netbox_kea.subnet_catalogue import IdentityOnlyCatalogueSnapshot, SubnetIdentity, VerifiedSubnet
+from netbox_kea.models import SyncConfig
 
-from .kea_stub import _res_page, _reservation_family, queued, stub_kea
+from .kea_stub import _catalogue_responses_for_subnets, _res_page, _reservation_family, _subnet_list, queued, stub_kea
 
 _PLUGINS_CONFIG = {
     "netbox_kea": {
@@ -82,22 +68,6 @@ def _make_job() -> MagicMock:
     return mock_job
 
 
-def _make_server(name: str = "kea1", dhcp4: bool = True, dhcp6: bool = False, pk: int = 1) -> MagicMock:
-    """Return a MagicMock Server — used only by SimpleTestCase helper tests."""
-    server = MagicMock(spec=Server)
-    server.name = name
-    server.dhcp4 = dhcp4
-    server.dhcp6 = dhcp6
-    server.pk = pk
-    server.sync_enabled = True
-    server.sync_leases_enabled = True
-    server.sync_reservations_enabled = True
-    server.sync_prefixes_enabled = True
-    server.sync_ip_ranges_enabled = True
-    server.sync_vrf = None
-    return server
-
-
 def _lease_page(leases: list[dict] | None) -> dict:
     """A ``lease{v}-get-page`` payload holding *leases* as a single page.
 
@@ -109,13 +79,6 @@ def _lease_page(leases: list[dict] | None) -> dict:
     if not leases:
         return {"result": 3, "text": "0 lease(s) found"}
     return {"result": 0, "arguments": {"leases": leases, "count": len(leases)}}
-
-
-def _empty_config(body: dict) -> dict:
-    """A ``config-get`` payload with no subnets, keyed by the requested service."""
-    svc = (body.get("service") or ["dhcp4"])[0]
-    root, subnets = ("Dhcp6", "subnet6") if svc == "dhcp6" else ("Dhcp4", "subnet4")
-    return {"result": 0, "arguments": {root: {subnets: [], "shared-networks": []}}}
 
 
 def _reservation_subnets(reservations: list[dict], version: int) -> list[dict]:
@@ -157,58 +120,6 @@ def _full_reservation_page() -> list[dict]:
         }
         for index in range(_JOB_RESERVATION_PAGE_SIZE)
     ]
-
-
-def _reservation_catalogue(reservations: list[dict], version: Family) -> IdentityOnlyCatalogueSnapshot:
-    entries = _reservation_subnets(reservations, version)
-    # Identity-only: these Subnets carry no configuration, which is exactly what a
-    # Reservation Scope needs to be verified.
-    return IdentityOnlyCatalogueSnapshot(
-        server_id=1,
-        family=version,
-        observed_at=timezone.now(),
-        subnets=tuple(
-            VerifiedSubnet(
-                identity=SubnetIdentity(entry["id"], ipaddress.ip_network(entry["subnet"])),
-                configuration=None,
-                shared_network=None,
-            )
-            for entry in entries
-        ),
-        configured_subnets=(),
-        diagnostics=(),
-        identity_available=True,
-        configuration_available=False,
-        identity_complete=True,
-        configuration_complete=False,
-        consistent=True,
-        configuration_hash=None,
-    )
-
-
-def _reservation_snapshot(reservations: list[dict], version: Family) -> ReservationSnapshot:
-    catalogue = _reservation_catalogue(reservations, version)
-    hosts = [host for host in reservations if _reservation_family(host) == version]
-    client = KeaClient(url="http://kea.example.invalid", send_service=False)
-    with stub_kea({"reservation-get-page": _res_page(hosts)}):
-        # The method the job itself calls, so the double cannot differ from production in
-        # traversal state. Page size is bound to the fixture, so a larger fixture cannot
-        # silently truncate.
-        return client.reservation_snapshot(version, catalogue, page_size=max(len(hosts), 1))
-
-
-def _incomplete_reservation_snapshot(reservations: list[dict], version: Family) -> ReservationSnapshot:
-    """Return a Snapshot whose page traversal stopped before Kea was exhausted.
-
-    The diagnostic comes from the real traversal, so the test cannot claim an
-    incomplete Snapshot the production code would never build.
-    """
-    hosts = [host for host in reservations if _reservation_family(host) == version]
-    catalogue = _reservation_catalogue(reservations, version)
-    client = KeaClient(url="http://kea.example.invalid", send_service=False)
-    first_page = _res_page(hosts, next_from=99, next_source=1)
-    with stub_kea({"reservation-get-page": queued(first_page, RuntimeError("page fetch failed"))}):
-        return client.reservation_snapshot(version, catalogue, page_size=max(len(hosts), 1))
 
 
 @contextmanager
@@ -270,17 +181,7 @@ def _patch_kea(
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestKeaIpamSyncJobRun(TestCase):
-    """Integration tests for KeaIpamSyncJob.run() against the real ORM.
-
-    Only the three Kea HTTP methods are mocked (``command``, ``lease_get_all``,
-    Reservation Snapshot command). Everything else, including ``sync_lease_to_netbox``,
-    ``sync_reservation_to_netbox``, ``cleanup_stale_ips_batch``, ORM queries —
-    executes against the real test database.
-
-    Why this matters: a ``MagicMock`` auto-synthesises every attribute access,
-    so mock-heavy tests stay green while the real code path is broken.  Asserting
-    against actual ``IPAddress`` rows catches real bugs.
-    """
+    """Run the job with real sync helpers and ORM writes; stub only Kea HTTP."""
 
     # ── scaffolding ──────────────────────────────────────────────────────────
 
@@ -305,26 +206,32 @@ class TestKeaIpamSyncJobRun(TestCase):
 
     # ── basic lease sync ──────────────────────────────────────────────────────
 
+    @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG_CLEANUP)
     def test_malformed_foreign_lease_hostname_is_excluded_from_keep_set(self):
-        from netbox_kea.jobs import _sync_server_leases
-
-        server = self._make_db_server()
+        self._make_db_server(dhcp6=False)
         foreign = NbIP.objects.create(address="198.18.0.20/32", status="active", description="Manual address")
+        stale = NbIP.objects.create(
+            address="198.18.0.29/32",
+            status="dhcp",
+            dns_name="valid.example.invalid",
+            description="Synced from Kea DHCP (dhcp)",
+        )
+        valid_lease = {"ip-address": "198.18.0.30", "subnet-id": 1, "hostname": "valid.example.invalid"}
         for hostname in (["host.example.invalid"], {"name": "host.example.invalid"}):
             with self.subTest(hostname=hostname):
                 lease = {"ip-address": "198.18.0.20", "subnet-id": 1, "hostname": hostname}
-                stats = {"created": 0, "updated": 0, "errors": 0, "conflicts": 0}
-                all_synced = []
-                with _patch_kea(leases4=[lease]):
-                    complete, lease_ips = _sync_server_leases(
-                        server, 4, max_leases=0, stats=stats, all_synced=all_synced, subnet_prefix_map={1: 24}
-                    )
-                self.assertEqual(all_synced, [])
-                self.assertFalse(complete)
-                self.assertEqual(lease_ips, frozenset())
-                self.assertEqual(stats["errors"], 1)
+                job = _make_job()
+                with _patch_kea(leases4=[lease, valid_lease]), self.assertRaises(JobFailed):
+                    KeaIpamSyncJob(job).run()
+                self.assertEqual(job.data["summary"][0]["errors"], 1)
+                self.assertEqual(job.data["summary"][0]["conflicts"], 0)
                 foreign.refresh_from_db()
+                self.assertEqual(str(foreign.address), "198.18.0.20/32")
+                self.assertEqual(foreign.status, "active")
+                self.assertEqual(foreign.dns_name, "")
                 self.assertEqual(foreign.description, "Manual address")
+                self.assertTrue(NbIP.objects.filter(pk=stale.pk).exists())
+                self.assertTrue(NbIP.objects.filter(address__net_host="198.18.0.30").exists())
 
     def test_creates_ip_from_lease(self):
         """Lease sync creates an IPAddress row in the real DB."""
@@ -388,6 +295,42 @@ class TestKeaIpamSyncJobRun(TestCase):
         ip = IPAddress.objects.filter(address__net_host="10.0.0.100").first()
         self.assertIsNotNone(ip)
         self.assertEqual(ip.status, "reserved")
+
+    def test_reservation_updates_existing_address_and_summary(self):
+        self._make_db_server(dhcp6=False, sync_prefixes_enabled=False, sync_ip_ranges_enabled=False)
+        existing = NbIP.objects.create(
+            address="198.18.0.20/24",
+            status="reserved",
+            dns_name="old.example.invalid",
+            description="Synced from Kea DHCP reservation",
+        )
+        reservation = {
+            "ip-address": "198.18.0.20",
+            "hw-address": "00:11:22:33:44:55",
+            "hostname": "updated.example.invalid",
+            "subnet-id": 1,
+        }
+        with _patch_kea(reservations=[reservation]):
+            job = _make_job()
+            KeaIpamSyncJob(job).run()
+        existing.refresh_from_db()
+        self.assertEqual(existing.dns_name, "updated.example.invalid")
+        self.assertEqual(existing.status, "reserved")
+        self.assertEqual(NbIP.objects.count(), 1)
+        self.assertEqual(job.data["summary"][0]["created"], 0)
+        self.assertEqual(job.data["summary"][0]["updated"], 1)
+        self.assertEqual(job.data["summary"][0]["errors"], 0)
+
+    def test_ipv6_prefix_only_reservation_is_skipped(self):
+        self._make_db_server(dhcp4=False, dhcp6=True, sync_prefixes_enabled=False, sync_ip_ranges_enabled=False)
+        reservation = {"duid": "00:01:00:01:12:34", "subnet-id": 12, "prefixes": ["2001:db8:1::/64"]}
+        with _patch_kea(reservations=[reservation]):
+            job = _make_job()
+            KeaIpamSyncJob(job).run()
+        self.assertFalse(NbIP.objects.exists())
+        self.assertEqual(job.data["summary"][0]["created"], 0)
+        self.assertEqual(job.data["summary"][0]["errors"], 0)
+        self.assertEqual(job.data["summary"][0]["skipped"], 1)
 
     def test_both_lease_and_reservation_synced(self):
         """Both lease and reservation IPs are persisted in the same run."""
@@ -967,14 +910,8 @@ class TestKeaIpamSyncJobRun(TestCase):
         # Fallback is surfaced to the operator.
         self.assertTrue(any("fall back to NetBox prefix matching" in m for m in cm.output))
 
-    def test_subnet_prefix_map_masks_lease_from_config_get(self):
-        """A lease's mask comes from the Kea subnet-id map (config-get), not a NetBox Prefix.
-
-        Guards the _sync_one_server → sync-helper ``subnet_prefix_map`` wiring: with
-        NO NetBox Prefix present, the only way the lease is saved as /24 (rather than
-        the /32 fallback) is the ``{subnet-id: prefix_len}`` map derived from config-get.
-        If _sync_one_server stopped forwarding subnet_prefix_map, this would regress to /32.
-        """
+    def test_catalogue_prefix_length_masks_lease_without_netbox_prefix(self):
+        """A verified Catalogue supplies the lease mask before any Prefix exists."""
         from ipam.models import IPAddress, Prefix
 
         # Prefix/range sync off so the /24 cannot come from a *created* NetBox Prefix.
@@ -985,19 +922,13 @@ class TestKeaIpamSyncJobRun(TestCase):
             sync_ip_ranges_enabled=False,
         )
         lease = {"ip-address": "10.0.0.50", "hostname": "masked-host", "subnet-id": 1}
-        config_with_subnet = {
-            "result": 0,
-            "arguments": {
-                "Dhcp4": {"subnet4": [{"id": 1, "subnet": "10.0.0.0/24", "pools": []}], "shared-networks": []}
-            },
-        }
-
-        with _patch_kea(leases4=[lease], responses={"config-get": config_with_subnet}):
+        responses = _catalogue_responses_for_subnets(4, [{"id": 1, "subnet": "10.0.0.0/24"}])
+        with _patch_kea(leases4=[lease], responses=responses):
             self._run()
 
         ip = IPAddress.objects.get(address__net_host="10.0.0.50")
         self.assertEqual(str(ip.address), "10.0.0.50/24")
-        # No NetBox Prefix was created — the mask came from config-get, not prefix matching.
+        # The Catalogue supplies the mask without creating a NetBox Prefix.
         self.assertFalse(Prefix.objects.filter(prefix="10.0.0.0/24").exists())
 
     # ── reservation generic exception ─────────────────────────────────────
@@ -1261,446 +1192,6 @@ class TestGetPluginConfig(SimpleTestCase):
         self.assertTrue(any("netbox_kea" in msg for msg in cm.output))
 
 
-# ---------------------------------------------------------------------------
-# Tests for _sync_subnet_entry (unit — no DB)
-# ---------------------------------------------------------------------------
-
-
-class TestSyncSubnetEntry(SimpleTestCase):
-    """Tests for the _sync_subnet_entry helper in jobs.py."""
-
-    def _make_stats(self):
-        return {"created": 0, "updated": 0, "errors": 0, "prefix_errors": 0}
-
-    def test_no_subnet_cidr_returns_early(self):
-        """Subnet dict without 'subnet' key → no sync called, stats unchanged."""
-        from netbox_kea.jobs import _sync_subnet_entry
-
-        stats = self._make_stats()
-        with patch("netbox_kea.sync.sync_subnet_to_netbox_prefix", autospec=True) as mock_prefix:
-            _sync_subnet_entry({}, sync_prefixes=True, sync_ip_ranges=True, vrf=None, stats=stats, server_name="s")
-        mock_prefix.assert_not_called()
-        self.assertEqual(stats, {"created": 0, "updated": 0, "errors": 0, "prefix_errors": 0})
-
-    @patch(
-        "netbox_kea.sync.sync_subnet_to_netbox_prefix",
-        return_value=(MagicMock(spec=Prefix), True, False),
-        autospec=True,
-    )
-    def test_prefix_created_increments_created(self, mock_prefix):
-        """New prefix (created=True) increments stats['created']."""
-        from netbox_kea.jobs import _sync_subnet_entry
-
-        stats = self._make_stats()
-        _sync_subnet_entry(
-            {"subnet": "10.0.0.0/24"},
-            sync_prefixes=True,
-            sync_ip_ranges=False,
-            vrf=None,
-            stats=stats,
-            server_name="s",
-        )
-        self.assertEqual(stats["created"], 1)
-        self.assertEqual(stats["updated"], 0)
-
-    @patch(
-        "netbox_kea.sync.sync_subnet_to_netbox_prefix",
-        return_value=(MagicMock(spec=Prefix), False, True),
-        autospec=True,
-    )
-    def test_prefix_updated_increments_updated(self, mock_prefix):
-        """Updated prefix (created=False, did_update=True) increments stats['updated']."""
-        from netbox_kea.jobs import _sync_subnet_entry
-
-        stats = self._make_stats()
-        _sync_subnet_entry(
-            {"subnet": "10.0.0.0/24"},
-            sync_prefixes=True,
-            sync_ip_ranges=False,
-            vrf=None,
-            stats=stats,
-            server_name="s",
-        )
-        self.assertEqual(stats["updated"], 1)
-        self.assertEqual(stats["created"], 0)
-
-    @patch(
-        "netbox_kea.sync.sync_subnet_to_netbox_prefix",
-        return_value=(MagicMock(spec=Prefix), False, False),
-        autospec=True,
-    )
-    def test_prefix_idempotent_does_not_increment(self, mock_prefix):
-        """Unchanged prefix (created=False, did_update=False) leaves stats at 0."""
-        from netbox_kea.jobs import _sync_subnet_entry
-
-        stats = self._make_stats()
-        _sync_subnet_entry(
-            {"subnet": "10.0.0.0/24"},
-            sync_prefixes=True,
-            sync_ip_ranges=False,
-            vrf=None,
-            stats=stats,
-            server_name="s",
-        )
-        self.assertEqual(stats, {"created": 0, "updated": 0, "errors": 0, "prefix_errors": 0})
-
-    @patch("netbox_kea.sync.sync_subnet_to_netbox_prefix", autospec=True)
-    def test_sync_prefixes_false_skips_prefix_call(self, mock_prefix):
-        """sync_prefixes=False → prefix sync function never called."""
-        from netbox_kea.jobs import _sync_subnet_entry
-
-        stats = self._make_stats()
-        _sync_subnet_entry(
-            {"subnet": "10.0.0.0/24"},
-            sync_prefixes=False,
-            sync_ip_ranges=False,
-            vrf=None,
-            stats=stats,
-            server_name="s",
-        )
-        mock_prefix.assert_not_called()
-
-    @patch("netbox_kea.sync.sync_subnet_to_netbox_prefix", side_effect=Exception("db down"), autospec=True)
-    def test_prefix_exception_increments_errors(self, mock_prefix):
-        """Exception in prefix sync → stats['prefix_errors'] incremented, no re-raise."""
-        from netbox_kea.jobs import _sync_subnet_entry
-
-        stats = self._make_stats()
-        _sync_subnet_entry(
-            {"subnet": "10.0.0.0/24"},
-            sync_prefixes=True,
-            sync_ip_ranges=False,
-            vrf=None,
-            stats=stats,
-            server_name="s",
-        )
-        self.assertEqual(stats["prefix_errors"], 1)
-        self.assertEqual(stats["errors"], 0)
-
-    @patch(
-        "netbox_kea.sync.sync_pool_to_netbox_ip_range",
-        return_value=(MagicMock(spec=IPRange), True, False),
-        autospec=True,
-    )
-    @patch(
-        "netbox_kea.sync.sync_subnet_to_netbox_prefix",
-        return_value=(MagicMock(spec=Prefix), False, False),
-        autospec=True,
-    )
-    def test_pool_created_increments_created(self, mock_prefix, mock_range):
-        """New IP range (created=True) increments stats['created']."""
-        from netbox_kea.jobs import _sync_subnet_entry
-
-        stats = self._make_stats()
-        subnet = {"subnet": "10.0.0.0/24", "pools": [{"pool": "10.0.0.10-10.0.0.50"}]}
-        _sync_subnet_entry(subnet, sync_prefixes=True, sync_ip_ranges=True, vrf=None, stats=stats, server_name="s")
-        self.assertEqual(stats["created"], 1)
-
-    @patch("netbox_kea.sync.sync_pool_to_netbox_ip_range", side_effect=Exception("overflow"), autospec=True)
-    @patch(
-        "netbox_kea.sync.sync_subnet_to_netbox_prefix",
-        return_value=(MagicMock(spec=Prefix), False, False),
-        autospec=True,
-    )
-    def test_pool_exception_increments_errors(self, mock_prefix, mock_range):
-        """Exception in pool sync → stats['prefix_errors'] incremented, no re-raise."""
-        from netbox_kea.jobs import _sync_subnet_entry
-
-        stats = self._make_stats()
-        subnet = {"subnet": "10.0.0.0/24", "pools": [{"pool": "10.0.0.10-10.0.0.50"}]}
-        _sync_subnet_entry(subnet, sync_prefixes=False, sync_ip_ranges=True, vrf=None, stats=stats, server_name="s")
-        self.assertEqual(stats["prefix_errors"], 1)
-        self.assertEqual(stats["errors"], 0)
-
-    @patch("netbox_kea.sync.sync_pool_to_netbox_ip_range", return_value=None, autospec=True)
-    @patch(
-        "netbox_kea.sync.sync_subnet_to_netbox_prefix",
-        return_value=(MagicMock(spec=Prefix), False, False),
-        autospec=True,
-    )
-    def test_pool_none_result_counts_as_error(self, mock_prefix, mock_range):
-        """sync_pool_to_netbox_ip_range returning None (unparseable pool) increments prefix_errors."""
-        from netbox_kea.jobs import _sync_subnet_entry
-
-        stats = self._make_stats()
-        subnet = {"subnet": "10.0.0.0/24", "pools": [{"pool": "10.0.0.10-10.0.0.50"}]}
-        _sync_subnet_entry(subnet, sync_prefixes=False, sync_ip_ranges=True, vrf=None, stats=stats, server_name="s")
-        self.assertEqual(stats, {"created": 0, "updated": 0, "errors": 0, "prefix_errors": 1})
-
-    @patch(
-        "netbox_kea.sync.sync_subnet_to_netbox_prefix",
-        return_value=(MagicMock(spec=Prefix), True, False),
-        autospec=True,
-    )
-    def test_vrf_forwarded_to_prefix_sync(self, mock_prefix):
-        """vrf value is forwarded to sync_subnet_to_netbox_prefix."""
-        from netbox_kea.jobs import _sync_subnet_entry
-
-        fake_vrf = MagicMock()  # mock-ok: VRF stand-in (sync_vrf value)
-        _sync_subnet_entry(
-            {"subnet": "10.0.0.0/24"},
-            sync_prefixes=True,
-            sync_ip_ranges=False,
-            vrf=fake_vrf,
-            stats=self._make_stats(),
-            server_name="s",
-        )
-        _, call_kwargs = mock_prefix.call_args
-        self.assertEqual(call_kwargs["vrf"], fake_vrf)
-
-    @patch(
-        "netbox_kea.sync.sync_pool_to_netbox_ip_range",
-        return_value=(MagicMock(spec=IPRange), True, False),
-        autospec=True,
-    )
-    def test_vrf_forwarded_to_pool_sync(self, mock_range):
-        """vrf value is forwarded to sync_pool_to_netbox_ip_range."""
-        from netbox_kea.jobs import _sync_subnet_entry
-
-        fake_vrf = MagicMock()  # mock-ok: VRF stand-in (sync_vrf value)
-        subnet = {"subnet": "10.0.0.0/24", "pools": [{"pool": "10.0.0.10-10.0.0.50"}]}
-        _sync_subnet_entry(
-            subnet,
-            sync_prefixes=False,
-            sync_ip_ranges=True,
-            vrf=fake_vrf,
-            stats=self._make_stats(),
-            server_name="s",
-        )
-        _, call_kwargs = mock_range.call_args
-        self.assertEqual(call_kwargs["vrf"], fake_vrf)
-
-    @patch("netbox_kea.sync.sync_pool_to_netbox_ip_range", autospec=True)
-    def test_pool_entry_missing_pool_key_skipped(self, mock_range):
-        """Pool entry without 'pool' key is silently skipped."""
-        from netbox_kea.jobs import _sync_subnet_entry
-
-        subnet = {"subnet": "10.0.0.0/24", "pools": [{"some-other-key": "value"}]}
-        _sync_subnet_entry(
-            subnet, sync_prefixes=False, sync_ip_ranges=True, vrf=None, stats=self._make_stats(), server_name="s"
-        )
-        mock_range.assert_not_called()
-
-    def test_pool_too_large_is_silently_skipped(self):
-        """_POOL_TOO_LARGE sentinel from sync_pool_to_netbox_ip_range → stats unchanged (line 302)."""
-        from netbox_kea.jobs import _sync_subnet_entry
-        from netbox_kea.sync import _POOL_TOO_LARGE
-
-        stats = self._make_stats()
-        subnet = {"subnet": "10.0.0.0/8", "pools": [{"pool": "10.0.0.0-10.255.255.255"}]}
-        with patch("netbox_kea.sync.sync_pool_to_netbox_ip_range", return_value=_POOL_TOO_LARGE, autospec=True):
-            _sync_subnet_entry(subnet, sync_prefixes=False, sync_ip_ranges=True, vrf=None, stats=stats, server_name="s")
-        self.assertEqual(stats, {"created": 0, "updated": 0, "errors": 0, "prefix_errors": 0})
-
-    @patch(
-        "netbox_kea.sync.sync_pool_to_netbox_ip_range",
-        return_value=(MagicMock(spec=IPRange), False, True),
-        autospec=True,
-    )
-    def test_pool_updated_increments_updated(self, mock_range):
-        """Updated IP range (created=False, did_update=True) increments stats['updated'] (lines 315-316)."""
-        from netbox_kea.jobs import _sync_subnet_entry
-
-        stats = self._make_stats()
-        subnet = {"subnet": "10.0.0.0/24", "pools": [{"pool": "10.0.0.10-10.0.0.50"}]}
-        _sync_subnet_entry(subnet, sync_prefixes=False, sync_ip_ranges=True, vrf=None, stats=stats, server_name="s")
-        self.assertEqual(stats["updated"], 1)
-        self.assertEqual(stats["created"], 0)
-
-
-# ---------------------------------------------------------------------------
-# Tests for _sync_server_prefixes_and_ranges (unit — no DB)
-# ---------------------------------------------------------------------------
-
-_DHCP4_CONFIG_RESPONSE = [
-    {
-        "result": 0,
-        "arguments": {
-            "Dhcp4": {
-                "subnet4": [
-                    {"subnet": "10.0.0.0/24", "pools": [{"pool": "10.0.0.10-10.0.0.50"}]},
-                    {"subnet": "10.0.1.0/24", "pools": []},
-                ],
-                "shared-networks": [],
-            }
-        },
-    }
-]
-
-_DHCP4_CONFIG_WITH_SHARED = [
-    {
-        "result": 0,
-        "arguments": {
-            "Dhcp4": {
-                "subnet4": [{"subnet": "10.0.0.0/24", "pools": []}],
-                "shared-networks": [
-                    {
-                        "name": "net-a",
-                        "subnet4": [{"subnet": "192.168.1.0/24", "pools": [{"pool": "192.168.1.10-192.168.1.100"}]}],
-                    }
-                ],
-            }
-        },
-    }
-]
-
-_DHCP6_CONFIG_WITH_SHARED = [
-    {
-        "result": 0,
-        "arguments": {
-            "Dhcp6": {
-                "subnet6": [{"subnet": "2001:db8::/48", "pools": []}],
-                "shared-networks": [
-                    {
-                        "name": "net-b",
-                        "subnet6": [
-                            {
-                                "subnet": "2001:db8:1::/64",
-                                "pools": [{"pool": "2001:db8:1::10-2001:db8:1::ff"}],
-                            }
-                        ],
-                    }
-                ],
-            }
-        },
-    }
-]
-
-
-class TestFetchKeaSubnets(SimpleTestCase):
-    """_fetch_kea_subnets fetches + parses the Kea subnet list, returning None on failure."""
-
-    def _server(self, name="kea1"):
-        # Server is a plain container here (only .name + .get_client are read); the
-        # client it returns is a REAL KeaClient whose HTTP boundary stub_kea covers.
-        server = MagicMock(spec=Server)  # mock-ok: Server container for a job helper (name + get_client)
-        server.name = name
-        server.get_client.return_value = KeaClient(url="https://kea.example.com")
-        return server
-
-    @contextmanager
-    def _config_get(self, response):
-        """Yield a server whose real client answers ``config-get`` with *response*.
-
-        *response* is a raw Kea payload (list) or an exception instance the stub
-        raises at the HTTP boundary.
-        """
-        with stub_kea({"config-get": response}):
-            yield self._server()
-
-    def test_returns_subnet_list(self):
-        from netbox_kea.jobs import _fetch_kea_subnets
-
-        with self._config_get(_DHCP4_CONFIG_RESPONSE) as server:
-            self.assertEqual(len(_fetch_kea_subnets(server, 4)), 2)
-
-    def test_shared_network_subnets_included(self):
-        from netbox_kea.jobs import _fetch_kea_subnets
-
-        with self._config_get(_DHCP4_CONFIG_WITH_SHARED) as server:
-            # 1 top-level subnet + 1 in shared-network = 2
-            self.assertEqual(len(_fetch_kea_subnets(server, 4)), 2)
-
-    def test_shared_network_subnets_v6_included(self):
-        from netbox_kea.jobs import _fetch_kea_subnets
-
-        with self._config_get(_DHCP6_CONFIG_WITH_SHARED) as server:
-            self.assertEqual(len(_fetch_kea_subnets(server, 6)), 2)
-
-    def test_get_client_exception_returns_none(self):
-        from netbox_kea.jobs import _fetch_kea_subnets
-
-        # cert-without-key makes the real get_client() raise ValueError → helper returns None.
-        server = Server(name="kea1", ca_url="https://kea.example.com", dhcp4=True, client_cert_path="/x.pem")
-        with stub_kea({}):
-            self.assertIsNone(_fetch_kea_subnets(server, 4))
-
-    def test_command_exception_returns_none(self):
-        from netbox_kea.jobs import _fetch_kea_subnets
-
-        # A transport error at the boundary propagates through command() → helper returns None.
-        with self._config_get(Exception("timeout")) as server:
-            self.assertIsNone(_fetch_kea_subnets(server, 4))
-
-    def test_result_nonzero_returns_none(self):
-        from netbox_kea.jobs import _fetch_kea_subnets
-
-        with self._config_get([{"result": 1, "text": "internal error"}]) as server:
-            self.assertIsNone(_fetch_kea_subnets(server, 4))
-
-    def test_arguments_not_dict_returns_none(self):
-        from netbox_kea.jobs import _fetch_kea_subnets
-
-        with self._config_get([{"result": 0, "arguments": "not-a-dict"}]) as server:
-            self.assertIsNone(_fetch_kea_subnets(server, 4))
-
-    def test_arguments_none_returns_empty_list(self):
-        from netbox_kea.jobs import _fetch_kea_subnets
-
-        with self._config_get([{"result": 0, "arguments": None}]) as server:
-            self.assertEqual(_fetch_kea_subnets(server, 4), [])
-
-    def test_dhcp_config_not_dict_returns_none(self):
-        from netbox_kea.jobs import _fetch_kea_subnets
-
-        with self._config_get([{"result": 0, "arguments": {"Dhcp4": "not-a-dict"}}]) as server:
-            self.assertIsNone(_fetch_kea_subnets(server, 4))
-
-    def test_empty_subnet_list_returns_empty(self):
-        from netbox_kea.jobs import _fetch_kea_subnets
-
-        with self._config_get([{"result": 0, "arguments": {"Dhcp4": {"subnet4": []}}}]) as server:
-            self.assertEqual(_fetch_kea_subnets(server, 4), [])
-
-    def test_non_dict_shared_network_entry_is_skipped(self):
-        from netbox_kea.jobs import _fetch_kea_subnets
-
-        config = [
-            {
-                "result": 0,
-                "arguments": {
-                    "Dhcp4": {
-                        "subnet4": [],
-                        "shared-networks": [
-                            "not-a-dict",
-                            {"name": "net-a", "subnet4": [{"subnet": "10.1.0.0/24", "pools": []}]},
-                        ],
-                    }
-                },
-            }
-        ]
-        with self._config_get(config) as server:
-            subnets = _fetch_kea_subnets(server, 4)
-        self.assertEqual(len(subnets), 1)
-        self.assertEqual(subnets[0]["subnet"], "10.1.0.0/24")
-
-    # NOTE: the old test_malformed_non_list_returns_none was removed — a non-list Kea
-    # response is unreachable through the real client (KeaClient.command() raises
-    # ValueError on a non-list body, which _fetch_kea_subnets catches → None). That
-    # None outcome is already covered by test_command_exception_returns_none.
-
-
-class TestBuildSubnetPrefixMap(SimpleTestCase):
-    """_build_subnet_prefix_map maps Kea subnet-id → prefix length."""
-
-    def test_builds_map_from_subnet_cidrs(self):
-        from netbox_kea.jobs import _build_subnet_prefix_map
-
-        subnets = [{"id": 1, "subnet": "10.0.0.0/24"}, {"id": 10, "subnet": "2001:db8::/64"}]
-        self.assertEqual(_build_subnet_prefix_map(subnets), {1: 24, 10: 64})
-
-    def test_skips_entries_missing_id_or_cidr_or_unparseable(self):
-        from netbox_kea.jobs import _build_subnet_prefix_map
-
-        subnets = [{"subnet": "10.0.0.0/24"}, {"id": 2}, {"id": 3, "subnet": "bad"}]
-        self.assertEqual(_build_subnet_prefix_map(subnets), {})
-
-    def test_none_returns_empty_map(self):
-        from netbox_kea.jobs import _build_subnet_prefix_map
-
-        self.assertEqual(_build_subnet_prefix_map(None), {})
-
-
 class TestRecordConflicts(SimpleTestCase):
     """_record_conflicts folds one phase's conflicts into the job stats."""
 
@@ -1724,395 +1215,375 @@ class TestRecordConflicts(SimpleTestCase):
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
-class TestSyncServerReservationsReturnValue(TestCase):
-    """_sync_server_reservations must report failure when any individual row fails.
+class TestJobSaveFailure(TestCase):
+    """A JobRunner persistence failure is logged after the real job flow finishes."""
 
-    Returning True on a partial failure would let _sync_one_server keep
-    cleanup_safe=True and run stale cleanup with an incomplete keep-set, deleting
-    live IPs whose reservation failed to sync.
-    """
-
-    @staticmethod
-    def _server(name="kea-fail"):
-        server = MagicMock(spec=Server)  # mock-ok: Server container (name/pk/get_client) for a job helper
-        server.name = name
-        server.pk = 1
-        server.get_client.return_value = KeaClient(url="https://kea.example.com")
-        return server
-
-    @staticmethod
-    def _stats():
-        return {"created": 0, "updated": 0, "errors": 0, "prefix_errors": 0, "conflicts": 0, "skipped": 0}
-
-    def test_returns_false_when_a_row_fails(self):
-        from netbox_kea.jobs import _sync_server_reservations
-
-        # The typed Snapshot quarantines the malformed record before synchronization.
-        stats = self._stats()
-        bad = {"ip-address": "999.999.999.999", "hw-address": "aa:bb:cc:dd:ee:ff", "subnet-id": 1}
-        snapshot = _reservation_snapshot([bad], 4)
-        ok = _sync_server_reservations(self._server(), snapshot, stats=stats, all_synced=[], protected=[])
-
-        self.assertFalse(ok)
-        self.assertEqual(stats["errors"], 1)
-        self.assertEqual(stats["skipped"], 0)
-
-    def test_an_incomplete_snapshot_is_never_safe_for_cleanup(self):
-        """An unfinished page traversal cannot produce a complete keep-set."""
-        from ipam.models import IPAddress
-
-        from netbox_kea.jobs import _sync_server_reservations
-
-        stats = self._stats()
-        all_synced = []
-        snapshot = _incomplete_reservation_snapshot([_RESV4], 4)
-
-        ok = _sync_server_reservations(self._server(), snapshot, stats=stats, all_synced=all_synced, protected=[])
-
-        self.assertFalse(snapshot.complete)
-        self.assertFalse(ok)
-        # The valid record still reached IPAM: an incomplete Snapshot is additive, not idle.
-        self.assertEqual(len(all_synced), 1)
-        self.assertTrue(IPAddress.objects.filter(address__net_host="10.0.0.100").exists())
-
-    def test_address_less_reservation_is_skipped_not_an_error(self):
-        """A host that reserves no address is legal Kea config, not a sync failure (#110).
-
-        It has nothing to write to IPAM, so it must not count as an error — errors make
-        the whole job raise JobFailed — and must not enter ``all_synced``, whose IPs form
-        the stale-cleanup keep-set.
-        """
-        from netbox_kea.jobs import _sync_server_reservations
-
-        stats = self._stats()
-        all_synced: list = []
-        protected = []
-        host = {"hostname": "printer-1", "hw-address": "aa:bb:cc:dd:ee:ff", "subnet-id": 1}
-        snapshot = _reservation_snapshot([host], 4)
-        ok = _sync_server_reservations(
-            self._server(), snapshot, stats=stats, all_synced=all_synced, protected=protected
-        )
-
-        self.assertTrue(ok)
-        self.assertEqual(stats["errors"], 0)
-        self.assertEqual(stats["skipped"], 1)
-        self.assertEqual(all_synced, [])
-        # Skipped records still go to the keep-set channel, which stale cleanup reads.
-        self.assertEqual(protected, list(snapshot.records))
-
-    def test_conflicts_stay_consistent_with_the_deduplicated_set(self):
-        """``conflicts`` must equal the size of the caller's set, not a running sum.
-
-        The caller names the addresses in the job summary from that set, so a count
-        derived any other way can disagree with the sample beside it.
-        """
-        from ipam.models import IPAddress
-
-        from netbox_kea.jobs import _sync_server_reservations
-
-        IPAddress.objects.create(address="10.0.0.100/32", status="active", description="Router loopback")
-        conflict_ips: set[str] = set()
-        stats = self._stats()
-        host = {"ip-address": "10.0.0.100", "hw-address": "11:22:33:44:55:66", "subnet-id": 1}
-        snapshot = _reservation_snapshot([host], 4)
-        _sync_server_reservations(
-            self._server(), snapshot, stats=stats, all_synced=[], protected=[], conflict_ips=conflict_ips
-        )
-
-        self.assertEqual(conflict_ips, {"10.0.0.100"})
-        self.assertEqual(stats["conflicts"], len(conflict_ips))
-
-    def test_v6_prefix_only_reservation_is_skipped(self):
-        """A PD-only DHCPv6 host reserves prefixes, not addresses — same treatment."""
-        from netbox_kea.jobs import _sync_server_reservations
-
-        stats = self._stats()
-        all_synced: list = []
-        protected = []
-        host = {"duid": "00:01:00:01:12:34", "subnet-id": 12, "prefixes": ["2001:db8:1::/64"]}
-        snapshot = _reservation_snapshot([host], 6)
-        ok = _sync_server_reservations(
-            self._server(), snapshot, stats=stats, all_synced=all_synced, protected=protected
-        )
-
-        self.assertTrue(ok)
-        self.assertEqual(stats["errors"], 0)
-        self.assertEqual(stats["skipped"], 1)
-        self.assertEqual(all_synced, [])
-        self.assertEqual(protected, list(snapshot.records))
-
-
-class TestSyncServerPrefixesAndRanges(SimpleTestCase):
-    """_sync_server_prefixes_and_ranges processes a pre-fetched subnet list."""
-
-    def _make_server(self, name="kea1"):
-        server = MagicMock(spec=Server)
-        server.name = name
-        server.sync_vrf = None
-        return server
-
-    @patch("netbox_kea.jobs._sync_subnet_entry", autospec=True)
-    def test_syncs_each_subnet(self, mock_entry):
-        """Two subnets → _sync_subnet_entry called twice."""
-        from netbox_kea.jobs import _sync_server_prefixes_and_ranges
-
-        subnets = [{"subnet": "10.0.0.0/24", "pools": []}, {"subnet": "10.0.1.0/24", "pools": []}]
-        stats = {"created": 0, "updated": 0, "errors": 0, "prefix_errors": 0}
-        _sync_server_prefixes_and_ranges(
-            self._make_server(), version=4, subnets=subnets, sync_prefixes=True, sync_ip_ranges=True, stats=stats
-        )
-        self.assertEqual(mock_entry.call_count, 2)
-
-    @patch("netbox_kea.jobs._sync_subnet_entry", autospec=True)
-    def test_none_subnets_increments_prefix_errors(self, mock_entry):
-        """subnets=None (fetch failed) → prefix_errors incremented, no entries processed."""
-        from netbox_kea.jobs import _sync_server_prefixes_and_ranges
-
-        stats = {"created": 0, "updated": 0, "errors": 0, "prefix_errors": 0}
-        _sync_server_prefixes_and_ranges(
-            self._make_server(), version=4, subnets=None, sync_prefixes=True, sync_ip_ranges=True, stats=stats
-        )
-        mock_entry.assert_not_called()
-        self.assertEqual(stats["prefix_errors"], 1)
-        self.assertEqual(stats["errors"], 0)
-
-    @patch("netbox_kea.jobs._sync_subnet_entry", autospec=True)
-    def test_empty_subnet_list_no_calls(self, mock_entry):
-        """Empty subnet list → _sync_subnet_entry never called, no errors."""
-        from netbox_kea.jobs import _sync_server_prefixes_and_ranges
-
-        stats = {"created": 0, "updated": 0, "errors": 0, "prefix_errors": 0}
-        _sync_server_prefixes_and_ranges(
-            self._make_server(), version=4, subnets=[], sync_prefixes=True, sync_ip_ranges=True, stats=stats
-        )
-        mock_entry.assert_not_called()
-        self.assertEqual(stats["prefix_errors"], 0)
-
-    @patch("netbox_kea.jobs._sync_subnet_entry", autospec=True)
-    def test_vrf_forwarded_to_subnet_entry(self, mock_entry):
-        """vrf kwarg is passed through to each _sync_subnet_entry call."""
-        from netbox_kea.jobs import _sync_server_prefixes_and_ranges
-
-        fake_vrf = MagicMock()  # mock-ok: VRF stand-in (sync_vrf value)
-        subnets = [{"subnet": "10.0.0.0/24", "pools": []}]
-        stats = {"created": 0, "updated": 0, "errors": 0, "prefix_errors": 0}
-        _sync_server_prefixes_and_ranges(
-            self._make_server(),
-            version=4,
-            subnets=subnets,
-            sync_prefixes=True,
-            sync_ip_ranges=True,
-            vrf=fake_vrf,
-            stats=stats,
-        )
-        for c in mock_entry.call_args_list:
-            self.assertEqual(c.args[3], fake_vrf)  # vrf is the 4th positional arg
-
-
-# ---------------------------------------------------------------------------
-# Tests for per-server prefix/range toggle in KeaIpamSyncJob.run()
-# ---------------------------------------------------------------------------
-
-
-class TestPerServerPrefixRangeToggles(SimpleTestCase):
-    """Per-server sync_prefixes_enabled / sync_ip_ranges_enabled override tests."""
-
-    def setUp(self):
-        patcher = patch("netbox_kea.models.SyncConfig", autospec=True)
-        self.MockSyncConfig = patcher.start()
-        self.MockSyncConfig.get.return_value = MagicMock(
-            spec=SyncConfig,
-            sync_enabled=True,
-            interval_minutes=5,
-            sync_leases_enabled=False,
-            sync_reservations_enabled=False,
-            sync_prefixes_enabled=True,
-            sync_ip_ranges_enabled=True,
-        )
-        self.addCleanup(patcher.stop)
-
-    @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
-    @patch("netbox_kea.jobs._sync_server_prefixes_and_ranges", autospec=True)
-    @patch("netbox_kea.models.Server", autospec=True)
-    def test_prefix_range_sync_called_when_both_enabled(self, MockServer, mock_pr):
-        """Global and per-server both enabled → _sync_server_prefixes_and_ranges called."""
-        server = _make_server()
-        server.sync_prefixes_enabled = True
-        server.sync_ip_ranges_enabled = True
-        MockServer.objects.all.return_value = [server]
-
-        KeaIpamSyncJob(_make_job()).run()
-
-        mock_pr.assert_called()
-
-    @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
-    @patch("netbox_kea.jobs._sync_server_prefixes_and_ranges", autospec=True)
-    @patch("netbox_kea.models.Server", autospec=True)
-    def test_prefix_range_not_called_when_server_disables_both(self, MockServer, mock_pr):
-        """Global enabled but server disables both → _sync_server_prefixes_and_ranges NOT called."""
-        server = _make_server()
-        server.sync_prefixes_enabled = False
-        server.sync_ip_ranges_enabled = False
-        MockServer.objects.all.return_value = [server]
-
-        KeaIpamSyncJob(_make_job()).run()
-
-        mock_pr.assert_not_called()
-
-    @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
-    @patch("netbox_kea.jobs._sync_server_prefixes_and_ranges", autospec=True)
-    @patch("netbox_kea.models.Server", autospec=True)
-    def test_only_prefix_enabled_calls_with_sync_ip_ranges_false(self, MockServer, mock_pr):
-        """Server disables ip_ranges but keeps prefixes → called with sync_ip_ranges=False."""
-        server = _make_server()
-        server.sync_prefixes_enabled = True
-        server.sync_ip_ranges_enabled = False
-        MockServer.objects.all.return_value = [server]
-
-        KeaIpamSyncJob(_make_job()).run()
-
-        mock_pr.assert_called()
-        # Check the effective flags passed in call
-        call_kwargs = mock_pr.call_args_list[0].kwargs
-        self.assertTrue(call_kwargs["sync_prefixes"])
-        self.assertFalse(call_kwargs["sync_ip_ranges"])
-
-    @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
-    @patch("netbox_kea.jobs._sync_server_prefixes_and_ranges", autospec=True)
-    @patch("netbox_kea.models.Server", autospec=True)
-    def test_global_prefixes_disabled_overrides_server(self, MockServer, mock_pr):
-        """Global sync_prefixes_enabled=False AND sync_ip_ranges_enabled=False → no call."""
-        self.MockSyncConfig.get.return_value.sync_prefixes_enabled = False
-        self.MockSyncConfig.get.return_value.sync_ip_ranges_enabled = False
-        server = _make_server()
-        server.sync_prefixes_enabled = True
-        server.sync_ip_ranges_enabled = True
-        MockServer.objects.all.return_value = [server]
-
-        KeaIpamSyncJob(_make_job()).run()
-
-        mock_pr.assert_not_called()
-
-    @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
-    @patch("netbox_kea.jobs._sync_server_prefixes_and_ranges", autospec=True)
-    @patch("netbox_kea.models.Server", autospec=True)
-    def test_sync_vrf_forwarded_to_prefix_range_sync(self, MockServer, mock_pr):
-        """server.sync_vrf is forwarded as vrf= to _sync_server_prefixes_and_ranges."""
-        server = _make_server()
-        fake_vrf = MagicMock(name="vrf-red")  # mock-ok: VRF stand-in (sync_vrf value)
-        server.sync_vrf = fake_vrf
-        server.sync_prefixes_enabled = True
-        server.sync_ip_ranges_enabled = True
-        MockServer.objects.all.return_value = [server]
-
-        KeaIpamSyncJob(_make_job()).run()
-
-        for c in mock_pr.call_args_list:
-            self.assertEqual(c.kwargs.get("vrf"), fake_vrf)
-
-
-# ---------------------------------------------------------------------------
-# Tests for global all-sync-disabled early return
-# ---------------------------------------------------------------------------
-
-
-class TestAllSyncTypesDisabled(SimpleTestCase):
-    """When all four sync type flags are False, run() exits early."""
-
-    def setUp(self):
-        patcher = patch("netbox_kea.models.SyncConfig", autospec=True)
-        self.MockSyncConfig = patcher.start()
-        self.MockSyncConfig.get.return_value = MagicMock(
-            spec=SyncConfig,
-            sync_enabled=True,
-            interval_minutes=5,
-            sync_leases_enabled=False,
-            sync_reservations_enabled=False,
-            sync_prefixes_enabled=False,
-            sync_ip_ranges_enabled=False,
-        )
-        self.addCleanup(patcher.stop)
-
-    @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
-    @patch("netbox_kea.models.Server", autospec=True)
-    def test_all_disabled_logs_nothing_to_do(self, MockServer):
-        """All four sync flags False → 'nothing to do' logged, Server.objects.all not called."""
-        with self.assertLogs(level="INFO") as cm:
-            KeaIpamSyncJob(_make_job()).run()
-
-        MockServer.objects.all.assert_not_called()
-        self.assertTrue(any("nothing to do" in msg.lower() for msg in cm.output))
-
-
-# ---------------------------------------------------------------------------
-# Tests for reservation updated path in _sync_server_reservations
-# ---------------------------------------------------------------------------
+    def test_save_exception_is_caught_and_logged(self):
+        config = SyncConfig.get()
+        config.sync_enabled = False
+        config.save()
+        job = _make_job()
+        job.save.side_effect = RuntimeError("job persistence unavailable")
+        with self.assertLogs("netbox_kea.jobs", level="ERROR") as logs:
+            KeaIpamSyncJob(job).run()
+        self.assertEqual(job.data["summary"], [])
+        job.save.assert_called_once_with(update_fields=["data"])
+        self.assertTrue(any("Failed to persist sync job summary data" in message for message in logs.output))
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
-class TestSyncServerReservationsUpdated(TestCase):
-    """An existing managed address contributes to the updated count."""
-
-    def _make_server(self):
-        server = MagicMock(spec=Server)
-        server.name = "kea1"
-        return server
-
-    def test_reservation_updated_increments_stats(self):
-        from netbox_kea.jobs import _sync_server_reservations
-
-        server = self._make_server()
-        server.pk = 1
-        NbIP.objects.create(
-            address="10.0.0.100/24",
-            status="reserved",
-            dns_name="old-name",
-            description="Synced from Kea DHCP reservation",
-        )
-
-        stats = {"created": 0, "updated": 0, "errors": 0, "prefix_errors": 0}
-        all_synced: list = []
-        snapshot = _reservation_snapshot([_RESV4], 4)
-        result = _sync_server_reservations(server, snapshot, stats=stats, all_synced=all_synced, protected=[])
-
-        self.assertTrue(result)
-        self.assertEqual(stats["updated"], 1)
-        self.assertEqual(stats["created"], 0)
-        self.assertEqual(NbIP.objects.get(address="10.0.0.100/24").dns_name, "reserved1")
-
-
-# ---------------------------------------------------------------------------
-# Tests for job.save() failure in run() finally block
-# ---------------------------------------------------------------------------
-
-
-class TestJobSaveFailure(SimpleTestCase):
-    """Tests that job.save() failure in the finally block is caught and logged."""
-
+class TestSubnetCatalogueJob(TestCase):
     def setUp(self):
-        patcher = patch("netbox_kea.models.SyncConfig", autospec=True)
-        self.MockSyncConfig = patcher.start()
-        self.MockSyncConfig.get.return_value = MagicMock(
-            spec=SyncConfig,
-            sync_enabled=True,
-            interval_minutes=5,
-            sync_leases_enabled=False,
-            sync_reservations_enabled=False,
-            sync_prefixes_enabled=False,
-            sync_ip_ranges_enabled=False,
+        from netbox_kea.tests.utils import _make_db_server
+
+        self.server = _make_db_server(dhcp6=False)
+        self.config = SyncConfig.get()
+        self.config.sync_leases_enabled = False
+        self.config.sync_reservations_enabled = False
+        self.config.sync_prefixes_enabled = True
+        self.config.sync_ip_ranges_enabled = True
+        self.config.save()
+
+    def test_inconsistent_catalogue_rejects_prefix_and_range_sync(self):
+        responses = _catalogue_responses_for_subnets(
+            4, [{"id": 1, "subnet": "198.18.0.0/24", "pools": [{"pool": "198.18.0.10-198.18.0.20"}]}]
         )
-        self.addCleanup(patcher.stop)
+        responses["subnet4-list"] = _subnet_list(4, [{"id": 1, "subnet": "198.18.1.0/24"}])
+        job = _make_job()
+        with stub_kea(responses), self.assertRaises(JobFailed):
+            KeaIpamSyncJob(job).run()
+        self.assertFalse(Prefix.objects.exists())
+        self.assertFalse(IPRange.objects.exists())
+        self.assertEqual(job.data["summary"][0]["prefix_errors"], 1)
+        self.assertEqual(job.data["summary"][0]["errors"], 0)
 
-    @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
-    @patch("netbox_kea.models.Server", autospec=True)
-    def test_save_exception_is_caught_and_logged(self, MockServer):
-        """job.save() raising an exception is caught; run() does not re-raise (lines 679-680)."""
-        MockServer.objects.all.return_value = []
-        mock_job = _make_job()
-        mock_job.data = {}
-        mock_job.save.side_effect = Exception("db write failed")
+    def _run(self, responses, *, failed=False):
+        job = _make_job()
+        with stub_kea(responses) as kea:
+            if failed:
+                with self.assertRaises(JobFailed):
+                    KeaIpamSyncJob(job).run()
+            else:
+                KeaIpamSyncJob(job).run()
+        return job.data["summary"], kea
 
-        with self.assertLogs("netbox_kea.jobs", level="ERROR") as cm:
-            KeaIpamSyncJob(mock_job).run()
+    def _responses(self, pools=()):
+        return _catalogue_responses_for_subnets(
+            4, [{"id": 1, "subnet": "198.18.0.0/24", "pools": [{"pool": pool} for pool in pools]}]
+        )
 
-        self.assertTrue(any("persist" in msg.lower() or "summary" in msg.lower() for msg in cm.output))
+    def test_prefix_created_updated_and_unchanged_counts(self):
+        responses = self._responses()
+        summary, _ = self._run(responses)
+        prefix = Prefix.objects.get(prefix="198.18.0.0/24")
+        self.assertEqual(prefix.status, "active")
+        self.assertEqual(summary[0]["created"], 1)
+        self.assertEqual(summary[0]["updated"], 0)
+        prefix.description = ""
+        prefix.save()
+        summary, _ = self._run(responses)
+        prefix.refresh_from_db()
+        self.assertEqual(prefix.description, "Synced from Kea DHCP subnet")
+        self.assertEqual(summary[0]["created"], 0)
+        self.assertEqual(summary[0]["updated"], 1)
+        summary, _ = self._run(responses)
+        self.assertEqual(summary[0]["created"], 0)
+        self.assertEqual(summary[0]["updated"], 0)
+        self.assertEqual(Prefix.objects.count(), 1)
+
+    def test_pools_create_update_and_keep_ranges(self):
+        responses = self._responses(("198.18.0.10 - 198.18.0.20", "198.18.0.128/25"))
+        summary, _ = self._run(responses)
+        ranges = list(IPRange.objects.order_by("start_address"))
+        self.assertEqual(
+            [(str(r.start_address), str(r.end_address)) for r in ranges],
+            [("198.18.0.10/24", "198.18.0.20/24"), ("198.18.0.128/24", "198.18.0.255/24")],
+        )
+        self.assertEqual(summary[0]["created"], 3)
+        ranges[0].description = ""
+        ranges[0].save()
+        ranges[1].description = "Operator pool note"
+        ranges[1].save()
+        summary, _ = self._run(responses)
+        ranges[0].refresh_from_db()
+        ranges[1].refresh_from_db()
+        self.assertEqual(ranges[0].description, "Synced from Kea DHCP pool")
+        self.assertEqual(ranges[1].description, "Operator pool note")
+        self.assertEqual(summary[0]["updated"], 1)
+        self.assertEqual(summary[0]["created"], 0)
+        self.assertEqual(IPRange.objects.count(), 2)
+
+    def test_existing_cidr_pool_keeps_one_range_and_operator_description(self):
+        from netaddr import IPNetwork
+
+        existing = IPRange.objects.create(
+            start_address=IPNetwork("198.18.0.128/25"),
+            end_address=IPNetwork("198.18.0.255/25"),
+            status="active",
+            description="Operator pool note",
+        )
+        summary, _ = self._run(self._responses(("198.18.0.128/25",)))
+        self.assertEqual(IPRange.objects.count(), 1)
+        existing.refresh_from_db()
+        self.assertEqual(existing.description, "Operator pool note")
+        self.assertEqual(str(existing.start_address), "198.18.0.128/25")
+        self.assertEqual(str(existing.end_address), "198.18.0.255/25")
+        self.assertEqual(summary[0]["created"], 1)
+        self.assertEqual(summary[0]["updated"], 0)
+        self.assertEqual(summary[0]["prefix_errors"], 0)
+
+    def test_large_ipv6_pool_is_skipped_without_error(self):
+        self.server.dhcp4 = False
+        self.server.dhcp6 = True
+        self.server.save()
+        responses = _catalogue_responses_for_subnets(
+            6, [{"id": 1, "subnet": "2001:db8::/64", "pools": [{"pool": "2001:db8::/64"}]}]
+        )
+        summary, _ = self._run(responses)
+        self.assertTrue(Prefix.objects.filter(prefix="2001:db8::/64").exists())
+        self.assertFalse(IPRange.objects.exists())
+        self.assertEqual(summary[0]["created"], 1)
+        self.assertEqual(summary[0]["prefix_errors"], 0)
+
+    def test_invalid_pool_fails_catalogue_without_partial_writes(self):
+        summary, _ = self._run(self._responses(("198.18.0.10-198.18.0.20", "invalid-pool")), failed=True)
+        self.assertFalse(Prefix.objects.exists())
+        self.assertFalse(IPRange.objects.exists())
+        self.assertEqual(summary[0]["prefix_errors"], 1)
+        self.assertEqual(summary[0]["errors"], 0)
+
+    def test_per_server_prefix_range_toggles(self):
+        for prefixes, ranges in ((True, True), (True, False), (False, True), (False, False)):
+            with self.subTest(prefixes=prefixes, ranges=ranges):
+                Prefix.objects.all().delete()
+                IPRange.objects.all().delete()
+                self.server.sync_prefixes_enabled = prefixes
+                self.server.sync_ip_ranges_enabled = ranges
+                self.server.save()
+                summary, kea = self._run(self._responses(("198.18.0.10-198.18.0.20",)))
+                self.assertEqual(Prefix.objects.count(), int(prefixes))
+                self.assertEqual(IPRange.objects.count(), int(ranges))
+                self.assertEqual(summary[0]["created"], int(prefixes) + int(ranges))
+                self.assertEqual(summary[0]["prefix_errors"], 0)
+                if not prefixes and not ranges:
+                    self.assertEqual(kea.commands(), [])
+
+    def test_global_prefix_range_toggles(self):
+        for prefixes, ranges in ((True, False), (False, True), (False, False)):
+            with self.subTest(prefixes=prefixes, ranges=ranges):
+                Prefix.objects.all().delete()
+                IPRange.objects.all().delete()
+                self.config.sync_prefixes_enabled = prefixes
+                self.config.sync_ip_ranges_enabled = ranges
+                self.config.save()
+                summary, kea = self._run(self._responses(("198.18.0.10-198.18.0.20",)))
+                self.assertEqual(Prefix.objects.count(), int(prefixes))
+                self.assertEqual(IPRange.objects.count(), int(ranges))
+                if not prefixes and not ranges:
+                    self.assertEqual(summary, [])
+                    self.assertEqual(kea.commands(), [])
+
+    def test_prefix_and_range_use_server_vrf(self):
+        from ipam.models import VRF
+
+        self.server.sync_vrf = VRF.objects.create(name="catalogue-vrf")
+        self.server.save()
+        self._run(self._responses(("198.18.0.10-198.18.0.20",)))
+        self.assertEqual(Prefix.objects.get().vrf_id, self.server.sync_vrf_id)
+        self.assertEqual(IPRange.objects.get().vrf_id, self.server.sync_vrf_id)
+
+    def test_unavailable_catalogue_counts_one_error_and_falls_back_for_leases(self):
+        self.config.sync_leases_enabled = True
+        self.config.save()
+        Prefix.objects.create(prefix="198.18.0.0/25", status="active", description="Fallback prefix")
+        responses = self._responses()
+        responses["config-get"] = requests.ConnectionError("unavailable")
+        responses["lease4-get-page"] = _lease_page(
+            [{"ip-address": "198.18.0.10", "subnet-id": 1, "hostname": "lease.example.invalid"}]
+        )
+        with self.assertLogs("netbox_kea.jobs", level="INFO") as logs:
+            summary, _ = self._run(responses, failed=True)
+        self.assertEqual(str(NbIP.objects.get().address), "198.18.0.10/25")
+        self.assertEqual(summary[0]["created"], 1)
+        self.assertEqual(summary[0]["prefix_errors"], 1)
+        self.assertEqual(summary[0]["errors"], 0)
+        self.assertEqual(Prefix.objects.count(), 1)
+        self.assertFalse(IPRange.objects.exists())
+        self.assertTrue(any("Subnet Catalogue unavailable" in message for message in logs.output))
+        self.assertTrue(any("lease masks fall back to NetBox prefix matching" in message for message in logs.output))
+
+    def test_shared_network_subnets_sync_prefixes_and_pools(self):
+        for family, cidr, pool in (
+            (4, "198.18.0.0/24", "198.18.0.10-198.18.0.20"),
+            (6, "2001:db8::/64", "2001:db8::10-2001:db8::20"),
+        ):
+            with self.subTest(family=family):
+                self.server.dhcp4 = family == 4
+                self.server.dhcp6 = family == 6
+                self.server.save()
+                subnet = {"id": 2, "subnet": cidr, "pools": [{"pool": pool}]}
+                responses = _catalogue_responses_for_subnets(
+                    family, [], shared_networks=[{"name": "shared", f"subnet{family}": [subnet]}]
+                )
+                responses[f"subnet{family}-list"] = _subnet_list(
+                    family, [{"id": 2, "subnet": cidr, "shared-network-name": "shared"}]
+                )
+                summary, _ = self._run(responses)
+                self.assertTrue(Prefix.objects.filter(prefix=cidr).exists())
+                self.assertTrue(
+                    IPRange.objects.filter(start_address=f"{pool.split('-')[0]}/{cidr.split('/')[1]}").exists()
+                )
+                self.assertEqual(summary[0]["created"], 2)
+                self.assertEqual(summary[0]["prefix_errors"], 0)
+
+    def test_multiple_subnets_sync_all_prefixes_and_pools(self):
+        standalone_subnets = [
+            {"id": 1, "subnet": "198.18.0.0/26", "pools": [{"pool": "198.18.0.10-198.18.0.20"}]},
+            {"id": 2, "subnet": "198.18.0.64/27", "pools": [{"pool": "198.18.0.70-198.18.0.80"}]},
+        ]
+        shared_subnet = {
+            "id": 3,
+            "subnet": "198.18.0.96/28",
+            "pools": [{"pool": "198.18.0.100-198.18.0.110"}],
+        }
+        responses = _catalogue_responses_for_subnets(
+            4, standalone_subnets, shared_networks=[{"name": "shared", "subnet4": [shared_subnet]}]
+        )
+        responses["subnet4-list"] = _subnet_list(
+            4,
+            [
+                {"id": 1, "subnet": "198.18.0.0/26"},
+                {"id": 2, "subnet": "198.18.0.64/27"},
+                {"id": 3, "subnet": "198.18.0.96/28", "shared-network-name": "shared"},
+            ],
+        )
+
+        summary, _ = self._run(responses)
+
+        self.assertCountEqual(
+            [str(prefix.prefix) for prefix in Prefix.objects.all()],
+            ["198.18.0.0/26", "198.18.0.64/27", "198.18.0.96/28"],
+        )
+        self.assertCountEqual(
+            [(str(ip_range.start_address), str(ip_range.end_address)) for ip_range in IPRange.objects.all()],
+            [
+                ("198.18.0.10/26", "198.18.0.20/26"),
+                ("198.18.0.70/27", "198.18.0.80/27"),
+                ("198.18.0.100/28", "198.18.0.110/28"),
+            ],
+        )
+        self.assertEqual(summary[0]["created"], 6)
+        self.assertEqual(summary[0]["errors"], 0)
+        self.assertEqual(summary[0]["prefix_errors"], 0)
+
+    def test_multiple_subnet_ids_supply_each_lease_mask(self):
+        self.config.sync_leases_enabled = True
+        self.config.sync_prefixes_enabled = False
+        self.config.sync_ip_ranges_enabled = False
+        self.config.save()
+        responses = _catalogue_responses_for_subnets(
+            4,
+            [
+                {"id": 1, "subnet": "198.18.0.0/26"},
+                {"id": 2, "subnet": "198.18.0.64/27"},
+                {"id": 3, "subnet": "198.18.0.96/28"},
+            ],
+        )
+        responses["lease4-get-page"] = _lease_page(
+            [
+                {"ip-address": "198.18.0.10", "subnet-id": 1, "hostname": "lease1.example.invalid"},
+                {"ip-address": "198.18.0.70", "subnet-id": 2, "hostname": "lease2.example.invalid"},
+                {"ip-address": "198.18.0.100", "subnet-id": 3, "hostname": "lease3.example.invalid"},
+            ]
+        )
+        self.assertFalse(Prefix.objects.exists())
+
+        summary, _ = self._run(responses)
+
+        self.assertCountEqual(
+            [str(ip.address) for ip in NbIP.objects.all()],
+            ["198.18.0.10/26", "198.18.0.70/27", "198.18.0.100/28"],
+        )
+        self.assertFalse(Prefix.objects.exists())
+        self.assertEqual(summary[0]["created"], 3)
+        self.assertEqual(summary[0]["errors"], 0)
+        self.assertEqual(summary[0]["prefix_errors"], 0)
+
+    def test_all_phases_share_one_catalogue_per_family(self):
+        self.server.dhcp6 = True
+        self.server.save()
+        self.config.sync_leases_enabled = True
+        self.config.sync_reservations_enabled = True
+        self.config.save()
+        families = {
+            4: ("198.18.0.0/26", "198.18.0.10", "198.18.0.20"),
+            6: ("2001:db8::/72", "2001:db8::10", "2001:db8::20"),
+        }
+        responses = {}
+        for family, (cidr, lease, _reservation) in families.items():
+            responses.update(_catalogue_responses_for_subnets(family, [{"id": 1, "subnet": cidr}]))
+            responses[f"lease{family}-get-page"] = _lease_page(
+                [{"ip-address": lease, "subnet-id": 1, "hostname": f"lease{family}.example.invalid"}]
+            )
+
+        def config_get(body):
+            family = int(body["service"][0][-1])
+            return _catalogue_responses_for_subnets(family, [{"id": 1, "subnet": families[family][0]}])["config-get"]
+
+        def reservation_page(body):
+            family = int(body["service"][0][-1])
+            address = families[family][2]
+            row = {"subnet-id": 1, "hostname": f"reservation{family}.example.invalid"}
+            row.update(
+                {"ip-address": address, "hw-address": "00:11:22:33:44:55"}
+                if family == 4
+                else {"ip-addresses": [address], "duid": "00:01:02:03"}
+            )
+            return _res_page([row])
+
+        responses["config-get"] = config_get
+        responses["reservation-get-page"] = reservation_page
+        summary, kea = self._run(responses)
+        self.assertEqual(len(kea.bodies("config-get")), 2)
+        self.assertEqual(len(kea.bodies("subnet4-list")), 1)
+        self.assertEqual(len(kea.bodies("subnet6-list")), 1)
+        self.assertEqual(summary[0]["created"], 6)
+        self.assertEqual(summary[0]["errors"], 0)
+        self.assertEqual(summary[0]["prefix_errors"], 0)
+        for cidr, lease, reservation in families.values():
+            mask = cidr.split("/")[1]
+            self.assertEqual(str(NbIP.objects.get(address__net_host=lease).address), f"{lease}/{mask}")
+            self.assertEqual(str(NbIP.objects.get(address__net_host=reservation).address), f"{reservation}/{mask}")
+            self.assertTrue(Prefix.objects.filter(prefix=cidr).exists())
+
+    def test_duplicate_prefix_counts_error_and_still_syncs_pool(self):
+        for _ in range(2):
+            Prefix.objects.create(prefix="198.18.0.0/24", status="active")
+        summary, _ = self._run(self._responses(("198.18.0.10-198.18.0.20",)), failed=True)
+        self.assertEqual(Prefix.objects.count(), 2)
+        self.assertEqual(IPRange.objects.count(), 1)
+        self.assertEqual(summary[0]["created"], 1)
+        self.assertEqual(summary[0]["prefix_errors"], 1)
+        self.assertEqual(summary[0]["errors"], 0)
+
+    def test_duplicate_range_counts_error_and_keeps_prefix(self):
+        from netaddr import IPNetwork
+
+        for _ in range(2):
+            IPRange.objects.create(
+                start_address=IPNetwork("198.18.0.10/24"), end_address=IPNetwork("198.18.0.20/24"), status="active"
+            )
+        summary, _ = self._run(self._responses(("198.18.0.10-198.18.0.20",)), failed=True)
+        self.assertEqual(Prefix.objects.count(), 1)
+        self.assertEqual(IPRange.objects.count(), 2)
+        self.assertEqual(summary[0]["created"], 1)
+        self.assertEqual(summary[0]["prefix_errors"], 1)
+        self.assertEqual(summary[0]["errors"], 0)
+
+    def test_empty_catalogue_is_successful(self):
+        summary, kea = self._run(_catalogue_responses_for_subnets(4, []))
+        self.assertFalse(Prefix.objects.exists())
+        self.assertFalse(IPRange.objects.exists())
+        self.assertEqual(summary[0]["created"], 0)
+        self.assertEqual(summary[0]["prefix_errors"], 0)
+        self.assertEqual(kea.commands().count("config-get"), 1)
