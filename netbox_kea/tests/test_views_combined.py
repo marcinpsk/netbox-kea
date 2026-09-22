@@ -18,20 +18,8 @@ from django.urls import reverse
 
 from netbox_kea.views.reservations import _RESERVATION_PAGE_SIZE
 
-from .kea_stub import _catalogue_responses, _res_page, queued, stub_kea
+from .kea_stub import _catalogue_responses, _catalogue_responses_for_subnets, _res_page, queued, stub_kea
 from .utils import _make_db_server, _ViewTestBase
-
-
-class TestFetchSharedNetworksFromServer(_ViewTestBase):
-    """_fetch_shared_networks_from_server with null config-get arguments raises RuntimeError."""
-
-    def test_null_config_raises_runtime_error(self):
-        from netbox_kea.views.combined import _fetch_shared_networks_from_server
-
-        with stub_kea({"config-get": [{"result": 0, "arguments": None}]}):
-            with self.assertRaises(RuntimeError):
-                _fetch_shared_networks_from_server(self.server, version=4)
-
 
 # ---------------------------------------------------------------------------
 # Combined fetch helpers — response-shape guards
@@ -39,20 +27,7 @@ class TestFetchSharedNetworksFromServer(_ViewTestBase):
 
 
 class TestCombinedResponseShapeGuards(_ViewTestBase):
-    """An empty Kea response list must raise RuntimeError before indexing ``resp[0]``.
-
-    ``KeaClient.command`` only guarantees a *list*; ``check_response`` iterating an
-    empty list raises nothing, so a helper that indexes ``resp[0]["result"]`` would
-    blow up with ``IndexError``. These combined helpers guard with
-    ``_require_first_entry`` and raise ``RuntimeError`` instead (CLAUDE.md: "Validate
-    Kea response shape before indexing … raise RuntimeError").
-
-    A *non-dict* first entry (e.g. ``["not-a-dict"]``) is not exercised here: with the
-    real client it never reaches the helper's guard because ``check_response`` (which
-    every one of these commands runs with ``check=(0, 3)``) indexes ``entry["result"]``
-    first and raises on the non-subscriptable entry. The empty-list case below covers
-    the ``_require_first_entry`` guard through a response the real client can produce.
-    """
+    """Lease collection helpers reject an empty Kea response list safely."""
 
     def test_leases_empty_response_raises_runtime_error(self):
         from netbox_kea import constants
@@ -68,13 +43,6 @@ class TestCombinedResponseShapeGuards(_ViewTestBase):
         with stub_kea({"lease4-get-page": []}):
             with self.assertRaises(RuntimeError):
                 _fetch_all_leases_from_server(self.server, 4)
-
-    def test_shared_networks_empty_response_raises_runtime_error(self):
-        from netbox_kea.views.combined import _fetch_shared_networks_from_server
-
-        with stub_kea({"config-get": []}):
-            with self.assertRaises(RuntimeError):
-                _fetch_shared_networks_from_server(self.server, 4)
 
 
 class TestCombinedSubnetDiagnostics(_ViewTestBase):
@@ -120,19 +88,10 @@ class TestCombinedSubnetDiagnostics(_ViewTestBase):
 
     def test_complete_catalogue_is_reused_for_unchanged_requests(self):
         url = reverse("plugins:netbox_kea:combined_subnets4") + f"?server={self.server.pk}"
-        identity = {"result": 0, "arguments": {"subnets": [{"id": 1, "subnet": "198.18.1.0/24"}]}}
-        configuration = {
-            "result": 0,
-            "arguments": {"Dhcp4": {"subnet4": [{"id": 1, "subnet": "198.18.1.0/24", "pools": []}]}},
-        }
+        responses = _catalogue_responses_for_subnets(4, [{"id": 1, "subnet": "198.18.1.0/24", "pools": []}])
+        responses["stat-lease4-get"] = {"result": 2, "text": "unknown command"}
 
-        with stub_kea(
-            {
-                "subnet4-list": identity,
-                "config-get": configuration,
-                "stat-lease4-get": {"result": 2, "text": "unknown command"},
-            }
-        ) as kea:
+        with stub_kea(responses) as kea:
             first_response = self.client.get(url)
             second_response = self.client.get(url)
 
@@ -175,21 +134,8 @@ class TestCombinedSubnetDiagnostics(_ViewTestBase):
         self.assertContains(response, "alert-warning")
 
     def test_incomplete_catalogue_explains_omitted_facts(self):
-        responses = {
-            "subnet4-list": {
-                "result": 0,
-                "arguments": {"subnets": [{"id": 1, "subnet": "198.18.0.0/24"}]},
-            },
-            "config-get": {
-                "result": 0,
-                "arguments": {
-                    "Dhcp4": {
-                        "subnet4": [{"id": 1, "subnet": "198.18.0.0/24", "pools": "not-a-list"}],
-                    }
-                },
-            },
-            "stat-lease4-get": {"result": 2, "text": "unknown command"},
-        }
+        responses = _catalogue_responses_for_subnets(4, [{"id": 1, "subnet": "198.18.0.0/24", "pools": "not-a-list"}])
+        responses["stat-lease4-get"] = {"result": 2, "text": "unknown command"}
         url = reverse("plugins:netbox_kea:combined_subnets4") + f"?server={self.server.pk}"
 
         with stub_kea(responses):
@@ -202,27 +148,11 @@ class TestCombinedSubnetDiagnostics(_ViewTestBase):
         self.assertContains(response, "alert-warning")
 
     def test_repeated_catalogue_diagnostics_render_once(self):
-        responses = {
-            "subnet4-list": {
-                "result": 0,
-                "arguments": {"subnets": [{"id": 1, "subnet": "198.18.0.0/24"}]},
-            },
-            "config-get": {
-                "result": 0,
-                "arguments": {
-                    "Dhcp4": {
-                        "subnet4": [
-                            {
-                                "id": 1,
-                                "subnet": "198.18.0.0/24",
-                                "pools": ["invalid-one", "invalid-two"],
-                            }
-                        ],
-                    }
-                },
-            },
-            "stat-lease4-get": {"result": 2, "text": "unknown command"},
-        }
+        responses = _catalogue_responses_for_subnets(
+            4,
+            [{"id": 1, "subnet": "198.18.0.0/24", "pools": ["invalid-one", "invalid-two"]}],
+        )
+        responses["stat-lease4-get"] = {"result": 2, "text": "unknown command"}
         url = reverse("plugins:netbox_kea:combined_subnets4") + f"?server={self.server.pk}"
 
         with stub_kea(responses):
@@ -230,6 +160,79 @@ class TestCombinedSubnetDiagnostics(_ViewTestBase):
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Kea returned an invalid Pool.", count=1)
+
+
+class TestCombinedSharedNetworkDiagnostics(_ViewTestBase):
+    def _url(self):
+        return reverse("plugins:netbox_kea:combined_shared_networks4") + f"?server={self.server.pk}"
+
+    def test_unreachable_server_is_reported_with_its_snapshot_diagnostic(self):
+        with stub_kea({"config-get": requests.ConnectionError("unreachable")}):
+            response = self.client.get(self._url())
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.context["errors"],
+            [(self.server.name, "Kea Subnet configuration facts are unavailable.")],
+        )
+        self.assertNotContains(response, "Failed to query server")
+        self.assertContains(response, "alert-danger")
+        self.assertNotContains(response, "alert-warning")
+
+    def test_non_object_family_configuration_is_reported_without_a_server_error(self):
+        with stub_kea({"config-get": {"result": 0, "arguments": {"Dhcp4": []}}}):
+            response = self.client.get(self._url())
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.context["errors"],
+            [(self.server.name, "Kea did not return a Dhcp4 configuration object.")],
+        )
+        self.assertNotContains(response, "Failed to query server")
+
+    def test_incomplete_snapshot_keeps_valid_shared_networks_visible(self):
+        responses = _catalogue_responses_for_subnets(
+            4,
+            [],
+            shared_networks=[{"name": "clients", "subnet4": []}, None],
+        )
+
+        with stub_kea(responses):
+            response = self.client.get(self._url())
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "clients")
+        self.assertEqual(response.context["errors"], [])
+        self.assertEqual(
+            response.context["warnings"],
+            [(self.server.name, "Kea returned a non-object Shared Network.")],
+        )
+        self.assertContains(response, "alert-warning")
+        self.assertNotContains(response, "alert-danger")
+
+    def test_writable_server_offers_shared_network_actions(self):
+        responses = _catalogue_responses_for_subnets(4, [], shared_networks=[{"name": "clients", "subnet4": []}])
+        with stub_kea(responses):
+            response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'aria-label="Edit clients"')
+        self.assertContains(response, 'aria-label="Delete clients"')
+
+    def test_readonly_server_hides_shared_network_actions(self):
+        from django.contrib.contenttypes.models import ContentType
+        from users.models import ObjectPermission
+
+        self.user.is_superuser = False
+        self.user.save()
+        permission = ObjectPermission.objects.create(name="view-shared-network-server", actions=["view"])
+        permission.object_types.add(ContentType.objects.get_for_model(type(self.server)))
+        permission.users.add(self.user)
+        responses = _catalogue_responses_for_subnets(4, [], shared_networks=[{"name": "clients", "subnet4": []}])
+        with stub_kea(responses):
+            response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "clients")
+        self.assertNotContains(response, 'aria-label="Edit clients"')
 
 
 class TestCombinedReservationsWithoutAddress(_ViewTestBase):

@@ -5,15 +5,18 @@ from urllib.parse import parse_qsl, urlparse
 from urllib.parse import urlencode as _urlencode
 
 import requests
+from django.contrib import messages
 from django.contrib.auth.models import PermissionsMixin
 from django.http import Http404, HttpResponse, HttpResponseForbidden
 from django.http.request import HttpRequest
+from django.urls import reverse
 from netbox.tables import BaseTable
 
 from ..constants import Family
 from ..dhcp_options import DHCPOption
 from ..kea import KeaException
 from ..models import Server
+from ..server_configuration import Diagnostic, SharedNetwork
 from ..subnet_catalogue import ConfiguredSubnet, VerifiedSubnet
 
 try:
@@ -121,6 +124,46 @@ def _catalogue_subnet_row(
     if subnet.shared_network is not None:
         row["shared_network"] = subnet.shared_network.name
     return row
+
+
+def _shared_network_row(
+    network: SharedNetwork,
+    server: Server,
+    version: Family,
+    can_change: bool,
+    *,
+    include_server_name: bool = False,
+) -> dict[str, Any]:
+    """Build one Shared Network table row from typed configuration facts."""
+    subnet_links = [
+        {
+            "cidr": cidr,
+            "url": (
+                reverse(f"plugins:netbox_kea:server_leases{version}", args=[server.pk])
+                + "?"
+                + _urlencode({"by": "subnet", "q": cidr})
+            ),
+        }
+        for cidr in network.member_cidrs
+    ]
+    row = {
+        "name": network.name,
+        "description": network.description or "",
+        "subnet_count": len(network.member_cidrs),
+        "subnet_links": subnet_links,
+        "server_pk": server.pk,
+        "dhcp_version": version,
+        "can_change": can_change,
+    }
+    if include_server_name:
+        row["server_name"] = server.name
+    return row
+
+
+def _diagnostic_messages(request: HttpRequest, diagnostics: tuple[Diagnostic, ...], level: int) -> None:
+    """Show each distinct Snapshot diagnostic at its presentation level."""
+    for message in dict.fromkeys(diagnostic.message for diagnostic in diagnostics):
+        messages.add_message(request, level, message)
 
 
 def _enrich_subnet_statistics(rows: list[dict[str, Any]], server: Server, version: Family) -> None:

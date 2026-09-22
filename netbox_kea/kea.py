@@ -1375,11 +1375,13 @@ class KeaClient:
         description: str | None = None,
         interface: str | None = None,
         relay_addresses: list[str] | None = None,
-        options: list[dict] | None = None,
+        dns_servers: list[str] | None = None,
+        ntp_servers: list[str] | None = None,
     ) -> None:
         """Update a shared network's properties via config-get → config-test → config-set → config-write.
 
-        Only provided (non-None) fields are modified; others are left unchanged.
+        Only provided (non-None) fields are modified; others are left unchanged. DNS
+        and NTP updates preserve all unmanaged DHCP Options and existing option metadata.
         Raises ``KeaException`` if *name* is not found in the config.
         Raises ``KeaConfigTestError`` if config-test validation fails.
         Raises ``PartialPersistError`` if config-write fails after a successful config-set (change
@@ -1415,7 +1417,26 @@ class KeaClient:
                 network["relay"] = {"ip-addresses": relay_addresses}
             else:
                 network.pop("relay", None)
-        if options is not None:
+        if dns_servers is not None or ntp_servers is not None:
+            options = list(network.get("option-data") or [])
+            if dns_servers is not None:
+                options = _replace_managed_option(
+                    options,
+                    version,
+                    {"domain-name-servers", "dns-servers"},
+                    6 if version == 4 else 23,
+                    "domain-name-servers" if version == 4 else "dns-servers",
+                    ",".join(dns_servers),
+                )
+            if ntp_servers is not None:
+                options = _replace_managed_option(
+                    options,
+                    version,
+                    {"ntp-servers", "sntp-servers"},
+                    42 if version == 4 else 31,
+                    "ntp-servers" if version == 4 else "sntp-servers",
+                    ",".join(ntp_servers),
+                )
             network["option-data"] = options
 
         self._apply_config(service, config)

@@ -17,7 +17,7 @@ from ..constants import Family
 from ..kea import KeaClient, KeaException, PartialPersistError
 from ..models import Server
 from ..reservations import InSubnetReservationScope
-from ..subnet_catalogue import ConfiguredSubnet, Diagnostic, VerifiedSubnet
+from ..subnet_catalogue import ConfiguredSubnet, VerifiedSubnet
 from ..subnet_catalogue import display as subnet_catalogue
 from ..utilities import (
     OptionalViewTab,
@@ -28,6 +28,7 @@ from ..utilities import (
 )
 from ._base import (
     _catalogue_subnet_row,
+    _diagnostic_messages,
     _enrich_subnet_statistics,
     _KeaChangeMixin,
     _subnet_option_fields,
@@ -44,12 +45,6 @@ _POOL_RE = re.compile(r"^[0-9a-fA-F.:/-]{3,100}$")
 # Two in-page toggles — section (Subnets | Shared Networks) and family (v4 | v6) —
 # switch between the four underlying URLs, which are all unchanged.
 _SUBNETS_TAB = OptionalViewTab(label="Subnets", weight=1020, is_enabled=lambda s: s.dhcp4 or s.dhcp6)
-
-
-def _diagnostic_messages(request: HttpRequest, diagnostics: tuple[Diagnostic, ...], level: int) -> None:
-    """Show each distinct Snapshot diagnostic at its presentation level."""
-    for message in dict.fromkeys(diagnostic.message for diagnostic in diagnostics):
-        messages.add_message(request, level, message)
 
 
 def subnets_nav_context(server_pk: int, section: str, dhcp_version: Family) -> dict[str, Any]:
