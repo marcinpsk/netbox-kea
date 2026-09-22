@@ -16,12 +16,9 @@ Command chains (all issued through the real client):
   (``config-get`` → ``config-test`` → ``config-write``; ``persist_config``
   defaults True).
 * **delete** (``network_del``): ``network{v}-del`` then the same persist chain.
-* **edit** (``network_update``): the POST first reloads the network via
-  ``config-get`` (``_fetch_network``), then ``network_update`` runs a
-  read-modify-write cycle ``config-get`` → ``config-test`` → ``config-set`` →
-  ``config-write``. There is no free ``network{v}-update`` hook, so the option
-  payload is asserted on the **config-set body** (``_written_sn``), which proves
-  the version, network, and option-data end to end.
+* **edit** (``network_update``): the POST verifies a live Server Configuration,
+  then ``network_update`` runs its read-modify-write cycle. The resulting body
+  proves the version, network, and DHCP Options end to end.
 
 Error paths are driven through the real client:
 
@@ -40,7 +37,7 @@ from django.contrib import messages as django_messages
 from django.test import override_settings
 from django.urls import reverse
 
-from .kea_stub import queued, stub_kea
+from .kea_stub import _catalogue_responses_for_subnets, queued, stub_kea
 from .utils import _PLUGINS_CONFIG, _make_db_server, _ViewTestBase
 
 _CONFIG_OK = {"result": 0}
@@ -49,49 +46,35 @@ _CONFIG_OK = {"result": 0}
 # config-get fixtures for the shared-networks LIST views
 # ---------------------------------------------------------------------------
 
-_SHARED_NETWORKS_CONFIG_V4 = [
-    {
-        "result": 0,
-        "arguments": {
-            "Dhcp4": {
-                "subnet4": [{"id": 1, "subnet": "192.168.0.0/24"}],
-                "shared-networks": [
-                    {
-                        "name": "net-alpha",
-                        "description": "Alpha test network",
-                        "subnet4": [
-                            {"id": 10, "subnet": "10.0.0.0/24"},
-                            {"id": 11, "subnet": "10.0.1.0/24"},
-                        ],
-                    }
-                ],
-            }
-        },
-    }
-]
+_SHARED_NETWORKS_CONFIG_V4 = _catalogue_responses_for_subnets(
+    4,
+    [{"id": 1, "subnet": "192.168.0.0/24"}],
+    shared_networks=[
+        {
+            "name": "net-alpha",
+            "description": "Alpha test network",
+            "subnet4": [
+                {"id": 10, "subnet": "10.0.0.0/24"},
+                {"id": 11, "subnet": "10.0.1.0/24"},
+            ],
+        }
+    ],
+)["config-get"]
 
-_SHARED_NETWORKS_CONFIG_V6 = [
-    {
-        "result": 0,
-        "arguments": {
-            "Dhcp6": {
-                "subnet6": [],
-                "shared-networks": [
-                    {
-                        "name": "net-beta",
-                        "description": "",
-                        "subnet6": [
-                            {"id": 20, "subnet": "2001:db8::/48"},
-                        ],
-                    }
-                ],
-            }
-        },
-    }
-]
+_SHARED_NETWORKS_CONFIG_V6 = _catalogue_responses_for_subnets(
+    6,
+    [],
+    shared_networks=[
+        {
+            "name": "net-beta",
+            "description": "",
+            "subnet6": [{"id": 20, "subnet": "2001:db8::/48"}],
+        }
+    ],
+)["config-get"]
 
 # A config with an empty shared-networks list (used by not-found / abort paths).
-_EMPTY_SN_CONFIG_V4 = [{"result": 0, "arguments": {"Dhcp4": {"subnet4": [], "shared-networks": []}}}]
+_EMPTY_SN_CONFIG_V4 = _catalogue_responses_for_subnets(4, [])["config-get"]
 
 
 # ---------------------------------------------------------------------------
@@ -105,7 +88,7 @@ def _sn_config(version=4, name="prod-net", description="", option_data=None, sub
     network: dict = {"name": name, "description": description, subnet_key: list(subnets or [])}
     if option_data is not None:
         network["option-data"] = option_data
-    return [{"result": 0, "arguments": {f"Dhcp{version}": {"shared-networks": [network], subnet_key: []}}}]
+    return _catalogue_responses_for_subnets(version, [], shared_networks=[network])["config-get"]
 
 
 def _mutate_stub(command, response=_CONFIG_OK, **overrides):
@@ -117,9 +100,10 @@ def _mutate_stub(command, response=_CONFIG_OK, **overrides):
     (or is an exception), the mutation raises before persistence, so the persist
     registrations simply go unused.
     """
+    version = 4 if command.startswith("network4") else 6
     base = {
         command: response,
-        "config-get": [{"result": 0, "arguments": {}}],
+        "config-get": _catalogue_responses_for_subnets(version, [])["config-get"],
         "config-test": _CONFIG_OK,
         "config-write": _CONFIG_OK,
     }
@@ -130,11 +114,9 @@ def _mutate_stub(command, response=_CONFIG_OK, **overrides):
 def _edit_stub(config_get, **overrides):
     """Stub the shared-network edit read-modify-write chain.
 
-    The edit POST reloads the network via ``_fetch_network`` (``config-get``),
-    then ``network_update`` runs ``config-get`` → ``config-test`` → ``config-set``
-    → ``config-write``. *config_get* is deep-copied because ``network_update``
-    mutates the fetched config in place; assert on the resulting config-set body
-    via :func:`_written_sn`.
+    The edit POST verifies the live Server Configuration before ``network_update``
+    runs the write cycle. *config_get* is deep-copied because ``network_update``
+    mutates its fetched configuration in place.
     """
     base = {
         "config-get": copy.deepcopy(config_get),
@@ -188,6 +170,61 @@ class TestServerSharedNetworks4View(_ViewTestBase):
             response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
         self.assertNotContains(response, "net-alpha")
+        self.assertEqual(list(response.context["messages"]), [])
+
+    def test_kea_error_shows_diagnostic_and_keeps_page_available(self):
+        with stub_kea({"config-get": {"result": 1, "text": "config-get failed"}}):
+            response = self.client.get(self._url())
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Kea Subnet configuration facts are unavailable.")
+        self.assertTrue(any(message.level == django_messages.ERROR for message in response.context["messages"]))
+
+    def test_unreachable_server_shows_diagnostic_and_keeps_page_available(self):
+        with stub_kea({"config-get": requests.ConnectionError("unreachable")}):
+            response = self.client.get(self._url())
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Kea Subnet configuration facts are unavailable.")
+        self.assertTrue(any(message.level == django_messages.ERROR for message in response.context["messages"]))
+
+    def test_non_object_family_configuration_shows_diagnostic_instead_of_raising(self):
+        with stub_kea({"config-get": {"result": 0, "arguments": {"Dhcp4": []}}}):
+            response = self.client.get(self._url())
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Kea did not return a Dhcp4 configuration object.")
+
+    def test_empty_network_appears_in_both_lists_and_subnet_add_choices(self):
+        network = {"name": "empty-clients", "description": "No members yet", "subnet4": []}
+        responses = _catalogue_responses_for_subnets(4, [], shared_networks=[network])
+
+        with stub_kea(responses) as kea:
+            server_list = self.client.get(self._url())
+            combined_list = self.client.get(
+                reverse("plugins:netbox_kea:combined_shared_networks4"), {"server": self.server.pk}
+            )
+            subnet_add = self.client.get(reverse("plugins:netbox_kea:server_subnet4_add", args=[self.server.pk]))
+
+        self.assertContains(server_list, "empty-clients")
+        self.assertContains(combined_list, "empty-clients")
+        self.assertIn(("empty-clients", "empty-clients"), subnet_add.context["form"].fields["shared_network"].choices)
+        self.assertEqual(kea.commands().count("config-get"), 1)
+
+    def test_incomplete_snapshot_shows_valid_network_and_warning(self):
+        responses = _catalogue_responses_for_subnets(
+            4,
+            [],
+            shared_networks=[{"name": "clients", "subnet4": []}, None],
+        )
+
+        with stub_kea(responses):
+            response = self.client.get(self._url())
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "clients")
+        self.assertContains(response, "Kea returned a non-object Shared Network.")
+        self.assertTrue(any(message.level == django_messages.WARNING for message in response.context["messages"]))
 
     def test_get_with_dhcp4_disabled_redirects(self):
         v6_only = _make_db_server(name="v6-only-sn", dhcp4=False, dhcp6=True)
@@ -232,6 +269,13 @@ class TestServerSharedNetworks6View(_ViewTestBase):
         with stub_kea({"config-get": _SHARED_NETWORKS_CONFIG_V6}):
             response = self.client.get(self._url())
         self.assertContains(response, "net-beta")
+
+    def test_non_object_family_configuration_shows_diagnostic_instead_of_raising(self):
+        with stub_kea({"config-get": {"result": 0, "arguments": {"Dhcp6": []}}}):
+            response = self.client.get(self._url())
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Kea did not return a Dhcp6 configuration object.")
 
     def test_shows_subnet_cidrs(self):
         with stub_kea({"config-get": _SHARED_NETWORKS_CONFIG_V6}):
@@ -433,6 +477,92 @@ class TestServerSharedNetwork4EditView(_ViewTestBase):
             response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
 
+    def test_get_reads_the_live_configuration_even_when_the_display_cache_is_warm(self):
+        """The edit form is a read-modify-write prefill, so it must not serve the display cache."""
+        responses = _catalogue_responses_for_subnets(
+            4,
+            [],
+            shared_networks=[{"name": "prod-net", "description": "Old", "subnet4": []}],
+        )
+
+        with stub_kea(responses) as kea:
+            self.client.get(reverse("plugins:netbox_kea:server_shared_networks4", args=[self.server.pk]))
+            first = self.client.get(self._url())
+            second = self.client.get(self._url())
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(kea.commands().count("config-get"), 3)
+
+    def test_get_prefills_a_code_only_dns_option_and_an_unrelated_save_keeps_it(self):
+        """A DNS option written by code must round-trip through the form."""
+        config = _sn_config(
+            4,
+            "prod-net",
+            option_data=[
+                {"code": 6, "data": "198.18.0.53"},
+                {"name": "domain-name-servers", "space": "vendor-4491", "data": "198.18.0.99"},
+            ],
+        )
+        with _edit_stub(config) as kea:
+            response = self.client.get(self._url())
+            initial = response.context["form"].initial
+            self.assertEqual(initial["dns_servers"], "198.18.0.53")
+            self.client.post(self._url(), self._post_data(description="Renamed", dns_servers=initial["dns_servers"]))
+
+        self.assertEqual(
+            _written_sn(kea)["option-data"],
+            [
+                {"name": "domain-name-servers", "space": "vendor-4491", "data": "198.18.0.99"},
+                {"code": 6, "data": "198.18.0.53"},
+            ],
+        )
+
+    def test_an_unrelated_save_keeps_a_dns_suppression_entry(self):
+        """A never-send entry shows no value in the form, so an empty field must not delete it."""
+        config = _sn_config(4, "prod-net", option_data=[{"code": 6, "never-send": True}])
+        with _edit_stub(config) as kea:
+            response = self.client.get(self._url())
+            self.assertEqual(response.context["form"].initial["dns_servers"], "")
+            self.client.post(self._url(), self._post_data(description="Renamed"))
+
+        self.assertEqual(_written_sn(kea)["option-data"], [{"code": 6, "never-send": True}])
+
+    def test_an_unrelated_save_keeps_never_send_next_to_a_value(self):
+        """The form edits the DNS value only; a delivery flag beside it survives an unchanged save."""
+        option = {"code": 6, "data": "198.18.0.53", "never-send": True}
+        with _edit_stub(_sn_config(4, "prod-net", option_data=[option])) as kea:
+            response = self.client.get(self._url())
+            initial = response.context["form"].initial
+            self.assertEqual(initial["dns_servers"], "198.18.0.53")
+            self.client.post(self._url(), self._post_data(description="Renamed", dns_servers=initial["dns_servers"]))
+
+        self.assertEqual(_written_sn(kea)["option-data"], [option])
+
+    def test_a_binary_dns_entry_stays_out_of_the_form_and_survives_an_unrelated_save(self):
+        """The form cannot show hexadecimal data, so the field is empty and the entry is kept."""
+        binary = {"code": 6, "data": "C6120035", "csv-format": False}
+        with _edit_stub(_sn_config(4, "prod-net", option_data=[binary])) as kea:
+            response = self.client.get(self._url())
+            self.assertEqual(response.context["form"].initial["dns_servers"], "")
+            post = self.client.post(self._url(), self._post_data(description="Renamed"))
+
+        self.assertEqual(post.status_code, 302)
+        self.assertEqual(_written_sn(kea)["option-data"], [binary])
+
+    def test_null_option_data_refuses_the_edit_form_and_the_update(self):
+        """A network whose option-data failed to parse is not editable through this form."""
+        config = _sn_config(4, "prod-net", option_data=None)
+        config["arguments"]["Dhcp4"]["shared-networks"][0]["option-data"] = None
+        with _edit_stub(config) as kea:
+            get = self.client.get(self._url())
+            post = self.client.post(self._url(), self._post_data(description="Renamed"))
+
+        self.assertEqual(get.status_code, 302)
+        self.assertEqual(post.status_code, 200)
+        self.assertContains(post, "Could not reload")
+        self.assertNotIn("config-set", kea.commands())
+
     def test_post_valid_calls_network_update_and_redirects(self):
         """POST with valid data runs the read-modify-write cycle and redirects."""
         with _edit_stub(_sn_config(4, "prod-net")) as kea:
@@ -586,8 +716,8 @@ class TestSharedNetworkOptionDataPreservation(_ViewTestBase):
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
-class TestSharedNetworkEditFetchFailures(_ViewTestBase):
-    """_fetch_network failure paths: GET redirect + POST abort."""
+class TestSharedNetworkEditSnapshotFailures(_ViewTestBase):
+    """Server Configuration failure paths for GET display and POST verification."""
 
     def _url(self, name="prod-net"):
         return reverse("plugins:netbox_kea:server_shared_network4_edit", args=[self.server.pk, name])
@@ -617,15 +747,48 @@ class TestSharedNetworkEditFetchFailures(_ViewTestBase):
             response = self.client.get(self._url())
         self.assertEqual(response.status_code, 302)
 
+    def test_get_redirects_when_shared_network_collection_is_incomplete(self):
+        """GET must not offer a form that POST refuses."""
+        responses = _catalogue_responses_for_subnets(
+            4,
+            [],
+            shared_networks=[{"name": "prod-net", "subnet4": []}, None],
+        )
+
+        with stub_kea(responses):
+            response = self.client.get(self._url())
+
+        self.assertEqual(response.status_code, 302)
+
     def test_post_aborts_when_reload_returns_empty(self):
-        """POST aborts with error when _fetch_network (reload before write) returns empty."""
-        # POST path reloads via _fetch_network; an empty shared-networks list (prod-net
-        # absent) triggers the abort path before any mutation.
+        """POST aborts with an error when the verified network is absent."""
         with stub_kea({"config-get": _EMPTY_SN_CONFIG_V4}):
             response = self.client.post(self._url(), self._post_data())
         # Must re-render (not crash) with error message
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Could not reload")
+
+    def test_post_aborts_when_family_configuration_is_not_an_object(self):
+        with stub_kea({"config-get": {"result": 0, "arguments": {"Dhcp4": []}}}) as kea:
+            response = self.client.post(self._url(), self._post_data())
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Could not reload")
+        self.assertNotIn("config-set", kea.commands())
+
+    def test_post_aborts_when_shared_network_collection_is_incomplete(self):
+        responses = _catalogue_responses_for_subnets(
+            4,
+            [],
+            shared_networks=[{"name": "prod-net", "subnet4": []}, None],
+        )
+
+        with stub_kea(responses) as kea:
+            response = self.client.post(self._url(), self._post_data())
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Could not reload")
+        self.assertNotIn("config-set", kea.commands())
 
     def test_post_sets_ntp_servers_option(self):
         """POST with ntp_servers populates option-data with an ntp-servers entry."""
@@ -648,8 +811,7 @@ class TestSharedNetworkEditFetchFailures(_ViewTestBase):
 
     def test_post_generic_exception_rerenders(self):
         """A transport error during network_update must not crash (no 500)."""
-        # _fetch_network's config-get succeeds; network_update's config-get then raises a
-        # transport error, exercising the view's (RequestException, ValueError) branch.
+        # Verification succeeds, then the write path raises a transport error.
         stub = {"config-get": queued(_sn_config(4, "prod-net"), requests.ConnectionError("boom"))}
         with stub_kea(stub):
             response = self.client.post(self._url(), self._post_data())
@@ -664,13 +826,13 @@ class TestSharedNetworkEditFetchFailures(_ViewTestBase):
 
 
 # ---------------------------------------------------------------------------
-# Shared network list — dhcp disabled + null config
+# Shared network list with DHCP disabled
 # ---------------------------------------------------------------------------
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestSharedNetworkListEdgeCases(_ViewTestBase):
-    """Shared network list when dhcp disabled or config-get returns null arguments."""
+    """Shared Network list when DHCP is disabled."""
 
     def test_dhcp4_disabled_redirects(self):
         """When dhcp4 disabled, the v4 list view redirects to the v6 route (no Kea)."""
@@ -680,13 +842,6 @@ class TestSharedNetworkListEdgeCases(_ViewTestBase):
             response = self.client.get(url)
         self.assertEqual(response.status_code, 302)
         self.assertEqual(kea.commands(), [])
-
-    def test_null_config_returns_empty(self):
-        """get_children returns [] when config-get returns null arguments."""
-        url = reverse("plugins:netbox_kea:server_shared_networks4", args=[self.server.pk])
-        with stub_kea({"config-get": [{"result": 0, "arguments": None}]}):
-            response = self.client.get(url)
-        self.assertEqual(response.status_code, 200)
 
 
 # ---------------------------------------------------------------------------

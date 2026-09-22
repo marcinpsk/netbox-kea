@@ -2,12 +2,13 @@ import logging
 from typing import Any
 
 import requests
+from django.contrib import messages
 from django.http.request import HttpRequest
 from django.urls import reverse
 from netbox.views import generic
 from utilities.views import ViewTab, register_model_view
 
-from .. import forms, tables
+from .. import forms, server_configuration, tables
 from ..constants import Family
 from ..filtersets import ServerFilterSet
 from ..kea import KeaClient, KeaException, KeaResponse
@@ -15,6 +16,8 @@ from ..models import Server
 from ..utilities import (
     format_duration,
 )
+from ._base import _option_payload
+from .subnets import _diagnostic_messages
 
 logger = logging.getLogger(__name__)
 
@@ -42,14 +45,14 @@ def _status_duration(arguments: dict[str, Any], field: str) -> str:
     return formatted
 
 
-def _get_global_options(server: "Server") -> dict[str, dict[str, str]]:
-    """Return parsed global DHCP option-data for each enabled DHCP version.
+def _get_global_options(request: HttpRequest, server: "Server") -> dict[str, dict[str, str]]:
+    """Return formatted global DHCP Options for each enabled DHCP version.
 
-    Calls ``config-get`` on each enabled DHCP service and extracts the
-    top-level ``option-data`` block.  Any per-service failure is logged and
-    skipped so the status page always renders.
+    Any per-service failure is logged and skipped so the status page always
+    renders.
 
     Args:
+        request: The request that receives the snapshot diagnostics as messages.
         server: The Kea :class:`Server` to query.
 
     Returns:
@@ -59,33 +62,31 @@ def _get_global_options(server: "Server") -> dict[str, dict[str, str]]:
     """
     from ..utilities import format_option_data
 
-    svc_map: dict[str, tuple[str, Family]] = {}
+    families: dict[str, Family] = {}
     if server.dhcp4:
-        svc_map["DHCPv4"] = ("dhcp4", 4)
+        families["DHCPv4"] = 4
     if server.dhcp6:
-        svc_map["DHCPv6"] = ("dhcp6", 6)
+        families["DHCPv6"] = 6
 
     result: dict[str, dict[str, str]] = {}
-    for label, (svc, version) in svc_map.items():
+    for label, version in families.items():
         try:
-            client = server.get_client(version=version)
-            resp = client.command("config-get", service=[svc])
-            dhcp_key = f"Dhcp{version}"
-            args = _response_arguments(resp, "config-get")
-            dhcp_block = args.get(dhcp_key, {})
-            if not isinstance(dhcp_block, dict):
-                raise RuntimeError(f"Kea config-get returned an invalid {dhcp_key} block")
-            option_data = dhcp_block.get("option-data", [])
-            if not isinstance(option_data, list) or any(not isinstance(option, dict) for option in option_data):
-                raise RuntimeError("Kea config-get returned invalid option-data")
-            opts = format_option_data(option_data, version=version)
+            snapshot = server_configuration.display(server, version)
+            diagnostics = "; ".join(diagnostic.message for diagnostic in snapshot.diagnostics)
+            _diagnostic_messages(
+                request, snapshot.diagnostics, messages.WARNING if snapshot.available else messages.ERROR
+            )
+            if not snapshot.available:
+                logger.warning("Global DHCP Options are unavailable for %s: %s", label, diagnostics)
+                continue
+            if not snapshot.complete:
+                logger.warning("Global DHCP Options are incomplete for %s: %s", label, diagnostics)
+            opts = format_option_data([_option_payload(option) for option in snapshot.global_options], version=version)
             if opts:
                 # Convert snake_case keys to "Title Case" for display
                 result[label] = {k.replace("_", " ").title(): v for k, v in opts.items()}
-        except KeaException:  # noqa: PERF203
-            logger.debug("config-get failed for %s (%s) — skipping global options", label, svc)
-        except (requests.RequestException, RuntimeError, ValueError):
-            logger.warning("Unexpected error fetching global options for %s (%s)", label, svc, exc_info=True)
+        except (OSError, RuntimeError, ValueError):
+            logger.warning("Unexpected error fetching global DHCP Options for %s", label, exc_info=True)
     return result
 
 
@@ -288,6 +289,6 @@ class ServerStatusView(generic.ObjectView):
         can_change = Server.objects.restrict(request.user, "change").filter(pk=instance.pk).exists()
         return {
             "services": services,
-            "global_options": _get_global_options(instance),
+            "global_options": _get_global_options(request, instance),
             "can_change_server": can_change,
         }

@@ -120,7 +120,7 @@ def test_shared_response_builders_shape():
 
 def test_catalogue_responses_shape():
     """Lock the shared catalogue factory that replaced three drifting local copies."""
-    from netbox_kea.tests.kea_stub import _catalogue_responses, _subnet_list
+    from netbox_kea.tests.kea_stub import _catalogue_responses, _catalogue_responses_for_subnets, _subnet_list
 
     responses = _catalogue_responses(4, 20, "198.18.0.0/24")
 
@@ -145,6 +145,21 @@ def test_catalogue_responses_shape():
     assert "subnet6-list" in v6
     assert v6["config-get"]["arguments"]["Dhcp6"]["subnet6"] == [{"id": 30, "subnet": "2001:db8::/64"}]
     assert v6["config-get"]["arguments"]["hash"] == "other"
+
+    options = ({"name": "routers", "data": "198.18.0.1"},)
+    definitions = ({"code": 222, "name": "site-code", "space": "dhcp4", "type": "string"},)
+    configured = _catalogue_responses_for_subnets(
+        4,
+        [],
+        global_options=options,
+        option_definitions=definitions,
+    )["config-get"]["arguments"]["Dhcp4"]
+    assert configured["option-data"] == list(options)
+    assert configured["option-def"] == list(definitions)
+
+    shared_networks = [{"name": "clients", "subnet4": []}]
+    with_networks = _catalogue_responses_for_subnets(4, [], shared_networks=shared_networks)
+    assert with_networks["config-get"]["arguments"]["Dhcp4"]["shared-networks"] == shared_networks
 
 
 @pytest.mark.parametrize(

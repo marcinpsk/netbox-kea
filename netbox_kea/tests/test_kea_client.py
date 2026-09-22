@@ -2742,47 +2742,6 @@ _OPTION_DEF_CONFIG_EMPTY = [
 ]
 
 
-class TestOptionDefList(TestCase):
-    """Tests for KeaClient.option_def_list()."""
-
-    def setUp(self):
-        self.client = KeaClient(url="http://kea:8000")
-
-    def test_returns_option_def_list_v4(self):
-        """option_def_list(4) returns the Dhcp4.option-def list from config."""
-        with patch.object(self.client._session, "post", return_value=_mock_http_response(_OPTION_DEF_CONFIG_V4)):
-            result = self.client.option_def_list(version=4)
-        self.assertEqual(result, [{"name": "my-opt", "code": 200, "type": "string", "space": "dhcp4"}])
-
-    def test_returns_option_def_list_v6(self):
-        """option_def_list(6) returns the Dhcp6.option-def list."""
-        with patch.object(self.client._session, "post", return_value=_mock_http_response(_OPTION_DEF_CONFIG_V6)):
-            result = self.client.option_def_list(version=6)
-        self.assertEqual(result, [{"name": "my-v6-opt", "code": 201, "type": "uint32", "space": "dhcp6"}])
-
-    def test_returns_empty_list_when_no_option_def_key(self):
-        """Returns [] when Dhcp4 has no 'option-def' key."""
-        with patch.object(self.client._session, "post", return_value=_mock_http_response(_OPTION_DEF_CONFIG_EMPTY)):
-            result = self.client.option_def_list(version=4)
-        self.assertEqual(result, [])
-
-    def test_calls_config_get_on_correct_service(self):
-        """option_def_list(4) sends config-get to the dhcp4 service."""
-
-        def _payloads(mock_post):
-            return [(c.kwargs.get("json") or c[1]["json"]) for c in mock_post.call_args_list]
-
-        with patch.object(
-            self.client._session,
-            "post",
-            return_value=_mock_http_response(_OPTION_DEF_CONFIG_V4),
-        ) as mock_post:
-            self.client.option_def_list(version=4)
-        payload = _payloads(mock_post)[0]
-        self.assertEqual(payload["command"], "config-get")
-        self.assertEqual(payload["service"], ["dhcp4"])
-
-
 class TestOptionDefAdd(TestCase):
     """Tests for KeaClient.option_def_add()."""
 
@@ -3224,29 +3183,131 @@ class TestNetworkUpdate(TestCase):
             # The other network's relay must be untouched.
             self.assertIn("relay", other)
 
-    def test_updates_options_in_payload(self):
-        """options list is written to 'option-data' on the network in config-test and config-set payloads."""
-        new_options = [{"name": "domain-name-servers", "data": "8.8.8.8"}]
+    def test_replaces_managed_options_and_preserves_unmanaged_entries(self):
+        """DNS and NTP updates preserve unrelated DHCP Options and existing DNS metadata."""
+        config_with_options = [
+            {
+                "result": 0,
+                "arguments": {
+                    "Dhcp4": {
+                        "shared-networks": [
+                            {
+                                "name": "prod-net",
+                                "option-data": [
+                                    {"name": "dns-servers", "data": "192.0.2.53", "always-send": True},
+                                    {"name": "sntp-servers", "data": "192.0.2.123"},
+                                    {"name": "vendor-specific", "data": "deadbeef"},
+                                ],
+                                "subnet4": [],
+                            },
+                            {"name": "other-net", "option-data": [], "subnet4": []},
+                        ],
+                        "subnet4": [],
+                    }
+                },
+            }
+        ]
         with patch.object(
             self.client._session,
             "post",
             side_effect=_side_effects(
-                _CONFIG_GET_WITH_SHARED_NETWORK,
+                config_with_options,
                 _CONFIG_TEST_OK_RESP,
                 _CONFIG_SET_OK_RESP,
                 _CONFIG_WRITE_RESP,
             ),
         ) as mock_post:
-            self.client.network_update(version=4, name="prod-net", options=new_options)
+            self.client.network_update(
+                version=4,
+                name="prod-net",
+                dns_servers=["198.18.0.53", "198.18.0.54"],
+                ntp_servers=[],
+            )
         payloads = self._payloads(mock_post)
         for cmd in ("config-test", "config-set"):
             payload = next(p for p in payloads if p["command"] == cmd)
             networks = payload["arguments"]["Dhcp4"]["shared-networks"]
             target = next(n for n in networks if n["name"] == "prod-net")
             other = next(n for n in networks if n["name"] == "other-net")
-            self.assertEqual(target["option-data"], new_options)
-            # The other network's option-data must be untouched.
-            self.assertNotEqual(other.get("option-data"), new_options)
+            self.assertEqual(
+                target["option-data"],
+                [
+                    {"name": "vendor-specific", "data": "deadbeef"},
+                    {
+                        "name": "dns-servers",
+                        "data": "198.18.0.53,198.18.0.54",
+                        "always-send": True,
+                    },
+                ],
+            )
+            self.assertEqual(other["option-data"], [])
+
+    def test_matches_managed_options_by_space_and_code(self):
+        """A custom-space option keeps its managed name; a code-only DNS entry is replaced, not duplicated."""
+        config = [
+            {
+                "result": 0,
+                "arguments": {
+                    "Dhcp4": {
+                        "shared-networks": [
+                            {
+                                "name": "prod-net",
+                                "option-data": [
+                                    {"name": "domain-name-servers", "space": "vendor-4491", "data": "192.0.2.9"},
+                                    {"code": 6, "data": "192.0.2.53"},
+                                    {"code": 42, "space": "dhcp4", "data": "192.0.2.123"},
+                                ],
+                                "subnet4": [],
+                            }
+                        ],
+                        "subnet4": [],
+                    }
+                },
+            }
+        ]
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(config, _CONFIG_TEST_OK_RESP, _CONFIG_SET_OK_RESP, _CONFIG_WRITE_RESP),
+        ) as mock_post:
+            self.client.network_update(version=4, name="prod-net", dns_servers=["198.18.0.53"], ntp_servers=[])
+
+        payload = next(p for p in self._payloads(mock_post) if p["command"] == "config-set")
+        self.assertEqual(
+            payload["arguments"]["Dhcp4"]["shared-networks"][0]["option-data"],
+            [
+                {"name": "domain-name-servers", "space": "vendor-4491", "data": "192.0.2.9"},
+                {"code": 6, "data": "198.18.0.53"},
+            ],
+        )
+
+    def test_adds_family_specific_v6_option_names(self):
+        config = [
+            {
+                "result": 0,
+                "arguments": {"Dhcp6": {"shared-networks": [{"name": "prod-net", "subnet6": []}]}},
+            }
+        ]
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(config, _CONFIG_TEST_OK_RESP, _CONFIG_SET_OK_RESP, _CONFIG_WRITE_RESP),
+        ) as mock_post:
+            self.client.network_update(
+                version=6,
+                name="prod-net",
+                dns_servers=["2001:db8::53"],
+                ntp_servers=["2001:db8::123"],
+            )
+
+        payload = next(p for p in self._payloads(mock_post) if p["command"] == "config-set")
+        self.assertEqual(
+            payload["arguments"]["Dhcp6"]["shared-networks"][0]["option-data"],
+            [
+                {"name": "dns-servers", "data": "2001:db8::53"},
+                {"name": "sntp-servers", "data": "2001:db8::123"},
+            ],
+        )
 
     def test_config_test_failure_raises_kea_config_test_error(self):
         """Non-2 config-test failure raises KeaConfigTestError (not PartialPersistError)."""
@@ -4580,6 +4641,93 @@ class TestSubnetUpdateMerge(TestCase):
     def setUp(self):
         self.client = KeaClient(url="http://kea:8000")
 
+    def test_code_only_and_suppression_options_round_trip(self):
+        """A DNS option written by code is replaced, not duplicated; a never-send entry survives an empty field."""
+        subnet_get = [
+            {
+                "result": 0,
+                "arguments": {
+                    "subnet4": [
+                        {
+                            "id": 42,
+                            "subnet": "10.0.0.0/24",
+                            "option-data": [
+                                {"code": 6, "data": "10.0.0.53", "always-send": True},
+                                {"code": 42, "never-send": True},
+                                {"name": "domain-name-servers", "space": "vendor-4491", "data": "10.0.0.99"},
+                            ],
+                        }
+                    ]
+                },
+            }
+        ]
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(subnet_get, _SUBNET_UPDATE_OK, _CONFIG_GET_RUNNING_RESP, _OK, _OK),
+        ) as mock_post:
+            self.client.subnet_update(
+                version=4, subnet_id=42, subnet_cidr="10.0.0.0/24", dns_servers=["10.0.0.53"], ntp_servers=[]
+            )
+        update_call = next(
+            c.kwargs["json"] for c in mock_post.call_args_list if c.kwargs["json"]["command"] == "subnet4-update"
+        )
+        self.assertEqual(
+            update_call["arguments"]["subnet4"][0]["option-data"],
+            [
+                {"name": "domain-name-servers", "space": "vendor-4491", "data": "10.0.0.99"},
+                {"code": 6, "data": "10.0.0.53", "always-send": True},
+                {"code": 42, "never-send": True},
+            ],
+        )
+
+    def _update_options(self, existing, **kwargs):
+        subnet_get = [
+            {"result": 0, "arguments": {"subnet4": [{"id": 42, "subnet": "10.0.0.0/24", "option-data": existing}]}}
+        ]
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(subnet_get, _SUBNET_UPDATE_OK, _CONFIG_GET_RUNNING_RESP, _OK, _OK),
+        ) as mock_post:
+            self.client.subnet_update(version=4, subnet_id=42, subnet_cidr="10.0.0.0/24", **kwargs)
+        update_call = next(
+            c.kwargs["json"] for c in mock_post.call_args_list if c.kwargs["json"]["command"] == "subnet4-update"
+        )
+        return update_call["arguments"]["subnet4"][0]["option-data"]
+
+    def test_an_unchanged_value_keeps_the_delivery_flags(self):
+        """never-send can sit next to a value; the form edits the value only."""
+        existing = [{"code": 6, "data": "10.0.0.53", "never-send": True, "csv-format": True}]
+        self.assertEqual(self._update_options(existing, dns_servers=["10.0.0.53"]), existing)
+
+    def test_class_tagged_entries_are_not_managed_by_the_form(self):
+        """Kea allows one entry per class tag; the form edits only the untagged default."""
+        tagged = [
+            {"code": 6, "data": "10.0.1.53", "client-classes": ["class-a"]},
+            {"code": 6, "data": "10.0.2.53", "client-classes": ["class-b"]},
+            {"name": "domain-name-servers", "data": "10.0.0.53"},
+        ]
+        self.assertEqual(
+            self._update_options(tagged, dns_servers=["10.0.0.54"]),
+            [*tagged[:2], {"name": "domain-name-servers", "data": "10.0.0.54"}],
+        )
+
+    def test_an_empty_field_keeps_a_binary_encoded_entry(self):
+        """The form cannot show binary data, so an empty field must not delete it."""
+        binary = [{"code": 6, "data": "0A000035", "csv-format": False}]
+        self.assertEqual(self._update_options(binary, dns_servers=[]), binary)
+
+    def test_an_empty_gateway_keeps_a_router_array(self):
+        """The gateway field holds one address, so a router list is kept, not deleted."""
+        routers = [{"code": 3, "data": "10.0.0.1, 10.0.0.2"}]
+        self.assertEqual(self._update_options(routers, gateway=""), routers)
+
+    def test_a_changed_value_drops_the_old_encoding_flag(self):
+        """Form text is CSV, so csv-format false no longer describes the new value."""
+        existing = [{"code": 6, "data": "0A000035", "csv-format": False}]
+        self.assertEqual(self._update_options(existing, dns_servers=["10.0.0.53"]), [{"code": 6, "data": "10.0.0.53"}])
+
     def _run_update(self, **kwargs):
         """Run subnet_update with sensible defaults, returning the args sent to subnet4-update."""
         with patch.object(
@@ -5443,7 +5591,7 @@ class TestNetworkUpdateClearInterface(TestCase):
 
 
 class TestConfigGetShapeGuardAdditional(TestCase):
-    """network_update, subnet_update_options, and option_def_list raise KeaException on null config-get (lines 546, 746, 814)."""
+    """Configuration mutations reject null configuration arguments."""
 
     def setUp(self):
         self.client = KeaClient(url="http://kea:8000")
@@ -5464,13 +5612,6 @@ class TestConfigGetShapeGuardAdditional(TestCase):
         mock_post.return_value = self._null_args_response()
         with self.assertRaises(KeaException):
             self.client.subnet_update_options(version=4, subnet_id=1, options=[])
-
-    @patch("requests.Session.post")
-    def test_option_def_list_null_arguments_raises_kea_exception(self, mock_post):
-        """option_def_list raises KeaException when config-get returns null arguments (line 814)."""
-        mock_post.return_value = self._null_args_response()
-        with self.assertRaises(KeaException):
-            self.client.option_def_list(version=4)
 
 
 class TestLeaseUpdateGuards(TestCase):

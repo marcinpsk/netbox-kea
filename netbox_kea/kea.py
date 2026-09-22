@@ -302,6 +302,67 @@ def _configured_subnet_id_for_network(
     return None
 
 
+def _serialize_option_form_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Serialize cleaned option form rows for the Kea configuration write path."""
+    return [
+        {
+            "name": row["name"],
+            "data": row["data"],
+            **({"always-send": True} if row.get("always_send") else {}),
+        }
+        for row in rows
+    ]
+
+
+def _managed_option_matcher(version: int, names: set[str], code: int) -> Callable[[dict[str, Any]], bool]:
+    """Return a predicate for one managed option in the family's default space."""
+
+    def matches(option: dict[str, Any]) -> bool:
+        if option.get("space") not in (None, f"dhcp{version}") or option.get("client-classes"):
+            return False
+        if option.get("code") is not None:
+            return option.get("code") == code
+        return option.get("name") in names
+
+    return matches
+
+
+def _replace_managed_option(
+    options: list[dict[str, Any]],
+    version: int,
+    names: set[str],
+    code: int,
+    canonical: str,
+    data: str | None,
+    *,
+    single_value: bool = False,
+) -> list[dict[str, Any]]:
+    """Set one form-managed option to *data*, or remove it when *data* is empty.
+
+    The form edits the value only. Delivery flags stay as they are. An entry the
+    form cannot show (never-send, no data, binary-encoded, or a list where the
+    form holds one value) is kept when the field is empty. Form text is CSV, so a
+    new value drops a csv-format flag that described the old encoding.
+    """
+    is_managed = _managed_option_matcher(version, names, code)
+    existing = next((option for option in options if is_managed(option)), None)
+    kept = [option for option in options if not is_managed(option)]
+    if data:
+        replacement = dict(existing) if existing else {"name": canonical}
+        if data != replacement.get("data"):
+            replacement.pop("csv-format", None)
+        replacement["data"] = data
+        return [*kept, replacement]
+    if existing is not None and (
+        existing.get("never-send")
+        or "data" not in existing
+        or existing.get("csv-format") is False
+        or (single_value and "," in str(existing.get("data", "")))
+    ):
+        return [*kept, existing]
+    return kept
+
+
 class KeaClient:
     """HTTP client for the Kea Control API."""
 
@@ -1314,11 +1375,13 @@ class KeaClient:
         description: str | None = None,
         interface: str | None = None,
         relay_addresses: list[str] | None = None,
-        options: list[dict] | None = None,
+        dns_servers: list[str] | None = None,
+        ntp_servers: list[str] | None = None,
     ) -> None:
         """Update a shared network's properties via config-get → config-test → config-set → config-write.
 
-        Only provided (non-None) fields are modified; others are left unchanged.
+        Only provided (non-None) fields are modified; others are left unchanged. DNS
+        and NTP updates preserve all unmanaged DHCP Options and existing option metadata.
         Raises ``KeaException`` if *name* is not found in the config.
         Raises ``KeaConfigTestError`` if config-test validation fails.
         Raises ``PartialPersistError`` if config-write fails after a successful config-set (change
@@ -1354,7 +1417,26 @@ class KeaClient:
                 network["relay"] = {"ip-addresses": relay_addresses}
             else:
                 network.pop("relay", None)
-        if options is not None:
+        if dns_servers is not None or ntp_servers is not None:
+            options = list(network.get("option-data") or [])
+            if dns_servers is not None:
+                options = _replace_managed_option(
+                    options,
+                    version,
+                    {"domain-name-servers", "dns-servers"},
+                    6 if version == 4 else 23,
+                    "domain-name-servers" if version == 4 else "dns-servers",
+                    ",".join(dns_servers),
+                )
+            if ntp_servers is not None:
+                options = _replace_managed_option(
+                    options,
+                    version,
+                    {"ntp-servers", "sntp-servers"},
+                    42 if version == 4 else 31,
+                    "ntp-servers" if version == 4 else "sntp-servers",
+                    ",".join(ntp_servers),
+                )
             network["option-data"] = options
 
         self._apply_config(service, config)
@@ -1460,34 +1542,27 @@ class KeaClient:
         # Keep the CIDR returned by Kea; edits cannot change the subnet identity.
         subnet_def["id"] = subnet_id
 
-        # option-data: preserve entries NOT owned by this form (e.g. domain-name, tftp-server)
-        # while replacing/adding/removing the ones the form manages.
-        _managed_option_names = {
-            "routers",
-            "domain-name-servers",
-            "dns-servers",
-            "ntp-servers",
-            "sntp-servers",
-        }
-        preserved_opts = [o for o in subnet_def.get("option-data", []) if o.get("name") not in _managed_option_names]
-        new_opts: list[dict[str, str]] = []
-        if gateway and version == 4:
-            new_opts.append({"name": "routers", "data": gateway})
-        if dns_servers:
-            new_opts.append(
-                {
-                    "name": "domain-name-servers" if version == 4 else "dns-servers",
-                    "data": ", ".join(dns_servers),
-                }
-            )
-        if ntp_servers:
-            new_opts.append(
-                {
-                    "name": "ntp-servers" if version == 4 else "sntp-servers",
-                    "data": ", ".join(ntp_servers),
-                }
-            )
-        subnet_def["option-data"] = preserved_opts + new_opts
+        # option-data: replace only the entries this form manages; keep every other entry.
+        options = list(subnet_def.get("option-data") or [])
+        if version == 4:
+            options = _replace_managed_option(options, 4, {"routers"}, 3, "routers", gateway, single_value=True)
+        options = _replace_managed_option(
+            options,
+            version,
+            {"domain-name-servers", "dns-servers"},
+            6 if version == 4 else 23,
+            "domain-name-servers" if version == 4 else "dns-servers",
+            ", ".join(dns_servers or []),
+        )
+        options = _replace_managed_option(
+            options,
+            version,
+            {"ntp-servers", "sntp-servers"},
+            42 if version == 4 else 31,
+            "ntp-servers" if version == 4 else "sntp-servers",
+            ", ".join(ntp_servers or []),
+        )
+        subnet_def["option-data"] = options
 
         # ddns-qualifying-suffix: None = omit (Kea keeps existing); "" = explicitly clear; a value sets it.
         if ddns_qualifying_suffix is not None:
@@ -1520,7 +1595,7 @@ class KeaClient:
         )
         self._persist_config(service)
 
-    def subnet_update_options(self, version: int, subnet_id: int, options: list[dict]) -> None:
+    def subnet_update_options(self, version: int, subnet_id: int, options: list[dict[str, Any]]) -> None:
         """Update option-data for a subnet via config-get → config-test → config-write.
 
         Free Kea has no option-set hook, so the only supported approach is a full
@@ -1532,7 +1607,7 @@ class KeaClient:
         Args:
             version: DHCP version (4 or 6).
             subnet_id: Kea subnet ID.
-            options: New ``option-data`` list. Pass ``[]`` to remove all options.
+            options: Cleaned option form rows. Pass ``[]`` to remove all options.
 
         Raises:
             KeaException: If ``subnet_id`` is not found, or if ``config-test`` fails.
@@ -1566,10 +1641,10 @@ class KeaClient:
         if subnet is None:
             raise KeaException({"result": 3, "text": f"Subnet id {subnet_id} not found in config"})
 
-        subnet["option-data"] = options
+        subnet["option-data"] = _serialize_option_form_rows(options)
         self._apply_config(service, config)
 
-    def server_update_options(self, version: int, options: list[dict]) -> None:
+    def server_update_options(self, version: int, options: list[dict[str, Any]]) -> None:
         """Update server-level option-data via config-get → config-test → config-write.
 
         Replaces the ``option-data`` list at the ``Dhcp{v}`` level (not per-subnet).
@@ -1577,7 +1652,7 @@ class KeaClient:
 
         Args:
             version: DHCP version (4 or 6).
-            options: New ``option-data`` list. Pass ``[]`` to remove all server-level options.
+            options: Cleaned option form rows. Pass ``[]`` to remove all server-level options.
 
         Raises:
             KeaException: If ``config-test`` fails.
@@ -1593,29 +1668,8 @@ class KeaClient:
             raise KeaException({"result": -1, "text": f"config-get returned unexpected arguments for {service}"})
         config = raw
         config.pop("hash", None)
-        config.setdefault(dhcp_key, {})["option-data"] = options
+        config.setdefault(dhcp_key, {})["option-data"] = _serialize_option_form_rows(options)
         self._apply_config(service, config)
-
-    def option_def_list(self, version: int) -> list[dict]:
-        """Return the current ``option-def`` list for a DHCP version via ``config-get``.
-
-        Args:
-            version: DHCP version (4 or 6).
-
-        Returns:
-            List of option-def dicts, or ``[]`` if none are defined.
-
-        Raises:
-            KeaException: If ``config-get`` fails.
-
-        """
-        service = f"dhcp{version}"
-        dhcp_key = f"Dhcp{version}"
-        resp = self.command("config-get", service=[service])
-        raw = resp[0].get("arguments") if resp and isinstance(resp[0], dict) else None
-        if not isinstance(raw, dict):
-            raise KeaException({"result": -1, "text": f"config-get returned unexpected arguments for {service}"})
-        return raw.get(dhcp_key, {}).get("option-def", [])
 
     def option_def_add(self, version: int, option_def: dict) -> None:
         """Append a new option-def entry via config-get → config-test → config-write.
@@ -2366,13 +2420,19 @@ class KeaClient:
             service=[service],
             arguments={"id": subnet_id},
         )
+        if not isinstance(resp, list) or not resp or not isinstance(resp[0], dict):
+            raise RuntimeError(f"subnet{version}-get returned an invalid response envelope")
         args = resp[0].get("arguments") or {}
-        subnets = args.get(subnet_key, []) if isinstance(args, dict) else []
+        if not isinstance(args, dict) or not isinstance(args.get(subnet_key, []), list):
+            raise RuntimeError(f"subnet{version}-get returned an invalid subnet collection")
+        subnets = args.get(subnet_key, [])
         if not subnets:
             raise KeaException(
                 {"result": 3, "text": f"subnet{version}-get returned no subnet for id={subnet_id}", "arguments": None},
                 index=0,
             )
+        if not isinstance(subnets[0], dict):
+            raise RuntimeError(f"subnet{version}-get returned an invalid subnet")
         return dict(subnets[0])
 
     def _find_subnet_id_by_cidr(self, version: int, cidr: str) -> int | None:
