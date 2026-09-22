@@ -152,8 +152,12 @@ _FORM_OPTION_CODES: dict[Family, dict[int, str]] = {
 
 
 def _form_option_field(option: DHCPOption, version: Family) -> str | None:
-    """Return the form field a default-space option maps to, by code first."""
-    if option.space not in (None, f"dhcp{version}"):
+    """Return the form field a default-space option maps to, by code first.
+
+    Class-tagged and binary-encoded entries are not shown: the form has no
+    field for a tag and no way to enter binary data.
+    """
+    if option.space not in (None, f"dhcp{version}") or option.client_classes or option.csv_format is False:
         return None
     if option.code is not None:
         return _FORM_OPTION_CODES[version].get(option.code)

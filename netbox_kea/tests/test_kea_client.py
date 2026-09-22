@@ -4599,6 +4599,23 @@ class TestSubnetUpdateMerge(TestCase):
         existing = [{"code": 6, "data": "10.0.0.53", "never-send": True, "csv-format": True}]
         self.assertEqual(self._update_options(existing, dns_servers=["10.0.0.53"]), existing)
 
+    def test_class_tagged_entries_are_not_managed_by_the_form(self):
+        """Kea allows one entry per class tag; the form edits only the untagged default."""
+        tagged = [
+            {"code": 6, "data": "10.0.1.53", "client-classes": ["class-a"]},
+            {"code": 6, "data": "10.0.2.53", "client-classes": ["class-b"]},
+            {"name": "domain-name-servers", "data": "10.0.0.53"},
+        ]
+        self.assertEqual(
+            self._update_options(tagged, dns_servers=["10.0.0.54"]),
+            [*tagged[:2], {"name": "domain-name-servers", "data": "10.0.0.54"}],
+        )
+
+    def test_an_empty_field_keeps_a_binary_encoded_entry(self):
+        """The form cannot show binary data, so an empty field must not delete it."""
+        binary = [{"code": 6, "data": "0A000035", "csv-format": False}]
+        self.assertEqual(self._update_options(binary, dns_servers=[]), binary)
+
     def test_a_changed_value_drops_the_old_encoding_flag(self):
         """Form text is CSV, so csv-format false no longer describes the new value."""
         existing = [{"code": 6, "data": "0A000035", "csv-format": False}]

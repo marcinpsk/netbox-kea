@@ -15,6 +15,7 @@ class DHCPOption:
     csv_format: bool | None
     always_send: bool | None
     never_send: bool | None
+    client_classes: tuple[str, ...] = ()
 
     @property
     def match_key(self) -> tuple[str | None, int | str | None]:
@@ -62,6 +63,9 @@ def parse_dhcp_option(entry: Any) -> DHCPOption:
     flags = (entry.get("csv-format"), entry.get("always-send"), entry.get("never-send"))
     if any(flag is not None and not isinstance(flag, bool) for flag in flags):
         raise ValueError("DHCP Option delivery flags must be Boolean values.")
+    client_classes = entry.get("client-classes", [])
+    if not isinstance(client_classes, list) or not all(isinstance(tag, str) and tag for tag in client_classes):
+        raise ValueError("DHCP Option class tags must be a list of non-empty strings.")
     return DHCPOption(
         code=code,
         name=name,
@@ -70,6 +74,7 @@ def parse_dhcp_option(entry: Any) -> DHCPOption:
         csv_format=flags[0],
         always_send=flags[1],
         never_send=flags[2],
+        client_classes=tuple(client_classes),
     )
 
 

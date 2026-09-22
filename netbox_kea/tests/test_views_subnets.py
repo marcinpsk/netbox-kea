@@ -613,6 +613,17 @@ class TestServerSubnet4EditView(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context["form"].initial["shared_network"], "net-alpha")
 
+    def test_get_leaves_unshowable_dns_entries_out_of_the_form(self):
+        """Binary and class-tagged entries have no form representation, so the field stays empty."""
+        subnet = deepcopy(_SUBNET4_GET_FULL[0])
+        subnet["arguments"]["subnet4"][0]["option-data"] = [
+            {"code": 6, "data": "0A000035", "csv-format": False},
+            {"code": 6, "data": "10.0.1.53", "client-classes": ["class-a"]},
+        ]
+        with self._get_stub(subnet=subnet):
+            response = self.client.get(self._url())
+        self.assertEqual(response.context["form"].initial.get("dns_servers", ""), "")
+
     def test_get_reads_the_live_configuration_on_every_visit(self):
         """The edit form is a read-modify-write prefill, so it must not serve the display cache."""
         with self._get_stub() as kea:

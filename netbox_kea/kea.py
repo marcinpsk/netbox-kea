@@ -318,7 +318,7 @@ def _managed_option_matcher(version: int, names: set[str], code: int) -> Callabl
     """Return a predicate for one managed option in the family's default space."""
 
     def matches(option: dict[str, Any]) -> bool:
-        if option.get("space") not in (None, f"dhcp{version}"):
+        if option.get("space") not in (None, f"dhcp{version}") or option.get("client-classes"):
             return False
         if option.get("code") is not None:
             return option.get("code") == code
@@ -337,10 +337,10 @@ def _replace_managed_option(
 ) -> list[dict[str, Any]]:
     """Set one form-managed option to *data*, or remove it when *data* is empty.
 
-    The form edits the value only. Delivery flags stay as they are, and a
-    suppression entry (never-send, or no data) shows no value in the form, so an
-    empty field keeps it instead of deleting it. Form text is CSV, so a changed
-    value drops a csv-format flag that described the old encoding.
+    The form edits the value only. Delivery flags stay as they are. An entry the
+    form cannot show (never-send, no data, or binary-encoded) is kept when the
+    field is empty. Form text is CSV, so a new value drops a csv-format flag that
+    described the old encoding.
     """
     is_managed = _managed_option_matcher(version, names, code)
     existing = next((option for option in options if is_managed(option)), None)
@@ -351,7 +351,9 @@ def _replace_managed_option(
             replacement.pop("csv-format", None)
         replacement["data"] = data
         return [*kept, replacement]
-    if existing is not None and (existing.get("never-send") or "data" not in existing):
+    if existing is not None and (
+        existing.get("never-send") or "data" not in existing or existing.get("csv-format") is False
+    ):
         return [*kept, existing]
     return kept
 
