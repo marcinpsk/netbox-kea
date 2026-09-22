@@ -23,7 +23,7 @@ from netbox.views import generic
 from utilities.paginator import EnhancedPaginator, get_paginate_count
 from utilities.views import GetReturnURLMixin, register_model_view
 
-from .. import constants, forms, tables
+from .. import constants, forms, subnet_catalogue, tables
 from ..constants import Family
 from ..kea import (
     KeaClient,
@@ -44,7 +44,6 @@ from ..utilities import (
     OptionalViewTab,
     check_dhcp_enabled,
     export_table,
-    fetch_subnet_choices,
     format_leases,
     kea_error_hint,
 )
@@ -150,8 +149,8 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
 
     def _make_search_form(self, server: Server, data: Any | None = None):
         """Build the lease-search form with the subnet quick-select choices populated."""
-        subnet_choices, subnet_cmds_available = fetch_subnet_choices(server, self.dhcp_version)
-        kwargs = {"subnet_choices": subnet_choices, "subnet_cmds_available": subnet_cmds_available}
+        snapshot = subnet_catalogue.display(server, self.dhcp_version)
+        kwargs = {"subnet_choices": snapshot.subnet_choices, "subnet_cmds_available": snapshot.subnet_cmds_available}
         if data is None:
             return self.form(**kwargs)
         return self.form(data, **kwargs)

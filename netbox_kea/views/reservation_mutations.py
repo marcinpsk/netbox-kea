@@ -15,7 +15,7 @@ from django.shortcuts import redirect, render
 from django.urls import reverse
 from netbox.views import generic
 
-from .. import constants, forms
+from .. import constants, forms, subnet_catalogue
 from ..constants import Family
 from ..dhcp_options import DHCPOption
 from ..kea import KeaClient, KeaException
@@ -39,7 +39,7 @@ from ..reservations import (
 from ..signals import reservation_created, reservation_deleted, reservation_updated
 from ..subnet_catalogue import CatalogueSnapshot, MutationScope
 from ..sync import sync_reservation_to_netbox
-from ..utilities import fetch_subnet_choices, kea_error_hint, parse_pool_range
+from ..utilities import kea_error_hint, parse_pool_range
 from ._base import _KeaChangeMixin
 from .reservations import _RESERVATIONS_TAB, _build_reservation_options_formset, _configured_capabilities
 
@@ -381,7 +381,7 @@ class _ReservationMutationView(_KeaChangeMixin, generic.ObjectView):
         options_formset: Any,
         capabilities: ReservationCapabilities | None,
         *,
-        subnet_choices: list[tuple[str, int]] | None = None,
+        subnet_choices: tuple[tuple[str, int], ...] = (),
         subnet_cmds_available: bool = True,
         lease_diff: dict[str, str] | None = None,
     ) -> dict[str, Any]:
@@ -393,7 +393,7 @@ class _ReservationMutationView(_KeaChangeMixin, generic.ObjectView):
             "action": self.form_action,
             "dhcp_version": self.dhcp_version,
             "tab": self.tab,
-            "subnet_choices": subnet_choices or [],
+            "subnet_choices": subnet_choices,
             "subnet_cmds_available": subnet_cmds_available,
             "subnet_datalist_id": constants.RESERVATION_SUBNET_DATALIST_ID,
             "reservation_capabilities": capabilities,
@@ -424,7 +424,7 @@ class _ReservationAddView(_ReservationMutationView):
     def get(self, request: HttpRequest, pk: int) -> HttpResponse:
         server = self.get_object(pk=pk)
         capabilities = _configured_capabilities(server, self.dhcp_version)
-        subnet_choices, subnet_cmds_available = fetch_subnet_choices(server, self.dhcp_version)
+        snapshot = subnet_catalogue.display(server, self.dhcp_version)
         initial_fields = (
             ("subnet_cidr", "ip_address", "identifier_type", "identifier", "hostname")
             if self.dhcp_version == 4
@@ -438,8 +438,8 @@ class _ReservationAddView(_ReservationMutationView):
             form,
             forms.ReservationOptionsFormSet(prefix="options"),
             capabilities,
-            subnet_choices=subnet_choices,
-            subnet_cmds_available=subnet_cmds_available,
+            subnet_choices=snapshot.subnet_choices,
+            subnet_cmds_available=snapshot.subnet_cmds_available,
         )
 
     def post(self, request: HttpRequest, pk: int) -> HttpResponse:
@@ -468,15 +468,15 @@ class _ReservationAddView(_ReservationMutationView):
             except (requests.RequestException, RuntimeError, ValueError):
                 logger.exception("Could not create a DHCPv%s Reservation", self.dhcp_version)
                 messages.error(request, "The Reservation could not be created. See server logs.")
-        subnet_choices, subnet_cmds_available = fetch_subnet_choices(server, self.dhcp_version)
+        snapshot = subnet_catalogue.display(server, self.dhcp_version)
         return self._render(
             request,
             server,
             form,
             options_formset,
             capabilities,
-            subnet_choices=subnet_choices,
-            subnet_cmds_available=subnet_cmds_available,
+            subnet_choices=snapshot.subnet_choices,
+            subnet_cmds_available=snapshot.subnet_cmds_available,
         )
 
     def _create(

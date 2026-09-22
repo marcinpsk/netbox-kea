@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from django.test import SimpleTestCase, TestCase, override_settings
 
+from netbox_kea import constants
 from netbox_kea.tests.conftest import _prepopulate_url_resolver, _test_database_name
 from netbox_kea.tests.kea_stub import queued, stub_kea
 from netbox_kea.tests.utils import _PLUGINS_CONFIG, _make_db_server
@@ -114,7 +115,7 @@ class TestPluginCacheHygieneReachesDjangoTestCases(TestCase):
     the cleanup ran for this class rather than for some earlier test.
     """
 
-    _PLANTED = "netbox_kea:subnet_catalogue:v1:4242:4:snapshot:planted"
+    _PLANTED = f"{constants.SUBNET_CATALOGUE_CACHE_PREFIX}v1:4242:4:snapshot:planted"
 
     @classmethod
     def setUpClass(cls):
