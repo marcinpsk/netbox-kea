@@ -337,15 +337,18 @@ def _replace_managed_option(
 ) -> list[dict[str, Any]]:
     """Set one form-managed option to *data*, or remove it when *data* is empty.
 
-    A suppression entry (never-send, or no data) shows no value in the form, so an
-    empty field keeps it instead of deleting it.
+    The form edits the value only. Delivery flags stay as they are, and a
+    suppression entry (never-send, or no data) shows no value in the form, so an
+    empty field keeps it instead of deleting it. Form text is CSV, so a changed
+    value drops a csv-format flag that described the old encoding.
     """
     is_managed = _managed_option_matcher(version, names, code)
     existing = next((option for option in options if is_managed(option)), None)
     kept = [option for option in options if not is_managed(option)]
     if data:
         replacement = dict(existing) if existing else {"name": canonical}
-        replacement.pop("never-send", None)
+        if data != replacement.get("data"):
+            replacement.pop("csv-format", None)
         replacement["data"] = data
         return [*kept, replacement]
     if existing is not None and (existing.get("never-send") or "data" not in existing):

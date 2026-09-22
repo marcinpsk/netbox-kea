@@ -4579,6 +4579,31 @@ class TestSubnetUpdateMerge(TestCase):
             ],
         )
 
+    def _update_options(self, existing, **kwargs):
+        subnet_get = [
+            {"result": 0, "arguments": {"subnet4": [{"id": 42, "subnet": "10.0.0.0/24", "option-data": existing}]}}
+        ]
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(subnet_get, _SUBNET_UPDATE_OK, _CONFIG_GET_RUNNING_RESP, _OK, _OK),
+        ) as mock_post:
+            self.client.subnet_update(version=4, subnet_id=42, subnet_cidr="10.0.0.0/24", **kwargs)
+        update_call = next(
+            c.kwargs["json"] for c in mock_post.call_args_list if c.kwargs["json"]["command"] == "subnet4-update"
+        )
+        return update_call["arguments"]["subnet4"][0]["option-data"]
+
+    def test_an_unchanged_value_keeps_the_delivery_flags(self):
+        """never-send can sit next to a value; the form edits the value only."""
+        existing = [{"code": 6, "data": "10.0.0.53", "never-send": True, "csv-format": True}]
+        self.assertEqual(self._update_options(existing, dns_servers=["10.0.0.53"]), existing)
+
+    def test_a_changed_value_drops_the_old_encoding_flag(self):
+        """Form text is CSV, so csv-format false no longer describes the new value."""
+        existing = [{"code": 6, "data": "0A000035", "csv-format": False}]
+        self.assertEqual(self._update_options(existing, dns_servers=["10.0.0.53"]), [{"code": 6, "data": "10.0.0.53"}])
+
     def _run_update(self, **kwargs):
         """Run subnet_update with sensible defaults, returning the args sent to subnet4-update."""
         with patch.object(

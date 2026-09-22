@@ -595,6 +595,24 @@ class TestServerSubnet4EditView(_ViewTestBase):
             response = self.client.get(self._url())
         self.assertEqual(response.context["form"].initial["dns_servers"], "10.0.0.53")
 
+    def test_get_prefills_membership_from_the_live_declaration_when_the_catalogue_is_stale(self):
+        """A Subnet added after the catalogue was cached must not render as global."""
+        with stub_kea({**_ABSENT_READ_HOOKS, "config-get": _EMPTY_CONFIG4}):
+            self.client.get(reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk]))
+        member = {
+            "result": 0,
+            "arguments": {
+                "Dhcp4": {
+                    "subnet4": [],
+                    "shared-networks": [{"name": "net-alpha", "subnet4": [{"id": 42, "subnet": "10.0.0.0/24"}]}],
+                }
+            },
+        }
+        with self._get_stub(config=member):
+            response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["form"].initial["shared_network"], "net-alpha")
+
     def test_get_reads_the_live_configuration_on_every_visit(self):
         """The edit form is a read-modify-write prefill, so it must not serve the display cache."""
         with self._get_stub() as kea:

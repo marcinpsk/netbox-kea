@@ -620,7 +620,7 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
         subnet_configuration = None
         subnet_cidr = ""
         display_network = subnet.shared_network.name if subnet and subnet.shared_network else ""
-        if subnet is not None and configured_target is not None and configured_target.complete:
+        if configured_target is not None and configured_target.complete:
             subnet_configuration = configured_target.configuration
             subnet_cidr = configured_target.declared_cidr
             display_network = configured_target.shared_network_name or ""
