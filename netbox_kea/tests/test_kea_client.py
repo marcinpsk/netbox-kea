@@ -2742,47 +2742,6 @@ _OPTION_DEF_CONFIG_EMPTY = [
 ]
 
 
-class TestOptionDefList(TestCase):
-    """Tests for KeaClient.option_def_list()."""
-
-    def setUp(self):
-        self.client = KeaClient(url="http://kea:8000")
-
-    def test_returns_option_def_list_v4(self):
-        """option_def_list(4) returns the Dhcp4.option-def list from config."""
-        with patch.object(self.client._session, "post", return_value=_mock_http_response(_OPTION_DEF_CONFIG_V4)):
-            result = self.client.option_def_list(version=4)
-        self.assertEqual(result, [{"name": "my-opt", "code": 200, "type": "string", "space": "dhcp4"}])
-
-    def test_returns_option_def_list_v6(self):
-        """option_def_list(6) returns the Dhcp6.option-def list."""
-        with patch.object(self.client._session, "post", return_value=_mock_http_response(_OPTION_DEF_CONFIG_V6)):
-            result = self.client.option_def_list(version=6)
-        self.assertEqual(result, [{"name": "my-v6-opt", "code": 201, "type": "uint32", "space": "dhcp6"}])
-
-    def test_returns_empty_list_when_no_option_def_key(self):
-        """Returns [] when Dhcp4 has no 'option-def' key."""
-        with patch.object(self.client._session, "post", return_value=_mock_http_response(_OPTION_DEF_CONFIG_EMPTY)):
-            result = self.client.option_def_list(version=4)
-        self.assertEqual(result, [])
-
-    def test_calls_config_get_on_correct_service(self):
-        """option_def_list(4) sends config-get to the dhcp4 service."""
-
-        def _payloads(mock_post):
-            return [(c.kwargs.get("json") or c[1]["json"]) for c in mock_post.call_args_list]
-
-        with patch.object(
-            self.client._session,
-            "post",
-            return_value=_mock_http_response(_OPTION_DEF_CONFIG_V4),
-        ) as mock_post:
-            self.client.option_def_list(version=4)
-        payload = _payloads(mock_post)[0]
-        self.assertEqual(payload["command"], "config-get")
-        self.assertEqual(payload["service"], ["dhcp4"])
-
-
 class TestOptionDefAdd(TestCase):
     """Tests for KeaClient.option_def_add()."""
 
@@ -5443,7 +5402,7 @@ class TestNetworkUpdateClearInterface(TestCase):
 
 
 class TestConfigGetShapeGuardAdditional(TestCase):
-    """network_update, subnet_update_options, and option_def_list raise KeaException on null config-get (lines 546, 746, 814)."""
+    """Configuration mutations reject null configuration arguments."""
 
     def setUp(self):
         self.client = KeaClient(url="http://kea:8000")
@@ -5464,13 +5423,6 @@ class TestConfigGetShapeGuardAdditional(TestCase):
         mock_post.return_value = self._null_args_response()
         with self.assertRaises(KeaException):
             self.client.subnet_update_options(version=4, subnet_id=1, options=[])
-
-    @patch("requests.Session.post")
-    def test_option_def_list_null_arguments_raises_kea_exception(self, mock_post):
-        """option_def_list raises KeaException when config-get returns null arguments (line 814)."""
-        mock_post.return_value = self._null_args_response()
-        with self.assertRaises(KeaException):
-            self.client.option_def_list(version=4)
 
 
 class TestLeaseUpdateGuards(TestCase):

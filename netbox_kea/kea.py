@@ -302,6 +302,18 @@ def _configured_subnet_id_for_network(
     return None
 
 
+def _serialize_option_form_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Serialize cleaned option form rows for the Kea configuration write path."""
+    return [
+        {
+            "name": row["name"],
+            "data": row["data"],
+            **({"always-send": True} if row.get("always_send") else {}),
+        }
+        for row in rows
+    ]
+
+
 class KeaClient:
     """HTTP client for the Kea Control API."""
 
@@ -1520,7 +1532,7 @@ class KeaClient:
         )
         self._persist_config(service)
 
-    def subnet_update_options(self, version: int, subnet_id: int, options: list[dict]) -> None:
+    def subnet_update_options(self, version: int, subnet_id: int, options: list[dict[str, Any]]) -> None:
         """Update option-data for a subnet via config-get → config-test → config-write.
 
         Free Kea has no option-set hook, so the only supported approach is a full
@@ -1532,7 +1544,7 @@ class KeaClient:
         Args:
             version: DHCP version (4 or 6).
             subnet_id: Kea subnet ID.
-            options: New ``option-data`` list. Pass ``[]`` to remove all options.
+            options: Cleaned option form rows. Pass ``[]`` to remove all options.
 
         Raises:
             KeaException: If ``subnet_id`` is not found, or if ``config-test`` fails.
@@ -1566,10 +1578,10 @@ class KeaClient:
         if subnet is None:
             raise KeaException({"result": 3, "text": f"Subnet id {subnet_id} not found in config"})
 
-        subnet["option-data"] = options
+        subnet["option-data"] = _serialize_option_form_rows(options)
         self._apply_config(service, config)
 
-    def server_update_options(self, version: int, options: list[dict]) -> None:
+    def server_update_options(self, version: int, options: list[dict[str, Any]]) -> None:
         """Update server-level option-data via config-get → config-test → config-write.
 
         Replaces the ``option-data`` list at the ``Dhcp{v}`` level (not per-subnet).
@@ -1577,7 +1589,7 @@ class KeaClient:
 
         Args:
             version: DHCP version (4 or 6).
-            options: New ``option-data`` list. Pass ``[]`` to remove all server-level options.
+            options: Cleaned option form rows. Pass ``[]`` to remove all server-level options.
 
         Raises:
             KeaException: If ``config-test`` fails.
@@ -1593,29 +1605,8 @@ class KeaClient:
             raise KeaException({"result": -1, "text": f"config-get returned unexpected arguments for {service}"})
         config = raw
         config.pop("hash", None)
-        config.setdefault(dhcp_key, {})["option-data"] = options
+        config.setdefault(dhcp_key, {})["option-data"] = _serialize_option_form_rows(options)
         self._apply_config(service, config)
-
-    def option_def_list(self, version: int) -> list[dict]:
-        """Return the current ``option-def`` list for a DHCP version via ``config-get``.
-
-        Args:
-            version: DHCP version (4 or 6).
-
-        Returns:
-            List of option-def dicts, or ``[]`` if none are defined.
-
-        Raises:
-            KeaException: If ``config-get`` fails.
-
-        """
-        service = f"dhcp{version}"
-        dhcp_key = f"Dhcp{version}"
-        resp = self.command("config-get", service=[service])
-        raw = resp[0].get("arguments") if resp and isinstance(resp[0], dict) else None
-        if not isinstance(raw, dict):
-            raise KeaException({"result": -1, "text": f"config-get returned unexpected arguments for {service}"})
-        return raw.get(dhcp_key, {}).get("option-def", [])
 
     def option_def_add(self, version: int, option_def: dict) -> None:
         """Append a new option-def entry via config-get → config-test → config-write.
