@@ -2786,7 +2786,11 @@ def _unguarded_new_stdlib_imports(tree: ast.Module, floor: tuple[int, int]) -> l
             names = [node.module]
         else:
             continue
-        offenders.extend(f"line {node.lineno}: {name}" for name in names if _STDLIB_ADDED_IN.get(name, floor) > floor)
+        offenders.extend(
+            f"line {node.lineno}: {name}"
+            for name in names
+            if _STDLIB_ADDED_IN.get(name.partition(".")[0], floor) > floor
+        )
     return offenders
 
 
@@ -2811,6 +2815,8 @@ def test_no_module_imports_a_standard_library_module_the_floor_lacks():
 
 #: Sources the floor guard must flag, keyed by why Python 3.10 still reaches the import.
 _IMPORTS_THE_FLOOR_REACHES = {
+    "a dotted import of a submodule": "import tomllib._parser\n",
+    "a dotted from-import": "from tomllib._parser import loads\n",
     "a bare import": "import tomllib\n",
     "the from spelling": "from tomllib import loads\n",
     "an inverted comparison, whose body is the arm 3.10 runs": (
