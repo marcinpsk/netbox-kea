@@ -2755,9 +2755,12 @@ def _floor_takes_body(test: ast.expr, floor: tuple[int, int]) -> bool | None:
     if compare is None:
         return None
     try:
-        return bool(compare((*floor, 0, "final", 0), tuple(parts)))
+        oldest = bool(compare((*floor, 0, "final", 0), tuple(parts)))
+        newest = bool(compare((*floor, sys.maxsize, "final", 0), tuple(parts)))
     except TypeError:
         return None  # the literal mixes types with the releaselevel field; clear nothing
+    # A patch-level literal can split the floor line; clear nothing unless every release agrees.
+    return oldest if oldest == newest else None
 
 
 def _unguarded_new_stdlib_imports(tree: ast.Module, floor: tuple[int, int]) -> list[str]:
@@ -2815,6 +2818,9 @@ def test_no_module_imports_a_standard_library_module_the_floor_lacks():
 
 #: Sources the floor guard must flag, keyed by why Python 3.10 still reaches the import.
 _IMPORTS_THE_FLOOR_REACHES = {
+    "a patch-level guard the floor line straddles": (
+        "import sys\n\nif sys.version_info >= (3, 10, 1):\n    import tomllib\n"
+    ),
     "a dotted import of a submodule": "import tomllib._parser\n",
     "a dotted from-import": "from tomllib._parser import loads\n",
     "a bare import": "import tomllib\n",
@@ -2838,6 +2844,9 @@ _IMPORTS_THE_FLOOR_REACHES = {
 }
 #: Sources the floor guard must clear: 3.10 runs the other arm, or the module is older.
 _IMPORTS_THE_FLOOR_SKIPS = {
+    "a patch-level guard every floor release skips": (
+        "import sys\n\nif sys.version_info >= (3, 11, 0):\n    import tomllib\n"
+    ),
     "the documented fallback": (
         "import sys\n\nif sys.version_info >= (3, 11):\n    import tomllib\nelse:\n    import tomli\n"
     ),
