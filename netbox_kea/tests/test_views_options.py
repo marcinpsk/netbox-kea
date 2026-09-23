@@ -1491,13 +1491,14 @@ class TestConfigurationOptionIdentity(_ViewTestBase):
             {"code": 6, "space": "dhcp4", "data": "198.18.0.55"},
         ]
         for scope in ("server", "subnet"):
-            with self.subTest(scope=scope), _persist_stub(self._config(scope, options)):
-                data = self._submitted(self.client.get(self._url(scope)))
-            data["form-1-data"] = "198.18.0.56"
-            live = copy.deepcopy(options)
-            live[0]["client-classes"].reverse()
-            with self.subTest(scope=scope), _persist_stub(self._config(scope, live)) as kea:
-                post = self.client.post(self._url(scope), data)
+            with self.subTest(scope=scope):
+                with _persist_stub(self._config(scope, options)):
+                    data = self._submitted(self.client.get(self._url(scope)))
+                data["form-1-data"] = "198.18.0.56"
+                live = copy.deepcopy(options)
+                live[0]["client-classes"].reverse()
+                with _persist_stub(self._config(scope, live)) as kea:
+                    post = self.client.post(self._url(scope), data)
                 self.assertEqual(post.status_code, 302)
                 written = _written_config(kea)["Dhcp4"]
                 if scope == "subnet":
@@ -1580,12 +1581,12 @@ class TestConfigurationOptionIdentity(_ViewTestBase):
             {"code": 6, "data": "198.18.0.53", "never-send": True},
         ]
         for scope in ("server", "subnet"):
-            with self.subTest(scope=scope), _persist_stub(self._config(scope, options)):
-                get = self.client.get(self._url(scope))
-                data = self._submitted(get)
-            data["form-0-DELETE"] = "on"
-            with self.subTest(scope=scope), _persist_stub(self._config(scope, options[::-1])) as kea:
-                post = self.client.post(self._url(scope), data)
+            with self.subTest(scope=scope):
+                with _persist_stub(self._config(scope, options)):
+                    data = self._submitted(self.client.get(self._url(scope)))
+                data["form-0-DELETE"] = "on"
+                with _persist_stub(self._config(scope, options[::-1])) as kea:
+                    post = self.client.post(self._url(scope), data)
                 self.assertEqual(post.status_code, 302)
                 written = _written_config(kea)["Dhcp4"]
                 if scope == "subnet":
@@ -1595,11 +1596,11 @@ class TestConfigurationOptionIdentity(_ViewTestBase):
     def test_missing_ambiguous_and_duplicate_targets_abort_before_write(self):
         options = [{"name": "routers", "data": "198.18.0.1"}]
         for live in ([], options * 2):
-            with self.subTest(live=live), _persist_stub(self._config("server", options)):
-                get = self.client.get(self._url("server"))
-                data = self._submitted(get)
-            with self.subTest(live=live), _persist_stub(self._config("server", live)) as kea:
-                post = self.client.post(self._url("server"), data)
+            with self.subTest(live=live):
+                with _persist_stub(self._config("server", options)):
+                    data = self._submitted(self.client.get(self._url("server")))
+                with _persist_stub(self._config("server", live)) as kea:
+                    post = self.client.post(self._url("server"), data)
                 self.assertNotIn("config-test", kea.commands())
                 self.assertNotIn("config-set", kea.commands())
                 messages = [str(message) for message in django_messages.get_messages(post.wsgi_request)]
