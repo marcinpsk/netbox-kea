@@ -61,42 +61,43 @@ def _warn_reservation_pool_overlap(
     """Add a non-blocking warning if *ip_str* falls within an existing pool in *subnet_id*.
 
     Fetches the subnet configuration via ``subnet{version}-get`` and checks each
-    pool entry.  Silently skips on any error.
+    pool entry. A malformed entry is skipped; Kea and transport errors reach the caller.
     """
-    try:
-        from netaddr import IPAddress
+    from netaddr import AddrFormatError, IPAddress
 
-        resp = client.command(
-            f"subnet{version}-get",
-            service=[f"dhcp{version}"],
-            arguments={"id": subnet_id},
-            check=(0, 2, 3),
-        )
-        if not resp or not isinstance(resp[0], dict) or resp[0].get("result") != 0:
-            return
-        arguments = resp[0].get("arguments")
-        if not isinstance(arguments, dict):
-            return
-        subnet_list = arguments.get(f"subnet{version}", [])
-        if not isinstance(subnet_list, list) or not subnet_list:
-            return
-        subnet = subnet_list[0] if isinstance(subnet_list[0], dict) else {}
-        ip = IPAddress(ip_str)
+    resp = client.command(
+        f"subnet{version}-get",
+        service=[f"dhcp{version}"],
+        arguments={"id": subnet_id},
+        check=(0, 2, 3),
+    )
+    if not resp or not isinstance(resp[0], dict) or resp[0].get("result") != 0:
+        return
+    arguments = resp[0].get("arguments")
+    if not isinstance(arguments, dict):
+        return
+    subnet_list = arguments.get(f"subnet{version}", [])
+    if not isinstance(subnet_list, list) or not subnet_list:
+        return
+    subnet = subnet_list[0] if isinstance(subnet_list[0], dict) else {}
+    pools = subnet.get("pools")
+    ip = IPAddress(ip_str)
 
-        for pool_entry in subnet.get("pools") or []:
-            ps = pool_entry.get("pool", "")
-            if not ps:
-                continue
+    for pool_entry in pools if isinstance(pools, list) else []:
+        ps = pool_entry.get("pool") if isinstance(pool_entry, dict) else None
+        if not isinstance(ps, str) or not ps:
+            continue
+        try:
             pool_range = parse_pool_range(ps)
-            if ip in pool_range:
-                messages.warning(
-                    request,
-                    f"IP {ip_str} is within existing pool {ps}. "
-                    "Kea allows this — reservations take priority over pool allocation.",
-                )
-                break
-    except Exception:
-        logger.exception("Failed to check reservation/pool overlap for %s in subnet %s", ip_str, subnet_id)
+        except AddrFormatError:
+            continue
+        if ip in pool_range:
+            messages.warning(
+                request,
+                f"IP {ip_str} is within existing pool {ps}. "
+                "Kea allows this — reservations take priority over pool allocation.",
+            )
+            break
 
 
 def _in_subnet_scope(reservation: Reservation) -> InSubnetReservationScope:

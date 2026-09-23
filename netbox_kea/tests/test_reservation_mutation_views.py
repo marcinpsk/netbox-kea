@@ -237,6 +237,64 @@ class TestReservationMutationViews(_ViewTestBase):
             )
         )
 
+    def test_a_malformed_pool_entry_does_not_stop_the_overlap_check(self):
+        from django.contrib import messages
+        from django.contrib.messages import get_messages
+
+        for malformed in ({"pool": "invalid"}, "not-a-pool", {"pool": 7}, {"pool": "198.18.0.30-198.18.0.10"}):
+            with self.subTest(malformed=malformed):
+                responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
+                raw = {"subnet-id": 20, "hw-address": "aa:bb:cc:dd:ee:ff", "ip-address": "198.18.0.20"}
+                responses.update({"reservation-add": {"result": 0}, "reservation-get": _res_get(raw)})
+                pools = [malformed, {"pool": "198.18.0.10-198.18.0.30"}]
+                responses["subnet4-get"] = {
+                    "result": 0,
+                    "arguments": {"subnet4": [{"id": 20, "subnet": "198.18.0.0/24", "pools": pools}]},
+                }
+                with stub_kea(responses), self.assertNoLogs("netbox_kea.views.reservation_mutations", "ERROR"):
+                    response = self.client.post(
+                        reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk]),
+                        {
+                            "subnet_cidr": "198.18.0.0/24",
+                            "ip_address": "198.18.0.20",
+                            "identifier_type": "hw-address",
+                            "identifier": "aa:bb:cc:dd:ee:ff",
+                        },
+                    )
+
+                self.assertEqual(response.status_code, 302)
+                self.assertTrue(
+                    any(
+                        message.level == messages.WARNING
+                        and "198.18.0.20 is within existing pool 198.18.0.10-198.18.0.30" in str(message)
+                        for message in get_messages(response.wsgi_request)
+                    )
+                )
+
+    def test_a_failed_overlap_read_is_logged_as_a_warning(self):
+        responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
+        raw = {"subnet-id": 20, "hw-address": "aa:bb:cc:dd:ee:ff", "ip-address": "198.18.0.20"}
+        responses.update({"reservation-add": {"result": 0}, "reservation-get": _res_get(raw)})
+        responses["subnet4-get"] = requests.ConnectionError("Kea is unreachable")
+
+        with (
+            stub_kea(responses),
+            self.assertNoLogs("netbox_kea.views.reservation_mutations", "ERROR"),
+            self.assertLogs("netbox_kea.views.reservation_mutations", "WARNING") as logs,
+        ):
+            response = self.client.post(
+                reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk]),
+                {
+                    "subnet_cidr": "198.18.0.0/24",
+                    "ip_address": "198.18.0.20",
+                    "identifier_type": "hw-address",
+                    "identifier": "aa:bb:cc:dd:ee:ff",
+                },
+            )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("Could not check Reservation pool overlap", logs.output[0])
+
     def test_a_journal_validation_error_does_not_lose_the_applied_creation(self):
         """A save signal can raise ValidationError, which is not a ValueError the view catches."""
         from django.contrib.messages import get_messages
@@ -246,7 +304,9 @@ class TestReservationMutationViews(_ViewTestBase):
 
         responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
         raw = {"subnet-id": 20, "hw-address": "aa:bb:cc:dd:ee:ff", "ip-address": "198.18.0.20"}
-        responses.update({"reservation-add": {"result": 0}, "reservation-get": _res_get(raw)})
+        responses.update(
+            {"subnet4-get": {"result": 3}, "reservation-add": {"result": 0}, "reservation-get": _res_get(raw)}
+        )
 
         def reject(sender, **kwargs):
             raise ValidationError("journal rejected by a save signal")
