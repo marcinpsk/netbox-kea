@@ -220,6 +220,7 @@ def test_all_registered_kea_settings_have_guard_coverage():
 @pytest.mark.parametrize(
     "expression",
     [
+        'f"config-{operation}"',
         'f"lease4-{operation}"',
         'f"subnet6-{operation}"',
         'f"reservation-get-{selector}"',
@@ -328,6 +329,19 @@ def test_fstring_expressions_are_still_scanned():
     assert len(wd.scan_source("value = f\"Label: {row['arguments']}\"")) == 1
 
 
+def test_documented_wire_owners_match_tree_exclusions(tmp_path):
+    guidance = (wd.PACKAGE_ROOT.parent / "AGENTS.md").read_text()
+    section = guidance.split("**Kea wire-discipline gate.**", 1)[1].split("\n- **", 1)[0]
+    documented = set(re.findall(r"`([a-z_]+(?:/[a-z_]+)*\.py)`", section))
+    documented.discard("netbox_kea/tests/kea_wire_discipline.py")
+    assert documented == wd._OWNERS | {"tests/kea_stub.py"}
+    for rel in documented | {"views/kea_stub.py", "views/kea.py"}:
+        path = tmp_path / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('value = "config-get"\n')
+    assert [hit.path for hit in wd.scan_tree(tmp_path)] == ["views/kea.py", "views/kea_stub.py"]
+
+
 def test_tree_excludes_exact_owners_tests_and_migrations(tmp_path):
     paths = [
         "kea.py",
@@ -363,16 +377,41 @@ def test_baseline_roundtrip(tmp_path):
     assert not path.read_text().endswith("\n\n")
 
 
-def test_cli_reports_debt_and_updates_baseline(tmp_path, capsys):
+@pytest.mark.parametrize(
+    "existing",
+    [{}, {"consumer.py::<module>": 1}, {"consumer.py::other": 2}],
+    ids=["new-file", "increased-count", "new-scope"],
+)
+def test_cli_refuses_baseline_growth_without_writing(tmp_path, capsys, existing):
+    (tmp_path / "consumer.py").write_text('value = "config-get", "option-data"\n')
+    baseline = tmp_path / "baseline.txt"
+    wd.save_baseline(existing, baseline)
+    original = baseline.read_bytes()
+    assert wd._main(["--update-baseline"], root=tmp_path, baseline_path=baseline) == 1
+    assert "consumer.py::<module>" in capsys.readouterr().out
+    assert baseline.read_bytes() == original
+
+
+def test_cli_does_not_bootstrap_missing_baseline(tmp_path):
     (tmp_path / "consumer.py").write_text('value = "config-get"\n')
     baseline = tmp_path / "baseline.txt"
+    assert wd._main(["--update-baseline"], root=tmp_path, baseline_path=baseline) == 1
+    assert not baseline.exists()
+
+
+def test_cli_reports_debt_and_records_only_decreases(tmp_path, capsys):
+    (tmp_path / "consumer.py").write_text('value = "config-get", "option-data"\n')
+    baseline = tmp_path / "baseline.txt"
+    wd.save_baseline({"consumer.py::<module>": 1, "gone.py::old": 9}, baseline)
     assert wd._main([], root=tmp_path, baseline_path=baseline) == 1
     assert "consumer.py:1" in capsys.readouterr().out
+    (tmp_path / "consumer.py").write_text('value = "config-get"\n')
     assert wd._main(["--update-baseline"], root=tmp_path, baseline_path=baseline) == 0
     assert wd.load_baseline(baseline) == {"consumer.py::<module>": 1}
     assert wd._main([], root=tmp_path, baseline_path=baseline) == 0
-    (tmp_path / "consumer.py").write_text('value = "config-get", "option-data"\n')
-    assert wd._main([], root=tmp_path, baseline_path=baseline) == 1
+    (tmp_path / "consumer.py").write_text('value = "display"\n')
+    assert wd._main(["--update-baseline"], root=tmp_path, baseline_path=baseline) == 0
+    assert wd.load_baseline(baseline) == {}
 
 
 def test_nested_scopes_have_separate_budgets():

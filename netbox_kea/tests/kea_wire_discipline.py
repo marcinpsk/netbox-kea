@@ -341,7 +341,7 @@ _WIRE_FSTRING = re.compile(
     r"(?:"
     r"(?:subnet|Dhcp|dhcp)\{\}"
     r"|(?:subnet|lease|network|stat-lease)(?:[46]|\{\})-(?:[a-z0-9-]|\{\})+"
-    r"|(?:reservation|option)-(?:[a-z0-9-]|\{\})*\{\}(?:[a-z0-9-]|\{\})*"
+    r"|(?:config|reservation|option)-(?:[a-z0-9-]|\{\})*\{\}(?:[a-z0-9-]|\{\})*"
     r")\Z"
 )
 
@@ -530,6 +530,13 @@ def _main(argv: list[str], *, root: Path = PACKAGE_ROOT, baseline_path: Path = _
     args = parser.parse_args(argv)
     if args.update_baseline:
         counts = dict(Counter(hit.site for hit in scan_tree(root)))
+        allowed = load_baseline(baseline_path)
+        increases = {site: count for site, count in counts.items() if count > allowed.get(site, 0)}
+        if increases:
+            for site, count in sorted(increases.items()):
+                print(f"{site}: baseline budget would increase from {allowed.get(site, 0)} to {count}")
+            print("baseline unchanged: fix new wire literals before recording decreases")
+            return 1
         save_baseline(counts, baseline_path)
         print(f"baseline updated: {sum(counts.values())} literal(s) across {len(counts)} site(s)")
         return 0

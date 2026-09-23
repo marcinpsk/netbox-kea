@@ -277,12 +277,16 @@ resort, reserved for true external boundaries you cannot run locally.
   that way: it grandfathers accepted violations per (file, function), so regenerating it
   to silence a failure defeats the gate. Fix the call site instead.
 - **Kea wire-discipline gate.** `netbox_kea/tests/kea_wire_discipline.py` checks
-  production code outside the five wire-owning modules for Kea command names,
-  hyphenated payload keys, and family-suffixed configuration keys or service names.
+  production code for Kea command names, hyphenated payload keys, and family-suffixed
+  configuration keys or service names. Wire owners are `kea.py`, `server_configuration.py`,
+  `subnet_catalogue.py`, `reservations.py`, and `dhcp_options.py`, relative to `netbox_kea/`.
+  The checker excludes these exact modules, tests, and migrations. The transport stub
+  `tests/kea_stub.py` may also use wire literals to model Kea responses.
   It also checks `arguments` when code uses it as a raw payload key. Prefer typed domain
   interfaces when the gate fails. The baseline is the follow-up brief and only shrinks.
-  Use `--update-baseline` only to record a decrease. A test prevents the baseline from
-  adding files. The pre-commit hook and the real-tree suite test enforce the budgets.
+  Use `--update-baseline` to record decreases. It refuses new sites and higher counts
+  without changing the baseline. A test prevents the baseline from adding files.
+  The pre-commit hook and the real-tree suite test enforce the budgets.
 - **Standard NetBox model coverage via mixins.** For the `Server` model (a
   `NetBoxModel` with standard generic views + `NetBoxModelViewSet`), use NetBox's
   `ViewTestCases` / `APIViewTestCases` (see `test_server_generic.py`). Wire plugin
