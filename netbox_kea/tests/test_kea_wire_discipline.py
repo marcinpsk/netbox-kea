@@ -316,6 +316,25 @@ def test_django_template_wire_comparison_is_flagged():
 
 
 @pytest.mark.parametrize(
+    "source",
+    [
+        "template = f\"{{% if record.identifier_type == 'hw-address' %}}{label}{{% endif %}}\"",
+        "template = f\"{{% if {field} == 'hw-address' %}}MAC{{% endif %}}\"",
+    ],
+)
+def test_fstring_template_comparisons_match_plain_template(source):
+    plain = "template = \"{% if record.identifier_type == 'hw-address' %}MAC{% endif %}\""
+    expected = [hit.literal for hit in wd.scan_source(plain)]
+    assert expected == ["hw-address"]
+    assert [hit.literal for hit in wd.scan_source(source)] == expected
+
+
+def test_fstring_presentation_wire_text_outside_template_tag_is_ignored():
+    source = "template = f\"<span class='hw-address'>{label}</span>\""
+    assert wd.scan_source(source) == []
+
+
+@pytest.mark.parametrize(
     "expression",
     [
         'f"subnet{version}"',

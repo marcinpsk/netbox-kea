@@ -418,13 +418,16 @@ class _Scanner(ast.NodeVisitor):
         reads = [n for n in references if isinstance(n.ctx, ast.Load)]
         return len(stores) == 1 and bool(reads) and all(self._is_filter_key(read) for read in reads)
 
-    def visit_Constant(self, node: ast.Constant) -> None:
-        if not isinstance(node.value, str):
-            return
-        for tag in re.finditer(r"\{%.*?%\}|\{\{.*?\}\}", node.value, re.DOTALL):
+    def _scan_template_tags(self, node: ast.expr, text: str) -> None:
+        for tag in re.finditer(r"\{%.*?%\}|\{\{.*?\}\}", text, re.DOTALL):
             for quoted in re.finditer(r"""(["'])([a-zA-Z][a-zA-Z0-9-]*)\1""", tag.group()):
                 if quoted[2] in WIRE_LITERALS - _ARGUMENTS_KEYS:
                     self._record(node, quoted[2])
+
+    def visit_Constant(self, node: ast.Constant) -> None:
+        if not isinstance(node.value, str):
+            return
+        self._scan_template_tags(node, node.value)
         if node.value not in WIRE_LITERALS:
             return
         if node.value in _ARGUMENTS_KEYS:
@@ -452,6 +455,7 @@ class _Scanner(ast.NodeVisitor):
             value.value if isinstance(value, ast.Constant) and isinstance(value.value, str) else "{}"
             for value in node.values
         )
+        self._scan_template_tags(node, shape)
         is_field = shape == "dhcp{}" and self._is_model_field(node)
         # Match fixed command text against the same vocabulary as plain literals.
         # Require the complete family, so labels such as v{version} stay separate.
