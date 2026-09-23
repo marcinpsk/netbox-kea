@@ -163,7 +163,7 @@ def _network(value: Any, family: Family) -> IPNetworkValue:
 
 
 def _generation_key(server: Server, family: Family) -> str:
-    return f"netbox_kea:server_configuration:v1:{_require_persisted_server(server)}:{family}:generation"
+    return f"{constants.SERVER_CONFIGURATION_CACHE_PREFIX}v1:{_require_persisted_server(server)}:{family}:generation"
 
 
 def _cache_generation(server: Server, family: Family) -> str:
@@ -179,7 +179,7 @@ def _cache_generation(server: Server, family: Family) -> str:
 
 def _cache_key(server: Server, family: Family, generation: str | None = None) -> str:
     generation = generation or _cache_generation(server, family)
-    return f"netbox_kea:server_configuration:v1:{_require_persisted_server(server)}:{family}:snapshot:{generation}"
+    return f"{constants.SERVER_CONFIGURATION_CACHE_PREFIX}v1:{_require_persisted_server(server)}:{family}:snapshot:{generation}"
 
 
 def _require_persisted_server(server: Server) -> int:
@@ -787,7 +787,7 @@ def display(server: Server, family: int) -> ServerConfigurationSnapshot:
         return cached
     snapshot = _read_live(server, validated_family)
     if snapshot.available:
-        cache.set(key, snapshot, constants.SUBNET_CHOICES_TTL)
+        cache.set(key, snapshot, constants.DISPLAY_SNAPSHOT_TTL)
     return snapshot
 
 
