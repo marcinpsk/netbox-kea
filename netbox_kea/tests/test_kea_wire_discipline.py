@@ -353,6 +353,44 @@ def test_wire_fstrings_are_flagged_once(expression):
 @pytest.mark.parametrize(
     "expression",
     [
+        '"lease{}-get".format(version)',
+        '"lease{version}-get".format(version=version)',
+        '"lease%s-get" % version',
+        '"lease%d-get" % version',
+        '"lease%(v)s-get" % {"v": version}',
+        '"subnet%s" % version',
+        '"reservation-" + operation',
+        '"lease" + str(version) + "-get"',
+        'f"lease{version}" + "-get"',
+        '"lease4-get" + suffix',
+        'f"lease{version}-get" + suffix',
+    ],
+)
+def test_formatted_wire_templates_are_flagged_once(expression):
+    assert len(wd.scan_source(f"value = {expression}", "views/server.py")) == 1
+
+
+@pytest.mark.parametrize(
+    "expression",
+    [
+        '"subnet {} returned no data".format(version)',
+        '"config-get failed: %s" % error',
+        '"DHCPv" + str(version)',
+        '"%s-get" % label',
+        '"Label: " + name',
+    ],
+)
+def test_formatted_presentation_strings_are_ignored(expression):
+    assert wd.scan_source(f"value = {expression}") == []
+
+
+def test_formatted_model_filter_field_is_ignored():
+    assert wd.scan_source('Server.objects.filter(**{"dhcp%s" % version: True})') == []
+
+
+@pytest.mark.parametrize(
+    "expression",
+    [
         'f"reservation_cursor_{pk}"',
         'f"reservations[{index}]"',
         'f"subnet {id}"',

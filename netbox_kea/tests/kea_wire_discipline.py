@@ -7,7 +7,8 @@ and family keys or service/command f-strings. Bare dhcp4/dhcp6 are model fields.
 Only arguments also counts in subscripts, .get(), and positional helper calls whose
 first argument is a Name. Bare arguments strings do not count.
 Reads through a variable are out of reach; command names catch those wire sites.
-Command f-strings require a complete command-family prefix before the first hyphen.
+Command templates (f-strings, .format, %, +) require a complete command-family
+prefix before the first hyphen.
 The family may interpolate its protocol number, as in subnet{version}-list.
 Quoted wire literals in Django template tags count. Proven filter/exclude keyword
 names are model fields, including service-shaped f-strings used only as those names.
@@ -347,6 +348,7 @@ _WIRE_FSTRING = re.compile(
     r"|option-(?:[a-z0-9-]|\{\})*\{\}(?:[a-z0-9-]|\{\})*"
     r")\Z"
 )
+_FORMAT_PLACEHOLDER = re.compile(r"\{[^{}]*\}|%(?:\([^)]*\))?[sdi]")
 
 
 @dataclass(frozen=True)
@@ -399,7 +401,7 @@ class _Scanner(ast.NodeVisitor):
             and call.func.attr in {"filter", "exclude"}
         )
 
-    def _is_model_field(self, node: ast.JoinedStr) -> bool:
+    def _is_model_field(self, node: ast.expr) -> bool:
         if self._is_filter_key(node):
             return True
         assignment = self.parents.get(node)
@@ -451,11 +453,43 @@ class _Scanner(ast.NodeVisitor):
         self._record(node, node.value)
 
     def visit_JoinedStr(self, node: ast.JoinedStr) -> None:
-        shape = "".join(
-            value.value if isinstance(value, ast.Constant) and isinstance(value.value, str) else "{}"
-            for value in node.values
-        )
+        shape = _shape(node)
         self._scan_template_tags(node, shape)
+        self._check_shape(node, shape)
+        for value in node.values:
+            if isinstance(value, ast.FormattedValue):
+                self.visit(value)
+
+    def visit_Call(self, node: ast.Call) -> None:
+        template = (
+            _text(node.func.value) if isinstance(node.func, ast.Attribute) and node.func.attr == "format" else None
+        )
+        if template is not None and self._check_shape(node, _FORMAT_PLACEHOLDER.sub("{}", template)):
+            for child in [*node.args, *node.keywords]:
+                self.visit(child)
+            return
+        self.generic_visit(node)
+
+    def visit_BinOp(self, node: ast.BinOp) -> None:
+        parent = self.parents.get(node)
+        if isinstance(node.op, ast.Mod) and (template := _text(node.left)) is not None:
+            if self._check_shape(node, _FORMAT_PLACEHOLDER.sub("{}", template)):
+                self.visit(node.right)
+                return
+        elif isinstance(node.op, ast.Add) and not (isinstance(parent, ast.BinOp) and isinstance(parent.op, ast.Add)):
+            parts = _concatenation(node)
+            has_text = any(_text(part) is not None or isinstance(part, ast.JoinedStr) for part in parts)
+            if has_text and self._check_shape(node, "".join(_shape(part) for part in parts)):
+                for part in parts:
+                    holes = part.values if isinstance(part, ast.JoinedStr) else [part]
+                    for hole in holes:
+                        if _text(hole) is None:
+                            self.visit(hole)
+                return
+        self.generic_visit(node)
+
+    def _check_shape(self, node: ast.expr, shape: str) -> bool:
+        """Record *node* when its text shape, with ``{}`` for each hole, is wire text."""
         is_field = shape == "dhcp{}" and self._is_model_field(node)
         # Match fixed command text against the same vocabulary as plain literals.
         # Require the complete family, so labels such as v{version} stay separate.
@@ -469,9 +503,29 @@ class _Scanner(ast.NodeVisitor):
             is_command = any(command_pattern.fullmatch(command) for command in WIRE_COMMANDS)
         if not is_field and (is_command or _WIRE_FSTRING.fullmatch(shape) or shape in WIRE_LITERALS - _ARGUMENTS_KEYS):
             self._record(node, ast.unparse(node))
-        for value in node.values:
-            if isinstance(value, ast.FormattedValue):
-                self.visit(value)
+            return True
+        return False
+
+
+def _text(node: ast.AST) -> str | None:
+    return node.value if isinstance(node, ast.Constant) and isinstance(node.value, str) else None
+
+
+def _shape(node: ast.AST) -> str:
+    """Return string text with ``{}`` for each hole; any other expression is one hole."""
+    text = _text(node)
+    if text is not None:
+        return text
+    if isinstance(node, ast.JoinedStr):
+        return "".join(_shape(value) for value in node.values)
+    return "{}"
+
+
+def _concatenation(node: ast.expr) -> list[ast.expr]:
+    """Return the operands of a left-nested ``+`` chain in source order."""
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        return [*_concatenation(node.left), *_concatenation(node.right)]
+    return [node]
 
 
 def scan_source(src: str, rel: str = "<source>") -> list[Violation]:
