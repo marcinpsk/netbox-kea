@@ -10,6 +10,7 @@ Reads through a variable are out of reach; command names catch those wire sites.
 Command templates (f-strings, .format, %, +) require a complete command-family
 prefix before the first hyphen.
 The family may interpolate its protocol number, as in subnet{version}-list.
+A hole may be empty. Only the outermost template is checked, and then its holes.
 Quoted wire literals in Django template tags count. Proven filter/exclude keyword
 names are model fields, including service-shaped f-strings used only as those names.
 """
@@ -432,9 +433,12 @@ class _Scanner(ast.NodeVisitor):
         if not isinstance(node.value, str):
             return
         self._scan_template_tags(node, node.value)
-        if node.value not in WIRE_LITERALS:
+        self._check_literal(node, node.value)
+
+    def _check_literal(self, node: ast.Constant, value: str) -> None:
+        if value not in WIRE_LITERALS:
             return
-        if node.value in _ARGUMENTS_KEYS:
+        if value in _ARGUMENTS_KEYS:
             parent = self.parents.get(node)
             is_key = isinstance(parent, ast.Subscript) and parent.slice is node
             is_get = (
@@ -452,45 +456,29 @@ class _Scanner(ast.NodeVisitor):
             )
             if not (is_key or is_get or is_helper):
                 return
-        self._record(node, node.value)
+        self._record(node, value)
 
     def visit_JoinedStr(self, node: ast.JoinedStr) -> None:
-        shape = _shape(node)
-        self._scan_template_tags(node, shape)
-        self._check_shape(node, shape)
-        for value in node.values:
-            if isinstance(value, ast.FormattedValue):
-                self.visit(value)
+        self._visit_template(node)
 
-    def visit_Call(self, node: ast.Call) -> None:
-        template = (
-            _text(node.func.value) if isinstance(node.func, ast.Attribute) and node.func.attr == "format" else None
-        )
-        shape = None if template is None else _format_shape(template)
-        if shape is not None and self._check_shape(node, shape):
-            for child in [*node.args, *node.keywords]:
-                self.visit(child)
-            return
-        self.generic_visit(node)
+    def visit_Call(self, node: ast.Call | ast.BinOp) -> None:
+        if not self._visit_template(node):
+            self.generic_visit(node)
 
-    def visit_BinOp(self, node: ast.BinOp) -> None:
-        parent = self.parents.get(node)
-        if isinstance(node.op, ast.Mod) and (template := _text(node.left)) is not None:
-            shape = _printf_shape(template)
-            if shape is not None and self._check_shape(node, shape):
-                self.visit(node.right)
-                return
-        elif isinstance(node.op, ast.Add) and not (isinstance(parent, ast.BinOp) and isinstance(parent.op, ast.Add)):
-            parts = _concatenation(node)
-            has_text = any(_text(part) is not None or isinstance(part, ast.JoinedStr) for part in parts)
-            if has_text and self._check_shape(node, "".join(_shape(part) for part in parts)):
-                for part in parts:
-                    holes = part.values if isinstance(part, ast.JoinedStr) else [part]
-                    for hole in holes:
-                        if _text(hole) is None:
-                            self.visit(hole)
-                return
-        self.generic_visit(node)
+    visit_BinOp = visit_Call
+
+    def _visit_template(self, node: ast.expr) -> bool:
+        """Check a string template once as a whole, then visit its holes; False when *node* is none."""
+        template = _template(node)
+        if template is None:
+            return False
+        self._scan_template_tags(node, template.shape)
+        if not self._check_shape(node, template.shape):
+            for text, value in template.texts:
+                self._check_literal(text, value)
+        for hole in template.holes:
+            self.visit(hole)
+        return True
 
     def _check_shape(self, node: ast.expr, shape: str) -> bool:
         """Record *node* when its text shape, with ``{}`` for each hole, is wire text."""
@@ -499,20 +487,16 @@ class _Scanner(ast.NodeVisitor):
         # Require the complete family, so labels such as v{version} stay separate.
         family, separator, _ = shape.partition("-")
         has_family = bool(separator) and any(
-            family.replace("{}", str(version)) in _WIRE_COMMAND_FAMILIES for version in (4, 6)
+            family.replace("{}", version) in _WIRE_COMMAND_FAMILIES for version in ("", "4", "6")
         )
         is_command = False
         if "{}" in shape and has_family:
-            command_pattern = re.compile(re.escape(shape).replace(r"\{\}", "[a-z0-9-]+"))
+            command_pattern = re.compile(re.escape(shape).replace(r"\{\}", "[a-z0-9-]*"))
             is_command = any(command_pattern.fullmatch(command) for command in WIRE_COMMANDS)
         if not is_field and (is_command or _WIRE_FSTRING.fullmatch(shape) or shape in WIRE_LITERALS - _ARGUMENTS_KEYS):
             self._record(node, ast.unparse(node))
             return True
         return False
-
-
-def _text(node: ast.AST) -> str | None:
-    return node.value if isinstance(node, ast.Constant) and isinstance(node.value, str) else None
 
 
 def _format_shape(template: str) -> str | None:
@@ -549,21 +533,48 @@ def _printf_shape(template: str) -> str | None:
     return "".join(shape)
 
 
-def _shape(node: ast.AST) -> str:
-    """Return string text with ``{}`` for each hole; any other expression is one hole."""
-    text = _text(node)
-    if text is not None:
-        return text
+@dataclass(frozen=True)
+class _Template:
+    shape: str
+    texts: tuple[tuple[ast.Constant, str], ...]
+    holes: tuple[ast.AST, ...]
+
+
+def _template(node: ast.AST) -> _Template | None:
+    """Return a string template's text with {} for each hole, or None when *node* builds no string.
+
+    f-strings, .format and % templates, and + chains of them are templates; any other operand is a hole.
+    """
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return _Template(node.value, ((node, node.value),), ())
     if isinstance(node, ast.JoinedStr):
-        return "".join(_shape(value) for value in node.values)
-    return "{}"
+        return _joined([_template(value) or _Template("{}", (), (value,)) for value in node.values])
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "format":
+        receiver = node.func.value
+        if isinstance(receiver, ast.Constant) and isinstance(receiver.value, str):
+            shape = _format_shape(receiver.value)
+            if shape is not None:
+                return _Template(shape, ((receiver, receiver.value),), (*node.args, *node.keywords))
+        return None
+    if not isinstance(node, ast.BinOp):
+        return None
+    if isinstance(node.op, ast.Mod) and isinstance(node.left, ast.Constant) and isinstance(node.left.value, str):
+        shape = _printf_shape(node.left.value)
+        return None if shape is None else _Template(shape, ((node.left, node.left.value),), (node.right,))
+    if isinstance(node.op, ast.Add):
+        left, right = _template(node.left), _template(node.right)
+        if left is None and right is None:
+            return None
+        return _joined([left or _Template("{}", (), (node.left,)), right or _Template("{}", (), (node.right,))])
+    return None
 
 
-def _concatenation(node: ast.expr) -> list[ast.expr]:
-    """Return the operands of a left-nested ``+`` chain in source order."""
-    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
-        return [*_concatenation(node.left), *_concatenation(node.right)]
-    return [node]
+def _joined(parts: list[_Template]) -> _Template:
+    return _Template(
+        "".join(part.shape for part in parts),
+        tuple(text for part in parts for text in part.texts),
+        tuple(hole for part in parts for hole in part.holes),
+    )
 
 
 def scan_source(src: str, rel: str = "<source>") -> list[Violation]:
