@@ -348,7 +348,9 @@ _WIRE_FSTRING = re.compile(
     r"|option-(?:[a-z0-9-]|\{\})*\{\}(?:[a-z0-9-]|\{\})*"
     r")\Z"
 )
-_FORMAT_PLACEHOLDER = re.compile(r"\{[^{}]*\}|%(?:\([^)]*\))?[sdi]")
+_FORMAT_FIELD = re.compile(r"\{[^{}]*\}")
+# The full printf conversion grammar; %% stays a literal %.
+_PRINTF_SPEC = re.compile(r"%%|%(?:\([^)]*\))?[#0 +-]*(?:\*|\d+)?(?:\.(?:\*|\d+))?[hlL]?[diouxXeEfFgGcrsa]")
 
 
 @dataclass(frozen=True)
@@ -464,7 +466,7 @@ class _Scanner(ast.NodeVisitor):
         template = (
             _text(node.func.value) if isinstance(node.func, ast.Attribute) and node.func.attr == "format" else None
         )
-        if template is not None and self._check_shape(node, _FORMAT_PLACEHOLDER.sub("{}", template)):
+        if template is not None and self._check_shape(node, _FORMAT_FIELD.sub("{}", template)):
             for child in [*node.args, *node.keywords]:
                 self.visit(child)
             return
@@ -473,7 +475,7 @@ class _Scanner(ast.NodeVisitor):
     def visit_BinOp(self, node: ast.BinOp) -> None:
         parent = self.parents.get(node)
         if isinstance(node.op, ast.Mod) and (template := _text(node.left)) is not None:
-            if self._check_shape(node, _FORMAT_PLACEHOLDER.sub("{}", template)):
+            if self._check_shape(node, _printf_shape(template)):
                 self.visit(node.right)
                 return
         elif isinstance(node.op, ast.Add) and not (isinstance(parent, ast.BinOp) and isinstance(parent.op, ast.Add)):
@@ -509,6 +511,10 @@ class _Scanner(ast.NodeVisitor):
 
 def _text(node: ast.AST) -> str | None:
     return node.value if isinstance(node, ast.Constant) and isinstance(node.value, str) else None
+
+
+def _printf_shape(template: str) -> str:
+    return _PRINTF_SPEC.sub(lambda match: "%" if match[0] == "%%" else "{}", template)
 
 
 def _shape(node: ast.AST) -> str:
