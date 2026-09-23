@@ -363,6 +363,14 @@ def test_wire_fstrings_are_flagged_once(expression):
         '"lease%r-get" % version',
         '"lease%-2s-get" % version',
         '"lease%*d-get" % (1, version)',
+        '"lease%.d-get" % version',
+        '"lease%.*d-get" % (1, version)',
+        '"lease%hd-get" % version',
+        '"lease%(a(b))s-get" % {"a(b)": version}',
+        '"lease%-+ #08.3d-get" % version',
+        '"lease{version:{width}d}-get".format(version=version, width=1)',
+        '"lease{0!s:>1}-get".format(version)',
+        '"lease{v.number}-get".format(v=family)',
         '"lease{0:d}-get".format(version)',
         '"subnet%s" % version',
         '"reservation-" + operation',
@@ -384,6 +392,8 @@ def test_formatted_wire_templates_are_flagged_once(expression):
         '"DHCPv" + str(version)',
         '"%s-get" % label',
         '"Label: " + name',
+        '"lease{-get".format(version)',
+        '"lease%lld-get" % version',
     ],
 )
 def test_formatted_presentation_strings_are_ignored(expression):

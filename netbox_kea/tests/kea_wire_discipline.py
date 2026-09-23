@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import ast
 import re
+import string
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
@@ -348,9 +349,8 @@ _WIRE_FSTRING = re.compile(
     r"|option-(?:[a-z0-9-]|\{\})*\{\}(?:[a-z0-9-]|\{\})*"
     r")\Z"
 )
-_FORMAT_FIELD = re.compile(r"\{[^{}]*\}")
-# The full printf conversion grammar; %% stays a literal %.
-_PRINTF_SPEC = re.compile(r"%%|%(?:\([^)]*\))?[#0 +-]*(?:\*|\d+)?(?:\.(?:\*|\d+))?[hlL]?[diouxXeEfFgGcrsa]")
+# The part of a printf conversion after its mapping key, as CPython parses it.
+_PRINTF_TAIL = re.compile(r"[-+ #0]*(?:\*|\d*)(?:\.(?:\*|\d*))?[hlL]?([diouxXeEfFgGcrsa%])")
 
 
 @dataclass(frozen=True)
@@ -466,7 +466,8 @@ class _Scanner(ast.NodeVisitor):
         template = (
             _text(node.func.value) if isinstance(node.func, ast.Attribute) and node.func.attr == "format" else None
         )
-        if template is not None and self._check_shape(node, _FORMAT_FIELD.sub("{}", template)):
+        shape = None if template is None else _format_shape(template)
+        if shape is not None and self._check_shape(node, shape):
             for child in [*node.args, *node.keywords]:
                 self.visit(child)
             return
@@ -475,7 +476,8 @@ class _Scanner(ast.NodeVisitor):
     def visit_BinOp(self, node: ast.BinOp) -> None:
         parent = self.parents.get(node)
         if isinstance(node.op, ast.Mod) and (template := _text(node.left)) is not None:
-            if self._check_shape(node, _printf_shape(template)):
+            shape = _printf_shape(template)
+            if shape is not None and self._check_shape(node, shape):
                 self.visit(node.right)
                 return
         elif isinstance(node.op, ast.Add) and not (isinstance(parent, ast.BinOp) and isinstance(parent.op, ast.Add)):
@@ -513,8 +515,38 @@ def _text(node: ast.AST) -> str | None:
     return node.value if isinstance(node, ast.Constant) and isinstance(node.value, str) else None
 
 
-def _printf_shape(template: str) -> str:
-    return _PRINTF_SPEC.sub(lambda match: "%" if match[0] == "%%" else "{}", template)
+def _format_shape(template: str) -> str | None:
+    """Return a str.format template with {} for each field, or None when it cannot format."""
+    try:
+        fields = list(string.Formatter().parse(template))
+    except ValueError:
+        return None
+    return "".join(literal + ("" if field is None else "{}") for literal, field, _, _ in fields)
+
+
+def _printf_shape(template: str) -> str | None:
+    """Return a % template with {} for each conversion, or None when it cannot format."""
+    shape: list[str] = []
+    index = 0
+    while (start := template.find("%", index)) != -1:
+        shape.append(template[index:start])
+        index = start + 1
+        if template.startswith("(", index):
+            depth = 0
+            while index < len(template):
+                depth += {"(": 1, ")": -1}.get(template[index], 0)
+                index += 1
+                if depth == 0:
+                    break
+            if depth:
+                return None
+        conversion = _PRINTF_TAIL.match(template, index)
+        if conversion is None:
+            return None
+        shape.append("%" if conversion[1] == "%" else "{}")
+        index = conversion.end()
+    shape.append(template[index:])
+    return "".join(shape)
 
 
 def _shape(node: ast.AST) -> str:
