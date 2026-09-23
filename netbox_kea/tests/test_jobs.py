@@ -496,6 +496,17 @@ class TestKeaIpamSyncJobRun(TestCase):
                 self._run()
         self.assertTrue(any("host_cmds" in msg for msg in cm.output))
 
+    def test_identity_oserror_does_not_stop_the_other_family(self):
+        self._make_db_server(dhcp4=True, dhcp6=True)
+        lease = {**_LEASE6, "ip-address": "2001:db8::123", "hostname": "lease.example.invalid"}
+        with _patch_kea(
+            leases6=[lease], responses={"subnet4-list": OSError("TLS CA certificate file is unavailable")}
+        ) as kea:
+            self._run()
+        self.assertTrue(NbIP.objects.filter(address__net_host="2001:db8::123", status="dhcp").exists())
+        self.assertIn("subnet6-list", kea.commands())
+        self.assertIn("lease6-get-page", kea.commands())
+
     def test_catalogue_failure_is_not_reported_as_missing_host_cmds(self):
         self._make_db_server(dhcp6=False)
         with _patch_kea(

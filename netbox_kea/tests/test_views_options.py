@@ -1455,6 +1455,51 @@ class TestCombinedStatusBadgeError(_ViewTestBase):
 
 
 class TestConfigurationOptionIdentity(_ViewTestBase):
+    def test_class_specific_options_keep_distinct_values_and_metadata(self):
+        options = [
+            {
+                "code": 6,
+                "space": "dhcp4",
+                "data": "198.18.0.53",
+                "client-classes": ["group-a", "group-b"],
+                "csv-format": True,
+            },
+            {"code": 6, "space": "dhcp4", "data": "198.18.0.54", "client-classes": ["group-c"], "always-send": True},
+            {"code": 6, "space": "dhcp4", "data": "198.18.0.55"},
+        ]
+        for scope in ("server", "subnet"):
+            with self.subTest(scope=scope), _persist_stub(self._config(scope, options)):
+                data = self._submitted(self.client.get(self._url(scope)))
+            data["form-1-data"] = "198.18.0.56"
+            live = copy.deepcopy(options)
+            live[0]["client-classes"].reverse()
+            with self.subTest(scope=scope), _persist_stub(self._config(scope, live)) as kea:
+                post = self.client.post(self._url(scope), data)
+                self.assertEqual(post.status_code, 302)
+                written = _written_config(kea)["Dhcp4"]
+                if scope == "subnet":
+                    written = written["subnet4"][0]
+                expected = copy.deepcopy(live)
+                expected[1]["data"] = "198.18.0.56"
+                self.assertEqual(written["option-data"], expected)
+
+    def test_coded_option_name_cannot_change_to_an_incompatible_option(self):
+        for scope in ("server", "subnet"):
+            for name in ("routers", None):
+                option = {"code": 3, "space": "dhcp4", "data": "198.18.0.1", "csv-format": True}
+                if name is not None:
+                    option["name"] = name
+                with self.subTest(scope=scope, name=name), _persist_stub(self._config(scope, [option])) as kea:
+                    data = self._submitted(self.client.get(self._url(scope)))
+                    data["form-0-name"] = "domain-name-servers"
+                    post = self.client.post(self._url(scope), data)
+                    self.assertNotIn("config-test", kea.commands())
+                    self.assertNotIn("config-set", kea.commands())
+                    messages = [str(message) for message in django_messages.get_messages(post.wsgi_request)]
+                    self.assertIn(
+                        "A coded DHCP Option cannot be renamed. Delete it and add a new option instead.", messages
+                    )
+
     def _url(self, scope):
         if scope == "subnet":
             return reverse("plugins:netbox_kea:server_subnet4_options_edit", args=[self.server.pk, 42])

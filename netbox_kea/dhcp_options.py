@@ -8,6 +8,10 @@ class DHCPOptionConflict(ValueError):
     """An existing DHCP Option cannot be identified safely for an edit."""
 
 
+class DHCPOptionNameChange(ValueError):
+    """A name edit would change the identity of a coded DHCP Option."""
+
+
 @dataclass(frozen=True)
 class DHCPOption:
     """One immutable Kea DHCP Option value."""
@@ -23,12 +27,17 @@ class DHCPOption:
 
     @property
     def match_key(self) -> tuple[str | None, int | str | None]:
-        """Return the option identity within its containing configuration."""
+        """Return the option definition identity within its containing configuration."""
         return self.space, self.code if self.code is not None else self.name
+
+    @property
+    def assignment_key(self) -> tuple[tuple[str | None, int | str | None], frozenset[str]]:
+        """Identify one assignment of an option to a set of client classes."""
+        return self.match_key, frozenset(self.client_classes)
 
     def form_initial(self) -> dict[str, Any]:
         """Return editable values and the stable identity of this existing row."""
-        identity = {
+        identity: dict[str, Any] = {
             key: value
             for key, value in {
                 "space": self.space,
@@ -37,6 +46,8 @@ class DHCPOption:
             }.items()
             if value is not None
         }
+        if self.client_classes:
+            identity["client-classes"] = list(self.client_classes)
         return {
             "name": self.name or "",
             "data": self.data,
@@ -110,13 +121,13 @@ def parse_dhcp_options(entries: Any) -> tuple[DHCPOption, ...]:
 def merge_option_form_rows(rows: list[dict[str, Any]], existing: Any) -> list[dict[str, Any]]:
     """Merge exposed edits onto fresh raw options selected by their typed identity."""
     parsed = parse_dhcp_options(existing)
-    used: set[tuple[str | None, int | str | None]] = set()
+    used: set[tuple[tuple[str | None, int | str | None], frozenset[str]]] = set()
     result = []
     for row in rows:
         identity = row.get("original_option")
         if identity is not None:
-            key = parse_dhcp_option(identity).match_key
-            matches = [index for index, option in enumerate(parsed) if option.match_key == key]
+            key = parse_dhcp_option(identity).assignment_key
+            matches = [index for index, option in enumerate(parsed) if option.assignment_key == key]
             if len(matches) != 1 or key in used:
                 raise DHCPOptionConflict("An existing DHCP Option is missing, ambiguous, or submitted twice.")
             used.add(key)
@@ -126,6 +137,8 @@ def merge_option_form_rows(rows: list[dict[str, Any]], existing: Any) -> list[di
         if row.get("DELETE"):
             continue
         name = row["name"]
+        if option.get("code") is not None and name and name != option.get("name"):
+            raise DHCPOptionNameChange("An existing coded DHCP Option cannot be renamed.")
         if name:
             option["name"] = name
         else:

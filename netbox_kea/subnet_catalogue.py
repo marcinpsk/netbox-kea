@@ -305,7 +305,7 @@ def _read_identity(client: KeaClient, family: Family) -> _IdentityObservation:
             )
         logger.warning("Subnet identity read failed for DHCPv%s", family, exc_info=True)
         return _unavailable_identity("identity-unavailable", "Kea subnet identity facts are unavailable.")
-    except (requests.RequestException, ValueError, RuntimeError):
+    except (requests.RequestException, OSError, ValueError, RuntimeError):
         logger.warning("Subnet identity read failed for DHCPv%s", family, exc_info=True)
         return _unavailable_identity("identity-unavailable", "Kea subnet identity facts are unavailable.")
 

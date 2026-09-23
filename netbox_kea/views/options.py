@@ -15,7 +15,7 @@ from utilities.views import register_model_view
 
 from .. import forms, server_configuration
 from ..constants import Family
-from ..dhcp_options import DHCPOption, DHCPOptionConflict
+from ..dhcp_options import DHCPOption, DHCPOptionConflict, DHCPOptionNameChange
 from ..kea import AmbiguousConfigSetError, KeaConfigTestError, KeaException, PartialPersistError
 from ..models import Server
 from ..utilities import (
@@ -87,6 +87,8 @@ def _kea_options_mutation(request: HttpRequest, subject: str):
         messages.error(request, "Transport error communicating with Kea.")
     except DHCPOptionConflict:
         messages.error(request, "DHCP Options changed or are ambiguous. Reload the form before saving.")
+    except DHCPOptionNameChange:
+        messages.error(request, "A coded DHCP Option cannot be renamed. Delete it and add a new option instead.")
     except ValueError:
         logger.exception("Invalid Kea client configuration for %s", subject)
         messages.error(request, "Invalid Kea client configuration.")
