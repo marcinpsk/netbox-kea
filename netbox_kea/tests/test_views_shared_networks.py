@@ -683,8 +683,13 @@ class TestSharedNetworkEditAmbiguousWrite(_ViewTestBase):
                 requests.ConnectionError("connection refused"),
                 requests.Timeout("reply lost"),
                 ValueError("bad JSON"),
+                [],
+                [{}],
+                [None],
+                [{"result": 0}, {"result": 0}],
+                [{"result": False}],
             ):
-                with self.subTest(version=version, error=type(error).__name__):
+                with self.subTest(version=version, response=repr(error)):
                     url = reverse(
                         f"plugins:netbox_kea:server_shared_network{version}_edit", args=[self.server.pk, "clients"]
                     )
@@ -714,6 +719,54 @@ class TestSharedNetworkEditAmbiguousWrite(_ViewTestBase):
                     )
                     self.assertIn("config-set", kea.commands())
                     self.assertNotIn("config-write", kea.commands())
+
+    def test_malformed_validation_and_persistence_replies_keep_their_phase_meaning(self):
+        for version in (4, 6):
+            for phase in ("config-test", "config-write"):
+                for payload in ([], [{}], [None], [{"result": 2}, {"result": 0}], [{"result": False}]):
+                    with self.subTest(version=version, phase=phase, payload=repr(payload)):
+                        url = reverse(
+                            f"plugins:netbox_kea:server_shared_network{version}_edit", args=[self.server.pk, "clients"]
+                        )
+                        with _edit_stub(_sn_config(version, "clients"), **{phase: payload}) as kea:
+                            response = self.client.post(url, {"name": "clients", "description": "Updated"}, follow=True)
+                        self.assertEqual(response.status_code, 200)
+                        messages = list(django_messages.get_messages(response.wsgi_request))
+                        self.assertFalse(any(message.level == django_messages.SUCCESS for message in messages))
+                        if phase == "config-test":
+                            self.assertNotIn("config-set", kea.commands())
+                            self.assertNotIn("config-write", kea.commands())
+                            self.assertTrue(any(message.level == django_messages.ERROR for message in messages))
+                        else:
+                            self.assertIn("config-set", kea.commands())
+                            self.assertEqual(
+                                [(message.level, str(message)) for message in messages],
+                                [
+                                    (
+                                        django_messages.WARNING,
+                                        "Change applied but may not survive a Kea restart (config-write failed).",
+                                    )
+                                ],
+                            )
+
+    def test_hook_mutation_rejects_malformed_persistence_phase_replies(self):
+        for version in (4, 6):
+            for phase in ("config-test", "config-write"):
+                for payload in ([], [{}], [None], [{"result": 2}, {"result": 0}], [{"result": False}]):
+                    with self.subTest(version=version, phase=phase, payload=repr(payload)):
+                        url = reverse(f"plugins:netbox_kea:server_shared_network{version}_add", args=[self.server.pk])
+                        with _mutate_stub(f"network{version}-add", **{phase: payload}) as kea:
+                            response = self.client.post(url, {"name": "clients"}, follow=True)
+                        self.assertEqual(response.status_code, 200)
+                        self.assertIn(f"network{version}-add", kea.commands())
+                        messages = list(django_messages.get_messages(response.wsgi_request))
+                        self.assertFalse(any(message.level == django_messages.SUCCESS for message in messages))
+                        if phase == "config-test":
+                            self.assertNotIn("config-write", kea.commands())
+                            self.assertTrue(any(message.level == django_messages.ERROR for message in messages))
+                        else:
+                            self.assertTrue(any(message.level == django_messages.WARNING for message in messages))
+                            self.assertTrue(any("created on the live server" in str(message) for message in messages))
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)

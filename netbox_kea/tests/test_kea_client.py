@@ -5704,6 +5704,12 @@ class TestApplyConfigTransportError(TestCase):
     def setUp(self):
         self.client = KeaClient(url="http://kea:8000")
 
+    def test_config_set_requires_an_explicit_configuration(self):
+        with stub_kea({}) as kea:
+            with self.assertRaises(ValueError):
+                self.client._config_phase_command("config-set", "dhcp4")
+        self.assertEqual(kea.commands(), [])
+
     def test_config_test_request_exception_raises_kea_config_test_error(self):
         """requests.ConnectionError during config-test propagates as KeaConfigTestError."""
 

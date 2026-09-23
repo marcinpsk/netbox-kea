@@ -7,6 +7,21 @@
 #
 # Rule-test fixtures live in .opengrep/tests/; run them with scripts/opengrep-test.sh.
 rules:
+  - id: kea-config-phase-without-reply-validation
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Send config-test, config-set, and config-write through _config_phase_command()
+      so each phase requires one well-formed reply before accepting a result code.
+    paths:
+      exclude:
+        - "**/tests/**"
+    pattern-either:
+      - pattern: $CLIENT.command("config-test", ...)
+      - pattern: $CLIENT.command("config-set", ...)
+      - pattern: $CLIENT.command("config-write", ...)
+      - pattern: $CLIENT._config_mutation_command("config-set", ...)
+
   - id: kea-sync-hostname-unvalidated
     languages: [python]
     severity: ERROR

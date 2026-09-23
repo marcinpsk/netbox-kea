@@ -507,11 +507,13 @@ class KeaClient:
         command: str,
         service: str,
         arguments: dict[str, Any],
+        *,
+        check: Sequence[int] | None = (0,),
     ) -> list[KeaResponse]:
         """Send one live configuration mutation between invalidation notifications."""
         self._notify_config_change(service)
         try:
-            return self.command(command, service=[service], arguments=arguments)
+            return self.command(command, service=[service], arguments=arguments, check=check)
         finally:
             # The response can be lost after Kea applies the command. Invalidate again
             # so a read during the request cannot repopulate the active cache generation.
@@ -2230,6 +2232,23 @@ class KeaClient:
             )
         self._persist_config(service)
 
+    def _config_phase_command(self, command: str, service: str, arguments: dict[str, Any] | None = None) -> None:
+        """Require one well-formed success reply for a single-service config phase."""
+        if command == "config-set":
+            if arguments is None:
+                raise ValueError("config-set requires an explicit configuration.")
+            response = self._config_mutation_command(command, service, arguments, check=None)
+        else:
+            response = self.command(command, service=[service], arguments=arguments, check=None)
+        if (
+            len(response) != 1
+            or not isinstance(response[0], dict)
+            or not isinstance(response[0].get("result"), int)
+            or isinstance(response[0].get("result"), bool)
+        ):
+            raise RuntimeError(f"{command} did not return one valid result for {service}.")
+        check_response(response, (0,))
+
     def _apply_config(self, service: str, config: dict) -> None:
         """Validate, apply, and persist a modified config dict.
 
@@ -2249,30 +2268,30 @@ class KeaClient:
 
         """
         try:
-            self.command("config-test", service=[service], arguments=config)
+            self._config_phase_command("config-test", service, config)
         except KeaException as exc:
             if exc.response.get("result") == 2:
                 logger.debug("config-test not supported for service %s — skipping pre-flight check", service)
             else:
                 logger.warning("config-test failed for service %s — aborting config-set", service)
                 raise KeaConfigTestError(service, exc) from exc
-        except (requests.RequestException, ValueError) as exc:
+        except (requests.RequestException, ValueError, RuntimeError) as exc:
             logger.warning(
                 "config-test transport/parse error for service %s — aborting config-set",
                 service,
             )
             raise KeaConfigTestError(service, exc) from exc
         try:
-            self._config_mutation_command("config-set", service, config)
-        except (requests.RequestException, ValueError) as exc:
+            self._config_phase_command("config-set", service, config)
+        except (requests.RequestException, ValueError, RuntimeError) as exc:
             logger.warning(
                 "config-set transport/parse error for service %s — change may be live but unpersisted", service
             )
             raise AmbiguousConfigSetError(service, exc) from exc
         if self.persist_config:
             try:
-                self.command("config-write", service=[service])
-            except (KeaException, requests.RequestException, ValueError) as exc:
+                self._config_phase_command("config-write", service)
+            except (KeaException, requests.RequestException, ValueError, RuntimeError) as exc:
                 logger.warning("config-write failed for service %s — change not persisted to disk", service)
                 raise PartialPersistError(service, exc) from exc
         else:
@@ -2318,7 +2337,7 @@ class KeaClient:
         # Step 2: config-test — pass the live config as arguments (required by Kea).
         if config is not None:
             try:
-                self.command("config-test", service=[service], arguments=config)
+                self._config_phase_command("config-test", service, config)
             except KeaException as exc:
                 result = exc.response.get("result")
                 if result == 2:
@@ -2326,7 +2345,7 @@ class KeaClient:
                 else:
                     logger.warning("config-test failed for service %s — aborting config-write", service)
                     raise KeaConfigPersistError(service, exc) from exc
-            except (requests.RequestException, ValueError) as exc:
+            except (requests.RequestException, ValueError, RuntimeError) as exc:
                 logger.warning(
                     "config-test transport error for service %s — aborting config-write", service, exc_info=True
                 )
@@ -2334,8 +2353,8 @@ class KeaClient:
 
         # Step 3: write to disk.
         try:
-            self.command("config-write", service=[service])
-        except (KeaException, requests.RequestException, ValueError) as exc:
+            self._config_phase_command("config-write", service)
+        except (KeaException, requests.RequestException, ValueError, RuntimeError) as exc:
             logger.warning(
                 "config-write failed for service %s — change is live but not persisted to disk",
                 service,
