@@ -344,9 +344,10 @@ WIRE_PAYLOAD_KEYS = frozenset(
 WIRE_FAMILY_KEYS = frozenset({"Dhcp4", "Dhcp6", "subnet4", "subnet6"})
 _ARGUMENTS_KEYS = frozenset({"arguments"})
 WIRE_LITERALS = WIRE_COMMANDS | WIRE_PAYLOAD_KEYS | WIRE_FAMILY_KEYS | _ARGUMENTS_KEYS
+# Holes around a family key may be empty, as in f"subnet{version}" + suffix.
 _WIRE_FSTRING = re.compile(
-    r"(?:"
-    r"(?:subnet|Dhcp|dhcp)\{\}"
+    r"(?:\{\})*(?:"
+    r"(?:subnet|Dhcp|dhcp)(?:\{\})+"
     r"|option-(?:[a-z0-9-]|\{\})*\{\}(?:[a-z0-9-]|\{\})*"
     r")\Z"
 )
