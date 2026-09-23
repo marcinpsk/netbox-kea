@@ -937,6 +937,23 @@ class TestGetGlobalOptionsGenericException(_ViewTestBase):
         warnings = [str(m) for m in response.context["messages"] if m.level == django_messages.WARNING]
         self.assertTrue(warnings, list(response.context["messages"]))
 
+    def test_invalid_pool_does_not_log_global_options_as_incomplete(self):
+        subnet = {"id": 1, "subnet": "10.0.0.0/24", "pools": [{"pool": "192.0.2.1-192.0.2.9"}]}
+        configs = {
+            "dhcp4": _catalogue_responses_for_subnets(4, [subnet], global_options=_GLOBAL_OPTIONS_V4)["config-get"],
+            "dhcp6": _catalogue_responses_for_subnets(6, [])["config-get"],
+        }
+        with (
+            _status_stub(**{"config-get": lambda body: configs[body["service"][0]]}),
+            self.assertNoLogs("netbox_kea.views.server", level="WARNING"),
+        ):
+            response = self.client.get(self._url())
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["global_options"]["DHCPv4"]["Dns Servers"], "8.8.8.8, 8.8.4.4")
+        warnings = [str(m) for m in response.context["messages"] if m.level == django_messages.WARNING]
+        self.assertIn("Kea returned an invalid Pool.", warnings)
+
 
 # ---------------------------------------------------------------------------
 # Bulk delete POST — missing permission

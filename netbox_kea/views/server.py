@@ -79,7 +79,7 @@ def _get_global_options(request: HttpRequest, server: "Server") -> dict[str, dic
             if not snapshot.available:
                 logger.warning("Global DHCP Options are unavailable for %s: %s", label, diagnostics)
                 continue
-            if not snapshot.complete:
+            if not snapshot.global_options_complete:
                 logger.warning("Global DHCP Options are incomplete for %s: %s", label, diagnostics)
             opts = format_option_data([_option_payload(option) for option in snapshot.global_options], version=version)
             if opts:
