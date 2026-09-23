@@ -1,0 +1,51 @@
+# SPDX-FileCopyrightText: 2026 Marcin Zieba
+# SPDX-License-Identifier: Apache-2.0
+# Kea wire-discipline baseline is the follow-up brief for existing wire debt.
+# Entries only leave; counts only decrease. Use --update-baseline to record a decrease.
+# Each line: <relpath-from-netbox_kea>::<qualname>\t<allowed-count>.
+# Budgets permit replacement within a scope; they do not identify exact literals.
+# Update: python3 netbox_kea/tests/kea_wire_discipline.py --update-baseline
+
+constants.py::<module>	153
+integrations/dhcp_plugin.py::<module>	44
+integrations/dhcp_plugin.py::_apply_reservation_identifier	4
+integrations/dhcp_plugin.py::_create_custom_option_def	1
+integrations/dhcp_plugin.py::_ensure_reservation_addresses	1
+integrations/dhcp_plugin.py::_find_reservation	4
+integrations/dhcp_plugin.py::_hr_identifiers	3
+integrations/dhcp_plugin.py::_relay_to_str	1
+integrations/dhcp_plugin.py::_send_option	2
+integrations/dhcp_plugin.py::_upsert_reservation	1
+mappers/kea_to_dhcp.py::<module>	44
+mappers/kea_to_dhcp.py::_client_class_intent	4
+mappers/kea_to_dhcp.py::_option_def_intent	1
+mappers/kea_to_dhcp.py::_pools	1
+mappers/kea_to_dhcp.py::_subnet_intent	1
+mappers/kea_to_dhcp.py::parse_dhcp_config	6
+models.py::Server.clean	2
+reservation_transfer.py::_parse_options	3
+sync.py::_record_hostname_and_addresses	2
+sync.py::sync_lease_to_netbox	3
+sync.py::sync_reservation_to_netbox	1
+tables.py::<module>	1
+utilities.py::parse_lease_csv	18
+utilities.py::parse_subnet_stats	7
+views/_base.py::<module>	4
+views/_base.py::_enrich_subnet_statistics	2
+views/_base.py::_form_option_field	1
+views/_base.py::_option_payload	3
+views/dhcp_control.py::_BaseServerDHCPDisableView.post	1
+views/dhcp_control.py::_BaseServerDHCPEnableView.post	1
+views/dhcp_plugin_sync.py::_extract_dhcp_conf	2
+views/dhcp_plugin_sync.py::_fetch_config_intent	2
+views/leases.py::BaseServerLeasesDeleteView.delete_lease	3
+views/leases.py::_BaseLeaseAddView.post	4
+views/leases.py::_BaseLeaseEditView.get	2
+views/leases.py::_set_lease_reservation_fields	2
+views/options.py::BaseServerOptionDefAddView.get	1
+views/options.py::CombinedServerStatusBadgeView.get	2
+views/reservation_mutations.py::_warn_reservation_pool_overlap	4
+views/reservations.py::_lease_facts_in_subnet	2
+views/server.py::ServerStatusView._get_ca_status	4
+views/server.py::ServerStatusView._get_dhcp_status	11
+views/server.py::_response_arguments	1
