@@ -12,6 +12,7 @@ from utilities.forms.rendering import FieldSet
 
 from . import constants
 from .constants import Family
+from .dhcp_options import parse_dhcp_option
 from .models import Server
 from .reservation_transfer import MAX_DOCUMENT_BYTES as MAX_TRANSFER_DOCUMENT_BYTES
 from .reservations import (
@@ -1262,7 +1263,39 @@ class SubnetOptionsForm(forms.Form):
     )
 
 
-SubnetOptionsFormSet = forms.formset_factory(SubnetOptionsForm, extra=1, can_delete=True)
+class ConfigurationOptionsForm(SubnetOptionsForm):
+    """Edit a configuration option while retaining its original identity."""
+
+    original_option = forms.JSONField(required=False, widget=forms.HiddenInput)
+
+    def __init__(self, *args, **kwargs):
+        """Allow code-only rows and suppression entries to omit displayed values."""
+        super().__init__(*args, **kwargs)
+        self.fields["name"].required = False
+        self.fields["data"].required = False
+
+    def clean_original_option(self):
+        """Validate the original identity with the shared DHCP Option parser."""
+        identity = self.cleaned_data.get("original_option")
+        if identity is not None:
+            try:
+                parse_dhcp_option(identity)
+            except ValueError as exc:
+                raise forms.ValidationError("Invalid original DHCP Option identity.") from exc
+        return identity
+
+    def clean(self):
+        """Require an option name for a new row or an existing name-only row."""
+        data = super().clean()
+        identity = data.get("original_option")
+        if not data.get("name") and (not isinstance(identity, dict) or identity.get("code") is None):
+            self.add_error("name", "An option name is required unless the existing option has a code.")
+        if identity is None and not data.get("data"):
+            self.add_error("data", "This field is required.")
+        return data
+
+
+SubnetOptionsFormSet = forms.formset_factory(ConfigurationOptionsForm, extra=1, can_delete=True)
 
 
 class ReservationOptionsForm(SubnetOptionsForm):

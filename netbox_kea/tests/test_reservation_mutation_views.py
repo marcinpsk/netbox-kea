@@ -131,8 +131,8 @@ class TestReservationMutationViews(_ViewTestBase):
                         "identifier": "AA-BB-CC-DD-EE-FF",
                     },
                 )
-            self.assertEqual(response.status_code, 302)
-            self.assertIn("reservation-add", kea.commands())
+                self.assertEqual(response.status_code, 302)
+                self.assertIn("reservation-add", kea.commands())
 
     def test_create_uses_the_typed_operation_and_emits_one_typed_signal(self):
         responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])

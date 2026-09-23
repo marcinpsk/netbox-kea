@@ -324,9 +324,10 @@ def _parse_configuration(
                 )
             )
             continue
+        network_diagnostics = len(diagnostics)
         name = shared_network.get("name")
-        shared_networks_complete &= isinstance(name, str)
         valid_name = isinstance(name, str) and bool(name) and shared_names.get(name) == 1
+        shared_networks_complete &= valid_name
         if not valid_name:
             diagnostics.append(
                 _diagnostic(
@@ -367,7 +368,6 @@ def _parse_configuration(
                 membership_complete.append(valid_name)
                 member_cidrs.append(fact.declared_cidr)
         if valid_name and isinstance(name, str):
-            network_diagnostics = len(diagnostics)
             description = _optional_string(shared_network, "description", path, diagnostics, allow_empty=True)
             interface = _optional_string(shared_network, "interface", path, diagnostics)
             relay_addresses = _relay_addresses(shared_network.get("relay"), family, path, diagnostics)

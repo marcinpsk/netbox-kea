@@ -46,6 +46,7 @@
               {% for form in formset %}
                 <tr class="formset-row">
                   <td>
+                    {{ form.original_option }}
                     {{ form.name }}
                     {% for err in form.name.errors %}<div class="text-danger small">{{ err }}</div>{% endfor %}
                   </td>

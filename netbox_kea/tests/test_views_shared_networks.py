@@ -518,6 +518,23 @@ class TestServerSharedNetwork4EditView(_ViewTestBase):
             ],
         )
 
+    def test_unchanged_csv_preserves_raw_data_and_flags(self):
+        options = [
+            {"code": 6, "data": "198.18.0.53, 198.18.0.54", "csv-format": True},
+            {"code": 42, "data": "198.18.0.123, 198.18.0.124", "csv-format": True},
+        ]
+        with _edit_stub(_sn_config(4, "prod-net", option_data=options)) as kea:
+            response = self.client.get(self._url())
+            initial = response.context["form"].initial
+            post = self.client.post(
+                self._url(),
+                self._post_data(
+                    description="Renamed", dns_servers=initial["dns_servers"], ntp_servers=initial["ntp_servers"]
+                ),
+            )
+        self.assertEqual(post.status_code, 302)
+        self.assertEqual(_written_sn(kea)["option-data"], options)
+
     def test_an_unrelated_save_keeps_a_dns_suppression_entry(self):
         """A never-send entry shows no value in the form, so an empty field must not delete it."""
         config = _sn_config(4, "prod-net", option_data=[{"code": 6, "never-send": True}])

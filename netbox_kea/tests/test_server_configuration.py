@@ -139,10 +139,10 @@ class TestServerConfiguration(TestCase):
         for response in ([], {"result": 0}, {"result": 0, "arguments": {"Dhcp4": []}}):
             with self.subTest(response=response), stub_kea({"config-get": response}):
                 snapshot = server_configuration.for_verification(self.server, 4)
-            self.assertFalse(snapshot.available)
-            self.assertEqual(snapshot.subnets, ())
-            self.assertEqual(snapshot.global_options, ())
-            self.assertEqual(snapshot.diagnostics[0].code, "malformed-configuration-response")
+                self.assertFalse(snapshot.available)
+                self.assertEqual(snapshot.subnets, ())
+                self.assertEqual(snapshot.global_options, ())
+                self.assertEqual(snapshot.diagnostics[0].code, "malformed-configuration-response")
 
     def test_invalidation_expires_both_display_caches(self):
         from netbox_kea import subnet_catalogue
@@ -186,6 +186,7 @@ class TestServerConfiguration(TestCase):
         self.assertEqual(network.relay_addresses, (ipaddress.ip_address("198.18.0.1"),))
         self.assertEqual(network.options[0].code, 3)
         self.assertEqual(network.member_cidrs, ())
+        self.assertFalse(network.complete)
         self.assertEqual(snapshot.diagnostics[0].code, "invalid-subnet-collection")
 
     def test_transport_oserror_returns_unavailable_snapshot(self):
@@ -195,3 +196,20 @@ class TestServerConfiguration(TestCase):
         self.assertFalse(snapshot.complete)
         self.assertEqual(snapshot.subnets, ())
         self.assertTrue(snapshot.diagnostics)
+
+    def test_invalid_shared_names_block_membership_changes(self):
+        for networks in ([{"name": ""}], [{"name": "duplicate"}, {"name": "duplicate"}]):
+            with (
+                self.subTest(networks=networks),
+                stub_kea({"config-get": self.response({"shared-networks": networks})}),
+            ):
+                snapshot = server_configuration.for_verification(self.server, 4)
+                self.assertFalse(snapshot.shared_networks_complete)
+
+    def test_invalid_members_mark_only_their_network_incomplete(self):
+        for members in ([False], [{"id": True, "subnet": "198.18.1.0/24"}], [{"id": 1, "subnet": "bad"}]):
+            networks = [{"name": "broken", "subnet4": members}, {"name": "fine", "subnet4": []}]
+            with self.subTest(members=members), stub_kea({"config-get": self.response({"shared-networks": networks})}):
+                snapshot = server_configuration.for_verification(self.server, 4)
+                self.assertFalse(snapshot.shared_networks[0].complete)
+                self.assertTrue(snapshot.shared_networks[1].complete)

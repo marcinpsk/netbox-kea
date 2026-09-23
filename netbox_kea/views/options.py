@@ -15,7 +15,7 @@ from utilities.views import register_model_view
 
 from .. import forms, server_configuration
 from ..constants import Family
-from ..dhcp_options import DHCPOption
+from ..dhcp_options import DHCPOption, DHCPOptionConflict
 from ..kea import AmbiguousConfigSetError, KeaConfigTestError, KeaException, PartialPersistError
 from ..models import Server
 from ..utilities import (
@@ -85,6 +85,8 @@ def _kea_options_mutation(request: HttpRequest, subject: str):
     except requests.RequestException:
         logger.exception("Transport error during options mutation for %s", subject)
         messages.error(request, "Transport error communicating with Kea.")
+    except DHCPOptionConflict:
+        messages.error(request, "DHCP Options changed or are ambiguous. Reload the form before saving.")
     except ValueError:
         logger.exception("Invalid Kea client configuration for %s", subject)
         messages.error(request, "Invalid Kea client configuration.")
@@ -120,14 +122,7 @@ class _BaseSubnetOptionsEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin,
         if subnet is None:
             messages.error(request, "Could not load subnet configuration from Kea. The form cannot be displayed.")
             return redirect(return_url)
-        initial = [
-            {
-                "name": opt.name or "",
-                "data": opt.data,
-                "always_send": bool(opt.always_send),
-            }
-            for opt in subnet.configuration.options
-        ]
+        initial = [opt.form_initial() for opt in subnet.configuration.options]
         formset = forms.SubnetOptionsFormSet(initial=initial)
         return render(
             request,
@@ -174,9 +169,7 @@ class _BaseSubnetOptionsEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin,
                 },
             )
 
-        options = [
-            form.cleaned_data for form in formset.forms if form.cleaned_data and not form.cleaned_data.get("DELETE")
-        ]
+        options = [form.cleaned_data for form in formset.forms if form.cleaned_data]
 
         with _kea_options_mutation(request, f"subnet {subnet_id} on server {pk}"):
             client = server.get_client(version=self.dhcp_version)
@@ -232,14 +225,7 @@ class _BaseServerOptionsEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin,
         if existing is None:
             messages.error(request, "Could not load server options from Kea. The form cannot be displayed.")
             return redirect(reverse("plugins:netbox_kea:server", args=[pk]))
-        initial = [
-            {
-                "name": opt.name or "",
-                "data": opt.data,
-                "always_send": bool(opt.always_send),
-            }
-            for opt in existing
-        ]
+        initial = [opt.form_initial() for opt in existing]
         formset = forms.SubnetOptionsFormSet(initial=initial)
         return render(
             request,
@@ -273,9 +259,7 @@ class _BaseServerOptionsEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin,
                 },
             )
 
-        options = [
-            form.cleaned_data for form in formset.forms if form.cleaned_data and not form.cleaned_data.get("DELETE")
-        ]
+        options = [form.cleaned_data for form in formset.forms if form.cleaned_data]
 
         with _kea_options_mutation(request, f"dhcp{self.dhcp_version} server options on server {pk}"):
             client = server.get_client(version=self.dhcp_version)

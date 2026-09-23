@@ -4,6 +4,10 @@ from dataclasses import dataclass
 from typing import Any
 
 
+class DHCPOptionConflict(ValueError):
+    """An existing DHCP Option cannot be identified safely for an edit."""
+
+
 @dataclass(frozen=True)
 class DHCPOption:
     """One immutable Kea DHCP Option value."""
@@ -21,6 +25,24 @@ class DHCPOption:
     def match_key(self) -> tuple[str | None, int | str | None]:
         """Return the option identity within its containing configuration."""
         return self.space, self.code if self.code is not None else self.name
+
+    def form_initial(self) -> dict[str, Any]:
+        """Return editable values and the stable identity of this existing row."""
+        identity = {
+            key: value
+            for key, value in {
+                "space": self.space,
+                "code": self.code,
+                "name": self.name,
+            }.items()
+            if value is not None
+        }
+        return {
+            "name": self.name or "",
+            "data": self.data,
+            "always_send": bool(self.always_send),
+            "original_option": identity,
+        }
 
     def matches_intent(self, intended: DHCPOption, *, exact_space: bool = False) -> bool:
         """Return whether this resolved Option is the target of a submitted intent.
@@ -83,3 +105,35 @@ def parse_dhcp_options(entries: Any) -> tuple[DHCPOption, ...]:
     if not isinstance(entries, list):
         raise ValueError("DHCP Options must be a list.")
     return tuple(parse_dhcp_option(entry) for entry in entries)
+
+
+def merge_option_form_rows(rows: list[dict[str, Any]], existing: Any) -> list[dict[str, Any]]:
+    """Merge exposed edits onto fresh raw options selected by their typed identity."""
+    parsed = parse_dhcp_options(existing)
+    used: set[tuple[str | None, int | str | None]] = set()
+    result = []
+    for row in rows:
+        identity = row.get("original_option")
+        if identity is not None:
+            key = parse_dhcp_option(identity).match_key
+            matches = [index for index, option in enumerate(parsed) if option.match_key == key]
+            if len(matches) != 1 or key in used:
+                raise DHCPOptionConflict("An existing DHCP Option is missing, ambiguous, or submitted twice.")
+            used.add(key)
+            option = dict(existing[matches[0]])
+        else:
+            option = {}
+        if row.get("DELETE"):
+            continue
+        name = row["name"]
+        if name:
+            option["name"] = name
+        else:
+            option.pop("name", None)
+        if "data" in option or row["data"]:
+            option["data"] = row["data"]
+        if "always-send" in option or row.get("always_send"):
+            option["always-send"] = bool(row.get("always_send"))
+        parse_dhcp_option(option)
+        result.append(option)
+    return result

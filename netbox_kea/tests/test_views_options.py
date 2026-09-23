@@ -190,7 +190,7 @@ class TestSubnetOptionsView(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(
             response.context["formset"].initial,
-            [{"name": "", "data": "opaque", "always_send": True}],
+            [{"name": "", "data": "opaque", "always_send": True, "original_option": {"code": 222}}],
         )
 
     def test_get_renders_without_the_subnet_cmds_hook(self):
@@ -1452,3 +1452,97 @@ class TestCombinedStatusBadgeError(_ViewTestBase):
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         self.assertIn("offline", response.content.decode().lower())
+
+
+class TestConfigurationOptionIdentity(_ViewTestBase):
+    def _url(self, scope):
+        if scope == "subnet":
+            return reverse("plugins:netbox_kea:server_subnet4_options_edit", args=[self.server.pk, 42])
+        return reverse("plugins:netbox_kea:server_dhcp4_options_edit", args=[self.server.pk])
+
+    def _config(self, scope, options):
+        body = (
+            {"option-data": options}
+            if scope == "server"
+            else {"subnet4": [{"id": 42, "subnet": "198.18.0.0/24", "option-data": options}]}
+        )
+        return {"result": 0, "arguments": {"Dhcp4": body}}
+
+    def _submitted(self, response):
+        forms = response.context["formset"]
+        data = {"form-TOTAL_FORMS": str(len(forms.initial)), "form-INITIAL_FORMS": str(len(forms.initial))}
+        for index, form in enumerate(forms.forms[: len(forms.initial)]):
+            for field in form:
+                value = field.value()
+                if value is not None and value is not False:
+                    data[f"form-{index}-{field.name}"] = value
+        return data
+
+    def test_round_trip_preserves_identity_and_unexposed_metadata(self):
+        options = [
+            {
+                "code": 224,
+                "space": "vendor-example",
+                "data": "aabb",
+                "csv-format": False,
+                "never-send": True,
+                "always-send": False,
+                "user-context": {"note": "keep"},
+            },
+            {"name": "routers", "code": 3, "space": "dhcp4", "data": "198.18.0.1", "csv-format": True},
+            {"code": 6, "never-send": True},
+        ]
+        for scope in ("server", "subnet"):
+            with self.subTest(scope=scope), _persist_stub(self._config(scope, options)) as kea:
+                get = self.client.get(self._url(scope))
+                data = self._submitted(get)
+                data["form-1-data"] = "198.18.0.2"
+                post = self.client.post(self._url(scope), data)
+                self.assertEqual(post.status_code, 302)
+                written = _written_config(kea)["Dhcp4"]
+                if scope == "subnet":
+                    written = written["subnet4"][0]
+                expected = copy.deepcopy(options)
+                expected[1]["data"] = "198.18.0.2"
+                self.assertEqual(written["option-data"], expected)
+
+    def test_reordered_live_options_keep_their_own_metadata_and_allow_deletion(self):
+        options = [
+            {"name": "routers", "data": "198.18.0.1", "csv-format": True},
+            {"code": 6, "data": "198.18.0.53", "never-send": True},
+        ]
+        for scope in ("server", "subnet"):
+            with self.subTest(scope=scope), _persist_stub(self._config(scope, options)):
+                get = self.client.get(self._url(scope))
+                data = self._submitted(get)
+            data["form-0-DELETE"] = "on"
+            with self.subTest(scope=scope), _persist_stub(self._config(scope, options[::-1])) as kea:
+                post = self.client.post(self._url(scope), data)
+                self.assertEqual(post.status_code, 302)
+                written = _written_config(kea)["Dhcp4"]
+                if scope == "subnet":
+                    written = written["subnet4"][0]
+                self.assertEqual(written["option-data"], [options[1]])
+
+    def test_missing_ambiguous_and_duplicate_targets_abort_before_write(self):
+        options = [{"name": "routers", "data": "198.18.0.1"}]
+        for live in ([], options * 2):
+            with self.subTest(live=live), _persist_stub(self._config("server", options)):
+                get = self.client.get(self._url("server"))
+                data = self._submitted(get)
+            with self.subTest(live=live), _persist_stub(self._config("server", live)) as kea:
+                post = self.client.post(self._url("server"), data)
+                self.assertNotIn("config-test", kea.commands())
+                self.assertNotIn("config-set", kea.commands())
+                messages = [str(message) for message in django_messages.get_messages(post.wsgi_request)]
+                self.assertIn("DHCP Options changed or are ambiguous. Reload the form before saving.", messages)
+        with _persist_stub(self._config("server", options)):
+            data = self._submitted(self.client.get(self._url("server")))
+        data.update(
+            {key.replace("form-0-", "form-1-"): value for key, value in list(data.items()) if key.startswith("form-0-")}
+        )
+        data["form-TOTAL_FORMS"] = "2"
+        data["form-INITIAL_FORMS"] = "2"
+        with _persist_stub(self._config("server", options)) as kea:
+            self.client.post(self._url("server"), data)
+            self.assertNotIn("config-set", kea.commands())

@@ -147,6 +147,9 @@ class TestCombinedSubnetDiagnostics(_ViewTestBase):
         self.assertEqual(response.context["errors"], [])
         self.assertContains(response, "alert-warning")
 
+        self.assertContains(response, "Some server data is incomplete:")
+        self.assertNotContains(response, "Some server data is unavailable or incomplete:")
+
     def test_repeated_catalogue_diagnostics_render_once(self):
         responses = _catalogue_responses_for_subnets(
             4,

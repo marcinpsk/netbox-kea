@@ -4702,6 +4702,21 @@ class TestSubnetUpdateMerge(TestCase):
         )
         return update_call["arguments"]["subnet4"][0]["option-data"]
 
+    def test_omitted_managed_values_preserve_options(self):
+        existing = [
+            {"code": 3, "data": "198.18.0.1"},
+            {"code": 6, "data": "198.18.0.53"},
+            {"code": 42, "data": "198.18.0.123"},
+        ]
+        self.assertEqual(self._update_options(existing, valid_lft=7200), existing)
+        self.assertEqual(self._update_options(existing, gateway="", dns_servers=[], ntp_servers=[]), [])
+
+    def test_equivalent_csv_preserves_encoding_flags(self):
+        for data in ("198.18.0.53,198.18.0.54", "198.18.0.53, 198.18.0.54"):
+            with self.subTest(data=data):
+                existing = [{"code": 6, "data": data, "csv-format": True, "never-send": True}]
+                self.assertEqual(self._update_options(existing, dns_servers=["198.18.0.53", "198.18.0.54"]), existing)
+
     def test_an_unchanged_value_keeps_the_delivery_flags(self):
         """never-send can sit next to a value; the form edits the value only."""
         existing = [{"code": 6, "data": "10.0.0.53", "never-send": True, "csv-format": True}]
@@ -4786,8 +4801,8 @@ class TestSubnetUpdateMerge(TestCase):
         self.assertEqual(routers[0]["data"], "10.0.0.2")
 
     def test_removes_managed_option_when_cleared(self):
-        """subnet_update must remove routers option-data when gateway=None."""
-        sent = self._run_update(gateway=None)
+        """An explicit empty gateway removes the routers option."""
+        sent = self._run_update(gateway="")
         names = [o["name"] for o in sent.get("option-data", [])]
         self.assertNotIn("routers", names)
 

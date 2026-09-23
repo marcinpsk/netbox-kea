@@ -790,6 +790,34 @@ class TestServerSubnet4EditView(_ViewTestBase):
             )
         self.assertEqual(self._updated_subnet(kea)["ddns-qualifying-suffix"], "example.com.")
 
+    def test_post_blank_managed_options_explicitly_clears_values(self):
+        live = {
+            "id": 42,
+            "subnet": "198.18.0.0/24",
+            "option-data": [
+                {"code": 3, "data": "198.18.0.1"},
+                {"code": 6, "data": "198.18.0.53"},
+                {"code": 42, "data": "198.18.0.123"},
+            ],
+        }
+        responses = {
+            "subnet4-get": {"result": 0, "arguments": {"subnet4": [live]}},
+            "config-get": {"result": 0, "arguments": {"Dhcp4": {"subnet4": [live]}}},
+        }
+        with self._post_stub(**responses) as kea:
+            post = self.client.post(
+                self._url(),
+                {
+                    "subnet_cidr": live["subnet"],
+                    "pools": "",
+                    "gateway": "",
+                    "dns_servers": "",
+                    "ntp_servers": "",
+                },
+            )
+        self.assertEqual(post.status_code, 302)
+        self.assertEqual(self._updated_subnet(kea)["option-data"], [])
+
     def test_post_clears_ddns_qualifying_suffix_with_empty_string(self):
         """Clearing the DDNS field on edit must remove it from the subnet4-update payload.
 

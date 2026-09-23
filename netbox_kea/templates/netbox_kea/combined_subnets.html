@@ -57,7 +57,7 @@
 
 {% if warnings %}
 <div class="alert alert-warning mt-3">
-  <strong>Some server data is unavailable or incomplete:</strong>
+  <strong>Some server data is incomplete:</strong>
   <ul class="mb-0 mt-1">
     {% for name, msg in warnings %}
     <li><strong>{{ name }}</strong>: {{ msg }}</li>
