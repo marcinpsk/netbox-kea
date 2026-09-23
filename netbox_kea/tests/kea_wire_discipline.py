@@ -7,6 +7,8 @@ and family keys or service/command f-strings. Bare dhcp4/dhcp6 are model fields.
 Only arguments also counts in subscripts, .get(), and positional helper calls whose
 first argument is a Name. Bare arguments strings do not count.
 Reads through a variable are out of reach; command names catch those wire sites.
+Command f-strings require a complete command-family prefix before the first hyphen.
+The family may interpolate its protocol number, as in subnet{version}-list.
 Quoted wire literals in Django template tags count. Proven filter/exclude keyword
 names are model fields, including service-shaped f-strings used only as those names.
 """
@@ -97,6 +99,8 @@ WIRE_COMMANDS = frozenset(
         "version-get",
     }
 )
+
+_WIRE_COMMAND_FAMILIES = frozenset(command.split("-", 1)[0] for command in WIRE_COMMANDS)
 
 WIRE_PAYLOAD_KEYS = frozenset(
     {
@@ -450,9 +454,13 @@ class _Scanner(ast.NodeVisitor):
         )
         is_field = shape == "dhcp{}" and self._is_model_field(node)
         # Match fixed command text against the same vocabulary as plain literals.
-        # A leading placeholder alone does not identify a Kea command family.
+        # Require the complete family, so labels such as v{version} stay separate.
+        family, separator, _ = shape.partition("-")
+        has_family = bool(separator) and any(
+            family.replace("{}", str(version)) in _WIRE_COMMAND_FAMILIES for version in (4, 6)
+        )
         is_command = False
-        if "{}" in shape and not shape.startswith("{}"):
+        if "{}" in shape and has_family:
             command_pattern = re.compile(re.escape(shape).replace(r"\{\}", "[a-z0-9-]+"))
             is_command = any(command_pattern.fullmatch(command) for command in WIRE_COMMANDS)
         if not is_field and (is_command or _WIRE_FSTRING.fullmatch(shape) or shape in WIRE_LITERALS - _ARGUMENTS_KEYS):

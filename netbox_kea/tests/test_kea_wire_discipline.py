@@ -346,6 +346,10 @@ def test_presentation_strings_are_ignored(expression):
     assert wd.scan_source(f"value = {expression}") == []
 
 
+def test_short_version_label_is_not_a_command_template():
+    assert wd.scan_source('version = 4; label = f"v{version}"') == []
+
+
 def test_fstring_expressions_are_still_scanned():
     assert len(wd.scan_source("value = f\"Label: {row['arguments']}\"")) == 1
 
