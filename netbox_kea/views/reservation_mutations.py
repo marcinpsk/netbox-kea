@@ -40,7 +40,7 @@ from ..signals import reservation_created, reservation_deleted, reservation_upda
 from ..subnet_catalogue import CatalogueSnapshot, MutationScope
 from ..sync import sync_reservation_to_netbox
 from ..utilities import kea_error_hint, parse_pool_range
-from ._base import _KeaChangeMixin
+from ._base import _diagnostic_messages, _KeaChangeMixin
 from .reservations import _RESERVATIONS_TAB, _build_reservation_options_formset, _configured_capabilities
 
 logger = logging.getLogger(__name__)
@@ -425,6 +425,9 @@ class _ReservationAddView(_ReservationMutationView):
         server = self.get_object(pk=pk)
         capabilities = _configured_capabilities(server, self.dhcp_version)
         snapshot = subnet_catalogue.display(server, self.dhcp_version)
+        _diagnostic_messages(
+            request, snapshot.diagnostics, messages.ERROR if snapshot.unavailable else messages.WARNING
+        )
         initial_fields = (
             ("subnet_cidr", "ip_address", "identifier_type", "identifier", "hostname")
             if self.dhcp_version == 4
@@ -469,6 +472,9 @@ class _ReservationAddView(_ReservationMutationView):
                 logger.exception("Could not create a DHCPv%s Reservation", self.dhcp_version)
                 messages.error(request, "The Reservation could not be created. See server logs.")
         snapshot = subnet_catalogue.display(server, self.dhcp_version)
+        _diagnostic_messages(
+            request, snapshot.diagnostics, messages.ERROR if snapshot.unavailable else messages.WARNING
+        )
         return self._render(
             request,
             server,

@@ -1,5 +1,6 @@
 """Subnet pickers follow catalogue invalidation across configuration writes."""
 
+from django.contrib import messages
 from django.test import override_settings
 from django.urls import reverse
 
@@ -45,6 +46,29 @@ class TestSubnetPickerViews(_ViewTestBase):
                         {},
                     )
                 self.assertContains(response, f'value="{cidr}"')
+
+    def test_pickers_show_catalogue_diagnostics(self):
+        for family, listed, configured in (
+            (4, "198.18.1.0/24", "198.18.9.0/24"),
+            (6, "2001:db8:1::/64", "2001:db8:9::/64"),
+        ):
+            responses = _catalogue_responses_for_subnets(family, [{"id": 1, "subnet": listed}])
+            responses["config-get"]["arguments"][f"Dhcp{family}"][f"subnet{family}"] = [{"id": 1, "subnet": configured}]
+            for method, view_name in (
+                ("get", f"server_leases{family}"),
+                ("get", f"server_reservation{family}_add"),
+                ("post", f"server_reservation{family}_add"),
+            ):
+                with self.subTest(family=family, method=method, view=view_name), stub_kea(responses):
+                    url = reverse(f"plugins:netbox_kea:{view_name}", args=[self.server.pk])
+                    response = self.client.get(url) if method == "get" else self.client.post(url, {})
+                    shown = [(message.level, message.message) for message in response.context["messages"]]
+                    self.assertIn(
+                        (messages.ERROR, "Kea subnet identity and configuration facts disagree after a fresh retry."),
+                        shown,
+                    )
+                    self.assertNotContains(response, f'value="{listed}"')
+                    self.assertNotContains(response, f'value="{configured}"')
 
     def test_ipv6_pickers_keep_network_order_and_subnet_ids(self):
         subnets = [{"id": 10, "subnet": "2001:db8:10::/64"}, {"id": 2, "subnet": "2001:db8:2::/64"}]
