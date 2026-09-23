@@ -278,7 +278,8 @@ resort, reserved for true external boundaries you cannot run locally.
   to silence a failure defeats the gate. Fix the call site instead.
 - **Kea wire-discipline gate.** `netbox_kea/tests/kea_wire_discipline.py` checks
   production code for Kea command names, hyphenated payload keys, and family-suffixed
-  configuration keys or service names. Wire owners are `kea.py`, `server_configuration.py`,
+  configuration keys or service names. String templates (f-strings, `.format`, `%`, `+`)
+  count when they can build a wire literal. Wire owners are `kea.py`, `server_configuration.py`,
   `subnet_catalogue.py`, `reservations.py`, and `dhcp_options.py`, relative to `netbox_kea/`.
   The checker excludes these exact modules, tests, and migrations. The transport stub
   `tests/kea_stub.py` may also use wire literals to model Kea responses.

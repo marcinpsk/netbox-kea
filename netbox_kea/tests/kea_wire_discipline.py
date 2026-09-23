@@ -2,17 +2,15 @@
 # SPDX-License-Identifier: Apache-2.0
 """Keep Kea wire literals inside their owning modules, with budgets for existing debt.
 
-The vocabulary covers command names, hyphenated payload keys (including option names),
-and family keys or service/command f-strings. Bare dhcp4/dhcp6 are model fields.
+The vocabulary covers command names, hyphenated payload keys (including option names)
+and family keys. A string template (f-string, .format, %, or a + chain of them) counts
+when some wire literal fits it with any wire characters, or none, in each hole. Only the
+outermost template is checked, then its holes. A template with fewer than two letters
+of its own text, and any read through a variable, is out of reach.
 Only arguments also counts in subscripts, .get(), and positional helper calls whose
-first argument is a Name. Bare arguments strings do not count.
-Reads through a variable are out of reach; command names catch those wire sites.
-Command templates (f-strings, .format, %, +) require a complete command-family
-prefix before the first hyphen.
-The family may interpolate its protocol number, as in subnet{version}-list.
-A hole may be empty. Only the outermost template is checked, and then its holes.
-Quoted wire literals in Django template tags count. Proven filter/exclude keyword
-names are model fields, including service-shaped f-strings used only as those names.
+first argument is a Name. Bare dhcp4/dhcp6 are model fields, and so are proven
+filter/exclude keyword names such as f"dhcp{version}".
+Quoted wire literals in Django template tags count.
 """
 
 from __future__ import annotations
@@ -102,8 +100,6 @@ WIRE_COMMANDS = frozenset(
         "version-get",
     }
 )
-
-_WIRE_COMMAND_FAMILIES = frozenset(command.split("-", 1)[0] for command in WIRE_COMMANDS)
 
 WIRE_PAYLOAD_KEYS = frozenset(
     {
@@ -344,13 +340,7 @@ WIRE_PAYLOAD_KEYS = frozenset(
 WIRE_FAMILY_KEYS = frozenset({"Dhcp4", "Dhcp6", "subnet4", "subnet6"})
 _ARGUMENTS_KEYS = frozenset({"arguments"})
 WIRE_LITERALS = WIRE_COMMANDS | WIRE_PAYLOAD_KEYS | WIRE_FAMILY_KEYS | _ARGUMENTS_KEYS
-# Holes around a family key may be empty, as in f"subnet{version}" + suffix.
-_WIRE_FSTRING = re.compile(
-    r"(?:\{\})*(?:"
-    r"(?:subnet|Dhcp|dhcp)(?:\{\})+"
-    r"|option-(?:[a-z0-9-]|\{\})*\{\}(?:[a-z0-9-]|\{\})*"
-    r")\Z"
-)
+_OPTION_FAMILY = re.compile(r"(?:\{\})*option-(?:[a-z0-9-]|\{\})*\{\}(?:[a-z0-9-]|\{\})*")
 # The part of a printf conversion after its mapping key, as CPython parses it.
 _PRINTF_TAIL = re.compile(r"[-+ #0]*(?:\*|\d*)(?:\.(?:\*|\d*))?[hlL]?([diouxXeEfFgGcrsa%])")
 
@@ -434,30 +424,7 @@ class _Scanner(ast.NodeVisitor):
         if not isinstance(node.value, str):
             return
         self._scan_template_tags(node, node.value)
-        self._check_literal(node, node.value)
-
-    def _check_literal(self, node: ast.Constant, value: str) -> None:
-        if value not in WIRE_LITERALS:
-            return
-        if value in _ARGUMENTS_KEYS:
-            parent = self.parents.get(node)
-            is_key = isinstance(parent, ast.Subscript) and parent.slice is node
-            is_get = (
-                isinstance(parent, ast.Call)
-                and isinstance(parent.func, ast.Attribute)
-                and parent.func.attr == "get"
-                and bool(parent.args)
-                and parent.args[0] is node
-            )
-            is_helper = (
-                isinstance(parent, ast.Call)
-                and bool(parent.args)
-                and isinstance(parent.args[0], ast.Name)
-                and node in parent.args[1:]
-            )
-            if not (is_key or is_get or is_helper):
-                return
-        self._record(node, value)
+        self._check_shape(node, node.value, node.value)
 
     def visit_JoinedStr(self, node: ast.JoinedStr) -> None:
         self._visit_template(node)
@@ -474,30 +441,42 @@ class _Scanner(ast.NodeVisitor):
         if template is None:
             return False
         self._scan_template_tags(node, template.shape)
-        if not self._check_shape(node, template.shape):
-            for text, value in template.texts:
-                self._check_literal(text, value)
+        self._check_shape(node, template.shape, ast.unparse(node))
         for hole in template.holes:
             self.visit(hole)
         return True
 
-    def _check_shape(self, node: ast.expr, shape: str) -> bool:
-        """Record *node* when its text shape, with ``{}`` for each hole, is wire text."""
-        is_field = shape == "dhcp{}" and self._is_model_field(node)
-        # Match fixed command text against the same vocabulary as plain literals.
-        # Require the complete family, so labels such as v{version} stay separate.
-        family, separator, _ = shape.partition("-")
-        # Each hole in the family is independently empty or a protocol number.
-        family_pattern = re.compile(re.escape(family).replace(r"\{\}", "[46]?"))
-        has_family = bool(separator) and any(family_pattern.fullmatch(name) for name in _WIRE_COMMAND_FAMILIES)
-        is_command = False
-        if "{}" in shape and has_family:
-            command_pattern = re.compile(re.escape(shape).replace(r"\{\}", "[a-z0-9-]*"))
-            is_command = any(command_pattern.fullmatch(command) for command in WIRE_COMMANDS)
-        if not is_field and (is_command or _WIRE_FSTRING.fullmatch(shape) or shape in WIRE_LITERALS - _ARGUMENTS_KEYS):
-            self._record(node, ast.unparse(node))
-            return True
-        return False
+    def _in_read_position(self, node: ast.expr) -> bool:
+        """Return true when *node* is a subscript key, a .get() key, or a helper's key argument."""
+        parent = self.parents.get(node)
+        if isinstance(parent, ast.Subscript):
+            return parent.slice is node
+        if not isinstance(parent, ast.Call) or not parent.args:
+            return False
+        is_get = isinstance(parent.func, ast.Attribute) and parent.func.attr == "get" and parent.args[0] is node
+        return is_get or (isinstance(parent.args[0], ast.Name) and node in parent.args[1:])
+
+    def _check_shape(self, node: ast.expr, shape: str, label: str) -> None:
+        """Record *node* when the text it builds, with any text in each ``{}`` hole, can be wire text."""
+        produced = _producible_literals(shape)
+        if not produced or (shape == "dhcp{}" and self._is_model_field(node)):
+            return
+        if produced <= _ARGUMENTS_KEYS and not self._in_read_position(node):
+            return
+        self._record(node, label)
+
+
+def _producible_literals(shape: str) -> frozenset[str]:
+    """Return the wire literals *shape* can build when each hole holds any wire characters, including none."""
+    if "{}" not in shape:
+        return frozenset({shape}) & WIRE_LITERALS
+    # A template with almost no text of its own is as opaque as a variable read.
+    if sum(char.isalpha() for char in shape.replace("{}", "")) < 2:
+        return frozenset()
+    pattern = re.compile(re.escape(shape).replace(r"\{\}", "[A-Za-z0-9-]*"))
+    produced = frozenset(literal for literal in WIRE_LITERALS if pattern.fullmatch(literal))
+    # Option families such as option-def-{operation} lie outside the frozen vocabulary.
+    return produced or (frozenset({shape}) if _OPTION_FAMILY.fullmatch(shape) else frozenset())
 
 
 def _format_shape(template: str) -> str | None:
@@ -537,7 +516,6 @@ def _printf_shape(template: str) -> str | None:
 @dataclass(frozen=True)
 class _Template:
     shape: str
-    texts: tuple[tuple[ast.Constant, str], ...]
     holes: tuple[ast.AST, ...]
 
 
@@ -547,33 +525,32 @@ def _template(node: ast.AST) -> _Template | None:
     f-strings, .format and % templates, and + chains of them are templates; any other operand is a hole.
     """
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
-        return _Template(node.value, ((node, node.value),), ())
+        return _Template(node.value, ())
     if isinstance(node, ast.JoinedStr):
-        return _joined([_template(value) or _Template("{}", (), (value,)) for value in node.values])
+        return _joined([_template(value) or _Template("{}", (value,)) for value in node.values])
     if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "format":
         receiver = node.func.value
         if isinstance(receiver, ast.Constant) and isinstance(receiver.value, str):
             shape = _format_shape(receiver.value)
             if shape is not None:
-                return _Template(shape, ((receiver, receiver.value),), (*node.args, *node.keywords))
+                return _Template(shape, (*node.args, *node.keywords))
         return None
     if not isinstance(node, ast.BinOp):
         return None
     if isinstance(node.op, ast.Mod) and isinstance(node.left, ast.Constant) and isinstance(node.left.value, str):
         shape = _printf_shape(node.left.value)
-        return None if shape is None else _Template(shape, ((node.left, node.left.value),), (node.right,))
+        return None if shape is None else _Template(shape, (node.right,))
     if isinstance(node.op, ast.Add):
         left, right = _template(node.left), _template(node.right)
         if left is None and right is None:
             return None
-        return _joined([left or _Template("{}", (), (node.left,)), right or _Template("{}", (), (node.right,))])
+        return _joined([left or _Template("{}", (node.left,)), right or _Template("{}", (node.right,))])
     return None
 
 
 def _joined(parts: list[_Template]) -> _Template:
     return _Template(
         "".join(part.shape for part in parts),
-        tuple(text for part in parts for text in part.texts),
         tuple(hole for part in parts for hole in part.holes),
     )
 

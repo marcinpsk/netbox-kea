@@ -246,7 +246,8 @@ def test_every_command_family_has_dynamic_guard_coverage(command):
         'f"statistic-{operation} returned no data"',
         'f"version-number-{version}"',
         'f"{label}"',
-        'f"{label}-get"',
+        'f"{start}-{end}"',
+        'f"{a}{b}"',
     ],
 )
 def test_unrelated_dynamic_strings_are_ignored(expression):
@@ -266,7 +267,16 @@ def test_ambiguous_words_are_not_wire_literals(key):
 
 
 @pytest.mark.parametrize(
-    "expression", ['payload["arguments"]', 'payload.get("arguments")', '_read(payload, "arguments")']
+    "expression",
+    [
+        'payload["arguments"]',
+        'payload.get("arguments")',
+        '_read(payload, "arguments")',
+        'payload["arg" + "uments"]',
+        'payload.get("arguments{}".format(""))',
+        '_read(payload, "arguments%s" % "")',
+        'payload[f"{prefix}arguments"]',
+    ],
 )
 def test_arguments_reads_are_flagged(expression):
     assert len(wd.scan_source(f"value = {expression}", "views/server.py")) == 1
@@ -281,6 +291,8 @@ def test_arguments_reads_are_flagged(expression):
         '_read("arguments")',
         '_read(factory(), "arguments")',
         '_read(payload, key="arguments")',
+        '"arg" + "uments"',
+        'label = f"{prefix}arguments"',
     ],
 )
 def test_arguments_outside_read_positions_are_ignored(expression):
@@ -383,6 +395,11 @@ def test_wire_fstrings_are_flagged_once(expression):
         'f"subnet{version}" + suffix',
         '"Dhcp%s%s" % (version, suffix)',
         '"{}dhcp{}".format(prefix, version)',
+        'f"{label}-get"',
+        '"%s-get" % label',
+        'f"hw-{kind}"',
+        '"ha-" + mode',
+        'f"all-{scope}-local"',
         '"lease{0:d}-get".format(version)',
         '"subnet%s" % version',
         '"reservation-" + operation',
@@ -402,7 +419,6 @@ def test_formatted_wire_templates_are_flagged_once(expression):
         '"subnet {} returned no data".format(version)',
         '"config-get failed: %s" % error',
         '"DHCPv" + str(version)',
-        '"%s-get" % label',
         '"Label: " + name',
         '"subnet" + str(version) + " deleted"',
         '("subnet%s" % version) + " deleted"',
