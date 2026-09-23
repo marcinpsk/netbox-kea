@@ -7,6 +7,8 @@ from django.urls import reverse
 from .kea_stub import _catalogue_responses_for_subnets, stub_kea
 from .utils import _PLUGINS_CONFIG, _ViewTestBase
 
+_DISAGREEMENT = "Kea subnet identity and configuration facts disagree after a fresh retry."
+
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestSubnetPickerViews(_ViewTestBase):
@@ -47,28 +49,38 @@ class TestSubnetPickerViews(_ViewTestBase):
                     )
                 self.assertContains(response, f'value="{cidr}"')
 
-    def test_pickers_show_catalogue_diagnostics(self):
+    def test_lease_picker_shows_catalogue_diagnostics_inline(self):
+        for family, responses, listed, configured in self._disagreeing_catalogues():
+            url = reverse(f"plugins:netbox_kea:server_leases{family}", args=[self.server.pk])
+            for label, headers in (("page", {}), ("htmx", {"HTTP_HX_REQUEST": "true"})):
+                with self.subTest(family=family, request=label), stub_kea(responses):
+                    response = self.client.get(url, {"by": "ip", "q": ""}, **headers)
+                    self.assertContains(response, 'class="alert alert-danger py-2 px-3 mb-3 small"')
+                    self.assertContains(response, _DISAGREEMENT)
+                    self.assertEqual(list(response.context["messages"]), [])
+                    self.assertNotContains(response, f'value="{listed}"')
+                    self.assertNotContains(response, f'value="{configured}"')
+
+    def test_reservation_picker_shows_catalogue_diagnostics(self):
+        for family, responses, listed, configured in self._disagreeing_catalogues():
+            url = reverse(f"plugins:netbox_kea:server_reservation{family}_add", args=[self.server.pk])
+            for method in ("get", "post"):
+                with self.subTest(family=family, method=method), stub_kea(responses):
+                    response = self.client.get(url) if method == "get" else self.client.post(url, {})
+                    shown = [(message.level, message.message) for message in response.context["messages"]]
+                    self.assertIn((messages.ERROR, _DISAGREEMENT), shown)
+                    self.assertNotContains(response, f'value="{listed}"')
+                    self.assertNotContains(response, f'value="{configured}"')
+
+    @staticmethod
+    def _disagreeing_catalogues():
         for family, listed, configured in (
             (4, "198.18.1.0/24", "198.18.9.0/24"),
             (6, "2001:db8:1::/64", "2001:db8:9::/64"),
         ):
             responses = _catalogue_responses_for_subnets(family, [{"id": 1, "subnet": listed}])
             responses["config-get"]["arguments"][f"Dhcp{family}"][f"subnet{family}"] = [{"id": 1, "subnet": configured}]
-            for method, view_name in (
-                ("get", f"server_leases{family}"),
-                ("get", f"server_reservation{family}_add"),
-                ("post", f"server_reservation{family}_add"),
-            ):
-                with self.subTest(family=family, method=method, view=view_name), stub_kea(responses):
-                    url = reverse(f"plugins:netbox_kea:{view_name}", args=[self.server.pk])
-                    response = self.client.get(url) if method == "get" else self.client.post(url, {})
-                    shown = [(message.level, message.message) for message in response.context["messages"]]
-                    self.assertIn(
-                        (messages.ERROR, "Kea subnet identity and configuration facts disagree after a fresh retry."),
-                        shown,
-                    )
-                    self.assertNotContains(response, f'value="{listed}"')
-                    self.assertNotContains(response, f'value="{configured}"')
+            yield family, responses, listed, configured
 
     def test_ipv6_pickers_keep_network_order_and_subnet_ids(self):
         subnets = [{"id": 10, "subnet": "2001:db8:10::/64"}, {"id": 2, "subnet": "2001:db8:2::/64"}]

@@ -47,7 +47,7 @@ from ..utilities import (
     format_leases,
     kea_error_hint,
 )
-from ._base import ConditionalLoginRequiredMixin, _diagnostic_messages, _KeaChangeMixin, _strip_empty_params
+from ._base import ConditionalLoginRequiredMixin, _KeaChangeMixin, _strip_empty_params
 
 logger = logging.getLogger(__name__)
 
@@ -147,9 +147,15 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
         table.configure(request)
         return table
 
-    def _make_search_form(self, snapshot: subnet_catalogue.CatalogueSnapshot, data: Any | None = None):
-        """Build the lease-search form with the subnet quick-select choices populated."""
-        kwargs = {"subnet_choices": snapshot.subnet_choices, "subnet_cmds_available": snapshot.subnet_cmds_available}
+    def _make_search_form(self, server: Server, data: Any | None = None):
+        """Build the lease-search form with the subnet quick-select choices and their diagnostics."""
+        snapshot = subnet_catalogue.display(server, self.dhcp_version)
+        kwargs = {
+            "subnet_choices": snapshot.subnet_choices,
+            "subnet_cmds_available": snapshot.subnet_cmds_available,
+            "subnet_diagnostics": tuple(dict.fromkeys(diagnostic.message for diagnostic in snapshot.diagnostics)),
+            "subnet_catalogue_unavailable": snapshot.unavailable,
+        }
         if data is None:
             return self.form(**kwargs)
         return self.form(data, **kwargs)
@@ -182,11 +188,7 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
         # For non-htmx requests.
 
         table = self.get_table([], request)
-        snapshot = subnet_catalogue.display(instance, self.dhcp_version)
-        _diagnostic_messages(
-            request, snapshot.diagnostics, messages.ERROR if snapshot.unavailable else messages.WARNING
-        )
-        form = self._make_search_form(snapshot, request.GET if "q" in request.GET else None)
+        form = self._make_search_form(instance, request.GET if "q" in request.GET else None)
         can_change = Server.objects.restrict(request.user, "change").filter(pk=instance.pk).exists()
         ctx: dict[str, Any] = {
             "form": form,
@@ -208,7 +210,7 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
     def get_export(self, request: HttpRequest, **kwargs) -> HttpResponse:
         """Stream all matching leases as a CSV download."""
         instance = self.get_object(**kwargs)
-        form = self._make_search_form(subnet_catalogue.display(instance, self.dhcp_version), request.GET)
+        form = self._make_search_form(instance, request.GET)
         if not form.is_valid():
             messages.warning(request, "Invalid form for export.")
             return redirect(request.path)
@@ -313,7 +315,7 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
 
         # Outside the try: the LeaseQueryGuardError handler below reads both `form` and
         # `form.cleaned_data`, so neither may depend on how far into the try we got.
-        form = self._make_search_form(subnet_catalogue.display(instance, self.dhcp_version), request.GET)
+        form = self._make_search_form(instance, request.GET)
         if not form.is_valid():
             table = self.get_table([], request)
             return render(
