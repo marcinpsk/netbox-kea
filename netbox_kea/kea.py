@@ -328,7 +328,7 @@ def _replace_managed_option(
     """Set one form-managed option to *data*, or remove it when *data* is empty.
 
     The form edits the value only. Delivery flags stay as they are. An entry the
-    form cannot show (never-send, no data, binary-encoded, or a list where the
+    form cannot show (empty data, binary-encoded, or a list where the
     form holds one value) is kept when the field is empty. Form text is CSV, so a
     new value drops a csv-format flag that described the old encoding.
     """
@@ -350,8 +350,7 @@ def _replace_managed_option(
             replacement["data"] = data
         return [*kept, replacement]
     if existing is not None and (
-        existing.get("never-send")
-        or "data" not in existing
+        not existing.get("data")
         or existing.get("csv-format") is False
         or (single_value and "," in str(existing.get("data", "")))
     ):

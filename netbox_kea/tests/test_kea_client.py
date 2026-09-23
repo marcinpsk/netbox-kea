@@ -4704,9 +4704,9 @@ class TestSubnetUpdateMerge(TestCase):
 
     def test_omitted_managed_values_preserve_options(self):
         existing = [
-            {"code": 3, "data": "198.18.0.1"},
-            {"code": 6, "data": "198.18.0.53"},
-            {"code": 42, "data": "198.18.0.123"},
+            {"code": 3, "data": "198.18.0.1", "never-send": True},
+            {"code": 6, "data": "198.18.0.53", "never-send": True},
+            {"code": 42, "data": "198.18.0.123", "never-send": True},
         ]
         self.assertEqual(self._update_options(existing, valid_lft=7200), existing)
         self.assertEqual(self._update_options(existing, gateway="", dns_servers=[], ntp_servers=[]), [])

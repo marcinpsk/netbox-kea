@@ -571,6 +571,52 @@ class TestServerSubnet4EditView(_ViewTestBase):
         """The subnet object in the real subnet4-update payload."""
         return kea.bodies("subnet4-update")[0]["arguments"]["subnet4"][0]
 
+    def test_displayed_suppressed_options_preserve_metadata_unless_cleared(self):
+        options = [
+            {"code": 3, "data": "198.18.0.1", "never-send": True},
+            {"code": 6, "data": "198.18.0.53", "never-send": True, "csv-format": True},
+            {"code": 42, "data": "198.18.0.123", "never-send": True, "always-send": False},
+        ]
+        live = {"id": 42, "subnet": "198.18.0.0/24", "pools": [], "option-data": options}
+        responses = {
+            "subnet4-get": {"result": 0, "arguments": {"subnet4": [live]}},
+            "config-get": {"result": 0, "arguments": {"Dhcp4": {"subnet4": [live]}}},
+        }
+        for clear in (False, True):
+            with self.subTest(clear=clear), self._post_stub(**responses) as kea:
+                get = self.client.get(self._url())
+                initial = get.context["form"].initial
+                self.assertEqual(initial["gateway"], "198.18.0.1")
+                self.assertEqual(initial["dns_servers"], "198.18.0.53")
+                self.assertEqual(initial["ntp_servers"], "198.18.0.123")
+                data = {"subnet_cidr": live["subnet"], "pools": "", "shared_network": ""}
+                data.update(
+                    {field: "" if clear else initial[field] for field in ("gateway", "dns_servers", "ntp_servers")}
+                )
+                post = self.client.post(self._url(), data)
+                self.assertEqual(post.status_code, 302)
+                self.assertEqual(self._updated_subnet(kea)["option-data"], [] if clear else options)
+
+    def test_hidden_options_survive_blank_form_fields(self):
+        for option in (
+            {"code": 6, "never-send": True},
+            {"code": 6, "data": "", "never-send": True},
+            {"code": 6, "data": "C6120035", "csv-format": False},
+        ):
+            live = {"id": 42, "subnet": "198.18.0.0/24", "pools": [], "option-data": [option]}
+            responses = {
+                "subnet4-get": {"result": 0, "arguments": {"subnet4": [live]}},
+                "config-get": {"result": 0, "arguments": {"Dhcp4": {"subnet4": [live]}}},
+            }
+            with self.subTest(option=option), self._post_stub(**responses) as kea:
+                get = self.client.get(self._url())
+                self.assertEqual(get.context["form"].initial.get("dns_servers", ""), "")
+                post = self.client.post(
+                    self._url(), {"subnet_cidr": live["subnet"], "dns_servers": "", "shared_network": ""}
+                )
+                self.assertEqual(post.status_code, 302)
+                self.assertEqual(self._updated_subnet(kea)["option-data"], [option])
+
     def test_get_returns_200(self):
         """GET must render the edit form with status 200."""
         with self._get_stub():

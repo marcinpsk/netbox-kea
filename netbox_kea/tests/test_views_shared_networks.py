@@ -556,6 +556,27 @@ class TestServerSharedNetwork4EditView(_ViewTestBase):
 
         self.assertEqual(_written_sn(kea)["option-data"], [option])
 
+    def test_displayed_suppressed_addresses_can_be_cleared(self):
+        options = [
+            {"code": 6, "data": "198.18.0.53", "never-send": True, "csv-format": True},
+            {"code": 42, "data": "198.18.0.123", "never-send": True, "always-send": False},
+        ]
+        with _edit_stub(_sn_config(4, "prod-net", option_data=options)) as kea:
+            get = self.client.get(self._url())
+            self.assertEqual(get.context["form"].initial["dns_servers"], "198.18.0.53")
+            self.assertEqual(get.context["form"].initial["ntp_servers"], "198.18.0.123")
+            post = self.client.post(self._url(), self._post_data(dns_servers="", ntp_servers=""))
+        self.assertEqual(post.status_code, 302)
+        self.assertEqual(_written_sn(kea)["option-data"], [])
+
+    def test_empty_suppression_data_survives_an_unchanged_blank_save(self):
+        option = {"code": 6, "data": "", "never-send": True}
+        with _edit_stub(_sn_config(4, "prod-net", option_data=[option])) as kea:
+            get = self.client.get(self._url())
+            self.assertEqual(get.context["form"].initial["dns_servers"], "")
+            self.client.post(self._url(), self._post_data())
+        self.assertEqual(_written_sn(kea)["option-data"], [option])
+
     def test_a_binary_dns_entry_stays_out_of_the_form_and_survives_an_unrelated_save(self):
         """The form cannot show hexadecimal data, so the field is empty and the entry is kept."""
         binary = {"code": 6, "data": "C6120035", "csv-format": False}
