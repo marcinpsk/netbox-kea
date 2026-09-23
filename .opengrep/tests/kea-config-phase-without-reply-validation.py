@@ -11,6 +11,14 @@ def apply(client, service, config):
     client.command("config-write", service=[service])
     # ruleid: kea-config-phase-without-reply-validation
     client._config_mutation_command("config-set", service, config)
+    # ruleid: kea-config-phase-without-reply-validation
+    client.command(command="config-test", service=[service], arguments=config)
+    # ruleid: kea-config-phase-without-reply-validation
+    client.command(command="config-set", service=[service], arguments=config)
+    # ruleid: kea-config-phase-without-reply-validation
+    client.command(service=[service], command="config-write")
+    # ruleid: kea-config-phase-without-reply-validation
+    client._config_mutation_command(command="config-set", service=service, arguments=config)
     # ok: kea-config-phase-without-reply-validation
     client._config_phase_command("config-test", service, config)
     # ok: kea-config-phase-without-reply-validation
