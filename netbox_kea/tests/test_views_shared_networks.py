@@ -177,7 +177,7 @@ class TestServerSharedNetworks4View(_ViewTestBase):
             response = self.client.get(self._url())
 
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "Kea Subnet configuration facts are unavailable.")
+        self.assertContains(response, "Kea configuration facts are unavailable.")
         self.assertTrue(any(message.level == django_messages.ERROR for message in response.context["messages"]))
 
     def test_unreachable_server_shows_diagnostic_and_keeps_page_available(self):
@@ -185,7 +185,7 @@ class TestServerSharedNetworks4View(_ViewTestBase):
             response = self.client.get(self._url())
 
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "Kea Subnet configuration facts are unavailable.")
+        self.assertContains(response, "Kea configuration facts are unavailable.")
         self.assertTrue(any(message.level == django_messages.ERROR for message in response.context["messages"]))
 
     def test_non_object_family_configuration_shows_diagnostic_instead_of_raising(self):

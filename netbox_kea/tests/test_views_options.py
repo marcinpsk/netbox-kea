@@ -236,7 +236,7 @@ class TestSubnetOptionsView(_ViewTestBase):
 
         self.assertEqual(response.status_code, 302)
         texts = [str(message) for message in django_messages.get_messages(response.wsgi_request)]
-        self.assertIn("Kea Subnet configuration facts are unavailable.", texts)
+        self.assertIn("Kea configuration facts are unavailable.", texts)
 
     def test_post_calls_subnet_update_options(self):
         """POST with valid formset runs the read-modify-write and redirects."""
@@ -391,7 +391,7 @@ class TestServerOptionsView(_ViewTestBase):
         self.assertEqual(response.status_code, 302)
         texts = [str(message) for message in django_messages.get_messages(response.wsgi_request)]
         self.assertIn("Could not load server options from Kea. The form cannot be displayed.", texts)
-        self.assertTrue(any("invalid Subnet option" in text for text in texts))
+        self.assertIn("Kea returned an invalid DHCP Option.", texts)
 
     def test_get_reads_the_live_configuration_even_when_the_display_cache_is_warm(self):
         with stub_kea(_catalogue_responses_for_subnets(4, [])) as kea:

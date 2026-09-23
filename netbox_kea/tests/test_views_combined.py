@@ -113,7 +113,7 @@ class TestCombinedSubnetDiagnostics(_ViewTestBase):
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Kea subnet identity facts are unavailable.")
-        self.assertContains(response, "Kea Subnet configuration facts are unavailable.")
+        self.assertContains(response, "Kea configuration facts are unavailable.")
         self.assertNotContains(response, "Failed to query server")
         self.assertTrue(response.context["errors"])
         self.assertContains(response, "alert-danger")
@@ -176,7 +176,7 @@ class TestCombinedSharedNetworkDiagnostics(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(
             response.context["errors"],
-            [(self.server.name, "Kea Subnet configuration facts are unavailable.")],
+            [(self.server.name, "Kea configuration facts are unavailable.")],
         )
         self.assertNotContains(response, "Failed to query server")
         self.assertContains(response, "alert-danger")

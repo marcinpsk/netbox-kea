@@ -219,20 +219,20 @@ def _read_live(server: Server, family: Family) -> ServerConfigurationSnapshot:
         client = server.get_client(version=family)
         response = client.command("config-get", service=[f"dhcp{family}"])
     except KeaException as exc:
-        logger.warning("Subnet configuration read failed for DHCPv%s", family, exc_info=True)
+        logger.warning("Server configuration read failed for DHCPv%s", family, exc_info=True)
         return _unavailable(
             server,
             family,
             "configuration-unavailable",
-            f"Kea Subnet configuration facts are unavailable. {kea_error_hint(exc)}",
+            f"Kea configuration facts are unavailable. {kea_error_hint(exc)}",
         )
     except (OSError, ValueError, RuntimeError):
-        logger.warning("Subnet configuration read failed for DHCPv%s", family, exc_info=True)
+        logger.warning("Server configuration read failed for DHCPv%s", family, exc_info=True)
         return _unavailable(
             server,
             family,
             "configuration-unavailable",
-            "Kea Subnet configuration facts are unavailable.",
+            "Kea configuration facts are unavailable.",
         )
 
     if not response or not isinstance(response[0], dict):
@@ -559,7 +559,7 @@ def _parse_options(entries: Any, path: str, diagnostics: list[Diagnostic]) -> tu
             option = parse_dhcp_option(entry)
         except ValueError:
             diagnostics.append(
-                _diagnostic("invalid-option", "Kea returned an invalid Subnet option.", "configuration", option_path)
+                _diagnostic("invalid-option", "Kea returned an invalid DHCP Option.", "configuration", option_path)
             )
             continue
         options.append(option)
