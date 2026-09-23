@@ -486,9 +486,9 @@ class _Scanner(ast.NodeVisitor):
         # Match fixed command text against the same vocabulary as plain literals.
         # Require the complete family, so labels such as v{version} stay separate.
         family, separator, _ = shape.partition("-")
-        has_family = bool(separator) and any(
-            family.replace("{}", version) in _WIRE_COMMAND_FAMILIES for version in ("", "4", "6")
-        )
+        # Each hole in the family is independently empty or a protocol number.
+        family_pattern = re.compile(re.escape(family).replace(r"\{\}", "[46]?"))
+        has_family = bool(separator) and any(family_pattern.fullmatch(name) for name in _WIRE_COMMAND_FAMILIES)
         is_command = False
         if "{}" in shape and has_family:
             command_pattern = re.compile(re.escape(shape).replace(r"\{\}", "[a-z0-9-]*"))

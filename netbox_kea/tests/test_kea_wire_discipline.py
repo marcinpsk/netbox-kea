@@ -378,6 +378,8 @@ def test_wire_fstrings_are_flagged_once(expression):
         '"config-get{}".format(suffix)',
         '"config-get%s" % suffix',
         'f"{prefix}config-get"',
+        'f"{prefix}lease{version}-get"',
+        '"%slease%s-get" % (prefix, version)',
         '"lease{0:d}-get".format(version)',
         '"subnet%s" % version',
         '"reservation-" + operation',
