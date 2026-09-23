@@ -13,7 +13,7 @@ from utilities.views import register_model_view
 
 from .. import forms, server_configuration, tables
 from ..constants import Family
-from ..kea import KeaException, PartialPersistError
+from ..kea import AmbiguousConfigSetError, KeaException, PartialPersistError
 from ..models import Server
 from ..utilities import (
     check_dhcp_enabled,
@@ -370,6 +370,8 @@ class BaseServerSharedNetworkEditView(_KeaChangeMixin, ConditionalLoginRequiredM
                 ntp_servers=ntp_servers,
             )
             messages.success(request, f"Shared network '{network_name}' updated.")
+        except AmbiguousConfigSetError:
+            messages.warning(request, "Kea did not confirm the change. Check the server configuration before retrying.")
         except PartialPersistError:
             messages.warning(request, "Change applied but may not survive a Kea restart (config-write failed).")
         except KeaException as exc:

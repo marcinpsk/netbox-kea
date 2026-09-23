@@ -622,6 +622,11 @@ class TestServerSharedNetwork4EditView(_ViewTestBase):
             any(m.level == django_messages.WARNING for m in messages_list),
             f"Expected a WARNING message; got: {[(m.level, m.message) for m in messages_list]}",
         )
+        self.assertIn(
+            "Change applied but may not survive a Kea restart (config-write failed).",
+            [str(message) for message in messages_list],
+        )
+        self.assertFalse(any("Kea did not confirm the change" in str(message) for message in messages_list))
 
     def test_get_requires_login(self):
         """Unauthenticated GET must redirect to login."""
@@ -669,6 +674,46 @@ class TestServerSharedNetwork6EditView(_ViewTestBase):
 # ---------------------------------------------------------------------------
 # Tests for shared network POST — option-data preservation
 # ---------------------------------------------------------------------------
+
+
+class TestSharedNetworkEditAmbiguousWrite(_ViewTestBase):
+    def test_unconfirmed_config_set_never_claims_the_change_was_applied(self):
+        for version in (4, 6):
+            for error in (
+                requests.ConnectionError("connection refused"),
+                requests.Timeout("reply lost"),
+                ValueError("bad JSON"),
+            ):
+                with self.subTest(version=version, error=type(error).__name__):
+                    url = reverse(
+                        f"plugins:netbox_kea:server_shared_network{version}_edit", args=[self.server.pk, "clients"]
+                    )
+                    with _edit_stub(_sn_config(version, "clients"), **{"config-set": error}) as kea:
+                        response = self.client.post(
+                            url,
+                            {
+                                "name": "clients",
+                                "description": "Updated",
+                                "interface": "",
+                                "relay_addresses": "",
+                                "dns_servers": "",
+                                "ntp_servers": "",
+                            },
+                            follow=True,
+                        )
+                    self.assertEqual(response.status_code, 200)
+                    messages = list(django_messages.get_messages(response.wsgi_request))
+                    self.assertEqual(
+                        [(message.level, str(message)) for message in messages],
+                        [
+                            (
+                                django_messages.WARNING,
+                                "Kea did not confirm the change. Check the server configuration before retrying.",
+                            )
+                        ],
+                    )
+                    self.assertIn("config-set", kea.commands())
+                    self.assertNotIn("config-write", kea.commands())
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
