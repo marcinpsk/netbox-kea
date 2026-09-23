@@ -1607,7 +1607,8 @@ class KeaClient:
         Args:
             version: DHCP version (4 or 6).
             subnet_id: Kea subnet ID.
-            options: Cleaned option form rows. Pass ``[]`` to remove all options.
+            options: Cleaned form rows covering every live option by original identity.
+                Set ``DELETE`` on an existing row to remove it.
 
         Raises:
             KeaException: If ``subnet_id`` is not found, or if ``config-test`` fails.
@@ -1652,7 +1653,8 @@ class KeaClient:
 
         Args:
             version: DHCP version (4 or 6).
-            options: Cleaned option form rows. Pass ``[]`` to remove all server-level options.
+            options: Cleaned form rows covering every live option by original identity.
+                Set ``DELETE`` on an existing row to remove it.
 
         Raises:
             KeaException: If ``config-test`` fails.

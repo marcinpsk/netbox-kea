@@ -149,4 +149,6 @@ def merge_option_form_rows(rows: list[dict[str, Any]], existing: Any) -> list[di
             option["always-send"] = bool(row.get("always_send"))
         parse_dhcp_option(option)
         result.append(option)
+    if len(used) != len(parsed):
+        raise DHCPOptionConflict("The live DHCP Option list changed. Reload the form before saving.")
     return result

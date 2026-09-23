@@ -58,6 +58,10 @@ _SUBNET6 = {
 }
 _OPTIONS_CONFIG_GET = [_catalogue_responses_for_subnets(4, [_SUBNET4])["config-get"]]
 _OPTIONS_CONFIG_GET_V6 = [_catalogue_responses_for_subnets(6, [_SUBNET6])["config-get"]]
+_EMPTY_OPTIONS_CONFIG_GET = [_catalogue_responses_for_subnets(4, [{**_SUBNET4, "option-data": []}])["config-get"]]
+_EMPTY_OPTIONS_CONFIG_GET_V6 = [_catalogue_responses_for_subnets(6, [{**_SUBNET6, "option-data": []}])["config-get"]]
+_EMPTY_SERVER_OPTIONS_CONFIG_GET = [_catalogue_responses_for_subnets(4, [])["config-get"]]
+_EMPTY_SERVER_OPTIONS_CONFIG_GET_V6 = [_catalogue_responses_for_subnets(6, [])["config-get"]]
 
 _SUBNET4_REDIRECT_IDENTITY = {
     "subnet4-list": {"result": 0, "arguments": {"subnets": [{"id": 42, "subnet": "10.0.0.0/24"}]}},
@@ -236,7 +240,7 @@ class TestSubnetOptionsView(_ViewTestBase):
 
     def test_post_calls_subnet_update_options(self):
         """POST with valid formset runs the read-modify-write and redirects."""
-        with _persist_stub(_OPTIONS_CONFIG_GET) as kea:
+        with _persist_stub(_EMPTY_OPTIONS_CONFIG_GET) as kea:
             response = self.client.post(self._url(), self._post_data())
         self.assertEqual(response.status_code, 302)
         self._assert_redirect_to_integer_pk(response)
@@ -244,7 +248,7 @@ class TestSubnetOptionsView(_ViewTestBase):
 
     def test_post_passes_correct_version_and_subnet_id(self):
         """POST rewrites subnet 42's option-data in the DHCPv4 config (version + subnet_id)."""
-        with _persist_stub(_OPTIONS_CONFIG_GET) as kea:
+        with _persist_stub(_EMPTY_OPTIONS_CONFIG_GET) as kea:
             self.client.post(self._url(version=4, subnet_id=42), self._post_data())
         subnet = _written_config(kea)["Dhcp4"]["subnet4"][0]
         self.assertEqual(subnet["id"], 42)
@@ -266,7 +270,7 @@ class TestSubnetOptionsView(_ViewTestBase):
             "form-1-always_send": "",
             "form-1-DELETE": "on",
         }
-        with _persist_stub(_OPTIONS_CONFIG_GET) as kea:
+        with _persist_stub(_EMPTY_OPTIONS_CONFIG_GET) as kea:
             self.client.post(self._url(), data)
         opts = _written_config(kea)["Dhcp4"]["subnet4"][0]["option-data"]
         self.assertEqual(len(opts), 1)
@@ -301,7 +305,7 @@ class TestSubnetOptionsView(_ViewTestBase):
 
     def test_post_passes_correct_version_and_subnet_id_v6(self):
         """POST for a DHCPv6 subnet rewrites subnet 42's option-data in the DHCPv6 config."""
-        with _persist_stub(_OPTIONS_CONFIG_GET_V6) as kea:
+        with _persist_stub(_EMPTY_OPTIONS_CONFIG_GET_V6) as kea:
             self.client.post(
                 self._url(version=6, subnet_id=42),
                 self._post_data(name="dns-servers", data="2001:4860:4860::8888"),
@@ -405,7 +409,7 @@ class TestServerOptionsView(_ViewTestBase):
 
     def test_post_calls_server_update_options(self):
         """POST with valid formset runs the read-modify-write and redirects."""
-        with _persist_stub(_SERVER_OPTIONS_CONFIG_GET) as kea:
+        with _persist_stub(_EMPTY_SERVER_OPTIONS_CONFIG_GET) as kea:
             response = self.client.post(self._url(), self._post_data())
         self.assertEqual(response.status_code, 302)
         self._assert_redirect_to_integer_pk(response)
@@ -413,7 +417,7 @@ class TestServerOptionsView(_ViewTestBase):
 
     def test_post_passes_correct_version(self):
         """POST rewrites the DHCPv4 server-level option-data."""
-        with _persist_stub(_SERVER_OPTIONS_CONFIG_GET) as kea:
+        with _persist_stub(_EMPTY_SERVER_OPTIONS_CONFIG_GET) as kea:
             self.client.post(self._url(version=4), self._post_data())
         opts = _written_config(kea)["Dhcp4"]["option-data"]
         self.assertEqual([o["name"] for o in opts], ["routers"])
@@ -434,7 +438,7 @@ class TestServerOptionsView(_ViewTestBase):
             "form-1-always_send": "",
             "form-1-DELETE": "on",
         }
-        with _persist_stub(_SERVER_OPTIONS_CONFIG_GET) as kea:
+        with _persist_stub(_EMPTY_SERVER_OPTIONS_CONFIG_GET) as kea:
             self.client.post(self._url(), data)
         opts = _written_config(kea)["Dhcp4"]["option-data"]
         self.assertEqual(len(opts), 1)
@@ -466,7 +470,7 @@ class TestServerOptionsView(_ViewTestBase):
 
     def test_post_passes_version_6(self):
         """POST for DHCPv6 server options rewrites the DHCPv6 server-level option-data."""
-        with _persist_stub(_SERVER_OPTIONS_CONFIG_GET_V6) as kea:
+        with _persist_stub(_EMPTY_SERVER_OPTIONS_CONFIG_GET_V6) as kea:
             self.client.post(self._url(version=6), self._post_data(name="dns-servers", data="2001:4860:4860::8888"))
         opts = _written_config(kea)["Dhcp6"]["option-data"]
         self.assertEqual([o["name"] for o in opts], ["dns-servers"])
@@ -828,7 +832,7 @@ class TestSubnetOptionsPostInvalid(_ViewTestBase):
 
     def test_post_with_always_send_includes_flag(self):
         """POST with always_send=True writes always-send=True into the option-data."""
-        with _persist_stub(_OPTIONS_CONFIG_GET) as kea:
+        with _persist_stub(_EMPTY_OPTIONS_CONFIG_GET) as kea:
             self.client.post(
                 self._url(),
                 {
@@ -876,7 +880,7 @@ class TestServerOptionsPostInvalid(_ViewTestBase):
 
     def test_post_with_always_send_includes_flag(self):
         """POST with always_send=True writes always-send=True into the server option-data."""
-        with _persist_stub(_SERVER_OPTIONS_CONFIG_GET) as kea:
+        with _persist_stub(_EMPTY_SERVER_OPTIONS_CONFIG_GET) as kea:
             self.client.post(
                 self._url(),
                 {
@@ -1033,7 +1037,7 @@ class TestKeaConfigTestErrorHandling(_ViewTestBase):
     def test_subnet_options_config_test_error_shows_message(self):
         """POST to subnet options edit shows the config-test error message."""
         url = reverse("plugins:netbox_kea:server_subnet4_options_edit", args=[self.server.pk, 42])
-        with _persist_stub(_OPTIONS_CONFIG_GET, **_SUBNET4_REDIRECT_IDENTITY, **self._CONFIG_TEST_FAILS):
+        with _persist_stub(_EMPTY_OPTIONS_CONFIG_GET, **_SUBNET4_REDIRECT_IDENTITY, **self._CONFIG_TEST_FAILS):
             response = self.client.post(
                 url,
                 {
@@ -1053,7 +1057,7 @@ class TestKeaConfigTestErrorHandling(_ViewTestBase):
     def test_server_options_config_test_error_shows_message(self):
         """POST to server options edit shows the config-test error message."""
         url = reverse("plugins:netbox_kea:server_dhcp4_options_edit", args=[self.server.pk])
-        with _persist_stub(_SERVER_OPTIONS_CONFIG_GET, **self._CONFIG_TEST_FAILS):
+        with _persist_stub(_EMPTY_SERVER_OPTIONS_CONFIG_GET, **self._CONFIG_TEST_FAILS):
             response = self.client.post(
                 url,
                 {
@@ -1106,7 +1110,7 @@ class TestSubnetOptionsPartialPersistError(_ViewTestBase):
         applied_config = copy.deepcopy(_OPTIONS_CONFIG_GET)
         applied_config[0]["arguments"]["Dhcp4"]["subnet4"][0]["option-data"] = [{"name": "routers", "data": "10.0.0.1"}]
         with _persist_stub(
-            queued(_OPTIONS_CONFIG_GET, applied_config),
+            queued(_EMPTY_OPTIONS_CONFIG_GET, applied_config),
             **_SUBNET4_REDIRECT_IDENTITY,
             **{"config-write": {"result": 1, "text": "write failed"}},
         ):
@@ -1206,7 +1210,7 @@ class TestServerOptionsPartialPersistError(_ViewTestBase):
 
     def test_partial_persist_error_shows_warning_without_success(self):
         url = reverse("plugins:netbox_kea:server_dhcp4_options_edit", args=[self.server.pk])
-        with _persist_stub(_SERVER_OPTIONS_CONFIG_GET, **{"config-write": {"result": 1, "text": "write failed"}}):
+        with _persist_stub(_EMPTY_SERVER_OPTIONS_CONFIG_GET, **{"config-write": {"result": 1, "text": "write failed"}}):
             response = self.client.post(
                 url,
                 {
@@ -1234,7 +1238,9 @@ class TestServerOptionsPartialPersistError(_ViewTestBase):
 
     def test_lost_config_set_reply_is_not_reported_as_applied(self):
         url = reverse("plugins:netbox_kea:server_dhcp4_options_edit", args=[self.server.pk])
-        with _persist_stub(_SERVER_OPTIONS_CONFIG_GET, **{"config-set": requests.ConnectionError("reply lost")}) as kea:
+        with _persist_stub(
+            _EMPTY_SERVER_OPTIONS_CONFIG_GET, **{"config-set": requests.ConnectionError("reply lost")}
+        ) as kea:
             response = self.client.post(
                 url,
                 {
@@ -1455,6 +1461,23 @@ class TestCombinedStatusBadgeError(_ViewTestBase):
 
 
 class TestConfigurationOptionIdentity(_ViewTestBase):
+    def test_concurrent_option_addition_aborts_before_configuration_write(self):
+        original = [{"code": 6, "data": "198.18.0.53"}]
+        added = {"code": 42, "data": "198.18.0.123", "never-send": True}
+        for scope in ("server", "subnet"):
+            for delete in (False, True):
+                with self.subTest(scope=scope, delete=delete):
+                    with _persist_stub(self._config(scope, original)):
+                        data = self._submitted(self.client.get(self._url(scope)))
+                    if delete:
+                        data["form-0-DELETE"] = "on"
+                    with _persist_stub(self._config(scope, [*original, added])) as kea:
+                        response = self.client.post(self._url(scope), data)
+                    self.assertNotIn("config-test", kea.commands())
+                    self.assertNotIn("config-set", kea.commands())
+                    messages = [str(message) for message in django_messages.get_messages(response.wsgi_request)]
+                    self.assertIn("DHCP Options changed or are ambiguous. Reload the form before saving.", messages)
+
     def test_class_specific_options_keep_distinct_values_and_metadata(self):
         options = [
             {

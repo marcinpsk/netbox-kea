@@ -1927,6 +1927,9 @@ _CONFIG_GET_NO_SUBNET = [
 ]
 
 
+_DELETE_DNS_OPTION = [{"original_option": {"name": "domain-name-servers"}, "DELETE": True}]
+
+
 class TestSubnetOptionUpdate(TestCase):
     """Tests for KeaClient.subnet_update_options()."""
 
@@ -1951,7 +1954,7 @@ class TestSubnetOptionUpdate(TestCase):
                 _CONFIG_WRITE_RESP,
             ),
         ) as mock_post:
-            self.client.subnet_update_options(version=4, subnet_id=1, options=[])
+            self.client.subnet_update_options(version=4, subnet_id=1, options=_DELETE_DNS_OPTION)
         cmds = self._cmds(mock_post)
         self.assertEqual(cmds, ["config-get", "config-test", "config-set", "config-write"])
 
@@ -1968,7 +1971,7 @@ class TestSubnetOptionUpdate(TestCase):
                 _CONFIG_WRITE_RESP,
             ),
         ) as mock_post:
-            self.client.subnet_update_options(version=4, subnet_id=1, options=new_opts)
+            self.client.subnet_update_options(version=4, subnet_id=1, options=[*_DELETE_DNS_OPTION, *new_opts])
         payloads = self._payloads(mock_post)
         # Both config-test and config-set must carry the same updated option-data
         for cmd in ("config-test", "config-set"):
@@ -1976,8 +1979,8 @@ class TestSubnetOptionUpdate(TestCase):
             subnet = payload["arguments"]["Dhcp4"]["subnet4"][0]
             self.assertEqual(subnet["option-data"], new_opts, f"{cmd} payload has wrong option-data")
 
-    def test_clears_option_data_when_empty_list_given(self):
-        """Passing options=[] removes all existing options from the subnet in config-test and config-set."""
+    def test_clears_option_data_with_explicit_deletion(self):
+        """Explicit deletion removes the existing subnet option in config-test and config-set."""
         with patch.object(
             self.client._session,
             "post",
@@ -1988,7 +1991,7 @@ class TestSubnetOptionUpdate(TestCase):
                 _CONFIG_WRITE_RESP,
             ),
         ) as mock_post:
-            self.client.subnet_update_options(version=4, subnet_id=1, options=[])
+            self.client.subnet_update_options(version=4, subnet_id=1, options=_DELETE_DNS_OPTION)
         payloads = self._payloads(mock_post)
         for cmd in ("config-test", "config-set"):
             payload = next(p for p in payloads if p["command"] == cmd)
@@ -2018,7 +2021,7 @@ class TestSubnetOptionUpdate(TestCase):
             ),
         ):
             with self.assertRaises(PartialPersistError):
-                self.client.subnet_update_options(version=4, subnet_id=1, options=[])
+                self.client.subnet_update_options(version=4, subnet_id=1, options=_DELETE_DNS_OPTION)
 
     def test_skips_config_test_gracefully_when_not_supported(self):
         """If config-test returns result=2, config-set and config-write still proceed."""
@@ -2032,7 +2035,7 @@ class TestSubnetOptionUpdate(TestCase):
                 _CONFIG_WRITE_RESP,
             ),
         ) as mock_post:
-            self.client.subnet_update_options(version=4, subnet_id=1, options=[])
+            self.client.subnet_update_options(version=4, subnet_id=1, options=_DELETE_DNS_OPTION)
         # Must not raise; both config-set and config-write must have been called
         cmds = self._cmds(mock_post)
         self.assertIn("config-set", cmds)
@@ -2073,7 +2076,7 @@ class TestSubnetOptionUpdate(TestCase):
                 _CONFIG_GET_WITH_SUBNET, _CONFIG_TEST_OK_RESP, _CONFIG_SET_OK_RESP, _CONFIG_WRITE_RESP
             ),
         ):
-            result = self.client.subnet_update_options(version=4, subnet_id=1, options=[])
+            result = self.client.subnet_update_options(version=4, subnet_id=1, options=_DELETE_DNS_OPTION)
         self.assertIsNone(result)
 
     def test_raises_kea_config_test_error_on_config_test_failure(self):
@@ -2085,7 +2088,7 @@ class TestSubnetOptionUpdate(TestCase):
             side_effect=_side_effects(_CONFIG_GET_WITH_SUBNET, _CONFIG_TEST_FAIL_RESP),
         ):
             with self.assertRaises(KeaConfigTestError):
-                self.client.subnet_update_options(version=4, subnet_id=1, options=[])
+                self.client.subnet_update_options(version=4, subnet_id=1, options=_DELETE_DNS_OPTION)
 
     def test_finds_subnet_inside_shared_network(self):
         """subnet_update_options locates subnet inside shared-networks when not at top-level."""
@@ -2164,7 +2167,7 @@ class TestServerOptionsUpdate(TestCase):
                 _CONFIG_WRITE_RESP,
             ),
         ) as mock_post:
-            self.client.server_update_options(version=4, options=[])
+            self.client.server_update_options(version=4, options=_DELETE_DNS_OPTION)
         self.assertEqual(self._cmds(mock_post), ["config-get", "config-test", "config-set", "config-write"])
 
     def test_replaces_option_data_in_config_test_payload(self):
@@ -2180,13 +2183,13 @@ class TestServerOptionsUpdate(TestCase):
                 _CONFIG_WRITE_RESP,
             ),
         ) as mock_post:
-            self.client.server_update_options(version=4, options=new_opts)
+            self.client.server_update_options(version=4, options=[*_DELETE_DNS_OPTION, *new_opts])
         payloads = self._payloads(mock_post)
         test_payload = next(p for p in payloads if p["command"] == "config-test")
         self.assertEqual(test_payload["arguments"]["Dhcp4"]["option-data"], new_opts)
 
-    def test_clears_option_data_when_empty_list_given(self):
-        """Passing options=[] removes all existing server-level options."""
+    def test_clears_option_data_with_explicit_deletion(self):
+        """Explicit deletion removes the existing server option."""
         with patch.object(
             self.client._session,
             "post",
@@ -2197,7 +2200,7 @@ class TestServerOptionsUpdate(TestCase):
                 _CONFIG_WRITE_RESP,
             ),
         ) as mock_post:
-            self.client.server_update_options(version=4, options=[])
+            self.client.server_update_options(version=4, options=_DELETE_DNS_OPTION)
         payloads = self._payloads(mock_post)
         test_payload = next(p for p in payloads if p["command"] == "config-test")
         self.assertEqual(test_payload["arguments"]["Dhcp4"]["option-data"], [])
@@ -2215,7 +2218,7 @@ class TestServerOptionsUpdate(TestCase):
             ),
         ):
             with self.assertRaises(PartialPersistError):
-                self.client.server_update_options(version=4, options=[])
+                self.client.server_update_options(version=4, options=_DELETE_DNS_OPTION)
 
     def test_skips_config_test_gracefully_when_not_supported(self):
         """If config-test returns result=2, config-set and config-write still proceed."""
@@ -2229,7 +2232,7 @@ class TestServerOptionsUpdate(TestCase):
                 _CONFIG_WRITE_RESP,
             ),
         ) as mock_post:
-            self.client.server_update_options(version=4, options=[])
+            self.client.server_update_options(version=4, options=_DELETE_DNS_OPTION)
         cmds = self._cmds(mock_post)
         self.assertIn("config-set", cmds)
         self.assertIn("config-write", cmds)
@@ -2267,7 +2270,7 @@ class TestServerOptionsUpdate(TestCase):
                 _SERVER_CONFIG_GET_V4, _CONFIG_TEST_OK_RESP, _CONFIG_SET_OK_RESP, _CONFIG_WRITE_RESP
             ),
         ):
-            result = self.client.server_update_options(version=4, options=[])
+            result = self.client.server_update_options(version=4, options=_DELETE_DNS_OPTION)
         self.assertIsNone(result)
 
     def test_raises_kea_config_test_error_on_config_test_failure(self):
@@ -2279,7 +2282,7 @@ class TestServerOptionsUpdate(TestCase):
             side_effect=_side_effects(_SERVER_CONFIG_GET_V4, _CONFIG_TEST_FAIL_RESP),
         ):
             with self.assertRaises(KeaConfigTestError):
-                self.client.server_update_options(version=4, options=[])
+                self.client.server_update_options(version=4, options=_DELETE_DNS_OPTION)
 
 
 # TestLeaseUpdate
