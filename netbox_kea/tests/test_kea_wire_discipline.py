@@ -232,6 +232,27 @@ def test_wire_fstrings_allow_fixed_command_segments(expression):
     assert len(wd.scan_source(f"value = {expression}")) == 1
 
 
+@pytest.mark.parametrize("command", sorted(wd.WIRE_COMMANDS))
+def test_every_command_family_has_dynamic_guard_coverage(command):
+    for prefix in {command.split("-", 1)[0], command.rsplit("-", 1)[0]}:
+        source = f'client.command(f"{prefix}-{{operation}}", service=services)'
+        assert len(wd.scan_source(source)) == 1
+
+
+@pytest.mark.parametrize(
+    "expression",
+    [
+        'f"dhcp-{operation} failed"',
+        'f"statistic-{operation} returned no data"',
+        'f"version-number-{version}"',
+        'f"{label}"',
+        'f"{label}-get"',
+    ],
+)
+def test_unrelated_dynamic_strings_are_ignored(expression):
+    assert wd.scan_source(f"value = {expression}") == []
+
+
 @pytest.mark.parametrize("key", ["subnet", "pool", "pools", "name", "state", "identifier", "description", "interface"])
 def test_form_fields_are_not_wire_literals(key):
     assert wd.scan_source(f"value = cleaned_data[{key!r}]", "forms.py") == []

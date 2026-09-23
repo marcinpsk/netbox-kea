@@ -340,8 +340,7 @@ WIRE_LITERALS = WIRE_COMMANDS | WIRE_PAYLOAD_KEYS | WIRE_FAMILY_KEYS | _ARGUMENT
 _WIRE_FSTRING = re.compile(
     r"(?:"
     r"(?:subnet|Dhcp|dhcp)\{\}"
-    r"|(?:subnet|lease|network|stat-lease)(?:[46]|\{\})-(?:[a-z0-9-]|\{\})+"
-    r"|(?:config|reservation|option)-(?:[a-z0-9-]|\{\})*\{\}(?:[a-z0-9-]|\{\})*"
+    r"|option-(?:[a-z0-9-]|\{\})*\{\}(?:[a-z0-9-]|\{\})*"
     r")\Z"
 )
 
@@ -450,7 +449,13 @@ class _Scanner(ast.NodeVisitor):
             for value in node.values
         )
         is_field = shape == "dhcp{}" and self._is_model_field(node)
-        if not is_field and (_WIRE_FSTRING.fullmatch(shape) or shape in WIRE_LITERALS - _ARGUMENTS_KEYS):
+        # Match fixed command text against the same vocabulary as plain literals.
+        # A leading placeholder alone does not identify a Kea command family.
+        is_command = False
+        if "{}" in shape and not shape.startswith("{}"):
+            command_pattern = re.compile(re.escape(shape).replace(r"\{\}", "[a-z0-9-]+"))
+            is_command = any(command_pattern.fullmatch(command) for command in WIRE_COMMANDS)
+        if not is_field and (is_command or _WIRE_FSTRING.fullmatch(shape) or shape in WIRE_LITERALS - _ARGUMENTS_KEYS):
             self._record(node, ast.unparse(node))
         for value in node.values:
             if isinstance(value, ast.FormattedValue):
