@@ -36,11 +36,13 @@ out of CI so CodeRabbit can run its own analysis on pull requests.
 
 | Rule id | Severity | Catches |
 | --- | --- | --- |
+| `kea-config-phase-without-reply-validation` | error | Direct config-test, config-set, or config-write calls that bypass `_config_phase_command()` and its single-reply validation. |
 | `kea-sync-hostname-unvalidated` | error | Raw hostname reads in lease sync and cleanup indexing that bypass the shared string-or-null validator. |
 | `kea-get-client-missing-version` | warning | `server.get_client()` without `version=` (wrong daemon on dual-URL servers). |
 | `kea-exception-detail-in-response` | error | `str(exc)` / f-string of a caught exception leaked into `messages.*` / HTTP / DRF responses. |
 | `kea-command-result-indexed-without-guard` | error | `client.command(...)[0]` indexed directly, before validating the response shape. |
 | `kea-reservation-command-outside-adapter` | error | A `reservation-*` Kea command sent outside `kea.py`, which would put raw Reservation records in front of a consumer that cannot read their keys. |
+| `kea-config-read-modify-write-without-reader` | error | A `config-get` read in a method that calls `_apply_config()`, bypassing `_config_for_update()` and its `Dhcp4`/`Dhcp6` shape check. |
 
 ## Running locally
 

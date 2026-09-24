@@ -62,6 +62,7 @@ class TestReservationMutationViews(_ViewTestBase):
     def test_capability_failure_leaves_the_add_form_visible_but_disables_save(self):
         responses = {
             "list-commands": RuntimeError("capability read failed"),
+            "config-get": RuntimeError("configuration read failed"),
             "subnet4-list": _subnet_list(4, [{"id": 20, "subnet": "198.18.0.0/24"}]),
         }
         url = reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk])
@@ -104,6 +105,35 @@ class TestReservationMutationViews(_ViewTestBase):
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Configuration persistence is disabled.")
+
+    def test_create_skips_the_pool_overlap_check_without_an_error_log(self):
+        """An absent subnet_cmds hook or subnet is an optional check, not an error."""
+        raw = {"subnet-id": 20, "hw-address": "aa:bb:cc:dd:ee:ff", "ip-address": "198.18.0.20"}
+        for result in (2, 3):
+            responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
+            responses.update(
+                {
+                    "subnet4-get": {"result": result, "text": "not available"},
+                    "reservation-add": {"result": 0},
+                    "reservation-get": _res_get(raw),
+                }
+            )
+            with (
+                self.subTest(result=result),
+                stub_kea(responses) as kea,
+                self.assertNoLogs("netbox_kea.views.reservation_mutations", level="ERROR"),
+            ):
+                response = self.client.post(
+                    reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk]),
+                    {
+                        "subnet_cidr": "198.18.0.0/24",
+                        "ip_address": raw["ip-address"],
+                        "identifier_type": "hw-address",
+                        "identifier": "AA-BB-CC-DD-EE-FF",
+                    },
+                )
+                self.assertEqual(response.status_code, 302)
+                self.assertIn("reservation-add", kea.commands())
 
     def test_create_uses_the_typed_operation_and_emits_one_typed_signal(self):
         responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
@@ -162,7 +192,10 @@ class TestReservationMutationViews(_ViewTestBase):
         self.assertIn("Reservation created", journal.comments)
         self.assertIn("aa:bb:cc:dd:ee:ff", journal.comments)
 
-    def test_create_logs_overlap_probe_failure_as_a_warning(self):
+    def test_create_with_overlapping_pool_succeeds_with_warning(self):
+        from django.contrib import messages
+        from django.contrib.messages import get_messages
+
         responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
         raw = {
             "subnet-id": 20,
@@ -170,15 +203,85 @@ class TestReservationMutationViews(_ViewTestBase):
             "ip-address": "198.18.0.20",
         }
         responses.update({"reservation-add": {"result": 0}, "reservation-get": _res_get(raw)})
+        responses["subnet4-get"] = {
+            "result": 0,
+            "arguments": {
+                "subnet4": [
+                    {
+                        "id": 20,
+                        "subnet": "198.18.0.0/24",
+                        "pools": [{"pool": "198.18.0.10-198.18.0.30"}],
+                    }
+                ]
+            },
+        }
+
+        with stub_kea(responses):
+            response = self.client.post(
+                reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk]),
+                {
+                    "subnet_cidr": "198.18.0.0/24",
+                    "ip_address": "198.18.0.20",
+                    "identifier_type": "hw-address",
+                    "identifier": "aa:bb:cc:dd:ee:ff",
+                },
+            )
+
+        self.assertEqual(response.status_code, 302)
+        feedback = list(get_messages(response.wsgi_request))
+        self.assertTrue(any(message.level == messages.SUCCESS for message in feedback))
+        self.assertTrue(
+            any(
+                message.level == messages.WARNING
+                and "198.18.0.20 is within existing pool 198.18.0.10-198.18.0.30" in str(message)
+                for message in feedback
+            )
+        )
+
+    def test_a_malformed_pool_entry_does_not_stop_the_overlap_check(self):
+        from django.contrib import messages
+        from django.contrib.messages import get_messages
+
+        for malformed in ({"pool": "invalid"}, "not-a-pool", {"pool": 7}, {"pool": "198.18.0.30-198.18.0.10"}):
+            with self.subTest(malformed=malformed):
+                responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
+                raw = {"subnet-id": 20, "hw-address": "aa:bb:cc:dd:ee:ff", "ip-address": "198.18.0.20"}
+                responses.update({"reservation-add": {"result": 0}, "reservation-get": _res_get(raw)})
+                pools = [malformed, {"pool": "198.18.0.10-198.18.0.30"}]
+                responses["subnet4-get"] = {
+                    "result": 0,
+                    "arguments": {"subnet4": [{"id": 20, "subnet": "198.18.0.0/24", "pools": pools}]},
+                }
+                with stub_kea(responses), self.assertNoLogs("netbox_kea.views.reservation_mutations", "ERROR"):
+                    response = self.client.post(
+                        reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk]),
+                        {
+                            "subnet_cidr": "198.18.0.0/24",
+                            "ip_address": "198.18.0.20",
+                            "identifier_type": "hw-address",
+                            "identifier": "aa:bb:cc:dd:ee:ff",
+                        },
+                    )
+
+                self.assertEqual(response.status_code, 302)
+                self.assertTrue(
+                    any(
+                        message.level == messages.WARNING
+                        and "198.18.0.20 is within existing pool 198.18.0.10-198.18.0.30" in str(message)
+                        for message in get_messages(response.wsgi_request)
+                    )
+                )
+
+    def test_a_failed_overlap_read_is_logged_as_a_warning(self):
+        responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
+        raw = {"subnet-id": 20, "hw-address": "aa:bb:cc:dd:ee:ff", "ip-address": "198.18.0.20"}
+        responses.update({"reservation-add": {"result": 0}, "reservation-get": _res_get(raw)})
+        responses["subnet4-get"] = requests.ConnectionError("Kea is unreachable")
 
         with (
-            patch(
-                "netbox_kea.views.reservation_mutations._warn_reservation_pool_overlap",
-                autospec=True,
-                side_effect=ValueError("malformed pool"),
-            ),
-            self.assertLogs("netbox_kea.views.reservation_mutations", level="WARNING") as logs,
             stub_kea(responses),
+            self.assertNoLogs("netbox_kea.views.reservation_mutations", "ERROR"),
+            self.assertLogs("netbox_kea.views.reservation_mutations", "WARNING") as logs,
         ):
             response = self.client.post(
                 reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk]),
@@ -191,7 +294,7 @@ class TestReservationMutationViews(_ViewTestBase):
             )
 
         self.assertEqual(response.status_code, 302)
-        self.assertTrue(any("overlap" in message.lower() for message in logs.output))
+        self.assertIn("Could not check Reservation pool overlap", logs.output[0])
 
     def test_a_journal_validation_error_does_not_lose_the_applied_creation(self):
         """A save signal can raise ValidationError, which is not a ValueError the view catches."""
@@ -202,7 +305,9 @@ class TestReservationMutationViews(_ViewTestBase):
 
         responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
         raw = {"subnet-id": 20, "hw-address": "aa:bb:cc:dd:ee:ff", "ip-address": "198.18.0.20"}
-        responses.update({"reservation-add": {"result": 0}, "reservation-get": _res_get(raw)})
+        responses.update(
+            {"subnet4-get": {"result": 3}, "reservation-add": {"result": 0}, "reservation-get": _res_get(raw)}
+        )
 
         def reject(sender, **kwargs):
             raise ValidationError("journal rejected by a save signal")

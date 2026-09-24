@@ -12,6 +12,7 @@ from utilities.forms.rendering import FieldSet
 
 from . import constants
 from .constants import Family
+from .dhcp_options import parse_dhcp_option
 from .models import Server
 from .reservation_transfer import MAX_DOCUMENT_BYTES as MAX_TRANSFER_DOCUMENT_BYTES
 from .reservations import (
@@ -310,8 +311,10 @@ class BaseLeasesSarchForm(forms.Form):
     def __init__(
         self,
         *args,
-        subnet_choices: list[tuple[str, int]] | None = None,
+        subnet_choices: tuple[tuple[str, int], ...] = (),
         subnet_cmds_available: bool = True,
+        subnet_diagnostics: tuple[str, ...] = (),
+        subnet_catalogue_unavailable: bool = False,
         **kwargs,
     ) -> None:
         """Stash the configured-subnet list so the template can build the Search combobox.
@@ -321,10 +324,14 @@ class BaseLeasesSarchForm(forms.Form):
         or *Subnet ID* — there is no separate subnet selector field.
         ``subnet_cmds_available`` is False when the hook that supplies those choices is
         not loaded, which the template reports instead of showing an empty combobox.
+        ``subnet_diagnostics`` are the Subnet Catalogue messages the template shows inline,
+        as an error when ``subnet_catalogue_unavailable`` and as a warning otherwise.
         """
         super().__init__(*args, **kwargs)
-        self.subnet_choices: list[tuple[str, int]] = subnet_choices or []
+        self.subnet_choices = subnet_choices
         self.subnet_cmds_available = subnet_cmds_available
+        self.subnet_diagnostics = subnet_diagnostics
+        self.subnet_catalogue_unavailable = subnet_catalogue_unavailable
 
     def clean(self) -> dict[str, Any] | None:
         """Validate and normalise search fields according to the selected search type."""
@@ -599,9 +606,7 @@ class Reservation4Form(forms.Form):
             network = ipaddress.IPv4Network(value, strict=True)
         except ValueError as exc:
             raise forms.ValidationError("Enter a valid IPv4 subnet CIDR (e.g. 10.0.0.0/24).") from exc
-        # Kea reports subnets in canonical form; subnet_id_from_cidr() matches by
-        # exact string, so a non-canonical but valid input (e.g. a netmask like
-        # "/255.255.255.0" instead of "/24") would otherwise never match.
+        # Use the canonical CIDR form accepted by configured_subnet_id_from_cidr().
         return str(network)
 
     def clean_ip_address(self) -> str:
@@ -702,9 +707,7 @@ class Reservation6Form(forms.Form):
             network = ipaddress.IPv6Network(value, strict=True)
         except ValueError as exc:
             raise forms.ValidationError("Enter a valid IPv6 subnet CIDR (e.g. 2001:db8::/48).") from exc
-        # Kea reports subnets in canonical (compressed) form; subnet_id_from_cidr()
-        # matches by exact string, so a valid but expanded address (e.g.
-        # "2001:0db8:0000:.../32") would otherwise never match.
+        # Use the canonical CIDR form accepted by configured_subnet_id_from_cidr().
         return str(network)
 
     def clean_ip_addresses(self) -> str:
@@ -1262,7 +1265,39 @@ class SubnetOptionsForm(forms.Form):
     )
 
 
-SubnetOptionsFormSet = forms.formset_factory(SubnetOptionsForm, extra=1, can_delete=True)
+class ConfigurationOptionsForm(SubnetOptionsForm):
+    """Edit a configuration option while retaining its original identity."""
+
+    original_option = forms.JSONField(required=False, widget=forms.HiddenInput)
+
+    def __init__(self, *args, **kwargs):
+        """Allow code-only rows and suppression entries to omit displayed values."""
+        super().__init__(*args, **kwargs)
+        self.fields["name"].required = False
+        self.fields["data"].required = False
+
+    def clean_original_option(self):
+        """Validate the original identity with the shared DHCP Option parser."""
+        identity = self.cleaned_data.get("original_option")
+        if identity is not None:
+            try:
+                parse_dhcp_option(identity)
+            except ValueError as exc:
+                raise forms.ValidationError("Invalid original DHCP Option identity.") from exc
+        return identity
+
+    def clean(self):
+        """Require an option name for a new row or an existing name-only row."""
+        data = super().clean()
+        identity = data.get("original_option")
+        if not data.get("name") and (not isinstance(identity, dict) or identity.get("code") is None):
+            self.add_error("name", "An option name is required unless the existing option has a code.")
+        if identity is None and not data.get("data"):
+            self.add_error("data", "This field is required.")
+        return data
+
+
+SubnetOptionsFormSet = forms.formset_factory(ConfigurationOptionsForm, extra=1, can_delete=True)
 
 
 class ReservationOptionsForm(SubnetOptionsForm):

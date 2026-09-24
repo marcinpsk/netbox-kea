@@ -7,6 +7,21 @@
 #
 # Rule-test fixtures live in .opengrep/tests/; run them with scripts/opengrep-test.sh.
 rules:
+  - id: kea-config-phase-without-reply-validation
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Send config-test, config-set, and config-write through _config_phase_command()
+      so each phase requires one well-formed reply before accepting a result code.
+    paths:
+      exclude:
+        - "**/tests/**"
+    pattern-either:
+      - pattern: $CLIENT.command("=~/^config-(test|set|write)$/", ...)
+      - pattern: $CLIENT.command(..., command="=~/^config-(test|set|write)$/", ...)
+      - pattern: $CLIENT._config_mutation_command("config-set", ...)
+      - pattern: $CLIENT._config_mutation_command(..., command="config-set", ...)
+
   - id: kea-sync-hostname-unvalidated
     languages: [python]
     severity: ERROR
@@ -137,3 +152,30 @@ rules:
       - pattern-either:
           - pattern: $C.command("=~/^reservation-/", ...)
           - pattern: $C.command(command="=~/^reservation-/", ...)
+
+  - id: kea-config-read-modify-write-without-reader
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Read the live configuration for a read-modify-write through
+      KeaClient._config_for_update(). It validates the config-get reply and the
+      Dhcp4/Dhcp6 block before the mutation reads it, and _config_entries()
+      validates each list the mutation walks. A hand-parsed config-get reply
+      turns a malformed block into an AttributeError and an HTTP 500.
+    metadata:
+      category: correctness
+      confidence: HIGH
+      references:
+        - "CLAUDE.md: Validate Kea response shape before indexing"
+    paths:
+      exclude:
+        - "**/tests/**"
+        - "**/migrations/**"
+    patterns:
+      - pattern-inside: |
+          def $F(...):
+            ...
+            $S._apply_config(...)
+      - pattern-either:
+          - pattern: $C.command("config-get", ...)
+          - pattern: $C.command(command="config-get", ...)

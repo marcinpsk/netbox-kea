@@ -24,8 +24,11 @@ which does **not** call ``Model.clean()`` and therefore does not trigger live Ke
 connectivity checks.
 """
 
+from copy import deepcopy
+
 import requests
 from django.contrib import messages as django_messages
+from django.contrib.messages import get_messages
 from django.test import override_settings
 from django.urls import reverse
 
@@ -39,6 +42,36 @@ _EMPTY_CONFIG4 = {"result": 0, "arguments": {"Dhcp4": {"subnet4": [], "shared-ne
 _EMPTY_CONFIG6 = {"result": 0, "arguments": {"Dhcp6": {"subnet6": [], "shared-networks": []}}}
 _STAT_ABSENT4 = {"result": 2, "text": "unknown command 'stat-lease4-get'"}
 _STAT_ABSENT6 = {"result": 2, "text": "unknown command 'stat-lease6-get'"}
+_ABSENT_READ_HOOKS = {
+    "subnet4-list": {"result": 2, "text": "subnet_cmds is not loaded"},
+    "subnet6-list": {"result": 2, "text": "subnet_cmds is not loaded"},
+    "stat-lease4-get": _STAT_ABSENT4,
+    "stat-lease6-get": _STAT_ABSENT6,
+}
+
+
+def _edit_responses(version, subnet_response, config_response):
+    """Describe consistent identity and declared configuration for the edit form."""
+    subnet = deepcopy(subnet_response["arguments"][f"subnet{version}"][0])
+    identity = {"id": subnet["id"], "subnet": subnet["subnet"]}
+    configuration = deepcopy(config_response)
+    if configuration.get("result") == 0 and isinstance(configuration.get("arguments"), dict):
+        service = configuration["arguments"][f"Dhcp{version}"]
+        members = service.setdefault(f"subnet{version}", [])
+        for network in service.get("shared-networks", []):
+            if any(
+                item.get("id") == subnet["id"] for item in network.get(f"subnet{version}", []) if isinstance(item, dict)
+            ):
+                members = network[f"subnet{version}"]
+                identity["shared-network-name"] = network["name"]
+                break
+        members[:] = [item for item in members if not isinstance(item, dict) or item.get("id") != subnet["id"]]
+        members.append(subnet)
+    return {
+        f"subnet{version}-list": _subnet_list(version, [identity]),
+        f"subnet{version}-get": subnet_response,
+        "config-get": configuration,
+    }
 
 
 def _pool_add_registry(subnet_id: int, cidr: str) -> dict:
@@ -62,9 +95,19 @@ def _pool_add_registry(subnet_id: int, cidr: str) -> dict:
 class TestServerSubnets4View(_ViewTestBase):
     """GET /plugins/kea/servers/<pk>/subnets4/"""
 
+    def test_configured_subnet_offers_options_without_identity_hook(self):
+        config = {"result": 0, "arguments": {"Dhcp4": {"subnet4": [{"id": 7, "subnet": "198.18.0.0/24"}]}}}
+        with stub_kea({**_ABSENT_READ_HOOKS, "config-get": config}):
+            response = self.client.get(reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk]))
+        options_url = reverse("plugins:netbox_kea:server_subnet4_options_edit", args=[self.server.pk, 7])
+        self.assertContains(response, f'href="{options_url}"')
+        self.assertContains(response, "Edit options")
+        wipe_url = reverse("plugins:netbox_kea:server_subnet4_wipe_leases", args=[self.server.pk, 7])
+        self.assertNotContains(response, f'href="{wipe_url}"')
+
     def test_get_returns_200(self):
         url = reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk])
-        with stub_kea({"config-get": _EMPTY_CONFIG4, "stat-lease4-get": _STAT_ABSENT4}):
+        with stub_kea({**_ABSENT_READ_HOOKS, "config-get": _EMPTY_CONFIG4, "stat-lease4-get": _STAT_ABSENT4}):
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
 
@@ -73,7 +116,7 @@ class TestServerSubnets4View(_ViewTestBase):
         from netbox_kea.views.subnets import ServerDHCP4SubnetsView
 
         url = reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk])
-        with stub_kea({"config-get": _EMPTY_CONFIG4, "stat-lease4-get": _STAT_ABSENT4}):
+        with stub_kea({**_ABSENT_READ_HOOKS, "config-get": _EMPTY_CONFIG4, "stat-lease4-get": _STAT_ABSENT4}):
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         self.assertIs(response.context["tab"], ServerDHCP4SubnetsView.tab)
@@ -93,7 +136,7 @@ class TestServerSubnets6View(_ViewTestBase):
 
     def test_get_returns_200(self):
         url = reverse("plugins:netbox_kea:server_subnets6", args=[self.server.pk])
-        with stub_kea({"config-get": _EMPTY_CONFIG6, "stat-lease6-get": _STAT_ABSENT6}):
+        with stub_kea({**_ABSENT_READ_HOOKS, "config-get": _EMPTY_CONFIG6, "stat-lease6-get": _STAT_ABSENT6}):
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
 
@@ -106,7 +149,7 @@ class TestServerSubnets6View(_ViewTestBase):
         from netbox_kea.views.subnets import ServerDHCP4SubnetsView
 
         url = reverse("plugins:netbox_kea:server_subnets6", args=[self.server.pk])
-        with stub_kea({"config-get": _EMPTY_CONFIG6, "stat-lease6-get": _STAT_ABSENT6}):
+        with stub_kea({**_ABSENT_READ_HOOKS, "config-get": _EMPTY_CONFIG6, "stat-lease6-get": _STAT_ABSENT6}):
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         self.assertIs(response.context["tab"], ServerDHCP4SubnetsView.tab)
@@ -115,6 +158,42 @@ class TestServerSubnets6View(_ViewTestBase):
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestSubnetEnrichment(_ViewTestBase):
     """Subnet views must pass option-data and pool information through to the table."""
+
+    def test_subnet_tab_and_combined_view_show_identical_rows(self):
+        subnet = {
+            "id": 7,
+            "subnet": "198.18.1.0/24",
+            "pools": [{"pool": "198.18.1.64/26"}],
+            "option-data": [{"code": 3, "name": "routers", "data": "198.18.1.1"}],
+            "ddns-qualifying-suffix": "example.test",
+        }
+        responses = {
+            "subnet4-list": _subnet_list(4, [{"id": 7, "subnet": "198.18.1.0/24", "shared-network-name": "clients"}]),
+            "config-get": {
+                "result": 0,
+                "arguments": {"Dhcp4": {"shared-networks": [{"name": "clients", "subnet4": [subnet]}]}},
+            },
+            "stat-lease4-get": _STAT_ABSENT4,
+        }
+        with stub_kea({**_ABSENT_READ_HOOKS, **responses}):
+            tab_response = self.client.get(reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk]))
+            combined_response = self.client.get(
+                reverse("plugins:netbox_kea:combined_subnets4"), {"server": self.server.pk}
+            )
+
+        self.assertEqual(tab_response.status_code, 200)
+        self.assertEqual(combined_response.status_code, 200)
+        self.assertEqual(combined_response.context["errors"], [])
+        tab_rows = list(tab_response.context["table"].data)
+        combined_rows = list(combined_response.context["table"].data)
+        self.assertEqual(len(tab_rows), 1)
+        self.assertEqual(len(combined_rows), 1)
+        self.assertEqual(combined_rows[0]["pools"], ["198.18.1.64-198.18.1.127"])
+        fields = ("id", "subnet", "pools", "options", "shared_network", "ddns_qualifying_suffix", "can_change")
+        self.assertEqual(
+            [{field: row[field] for field in fields} for row in tab_rows],
+            [{field: row[field] for field in fields} for row in combined_rows],
+        )
 
     def _config_with_subnet(self, version: int) -> list[dict]:
         """Return a mock config-get response with one subnet including options and pools."""
@@ -133,7 +212,9 @@ class TestSubnetEnrichment(_ViewTestBase):
 
     def _stub(self):
         """Subnet list with one option/pool-carrying subnet; stat_cmds hook absent."""
-        return stub_kea({"config-get": self._config_with_subnet(4)[0], "stat-lease4-get": _STAT_ABSENT4})
+        return stub_kea(
+            {**_ABSENT_READ_HOOKS, "config-get": self._config_with_subnet(4)[0], "stat-lease4-get": _STAT_ABSENT4}
+        )
 
     def test_subnet_table_includes_options_data(self):
         """Each subnet dict in the table must carry parsed option-data."""
@@ -168,6 +249,42 @@ class TestSubnetEnrichment(_ViewTestBase):
         first_row = next(iter(table.data))
         expected = int(ipaddress.ip_network("10.0.0.0/24").network_address)
         self.assertEqual(first_row["_subnet_sort_key"], expected)
+
+
+class TestSubnetSnapshotDiagnostics(_ViewTestBase):
+    def test_unavailable_catalogue_renders_an_error(self):
+        with stub_kea(
+            {
+                **_ABSENT_READ_HOOKS,
+                "subnet4-list": requests.ConnectionError("identity unavailable"),
+                "config-get": requests.ConnectionError("configuration unavailable"),
+                "stat-lease4-get": _STAT_ABSENT4,
+            }
+        ):
+            response = self.client.get(reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk]))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(list(response.context["table"].data), [])
+        self.assertTrue(any(message.level == django_messages.ERROR for message in response.context["messages"]))
+        self.assertContains(response, "Kea subnet identity facts are unavailable.")
+
+    def test_incomplete_catalogue_renders_usable_rows_with_a_warning(self):
+        with stub_kea(
+            {
+                **_ABSENT_READ_HOOKS,
+                "subnet4-list": _subnet_list(4, [{"id": 1, "subnet": "198.18.0.0/24"}]),
+                "config-get": {
+                    "result": 0,
+                    "arguments": {"Dhcp4": {"subnet4": [{"id": 1, "subnet": "198.18.0.0/24", "pools": "invalid"}]}},
+                },
+                "stat-lease4-get": _STAT_ABSENT4,
+            }
+        ):
+            response = self.client.get(reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk]))
+        self.assertContains(response, "198.18.0.0/24")
+        self.assertContains(response, "Kea returned a non-list Pool collection.")
+        levels = [message.level for message in response.context["messages"]]
+        self.assertIn(django_messages.WARNING, levels)
+        self.assertNotIn(django_messages.ERROR, levels)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -231,7 +348,13 @@ class TestSubnetUtilizationStats(_ViewTestBase):
     def test_utilization_percentage_shown_in_table(self):
         """25/100 addresses → '25%' utilization shown in subnets4 table."""
         url = reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk])
-        with stub_kea({"config-get": _config_with_one_subnet()[0], "stat-lease4-get": _STAT_LEASE4_RESPONSE[0]}):
+        with stub_kea(
+            {
+                **_ABSENT_READ_HOOKS,
+                "config-get": _config_with_one_subnet()[0],
+                "stat-lease4-get": _STAT_LEASE4_RESPONSE[0],
+            }
+        ):
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "25%")
@@ -239,14 +362,18 @@ class TestSubnetUtilizationStats(_ViewTestBase):
     def test_no_crash_when_stat_cmds_unavailable(self):
         """When stat_cmds hook is not loaded, subnets page must still render (200)."""
         url = reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk])
-        with stub_kea({"config-get": _config_with_one_subnet()[0], "stat-lease4-get": _STAT_ABSENT4}):
+        with stub_kea(
+            {**_ABSENT_READ_HOOKS, "config-get": _config_with_one_subnet()[0], "stat-lease4-get": _STAT_ABSENT4}
+        ):
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
 
     def test_zero_percent_when_no_leases_assigned(self):
         """0 assigned / 100 total → '0%' utilization."""
         url = reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk])
-        with stub_kea({"config-get": _config_with_one_subnet()[0], "stat-lease4-get": self._stat(0)}):
+        with stub_kea(
+            {**_ABSENT_READ_HOOKS, "config-get": _config_with_one_subnet()[0], "stat-lease4-get": self._stat(0)}
+        ):
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "0%")
@@ -254,7 +381,13 @@ class TestSubnetUtilizationStats(_ViewTestBase):
     def test_hundred_percent_when_fully_utilized(self):
         """All addresses assigned → '100%' utilization."""
         url = reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk])
-        with stub_kea({"config-get": _config_with_one_subnet()[0], "stat-lease4-get": self._stat(50, total=50)}):
+        with stub_kea(
+            {
+                **_ABSENT_READ_HOOKS,
+                "config-get": _config_with_one_subnet()[0],
+                "stat-lease4-get": self._stat(50, total=50),
+            }
+        ):
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "100%")
@@ -275,21 +408,32 @@ class TestServerSubnet4WipeView(_ViewTestBase):
     def test_get_returns_confirmation_page(self):
         """GET must show the wipe confirmation page with subnet info."""
         subnet = {"result": 0, "arguments": {"subnet4": [{"id": 42, "subnet": "10.0.0.0/24"}]}}
-        with stub_kea({"subnet4-get": subnet}):
+        with stub_kea(_edit_responses(4, subnet, _EMPTY_CONFIG4)):
             response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "10.0.0.0/24")
         self.assertContains(response, "42")
 
+    def test_get_names_the_live_subnet_not_the_cached_one(self):
+        """The confirmation must describe what the POST will act on, so it reads live."""
+        cached = {"result": 0, "arguments": {"subnet4": [{"id": 42, "subnet": "10.0.0.0/24"}]}}
+        live = {"result": 0, "arguments": {"subnet4": [{"id": 42, "subnet": "10.9.0.0/24"}]}}
+        with stub_kea({**_ABSENT_READ_HOOKS, **_edit_responses(4, cached, _EMPTY_CONFIG4)}):
+            self.client.get(reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk]))
+        with stub_kea(_edit_responses(4, live, _EMPTY_CONFIG4)):
+            response = self.client.get(self._url())
+        self.assertContains(response, "10.9.0.0/24")
+        self.assertNotContains(response, "10.0.0.0/24")
+
     def test_get_shows_form_when_subnet_fetch_fails(self):
         """GET must still return 200 even when the subnet-get Kea call fails."""
-        with stub_kea({"subnet4-get": {"result": 1, "text": "not found"}}):
+        with stub_kea({**_ABSENT_READ_HOOKS, "config-get": {"result": 1, "text": "unavailable"}}):
             response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
 
     def test_post_calls_lease_wipe_and_redirects(self):
         """POST must call lease_wipe on the client and redirect to the subnets tab."""
-        with stub_kea({"lease4-wipe": {"result": 0}}) as kea:
+        with stub_kea({**_ABSENT_READ_HOOKS, "lease4-wipe": {"result": 0}}) as kea:
             response = self.client.post(self._url(subnet_id=10))
         self.assertEqual(response.status_code, 302)
         self._assert_no_none_pk_redirect(response)
@@ -298,14 +442,14 @@ class TestServerSubnet4WipeView(_ViewTestBase):
 
     def test_post_on_kea_exception_shows_error_message(self):
         """POST that causes a KeaException must flash an error and redirect (no 500)."""
-        with stub_kea({"lease4-wipe": {"result": 1, "text": "hook not loaded"}}):
+        with stub_kea({**_ABSENT_READ_HOOKS, "lease4-wipe": {"result": 1, "text": "hook not loaded"}}):
             response = self.client.post(self._url())
         self.assertEqual(response.status_code, 302)
         self._assert_no_none_pk_redirect(response)
 
     def test_post_on_unexpected_exception_shows_error_message(self):
         """POST that raises an unexpected exception must redirect (no 500)."""
-        with stub_kea({"lease4-wipe": ValueError("unexpected")}):
+        with stub_kea({**_ABSENT_READ_HOOKS, "lease4-wipe": ValueError("unexpected")}):
             response = self.client.post(self._url())
         self.assertEqual(response.status_code, 302)
         self._assert_no_none_pk_redirect(response)
@@ -332,14 +476,14 @@ class TestServerSubnet6WipeView(_ViewTestBase):
 
     def test_get_returns_200(self):
         subnet = {"result": 0, "arguments": {"subnet6": [{"id": 7, "subnet": "2001:db8::/32"}]}}
-        with stub_kea({"subnet6-get": subnet}):
+        with stub_kea(_edit_responses(6, subnet, _EMPTY_CONFIG6)):
             response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "2001:db8::/32")
 
     def test_post_calls_lease_wipe_v6(self):
         """POST must call lease_wipe with version=6."""
-        with stub_kea({"lease6-wipe": {"result": 0}}) as kea:
+        with stub_kea({**_ABSENT_READ_HOOKS, "lease6-wipe": {"result": 0}}) as kea:
             response = self.client.post(self._url(subnet_id=7))
         self.assertEqual(response.status_code, 302)
         self.assertIn("lease6-wipe", kea.commands())
@@ -363,7 +507,7 @@ _SUBNET4_GET_FULL = [
                         {"name": "routers", "data": "10.0.0.1"},
                         {"name": "domain-name-servers", "data": "8.8.8.8"},
                     ],
-                    "valid-lft": 3600,
+                    "valid-lifetime": 3600,
                 }
             ]
         },
@@ -380,7 +524,7 @@ _SUBNET6_GET_FULL = [
                     "subnet": "2001:db8::/48",
                     "pools": [],
                     "option-data": [],
-                    "valid-lft": 3600,
+                    "valid-lifetime": 3600,
                 }
             ]
         },
@@ -402,12 +546,12 @@ class TestServerSubnet4EditView(_ViewTestBase):
         return reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, subnet_id])
 
     def _get_stub(self, subnet=None, config=None):
-        """GET chain: subnet{v}-get (prefill) then config-get (network/inherited data)."""
         return stub_kea(
-            {
-                "subnet4-get": subnet if subnet is not None else _SUBNET4_GET_FULL[0],
-                "config-get": config if config is not None else _CONFIG4_NO_NETWORKS[0],
-            }
+            _edit_responses(
+                4,
+                subnet if subnet is not None else _SUBNET4_GET_FULL[0],
+                config if config is not None else _CONFIG4_NO_NETWORKS[0],
+            )
         )
 
     def _post_stub(self, **overrides):
@@ -420,12 +564,58 @@ class TestServerSubnet4EditView(_ViewTestBase):
             "config-write": {"result": 0},
         }
         base.update(overrides)
-        return stub_kea(base)
+        return stub_kea({**_ABSENT_READ_HOOKS, **base})
 
     @staticmethod
     def _updated_subnet(kea):
         """The subnet object in the real subnet4-update payload."""
         return kea.bodies("subnet4-update")[0]["arguments"]["subnet4"][0]
+
+    def test_displayed_suppressed_options_preserve_metadata_unless_cleared(self):
+        options = [
+            {"code": 3, "data": "198.18.0.1", "never-send": True},
+            {"code": 6, "data": "198.18.0.53", "never-send": True, "csv-format": True},
+            {"code": 42, "data": "198.18.0.123", "never-send": True, "always-send": False},
+        ]
+        live = {"id": 42, "subnet": "198.18.0.0/24", "pools": [], "option-data": options}
+        responses = {
+            "subnet4-get": {"result": 0, "arguments": {"subnet4": [live]}},
+            "config-get": {"result": 0, "arguments": {"Dhcp4": {"subnet4": [live]}}},
+        }
+        for clear in (False, True):
+            with self.subTest(clear=clear), self._post_stub(**responses) as kea:
+                get = self.client.get(self._url())
+                initial = get.context["form"].initial
+                self.assertEqual(initial["gateway"], "198.18.0.1")
+                self.assertEqual(initial["dns_servers"], "198.18.0.53")
+                self.assertEqual(initial["ntp_servers"], "198.18.0.123")
+                data = {"subnet_cidr": live["subnet"], "pools": "", "shared_network": ""}
+                data.update(
+                    {field: "" if clear else initial[field] for field in ("gateway", "dns_servers", "ntp_servers")}
+                )
+                post = self.client.post(self._url(), data)
+                self.assertEqual(post.status_code, 302)
+                self.assertEqual(self._updated_subnet(kea)["option-data"], [] if clear else options)
+
+    def test_hidden_options_survive_blank_form_fields(self):
+        for option in (
+            {"code": 6, "never-send": True},
+            {"code": 6, "data": "", "never-send": True},
+            {"code": 6, "data": "C6120035", "csv-format": False},
+        ):
+            live = {"id": 42, "subnet": "198.18.0.0/24", "pools": [], "option-data": [option]}
+            responses = {
+                "subnet4-get": {"result": 0, "arguments": {"subnet4": [live]}},
+                "config-get": {"result": 0, "arguments": {"Dhcp4": {"subnet4": [live]}}},
+            }
+            with self.subTest(option=option), self._post_stub(**responses) as kea:
+                get = self.client.get(self._url())
+                self.assertEqual(get.context["form"].initial.get("dns_servers", ""), "")
+                post = self.client.post(
+                    self._url(), {"subnet_cidr": live["subnet"], "dns_servers": "", "shared_network": ""}
+                )
+                self.assertEqual(post.status_code, 302)
+                self.assertEqual(self._updated_subnet(kea)["option-data"], [option])
 
     def test_get_returns_200(self):
         """GET must render the edit form with status 200."""
@@ -440,9 +630,93 @@ class TestServerSubnet4EditView(_ViewTestBase):
         self.assertContains(response, "10.0.0.0/24")
         self.assertContains(response, "10.0.0.100-10.0.0.200")
 
+    def test_get_prefills_a_code_only_dns_option(self):
+        """A DNS option written by code renders in the form so a save does not drop it."""
+        subnet = deepcopy(_SUBNET4_GET_FULL[0])
+        subnet["arguments"]["subnet4"][0]["option-data"] = [
+            {"code": 6, "data": "10.0.0.53"},
+            {"name": "domain-name-servers", "space": "vendor-4491", "data": "10.0.0.99"},
+        ]
+        with self._get_stub(subnet=subnet):
+            response = self.client.get(self._url())
+        self.assertEqual(response.context["form"].initial["dns_servers"], "10.0.0.53")
+
+    def test_get_prefills_membership_from_the_live_declaration_when_the_catalogue_is_stale(self):
+        """A Subnet added after the catalogue was cached must not render as global."""
+        with stub_kea({**_ABSENT_READ_HOOKS, "config-get": _EMPTY_CONFIG4}):
+            self.client.get(reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk]))
+        member = {
+            "result": 0,
+            "arguments": {
+                "Dhcp4": {
+                    "subnet4": [],
+                    "shared-networks": [{"name": "net-alpha", "subnet4": [{"id": 42, "subnet": "10.0.0.0/24"}]}],
+                }
+            },
+        }
+        with self._get_stub(config=member):
+            response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["form"].initial["shared_network"], "net-alpha")
+
+    def test_get_leaves_unshowable_dns_entries_out_of_the_form(self):
+        """Binary and class-tagged entries have no form representation, so the field stays empty."""
+        subnet = deepcopy(_SUBNET4_GET_FULL[0])
+        subnet["arguments"]["subnet4"][0]["option-data"] = [
+            {"code": 6, "data": "0A000035", "csv-format": False},
+            {"code": 6, "data": "10.0.1.53", "client-classes": ["class-a"]},
+        ]
+        with self._get_stub(subnet=subnet):
+            response = self.client.get(self._url())
+        self.assertEqual(response.context["form"].initial.get("dns_servers", ""), "")
+
+    def test_get_prefills_one_router_but_leaves_a_router_array_out(self):
+        for data, expected in (("10.0.0.1", "10.0.0.1"), ("10.0.0.1, 10.0.0.2", "")):
+            subnet = deepcopy(_SUBNET4_GET_FULL[0])
+            subnet["arguments"]["subnet4"][0]["option-data"] = [{"code": 3, "data": data}]
+            with self.subTest(data=data), self._get_stub(subnet=subnet):
+                response = self.client.get(self._url())
+            self.assertEqual(response.context["form"].initial.get("gateway", ""), expected)
+
+    def test_get_prefills_membership_from_the_live_declaration_when_the_target_is_incomplete(self):
+        """An incomplete live declaration still decides membership; the cached catalogue never does."""
+        with stub_kea({**_ABSENT_READ_HOOKS, "config-get": _CONFIG4_NO_NETWORKS[0]}):
+            self.client.get(reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk]))
+        target = {"id": 42, "subnet": "10.0.0.0/24", "pools": [{"pool": "invalid"}]}
+        live = {"result": 0, "arguments": {"subnet4": [{**target, "pools": []}]}}
+        member = {
+            "result": 0,
+            "arguments": {"Dhcp4": {"subnet4": [], "shared-networks": [{"name": "clients", "subnet4": [target]}]}},
+        }
+        with stub_kea(
+            {
+                "subnet4-list": _subnet_list(4, [{"id": 42, "subnet": "10.0.0.0/24"}]),
+                "subnet4-get": live,
+                "config-get": member,
+            }
+        ):
+            response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["form"].initial["shared_network"], "clients")
+
+    def test_get_reads_the_live_configuration_on_every_visit(self):
+        """The edit form is a read-modify-write prefill, so it must not serve the display cache."""
+        with self._get_stub() as kea:
+            self.client.get(self._url())
+            first = kea.commands().count("config-get")
+            self.client.get(self._url())
+            second = kea.commands().count("config-get")
+        self.assertGreaterEqual(second - first, 1)
+
     def test_get_when_subnet_fetch_fails_redirects_with_error(self):
         """GET must redirect to the subnet list when the subnet-get Kea call fails."""
-        with stub_kea({"subnet4-get": {"result": 1, "text": "not found"}}):
+        with stub_kea(
+            {
+                **_ABSENT_READ_HOOKS,
+                "config-get": {"result": 1, "text": "unavailable"},
+                "subnet4-get": {"result": 1, "text": "unavailable"},
+            }
+        ):
             response = self.client.get(self._url())
         self.assertEqual(response.status_code, 302)
         self.assertIn("subnets", response.url)
@@ -488,7 +762,7 @@ class TestServerSubnet4EditView(_ViewTestBase):
     def test_post_invalid_form_rerenders_with_200(self):
         """POST with invalid data (bad gateway IP) must re-render the form."""
         # Invalid form re-renders after the network config-get, before any subnet4-update.
-        with stub_kea({"config-get": _CONFIG4_NO_NETWORKS[0]}) as kea:
+        with stub_kea({**_ABSENT_READ_HOOKS, "config-get": _CONFIG4_NO_NETWORKS[0]}) as kea:
             response = self.client.post(
                 self._url(subnet_id=42),
                 {
@@ -562,6 +836,34 @@ class TestServerSubnet4EditView(_ViewTestBase):
             )
         self.assertEqual(self._updated_subnet(kea)["ddns-qualifying-suffix"], "example.com.")
 
+    def test_post_blank_managed_options_explicitly_clears_values(self):
+        live = {
+            "id": 42,
+            "subnet": "198.18.0.0/24",
+            "option-data": [
+                {"code": 3, "data": "198.18.0.1"},
+                {"code": 6, "data": "198.18.0.53"},
+                {"code": 42, "data": "198.18.0.123"},
+            ],
+        }
+        responses = {
+            "subnet4-get": {"result": 0, "arguments": {"subnet4": [live]}},
+            "config-get": {"result": 0, "arguments": {"Dhcp4": {"subnet4": [live]}}},
+        }
+        with self._post_stub(**responses) as kea:
+            post = self.client.post(
+                self._url(),
+                {
+                    "subnet_cidr": live["subnet"],
+                    "pools": "",
+                    "gateway": "",
+                    "dns_servers": "",
+                    "ntp_servers": "",
+                },
+            )
+        self.assertEqual(post.status_code, 302)
+        self.assertEqual(self._updated_subnet(kea)["option-data"], [])
+
     def test_post_clears_ddns_qualifying_suffix_with_empty_string(self):
         """Clearing the DDNS field on edit must remove it from the subnet4-update payload.
 
@@ -622,13 +924,12 @@ class TestServerSubnet4EditView(_ViewTestBase):
         self.assertEqual(inherited["dns_servers"]["source"], "global")
 
     def test_get_inherited_options_empty_when_kea_config_fails(self):
-        """F5: When config-get raises KeaException, inherited_options is an empty dict."""
-        # subnet lookup succeeds; the network config-get fails (result 1 → KeaException).
+        """Subnet facts prefill the form without unavailable inherited options."""
         with self._get_stub(subnet=_SUBNET4_GET_FULL[0], config={"result": 1, "text": "err"}):
             response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
-        inherited = response.context.get("inherited_options", {})
-        self.assertEqual(inherited, {})
+        self.assertEqual(response.context["inherited_options"], {})
+        self.assertContains(response, "network assignment may be inaccurate")
 
     def test_get_inherited_options_excludes_field_already_set_in_subnet(self):
         """F5: Fields already set in the subnet itself are excluded from inherited_options."""
@@ -687,12 +988,12 @@ class TestServerSubnet6EditView(_ViewTestBase):
         return reverse("plugins:netbox_kea:server_subnet6_edit", args=[self.server.pk, subnet_id])
 
     def _get_stub(self, subnet=None, config=None):
-        """GET chain: subnet6-get (prefill) then config-get (network/inherited data)."""
         return stub_kea(
-            {
-                "subnet6-get": subnet if subnet is not None else _SUBNET6_GET_FULL[0],
-                "config-get": config if config is not None else _CONFIG6_NO_NETWORKS[0],
-            }
+            _edit_responses(
+                6,
+                subnet if subnet is not None else _SUBNET6_GET_FULL[0],
+                config if config is not None else _CONFIG6_NO_NETWORKS[0],
+            )
         )
 
     def _post_stub(self, **overrides):
@@ -705,7 +1006,7 @@ class TestServerSubnet6EditView(_ViewTestBase):
             "config-write": {"result": 0},
         }
         base.update(overrides)
-        return stub_kea(base)
+        return stub_kea({**_ABSENT_READ_HOOKS, **base})
 
     @staticmethod
     def _updated_subnet(kea):
@@ -830,8 +1131,7 @@ class TestServerSubnet4EditViewNetworkAssignment(_ViewTestBase):
         }
 
     def _get_stub(self, config):
-        """GET chain: subnet4-get (prefill) then config-get (network data drives the dropdown)."""
-        return stub_kea({"subnet4-get": _SUBNET4_GET_FULL[0], "config-get": config})
+        return stub_kea(_edit_responses(4, _SUBNET4_GET_FULL[0], config))
 
     def _post_stub(self, config, **overrides):
         """POST chain: config-get (current network + choices) + real subnet_update + network move.
@@ -851,7 +1151,7 @@ class TestServerSubnet4EditViewNetworkAssignment(_ViewTestBase):
             "network4-subnet-del": {"result": 0},
         }
         base.update(overrides)
-        return stub_kea(base)
+        return stub_kea({**_ABSENT_READ_HOOKS, **base})
 
     def test_get_shows_network_dropdown_with_available_networks(self):
         """GET must render the form with a shared_network dropdown listing available networks."""
@@ -971,11 +1271,11 @@ class TestServerSubnet4AddViewSharedNetwork(_ViewTestBase):
             "network4-subnet-add": {"result": 0},
         }
         base.update(overrides)
-        return stub_kea(base)
+        return stub_kea({**_ABSENT_READ_HOOKS, **base})
 
     def test_get_shows_shared_network_dropdown(self):
         """GET must render a shared_network dropdown populated from Kea config."""
-        with stub_kea({"config-get": _CONFIG4_NETWORKS_FOR_ADD[0]}):
+        with stub_kea({**_ABSENT_READ_HOOKS, "config-get": _CONFIG4_NETWORKS_FOR_ADD[0]}):
             response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "net-alpha")
@@ -1020,28 +1320,56 @@ class TestServerSubnet4AddViewSharedNetwork(_ViewTestBase):
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestSubnetEditNetworkChoicesNoneArguments(_ViewTestBase):
-    """_get_network_choices must return fallback when config-get returns None arguments."""
+    """Subnet facts prefill the edit form when Server Configuration is unavailable."""
 
     def _url(self, subnet_id=42):
         return reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, subnet_id])
 
-    # subnet the GET prefill (subnet{v}-get) returns before config-get is consulted.
-    _SUBNET4_GET = {"result": 0, "arguments": {"subnet4": [{"id": 42, "subnet": "10.0.0.0/24"}]}}
+    def test_get_rejects_malformed_subnet_response(self):
+        for payload in ([], {"result": 0, "arguments": {"subnet4": {"id": 42}}}):
+            with (
+                self.subTest(payload=payload),
+                stub_kea(
+                    {
+                        **_ABSENT_READ_HOOKS,
+                        "config-get": {"result": 1, "text": "unavailable"},
+                        "subnet4-get": payload,
+                    }
+                ),
+            ):
+                response = self.client.get(self._url())
+                self.assertRedirects(
+                    response,
+                    reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk]),
+                    fetch_redirect_response=False,
+                )
+                self.assertTrue(
+                    any(
+                        message.level == django_messages.ERROR and "Could not load subnet configuration" in str(message)
+                        for message in get_messages(response.wsgi_request)
+                    )
+                )
 
     def test_get_falls_back_when_config_returns_none_arguments(self):
-        """GET must not crash and must show form when config-get returns arguments=None."""
+        """Malformed configuration leaves the Subnet form available."""
         config_none_args = {"result": 0, "arguments": None, "text": "no config"}
-        with stub_kea({"subnet4-get": self._SUBNET4_GET, "config-get": config_none_args}):
+        with stub_kea({**_ABSENT_READ_HOOKS, "config-get": config_none_args, "subnet4-get": _SUBNET4_GET_FULL[0]}):
             response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "network assignment may be inaccurate")
 
     def test_get_falls_back_when_config_raises_kea_exception(self):
         """GET must not crash when config-get fails (result 1 → real KeaException)."""
-        # result=1 on config-get makes the real client raise KeaException, which
-        # _get_network_data catches and degrades to fallback choices.
-        with stub_kea({"subnet4-get": self._SUBNET4_GET, "config-get": {"result": 1, "text": "error"}}):
+        with stub_kea(
+            {
+                **_ABSENT_READ_HOOKS,
+                "config-get": {"result": 1, "text": "error"},
+                "subnet4-get": _SUBNET4_GET_FULL[0],
+            }
+        ):
             response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "network assignment may be inaccurate")
 
     def test_post_subnet_update_fails_does_not_move_network(self):
         """POST where subnet_update fails (result 1 → KeaException) must NOT issue a network move."""
@@ -1057,7 +1385,7 @@ class TestSubnetEditNetworkChoicesNoneArguments(_ViewTestBase):
             "network4-subnet-add": {"result": 0},
             "network4-subnet-del": {"result": 0},
         }
-        with stub_kea(stub) as kea:
+        with stub_kea({**_ABSENT_READ_HOOKS, **stub}) as kea:
             response = self.client.post(
                 self._url(),
                 {
@@ -1110,8 +1438,8 @@ class TestSubnetEditZeroTimers(_ViewTestBase):
         return reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, subnet_id])
 
     def _stub(self):
-        """GET chain: subnet4-get (zero timers) then config-get (network data)."""
-        return stub_kea({"subnet4-get": _SUBNET4_GET_ZERO_TIMERS[0], "config-get": _CONFIG4_NO_NETWORKS_RESP[0]})
+        """The Server Configuration declares zero-valued Subnet timers."""
+        return stub_kea(_edit_responses(4, _SUBNET4_GET_ZERO_TIMERS[0], _CONFIG4_NO_NETWORKS_RESP[0]))
 
     def test_get_includes_zero_renew_timer_in_initial(self):
         """GET for a subnet with renew-timer=0 must populate the form field with 0."""
@@ -1161,7 +1489,7 @@ class TestPoolAddExceptions(_ViewTestBase):
             "config-write": {"result": 1, "text": "disk full"},
             "stat-lease4-get": _STAT_ABSENT4,
         }
-        with stub_kea(stub):
+        with stub_kea({**_ABSENT_READ_HOOKS, **stub}):
             response = self.client.post(self._url(), {"pool": "10.0.0.100-10.0.0.200"}, follow=True)
         msgs = list(response.context["messages"])
         self.assertTrue(any(m.level == django_messages.WARNING for m in msgs))
@@ -1176,7 +1504,7 @@ class TestPoolAddExceptions(_ViewTestBase):
             "config-get": _EMPTY_CONFIG4,
             "stat-lease4-get": _STAT_ABSENT4,
         }
-        with stub_kea(stub):
+        with stub_kea({**_ABSENT_READ_HOOKS, **stub}):
             response = self.client.post(self._url(), {"pool": "10.0.0.100-10.0.0.200"}, follow=True)
         msgs = list(response.context["messages"])
         self.assertTrue(any(m.level == django_messages.ERROR for m in msgs))
@@ -1206,7 +1534,7 @@ class TestPoolDeleteExceptions(_ViewTestBase):
             "stat-lease4-get": _STAT_ABSENT4,
         }
         base.update(overrides)
-        return stub_kea(base)
+        return stub_kea({**_ABSENT_READ_HOOKS, **base})
 
     def test_get_invalid_pool_format_returns_400(self):
         """GET with invalid pool string must return 400 (before any Kea call)."""
@@ -1301,13 +1629,33 @@ class TestSubnetAddExceptionPaths(_ViewTestBase):
             "stat-lease4-get": _STAT_ABSENT4,
         }
         base.update(overrides)
-        return stub_kea(base)
+        return stub_kea({**_ABSENT_READ_HOOKS, **base})
 
     def test_get_falls_back_when_network_choices_raise(self):
         """GET must render the form with fallback choices when config-get fails (result 1 → KeaException)."""
-        with stub_kea({"config-get": {"result": 1, "text": "config error"}}):
+        with stub_kea({**_ABSENT_READ_HOOKS, "config-get": {"result": 1, "text": "config error"}}):
             response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
+
+    def test_add_with_invalid_pool_on_another_subnet(self):
+        config = {
+            "result": 0,
+            "arguments": {
+                "Dhcp4": {"subnet4": [{"id": 90, "subnet": "198.18.90.0/24", "pools": [{"pool": "invalid"}]}]}
+            },
+        }
+        with self._add_stub(
+            config,
+            **{
+                "subnet4-list": _subnet_list(4, [{"id": 90, "subnet": "198.18.90.0/24"}]),
+                "subnet4-add": {"result": 0, "arguments": {"subnets": [{"id": 91}]}},
+            },
+        ):
+            response = self.client.post(self._url(), {**_SUBNET_ADD_POST, "subnet": "198.18.1.0/24"})
+        self.assertEqual(response.status_code, 302)
+        messages = list(get_messages(response.wsgi_request))
+        self.assertTrue(any(message.level == django_messages.SUCCESS for message in messages))
+        self.assertTrue(any(message.level == django_messages.WARNING for message in messages))
 
     def test_post_partial_persist_error_redirects(self):
         """A real config-write failure (PartialPersistError) on subnet_add must warn."""
@@ -1425,6 +1773,88 @@ class TestSubnetEditPostExceptions(_ViewTestBase):
         "arguments": {"subnet4": [{"id": 42, "subnet": "10.0.0.0/24", "pools": [], "option-data": []}]},
     }
 
+    def test_edit_preserves_live_pool_when_target_configuration_pool_is_invalid(self):
+        target = {"id": 42, "subnet": "198.18.0.0/24", "pools": [{"pool": "invalid"}]}
+        live_target = {**target, "pools": [{"pool": "198.18.0.10-198.18.0.30"}]}
+        responses = {
+            "subnet4-list": _subnet_list(4, [{"id": 42, "subnet": "198.18.0.0/24"}]),
+            "config-get": {"result": 0, "arguments": {"Dhcp4": {"subnet4": [target]}}},
+            "subnet4-get": {"result": 0, "arguments": {"subnet4": [live_target]}},
+            "subnet4-update": {"result": 0},
+            "config-test": {"result": 0},
+            "config-write": {"result": 0},
+        }
+        with stub_kea(responses) as kea:
+            edit = self.client.get(self._url())
+            self.assertEqual(edit.status_code, 200)
+            response = self.client.post(
+                self._url(),
+                {
+                    **_SUBNET4_EDIT_POST,
+                    "subnet_cidr": edit.context["form"].initial["subnet_cidr"],
+                    "pools": edit.context["form"].initial["pools"],
+                },
+            )
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(
+            kea.bodies("subnet4-update")[0]["arguments"]["subnet4"][0]["pools"],
+            [{"pool": "198.18.0.10-198.18.0.30"}],
+        )
+
+    def test_edit_preserves_pool_when_configuration_recovers_between_reads(self):
+        target = {"id": 42, "subnet": "198.18.0.0/24", "pools": [{"pool": "invalid"}]}
+        live_target = {**target, "pools": [{"pool": "198.18.0.10-198.18.0.30"}]}
+        responses = {
+            "subnet4-list": _subnet_list(4, [{"id": 42, "subnet": "198.18.0.0/24"}]),
+            "config-get": queued(
+                {"result": 0, "arguments": {"Dhcp4": {"subnet4": [target]}}},
+                {"result": 0, "arguments": {"Dhcp4": {"subnet4": [live_target]}}},
+            ),
+            "subnet4-get": {"result": 0, "arguments": {"subnet4": [live_target]}},
+            "subnet4-update": {"result": 0},
+            "config-test": {"result": 0},
+            "config-write": {"result": 0},
+        }
+        with stub_kea(responses) as kea:
+            edit = self.client.get(self._url())
+            self.assertEqual(edit.status_code, 200)
+            response = self.client.post(
+                self._url(),
+                {
+                    **_SUBNET4_EDIT_POST,
+                    "subnet_cidr": edit.context["form"].initial["subnet_cidr"],
+                    "pools": edit.context["form"].initial["pools"],
+                },
+            )
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(
+            kea.bodies("subnet4-update")[0]["arguments"]["subnet4"][0]["pools"],
+            [{"pool": "198.18.0.10-198.18.0.30"}],
+        )
+
+    def test_edit_with_invalid_pool_on_another_subnet(self):
+        target = {"id": 42, "subnet": "198.18.0.0/24", "pools": []}
+        config = {
+            "result": 0,
+            "arguments": {
+                "Dhcp4": {"subnet4": [target, {"id": 90, "subnet": "198.18.90.0/24", "pools": [{"pool": "invalid"}]}]}
+            },
+        }
+        responses = {
+            **_ABSENT_READ_HOOKS,
+            "config-get": config,
+            "subnet4-get": {"result": 0, "arguments": {"subnet4": [target]}},
+            "subnet4-update": {"result": 0},
+            "config-test": {"result": 0},
+            "config-write": {"result": 0},
+        }
+        with stub_kea(responses):
+            response = self.client.post(self._url(), {**_SUBNET4_EDIT_POST, "subnet_cidr": "198.18.0.0/24"})
+        self.assertEqual(response.status_code, 302)
+        messages = list(get_messages(response.wsgi_request))
+        self.assertTrue(any(message.level == django_messages.SUCCESS for message in messages))
+        self.assertTrue(any(message.level == django_messages.WARNING for message in messages))
+
     def test_post_partial_persist_redirects_with_warning(self):
         """A real config-write failure (PartialPersistError) on subnet_update must warn."""
         # subnet_update: config-get (network data) → subnet4-get → subnet4-update → persist.
@@ -1437,7 +1867,7 @@ class TestSubnetEditPostExceptions(_ViewTestBase):
             "config-write": {"result": 1, "text": "disk full"},
             "stat-lease4-get": _STAT_ABSENT4,
         }
-        with stub_kea(stub):
+        with stub_kea({**_ABSENT_READ_HOOKS, **stub}):
             response = self.client.post(self._url(), _SUBNET4_EDIT_POST, follow=True)
         msgs = list(response.context["messages"])
         self.assertTrue(any(m.level == django_messages.WARNING for m in msgs))
@@ -1450,7 +1880,7 @@ class TestSubnetEditPostExceptions(_ViewTestBase):
             "subnet4-get": self._LIVE_SUBNET4,
             "subnet4-update": ValueError("crash"),
         }
-        with stub_kea(stub):
+        with stub_kea({**_ABSENT_READ_HOOKS, **stub}):
             response = self.client.post(self._url(), _SUBNET4_EDIT_POST)
         self.assertEqual(response.status_code, 200)
 
@@ -1463,7 +1893,7 @@ class TestSubnetEditPostExceptions(_ViewTestBase):
                     "config-get": {"result": 0, "arguments": {"Dhcp4": config}},
                     "subnet4-get": {"result": 0, "arguments": {"subnet4": [live]}},
                 }
-                with stub_kea(responses) as kea:
+                with stub_kea({**_ABSENT_READ_HOOKS, **responses}) as kea:
                     response = self.client.post(
                         self._url(), {"subnet_cidr": cidr, "valid_lft": "7200", "shared_network": ""}
                     )
@@ -1489,9 +1919,9 @@ class TestSubnetEditNetworkDelPartialPersist(_ViewTestBase):
             "result": 0,
             "arguments": {
                 "Dhcp4": {
-                    "subnet4": [{"id": 42, "subnet": "10.0.0.0/24"}],
+                    "subnet4": [],
                     "shared-networks": [
-                        {"name": "old-net", "subnet4": [{"id": 42}]},
+                        {"name": "old-net", "subnet4": [{"id": 42, "subnet": "10.0.0.0/24"}]},
                         {"name": "new-net", "subnet4": []},
                     ],
                 }
@@ -1511,7 +1941,7 @@ class TestSubnetEditNetworkDelPartialPersist(_ViewTestBase):
             "network4-subnet-del": {"result": 0},
         }
         post_data = {**_SUBNET4_EDIT_POST, "shared_network": "new-net"}
-        with stub_kea(stub) as kea:
+        with stub_kea({**_ABSENT_READ_HOOKS, **stub}) as kea:
             response = self.client.post(self._url(), post_data)
         self.assertIn(response.status_code, (200, 302))
         # del issued once (for old-net); no rollback del of new-net.
@@ -1532,19 +1962,21 @@ class TestSubnetListViewEdgeCases(_ViewTestBase):
 
     def test_null_config_arguments_raises(self):
         """Null config-get arguments returns an empty table (degraded 200 state)."""
-        with stub_kea({"config-get": {"result": 0, "arguments": None}, "stat-lease4-get": _STAT_ABSENT4}):
+        with stub_kea(
+            {**_ABSENT_READ_HOOKS, "config-get": {"result": 0, "arguments": None}, "stat-lease4-get": _STAT_ABSENT4}
+        ):
             response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
 
     def test_export_returns_csv(self):
         """?export=csv returns a CSV file response."""
-        with stub_kea({"config-get": _EMPTY_CONFIG4, "stat-lease4-get": _STAT_ABSENT4}):
+        with stub_kea({**_ABSENT_READ_HOOKS, "config-get": _EMPTY_CONFIG4, "stat-lease4-get": _STAT_ABSENT4}):
             response = self.client.get(self._url() + "?export=csv")
         self.assertEqual(response.status_code, 200)
 
     def test_htmx_partial_returns_table_fragment(self):
         """HTMX request to the subnet view returns a partial table fragment."""
-        with stub_kea({"config-get": _EMPTY_CONFIG4, "stat-lease4-get": _STAT_ABSENT4}):
+        with stub_kea({**_ABSENT_READ_HOOKS, "config-get": _EMPTY_CONFIG4, "stat-lease4-get": _STAT_ABSENT4}):
             response = self.client.get(self._url(), HTTP_HX_REQUEST="true")
         self.assertEqual(response.status_code, 200)
 
@@ -1563,14 +1995,14 @@ class TestSubnetDeleteExceptionPaths(_ViewTestBase):
 
     def test_get_exception_still_renders(self):
         """A subnet-get failure (result 1 → KeaException) in GET must still render the confirm page."""
-        with stub_kea({"subnet4-get": {"result": 1, "text": "subnet-get failed"}}):
+        with stub_kea({**_ABSENT_READ_HOOKS, "config-get": {"result": 1, "text": "configuration unavailable"}}):
             response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
 
     def test_post_generic_exception_shows_error(self):
         """A generic (ValueError) failure on subnet_del must redirect with an error, no 500."""
         # subnet4-del raises ValueError at the boundary → view's generic-error branch redirects.
-        with stub_kea({"subnet4-del": ValueError("crash")}):
+        with stub_kea({**_ABSENT_READ_HOOKS, "subnet4-del": ValueError("crash")}):
             response = self.client.post(self._url())
         self.assertEqual(response.status_code, 302)
 
@@ -1585,12 +2017,11 @@ class TestFetchSubnetsFromServer(_ViewTestBase):
     """Lines 3807-3855: _fetch_subnets_from_server edge cases."""
 
     def _run(self, responses):
-        """Call _fetch_subnets_from_server against a real client with the given stubbed responses."""
-        from netbox_kea.views.combined import _fetch_subnets_from_server
-
-        with stub_kea(responses):
-            subnets, _diagnostics = _fetch_subnets_from_server(self.server, version=4)
-        return subnets
+        """Render the combined Subnet table through its public HTTP view."""
+        with stub_kea({**_ABSENT_READ_HOOKS, **responses}):
+            response = self.client.get(reverse("plugins:netbox_kea:combined_subnets4"), {"server": self.server.pk})
+        self.assertEqual(response.status_code, 200)
+        return list(response.context["table"].data)
 
     def test_null_arguments_preserves_confirmed_empty_identity(self):
         """Malformed config does not override a complete identity observation with no Subnets."""
@@ -1768,18 +2199,23 @@ class TestSubnetEditNonCanonicalCidr(_ViewTestBase):
             "config-write": {"result": 0},
         }
         base.update(overrides)
-        return stub_kea(base)
+        return stub_kea({**_ABSENT_READ_HOOKS, **base})
 
     def test_round_trip_preserves_the_configured_prefix(self):
         """GET then POST must reach subnet4-update with the prefix Kea reported, unmodified."""
         with self._stub():
             get_response = self.client.get(self._url())
         self.assertEqual(get_response.status_code, 200)
-        self.assertEqual(get_response.context["form"].initial["subnet_cidr"], self._CIDR)
+        self.assertEqual(get_response.context["form"].initial["subnet_cidr"], "10.0.0.0/24")
 
         with self._stub() as kea:
             post_response = self.client.post(
-                self._url(), {"subnet_cidr": self._CIDR, "valid_lft": "7200", "shared_network": ""}
+                self._url(),
+                {
+                    "subnet_cidr": get_response.context["form"].initial["subnet_cidr"],
+                    "valid_lft": "7200",
+                    "shared_network": "",
+                },
             )
         self.assertEqual(post_response.status_code, 302)
         self.assertIn("subnet4-update", kea.commands())
@@ -1842,7 +2278,7 @@ class TestSubnetEditFormInitialFields(_ViewTestBase):
             "result": 0,
             "arguments": {"Dhcp4": {"subnet4": [{"id": 42, "subnet": "10.0.0.0/24"}], "shared-networks": []}},
         }
-        with stub_kea({"subnet4-get": subnet_resp, "config-get": config_resp}):
+        with stub_kea(_edit_responses(4, subnet_resp, config_resp)):
             response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
         initial = response.context["form"].initial
@@ -1880,28 +2316,28 @@ class TestGetNetworkDataUnnamedNetwork(_ViewTestBase):
             "arguments": {"subnet4": [{"id": 42, "subnet": "10.0.0.0/24", "pools": [], "option-data": []}]},
         }
         url = reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, 42])
-        with stub_kea({"subnet4-get": subnet_resp, "config-get": config_resp}):
+        with stub_kea(_edit_responses(4, subnet_resp, config_resp)):
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "valid-net")
 
 
 # ---------------------------------------------------------------------------
-# _fetch_network — non-dict args (lines 1462-1463)
+# Shared Network edit GET: config-get with non-dict arguments
 # ---------------------------------------------------------------------------
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestFetchNetworkNonDictArgs(_ViewTestBase):
-    """Lines 1462-1463: config-get returns non-dict args → log warning + return {}."""
+    """config-get returning non-dict arguments makes the edit GET redirect."""
 
     def test_get_non_dict_args_redirects(self):
-        """config-get returning arguments=None → _fetch_network returns {} → redirect."""
+        """config-get returning arguments=None is an unavailable snapshot, so GET redirects."""
         url = reverse(
             "plugins:netbox_kea:server_shared_network4_edit",
             args=[self.server.pk, "test-net"],
         )
-        with stub_kea({"config-get": {"result": 0, "arguments": None}}):
+        with stub_kea({**_ABSENT_READ_HOOKS, "config-get": {"result": 0, "arguments": None}}):
             response = self.client.get(url)
         # network not found → redirects back to shared_networks4
         self.assertEqual(response.status_code, 302)
@@ -1920,7 +2356,7 @@ class TestGetNetworkChoicesKeaException(_ViewTestBase):
     def test_kea_exception_returns_global_pool_only(self):
         """config-get failing (result 1 → KeaException) → the add form falls back to global-pool only."""
         url = reverse("plugins:netbox_kea:server_subnet4_add", args=[self.server.pk])
-        with stub_kea({"config-get": {"result": 1, "text": "error"}}):
+        with stub_kea({**_ABSENT_READ_HOOKS, "config-get": {"result": 1, "text": "error"}}):
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
 
@@ -1954,7 +2390,7 @@ class TestGetInheritedOptionsParseOpts(_ViewTestBase):
             },
         }
         url = reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, 42])
-        with stub_kea({"subnet4-get": subnet_resp, "config-get": config_resp}):
+        with stub_kea(_edit_responses(4, subnet_resp, config_resp)):
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         # inherited_options should have gateway and ntp_servers from global config
@@ -1979,7 +2415,7 @@ class TestSubnetEditNetworkRollback(_ViewTestBase):
             "Dhcp4": {
                 "subnet4": [],
                 "shared-networks": [
-                    {"name": "net-old", "subnet4": [{"id": 42}]},
+                    {"name": "net-old", "subnet4": [{"id": 42, "subnet": "10.0.0.0/24"}]},
                     {"name": "net-new", "subnet4": []},
                 ],
                 "option-data": [],
@@ -2002,7 +2438,7 @@ class TestSubnetEditNetworkRollback(_ViewTestBase):
             "network4-subnet-del": {"result": 0},
         }
         base.update(overrides)
-        return stub_kea(base)
+        return stub_kea({**_ABSENT_READ_HOOKS, **base})
 
     def _post_data(self):
         return {
@@ -2048,9 +2484,27 @@ class TestSubnetAddNetworkChoicesError(_ViewTestBase):
     def _url(self):
         return reverse("plugins:netbox_kea:server_subnet4_add", args=[self.server.pk])
 
+    def test_invalid_shared_networks_disables_choices_and_blocks_creation(self):
+        responses = {
+            **_ABSENT_READ_HOOKS,
+            "config-get": {"result": 0, "arguments": {"Dhcp4": {"shared-networks": "invalid"}}},
+            "subnet4-add": {"result": 0, "arguments": {"subnets": [{"id": 42}]}},
+            "config-test": {"result": 0},
+            "config-write": {"result": 0},
+        }
+        with self.subTest(method="GET"), stub_kea(responses):
+            response = self.client.get(self._url())
+            self.assertEqual(response.status_code, 200)
+            self.assertTrue(response.context["form"].fields["shared_network"].disabled)
+        with self.subTest(method="POST"), stub_kea(responses) as kea:
+            response = self.client.post(self._url(), {"subnet": "198.18.0.0/24", "shared_network": ""})
+            self.assertNotIn("subnet4-add", kea.commands())
+            self.assertEqual(response.status_code, 200)
+            self.assertContains(response, "Could not load shared networks from Kea")
+
     def test_get_shows_warning_when_network_choices_fail(self):
         """GET must render 200 with a warning message when config-get fails (result 1 → KeaException)."""
-        with stub_kea({"config-get": {"result": 1, "text": "config-get failed"}}):
+        with stub_kea({**_ABSENT_READ_HOOKS, "config-get": {"result": 1, "text": "config-get failed"}}):
             response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
         msgs = [str(m) for m in response.context["messages"]]
@@ -2058,7 +2512,7 @@ class TestSubnetAddNetworkChoicesError(_ViewTestBase):
 
     def test_post_rejects_submission_when_network_choices_fail(self):
         """POST must show a form error and NOT issue subnet4-add when config-get fails."""
-        with stub_kea({"config-get": {"result": 1, "text": "config-get failed"}}) as kea:
+        with stub_kea({**_ABSENT_READ_HOOKS, "config-get": {"result": 1, "text": "config-get failed"}}) as kea:
             response = self.client.post(
                 self._url(),
                 {
@@ -2088,19 +2542,208 @@ class TestSubnetEditNetworkDataErrors(_ViewTestBase):
         "arguments": {"subnet4": [{"id": 1, "subnet": "10.0.0.0/24", "pools": [], "option-data": []}]},
     }
 
-    def test_transport_error_returns_200(self):
+    def _shared_network_responses(self, networks):
+        subnet = {"id": 1, "subnet": "198.18.0.0/24"}
+        return {
+            "subnet4-list": _subnet_list(4, [subnet]),
+            "config-get": {
+                "result": 0,
+                "arguments": {
+                    "Dhcp4": {
+                        "subnet4": [subnet],
+                        "shared-networks": networks,
+                        "option-data": [{"name": "domain-name-servers", "data": "198.18.0.53"}],
+                    }
+                },
+            },
+            "subnet4-get": {"result": 0, "arguments": {"subnet4": [subnet]}},
+            "subnet4-update": {"result": 0},
+            "network4-subnet-add": {"result": 0},
+            "network4-subnet-del": {"result": 0},
+            "config-test": {"result": 0},
+            "config-write": {"result": 0},
+        }
+
+    def _assert_unreadable_shared_networks_block_edit(self, networks):
+        url = reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, 1])
+        with stub_kea(self._shared_network_responses(networks)) as kea:
+            with self.subTest(method="GET"):
+                response = self.client.get(url)
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.context["inherited_options"], {})
+            with self.subTest(method="POST"):
+                response = self.client.post(url, {"subnet_cidr": "198.18.0.0/24", "shared_network": ""})
+                self.assertEqual(response.status_code, 302)
+                self.assertEqual(
+                    set(kea.commands()) & {"subnet4-update", "network4-subnet-add", "network4-subnet-del"}, set()
+                )
+                self.assertTrue(any("edit aborted" in str(message) for message in get_messages(response.wsgi_request)))
+
+    def test_null_shared_network_blocks_edit_and_inherited_hints(self):
+        self._assert_unreadable_shared_networks_block_edit([None])
+
+    def test_duplicate_shared_network_subnet_ids_block_edit_and_inherited_hints(self):
+        self._assert_unreadable_shared_networks_block_edit(
+            [
+                {
+                    "name": "clients",
+                    "subnet4": [
+                        {"id": 2, "subnet": "198.18.1.0/24"},
+                        {"id": 2, "subnet": "198.18.2.0/24"},
+                    ],
+                }
+            ]
+        )
+
+    def test_duplicate_subnet_ids_across_shared_networks_block_edit_and_inherited_hints(self):
+        self._assert_unreadable_shared_networks_block_edit(
+            [
+                {"name": "clients", "subnet4": [{"id": 2, "subnet": "198.18.1.0/24"}]},
+                {"name": "guests", "subnet4": [{"id": 2, "subnet": "198.18.2.0/24"}]},
+            ]
+        )
+
+    def test_null_shared_network_subnet_blocks_edit_and_inherited_hints(self):
+        self._assert_unreadable_shared_networks_block_edit([{"name": "clients", "subnet4": [None]}])
+
+    def test_invalid_shared_network_member_pool_preserves_unrelated_operations(self):
+        responses = self._shared_network_responses(
+            [{"name": "clients", "subnet4": [{"id": 2, "subnet": "198.18.1.0/24", "pools": "invalid"}]}]
+        )
+        responses["subnet4-list"] = _subnet_list(
+            4, [{"id": 1, "subnet": "198.18.0.0/24"}, {"id": 2, "subnet": "198.18.1.0/24"}]
+        )
+        responses["subnet4-add"] = {"result": 0, "arguments": {"subnets": [{"id": 3}]}}
+        edit_url = reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, 1])
+        add_url = reverse("plugins:netbox_kea:server_subnet4_add", args=[self.server.pk])
+        with self.subTest(operation="inherited hints"), stub_kea(responses):
+            response = self.client.get(edit_url)
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(
+                response.context["inherited_options"],
+                {"dns_servers": {"value": "198.18.0.53", "source": "global"}},
+            )
+            self.assertTrue(
+                any(
+                    message.level == django_messages.WARNING and "non-list Pool collection" in str(message)
+                    for message in get_messages(response.wsgi_request)
+                )
+            )
+        for url, data, command in (
+            (add_url, {"subnet": "198.18.2.0/24", "shared_network": ""}, "subnet4-add"),
+            (edit_url, {"subnet_cidr": "198.18.0.0/24", "shared_network": ""}, "subnet4-update"),
+        ):
+            with self.subTest(operation=command), stub_kea(responses) as kea:
+                response = self.client.post(url, data)
+                self.assertEqual(response.status_code, 302)
+                self.assertIn(command, kea.commands())
+                messages = list(get_messages(response.wsgi_request))
+                self.assertTrue(any(message.level == django_messages.SUCCESS for message in messages))
+                self.assertTrue(
+                    any(
+                        message.level == django_messages.WARNING and "non-list Pool collection" in str(message)
+                        for message in messages
+                    )
+                )
+
+    def test_missing_shared_network_subnet_id_blocks_edit_and_inherited_hints(self):
+        self._assert_unreadable_shared_networks_block_edit(
+            [{"name": "clients", "subnet4": [{"subnet": "198.18.1.0/24"}]}]
+        )
+
+    def test_non_scalar_shared_network_subnet_id_blocks_edit_and_inherited_hints(self):
+        self._assert_unreadable_shared_networks_block_edit(
+            [{"name": "clients", "subnet4": [{"id": [], "subnet": "198.18.1.0/24"}]}]
+        )
+
+    def test_empty_shared_network_is_selectable_and_edit_proceeds(self):
+        url = reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, 1])
+        with stub_kea(self._shared_network_responses([{"name": "clients", "subnet4": []}])) as kea:
+            response = self.client.get(url)
+            self.assertEqual(response.status_code, 200)
+            self.assertIn(("clients", "clients"), response.context["form"].fields["shared_network"].choices)
+            self.assertEqual(
+                response.context["inherited_options"]["dns_servers"], {"value": "198.18.0.53", "source": "global"}
+            )
+            response = self.client.post(url, {"subnet_cidr": "198.18.0.0/24", "shared_network": "clients"})
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("subnet4-update", kea.commands())
+        self.assertIn("network4-subnet-add", kea.commands())
+
+    def test_invalid_shared_networks_blocks_edit_mutation(self):
+        url = reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, 1])
+        subnet = {"id": 1, "subnet": "198.18.0.0/24"}
+        with stub_kea(
+            {
+                **_ABSENT_READ_HOOKS,
+                "config-get": {
+                    "result": 0,
+                    "arguments": {"Dhcp4": {"subnet4": [subnet], "shared-networks": "invalid"}},
+                },
+                "subnet4-get": {"result": 0, "arguments": {"subnet4": [subnet]}},
+                "subnet4-update": {"result": 0},
+                "network4-subnet-add": {"result": 0},
+                "network4-subnet-del": {"result": 0},
+                "config-test": {"result": 0},
+                "config-write": {"result": 0},
+            }
+        ) as kea:
+            response = self.client.post(url, {"subnet_cidr": "198.18.0.0/24", "shared_network": ""})
+        self.assertNotIn("subnet4-update", kea.commands())
+        self.assertNotIn("network4-subnet-add", kea.commands())
+        self.assertNotIn("network4-subnet-del", kea.commands())
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(
+            any(
+                message.level == django_messages.ERROR and "edit aborted" in str(message)
+                for message in get_messages(response.wsgi_request)
+            )
+        )
+
+    def test_invalid_shared_networks_preserves_edit_display(self):
+        url = reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, 1])
+        live_subnet = {"result": 0, "arguments": {"subnet4": [{"id": 1, "subnet": "198.18.0.0/24"}]}}
+        with stub_kea(
+            {
+                **_ABSENT_READ_HOOKS,
+                "config-get": {
+                    "result": 0,
+                    "arguments": {
+                        "Dhcp4": {
+                            "shared-networks": "invalid",
+                            "option-data": [{"name": "domain-name-servers", "data": "198.18.0.53"}],
+                        }
+                    },
+                },
+                "subnet4-get": live_subnet,
+            }
+        ):
+            response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["form"].initial["subnet_cidr"], "198.18.0.0/24")
+        self.assertContains(response, "network assignment may be inaccurate")
+        self.assertEqual(response.context["inherited_options"], {})
+
+    def test_transport_error_renders_edit_form_with_warning(self):
         """A requests.RequestException on config-get must not cause a 500 in the edit view."""
         url = reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, 1])
-        with stub_kea({"subnet4-get": self._LIVE_SUBNET, "config-get": requests.ConnectionError("down")}):
+        with stub_kea(
+            {**_ABSENT_READ_HOOKS, "subnet4-get": self._LIVE_SUBNET, "config-get": requests.ConnectionError("down")}
+        ):
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "network assignment may be inaccurate")
+        self.assertEqual(response.context["form"].initial["subnet_cidr"], "10.0.0.0/24")
 
-    def test_value_error_returns_200(self):
+    def test_value_error_renders_edit_form_with_warning(self):
         """A ValueError on config-get must not cause a 500 in the edit view."""
         url = reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, 1])
-        with stub_kea({"subnet4-get": self._LIVE_SUBNET, "config-get": ValueError("bad response")}):
+        with stub_kea(
+            {**_ABSENT_READ_HOOKS, "subnet4-get": self._LIVE_SUBNET, "config-get": ValueError("bad response")}
+        ):
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "network assignment may be inaccurate")
 
 
 # ---------------------------------------------------------------------------
@@ -2131,7 +2774,7 @@ class TestSubnetAddPartialPersistNetworkAssign(_ViewTestBase):
             "stat-lease4-get": _STAT_ABSENT4,
         }
         url = reverse("plugins:netbox_kea:server_subnet4_add", args=[self.server.pk])
-        with stub_kea(stub) as kea:
+        with stub_kea({**_ABSENT_READ_HOOKS, **stub}) as kea:
             response = self.client.post(
                 url,
                 {
@@ -2180,7 +2823,7 @@ class TestSubnetAddNoIdWarning(_ViewTestBase):
             "stat-lease4-get": _STAT_ABSENT4,
         }
         url = reverse("plugins:netbox_kea:server_subnet4_add", args=[self.server.pk])
-        with stub_kea(stub) as kea:
+        with stub_kea({**_ABSENT_READ_HOOKS, **stub}) as kea:
             response = self.client.post(
                 url,
                 {
@@ -2275,7 +2918,11 @@ class TestGetSubnetsConfigShapeGuard(_ViewTestBase):
         """Non-dict (string) arguments in config-get must yield an empty subnet list, not a 500."""
         url = reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk])
         with stub_kea(
-            {"config-get": {"result": 0, "arguments": "unexpected string"}, "stat-lease4-get": _STAT_ABSENT4}
+            {
+                **_ABSENT_READ_HOOKS,
+                "config-get": {"result": 0, "arguments": "unexpected string"},
+                "stat-lease4-get": _STAT_ABSENT4,
+            }
         ):
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
@@ -2283,7 +2930,9 @@ class TestGetSubnetsConfigShapeGuard(_ViewTestBase):
     def test_integer_arguments_returns_empty_list(self):
         """Integer arguments in config-get must yield an empty subnet list, not a 500."""
         url = reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk])
-        with stub_kea({"config-get": {"result": 0, "arguments": 42}, "stat-lease4-get": _STAT_ABSENT4}):
+        with stub_kea(
+            {**_ABSENT_READ_HOOKS, "config-get": {"result": 0, "arguments": 42}, "stat-lease4-get": _STAT_ABSENT4}
+        ):
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
 
@@ -2307,7 +2956,7 @@ class TestPoolAddPostErrors(_ViewTestBase):
         """
         base = _pool_add_registry(1, "10.0.0.0/24")
         base.update(overrides)
-        return stub_kea(base)
+        return stub_kea({**_ABSENT_READ_HOOKS, **base})
 
     def test_partial_persist_shows_warning(self):
         """A config-write failure (PartialPersistError) from pool_add re-renders without a 500."""
@@ -2408,7 +3057,7 @@ class TestPoolDeletePostErrors(_ViewTestBase):
             "stat-lease4-get": _STAT_ABSENT4,
         }
         base.update(overrides)
-        return stub_kea(base)
+        return stub_kea({**_ABSENT_READ_HOOKS, **base})
 
     def test_partial_persist_shows_warning(self):
         """A config-write failure (PartialPersistError) from pool_del re-renders without a 500."""
@@ -2471,7 +3120,7 @@ class TestSubnetAddPostNetworkErrors(_ViewTestBase):
             "stat-lease4-get": _STAT_ABSENT4,
         }
         base.update(overrides)
-        return stub_kea(base)
+        return stub_kea({**_ABSENT_READ_HOOKS, **base})
 
     def _post_data(self, shared_network=""):
         return {
@@ -2572,7 +3221,7 @@ class TestGetSubnetsError(_ViewTestBase):
     def test_config_get_value_error_shows_empty(self):
         """A ValueError from config-get shows an empty subnet list with an error message, no 500."""
         url = reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk])
-        with stub_kea({"config-get": ValueError("bad JSON"), "stat-lease4-get": _STAT_ABSENT4}):
+        with stub_kea({**_ABSENT_READ_HOOKS, "config-get": ValueError("bad JSON"), "stat-lease4-get": _STAT_ABSENT4}):
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
 
@@ -2598,7 +3247,7 @@ class TestSubnetListNonDictItems(_ViewTestBase):
             },
         }
         url = reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk])
-        with stub_kea({"config-get": config, "stat-lease4-get": _STAT_ABSENT4}):
+        with stub_kea({**_ABSENT_READ_HOOKS, "config-get": config, "stat-lease4-get": _STAT_ABSENT4}):
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "10.0.0.0/24")
@@ -2618,7 +3267,7 @@ class TestSubnetListNonDictItems(_ViewTestBase):
             },
         }
         url = reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk])
-        with stub_kea({"config-get": config, "stat-lease4-get": _STAT_ABSENT4}):
+        with stub_kea({**_ABSENT_READ_HOOKS, "config-get": config, "stat-lease4-get": _STAT_ABSENT4}):
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "10.0.0.0/24")
@@ -2637,7 +3286,7 @@ class TestSubnetListNonDictItems(_ViewTestBase):
             },
         }
         url = reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk])
-        with stub_kea({"config-get": config, "stat-lease4-get": _STAT_ABSENT4}):
+        with stub_kea({**_ABSENT_READ_HOOKS, "config-get": config, "stat-lease4-get": _STAT_ABSENT4}):
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "10.0.0.0/24")
@@ -2667,7 +3316,7 @@ class TestGetNetworkDataNonDictSubnet(_ViewTestBase):
             },
         }
         url = reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, 42])
-        with stub_kea({"subnet4-get": subnet_get_resp, "config-get": config_get_resp}):
+        with stub_kea(_edit_responses(4, subnet_get_resp, config_get_resp)):
             response = self.client.get(url)
         # _get_network_data returns None (malformed) → view still renders or redirects, never 500.
         self.assertIn(response.status_code, (200, 302))
@@ -2687,13 +3336,15 @@ class TestSubnetViewCoverageGaps(_ViewTestBase):
 
     def _list_stub(self, config, stat=None):
         """Subnets-list GET chain: config-get (subnets) + stat-lease4-get (utilisation)."""
-        return stub_kea({"config-get": config, "stat-lease4-get": stat if stat is not None else _STAT_ABSENT4})
+        return stub_kea(
+            {**_ABSENT_READ_HOOKS, "config-get": config, "stat-lease4-get": stat if stat is not None else _STAT_ABSENT4}
+        )
 
     def _pool_add_stub(self, **overrides):
         """pool_add chain: reservation overlap probe → list-commands → subnet4-pool-add → persist + list."""
         base = _pool_add_registry(42, "10.0.0.0/24")
         base.update(overrides)
-        return stub_kea(base)
+        return stub_kea({**_ABSENT_READ_HOOKS, **base})
 
     def _pool_del_stub(self, **overrides):
         """pool_del chain: list-commands → subnet4-pool-del → persist + the followed subnets list."""
@@ -2709,7 +3360,7 @@ class TestSubnetViewCoverageGaps(_ViewTestBase):
             "stat-lease4-get": _STAT_ABSENT4,
         }
         base.update(overrides)
-        return stub_kea(base)
+        return stub_kea({**_ABSENT_READ_HOOKS, **base})
 
     # ── 1. config-get returns non-dict arguments (~lines 92-99) ──────────
 
@@ -2857,7 +3508,7 @@ class TestSubnetViewCoverageGaps(_ViewTestBase):
             "subnet4-update": requests.RequestException("connection lost"),
         }
         url = reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, 42])
-        with stub_kea(stub) as kea:
+        with stub_kea({**_ABSENT_READ_HOOKS, **stub}) as kea:
             response = self.client.post(url, self._EDIT_POST)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(kea.commands().count("subnet4-update"), 1)
@@ -2870,7 +3521,7 @@ class TestSubnetViewCoverageGaps(_ViewTestBase):
             "subnet4-update": {"result": 1, "text": "subnet not found"},
         }
         url = reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, 42])
-        with stub_kea(stub):
+        with stub_kea({**_ABSENT_READ_HOOKS, **stub}):
             response = self.client.post(url, self._EDIT_POST)
         self.assertEqual(response.status_code, 200)
 
@@ -2969,7 +3620,7 @@ class TestPersistConfigBanner(_ViewTestBase):
     def test_banner_absent_when_persist_config_true(self):
         """No warning banner on subnet add when persist_config=True (default)."""
         url = reverse("plugins:netbox_kea:server_subnet4_add", args=[self.server.pk])
-        with stub_kea({"config-get": _EMPTY_CONFIG4}):
+        with stub_kea({**_ABSENT_READ_HOOKS, "config-get": _EMPTY_CONFIG4}):
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         self.assertNotContains(response, "Configuration persistence is disabled.")
@@ -2978,7 +3629,7 @@ class TestPersistConfigBanner(_ViewTestBase):
         """Warning banner appears on subnet add page when persist_config=False."""
         server = _make_db_server(name="no-persist", persist_config=False)
         url = reverse("plugins:netbox_kea:server_subnet4_add", args=[server.pk])
-        with stub_kea({"config-get": _EMPTY_CONFIG4}):
+        with stub_kea({**_ABSENT_READ_HOOKS, "config-get": _EMPTY_CONFIG4}):
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Configuration persistence is disabled.")
@@ -3026,7 +3677,7 @@ class TestSubnetLifetimeKeaParameterNames(_ViewTestBase):
             "config-test": {"result": 0},
             "config-write": {"result": 0},
         }
-        with stub_kea(stub) as kea:
+        with stub_kea({**_ABSENT_READ_HOOKS, **stub}) as kea:
             response = self.client.post(
                 self._url(),
                 {
@@ -3057,8 +3708,8 @@ class TestSubnetLifetimeKeaParameterNames(_ViewTestBase):
             )
 
     def test_get_prefills_from_kea_subnet_lifetime_parameter_names(self):
-        """The edit form must prefill from valid-lifetime, which is what subnet4-get returns."""
-        with stub_kea({"subnet4-get": _SUBNET4_GET_LIFETIMES, "config-get": _CONFIG4_NO_NETWORKS[0]}):
+        """The edit form uses the Subnet lifetime settings declared by Kea."""
+        with stub_kea(_edit_responses(4, _SUBNET4_GET_LIFETIMES, _CONFIG4_NO_NETWORKS[0])):
             response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
         initial = response.context["form"].initial

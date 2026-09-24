@@ -53,13 +53,6 @@ SUBNET_ACTIONS = """<span class="btn-group dropdown">
       </a>
     </li>
     <li>
-      <a href="{% url "plugins:netbox_kea:server_subnet4_options_edit" record.server_pk record.id %}"
-         class="dropdown-item">
-        <i class="mdi mdi-tune" aria-hidden="true"></i>
-        Edit options
-      </a>
-    </li>
-    <li>
       <a href="{% url "plugins:netbox_kea:server_subnet4_delete" record.server_pk record.id %}"
          class="dropdown-item text-danger">
         <i class="mdi mdi-trash-can-outline" aria-hidden="true"></i>
@@ -89,13 +82,6 @@ SUBNET_ACTIONS = """<span class="btn-group dropdown">
       </a>
     </li>
     <li>
-      <a href="{% url "plugins:netbox_kea:server_subnet6_options_edit" record.server_pk record.id %}"
-         class="dropdown-item">
-        <i class="mdi mdi-tune" aria-hidden="true"></i>
-        Edit options
-      </a>
-    </li>
-    <li>
       <a href="{% url "plugins:netbox_kea:server_subnet6_delete" record.server_pk record.id %}"
          class="dropdown-item text-danger">
         <i class="mdi mdi-trash-can-outline" aria-hidden="true"></i>
@@ -103,6 +89,15 @@ SUBNET_ACTIONS = """<span class="btn-group dropdown">
       </a>
     </li>
     {% endif %}
+    {% endif %}
+    {% if record.server_pk and record.id and record.can_edit_options %}
+    <li>
+      <a href="{% if record.dhcp_version == 4 %}{% url 'plugins:netbox_kea:server_subnet4_options_edit' record.server_pk record.id %}{% else %}{% url 'plugins:netbox_kea:server_subnet6_options_edit' record.server_pk record.id %}{% endif %}"
+         class="dropdown-item">
+        <i class="mdi mdi-tune" aria-hidden="true"></i>
+        Edit options
+      </a>
+    </li>
     {% endif %}
   </ul>
 </span>

@@ -13,7 +13,15 @@ import threading
 import pytest
 import requests
 
-from netbox_kea.tests.kea_stub import KeaHttpStub, _reservation_family, _typed_reservation, queued
+from netbox_kea.kea import KeaClient
+from netbox_kea.tests.kea_stub import (
+    KeaHttpStub,
+    _http_response,
+    _reservation_family,
+    _typed_reservation,
+    queued,
+    stub_kea,
+)
 
 
 def _call(stub, command="x"):
@@ -24,6 +32,19 @@ def test_dict_payload_is_wrapped_in_single_entry_list():
     """A dict value is the single ``.json()`` entry (Kea returns a list)."""
     stub = KeaHttpStub({"x": {"result": 0}})
     assert _call(stub) == [{"result": 0}]
+
+
+def test_http_boundary_returns_concrete_requests_responses():
+    """The real KeaClient decodes a stubbed success and raises on a stubbed HTTP error."""
+    client = KeaClient(url="https://kea.example.invalid/")
+    with stub_kea({"x": {"result": 0}}) as stub:
+        assert client.command("x", service=["dhcp4"]) == [{"result": 0}]
+    assert stub.urls() == ["https://kea.example.invalid/"]
+
+    failed = _http_response([{"result": 1}], status=503, url="https://kea.example.invalid/")
+    with stub_kea({"x": failed}), pytest.raises(requests.HTTPError) as error:
+        client.command("x", service=["dhcp4"])
+    assert error.value.response is failed
 
 
 def test_plain_multi_entry_list_returned_verbatim():
@@ -99,7 +120,7 @@ def test_shared_response_builders_shape():
 
 def test_catalogue_responses_shape():
     """Lock the shared catalogue factory that replaced three drifting local copies."""
-    from netbox_kea.tests.kea_stub import _catalogue_responses, _subnet_list
+    from netbox_kea.tests.kea_stub import _catalogue_responses, _catalogue_responses_for_subnets, _subnet_list
 
     responses = _catalogue_responses(4, 20, "198.18.0.0/24")
 
@@ -124,6 +145,21 @@ def test_catalogue_responses_shape():
     assert "subnet6-list" in v6
     assert v6["config-get"]["arguments"]["Dhcp6"]["subnet6"] == [{"id": 30, "subnet": "2001:db8::/64"}]
     assert v6["config-get"]["arguments"]["hash"] == "other"
+
+    options = ({"name": "routers", "data": "198.18.0.1"},)
+    definitions = ({"code": 222, "name": "site-code", "space": "dhcp4", "type": "string"},)
+    configured = _catalogue_responses_for_subnets(
+        4,
+        [],
+        global_options=options,
+        option_definitions=definitions,
+    )["config-get"]["arguments"]["Dhcp4"]
+    assert configured["option-data"] == list(options)
+    assert configured["option-def"] == list(definitions)
+
+    shared_networks = [{"name": "clients", "subnet4": []}]
+    with_networks = _catalogue_responses_for_subnets(4, [], shared_networks=shared_networks)
+    assert with_networks["config-get"]["arguments"]["Dhcp4"]["shared-networks"] == shared_networks
 
 
 @pytest.mark.parametrize(

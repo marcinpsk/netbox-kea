@@ -15,7 +15,7 @@ from django.shortcuts import redirect, render
 from django.urls import reverse
 from netbox.views import generic
 
-from .. import constants, forms
+from .. import constants, forms, subnet_catalogue
 from ..constants import Family
 from ..dhcp_options import DHCPOption
 from ..kea import KeaClient, KeaException
@@ -39,10 +39,9 @@ from ..reservations import (
 from ..signals import reservation_created, reservation_deleted, reservation_updated
 from ..subnet_catalogue import CatalogueSnapshot, MutationScope
 from ..sync import sync_reservation_to_netbox
-from ..utilities import fetch_subnet_choices, kea_error_hint
-from ._base import _KeaChangeMixin
+from ..utilities import kea_error_hint, parse_pool_range
+from ._base import _diagnostic_messages, _KeaChangeMixin
 from .reservations import _RESERVATIONS_TAB, _build_reservation_options_formset, _configured_capabilities
-from .subnets import _warn_reservation_pool_overlap
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +49,55 @@ _FINGERPRINT_SALT = "netbox_kea.reservation-managed-facts"
 FLEX_ID_DOCUMENTATION_URL = (
     "https://kea.readthedocs.io/en/latest/arm/hooks.html#flex-id-flexible-identifiers-for-host-reservations"
 )
+
+
+def _warn_reservation_pool_overlap(
+    request: HttpRequest,
+    client: "KeaClient",
+    version: Family,
+    subnet_id: int,
+    ip_str: str,
+) -> None:
+    """Add a non-blocking warning if *ip_str* falls within an existing pool in *subnet_id*.
+
+    Fetches the subnet configuration via ``subnet{version}-get`` and checks each
+    pool entry. A malformed entry is skipped; Kea and transport errors reach the caller.
+    """
+    from netaddr import AddrFormatError, IPAddress
+
+    resp = client.command(
+        f"subnet{version}-get",
+        service=[f"dhcp{version}"],
+        arguments={"id": subnet_id},
+        check=(0, 2, 3),
+    )
+    if not resp or not isinstance(resp[0], dict) or resp[0].get("result") != 0:
+        return
+    arguments = resp[0].get("arguments")
+    if not isinstance(arguments, dict):
+        return
+    subnet_list = arguments.get(f"subnet{version}", [])
+    if not isinstance(subnet_list, list) or not subnet_list:
+        return
+    subnet = subnet_list[0] if isinstance(subnet_list[0], dict) else {}
+    pools = subnet.get("pools")
+    ip = IPAddress(ip_str)
+
+    for pool_entry in pools if isinstance(pools, list) else []:
+        ps = pool_entry.get("pool") if isinstance(pool_entry, dict) else None
+        if not isinstance(ps, str) or not ps:
+            continue
+        try:
+            pool_range = parse_pool_range(ps)
+        except AddrFormatError:
+            continue
+        if ip in pool_range:
+            messages.warning(
+                request,
+                f"IP {ip_str} is within existing pool {ps}. "
+                "Kea allows this — reservations take priority over pool allocation.",
+            )
+            break
 
 
 def _in_subnet_scope(reservation: Reservation) -> InSubnetReservationScope:
@@ -333,7 +381,7 @@ class _ReservationMutationView(_KeaChangeMixin, generic.ObjectView):
         options_formset: Any,
         capabilities: ReservationCapabilities | None,
         *,
-        subnet_choices: list[tuple[str, int]] | None = None,
+        subnet_choices: tuple[tuple[str, int], ...] = (),
         subnet_cmds_available: bool = True,
         lease_diff: dict[str, str] | None = None,
     ) -> dict[str, Any]:
@@ -345,7 +393,7 @@ class _ReservationMutationView(_KeaChangeMixin, generic.ObjectView):
             "action": self.form_action,
             "dhcp_version": self.dhcp_version,
             "tab": self.tab,
-            "subnet_choices": subnet_choices or [],
+            "subnet_choices": subnet_choices,
             "subnet_cmds_available": subnet_cmds_available,
             "subnet_datalist_id": constants.RESERVATION_SUBNET_DATALIST_ID,
             "reservation_capabilities": capabilities,
@@ -376,7 +424,10 @@ class _ReservationAddView(_ReservationMutationView):
     def get(self, request: HttpRequest, pk: int) -> HttpResponse:
         server = self.get_object(pk=pk)
         capabilities = _configured_capabilities(server, self.dhcp_version)
-        subnet_choices, subnet_cmds_available = fetch_subnet_choices(server, self.dhcp_version)
+        snapshot = subnet_catalogue.display(server, self.dhcp_version)
+        _diagnostic_messages(
+            request, snapshot.diagnostics, messages.ERROR if snapshot.unavailable else messages.WARNING
+        )
         initial_fields = (
             ("subnet_cidr", "ip_address", "identifier_type", "identifier", "hostname")
             if self.dhcp_version == 4
@@ -390,8 +441,8 @@ class _ReservationAddView(_ReservationMutationView):
             form,
             forms.ReservationOptionsFormSet(prefix="options"),
             capabilities,
-            subnet_choices=subnet_choices,
-            subnet_cmds_available=subnet_cmds_available,
+            subnet_choices=snapshot.subnet_choices,
+            subnet_cmds_available=snapshot.subnet_cmds_available,
         )
 
     def post(self, request: HttpRequest, pk: int) -> HttpResponse:
@@ -420,15 +471,18 @@ class _ReservationAddView(_ReservationMutationView):
             except (requests.RequestException, RuntimeError, ValueError):
                 logger.exception("Could not create a DHCPv%s Reservation", self.dhcp_version)
                 messages.error(request, "The Reservation could not be created. See server logs.")
-        subnet_choices, subnet_cmds_available = fetch_subnet_choices(server, self.dhcp_version)
+        snapshot = subnet_catalogue.display(server, self.dhcp_version)
+        _diagnostic_messages(
+            request, snapshot.diagnostics, messages.ERROR if snapshot.unavailable else messages.WARNING
+        )
         return self._render(
             request,
             server,
             form,
             options_formset,
             capabilities,
-            subnet_choices=subnet_choices,
-            subnet_cmds_available=subnet_cmds_available,
+            subnet_choices=snapshot.subnet_choices,
+            subnet_cmds_available=snapshot.subnet_cmds_available,
         )
 
     def _create(

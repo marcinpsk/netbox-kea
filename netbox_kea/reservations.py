@@ -177,7 +177,7 @@ class GlobalReservationScope:
 
 @dataclass(frozen=True)
 class InSubnetReservationScope:
-    """An In-Subnet Reservation Scope with verified Subnet Identity."""
+    """An In-Subnet Reservation Scope bound to one catalogued Subnet Identity; writes verify it through MutationScope."""
 
     subnet: SubnetIdentity
     kind: Literal["in-subnet"] = "in-subnet"
