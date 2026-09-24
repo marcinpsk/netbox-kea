@@ -583,6 +583,7 @@ class TestReservation4API(_APITestBase):
             with self.subTest(params=params):
                 responses = _catalogue_responses(4, 20, "198.18.0.0/24")
                 responses["subnet4-list"] = {"result": 2, "text": "subnet commands unavailable"}
+                invalidate(self.server, 4)
                 with stub_kea(responses) as kea:
                     response = self.api_client.get(self._url(), params)
                 self.assertEqual(response.status_code, 400)
