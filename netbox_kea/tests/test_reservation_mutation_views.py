@@ -280,7 +280,6 @@ class TestReservationMutationViews(_ViewTestBase):
 
         with (
             stub_kea(responses),
-            self.assertNoLogs("netbox_kea.views.reservation_mutations", "ERROR"),
             self.assertLogs("netbox_kea.views.reservation_mutations", "WARNING") as logs,
         ):
             response = self.client.post(
@@ -294,6 +293,7 @@ class TestReservationMutationViews(_ViewTestBase):
             )
 
         self.assertEqual(response.status_code, 302)
+        self.assertEqual([record.levelname for record in logs.records], ["WARNING"], logs.output)
         self.assertIn("Could not check Reservation pool overlap", logs.output[0])
 
     def test_a_journal_validation_error_does_not_lose_the_applied_creation(self):
