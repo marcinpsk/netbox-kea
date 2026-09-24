@@ -1501,7 +1501,7 @@ class SharedNetworkEditForm(forms.Form):
     """Form for editing an existing Kea shared network (description, interface, relay, options)."""
 
     name = forms.CharField(widget=forms.HiddenInput())
-    description = forms.CharField(max_length=255, required=False, label="Description")
+    description = forms.CharField(required=False, label="Description")
     interface = forms.CharField(
         max_length=128,
         required=False,

@@ -1296,16 +1296,10 @@ class TestSharedNetworkEditForm(SimpleTestCase):
 
         self.assertIsInstance(SharedNetworkEditForm().fields["name"].widget, HiddenInput)
 
-    def test_description_accepts_255_chars(self):
-        """description accepts strings up to 255 characters."""
-        form = self._form(description="x" * 255)
+    def test_description_accepts_a_comment_of_any_length(self):
+        """Kea puts no length limit on a comment, so an existing long comment must not block an edit."""
+        form = self._form(description="x" * 1000)
         self.assertTrue(form.is_valid(), form.errors)
-
-    def test_description_rejects_256_chars(self):
-        """description rejects strings longer than 255 characters."""
-        form = self._form(description="x" * 256)
-        self.assertFalse(form.is_valid())
-        self.assertIn("description", form.errors)
 
     def test_valid_single_dns_server(self):
         """A single valid DNS server IP is accepted and normalized."""

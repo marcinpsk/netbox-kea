@@ -643,6 +643,14 @@ class TestServerSharedNetwork4EditView(_ViewTestBase):
                 self.client.post(self._url(), self._post_data(description=description))
             self.assertEqual(_written_sn(kea, 4)["user-context"], expected)
 
+    def test_a_long_comment_does_not_block_an_unrelated_edit(self):
+        comment = "x" * 300
+        with _edit_stub(_sn_config(4, "prod-net", description=comment)) as kea:
+            initial = self.client.get(self._url()).context["form"].initial
+            post = self.client.post(self._url(), self._post_data(description=initial["description"], interface="eth1"))
+        self.assertEqual(post.status_code, 302)
+        self.assertEqual(_written_sn(kea, 4)["user-context"], {"comment": comment})
+
     def test_clearing_the_only_comment_removes_the_user_context(self):
         with _edit_stub(_sn_config(4, "prod-net", description="Old")) as kea:
             self.client.post(self._url(), self._post_data(description=""))
