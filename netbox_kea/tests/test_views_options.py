@@ -456,6 +456,15 @@ class TestServerOptionsView(_ViewTestBase):
         msgs = list(django_messages.get_messages(response.wsgi_request))
         self.assertTrue(any(m.level == django_messages.ERROR for m in msgs))
 
+    def test_post_non_object_family_configuration_redirects_without_500(self):
+        with stub_kea({"config-get": {"result": 0, "arguments": {"Dhcp4": []}}}) as kea:
+            response = self.client.post(self._url(), self._post_data())
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(kea.commands(), ["config-get"])
+        msgs = list(django_messages.get_messages(response.wsgi_request))
+        self.assertTrue(any(m.level == django_messages.ERROR for m in msgs))
+
     def test_get_requires_login(self):
         """Unauthenticated GET is redirected."""
         self.client.logout()

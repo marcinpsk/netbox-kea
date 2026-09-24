@@ -152,3 +152,30 @@ rules:
       - pattern-either:
           - pattern: $C.command("=~/^reservation-/", ...)
           - pattern: $C.command(command="=~/^reservation-/", ...)
+
+  - id: kea-config-read-modify-write-without-reader
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Read the live configuration for a read-modify-write through
+      KeaClient._config_for_update(). It validates the config-get reply and the
+      Dhcp4/Dhcp6 block before the mutation reads it, and _config_entries()
+      validates each list the mutation walks. A hand-parsed config-get reply
+      turns a malformed block into an AttributeError and an HTTP 500.
+    metadata:
+      category: correctness
+      confidence: HIGH
+      references:
+        - "CLAUDE.md: Validate Kea response shape before indexing"
+    paths:
+      exclude:
+        - "**/tests/**"
+        - "**/migrations/**"
+    patterns:
+      - pattern-inside: |
+          def $F(...):
+            ...
+            $S._apply_config(...)
+      - pattern-either:
+          - pattern: $C.command("config-get", ...)
+          - pattern: $C.command(command="config-get", ...)

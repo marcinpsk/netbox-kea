@@ -5426,6 +5426,48 @@ class TestConfigGetShapeGuardAdditional(TestCase):
             self.client.subnet_update_options(version=4, subnet_id=1, options=[])
 
 
+class TestConfigGetMalformedConfiguration(TestCase):
+    """Read-modify-write mutations reject a malformed live configuration before any write."""
+
+    _MUTATIONS = {
+        "server_update_options": lambda client: client.server_update_options(version=4, options=[]),
+        "subnet_update_options": lambda client: client.subnet_update_options(version=4, subnet_id=1, options=[]),
+        "network_update": lambda client: client.network_update(version=4, name="net", dns_servers=["192.0.2.53"]),
+        "option_def_add": lambda client: client.option_def_add(
+            version=4, option_def={"name": "test", "code": 200, "type": "string", "space": "dhcp4"}
+        ),
+        "option_def_del": lambda client: client.option_def_del(version=4, code=200, space="dhcp4"),
+    }
+
+    def _assert_rejected_before_write(self, mutation, arguments, message):
+        with stub_kea({"config-get": {"result": 0, "arguments": arguments}}) as kea:
+            with self.assertRaisesRegex(KeaException, message):
+                self._MUTATIONS[mutation](KeaClient(url="http://kea:8000"))
+        self.assertEqual(kea.commands(), ["config-get"])
+
+    def test_non_object_family_block_raises_kea_exception(self):
+        for mutation in self._MUTATIONS:
+            for arguments in ({}, {"Dhcp4": []}, {"Dhcp4": "text"}, {"Dhcp4": None}):
+                with self.subTest(mutation=mutation, arguments=arguments):
+                    self._assert_rejected_before_write(mutation, arguments, "non-object Dhcp4")
+
+    def test_malformed_collection_raises_kea_exception(self):
+        cases = (
+            ("subnet_update_options", {"subnet4": {}}, "subnet4"),
+            ("subnet_update_options", {"subnet4": ["text"]}, "subnet4"),
+            ("subnet_update_options", {"shared-networks": ["text"]}, "shared-networks"),
+            ("subnet_update_options", {"shared-networks": [{"subnet4": "text"}]}, "subnet4"),
+            ("network_update", {"shared-networks": {}}, "shared-networks"),
+            ("network_update", {"shared-networks": [None]}, "shared-networks"),
+            ("network_update", {"shared-networks": [{"name": "net", "option-data": ["text"]}]}, "option-data"),
+            ("option_def_add", {"option-def": {}}, "option-def"),
+            ("option_def_del", {"option-def": ["text"]}, "option-def"),
+        )
+        for mutation, dhcp4, message in cases:
+            with self.subTest(mutation=mutation, dhcp4=dhcp4):
+                self._assert_rejected_before_write(mutation, {"Dhcp4": dhcp4}, f"malformed {message}")
+
+
 class TestLeaseUpdateGuards(TestCase):
     """lease_update guards on result=3 and non-dict arguments (lines 944-945, 948)."""
 

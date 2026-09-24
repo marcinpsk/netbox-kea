@@ -1,5 +1,4 @@
 import base64
-import copy
 import ipaddress
 import json
 import logging
@@ -356,6 +355,14 @@ def _replace_managed_option(
     ):
         return [*kept, existing]
     return kept
+
+
+def _config_entries(container: dict[str, Any], key: str, service: str) -> list[dict[str, Any]]:
+    """Return the objects listed at *key* in a live configuration, or raise ``KeaException``."""
+    entries = container.get(key, [])
+    if not isinstance(entries, list) or not all(isinstance(entry, dict) for entry in entries):
+        raise KeaException({"result": -1, "text": f"config-get returned a malformed {key} list for {service}"})
+    return entries
 
 
 class KeaClient:
@@ -1299,18 +1306,10 @@ class KeaClient:
         Raises ``PartialPersistError`` if config-write fails after a successful config-set (change
         is live but will not survive restart).
         """
-        service = f"dhcp{version}"
-        dhcp_key = f"Dhcp{version}"
-
-        resp = self.command("config-get", service=[service])
-        # Strip the "hash" key that Kea 2.4+ includes — config-test and config-set reject it.
-        raw = resp[0].get("arguments") if resp and isinstance(resp[0], dict) else None
-        if not isinstance(raw, dict):
-            raise KeaException({"result": -1, "text": f"config-get returned unexpected arguments for {service}"})
-        config = {k: v for k, v in raw.items() if k != "hash"}
+        service, config, daemon = self._config_for_update(version)
 
         network: dict[str, Any] | None = None
-        for sn in config.get(dhcp_key, {}).get("shared-networks", []):
+        for sn in _config_entries(daemon, "shared-networks", service):
             if sn.get("name") == name:
                 network = sn
                 break
@@ -1330,7 +1329,7 @@ class KeaClient:
             else:
                 network.pop("relay", None)
         if dns_servers is not None or ntp_servers is not None:
-            options = list(network.get("option-data") or [])
+            options = list(_config_entries(network, "option-data", service))
             if dns_servers is not None:
                 options = _replace_managed_option(
                     options,
@@ -1530,25 +1529,17 @@ class KeaClient:
             PartialPersistError: If ``config-write`` fails after successful ``config-test``.
 
         """
-        service = f"dhcp{version}"
-        dhcp_key = f"Dhcp{version}"
         subnet_key = f"subnet{version}"
-
-        resp = self.command("config-get", service=[service])
-        raw = resp[0].get("arguments") if resp and isinstance(resp[0], dict) else None
-        if not isinstance(raw, dict):
-            raise KeaException({"result": -1, "text": f"config-get returned unexpected arguments for {service}"})
-        config = raw
-        config.pop("hash", None)
+        service, config, daemon = self._config_for_update(version)
 
         subnet = None
-        for s in config.get(dhcp_key, {}).get(subnet_key, []):
+        for s in _config_entries(daemon, subnet_key, service):
             if s.get("id") == subnet_id:
                 subnet = s
                 break
         if subnet is None:
-            for sn in config.get(dhcp_key, {}).get("shared-networks", []):
-                for s in sn.get(subnet_key, []):
+            for sn in _config_entries(daemon, "shared-networks", service):
+                for s in _config_entries(sn, subnet_key, service):
                     if s.get("id") == subnet_id:
                         subnet = s
                         break
@@ -1576,16 +1567,7 @@ class KeaClient:
             PartialPersistError: If ``config-write`` fails after successful ``config-test``.
 
         """
-        service = f"dhcp{version}"
-        dhcp_key = f"Dhcp{version}"
-
-        resp = self.command("config-get", service=[service])
-        raw = resp[0].get("arguments") if resp and isinstance(resp[0], dict) else None
-        if not isinstance(raw, dict):
-            raise KeaException({"result": -1, "text": f"config-get returned unexpected arguments for {service}"})
-        config = raw
-        config.pop("hash", None)
-        daemon = config.setdefault(dhcp_key, {})
+        service, config, daemon = self._config_for_update(version)
         daemon["option-data"] = merge_option_form_rows(options, daemon.get("option-data", []))
         self._apply_config(service, config)
 
@@ -1602,16 +1584,8 @@ class KeaClient:
             PartialPersistError: If ``config-write`` fails after successful ``config-test``.
 
         """
-        service = f"dhcp{version}"
-        dhcp_key = f"Dhcp{version}"
-        resp = self.command("config-get", service=[service])
-        raw_args = resp[0].get("arguments") if resp and isinstance(resp[0], dict) else None
-        if not isinstance(raw_args, dict):
-            raise KeaException({"result": -1, "text": f"config-get returned unexpected arguments for {service}"})
-        config = copy.deepcopy(raw_args)
-        config.pop("hash", None)
-        defs = config.setdefault(dhcp_key, {}).setdefault("option-def", [])
-        defs.append(option_def)
+        service, config, daemon = self._config_for_update(version)
+        daemon["option-def"] = [*_config_entries(daemon, "option-def", service), option_def]
         self._apply_config(service, config)
 
     def option_def_del(self, version: int, code: int, space: str) -> None:
@@ -1627,19 +1601,12 @@ class KeaClient:
             PartialPersistError: If ``config-write`` fails after successful ``config-test``.
 
         """
-        service = f"dhcp{version}"
-        dhcp_key = f"Dhcp{version}"
-        resp = self.command("config-get", service=[service])
-        raw_args = resp[0].get("arguments") if resp and isinstance(resp[0], dict) else None
-        if not isinstance(raw_args, dict):
-            raise KeaException({"result": -1, "text": f"config-get returned unexpected arguments for {service}"})
-        config = copy.deepcopy(raw_args)
-        config.pop("hash", None)
-        defs = config.get(dhcp_key, {}).get("option-def", [])
+        service, config, daemon = self._config_for_update(version)
+        defs = _config_entries(daemon, "option-def", service)
         new_defs = [d for d in defs if not (d.get("code") == code and d.get("space") == space)]
         if len(new_defs) == len(defs):
             raise KeaException({"result": 3, "text": f"option-def code={code} space={space} not found"})
-        config.setdefault(dhcp_key, {})["option-def"] = new_defs
+        daemon["option-def"] = new_defs
         self._apply_config(service, config)
 
     def lease_wipe(self, version: int, subnet_id: int) -> None:
@@ -2164,6 +2131,20 @@ class KeaClient:
         ):
             raise RuntimeError(f"{command} did not return one valid result for {service}.")
         check_response(response, (0,))
+
+    def _config_for_update(self, version: int) -> tuple[str, dict[str, Any], dict[str, Any]]:
+        """Return the service, the live config without ``hash``, and its validated ``Dhcp{v}`` block."""
+        service = f"dhcp{version}"
+        resp = self.command("config-get", service=[service])
+        config = resp[0].get("arguments") if resp and isinstance(resp[0], dict) else None
+        if not isinstance(config, dict):
+            raise KeaException({"result": -1, "text": f"config-get returned unexpected arguments for {service}"})
+        # Kea 2.4+ adds "hash"; config-test and config-set reject it.
+        config.pop("hash", None)
+        daemon = config.get(f"Dhcp{version}")
+        if not isinstance(daemon, dict):
+            raise KeaException({"result": -1, "text": f"config-get returned a non-object Dhcp{version} for {service}"})
+        return service, config, daemon
 
     def _apply_config(self, service: str, config: dict) -> None:
         """Validate, apply, and persist a modified config dict.
