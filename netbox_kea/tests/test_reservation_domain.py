@@ -33,8 +33,10 @@ from netbox_kea.reservations import (
     reservation_fingerprint,
     reservation_identifier_types,
 )
+from netbox_kea.server_configuration import SubnetConfiguration, SubnetSettings
 from netbox_kea.subnet_catalogue import (
     CatalogueSnapshot,
+    ConfiguredSubnet,
     IdentityOnlyCatalogueSnapshot,
     SubnetIdentity,
     VerifiedSubnet,
@@ -275,6 +277,22 @@ class TestReservationValues(SimpleTestCase):
 class TestReservationPage(SimpleTestCase):
     def setUp(self):
         self.kea = KeaClient(url="http://kea.example.invalid", send_service=False)
+
+    def test_quarantines_configured_subnet_without_verified_identity(self):
+        catalogue = _catalogue(4, 20, "198.18.0.0/24")
+        configured = ConfiguredSubnet(
+            candidate_identity=catalogue.subnets[0].identity,
+            configuration=SubnetConfiguration(pools=(), options=(), settings=SubnetSettings()),
+            shared_network=None,
+        )
+        catalogue = replace(catalogue, subnets=(), configured_subnets=(configured,))
+        raw = {"subnet-id": 20, "hw-address": "aa:bb:cc:dd:ee:ff", "ip-address": "198.18.0.20"}
+
+        with stub_kea({"reservation-get-page": _res_page([raw])}):
+            snapshot = self.kea.reservation_page(4, catalogue)
+
+        self.assertEqual(snapshot.records, ())
+        self.assertEqual([diagnostic.code for diagnostic in snapshot.diagnostics], ["unverified-scope"])
 
     def test_returns_typed_snapshot_and_quarantines_one_malformed_record(self):
         page = _res_page(

@@ -1334,7 +1334,7 @@ class KeaClient:
                 options = _replace_managed_option(
                     options,
                     version,
-                    {"domain-name-servers", "dns-servers"},
+                    {"domain-name-servers"} if version == 4 else {"dns-servers"},
                     6 if version == 4 else 23,
                     "domain-name-servers" if version == 4 else "dns-servers",
                     ",".join(dns_servers),
@@ -1343,7 +1343,7 @@ class KeaClient:
                 options = _replace_managed_option(
                     options,
                     version,
-                    {"ntp-servers", "sntp-servers"},
+                    {"ntp-servers"} if version == 4 else {"sntp-servers"},
                     42 if version == 4 else 31,
                     "ntp-servers" if version == 4 else "sntp-servers",
                     ",".join(ntp_servers),
@@ -1463,7 +1463,7 @@ class KeaClient:
         options = _replace_managed_option(
             options,
             version,
-            {"domain-name-servers", "dns-servers"},
+            {"domain-name-servers"} if version == 4 else {"dns-servers"},
             6 if version == 4 else 23,
             "domain-name-servers" if version == 4 else "dns-servers",
             None if dns_servers is None else ", ".join(dns_servers),
@@ -1471,7 +1471,7 @@ class KeaClient:
         options = _replace_managed_option(
             options,
             version,
-            {"ntp-servers", "sntp-servers"},
+            {"ntp-servers"} if version == 4 else {"sntp-servers"},
             42 if version == 4 else 31,
             "ntp-servers" if version == 4 else "sntp-servers",
             None if ntp_servers is None else ", ".join(ntp_servers),

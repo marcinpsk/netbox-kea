@@ -39,6 +39,7 @@ from ..reservations import (
     lease_identities,
 )
 from ..signals import lease_added, leases_deleted
+from ..subnet_catalogue import VerifiedSubnet
 from ..sync import sync_lease_to_netbox
 from ..utilities import (
     OptionalViewTab,
@@ -971,7 +972,7 @@ def _reservation_for_lease_worker(worker_clients, version, catalogue, lease, loo
     if not ip or isinstance(subnet_id, bool) or not isinstance(subnet_id, int):
         return ip, None, None
     subnet = catalogue.find_by_id(subnet_id)
-    if subnet is None:
+    if not isinstance(subnet, VerifiedSubnet):
         return ip, None, None
     scope = InSubnetReservationScope(subnet.identity)
     identities = lease_identities(lease, version)
@@ -1173,7 +1174,7 @@ def _enrich_leases_with_badges(
             reservation_by_ip.get(ip),
             server.pk,
             version,
-            subnet.cidr if subnet is not None else None,
+            subnet.cidr if isinstance(subnet, VerifiedSubnet) else None,
             host_cmds_available,
             failed_ips,
             can_change,

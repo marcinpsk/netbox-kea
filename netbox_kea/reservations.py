@@ -625,13 +625,15 @@ def _identity(raw: dict[str, Any], family: Family) -> ReservationIdentity:
 
 
 def _scope(raw: dict[str, Any], catalogue: CatalogueSnapshot) -> ReservationScope:
+    from .subnet_catalogue import VerifiedSubnet
+
     subnet_id = raw.get("subnet-id")
     if isinstance(subnet_id, bool) or not isinstance(subnet_id, int) or subnet_id < 0:
         raise MalformedReservation("invalid-scope", "The Reservation has an invalid scope.", "subnet-id")
     if subnet_id == 0:
         return GlobalReservationScope()
     subnet = catalogue.find_by_id(subnet_id)
-    if subnet is None:
+    if not isinstance(subnet, VerifiedSubnet):
         raise MalformedReservation(
             "unverified-scope",
             "The Reservation refers to a Subnet that the Subnet Catalogue cannot verify.",

@@ -39,6 +39,7 @@ from ..reservations import (
     lease_identifier_types,
     lease_identities,
 )
+from ..subnet_catalogue import VerifiedSubnet
 from ..subnet_catalogue import display as subnet_catalogue
 from ..utilities import OptionalViewTab
 
@@ -296,7 +297,11 @@ def _fetch_reservation_page(
         return replace(_empty_reservation_snapshot(version), complete=True)
     catalogue = subnet_catalogue(server, version)
     read_subnet_id = 0 if scope == "global" else subnet_id
-    if read_subnet_id is not None and read_subnet_id > 0 and catalogue.find_by_id(read_subnet_id) is None:
+    if (
+        read_subnet_id is not None
+        and read_subnet_id > 0
+        and not isinstance(catalogue.find_by_id(read_subnet_id), VerifiedSubnet)
+    ):
         if catalogue.identity_complete and catalogue.consistent:
             return replace(_empty_reservation_snapshot(version), complete=True)
         read_subnet_id = None

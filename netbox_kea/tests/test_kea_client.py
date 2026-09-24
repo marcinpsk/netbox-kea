@@ -3203,8 +3203,8 @@ class TestNetworkUpdate(TestCase):
                             {
                                 "name": "prod-net",
                                 "option-data": [
-                                    {"name": "dns-servers", "data": "192.0.2.53", "always-send": True},
-                                    {"name": "sntp-servers", "data": "192.0.2.123"},
+                                    {"name": "domain-name-servers", "data": "192.0.2.53", "always-send": True},
+                                    {"name": "ntp-servers", "data": "192.0.2.123"},
                                     {"name": "vendor-specific", "data": "deadbeef"},
                                 ],
                                 "subnet4": [],
@@ -3243,13 +3243,51 @@ class TestNetworkUpdate(TestCase):
                 [
                     {"name": "vendor-specific", "data": "deadbeef"},
                     {
-                        "name": "dns-servers",
+                        "name": "domain-name-servers",
                         "data": "198.18.0.53,198.18.0.54",
                         "always-send": True,
                     },
                 ],
             )
             self.assertEqual(other["option-data"], [])
+
+    def test_preserves_other_family_option_names_without_matching_codes(self):
+        config = [
+            {
+                "result": 0,
+                "arguments": {
+                    "Dhcp4": {
+                        "shared-networks": [
+                            {
+                                "name": "prod-net",
+                                "option-data": [
+                                    {"name": "dns-servers", "data": "192.0.2.53"},
+                                    {"name": "sntp-servers", "data": "192.0.2.123"},
+                                ],
+                                "subnet4": [],
+                            }
+                        ],
+                        "subnet4": [],
+                    }
+                },
+            }
+        ]
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(config, _CONFIG_TEST_OK_RESP, _CONFIG_SET_OK_RESP, _CONFIG_WRITE_RESP),
+        ) as mock_post:
+            self.client.network_update(version=4, name="prod-net", dns_servers=["198.18.0.53"], ntp_servers=[])
+
+        payload = next(p for p in self._payloads(mock_post) if p["command"] == "config-set")
+        self.assertEqual(
+            payload["arguments"]["Dhcp4"]["shared-networks"][0]["option-data"],
+            [
+                {"name": "dns-servers", "data": "192.0.2.53"},
+                {"name": "sntp-servers", "data": "192.0.2.123"},
+                {"name": "domain-name-servers", "data": "198.18.0.53"},
+            ],
+        )
 
     def test_matches_managed_options_by_space_and_code(self):
         """A custom-space option keeps its managed name; a code-only DNS entry is replaced, not duplicated."""
@@ -4501,6 +4539,16 @@ class TestSubnetUpdateMerge(TestCase):
         ]
         self.assertEqual(self._update_options(existing, valid_lft=7200), existing)
         self.assertEqual(self._update_options(existing, gateway="", dns_servers=[], ntp_servers=[]), [])
+
+    def test_other_family_option_names_remain_unmanaged(self):
+        existing = [
+            {"name": "dns-servers", "data": "192.0.2.53"},
+            {"name": "sntp-servers", "data": "192.0.2.123"},
+        ]
+        self.assertEqual(
+            self._update_options(existing, dns_servers=["198.18.0.53"], ntp_servers=[]),
+            [*existing, {"name": "domain-name-servers", "data": "198.18.0.53"}],
+        )
 
     def test_equivalent_csv_preserves_encoding_flags(self):
         for data in ("198.18.0.53,198.18.0.54", "198.18.0.53, 198.18.0.54"):
