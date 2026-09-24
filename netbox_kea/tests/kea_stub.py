@@ -90,29 +90,24 @@ _RECORDINGS = Path(__file__).with_name("kea_recordings")
 
 
 @cache
-def _recorded_keys(family: int) -> dict[str, frozenset[str]]:
-    """Return every key a real Kea emits on a Shared Network and on a Subnet."""
-    daemon = json.loads((_RECORDINGS / f"dhcp{family}.json").read_text())["config-get"]["arguments"][f"Dhcp{family}"]
-    networks = daemon["shared-networks"]
-    subnets = [*daemon[f"subnet{family}"], *(subnet for network in networks for subnet in network[f"subnet{family}"])]
-    return {
-        "shared-networks": frozenset(key for network in networks for key in network),
-        f"subnet{family}": frozenset(key for subnet in subnets for key in subnet),
-    }
+def _accepted_keys(family: int) -> dict[str, frozenset[str]]:
+    """Return the keys the recorded Kea grammar accepts on a Shared Network and on a Subnet."""
+    accepted = json.loads((_RECORDINGS / "accepted-keys.json").read_text())[f"dhcp{family}"]
+    return {kind: frozenset(keys) for kind, keys in accepted.items()}
 
 
 def _assert_kea_would_accept(body: dict[str, Any]) -> None:
-    """Fail on a Shared Network or Subnet key that a real Kea never returns in config-get.
+    """Fail on a Shared Network or Subnet key that the Kea grammar does not accept.
 
-    Kea rejects unknown keys, and a read-modify-write payload only carries keys that
-    config-get returned, so an extra key came from the writer or from a fixture.
+    Kea rejects unknown keys, so a config-test or config-set that sends one fails
+    against a real Kea even when a hand-written stub answers it.
     """
     arguments = body.get("arguments")
     for family in (4, 6):
         daemon = arguments.get(f"Dhcp{family}") if isinstance(arguments, dict) else None
         if not isinstance(daemon, dict):
             continue
-        known = _recorded_keys(family)
+        known = _accepted_keys(family)
         networks = [n for n in daemon.get("shared-networks") or [] if isinstance(n, dict)]
         subnets = [
             *(daemon.get(f"subnet{family}") or []),
@@ -122,8 +117,8 @@ def _assert_kea_would_accept(body: dict[str, Any]) -> None:
             unknown = {key for entry in entries if isinstance(entry, dict) for key in entry} - known[kind]
             if unknown:
                 raise AssertionError(
-                    f"KeaHttpStub: {body.get('command')} sends {sorted(unknown)} in {kind}, which Kea "
-                    f"{family} never returns. Record a coverage configuration that sets the key, or drop it."
+                    f"KeaHttpStub: {body.get('command')} sends {sorted(unknown)} in {kind}, which the "
+                    f"DHCPv{family} Kea grammar in kea_recordings/accepted-keys.json does not accept."
                 )
 
 

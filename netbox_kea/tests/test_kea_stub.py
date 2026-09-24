@@ -243,8 +243,12 @@ def test_config_writes_carry_only_keys_a_real_kea_returns(family):
     stub = KeaHttpStub({"config-test": {"result": 0}})
     assert stub("https://kea.example.invalid/", json={"command": "config-test", "arguments": arguments}).ok
 
+    network = arguments[f"Dhcp{family}"]["shared-networks"][0]
+    network["client-classes"] = ["voip"]
+    assert stub("https://kea.example.invalid/", json={"command": "config-test", "arguments": arguments}).ok
+
     member = arguments[f"Dhcp{family}"]["shared-networks"][1][f"subnet{family}"][0]
-    for entry in (arguments[f"Dhcp{family}"]["shared-networks"][0], member):
+    for entry in (network, member):
         entry["description"] = "Kea rejects this key"
         with pytest.raises(AssertionError, match=r"sends \['description'\]"):
             stub("https://kea.example.invalid/", json={"command": "config-test", "arguments": arguments})
