@@ -252,7 +252,8 @@ resort, reserved for true external boundaries you cannot run locally.
   `subnet{4,6}-list` replies recorded from a real Kea (the harness `KEA_VERSION`), with
   coverage configurations that use every field `server_configuration` reads.
   `test_kea_recordings.py` requires zero diagnostics. The script also writes
-  `accepted-keys.json` from the Kea Bison grammar of the same release. `stub_kea()`
+  `accepted-keys.json` from the keyword tables that Kea's `config-test` and
+  `config-set` check in the same release (`simple_parser{4,6}.cc`). `stub_kea()`
   fails a `config-test` or `config-set` whose Shared Network or Subnet carries a key
   outside that file, because Kea rejects unknown keys. When you bump `KEA_VERSION` or
   make the parser read a new field, add the field to `kea-dhcp{4,6}.conf` and run

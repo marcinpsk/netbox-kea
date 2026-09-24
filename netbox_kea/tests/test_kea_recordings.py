@@ -35,7 +35,7 @@ def test_recordings_come_from_the_harness_kea_version():
     assert recorded == set(harness)
 
 
-def test_the_grammar_keys_cover_every_key_kea_returned():
+def test_the_accepted_keys_cover_every_key_kea_returned():
     for family in (4, 6):
         daemon = _recording(family)["config-get"]["arguments"][f"Dhcp{family}"]
         networks = daemon["shared-networks"]

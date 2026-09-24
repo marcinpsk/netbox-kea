@@ -91,13 +91,13 @@ _RECORDINGS = Path(__file__).with_name("kea_recordings")
 
 @cache
 def _accepted_keys(family: int) -> dict[str, frozenset[str]]:
-    """Return the keys the recorded Kea grammar accepts on a Shared Network and on a Subnet."""
+    """Return the keys Kea's config-test and config-set accept on a Shared Network and on a Subnet."""
     accepted = json.loads((_RECORDINGS / "accepted-keys.json").read_text())[f"dhcp{family}"]
     return {kind: frozenset(keys) for kind, keys in accepted.items()}
 
 
 def _assert_kea_would_accept(body: dict[str, Any]) -> None:
-    """Fail on a Shared Network or Subnet key that the Kea grammar does not accept.
+    """Fail on a Shared Network or Subnet key that Kea's keyword tables do not accept.
 
     Kea rejects unknown keys, so a config-test or config-set that sends one fails
     against a real Kea even when a hand-written stub answers it.
@@ -118,7 +118,7 @@ def _assert_kea_would_accept(body: dict[str, Any]) -> None:
             if unknown:
                 raise AssertionError(
                     f"KeaHttpStub: {body.get('command')} sends {sorted(unknown)} in {kind}, which the "
-                    f"DHCPv{family} Kea grammar in kea_recordings/accepted-keys.json does not accept."
+                    f"DHCPv{family} Kea keyword tables in kea_recordings/accepted-keys.json do not accept."
                 )
 
 
