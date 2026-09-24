@@ -1,16 +1,14 @@
 """Subnet pickers follow catalogue invalidation across configuration writes."""
 
 from django.contrib import messages
-from django.test import override_settings
 from django.urls import reverse
 
 from .kea_stub import _catalogue_responses_for_subnets, stub_kea
-from .utils import _PLUGINS_CONFIG, _ViewTestBase
+from .utils import _ViewTestBase
 
 _DISAGREEMENT = "Kea subnet identity and configuration facts disagree after a fresh retry."
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestSubnetPickerViews(_ViewTestBase):
     def test_lease_picker_refreshes_after_subnet_creation(self):
         self._assert_refreshes_after_subnet_creation("server_leases4")
