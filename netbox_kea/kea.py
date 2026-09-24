@@ -1510,13 +1510,12 @@ class KeaClient:
         self._persist_config(service)
 
     def subnet_update_options(self, version: int, subnet_id: int, options: list[dict[str, Any]]) -> None:
-        """Update option-data for a subnet via config-get → config-test → config-write.
+        """Merge form rows into a subnet's option-data via config-get → config-test → config-set → config-write.
 
         Free Kea has no option-set hook, so the only supported approach is a full
-        read-modify-write cycle: fetch the current config, replace the subnet's
-        ``option-data`` in the Python dict, then validate and write it back using
-        ``config-test`` (with the modified config as ``arguments``) followed by
-        ``config-write`` (also with the modified config).
+        read-modify-write cycle: fetch the current config, merge the submitted rows
+        onto the subnet's ``option-data`` by original identity, then validate, apply
+        and persist the modified config.
 
         Args:
             version: DHCP version (4 or 6).
@@ -1526,7 +1525,8 @@ class KeaClient:
 
         Raises:
             KeaException: If ``subnet_id`` is not found, or if ``config-test`` fails.
-            PartialPersistError: If ``config-write`` fails after successful ``config-test``.
+            DHCPOptionConflict: If a row's original identity is missing, ambiguous, or submitted twice.
+            PartialPersistError: If ``config-write`` fails after a successful ``config-set``.
 
         """
         subnet_key = f"subnet{version}"
@@ -1552,9 +1552,10 @@ class KeaClient:
         self._apply_config(service, config)
 
     def server_update_options(self, version: int, options: list[dict[str, Any]]) -> None:
-        """Update server-level option-data via config-get → config-test → config-write.
+        """Merge form rows into server-level option-data via config-get → config-test → config-set → config-write.
 
-        Replaces the ``option-data`` list at the ``Dhcp{v}`` level (not per-subnet).
+        Merges onto the ``option-data`` list at the ``Dhcp{v}`` level (not per-subnet)
+        by original identity.
         Uses the same read-modify-write pipeline as :meth:`subnet_update_options`.
 
         Args:
@@ -1564,7 +1565,8 @@ class KeaClient:
 
         Raises:
             KeaException: If ``config-test`` fails.
-            PartialPersistError: If ``config-write`` fails after successful ``config-test``.
+            DHCPOptionConflict: If a row's original identity is missing, ambiguous, or submitted twice.
+            PartialPersistError: If ``config-write`` fails after a successful ``config-set``.
 
         """
         service, config, daemon = self._config_for_update(version)
@@ -1572,7 +1574,7 @@ class KeaClient:
         self._apply_config(service, config)
 
     def option_def_add(self, version: int, option_def: dict) -> None:
-        """Append a new option-def entry via config-get → config-test → config-write.
+        """Append a new option-def entry via config-get → config-test → config-set → config-write.
 
         Args:
             version: DHCP version (4 or 6).
@@ -1581,7 +1583,7 @@ class KeaClient:
 
         Raises:
             KeaException: If ``config-test`` fails.
-            PartialPersistError: If ``config-write`` fails after successful ``config-test``.
+            PartialPersistError: If ``config-write`` fails after a successful ``config-set``.
 
         """
         service, config, daemon = self._config_for_update(version)
@@ -1589,7 +1591,7 @@ class KeaClient:
         self._apply_config(service, config)
 
     def option_def_del(self, version: int, code: int, space: str) -> None:
-        """Remove an option-def entry by code+space via config-get → config-test → config-write.
+        """Remove an option-def entry by code+space via config-get → config-test → config-set → config-write.
 
         Args:
             version: DHCP version (4 or 6).
@@ -1598,7 +1600,7 @@ class KeaClient:
 
         Raises:
             KeaConfigTestError: If ``config-test`` fails before the mutation is applied.
-            PartialPersistError: If ``config-write`` fails after successful ``config-test``.
+            PartialPersistError: If ``config-write`` fails after a successful ``config-set``.
 
         """
         service, config, daemon = self._config_for_update(version)
