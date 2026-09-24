@@ -1,0 +1,463 @@
+{
+  "config-get": {
+    "arguments": {
+      "Dhcp6": {
+        "allocator": "iterative",
+        "allow-address-registration": true,
+        "cache-threshold": 0.25,
+        "calculate-tee-times": true,
+        "client-classes": [
+          {
+            "name": "voip",
+            "option-data": []
+          },
+          {
+            "name": "printers",
+            "only-in-additional-list": true,
+            "option-data": []
+          }
+        ],
+        "control-sockets": [
+          {
+            "socket-address": "0.0.0.0",
+            "socket-port": 8000,
+            "socket-type": "http"
+          }
+        ],
+        "ddns-conflict-resolution-mode": "check-with-dhcid",
+        "ddns-generated-prefix": "myhost",
+        "ddns-override-client-update": false,
+        "ddns-override-no-update": false,
+        "ddns-qualifying-suffix": "",
+        "ddns-replace-client-name": "never",
+        "ddns-send-updates": true,
+        "ddns-update-on-renew": false,
+        "decline-probation-period": 86400,
+        "dhcp-ddns": {
+          "enable-updates": false,
+          "max-queue-size": 1024,
+          "ncr-format": "JSON",
+          "ncr-protocol": "UDP",
+          "sender-ip": "0.0.0.0",
+          "sender-port": 0,
+          "server-ip": "127.0.0.1",
+          "server-port": 53001
+        },
+        "dhcp-queue-control": {
+          "capacity": 64,
+          "enable-queue": false,
+          "queue-type": "kea-ring6"
+        },
+        "dhcp4o6-port": 0,
+        "early-global-reservations-lookup": false,
+        "expired-leases-processing": {
+          "flush-reclaimed-timer-wait-time": 25,
+          "hold-reclaimed-time": 3600,
+          "max-reclaim-leases": 100,
+          "max-reclaim-time": 250,
+          "reclaim-timer-wait-time": 10,
+          "unwarned-reclaim-cycles": 5
+        },
+        "hooks-libraries": [
+          {
+            "library": "/usr/lib/kea/hooks/libdhcp_subnet_cmds.so"
+          }
+        ],
+        "host-reservation-identifiers": [
+          "hw-address",
+          "duid"
+        ],
+        "hostname-char-replacement": "",
+        "hostname-char-set": "[^A-Za-z0-9.-]",
+        "interfaces-config": {
+          "interfaces": [],
+          "re-detect": true
+        },
+        "ip-reservations-unique": true,
+        "lease-database": {
+          "persist": false,
+          "type": "memfile"
+        },
+        "mac-sources": [
+          "any"
+        ],
+        "multi-threading": {
+          "enable-multi-threading": true,
+          "packet-queue-size": 64,
+          "thread-pool-size": 0
+        },
+        "option-data": [
+          {
+            "always-send": false,
+            "code": 23,
+            "csv-format": true,
+            "data": "2001:db8::53, 2001:db8::54",
+            "name": "dns-servers",
+            "never-send": false,
+            "space": "dhcp6"
+          },
+          {
+            "always-send": true,
+            "code": 31,
+            "csv-format": true,
+            "data": "2001:db8::123",
+            "name": "sntp-servers",
+            "never-send": false,
+            "space": "dhcp6"
+          },
+          {
+            "always-send": false,
+            "code": 24,
+            "csv-format": true,
+            "data": "example.org",
+            "name": "domain-search",
+            "never-send": false,
+            "space": "dhcp6"
+          },
+          {
+            "always-send": false,
+            "code": 1000,
+            "csv-format": true,
+            "data": "2001:db8::69",
+            "name": "tftp-list",
+            "never-send": false,
+            "space": "dhcp6"
+          },
+          {
+            "always-send": false,
+            "code": 1001,
+            "csv-format": true,
+            "data": "1, hello",
+            "name": "vendor-record",
+            "never-send": false,
+            "space": "dhcp6"
+          },
+          {
+            "always-send": false,
+            "code": 1002,
+            "csv-format": false,
+            "data": "",
+            "name": "vendor-container",
+            "never-send": false,
+            "space": "dhcp6"
+          },
+          {
+            "always-send": false,
+            "client-classes": [
+              "voip"
+            ],
+            "code": 7,
+            "csv-format": true,
+            "data": "10",
+            "name": "preference",
+            "never-send": false,
+            "space": "dhcp6"
+          },
+          {
+            "always-send": false,
+            "code": 1003,
+            "csv-format": false,
+            "data": "C0000245",
+            "never-send": false,
+            "space": "dhcp6"
+          },
+          {
+            "always-send": false,
+            "code": 1,
+            "csv-format": true,
+            "data": "nested",
+            "name": "sub-one",
+            "never-send": false,
+            "space": "vendor-sub"
+          }
+        ],
+        "option-def": [
+          {
+            "array": true,
+            "code": 1000,
+            "encapsulate": "",
+            "name": "tftp-list",
+            "record-types": "",
+            "space": "dhcp6",
+            "type": "ipv6-address"
+          },
+          {
+            "array": false,
+            "code": 1001,
+            "encapsulate": "",
+            "name": "vendor-record",
+            "record-types": "uint16, string",
+            "space": "dhcp6",
+            "type": "record"
+          },
+          {
+            "array": false,
+            "code": 1002,
+            "encapsulate": "vendor-sub",
+            "name": "vendor-container",
+            "record-types": "",
+            "space": "dhcp6",
+            "type": "empty"
+          },
+          {
+            "array": false,
+            "code": 1,
+            "encapsulate": "",
+            "name": "sub-one",
+            "record-types": "",
+            "space": "vendor-sub",
+            "type": "string"
+          }
+        ],
+        "parked-packet-limit": 256,
+        "pd-allocator": "iterative",
+        "preferred-lifetime": 3000,
+        "rebind-timer": 2000,
+        "relay-supplied-options": [
+          "65"
+        ],
+        "renew-timer": 1000,
+        "reservations-global": false,
+        "reservations-in-subnet": true,
+        "reservations-lookup-first": false,
+        "reservations-out-of-pool": false,
+        "sanity-checks": {
+          "extended-info-checks": "fix",
+          "lease-checks": "warn"
+        },
+        "server-id": {
+          "enterprise-id": 0,
+          "htype": 0,
+          "identifier": "",
+          "persist": true,
+          "time": 0,
+          "type": "LLT"
+        },
+        "server-tag": "",
+        "shared-networks": [
+          {
+            "allocator": "iterative",
+            "cache-threshold": 0.25,
+            "calculate-tee-times": true,
+            "max-preferred-lifetime": 3000,
+            "max-valid-lifetime": 4000,
+            "min-preferred-lifetime": 3000,
+            "min-valid-lifetime": 4000,
+            "name": "empty-network",
+            "option-data": [],
+            "pd-allocator": "iterative",
+            "preferred-lifetime": 3000,
+            "rapid-commit": false,
+            "rebind-timer": 2000,
+            "relay": {
+              "ip-addresses": []
+            },
+            "renew-timer": 1000,
+            "store-extended-info": false,
+            "subnet6": [],
+            "t1-percent": 0.5,
+            "t2-percent": 0.8,
+            "valid-lifetime": 4000
+          },
+          {
+            "allocator": "iterative",
+            "cache-threshold": 0.25,
+            "calculate-tee-times": true,
+            "interface": "eth0",
+            "max-preferred-lifetime": 3000,
+            "max-valid-lifetime": 4000,
+            "min-preferred-lifetime": 3000,
+            "min-valid-lifetime": 4000,
+            "name": "office",
+            "option-data": [
+              {
+                "always-send": false,
+                "code": 23,
+                "csv-format": true,
+                "data": "2001:db8:2::53",
+                "name": "dns-servers",
+                "never-send": false,
+                "space": "dhcp6"
+              }
+            ],
+            "pd-allocator": "iterative",
+            "preferred-lifetime": 3000,
+            "rapid-commit": false,
+            "rebind-timer": 2000,
+            "relay": {
+              "ip-addresses": [
+                "2001:db8:ffff::2"
+              ]
+            },
+            "renew-timer": 1000,
+            "store-extended-info": false,
+            "subnet6": [
+              {
+                "allocator": "iterative",
+                "cache-threshold": 0.25,
+                "calculate-tee-times": true,
+                "id": 20,
+                "max-preferred-lifetime": 3000,
+                "max-valid-lifetime": 4000,
+                "min-preferred-lifetime": 3000,
+                "min-valid-lifetime": 4000,
+                "option-data": [],
+                "pd-allocator": "iterative",
+                "pd-pools": [],
+                "pools": [
+                  {
+                    "option-data": [],
+                    "pool": "2001:db8:2::10-2001:db8:2::50"
+                  }
+                ],
+                "preferred-lifetime": 3000,
+                "rebind-timer": 2000,
+                "relay": {
+                  "ip-addresses": [
+                    "2001:db8:ffff::2"
+                  ]
+                },
+                "renew-timer": 1000,
+                "reservations": [],
+                "store-extended-info": false,
+                "subnet": "2001:db8:2::/64",
+                "t1-percent": 0.5,
+                "t2-percent": 0.8,
+                "valid-lifetime": 4000
+              },
+              {
+                "allocator": "iterative",
+                "cache-threshold": 0.25,
+                "calculate-tee-times": true,
+                "ddns-qualifying-suffix": "office.example.org.",
+                "id": 21,
+                "max-preferred-lifetime": 3000,
+                "max-valid-lifetime": 4000,
+                "min-preferred-lifetime": 3000,
+                "min-valid-lifetime": 4000,
+                "option-data": [],
+                "pd-allocator": "iterative",
+                "pd-pools": [],
+                "pools": [],
+                "preferred-lifetime": 3000,
+                "rebind-timer": 2000,
+                "relay": {
+                  "ip-addresses": [
+                    "2001:db8:ffff::2"
+                  ]
+                },
+                "renew-timer": 1000,
+                "reservations": [],
+                "store-extended-info": false,
+                "subnet": "2001:db8:3::/64",
+                "t1-percent": 0.5,
+                "t2-percent": 0.8,
+                "valid-lifetime": 4000
+              }
+            ],
+            "t1-percent": 0.5,
+            "t2-percent": 0.8,
+            "valid-lifetime": 4000
+          }
+        ],
+        "statistic-default-sample-age": 0,
+        "statistic-default-sample-count": 20,
+        "store-extended-info": false,
+        "subnet6": [
+          {
+            "allocator": "random",
+            "cache-threshold": 0.25,
+            "calculate-tee-times": true,
+            "client-classes": [
+              "voip"
+            ],
+            "ddns-qualifying-suffix": "",
+            "evaluate-additional-classes": [
+              "printers"
+            ],
+            "id": 10,
+            "interface-id": "port-7",
+            "max-preferred-lifetime": 3600,
+            "max-valid-lifetime": 7200,
+            "min-preferred-lifetime": 900,
+            "min-valid-lifetime": 1800,
+            "option-data": [
+              {
+                "always-send": false,
+                "code": 23,
+                "csv-format": true,
+                "data": "2001:db8:1::53",
+                "name": "dns-servers",
+                "never-send": false,
+                "space": "dhcp6"
+              }
+            ],
+            "pd-allocator": "flq",
+            "pd-pools": [
+              {
+                "delegated-len": 56,
+                "option-data": [],
+                "prefix": "2001:db8:100::",
+                "prefix-len": 48
+              }
+            ],
+            "pools": [
+              {
+                "option-data": [],
+                "pool": "2001:db8:1::10-2001:db8:1::ff"
+              },
+              {
+                "option-data": [],
+                "pool": "2001:db8:1:0:1::/80"
+              }
+            ],
+            "preferred-lifetime": 1800,
+            "rapid-commit": false,
+            "rebind-timer": 1800,
+            "relay": {
+              "ip-addresses": [
+                "2001:db8:ffff::1"
+              ]
+            },
+            "renew-timer": 900,
+            "reservations": [],
+            "store-extended-info": false,
+            "subnet": "2001:db8:1::/64",
+            "t1-percent": 0.5,
+            "t2-percent": 0.8,
+            "valid-lifetime": 3600
+          }
+        ],
+        "t1-percent": 0.5,
+        "t2-percent": 0.8,
+        "valid-lifetime": 4000
+      },
+      "hash": "9DEAA583C32D79553AFDFF7D917917BE5FD7A5E4E899FE28E146D4D620985AE9"
+    },
+    "result": 0
+  },
+  "kea-version": "3.2.0",
+  "subnet6-list": {
+    "arguments": {
+      "subnets": [
+        {
+          "id": 10,
+          "shared-network-name": null,
+          "subnet": "2001:db8:1::/64"
+        },
+        {
+          "id": 20,
+          "shared-network-name": "office",
+          "subnet": "2001:db8:2::/64"
+        },
+        {
+          "id": 21,
+          "shared-network-name": "office",
+          "subnet": "2001:db8:3::/64"
+        }
+      ]
+    },
+    "result": 0,
+    "text": "3 IPv6 subnets found"
+  }
+}
