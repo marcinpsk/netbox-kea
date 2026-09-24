@@ -73,8 +73,11 @@ class TestRecordedKeaConfiguration(TestCase):
                 self.assertEqual(settings.allocator, "random")
                 self.assertEqual(settings.ddns_qualifying_suffix, "")
                 self.assertEqual(
-                    [(network.name, len(network.member_cidrs)) for network in snapshot.shared_networks],
-                    [("empty-network", 0), ("office", 2)],
+                    [
+                        (network.name, network.description, len(network.member_cidrs))
+                        for network in snapshot.shared_networks
+                    ],
+                    [("empty-network", None, 0), ("office", "Office floors", 2)],
                 )
                 self.assertEqual(len(snapshot.global_options), global_options)
                 self.assertIn(record_types, [definition.record_types for definition in snapshot.option_definitions])

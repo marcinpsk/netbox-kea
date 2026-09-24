@@ -52,7 +52,7 @@ _SHARED_NETWORKS_CONFIG_V4 = _catalogue_responses_for_subnets(
     shared_networks=[
         {
             "name": "net-alpha",
-            "description": "Alpha test network",
+            "user-context": {"comment": "Alpha test network"},
             "subnet4": [
                 {"id": 10, "subnet": "10.0.0.0/24"},
                 {"id": 11, "subnet": "10.0.1.0/24"},
@@ -67,7 +67,6 @@ _SHARED_NETWORKS_CONFIG_V6 = _catalogue_responses_for_subnets(
     shared_networks=[
         {
             "name": "net-beta",
-            "description": "",
             "subnet6": [{"id": 20, "subnet": "2001:db8::/48"}],
         }
     ],
@@ -85,7 +84,9 @@ _EMPTY_SN_CONFIG_V4 = _catalogue_responses_for_subnets(4, [])["config-get"]
 def _sn_config(version=4, name="prod-net", description="", option_data=None, subnets=None):
     """config-get payload exposing a single shared network under ``Dhcp{version}``."""
     subnet_key = f"subnet{version}"
-    network: dict = {"name": name, "description": description, subnet_key: list(subnets or [])}
+    network: dict = {"name": name, subnet_key: list(subnets or [])}
+    if description:
+        network["user-context"] = {"comment": description}
     if option_data is not None:
         network["option-data"] = option_data
     return _catalogue_responses_for_subnets(version, [], shared_networks=[network])["config-get"]
@@ -196,7 +197,7 @@ class TestServerSharedNetworks4View(_ViewTestBase):
         self.assertContains(response, "Kea did not return a Dhcp4 configuration object.")
 
     def test_empty_network_appears_in_both_lists_and_subnet_add_choices(self):
-        network = {"name": "empty-clients", "description": "No members yet", "subnet4": []}
+        network = {"name": "empty-clients", "user-context": {"comment": "No members yet"}, "subnet4": []}
         responses = _catalogue_responses_for_subnets(4, [], shared_networks=[network])
 
         with stub_kea(responses) as kea:
@@ -482,7 +483,7 @@ class TestServerSharedNetwork4EditView(_ViewTestBase):
         responses = _catalogue_responses_for_subnets(
             4,
             [],
-            shared_networks=[{"name": "prod-net", "description": "Old", "subnet4": []}],
+            shared_networks=[{"name": "prod-net", "user-context": {"comment": "Old"}, "subnet4": []}],
         )
 
         with stub_kea(responses) as kea:
@@ -618,7 +619,24 @@ class TestServerSharedNetwork4EditView(_ViewTestBase):
         self._assert_no_none_pk_redirect(response)
         # config-set proves network_update completed the read-modify-write cycle.
         self.assertIn("config-set", kea.commands())
-        self.assertEqual(_written_sn(kea, 4)["description"], "Updated description")
+        written = _written_sn(kea, 4)
+        self.assertEqual(written["user-context"], {"comment": "Updated description"})
+        self.assertNotIn("description", written)
+
+    def test_the_description_is_the_kea_comment_and_other_user_context_survives(self):
+        config = _sn_config(4, "prod-net")
+        config["arguments"]["Dhcp4"]["shared-networks"][0]["user-context"] = {"comment": "Old", "owner": "noc"}
+        for description, expected in (("New", {"comment": "New", "owner": "noc"}), ("", {"owner": "noc"})):
+            with self.subTest(description=description), _edit_stub(config) as kea:
+                initial = self.client.get(self._url()).context["form"].initial
+                self.assertEqual(initial["description"], "Old")
+                self.client.post(self._url(), self._post_data(description=description))
+            self.assertEqual(_written_sn(kea, 4)["user-context"], expected)
+
+    def test_clearing_the_only_comment_removes_the_user_context(self):
+        with _edit_stub(_sn_config(4, "prod-net", description="Old")) as kea:
+            self.client.post(self._url(), self._post_data(description=""))
+        self.assertNotIn("user-context", _written_sn(kea, 4))
 
     def test_post_passes_version_4_to_network_update(self):
         """POST must issue the config-set to the dhcp4 service."""

@@ -14,7 +14,7 @@ from django.utils import timezone
 from . import constants
 from .constants import Family, IPAddressValue, IPNetworkValue
 from .dhcp_options import DHCPOption, parse_dhcp_option
-from .kea import KeaException
+from .kea import KeaException, shared_network_description
 from .models import Server
 from .utilities import kea_error_hint
 
@@ -368,7 +368,7 @@ def _parse_configuration(
                 membership_complete.append(valid_name)
                 member_cidrs.append(fact.declared_cidr)
         if valid_name and isinstance(name, str):
-            description = _optional_string(shared_network, "description", path, diagnostics, allow_empty=True)
+            description = _description(shared_network, path, diagnostics)
             interface = _optional_string(shared_network, "interface", path, diagnostics)
             relay_addresses = _relay_addresses(shared_network.get("relay"), family, path, diagnostics)
             network_options = _parse_options(shared_network.get("option-data", []), path, diagnostics)
@@ -626,6 +626,18 @@ def _optional_string(
         )
         return None
     return value
+
+
+def _description(shared_network: dict[str, Any], path: str, diagnostics: list[Diagnostic]) -> str | None:
+    try:
+        return shared_network_description(shared_network)
+    except ValueError:
+        diagnostics.append(
+            _diagnostic(
+                "invalid-setting", "Kea returned an invalid comment setting.", "configuration", f"{path}.user-context"
+            )
+        )
+        return None
 
 
 def _relay_addresses(

@@ -251,6 +251,9 @@
             "subnet4": [],
             "t1-percent": 0.5,
             "t2-percent": 0.875,
+            "user-context": {
+              "owner": "noc"
+            },
             "valid-lifetime": 4000
           },
           {
@@ -345,6 +348,9 @@
             ],
             "t1-percent": 0.5,
             "t2-percent": 0.875,
+            "user-context": {
+              "comment": "Office floors"
+            },
             "valid-lifetime": 4000
           }
         ],
@@ -412,7 +418,7 @@
         "t2-percent": 0.875,
         "valid-lifetime": 4000
       },
-      "hash": "A224B91A5C985EDE619BE30C7DC71CF82A5C93DBB1816B60842F3CEC48F2F75C"
+      "hash": "05B19DB87B3B1E7922A4D12A0CF55383141A8E618FED303B0A9C8B3F4CBD4882"
     },
     "result": 0
   },

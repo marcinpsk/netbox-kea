@@ -319,6 +319,7 @@ WIRE_PAYLOAD_KEYS = frozenset(
         "unacked-clients",
         "unacked-clients-left",
         "user-class",
+        "user-context",
         "uuid-guid",
         "v4-captive-portal",
         "v4-lost",

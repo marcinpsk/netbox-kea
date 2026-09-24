@@ -356,6 +356,41 @@ def _replace_managed_option(
     return kept
 
 
+def shared_network_description(network: dict[str, Any]) -> str | None:
+    """Return the Shared Network description, which Kea keeps as ``user-context.comment``.
+
+    Kea rejects a ``description`` key on a Shared Network, and stores a config-file
+    ``comment`` in ``user-context``.
+
+    Raises:
+        ValueError: If ``user-context`` is not an object or its comment is not a string.
+
+    """
+    context = network.get("user-context")
+    if context is None:
+        return None
+    if not isinstance(context, dict):
+        raise ValueError("A Shared Network user-context must be an object.")
+    comment = context.get("comment")
+    if comment is not None and not isinstance(comment, str):
+        raise ValueError("A Shared Network comment must be a string.")
+    return comment
+
+
+def _set_shared_network_description(network: dict[str, Any], description: str) -> None:
+    """Write *description* as ``user-context.comment`` and keep every other user-context key."""
+    shared_network_description(network)
+    context = dict(network.get("user-context") or {})
+    if description:
+        context["comment"] = description
+    else:
+        context.pop("comment", None)
+    if context:
+        network["user-context"] = context
+    else:
+        network.pop("user-context", None)
+
+
 def _config_entries(container: dict[str, Any], key: str, service: str) -> list[dict[str, Any]]:
     """Return the objects listed at *key* in a live configuration, or raise ``KeaException``."""
     entries = container.get(key, [])
@@ -1307,7 +1342,7 @@ class KeaClient:
             raise KeaException({"result": 3, "text": f"Shared network '{name}' not found in config"})
 
         if description is not None:
-            network["description"] = description
+            _set_shared_network_description(network, description)
         if interface is not None:
             if interface:
                 network["interface"] = interface
