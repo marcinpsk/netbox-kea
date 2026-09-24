@@ -252,6 +252,10 @@
             "t1-percent": 0.5,
             "t2-percent": 0.875,
             "user-context": {
+              "comment": [
+                "first line",
+                "second line"
+              ],
               "owner": "noc"
             },
             "valid-lifetime": 4000
@@ -411,6 +415,10 @@
             "subnet": "192.0.2.0/24",
             "t1-percent": 0.5,
             "t2-percent": 0.875,
+            "user-context": {
+              "comment": "Standalone",
+              "site": "hq"
+            },
             "valid-lifetime": 3600
           }
         ],
@@ -418,7 +426,7 @@
         "t2-percent": 0.875,
         "valid-lifetime": 4000
       },
-      "hash": "05B19DB87B3B1E7922A4D12A0CF55383141A8E618FED303B0A9C8B3F4CBD4882"
+      "hash": "6AF5AB21E12E76FB7E0C4E69B848EBA9A407BB280BD49F172772B95BCAAD9710"
     },
     "result": 0
   },

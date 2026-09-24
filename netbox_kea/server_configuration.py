@@ -634,7 +634,10 @@ def _description(shared_network: dict[str, Any], path: str, diagnostics: list[Di
     except ValueError:
         diagnostics.append(
             _diagnostic(
-                "invalid-setting", "Kea returned an invalid comment setting.", "configuration", f"{path}.user-context"
+                "invalid-setting",
+                "Kea returned an invalid user-context setting.",
+                "configuration",
+                f"{path}.user-context",
             )
         )
         return None

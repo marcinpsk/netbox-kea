@@ -360,10 +360,10 @@ def shared_network_description(network: dict[str, Any]) -> str | None:
     """Return the Shared Network description, which Kea keeps as ``user-context.comment``.
 
     Kea rejects a ``description`` key on a Shared Network, and stores a config-file
-    ``comment`` in ``user-context``.
+    ``comment`` in ``user-context``. A comment that is not a string has no description.
 
     Raises:
-        ValueError: If ``user-context`` is not an object or its comment is not a string.
+        ValueError: If ``user-context`` is not an object.
 
     """
     context = network.get("user-context")
@@ -372,19 +372,20 @@ def shared_network_description(network: dict[str, Any]) -> str | None:
     if not isinstance(context, dict):
         raise ValueError("A Shared Network user-context must be an object.")
     comment = context.get("comment")
-    if comment is not None and not isinstance(comment, str):
-        raise ValueError("A Shared Network comment must be a string.")
-    return comment
+    return comment if isinstance(comment, str) else None
 
 
 def _set_shared_network_description(network: dict[str, Any], description: str) -> None:
-    """Write *description* as ``user-context.comment`` and keep every other user-context key."""
+    """Write *description* as ``user-context.comment`` and keep every other user-context key.
+
+    An empty *description* keeps a comment the form cannot show, the same as a binary option.
+    """
     shared_network_description(network)
     context = dict(network.get("user-context") or {})
     if description:
         context["comment"] = description
-    else:
-        context.pop("comment", None)
+    elif isinstance(context.get("comment"), str):
+        del context["comment"]
     if context:
         network["user-context"] = context
     else:

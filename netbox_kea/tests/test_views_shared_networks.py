@@ -633,6 +633,16 @@ class TestServerSharedNetwork4EditView(_ViewTestBase):
                 self.client.post(self._url(), self._post_data(description=description))
             self.assertEqual(_written_sn(kea, 4)["user-context"], expected)
 
+    def test_a_structured_comment_stays_out_of_the_form_until_a_description_replaces_it(self):
+        config = _sn_config(4, "prod-net")
+        config["arguments"]["Dhcp4"]["shared-networks"][0]["user-context"] = {"comment": ["one", "two"]}
+        for description, expected in (("", {"comment": ["one", "two"]}), ("New", {"comment": "New"})):
+            with self.subTest(description=description), _edit_stub(config) as kea:
+                response = self.client.get(self._url())
+                self.assertEqual(response.context["form"].initial["description"], "")
+                self.client.post(self._url(), self._post_data(description=description))
+            self.assertEqual(_written_sn(kea, 4)["user-context"], expected)
+
     def test_clearing_the_only_comment_removes_the_user_context(self):
         with _edit_stub(_sn_config(4, "prod-net", description="Old")) as kea:
             self.client.post(self._url(), self._post_data(description=""))
