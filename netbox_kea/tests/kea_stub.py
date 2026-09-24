@@ -22,6 +22,8 @@ import threading
 from collections import deque
 from collections.abc import Sequence
 from contextlib import contextmanager
+from functools import cache
+from pathlib import Path
 from typing import Any, cast
 from unittest.mock import patch
 
@@ -84,6 +86,47 @@ def queued(*responses: Any) -> ResponseQueue:
     return ResponseQueue(responses)
 
 
+_RECORDINGS = Path(__file__).with_name("kea_recordings")
+
+
+@cache
+def _recorded_keys(family: int) -> dict[str, frozenset[str]]:
+    """Return every key a real Kea emits on a Shared Network and on a Subnet."""
+    daemon = json.loads((_RECORDINGS / f"dhcp{family}.json").read_text())["config-get"]["arguments"][f"Dhcp{family}"]
+    networks = daemon["shared-networks"]
+    subnets = [*daemon[f"subnet{family}"], *(subnet for network in networks for subnet in network[f"subnet{family}"])]
+    return {
+        "shared-networks": frozenset(key for network in networks for key in network),
+        f"subnet{family}": frozenset(key for subnet in subnets for key in subnet),
+    }
+
+
+def _assert_kea_would_accept(body: dict[str, Any]) -> None:
+    """Fail on a Shared Network or Subnet key that a real Kea never returns in config-get.
+
+    Kea rejects unknown keys, and a read-modify-write payload only carries keys that
+    config-get returned, so an extra key came from the writer or from a fixture.
+    """
+    arguments = body.get("arguments")
+    for family in (4, 6):
+        daemon = arguments.get(f"Dhcp{family}") if isinstance(arguments, dict) else None
+        if not isinstance(daemon, dict):
+            continue
+        known = _recorded_keys(family)
+        networks = [n for n in daemon.get("shared-networks") or [] if isinstance(n, dict)]
+        subnets = [
+            *(daemon.get(f"subnet{family}") or []),
+            *(s for n in networks for s in n.get(f"subnet{family}") or []),
+        ]
+        for kind, entries in (("shared-networks", networks), (f"subnet{family}", subnets)):
+            unknown = {key for entry in entries if isinstance(entry, dict) for key in entry} - known[kind]
+            if unknown:
+                raise AssertionError(
+                    f"KeaHttpStub: {body.get('command')} sends {sorted(unknown)} in {kind}, which Kea "
+                    f"{family} never returns. Record a coverage configuration that sets the key, or drop it."
+                )
+
+
 class KeaHttpStub:
     """Dispatch Kea commands by name and record the request bodies sent.
 
@@ -125,6 +168,8 @@ class KeaHttpStub:
             self.requests.append(body)
             self._urls.append(url)
             cmd = body.get("command")
+            if cmd in ("config-test", "config-set"):
+                _assert_kea_would_accept(body)
             if cmd not in self._responses:
                 raise AssertionError(f"KeaHttpStub: no response registered for command {cmd!r} (url={url})")
             spec = self._responses[cmd]

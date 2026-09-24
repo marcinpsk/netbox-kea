@@ -8,7 +8,9 @@ responses, and both request recording and queue dispatch are thread-safe (the
 enrichment views POST from cloned clients on worker threads).
 """
 
+import json
 import threading
+from pathlib import Path
 
 import pytest
 import requests
@@ -232,3 +234,18 @@ def test_queue_dispatch_is_thread_safe():
     for t in threads:
         t.join()
     assert sorted(seen) == list(range(n))
+
+
+@pytest.mark.parametrize("family", [4, 6])
+def test_config_writes_carry_only_keys_a_real_kea_returns(family):
+    recorded = (Path(__file__).with_name("kea_recordings") / f"dhcp{family}.json").read_text()
+    arguments = json.loads(recorded)["config-get"]["arguments"]
+    stub = KeaHttpStub({"config-test": {"result": 0}})
+    assert stub("https://kea.example.invalid/", json={"command": "config-test", "arguments": arguments}).ok
+
+    member = arguments[f"Dhcp{family}"]["shared-networks"][1][f"subnet{family}"][0]
+    for entry in (arguments[f"Dhcp{family}"]["shared-networks"][0], member):
+        entry["description"] = "Kea rejects this key"
+        with pytest.raises(AssertionError, match=r"sends \['description'\]"):
+            stub("https://kea.example.invalid/", json={"command": "config-test", "arguments": arguments})
+        del entry["description"]
