@@ -251,9 +251,13 @@ resort, reserved for true external boundaries you cannot run locally.
   Kea to return. `netbox_kea/tests/kea_recordings/` holds `config-get` and
   `subnet{4,6}-list` replies recorded from a real Kea (the harness `KEA_VERSION`), with
   coverage configurations that use every field `server_configuration` reads.
-  `test_kea_recordings.py` requires zero diagnostics. When you bump `KEA_VERSION` or
+  `test_kea_recordings.py` requires zero diagnostics. The script also writes
+  `accepted-keys.json` from the keyword tables that Kea's `config-test` and
+  `config-set` check in the same release (`simple_parser{4,6}.cc`). `stub_kea()`
+  fails a `config-test` or `config-set` whose Shared Network or Subnet carries a key
+  outside that file, because Kea rejects unknown keys. When you bump `KEA_VERSION` or
   make the parser read a new field, add the field to `kea-dhcp{4,6}.conf` and run
-  `scripts/record_kea_config_get.py` (Docker required).
+  `scripts/record_kea_config_get.py` (Docker and curl required).
 - **Type-check gate.** `scripts/mypy-gate.sh` (+ `test_mypy_gate.py`, a pre-push hook,
   the CI `lint` job) type-checks `netbox_kea/` and fails only on errors that are absent
   from `mypy-baseline.txt`. It exists to catch annotation drift between a producer and

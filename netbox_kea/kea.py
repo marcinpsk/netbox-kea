@@ -356,6 +356,45 @@ def _replace_managed_option(
     return kept
 
 
+def shared_network_description(network: dict[str, Any]) -> str | None:
+    """Return the Shared Network description, which Kea keeps as ``user-context.comment``.
+
+    Kea rejects a ``description`` key on a Shared Network, and stores a config-file
+    ``comment`` in ``user-context``. A comment that is not a string has no description.
+
+    Raises:
+        ValueError: If ``user-context`` is not an object.
+
+    """
+    context = network.get("user-context")
+    if context is None:
+        return None
+    if not isinstance(context, dict):
+        raise ValueError("A Shared Network user-context must be an object.")
+    comment = context.get("comment")
+    return comment if isinstance(comment, str) else None
+
+
+def _set_shared_network_description(network: dict[str, Any], description: str) -> None:
+    """Write *description* as ``user-context.comment`` and keep every other user-context key.
+
+    An empty *description* keeps a comment the form cannot show, the same as a binary option.
+    A *description* equal to the comment as a text input shows it keeps the comment unchanged.
+    """
+    existing = shared_network_description(network)
+    if existing is not None and description == existing.replace("\r", "").replace("\n", "").strip():
+        return
+    context = dict(network.get("user-context") or {})
+    if description:
+        context["comment"] = description
+    elif isinstance(context.get("comment"), str):
+        del context["comment"]
+    if context:
+        network["user-context"] = context
+    else:
+        network.pop("user-context", None)
+
+
 def _config_entries(container: dict[str, Any], key: str, service: str) -> list[dict[str, Any]]:
     """Return the objects listed at *key* in a live configuration, or raise ``KeaException``."""
     entries = container.get(key, [])
@@ -1307,7 +1346,7 @@ class KeaClient:
             raise KeaException({"result": 3, "text": f"Shared network '{name}' not found in config"})
 
         if description is not None:
-            network["description"] = description
+            _set_shared_network_description(network, description)
         if interface is not None:
             if interface:
                 network["interface"] = interface

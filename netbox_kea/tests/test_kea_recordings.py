@@ -24,10 +24,29 @@ def _recording(family: int) -> dict:
     return json.loads((_RECORDINGS / f"dhcp{family}.json").read_text())
 
 
+def _accepted_keys() -> dict:
+    return json.loads((_RECORDINGS / "accepted-keys.json").read_text())
+
+
 def test_recordings_come_from_the_harness_kea_version():
     harness = re.findall(r"kea-dhcp[46]:\$\{KEA_VERSION:-([^}]+)\}", _COMPOSE_OVERRIDE.read_text())
     assert len(harness) == 2, harness
-    assert {_recording(4)["kea-version"], _recording(6)["kea-version"]} == set(harness)
+    recorded = {_recording(4)["kea-version"], _recording(6)["kea-version"], _accepted_keys()["kea-version"]}
+    assert recorded == set(harness)
+
+
+def test_the_accepted_keys_cover_every_key_kea_returned():
+    for family in (4, 6):
+        daemon = _recording(family)["config-get"]["arguments"][f"Dhcp{family}"]
+        networks = daemon["shared-networks"]
+        subnets = [
+            *daemon[f"subnet{family}"],
+            *(subnet for network in networks for subnet in network[f"subnet{family}"]),
+        ]
+        accepted = _accepted_keys()[f"dhcp{family}"]
+        assert {key for network in networks for key in network} <= set(accepted["shared-networks"])
+        assert {key for subnet in subnets for key in subnet} <= set(accepted[f"subnet{family}"])
+        assert "description" not in accepted["shared-networks"]
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
@@ -73,8 +92,11 @@ class TestRecordedKeaConfiguration(TestCase):
                 self.assertEqual(settings.allocator, "random")
                 self.assertEqual(settings.ddns_qualifying_suffix, "")
                 self.assertEqual(
-                    [(network.name, len(network.member_cidrs)) for network in snapshot.shared_networks],
-                    [("empty-network", 0), ("office", 2)],
+                    [
+                        (network.name, network.description, len(network.member_cidrs))
+                        for network in snapshot.shared_networks
+                    ],
+                    [("empty-network", None, 0), ("office", "Office floors", 2)],
                 )
                 self.assertEqual(len(snapshot.global_options), global_options)
                 self.assertIn(record_types, [definition.record_types for definition in snapshot.option_definitions])

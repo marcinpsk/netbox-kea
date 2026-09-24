@@ -33,7 +33,7 @@ class TestServerConfiguration(TestCase):
             "shared-networks": [
                 {
                     "name": "empty",
-                    "description": "No members",
+                    "user-context": {"comment": "No members"},
                     "interface": "eth0",
                     "relay": {"ip-addresses": ["198.18.0.1"]},
                     "option-data": [{"code": 3, "data": "198.18.0.1"}],
@@ -168,7 +168,7 @@ class TestServerConfiguration(TestCase):
     def test_invalid_member_collection_preserves_shared_network_facts(self):
         shared = {
             "name": "access",
-            "description": "Access network",
+            "user-context": {"comment": "Access network"},
             "interface": "eth0",
             "relay": {"ip-addresses": ["198.18.0.1"]},
             "option-data": [{"code": 3, "data": "198.18.0.1"}],
