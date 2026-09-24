@@ -518,6 +518,15 @@ class TestServerSharedNetwork4EditView(_ViewTestBase):
             ],
         )
 
+    def test_other_family_option_names_stay_out_of_the_form_and_survive_a_save(self):
+        options = [{"name": "dns-servers", "data": "192.0.2.53"}, {"name": "sntp-servers", "data": "192.0.2.123"}]
+        with _edit_stub(_sn_config(4, "prod-net", option_data=options)) as kea:
+            initial = self.client.get(self._url()).context["form"].initial
+            self.assertEqual((initial["dns_servers"], initial["ntp_servers"]), ("", ""))
+            post = self.client.post(self._url(), self._post_data(**initial))
+        self.assertEqual(post.status_code, 302)
+        self.assertEqual(_written_sn(kea)["option-data"], options)
+
     def test_unchanged_csv_preserves_raw_data_and_flags(self):
         options = [
             {"code": 6, "data": "198.18.0.53, 198.18.0.54", "csv-format": True},
@@ -690,6 +699,18 @@ class TestServerSharedNetwork6EditView(_ViewTestBase):
                 },
             )
         self.assertEqual(kea.bodies("config-set")[0]["service"], ["dhcp6"])
+
+    def test_other_family_option_names_stay_out_of_the_form_and_survive_a_save(self):
+        options = [
+            {"name": "domain-name-servers", "data": "2001:db8::53"},
+            {"name": "ntp-servers", "data": "2001:db8::123"},
+        ]
+        with _edit_stub(_sn_config(6, "prod-net6", option_data=options)) as kea:
+            initial = self.client.get(self._url()).context["form"].initial
+            self.assertEqual((initial["dns_servers"], initial["ntp_servers"]), ("", ""))
+            post = self.client.post(self._url(), {"interface": "", "relay_addresses": "", **initial})
+        self.assertEqual(post.status_code, 302)
+        self.assertEqual(_written_sn(kea, 6)["option-data"], options)
 
 
 # ---------------------------------------------------------------------------

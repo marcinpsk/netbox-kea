@@ -13,7 +13,7 @@ from django.urls import reverse
 from netbox.tables import BaseTable
 
 from ..constants import Family
-from ..dhcp_options import DHCPOption
+from ..dhcp_options import DHCPOption, form_managed_options
 from ..kea import KeaException
 from ..models import Server
 from ..server_configuration import Diagnostic, SharedNetwork
@@ -181,19 +181,6 @@ def _enrich_subnet_statistics(rows: list[dict[str, Any]], server: Server, versio
         logger.debug("stat_cmds hook unavailable or failed", exc_info=True)
 
 
-_FORM_OPTION_NAMES = {
-    "routers": "gateway",
-    "domain-name-servers": "dns_servers",
-    "dns-servers": "dns_servers",
-    "ntp-servers": "ntp_servers",
-    "sntp-servers": "ntp_servers",
-}
-_FORM_OPTION_CODES: dict[Family, dict[int, str]] = {
-    4: {3: "gateway", 6: "dns_servers", 42: "ntp_servers"},
-    6: {23: "dns_servers", 31: "ntp_servers"},
-}
-
-
 def _form_option_field(option: DHCPOption, version: Family) -> str | None:
     """Return the form field a default-space option maps to, by code first.
 
@@ -202,10 +189,14 @@ def _form_option_field(option: DHCPOption, version: Family) -> str | None:
     """
     if option.space not in (None, f"dhcp{version}") or option.client_classes or option.csv_format is False:
         return None
-    if option.code is not None:
-        field = _FORM_OPTION_CODES[version].get(option.code)
-    else:
-        field = _FORM_OPTION_NAMES.get(option.name or "")
+    field = next(
+        (
+            managed.field
+            for managed in form_managed_options(version).values()
+            if (managed.code == option.code if option.code is not None else managed.name == option.name)
+        ),
+        None,
+    )
     # The gateway field holds one address; a router array has no form representation.
     if field == "gateway" and "," in option.data:
         return None

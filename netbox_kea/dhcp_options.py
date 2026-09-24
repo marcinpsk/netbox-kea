@@ -70,6 +70,34 @@ class DHCPOption:
         return same_space and self.name is not None and self.name == intended.name
 
 
+@dataclass(frozen=True)
+class FormManagedOption:
+    """One default-space DHCP Option that a Subnet or Shared Network form field edits."""
+
+    field: str
+    name: str
+    code: int
+
+
+# The form reader and the kea.py writer both use this table, so the two cannot disagree.
+_FORM_MANAGED_OPTIONS: dict[int, tuple[FormManagedOption, ...]] = {
+    4: (
+        FormManagedOption("gateway", "routers", 3),
+        FormManagedOption("dns_servers", "domain-name-servers", 6),
+        FormManagedOption("ntp_servers", "ntp-servers", 42),
+    ),
+    6: (
+        FormManagedOption("dns_servers", "dns-servers", 23),
+        FormManagedOption("ntp_servers", "sntp-servers", 31),
+    ),
+}
+
+
+def form_managed_options(version: int) -> dict[str, FormManagedOption]:
+    """Return the form-edited DHCP Options of one family, keyed by form field."""
+    return {option.field: option for option in _FORM_MANAGED_OPTIONS[version]}
+
+
 def parse_dhcp_option(entry: Any) -> DHCPOption:
     """Parse one raw Kea option-data entry.
 

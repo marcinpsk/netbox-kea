@@ -10,7 +10,7 @@ from requests.models import HTTPBasicAuth
 
 from . import constants
 from .constants import Family
-from .dhcp_options import DHCPOption, merge_option_form_rows
+from .dhcp_options import DHCPOption, FormManagedOption, form_managed_options, merge_option_form_rows
 from .reservations import (
     RESERVATION_PAGE_FETCH_FAILED,
     RESERVATION_PAGE_LIMIT_REACHED,
@@ -301,15 +301,15 @@ def _configured_subnet_id_for_network(
     return None
 
 
-def _managed_option_matcher(version: int, names: set[str], code: int) -> Callable[[dict[str, Any]], bool]:
+def _managed_option_matcher(version: int, managed: FormManagedOption) -> Callable[[dict[str, Any]], bool]:
     """Return a predicate for one managed option in the family's default space."""
 
     def matches(option: dict[str, Any]) -> bool:
         if option.get("space") not in (None, f"dhcp{version}") or option.get("client-classes"):
             return False
         if option.get("code") is not None:
-            return option.get("code") == code
-        return option.get("name") in names
+            return option.get("code") == managed.code
+        return option.get("name") == managed.name
 
     return matches
 
@@ -317,9 +317,7 @@ def _managed_option_matcher(version: int, names: set[str], code: int) -> Callabl
 def _replace_managed_option(
     options: list[dict[str, Any]],
     version: int,
-    names: set[str],
-    code: int,
-    canonical: str,
+    field: str,
     data: str | None,
     *,
     single_value: bool = False,
@@ -333,11 +331,12 @@ def _replace_managed_option(
     """
     if data is None:
         return options
-    is_managed = _managed_option_matcher(version, names, code)
+    managed = form_managed_options(version)[field]
+    is_managed = _managed_option_matcher(version, managed)
     existing = next((option for option in options if is_managed(option)), None)
     kept = [option for option in options if not is_managed(option)]
     if data:
-        replacement = dict(existing) if existing else {"name": canonical}
+        replacement = dict(existing) if existing else {"name": managed.name}
         old_data = replacement.get("data")
         unchanged = (
             isinstance(old_data, str)
@@ -1154,23 +1153,14 @@ class KeaClient:
                 logger.warning("subnet%s-list failed; falling back to no explicit ID", version)
         if pools:
             subnet_def["pools"] = [{"pool": p} for p in pools]
+        managed = form_managed_options(version)
         option_data: list[dict[str, str]] = []
         if gateway and version == 4:
-            option_data.append({"name": "routers", "data": gateway})
+            option_data.append({"name": managed["gateway"].name, "data": gateway})
         if dns_servers:
-            option_data.append(
-                {
-                    "name": "domain-name-servers" if version == 4 else "dns-servers",
-                    "data": ", ".join(dns_servers),
-                }
-            )
+            option_data.append({"name": managed["dns_servers"].name, "data": ", ".join(dns_servers)})
         if ntp_servers:
-            option_data.append(
-                {
-                    "name": "ntp-servers" if version == 4 else "sntp-servers",
-                    "data": ", ".join(ntp_servers),
-                }
-            )
+            option_data.append({"name": managed["ntp_servers"].name, "data": ", ".join(ntp_servers)})
         if option_data:
             subnet_def["option-data"] = option_data
         if ddns_qualifying_suffix:
@@ -1331,23 +1321,9 @@ class KeaClient:
         if dns_servers is not None or ntp_servers is not None:
             options = list(_config_entries(network, "option-data", service))
             if dns_servers is not None:
-                options = _replace_managed_option(
-                    options,
-                    version,
-                    {"domain-name-servers"} if version == 4 else {"dns-servers"},
-                    6 if version == 4 else 23,
-                    "domain-name-servers" if version == 4 else "dns-servers",
-                    ",".join(dns_servers),
-                )
+                options = _replace_managed_option(options, version, "dns_servers", ",".join(dns_servers))
             if ntp_servers is not None:
-                options = _replace_managed_option(
-                    options,
-                    version,
-                    {"ntp-servers"} if version == 4 else {"sntp-servers"},
-                    42 if version == 4 else 31,
-                    "ntp-servers" if version == 4 else "sntp-servers",
-                    ",".join(ntp_servers),
-                )
+                options = _replace_managed_option(options, version, "ntp_servers", ",".join(ntp_servers))
             network["option-data"] = options
 
         self._apply_config(service, config)
@@ -1459,22 +1435,12 @@ class KeaClient:
         # option-data: replace only the entries this form manages; keep every other entry.
         options = list(subnet_def.get("option-data") or [])
         if version == 4:
-            options = _replace_managed_option(options, 4, {"routers"}, 3, "routers", gateway, single_value=True)
+            options = _replace_managed_option(options, 4, "gateway", gateway, single_value=True)
         options = _replace_managed_option(
-            options,
-            version,
-            {"domain-name-servers"} if version == 4 else {"dns-servers"},
-            6 if version == 4 else 23,
-            "domain-name-servers" if version == 4 else "dns-servers",
-            None if dns_servers is None else ", ".join(dns_servers),
+            options, version, "dns_servers", None if dns_servers is None else ", ".join(dns_servers)
         )
         options = _replace_managed_option(
-            options,
-            version,
-            {"ntp-servers"} if version == 4 else {"sntp-servers"},
-            42 if version == 4 else 31,
-            "ntp-servers" if version == 4 else "sntp-servers",
-            None if ntp_servers is None else ", ".join(ntp_servers),
+            options, version, "ntp_servers", None if ntp_servers is None else ", ".join(ntp_servers)
         )
         subnet_def["option-data"] = options
 

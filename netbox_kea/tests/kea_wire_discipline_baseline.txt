@@ -30,7 +30,6 @@ sync.py::sync_reservation_to_netbox	1
 tables.py::<module>	1
 utilities.py::parse_lease_csv	18
 utilities.py::parse_subnet_stats	7
-views/_base.py::<module>	4
 views/_base.py::_enrich_subnet_statistics	2
 views/_base.py::_form_option_field	1
 views/_base.py::_option_payload	3
