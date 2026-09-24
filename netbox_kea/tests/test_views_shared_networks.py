@@ -651,6 +651,14 @@ class TestServerSharedNetwork4EditView(_ViewTestBase):
         self.assertEqual(post.status_code, 302)
         self.assertEqual(_written_sn(kea, 4)["user-context"], {"comment": comment})
 
+    def test_an_unrelated_edit_keeps_a_multiline_comment_the_browser_flattened(self):
+        comment = " First line\nSecond line "
+        with _edit_stub(_sn_config(4, "prod-net", description=comment)) as kea:
+            # A text input drops line breaks; Django strips the rest.
+            post = self.client.post(self._url(), self._post_data(description="First lineSecond line", interface="eth1"))
+        self.assertEqual(post.status_code, 302)
+        self.assertEqual(_written_sn(kea, 4)["user-context"], {"comment": comment})
+
     def test_clearing_the_only_comment_removes_the_user_context(self):
         with _edit_stub(_sn_config(4, "prod-net", description="Old")) as kea:
             self.client.post(self._url(), self._post_data(description=""))

@@ -379,8 +379,11 @@ def _set_shared_network_description(network: dict[str, Any], description: str) -
     """Write *description* as ``user-context.comment`` and keep every other user-context key.
 
     An empty *description* keeps a comment the form cannot show, the same as a binary option.
+    A *description* equal to the comment as a text input shows it keeps the comment unchanged.
     """
-    shared_network_description(network)
+    existing = shared_network_description(network)
+    if existing is not None and description == existing.replace("\r", "").replace("\n", "").strip():
+        return
     context = dict(network.get("user-context") or {})
     if description:
         context["comment"] = description
