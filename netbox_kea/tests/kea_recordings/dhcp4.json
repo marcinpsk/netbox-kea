@@ -1,0 +1,457 @@
+{
+  "config-get": {
+    "arguments": {
+      "Dhcp4": {
+        "allocator": "iterative",
+        "authoritative": false,
+        "boot-file-name": "",
+        "cache-threshold": 0.25,
+        "calculate-tee-times": false,
+        "client-classes": [
+          {
+            "boot-file-name": "",
+            "name": "voip",
+            "next-server": "0.0.0.0",
+            "option-data": [],
+            "option-def": [],
+            "server-hostname": ""
+          },
+          {
+            "boot-file-name": "",
+            "name": "printers",
+            "next-server": "0.0.0.0",
+            "only-in-additional-list": true,
+            "option-data": [],
+            "option-def": [],
+            "server-hostname": ""
+          }
+        ],
+        "control-sockets": [
+          {
+            "socket-address": "0.0.0.0",
+            "socket-port": 8000,
+            "socket-type": "http"
+          }
+        ],
+        "ddns-conflict-resolution-mode": "check-with-dhcid",
+        "ddns-generated-prefix": "myhost",
+        "ddns-override-client-update": false,
+        "ddns-override-no-update": false,
+        "ddns-qualifying-suffix": "",
+        "ddns-replace-client-name": "never",
+        "ddns-send-updates": true,
+        "ddns-update-on-renew": false,
+        "decline-probation-period": 86400,
+        "dhcp-ddns": {
+          "enable-updates": false,
+          "max-queue-size": 1024,
+          "ncr-format": "JSON",
+          "ncr-protocol": "UDP",
+          "sender-ip": "0.0.0.0",
+          "sender-port": 0,
+          "server-ip": "127.0.0.1",
+          "server-port": 53001
+        },
+        "dhcp-queue-control": {
+          "capacity": 64,
+          "enable-queue": false,
+          "queue-type": "kea-ring4"
+        },
+        "dhcp4o6-port": 0,
+        "early-global-reservations-lookup": false,
+        "echo-client-id": true,
+        "expired-leases-processing": {
+          "flush-reclaimed-timer-wait-time": 25,
+          "hold-reclaimed-time": 3600,
+          "max-reclaim-leases": 100,
+          "max-reclaim-time": 250,
+          "reclaim-timer-wait-time": 10,
+          "unwarned-reclaim-cycles": 5
+        },
+        "hooks-libraries": [
+          {
+            "library": "/usr/lib/kea/hooks/libdhcp_subnet_cmds.so"
+          }
+        ],
+        "host-reservation-identifiers": [
+          "hw-address",
+          "duid",
+          "circuit-id",
+          "client-id"
+        ],
+        "hostname-char-replacement": "",
+        "hostname-char-set": "[^A-Za-z0-9.-]",
+        "interfaces-config": {
+          "interfaces": [],
+          "re-detect": true
+        },
+        "ip-reservations-unique": true,
+        "lease-database": {
+          "persist": false,
+          "type": "memfile"
+        },
+        "match-client-id": true,
+        "multi-threading": {
+          "enable-multi-threading": true,
+          "packet-queue-size": 64,
+          "thread-pool-size": 0
+        },
+        "next-server": "0.0.0.0",
+        "option-data": [
+          {
+            "always-send": false,
+            "code": 6,
+            "csv-format": true,
+            "data": "192.0.2.53, 192.0.2.54",
+            "name": "domain-name-servers",
+            "never-send": false,
+            "space": "dhcp4"
+          },
+          {
+            "always-send": true,
+            "code": 42,
+            "csv-format": true,
+            "data": "192.0.2.123",
+            "name": "ntp-servers",
+            "never-send": false,
+            "space": "dhcp4"
+          },
+          {
+            "always-send": false,
+            "code": 15,
+            "csv-format": true,
+            "data": "example.org",
+            "name": "domain-name",
+            "never-send": false,
+            "space": "dhcp4"
+          },
+          {
+            "always-send": false,
+            "code": 224,
+            "csv-format": true,
+            "data": "192.0.2.69, 192.0.2.70",
+            "name": "tftp-list",
+            "never-send": false,
+            "space": "dhcp4"
+          },
+          {
+            "always-send": false,
+            "code": 225,
+            "csv-format": true,
+            "data": "1, hello",
+            "name": "vendor-record",
+            "never-send": false,
+            "space": "dhcp4"
+          },
+          {
+            "always-send": false,
+            "code": 226,
+            "csv-format": false,
+            "data": "",
+            "name": "vendor-container",
+            "never-send": false,
+            "space": "dhcp4"
+          },
+          {
+            "always-send": false,
+            "client-classes": [
+              "voip"
+            ],
+            "code": 3,
+            "csv-format": true,
+            "data": "192.0.2.1",
+            "name": "routers",
+            "never-send": false,
+            "space": "dhcp4"
+          },
+          {
+            "always-send": false,
+            "code": 150,
+            "csv-format": false,
+            "data": "C0000245",
+            "never-send": false,
+            "space": "dhcp4"
+          },
+          {
+            "always-send": false,
+            "code": 1,
+            "csv-format": true,
+            "data": "nested",
+            "name": "sub-one",
+            "never-send": false,
+            "space": "vendor-sub"
+          }
+        ],
+        "option-def": [
+          {
+            "array": true,
+            "code": 224,
+            "encapsulate": "",
+            "name": "tftp-list",
+            "record-types": "",
+            "space": "dhcp4",
+            "type": "ipv4-address"
+          },
+          {
+            "array": false,
+            "code": 225,
+            "encapsulate": "",
+            "name": "vendor-record",
+            "record-types": "uint8, string",
+            "space": "dhcp4",
+            "type": "record"
+          },
+          {
+            "array": false,
+            "code": 226,
+            "encapsulate": "vendor-sub",
+            "name": "vendor-container",
+            "record-types": "",
+            "space": "dhcp4",
+            "type": "empty"
+          },
+          {
+            "array": false,
+            "code": 1,
+            "encapsulate": "",
+            "name": "sub-one",
+            "record-types": "",
+            "space": "vendor-sub",
+            "type": "string"
+          }
+        ],
+        "parked-packet-limit": 256,
+        "rebind-timer": 2000,
+        "renew-timer": 1000,
+        "reservations-global": false,
+        "reservations-in-subnet": true,
+        "reservations-lookup-first": false,
+        "reservations-out-of-pool": false,
+        "sanity-checks": {
+          "extended-info-checks": "fix",
+          "lease-checks": "warn"
+        },
+        "server-hostname": "",
+        "server-tag": "",
+        "shared-networks": [
+          {
+            "allocator": "iterative",
+            "cache-threshold": 0.25,
+            "calculate-tee-times": false,
+            "max-valid-lifetime": 4000,
+            "min-valid-lifetime": 4000,
+            "name": "empty-network",
+            "option-data": [],
+            "rebind-timer": 2000,
+            "relay": {
+              "ip-addresses": []
+            },
+            "renew-timer": 1000,
+            "store-extended-info": false,
+            "subnet4": [],
+            "t1-percent": 0.5,
+            "t2-percent": 0.875,
+            "user-context": {
+              "comment": [
+                "first line",
+                "second line"
+              ],
+              "owner": "noc"
+            },
+            "valid-lifetime": 4000
+          },
+          {
+            "allocator": "iterative",
+            "cache-threshold": 0.25,
+            "calculate-tee-times": false,
+            "interface": "eth0",
+            "max-valid-lifetime": 4000,
+            "min-valid-lifetime": 4000,
+            "name": "office",
+            "option-data": [
+              {
+                "always-send": false,
+                "code": 6,
+                "csv-format": true,
+                "data": "198.51.100.53",
+                "name": "domain-name-servers",
+                "never-send": false,
+                "space": "dhcp4"
+              }
+            ],
+            "rebind-timer": 2000,
+            "relay": {
+              "ip-addresses": [
+                "198.51.100.2",
+                "198.51.100.3"
+              ]
+            },
+            "renew-timer": 1000,
+            "store-extended-info": false,
+            "subnet4": [
+              {
+                "4o6-interface": "",
+                "4o6-interface-id": "",
+                "4o6-subnet": "",
+                "allocator": "iterative",
+                "cache-threshold": 0.25,
+                "calculate-tee-times": false,
+                "id": 20,
+                "max-valid-lifetime": 4000,
+                "min-valid-lifetime": 4000,
+                "option-data": [],
+                "pools": [
+                  {
+                    "option-data": [],
+                    "pool": "198.51.100.10-198.51.100.50"
+                  }
+                ],
+                "rebind-timer": 2000,
+                "relay": {
+                  "ip-addresses": [
+                    "198.51.100.2",
+                    "198.51.100.3"
+                  ]
+                },
+                "renew-timer": 1000,
+                "reservations": [],
+                "store-extended-info": false,
+                "subnet": "198.51.100.0/25",
+                "t1-percent": 0.5,
+                "t2-percent": 0.875,
+                "valid-lifetime": 4000
+              },
+              {
+                "4o6-interface": "",
+                "4o6-interface-id": "",
+                "4o6-subnet": "",
+                "allocator": "iterative",
+                "cache-threshold": 0.25,
+                "calculate-tee-times": false,
+                "ddns-qualifying-suffix": "office.example.org.",
+                "id": 21,
+                "max-valid-lifetime": 4000,
+                "min-valid-lifetime": 4000,
+                "option-data": [],
+                "pools": [],
+                "rebind-timer": 2000,
+                "relay": {
+                  "ip-addresses": [
+                    "198.51.100.2",
+                    "198.51.100.3"
+                  ]
+                },
+                "renew-timer": 1000,
+                "reservations": [],
+                "store-extended-info": false,
+                "subnet": "198.51.100.128/25",
+                "t1-percent": 0.5,
+                "t2-percent": 0.875,
+                "valid-lifetime": 4000
+              }
+            ],
+            "t1-percent": 0.5,
+            "t2-percent": 0.875,
+            "user-context": {
+              "comment": "Office floors"
+            },
+            "valid-lifetime": 4000
+          }
+        ],
+        "stash-agent-options": false,
+        "statistic-default-sample-age": 0,
+        "statistic-default-sample-count": 20,
+        "store-extended-info": false,
+        "subnet4": [
+          {
+            "4o6-interface": "",
+            "4o6-interface-id": "",
+            "4o6-subnet": "",
+            "allocator": "random",
+            "cache-threshold": 0.25,
+            "calculate-tee-times": false,
+            "client-classes": [
+              "voip"
+            ],
+            "ddns-qualifying-suffix": "",
+            "evaluate-additional-classes": [
+              "printers"
+            ],
+            "id": 10,
+            "interface": "eth0",
+            "max-valid-lifetime": 7200,
+            "min-valid-lifetime": 1800,
+            "offer-lifetime": 60,
+            "option-data": [
+              {
+                "always-send": false,
+                "code": 3,
+                "csv-format": true,
+                "data": "192.0.2.1",
+                "name": "routers",
+                "never-send": false,
+                "space": "dhcp4"
+              }
+            ],
+            "pools": [
+              {
+                "option-data": [],
+                "pool": "192.0.2.10-192.0.2.20"
+              },
+              {
+                "option-data": [],
+                "pool": "192.0.2.64/26"
+              }
+            ],
+            "rebind-timer": 1800,
+            "relay": {
+              "ip-addresses": [
+                "198.51.100.1"
+              ]
+            },
+            "renew-timer": 900,
+            "reservations": [],
+            "store-extended-info": false,
+            "subnet": "192.0.2.0/24",
+            "t1-percent": 0.5,
+            "t2-percent": 0.875,
+            "user-context": {
+              "comment": "Standalone",
+              "site": "hq"
+            },
+            "valid-lifetime": 3600
+          }
+        ],
+        "t1-percent": 0.5,
+        "t2-percent": 0.875,
+        "valid-lifetime": 4000
+      },
+      "hash": "6AF5AB21E12E76FB7E0C4E69B848EBA9A407BB280BD49F172772B95BCAAD9710"
+    },
+    "result": 0
+  },
+  "kea-version": "3.2.0",
+  "subnet4-list": {
+    "arguments": {
+      "subnets": [
+        {
+          "id": 10,
+          "shared-network-name": null,
+          "subnet": "192.0.2.0/24"
+        },
+        {
+          "id": 20,
+          "shared-network-name": "office",
+          "subnet": "198.51.100.0/25"
+        },
+        {
+          "id": 21,
+          "shared-network-name": "office",
+          "subnet": "198.51.100.128/25"
+        }
+      ]
+    },
+    "result": 0,
+    "text": "3 IPv4 subnets found"
+  }
+}

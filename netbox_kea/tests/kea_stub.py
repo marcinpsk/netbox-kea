@@ -22,6 +22,8 @@ import threading
 from collections import deque
 from collections.abc import Sequence
 from contextlib import contextmanager
+from functools import cache
+from pathlib import Path
 from typing import Any, cast
 from unittest.mock import patch
 
@@ -84,6 +86,42 @@ def queued(*responses: Any) -> ResponseQueue:
     return ResponseQueue(responses)
 
 
+_RECORDINGS = Path(__file__).with_name("kea_recordings")
+
+
+@cache
+def _accepted_keys(family: int) -> dict[str, frozenset[str]]:
+    """Return the keys Kea's config-test and config-set accept on a Shared Network and on a Subnet."""
+    accepted = json.loads((_RECORDINGS / "accepted-keys.json").read_text())[f"dhcp{family}"]
+    return {kind: frozenset(keys) for kind, keys in accepted.items()}
+
+
+def _assert_kea_would_accept(body: dict[str, Any]) -> None:
+    """Fail on a Shared Network or Subnet key that Kea's keyword tables do not accept.
+
+    Kea rejects unknown keys, so a config-test or config-set that sends one fails
+    against a real Kea even when a hand-written stub answers it.
+    """
+    arguments = body.get("arguments")
+    for family in (4, 6):
+        daemon = arguments.get(f"Dhcp{family}") if isinstance(arguments, dict) else None
+        if not isinstance(daemon, dict):
+            continue
+        known = _accepted_keys(family)
+        networks = [n for n in daemon.get("shared-networks") or [] if isinstance(n, dict)]
+        subnets = [
+            *(daemon.get(f"subnet{family}") or []),
+            *(s for n in networks for s in n.get(f"subnet{family}") or []),
+        ]
+        for kind, entries in (("shared-networks", networks), (f"subnet{family}", subnets)):
+            unknown = {key for entry in entries if isinstance(entry, dict) for key in entry} - known[kind]
+            if unknown:
+                raise AssertionError(
+                    f"KeaHttpStub: {body.get('command')} sends {sorted(unknown)} in {kind}, which the "
+                    f"DHCPv{family} Kea keyword tables in kea_recordings/accepted-keys.json do not accept."
+                )
+
+
 class KeaHttpStub:
     """Dispatch Kea commands by name and record the request bodies sent.
 
@@ -125,6 +163,8 @@ class KeaHttpStub:
             self.requests.append(body)
             self._urls.append(url)
             cmd = body.get("command")
+            if cmd in ("config-test", "config-set"):
+                _assert_kea_would_accept(body)
             if cmd not in self._responses:
                 raise AssertionError(f"KeaHttpStub: no response registered for command {cmd!r} (url={url})")
             spec = self._responses[cmd]

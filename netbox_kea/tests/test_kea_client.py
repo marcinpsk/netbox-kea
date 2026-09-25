@@ -2980,13 +2980,13 @@ _CONFIG_GET_WITH_SHARED_NETWORK = [
                 "shared-networks": [
                     {
                         "name": "prod-net",
-                        "description": "Old description",
+                        "user-context": {"comment": "Old description", "owner": "noc"},
                         "option-data": [],
                         "subnet4": [],
                     },
                     {
                         "name": "other-net",
-                        "description": "Unrelated network",
+                        "user-context": {"comment": "Unrelated network"},
                         "option-data": [],
                         "subnet4": [],
                     },
@@ -3056,8 +3056,9 @@ class TestNetworkUpdate(TestCase):
             networks = payload["arguments"]["Dhcp4"]["shared-networks"]
             target = next(n for n in networks if n["name"] == "prod-net")
             other = next(n for n in networks if n["name"] == "other-net")
-            self.assertEqual(target["description"], "New description")
-            self.assertNotEqual(other.get("description"), "New description")
+            self.assertEqual(target["user-context"], {"comment": "New description", "owner": "noc"})
+            self.assertNotIn("description", target)
+            self.assertEqual(other["user-context"], {"comment": "Unrelated network"})
 
     def test_updates_relay_addresses(self):
         """relay_addresses list is stored under network['relay']['ip-addresses'] in both config-test and config-set."""
