@@ -43,7 +43,7 @@ out of CI so CodeRabbit can run its own analysis on pull requests.
 | `kea-command-result-indexed-without-guard` | error | `client.command(...)[0]` indexed directly, before validating the response shape. |
 | `kea-reservation-command-outside-adapter` | error | A `reservation-*` Kea command sent outside `kea.py`, which would put raw Reservation records in front of a consumer that cannot read their keys. |
 | `kea-config-read-modify-write-without-reader` | error | A `config-get` read in a method that calls `_apply_config()`, bypassing `_config_for_update()` and its `Dhcp4`/`Dhcp6` shape check. |
-| `netbox-ipam-get-or-create-non-unique-key` | error | `get_or_create()` on `Prefix`, `IPRange`, or `IPAddress`. NetBox does not enforce these keys in the database, so a duplicate row makes every call raise `MultipleObjectsReturned`. |
+| `netbox-ipam-get-or-create-non-unique-key` | error | `get_or_create()` on `Prefix`, `IPRange`, or `IPAddress`, directly or on a queryset chain such as `.filter(...)`. NetBox does not enforce these keys in the database, so a duplicate row makes every call raise `MultipleObjectsReturned`. |
 
 ## Running locally
 

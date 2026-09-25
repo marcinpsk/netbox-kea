@@ -21,6 +21,26 @@ def bad_ip_address(address):
     return IPAddress.objects.get_or_create(address=address)
 
 
+def bad_prefix_chained(cidr, vrf):
+    # ruleid: netbox-ipam-get-or-create-non-unique-key
+    return Prefix.objects.filter(vrf=vrf).get_or_create(prefix=cidr)
+
+
+def bad_ip_range_chained(user, start, end):
+    # ruleid: netbox-ipam-get-or-create-non-unique-key
+    return IPRange.objects.restrict(user, "view").filter(vrf=None).get_or_create(start_address=start, end_address=end)
+
+
+def bad_ip_address_chained(address):
+    # ruleid: netbox-ipam-get-or-create-non-unique-key
+    return IPAddress.objects.all().get_or_create(address=address)
+
+
+def ok_mac_address_chained(mac):
+    # ok: netbox-ipam-get-or-create-non-unique-key
+    return MACAddress.objects.filter(mac_address=mac).get_or_create(mac_address=mac)
+
+
 def ok_prefix_filter(cidr, vrf):
     # ok: netbox-ipam-get-or-create-non-unique-key
     return list(Prefix.objects.filter(prefix=cidr, vrf=vrf).order_by("pk"))

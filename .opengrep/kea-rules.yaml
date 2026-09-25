@@ -194,7 +194,12 @@ rules:
     paths:
       exclude:
         - "**/tests/**"
-    pattern-either:
-      - pattern: Prefix.objects.get_or_create(...)
-      - pattern: IPRange.objects.get_or_create(...)
-      - pattern: IPAddress.objects.get_or_create(...)
+    patterns:
+      - pattern: $QS.get_or_create(...)
+      # The receiver can be a queryset chain, e.g. Prefix.objects.filter(...).
+      - metavariable-pattern:
+          metavariable: $QS
+          pattern-either:
+            - pattern: <... Prefix.objects ...>
+            - pattern: <... IPRange.objects ...>
+            - pattern: <... IPAddress.objects ...>
