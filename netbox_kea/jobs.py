@@ -37,6 +37,7 @@ from netbox.jobs import JobRunner, system_job
 
 if TYPE_CHECKING:
     from .models import Server
+    from .sync import DuplicateNetBoxRowsError
 
 # Runtime import: get_type_hints() resolves this module's annotations, so a
 # TYPE_CHECKING-only Family would make that fail with NameError.
@@ -329,9 +330,15 @@ def _sync_subnet_entry(
     vrf,
     stats: dict[str, int],
     server_name: str,
+    duplicates: list[DuplicateNetBoxRowsError],
 ) -> None:
     """Sync one verified Subnet to a NetBox Prefix and its allocation ranges."""
-    from .sync import _POOL_TOO_LARGE, sync_pool_to_netbox_ip_range, sync_subnet_to_netbox_prefix
+    from .sync import (
+        _POOL_TOO_LARGE,
+        DuplicateNetBoxRowsError,
+        sync_pool_to_netbox_ip_range,
+        sync_subnet_to_netbox_prefix,
+    )
 
     subnet_cidr = subnet.cidr
 
@@ -342,6 +349,10 @@ def _sync_subnet_entry(
                 stats["created"] += 1
             elif did_update:
                 stats["updated"] += 1
+        except DuplicateNetBoxRowsError as exc:
+            logger.exception("Failed to sync prefix %s from server %s", subnet_cidr, server_name)
+            stats["prefix_errors"] += 1
+            duplicates.append(exc)
         except Exception:
             logger.exception("Failed to sync prefix %s from server %s", subnet_cidr, server_name)
             stats["prefix_errors"] += 1
@@ -369,6 +380,10 @@ def _sync_subnet_entry(
                         stats["created"] += 1
                     elif did_update:
                         stats["updated"] += 1
+            except DuplicateNetBoxRowsError as exc:
+                logger.exception("Failed to sync pool %s from server %s", pool_str, server_name)
+                stats["prefix_errors"] += 1
+                duplicates.append(exc)
             except Exception:
                 logger.exception("Failed to sync pool %s from server %s", pool_str, server_name)
                 stats["prefix_errors"] += 1
@@ -383,6 +398,7 @@ def _sync_server_prefixes_and_ranges(
     sync_ip_ranges: bool,
     vrf=None,
     stats: dict[str, int],
+    duplicates: list[DuplicateNetBoxRowsError],
 ) -> None:
     """Sync Prefixes and IP Ranges from the run's complete catalogue."""
     if catalogue is None:
@@ -394,7 +410,7 @@ def _sync_server_prefixes_and_ranges(
 
     logger.info("Server %s (v%s): found %d subnets for prefix/range sync", server.name, version, len(catalogue.subnets))
     for subnet in catalogue.subnets:
-        _sync_subnet_entry(subnet, sync_prefixes, sync_ip_ranges, vrf, stats, server.name)
+        _sync_subnet_entry(subnet, sync_prefixes, sync_ip_ranges, vrf, stats, server.name, duplicates)
 
 
 def _sync_one_server(
@@ -406,6 +422,7 @@ def _sync_one_server(
     max_leases: int,
     stats: dict[str, int],
     conflict_ips: set[str] | None = None,
+    duplicates: list[DuplicateNetBoxRowsError] | None = None,
 ) -> None:
     """Sync a single server's leases, reservations, prefixes, and IP ranges.
 
@@ -415,6 +432,9 @@ def _sync_one_server(
     foreign IP that has *both* a lease and a reservation is one conflict for the
     operator to resolve, not two.  Each phase still accumulates into its own list
     because ``sync_{lease,reservation}_to_netbox`` append to it.
+
+    *duplicates* is an optional caller-owned list that collects the Kea subnets and
+    pools that match more than one NetBox row, so the caller can name them.
     """
     from .sync import cleanup_stale_ips_batch
 
@@ -423,6 +443,8 @@ def _sync_one_server(
     protected: list[dict | Reservation] = []
     if conflict_ips is None:
         conflict_ips = set()
+    if duplicates is None:
+        duplicates = []
     # Cleanup is only safe when both sources contributed, otherwise we risk
     # removing IPs that exist in the source we didn't sync.
     cleanup_safe = sync_leases and sync_reservations
@@ -492,6 +514,7 @@ def _sync_one_server(
                 sync_ip_ranges=sync_ip_ranges,
                 vrf=server.sync_vrf,
                 stats=stats,
+                duplicates=duplicates,
             )
 
     # Authoritative count: the per-phase increments above double-count an IP that is
@@ -697,6 +720,7 @@ class KeaIpamSyncJob(JobRunner):
                 # Foreign NetBox IPs this server refused to overwrite, deduplicated
                 # across the lease and reservation phases and both IP versions.
                 conflict_ips: set[str] = set()
+                duplicates: list[DuplicateNetBoxRowsError] = []
 
                 try:
                     _sync_one_server(
@@ -708,6 +732,7 @@ class KeaIpamSyncJob(JobRunner):
                         max_leases,
                         server_stats,
                         conflict_ips=conflict_ips,
+                        duplicates=duplicates,
                     )
                 except Exception:
                     self.logger.exception(f"Unhandled error syncing server {server.name}; see server logs")
@@ -720,6 +745,12 @@ class KeaIpamSyncJob(JobRunner):
                     f" conflicts={server_stats['conflicts']}"
                     f" skipped={server_stats['skipped']}"
                 )
+                # No row pks here: the list URL applies the viewer's own IPAM permissions.
+                for dup in duplicates:
+                    self.logger.error(
+                        f"Server {server.name}: Kea {dup.kea_object} matches duplicate NetBox {dup.rows};"
+                        f" the sync leaves them unchanged. Review them at {dup.list_url}"
+                    )
                 for key in total:
                     total[key] += server_stats.get(key, 0)
 

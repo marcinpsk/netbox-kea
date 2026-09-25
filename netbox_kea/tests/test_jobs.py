@@ -1269,7 +1269,7 @@ class TestSubnetCatalogueJob(TestCase):
         self.assertEqual(job.data["summary"][0]["errors"], 0)
 
     def _run(self, responses, *, failed=False):
-        job = _make_job()
+        job = self.job = _make_job()
         with stub_kea(responses) as kea:
             if failed:
                 with self.assertRaises(JobFailed):
@@ -1576,6 +1576,7 @@ class TestSubnetCatalogueJob(TestCase):
         self.assertEqual(summary[0]["created"], 1)
         self.assertEqual(summary[0]["prefix_errors"], 1)
         self.assertEqual(summary[0]["errors"], 0)
+        self._assert_duplicate_logged("subnet 198.18.0.0/24", "/ipam/prefixes/?prefix=198.18.0.0%2F24&vrf_id=null")
 
     def test_duplicate_range_counts_error_and_keeps_prefix(self):
         from netaddr import IPNetwork
@@ -1590,6 +1591,22 @@ class TestSubnetCatalogueJob(TestCase):
         self.assertEqual(summary[0]["created"], 1)
         self.assertEqual(summary[0]["prefix_errors"], 1)
         self.assertEqual(summary[0]["errors"], 0)
+        self._assert_duplicate_logged(
+            "pool 198.18.0.10-198.18.0.20",
+            "/ipam/ip-ranges/?start_address=198.18.0.10&end_address=198.18.0.20&vrf_id=null",
+        )
+
+    def _assert_duplicate_logged(self, kea_object, list_url):
+        """The job log names the Kea object and the filtered list URL, but no row pk."""
+        from core.dataclasses import JobLogEntry
+
+        messages = [JobLogEntry.from_logrecord(call.args[0]).message for call in self.job.log.call_args_list]
+        lines = [m for m in messages if kea_object in m]
+        self.assertEqual(len(lines), 1, messages)
+        self.assertIn(list_url, lines[0])
+        self.assertNotRegex(
+            lines[0].replace(list_url, "").replace(kea_object, ""), r"\d", "a row pk reached the job log"
+        )
 
     def test_empty_catalogue_is_successful(self):
         summary, kea = self._run(_catalogue_responses_for_subnets(4, []))
