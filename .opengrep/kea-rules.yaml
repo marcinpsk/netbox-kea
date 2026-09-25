@@ -179,3 +179,22 @@ rules:
       - pattern-either:
           - pattern: $C.command("config-get", ...)
           - pattern: $C.command(command="config-get", ...)
+
+  - id: netbox-ipam-get-or-create-non-unique-key
+    languages: [python]
+    severity: ERROR
+    message: >-
+      NetBox does not enforce Prefix, IPRange, or IPAddress keys in the database.
+      ENFORCE_GLOBAL_UNIQUE is checked only in clean(), so duplicate rows can exist.
+      get_or_create() then raises MultipleObjectsReturned on every run.
+      Query with filter(...) and handle more than one match explicitly, as sync._single_match does.
+    metadata:
+      category: correctness
+      confidence: HIGH
+    paths:
+      exclude:
+        - "**/tests/**"
+    pattern-either:
+      - pattern: Prefix.objects.get_or_create(...)
+      - pattern: IPRange.objects.get_or_create(...)
+      - pattern: IPAddress.objects.get_or_create(...)
