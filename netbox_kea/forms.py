@@ -21,6 +21,7 @@ from .reservations import (
     reservation_identifier_choices,
     reservation_identifier_types,
 )
+from .subnet_catalogue import MAX_SUBNET_ID, MIN_SUBNET_ID
 from .utilities import is_hex_string, parse_delegated_prefixes, parse_pool_range
 
 
@@ -987,8 +988,9 @@ class SubnetAddForm(_SubnetBaseForm):
     subnet_id = forms.IntegerField(
         label="Subnet ID",
         required=False,
-        min_value=1,
-        help_text="Leave blank for Kea to auto-assign.",
+        min_value=MIN_SUBNET_ID,
+        max_value=MAX_SUBNET_ID,
+        help_text="Leave blank to use the highest existing subnet ID plus one.",
     )
     shared_network = forms.ChoiceField(
         label="Shared Network",

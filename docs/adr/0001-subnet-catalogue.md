@@ -70,6 +70,10 @@ Subnet Settings expose effective values that the repository consumes. They do no
 - Existing Subnet mutation can proceed with one exact Verified Subnet.
 - New Subnet creation requires a complete live identity observation.
 - Automatic Kea subnet ID allocation uses the highest existing ID plus one. It retries once after a concurrent collision and fails when the valid range is exhausted.
+  **Amended 2026-09-26:** when the highest existing ID is the largest valid ID, allocation reuses the lowest free ID.
+  It fails only when every valid ID is in use. After Kea rejects an automatic ID, a fresh live mutation scope decides
+  if a concurrent writer took that ID. The retry runs only when another Subnet now holds the ID. The decision does
+  not use Kea's error text.
 
 Read-modify-write adapters refetch the raw target immediately before mutation. They preserve unknown Kea fields but never expose the raw object through the catalogue interface.
 

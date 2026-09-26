@@ -1147,23 +1147,23 @@ class KeaClient:
 
         return _configured_subnet_id_for_network(subnet_collections, version, network)
 
-    def subnet_add(  # noqa: C901
+    def subnet_add(
         self,
         version: int,
         subnet_cidr: str,
-        subnet_id: int | None = None,
+        subnet_id: int,
         pools: list[str] | None = None,
         gateway: str | None = None,
         dns_servers: list[str] | None = None,
         ntp_servers: list[str] | None = None,
         ddns_qualifying_suffix: str | None = None,
-    ) -> int | None:
+    ) -> None:
         """Add a new subnet to Kea and persist the change.
 
         Args:
             version: DHCP version (4 or 6).
             subnet_cidr: Subnet in CIDR notation, e.g. ``"10.0.0.0/24"``.
-            subnet_id: Optional Kea subnet ID. If ``None``, Kea auto-assigns.
+            subnet_id: Kea subnet ID, allocated by the Subnet Catalogue's ``prepare_creation``.
             pools: Optional list of initial pool ranges (e.g. ``["10.0.0.100-10.0.0.200"]``).
             gateway: Optional default gateway IP (sets option ``routers``; DHCPv4 only).
             dns_servers: Optional list of DNS server IPs.
@@ -1171,35 +1171,13 @@ class KeaClient:
             ddns_qualifying_suffix: Optional DDNS qualifying suffix for dynamic DNS updates.
 
         Raises:
-            KeaException: If Kea returns a non-zero result code.
+            KeaException: If Kea rejects the ``subnet{v}-add`` command. Kea did not apply it.
+            PartialPersistError: If the subnet is live but not persisted. ``subnet_id`` names it.
+            KeaConfigPersistError: If the subnet is live but ``config-test`` rejected the result.
 
         """
         service = f"dhcp{version}"
-        subnet_key = f"subnet{version}"
-        subnet_def: dict[str, Any] = {"subnet": subnet_cidr}
-        if subnet_id is not None:
-            subnet_def["id"] = subnet_id
-        else:
-            # Kea 3.x requires an explicit id — auto-assign max + 1
-            try:
-                list_resp = self.command(
-                    f"subnet{version}-list",
-                    service=[service],
-                    check=(0, 3),  # result=3 means no subnets yet — treat as empty list
-                )
-                if not list_resp or not isinstance(list_resp[0], dict):
-                    raise RuntimeError(f"subnet{version}-list returned malformed response: {list_resp!r}")
-                if list_resp[0].get("result") == 3:
-                    existing = []
-                else:
-                    arguments = list_resp[0].get("arguments")
-                    if not isinstance(arguments, dict) or not isinstance(arguments.get("subnets"), list):
-                        raise RuntimeError(f"subnet{version}-list returned malformed arguments: {list_resp[0]!r}")
-                    existing = arguments["subnets"]
-                max_id = max((s.get("id", 0) for s in existing), default=0)
-                subnet_def["id"] = max_id + 1
-            except KeaException:
-                logger.warning("subnet%s-list failed; falling back to no explicit ID", version)
+        subnet_def: dict[str, Any] = {"subnet": subnet_cidr, "id": subnet_id}
         if pools:
             subnet_def["pools"] = [{"pool": p} for p in pools]
         managed = form_managed_options(version)
@@ -1215,52 +1193,18 @@ class KeaClient:
         if ddns_qualifying_suffix:
             subnet_def["ddns-qualifying-suffix"] = ddns_qualifying_suffix
         try:
-            last_exc: KeaException | None = None
-            add_resp: list | None = None
-            auto_assigned_id = subnet_id is None and "id" in subnet_def
-            for _attempt in range(3):
-                try:
-                    add_resp = self._config_mutation_command(
-                        f"subnet{version}-add",
-                        service,
-                        {subnet_key: [dict(subnet_def)]},
-                    )
-                    last_exc = None
-                    break
-                except KeaException as exc:
-                    if auto_assigned_id and "duplicate" in str(exc).lower() and "id" in subnet_def:
-                        subnet_def["id"] += 1
-                        last_exc = exc
-                    else:
-                        raise
-            if last_exc is not None:
-                raise last_exc
+            self._config_mutation_command(f"subnet{version}-add", service, {f"subnet{version}": [subnet_def]})
         except (requests.RequestException, ValueError) as transport_exc:
-            found_id = self._find_subnet_id_by_cidr(version, subnet_def["subnet"])
+            found_id = self._find_subnet_id_by_cidr(version, subnet_cidr)
             if found_id is not None:
                 err = PartialPersistError(service, transport_exc, subnet_id=found_id)
                 raise err from transport_exc
             raise
-        # Prefer the authoritative ID Kea echoes back in the add response — it is
-        # the only source of truth when subnet{v}-list failed and no explicit id was
-        # provided (subnet_def would have no "id" key in that case → returns None).
-        if add_resp:
-            subnets = (add_resp[0].get("arguments") or {}).get("subnets")
-            if subnets:
-                kea_id = subnets[0].get("id")
-                if kea_id is not None:
-                    subnet_def["id"] = kea_id
         try:
             self._persist_config(service)
-        except KeaConfigPersistError as exc:
-            exc.subnet_id = subnet_def.get("id")
-            raise
         except PartialPersistError as exc:
-            # Subnet is live; re-raise with the known ID so callers can still
-            # perform follow-up operations (e.g. assign to a shared network).
-            exc.subnet_id = subnet_def.get("id")
+            exc.subnet_id = subnet_id
             raise
-        return subnet_def.get("id")
 
     def subnet_del(self, version: int, subnet_id: int) -> None:
         """Delete an existing subnet from Kea and persist the change.

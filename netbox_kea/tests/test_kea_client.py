@@ -659,11 +659,6 @@ _SUBNET6_ADD_RESP = [
     {"result": 0, "arguments": {"subnets": [{"id": 20, "subnet": "2001:db8:99::/48"}]}, "text": "IPv6 subnet added"}
 ]
 _SUBNET_DEL_RESP = [{"result": 0, "text": "IPv4 subnet deleted"}]
-# subnet-list response returned before auto-ID lookup
-_SUBNET4_LIST_RESP = [
-    {"result": 0, "arguments": {"subnets": [{"id": 1, "subnet": "10.0.0.0/8"}, {"id": 2, "subnet": "192.168.0.0/16"}]}}
-]
-_SUBNET6_LIST_RESP = [{"result": 0, "arguments": {"subnets": [{"id": 5, "subnet": "2001:db8::/32"}]}}]
 
 
 class TestSubnetAdd(TestCase):
@@ -680,9 +675,9 @@ class TestSubnetAdd(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_SUBNET4_LIST_RESP, _SUBNET4_ADD_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _OK),
+            side_effect=_side_effects(_SUBNET4_ADD_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _OK),
         ) as mock_post:
-            self.client.subnet_add(version=4, subnet_cidr="10.99.0.0/24")
+            self.client.subnet_add(version=4, subnet_cidr="10.99.0.0/24", subnet_id=10)
         self.assertIn("subnet4-add", self._cmds(mock_post))
 
     def test_subnet_add_v6_sends_correct_command(self):
@@ -690,9 +685,9 @@ class TestSubnetAdd(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_SUBNET6_LIST_RESP, _SUBNET6_ADD_RESP, _CONFIG_GET_RUNNING_RESP_V6, _OK, _OK),
+            side_effect=_side_effects(_SUBNET6_ADD_RESP, _CONFIG_GET_RUNNING_RESP_V6, _OK, _OK),
         ) as mock_post:
-            self.client.subnet_add(version=6, subnet_cidr="2001:db8:99::/48")
+            self.client.subnet_add(version=6, subnet_cidr="2001:db8:99::/48", subnet_id=20)
         self.assertIn("subnet6-add", self._cmds(mock_post))
         self.assertNotIn("subnet4-add", self._cmds(mock_post))
 
@@ -701,9 +696,9 @@ class TestSubnetAdd(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_SUBNET4_LIST_RESP, _SUBNET4_ADD_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _OK),
+            side_effect=_side_effects(_SUBNET4_ADD_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _OK),
         ) as mock_post:
-            self.client.subnet_add(version=4, subnet_cidr="10.99.0.0/24")
+            self.client.subnet_add(version=4, subnet_cidr="10.99.0.0/24", subnet_id=10)
         add_call = next(
             c.kwargs.get("json") or c[1]["json"]
             for c in mock_post.call_args_list
@@ -712,78 +707,28 @@ class TestSubnetAdd(TestCase):
         subnet_arg = add_call["arguments"]["subnet4"][0]
         self.assertEqual(subnet_arg["subnet"], "10.99.0.0/24")
 
-    def test_subnet_add_includes_optional_id(self):
-        """subnet4-add payload includes id when provided (no list call)."""
+    def test_subnet_add_sends_the_requested_id_without_reading_the_subnet_list(self):
+        """subnet4-add carries the caller's ID; subnet_add allocates nothing itself."""
         with patch.object(
             self.client._session,
             "post",
             side_effect=_side_effects(_SUBNET4_ADD_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _OK),
         ) as mock_post:
             self.client.subnet_add(version=4, subnet_cidr="10.99.0.0/24", subnet_id=42)
-        add_call = next(
-            c.kwargs.get("json") or c[1]["json"]
-            for c in mock_post.call_args_list
-            if (c.kwargs.get("json") or c[1]["json"])["command"] == "subnet4-add"
-        )
-        self.assertEqual(add_call["arguments"]["subnet4"][0]["id"], 42)
-        # Exactly 4 calls: subnet4-add + config-get + config-test + config-write (no subnet4-list)
-        self.assertEqual(len(mock_post.call_args_list), 4)
-
-    def test_subnet_add_auto_assigns_id_as_max_plus_one(self):
-        """When no subnet_id provided, auto-assigns max existing ID + 1."""
-        with patch.object(
-            self.client._session,
-            "post",
-            side_effect=_side_effects(_SUBNET4_LIST_RESP, _SUBNET4_ADD_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _OK),
-        ) as mock_post:
-            self.client.subnet_add(version=4, subnet_cidr="10.99.0.0/24")
-        add_call = next(
-            c.kwargs.get("json") or c[1]["json"]
-            for c in mock_post.call_args_list
-            if (c.kwargs.get("json") or c[1]["json"])["command"] == "subnet4-add"
-        )
-        # _SUBNET4_LIST_RESP has ids 1 and 2, so auto-assigned should be 3
-        self.assertEqual(add_call["arguments"]["subnet4"][0]["id"], 3)
-
-    def test_subnet_add_auto_assigns_id_1_when_no_subnets_exist(self):
-        """result=3 (no subnets configured yet) is accepted via check=(0, 3) and treated as an empty list, so the first subnet gets id 1 — the case this fix restores on Kea 3.x."""
-        empty_list_resp = [{"result": 3, "text": "no subnets configured"}]
-        with patch.object(
-            self.client._session,
-            "post",
-            side_effect=_side_effects(empty_list_resp, _SUBNET4_ADD_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _OK),
-        ) as mock_post:
-            self.client.subnet_add(version=4, subnet_cidr="10.99.0.0/24")
-        add_call = next(
-            c.kwargs.get("json") or c[1]["json"]
-            for c in mock_post.call_args_list
-            if (c.kwargs.get("json") or c[1]["json"])["command"] == "subnet4-add"
-        )
-        self.assertEqual(add_call["arguments"]["subnet4"][0]["id"], 1)
-
-    def test_subnet_add_raises_on_malformed_list_response(self):
-        """A subnet-list response with no result envelope (empty list) must raise RuntimeError, not be silently treated as empty — otherwise id 1 could collide with real subnets."""
-        with patch.object(self.client._session, "post", side_effect=_side_effects([])):
-            with self.assertRaises(RuntimeError):
-                self.client.subnet_add(version=4, subnet_cidr="10.99.0.0/24")
-
-    def test_subnet_add_raises_on_malformed_list_arguments(self):
-        """A result=0 subnet-list response missing arguments.subnets must raise RuntimeError rather than assume "no subnets" and assign a colliding id 1."""
-        malformed = [{"result": 0}]  # ok result code, but no 'arguments' — can't trust it as empty
-        with patch.object(self.client._session, "post", side_effect=_side_effects(malformed)):
-            with self.assertRaises(RuntimeError):
-                self.client.subnet_add(version=4, subnet_cidr="10.99.0.0/24")
+        self.assertEqual(self._add_payload(mock_post)["arguments"]["subnet4"][0]["id"], 42)
+        self.assertEqual(self._cmds(mock_post), ["subnet4-add", "config-get", "config-test", "config-write"])
 
     def test_subnet_add_includes_pools(self):
         """subnet4-add payload includes pools when provided."""
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_SUBNET4_LIST_RESP, _SUBNET4_ADD_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _OK),
+            side_effect=_side_effects(_SUBNET4_ADD_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _OK),
         ) as mock_post:
             self.client.subnet_add(
                 version=4,
                 subnet_cidr="10.99.0.0/24",
+                subnet_id=10,
                 pools=["10.99.0.100-10.99.0.200"],
             )
         add_call = next(
@@ -801,11 +746,12 @@ class TestSubnetAdd(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_SUBNET4_LIST_RESP, _SUBNET4_ADD_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _OK),
+            side_effect=_side_effects(_SUBNET4_ADD_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _OK),
         ) as mock_post:
             self.client.subnet_add(
                 version=4,
                 subnet_cidr="10.99.0.0/24",
+                subnet_id=10,
                 gateway="10.99.0.1",
                 dns_servers=["8.8.8.8", "8.8.4.4"],
                 ntp_servers=["10.99.0.123"],
@@ -825,101 +771,32 @@ class TestSubnetAdd(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_SUBNET4_LIST_RESP, _SUBNET4_ADD_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _OK),
+            side_effect=_side_effects(_SUBNET4_ADD_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _OK),
         ) as mock_post:
-            self.client.subnet_add(version=4, subnet_cidr="10.99.0.0/24")
+            self.client.subnet_add(version=4, subnet_cidr="10.99.0.0/24", subnet_id=10)
         cmds = self._cmds(mock_post)
         self.assertIn("config-write", cmds)
         self.assertLess(cmds.index("subnet4-add"), cmds.index("config-write"))
 
-    def test_subnet_add_raises_on_kea_error(self):
-        """KeaException is raised when Kea returns result != 0."""
-        with patch.object(
-            self.client._session,
-            "post",
-            side_effect=_side_effects(_SUBNET4_LIST_RESP, [{"result": 1, "text": "subnet already exists"}]),
-        ):
+    def test_subnet_add_raises_on_kea_error_without_a_retry(self):
+        """A Kea rejection raises KeaException after exactly one subnet4-add."""
+        rejection = [{"result": 1, "text": "ID of the new IPv4 subnet '10' is already in use"}]
+        with patch.object(self.client._session, "post", side_effect=_side_effects(rejection)) as mock_post:
             with self.assertRaises(KeaException):
-                self.client.subnet_add(version=4, subnet_cidr="10.99.0.0/24")
-
-    def test_subnet_add_returns_assigned_id(self):
-        """subnet_add returns the authoritative ID echoed back by Kea in the add response."""
-        with patch.object(
-            self.client._session,
-            "post",
-            side_effect=_side_effects(_SUBNET4_LIST_RESP, _SUBNET4_ADD_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _OK),
-        ):
-            result = self.client.subnet_add(version=4, subnet_cidr="10.99.0.0/24")
-        # _SUBNET4_ADD_RESP echoes back id=10; we prefer the Kea-provided ID over the
-        # locally-computed max_id+1 value so we always have the authoritative ID.
-        self.assertEqual(result, 10)
-
-    def test_subnet_add_without_explicit_id_falls_back_when_list_fails(self):
-        """When subnet{v}-list raises KeaException, subnet_add falls back to no explicit ID."""
-        list_error = [{"result": 2, "text": "unknown command"}]
-        with patch.object(
-            self.client._session,
-            "post",
-            side_effect=_side_effects(list_error, _SUBNET4_ADD_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _OK),
-        ) as mock_post:
-            self.client.subnet_add(version=4, subnet_cidr="10.99.0.0/24")
-        add_call = next(
-            c.kwargs.get("json") or c[1]["json"]
-            for c in mock_post.call_args_list
-            if (c.kwargs.get("json") or c[1]["json"])["command"] == "subnet4-add"
-        )
-        # No explicit id should be set when the list call fails
-        self.assertNotIn("id", add_call["arguments"]["subnet4"][0])
-
-    def test_subnet_add_list_fails_returns_kea_assigned_id(self):
-        """When subnet{v}-list fails, subnet_add returns the ID Kea echoes back in the add response."""
-        list_error = [{"result": 2, "text": "unknown command"}]
-        with patch.object(
-            self.client._session,
-            "post",
-            side_effect=_side_effects(list_error, _SUBNET4_ADD_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _OK),
-        ):
-            result = self.client.subnet_add(version=4, subnet_cidr="10.99.0.0/24")
-        # _SUBNET4_ADD_RESP has id=10; that should be the return value even though list failed.
-        self.assertEqual(result, 10)
-
-    def test_subnet_add_retries_on_duplicate_id(self):
-        """subnet_add retries with id+1 when Kea rejects with 'duplicate' in error."""
-        duplicate_resp = [{"result": 1, "text": "duplicate subnet id"}]
-        with patch.object(
-            self.client._session,
-            "post",
-            side_effect=_side_effects(
-                _SUBNET4_LIST_RESP,  # subnet4-list → ids 1, 2 → assigns id=3
-                duplicate_resp,  # first subnet4-add attempt → duplicate
-                _SUBNET4_ADD_RESP,  # second subnet4-add attempt (id=4) → success; Kea echoes id=10
-                _CONFIG_GET_RUNNING_RESP,  # config-get
-                _OK,  # config-test
-                _OK,  # config-write
-            ),
-        ) as mock_post:
-            result = self.client.subnet_add(version=4, subnet_cidr="10.99.0.0/24")
-        add_calls = [
-            c.kwargs.get("json") or c[1]["json"]
-            for c in mock_post.call_args_list
-            if (c.kwargs.get("json") or c[1]["json"])["command"] == "subnet4-add"
-        ]
-        self.assertEqual(len(add_calls), 2)
-        self.assertEqual(add_calls[0]["arguments"]["subnet4"][0]["id"], 3)
-        self.assertEqual(add_calls[1]["arguments"]["subnet4"][0]["id"], 4)
-        # Kea echoes back id=10 in _SUBNET4_ADD_RESP — that is the authoritative return value.
-        self.assertEqual(result, 10)
+                self.client.subnet_add(version=4, subnet_cidr="10.99.0.0/24", subnet_id=10)
+        self.assertEqual(self._cmds(mock_post), ["subnet4-add"])
 
     def test_subnet_add_v6_uses_dns_servers_option_name(self):
         """For DHCPv6, dns_servers option name must be 'dns-servers' not 'domain-name-servers'."""
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_SUBNET6_LIST_RESP, _SUBNET6_ADD_RESP, _CONFIG_GET_RUNNING_RESP_V6, _OK, _OK),
+            side_effect=_side_effects(_SUBNET6_ADD_RESP, _CONFIG_GET_RUNNING_RESP_V6, _OK, _OK),
         ) as mock_post:
             self.client.subnet_add(
                 version=6,
                 subnet_cidr="2001:db8:99::/48",
+                subnet_id=20,
                 dns_servers=["2001:4860:4860::8888"],
                 ntp_servers=["2001:db8:99::123"],
             )
@@ -934,62 +811,22 @@ class TestSubnetAdd(TestCase):
         self.assertIn("sntp-servers", opts)
         self.assertNotIn("ntp-servers", opts)
 
-    def test_raises_when_all_retries_exhausted_with_duplicate_id(self):
-        """subnet_add raises the last KeaException when all 3 retry attempts get a duplicate-id error."""
-        _DUPLICATE_ID_RESP = [{"result": 1, "text": "duplicate subnet id: X"}]
-        with patch.object(
-            self.client._session,
-            "post",
-            side_effect=_side_effects(
-                _SUBNET4_LIST_RESP,
-                _DUPLICATE_ID_RESP,
-                _DUPLICATE_ID_RESP,
-                _DUPLICATE_ID_RESP,
-            ),
-        ):
-            with self.assertRaises(KeaException):
-                self.client.subnet_add(version=4, subnet_cidr="10.99.0.0/24")
-
     def test_partial_persist_error_carries_subnet_id(self):
-        """PartialPersistError raised by subnet_add includes the assigned subnet_id."""
+        """PartialPersistError raised by subnet_add names the requested subnet_id."""
         with patch.object(
             self.client._session,
             "post",
             side_effect=_side_effects(
-                _SUBNET4_LIST_RESP,  # subnet4-list → ids 1, 2
-                _SUBNET4_ADD_RESP,  # subnet4-add → Kea echoes id=10
+                _SUBNET4_ADD_RESP,  # subnet4-add
                 _CONFIG_GET_RUNNING_RESP,  # config-get (for config-test preflight)
                 _CONFIG_TEST_OK_RESP,  # config-test
                 [{"result": 1, "text": "write failed"}],  # config-write → fail
             ),
         ):
             with self.assertRaises(PartialPersistError) as ctx:
-                self.client.subnet_add(version=4, subnet_cidr="10.99.0.0/24")
-        # The exception must carry the Kea-assigned ID (echoed back in _SUBNET4_ADD_RESP as 10)
-        # so callers can still use it for follow-up operations (e.g. network assignment).
+                self.client.subnet_add(version=4, subnet_cidr="10.99.0.0/24", subnet_id=10)
+        # Callers use the ID for follow-up operations (e.g. network assignment).
         self.assertEqual(ctx.exception.subnet_id, 10)
-
-    def test_partial_persist_error_subnet_id_none_when_kea_does_not_echo_back(self):
-        """PartialPersistError.subnet_id is None when list fails AND Kea echoes no id back."""
-        # Must use a failed list call so no locally-computed id ends up in subnet_def
-        list_error = [{"result": 2, "text": "unknown command"}]
-        no_id_add_resp = [
-            {"result": 0, "text": "Subnet added.", "arguments": {"subnets": [{"subnet": "10.99.0.0/24"}]}}
-        ]
-        with patch.object(
-            self.client._session,
-            "post",
-            side_effect=_side_effects(
-                list_error,  # subnet4-list fails → no locally-assigned id
-                no_id_add_resp,  # subnet4-add → Kea does not echo id
-                _CONFIG_GET_RUNNING_RESP,
-                _CONFIG_TEST_OK_RESP,
-                [{"result": 1, "text": "write failed"}],
-            ),
-        ):
-            with self.assertRaises(PartialPersistError) as ctx:
-                self.client.subnet_add(version=4, subnet_cidr="10.99.0.0/24")
-        self.assertIsNone(ctx.exception.subnet_id)
 
     def _add_payload(self, mock_post):
         """Return the subnet4-add call arguments dict."""
@@ -1004,9 +841,11 @@ class TestSubnetAdd(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_SUBNET4_LIST_RESP, _SUBNET4_ADD_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _OK),
+            side_effect=_side_effects(_SUBNET4_ADD_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _OK),
         ) as mock_post:
-            self.client.subnet_add(version=4, subnet_cidr="10.99.0.0/24", ddns_qualifying_suffix="example.com.")
+            self.client.subnet_add(
+                version=4, subnet_cidr="10.99.0.0/24", subnet_id=10, ddns_qualifying_suffix="example.com."
+            )
         subnet_obj = self._add_payload(mock_post)["arguments"]["subnet4"][0]
         self.assertEqual(subnet_obj["ddns-qualifying-suffix"], "example.com.")
 
@@ -1015,9 +854,9 @@ class TestSubnetAdd(TestCase):
         with patch.object(
             self.client._session,
             "post",
-            side_effect=_side_effects(_SUBNET4_LIST_RESP, _SUBNET4_ADD_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _OK),
+            side_effect=_side_effects(_SUBNET4_ADD_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _OK),
         ) as mock_post:
-            self.client.subnet_add(version=4, subnet_cidr="10.99.0.0/24")
+            self.client.subnet_add(version=4, subnet_cidr="10.99.0.0/24", subnet_id=10)
         subnet_obj = self._add_payload(mock_post)["arguments"]["subnet4"][0]
         self.assertNotIn("ddns-qualifying-suffix", subnet_obj)
 
@@ -4769,8 +4608,6 @@ class TestSubnetAddAmbiguousCreate(TestCase):
 
         def _side(url, **kwargs):
             cmd = kwargs.get("json", {}).get("command", "")
-            if cmd.startswith("subnet4-list"):
-                return _mock_http_response(_SUBNET4_LIST_RESP)
             if cmd == "subnet4-add":
                 raise requests.ConnectionError("connection reset")
             if cmd == "config-get":
@@ -4779,7 +4616,7 @@ class TestSubnetAddAmbiguousCreate(TestCase):
 
         with patch.object(self.client._session, "post", side_effect=_side):
             with self.assertRaises(PartialPersistError) as ctx:
-                self.client.subnet_add(version=4, subnet_cidr="10.99.0.0/24")
+                self.client.subnet_add(version=4, subnet_cidr="10.99.0.0/24", subnet_id=10)
         self.assertEqual(ctx.exception.subnet_id, 10)
 
     def test_reraises_transport_error_when_subnet_not_found_after_probe(self):
@@ -4788,8 +4625,6 @@ class TestSubnetAddAmbiguousCreate(TestCase):
 
         def _side(url, **kwargs):
             cmd = kwargs.get("json", {}).get("command", "")
-            if cmd.startswith("subnet4-list"):
-                return _mock_http_response(_SUBNET4_LIST_RESP)
             if cmd == "subnet4-add":
                 raise requests.ConnectionError("connection reset")
             if cmd == "config-get":
@@ -4798,7 +4633,7 @@ class TestSubnetAddAmbiguousCreate(TestCase):
 
         with patch.object(self.client._session, "post", side_effect=_side):
             with self.assertRaises(requests.ConnectionError):
-                self.client.subnet_add(version=4, subnet_cidr="10.99.0.0/24")
+                self.client.subnet_add(version=4, subnet_cidr="10.99.0.0/24", subnet_id=10)
 
     def test_reraises_transport_error_when_probe_also_fails(self):
         """If both subnet-add and the config-get probe fail with transport errors,
@@ -4827,13 +4662,8 @@ class TestSubnetAddValueError(TestCase):
         """If subnet-add raises ValueError and config-get confirms subnet exists,
         PartialPersistError is raised with the found subnet_id."""
 
-        call_count = [0]
-
         def _side(url, **kwargs):
             cmd = kwargs.get("json", {}).get("command", "")
-            call_count[0] += 1
-            if cmd.startswith("subnet4-list"):
-                return _mock_http_response(_SUBNET4_LIST_RESP)
             if cmd == "subnet4-add":
                 raise ValueError("response was not JSON")
             if cmd == "config-get":
@@ -4842,7 +4672,7 @@ class TestSubnetAddValueError(TestCase):
 
         with patch.object(self.client._session, "post", side_effect=_side):
             with self.assertRaises(PartialPersistError) as ctx:
-                self.client.subnet_add(version=4, subnet_cidr="10.99.0.0/24")
+                self.client.subnet_add(version=4, subnet_cidr="10.99.0.0/24", subnet_id=10)
         self.assertEqual(ctx.exception.subnet_id, 10)
 
     def test_reraises_value_error_when_subnet_not_found(self):
@@ -4851,8 +4681,6 @@ class TestSubnetAddValueError(TestCase):
 
         def _side(url, **kwargs):
             cmd = kwargs.get("json", {}).get("command", "")
-            if cmd.startswith("subnet4-list"):
-                return _mock_http_response(_SUBNET4_LIST_RESP)
             if cmd == "subnet4-add":
                 raise ValueError("bad JSON")
             if cmd == "config-get":
@@ -4861,7 +4689,7 @@ class TestSubnetAddValueError(TestCase):
 
         with patch.object(self.client._session, "post", side_effect=_side):
             with self.assertRaises(ValueError):
-                self.client.subnet_add(version=4, subnet_cidr="10.99.0.0/24")
+                self.client.subnet_add(version=4, subnet_cidr="10.99.0.0/24", subnet_id=10)
 
 
 # ---------------------------------------------------------------------------
@@ -4902,44 +4730,6 @@ class TestFindSubnetIdNarrowedExcept(TestCase):
         with patch.object(self.client._session, "post", side_effect=AttributeError("bug")):
             with self.assertRaises(AttributeError):
                 self.client._find_subnet_id_by_cidr(4, "10.0.0.0/24")
-
-
-# ---------------------------------------------------------------------------
-# TestSubnetAddKeaConfigPersistError
-# ---------------------------------------------------------------------------
-
-
-class TestSubnetAddKeaConfigPersistError(TestCase):
-    """subnet_add() attaches subnet_id to KeaConfigPersistError from _persist_config."""
-
-    def setUp(self):
-        self.client = KeaClient(url="http://kea:8000")
-
-    def test_kea_config_persist_error_gets_subnet_id(self):
-        """When _persist_config raises KeaConfigPersistError, subnet_id is attached before re-raising."""
-        call_count = [0]
-
-        def _side(url, **kwargs):
-            cmd = kwargs.get("json", {}).get("command", "")
-            call_count[0] += 1
-            if cmd.startswith("subnet4-list"):
-                return _mock_http_response(_SUBNET4_LIST_RESP)
-            if cmd == "subnet4-add":
-                return _mock_http_response(
-                    [{"result": 0, "arguments": {"subnets": [{"id": 99, "subnet": "10.99.0.0/24"}]}}]
-                )
-            if cmd == "config-get":
-                return _mock_http_response([{"result": 0, "arguments": {"Dhcp4": {}, "hash": "abc"}}])
-            if cmd == "config-test":
-                return _mock_http_response([{"result": 1, "text": "config-test rejected"}])
-            if cmd == "config-write":
-                return _mock_http_response(_OK)
-            return _mock_http_response(_OK)
-
-        with patch.object(self.client._session, "post", side_effect=_side):
-            with self.assertRaises(KeaConfigPersistError) as ctx:
-                self.client.subnet_add(version=4, subnet_cidr="10.99.0.0/24")
-        self.assertEqual(ctx.exception.subnet_id, 99)
 
 
 # ---------------------------------------------------------------------------

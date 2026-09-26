@@ -5,7 +5,7 @@ from collections import defaultdict
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, Protocol, TypeVar
+from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeVar
 
 import requests
 from django.core.cache import cache
@@ -40,6 +40,10 @@ class CatalogueUnavailable(RuntimeError):
 
 class SubnetIdentityConflict(ValueError):
     """Raised when a proposed Subnet identity already exists."""
+
+    def __init__(self, message: str, *, part: Literal["network", "subnet_id"]) -> None:
+        super().__init__(message)
+        self.part = part
 
 
 class SubnetIdExhausted(RuntimeError):
@@ -804,7 +808,7 @@ class MutationScope(AbstractContextManager["MutationScope"]):
         self._require_complete_identity("New Subnet creation requires a complete live identity observation.")
         network = subnet_network(cidr, self.family)
         if any(subnet.network == network for subnet in snapshot.subnets):
-            raise SubnetIdentityConflict(f"Subnet {network} already exists.")
+            raise SubnetIdentityConflict(f"Subnet {network} already exists.", part="network")
 
         used_ids = {subnet.subnet_id for subnet in snapshot.subnets}
         if subnet_id is None:
@@ -814,7 +818,7 @@ class MutationScope(AbstractContextManager["MutationScope"]):
         elif not MIN_SUBNET_ID <= subnet_id <= MAX_SUBNET_ID:
             raise ValueError(f"subnet_id must be between {MIN_SUBNET_ID} and {MAX_SUBNET_ID}.")
         if subnet_id in used_ids:
-            raise SubnetIdentityConflict(f"Subnet ID {subnet_id} already exists.")
+            raise SubnetIdentityConflict(f"Subnet ID {subnet_id} already exists.", part="subnet_id")
         return NewSubnetIdentity(subnet_id=subnet_id, network=network)
 
     def _require_snapshot(self) -> CatalogueSnapshot:
