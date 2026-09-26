@@ -192,37 +192,50 @@ rules:
     paths:
       exclude:
         - "**/tests/**"
-    patterns:
-      - pattern-either:
-          - pattern: $EXC.response.get("result") == 2
-          - pattern: $EXC.response.get("result") != 2
-          - pattern: $EXC.response["result"] == 2
-          - pattern: $EXC.response["result"] != 2
-          - patterns:
-              - pattern-either:
-                  - pattern-inside: |
-                      $R = $EXC.response.get("result")
-                      ...
-                  - pattern-inside: |
-                      $R = $EXC.response["result"]
-                      ...
-              # A later assignment replaces the Kea result.
-              - pattern-not-inside: |
-                  $R = $EXC.response.get("result")
+    # v2 syntax: only a negated `inside` can carry the reassignment conditions.
+    match:
+      all:
+        - any:
+            - $EXC.response.get("result") == 2
+            - $EXC.response.get("result") != 2
+            - $EXC.response["result"] == 2
+            - $EXC.response["result"] != 2
+            - all:
+                - any:
+                    - inside: |
+                        $R = $EXC.response.get("result")
+                        ...
+                    - inside: |
+                        $R = $EXC.response["result"]
+                        ...
+                # Code after a later assignment of $R sees a replaced value.
+                - not:
+                    inside:
+                      all:
+                        - |
+                          $R = $OTHER
+                          ...
+                        - not: |
+                            $R = $EXC.response.get("result")
+                            ...
+                        - not: |
+                            $R = $EXC.response["result"]
+                            ...
+                        - inside:
+                            any:
+                              - |
+                                $R = $EXC.response.get("result")
+                                ...
+                              - |
+                                $R = $EXC.response["result"]
+                                ...
+                - any:
+                    - $R == 2
+                    - $R != 2
+        - not:
+            inside: |
+              class KeaException(...):
                   ...
-                  $R = $OTHER
-                  ...
-              - pattern-not-inside: |
-                  $R = $EXC.response["result"]
-                  ...
-                  $R = $OTHER
-                  ...
-              - pattern-either:
-                  - pattern: $R == 2
-                  - pattern: $R != 2
-      - pattern-not-inside: |
-          class KeaException(...):
-              ...
 
   - id: netbox-ipam-get-or-create-non-unique-key
     languages: [python]

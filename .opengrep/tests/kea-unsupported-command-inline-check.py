@@ -90,3 +90,30 @@ def bad_local_variable_initialised_first(exc):
     result = exc.response.get("result")
     # ruleid: kea-unsupported-command-inline-check
     return result == 2
+
+
+def bad_compare_before_reassignment_get(exc, other):
+    result = exc.response.get("result")
+    # ruleid: kea-unsupported-command-inline-check
+    if result == 2:
+        return None
+    result = other()
+    return result
+
+
+def bad_compare_before_reassignment_subscript(exc, other):
+    result = exc.response["result"]
+    # ruleid: kea-unsupported-command-inline-check
+    if result != 2:
+        return None
+    result = other()
+    return result
+
+
+def bad_compare_before_and_after_reassignment(exc, other):
+    result = exc.response.get("result")
+    # ruleid: kea-unsupported-command-inline-check
+    if result == 2:
+        return None
+    result = other()
+    return result == 2
