@@ -1830,7 +1830,7 @@ class KeaClient:
         try:
             counts = self._subnet_lease_counts(version, subnet_id)
         except KeaException as exc:
-            if exc.response.get("result") == 2:
+            if exc.unsupported_command:
                 raise LeaseQueryPreflightUnavailable from exc
             raise
         if state is None:
@@ -2174,7 +2174,7 @@ class KeaClient:
         try:
             self._config_phase_command("config-test", service, config)
         except KeaException as exc:
-            if exc.response.get("result") == 2:
+            if exc.unsupported_command:
                 logger.debug("config-test not supported for service %s — skipping pre-flight check", service)
             else:
                 logger.warning("config-test failed for service %s — aborting config-set", service)

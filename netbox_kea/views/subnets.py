@@ -32,7 +32,6 @@ from ._base import (
     _enrich_subnet_statistics,
     _KeaChangeMixin,
     _subnet_option_fields,
-    _unsupported_command,
 )
 
 logger = logging.getLogger(__name__)
@@ -992,7 +991,7 @@ class _BaseSubnetWipeView(_KeaChangeMixin, generic.ObjectView):
             messages.success(request, f"All leases in subnet {subnet_id} wiped.")
         except KeaException as exc:
             logger.exception("Failed to wipe leases in subnet %s", subnet_id)
-            if _unsupported_command(exc):
+            if exc.unsupported_command:
                 messages.error(
                     request,
                     "Failed to wipe leases: ensure the lease_cmds hook is loaded.",

@@ -211,8 +211,3 @@ def _subnet_option_fields(options: tuple[DHCPOption, ...], version: Family) -> d
         if field is not None:
             fields[field] = option.data
     return fields
-
-
-def _unsupported_command(exc: KeaException) -> bool:
-    """Return whether Kea rejected an unavailable hook command."""
-    return isinstance(exc.response, dict) and exc.response.get("result") == 2

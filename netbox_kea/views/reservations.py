@@ -87,7 +87,7 @@ def _lease_facts_in_subnet(client: KeaClient, version: Family, subnet_id: int) -
             addresses = {lease["ip-address"] for lease in leases if isinstance(lease.get("ip-address"), str)}
             identities = {identity for lease in leases for identity in lease_identities(lease, version, strict=True)}
         except KeaException as exc:
-            return _HOOK_UNAVAILABLE if exc.response.get("result") == 2 else _INDETERMINATE
+            return _HOOK_UNAVAILABLE if exc.unsupported_command else _INDETERMINATE
         except (LeaseQueryGuardError, requests.RequestException, RuntimeError, ValueError):
             return _INDETERMINATE
     return addresses, identities
@@ -107,7 +107,7 @@ def _identity_holds_a_lease(client: KeaClient, version: Family, identity: Reserv
             leases = worker_client.lease_search(version, selector, identity.value)
             assigned = [_assigned(lease) for lease in leases]
         except KeaException as exc:
-            return _HOOK_UNAVAILABLE if exc.response.get("result") == 2 else _INDETERMINATE
+            return _HOOK_UNAVAILABLE if exc.unsupported_command else _INDETERMINATE
         except (LeaseQueryGuardError, requests.RequestException, RuntimeError, ValueError):
             return _INDETERMINATE
     return any(assigned)
@@ -479,7 +479,7 @@ def _reservation_list_context(
     try:
         snapshot = _fetch_reservation_page(server, version, request.GET.get("cursor"), **filters)
     except KeaException as exc:
-        if exc.response.get("result") == 2:
+        if exc.unsupported_command:
             hook_available = False
         else:
             logger.exception("Failed to fetch DHCPv%s Reservations", version)

@@ -990,7 +990,7 @@ def _reservation_for_lease_worker(worker_clients, version, catalogue, lease, loo
                 if reservation is not None:
                     return ip, reservation, True
     except KeaException as exc:
-        if exc.response.get("result") == 2:
+        if exc.unsupported_command:
             return ip, None, False
         logger.debug("Reservation lookup failed for lease %s", ip, exc_info=True)
         return ip, None, None
@@ -1149,7 +1149,7 @@ def _enrich_leases_with_badges(
             client, version, catalogue, leases
         )
     except KeaException as exc:
-        if exc.response.get("result") == 2:
+        if exc.unsupported_command:
             host_cmds_available = False
         else:
             failed_ips = {lease.get("ip_address", "") for lease in leases}

@@ -297,7 +297,7 @@ def _read_identity(client: KeaClient, family: Family) -> _IdentityObservation:
     try:
         response = client.command(f"subnet{family}-list", service=[f"dhcp{family}"], check=(0, 3))
     except KeaException as exc:
-        if exc.response.get("result") == 2:
+        if exc.unsupported_command:
             return _unavailable_identity(
                 "identity-command-unavailable",
                 f"Kea does not provide subnet{family}-list.",
