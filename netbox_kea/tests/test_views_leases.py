@@ -1469,6 +1469,26 @@ class TestLeaseSearchHostBitsSubnet(_ViewTestBase):
         self.assertEqual(kea.bodies("lease4-get-all")[0]["arguments"], {"subnets": [1]})
         self.assertContains(response, "page-active")
 
+    def test_two_spellings_of_one_network_block_the_search(self):
+        # Kea 3.2.0 loads both as separate Subnets, so one network names two Subnet IDs.
+        subnets = [{"id": 1, "subnet": "198.18.1.5/24"}, {"id": 2, "subnet": "198.18.1.0/24"}]
+        with _lease_stub(
+            {
+                **_catalogue_responses_for_subnets(4, subnets),
+                "lease4-get-all": _PAGE_LEASES_RESP[0],
+                "reservation-get": {"result": 3},
+            }
+        ) as kea:
+            response = self.client.get(
+                reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk]),
+                {"by": "subnet", "q": "198.18.1.0/24"},
+                HTTP_HX_REQUEST="true",
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("lease4-get-all", kea.commands())
+        self.assertTemplateUsed(response, "netbox_kea/exception_htmx.html")
+        self.assertContains(response, "An internal error occurred")
+
 
 # ---------------------------------------------------------------------------
 # TestLeaseAddView — Manual Lease Add (lease4/6-add)

@@ -3958,6 +3958,15 @@ class TestLeaseSearch(TestCase):
             ):
                 self.client.configured_subnet_id_from_cidr(6, "2001:db8::/64")
 
+    def test_two_subnets_for_one_network_are_ambiguous(self):
+        # Kea 3.2.0 loads both spellings as separate Subnets.
+        subnets = [{"id": 21, "subnet": "2001:db8::5/64"}, {"id": 22, "subnet": "2001:db8::/64"}]
+        with (
+            stub_kea({"config-get": {"result": 0, "arguments": {"Dhcp6": {"subnet6": subnets}}}}),
+            self.assertRaisesRegex(RuntimeError, r"more than one Subnet for 2001:db8::/64: IDs \[21, 22\]"),
+        ):
+            self.client.configured_subnet_id_from_cidr(6, "2001:db8::/64")
+
     def test_malformed_unrelated_subnet_does_not_hide_matching_network(self):
         with stub_kea(
             {

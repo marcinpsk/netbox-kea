@@ -286,6 +286,7 @@ def _configured_subnet_id_for_network(
 ) -> int | None:
     """Find one Subnet ID while retaining malformed-entry evidence if no match exists."""
     malformed_entry_error: RuntimeError | None = None
+    matching_ids: set[int] = set()
     for subnets in subnet_collections:
         for subnet in subnets:
             try:
@@ -299,7 +300,12 @@ def _configured_subnet_id_for_network(
             subnet_id = subnet.get("id")
             if isinstance(subnet_id, bool) or not isinstance(subnet_id, int) or subnet_id < 1:
                 raise RuntimeError("config-get returned a Subnet without a valid ID.")
-            return subnet_id
+            matching_ids.add(subnet_id)
+    # Kea keeps host bits, so two declared prefixes can name one network.
+    if len(matching_ids) > 1:
+        raise RuntimeError(f"config-get declares more than one Subnet for {network}: IDs {sorted(matching_ids)}.")
+    if matching_ids:
+        return matching_ids.pop()
     if malformed_entry_error is not None:
         raise malformed_entry_error
     return None
