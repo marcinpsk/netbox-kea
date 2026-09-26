@@ -39,6 +39,19 @@ def bad_local_variable(exc):
     raise exc
 
 
+def bad_local_variable_index(exc):
+    result = exc.response["result"]
+    # ruleid: kea-unsupported-command-inline-check
+    return result == 2
+
+
+def ok_local_variable_reassigned(exc, other):
+    result = exc.response.get("result")
+    result = other()
+    # ok: kea-unsupported-command-inline-check
+    return result == 2
+
+
 def ok_local_variable_other_code(exc):
     result = exc.response.get("result")
     # ok: kea-unsupported-command-inline-check

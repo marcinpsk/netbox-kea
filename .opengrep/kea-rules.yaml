@@ -199,8 +199,18 @@ rules:
           - pattern: $EXC.response["result"] == 2
           - pattern: $EXC.response["result"] != 2
           - patterns:
-              - pattern-inside: |
-                  $R = $EXC.response.get("result")
+              - pattern-either:
+                  - pattern-inside: |
+                      $R = $EXC.response.get("result")
+                      ...
+                  - pattern-inside: |
+                      $R = $EXC.response["result"]
+                      ...
+              # A later assignment replaces the Kea result.
+              - pattern-not-inside: |
+                  $R = $FIRST
+                  ...
+                  $R = $OTHER
                   ...
               - pattern-either:
                   - pattern: $R == 2
