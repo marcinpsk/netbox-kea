@@ -44,7 +44,7 @@ out of CI so CodeRabbit can run its own analysis on pull requests.
 | `kea-reservation-command-outside-adapter` | error | A `reservation-*` Kea command sent outside `kea.py`, which would put raw Reservation records in front of a consumer that cannot read their keys. |
 | `kea-config-read-modify-write-without-reader` | error | A `config-get` read in a method that calls `_apply_config()`, bypassing `_config_for_update()` and its `Dhcp4`/`Dhcp6` shape check. |
 | `kea-unsupported-command-inline-check` | error | `exc.response.get("result") == 2` (or `["result"]`) outside `KeaException`; use the `unsupported_command` property. |
-| `netbox-ipam-get-or-create-non-unique-key` | error | `get_or_create()` on `Prefix`, `IPRange`, or `IPAddress`, directly or on a queryset chain such as `.filter(...)`. An exact `pk=` or `id=` lookup is exempt. NetBox does not enforce these keys in the database, so a duplicate row makes every call raise `MultipleObjectsReturned`. |
+| `netbox-ipam-get-or-create-non-unique-key` | error | `get_or_create()` or `update_or_create()` on `Prefix`, `IPRange`, or `IPAddress`, directly or on a queryset chain such as `.filter(...)`. An exact `pk=` or `id=` lookup is exempt. NetBox does not enforce these keys in the database, so a duplicate row makes every call raise `MultipleObjectsReturned`. |
 
 ## Running locally
 

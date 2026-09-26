@@ -69,3 +69,23 @@ def ok_prefix_pk(pk, cidr):
 def ok_ip_address_id_chained(vrf, pk):
     # ok: netbox-ipam-get-or-create-non-unique-key
     return IPAddress.objects.filter(vrf=vrf).get_or_create(id=pk)
+
+
+def bad_prefix_update_or_create(cidr, vrf):
+    # ruleid: netbox-ipam-get-or-create-non-unique-key
+    return Prefix.objects.update_or_create(prefix=cidr, vrf=vrf, defaults={"status": "active"})
+
+
+def bad_ip_address_update_or_create_chained(vrf, address):
+    # ruleid: netbox-ipam-get-or-create-non-unique-key
+    return IPAddress.objects.filter(vrf=vrf).update_or_create(address=address)
+
+
+def ok_prefix_update_or_create_pk(pk, cidr):
+    # ok: netbox-ipam-get-or-create-non-unique-key
+    return Prefix.objects.update_or_create(pk=pk, defaults={"prefix": cidr})
+
+
+def ok_ip_range_update_or_create_id_chained(vrf, pk):
+    # ok: netbox-ipam-get-or-create-non-unique-key
+    return IPRange.objects.filter(vrf=vrf).update_or_create(id=pk)

@@ -83,3 +83,10 @@ class KeaException(Exception):
     def unsupported_command(self):
         # ok: kea-unsupported-command-inline-check
         return self.response.get("result") == 2
+
+
+def bad_local_variable_initialised_first(exc):
+    result = None
+    result = exc.response.get("result")
+    # ruleid: kea-unsupported-command-inline-check
+    return result == 2

@@ -208,7 +208,12 @@ rules:
                       ...
               # A later assignment replaces the Kea result.
               - pattern-not-inside: |
-                  $R = $FIRST
+                  $R = $EXC.response.get("result")
+                  ...
+                  $R = $OTHER
+                  ...
+              - pattern-not-inside: |
+                  $R = $EXC.response["result"]
                   ...
                   $R = $OTHER
                   ...
@@ -225,7 +230,7 @@ rules:
     message: >-
       NetBox does not enforce Prefix, IPRange, or IPAddress keys in the database.
       ENFORCE_GLOBAL_UNIQUE is checked only in clean(), so duplicate rows can exist.
-      get_or_create() then raises MultipleObjectsReturned on every run.
+      get_or_create() and update_or_create() then raise MultipleObjectsReturned on every run.
       Query with filter(...) and handle more than one match explicitly, as sync._single_match does.
     metadata:
       category: correctness
@@ -234,10 +239,14 @@ rules:
       exclude:
         - "**/tests/**"
     patterns:
-      - pattern: $QS.get_or_create(...)
+      - pattern-either:
+          - pattern: $QS.get_or_create(...)
+          - pattern: $QS.update_or_create(...)
       # An exact primary-key lookup matches at most one row.
       - pattern-not: $QS.get_or_create(..., pk=$PK, ...)
       - pattern-not: $QS.get_or_create(..., id=$PK, ...)
+      - pattern-not: $QS.update_or_create(..., pk=$PK, ...)
+      - pattern-not: $QS.update_or_create(..., id=$PK, ...)
       # The receiver can be a queryset chain, e.g. Prefix.objects.filter(...).
       - metavariable-pattern:
           metavariable: $QS
