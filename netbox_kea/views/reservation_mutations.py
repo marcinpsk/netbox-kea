@@ -16,7 +16,7 @@ from django.urls import reverse
 from netbox.views import generic
 
 from .. import constants, forms, subnet_catalogue
-from ..constants import Family
+from ..constants import Family, IPAddressValue
 from ..dhcp_options import DHCPOption
 from ..kea import KeaClient, KeaException
 from ..models import Server
@@ -37,9 +37,9 @@ from ..reservations import (
     reservation_identifier_types,
 )
 from ..signals import reservation_created, reservation_deleted, reservation_updated
-from ..subnet_catalogue import CatalogueSnapshot, MutationScope
+from ..subnet_catalogue import CatalogueSnapshot, MutationScope, VerifiedSubnet
 from ..sync import sync_reservation_to_netbox
-from ..utilities import kea_error_hint, parse_pool_range
+from ..utilities import kea_error_hint
 from ._base import _diagnostic_messages, _KeaChangeMixin
 from .reservations import _RESERVATIONS_TAB, _build_reservation_options_formset, _configured_capabilities
 
@@ -53,51 +53,29 @@ FLEX_ID_DOCUMENTATION_URL = (
 
 def _warn_reservation_pool_overlap(
     request: HttpRequest,
-    client: "KeaClient",
-    version: Family,
-    subnet_id: int,
-    ip_str: str,
+    subnet: VerifiedSubnet,
+    addresses: tuple[IPAddressValue, ...],
 ) -> None:
-    """Add a non-blocking warning if *ip_str* falls within an existing pool in *subnet_id*.
-
-    Fetches the subnet configuration via ``subnet{version}-get`` and checks each
-    pool entry. A malformed entry is skipped; Kea and transport errors reach the caller.
-    """
-    from netaddr import AddrFormatError, IPAddress
-
-    resp = client.command(
-        f"subnet{version}-get",
-        service=[f"dhcp{version}"],
-        arguments={"id": subnet_id},
-        check=(0, 2, 3),
-    )
-    if not resp or not isinstance(resp[0], dict) or resp[0].get("result") != 0:
+    """Add a non-blocking warning for each address in *addresses* that falls within a pool of *subnet*."""
+    if not addresses:
         return
-    arguments = resp[0].get("arguments")
-    if not isinstance(arguments, dict):
+    if subnet.configuration is None:
+        messages.warning(
+            request,
+            f"The pool overlap check did not run. The configuration of Subnet {subnet.cidr} is unavailable, "
+            "so this Reservation was not checked against its pools.",
+        )
         return
-    subnet_list = arguments.get(f"subnet{version}", [])
-    if not isinstance(subnet_list, list) or not subnet_list:
-        return
-    subnet = subnet_list[0] if isinstance(subnet_list[0], dict) else {}
-    pools = subnet.get("pools")
-    ip = IPAddress(ip_str)
-
-    for pool_entry in pools if isinstance(pools, list) else []:
-        ps = pool_entry.get("pool") if isinstance(pool_entry, dict) else None
-        if not isinstance(ps, str) or not ps:
-            continue
-        try:
-            pool_range = parse_pool_range(ps)
-        except AddrFormatError:
-            continue
-        if ip in pool_range:
+    for address in addresses:
+        pool = next(
+            (pool for pool in subnet.configuration.pools if int(pool.start) <= int(address) <= int(pool.end)), None
+        )
+        if pool is not None:
             messages.warning(
                 request,
-                f"IP {ip_str} is within existing pool {ps}. "
+                f"IP {address} is within existing pool {pool.range}. "
                 "Kea allows this — reservations take priority over pool allocation.",
             )
-            break
 
 
 def _in_subnet_scope(reservation: Reservation) -> InSubnetReservationScope:
@@ -529,18 +507,8 @@ class _ReservationAddView(_ReservationMutationView):
                     hostname=cleaned_data.get("hostname", ""),
                     options=options,
                 )
+            _warn_reservation_pool_overlap(request, subnet, reservation.addresses)
             client = server.get_client(version=self.dhcp_version)
-            try:
-                for address in reservation.addresses:
-                    _warn_reservation_pool_overlap(
-                        request,
-                        client,
-                        self.dhcp_version,
-                        subnet.identity.subnet_id,
-                        str(address),
-                    )
-            except (KeaException, requests.RequestException, RuntimeError, ValueError):
-                logger.warning("Could not check Reservation pool overlap", exc_info=True)
             return client.reservation_create(reservation, catalogue)
 
 
