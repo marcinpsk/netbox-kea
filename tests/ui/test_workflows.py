@@ -1337,10 +1337,7 @@ class TestReservationCRUD:
         kea_server,
         track_http_errors: list,
     ) -> None:
-        """Edit-reservation form loads for an existing reservation without error.
-
-        Skips if no reservations exist on the live server.
-        """
+        """Edit-reservation form loads for an existing reservation without error."""
         server_id = kea_server.id
         page.goto(self._reservation_list_url(plugin_base, server_id))
         page.wait_for_load_state("networkidle")
@@ -1372,10 +1369,7 @@ class TestReservationCRUD:
         kea_server,
         track_http_errors: list,
     ) -> None:
-        """Delete confirmation page for a known reservation loads without error.
-
-        Skips if no reservations exist on the live server.
-        """
+        """Delete confirmation page for a known reservation loads without error."""
         server_id = kea_server.id
         page.goto(self._reservation_list_url(plugin_base, server_id))
         page.wait_for_load_state("networkidle")
@@ -1472,10 +1466,7 @@ class TestPoolManagement:
         kea_server,
         track_http_errors: list,
     ) -> None:
-        """Pool delete confirmation page renders for an existing pool.
-
-        Skips if the live server has no pools configured.
-        """
+        """Pool delete confirmation page renders for an existing pool."""
         server_id = kea_server.id
         page.goto(self._subnets4_url(plugin_base, server_id))
         page.wait_for_load_state("networkidle")
