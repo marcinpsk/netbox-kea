@@ -446,40 +446,45 @@ class _BaseSubnetAddView(_KeaChangeMixin, generic.ObjectView):
             form.fields["shared_network"].disabled = True
         return self._render(request, server, form)
 
-    def _add(self, client: KeaClient, identity: NewSubnetIdentity, cd: dict[str, Any]) -> None:
-        client.subnet_add(
-            version=self.dhcp_version,
-            subnet_cidr=identity.cidr,
-            subnet_id=identity.subnet_id,
-            pools=cd["pools"],
-            gateway=cd["gateway"] or None,
-            dns_servers=cd["dns_servers"],
-            ntp_servers=cd["ntp_servers"],
-            ddns_qualifying_suffix=cd.get("ddns_qualifying_suffix") or None,
-        )
+    def _add(self, client: KeaClient, identity: NewSubnetIdentity, cd: dict[str, Any]) -> str | None:
+        """Add the Subnet; return a warning when Kea applied it but did not persist it."""
+        try:
+            client.subnet_add(
+                version=self.dhcp_version,
+                subnet_cidr=identity.cidr,
+                subnet_id=identity.subnet_id,
+                pools=cd["pools"],
+                gateway=cd["gateway"] or None,
+                dns_servers=cd["dns_servers"],
+                ntp_servers=cd["ntp_servers"],
+                ddns_qualifying_suffix=cd.get("ddns_qualifying_suffix") or None,
+            )
+        except PartialPersistError:
+            return "Subnet added but config-write failed (change may not survive a Kea restart)."
+        except KeaConfigPersistError:
+            return (
+                "Subnet added but config-test rejected the running configuration, so it was not written to disk "
+                "(change may not survive a Kea restart)."
+            )
+        return None
 
-    def _create(self, server: Server, client: KeaClient, cd: dict[str, Any]) -> NewSubnetIdentity:
+    def _create(self, server: Server, client: KeaClient, cd: dict[str, Any]) -> tuple[NewSubnetIdentity, str | None]:
         """Add the Subnet under a live identity; retry once when a concurrent writer took the automatic ID."""
         requested_id = cd["subnet_id"]
         with subnet_mutation(server, self.dhcp_version) as scope:
             identity = scope.prepare_creation(cd["subnet"], requested_id)
             try:
-                self._add(client, identity, cd)
-            except (PartialPersistError, KeaConfigPersistError):
-                raise
+                return identity, self._add(client, identity, cd)
             except KeaException as exc:
                 if requested_id is not None:
                     raise
                 rejection = exc
-            else:
-                return identity
         # A fresh observation, not Kea's error text, shows whether another writer took the ID.
         with subnet_mutation(server, self.dhcp_version) as scope:
             if scope.find_by_id(identity.subnet_id) is None:
                 raise rejection
             identity = scope.prepare_creation(cd["subnet"])
-            self._add(client, identity, cd)
-            return identity
+            return identity, self._add(client, identity, cd)
 
     def _assign_network(self, request: HttpRequest, client: KeaClient, subnet_id: int, shared_network: str) -> None:
         try:
@@ -527,7 +532,7 @@ class _BaseSubnetAddView(_KeaChangeMixin, generic.ObjectView):
             return self._render(request, server, form)
         shared_network = cd.get("shared_network", "")
         try:
-            identity = self._create(server, client, cd)
+            identity, persistence_warning = self._create(server, client, cd)
         except SubnetIdentityConflict as exc:
             form.add_error("subnet" if exc.part == "network" else "subnet_id", str(exc))
             return self._render(request, server, form)
@@ -542,16 +547,10 @@ class _BaseSubnetAddView(_KeaChangeMixin, generic.ObjectView):
                 "No Subnet was created. Make sure the subnet_cmds hook library is loaded, then try again.",
             )
             return self._render(request, server, form)
-        except PartialPersistError as exc:
-            messages.warning(request, "Subnet added but config-write failed (change may not survive a Kea restart).")
-            # The subnet is live; attempt network assignment if we have the ID.
-            if shared_network and exc.subnet_id is not None:
-                self._assign_network(request, client, exc.subnet_id, shared_network)
-            return redirect(return_url)
         except KeaException as exc:
             logger.exception("Failed to add subnet %s", cd.get("subnet"))
             messages.error(request, kea_error_hint(exc))
-            return redirect(return_url)
+            return self._render(request, server, form)
         except requests.RequestException:
             logger.exception("Failed to add subnet %s (network error)", cd.get("subnet"))
             messages.error(request, "Network error communicating with Kea: see server logs.")
@@ -560,7 +559,10 @@ class _BaseSubnetAddView(_KeaChangeMixin, generic.ObjectView):
             logger.exception("Failed to add subnet %s", cd.get("subnet"))
             messages.error(request, "Failed to add subnet: see server logs for details.")
             return self._render(request, server, form)
-        messages.success(request, f"Subnet {identity.cidr} added.")
+        if persistence_warning is None:
+            messages.success(request, f"Subnet {identity.cidr} added.")
+        else:
+            messages.warning(request, persistence_warning)
         if shared_network:
             self._assign_network(request, client, identity.subnet_id, shared_network)
         return redirect(return_url)

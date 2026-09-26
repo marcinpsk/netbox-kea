@@ -1717,7 +1717,7 @@ class TestSubnetAddAllocatesThroughCatalogue(_ViewTestBase):
         )
         with store.stub() as kea:
             response = self._post(subnet="198.18.2.0/24")
-        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.status_code, 200)
         self.assertEqual(self._added_ids(kea), [2, 3])
         errors = [str(m) for m in get_messages(response.wsgi_request) if m.level == django_messages.ERROR]
         self.assertEqual(errors, ["Kea reported an error. Check the server logs for details."])
@@ -1735,7 +1735,7 @@ class TestSubnetAddAllocatesThroughCatalogue(_ViewTestBase):
             store = _SubnetStoreKea([], rejection={"result": 1, "text": "bad pool"})
             with self.subTest(label), store.stub() as kea:
                 response = self._post(subnet="198.18.2.0/24", **data)
-                self.assertEqual(response.status_code, 302)
+                self.assertEqual(response.status_code, 200)
                 self.assertEqual(kea.commands().count("subnet4-add"), 1)
 
 
@@ -1820,10 +1820,10 @@ class TestSubnetAddExceptionPaths(_ViewTestBase):
         msgs = list(response.context["messages"])
         self.assertTrue(any(m.level == django_messages.WARNING for m in msgs))
 
-    def test_post_partial_persist_error_with_subnet_id_attempts_network_assignment(self):
-        """A PartialPersistError carrying the new subnet_id must still trigger network assignment."""
-        # config-write fails, so subnet_add raises PartialPersistError(subnet_id=10) for the requested ID.
-        # The view then issues network4-subnet-add for that id (its own persist also fails → second warning).
+    def test_post_partial_persist_error_still_assigns_the_prepared_id(self):
+        """A PartialPersistError means the Subnet is live, so network assignment uses the prepared ID."""
+        # config-write fails, so subnet_add raises PartialPersistError.
+        # The view then issues network4-subnet-add for ID 10 (its own persist also fails → second warning).
         with self._add_stub(self._CONFIG4_ALPHA, **{"config-write": {"result": 1, "text": "disk full"}}) as kea:
             response = self.client.post(
                 self._url(), {**_SUBNET_ADD_POST, "subnet_id": "10", "shared_network": "alpha"}, follow=True
@@ -1834,6 +1834,51 @@ class TestSubnetAddExceptionPaths(_ViewTestBase):
         self.assertEqual(args["id"], 10)
         msgs = list(response.context["messages"])
         self.assertTrue(any(m.level == django_messages.WARNING for m in msgs))
+
+    def test_post_config_test_rejection_warns_and_still_assigns_the_network(self):
+        """KeaConfigPersistError means the Subnet is live, so the view warns and still assigns it."""
+        with self._add_stub(
+            self._CONFIG4_ALPHA,
+            **{"config-test": queued({"result": 1, "text": "config-test rejected"}, {"result": 0})},
+        ) as kea:
+            response = self.client.post(self._url(), {**_SUBNET_ADD_POST, "subnet_id": "12", "shared_network": "alpha"})
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(kea.bodies("network4-subnet-add")[0]["arguments"], {"name": "alpha", "id": 12})
+        messages = list(get_messages(response.wsgi_request))
+        self.assertEqual([m for m in messages if m.level == django_messages.ERROR], [])
+        self.assertIn(
+            "Subnet added but config-test rejected the running configuration, so it was not written to disk "
+            "(change may not survive a Kea restart).",
+            [str(m) for m in messages if m.level == django_messages.WARNING],
+        )
+        self.assertIn("Subnet assigned to shared network 'alpha'.", [str(m) for m in messages])
+
+    def test_post_transport_error_after_a_live_add_warns_and_assigns_the_prepared_id(self):
+        """A lost subnet4-add reply with the Subnet found under the prepared ID is a live, unpersisted add."""
+        with self._add_stub(
+            self._CONFIG4_ALPHA,
+            **{
+                "config-get": queued(
+                    self._CONFIG4_ALPHA,
+                    self._CONFIG4_ALPHA,
+                    {
+                        "result": 0,
+                        "arguments": {
+                            "Dhcp4": {
+                                "subnet4": [{"id": 1, "subnet": "10.2.0.0/24"}],
+                                "shared-networks": [{"name": "alpha", "subnet4": []}],
+                            }
+                        },
+                    },
+                ),
+                "subnet4-add": requests.ConnectionError("reply lost"),
+            },
+        ) as kea:
+            response = self.client.post(self._url(), {**_SUBNET_ADD_POST, "shared_network": "alpha"})
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(kea.bodies("network4-subnet-add")[0]["arguments"], {"name": "alpha", "id": 1})
+        warnings = [str(m) for m in get_messages(response.wsgi_request) if m.level == django_messages.WARNING]
+        self.assertIn("Subnet added but config-write failed (change may not survive a Kea restart).", warnings)
 
     def test_post_subnet_add_runtime_error_rerenders_form(self):
         """A generic (ValueError) failure during subnet_add must re-render the form (200)."""
@@ -3280,18 +3325,15 @@ class TestSubnetAddPostNetworkErrors(_ViewTestBase):
             response = self.client.post(self._url(), self._post_data())
         self.assertEqual(response.status_code, 200)
 
-    def test_subnet_add_kea_exception_redirects(self):
-        """A Kea-reported failure from subnet_add flashes the Kea hint and redirects.
-
-        The status alone would also match success, so the error message is asserted too.
-        """
+    def test_subnet_add_kea_exception_rerenders_the_form_with_the_input(self):
+        """A Kea rejection shows the Kea hint on the same form, so the user keeps the input."""
         with self._add_stub(_EMPTY_CONFIG4, **{"subnet4-add": {"result": 1, "text": "bad subnet"}}):
-            response = self.client.post(self._url(), self._post_data(), follow=True)
-        self.assertEqual(response.redirect_chain[-1][1], 302)
-        msgs = list(response.context["messages"])
-        errors = [m for m in msgs if m.level == django_messages.ERROR]
-        self.assertTrue(errors, msgs)
-        self.assertIn("Kea reported an error", str(errors[0]))
+            response = self.client.post(self._url(), {**self._post_data(), "pools": "10.99.0.10-10.99.0.20"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["form"]["subnet"].value(), "10.99.0.0/24")
+        self.assertEqual(response.context["form"]["pools"].value(), "10.99.0.10-10.99.0.20")
+        errors = [str(m) for m in get_messages(response.wsgi_request) if m.level == django_messages.ERROR]
+        self.assertEqual(errors, ["Kea reported an error. Check the server logs for details."])
 
 
 # ─────────────────────────────────────────────────────────────────────────────

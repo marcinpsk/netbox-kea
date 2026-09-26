@@ -1172,7 +1172,7 @@ class KeaClient:
 
         Raises:
             KeaException: If Kea rejects the ``subnet{v}-add`` command. Kea did not apply it.
-            PartialPersistError: If the subnet is live but not persisted. ``subnet_id`` names it.
+            PartialPersistError: If the subnet is live but not persisted.
             KeaConfigPersistError: If the subnet is live but ``config-test`` rejected the result.
 
         """
@@ -1195,16 +1195,11 @@ class KeaClient:
         try:
             self._config_mutation_command(f"subnet{version}-add", service, {f"subnet{version}": [subnet_def]})
         except (requests.RequestException, ValueError) as transport_exc:
-            found_id = self._find_subnet_id_by_cidr(version, subnet_cidr)
-            if found_id is not None:
-                err = PartialPersistError(service, transport_exc, subnet_id=found_id)
-                raise err from transport_exc
+            # The add is ours only when the probe finds the CIDR under the ID we sent.
+            if self._find_subnet_id_by_cidr(version, subnet_cidr) == subnet_id:
+                raise PartialPersistError(service, transport_exc) from transport_exc
             raise
-        try:
-            self._persist_config(service)
-        except PartialPersistError as exc:
-            exc.subnet_id = subnet_id
-            raise
+        self._persist_config(service)
 
     def subnet_del(self, version: int, subnet_id: int) -> None:
         """Delete an existing subnet from Kea and persist the change.
@@ -2402,13 +2397,9 @@ class PartialPersistError(KeaException):
 
     The change is applied in memory but will be lost on Kea restart.
     The original :exc:`KeaException` from config-write is stored in ``__cause__``.
-
-    ``subnet_id`` is set when the partial write occurred during ``subnet_add`` —
-    the subnet is live and this ID can still be used for follow-up operations
-    (e.g. assigning to a shared network) even though config-write failed.
     """
 
-    def __init__(self, service: str, cause: Exception, subnet_id: int | None = None) -> None:
+    def __init__(self, service: str, cause: Exception) -> None:
         response: KeaResponse = {
             "result": -1,
             "text": f"config-write failed for service {service!r} — change is live but not persisted to disk",
@@ -2416,7 +2407,6 @@ class PartialPersistError(KeaException):
         }
         super().__init__(response, msg=f"partial persist error for {service!r}")
         self.service = service
-        self.subnet_id: int | None = subnet_id
 
 
 class AmbiguousConfigSetError(PartialPersistError):

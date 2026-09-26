@@ -811,8 +811,8 @@ class TestSubnetAdd(TestCase):
         self.assertIn("sntp-servers", opts)
         self.assertNotIn("ntp-servers", opts)
 
-    def test_partial_persist_error_carries_subnet_id(self):
-        """PartialPersistError raised by subnet_add names the requested subnet_id."""
+    def test_config_write_failure_raises_partial_persist_error(self):
+        """A config-write failure after subnet4-add raises PartialPersistError: the Subnet is live."""
         with patch.object(
             self.client._session,
             "post",
@@ -823,10 +823,8 @@ class TestSubnetAdd(TestCase):
                 [{"result": 1, "text": "write failed"}],  # config-write → fail
             ),
         ):
-            with self.assertRaises(PartialPersistError) as ctx:
+            with self.assertRaises(PartialPersistError):
                 self.client.subnet_add(version=4, subnet_cidr="10.99.0.0/24", subnet_id=10)
-        # Callers use the ID for follow-up operations (e.g. network assignment).
-        self.assertEqual(ctx.exception.subnet_id, 10)
 
     def _add_payload(self, mock_post):
         """Return the subnet4-add call arguments dict."""
@@ -4603,8 +4601,8 @@ class TestSubnetAddAmbiguousCreate(TestCase):
         self.client = KeaClient(url="http://kea:8000")
 
     def test_raises_partial_persist_error_when_subnet_found_after_transport_error(self):
-        """If subnet-add transport fails but config-get confirms the subnet exists,
-        PartialPersistError is raised with the found subnet_id set."""
+        """If subnet-add transport fails but config-get confirms the subnet exists
+        under the requested ID, PartialPersistError is raised."""
 
         def _side(url, **kwargs):
             cmd = kwargs.get("json", {}).get("command", "")
@@ -4615,9 +4613,23 @@ class TestSubnetAddAmbiguousCreate(TestCase):
             return _mock_http_response(_OK)
 
         with patch.object(self.client._session, "post", side_effect=_side):
-            with self.assertRaises(PartialPersistError) as ctx:
+            with self.assertRaises(PartialPersistError):
                 self.client.subnet_add(version=4, subnet_cidr="10.99.0.0/24", subnet_id=10)
-        self.assertEqual(ctx.exception.subnet_id, 10)
+
+    def test_reraises_transport_error_when_the_cidr_holds_another_subnet_id(self):
+        """A probe that finds the CIDR under a different ID shows another writer's Subnet, not ours."""
+
+        def _side(url, **kwargs):
+            cmd = kwargs.get("json", {}).get("command", "")
+            if cmd == "subnet4-add":
+                raise requests.ConnectionError("connection reset")
+            if cmd == "config-get":
+                return _mock_http_response(_CONFIG_GET_WITH_NEW_SUBNET)
+            return _mock_http_response(_OK)
+
+        with patch.object(self.client._session, "post", side_effect=_side):
+            with self.assertRaises(requests.ConnectionError):
+                self.client.subnet_add(version=4, subnet_cidr="10.99.0.0/24", subnet_id=11)
 
     def test_reraises_transport_error_when_subnet_not_found_after_probe(self):
         """If subnet-add transport fails and config-get confirms the subnet does NOT exist,
@@ -4659,8 +4671,8 @@ class TestSubnetAddValueError(TestCase):
         self.client = KeaClient(url="http://kea:8000")
 
     def test_raises_partial_persist_when_subnet_found_after_value_error(self):
-        """If subnet-add raises ValueError and config-get confirms subnet exists,
-        PartialPersistError is raised with the found subnet_id."""
+        """If subnet-add raises ValueError and config-get confirms subnet exists
+        under the requested ID, PartialPersistError is raised."""
 
         def _side(url, **kwargs):
             cmd = kwargs.get("json", {}).get("command", "")
@@ -4671,9 +4683,8 @@ class TestSubnetAddValueError(TestCase):
             return _mock_http_response(_OK)
 
         with patch.object(self.client._session, "post", side_effect=_side):
-            with self.assertRaises(PartialPersistError) as ctx:
+            with self.assertRaises(PartialPersistError):
                 self.client.subnet_add(version=4, subnet_cidr="10.99.0.0/24", subnet_id=10)
-        self.assertEqual(ctx.exception.subnet_id, 10)
 
     def test_reraises_value_error_when_subnet_not_found(self):
         """If subnet-add raises ValueError and probe shows subnet not created,
