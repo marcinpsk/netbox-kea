@@ -195,7 +195,16 @@ rules:
     patterns:
       - pattern-either:
           - pattern: $EXC.response.get("result") == 2
+          - pattern: $EXC.response.get("result") != 2
           - pattern: $EXC.response["result"] == 2
+          - pattern: $EXC.response["result"] != 2
+          - patterns:
+              - pattern-inside: |
+                  $R = $EXC.response.get("result")
+                  ...
+              - pattern-either:
+                  - pattern: $R == 2
+                  - pattern: $R != 2
       - pattern-not-inside: |
           class KeaException(...):
               ...

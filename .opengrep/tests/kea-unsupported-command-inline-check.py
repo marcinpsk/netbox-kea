@@ -25,6 +25,26 @@ def bad_isinstance_guard(exc):
     return isinstance(exc.response, dict) and exc.response.get("result") == 2
 
 
+def bad_inverse(exc, suffix):
+    # ruleid: kea-unsupported-command-inline-check
+    if suffix != "-by-state" or exc.response.get("result") != 2:
+        raise exc
+
+
+def bad_local_variable(exc):
+    result = exc.response.get("result")
+    # ruleid: kea-unsupported-command-inline-check
+    if result == 2:
+        return None
+    raise exc
+
+
+def ok_local_variable_other_code(exc):
+    result = exc.response.get("result")
+    # ok: kea-unsupported-command-inline-check
+    return result == 3
+
+
 def ok_property(client):
     try:
         client.command("subnet4-list")
