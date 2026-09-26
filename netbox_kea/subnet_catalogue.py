@@ -430,7 +430,7 @@ def _quarantine_collisions(
 
 
 def _configuration_observation(snapshot: server_configuration.ServerConfigurationSnapshot) -> _ConfigurationObservation:
-    diagnostics = list(snapshot.diagnostics)
+    diagnostics = list(snapshot.subnet_diagnostics)
     facts: list[_ConfiguredFact] = []
     for declared, membership_complete in zip(snapshot.subnets, snapshot._membership_complete, strict=True):
         if declared.declared_subnet_id is None:
@@ -450,7 +450,7 @@ def _configuration_observation(snapshot: server_configuration.ServerConfiguratio
         facts=tuple(kept),
         diagnostics=tuple(diagnostics),
         available=snapshot.available,
-        complete=snapshot.complete and not diagnostics,
+        complete=snapshot.available and not diagnostics,
         configuration_hash=snapshot.configuration_hash,
         quarantined_ids=frozenset(ids),
         quarantined_networks=frozenset(networks),

@@ -61,6 +61,7 @@ ServerConfigurationSnapshot
     global_options: tuple[DHCPOption, ...]
     option_definitions: tuple[OptionDefinition, ...]
     diagnostics: tuple[Diagnostic, ...]
+    subnet_diagnostics: tuple[Diagnostic, ...] # Subnet and Shared Network facts only
     configuration_hash: str | None
     available: bool
     complete: bool
@@ -109,8 +110,11 @@ why `views/subnets.py` reads `config-get` for Shared Network choices today.
 - `complete` is false when any fact failed to parse. Valid facts survive. One invalid Pool, DHCP Option or
   Shared Network entry does not discard the rest.
 - `display` never raises. A caller reads `available`, `complete` and `diagnostics` to decide what to show.
-- The Subnet Catalogue folds the Snapshot diagnostics into its own and derives `configuration_complete` from
-  `complete`.
+- `subnet_diagnostics` holds the diagnostics from Subnet and Shared Network facts. It excludes the diagnostics
+  from server-global `option-data` and `option-def`. A failed read puts its diagnostic in both fields.
+- The Subnet Catalogue folds `subnet_diagnostics` into its own and derives `configuration_complete` from
+  `available` and those diagnostics. An invalid global option or Option Definition does not make the Catalogue
+  incomplete, because the Catalogue exposes no global facts.
 
 ### Cache rules
 

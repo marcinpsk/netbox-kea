@@ -23,7 +23,7 @@ from netbox_kea.subnet_catalogue import (
     invalidate,
     mutation,
 )
-from netbox_kea.tests.kea_stub import _subnet_list, queued, stub_kea
+from netbox_kea.tests.kea_stub import _catalogue_responses_for_subnets, _subnet_list, queued, stub_kea
 from netbox_kea.tests.utils import _PLUGINS_CONFIG, _make_db_server
 
 
@@ -915,6 +915,57 @@ class TestSubnetCatalogue(TestCase):
 
         self.assertIsInstance(snapshot, CompleteCatalogueSnapshot)
         self.assertEqual(snapshot.subnet_choices, (("198.18.1.0/24", 1),))
+
+    def test_invalid_global_option_facts_keep_the_catalogue_complete(self):
+        subnets = [{"id": 1, "subnet": "198.18.1.0/24", "pools": []}]
+        cases = {
+            "option-data": ("invalid-option", {"global_options": ({"data": "no identity"},)}),
+            "option-def": ("invalid-option-definition", {"option_definitions": ({"code": 224, "name": "example"},)}),
+        }
+        for label, (code, invalid) in cases.items():
+            with self.subTest(label):
+                server_configuration.invalidate(self.server, 4)
+                with stub_kea(_catalogue_responses_for_subnets(4, subnets, **invalid)):
+                    snapshot = for_synchronization(self.server, 4)
+                    configuration = server_configuration.display(self.server, 4)
+
+                self.assertIsInstance(snapshot, CompleteCatalogueSnapshot)
+                self.assertEqual(snapshot.subnet_choices, (("198.18.1.0/24", 1),))
+                self.assertEqual(snapshot.diagnostics, ())
+                self.assertFalse(configuration.complete)
+                self.assertIn(code, {diagnostic.code for diagnostic in configuration.diagnostics})
+                if label == "option-data":
+                    self.assertFalse(configuration.global_options_complete)
+
+    def test_invalid_local_option_facts_block_synchronization(self):
+        cases = {
+            "subnet": ([{"id": 1, "subnet": "198.18.1.0/24", "option-data": [{"data": "no identity"}]}], ()),
+            "shared-network": (
+                [],
+                (
+                    {
+                        "name": "access",
+                        "option-data": [{"data": "no identity"}],
+                        "subnet4": [{"id": 1, "subnet": "198.18.1.0/24"}],
+                    },
+                ),
+            ),
+        }
+        for label, (subnets, shared_networks) in cases.items():
+            with self.subTest(label):
+                responses = _catalogue_responses_for_subnets(4, subnets, shared_networks=shared_networks)
+                responses["subnet4-list"] = _identity(
+                    4,
+                    [
+                        {
+                            "id": 1,
+                            "subnet": "198.18.1.0/24",
+                            "shared-network-name": "access" if shared_networks else None,
+                        }
+                    ],
+                )
+                with stub_kea(responses), self.assertRaises(CatalogueUnavailable):
+                    for_synchronization(self.server, 4)
 
     def test_display_reports_client_construction_failure(self):
         self.server.client_cert_path = "/tmp/netbox-kea-client.crt"  # noqa: S108 - path is never created, only assigned

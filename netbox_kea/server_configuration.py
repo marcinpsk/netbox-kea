@@ -126,6 +126,8 @@ class ServerConfigurationSnapshot:
     global_options: tuple[DHCPOption, ...]
     option_definitions: tuple[OptionDefinition, ...]
     diagnostics: tuple[Diagnostic, ...]
+    # Diagnostics from Subnet and Shared Network facts only, without global option-data and option-def.
+    subnet_diagnostics: tuple[Diagnostic, ...]
     configuration_hash: str | None
     available: bool
     complete: bool
@@ -194,6 +196,7 @@ def _diagnostic(code: str, message: str, source: str, path: str = "") -> Diagnos
 
 
 def _unavailable(server: Server, family: Family, code: str, message: str) -> ServerConfigurationSnapshot:
+    diagnostics = (_diagnostic(code, message, "configuration"),)
     return ServerConfigurationSnapshot(
         server_id=server.pk,
         family=family,
@@ -202,7 +205,8 @@ def _unavailable(server: Server, family: Family, code: str, message: str) -> Ser
         shared_networks=(),
         global_options=(),
         option_definitions=(),
-        diagnostics=(_diagnostic(code, message, "configuration"),),
+        diagnostics=diagnostics,
+        subnet_diagnostics=diagnostics,
         configuration_hash=None,
         available=False,
         complete=False,
@@ -379,9 +383,9 @@ def _parse_configuration(
                 )
             )
 
-    global_diagnostics = len(diagnostics)
+    subnet_diagnostics = tuple(diagnostics)
     options = _parse_options(configuration.get("option-data", []), f"Dhcp{family}", diagnostics)
-    global_options_complete = len(diagnostics) == global_diagnostics
+    global_options_complete = len(diagnostics) == len(subnet_diagnostics)
     definitions = _parse_definitions(configuration.get("option-def", []), family, diagnostics)
     return ServerConfigurationSnapshot(
         server_id=server.pk,
@@ -392,6 +396,7 @@ def _parse_configuration(
         global_options=options,
         option_definitions=definitions,
         diagnostics=tuple(diagnostics),
+        subnet_diagnostics=subnet_diagnostics,
         available=True,
         complete=not diagnostics,
         configuration_hash=configuration_hash,

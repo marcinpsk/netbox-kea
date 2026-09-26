@@ -1283,6 +1283,19 @@ class TestSubnetCatalogueJob(TestCase):
             4, [{"id": 1, "subnet": "198.18.0.0/24", "pools": [{"pool": pool} for pool in pools]}]
         )
 
+    def test_invalid_global_option_facts_do_not_block_prefix_sync(self):
+        subnets = [{"id": 1, "subnet": "198.18.0.0/24", "pools": []}]
+        cases = {
+            "option-data": {"global_options": ({"data": "no identity"},)},
+            "option-def": {"option_definitions": ({"code": 224, "name": "example"},)},
+        }
+        for label, invalid in cases.items():
+            with self.subTest(label):
+                Prefix.objects.all().delete()
+                summary, _ = self._run(_catalogue_responses_for_subnets(4, subnets, **invalid))
+                self.assertTrue(Prefix.objects.filter(prefix="198.18.0.0/24").exists())
+                self.assertEqual(summary[0]["prefix_errors"], 0)
+
     def test_prefix_created_updated_and_unchanged_counts(self):
         responses = self._responses()
         summary, _ = self._run(responses)
