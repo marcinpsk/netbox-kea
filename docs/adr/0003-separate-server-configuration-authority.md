@@ -113,7 +113,7 @@ why `views/subnets.py` reads `config-get` for Shared Network choices today.
 
 - `server_configuration` caches its Snapshot. The Subnet Catalogue caches its reconciled Catalogue Snapshot.
   Both use the same generation.
-- Both caches admit an incomplete result. See the ADR 0001 amendment for why.
+- Both caches admit an incomplete result. See the ADR 0001 amendment for why. Neither cache admits a failed read.
 - `for_verification` bypasses both caches.
 
 ### Presentation

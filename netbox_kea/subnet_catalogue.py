@@ -736,8 +736,9 @@ def display(server: Server, family: int) -> CatalogueSnapshot:
     if isinstance(cached, CatalogueSnapshot):
         return cached
     snapshot = _read_live(server, validated_family)
-    # Cache when either source was available; retry only when both observations failed.
-    if snapshot.identity_available or snapshot.configuration_available:
+    # Cache only settled sources: an absent subnet_cmds hook is settled, a failed read is not.
+    identity_settled = snapshot.identity_available or not snapshot.subnet_cmds_available
+    if identity_settled and snapshot.configuration_available:
         cache.set(key, snapshot, constants.DISPLAY_SNAPSHOT_TTL)
     return snapshot
 

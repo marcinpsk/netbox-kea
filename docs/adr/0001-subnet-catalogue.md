@@ -60,6 +60,8 @@ Subnet Settings expose effective values that the repository consumes. They do no
   Freshness and completeness are separate properties. The cache generation already guarantees that no
   served snapshot predates the last configuration change. `for_synchronization` still refuses an
   Incomplete Catalogue Snapshot.
+  The cache admits a snapshot only when both sources answered. A missing `subnet_cmds` hook counts as an
+  answer. A failed or malformed read does not, so the next render reads Kea again.
 - Expired cache data is never served after a fresh read fails.
 - Mutation lookup is live and uncached.
 - A synchronization run pins one live Complete Catalogue Snapshot.

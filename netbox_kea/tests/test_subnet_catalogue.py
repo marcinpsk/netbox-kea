@@ -1085,3 +1085,34 @@ class TestCatalogueConfigurationRegressions(TestCase):
         self.assertFalse(first.subnet_cmds_available)
         self.assertEqual(second, first)
         self.assertEqual(kea.commands(), ["subnet4-list", "config-get"])
+
+    def test_transient_identity_failure_is_not_cached(self):
+        subnet = {"id": 1, "subnet": "198.18.1.0/24"}
+        failures = {"kea-error": {"result": 1, "text": "busy"}, "timeout": requests.Timeout("slow")}
+        for name, failure in failures.items():
+            with (
+                self.subTest(name),
+                stub_kea(
+                    {"subnet4-list": queued(failure, _identity(4, [subnet])), "config-get": _config(4, [subnet])}
+                ) as kea,
+            ):
+                invalidate(self.server, 4)
+                first = display(self.server, 4)
+                second = display(self.server, 4)
+                self.assertIsInstance(first, ConfigurationOnlyCatalogueSnapshot)
+                self.assertTrue(first.subnet_cmds_available)
+                self.assertIsInstance(second, CompleteCatalogueSnapshot)
+                self.assertEqual(kea.commands(), ["subnet4-list", "config-get", "subnet4-list", "config-get"])
+
+    def test_transient_configuration_failure_is_not_cached(self):
+        subnet = {"id": 1, "subnet": "198.18.1.0/24"}
+        responses = {
+            "subnet4-list": _identity(4, [subnet]),
+            "config-get": queued(requests.Timeout("slow"), _config(4, [subnet])),
+        }
+        with stub_kea(responses) as kea:
+            first = display(self.server, 4)
+            second = display(self.server, 4)
+        self.assertIsInstance(first, IdentityOnlyCatalogueSnapshot)
+        self.assertIsInstance(second, CompleteCatalogueSnapshot)
+        self.assertEqual(kea.commands(), ["subnet4-list", "config-get", "subnet4-list", "config-get"])
