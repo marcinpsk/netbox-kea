@@ -61,7 +61,6 @@ netbox_kea/models.py:0: error: Need type annotation for "created"  [var-annotate
 netbox_kea/models.py:0: error: Need type annotation for "last_synced"  [var-annotated]
 netbox_kea/models.py:0: error: "KeaDhcpLink" has no attribute "object_type_id"; maybe "object_type" or "object_id"?  [attr-defined]
 netbox_kea/utilities.py:0: error: Argument 1 to "get" of "dict" has incompatible type "Any | None"; expected "int"  [arg-type]
-netbox_kea/subnet_catalogue.py:0: error: Argument 1 to "_network" has incompatible type "Any | None"; expected "str"  [arg-type]
 netbox_kea/subnet_catalogue.py:0: error: Argument 2 to "_is_quarantined" has incompatible type "frozenset[int]"; expected "set[int]"  [arg-type]
 netbox_kea/subnet_catalogue.py:0: error: Argument 3 to "_is_quarantined" has incompatible type "frozenset[IPv4Network | IPv6Network]"; expected "set[IPv4Network | IPv6Network]"  [arg-type]
 netbox_kea/subnet_catalogue.py:0: error: Argument 2 to "_is_quarantined" has incompatible type "frozenset[int]"; expected "set[int]"  [arg-type]

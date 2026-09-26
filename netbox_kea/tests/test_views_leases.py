@@ -1448,6 +1448,28 @@ class TestLeaseStateFilter(_ViewTestBase):
         )
 
 
+@override_settings(PLUGINS_CONFIG=_UNGUARDED_PLUGINS_CONFIG)
+class TestLeaseSearchHostBitsSubnet(_ViewTestBase):
+    """Kea accepts a Subnet prefix with host bits, so a canonical CIDR search must still find it."""
+
+    def test_canonical_cidr_search_resolves_the_declared_subnet(self):
+        with _lease_stub(
+            {
+                **_catalogue_responses(4, 1, "10.0.0.5/24"),
+                "lease4-get-all": _PAGE_LEASES_RESP[0],
+                "reservation-get": {"result": 3},
+            }
+        ) as kea:
+            response = self.client.get(
+                reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk]),
+                {"by": "subnet", "q": "10.0.0.0/24"},
+                HTTP_HX_REQUEST="true",
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(kea.bodies("lease4-get-all")[0]["arguments"], {"subnets": [1]})
+        self.assertContains(response, "page-active")
+
+
 # ---------------------------------------------------------------------------
 # TestLeaseAddView — Manual Lease Add (lease4/6-add)
 # ---------------------------------------------------------------------------

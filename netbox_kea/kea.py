@@ -9,7 +9,7 @@ import requests
 from requests.models import HTTPBasicAuth
 
 from . import constants
-from .constants import Family
+from .constants import Family, IPNetworkValue
 from .dhcp_options import DHCPOption, FormManagedOption, form_managed_options, merge_option_form_rows
 from .reservations import (
     RESERVATION_PAGE_FETCH_FAILED,
@@ -259,20 +259,24 @@ def _validated_lease_addresses(
     return addresses
 
 
-def _configured_subnet_network(subnet: Any, version: int) -> ipaddress.IPv4Network | ipaddress.IPv6Network:
+def subnet_network(value: Any, family: int) -> IPNetworkValue:
+    """Parse the Subnet prefix Kea declares; Kea accepts host bits, so this does too."""
+    if not isinstance(value, str) or not value:
+        raise ValueError("Subnet CIDR must be a non-empty string.")
+    network = ipaddress.ip_network(value, strict=False)
+    if network.version != family:
+        raise ValueError(f"Subnet CIDR {value!r} is IPv{network.version}, not IPv{family}.")
+    return network
+
+
+def _configured_subnet_network(subnet: Any, version: int) -> IPNetworkValue:
     """Return one validated configured Subnet network for the requested family."""
     if not isinstance(subnet, dict):
         raise RuntimeError("config-get returned a malformed Subnet entry.")
-    raw_cidr = subnet.get("subnet")
-    if not isinstance(raw_cidr, str):
-        raise RuntimeError("config-get returned a Subnet without a valid CIDR.")
     try:
-        candidate = ipaddress.ip_network(raw_cidr, strict=True)
+        return subnet_network(subnet.get("subnet"), version)
     except ValueError as exc:
-        raise RuntimeError("config-get returned a Subnet without a valid CIDR.") from exc
-    if candidate.version != version:
-        raise RuntimeError(f"config-get returned an IPv{candidate.version} Subnet in Dhcp{version}.")
-    return candidate
+        raise RuntimeError(f"config-get returned a Subnet without a valid IPv{version} CIDR.") from exc
 
 
 def _configured_subnet_id_for_network(
@@ -2308,9 +2312,8 @@ class KeaClient:
         cidr = subnets[0].get("subnet")
         if not isinstance(cidr, str) or not cidr:
             raise RuntimeError(f"subnet{version}-get response missing 'subnet' field for id={subnet_id}")
-        network_cls = ipaddress.IPv4Network if version == 4 else ipaddress.IPv6Network
         try:
-            network_cls(cidr, strict=True)
+            subnet_network(cidr, version)
         except ValueError as exc:
             raise ValueError(f"subnet{version}-get returned a CIDR not matching IPv{version}: {cidr!r}") from exc
         return cidr

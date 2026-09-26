@@ -2206,7 +2206,8 @@ class TestSubnetEditNonCanonicalCidr(_ViewTestBase):
         with self._stub():
             get_response = self.client.get(self._url())
         self.assertEqual(get_response.status_code, 200)
-        self.assertEqual(get_response.context["form"].initial["subnet_cidr"], "10.0.0.0/24")
+        self.assertEqual(get_response.context["form"].initial["subnet_cidr"], self._CIDR)
+        self.assertEqual(get_response.context["subnet_cidr"], self._CIDR)
 
         with self._stub() as kea:
             post_response = self.client.post(
@@ -2940,6 +2941,46 @@ class TestGetSubnetsConfigShapeGuard(_ViewTestBase):
 # ─────────────────────────────────────────────────────────────────────────────
 # Pool add POST exception branches
 # ─────────────────────────────────────────────────────────────────────────────
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestPoolDeltaHostBitsSubnet(_ViewTestBase):
+    """Kea 3.x delta commands must echo the Subnet prefix exactly as Kea declares it, host bits included."""
+
+    def _stub(self, version, cidr, command):
+        subnet = {"id": 1, "subnet": cidr}
+        return stub_kea(
+            {
+                f"subnet{version}-list": _subnet_list(version, [subnet]),
+                "config-get": {
+                    "result": 0,
+                    "arguments": {f"Dhcp{version}": {f"subnet{version}": [subnet], "shared-networks": []}},
+                },
+                "reservation-get-page": {"result": 3},
+                "list-commands": {"result": 0, "arguments": [command, f"subnet{version}-get", "config-write"]},
+                f"subnet{version}-get": {"result": 0, "arguments": {f"subnet{version}": [subnet]}},
+                command: {"result": 0},
+                "config-test": {"result": 0},
+                "config-write": {"result": 0},
+            }
+        )
+
+    def test_pool_add_sends_the_declared_ipv4_prefix(self):
+        url = reverse("plugins:netbox_kea:server_subnet4_pool_add", args=[self.server.pk, 1])
+        with self._stub(4, "198.18.1.5/24", "subnet4-delta-add") as kea:
+            response = self.client.post(url, {"pool": "198.18.1.100-198.18.1.110"})
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(kea.bodies("subnet4-delta-add")[0]["arguments"]["subnet4"][0]["subnet"], "198.18.1.5/24")
+        self.assertIn("config-write", kea.commands())
+
+    def test_pool_delete_sends_the_declared_ipv6_prefix(self):
+        pool = "2001:db8:1::100-2001:db8:1::1ff"
+        url = reverse("plugins:netbox_kea:server_subnet6_pool_delete", args=[self.server.pk, 1, pool])
+        with self._stub(6, "2001:db8:1::5/64", "subnet6-delta-del") as kea:
+            response = self.client.post(url)
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(kea.bodies("subnet6-delta-del")[0]["arguments"]["subnet6"][0]["subnet"], "2001:db8:1::5/64")
+        self.assertIn("config-write", kea.commands())
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)

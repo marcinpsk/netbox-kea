@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import ipaddress
 import logging
 from collections import defaultdict
 from contextlib import AbstractContextManager
@@ -14,7 +13,7 @@ from django.utils import timezone
 
 from . import constants, server_configuration
 from .constants import Family, IPNetworkValue
-from .kea import KeaClient, KeaException
+from .kea import KeaClient, KeaException, subnet_network
 
 if TYPE_CHECKING:
     from .models import Server
@@ -181,8 +180,8 @@ class CatalogueSnapshot:
         )
 
     def find_by_cidr(self, cidr: str) -> VerifiedSubnet | ConfiguredSubnet | None:
-        """Return the verified or configured Subnet with an exact canonical CIDR, if present."""
-        network = _network(cidr, self.family)
+        """Return the verified or configured Subnet whose network the CIDR names, if present."""
+        network = subnet_network(cidr, self.family)
         return next((subnet for subnet in self._display_subnets() if subnet.identity.network == network), None)
 
 
@@ -250,13 +249,6 @@ def _validate_family(family: int) -> Family:
     if family == 6:
         return 6
     raise ValueError(f"family must be 4 or 6, got {family!r}")
-
-
-def _network(value: str, family: Family) -> IPNetworkValue:
-    if not isinstance(value, str) or not value:
-        raise ValueError("Subnet CIDR must be a non-empty string.")
-    network_class = ipaddress.IPv4Network if family == 4 else ipaddress.IPv6Network
-    return network_class(value, strict=True)
 
 
 def _cache_key(server: Server, family: Family, generation: str | None = None) -> str:
@@ -387,7 +379,7 @@ def _parse_identity(
         diagnostics.append(_diagnostic("invalid-subnet-id", "Kea returned an invalid subnet ID.", source, f"{path}.id"))
         return None
     try:
-        network = _network(entry.get("subnet"), family)
+        network = subnet_network(entry.get("subnet"), family)
     except (TypeError, ValueError):
         diagnostics.append(
             _diagnostic("invalid-subnet-cidr", "Kea returned an invalid Subnet CIDR.", source, f"{path}.subnet")
@@ -442,7 +434,7 @@ def _configuration_observation(snapshot: server_configuration.ServerConfiguratio
             continue
         facts.append(
             _ConfiguredFact(
-                identity=SubnetIdentity(declared.declared_subnet_id, _network(declared.declared_cidr, snapshot.family)),
+                identity=SubnetIdentity(declared.declared_subnet_id, declared.network),
                 configuration=declared.configuration,
                 shared_network_name=declared.shared_network_name,
                 membership_complete=membership_complete,
@@ -810,7 +802,7 @@ class MutationScope(AbstractContextManager["MutationScope"]):
         """Return a live-confirmed identity that is available for creation."""
         snapshot = self._require_snapshot()
         self._require_complete_identity("New Subnet creation requires a complete live identity observation.")
-        network = _network(cidr, self.family)
+        network = subnet_network(cidr, self.family)
         if any(subnet.network == network for subnet in snapshot.subnets):
             raise SubnetIdentityConflict(f"Subnet {network} already exists.")
 

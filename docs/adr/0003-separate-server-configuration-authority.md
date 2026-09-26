@@ -66,7 +66,8 @@ ServerConfigurationSnapshot
     complete: bool
 
 DeclaredSubnet
-    declared_cidr: str                         # canonical form of the Kea `subnet` value
+    declared_cidr: str                         # the Kea `subnet` value, verbatim
+    network: IPNetworkValue                    # canonical network of declared_cidr
     declared_subnet_id: int | None
     configuration: SubnetConfiguration
     shared_network_name: str | None
@@ -77,7 +78,7 @@ SharedNetwork
     interface: str | None
     relay_addresses: tuple[IPAddressValue, ...]
     options: tuple[DHCPOption, ...]
-    member_cidrs: tuple[str, ...]
+    member_cidrs: tuple[str, ...]              # canonical
 
 OptionDefinition
     code: int
@@ -93,7 +94,9 @@ OptionDefinition
 `server_configuration`, because they describe parsed configuration. The Subnet Catalogue re-exports them, so its
 callers keep one import. `DHCPOption` stays in `dhcp_options`. Both modules use it.
 
-A `DeclaredSubnet` states what Kea declared. It does not assert Subnet Identity. Only the Subnet Catalogue
+A `DeclaredSubnet` states what Kea declared. It does not assert Subnet Identity. Kea accepts a `subnet` value
+with host bits set and returns it unchanged, so `declared_cidr` keeps that text for display and `network` holds
+the canonical network that the Subnet Catalogue compares with the identity source. Only the Subnet Catalogue
 creates a Verified Subnet, and only after a declared fact agrees with a `subnet4-list` or `subnet6-list`
 observation.
 

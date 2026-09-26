@@ -3922,9 +3922,9 @@ class TestLeaseSearch(TestCase):
     def test_malformed_configured_subnet_network_is_rejected_without_a_match(self):
         cases = (
             ("not-a-subnet-entry", "malformed Subnet entry"),
-            ({"id": 21, "subnet": None}, "valid CIDR"),
-            ({"id": 21, "subnet": "not-a-network"}, "valid CIDR"),
-            ({"id": 21, "subnet": "198.18.0.0/24"}, "IPv4 Subnet in Dhcp6"),
+            ({"id": 21, "subnet": None}, "valid IPv6 CIDR"),
+            ({"id": 21, "subnet": "not-a-network"}, "valid IPv6 CIDR"),
+            ({"id": 21, "subnet": "198.18.0.0/24"}, "valid IPv6 CIDR"),
         )
 
         for configured_subnet, message in cases:

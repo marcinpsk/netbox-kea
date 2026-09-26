@@ -6,6 +6,7 @@ from unittest.mock import patch
 import requests
 from django.test import TestCase, override_settings
 
+from netbox_kea import server_configuration
 from netbox_kea.models import Server
 from netbox_kea.subnet_catalogue import (
     MAX_SUBNET_ID,
@@ -16,6 +17,7 @@ from netbox_kea.subnet_catalogue import (
     IncompleteCatalogueSnapshot,
     SubnetIdentityConflict,
     SubnetIdExhausted,
+    VerifiedSubnet,
     display,
     for_synchronization,
     invalidate,
@@ -182,6 +184,47 @@ class TestSubnetCatalogue(TestCase):
         self.assertEqual(settings.pd_allocator, "iterative")
         self.assertEqual(settings.interface_id, "eth0-v6")
         self.assertEqual(settings.relay_addresses, (ipaddress.ip_address("2001:db8::1"),))
+
+    def test_host_bits_subnet_is_one_verified_subnet_in_a_complete_snapshot(self):
+        # Kea 3.2.0 accepts these prefixes and returns them verbatim from subnet{v}-list and config-get.
+        cases = (
+            (4, "198.18.1.5/24", "198.18.1.0/24", "198.18.1.10-198.18.1.20"),
+            (6, "2001:db8:1::5/64", "2001:db8:1::/64", "2001:db8:1::/80"),
+        )
+        for family, declared, canonical, pool in cases:
+            member = {"id": 1, "subnet": declared, "pools": [{"pool": pool}], "option-data": []}
+            responses = {
+                f"subnet{family}-list": _identity(
+                    family, [{"id": 1, "subnet": declared, "shared-network-name": "access"}]
+                ),
+                "config-get": _config(family, [], shared_networks=[{"name": "access", f"subnet{family}": [member]}]),
+            }
+            with self.subTest(family=family), stub_kea(responses) as kea:
+                snapshot = display(self.server, family)
+                configuration = server_configuration.display(self.server, family)
+
+                self.assertIsInstance(snapshot, CompleteCatalogueSnapshot)
+                self.assertEqual(snapshot.diagnostics, ())
+                self.assertEqual(kea.commands()[:2], [f"subnet{family}-list", "config-get"])
+                self.assertEqual(snapshot.subnet_choices, ((canonical, 1),))
+                self.assertIsInstance(snapshot.find_by_id(1), VerifiedSubnet)
+                self.assertEqual(snapshot.find_by_cidr(declared), snapshot.find_by_id(1))
+                self.assertEqual(for_synchronization(self.server, family).find_by_id(1).cidr, canonical)
+
+                self.assertTrue(configuration.complete)
+                self.assertEqual(configuration.subnets[0].declared_cidr, declared)
+                self.assertEqual(configuration.subnets[0].network, ipaddress.ip_network(canonical))
+                self.assertEqual(configuration.shared_networks[0].member_cidrs, (canonical,))
+
+    def test_two_spellings_of_one_network_quarantine_both_subnets(self):
+        # Kea 3.2.0 loads both as separate Subnets; the plugin cannot tell them apart by network.
+        subnets = [{"id": 1, "subnet": "198.18.1.5/24"}, {"id": 2, "subnet": "198.18.1.0/24"}]
+        with stub_kea({"subnet4-list": _identity(4, subnets), "config-get": _config(4, subnets)}):
+            snapshot = display(self.server, 4)
+
+        self.assertIsInstance(snapshot, IncompleteCatalogueSnapshot)
+        self.assertEqual(snapshot.subnet_choices, ())
+        self.assertIn("catalogue-identity-collision", {diagnostic.code for diagnostic in snapshot.diagnostics})
 
     def _dhcpv6_relay_snapshot(self, relay_addresses):
         identities = _identity(6, [{"id": 1, "subnet": "2001:db8:1::/64", "shared-network-name": None}])
@@ -423,7 +466,7 @@ class TestSubnetCatalogue(TestCase):
             [
                 "not-an-object",
                 {"id": True, "subnet": "198.18.2.0/24"},
-                {"id": 2, "subnet": "198.18.2.1/24"},
+                {"id": 2, "subnet": "198.18.2.0/33"},
                 {"id": 1, "subnet": "198.18.1.0/24", "shared-network-name": []},
             ],
         )

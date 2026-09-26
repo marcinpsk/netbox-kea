@@ -14,7 +14,7 @@ from django.utils import timezone
 from . import constants
 from .constants import Family, IPAddressValue, IPNetworkValue
 from .dhcp_options import DHCPOption, parse_dhcp_option
-from .kea import KeaException, shared_network_description
+from .kea import KeaException, shared_network_description, subnet_network
 from .models import Server
 from .utilities import kea_error_hint
 
@@ -79,7 +79,9 @@ class SubnetConfiguration:
 class DeclaredSubnet:
     """One configuration declaration without verified Subnet identity."""
 
+    # Kea's `subnet` value verbatim; Kea keeps host bits, so it can differ from `network`.
     declared_cidr: str
+    network: IPNetworkValue
     declared_subnet_id: int | None
     configuration: SubnetConfiguration
     shared_network_name: str | None
@@ -153,13 +155,6 @@ def _validate_family(family: int) -> Family:
     if family == 6:
         return 6
     raise ValueError(f"family must be 4 or 6, got {family!r}")
-
-
-def _network(value: Any, family: Family) -> IPNetworkValue:
-    if not isinstance(value, str) or not value:
-        raise ValueError("Subnet CIDR must be a non-empty string.")
-    network_class = ipaddress.IPv4Network if family == 4 else ipaddress.IPv6Network
-    return network_class(value, strict=False)
 
 
 def _generation_key(server: Server, family: Family) -> str:
@@ -366,7 +361,7 @@ def _parse_configuration(
             if fact is not None:
                 facts.append(fact)
                 membership_complete.append(valid_name)
-                member_cidrs.append(fact.declared_cidr)
+                member_cidrs.append(str(fact.network))
         if valid_name and isinstance(name, str):
             description = _description(shared_network, path, diagnostics)
             interface = _optional_string(shared_network, "interface", path, diagnostics)
@@ -461,14 +456,15 @@ def _parse_configured_fact(
         )
         subnet_id = None
     try:
-        network = _network(entry.get("subnet"), family)
+        network = subnet_network(entry.get("subnet"), family)
     except ValueError:
         diagnostics.append(
             _diagnostic("invalid-subnet-cidr", "Kea returned an invalid Subnet CIDR.", "configuration", path)
         )
         return None
     return DeclaredSubnet(
-        declared_cidr=str(network),
+        declared_cidr=entry["subnet"],
+        network=network,
         declared_subnet_id=subnet_id,
         shared_network_name=shared_network_name,
         configuration=SubnetConfiguration(
