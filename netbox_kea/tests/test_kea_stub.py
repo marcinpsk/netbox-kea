@@ -8,12 +8,22 @@ responses, and both request recording and queue dispatch are thread-safe (the
 enrichment views POST from cloned clients on worker threads).
 """
 
+import json
 import threading
+from pathlib import Path
 
 import pytest
 import requests
 
-from netbox_kea.tests.kea_stub import KeaHttpStub, _reservation_family, _typed_reservation, queued
+from netbox_kea.kea import KeaClient
+from netbox_kea.tests.kea_stub import (
+    KeaHttpStub,
+    _http_response,
+    _reservation_family,
+    _typed_reservation,
+    queued,
+    stub_kea,
+)
 
 
 def _call(stub, command="x"):
@@ -24,6 +34,19 @@ def test_dict_payload_is_wrapped_in_single_entry_list():
     """A dict value is the single ``.json()`` entry (Kea returns a list)."""
     stub = KeaHttpStub({"x": {"result": 0}})
     assert _call(stub) == [{"result": 0}]
+
+
+def test_http_boundary_returns_concrete_requests_responses():
+    """The real KeaClient decodes a stubbed success and raises on a stubbed HTTP error."""
+    client = KeaClient(url="https://kea.example.invalid/")
+    with stub_kea({"x": {"result": 0}}) as stub:
+        assert client.command("x", service=["dhcp4"]) == [{"result": 0}]
+    assert stub.urls() == ["https://kea.example.invalid/"]
+
+    failed = _http_response([{"result": 1}], status=503, url="https://kea.example.invalid/")
+    with stub_kea({"x": failed}), pytest.raises(requests.HTTPError) as error:
+        client.command("x", service=["dhcp4"])
+    assert error.value.response is failed
 
 
 def test_plain_multi_entry_list_returned_verbatim():
@@ -74,7 +97,7 @@ def test_urls_records_endpoints_in_order():
 
 def test_shared_response_builders_shape():
     """Lock the shape of the shared reservation builders so callers can't drift."""
-    from netbox_kea.tests.kea_stub import _res_get, _res_page, _subnet_get, _subnet_list
+    from netbox_kea.tests.kea_stub import _res_get, _res_page, _subnet_list
 
     host = {"ip-address": "10.0.0.1", "subnet-id": 1}
     # _res_page: hosts snapshot + pagination cursor (both 0 == source exhausted).
@@ -85,12 +108,6 @@ def test_shared_response_builders_shape():
     assert _res_page([], next_from=2, next_source=1)["arguments"]["next"] == {"from": 2, "source-index": 1}
     # _res_get: host fields returned directly under arguments.
     assert _res_get(host) == {"result": 0, "arguments": host}
-    # _subnet_get: subnet{v} list carrying id + pools for the pool-overlap probe.
-    assert _subnet_get(4, pools=["10.0.0.10-10.0.0.20"], subnet_id=7) == {
-        "result": 0,
-        "arguments": {"subnet4": [{"id": 7, "pools": [{"pool": "10.0.0.10-10.0.0.20"}]}]},
-    }
-    assert _subnet_get(6)["arguments"]["subnet6"][0]["pools"] == []
     # _subnet_list: the Subnet catalogue list response.
     subnets = [{"id": 1, "subnet": "10.0.0.0/24"}]
     assert _subnet_list(4, subnets) == {"result": 0, "arguments": {"subnets": subnets}}
@@ -99,7 +116,7 @@ def test_shared_response_builders_shape():
 
 def test_catalogue_responses_shape():
     """Lock the shared catalogue factory that replaced three drifting local copies."""
-    from netbox_kea.tests.kea_stub import _catalogue_responses, _subnet_list
+    from netbox_kea.tests.kea_stub import _catalogue_responses, _catalogue_responses_for_subnets, _subnet_list
 
     responses = _catalogue_responses(4, 20, "198.18.0.0/24")
 
@@ -124,6 +141,21 @@ def test_catalogue_responses_shape():
     assert "subnet6-list" in v6
     assert v6["config-get"]["arguments"]["Dhcp6"]["subnet6"] == [{"id": 30, "subnet": "2001:db8::/64"}]
     assert v6["config-get"]["arguments"]["hash"] == "other"
+
+    options = ({"name": "routers", "data": "198.18.0.1"},)
+    definitions = ({"code": 222, "name": "site-code", "space": "dhcp4", "type": "string"},)
+    configured = _catalogue_responses_for_subnets(
+        4,
+        [],
+        global_options=options,
+        option_definitions=definitions,
+    )["config-get"]["arguments"]["Dhcp4"]
+    assert configured["option-data"] == list(options)
+    assert configured["option-def"] == list(definitions)
+
+    shared_networks = [{"name": "clients", "subnet4": []}]
+    with_networks = _catalogue_responses_for_subnets(4, [], shared_networks=shared_networks)
+    assert with_networks["config-get"]["arguments"]["Dhcp4"]["shared-networks"] == shared_networks
 
 
 @pytest.mark.parametrize(
@@ -196,3 +228,22 @@ def test_queue_dispatch_is_thread_safe():
     for t in threads:
         t.join()
     assert sorted(seen) == list(range(n))
+
+
+@pytest.mark.parametrize("family", [4, 6])
+def test_config_writes_carry_only_keys_a_real_kea_returns(family):
+    recorded = (Path(__file__).with_name("kea_recordings") / f"dhcp{family}.json").read_text()
+    arguments = json.loads(recorded)["config-get"]["arguments"]
+    stub = KeaHttpStub({"config-test": {"result": 0}})
+    assert stub("https://kea.example.invalid/", json={"command": "config-test", "arguments": arguments}).ok
+
+    network = arguments[f"Dhcp{family}"]["shared-networks"][0]
+    network["client-classes"] = ["voip"]
+    assert stub("https://kea.example.invalid/", json={"command": "config-test", "arguments": arguments}).ok
+
+    member = arguments[f"Dhcp{family}"]["shared-networks"][1][f"subnet{family}"][0]
+    for entry in (network, member):
+        entry["description"] = "Kea rejects this key"
+        with pytest.raises(AssertionError, match=r"sends \['description'\]"):
+            stub("https://kea.example.invalid/", json={"command": "config-test", "arguments": arguments})
+        del entry["description"]

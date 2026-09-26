@@ -38,10 +38,13 @@ from netbox.jobs import JobRunner, system_job
 if TYPE_CHECKING:
     from .models import Server
 
-# Runtime import: get_type_hints() resolves this module's annotations, so a
-# TYPE_CHECKING-only Family would make that fail with NameError.
+# Runtime imports: get_type_hints() resolves this module's annotations, so a
+# TYPE_CHECKING-only Family or DuplicateNetBoxRowsError would raise NameError.
+from . import subnet_catalogue
 from .constants import Family
 from .reservations import Reservation, ReservationSnapshot
+from .subnet_catalogue import CatalogueUnavailable, CompleteCatalogueSnapshot, VerifiedSubnet
+from .sync import DuplicateNetBoxRowsError
 
 logger = logging.getLogger(__name__)
 
@@ -75,31 +78,20 @@ class _SnapshotSkipped:
 SNAPSHOT_SKIPPED = _SnapshotSkipped()
 
 
-def _fetch_reservation_snapshot(server: Server, version: Family) -> ReservationSnapshot | _SnapshotSkipped | None:
-    """Return a typed Reservation Snapshot, SNAPSHOT_SKIPPED, or None after a failure."""
+def _fetch_reservation_snapshot(
+    server: Server, version: Family, catalogue: CompleteCatalogueSnapshot | None
+) -> ReservationSnapshot | _SnapshotSkipped | None:
+    """Read Reservations against the same verified catalogue as the other sync phases."""
     from .kea import KeaException
-    from .subnet_catalogue import CatalogueUnavailable, for_synchronization
+
+    if catalogue is None:
+        return None
 
     try:
         client = server.get_client(version=version)
-        catalogue = for_synchronization(server, version)
-    except CatalogueUnavailable as exc:
-        logger.warning(
-            "Server %s (v%s): Subnet Catalogue unavailable for Reservation Snapshot: %s",
-            server.name,
-            version,
-            exc,
-        )
-        return None
-    except Exception:
-        # exc_info, because the job continues and the traceback is the only record.
-        logger.warning("Server %s (v%s): Reservation Snapshot failed", server.name, version, exc_info=True)
-        return None
-
-    try:
         return client.reservation_snapshot(version, catalogue)
     except KeaException as exc:
-        if exc.response.get("result") == 2:
+        if exc.unsupported_command:
             logger.warning("Server %s (v%s): host_cmds is unavailable; Reservation sync skipped", server.name, version)
             return SNAPSHOT_SKIPPED
         logger.warning("Server %s (v%s): Reservation Snapshot failed", server.name, version, exc_info=True)
@@ -200,7 +192,7 @@ def _sync_server_leases(
     conflicts: list[str] = []
     for lease in raw_leases:
         try:
-            _ip, created, changed = sync_lease_to_netbox(
+            ip, created, changed = sync_lease_to_netbox(
                 lease,
                 cleanup=False,
                 reservation_ips=reservation_ips,
@@ -208,17 +200,14 @@ def _sync_server_leases(
                 conflicts=conflicts,
             )
             all_synced.append(lease)
-            ip_addr = lease.get("ip-address")
-            if ip_addr:
-                lease_ips.add(ip_addr)
+            lease_ips.add(str(ipaddress.ip_interface(str(ip.address)).ip))
             if created:
                 stats["created"] += 1
             elif changed:
                 stats["updated"] += 1
         except Exception:  # noqa: PERF203
             logger.debug(
-                "Failed to sync lease %s from server %s",
-                lease.get("ip-address", "?"),
+                "Failed to sync lease from server %s",
                 server.name,
                 exc_info=True,
             )
@@ -335,36 +324,42 @@ def _sync_server_reservations(
 
 
 def _sync_subnet_entry(
-    subnet: dict,
+    subnet: VerifiedSubnet,
     sync_prefixes: bool,
     sync_ip_ranges: bool,
     vrf,
     stats: dict[str, int],
     server_name: str,
+    duplicates: list[DuplicateNetBoxRowsError],
 ) -> None:
-    """Sync a single Kea subnet dict to NetBox Prefix and/or IP Ranges."""
-    from .sync import _POOL_TOO_LARGE, sync_pool_to_netbox_ip_range, sync_subnet_to_netbox_prefix
+    """Sync one verified Subnet to a NetBox Prefix and its allocation ranges."""
+    from .sync import (
+        _POOL_TOO_LARGE,
+        sync_pool_to_netbox_ip_range,
+        sync_subnet_to_netbox_prefix,
+    )
 
-    subnet_cidr = subnet.get("subnet")
-    if not subnet_cidr:
-        return
+    subnet_cidr = subnet.cidr
 
     if sync_prefixes:
         try:
-            _, created, did_update = sync_subnet_to_netbox_prefix(subnet_cidr, vrf=vrf)
+            _, created, did_update = sync_subnet_to_netbox_prefix(subnet.network, vrf=vrf)
             if created:
                 stats["created"] += 1
             elif did_update:
                 stats["updated"] += 1
+        except DuplicateNetBoxRowsError as exc:
+            logger.exception("Failed to sync prefix %s from server %s", subnet_cidr, server_name)
+            stats["prefix_errors"] += 1
+            duplicates.append(exc)
         except Exception:
             logger.exception("Failed to sync prefix %s from server %s", subnet_cidr, server_name)
             stats["prefix_errors"] += 1
 
     if sync_ip_ranges:
-        for pool_entry in subnet.get("pools") or []:
-            pool_str = pool_entry.get("pool") if isinstance(pool_entry, dict) else None
-            if not pool_str:
-                continue
+        pools = subnet.configuration.pools if subnet.configuration is not None else ()
+        for pool in pools:
+            pool_str = pool.range
             try:
                 result = sync_pool_to_netbox_ip_range(pool_str, subnet_cidr, vrf=vrf)
                 if result is _POOL_TOO_LARGE:
@@ -384,115 +379,37 @@ def _sync_subnet_entry(
                         stats["created"] += 1
                     elif did_update:
                         stats["updated"] += 1
+            except DuplicateNetBoxRowsError as exc:
+                logger.exception("Failed to sync pool %s from server %s", pool_str, server_name)
+                stats["prefix_errors"] += 1
+                duplicates.append(exc)
             except Exception:
                 logger.exception("Failed to sync pool %s from server %s", pool_str, server_name)
                 stats["prefix_errors"] += 1
-
-
-def _fetch_kea_subnets(server: Server, version: Family) -> list[dict] | None:
-    """Fetch and merge the full subnet list (incl. shared-network subnets) via ``config-get``.
-
-    Returns the list of subnet dicts on success (possibly empty), or ``None``
-    when the fetch or parse fails.  Does not touch ``stats`` — callers decide
-    how a ``None`` result affects error accounting for their phase.
-    """
-    service = f"dhcp{version}"
-    dhcp_key = f"Dhcp{version}"
-    subnet_key = f"subnet{version}"
-
-    try:
-        client = server.get_client(version=version)
-        config = client.command("config-get", service=[service])
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Failed to fetch config-get from server %s (v%s): %s", server.name, version, exc)
-        return None
-
-    if not isinstance(config, list) or not config or not isinstance(config[0], dict):
-        logger.warning("Malformed config-get response from server %s (v%s)", server.name, version)
-        return None
-
-    response = config[0]
-    if response.get("result") != 0:
-        logger.warning(
-            "config-get failed for server %s (v%s): %s",
-            server.name,
-            version,
-            response.get("text", response),
-        )
-        return None
-
-    raw_args = response.get("arguments") or {}
-    if not isinstance(raw_args, dict):
-        logger.warning("Malformed config-get arguments from server %s (v%s)", server.name, version)
-        return None
-
-    conf = raw_args.get(dhcp_key) or {}
-    if not isinstance(conf, dict):
-        logger.warning("Malformed %s config from server %s (v%s)", dhcp_key, server.name, version)
-        return None
-
-    raw_subnets = conf.get(subnet_key)
-    subnets: list[dict] = [s for s in raw_subnets if isinstance(s, dict)] if isinstance(raw_subnets, list) else []
-    for sn in conf.get("shared-networks") or []:
-        if not isinstance(sn, dict):
-            continue
-        sn_subnets = sn.get(subnet_key)
-        if isinstance(sn_subnets, list):
-            subnets.extend(s for s in sn_subnets if isinstance(s, dict))
-
-    return subnets
-
-
-def _build_subnet_prefix_map(subnets: list[dict] | None) -> dict[int, int]:
-    """Map Kea ``subnet-id`` → prefix length from a list of subnet dicts.
-
-    This is the authoritative source for the mask of a lease/reservation IP:
-    the record's ``subnet-id`` points directly at the subnet it was allocated
-    from.  Subnets with a missing/unparseable id or CIDR are skipped.
-    """
-    from netaddr import AddrFormatError, IPNetwork
-
-    result: dict[int, int] = {}
-    for subnet in subnets or []:
-        sid = subnet.get("id")
-        cidr = subnet.get("subnet")
-        if sid is None or not cidr:
-            continue
-        try:
-            result[int(sid)] = IPNetwork(cidr).prefixlen
-        except (AddrFormatError, ValueError, TypeError):
-            continue
-    return result
 
 
 def _sync_server_prefixes_and_ranges(
     server: Server,
     version: Family,
     *,
-    subnets: list[dict] | None,
+    catalogue: CompleteCatalogueSnapshot | None,
     sync_prefixes: bool,
     sync_ip_ranges: bool,
     vrf=None,
     stats: dict[str, int],
+    duplicates: list[DuplicateNetBoxRowsError],
 ) -> None:
-    """Sync a pre-fetched subnet list to NetBox Prefixes / IP Ranges.
-
-    *subnets* is the list returned by :func:`_fetch_kea_subnets` (``None`` when
-    the config fetch failed).  For each subnet:
-    - When *sync_prefixes* is ``True``, calls :func:`.sync.sync_subnet_to_netbox_prefix`.
-    - When *sync_ip_ranges* is ``True``, calls :func:`.sync.sync_pool_to_netbox_ip_range`
-      for each pool entry in the subnet.
-    - *vrf* is forwarded to both sync functions (``None`` means global VRF).
-    """
-    if subnets is None:
-        logger.warning("Server %s (v%s): skipping prefix/range sync — subnet fetch failed", server.name, version)
+    """Sync Prefixes and IP Ranges from the run's complete catalogue."""
+    if catalogue is None:
+        logger.warning(
+            "Server %s (v%s): skipping prefix/range sync: Subnet Catalogue unavailable", server.name, version
+        )
         stats["prefix_errors"] += 1
         return
 
-    logger.info("Server %s (v%s): found %d subnets for prefix/range sync", server.name, version, len(subnets))
-
-    for subnet in subnets:
-        _sync_subnet_entry(subnet, sync_prefixes, sync_ip_ranges, vrf, stats, server.name)
+    logger.info("Server %s (v%s): found %d subnets for prefix/range sync", server.name, version, len(catalogue.subnets))
+    for subnet in catalogue.subnets:
+        _sync_subnet_entry(subnet, sync_prefixes, sync_ip_ranges, vrf, stats, server.name, duplicates)
 
 
 def _sync_one_server(
@@ -504,6 +421,7 @@ def _sync_one_server(
     max_leases: int,
     stats: dict[str, int],
     conflict_ips: set[str] | None = None,
+    duplicates: list[DuplicateNetBoxRowsError] | None = None,
 ) -> None:
     """Sync a single server's leases, reservations, prefixes, and IP ranges.
 
@@ -513,6 +431,9 @@ def _sync_one_server(
     foreign IP that has *both* a lease and a reservation is one conflict for the
     operator to resolve, not two.  Each phase still accumulates into its own list
     because ``sync_{lease,reservation}_to_netbox`` append to it.
+
+    *duplicates* is an optional caller-owned list that collects the Kea subnets and
+    pools that match more than one NetBox row, so the caller can name them.
     """
     from .sync import cleanup_stale_ips_batch
 
@@ -521,6 +442,8 @@ def _sync_one_server(
     protected: list[dict | Reservation] = []
     if conflict_ips is None:
         conflict_ips = set()
+    if duplicates is None:
+        duplicates = []
     # Cleanup is only safe when both sources contributed, otherwise we risk
     # removing IPs that exist in the source we didn't sync.
     cleanup_safe = sync_leases and sync_reservations
@@ -529,28 +452,25 @@ def _sync_one_server(
         if not enabled:
             continue
 
-        # Fetch the Kea subnet list once per version and derive the authoritative
-        # {subnet-id: prefix_len} map.  Each lease/reservation carries a subnet-id
-        # pointing at the subnet it was allocated from, so this is the definitive
-        # source for the IP mask (NetBox prefix matching is only a fallback).
-        subnets = (
-            _fetch_kea_subnets(server, version)
-            if any((sync_leases, sync_reservations, sync_prefixes, sync_ip_ranges))
-            else None
+        catalogue = None
+        if any((sync_leases, sync_reservations, sync_prefixes, sync_ip_ranges)):
+            try:
+                catalogue = subnet_catalogue.for_synchronization(server, version)
+            except CatalogueUnavailable as exc:
+                logger.warning("Server %s (v%s): Subnet Catalogue unavailable: %s", server.name, version, exc)
+        subnet_prefix_map = (
+            {subnet.identity.subnet_id: subnet.identity.network.prefixlen for subnet in catalogue.subnets}
+            if catalogue is not None
+            else {}
         )
-        subnet_prefix_map = _build_subnet_prefix_map(subnets)
-
-        # If config-get failed but we're still syncing leases/reservations, masks
-        # degrade to NetBox prefix matching (then /32|/128). Surface that so an
-        # operator can tell why a mask looks wrong without it being a hard error.
-        if subnets is None and sync_leases:
+        if catalogue is None and sync_leases:
             logger.info(
-                "Server %s (v%s): config-get unavailable; lease masks fall back to NetBox prefix matching",
+                "Server %s (v%s): Subnet Catalogue unavailable; lease masks fall back to NetBox prefix matching",
                 server.name,
                 version,
             )
 
-        reservation_snapshot = _fetch_reservation_snapshot(server, version) if sync_reservations else None
+        reservation_snapshot = _fetch_reservation_snapshot(server, version, catalogue) if sync_reservations else None
         pre_reservation_ips = (
             _reservation_snapshot_ips(reservation_snapshot) if sync_leases and sync_reservations else None
         )
@@ -588,11 +508,12 @@ def _sync_one_server(
             _sync_server_prefixes_and_ranges(
                 server,
                 version,
-                subnets=subnets,
+                catalogue=catalogue,
                 sync_prefixes=sync_prefixes,
                 sync_ip_ranges=sync_ip_ranges,
                 vrf=server.sync_vrf,
                 stats=stats,
+                duplicates=duplicates,
             )
 
     # Authoritative count: the per-phase increments above double-count an IP that is
@@ -798,6 +719,7 @@ class KeaIpamSyncJob(JobRunner):
                 # Foreign NetBox IPs this server refused to overwrite, deduplicated
                 # across the lease and reservation phases and both IP versions.
                 conflict_ips: set[str] = set()
+                duplicates: list[DuplicateNetBoxRowsError] = []
 
                 try:
                     _sync_one_server(
@@ -809,6 +731,7 @@ class KeaIpamSyncJob(JobRunner):
                         max_leases,
                         server_stats,
                         conflict_ips=conflict_ips,
+                        duplicates=duplicates,
                     )
                 except Exception:
                     self.logger.exception(f"Unhandled error syncing server {server.name}; see server logs")
@@ -821,6 +744,12 @@ class KeaIpamSyncJob(JobRunner):
                     f" conflicts={server_stats['conflicts']}"
                     f" skipped={server_stats['skipped']}"
                 )
+                # No row pks here: the list URL applies the viewer's own IPAM permissions.
+                for dup in duplicates:
+                    self.logger.error(
+                        f"Server {server.name}: Kea {dup.kea_object} matches duplicate NetBox {dup.rows};"
+                        f" the sync leaves them unchanged. Review them at {dup.list_url}"
+                    )
                 for key in total:
                     total[key] += server_stats.get(key, 0)
 

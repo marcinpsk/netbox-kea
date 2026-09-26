@@ -15,6 +15,21 @@ class TestPerServerReservationSnapshots(_ViewTestBase):
     def _url(self, version: int = 4) -> str:
         return reverse(f"plugins:netbox_kea:server_reservations{version}", args=[self.server.pk])
 
+    def test_configured_only_subnet_filter_does_not_authorize_a_scoped_read(self):
+        responses = _catalogue_responses(4, 20, "198.18.0.0/24")
+        responses["subnet4-list"] = {"result": 2, "text": "subnet commands unavailable"}
+        responses["reservation-get-page"] = _res_page([{"subnet-id": 20, "flex-id": "not-verified"}])
+
+        with stub_kea(responses) as kea:
+            response = self.client.get(self._url(), {"subnet_id": "20"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["table"].data.data, [])
+        self.assertIn(
+            "unverified-scope", [diagnostic.code for diagnostic in response.context["reservation_diagnostics"]]
+        )
+        self.assertNotIn("subnet-id", kea.bodies("reservation-get-page")[0]["arguments"])
+
     def test_substring_search_continues_past_a_nonmatching_page(self):
         responses = _catalogue_responses(4, 20, "198.18.0.0/24")
         first = [{"subnet-id": 20, "flex-id": f"unrelated-{index}"} for index in range(100)]
@@ -622,6 +637,22 @@ class TestLeaseReservationIdentityMatching(_ViewTestBase):
         url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
         with stub_kea(responses):
             return self.client.get(url, {"by": "ip", "q": "198.18.0.20"}, HTTP_HX_REQUEST="true")
+
+    def test_configured_only_subnet_does_not_trigger_a_reservation_lookup(self):
+        responses = _catalogue_responses(4, 20, "198.18.0.0/24")
+        responses["subnet4-list"] = {"result": 2, "text": "subnet commands unavailable"}
+        responses["lease4-get"] = {"result": 0, "arguments": self.lease}
+        url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+
+        with stub_kea(responses) as kea:
+            response = self.client.get(url, {"by": "ip", "q": "198.18.0.20"}, HTTP_HX_REQUEST="true")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("reservation-get", kea.commands())
+        row = response.context["table"].data.data[0]
+        self.assertFalse(row["is_reserved"])
+        self.assertIsNone(row["create_reservation_url"])
+        self.assertIsNone(row.get("sync_url"))
 
     def test_addressless_reservation_matches_normalized_identity_in_the_same_subnet(self):
         response = self._get(

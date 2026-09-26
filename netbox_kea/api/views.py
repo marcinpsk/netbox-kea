@@ -21,6 +21,7 @@ from ..reservations import (
     reservation_query_mode,
     reservation_record_data,
 )
+from ..subnet_catalogue import VerifiedSubnet
 from ..subnet_catalogue import display as subnet_catalogue
 from ..utilities import format_leases
 from .serializers import ServerSerializer
@@ -320,7 +321,7 @@ class ServerViewSet(NetBoxModelViewSet):
                 scope: ReservationScope = GlobalReservationScope()
             else:
                 subnet = catalogue.find_by_id(subnet_id)
-                if subnet is None:
+                if not isinstance(subnet, VerifiedSubnet):
                     raise ValueError("The Reservation Subnet is not verified.")
                 scope = InSubnetReservationScope(subnet.identity)
             reservation = client.reservation_by_identity(version, catalogue, scope, identity)
@@ -351,7 +352,7 @@ class ServerViewSet(NetBoxModelViewSet):
             client = _reservation_client(server, version)
             catalogue = subnet_catalogue(server, version)
             subnet = catalogue.find_by_id(subnet_id)
-            if subnet is None:
+            if not isinstance(subnet, VerifiedSubnet):
                 raise ValueError("The Reservation Subnet is not verified.")
             scope = InSubnetReservationScope(subnet.identity)
             reservation = client.reservation_by_address(

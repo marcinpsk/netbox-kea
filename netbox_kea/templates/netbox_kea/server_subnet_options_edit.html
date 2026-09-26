@@ -18,7 +18,7 @@
           <i class="mdi mdi-information-outline" aria-hidden="true"></i>
           This replaces <strong>all</strong> option-data for subnet {{ subnet_id }} using
           <code>config-get</code> → <code>config-test</code> → <code>config-write</code>.
-          Any options not listed here will be removed.
+          Select Delete to remove an option. Reload this form if the live option list changes.
         </p>
 
         <form method="post" id="options-form">
@@ -46,6 +46,7 @@
               {% for form in formset %}
                 <tr class="formset-row">
                   <td>
+                    {{ form.original_option }}
                     {{ form.name }}
                     {% for err in form.name.errors %}<div class="text-danger small">{{ err }}</div>{% endfor %}
                   </td>

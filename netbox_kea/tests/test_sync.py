@@ -6,6 +6,7 @@ runs in a transaction that is rolled back afterwards.
 
 from __future__ import annotations
 
+import ipaddress
 from collections.abc import Iterable
 from typing import get_args, get_type_hints
 
@@ -1421,6 +1422,24 @@ class TestCleanupStaleIpsBatch(TestCase):
         self.assertEqual(consumer_hints["protected_records"], Iterable[record_types])
         self.assertEqual(reservation_hints["protected"], consumed)
 
+    def test_every_jobs_function_has_resolvable_type_hints(self):
+        """Every annotation name in netbox_kea.jobs except Server must exist at runtime."""
+        import inspect
+
+        from netbox_kea import jobs
+        from netbox_kea.models import Server
+
+        functions = [f for _, f in inspect.getmembers(jobs, inspect.isfunction) if f.__module__ == jobs.__name__]
+        for _, cls in inspect.getmembers(jobs, inspect.isclass):
+            if cls.__module__ == jobs.__name__:
+                functions += [
+                    f for _, f in inspect.getmembers(cls, inspect.isfunction) if f.__module__ == jobs.__name__
+                ]
+        self.assertTrue(functions)
+        for fn in functions:
+            with self.subTest(fn=fn.__qualname__):
+                get_type_hints(fn, localns={"Server": Server})
+
     @override_settings(PLUGINS_CONFIG=_STALE_PLUGINS_CONFIG)
     def test_batch_groups_by_address_family(self):
         """Mixed v4/v6 records for same hostname clean both families independently."""
@@ -1587,7 +1606,7 @@ class TestSyncSubnetToNetboxPrefix(TestCase):
     def _sync(self, cidr, vrf=None):
         from netbox_kea.sync import sync_subnet_to_netbox_prefix
 
-        return sync_subnet_to_netbox_prefix(cidr, vrf=vrf)
+        return sync_subnet_to_netbox_prefix(ipaddress.ip_network(cidr), vrf=vrf)
 
     def test_creates_prefix_on_first_call(self):
         from ipam.models import Prefix
@@ -1639,6 +1658,34 @@ class TestSyncSubnetToNetboxPrefix(TestCase):
     def test_returns_three_tuple(self):
         result = self._sync("10.5.0.0/24")
         self.assertEqual(len(result), 3)
+
+    def test_kea_subnet_with_host_bits_matches_existing_canonical_prefix(self):
+        from ipam.models import Prefix
+
+        from netbox_kea.kea import subnet_network
+        from netbox_kea.sync import sync_subnet_to_netbox_prefix
+
+        existing = Prefix.objects.create(prefix="10.8.0.0/24", description="")
+        prefix_obj, created, _ = sync_subnet_to_netbox_prefix(subnet_network("10.8.0.9/24", 4))
+        self.assertFalse(created)
+        self.assertEqual(prefix_obj.pk, existing.pk)
+        self.assertEqual(Prefix.objects.count(), 1)
+
+    def test_duplicate_prefixes_raise_and_change_nothing(self):
+        """NetBox does not enforce (vrf, prefix) uniqueness, so duplicates are an error, not a pick."""
+        from ipam.models import Prefix
+
+        from netbox_kea.sync import DuplicateNetBoxRowsError
+
+        first = Prefix.objects.create(prefix="10.6.0.0/24", description="")
+        second = Prefix.objects.create(prefix="10.6.0.0/24", description="")
+        with self.assertRaises(DuplicateNetBoxRowsError) as ctx:
+            self._sync("10.6.0.0/24")
+        self.assertEqual(ctx.exception.kea_object, "subnet 10.6.0.0/24")
+        self.assertEqual(ctx.exception.pks, [first.pk, second.pk])
+        self.assertIn(str(second.pk), str(ctx.exception))
+        self.assertEqual(Prefix.objects.count(), 2)
+        self.assertEqual(list(Prefix.objects.values_list("description", flat=True)), ["", ""])
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1730,6 +1777,122 @@ class TestSyncPoolToNetboxIPRange(TestCase):
         range_obj, _, _ = result
         self.assertEqual(range_obj.description, "Synced from Kea DHCP pool")
         self.assertEqual(range_obj.status, "active")
+
+    def test_duplicate_ranges_with_different_masks_raise_and_change_nothing(self):
+        """Older syncs matched masked endpoints, so one pool can own two IP Ranges."""
+        from ipam.models import IPRange
+        from netaddr import IPNetwork
+
+        from netbox_kea.sync import DuplicateNetBoxRowsError
+
+        first = IPRange.objects.create(
+            start_address=IPNetwork("192.168.12.50/24"), end_address=IPNetwork("192.168.12.100/24"), description=""
+        )
+        second = IPRange.objects.create(
+            start_address=IPNetwork("192.168.12.50/25"), end_address=IPNetwork("192.168.12.100/25"), description=""
+        )
+        with self.assertRaises(DuplicateNetBoxRowsError) as ctx:
+            self._sync("192.168.12.50-192.168.12.100", "192.168.12.0/24")
+        self.assertEqual(ctx.exception.kea_object, "pool 192.168.12.50-192.168.12.100")
+        self.assertEqual(ctx.exception.pks, [first.pk, second.pk])
+        self.assertIn(str(second.pk), str(ctx.exception))
+        self.assertEqual(IPRange.objects.count(), 2)
+        self.assertEqual(list(IPRange.objects.values_list("description", flat=True)), ["", ""])
+
+
+class TestDuplicateRowsListUrl(TestCase):
+    """The list URL in DuplicateNetBoxRowsError shows exactly the duplicates, and only to a viewer with permission."""
+
+    def setUp(self):
+        from django.contrib.auth import get_user_model
+        from ipam.models import VRF
+
+        self.vrf = VRF.objects.create(name="kea-dup-vrf")
+        self.user = get_user_model().objects.create_user(username="dup-viewer")
+        self.client.force_login(self.user)
+
+    def _grant_view(self, model):
+        from django.contrib.contenttypes.models import ContentType
+        from users.models import ObjectPermission
+
+        perm = ObjectPermission.objects.create(name=f"view-{model._meta.model_name}", actions=["view"])
+        perm.object_types.add(ContentType.objects.get_for_model(model))
+        perm.users.add(self.user)
+
+    def _listed_pks(self, url):
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        return sorted(row.pk for row in response.context["table"].data)
+
+    def _range_error(self, vrf):
+        from netbox_kea.sync import DuplicateNetBoxRowsError, sync_pool_to_netbox_ip_range
+
+        with self.assertRaises(DuplicateNetBoxRowsError) as ctx:
+            sync_pool_to_netbox_ip_range("192.168.13.50-192.168.13.100", "192.168.13.0/24", vrf=vrf)
+        return ctx.exception
+
+    def _prefix_error(self, vrf):
+        from netbox_kea.sync import DuplicateNetBoxRowsError, sync_subnet_to_netbox_prefix
+
+        with self.assertRaises(DuplicateNetBoxRowsError) as ctx:
+            sync_subnet_to_netbox_prefix(ipaddress.ip_network("10.7.0.0/24"), vrf=vrf)
+        return ctx.exception
+
+    def _make_ranges(self):
+        from ipam.models import IPRange
+        from netaddr import IPNetwork
+
+        def make(start, end, vrf):
+            return IPRange.objects.create(start_address=IPNetwork(start), end_address=IPNetwork(end), vrf=vrf).pk
+
+        return {
+            None: [
+                make("192.168.13.50/24", "192.168.13.100/24", None),
+                make("192.168.13.50/25", "192.168.13.100/25", None),
+            ],
+            self.vrf: [
+                make("192.168.13.50/24", "192.168.13.100/24", self.vrf),
+                make("192.168.13.50/24", "192.168.13.100/24", self.vrf),
+            ],
+            "decoy": [make("192.168.13.50/24", "192.168.13.101/24", None)],
+        }
+
+    def _make_prefixes(self):
+        from ipam.models import Prefix
+
+        def make(vrf):
+            return Prefix.objects.create(prefix="10.7.0.0/24", vrf=vrf).pk
+
+        return {None: [make(None), make(None)], self.vrf: [make(self.vrf), make(self.vrf)]}
+
+    def test_range_url_lists_exactly_the_duplicates_in_each_vrf(self):
+        from ipam.models import IPRange
+
+        pks = self._make_ranges()
+        self._grant_view(IPRange)
+        for vrf in (None, self.vrf):
+            with self.subTest(vrf=vrf):
+                error = self._range_error(vrf)
+                self.assertEqual(error.pks, pks[vrf])
+                self.assertEqual(self._listed_pks(error.list_url), pks[vrf])
+
+    def test_prefix_url_lists_exactly_the_duplicates_in_each_vrf(self):
+        from ipam.models import Prefix
+
+        pks = self._make_prefixes()
+        self._grant_view(Prefix)
+        for vrf in (None, self.vrf):
+            with self.subTest(vrf=vrf):
+                error = self._prefix_error(vrf)
+                self.assertEqual(error.pks, pks[vrf])
+                self.assertEqual(self._listed_pks(error.list_url), pks[vrf])
+
+    def test_url_shows_nothing_without_ipam_view_permission(self):
+        self._make_ranges()
+        self._make_prefixes()
+        for error in (self._range_error(None), self._prefix_error(None)):
+            with self.subTest(url=error.list_url):
+                self.assertEqual(self.client.get(error.list_url).status_code, 403)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2190,7 +2353,7 @@ class TestResolvePrefixLengthSubnetIdNormalization(TestCase):
     def test_string_subnet_id_still_hits_prefix_map_end_to_end(self):
         """A string-valued 'subnet-id' must still match the authoritative Kea mask.
 
-        _build_subnet_prefix_map keys by int(sid); a raw string id would miss it and
+        Catalogue identities use integer keys; a raw string ID would miss the map and
         fall back to NetBox/default, persisting the wrong prefix.
         """
         from ipam.models import IPAddress as NbIP

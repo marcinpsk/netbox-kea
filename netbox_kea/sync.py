@@ -31,6 +31,8 @@ from .reservations import (
 if TYPE_CHECKING:
     from ipam.models import IPAddress as NbIPAddress
 
+    from .constants import IPNetworkValue
+
 logger = logging.getLogger(__name__)
 
 
@@ -118,9 +120,7 @@ def _resolve_prefix_length(
     covering prefix (e.g. a ``/8`` but no ``/24``) or no prefix at all.
     """
     if subnet_prefix_map and subnet_id is not None:
-        # The map is int-keyed (see _build_subnet_prefix_map); a string-valued
-        # "subnet-id" from a Kea record must be normalized or it silently misses
-        # the authoritative mask and falls back to a (possibly wrong) NetBox/default.
+        # Catalogue identities use integer IDs; normalize the record ID before lookup.
         try:
             subnet_key = int(subnet_id)
         except (TypeError, ValueError):
@@ -863,8 +863,42 @@ def cleanup_stale_ips_batch(
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def sync_subnet_to_netbox_prefix(cidr: str, vrf=None, description: str = KEA_SUBNET_PREFIX_DESCRIPTION) -> tuple:
-    """Create or update a NetBox Prefix from a Kea CIDR string.
+class DuplicateNetBoxRowsError(Exception):
+    """More than one NetBox Prefix or IP Range matches the key of one Kea subnet or pool.
+
+    ``str()`` names the row pks, so it is for the server log only. The job log uses
+    ``kea_object`` and ``list_url``, and the list view applies the viewer's permissions.
+    """
+
+    def __init__(self, kea_object: str, rows: str, pks: list[int], list_url: str) -> None:
+        self.kea_object = kea_object
+        self.rows = rows
+        self.pks = pks
+        self.list_url = list_url
+        super().__init__(f"Kea {kea_object} matches duplicate NetBox {rows}: pks {pks}")
+
+
+def _single_match(queryset, kea_object: str, list_filter: dict[str, str]):
+    """Return the one row in *queryset*, ``None`` when it is empty, or raise :class:`DuplicateNetBoxRowsError`.
+
+    *list_filter* holds the NetBox list-view query parameters that select the same rows.
+    """
+    from urllib.parse import urlencode
+
+    from django.urls import reverse
+
+    matches = list(queryset.order_by("pk"))
+    if len(matches) > 1:
+        meta = queryset.model._meta
+        list_url = f"{reverse(f'ipam:{meta.model_name}_list')}?{urlencode(list_filter)}"
+        raise DuplicateNetBoxRowsError(kea_object, str(meta.verbose_name_plural), [m.pk for m in matches], list_url)
+    return matches[0] if matches else None
+
+
+def sync_subnet_to_netbox_prefix(
+    network: IPNetworkValue, vrf=None, description: str = KEA_SUBNET_PREFIX_DESCRIPTION
+) -> tuple:
+    """Create or update a NetBox Prefix from a parsed Kea network.
 
     Behaviour:
     - If a Prefix with this CIDR already exists (in *vrf*), it is returned
@@ -873,7 +907,7 @@ def sync_subnet_to_netbox_prefix(cidr: str, vrf=None, description: str = KEA_SUB
     - Otherwise a new active Prefix is created with *description*.
 
     Args:
-        cidr: CIDR notation, e.g. ``"192.168.10.0/24"`` or ``"2001:db8::/48"``.
+        network: The canonical network, e.g. from :func:`netbox_kea.kea.subnet_network`.
         vrf: NetBox VRF instance to assign the prefix to.  ``None`` means the global VRF.
         description: The note for a Prefix this call creates, or for an existing one that
             carries none.
@@ -884,11 +918,15 @@ def sync_subnet_to_netbox_prefix(cidr: str, vrf=None, description: str = KEA_SUB
     """
     from ipam.models import Prefix
 
-    prefix_obj, created = Prefix.objects.get_or_create(
-        prefix=cidr,
-        vrf=vrf,
-        defaults={"status": "active", "description": description},
+    cidr = str(network)
+    prefix_obj = _single_match(
+        Prefix.objects.filter(prefix=cidr, vrf=vrf),
+        f"subnet {cidr}",
+        {"prefix": cidr, "vrf_id": vrf.pk if vrf else "null"},
     )
+    created = prefix_obj is None
+    if created:
+        prefix_obj = Prefix.objects.create(prefix=cidr, vrf=vrf, status="active", description=description)
     did_update = False
     if not created and not prefix_obj.description:
         prefix_obj.description = description
@@ -974,12 +1012,23 @@ def sync_pool_to_netbox_ip_range(pool_str: str, subnet_cidr: str, vrf=None) -> t
         logger.debug("Skipping pool %r: range too large to store as NetBox IPRange", pool_str)
         return _POOL_TOO_LARGE
 
-    range_obj, created = IPRange.objects.get_or_create(
-        start_address=start_addr,
-        end_address=end_addr,
-        vrf=vrf,
-        defaults={"status": "active", "description": "Synced from Kea DHCP pool"},
+    # A pool is identified by its endpoints and VRF, independent of stored prefix lengths.
+    range_obj = _single_match(
+        IPRange.objects.filter(
+            start_address__net_host=str(start_addr.ip), end_address__net_host=str(end_addr.ip), vrf=vrf
+        ),
+        f"pool {pool_str}",
+        {"start_address": str(start_addr.ip), "end_address": str(end_addr.ip), "vrf_id": vrf.pk if vrf else "null"},
     )
+    created = range_obj is None
+    if created:
+        range_obj = IPRange.objects.create(
+            start_address=start_addr,
+            end_address=end_addr,
+            vrf=vrf,
+            status="active",
+            description="Synced from Kea DHCP pool",
+        )
     did_update = False
     if not created and not range_obj.description:
         range_obj.description = "Synced from Kea DHCP pool"

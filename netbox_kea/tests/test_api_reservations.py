@@ -569,6 +569,26 @@ class TestReservation4API(_APITestBase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(kea.commands(), ["subnet4-list", "config-get"])
 
+    def test_configured_only_subnet_cannot_select_a_reservation_scope(self):
+        selectors = (
+            {
+                "scope": "in-subnet",
+                "subnet_id": "20",
+                "identifier_type": "hw-address",
+                "identifier": "aa:bb:cc:dd:ee:ff",
+            },
+            {"ip_address": "198.18.0.20", "subnet_id": "20"},
+        )
+        for params in selectors:
+            with self.subTest(params=params):
+                responses = _catalogue_responses(4, 20, "198.18.0.0/24")
+                responses["subnet4-list"] = {"result": 2, "text": "subnet commands unavailable"}
+                invalidate(self.server, 4)
+                with stub_kea(responses) as kea:
+                    response = self.api_client.get(self._url(), params)
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(kea.commands(), ["subnet4-list", "config-get"])
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Reservation6 tests

@@ -31,9 +31,63 @@ def _claim_netbox_ip(nb_api: pynetbox.api, address: str, **fields):
     NetBox enforces global address uniqueness by default now, so one stray row for this
     address fails every fixture that reserves it, and then fails their teardown too.
     """
-    for stale in nb_api.ipam.ip_addresses.filter(address=address):
+    host = address.partition("/")[0]
+    # Clear by host, as NetBox matches duplicates: a stray may carry any prefix length.
+    for stale in nb_api.ipam.ip_addresses.filter(parent=f"{host}/{128 if ':' in host else 32}"):
         stale.delete()
     return nb_api.ipam.ip_addresses.create(address=address, **fields)
+
+
+#: A stray row for the same host, and the address a fixture then asks for. The prefix
+#: lengths differ on purpose: that is what the clearing loop used to miss.
+_STRAY_ROWS_AT_ANOTHER_PREFIX_LENGTH = {
+    "an IPv4 stray stored as a host route": ("192.0.2.250/32", "192.0.2.250/24"),
+    "an IPv6 stray stored as a host route": ("2001:db8:9::5/128", "2001:db8:9::5/64"),
+}
+
+
+@pytest.mark.parametrize(
+    ("stray", "claimed"),
+    _STRAY_ROWS_AT_ANOTHER_PREFIX_LENGTH.values(),
+    ids=_STRAY_ROWS_AT_ANOTHER_PREFIX_LENGTH,
+)
+def test_claim_netbox_ip_clears_a_stray_row_whatever_prefix_length_it_carries(
+    nb_api: pynetbox.api, stray: str, claimed: str
+) -> None:
+    """NetBox rejects a duplicate on the host address, so clearing one CIDR is not enough.
+
+    The plugin's own sync writes these rows and resolves the mask itself, so a stray can
+    carry any prefix length and the fixtures cannot assume the one they ask for.
+    """
+    for leftover in nb_api.ipam.ip_addresses.filter(parent=stray):
+        leftover.delete()
+    planted = nb_api.ipam.ip_addresses.create(address=stray)
+
+    try:
+        _claim_netbox_ip(nb_api, claimed).delete()
+    finally:
+        if nb_api.ipam.ip_addresses.get(planted.id) is not None:
+            planted.delete()
+
+
+def test_the_harness_pauses_the_periodic_ipam_sync(page: Page, netbox_login: None, plugin_base: str) -> None:
+    """The periodic Kea->NetBox sync must stay paused for the whole suite.
+
+    It is on by default and the harness runs an rqworker, so it writes the same
+    IPAddress rows these fixtures create and delete. That race made the lease-to-object
+    tests fail intermittently. tests/docker/plugins.py holds the kill-switch off.
+    """
+    page.goto(f"{plugin_base}/sync-jobs/")
+    toggle = page.locator("#id_sync_enabled")
+    toggle.wait_for()
+
+    assert not toggle.is_checked(), (
+        "The periodic Kea->NetBox IPAM sync is running, so the lease fixtures race it. "
+        "tests/docker/plugins.py disables it, but SyncConfig.get() reads PLUGINS_CONFIG "
+        "only when it creates the singleton row, so a stack whose postgres volume "
+        "pre-dates that setting keeps the stored value. Run 'docker compose down -v' in "
+        "tests/docker, then test_setup.sh again."
+    )
 
 
 @pytest.fixture

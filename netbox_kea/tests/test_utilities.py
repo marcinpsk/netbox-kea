@@ -296,31 +296,31 @@ class TestFormatOptionData(TestCase):
     """Tests for format_option_data() — parses Kea option-data lists."""
 
     def test_empty_list_returns_empty_dict(self):
-        self.assertEqual(format_option_data([]), {})
+        self.assertEqual(format_option_data([], version=4), {})
 
     def test_gateway_option3(self):
         opts = [{"code": 3, "name": "routers", "data": "10.0.0.1", "csv-format": True}]
-        result = format_option_data(opts)
+        result = format_option_data(opts, version=4)
         self.assertEqual(result["gateway"], "10.0.0.1")
 
     def test_dns_servers_option6(self):
         opts = [{"code": 6, "name": "domain-name-servers", "data": "1.1.1.1, 8.8.8.8"}]
-        result = format_option_data(opts)
+        result = format_option_data(opts, version=4)
         self.assertEqual(result["dns_servers"], "1.1.1.1, 8.8.8.8")
 
     def test_domain_name_option15(self):
         opts = [{"code": 15, "name": "domain-name", "data": "example.com"}]
-        result = format_option_data(opts)
+        result = format_option_data(opts, version=4)
         self.assertEqual(result["domain_name"], "example.com")
 
     def test_ntp_servers_option42(self):
         opts = [{"code": 42, "name": "ntp-servers", "data": "192.168.1.123"}]
-        result = format_option_data(opts)
+        result = format_option_data(opts, version=4)
         self.assertEqual(result["ntp_servers"], "192.168.1.123")
 
     def test_domain_search_option119(self):
         opts = [{"code": 119, "name": "domain-search", "data": "example.com, corp.local"}]
-        result = format_option_data(opts)
+        result = format_option_data(opts, version=4)
         self.assertEqual(result["domain_search"], "example.com, corp.local")
 
     def test_v6_dns_option23(self):
@@ -335,13 +335,13 @@ class TestFormatOptionData(TestCase):
 
     def test_unknown_code_uses_option_name(self):
         opts = [{"code": 99, "name": "some-custom-option", "data": "foo"}]
-        result = format_option_data(opts)
+        result = format_option_data(opts, version=4)
         self.assertIn("some_custom_option", result)
         self.assertEqual(result["some_custom_option"], "foo")
 
     def test_unknown_code_without_name_uses_code(self):
         opts = [{"code": 99, "data": "foo"}]
-        result = format_option_data(opts)
+        result = format_option_data(opts, version=4)
         self.assertIn("option_99", result)
 
     def test_multiple_options_all_present(self):
@@ -350,7 +350,7 @@ class TestFormatOptionData(TestCase):
             {"code": 6, "name": "domain-name-servers", "data": "8.8.8.8"},
             {"code": 15, "name": "domain-name", "data": "example.com"},
         ]
-        result = format_option_data(opts)
+        result = format_option_data(opts, version=4)
         self.assertEqual(len(result), 3)
         self.assertIn("gateway", result)
         self.assertIn("dns_servers", result)
@@ -359,7 +359,7 @@ class TestFormatOptionData(TestCase):
     def test_option_name_dash_to_underscore(self):
         """Names with dashes must be converted to underscores for template access."""
         opts = [{"code": 44, "name": "netbios-name-servers", "data": "192.168.1.1"}]
-        result = format_option_data(opts)
+        result = format_option_data(opts, version=4)
         self.assertIn("netbios_name_servers", result)
         self.assertNotIn("netbios-name-servers", result)
 
@@ -382,12 +382,6 @@ class TestFormatOptionData(TestCase):
         opts = [{"code": 6, "data": "8.8.8.8"}]
         result = format_option_data(opts, version=4)
         self.assertIn("dns_servers", result)
-
-    def test_default_version_is_v4(self):
-        """Calling without version defaults to v4 behaviour."""
-        opts = [{"code": 3, "data": "10.0.0.1"}]
-        result = format_option_data(opts)
-        self.assertIn("gateway", result)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -52,7 +52,9 @@ from dataclasses import dataclass, field
 from django.apps import apps
 from django.db import transaction
 
+from ..constants import IPNetworkValue
 from ..dhcp_options import DHCPOption
+from ..kea import subnet_network
 from ..mappers.kea_to_dhcp import (
     ClientClassIntent,
     OptionDefIntent,
@@ -131,8 +133,8 @@ def _link_model():
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def _ensure_prefix(cidr: str, vrf, description: str | None = None):
-    """Get/create the shared ``ipam.Prefix`` for *cidr* via the IPAM sync helper.
+def _ensure_prefix(network: IPNetworkValue, vrf, description: str | None = None):
+    """Get/create the shared ``ipam.Prefix`` for *network* via the IPAM sync helper.
 
     Refreshes the instance from the DB so ``.prefix`` is a ``netaddr.IPNetwork`` and
     not the raw string assigned on create — ``netbox_dhcp`` validators (e.g.
@@ -141,7 +143,7 @@ def _ensure_prefix(cidr: str, vrf, description: str | None = None):
     from ..sync import KEA_SUBNET_PREFIX_DESCRIPTION, sync_subnet_to_netbox_prefix
 
     prefix_obj, _created, _updated = sync_subnet_to_netbox_prefix(
-        cidr, vrf=vrf, description=description or KEA_SUBNET_PREFIX_DESCRIPTION
+        network, vrf=vrf, description=description or KEA_SUBNET_PREFIX_DESCRIPTION
     )
     prefix_obj.refresh_from_db()
     return prefix_obj
@@ -226,9 +228,7 @@ def _ensure_delegated_prefixes(reservation: Reservation, vrf) -> list:
     """
     from ..sync import KEA_DELEGATED_PREFIX_DESCRIPTION
 
-    return [
-        _ensure_prefix(str(prefix), vrf, KEA_DELEGATED_PREFIX_DESCRIPTION) for prefix in reservation.delegated_prefixes
-    ]
+    return [_ensure_prefix(prefix, vrf, KEA_DELEGATED_PREFIX_DESCRIPTION) for prefix in reservation.delegated_prefixes]
 
 
 def _resolve_mac(hw_address: str | None, hostname: str = ""):
@@ -640,11 +640,11 @@ def _linked_subnet(server, family: int, kea_subnet_id: int):
     return link.sys4_object if link is not None else None
 
 
-def _subnet_name(server, intent: SubnetIntent) -> str:
+def _subnet_name(server, intent: SubnetIntent, network: IPNetworkValue) -> str:
     """Build a globally-unique name (NetBoxDHCPModelMixin requires unique ``name``)."""
     if intent.kea_subnet_id is not None:
         return f"{server.name} DHCPv{intent.family} subnet {intent.kea_subnet_id}"[:255]
-    return f"{server.name} DHCPv{intent.family} {intent.cidr}"[:255]
+    return f"{server.name} DHCPv{intent.family} {network}"[:255]
 
 
 def _pool_name(subnet_obj, pool_intent) -> str:
@@ -674,7 +674,8 @@ def upsert_subnet(server, dhcp_server, intent: SubnetIntent, summary: ImportSumm
 
     try:
         # Inside the try so one bad CIDR is counted as a per-subnet error, not fatal.
-        prefix_obj = _ensure_prefix(intent.cidr, server.sync_vrf)
+        network = subnet_network(intent.cidr, intent.family)
+        prefix_obj = _ensure_prefix(network, server.sync_vrf)
         if existing is not None:
             changed = False
             if existing.prefix_id != prefix_obj.pk:
@@ -693,7 +694,7 @@ def upsert_subnet(server, dhcp_server, intent: SubnetIntent, summary: ImportSumm
         else:
             # Let the plugin auto-allocate its own (global) subnet_id; never write Kea's.
             subnet_obj = Subnet(
-                name=_subnet_name(server, intent),
+                name=_subnet_name(server, intent, network),
                 prefix=prefix_obj,
                 dhcp_server=dhcp_server,
                 shared_network=None,
@@ -730,8 +731,9 @@ def upsert_subnet(server, dhcp_server, intent: SubnetIntent, summary: ImportSumm
 def upsert_pools(subnet_obj, intent: SubnetIntent, server, summary: ImportSummary, dhcp_server, custom_defs):
     """Get/create DHCP-plugin ``Pool`` rows (and their options) for each Kea pool in *intent*."""
     Pool = _model("Pool")
+    subnet_cidr = str(subnet_obj.prefix.prefix)
     for pool_intent in intent.pools:
-        range_obj = _ensure_ip_range(pool_intent.pool, intent.cidr, server.sync_vrf)
+        range_obj = _ensure_ip_range(pool_intent.pool, subnet_cidr, server.sync_vrf)
         if range_obj is None:
             summary.warn(f"pool {pool_intent.pool} in {intent.cidr}: unusable range, skipped")
             continue
