@@ -1805,7 +1805,7 @@ class KeaClient:
                 check=(0, 3),
             )
         except KeaException as exc:
-            if command_suffix != "-by-state" or exc.response.get("result") != 2:
+            if command_suffix != "-by-state" or not exc.unsupported_command:
                 raise
             raise LeaseQueryPreflightUnavailable("state-command") from exc
         return command, response
@@ -2243,8 +2243,7 @@ class KeaClient:
             try:
                 self._config_phase_command("config-test", service, config)
             except KeaException as exc:
-                result = exc.response.get("result")
-                if result == 2:
+                if exc.unsupported_command:
                     logger.debug("config-test not supported for service %s — skipping pre-flight check", service)
                 else:
                     logger.warning("config-test failed for service %s — aborting config-write", service)
