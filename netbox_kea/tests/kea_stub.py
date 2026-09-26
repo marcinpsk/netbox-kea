@@ -275,22 +275,6 @@ def _res_get(reservation: dict[str, Any]) -> dict[str, Any]:
     return {"result": 0, "arguments": dict(reservation)}
 
 
-def _subnet_get(
-    version: int, pools: list[str] | None = None, subnet_id: int = 1, subnet_cidr: str | None = None
-) -> dict[str, Any]:
-    """A ``subnet{v}-get`` payload for the reservation-add pool-overlap probe and CIDR display.
-
-    *pools* is a list of pool range strings; the probe warns only when the
-    reservation IP falls inside one of them. *subnet_cidr*, when given, is the
-    ``subnet`` field ``KeaClient.get_subnet_cidr`` reads to display the CIDR on the
-    reservation edit views — omit it only for callers that never reach that lookup.
-    """
-    subnet: dict[str, Any] = {"id": subnet_id, "pools": [{"pool": p} for p in (pools or [])]}
-    if subnet_cidr is not None:
-        subnet["subnet"] = subnet_cidr
-    return {"result": 0, "arguments": {f"subnet{version}": [subnet]}}
-
-
 def _leases_per_subnet(leases_by_subnet: dict[Any, list[dict[str, Any]]]):
     """A Subnet lease responder that answers only for the Subnet it was asked about.
 
@@ -310,9 +294,7 @@ def _leases_per_subnet(leases_by_subnet: dict[Any, list[dict[str, Any]]]):
     return _respond
 
 
-def _subnet_list(
-    version: int, subnets: list[dict[str, Any]]
-) -> dict[str, Any]:  # version kept for symmetry with _subnet_get
+def _subnet_list(version: int, subnets: list[dict[str, Any]]) -> dict[str, Any]:
     """A ``subnet{v}-list`` payload, the ``subnet_cmds`` source every subnet lookup reads.
 
     Used by Subnet catalogue and Reservation form tests. *subnets* is the list of
