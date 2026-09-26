@@ -776,11 +776,12 @@ class TestBadgeEnrichment:
         #
         # This view aggregates every registered Server, and the suite's servers all
         # address the same Kea daemon, so the reservation renders once per Server and
-        # the row count is whatever else the session has registered. Assert that every
-        # row for this reservation carries the badge instead of pinning a count.
+        # the row count is whatever else the session has registered. Assert exactly one
+        # badge per row for this reservation instead of pinning a row count.
         rows = page.locator("table.object-list > tbody > tr").filter(has_text=_RESERVED_MAC4)
         expect(rows.first).to_be_visible()
-        expect(rows.locator('a.badge:has-text("Active Lease")')).to_have_count(rows.count())
+        for row in rows.all():
+            expect(row.locator('a.badge:has-text("Active Lease")')).to_have_count(1)
 
     def test_netbox_ip_synced_badge_or_sync_button_present_on_leases4(
         self,
@@ -808,14 +809,14 @@ class TestBadgeEnrichment:
         # the IP is either already in NetBox IPAM (Synced) or offered for sync (Sync).
         #
         # Combined views aggregate every registered Server and the suite's servers all
-        # address the same Kea daemon, so this lease renders once per Server. Assert a
-        # widget on every row for it rather than pinning a row count.
+        # address the same Kea daemon, so this lease renders once per Server. Assert
+        # exactly one widget per row for it rather than pinning a row count.
         rows = page.locator("table.object-list > tbody > tr").filter(has_text=reserved_lease4)
         expect(rows.first).to_be_visible()
-        # Row-scoped: a page-wide count lets another row's widget mask a regression
-        # that drops this one's.
-        widgets = rows.locator('a.badge:has-text("Synced"), button.badge:has-text("Sync")')
-        expect(widgets).to_have_count(rows.count())
+        # Per row: an aggregate count lets a row with two widgets mask a row with none.
+        for row in rows.all():
+            widgets = row.locator('a.badge:has-text("Synced"), button.badge:has-text("Sync")')
+            expect(widgets).to_have_count(1)
 
 
 # ---------------------------------------------------------------------------
