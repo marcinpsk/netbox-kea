@@ -180,6 +180,26 @@ rules:
           - pattern: $C.command("config-get", ...)
           - pattern: $C.command(command="config-get", ...)
 
+  - id: kea-unsupported-command-inline-check
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Use KeaException.unsupported_command instead of comparing the response result with 2.
+      The property is the one definition of an unsupported command.
+    metadata:
+      category: maintainability
+      confidence: HIGH
+    paths:
+      exclude:
+        - "**/tests/**"
+    patterns:
+      - pattern-either:
+          - pattern: $EXC.response.get("result") == 2
+          - pattern: $EXC.response["result"] == 2
+      - pattern-not-inside: |
+          class KeaException(...):
+              ...
+
   - id: netbox-ipam-get-or-create-non-unique-key
     languages: [python]
     severity: ERROR
