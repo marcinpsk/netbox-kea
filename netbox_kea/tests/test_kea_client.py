@@ -1617,6 +1617,22 @@ class TestPersistConfig(TestCase):
             with self.assertRaises(KeaConfigPersistError):
                 self.client._persist_config("dhcp4")
 
+    def test_config_test_rejection_is_a_live_unpersisted_change(self):
+        """Every handler for a live but unpersisted change also catches a config-test rejection by type."""
+        self.assertTrue(issubclass(KeaConfigPersistError, PartialPersistError))
+        with patch.object(
+            self.client._session,
+            "post",
+            side_effect=_side_effects(_CONFIG_GET_RUNNING_RESP, _CONFIG_TEST_FAIL_RESP),
+        ):
+            with self.assertRaises(PartialPersistError) as ctx:
+                self.client._persist_config("dhcp4")
+        self.assertIsInstance(ctx.exception, KeaConfigPersistError)
+        self.assertEqual(ctx.exception.service, "dhcp4")
+        self.assertIsInstance(ctx.exception.__cause__, KeaException)
+        self.assertIn("config-test rejected the running config", ctx.exception.response["text"])
+        self.assertIn("config-test rejected the running config", str(ctx.exception))
+
     def test_config_write_not_called_when_config_test_fails(self):
         """When config-test returns an error, config-write is NOT called."""
         with patch.object(

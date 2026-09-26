@@ -23,7 +23,7 @@ from ..utilities import (
     check_dhcp_enabled,
     kea_error_hint,
 )
-from ._base import ConditionalLoginRequiredMixin, _KeaChangeMixin
+from ._base import _LIVE_NOT_PERSISTED, ConditionalLoginRequiredMixin, _KeaChangeMixin
 from .subnets import _SUBNETS_TAB, _diagnostic_messages
 
 logger = logging.getLogger(__name__)
@@ -74,8 +74,8 @@ def _kea_options_mutation(request: HttpRequest, subject: str):
         logger.warning("Options mutation for %s has no confirmed config-set reply: %s", subject, exc)
         messages.warning(request, "Kea did not confirm the change. Check the server configuration before retrying.")
     except PartialPersistError as exc:
-        logger.warning("Options mutation applied but config-write failed for %s: %s", subject, exc)
-        messages.warning(request, "Change applied but may not survive a Kea restart (config-write failed).")
+        logger.warning("Options mutation applied but not persisted for %s: %s", subject, exc)
+        messages.warning(request, _LIVE_NOT_PERSISTED)
     except KeaConfigTestError:
         logger.warning("Config-test rejected options changes for %s", subject)
         messages.error(request, "Config validation failed. No changes were applied.")

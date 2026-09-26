@@ -20,6 +20,7 @@ from ..utilities import (
     kea_error_hint,
 )
 from ._base import (
+    _LIVE_NOT_PERSISTED,
     ConditionalLoginRequiredMixin,
     _diagnostic_messages,
     _KeaChangeMixin,
@@ -373,7 +374,7 @@ class BaseServerSharedNetworkEditView(_KeaChangeMixin, ConditionalLoginRequiredM
         except AmbiguousConfigSetError:
             messages.warning(request, "Kea did not confirm the change. Check the server configuration before retrying.")
         except PartialPersistError:
-            messages.warning(request, "Change applied but may not survive a Kea restart (config-write failed).")
+            messages.warning(request, _LIVE_NOT_PERSISTED)
         except KeaException as exc:
             logger.warning("network_update failed for %s on server %s: %s", network_name, pk, exc)
             messages.error(request, f"Kea error: {kea_error_hint(exc)}")

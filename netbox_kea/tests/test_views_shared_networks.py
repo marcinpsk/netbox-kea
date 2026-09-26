@@ -342,6 +342,25 @@ class TestServerSharedNetwork4AddView(_ViewTestBase):
         self.assertEqual(response.status_code, 302)
         self._assert_no_none_pk_redirect(response)
 
+    def test_post_config_test_rejection_warns_that_the_network_is_live(self):
+        """A config-test rejection after network4-add means the network is live but not persisted."""
+        with _mutate_stub("network4-add", **{"config-test": {"result": 1, "text": "config-test rejected"}}) as kea:
+            response = self.client.post(self._url(), {"name": "net-prod"})
+        self.assertEqual(response.status_code, 302)
+        self.assertNotIn("config-write", kea.commands())
+        self.assertEqual(
+            [(m.level, str(m)) for m in django_messages.get_messages(response.wsgi_request)],
+            [
+                (
+                    django_messages.WARNING,
+                    (
+                        "Shared network 'net-prod' created on the live server but config persistence failed. "
+                        "Manual reconciliation may be required."
+                    ),
+                )
+            ],
+        )
+
     def test_get_requires_login(self):
         """Unauthenticated GET must redirect to login."""
         self.client.logout()
@@ -413,6 +432,25 @@ class TestServerSharedNetwork4DeleteView(_ViewTestBase):
             response = self.client.post(self._url())
         self.assertEqual(response.status_code, 302)
         self._assert_no_none_pk_redirect(response)
+
+    def test_post_config_test_rejection_warns_that_the_delete_is_live(self):
+        """A config-test rejection after network4-del means the delete is live but not persisted."""
+        with _mutate_stub("network4-del", **{"config-test": {"result": 1, "text": "config-test rejected"}}) as kea:
+            response = self.client.post(self._url())
+        self.assertEqual(response.status_code, 302)
+        self.assertNotIn("config-write", kea.commands())
+        self.assertEqual(
+            [(m.level, str(m)) for m in django_messages.get_messages(response.wsgi_request)],
+            [
+                (
+                    django_messages.WARNING,
+                    (
+                        "Shared network 'net-alpha' deleted on the live server but config persistence failed. "
+                        "Manual reconciliation may be required."
+                    ),
+                )
+            ],
+        )
 
     def test_get_requires_login(self):
         """Unauthenticated GET must redirect to login."""
@@ -697,7 +735,7 @@ class TestServerSharedNetwork4EditView(_ViewTestBase):
             f"Expected a WARNING message; got: {[(m.level, m.message) for m in messages_list]}",
         )
         self.assertIn(
-            "Change applied but may not survive a Kea restart (config-write failed).",
+            "Change applied but may not survive a Kea restart (not written to disk).",
             [str(message) for message in messages_list],
         )
         self.assertFalse(any("Kea did not confirm the change" in str(message) for message in messages_list))
@@ -830,7 +868,7 @@ class TestSharedNetworkEditAmbiguousWrite(_ViewTestBase):
                                 [
                                     (
                                         django_messages.WARNING,
-                                        "Change applied but may not survive a Kea restart (config-write failed).",
+                                        "Change applied but may not survive a Kea restart (not written to disk).",
                                     )
                                 ],
                             )
@@ -847,12 +885,12 @@ class TestSharedNetworkEditAmbiguousWrite(_ViewTestBase):
                         self.assertIn(f"network{version}-add", kea.commands())
                         messages = list(django_messages.get_messages(response.wsgi_request))
                         self.assertFalse(any(message.level == django_messages.SUCCESS for message in messages))
+                        # The mutation is live in both phases, so the view warns and never reports a failure.
                         if phase == "config-test":
                             self.assertNotIn("config-write", kea.commands())
-                            self.assertTrue(any(message.level == django_messages.ERROR for message in messages))
-                        else:
-                            self.assertTrue(any(message.level == django_messages.WARNING for message in messages))
-                            self.assertTrue(any("created on the live server" in str(message) for message in messages))
+                        self.assertFalse(any(message.level == django_messages.ERROR for message in messages))
+                        self.assertTrue(any(message.level == django_messages.WARNING for message in messages))
+                        self.assertTrue(any("created on the live server" in str(message) for message in messages))
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)

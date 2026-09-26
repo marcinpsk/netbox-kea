@@ -15,7 +15,7 @@ from utilities.views import register_model_view
 
 from .. import forms, server_configuration, tables
 from ..constants import Family
-from ..kea import KeaClient, KeaConfigPersistError, KeaException, PartialPersistError
+from ..kea import KeaClient, KeaException, PartialPersistError
 from ..models import Server
 from ..reservations import InSubnetReservationScope
 from ..subnet_catalogue import (
@@ -36,6 +36,7 @@ from ..utilities import (
     parse_pool_range,
 )
 from ._base import (
+    _LIVE_NOT_PERSISTED,
     _catalogue_subnet_row,
     _diagnostic_messages,
     _enrich_subnet_statistics,
@@ -279,7 +280,7 @@ class _BasePoolAddView(_KeaChangeMixin, generic.ObjectView):
             client.pool_add(version=self.dhcp_version, subnet_id=subnet_id, pool=pool)
             messages.success(request, f"Pool {pool} added to subnet {subnet_id}.")
         except PartialPersistError:
-            messages.warning(request, "Change applied but may not survive a Kea restart (config-write failed).")
+            messages.warning(request, _LIVE_NOT_PERSISTED)
         except KeaException as exc:
             logger.exception("Failed to add pool to subnet %s", subnet_id)
             messages.error(request, kea_error_hint(exc))
@@ -350,7 +351,7 @@ class _BasePoolDeleteView(_KeaChangeMixin, generic.ObjectView):
             client.pool_del(version=self.dhcp_version, subnet_id=subnet_id, pool=pool)
             messages.success(request, f"Pool {pool} removed from subnet {subnet_id}.")
         except PartialPersistError:
-            messages.warning(request, "Change applied but may not survive a Kea restart (config-write failed).")
+            messages.warning(request, _LIVE_NOT_PERSISTED)
         except KeaException as exc:
             logger.exception("Failed to remove pool from subnet %s", subnet_id)
             messages.error(request, kea_error_hint(exc))
@@ -460,12 +461,7 @@ class _BaseSubnetAddView(_KeaChangeMixin, generic.ObjectView):
                 ddns_qualifying_suffix=cd.get("ddns_qualifying_suffix") or None,
             )
         except PartialPersistError:
-            return "Subnet added but config-write failed (change may not survive a Kea restart)."
-        except KeaConfigPersistError:
-            return (
-                "Subnet added but config-test rejected the running configuration, so it was not written to disk "
-                "(change may not survive a Kea restart)."
-            )
+            return "Subnet added but not written to disk (change may not survive a Kea restart)."
         return None
 
     def _create(self, server: Server, client: KeaClient, cd: dict[str, Any]) -> tuple[NewSubnetIdentity, str | None]:
@@ -493,7 +489,8 @@ class _BaseSubnetAddView(_KeaChangeMixin, generic.ObjectView):
         except PartialPersistError:
             messages.warning(
                 request,
-                f"Subnet assigned to '{shared_network}' but config-write failed (change may not survive restart).",
+                f"Subnet assigned to '{shared_network}' but not written to disk "
+                "(change may not survive a Kea restart).",
             )
         except (KeaException, requests.RequestException, ValueError):
             logger.exception("Subnet %s created but failed to assign to network %s", subnet_id, shared_network)
@@ -729,7 +726,7 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
             )
             messages.success(request, f"Subnet {cd['subnet_cidr']} updated.")
         except PartialPersistError:
-            messages.warning(request, "Change applied but may not survive a Kea restart (config-write failed).")
+            messages.warning(request, _LIVE_NOT_PERSISTED)
         except KeaException as exc:
             logger.exception("Failed to update subnet %s on server %s", subnet_id, pk)
             messages.error(request, kea_error_hint(exc))
@@ -790,12 +787,12 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
                     try:
                         client.network_subnet_add(version=self.dhcp_version, name=new_network, subnet_id=subnet_id)
                     except PartialPersistError as exc:
-                        # add is live but config-write failed; continue to attempt del, then re-raise
+                        # add is live but not persisted; continue to attempt del, then re-raise
                         add_partial_error = exc
                 if old_network:
                     try:
                         client.network_subnet_del(version=self.dhcp_version, name=old_network, subnet_id=subnet_id)
-                    except (KeaException, PartialPersistError, requests.RequestException, ValueError) as del_exc:
+                    except (KeaException, requests.RequestException, ValueError) as del_exc:
                         # add succeeded but del failed — only rollback if mutation is NOT already live
                         if isinstance(del_exc, PartialPersistError):
                             # del is live (running config changed); do not rollback
@@ -805,6 +802,14 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
                             try:
                                 client.network_subnet_del(
                                     version=self.dhcp_version, name=new_network, subnet_id=subnet_id
+                                )
+                            except PartialPersistError:
+                                logger.warning(
+                                    "Rollback of network_subnet_add for subnet %s on server %s "
+                                    "is live but not persisted",
+                                    subnet_id,
+                                    pk,
+                                    exc_info=True,
                                 )
                             except (KeaException, requests.RequestException, ValueError):
                                 logger.exception(
@@ -826,7 +831,7 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
                     raise add_partial_error
             except PartialPersistError as exc:
                 logger.warning(
-                    "network_subnet_add applied but config-write failed for subnet %s on server %s: %s",
+                    "network_subnet change applied but not persisted for subnet %s on server %s: %s",
                     subnet_id,
                     pk,
                     exc,
@@ -906,7 +911,7 @@ class _BaseSubnetDeleteView(_KeaChangeMixin, generic.ObjectView):
             client.subnet_del(version=self.dhcp_version, subnet_id=subnet_id)
             messages.success(request, f"Subnet {subnet_id} deleted.")
         except PartialPersistError:
-            messages.warning(request, "Change applied but may not survive a Kea restart (config-write failed).")
+            messages.warning(request, _LIVE_NOT_PERSISTED)
         except KeaException as exc:
             logger.exception("Failed to delete subnet %s", subnet_id)
             messages.error(request, kea_error_hint(exc))

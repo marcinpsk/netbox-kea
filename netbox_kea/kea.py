@@ -983,7 +983,7 @@ class KeaClient:
             return "not-requested"
         try:
             self._persist_config(f"dhcp{version}")
-        except (KeaConfigPersistError, PartialPersistError, RuntimeError):
+        except (PartialPersistError, RuntimeError):
             logger.warning("Could not persist a confirmed DHCPv%s Reservation mutation", version, exc_info=True)
             return "failed"
         return "persisted"
@@ -1173,7 +1173,7 @@ class KeaClient:
         Raises:
             KeaException: If Kea rejects the ``subnet{v}-add`` command. Kea did not apply it.
             PartialPersistError: If the subnet is live but not persisted.
-            KeaConfigPersistError: If the subnet is live but ``config-test`` rejected the result.
+            KeaConfigPersistError: A ``PartialPersistError`` for a live subnet that ``config-test`` rejected.
 
         """
         service = f"dhcp{version}"
@@ -2160,7 +2160,7 @@ class KeaClient:
            requires the config to be passed as arguments; calling ``config-test``
            without arguments always returns result 1 "Missing mandatory 'arguments'
            parameter."  Result 2 (command not supported) is silently skipped.  Any
-           other non-zero result raises :exc:`KeaConfigTestError`.
+           other non-zero result raises :exc:`KeaConfigPersistError`.
         3. ``config-write`` — persist the validated config to disk.  Failure raises
            :exc:`PartialPersistError` (change is live but will be lost on restart).
         """
@@ -2367,36 +2367,12 @@ class KeaConfigTestError(KeaException):
         self.service = service
 
 
-class KeaConfigPersistError(KeaException):
-    """Raised when ``_persist_config`` rejects the already-live config via ``config-test``.
-
-    The mutation IS already applied to the running daemon (the change is live in
-    memory) but config-test found the resulting config invalid, so config-write
-    was skipped.  The change **will be lost on daemon restart**.
-
-    Distinct from :exc:`PartialPersistError` (which is raised when config-write
-    itself fails after a successful config-test) and from :exc:`KeaConfigTestError`
-    (which is raised before any mutation is applied).
-    """
-
-    def __init__(self, service: str, cause: Exception) -> None:
-        response: KeaResponse = {
-            "result": -1,
-            "text": (
-                f"config-test rejected the running config for service {service!r} "
-                "— mutation is live but config-write was skipped"
-            ),
-            "arguments": [],
-        }
-        super().__init__(response, msg=f"config persist error for {service!r}")
-        self.service = service
-
-
 class PartialPersistError(KeaException):
-    """Raised when a Kea mutation is live but config-write failed.
+    """Raised when a Kea mutation is live but was not written to disk.
 
-    The change is applied in memory but will be lost on Kea restart.
-    The original :exc:`KeaException` from config-write is stored in ``__cause__``.
+    The change is applied in memory but will be lost on Kea restart.  This class
+    reports a failed config-write; subclasses report the other causes.
+    The original exception from the failed phase is stored in ``__cause__``.
     """
 
     def __init__(self, service: str, cause: Exception) -> None:
@@ -2407,6 +2383,28 @@ class PartialPersistError(KeaException):
         }
         super().__init__(response, msg=f"partial persist error for {service!r}")
         self.service = service
+
+
+class KeaConfigPersistError(PartialPersistError):
+    """Raised when ``_persist_config`` rejects the already-live config via ``config-test``.
+
+    The mutation IS already applied to the running daemon (the change is live in
+    memory) but config-test found the resulting config invalid, so config-write
+    was skipped.  The change **will be lost on daemon restart**.
+
+    Inherits from :exc:`PartialPersistError` because a caller must treat both the
+    same way: the change is live but not written to disk.  Distinct from
+    :exc:`KeaConfigTestError`, which is raised before any mutation is applied.
+    """
+
+    def __init__(self, service: str, cause: Exception) -> None:
+        super().__init__(service, cause)
+        rejected_text = (
+            f"config-test rejected the running config for service {service!r}; "
+            "mutation is live but config-write was skipped"
+        )
+        self.response["text"] = rejected_text
+        self.args = (f"config persist error for {service!r}: {rejected_text}",)
 
 
 class AmbiguousConfigSetError(PartialPersistError):

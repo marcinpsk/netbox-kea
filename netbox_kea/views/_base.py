@@ -34,6 +34,9 @@ T = TypeVar("T", bound=BaseTable)
 # Protects the <path:pool> URL parameter from injection before it reaches the Kea API.
 _POOL_RE = re.compile(r"^[0-9a-fA-F.:/-]{3,100}$")
 
+# The warning for a PartialPersistError: the change is live, but Kea did not write it to disk.
+_LIVE_NOT_PERSISTED = "Change applied but may not survive a Kea restart (not written to disk)."
+
 
 def _strip_empty_params(path: str) -> str:
     """Return *path* with blank query-string parameters removed.

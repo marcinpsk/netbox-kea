@@ -184,15 +184,16 @@ URL request
 Exception
  └── KeaException                  # base — any non-ok result from Kea
       ├── KeaConfigTestError       # config-test failed before the mutation; nothing changed
-      ├── KeaConfigPersistError    # mutation is live; config-test rejected it, so no config-write
       ├── PartialPersistError      # mutation is live; config-write failed
+      │    ├── KeaConfigPersistError    # mutation is live; config-test rejected it, so no config-write
       │    └── AmbiguousConfigSetError  # config-set status is ambiguous
       └── (generic Kea errors)
 ```
 
 **Catch order matters**: always catch the subclasses *before* `KeaException`.
-Order: `AmbiguousConfigSetError` → `PartialPersistError` → `KeaConfigPersistError` → `KeaException`.
-Both `PartialPersistError` and `KeaConfigPersistError` mean the change is live.
+Order: `AmbiguousConfigSetError` → `PartialPersistError` → `KeaException`.
+`PartialPersistError` means the change is live but not written to disk. It covers
+`KeaConfigPersistError` by type, so do not catch that subclass separately.
 
 ## Security & Code Quality Rules
 

@@ -1237,7 +1237,7 @@ class TestServerOptionsPartialPersistError(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         msgs = list(response.context["messages"])
         self.assertIn(
-            "Change applied but may not survive a Kea restart (config-write failed).",
+            "Change applied but may not survive a Kea restart (not written to disk).",
             [str(message) for message in msgs if message.level == django_messages.WARNING],
         )
         self.assertNotIn(

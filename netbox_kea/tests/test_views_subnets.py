@@ -1847,8 +1847,7 @@ class TestSubnetAddExceptionPaths(_ViewTestBase):
         messages = list(get_messages(response.wsgi_request))
         self.assertEqual([m for m in messages if m.level == django_messages.ERROR], [])
         self.assertIn(
-            "Subnet added but config-test rejected the running configuration, so it was not written to disk "
-            "(change may not survive a Kea restart).",
+            "Subnet added but not written to disk (change may not survive a Kea restart).",
             [str(m) for m in messages if m.level == django_messages.WARNING],
         )
         self.assertIn("Subnet assigned to shared network 'alpha'.", [str(m) for m in messages])
@@ -1878,7 +1877,7 @@ class TestSubnetAddExceptionPaths(_ViewTestBase):
         self.assertEqual(response.status_code, 302)
         self.assertEqual(kea.bodies("network4-subnet-add")[0]["arguments"], {"name": "alpha", "id": 1})
         warnings = [str(m) for m in get_messages(response.wsgi_request) if m.level == django_messages.WARNING]
-        self.assertIn("Subnet added but config-write failed (change may not survive a Kea restart).", warnings)
+        self.assertIn("Subnet added but not written to disk (change may not survive a Kea restart).", warnings)
 
     def test_post_subnet_add_runtime_error_rerenders_form(self):
         """A generic (ValueError) failure during subnet_add must re-render the form (200)."""
@@ -1900,7 +1899,30 @@ class TestSubnetAddExceptionPaths(_ViewTestBase):
         ):
             response = self.client.post(self._url(), {**_SUBNET_ADD_POST, "shared_network": "alpha"}, follow=True)
         msgs = list(response.context["messages"])
-        self.assertTrue(any("config-write failed" in m.message.lower() for m in msgs))
+        self.assertTrue(any("not written to disk" in m.message.lower() for m in msgs))
+
+    def test_post_network_assignment_config_test_rejection_warns_that_it_is_live(self):
+        """A config-test rejection after network4-subnet-add means the assignment is live but not persisted."""
+        with self._add_stub(
+            self._CONFIG4_ALPHA,
+            **{
+                "subnet4-add": {"result": 0, "arguments": {"subnets": [{"id": 5}]}},
+                "config-test": queued({"result": 0}, {"result": 1, "text": "config-test rejected"}),
+            },
+        ) as kea:
+            response = self.client.post(self._url(), {**_SUBNET_ADD_POST, "subnet_id": "5", "shared_network": "alpha"})
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(kea.bodies("network4-subnet-add")[0]["arguments"], {"name": "alpha", "id": 5})
+        self.assertEqual(kea.commands().count("config-write"), 1)
+        messages = [(m.level, str(m)) for m in get_messages(response.wsgi_request)]
+        self.assertIn(
+            (
+                django_messages.WARNING,
+                "Subnet assigned to 'alpha' but not written to disk (change may not survive a Kea restart).",
+            ),
+            messages,
+        )
+        self.assertFalse(any("could not be assigned" in text for _, text in messages))
 
     def test_post_network_assignment_generic_exception_shows_warning(self):
         """A transport error on network_subnet_add (after a clean subnet_add) must warn."""
@@ -2089,12 +2111,12 @@ class TestSubnetEditNetworkDelPartialPersist(_ViewTestBase):
     def _url(self, subnet_id=42):
         return reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, subnet_id])
 
-    def test_partial_persist_on_del_skips_rollback(self):
-        """When network_subnet_del hits a config-write failure, the view must not roll back the add."""
-        # subnet 42 lives in old-net; POST moves it to new-net. Order: subnet_update persist (ok),
-        # network4-subnet-add persist (ok), network4-subnet-del persist (config-write fails). Because
-        # the del is already live (PartialPersistError), the view must NOT issue a rollback del — so
-        # network4-subnet-del is issued exactly once.
+    def _move_to_new_net_with_failed_del_persist(self, phase):
+        """Move subnet 42 from old-net to new-net; *phase* fails for the network4-subnet-del persist.
+
+        Order: subnet_update persist, network4-subnet-add persist, network4-subnet-del persist.
+        The del is already live, so the view must NOT issue a rollback del of new-net.
+        """
         config_with_current_net = {
             "result": 0,
             "arguments": {
@@ -2115,17 +2137,34 @@ class TestSubnetEditNetworkDelPartialPersist(_ViewTestBase):
             },
             "subnet4-update": {"result": 0},
             "config-test": {"result": 0},
-            # 1: subnet_update persist ok, 2: network-add persist ok, 3: network-del persist fails.
-            "config-write": queued({"result": 0}, {"result": 0}, {"result": 1, "text": "disk full"}),
+            "config-write": {"result": 0},
             "network4-subnet-add": {"result": 0},
             "network4-subnet-del": {"result": 0},
+            phase: queued({"result": 0}, {"result": 0}, {"result": 1, "text": "persist failed"}),
         }
         post_data = {**_SUBNET4_EDIT_POST, "shared_network": "new-net"}
         with stub_kea({**_ABSENT_READ_HOOKS, **stub}) as kea:
             response = self.client.post(self._url(), post_data)
-        self.assertIn(response.status_code, (200, 302))
-        # del issued once (for old-net); no rollback del of new-net.
+        self.assertEqual(response.status_code, 302)
         self.assertEqual(kea.commands().count("network4-subnet-del"), 1)
+        self.assertIn(
+            (
+                django_messages.WARNING,
+                (
+                    "Network assignment may have applied to the running config but could not be persisted. "
+                    "Check Kea logs and reapply if needed."
+                ),
+            ),
+            [(m.level, str(m)) for m in get_messages(response.wsgi_request)],
+        )
+
+    def test_partial_persist_on_del_skips_rollback(self):
+        """When network_subnet_del hits a config-write failure, the view must not roll back the add."""
+        self._move_to_new_net_with_failed_del_persist("config-write")
+
+    def test_config_test_rejection_on_del_skips_rollback(self):
+        """When config-test rejects the config after network_subnet_del, the del is live: no rollback."""
+        self._move_to_new_net_with_failed_del_persist("config-test")
 
 
 # ---------------------------------------------------------------------------
@@ -2185,6 +2224,31 @@ class TestSubnetDeleteExceptionPaths(_ViewTestBase):
         with stub_kea({**_ABSENT_READ_HOOKS, "subnet4-del": ValueError("crash")}):
             response = self.client.post(self._url())
         self.assertEqual(response.status_code, 302)
+
+    def _assert_live_unpersisted_delete_warns(self, phase):
+        stub = {
+            "subnet4-del": {"result": 0},
+            "config-get": _EMPTY_CONFIG4,
+            "config-test": {"result": 0},
+            "config-write": {"result": 0},
+            phase: {"result": 1, "text": "persist failed"},
+        }
+        with stub_kea({**_ABSENT_READ_HOOKS, **stub}) as kea:
+            response = self.client.post(self._url())
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("subnet4-del", kea.commands())
+        self.assertEqual(
+            [(m.level, str(m)) for m in get_messages(response.wsgi_request)],
+            [(django_messages.WARNING, "Change applied but may not survive a Kea restart (not written to disk).")],
+        )
+
+    def test_post_config_write_failure_warns_that_the_delete_is_live(self):
+        """A config-write failure after subnet4-del means the delete is live but not persisted."""
+        self._assert_live_unpersisted_delete_warns("config-write")
+
+    def test_post_config_test_rejection_warns_that_the_delete_is_live(self):
+        """A config-test rejection after subnet4-del means the delete is live but not persisted."""
+        self._assert_live_unpersisted_delete_warns("config-test")
 
 
 # ---------------------------------------------------------------------------
@@ -2643,6 +2707,25 @@ class TestSubnetEditNetworkRollback(_ViewTestBase):
         # both del calls were made (old + rollback of new)
         self.assertEqual(kea.commands().count("network4-subnet-del"), 2)
 
+    def test_live_but_unpersisted_rollback_is_not_logged_as_failed(self):
+        """A rollback del whose config-test rejects is live, so the log must not call the rollback failed."""
+        # config-test: subnet_update persist, network add persist, then the rollback del persist rejects.
+        url = reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, 42])
+        with (
+            self._post_stub(
+                **{
+                    "network4-subnet-del": queued({"result": 1, "text": "del failed"}, {"result": 0}),
+                    "config-test": queued({"result": 0}, {"result": 0}, {"result": 1, "text": "rejected"}),
+                }
+            ) as kea,
+            self.assertLogs("netbox_kea.views.subnets", level="WARNING") as logs,
+        ):
+            response = self.client.post(url, self._post_data())
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(kea.commands().count("network4-subnet-del"), 2)
+        self.assertIn("is live but not persisted", "\n".join(logs.output))
+        self.assertNotIn("Rollback of network_subnet_add failed", "\n".join(logs.output))
+
     def test_network_subnet_del_transport_error_skips_rollback(self):
         """del(old) raising a transport error leaves state ambiguous → NO rollback attempted."""
         url = reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, 42])
@@ -2975,7 +3058,9 @@ class TestSubnetAddPartialPersistNetworkAssign(_ViewTestBase):
             )
         self.assertEqual(response.status_code, 200)
         msgs = [str(m) for m in response.context["messages"]]
-        self.assertIn("Subnet assigned to 'my-net' but config-write failed (change may not survive restart).", msgs)
+        self.assertIn(
+            "Subnet assigned to 'my-net' but not written to disk (change may not survive a Kea restart).", msgs
+        )
         self.assertFalse(any("could not be assigned" in m.lower() for m in msgs))
         # network4-subnet-add was issued for the partial subnet id (subnet IS live)
         self.assertEqual(kea.commands().count("network4-subnet-add"), 1)
