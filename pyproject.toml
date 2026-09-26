@@ -60,7 +60,7 @@ dev = [
   # This pin plus uv.lock is the only place a ruff version appears: the commit hook and
   # CI both resolve it through `uv run`. Exact, not a range, so a dependabot bump updates
   # this line as well as the lock rather than the lock alone. See test_lint_pins.py.
-  "ruff==0.16.7",
+  "ruff==0.16.8",
   "reuse",
   "pre-commit",
   "python-semantic-release",
