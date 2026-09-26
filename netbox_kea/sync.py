@@ -31,6 +31,8 @@ from .reservations import (
 if TYPE_CHECKING:
     from ipam.models import IPAddress as NbIPAddress
 
+    from .constants import IPNetworkValue
+
 logger = logging.getLogger(__name__)
 
 
@@ -893,8 +895,10 @@ def _single_match(queryset, kea_object: str, list_filter: dict[str, str]):
     return matches[0] if matches else None
 
 
-def sync_subnet_to_netbox_prefix(cidr: str, vrf=None, description: str = KEA_SUBNET_PREFIX_DESCRIPTION) -> tuple:
-    """Create or update a NetBox Prefix from a Kea CIDR string.
+def sync_subnet_to_netbox_prefix(
+    network: IPNetworkValue, vrf=None, description: str = KEA_SUBNET_PREFIX_DESCRIPTION
+) -> tuple:
+    """Create or update a NetBox Prefix from a parsed Kea network.
 
     Behaviour:
     - If a Prefix with this CIDR already exists (in *vrf*), it is returned
@@ -903,7 +907,7 @@ def sync_subnet_to_netbox_prefix(cidr: str, vrf=None, description: str = KEA_SUB
     - Otherwise a new active Prefix is created with *description*.
 
     Args:
-        cidr: CIDR notation, e.g. ``"192.168.10.0/24"`` or ``"2001:db8::/48"``.
+        network: The canonical network, e.g. from :func:`netbox_kea.kea.subnet_network`.
         vrf: NetBox VRF instance to assign the prefix to.  ``None`` means the global VRF.
         description: The note for a Prefix this call creates, or for an existing one that
             carries none.
@@ -914,6 +918,7 @@ def sync_subnet_to_netbox_prefix(cidr: str, vrf=None, description: str = KEA_SUB
     """
     from ipam.models import Prefix
 
+    cidr = str(network)
     prefix_obj = _single_match(
         Prefix.objects.filter(prefix=cidr, vrf=vrf),
         f"subnet {cidr}",

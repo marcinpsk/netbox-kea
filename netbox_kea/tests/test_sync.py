@@ -6,6 +6,7 @@ runs in a transaction that is rolled back afterwards.
 
 from __future__ import annotations
 
+import ipaddress
 from collections.abc import Iterable
 from typing import get_args, get_type_hints
 
@@ -1605,7 +1606,7 @@ class TestSyncSubnetToNetboxPrefix(TestCase):
     def _sync(self, cidr, vrf=None):
         from netbox_kea.sync import sync_subnet_to_netbox_prefix
 
-        return sync_subnet_to_netbox_prefix(cidr, vrf=vrf)
+        return sync_subnet_to_netbox_prefix(ipaddress.ip_network(cidr), vrf=vrf)
 
     def test_creates_prefix_on_first_call(self):
         from ipam.models import Prefix
@@ -1657,6 +1658,18 @@ class TestSyncSubnetToNetboxPrefix(TestCase):
     def test_returns_three_tuple(self):
         result = self._sync("10.5.0.0/24")
         self.assertEqual(len(result), 3)
+
+    def test_kea_subnet_with_host_bits_matches_existing_canonical_prefix(self):
+        from ipam.models import Prefix
+
+        from netbox_kea.kea import subnet_network
+        from netbox_kea.sync import sync_subnet_to_netbox_prefix
+
+        existing = Prefix.objects.create(prefix="10.8.0.0/24", description="")
+        prefix_obj, created, _ = sync_subnet_to_netbox_prefix(subnet_network("10.8.0.9/24", 4))
+        self.assertFalse(created)
+        self.assertEqual(prefix_obj.pk, existing.pk)
+        self.assertEqual(Prefix.objects.count(), 1)
 
     def test_duplicate_prefixes_raise_and_change_nothing(self):
         """NetBox does not enforce (vrf, prefix) uniqueness, so duplicates are an error, not a pick."""
@@ -1822,7 +1835,7 @@ class TestDuplicateRowsListUrl(TestCase):
         from netbox_kea.sync import DuplicateNetBoxRowsError, sync_subnet_to_netbox_prefix
 
         with self.assertRaises(DuplicateNetBoxRowsError) as ctx:
-            sync_subnet_to_netbox_prefix("10.7.0.0/24", vrf=vrf)
+            sync_subnet_to_netbox_prefix(ipaddress.ip_network("10.7.0.0/24"), vrf=vrf)
         return ctx.exception
 
     def _make_ranges(self):

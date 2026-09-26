@@ -343,7 +343,7 @@ def _sync_subnet_entry(
 
     if sync_prefixes:
         try:
-            _, created, did_update = sync_subnet_to_netbox_prefix(subnet_cidr, vrf=vrf)
+            _, created, did_update = sync_subnet_to_netbox_prefix(subnet.network, vrf=vrf)
             if created:
                 stats["created"] += 1
             elif did_update:

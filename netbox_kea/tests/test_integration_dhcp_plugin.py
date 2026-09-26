@@ -225,6 +225,26 @@ class DhcpPluginAdapterTest(TestCase):
         self.assertEqual(Pool.objects.count(), 1)
         self.assertEqual(HostReservation.objects.count(), 1)
 
+    def test_subnet_with_host_bits_reimports_onto_one_canonical_prefix(self):
+        from ipam.models import Prefix
+
+        Subnet = apps.get_model(DHCP_PLUGIN, "Subnet")
+        Pool = apps.get_model(DHCP_PLUGIN, "Pool")
+        conf = {"subnet4": [{"id": 1, "subnet": "198.18.1.5/24", "pools": [{"pool": "198.18.1.10-198.18.1.20"}]}]}
+
+        first = self.adapter.import_server_config(self.server, parse_dhcp_config(conf, 4))
+        second = self.adapter.import_server_config(self.server, parse_dhcp_config(conf, 4))
+
+        self.assertEqual((first.errors, second.errors), (0, 0), first.warnings + second.warnings)
+        prefix = Prefix.objects.get(prefix="198.18.1.0/24", vrf=None)
+        self.assertEqual(Prefix.objects.filter(prefix__net_contains_or_equals="198.18.1.0/24").count(), 1)
+        subnet = Subnet.objects.get()
+        self.assertEqual(subnet.prefix_id, prefix.pk)
+        pool = Pool.objects.get(subnet=subnet)
+        self.assertEqual(str(pool.ip_range.start_address), "198.18.1.10/24")
+        self.assertEqual(str(pool.ip_range.end_address), "198.18.1.20/24")
+        self.assertEqual((first.pools_created, second.pools_created), (1, 0))
+
     # ── deferred reporting ────────────────────────────────────────────────────
 
     def test_shared_network_subnets_flattened_and_reported(self):
