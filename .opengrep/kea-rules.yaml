@@ -196,6 +196,9 @@ rules:
         - "**/tests/**"
     patterns:
       - pattern: $QS.get_or_create(...)
+      # An exact primary-key lookup matches at most one row.
+      - pattern-not: $QS.get_or_create(..., pk=$PK, ...)
+      - pattern-not: $QS.get_or_create(..., id=$PK, ...)
       # The receiver can be a queryset chain, e.g. Prefix.objects.filter(...).
       - metavariable-pattern:
           metavariable: $QS

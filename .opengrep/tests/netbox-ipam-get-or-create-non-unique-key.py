@@ -54,3 +54,18 @@ def ok_create(cidr):
 def ok_mac_address(mac):
     # ok: netbox-ipam-get-or-create-non-unique-key
     return MACAddress.objects.get_or_create(mac_address=mac)
+
+
+def bad_prefix_pk_in(pks):
+    # ruleid: netbox-ipam-get-or-create-non-unique-key
+    return Prefix.objects.get_or_create(pk__in=pks)
+
+
+def ok_prefix_pk(pk, cidr):
+    # ok: netbox-ipam-get-or-create-non-unique-key
+    return Prefix.objects.get_or_create(pk=pk, defaults={"prefix": cidr})
+
+
+def ok_ip_address_id_chained(vrf, pk):
+    # ok: netbox-ipam-get-or-create-non-unique-key
+    return IPAddress.objects.filter(vrf=vrf).get_or_create(id=pk)
