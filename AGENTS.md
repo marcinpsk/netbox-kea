@@ -247,6 +247,17 @@ resort, reserved for true external boundaries you cannot run locally.
   parser can't hide behind a `MagicMock`. Register responses by command name (dict /
   list / `queued(...)` / a `(body) -> payload` callable / an exception instance raised
   at the boundary). Patching is at the class level so it also covers `clone()`.
+- **Recorded Kea replies check the parser.** A hand-written stub shows what we expect
+  Kea to return. `netbox_kea/tests/kea_recordings/` holds `config-get` and
+  `subnet{4,6}-list` replies recorded from a real Kea (the harness `KEA_VERSION`), with
+  coverage configurations that use every field `server_configuration` reads.
+  `test_kea_recordings.py` requires zero diagnostics. The script also writes
+  `accepted-keys.json` from the keyword tables that Kea's `config-test` and
+  `config-set` check in the same release (`simple_parser{4,6}.cc`). `stub_kea()`
+  fails a `config-test` or `config-set` whose Shared Network or Subnet carries a key
+  outside that file, because Kea rejects unknown keys. When you bump `KEA_VERSION` or
+  make the parser read a new field, add the field to `kea-dhcp{4,6}.conf` and run
+  `scripts/record_kea_config_get.py` (Docker and curl required).
 - **Type-check gate.** `scripts/mypy-gate.sh` (+ `test_mypy_gate.py`, a pre-push hook,
   the CI `lint` job) type-checks `netbox_kea/` and fails only on errors that are absent
   from `mypy-baseline.txt`. It exists to catch annotation drift between a producer and
@@ -276,6 +287,18 @@ resort, reserved for true external boundaries you cannot run locally.
   unreachable defensive guard). `mock_discipline_baseline.txt` is **empty** and must stay
   that way: it grandfathers accepted violations per (file, function), so regenerating it
   to silence a failure defeats the gate. Fix the call site instead.
+- **Kea wire-discipline gate.** `netbox_kea/tests/kea_wire_discipline.py` checks
+  production code for Kea command names, hyphenated payload keys, and family-suffixed
+  configuration keys or service names. String templates (f-strings, `.format`, `%`, `+`)
+  count when they can build a wire literal. Wire owners are `kea.py`, `server_configuration.py`,
+  `subnet_catalogue.py`, `reservations.py`, and `dhcp_options.py`, relative to `netbox_kea/`.
+  The checker excludes these exact modules, tests, and migrations. The transport stub
+  `tests/kea_stub.py` may also use wire literals to model Kea responses.
+  It also checks `arguments` when code uses it as a raw payload key. Prefer typed domain
+  interfaces when the gate fails. The baseline is the follow-up brief and only shrinks.
+  Use `--update-baseline` to record decreases. It refuses new sites and higher counts
+  without changing the baseline. A test prevents the baseline from adding files.
+  The pre-commit hook and the real-tree suite test enforce the budgets.
 - **Standard NetBox model coverage via mixins.** For the `Server` model (a
   `NetBoxModel` with standard generic views + `NetBoxModelViewSet`), use NetBox's
   `ViewTestCases` / `APIViewTestCases` (see `test_server_generic.py`). Wire plugin

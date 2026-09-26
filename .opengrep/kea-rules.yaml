@@ -7,6 +7,21 @@
 #
 # Rule-test fixtures live in .opengrep/tests/; run them with scripts/opengrep-test.sh.
 rules:
+  - id: kea-config-phase-without-reply-validation
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Send config-test, config-set, and config-write through _config_phase_command()
+      so each phase requires one well-formed reply before accepting a result code.
+    paths:
+      exclude:
+        - "**/tests/**"
+    pattern-either:
+      - pattern: $CLIENT.command("=~/^config-(test|set|write)$/", ...)
+      - pattern: $CLIENT.command(..., command="=~/^config-(test|set|write)$/", ...)
+      - pattern: $CLIENT._config_mutation_command("config-set", ...)
+      - pattern: $CLIENT._config_mutation_command(..., command="config-set", ...)
+
   - id: kea-sync-hostname-unvalidated
     languages: [python]
     severity: ERROR
@@ -113,3 +128,120 @@ rules:
         - "**/migrations/**"
     patterns:
       - pattern: $C.command(...)[0]
+
+  - id: kea-reservation-command-outside-adapter
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Only netbox_kea/kea.py may send a reservation-* command. Its results are raw
+      Kea Reservation records, whose keys only netbox_kea/reservations.py knows how
+      to read. Every other module consumes the typed Reservation, ReservationIdentity
+      and ReservationScope values those two build, so raw Reservation keys cannot
+      spread back out of the private adapters.
+    metadata:
+      category: correctness
+      confidence: HIGH
+      references:
+        - "CONTEXT.md: Reservation, Reservation Identity, Reservation Scope"
+    paths:
+      exclude:
+        - "**/tests/**"
+        - "**/migrations/**"
+        - "netbox_kea/kea.py"
+    patterns:
+      - pattern-either:
+          - pattern: $C.command("=~/^reservation-/", ...)
+          - pattern: $C.command(command="=~/^reservation-/", ...)
+
+  - id: kea-config-read-modify-write-without-reader
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Read the live configuration for a read-modify-write through
+      KeaClient._config_for_update(). It validates the config-get reply and the
+      Dhcp4/Dhcp6 block before the mutation reads it, and _config_entries()
+      validates each list the mutation walks. A hand-parsed config-get reply
+      turns a malformed block into an AttributeError and an HTTP 500.
+    metadata:
+      category: correctness
+      confidence: HIGH
+      references:
+        - "CLAUDE.md: Validate Kea response shape before indexing"
+    paths:
+      exclude:
+        - "**/tests/**"
+        - "**/migrations/**"
+    patterns:
+      - pattern-inside: |
+          def $F(...):
+            ...
+            $S._apply_config(...)
+      - pattern-either:
+          - pattern: $C.command("config-get", ...)
+          - pattern: $C.command(command="config-get", ...)
+
+  - id: kea-unsupported-command-inline-check
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Use KeaException.unsupported_command instead of comparing the response result with 2.
+      The property is the one definition of an unsupported command.
+    metadata:
+      category: maintainability
+      confidence: HIGH
+    paths:
+      exclude:
+        - "**/tests/**"
+    patterns:
+      - pattern-either:
+          - pattern: $EXC.response.get("result") == 2
+          - pattern: $EXC.response.get("result") != 2
+          - pattern: $EXC.response["result"] == 2
+          - pattern: $EXC.response["result"] != 2
+          - patterns:
+              - pattern-either:
+                  - pattern-inside: |
+                      $R = $EXC.response.get("result")
+                      ...
+                  - pattern-inside: |
+                      $R = $EXC.response["result"]
+                      ...
+              # A later assignment replaces the Kea result.
+              - pattern-not-inside: |
+                  $R = $FIRST
+                  ...
+                  $R = $OTHER
+                  ...
+              - pattern-either:
+                  - pattern: $R == 2
+                  - pattern: $R != 2
+      - pattern-not-inside: |
+          class KeaException(...):
+              ...
+
+  - id: netbox-ipam-get-or-create-non-unique-key
+    languages: [python]
+    severity: ERROR
+    message: >-
+      NetBox does not enforce Prefix, IPRange, or IPAddress keys in the database.
+      ENFORCE_GLOBAL_UNIQUE is checked only in clean(), so duplicate rows can exist.
+      get_or_create() then raises MultipleObjectsReturned on every run.
+      Query with filter(...) and handle more than one match explicitly, as sync._single_match does.
+    metadata:
+      category: correctness
+      confidence: HIGH
+    paths:
+      exclude:
+        - "**/tests/**"
+    patterns:
+      - pattern: $QS.get_or_create(...)
+      # An exact primary-key lookup matches at most one row.
+      - pattern-not: $QS.get_or_create(..., pk=$PK, ...)
+      - pattern-not: $QS.get_or_create(..., id=$PK, ...)
+      # The receiver can be a queryset chain, e.g. Prefix.objects.filter(...).
+      - metavariable-pattern:
+          metavariable: $QS
+          pattern-either:
+            - pattern: <... Prefix.objects ...>
+            - pattern: <... IPRange.objects ...>
+            - pattern: <... IPAddress.objects ...>

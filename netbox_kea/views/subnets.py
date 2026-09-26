@@ -1,4 +1,3 @@
-import ipaddress
 import logging
 import re
 from typing import Any
@@ -13,11 +12,12 @@ from netbox.views import generic
 from utilities.htmx import htmx_partial
 from utilities.views import register_model_view
 
-from .. import forms, tables
+from .. import forms, server_configuration, tables
 from ..constants import Family
 from ..kea import KeaClient, KeaException, PartialPersistError
 from ..models import Server
 from ..reservations import InSubnetReservationScope
+from ..subnet_catalogue import ConfiguredSubnet, VerifiedSubnet
 from ..subnet_catalogue import display as subnet_catalogue
 from ..utilities import (
     OptionalViewTab,
@@ -26,7 +26,13 @@ from ..utilities import (
     kea_error_hint,
     parse_pool_range,
 )
-from ._base import _KeaChangeMixin
+from ._base import (
+    _catalogue_subnet_row,
+    _diagnostic_messages,
+    _enrich_subnet_statistics,
+    _KeaChangeMixin,
+    _subnet_option_fields,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -65,104 +71,19 @@ class BaseServerDHCPSubnetsView(generic.ObjectChildrenView):
     template_name = "netbox_kea/server_dhcp_subnets.html"
 
     def get_children(self, request: HttpRequest, parent: Server) -> list[dict[str, Any]]:
-        """Return the subnet list for *parent* by delegating to :meth:`get_subnets`."""
-        return self.get_subnets(parent, request)
-
-    def _subnet_to_row(
-        self,
-        s: dict,
-        server_pk: int,
-        can_change: bool,
-        shared_network: str = "",
-    ) -> dict[str, Any] | None:
-        """Convert a Kea subnet dict to a table row dict, or ``None`` if invalid."""
-        from ..utilities import format_option_data
-
-        if not isinstance(s, dict):
-            return None
-        if "id" not in s or "subnet" not in s:
-            return None
-        if not isinstance(s["id"], (int, str)):
-            logger.warning("Skipping subnet with non-scalar ID: %s", s.get("id"))
-            return None
-        try:
-            sort_key = int(ipaddress.ip_network(s["subnet"], strict=False).network_address)
-        except (ValueError, TypeError):
-            logger.warning("Skipping subnet with malformed CIDR: %s", s.get("subnet"))
-            return None
-        row: dict[str, Any] = {
-            "id": s["id"],
-            "subnet": s["subnet"],
-            "dhcp_version": self.dhcp_version,
-            "server_pk": server_pk,
-            "_subnet_sort_key": sort_key,
-            "options": format_option_data(s.get("option-data") or [], version=self.dhcp_version),
-            "pools": [p.get("pool", "") for p in (s.get("pools") or []) if isinstance(p, dict) and p.get("pool")],
-            "can_change": can_change,
-            "ddns_qualifying_suffix": s.get("ddns-qualifying-suffix") or "",
-        }
-        if shared_network:
-            row["shared_network"] = shared_network
-        return row
-
-    def get_subnets(self, server: Server, request: HttpRequest) -> list[dict[str, Any]]:
-        """Fetch all subnets (including shared-network subnets) from the Kea config.
-
-        Also fetches per-subnet utilisation statistics from ``stat-lease{v}-get``
-        when the ``stat_cmds`` hook is loaded.  Degrades gracefully when the hook
-        is absent.
-        """
-        from ..utilities import parse_subnet_stats
-
-        try:
-            client = server.get_client(version=self.dhcp_version)
-            config = client.command("config-get", service=[f"dhcp{self.dhcp_version}"])
-            args = config[0]["arguments"] if config and isinstance(config[0], dict) else None
-            if not isinstance(args, dict):
-                logger.warning(
-                    "config-get returned non-dict arguments for dhcp%s on server %s: %r",
-                    self.dhcp_version,
-                    server.pk,
-                    type(args),
-                )
-                return []
-            dhcp_conf = args.get(f"Dhcp{self.dhcp_version}", {})
-            if not isinstance(dhcp_conf, dict):
-                dhcp_conf = {}
-        except (KeaException, requests.RequestException, ValueError, IndexError, KeyError):
-            logger.exception("Failed to fetch subnet config for dhcp%s on server %s", self.dhcp_version, server.pk)
+        """Return safe Subnet Catalogue rows for this Server."""
+        snapshot = subnet_catalogue(parent, self.dhcp_version)
+        _diagnostic_messages(
+            request, snapshot.diagnostics, messages.ERROR if snapshot.unavailable else messages.WARNING
+        )
+        if snapshot.unavailable:
             messages.error(request, "Failed to load subnet configuration from Kea.")
             return []
-        can_change = Server.objects.restrict(request.user, "change").filter(pk=server.pk).exists()
-        subnets = dhcp_conf.get(f"subnet{self.dhcp_version}") or []
-        subnet_list = []
-        for s in subnets:
-            row = self._subnet_to_row(s, server.pk, can_change)
-            if row is not None:
-                subnet_list.append(row)
-
-        for sn in dhcp_conf.get("shared-networks") or []:
-            if not isinstance(sn, dict):
-                continue
-            for s in sn.get(f"subnet{self.dhcp_version}") or []:
-                row = self._subnet_to_row(s, server.pk, can_change, shared_network=sn.get("name", ""))
-                if row is not None:
-                    subnet_list.append(row)
-
-        # Enrich with utilisation stats when stat_cmds hook is available.
-        try:
-            stat_resp = client.command(
-                f"stat-lease{self.dhcp_version}-get",
-                service=[f"dhcp{self.dhcp_version}"],
-            )
-            stats = parse_subnet_stats(stat_resp, self.dhcp_version)
-            for s in subnet_list:
-                if s["id"] in stats:
-                    s.update(stats[s["id"]])
-        except (KeaException, requests.RequestException, ValueError, TypeError, KeyError):
-            logger.debug("stat_cmds hook unavailable or failed", exc_info=True)
-
-        return subnet_list
+        can_change = Server.objects.restrict(request.user, "change").filter(pk=parent.pk).exists()
+        subnets: tuple[VerifiedSubnet | ConfiguredSubnet, ...] = (*snapshot.subnets, *snapshot.configured_subnets)
+        rows = [_catalogue_subnet_row(subnet, parent, self.dhcp_version, can_change) for subnet in subnets]
+        _enrich_subnet_statistics(rows, parent, self.dhcp_version)
+        return rows
 
     def get(self, request: HttpRequest, **kwargs: Any) -> HttpResponse:
         """Handle GET: check DHCP enabled, then render table or export."""
@@ -292,53 +213,6 @@ def _warn_pool_reservation_overlap(
     except Exception:
         logger.exception("Failed to check pool/reservation overlap for subnet %s", subnet_id)
         messages.warning(request, check_failed_message)
-
-
-def _warn_reservation_pool_overlap(
-    request: HttpRequest,
-    client: "KeaClient",
-    version: Family,
-    subnet_id: int,
-    ip_str: str,
-) -> None:
-    """Add a non-blocking warning if *ip_str* falls within an existing pool in *subnet_id*.
-
-    Fetches the subnet configuration via ``subnet{version}-get`` and checks each
-    pool entry.  Silently skips on any error.
-    """
-    try:
-        from netaddr import IPAddress
-
-        resp = client.command(
-            f"subnet{version}-get",
-            service=[f"dhcp{version}"],
-            arguments={"id": subnet_id},
-        )
-        if not resp or not isinstance(resp[0], dict):
-            return
-        arguments = resp[0].get("arguments")
-        if not isinstance(arguments, dict):
-            return
-        subnet_list = arguments.get(f"subnet{version}", [])
-        if not isinstance(subnet_list, list) or not subnet_list:
-            return
-        subnet = subnet_list[0] if isinstance(subnet_list[0], dict) else {}
-        ip = IPAddress(ip_str)
-
-        for pool_entry in subnet.get("pools") or []:
-            ps = pool_entry.get("pool", "")
-            if not ps:
-                continue
-            pool_range = parse_pool_range(ps)
-            if ip in pool_range:
-                messages.warning(
-                    request,
-                    f"IP {ip_str} is within existing pool {ps}. "
-                    "Kea allows this — reservations take priority over pool allocation.",
-                )
-                break
-    except Exception:
-        logger.exception("Failed to check reservation/pool overlap for %s in subnet %s", ip_str, subnet_id)
 
 
 class _BasePoolAddView(_KeaChangeMixin, generic.ObjectView):
@@ -499,6 +373,32 @@ class ServerSubnet6PoolDeleteView(_BasePoolDeleteView):
 # ---------------------------------------------------------------------------
 
 
+def _network_choices(snapshot: server_configuration.ServerConfigurationSnapshot) -> list[tuple[str, str]]:
+    """Return declared Shared Networks, including those without members."""
+    return [("", "— (global pool) —"), *((network.name, network.name) for network in snapshot.shared_networks)]
+
+
+def _inherited_subnet_options(
+    snapshot: server_configuration.ServerConfigurationSnapshot,
+    current_network: str,
+    form_values: dict[str, Any],
+) -> dict[str, dict[str, str]]:
+    """Return option hints not overridden by the Subnet form."""
+    inherited = {
+        field: {"value": value, "source": "global"}
+        for field, value in _subnet_option_fields(snapshot.global_options, snapshot.family).items()
+    }
+    network = next((network for network in snapshot.shared_networks if network.name == current_network), None)
+    if network is not None:
+        inherited.update(
+            {
+                field: {"value": value, "source": f"shared-network: {current_network}"}
+                for field, value in _subnet_option_fields(network.options, snapshot.family).items()
+            }
+        )
+    return {field: hint for field, hint in inherited.items() if not form_values.get(field)}
+
+
 class _BaseSubnetAddView(_KeaChangeMixin, generic.ObjectView):
     """Base view for adding a new subnet to Kea."""
 
@@ -509,42 +409,16 @@ class _BaseSubnetAddView(_KeaChangeMixin, generic.ObjectView):
     def _subnets_url(self, pk: int) -> str:
         return reverse(f"plugins:netbox_kea:server_subnets{self.dhcp_version}", args=[pk])
 
-    def _get_network_choices(self, client: "KeaClient") -> list[tuple[str, str]]:
-        """Return shared-network name choices for the subnet-add form dropdown.
-
-        Raises:
-            KeaException: If Kea returns an error or an unexpected response.
-            requests.RequestException: If the Kea server is unreachable.
-            ValueError: If the Kea response is structurally invalid.
-
-        """
-        resp = client.command("config-get", service=[f"dhcp{self.dhcp_version}"])
-        args = resp[0].get("arguments") if resp and isinstance(resp[0], dict) else None
-        if not isinstance(args, dict):
-            raise ValueError(f"config-get returned unexpected arguments: {type(args)}")
-        dhcp_conf = args.get(f"Dhcp{self.dhcp_version}", {})
-        if not isinstance(dhcp_conf, dict):
-            raise ValueError(f"config-get returned unexpected Dhcp{self.dhcp_version} structure: {type(dhcp_conf)}")
-        networks = dhcp_conf.get("shared-networks") or []
-        if networks and not isinstance(networks, list):
-            raise ValueError(f"config-get returned non-list shared-networks: {type(networks)}")
-        choices: list[tuple[str, str]] = [("", "— (global pool) —")]
-        for sn in networks:
-            if not isinstance(sn, dict):
-                continue
-            name = sn.get("name", "")
-            if name:
-                choices.append((name, name))
-        return choices
-
     def get(self, request: HttpRequest, pk: int) -> HttpResponse:
         server = self.get_object(pk=pk)
         form = forms.SubnetAddForm()
-        try:
-            client = server.get_client(version=self.dhcp_version)
-            form.fields["shared_network"].choices = self._get_network_choices(client)
-        except (KeaException, requests.RequestException, ValueError):
-            logger.exception("Failed to load shared networks for subnet add form (server %s)", pk)
+        configuration = server_configuration.display(server, self.dhcp_version)
+        _diagnostic_messages(
+            request, configuration.diagnostics, messages.WARNING if configuration.available else messages.ERROR
+        )
+        if configuration.shared_networks_complete:
+            form.fields["shared_network"].choices = _network_choices(configuration)
+        else:
             messages.warning(request, "Could not load shared networks from Kea — retry later.")
             form.fields["shared_network"].choices = [("", "— failed to load networks —")]
             form.fields["shared_network"].disabled = True
@@ -583,12 +457,13 @@ class _BaseSubnetAddView(_KeaChangeMixin, generic.ObjectView):
                 },
             )
 
-        try:
-            network_choices = self._get_network_choices(client)
-        except (KeaException, requests.RequestException, ValueError):
-            logger.exception("Failed to load shared networks for server %s", pk)
+        configuration = server_configuration.for_verification(server, self.dhcp_version)
+        network_choices = _network_choices(configuration)
+        _diagnostic_messages(request, configuration.diagnostics, messages.WARNING)
+        if not configuration.shared_networks_complete:
             form = forms.SubnetAddForm(request.POST)
             form.fields["shared_network"].choices = [("", "— (global pool) —")]
+            form.fields["shared_network"].disabled = True
             form.add_error(None, "Could not load shared networks from Kea. Please try again.")
             return render(
                 request,
@@ -730,205 +605,54 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
     def _subnets_url(self, pk: int) -> str:
         return reverse(f"plugins:netbox_kea:server_subnets{self.dhcp_version}", args=[pk])
 
-    def _fetch_subnet(self, server: Server, subnet_id: int) -> dict[str, Any] | None:
-        """Fetch current subnet config from Kea.  Returns None on error or if the subnet is not found."""
-        try:
-            key = f"subnet{self.dhcp_version}"
-            client = server.get_client(version=self.dhcp_version)
-            resp = client.command(
-                f"{key}-get",
-                service=[f"dhcp{self.dhcp_version}"],
-                arguments={"id": subnet_id},
-            )
-            if not resp or not isinstance(resp[0], dict):
-                return None
-            arguments = resp[0].get("arguments")
-            if not isinstance(arguments, dict):
-                return None
-            subnets = arguments.get(key, [])
-            if not isinstance(subnets, list) or not subnets:
-                return None
-            if not isinstance(subnets[0], dict):
-                return None
-            return subnets[0]
-        except (KeaException, requests.RequestException, ValueError):
-            logger.warning("Failed to fetch subnet %s for editing", subnet_id)
-            return None
-
-    def _get_network_data(self, client: "KeaClient", subnet_id: int) -> tuple[list[tuple[str, str]], str | None, dict]:
-        """Return ``(choices, current_network_name, dhcp_conf)`` for the shared-network dropdown.
-
-        ``choices`` is suitable for a ``ChoiceField``: ``[("", "— global pool —"), ("net-a", "net-a"), ...]``.
-        ``current_network_name`` is the name of the network the subnet currently belongs to,
-        ``""`` for global pool, or ``None`` when the network state could not be determined.
-        ``dhcp_conf`` is the raw Dhcp4/Dhcp6 config dict (for deriving inherited options).
-        """
-        try:
-            resp = client.command("config-get", service=[f"dhcp{self.dhcp_version}"])
-            args = resp[0].get("arguments") if resp and isinstance(resp[0], dict) else None
-            if not isinstance(args, dict):
-                logger.warning("config-get returned unexpected arguments for network data: %r", args)
-                return [("", "— (global pool) —")], None, {}
-            dhcp_conf = args.get(f"Dhcp{self.dhcp_version}", {})
-            if not isinstance(dhcp_conf, dict):
-                logger.warning("config-get returned non-dict Dhcp%s config: %r", self.dhcp_version, type(dhcp_conf))
-                return [("", "— (global pool) —")], None, {}
-            networks = dhcp_conf.get("shared-networks") or []
-            if networks and not isinstance(networks, list):
-                logger.warning("config-get returned non-list shared-networks for network data: %r", type(networks))
-                return [("", "— (global pool) —")], None, {}
-        except (KeaException, requests.RequestException, ValueError):
-            logger.warning("Failed to fetch shared networks for subnet edit dropdown")
-            return [("", "— (global pool) —")], None, {}
-
-        current_network = ""
-        choices: list[tuple[str, str]] = [("", "— (global pool) —")]
-        for sn in networks:
-            if not isinstance(sn, dict):
-                continue
-            name = sn.get("name", "")
-            if not name:
-                continue
-            choices.append((name, name))
-            sn_subnets = sn.get(f"subnet{self.dhcp_version}", [])
-            if not isinstance(sn_subnets, list):
-                continue
-            malformed = False
-            for sub in sn_subnets:
-                if not isinstance(sub, dict):
-                    malformed = True
-                    break
-            if malformed:
-                current_network = None
-                break
-            try:
-                subnet_ids = {sub["id"] for sub in sn_subnets if isinstance(sub.get("id"), (int, str))}
-            except (KeyError, TypeError):
-                current_network = None
-                break
-            if len(subnet_ids) != len(sn_subnets):
-                current_network = None
-                break
-            if subnet_id in subnet_ids:
-                current_network = name
-        return choices, current_network, dhcp_conf
-
-    def _form_initial(self, subnet: dict[str, Any]) -> dict[str, Any]:
-        """Build SubnetEditForm initial values from a Kea subnet dict."""
-        initial: dict[str, Any] = {"subnet_cidr": subnet.get("subnet", "")}
-
-        # Pools
-        pools = subnet.get("pools") or []
-        if pools:
-            initial["pools"] = "\n".join(p.get("pool", "") for p in pools if isinstance(p, dict) and p.get("pool"))
-
-        # Options
-        for opt in subnet.get("option-data") or []:
-            if not isinstance(opt, dict):
-                continue
-            name = opt.get("name", "")
-            data = opt.get("data", "")
-            if name == "routers":
-                initial["gateway"] = data
-            elif name in ("domain-name-servers", "dns-servers"):
-                initial["dns_servers"] = data
-            elif name in ("ntp-servers", "sntp-servers"):
-                initial["ntp_servers"] = data
-
-        # Lease lifetimes
-        if subnet.get("valid-lifetime") is not None:
-            initial["valid_lft"] = subnet["valid-lifetime"]
-        if subnet.get("min-valid-lifetime") is not None:
-            initial["min_valid_lft"] = subnet["min-valid-lifetime"]
-        if subnet.get("max-valid-lifetime") is not None:
-            initial["max_valid_lft"] = subnet["max-valid-lifetime"]
-        if subnet.get("renew-timer") is not None:
-            initial["renew_timer"] = subnet["renew-timer"]
-        if subnet.get("rebind-timer") is not None:
-            initial["rebind_timer"] = subnet["rebind-timer"]
-        if subnet.get("ddns-qualifying-suffix"):
-            initial["ddns_qualifying_suffix"] = subnet["ddns-qualifying-suffix"]
-
-        return initial
-
-    def _get_inherited_options(
-        self,
-        dhcp_conf: dict[str, Any],
-        current_network: str,
-        form_initial: dict[str, Any],
-    ) -> dict[str, dict[str, str]]:
-        """Return option hints inherited from shared-network or global config.
-
-        Only includes options NOT already set by the subnet itself (i.e., absent
-        from *form_initial*).  Each value is a dict with ``"value"`` and
-        ``"source"`` keys so the template can display e.g.
-        *inherited from global: 8.8.8.8*.
-        """
-
-        def _parse_opts(option_list: list) -> dict[str, str]:
-            result: dict[str, str] = {}
-            if not isinstance(option_list, list):
-                return result
-            for opt in option_list:
-                if not isinstance(opt, dict):
-                    continue
-                name = opt.get("name", "")
-                data = opt.get("data", "")
-                if name == "routers":
-                    result["gateway"] = data
-                elif name in ("domain-name-servers", "dns-servers"):
-                    result["dns_servers"] = data
-                elif name in ("ntp-servers", "sntp-servers"):
-                    result["ntp_servers"] = data
-            return result
-
-        global_opts = _parse_opts(dhcp_conf.get("option-data") or [])
-
-        network_opts: dict[str, str] = {}
-        if current_network:
-            for sn in dhcp_conf.get("shared-networks") or []:
-                if sn.get("name") == current_network:
-                    network_opts = _parse_opts(sn.get("option-data") or [])
-                    break
-
-        inherited: dict[str, dict[str, str]] = {}
-        for field in ("gateway", "dns_servers", "ntp_servers"):
-            if form_initial.get(field):
-                continue  # subnet already overrides this option
-            if field in network_opts:
-                inherited[field] = {"value": network_opts[field], "source": f"shared-network: {current_network}"}
-            elif field in global_opts:
-                inherited[field] = {"value": global_opts[field], "source": "global"}
-        return inherited
-
     def get(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
         server = self.get_object(pk=pk)
-        subnet = self._fetch_subnet(server, subnet_id)
-        if subnet is None:
+        snapshot = subnet_catalogue(server, self.dhcp_version)
+        configuration = server_configuration.for_verification(server, self.dhcp_version)
+        configured_target = configuration.subnet_with_membership(subnet_id)
+        subnet_configuration = None
+        subnet_cidr = ""
+        # Membership comes from the live declaration alone, never from the cached catalogue.
+        display_network = configured_target.shared_network_name or "" if configured_target is not None else ""
+        if configured_target is not None and configured_target.complete:
+            subnet_configuration = configured_target.configuration
+            subnet_cidr = configured_target.declared_cidr
+        if subnet_configuration is None:
+            declaration = server_configuration.subnet_for_display(server, self.dhcp_version, subnet_id)
+            if declaration is not None:
+                subnet_configuration = declaration.configuration
+                subnet_cidr = declaration.declared_cidr
+        if subnet_configuration is None:
+            _diagnostic_messages(request, snapshot.diagnostics, messages.ERROR)
             messages.error(request, "Could not load subnet configuration from Kea.")
             return redirect(self._subnets_url(pk))
-        try:
-            client = server.get_client(version=self.dhcp_version)
-        except (requests.RequestException, ValueError):
-            logger.exception("Failed to get Kea client for server %s (subnet edit GET)", pk)
-            messages.error(request, "Unable to connect to the Kea server.")
-            return redirect(self._subnets_url(pk))
-        network_choices, current_network, dhcp_conf = self._get_network_data(client, subnet_id)
-        if current_network is None:
-            logger.warning(
-                "Could not determine current shared-network for subnet %s on server %s — rendering without network data",
-                subnet_id,
-                pk,
-            )
+        _diagnostic_messages(
+            request,
+            snapshot.diagnostics + configuration.diagnostics,
+            messages.WARNING if configuration.available else messages.ERROR,
+        )
+        if not configuration.available or configured_target is None:
             messages.warning(request, "Could not load shared-network data; network assignment may be inaccurate.")
-        display_network = current_network or ""
-        initial = self._form_initial(subnet)
-        initial["shared_network"] = display_network
-        initial["current_network"] = display_network
+        settings = subnet_configuration.settings
+        initial = {
+            "subnet_cidr": subnet_cidr,
+            "pools": "\n".join(pool.range for pool in subnet_configuration.pools),
+            **_subnet_option_fields(subnet_configuration.options, self.dhcp_version),
+            "valid_lft": settings.valid_lifetime,
+            "min_valid_lft": settings.min_valid_lifetime,
+            "max_valid_lft": settings.max_valid_lifetime,
+            "renew_timer": settings.renew_timer,
+            "rebind_timer": settings.rebind_timer,
+            "ddns_qualifying_suffix": settings.ddns_qualifying_suffix or "",
+            "shared_network": display_network,
+            "current_network": display_network,
+        }
         form = forms.SubnetEditForm(initial=initial)
-        form.fields["shared_network"].choices = network_choices
+        form.fields["shared_network"].choices = _network_choices(configuration)
         inherited_options = (
-            self._get_inherited_options(dhcp_conf, display_network, initial) if current_network is not None else {}
+            _inherited_subnet_options(configuration, display_network, initial)
+            if configured_target is not None and configuration.shared_networks_complete
+            else {}
         )
         return render(
             request,
@@ -937,7 +661,7 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
                 "object": server,
                 "form": form,
                 "subnet_id": subnet_id,
-                "subnet_cidr": subnet.get("subnet", ""),
+                "subnet_cidr": subnet_cidr,
                 "dhcp_version": self.dhcp_version,
                 "return_url": self._subnets_url(pk),
                 "inherited_options": inherited_options,
@@ -954,23 +678,26 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
             logger.exception("Failed to get Kea client for server %s (subnet edit POST)", pk)
             messages.error(request, "Unable to connect to the Kea server.")
             return redirect(return_url)
-        network_choices, server_current_network, dhcp_conf = self._get_network_data(client, subnet_id)
-        if server_current_network is None:
+        configuration = server_configuration.for_verification(server, self.dhcp_version)
+        network_choices = _network_choices(configuration)
+        _diagnostic_messages(request, configuration.diagnostics, messages.WARNING)
+        if not configuration.available or not configuration.shared_networks_complete:
             logger.warning(
                 "Could not determine current shared-network for subnet %s on server %s — aborting edit", subnet_id, pk
             )
             messages.error(request, "Could not determine current network state; edit aborted to prevent data loss.")
             return redirect(return_url)
+        declaration = configuration.subnet_with_membership(subnet_id)
+        if declaration is None:
+            messages.error(request, "Could not determine current network state; edit aborted to prevent data loss.")
+            return redirect(return_url)
+        server_current_network = declaration.shared_network_name or ""
         form = forms.SubnetEditForm(request.POST)
         form.fields["shared_network"].choices = network_choices
         if not form.is_valid():
             display_network = form.data.get("shared_network", server_current_network or "")
             initial = {k: v for k, v in form.data.items() if k in form.fields}
-            inherited_options = (
-                self._get_inherited_options(dhcp_conf, display_network, initial)
-                if server_current_network is not None
-                else {}
-            )
+            inherited_options = _inherited_subnet_options(configuration, display_network, initial)
             return render(
                 request,
                 self.template_name,
@@ -994,11 +721,7 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
         # Pre-compute inherited_options for error branches that re-render the form.
         display_network = form.data.get("shared_network", server_current_network or "")
         initial = {k: v for k, v in form.data.items() if k in form.fields}
-        inherited_options = (
-            self._get_inherited_options(dhcp_conf, display_network, initial)
-            if server_current_network is not None
-            else {}
-        )
+        inherited_options = _inherited_subnet_options(configuration, display_network, initial)
 
         # Apply subnet config changes first — only move the network if the update succeeds.
         try:
@@ -1007,9 +730,9 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
                 subnet_id=subnet_id,
                 subnet_cidr=cd["subnet_cidr"],
                 pools=cd["pools"],
-                gateway=cd["gateway"] or None,
-                dns_servers=cd["dns_servers"] or None,
-                ntp_servers=cd["ntp_servers"] or None,
+                gateway=cd["gateway"],
+                dns_servers=cd["dns_servers"],
+                ntp_servers=cd["ntp_servers"],
                 ddns_qualifying_suffix=cd.get("ddns_qualifying_suffix"),
                 valid_lft=cd.get("valid_lft"),
                 min_valid_lft=cd.get("min_valid_lft"),
@@ -1164,23 +887,12 @@ class _BaseSubnetDeleteView(_KeaChangeMixin, generic.ObjectView):
 
     def get(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
         server = self.get_object(pk=pk)
-        subnet_cidr = ""
-        try:
-            client = server.get_client(version=self.dhcp_version)
-            resp = client.command(
-                f"subnet{self.dhcp_version}-get",
-                service=[f"dhcp{self.dhcp_version}"],
-                arguments={"id": subnet_id},
-            )
-            key = f"subnet{self.dhcp_version}"
-            if resp and isinstance(resp[0], dict):
-                arguments = resp[0].get("arguments")
-                if isinstance(arguments, dict):
-                    subnets = arguments.get(key, [])
-                    if isinstance(subnets, list) and subnets and isinstance(subnets[0], dict):
-                        subnet_cidr = subnets[0].get("subnet", "")
-        except (KeaException, requests.RequestException, ValueError):
-            logger.debug("Could not resolve subnet CIDR for subnet %s on server %s", subnet_id, pk)
+        configuration = server_configuration.for_verification(server, self.dhcp_version)
+        _diagnostic_messages(
+            request, configuration.diagnostics, messages.WARNING if configuration.available else messages.ERROR
+        )
+        declared = [subnet for subnet in configuration.subnets if subnet.declared_subnet_id == subnet_id]
+        subnet_cidr = declared[0].declared_cidr if len(declared) == 1 else ""
         return render(
             request,
             self.template_name,
@@ -1246,23 +958,12 @@ class _BaseSubnetWipeView(_KeaChangeMixin, generic.ObjectView):
 
     def get(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
         server = self.get_object(pk=pk)
-        subnet_cidr = ""
-        try:
-            client = server.get_client(version=self.dhcp_version)
-            resp = client.command(
-                f"subnet{self.dhcp_version}-get",
-                service=[f"dhcp{self.dhcp_version}"],
-                arguments={"id": subnet_id},
-            )
-            key = f"subnet{self.dhcp_version}"
-            if resp and isinstance(resp[0], dict):
-                arguments = resp[0].get("arguments")
-                if isinstance(arguments, dict):
-                    subnets = arguments.get(key, [])
-                    if isinstance(subnets, list) and subnets and isinstance(subnets[0], dict):
-                        subnet_cidr = subnets[0].get("subnet", "")
-        except (KeaException, requests.RequestException, ValueError):
-            logger.debug("CIDR lookup failed in wipe GET for subnet %s on server %s", subnet_id, pk)
+        configuration = server_configuration.for_verification(server, self.dhcp_version)
+        _diagnostic_messages(
+            request, configuration.diagnostics, messages.WARNING if configuration.available else messages.ERROR
+        )
+        declared = [subnet for subnet in configuration.subnets if subnet.declared_subnet_id == subnet_id]
+        subnet_cidr = declared[0].declared_cidr if len(declared) == 1 else ""
         return render(
             request,
             self.template_name,
@@ -1290,7 +991,7 @@ class _BaseSubnetWipeView(_KeaChangeMixin, generic.ObjectView):
             messages.success(request, f"All leases in subnet {subnet_id} wiped.")
         except KeaException as exc:
             logger.exception("Failed to wipe leases in subnet %s", subnet_id)
-            if isinstance(exc.response, dict) and exc.response.get("result") == 2:
+            if exc.unsupported_command:
                 messages.error(
                     request,
                     "Failed to wipe leases: ensure the lease_cmds hook is loaded.",

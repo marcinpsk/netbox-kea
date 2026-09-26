@@ -3,14 +3,16 @@ from typing import Any, cast
 
 from django import forms
 from django.core.exceptions import ValidationError
+from ipam.models import VRF
 from netaddr import EUI, AddrFormatError, IPAddress, IPNetwork, mac_unix_expanded
 from netbox.forms import NetBoxModelBulkEditForm, NetBoxModelFilterSetForm, NetBoxModelForm, NetBoxModelImportForm
 from utilities.forms import BOOLEAN_WITH_BLANK_CHOICES
-from utilities.forms.fields import TagFilterField
+from utilities.forms.fields import CSVModelChoiceField, TagFilterField
 from utilities.forms.rendering import FieldSet
 
 from . import constants
 from .constants import Family
+from .dhcp_options import parse_dhcp_option
 from .models import Server
 from .reservation_transfer import MAX_DOCUMENT_BYTES as MAX_TRANSFER_DOCUMENT_BYTES
 from .reservations import (
@@ -93,15 +95,9 @@ class ServerForm(NetBoxModelForm):
             "sync_vrf",
             name="IPAM Sync",
         ),
+        FieldSet("sync_dhcp_plugin_enabled", name="DHCP Plugin"),
         FieldSet("persist_config", name="Configuration"),
     )
-
-    def __init__(self, *args, **kwargs):
-        """Initialise dynamic form fields whose querysets must be evaluated per request."""
-        super().__init__(*args, **kwargs)
-        from ipam.models import VRF
-
-        self.fields["sync_vrf"].queryset = VRF.objects.all()
 
     class Meta:
         model = Server
@@ -129,6 +125,7 @@ class ServerForm(NetBoxModelForm):
             "sync_prefixes_enabled",
             "sync_ip_ranges_enabled",
             "sync_vrf",
+            "sync_dhcp_plugin_enabled",
             "persist_config",
             "tags",
         )
@@ -205,8 +202,66 @@ class ServerBulkEditForm(NetBoxModelBulkEditForm):
     nullable_fields: list[str] = []
 
 
+class CSVDefaultedBooleanField(forms.BooleanField):
+    """A CSV boolean whose absent or blank column leaves the model default alone.
+
+    An unchecked HTML checkbox sends nothing, so Django's checkbox widget reports
+    every absent value as False and ``construct_instance`` writes that False over
+    the model default. A plain widget reports an absent column as omitted instead.
+    """
+
+    widget = forms.TextInput
+
+    def __init__(self, **kwargs):
+        super().__init__(required=False, **kwargs)
+
+    def to_python(self, value):
+        """Return None for an absent or blank column; otherwise parse as Django does."""
+        if value in self.empty_values:
+            return None
+        return super().to_python(value)
+
+
 class ServerImportForm(NetBoxModelImportForm):
     """CSV/YAML bulk-import form for Server objects."""
+
+    #: Booleans an omitted column must leave alone. See CSVDefaultedBooleanField.
+    DEFAULTED_BOOLEANS = (
+        "ssl_verify",
+        "dhcp4",
+        "dhcp6",
+        "has_control_agent",
+        "sync_enabled",
+        "sync_leases_enabled",
+        "sync_reservations_enabled",
+        "sync_prefixes_enabled",
+        "sync_ip_ranges_enabled",
+        "sync_dhcp_plugin_enabled",
+        "persist_config",
+    )
+
+    sync_vrf = CSVModelChoiceField(
+        label="Sync VRF",
+        queryset=VRF.objects.all(),
+        to_field_name="name",
+        required=False,
+        help_text="VRF to assign to synced Prefixes and IP Ranges, by name.",
+    )
+
+    def __init__(self, *args, **kwargs):
+        """Retype the defaulted booleans so an omitted column stays omitted."""
+        super().__init__(*args, **kwargs)
+        for name in self.DEFAULTED_BOOLEANS:
+            field = self.fields[name]
+            self.fields[name] = CSVDefaultedBooleanField(label=field.label, help_text=field.help_text)
+
+    def clean(self):
+        """Drop every unset defaulted boolean so ``construct_instance`` skips it."""
+        cleaned_data = super().clean()
+        for name in self.DEFAULTED_BOOLEANS:
+            if cleaned_data.get(name) is None:
+                cleaned_data.pop(name, None)
+        return cleaned_data
 
     class Meta:
         model = Server
@@ -220,11 +275,22 @@ class ServerImportForm(NetBoxModelImportForm):
             "dhcp6_username",
             "dhcp6_password",
             "ssl_verify",
+            "client_cert_path",
+            "client_key_path",
+            "ca_file_path",
             "dhcp4",
             "dhcp6",
             "dhcp4_url",
             "dhcp6_url",
             "has_control_agent",
+            "sync_enabled",
+            "sync_leases_enabled",
+            "sync_reservations_enabled",
+            "sync_prefixes_enabled",
+            "sync_ip_ranges_enabled",
+            "sync_dhcp_plugin_enabled",
+            "sync_vrf",
+            "persist_config",
         )
 
 
@@ -245,8 +311,10 @@ class BaseLeasesSarchForm(forms.Form):
     def __init__(
         self,
         *args,
-        subnet_choices: list[tuple[str, int]] | None = None,
+        subnet_choices: tuple[tuple[str, int], ...] = (),
         subnet_cmds_available: bool = True,
+        subnet_diagnostics: tuple[str, ...] = (),
+        subnet_catalogue_unavailable: bool = False,
         **kwargs,
     ) -> None:
         """Stash the configured-subnet list so the template can build the Search combobox.
@@ -256,10 +324,14 @@ class BaseLeasesSarchForm(forms.Form):
         or *Subnet ID* — there is no separate subnet selector field.
         ``subnet_cmds_available`` is False when the hook that supplies those choices is
         not loaded, which the template reports instead of showing an empty combobox.
+        ``subnet_diagnostics`` are the Subnet Catalogue messages the template shows inline,
+        as an error when ``subnet_catalogue_unavailable`` and as a warning otherwise.
         """
         super().__init__(*args, **kwargs)
-        self.subnet_choices: list[tuple[str, int]] = subnet_choices or []
+        self.subnet_choices = subnet_choices
         self.subnet_cmds_available = subnet_cmds_available
+        self.subnet_diagnostics = subnet_diagnostics
+        self.subnet_catalogue_unavailable = subnet_catalogue_unavailable
 
     def clean(self) -> dict[str, Any] | None:
         """Validate and normalise search fields according to the selected search type."""
@@ -534,9 +606,7 @@ class Reservation4Form(forms.Form):
             network = ipaddress.IPv4Network(value, strict=True)
         except ValueError as exc:
             raise forms.ValidationError("Enter a valid IPv4 subnet CIDR (e.g. 10.0.0.0/24).") from exc
-        # Kea reports subnets in canonical form; subnet_id_from_cidr() matches by
-        # exact string, so a non-canonical but valid input (e.g. a netmask like
-        # "/255.255.255.0" instead of "/24") would otherwise never match.
+        # Use the canonical CIDR form accepted by configured_subnet_id_from_cidr().
         return str(network)
 
     def clean_ip_address(self) -> str:
@@ -637,9 +707,7 @@ class Reservation6Form(forms.Form):
             network = ipaddress.IPv6Network(value, strict=True)
         except ValueError as exc:
             raise forms.ValidationError("Enter a valid IPv6 subnet CIDR (e.g. 2001:db8::/48).") from exc
-        # Kea reports subnets in canonical (compressed) form; subnet_id_from_cidr()
-        # matches by exact string, so a valid but expanded address (e.g.
-        # "2001:0db8:0000:.../32") would otherwise never match.
+        # Use the canonical CIDR form accepted by configured_subnet_id_from_cidr().
         return str(network)
 
     def clean_ip_addresses(self) -> str:
@@ -1197,7 +1265,39 @@ class SubnetOptionsForm(forms.Form):
     )
 
 
-SubnetOptionsFormSet = forms.formset_factory(SubnetOptionsForm, extra=1, can_delete=True)
+class ConfigurationOptionsForm(SubnetOptionsForm):
+    """Edit a configuration option while retaining its original identity."""
+
+    original_option = forms.JSONField(required=False, widget=forms.HiddenInput)
+
+    def __init__(self, *args, **kwargs):
+        """Allow code-only rows and suppression entries to omit displayed values."""
+        super().__init__(*args, **kwargs)
+        self.fields["name"].required = False
+        self.fields["data"].required = False
+
+    def clean_original_option(self):
+        """Validate the original identity with the shared DHCP Option parser."""
+        identity = self.cleaned_data.get("original_option")
+        if identity is not None:
+            try:
+                parse_dhcp_option(identity)
+            except ValueError as exc:
+                raise forms.ValidationError("Invalid original DHCP Option identity.") from exc
+        return identity
+
+    def clean(self):
+        """Require an option name for a new row or an existing name-only row."""
+        data = super().clean()
+        identity = data.get("original_option")
+        if not data.get("name") and (not isinstance(identity, dict) or identity.get("code") is None):
+            self.add_error("name", "An option name is required unless the existing option has a code.")
+        if identity is None and not data.get("data"):
+            self.add_error("data", "This field is required.")
+        return data
+
+
+SubnetOptionsFormSet = forms.formset_factory(ConfigurationOptionsForm, extra=1, can_delete=True)
 
 
 class ReservationOptionsForm(SubnetOptionsForm):
@@ -1401,7 +1501,7 @@ class SharedNetworkEditForm(forms.Form):
     """Form for editing an existing Kea shared network (description, interface, relay, options)."""
 
     name = forms.CharField(widget=forms.HiddenInput())
-    description = forms.CharField(max_length=255, required=False, label="Description")
+    description = forms.CharField(required=False, label="Description")
     interface = forms.CharField(
         max_length=128,
         required=False,

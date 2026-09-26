@@ -1391,7 +1391,7 @@ _MOCK_CONFIG_WITH_SHARED_NET_V4 = [
                 "shared-networks": [
                     {
                         "name": "test-shared-net-v4",
-                        "description": "v4 shared network",
+                        "user-context": {"comment": "v4 shared network"},
                         "subnet4": [{"id": 2, "subnet": "10.1.0.0/24"}],
                     }
                 ],
@@ -1409,7 +1409,7 @@ _MOCK_CONFIG_WITH_SHARED_NET_V6 = [
                 "shared-networks": [
                     {
                         "name": "test-shared-net-v6",
-                        "description": "v6 shared network",
+                        "user-context": {"comment": "v6 shared network"},
                         "subnet6": [{"id": 3, "subnet": "2001:db8:1::/48"}],
                     }
                 ],

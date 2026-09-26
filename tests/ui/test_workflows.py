@@ -10,13 +10,17 @@ import subprocess
 import sys
 import warnings
 from collections.abc import Iterator
+from typing import TYPE_CHECKING
 from urllib.parse import parse_qs, urlencode, urlparse
 
 import pytest
 import requests
 from playwright.sync_api import Locator, Page, expect
 
-from .conftest import _DualEndpointKeaClient
+if TYPE_CHECKING:
+    # The unit suite execs this file standalone, where a relative import has no
+    # package to resolve against. Keep every cross-module import behind this guard.
+    from .conftest import _DualEndpointKeaClient
 
 #: Mirrors ``_KEA_DESC_PREFIX`` in netbox_kea/sync.py. This suite cannot import the
 #: package (it needs Django), so a guard in the unit suite keeps the two in step.
@@ -596,7 +600,7 @@ _RESERVED_SUBNET_ID = 1
 
 
 @pytest.fixture
-def reserved_lease4(kea_client: _DualEndpointKeaClient, clear_leases: None) -> Iterator[str]:
+def reserved_lease4(kea_client: "_DualEndpointKeaClient", clear_leases: None) -> Iterator[str]:
     """Seed an active lease on a reserved address and yield that address.
 
     Depends on ``clear_leases`` because that fixture is autouse and wipes every lease;
@@ -1333,10 +1337,7 @@ class TestReservationCRUD:
         kea_server,
         track_http_errors: list,
     ) -> None:
-        """Edit-reservation form loads for an existing reservation without error.
-
-        Skips if no reservations exist on the live server.
-        """
+        """Edit-reservation form loads for an existing reservation without error."""
         server_id = kea_server.id
         page.goto(self._reservation_list_url(plugin_base, server_id))
         page.wait_for_load_state("networkidle")
@@ -1349,8 +1350,10 @@ class TestReservationCRUD:
                 document.querySelectorAll('a[href*="reservations4"][href*="/edit/"]')
             ).map(a => a.href)"""
         )
-        if not hrefs:
-            pytest.skip("No existing reservations to edit on live server")
+        assert hrefs, (
+            "subnets4 config in tests/docker/kea_configs/kea-dhcp4.conf reserves hosts, so the "
+            "reservations4 page must offer an edit link; none rendered"
+        )
 
         page.goto(hrefs[0])
         page.wait_for_load_state("networkidle")
@@ -1366,10 +1369,7 @@ class TestReservationCRUD:
         kea_server,
         track_http_errors: list,
     ) -> None:
-        """Delete confirmation page for a known reservation loads without error.
-
-        Skips if no reservations exist on the live server.
-        """
+        """Delete confirmation page for a known reservation loads without error."""
         server_id = kea_server.id
         page.goto(self._reservation_list_url(plugin_base, server_id))
         page.wait_for_load_state("networkidle")
@@ -1382,8 +1382,10 @@ class TestReservationCRUD:
                 document.querySelectorAll('a[href*="reservations4"][href*="/delete/"]')
             ).map(a => a.href)"""
         )
-        if not hrefs:
-            pytest.skip("No existing reservations to delete on live server")
+        assert hrefs, (
+            "tests/docker/kea_configs/kea-dhcp4.conf reserves hosts, so the reservations4 page "
+            "must offer a delete link; none rendered"
+        )
 
         page.goto(hrefs[0])
         page.wait_for_load_state("networkidle")
@@ -1445,8 +1447,10 @@ class TestPoolManagement:
         _dismiss_debug_toolbar(page)
 
         hrefs = page.evaluate("() => Array.from(document.querySelectorAll('a[href*=\"pools/add\"]')).map(a => a.href)")
-        if not hrefs:
-            pytest.skip("No add-pool links found on subnets4 page")
+        assert hrefs, (
+            "tests/docker/kea_configs/kea-dhcp4.conf defines subnets, so the subnets4 page must "
+            "offer an add-pool link; none rendered"
+        )
 
         page.goto(hrefs[0])
         page.wait_for_load_state("networkidle")
@@ -1462,10 +1466,7 @@ class TestPoolManagement:
         kea_server,
         track_http_errors: list,
     ) -> None:
-        """Pool delete confirmation page renders for an existing pool.
-
-        Skips if the live server has no pools configured.
-        """
+        """Pool delete confirmation page renders for an existing pool."""
         server_id = kea_server.id
         page.goto(self._subnets4_url(plugin_base, server_id))
         page.wait_for_load_state("networkidle")
@@ -1477,8 +1478,10 @@ class TestPoolManagement:
                 document.querySelectorAll('a[href*="pools/"][href*="/delete/"]')
             ).map(a => a.href)"""
         )
-        if not hrefs:
-            pytest.skip("No delete-pool links found — no pools on live server")
+        assert hrefs, (
+            "tests/docker/kea_configs/kea-dhcp4.conf defines a pool in every subnet, so the "
+            "subnets4 page must offer a delete-pool link; none rendered"
+        )
 
         page.goto(hrefs[0])
         page.wait_for_load_state("networkidle")
@@ -1525,13 +1528,17 @@ class TestPoolManagement:
         _dismiss_debug_toolbar(page)
 
         row_data = self._discover_first_subnet(page)
-        if not row_data or not row_data.get("subnet"):
-            pytest.skip("No subnets with add-pool buttons found on live server")
+        assert row_data and row_data.get("subnet"), (
+            "tests/docker/kea_configs/kea-dhcp4.conf defines subnets, so the subnets4 page must "
+            "show a subnet row with an add-pool link; none rendered"
+        )
 
         net = ipaddress.IPv4Network(row_data["subnet"], strict=False)
         host_count = net.num_addresses - 2
-        if host_count < 15:
-            pytest.skip(f"Subnet {row_data['subnet']} too small for test pool")
+        assert host_count >= 15, (
+            f"Subnet {row_data['subnet']} has {host_count} hosts; the config's subnets are /24, so "
+            "a subnet too small for the test pool means the config changed"
+        )
 
         start_addr = ipaddress.IPv4Address(int(net.broadcast_address) - 10)
         end_addr = ipaddress.IPv4Address(int(net.broadcast_address) - 6)
