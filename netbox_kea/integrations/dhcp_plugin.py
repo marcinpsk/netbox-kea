@@ -149,15 +149,15 @@ def _ensure_prefix(network: IPNetworkValue, vrf, description: str | None = None)
     return prefix_obj
 
 
-def _ensure_ip_range(pool_str: str, subnet_cidr: str, vrf):
-    """Get/create the shared ``ipam.IPRange`` for a Kea pool, or ``None`` if unusable.
+def _ensure_ip_range(pool_str: str, subnet: IPNetworkValue, vrf):
+    """Get/create the shared ``ipam.IPRange`` for a Kea pool in *subnet*, or ``None`` if unusable.
 
     Refreshed from the DB so ``.range``/address fields are netaddr objects for
     ``netbox_dhcp``'s containment validators.
     """
     from ..sync import _POOL_TOO_LARGE, sync_pool_to_netbox_ip_range
 
-    result = sync_pool_to_netbox_ip_range(pool_str, subnet_cidr, vrf=vrf)
+    result = sync_pool_to_netbox_ip_range(pool_str, subnet, vrf=vrf)
     if result is None or result is _POOL_TOO_LARGE:
         return None
     range_obj, _created, _updated = result
@@ -740,11 +740,12 @@ def upsert_subnet(server, dhcp_server, intent: SubnetIntent, summary: ImportSumm
 def upsert_pools(subnet_obj, intent: SubnetIntent, server, summary: ImportSummary, dhcp_server, custom_defs):
     """Get/create DHCP-plugin ``Pool`` rows (and their options) for each Kea pool in *intent*."""
     Pool = _model("Pool")
-    subnet_cidr = str(subnet_obj.prefix.prefix)
+    # upsert_subnet already parsed this CIDR, so this cannot raise.
+    network = subnet_network(intent.cidr, intent.family)
     for pool_intent in intent.pools:
         try:
             with transaction.atomic():
-                range_obj = _ensure_ip_range(pool_intent.pool, subnet_cidr, server.sync_vrf)
+                range_obj = _ensure_ip_range(pool_intent.pool, network, server.sync_vrf)
                 if range_obj is not None:
                     pool_obj, created = Pool.objects.get_or_create(
                         subnet=subnet_obj,
