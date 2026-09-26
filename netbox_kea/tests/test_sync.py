@@ -1421,6 +1421,24 @@ class TestCleanupStaleIpsBatch(TestCase):
         self.assertEqual(consumer_hints["protected_records"], Iterable[record_types])
         self.assertEqual(reservation_hints["protected"], consumed)
 
+    def test_every_jobs_function_has_resolvable_type_hints(self):
+        """Every annotation name in netbox_kea.jobs except Server must exist at runtime."""
+        import inspect
+
+        from netbox_kea import jobs
+        from netbox_kea.models import Server
+
+        functions = [f for _, f in inspect.getmembers(jobs, inspect.isfunction) if f.__module__ == jobs.__name__]
+        for _, cls in inspect.getmembers(jobs, inspect.isclass):
+            if cls.__module__ == jobs.__name__:
+                functions += [
+                    f for _, f in inspect.getmembers(cls, inspect.isfunction) if f.__module__ == jobs.__name__
+                ]
+        self.assertTrue(functions)
+        for fn in functions:
+            with self.subTest(fn=fn.__qualname__):
+                get_type_hints(fn, localns={"Server": Server})
+
     @override_settings(PLUGINS_CONFIG=_STALE_PLUGINS_CONFIG)
     def test_batch_groups_by_address_family(self):
         """Mixed v4/v6 records for same hostname clean both families independently."""

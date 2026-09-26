@@ -37,14 +37,14 @@ from netbox.jobs import JobRunner, system_job
 
 if TYPE_CHECKING:
     from .models import Server
-    from .sync import DuplicateNetBoxRowsError
 
-# Runtime import: get_type_hints() resolves this module's annotations, so a
-# TYPE_CHECKING-only Family would make that fail with NameError.
+# Runtime imports: get_type_hints() resolves this module's annotations, so a
+# TYPE_CHECKING-only Family or DuplicateNetBoxRowsError would raise NameError.
 from . import subnet_catalogue
 from .constants import Family
 from .reservations import Reservation, ReservationSnapshot
 from .subnet_catalogue import CatalogueUnavailable, CompleteCatalogueSnapshot, VerifiedSubnet
+from .sync import DuplicateNetBoxRowsError
 
 logger = logging.getLogger(__name__)
 
@@ -335,7 +335,6 @@ def _sync_subnet_entry(
     """Sync one verified Subnet to a NetBox Prefix and its allocation ranges."""
     from .sync import (
         _POOL_TOO_LARGE,
-        DuplicateNetBoxRowsError,
         sync_pool_to_netbox_ip_range,
         sync_subnet_to_netbox_prefix,
     )
