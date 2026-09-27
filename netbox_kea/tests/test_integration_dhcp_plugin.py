@@ -681,6 +681,28 @@ class DhcpPluginTuningImportTest(TestCase):
         srv = DHCPServer.objects.get(name=self.server.name)
         self.assertEqual(srv.valid_lifetime, 7200)
 
+    def test_failed_global_save_does_not_clear_a_subnet_override(self):
+        DHCPServer = apps.get_model(DHCP_PLUGIN, "DHCPServer")
+        Subnet = apps.get_model(DHCP_PLUGIN, "Subnet")
+        conf1 = {"valid-lifetime": 3600, "subnet4": [{"id": 8, "subnet": "10.43.0.0/24", "valid-lifetime": 7200}]}
+        first = self.adapter.import_server_config(self.server, parse_dhcp_config(conf1, 4))
+        self.assertEqual(first.errors, 0, first.warnings)
+
+        # A uint32 Kea lifetime is above the PostgreSQL integer maximum, so both saves fail in the driver.
+        uint32_max = 4294967295
+        conf2 = {
+            "valid-lifetime": uint32_max,
+            "subnet4": [{"id": 8, "subnet": "10.43.0.0/24", "valid-lifetime": uint32_max}],
+        }
+        second = self.adapter.import_server_config(self.server, parse_dhcp_config(conf2, 4))
+
+        self.assertEqual(DHCPServer.objects.get(name=self.server.name).valid_lifetime, 3600)
+        subnet = Subnet.objects.get(prefix__prefix="10.43.0.0/24")
+        self.assertEqual(subnet.valid_lifetime, 7200, "subnet override was cleared to inherit the stale DB global")
+        self.assertEqual(second.errors, 2, second.warnings)
+        self.assertIn("DHCPServer settings", second.warnings[0])
+        self.assertIn("subnet 10.43.0.0/24 (id=8)", second.warnings[1])
+
 
 @tag("dhcp_plugin")
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)

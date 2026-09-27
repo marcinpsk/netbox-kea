@@ -512,7 +512,7 @@ def _apply_global_settings(dhcp_server, settings: dict, summary: ImportSummary, 
     if not settings:
         return
     model_fields = {f.name for f in dhcp_server._meta.get_fields()}
-    changed = False
+    changed: list[str] = []
     for kea_key, attr, transform in _SERVER_FIELDS:
         if attr not in model_fields or kea_key not in settings:
             continue
@@ -524,11 +524,11 @@ def _apply_global_settings(dhcp_server, settings: dict, summary: ImportSummary, 
             # This family owns the global config — mirror changed values on re-import.
             if current != value:
                 setattr(dhcp_server, attr, value)
-                changed = True
+                changed.append(attr)
         elif _is_unset(current):
             # Secondary protocol only fills gaps the primary family did not set.
             setattr(dhcp_server, attr, value)
-            changed = True
+            changed.append(attr)
     if changed:
         try:
             with transaction.atomic():
@@ -536,6 +536,8 @@ def _apply_global_settings(dhcp_server, settings: dict, summary: ImportSummary, 
         except Exception as exc:  # noqa: BLE001
             summary.errors += 1
             summary.warn(f"DHCPServer settings: {exc}")
+            # Children diff against this instance, so it must hold the persisted values.
+            dhcp_server.refresh_from_db(fields=changed)
 
 
 def _apply_inherited_settings(obj, parent, settings: dict, field_map, summary: ImportSummary) -> bool:
