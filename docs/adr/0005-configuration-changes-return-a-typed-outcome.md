@@ -73,9 +73,10 @@ configuration, the request was never sent, or the client configuration is invali
 - A native command can also fail after it changed the configuration: `subnet_cmds` adds or replaces the Subnet
   and then initializes its allocators, and a failure there returns result 1 for a live change. The result alone
   does not separate this from a validation failure, such as a duplicate Subnet ID. So after any other failure
-  result on a native command, the operation reads the target in a fresh scope. When the target does not hold the
-  state that the command requested, the change is not live, and the result is a rejection. Otherwise, or when the
-  read fails, the result is `unknown`.
+  result on a native command, the operation reads the target in a fresh scope. When the target shows none of the
+  changes that the command requested, the change is not live, and the result is a rejection. That means an object
+  that the command creates is absent, and every field that the command changes still holds the value that the
+  operation read before it sent the command. Otherwise, or when the read fails, the result is `unknown`.
 - That read can only prove that a change is not live. Kea answered, so the request is done and cannot arrive
   later. No operation reads Kea to turn `unknown` into `applied`: a concurrent writer would make that read lie,
   because an observed state proves what Kea holds now, not which request wrote it.
