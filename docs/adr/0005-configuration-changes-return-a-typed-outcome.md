@@ -61,6 +61,11 @@ sent, or the client configuration is invalid.
 - A read timeout, a reset during the reply, or a malformed reply to a command that can change the configuration
   gives `unknown`. The same failure on a read, or on the `config-test` of a candidate configuration, comes before
   any such command. It is a rejection because the change was never sent.
+- Through a Control Agent, a forwarding failure comes back as result 1 with the text `unable to forward command
+  to the <service> service`. The agent sends this answer when it cannot reach the daemon and also when it loses
+  the daemon's reply, so the daemon can have run the command. For a command that can change the configuration,
+  this answer gives `unknown`, not a rejection. This is the only rule that reads Kea's text, because the answer
+  has no other field that marks it. A test pins the text with a reply recorded from a real Control Agent.
 - No operation probes Kea to resolve `unknown`. A concurrent writer would make the probe lie: an observed
   state proves what Kea holds now, not which request wrote it.
 
@@ -99,8 +104,9 @@ warning, and one domain function computes it for both the Pool and the Reservati
   can lose a live change. It covers a `config-write` failure, a lost `config-write` reply, and a `config-test`
   rejection of the live configuration. The diagnostic says which. With `application="unknown"`, the message
   does not claim that the change is live.
-- The persist step also runs after an `unknown` application. `config-write` saves what Kea runs, so the disk
-  copy then matches memory whether the change applied or not.
+- The persist step also runs after an `unknown` application. `config-write` saves what Kea runs at that
+  moment, so the disk copy then matches memory whether the change applied or not. The exception is a lost
+  request that reaches Kea after the persist step (see Serialization).
 - Reservation mutations call the same step. `ReservationMutationResult.persistence` uses the shared type.
 
 ### Multi-step changes
@@ -125,14 +131,21 @@ check and the undo. The check narrows that window. It does not close it.
 
 ### Serialization
 
-Every operation holds a transaction-level PostgreSQL advisory lock on `(server, family)` from its first read to
-the end of its persist step. Two NetBox operations on one Server and family therefore run one at a time. A
-read-modify-write through `config-set` cannot erase the change of another NetBox operation, and no NetBox
-operation changes a target between a rollback check and its undo. The wait for the lock is bounded. When it
-expires, the operation raises a rejection because the request was never sent.
+Every operation holds a transaction-level PostgreSQL advisory lock from its first read to the end of its persist
+step. The lock key is the family and the URL that the Server resolves for that family: `dhcp4_url` or
+`dhcp6_url`, else `ca_url`. Two Server rows with the same URL therefore share one lock. Two NetBox operations on
+one Kea daemon run one at a time. A read-modify-write through `config-set` cannot erase the change of another
+NetBox operation, and no NetBox operation changes a target between a rollback check and its undo. The wait for
+the lock is bounded. When it expires, the operation raises a rejection because the request was never sent.
 
-The lock does not stop Kea administrators or other tools, because they write to Kea directly. A `config-set`
-can still erase a change that such a writer made after the read.
+The lock does not stop Kea administrators or other tools, because they write to Kea directly. Two URLs that
+reach one daemon through different names get two locks, so they count as such a writer. A `config-set` can
+still erase a change that such a writer made after the read.
+
+A request whose reply was lost can also reach Kea after its operation released the lock, because Kea has no
+request identity that NetBox can wait for. That request can then overwrite a later change, and the disk copy
+lags memory until the next persist step. The operation reported `unknown`, which tells the operator to check the
+Server. This ADR accepts that window.
 
 ### Placement
 
@@ -191,6 +204,11 @@ real `KeaClient`, and stub only `requests.Session.post`.
 - Let views open `MutationScope` and pass a Verified Subnet: rejected because every Subnet view then manages
   the scope, and the `(server, family)` contract breaks.
 - Detect an ID collision from Kea's error text: rejected because a reworded message breaks the retry.
+- Treat every result 1 through a Control Agent as `unknown`: rejected because every Kea rejection through an
+  agent then reads as unconfirmed.
+- Keep the lock after an `unknown` step until the lost request is done: rejected because Kea gives NetBox no
+  way to learn when, or whether, that request finishes.
+- Key the lock on the Server row: rejected because two Server rows can name one daemon.
 - Report `applied` after a lost reply when a Verified Subnet has the same CIDR and ID: rejected because
   another writer can create that identity after `prepare_creation`, which reserves nothing. The match proves the
   current state, not that this request applied.

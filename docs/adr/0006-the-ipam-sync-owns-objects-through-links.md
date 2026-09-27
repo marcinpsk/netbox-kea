@@ -63,9 +63,16 @@ when its snapshot is complete and no row in the phase failed. Each complete phas
 Each link records when a run last confirmed it, and a phase removes a link only when that time is before the phase
 read its snapshot. A claim made after the snapshot therefore survives. Both times come from the PostgreSQL clock
 when the statement runs (`clock_timestamp()`), not from the transaction start (`now()`) or from the worker clock.
-The phase takes its cutoff before it requests the snapshot from Kea. A failed phase does not block cleanup of
-another phase. `reconcile` runs the claims of all its phases before it removes any link, so an object that moves
-from one source to another in one run keeps its ID.
+The phase takes its cutoff before it requests the snapshot from Kea. A failed phase does not block the removal
+of links of another phase, except a last link (below). `reconcile` runs the claims of all its phases before it
+removes any link, so an object that moves from one source to another in one run keeps its ID.
+
+A complete phase removes the last link of an object only when every phase of the `reconcile` call is complete
+and no phase of the call reports the object. Otherwise the link stays and a later run decides. This covers a
+phase that failed, and an object that a phase reports but does not link, for example after an owner
+disagreement or a failed row. The Reservation phase reports the addresses of Global Reservations but does not
+link them, because ADR 0002 does not synchronize them. An object at such an address therefore keeps its last
+link.
 
 When a complete phase removes the last link of a Stale IPAM Object, the object changes as follows:
 
@@ -79,7 +86,9 @@ A release and the deletion of a Server also remove links, but they never remove 
 
 When a deprecation applies, the last link stays and is marked stale, so the object returns to its computed
 status when Kea reports it again. A stale link takes part in no fact comparison and no status computation. The
-mark goes when its owner reports the object again, and the link goes when another owner links the object.
+mark goes when its owner reports the object again and the run applies that report, and the link goes when
+another owner links the object. A confirmation without an applied report, as after an owner disagreement, keeps
+the mark and does not restore the status.
 The DHCP plugin reference guard stays: an object that the DHCP plugin references is never removed or deprecated.
 
 Deleting a Server drops its links. An object without an owner becomes an unowned marker object. The
@@ -102,8 +111,11 @@ phase, because no other caller reports delegated prefixes.
 Before `claim` and `reconcile` look up or create an object, or change its links, they take a transaction-level
 PostgreSQL advisory lock on the object identity: the VRF and the address, Prefix or IP Range. They decide the
 last-link change under that lock. Two runs therefore cannot both create one object, and of two runs that drop the
-last two links of one object, the second sees that no link is left. A lock error fails only that row, so the phase
-is not complete.
+last two links of one object, the second sees that no link is left. Under the advisory lock, they also lock the
+row of an existing object (`SELECT ... FOR UPDATE`) and read its description from that row before they link,
+change, deprecate or remove the object. An operator edit that removed the marker and committed first is therefore
+seen, and an edit that commits later waits for the row lock. A lock error fails only that row, so the phase is not
+complete.
 This decision lands in one change with that module.
 
 ### Upgrade
