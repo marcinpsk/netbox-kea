@@ -59,8 +59,8 @@ sent, or the client configuration is invalid.
   `requests.ConnectionError` caused by urllib3 `NewConnectionError`. The session sends one POST and does not
   retry.
 - A read timeout, a reset during the reply, or a malformed reply gives `unknown`.
-- No operation probes Kea to resolve `unknown`. A concurrent writer would make the probe lie. The one
-  exception is `add_subnet`. See "Subnet and Pool changes".
+- No operation probes Kea to resolve `unknown`. A concurrent writer would make the probe lie: an observed
+  state proves what Kea holds now, not which request wrote it.
 
 ### Subnet and Pool changes
 
@@ -72,9 +72,10 @@ rules of ADR 0001.
   and a rejected allocated ID causes one retry only when a fresh scope shows that ID is now taken. `add_subnet`
   takes over that logic from the view. It never reads Kea's error text, and an ID from the operator never
   causes a retry.
-- After a lost reply, `add_subnet` opens a fresh scope. If a Verified Subnet has the same CIDR and ID, the
-  application is `applied`, and the next steps of the change continue. In every other case the application is
-  `unknown`, never "not applied". This replaces the lookup by CIDR in `KeaClient.subnet_add`.
+- After a lost reply, `add_subnet` returns `unknown` with the ID it sent, and runs no dependent step. A later
+  Verified Subnet with the same CIDR and ID does not prove that this request created it, because another writer
+  can create the same identity after `prepare_creation`. The lookup by CIDR in `KeaClient.subnet_add` is
+  deleted.
 - `edit_subnet` and `delete_subnet` take the Subnet ID and the CIDR that the operator saw. The scope must return
   a Verified Subnet with that ID and that CIDR. Otherwise the operation raises a rejection that tells the
   operator to reload. A reused ID therefore cannot redirect a change to another Subnet.
@@ -102,9 +103,19 @@ A Configuration Change that needs several Kea commands is one operation. Example
 to a Shared Network, or move a Subnet between Shared Networks. The module runs the steps and persists once at
 the end.
 
-When Kea certainly rejects a later step, the module rolls back the steps that applied. If the rollback succeeds,
-nothing is live, and the operation raises the rejection. If the rollback fails, or any step is `unknown`, the
-operation returns `application="unknown"` with a diagnostic that names each step.
+After an `unknown` step, the operation runs no further step and returns `application="unknown"`.
+
+When Kea certainly rejects a later step, the module rolls back the steps that applied, newest first. Before it
+undoes a step, it reads the target again in a fresh scope. It undoes the step only when the target still holds
+the state that this operation wrote. Otherwise another writer changed the target, so the module leaves it and
+does not roll back earlier steps either.
+
+- Every undo succeeds: nothing that this operation wrote is live, and the operation raises the rejection.
+- An undo fails, or a target changed: the operation returns `application="unknown"` with a diagnostic that names
+  each step and its state.
+
+Kea's control API has no conditional write, so a writer can still change a target between the check and the
+undo. The check narrows that window. It does not close it.
 
 ### Placement
 
@@ -160,8 +171,13 @@ real `KeaClient`, and stub only `requests.Session.post`.
 - Let views open `MutationScope` and pass a Verified Subnet: rejected because every Subnet view then manages
   the scope, and the `(server, family)` contract breaks.
 - Detect an ID collision from Kea's error text: rejected because a reworded message breaks the retry.
-- Keep `unknown` after a lost reply even when the Subnet is found with the same CIDR and ID: rejected because
-  that match is direct evidence of the add, and the next steps of the change can then continue.
+- Report `applied` after a lost reply when a Verified Subnet has the same CIDR and ID: rejected because
+  another writer can create that identity after `prepare_creation`, which reserves nothing. The match proves the
+  current state, not that this request applied.
+- Serialize all configuration writes for one Server and family with a NetBox lock: rejected because Kea
+  administrators and other tools also write Kea, and a NetBox lock does not stop them. The check before each
+  undo covers every writer as far as Kea allows.
+- Undo a step without checking its target: rejected because the undo can remove a concurrent writer's change.
 - Identify a Subnet for edit or delete by ID only: rejected because an ID can be reused by another Subnet
   between the form and the write.
 - Send every Pool check to Kea: rejected because a form error names the field. Kea still decides when the

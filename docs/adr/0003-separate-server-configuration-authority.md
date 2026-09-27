@@ -5,8 +5,8 @@ date: 2026-09-18
 
 # Separate the Server Configuration authority from the Subnet Catalogue
 
-_Amended 2026-09-27 by ADR 0005, which gives Configuration Changes to a `config_write` module. This module
-stays read only._
+_Amended 2026-09-27 by ADR 0005, which gives Configuration Changes to a `config_write` module.
+`server_configuration` stays read only._
 
 ## Context
 

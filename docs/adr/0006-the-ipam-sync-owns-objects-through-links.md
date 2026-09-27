@@ -82,9 +82,17 @@ This decision lands in one change with that module.
 ### Upgrade
 
 No data migration guesses owners. The first complete run of each Server links the marker objects in its
-keep-set. For a Server with a `sync_vrf`, adoption also matches a marker IP address in the global VRF and moves
-it into `sync_vrf`, unless another Server already owns it. The object keeps its ID and changelog. Marker objects
-that no Server adopts stay unowned, and the job summary counts them.
+keep-set. For a marker IP address in the global VRF, the rule depends only on the `sync_vrf` of all Servers, never
+on which job runs first:
+
+- A Server whose `sync_vrf` is the global VRF adopts the row in place.
+- When every Server has the same non-global `sync_vrf`, the first run moves the row into that VRF, unless another
+  Server already owns it. The object keeps its ID and changelog, and every later run finds it in that VRF.
+- Otherwise the row is ambiguous: Servers with different VRFs could each report it. A Server with a non-global
+  `sync_vrf` does not move or adopt it, and creates its own row in its own VRF.
+
+Marker objects that no Server adopts stay unowned, and the job summary counts them for explicit handling by the
+operator.
 
 ### Guards
 
@@ -118,6 +126,8 @@ per Server, and the synchronization never removes them.
   by editing its description.
 - Last writer wins when owners disagree: rejected because the object changes on every run.
 - A data migration that assigns owners: rejected because overlapping Subnets make it a guess.
+- Move a legacy global-VRF row into the `sync_vrf` of the first Server that adopts it: rejected because the row's
+  ID and changelog then depend on which job runs first.
 - Apply the cleanup mode when a Server is deleted: rejected because deleting a Server must not delete IPAM data.
 - Deprecate stale Prefixes and IP Ranges by default, or allow their removal: rejected because operators attach
   their own data to these objects, so any change to them must be an explicit per-Server choice.
