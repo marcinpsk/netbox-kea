@@ -189,7 +189,7 @@ up to the bounded lock wait, and then that change is rejected.
 A caller that ignores the returned outcome loses a persistence warning or an `unknown` application. It cannot
 mistake a rejection for success, because a rejection raises.
 
-The replacement is completed in one change. Tests cross the `config_write` interface with a real Server and a
+The replacement is planned as one change. Tests cross the `config_write` interface with a real Server and a
 real `KeaClient`, and stub only `requests.Session.post`.
 
 ## Rejected alternatives

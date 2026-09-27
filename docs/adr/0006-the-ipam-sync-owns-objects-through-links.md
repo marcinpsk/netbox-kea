@@ -61,14 +61,18 @@ A Stale IPAM Object is an owned object that a complete phase of its owner no lon
 when its snapshot is complete and no row in the phase failed. Each complete phase removes only its own stale links.
 Each link records a confirmation number that a run takes when it confirms the link. The phase takes its cutoff
 number before it requests the snapshot from Kea, and removes a link only when its confirmation number is lower
-than the cutoff. A claim made after the cutoff therefore survives. Both numbers come from one PostgreSQL sequence
-with a cache of 1, taken when the statement runs. Sequence values grow in the order of the calls across all
-sessions, and a clock adjustment cannot change that order. `reconcile` runs the claims of all its phases before it
-removes any link, so an object that moves from one source to another in one run keeps its ID.
+than the cutoff. A claim that confirms the link after the cutoff therefore keeps it. Both numbers come from one
+PostgreSQL sequence with a cache of 1, taken when the statement runs. Sequence values grow in the order of the
+calls across all sessions, and a clock adjustment cannot change that order. `reconcile` runs the claims of all its
+phases before it removes any link, so an object that moves from one source to another in one run keeps its ID.
 
 The lease and Reservation snapshots come from separate Kea commands. An address that moves from one source to the
 other between the two reads can be absent from both, and the run then treats it as stale. The next run creates it
 again with a new ID. Kea has no snapshot that covers both sources, so this ADR accepts that window.
+
+A `claim` can also wait for the identity lock while cleanup holds it. When cleanup removes the object in the
+`remove` mode, the claim then finds no row and creates the object again with a new ID. The snapshot of the cleanup
+phase did not report the object, so the removal is correct for that snapshot. This ADR accepts that window too.
 
 A phase links every existing owned object that it reports, also when it does not apply its report: after a
 same-phase owner disagreement, and for the address of a Global Reservation. ADR 0002 does not synchronize Global
@@ -197,6 +201,8 @@ per Server, and the synchronization never removes them.
 - A data migration that assigns owners: rejected because overlapping Subnets make it a guess.
 - Confirmation times from the PostgreSQL clock (`clock_timestamp()`): rejected because the clock can step back,
   and a claim made after the cutoff then gets an earlier time and loses its link.
+- Let cleanup detect a `claim` that waits for the identity lock: rejected because a claim that starts just after
+  the removal commits gets the same new ID, so the window only gets smaller.
 - Move a legacy global-VRF row into the `sync_vrf` of the first Server that adopts it: rejected because the row's
   ID and changelog then depend on which job runs first.
 - Apply the cleanup mode when a Server is deleted: rejected because deleting a Server must not delete IPAM data.
