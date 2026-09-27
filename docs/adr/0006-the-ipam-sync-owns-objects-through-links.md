@@ -51,8 +51,10 @@ creation are scoped to that VRF.
 ### Stale objects
 
 A Stale IPAM Object is an owned object that a complete phase of its owner no longer reports. A phase is complete
-when its snapshot is complete and no row in the phase failed. Each complete phase removes only its own stale
-links. A failed phase does not block cleanup of another phase.
+when its snapshot is complete and no row in the phase failed. Each complete phase removes only its own stale links.
+Each link records when a run last confirmed it, and a phase removes a link only when that time is before the phase
+read its snapshot. A claim made after the snapshot therefore survives. A failed phase does not block cleanup of
+another phase.
 
 When the last link of an object goes, the object changes as follows:
 
@@ -116,7 +118,8 @@ operator.
 ## Consequences
 
 Cleanup cannot cross Servers or VRFs. The rows of expired leases, deleted Reservations and hostless leases now
-become stale. With the default `remove` mode, an upgrade therefore deletes lease rows that stayed before.
+become stale. With the default `remove` mode, the row of a lease that expires after the upgrade is removed. A row
+that was already stale before the upgrade gets no link, so it stays unowned and counted.
 
 The hostname index and the moved-device rule are deleted. The description marker stays as the release signal
 for operators, not as the ownership record.

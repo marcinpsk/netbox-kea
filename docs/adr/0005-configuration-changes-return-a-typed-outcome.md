@@ -67,8 +67,8 @@ sent, or the client configuration is invalid.
 ### Subnet and Pool changes
 
 `add_subnet`, `edit_subnet`, `delete_subnet`, `add_pool`, `delete_pool` and `set_subnet_options` open the Subnet
-Catalogue `MutationScope` themselves. Views do not touch the scope for these writes. This completes the Subnet mutation
-rules of ADR 0001.
+Catalogue `MutationScope` themselves. Views do not touch the scope for these writes. This completes the Subnet
+mutation rules of ADR 0001.
 
 - Subnet creation already follows ADR 0001: the view gets the identity from `MutationScope.prepare_creation`,
   and a rejected allocated ID causes one retry only when a fresh scope shows that ID is now taken. `add_subnet`
@@ -78,11 +78,11 @@ rules of ADR 0001.
   Verified Subnet with the same CIDR and ID does not prove that this request created it, because another writer
   can create the same identity after `prepare_creation`. The lookup by CIDR in `KeaClient.subnet_add` is
   deleted.
-- `edit_subnet`, `delete_subnet` and `set_subnet_options` take the Subnet ID and the CIDR that the operator saw. The scope must return
-  a Verified Subnet with that ID and that CIDR. Otherwise the operation raises a rejection that tells the
-  operator to reload. An ID that another Subnet reuses between the form and the check therefore cannot redirect
-  the change. A reuse between the check and the ID-only Kea command stays possible, because Kea cannot make the
-  command conditional on the CIDR.
+- `edit_subnet`, `delete_subnet` and `set_subnet_options` take the Subnet ID and the CIDR that the operator saw.
+  The scope must return a Verified Subnet with that ID and that CIDR. Otherwise the operation raises a rejection
+  that tells the operator to reload. An ID that another Subnet reuses between the form and the check therefore
+  cannot redirect the change. A reuse between the check and the Kea write stays possible, because Kea has no
+  conditional write.
 - `add_pool` and `delete_pool` take the same ID and CIDR pair, and a typed `Pool`. The Verified Subnet supplies
   the CIDR for the delta commands, so the separate `subnet-get` lookup goes.
 
@@ -111,10 +111,10 @@ the end.
 
 After an `unknown` step, the operation runs no further step and returns `application="unknown"`.
 
-When Kea certainly rejects a later step, the module rolls back the steps that applied, newest first. Before it
-undoes a step, it reads the target again in a fresh scope. It undoes the step only when the target still holds
-the state that this operation wrote. Otherwise another writer changed the target, so the module leaves it and
-does not roll back earlier steps either.
+When a later step certainly did not apply, because Kea rejected it or the request was never sent, the module rolls
+back the steps that applied, newest first. Before it undoes a step, it reads the target again in a fresh scope. It
+undoes the step only when the target still holds the state that this operation wrote. Otherwise another writer
+changed the target, so the module leaves it and does not roll back earlier steps either.
 
 - Every undo succeeds: nothing that this operation wrote is live, and the operation raises the rejection.
 - An undo fails, or a target changed: the operation returns `application="unknown"` with a diagnostic that names
