@@ -39,6 +39,9 @@ removes the marker from the start of the description releases the object. A note
 next run drops the links and reports a conflict. The `lease + reservation` status comes from the links of the
 object.
 
+A blank description is not the marker. When a run reports an object that has no link and no marker, the run
+reports a conflict and does not change the object. Only a forced `claim` writes the marker over it and links it.
+
 Several Servers can own one object, for example the two members of a Kea HA pair. A run compares the facts that its
 phase reports with the facts stored on the other links of the object. When they differ, the object keeps its
 current facts, the run stores its own facts on its link, and it reports an owner disagreement. When one phase
@@ -56,7 +59,9 @@ creation are scoped to that VRF.
 A Stale IPAM Object is an owned object that a complete phase of its owner no longer reports. A phase is complete
 when its snapshot is complete and no row in the phase failed. Each complete phase removes only its own stale links.
 Each link records when a run last confirmed it, and a phase removes a link only when that time is before the phase
-read its snapshot. A claim made after the snapshot therefore survives. A failed phase does not block cleanup of
+read its snapshot. A claim made after the snapshot therefore survives. Both times come from the PostgreSQL clock
+when the statement runs (`clock_timestamp()`), not from the transaction start (`now()`) or from the worker clock.
+The phase takes its cutoff before it requests the snapshot from Kea. A failed phase does not block cleanup of
 another phase. `reconcile` runs the claims of all its phases before it removes any link, so an object that moves
 from one source to another in one run keeps its ID.
 
@@ -100,8 +105,9 @@ This decision lands in one change with that module.
 ### Upgrade
 
 No data migration guesses owners. The first complete run of each Server links the marker objects in its
-keep-set. For a marker IP address in the global VRF, the rule depends only on the `sync_vrf` of all Servers, never
-on which job runs first:
+keep-set. It does not adopt an object with a blank description: the sync writes the marker on every object that it
+creates or updates, so the sync did not write a blank object last. For a marker IP address in the global VRF, the
+rule depends only on the `sync_vrf` of all Servers, never on which job runs first:
 
 - A Server whose `sync_vrf` is the global VRF adopts the row in place.
 - When every Server has the same non-global `sync_vrf`, the first run moves the row into that VRF, unless another
@@ -125,6 +131,9 @@ operator.
 Cleanup cannot cross Servers or VRFs. The rows of expired leases, deleted Reservations and hostless leases now
 become stale. With the default `remove` mode, the row of a lease that expires after the upgrade is removed. A row
 that was already stale before the upgrade gets no link, so it stays unowned and counted.
+
+The synchronization no longer adopts an object with a blank description. An operator who creates an IP address,
+Prefix or IP Range in NetBox before Kea reports it forces one `claim` for it, or writes the marker.
 
 The hostname index and the moved-device rule are deleted. The description marker stays as the release signal
 for operators, not as the ownership record.
