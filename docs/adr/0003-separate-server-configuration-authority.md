@@ -5,6 +5,9 @@ date: 2026-09-18
 
 # Separate the Server Configuration authority from the Subnet Catalogue
 
+_Amended 2026-09-27 by ADR 0005, which gives Configuration Changes to a `config_write` module.
+`server_configuration` stays read only._
+
 ## Context
 
 ADR 0001 gave the Subnet Catalogue both the Subnet Identity authority and the configuration authority. The
@@ -133,6 +136,7 @@ Snapshot is incomplete but usable. `Diagnostic` gains no severity field. The `av
 
 The module is read only. Shared Network, DHCP Option and option definition writes stay on the existing `kea.py`
 read-modify-write path. A mutation interface is future work. This ADR does not predict its shape.
+**Amended 2026-09-27 (ADR 0005):** the `config_write` module now owns these writes.
 
 `mappers/kea_to_dhcp.py` keeps its own parse. It needs 47 settings keys at three scopes, client class
 definitions, and per-Pool DHCP Options. The scope here is what this plugin's own user interface manages.

@@ -8,6 +8,9 @@ date: 2026-08-13
 _Amended 2026-09-18 by ADR 0003, which moves the `config-get` parse to the Server Configuration module
 and lets the cache admit an Incomplete Catalogue Snapshot._
 
+_Amended 2026-09-27 by ADR 0005, which routes every Subnet and Pool write through `MutationScope` and so
+completes the mutation rules below._
+
 ## Context
 
 The repository reads Kea Subnet facts through several paths. Some paths use `subnet4-list` or `subnet6-list`. Other paths parse `config-get`. Views, mutation handlers, synchronization, and the optional DHCP plugin adapter repeat source selection, response validation, Shared Network flattening, and lookup rules.
