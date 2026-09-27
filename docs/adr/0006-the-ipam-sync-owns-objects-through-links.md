@@ -75,7 +75,10 @@ number, and a concurrent phase sees it under the object lock.
 
 A phase removes the last link of its Server to an object only when the `reconcile` call runs every phase that can
 report that object type, and each of them is complete. For an IP address these are the lease and the Reservation
-phases. Otherwise the link stays and a later run decides. A call that runs only some of these phases, such as the
+phases. Otherwise the link stays and a later run decides. A Prefix is the exception: the job reports it from the
+Subnet phase and the DHCP plugin import from the `delegated-prefix` phase, in separate calls, so each of these
+phases counts alone. A Prefix is never removed, so the worst case is an opt-in deprecation that the next Subnet
+run reverts when it links the Prefix. A call that runs only some of these phases, such as the
 bulk Reservation Sync, therefore never removes the last link of its Server. A failed phase does not block the
 removal of a link when the Server keeps another link to the object.
 
@@ -91,9 +94,9 @@ A release and the deletion of a Server also remove links, but they never remove 
 
 When a deprecation applies, the last link stays and is marked stale, so the object returns to its computed
 status when Kea reports it again. A stale link takes part in no fact comparison and no status computation. The
-mark goes when its owner reports the object again and the run applies that report, and the link goes when
-another owner links the object. A confirmation without an applied report, as after an owner disagreement, keeps
-the mark and does not restore the status.
+mark goes when its owner reports the object again and the run applies that report. The link goes when another
+owner links the object, unless its own owner confirmed it after the mark. A confirmation without an applied
+report, as after an owner disagreement, keeps the mark and does not restore the status.
 The DHCP plugin reference guard stays: an object that the DHCP plugin references is never removed or deprecated.
 
 Deleting a Server drops its links. An object without an owner becomes an unowned marker object. The
