@@ -78,7 +78,9 @@ rules of ADR 0001.
   deleted.
 - `edit_subnet` and `delete_subnet` take the Subnet ID and the CIDR that the operator saw. The scope must return
   a Verified Subnet with that ID and that CIDR. Otherwise the operation raises a rejection that tells the
-  operator to reload. A reused ID therefore cannot redirect a change to another Subnet.
+  operator to reload. An ID that another Subnet reuses between the form and the check therefore cannot redirect
+  the change. A reuse between the check and the ID-only Kea command stays possible, because Kea cannot make the
+  command conditional on the CIDR.
 - `add_pool` and `delete_pool` take the same ID and CIDR pair, and a typed `Pool`. The Verified Subnet supplies
   the CIDR for the delta commands, so the separate `subnet-get` lookup goes.
 
@@ -141,8 +143,8 @@ Configuration. They are not Configuration Changes.
 Views lose their exception handlers and the Shared Network move rollback. A new failure mode needs one change
 in `config_write` and one row in the message mapper.
 
-A caller that ignores the returned outcome loses only a persistence warning. It cannot mistake a rejection for
-success, because a rejection raises.
+A caller that ignores the returned outcome loses a persistence warning or an `unknown` application. It cannot
+mistake a rejection for success, because a rejection raises.
 
 The replacement is completed in one change. Tests cross the `config_write` interface with a real Server and a
 real `KeaClient`, and stub only `requests.Session.post`.

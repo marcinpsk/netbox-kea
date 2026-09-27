@@ -62,8 +62,9 @@ When the last link of an object goes, the object changes as follows:
   site, VLAN or tenant data to these objects. When the field is off, the link goes and the object stays
   unchanged.
 
-When a deprecation applies, the last link stays, so the object returns to its computed status when Kea reports
-it again.
+When a deprecation applies, the last link stays and is marked stale, so the object returns to its computed
+status when Kea reports it again. A stale link takes part in no fact comparison and no status computation. The
+mark goes when its owner reports the object again, and the link goes when another owner links the object.
 The DHCP plugin reference guard stays: an object that the DHCP plugin references is never removed or deprecated.
 
 Deleting a Server drops its links. An object without an owner becomes an unowned marker object. The
@@ -79,6 +80,10 @@ claim(server, family, record, force) -> ClaimResult # one record, links, never c
 ```
 
 The job and the bulk views call `reconcile`. The per-row Sync, lease add and the DHCP plugin import call `claim`.
+
+`claim` and `reconcile` lock the object row before they change its links, and decide the last-link change under
+that lock. Two runs that drop the last two links of one object therefore run one after the other, and the second
+run sees that no link is left. A lock error fails only that row, so the phase is not complete.
 This decision lands in one change with that module.
 
 ### Upgrade

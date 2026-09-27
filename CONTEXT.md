@@ -131,5 +131,5 @@ _Avoid_: Kea-managed IP, synced description
 
 **Stale IPAM Object**:
 An owned NetBox object that a complete synchronization of its owner no longer reports. The owner drops its
-ownership. The object itself changes only when no owner is left.
+ownership. The object is removed or deprecated only when no owner is left.
 _Avoid_: Ghost IP, stale IP, orphan
