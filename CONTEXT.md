@@ -126,7 +126,7 @@ _Avoid_: Partial persist, ambiguous config-set
 **IPAM Ownership**:
 The fact that one Server and address family synchronized a NetBox IP address, Prefix, or IP Range from one Kea
 source: a lease, Reservation, Subnet, Pool, or delegated prefix. One object can have several owners. An operator
-ends every ownership of an object by changing its description.
+ends every ownership of an object by removing the marker from the start of its description.
 _Avoid_: Kea-managed IP, synced description
 
 **Stale IPAM Object**:

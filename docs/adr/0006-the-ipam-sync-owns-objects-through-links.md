@@ -34,9 +34,10 @@ requires exactly one. The source is `lease`, `reservation`, `subnet`, `pool` or 
 unique per `(server, family, source, object)`. Each link also stores the facts that its owner last reported for
 the object.
 
-An object is owned when it has at least one link and its description still starts with the marker. An operator
-who changes the description releases the object. The next run drops the links and reports a conflict. The
-`lease + reservation` status comes from the links of the object.
+An object is owned when it has at least one link and its description still starts with the marker. An operator who
+removes the marker from the start of the description releases the object. A note after the marker does not. The
+next run drops the links and reports a conflict. The `lease + reservation` status comes from the links of the
+object.
 
 Several Servers can own one object, for example the two members of a Kea HA pair. A run compares the facts that its
 phase reports with the facts stored on the other links of the object. When they differ, the object keeps its
