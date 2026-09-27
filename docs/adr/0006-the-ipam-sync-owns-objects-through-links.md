@@ -66,6 +66,10 @@ with a cache of 1, taken when the statement runs. Sequence values grow in the or
 sessions, and a clock adjustment cannot change that order. `reconcile` runs the claims of all its phases before it
 removes any link, so an object that moves from one source to another in one run keeps its ID.
 
+The lease and Reservation snapshots come from separate Kea commands. An address that moves from one source to the
+other between the two reads can be absent from both, and the run then treats it as stale. The next run creates it
+again with a new ID. Kea has no snapshot that covers both sources, so this ADR accepts that window.
+
 A phase links every existing owned object that it reports, also when it does not apply its report: after a
 same-phase owner disagreement, and for the address of a Global Reservation. ADR 0002 does not synchronize Global
 Reservations, so the Reservation phase never creates or changes their objects, but it links an existing one. When
