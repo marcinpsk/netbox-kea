@@ -38,10 +38,12 @@ An object is owned when it has at least one link and its description still start
 who changes the description releases the object. The next run drops the links and reports a conflict. The
 `lease + reservation` status comes from the links of the object.
 
-Several Servers can own one object, for example the two members of a Kea HA pair. A run compares the facts that
-its phase reports with the facts stored on the other links of the object. When they differ, the object keeps its
-current facts, the run stores its own facts on its link, and it reports an owner disagreement. When the
-disagreeing link goes, the next run of a remaining owner applies its facts.
+Several Servers can own one object, for example the two members of a Kea HA pair. A run compares the facts that its
+phase reports with the facts stored on the other links of the object. When they differ, the object keeps its
+current facts, the run stores its own facts on its link, and it reports an owner disagreement. The same applies
+when one phase reports one object twice with different facts, for example two Reservations in overlapping Subnets.
+The link then keeps the facts it stored before. When the disagreeing link goes, the next run of a remaining owner
+applies its facts.
 
 ### Identity
 
