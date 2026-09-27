@@ -70,12 +70,15 @@ configuration, the request was never sent, or the client configuration is invali
   the postponed hook initialization, which can fail with result 1. Result 5 means that Kea could not return to a
   working configuration. So result 5 on any command, and any failure result on a `config-set` whose candidate
   passed `config-test`, give `unknown`.
-- Any other failure result on a native command is a rejection. `subnet_cmds` adds or replaces the Subnet and then
-  initializes its allocators, and a failure there returns result 1 for a live change. NetBox cannot tell this
-  failure from a validation failure, such as a duplicate Subnet ID, without reading Kea's text. This ADR accepts
-  that NetBox then reports a live Subnet change as rejected.
-- No operation probes Kea to resolve `unknown`. A concurrent writer would make the probe lie: an observed
-  state proves what Kea holds now, not which request wrote it.
+- A native command can also fail after it changed the configuration: `subnet_cmds` adds or replaces the Subnet
+  and then initializes its allocators, and a failure there returns result 1 for a live change. The result alone
+  does not separate this from a validation failure, such as a duplicate Subnet ID. So after any other failure
+  result on a native command, the operation reads the target in a fresh scope. When the target does not hold the
+  state that the command requested, the change is not live, and the result is a rejection. Otherwise, or when the
+  read fails, the result is `unknown`.
+- That read can only prove that a change is not live. Kea answered, so the request is done and cannot arrive
+  later. No operation reads Kea to turn `unknown` into `applied`: a concurrent writer would make that read lie,
+  because an observed state proves what Kea holds now, not which request wrote it.
 
 ### Subnet and Pool changes
 
@@ -84,9 +87,9 @@ Catalogue `MutationScope` themselves. Views do not touch the scope for these wri
 mutation rules of ADR 0001.
 
 - Subnet creation already follows ADR 0001: the view gets the identity from `MutationScope.prepare_creation`,
-  and a rejected allocated ID causes one retry only when a fresh scope shows that ID is now taken. `add_subnet`
-  takes over that logic from the view. It never reads Kea's error text, and an ID from the operator never
-  causes a retry.
+  and a rejected allocated ID causes one retry only when the fresh scope of the check above shows that ID is now
+  taken by another Subnet. `add_subnet` takes over that logic from the view. It never reads Kea's error text, and
+  an ID from the operator never causes a retry.
 - After a lost reply, `add_subnet` returns `unknown` with the ID it sent, and runs no dependent step. A later
   Verified Subnet with the same CIDR and ID does not prove that this request created it, because another writer
   can create the same identity after `prepare_creation`. The lookup by CIDR in `KeaClient.subnet_add` is
@@ -214,6 +217,8 @@ real `KeaClient`, and stub only `requests.Session.post`.
 - Detect an ID collision from Kea's error text: rejected because a reworded message breaks the retry.
 - Treat every result 1 through a Control Agent, or every result 1 on a native command, as `unknown`: rejected
   because every Kea validation failure then reads as unconfirmed, and the Subnet ID retry can never run.
+- Treat a failure result on a native command as a rejection without the check: rejected because a live Subnet
+  change then reads as rejected, and no persist step saves it.
 - Keep the lock after an `unknown` step until the lost request is done: rejected because Kea gives NetBox no
   way to learn when, or whether, that request finishes.
 - Key the lock on the Server row: rejected because two Server rows can name one daemon.
