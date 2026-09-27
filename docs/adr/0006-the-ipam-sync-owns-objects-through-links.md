@@ -36,8 +36,8 @@ the object.
 
 An object is owned when it has at least one link and its description still starts with the marker. An operator who
 removes the marker from the start of the description releases the object. A note after the marker does not. The
-next run drops the links and reports a conflict. The `lease + reservation` status comes from the links of the
-object.
+next run drops the links and reports a conflict. It does not remove or deprecate the released object, even when it
+drops the last link. The `lease + reservation` status comes from the links of the object.
 
 A blank description is not the marker. When a run reports an object that has no link and no marker, the run
 reports a conflict and does not change the object. Only a forced `claim` writes the marker over it and links it.
@@ -65,13 +65,15 @@ The phase takes its cutoff before it requests the snapshot from Kea. A failed ph
 another phase. `reconcile` runs the claims of all its phases before it removes any link, so an object that moves
 from one source to another in one run keeps its ID.
 
-When the last link of an object goes, the object changes as follows:
+When a complete phase removes the last link of a Stale IPAM Object, the object changes as follows:
 
 - An IP address follows the plugin setting `stale_ip_cleanup`: `remove` (default), `deprecate` or `none`.
 - A Prefix or IP Range is never removed. A per-Server field, off by default, lets the operator opt in to
   deprecating it. The field of the Server whose phase dropped the last link applies. Operators often attach
   site, VLAN or tenant data to these objects. When the field is off, the link goes and the object stays
   unchanged.
+
+A release and the deletion of a Server also remove links, but they never remove or deprecate the object.
 
 When a deprecation applies, the last link stays and is marked stale, so the object returns to its computed
 status when Kea reports it again. A stale link takes part in no fact comparison and no status computation. The
