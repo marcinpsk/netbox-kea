@@ -80,13 +80,14 @@ synchronization never cleans it, and the job summary counts it.
 One IPAM Reconciliation module owns ownership, cleanup, per-row savepoints and conflict counting:
 
 ```text
-reconcile(server, family, phases) -> SyncReport     # complete phases, with cleanup
-claim(server, family, record, force) -> ClaimResult # one record, links, never cleans up
+reconcile(server, family, phases) -> SyncReport       # complete phases, with cleanup
+claim(server, family, records, force) -> ClaimResult  # one or more records, links, never cleans up
 ```
 
 The job and the bulk views call `reconcile`. The per-row Sync, lease add and the DHCP plugin import call `claim`.
-The DHCP plugin import also calls `reconcile` for its `delegated-prefix` phase, because no other caller reports
-delegated prefixes.
+The records of one `claim` call count as one phase for the fact comparison, so the DHCP plugin import passes all
+records of one snapshot in one call. The DHCP plugin import also calls `reconcile` for its `delegated-prefix`
+phase, because no other caller reports delegated prefixes.
 
 Before `claim` and `reconcile` look up or create an object, or change its links, they take a transaction-level
 PostgreSQL advisory lock on the object identity: the VRF and the address, Prefix or IP Range. They decide the
