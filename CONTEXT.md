@@ -112,3 +112,24 @@ _Avoid_: Raw config, config-get response
 A time-bounded observation of one Server Configuration. It states whether the observation is available and
 whether every fact parsed. Valid facts survive an invalid one.
 _Avoid_: Configuration Snapshot, Dhcp4 dict
+
+**Configuration Change**:
+One operator-requested change to a Server Configuration, such as adding a Subnet or moving it to another
+Shared Network. It can need several Kea commands, and it is applied, rejected, or unconfirmed as a whole.
+_Avoid_: Config write, config mutation, config-set
+
+**Configuration Change Outcome**:
+The observed result of a Configuration Change that is live or can be live. It states whether the change is
+applied or unknown, and whether it is persisted, failed to persist, or had no persistence requested.
+_Avoid_: Partial persist, ambiguous config-set
+
+**IPAM Ownership**:
+The fact that one Server and address family synchronized a NetBox IP address, Prefix, or IP Range from one Kea
+source: a lease, Reservation, Subnet, Pool, or delegated prefix. One object can have several owners. An operator
+ends every ownership of an object by changing its description.
+_Avoid_: Kea-managed IP, synced description
+
+**Stale IPAM Object**:
+An owned NetBox object that a complete synchronization of its owner no longer reports. The owner drops its
+ownership. The object itself changes only when no owner is left.
+_Avoid_: Ghost IP, stale IP, orphan

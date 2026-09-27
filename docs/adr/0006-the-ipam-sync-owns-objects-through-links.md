@@ -1,0 +1,125 @@
+---
+status: accepted
+date: 2026-09-27
+---
+
+# The IPAM synchronization owns NetBox objects through links
+
+## Context
+
+The IPAM synchronization treats a NetBox IP address as its own when the description starts with
+"Synced from Kea DHCP", or is blank. Stale cleanup matches IP addresses by `dns_name` in all of NetBox. It has
+no Server or VRF scope:
+
+- The job of Server A deletes an IP address of Server B that has the same hostname. The next run of Server B
+  creates it again, so the row changes on every interval.
+- The per-row lease Sync keeps only one address, so it deletes a reserved address of the same host.
+- Cleanup runs only for hostnames in the current run. The row of an expired lease stays forever. A lease
+  without a hostname is never cleaned up.
+- `get_netbox_ip` returns the first IP address in any VRF. Lease and Reservation rows go to the global VRF, and
+  `Server.sync_vrf` applies only to Prefixes and IP Ranges. Two Servers with overlapping address space in two
+  VRFs write to one row.
+- Prefixes and IP Ranges have no cleanup.
+
+Four callers run the synchronization: the job, the bulk Reservation view, the per-row Sync and lease add, and the
+DHCP plugin import. Each one applies its own cleanup policy.
+
+## Decision
+
+### Ownership
+
+A new link model records IPAM Ownership: `(server, family, source, object)`. The object is exactly one of three
+nullable foreign keys, `ip_address`, `prefix` or `ip_range`, each with `on_delete=CASCADE`. A check constraint
+requires exactly one. The source is `lease`, `reservation`, `subnet`, `pool` or `delegated-prefix`. The link is
+unique per `(server, family, source, object)`.
+
+An object is owned when it has at least one link and its description still starts with the marker. An operator
+who changes the description releases the object. The next run drops the links and reports a conflict. The
+`lease + reservation` status comes from the links of the object.
+
+Several Servers can own one object, for example the two members of a Kea HA pair. When owners report different
+facts for one object, the object keeps its current facts, the links stay, and the run reports an owner
+disagreement.
+
+### Identity
+
+Lease and Reservation IP addresses use `Server.sync_vrf`, as Prefixes and IP Ranges already do. Lookup and
+creation are scoped to that VRF.
+
+### Stale objects
+
+A Stale IPAM Object is an owned object that a complete phase of its owner no longer reports. A phase is complete
+when its snapshot is complete and no row in the phase failed. Each complete phase removes only its own stale
+links. A failed phase does not block cleanup of another phase.
+
+When the last link of an object goes, the object changes as follows:
+
+- An IP address follows the plugin setting `stale_ip_cleanup`: `remove` (default), `deprecate` or `none`.
+- A Prefix or IP Range is never removed. A per-Server field, off by default, lets the operator opt in to
+  deprecating it. The field of the Server whose phase dropped the last link applies. Operators often attach
+  site, VLAN or tenant data to these objects. When the field is off, the link goes and the object stays
+  unchanged.
+
+When a deprecation applies, the last link stays, so the object returns to its computed status when Kea reports
+it again.
+The DHCP plugin reference guard stays: an object that the DHCP plugin references is never removed or deprecated.
+
+Deleting a Server drops its links. An object without an owner becomes an unowned marker object. The
+synchronization never cleans it, and the job summary counts it.
+
+### Interface
+
+One IPAM Reconciliation module owns ownership, cleanup, per-row savepoints and conflict counting:
+
+```text
+reconcile(server, family, phases) -> SyncReport     # complete phases, with cleanup
+claim(server, family, record, force) -> ClaimResult # one record, links, never cleans up
+```
+
+The job and the bulk views call `reconcile`. The per-row Sync, lease add and the DHCP plugin import call `claim`.
+This decision lands in one change with that module.
+
+### Upgrade
+
+No data migration guesses owners. The first complete run of each Server links the marker objects in its
+keep-set. For a Server with a `sync_vrf`, adoption also matches a marker IP address in the global VRF and moves
+it into `sync_vrf`, unless another Server already owns it. The object keeps its ID and changelog. Marker objects
+that no Server adopts stay unowned, and the job summary counts them.
+
+### Guards
+
+- An OpenGrep rule refuses `.delete()` and status changes on `ipam` IP addresses, Prefixes and IP Ranges
+  outside the reconciliation module.
+- A regression test has two Servers, one hostname, and overlapping address space in two VRFs.
+
+## Consequences
+
+Cleanup cannot cross Servers or VRFs. The rows of expired leases, deleted Reservations and hostless leases now
+become stale. With the default `remove` mode, an upgrade therefore deletes lease rows that stayed before.
+
+The hostname index and the moved-device rule are deleted. The description marker stays as the release signal
+for operators, not as the ownership record.
+
+Prefixes and IP Ranges get ownership for the first time. An upgrade does not change them: deprecation is opt-in
+per Server, and the synchronization never removes them.
+
+## Rejected alternatives
+
+- Keep the moved-device rule and scope it to the owner: rejected because the rows of expired leases stay
+  forever.
+- A NetBox tag or a custom field per Server: rejected because neither has constraints, and a custom field
+  holds one owner.
+- A generic foreign key, as `KeaDhcpLink` uses: rejected because core models cannot get a `GenericRelation`,
+  so a deleted object leaves a dangling link.
+- One link table per object type: rejected because the cleanup logic is then written three times.
+- One owner per object: rejected because a Kea HA pair then synchronizes through one member only.
+- Ownership per Server without a source: rejected because one failed phase then blocks all cleanup.
+- The link as the only ownership fact: rejected because an operator could no longer protect a curated object
+  by editing its description.
+- Last writer wins when owners disagree: rejected because the object changes on every run.
+- A data migration that assigns owners: rejected because overlapping Subnets make it a guess.
+- Apply the cleanup mode when a Server is deleted: rejected because deleting a Server must not delete IPAM data.
+- Deprecate stale Prefixes and IP Ranges by default, or allow their removal: rejected because operators attach
+  their own data to these objects, so any change to them must be an explicit per-Server choice.
+- One entry point with record and force arguments: rejected because ADR 0001 and ADR 0003 prefer purpose-named
+  operations to mode flags.
