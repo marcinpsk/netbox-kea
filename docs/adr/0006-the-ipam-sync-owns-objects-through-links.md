@@ -57,7 +57,8 @@ A Stale IPAM Object is an owned object that a complete phase of its owner no lon
 when its snapshot is complete and no row in the phase failed. Each complete phase removes only its own stale links.
 Each link records when a run last confirmed it, and a phase removes a link only when that time is before the phase
 read its snapshot. A claim made after the snapshot therefore survives. A failed phase does not block cleanup of
-another phase.
+another phase. `reconcile` runs the claims of all its phases before it removes any link, so an object that moves
+from one source to another in one run keeps its ID.
 
 When the last link of an object goes, the object changes as follows:
 
