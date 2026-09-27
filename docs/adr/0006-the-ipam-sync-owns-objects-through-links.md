@@ -52,7 +52,7 @@ the facts it stored before. When the disagreeing link goes, the next run of a re
 ### Identity
 
 Lease and Reservation IP addresses use `Server.sync_vrf`, as Prefixes and IP Ranges already do. Lookup and
-creation are scoped to that VRF.
+creation are scoped to that VRF. The only exception is the adoption in Upgrade, which also looks up the global VRF.
 
 ### Stale objects
 
@@ -106,8 +106,10 @@ This decision lands in one change with that module.
 
 No data migration guesses owners. The first complete run of each Server links the marker objects in its
 keep-set. It does not adopt an object with a blank description: the sync writes the marker on every object that it
-creates or updates, so the sync did not write a blank object last. For a marker IP address in the global VRF, the
-rule depends only on the `sync_vrf` of all Servers, never on which job runs first:
+creates or updates, so the sync did not write a blank object last. A Server with a non-global `sync_vrf` looks up
+each IP address of its keep-set in its `sync_vrf` and in the global VRF. It holds the advisory lock of both
+identities, the global VRF first. For a marker IP address in the global VRF, the rule depends only on the
+`sync_vrf` of all Servers, never on which job runs first:
 
 - A Server whose `sync_vrf` is the global VRF adopts the row in place.
 - When every Server has the same non-global `sync_vrf`, the first run moves the row into that VRF, unless another
