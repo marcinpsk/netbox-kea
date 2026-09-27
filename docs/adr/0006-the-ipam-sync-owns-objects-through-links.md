@@ -60,19 +60,20 @@ creation are scoped to that VRF. The only exception is the adoption in Upgrade, 
 
 A Stale IPAM Object is an owned object that a complete phase of its owner no longer reports. A phase is complete
 when its snapshot is complete and no row in the phase failed. Each complete phase removes only its own stale links.
-Each link records when a run last confirmed it, and a phase removes a link only when that time is before the phase
-read its snapshot. A claim made after the snapshot therefore survives. Both times come from the PostgreSQL clock
-when the statement runs (`clock_timestamp()`), not from the transaction start (`now()`) or from the worker clock.
-The phase takes its cutoff before it requests the snapshot from Kea. A failed phase does not block the removal
-of links of another phase, except a last link (below). `reconcile` runs the claims of all its phases before it
+Each link records a confirmation number that a run takes when it confirms the link. The phase takes its cutoff
+number before it requests the snapshot from Kea, and removes a link only when its confirmation number is lower
+than the cutoff. A claim made after the cutoff therefore survives. Both numbers come from one PostgreSQL sequence
+with a cache of 1, taken when the statement runs. Sequence values grow in the order of the calls across all
+sessions, and a clock adjustment cannot change that order. `reconcile` runs the claims of all its phases before it
 removes any link, so an object that moves from one source to another in one run keeps its ID.
 
-A complete phase removes the last link of an object only when every phase of the `reconcile` call is complete
-and no phase of the call reports the object. Otherwise the link stays and a later run decides. This covers a
-phase that failed, and an object that a phase reports but does not link, for example after an owner
+A complete phase removes the last link of its Server to an object only when every phase of the `reconcile` call is
+complete and no phase of the call reports the object. Otherwise the link stays and a later run decides. This covers
+a phase that failed, and an object that a phase reports but does not link, for example after an owner
 disagreement or a failed row. The Reservation phase reports the addresses of Global Reservations but does not
-link them, because ADR 0002 does not synchronize them. An object at such an address therefore keeps its last
-link.
+link them, because ADR 0002 does not synchronize them. A Server that reports such an address therefore keeps a
+link to its object, and another Server cannot remove the last link while it does. A failed phase does not block
+the removal of a link when the Server keeps another link to the object.
 
 When a complete phase removes the last link of a Stale IPAM Object, the object changes as follows:
 
@@ -135,6 +136,11 @@ identities, the global VRF first. For a marker IP address in the global VRF, the
 - Otherwise the row is ambiguous: Servers with different VRFs could each report it. A Server with a non-global
   `sync_vrf` does not move or adopt it, and creates its own row in its own VRF.
 
+Adoption marks the links that it creates. Each Server records when its first complete run after the upgrade
+finished. Until every Server that synchronizes IPAM has finished that run, a phase does not remove the last link
+of an object whose links are all marked, so an owner that is not yet known cannot lose the object. The job
+summary counts the objects that wait for this.
+
 Marker objects that no Server adopts stay unowned, and the job summary counts them for explicit handling by the
 operator.
 
@@ -176,6 +182,8 @@ per Server, and the synchronization never removes them.
 - Read the current reports of all owners during a run: rejected because one run then calls the Kea API of other
   Servers, and an unreachable Server then blocks the run of another.
 - A data migration that assigns owners: rejected because overlapping Subnets make it a guess.
+- Confirmation times from the PostgreSQL clock (`clock_timestamp()`): rejected because the clock can step back,
+  and a claim made after the cutoff then gets an earlier time and loses its link.
 - Move a legacy global-VRF row into the `sync_vrf` of the first Server that adopts it: rejected because the row's
   ID and changelog then depend on which job runs first.
 - Apply the cleanup mode when a Server is deleted: rejected because deleting a Server must not delete IPAM data.

@@ -49,9 +49,9 @@ diagnostics: tuple[str, ...]
 
 `add_subnet` also returns the assigned Subnet ID.
 
-An operation raises one rejection exception when the change is certainly not live. The exception carries a
-reason: Kea rejected the command, `config-test` rejected the candidate configuration, the request was never
-sent, or the client configuration is invalid.
+An operation raises one rejection exception when the change is not live, as far as NetBox can tell (see
+Application). The exception carries a reason: Kea rejected the command, `config-test` rejected the candidate
+configuration, the request was never sent, or the client configuration is invalid.
 
 ### Application
 
@@ -66,6 +66,14 @@ sent, or the client configuration is invalid.
   the daemon's reply, so the daemon can have run the command. For a command that can change the configuration,
   this answer gives `unknown`, not a rejection. This is the only rule that reads Kea's text, because the answer
   has no other field that marks it. A test pins the text with a reply recorded from a real Control Agent.
+- Kea can report a failure after it applied a change. `config-set` commits the new configuration and then runs
+  the postponed hook initialization, which can fail with result 1. Result 5 means that Kea could not return to a
+  working configuration. So result 5 on any command, and any failure result on a `config-set` whose candidate
+  passed `config-test`, give `unknown`.
+- Any other failure result on a native command is a rejection. `subnet_cmds` adds or replaces the Subnet and then
+  initializes its allocators, and a failure there returns result 1 for a live change. NetBox cannot tell this
+  failure from a validation failure, such as a duplicate Subnet ID, without reading Kea's text. This ADR accepts
+  that NetBox then reports a live Subnet change as rejected.
 - No operation probes Kea to resolve `unknown`. A concurrent writer would make the probe lie: an observed
   state proves what Kea holds now, not which request wrote it.
 
@@ -117,7 +125,7 @@ the end.
 
 After an `unknown` step, the operation runs no further step and returns `application="unknown"`.
 
-When a later step certainly did not apply, because Kea rejected it or the request was never sent, the module rolls
+When a later step did not apply, because Kea rejected it or the request was never sent, the module rolls
 back the steps that applied, newest first. Before it undoes a step, it reads the target again in a fresh scope. It
 undoes the step only when the target still holds the state that this operation wrote. Otherwise another writer
 changed the target, so the module leaves it and does not roll back earlier steps either.
@@ -204,8 +212,8 @@ real `KeaClient`, and stub only `requests.Session.post`.
 - Let views open `MutationScope` and pass a Verified Subnet: rejected because every Subnet view then manages
   the scope, and the `(server, family)` contract breaks.
 - Detect an ID collision from Kea's error text: rejected because a reworded message breaks the retry.
-- Treat every result 1 through a Control Agent as `unknown`: rejected because every Kea rejection through an
-  agent then reads as unconfirmed.
+- Treat every result 1 through a Control Agent, or every result 1 on a native command, as `unknown`: rejected
+  because every Kea validation failure then reads as unconfirmed, and the Subnet ID retry can never run.
 - Keep the lock after an `unknown` step until the lost request is done: rejected because Kea gives NetBox no
   way to learn when, or whether, that request finishes.
 - Key the lock on the Server row: rejected because two Server rows can name one daemon.
