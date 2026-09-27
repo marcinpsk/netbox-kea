@@ -80,10 +80,14 @@ claim(server, family, record, force) -> ClaimResult # one record, links, never c
 ```
 
 The job and the bulk views call `reconcile`. The per-row Sync, lease add and the DHCP plugin import call `claim`.
+The DHCP plugin import also calls `reconcile` for its `delegated-prefix` phase, because no other caller reports
+delegated prefixes.
 
-`claim` and `reconcile` lock the object row before they change its links, and decide the last-link change under
-that lock. Two runs that drop the last two links of one object therefore run one after the other, and the second
-run sees that no link is left. A lock error fails only that row, so the phase is not complete.
+Before `claim` and `reconcile` look up or create an object, or change its links, they take a transaction-level
+PostgreSQL advisory lock on the object identity: the VRF and the address, Prefix or IP Range. They decide the
+last-link change under that lock. Two runs therefore cannot both create one object, and of two runs that drop the
+last two links of one object, the second sees that no link is left. A lock error fails only that row, so the phase
+is not complete.
 This decision lands in one change with that module.
 
 ### Upgrade
@@ -94,7 +98,9 @@ on which job runs first:
 
 - A Server whose `sync_vrf` is the global VRF adopts the row in place.
 - When every Server has the same non-global `sync_vrf`, the first run moves the row into that VRF, unless another
-  Server already owns it. The object keeps its ID and changelog, and every later run finds it in that VRF.
+  Server already owns it. The object keeps its ID and changelog, and every later run finds it in that VRF. When
+  that VRF already has an IP address with the same address, the row does not move. It stays unowned and counted,
+  the run reports a conflict, and the row in that VRF follows the normal rules.
 - Otherwise the row is ambiguous: Servers with different VRFs could each report it. A Server with a non-global
   `sync_vrf` does not move or adopt it, and creates its own row in its own VRF.
 

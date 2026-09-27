@@ -58,14 +58,16 @@ sent, or the client configuration is invalid.
 - Only connect-phase failures mean that the request was never sent: `requests.ConnectTimeout`, and a
   `requests.ConnectionError` caused by urllib3 `NewConnectionError`. The session sends one POST and does not
   retry.
-- A read timeout, a reset during the reply, or a malformed reply gives `unknown`.
+- A read timeout, a reset during the reply, or a malformed reply to a command that can change the configuration
+  gives `unknown`. The same failure on a read, or on the `config-test` of a candidate configuration, comes before
+  any such command. It is a rejection because the change was never sent.
 - No operation probes Kea to resolve `unknown`. A concurrent writer would make the probe lie: an observed
   state proves what Kea holds now, not which request wrote it.
 
 ### Subnet and Pool changes
 
-`add_subnet`, `edit_subnet`, `delete_subnet`, `add_pool` and `delete_pool` open the Subnet Catalogue
-`MutationScope` themselves. Views do not touch the scope for these writes. This completes the Subnet mutation
+`add_subnet`, `edit_subnet`, `delete_subnet`, `add_pool`, `delete_pool` and `set_subnet_options` open the Subnet
+Catalogue `MutationScope` themselves. Views do not touch the scope for these writes. This completes the Subnet mutation
 rules of ADR 0001.
 
 - Subnet creation already follows ADR 0001: the view gets the identity from `MutationScope.prepare_creation`,
@@ -76,7 +78,7 @@ rules of ADR 0001.
   Verified Subnet with the same CIDR and ID does not prove that this request created it, because another writer
   can create the same identity after `prepare_creation`. The lookup by CIDR in `KeaClient.subnet_add` is
   deleted.
-- `edit_subnet` and `delete_subnet` take the Subnet ID and the CIDR that the operator saw. The scope must return
+- `edit_subnet`, `delete_subnet` and `set_subnet_options` take the Subnet ID and the CIDR that the operator saw. The scope must return
   a Verified Subnet with that ID and that CIDR. Otherwise the operation raises a rejection that tells the
   operator to reload. An ID that another Subnet reuses between the form and the check therefore cannot redirect
   the change. A reuse between the check and the ID-only Kea command stays possible, because Kea cannot make the
@@ -93,8 +95,10 @@ warning, and one domain function computes it for both the Pool and the Reservati
 
 - `KeaClient.persist(family)` is the one persist step: `config-get`, `config-test` on the live configuration,
   then `config-write`. It returns `persisted`, `failed` or `not-requested`. It does not raise.
-- `failed` covers both a `config-write` failure and a `config-test` rejection of the live configuration. Both
-  mean that the change is live and a restart loses it. The diagnostic says which.
+- `failed` means that NetBox cannot confirm that the disk copy holds the running configuration, so a restart
+  can lose a live change. It covers a `config-write` failure, a lost `config-write` reply, and a `config-test`
+  rejection of the live configuration. The diagnostic says which. With `application="unknown"`, the message
+  does not claim that the change is live.
 - The persist step also runs after an `unknown` application. `config-write` saves what Kea runs, so the disk
   copy then matches memory whether the change applied or not.
 - Reservation mutations call the same step. `ReservationMutationResult.persistence` uses the shared type.
