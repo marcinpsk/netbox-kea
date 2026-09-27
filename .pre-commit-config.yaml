@@ -48,6 +48,13 @@ repos:
         pass_filenames: false
         files: ^netbox_kea/tests/.*\.py$
 
+      - id: kea-wire-discipline
+        name: kea-wire-discipline (no new wire literals outside owners)
+        entry: python3 netbox_kea/tests/kea_wire_discipline.py
+        language: system
+        pass_filenames: false
+        files: (^netbox_kea/.*\.py$|^netbox_kea/tests/kea_wire_discipline_baseline\.txt$|^\.pre-commit-config\.yaml$)
+
   # Type-check netbox_kea and fail only on errors absent from mypy-baseline.txt.
   # Runs on pre-push (not every commit) because a cold mypy cache takes ~20s. CI runs
   # the same script in the lint job, so both gates share one definition.

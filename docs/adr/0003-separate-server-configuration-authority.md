@@ -61,12 +61,14 @@ ServerConfigurationSnapshot
     global_options: tuple[DHCPOption, ...]
     option_definitions: tuple[OptionDefinition, ...]
     diagnostics: tuple[Diagnostic, ...]
+    subnet_diagnostics: tuple[Diagnostic, ...] # Subnet and Shared Network facts only
     configuration_hash: str | None
     available: bool
     complete: bool
 
 DeclaredSubnet
-    declared_cidr: str                         # canonical form of the Kea `subnet` value
+    declared_cidr: str                         # the Kea `subnet` value, verbatim
+    network: IPNetworkValue                    # canonical network of declared_cidr
     declared_subnet_id: int | None
     configuration: SubnetConfiguration
     shared_network_name: str | None
@@ -77,7 +79,7 @@ SharedNetwork
     interface: str | None
     relay_addresses: tuple[IPAddressValue, ...]
     options: tuple[DHCPOption, ...]
-    member_cidrs: tuple[str, ...]
+    member_cidrs: tuple[str, ...]              # canonical
 
 OptionDefinition
     code: int
@@ -93,7 +95,9 @@ OptionDefinition
 `server_configuration`, because they describe parsed configuration. The Subnet Catalogue re-exports them, so its
 callers keep one import. `DHCPOption` stays in `dhcp_options`. Both modules use it.
 
-A `DeclaredSubnet` states what Kea declared. It does not assert Subnet Identity. Only the Subnet Catalogue
+A `DeclaredSubnet` states what Kea declared. It does not assert Subnet Identity. Kea accepts a `subnet` value
+with host bits set and returns it unchanged, so `declared_cidr` keeps that text for display and `network` holds
+the canonical network that the Subnet Catalogue compares with the identity source. Only the Subnet Catalogue
 creates a Verified Subnet, and only after a declared fact agrees with a `subnet4-list` or `subnet6-list`
 observation.
 
@@ -106,14 +110,17 @@ why `views/subnets.py` reads `config-get` for Shared Network choices today.
 - `complete` is false when any fact failed to parse. Valid facts survive. One invalid Pool, DHCP Option or
   Shared Network entry does not discard the rest.
 - `display` never raises. A caller reads `available`, `complete` and `diagnostics` to decide what to show.
-- The Subnet Catalogue folds the Snapshot diagnostics into its own and derives `configuration_complete` from
-  `complete`.
+- `subnet_diagnostics` holds the diagnostics from Subnet and Shared Network facts. It excludes the diagnostics
+  from server-global `option-data` and `option-def`. A failed read puts its diagnostic in both fields.
+- The Subnet Catalogue folds `subnet_diagnostics` into its own and derives `configuration_complete` from
+  `available` and those diagnostics. An invalid global option or Option Definition does not make the Catalogue
+  incomplete, because the Catalogue exposes no global facts.
 
 ### Cache rules
 
 - `server_configuration` caches its Snapshot. The Subnet Catalogue caches its reconciled Catalogue Snapshot.
   Both use the same generation.
-- Both caches admit an incomplete result. See the ADR 0001 amendment for why.
+- Both caches admit an incomplete result. See the ADR 0001 amendment for why. Neither cache admits a failed read.
 - `for_verification` bypasses both caches.
 
 ### Presentation

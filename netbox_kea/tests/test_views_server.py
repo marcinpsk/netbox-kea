@@ -25,13 +25,14 @@ connectivity checks.
 from unittest.mock import patch
 
 import requests
+from django.contrib import messages as django_messages
 from django.contrib.contenttypes.models import ContentType
 from django.test import override_settings
 from django.urls import reverse
 
 from netbox_kea.models import Server
 
-from .kea_stub import stub_kea
+from .kea_stub import _catalogue_responses_for_subnets, stub_kea
 from .utils import _PLUGINS_CONFIG, User, _make_db_server, _ViewTestBase
 
 # ---------------------------------------------------------------------------
@@ -59,8 +60,7 @@ def _config_get_empty(body):
     """A ``config-get`` payload with no global option-data, for the queried service."""
     svc = (body.get("service") or [""])[0]
     version = 6 if svc == "dhcp6" else 4
-    key = f"Dhcp{version}"
-    return {"result": 0, "arguments": {key: {"option-data": [], f"subnet{version}": [], "shared-networks": []}}}
+    return _catalogue_responses_for_subnets(version, [])["config-get"]
 
 
 def _status_stub(**overrides):
@@ -100,6 +100,12 @@ class TestServerDetailView(_ViewTestBase):
         url = reverse("plugins:netbox_kea:server", args=[self.server.pk])
         response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
+
+    def test_get_shows_the_control_agent_url(self):
+        """The panel read object.server_url, a field renamed to ca_url, so it rendered blank."""
+        url = reverse("plugins:netbox_kea:server", args=[self.server.pk])
+
+        self.assertContains(self.client.get(url), self.server.ca_url)
 
     def test_get_nonexistent_returns_404(self):
         url = reverse("plugins:netbox_kea:server", args=[99999])
@@ -252,6 +258,34 @@ class TestServerEditView(_ViewTestBase):
         # Must redirect to THIS server's pk, not some other.
         self.assertIn(str(self.server.pk), response.url)
 
+    def test_post_turns_on_the_dhcp_plugin_sync_toggle(self):
+        """The whole edit flow must be able to set it: form -> view -> database row."""
+        self.assertFalse(self.server.sync_dhcp_plugin_enabled)
+        url = reverse("plugins:netbox_kea:server_edit", args=[self.server.pk])
+
+        with stub_kea({"version-get": _VERSION_OK}):
+            response = self.client.post(
+                url,
+                {
+                    "name": self.server.name,
+                    "ca_url": self.server.ca_url,
+                    "dhcp4": True,
+                    "dhcp6": False,
+                    "ssl_verify": True,
+                    "has_control_agent": True,
+                    "sync_dhcp_plugin_enabled": True,
+                },
+            )
+
+        self.assertEqual(response.status_code, 302)
+        self.server.refresh_from_db()
+        self.assertTrue(self.server.sync_dhcp_plugin_enabled)
+
+    def test_get_renders_the_dhcp_plugin_sync_checkbox(self):
+        url = reverse("plugins:netbox_kea:server_edit", args=[self.server.pk])
+
+        self.assertContains(self.client.get(url), 'name="sync_dhcp_plugin_enabled"')
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # ServerDeleteView
@@ -379,36 +413,91 @@ class TestServerBulkImportView(_ViewTestBase):
             "Expected duplicate name error in form",
         )
 
+    def test_post_csv_sets_the_sync_fields(self):
+        """Every sync column must survive the import, including the VRF matched by name.
+
+        The import form listed none of them, so a bulk-imported server silently kept
+        the model defaults and no CSV column could change that.
+        """
+        from ipam.models import VRF
+
+        vrf = VRF.objects.create(name="csv-sync-vrf")
+        url = reverse("plugins:netbox_kea:server_bulk_import")
+        csv_data = (
+            "name,ca_url,sync_enabled,sync_leases_enabled,sync_reservations_enabled,"
+            "sync_prefixes_enabled,sync_ip_ranges_enabled,sync_dhcp_plugin_enabled,"
+            "persist_config,sync_vrf\r\n"
+            "csv-sync-server,https://csv-sync.example.com,false,false,false,false,false,true,false,csv-sync-vrf\r\n"
+        )
+
+        with stub_kea({"version-get": _VERSION_OK}):
+            response = self.client.post(url, {"data": csv_data, "format": "csv", "csv_delimiter": ","})
+
+        self.assertIn(response.status_code, [200, 302])
+        server = Server.objects.get(name="csv-sync-server")
+        self.assertFalse(server.sync_enabled)
+        self.assertFalse(server.sync_leases_enabled)
+        self.assertFalse(server.sync_reservations_enabled)
+        self.assertFalse(server.sync_prefixes_enabled)
+        self.assertFalse(server.sync_ip_ranges_enabled)
+        self.assertTrue(server.sync_dhcp_plugin_enabled)
+        self.assertFalse(server.persist_config)
+        self.assertEqual(server.sync_vrf, vrf)
+
+    def test_post_csv_keeps_accepting_the_0_and_1_boolean_spelling(self):
+        """Retyping the boolean columns must not narrow what a CSV may say."""
+        url = reverse("plugins:netbox_kea:server_bulk_import")
+        csv_data = (
+            "name,ca_url,dhcp4,dhcp6,sync_enabled,sync_dhcp_plugin_enabled\r\n"
+            "csv-numeric-server,https://csv-numeric.example.com,1,0,0,1\r\n"
+        )
+
+        with stub_kea({"version-get": _VERSION_OK}):
+            response = self.client.post(url, {"data": csv_data, "format": "csv", "csv_delimiter": ","})
+
+        self.assertIn(response.status_code, [200, 302])
+        server = Server.objects.get(name="csv-numeric-server")
+        self.assertTrue(server.dhcp4)
+        self.assertFalse(server.dhcp6)
+        self.assertFalse(server.sync_enabled)
+        self.assertTrue(server.sync_dhcp_plugin_enabled)
+
+    def test_post_csv_without_the_sync_columns_keeps_the_model_defaults(self):
+        """Adding the columns must not make them mandatory."""
+        url = reverse("plugins:netbox_kea:server_bulk_import")
+        csv_data = "name,ca_url\r\ncsv-default-server,https://csv-default.example.com\r\n"
+
+        with stub_kea({"version-get": _VERSION_OK}):
+            response = self.client.post(url, {"data": csv_data, "format": "csv", "csv_delimiter": ","})
+
+        self.assertIn(response.status_code, [200, 302])
+        server = Server.objects.get(name="csv-default-server")
+        self.assertTrue(server.sync_enabled)
+        self.assertFalse(server.sync_dhcp_plugin_enabled)
+        self.assertTrue(server.persist_config)
+        self.assertIsNone(server.sync_vrf)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Phase 7c: Global DHCP options on the server status tab
 # ─────────────────────────────────────────────────────────────────────────────
 
-_CONFIG_WITH_OPTIONS_V4 = {
-    "option-data": [
-        {"code": 6, "name": "domain-name-servers", "data": "8.8.8.8, 8.8.4.4"},
-        {"code": 15, "name": "domain-name", "data": "example.com"},
-    ],
-    "subnet4": [],
-    "shared-networks": [],
-}
+_GLOBAL_OPTIONS_V4 = (
+    {"code": 6, "name": "domain-name-servers", "data": "8.8.8.8, 8.8.4.4"},
+    {"code": 15, "name": "domain-name", "data": "example.com"},
+)
 
 
 def _config_get_with_options(body):
     """A ``config-get`` payload carrying global option-data for the queried service."""
     svc = (body.get("service") or [""])[0]
     if svc == "dhcp6":
-        return {
-            "result": 0,
-            "arguments": {
-                "Dhcp6": {
-                    "option-data": [{"code": 23, "name": "dns-servers", "data": "2001:db8::1"}],
-                    "subnet6": [],
-                    "shared-networks": [],
-                }
-            },
-        }
-    return {"result": 0, "arguments": {"Dhcp4": _CONFIG_WITH_OPTIONS_V4}}
+        return _catalogue_responses_for_subnets(
+            6,
+            [],
+            global_options=({"code": 23, "name": "dns-servers", "data": "2001:db8::1"},),
+        )["config-get"]
+    return _catalogue_responses_for_subnets(4, [], global_options=_GLOBAL_OPTIONS_V4)["config-get"]
 
 
 def _global_options_stub(**overrides):
@@ -458,10 +547,14 @@ class TestServerStatusGlobalOptions(_ViewTestBase):
         """If ``config-get`` raises, the status page must still return 200 (graceful degradation)."""
         # config-get result 1 → real KeaException → _get_global_options swallows it → {}.
         url = reverse("plugins:netbox_kea:server_status", args=[self.server.pk])
-        with _global_options_stub(**{"config-get": {"result": 1, "text": "internal error"}}):
+        with (
+            _global_options_stub(**{"config-get": {"result": 1, "text": "internal error"}}),
+            self.assertLogs("netbox_kea.views.server", level="WARNING") as logs,
+        ):
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context["global_options"], {})
+        self.assertTrue(any("configuration facts are unavailable" in entry for entry in logs.output))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -822,7 +915,44 @@ class TestGetGlobalOptionsGenericException(_ViewTestBase):
                 response = self.client.get(self._url())
                 self.assertEqual(response.status_code, 200)
                 self.assertEqual(response.context["global_options"], {})
-                self.assertIn("Unexpected error fetching global options", logs.output[0])
+                self.assertIn("Global DHCP Options", logs.output[0])
+
+    def test_unavailable_family_configuration_is_shown_as_an_error(self):
+        with _status_stub(**{"config-get": {"result": 0, "arguments": {"Dhcp4": ["unexpected"]}}}):
+            response = self.client.get(self._url())
+
+        self.assertEqual(response.status_code, 200)
+        errors = [str(m) for m in response.context["messages"] if m.level == django_messages.ERROR]
+        self.assertIn("Kea did not return a Dhcp4 configuration object.", errors)
+
+    def test_incomplete_global_options_render_valid_values_with_a_warning(self):
+        config = _catalogue_responses_for_subnets(
+            4, [], global_options=({"code": 15, "name": "domain-name", "data": "example.com"}, {"data": "x"})
+        )["config-get"]
+        with _status_stub(**{"config-get": config}):
+            response = self.client.get(self._url())
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["global_options"]["DHCPv4"], {"Domain Name": "example.com"})
+        warnings = [str(m) for m in response.context["messages"] if m.level == django_messages.WARNING]
+        self.assertTrue(warnings, list(response.context["messages"]))
+
+    def test_invalid_pool_does_not_log_global_options_as_incomplete(self):
+        subnet = {"id": 1, "subnet": "10.0.0.0/24", "pools": [{"pool": "192.0.2.1-192.0.2.9"}]}
+        configs = {
+            "dhcp4": _catalogue_responses_for_subnets(4, [subnet], global_options=_GLOBAL_OPTIONS_V4)["config-get"],
+            "dhcp6": _catalogue_responses_for_subnets(6, [])["config-get"],
+        }
+        with (
+            _status_stub(**{"config-get": lambda body: configs[body["service"][0]]}),
+            self.assertNoLogs("netbox_kea.views.server", level="WARNING"),
+        ):
+            response = self.client.get(self._url())
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["global_options"]["DHCPv4"]["Dns Servers"], "8.8.8.8, 8.8.4.4")
+        warnings = [str(m) for m in response.context["messages"] if m.level == django_messages.WARNING]
+        self.assertIn("Kea returned an invalid Pool.", warnings)
 
 
 # ---------------------------------------------------------------------------
@@ -867,7 +997,7 @@ class TestKeaChangeMixinNoPk(_ViewTestBase):
         from django.test import RequestFactory
         from django.views import View
 
-        from netbox_kea.views import _KeaChangeMixin
+        from netbox_kea.views._base import _KeaChangeMixin
 
         class _MinimalView(_KeaChangeMixin, View):
             def get(self, request, **kwargs):

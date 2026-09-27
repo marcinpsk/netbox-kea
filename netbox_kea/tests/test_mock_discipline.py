@@ -185,7 +185,7 @@ _PATCH_IMPORT = "from unittest.mock import patch\n"
 
 def test_flags_unspecced_patch_of_first_party_target():
     """``patch("netbox_kea...")`` yields the same fabricating MagicMock as ``MagicMock()``."""
-    src = _PATCH_IMPORT + '\n@patch("netbox_kea.views.leases.fetch_subnet_choices")\ndef test_x(m):\n    pass\n'
+    src = _PATCH_IMPORT + '\n@patch("netbox_kea.views.leases.format_leases")\ndef test_x(m):\n    pass\n'
     hits = scan_source(src, "t.py")
     assert len(hits) == 1
     assert hits[0].kind == "patch"
@@ -193,10 +193,7 @@ def test_flags_unspecced_patch_of_first_party_target():
 
 
 def test_accepts_autospecced_patch():
-    src = (
-        _PATCH_IMPORT
-        + '\n@patch("netbox_kea.views.leases.fetch_subnet_choices", autospec=True)\ndef test_x(m):\n    pass\n'
-    )
+    src = _PATCH_IMPORT + '\n@patch("netbox_kea.views.leases.format_leases", autospec=True)\ndef test_x(m):\n    pass\n'
     assert scan_source(src, "t.py") == []
 
 

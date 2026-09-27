@@ -177,7 +177,7 @@ class GlobalReservationScope:
 
 @dataclass(frozen=True)
 class InSubnetReservationScope:
-    """An In-Subnet Reservation Scope with verified Subnet Identity."""
+    """An In-Subnet Reservation Scope bound to one catalogued Subnet Identity; writes verify it through MutationScope."""
 
     subnet: SubnetIdentity
     kind: Literal["in-subnet"] = "in-subnet"
@@ -625,13 +625,15 @@ def _identity(raw: dict[str, Any], family: Family) -> ReservationIdentity:
 
 
 def _scope(raw: dict[str, Any], catalogue: CatalogueSnapshot) -> ReservationScope:
+    from .subnet_catalogue import VerifiedSubnet
+
     subnet_id = raw.get("subnet-id")
     if isinstance(subnet_id, bool) or not isinstance(subnet_id, int) or subnet_id < 0:
         raise MalformedReservation("invalid-scope", "The Reservation has an invalid scope.", "subnet-id")
     if subnet_id == 0:
         return GlobalReservationScope()
     subnet = catalogue.find_by_id(subnet_id)
-    if subnet is None:
+    if not isinstance(subnet, VerifiedSubnet):
         raise MalformedReservation(
             "unverified-scope",
             "The Reservation refers to a Subnet that the Subnet Catalogue cannot verify.",

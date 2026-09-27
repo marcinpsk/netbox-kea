@@ -233,6 +233,14 @@ prerelease = false
 [tool.semantic_release.publish]
 upload_to_vcs_release = true
 
+# semantic-release splits the changelog on insertion_flag and writes the new section
+# there. A file with content but no flag is rewritten unchanged, with no warning and
+# exit 0. Both keys are stated rather than inherited so the guard in
+# netbox_kea/tests/test_release_changelog.py reads them instead of assuming a default.
+[tool.semantic_release.changelog]
+mode = "update"
+insertion_flag = "<!-- version list -->"
+
 [tool.semantic_release.changelog.default_templates]
 changelog_file = "CHANGELOG.md"
 

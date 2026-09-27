@@ -61,8 +61,8 @@
           <i class="mdi mdi-alert-circle-outline me-2 mt-1" aria-hidden="true"></i>
           <div>
             <strong>The <code>subnet_cmds</code> hook library is not loaded on this Kea server.</strong>
-            The Subnet CIDR field cannot offer the configured subnets, and saving will fail:
-            resolving a CIDR to its Kea subnet ID needs this hook. Load it on the server first.
+            Subnet suggestions come from the running configuration.
+            Saving an in-Subnet Reservation requires this hook to verify Subnet identity.
           </div>
         </div>
         {% endif %}

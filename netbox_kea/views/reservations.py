@@ -39,6 +39,7 @@ from ..reservations import (
     lease_identifier_types,
     lease_identities,
 )
+from ..subnet_catalogue import VerifiedSubnet
 from ..subnet_catalogue import display as subnet_catalogue
 from ..utilities import OptionalViewTab
 
@@ -86,7 +87,7 @@ def _lease_facts_in_subnet(client: KeaClient, version: Family, subnet_id: int) -
             addresses = {lease["ip-address"] for lease in leases if isinstance(lease.get("ip-address"), str)}
             identities = {identity for lease in leases for identity in lease_identities(lease, version, strict=True)}
         except KeaException as exc:
-            return _HOOK_UNAVAILABLE if exc.response.get("result") == 2 else _INDETERMINATE
+            return _HOOK_UNAVAILABLE if exc.unsupported_command else _INDETERMINATE
         except (LeaseQueryGuardError, requests.RequestException, RuntimeError, ValueError):
             return _INDETERMINATE
     return addresses, identities
@@ -106,7 +107,7 @@ def _identity_holds_a_lease(client: KeaClient, version: Family, identity: Reserv
             leases = worker_client.lease_search(version, selector, identity.value)
             assigned = [_assigned(lease) for lease in leases]
         except KeaException as exc:
-            return _HOOK_UNAVAILABLE if exc.response.get("result") == 2 else _INDETERMINATE
+            return _HOOK_UNAVAILABLE if exc.unsupported_command else _INDETERMINATE
         except (LeaseQueryGuardError, requests.RequestException, RuntimeError, ValueError):
             return _INDETERMINATE
     return any(assigned)
@@ -296,7 +297,11 @@ def _fetch_reservation_page(
         return replace(_empty_reservation_snapshot(version), complete=True)
     catalogue = subnet_catalogue(server, version)
     read_subnet_id = 0 if scope == "global" else subnet_id
-    if read_subnet_id is not None and read_subnet_id > 0 and catalogue.find_by_id(read_subnet_id) is None:
+    if (
+        read_subnet_id is not None
+        and read_subnet_id > 0
+        and not isinstance(catalogue.find_by_id(read_subnet_id), VerifiedSubnet)
+    ):
         if catalogue.identity_complete and catalogue.consistent:
             return replace(_empty_reservation_snapshot(version), complete=True)
         read_subnet_id = None
@@ -474,7 +479,7 @@ def _reservation_list_context(
     try:
         snapshot = _fetch_reservation_page(server, version, request.GET.get("cursor"), **filters)
     except KeaException as exc:
-        if exc.response.get("result") == 2:
+        if exc.unsupported_command:
             hook_available = False
         else:
             logger.exception("Failed to fetch DHCPv%s Reservations", version)

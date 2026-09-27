@@ -1,28 +1,24 @@
 import concurrent.futures
 import logging
 from typing import Any
-from urllib.parse import urlencode as _urlencode
 
-import requests
 from django.http import HttpResponse
 from django.http.request import HttpRequest
 from django.shortcuts import render
-from django.urls import reverse
 from django.views import View
 
-from .. import constants, forms, tables
+from .. import constants, forms, server_configuration, tables
 from ..constants import Family
-from ..dhcp_options import DHCPOption
-from ..kea import KeaException, LeaseQueryGuardError, lease_query_guard_message
+from ..kea import LeaseQueryGuardError, lease_query_guard_message
 from ..models import Server
 from ..reservation_transfer import export_reservation_document
 from ..reservations import ReservationCapabilities, ReservationDiagnostic, ReservationSnapshot
-from ..subnet_catalogue import ConfiguredSubnet, Diagnostic, VerifiedSubnet, display
+from ..subnet_catalogue import CatalogueSnapshot, display
 from ..utilities import (
     export_table,
     format_leases,
 )
-from ._base import ConditionalLoginRequiredMixin
+from ._base import ConditionalLoginRequiredMixin, _catalogue_subnet_row, _enrich_subnet_statistics, _shared_network_row
 from .leases import _enrich_leases_with_badges
 from .reservations import (
     _attach_reservation_action_urls,
@@ -35,20 +31,6 @@ from .reservations import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-def _require_first_entry(resp: Any, what: str) -> dict[str, Any]:
-    """Validate a Kea command-response shape and return its first entry.
-
-    ``KeaClient.command`` only guarantees a list, and ``check_response`` iterating
-    an empty list raises nothing — so indexing ``resp[0]`` on a malformed (empty or
-    non-dict) payload blows up with ``IndexError``/``TypeError``. Surface it as a
-    ``RuntimeError`` (the contract callers already catch) instead, matching the
-    guard the subnet/option/server views use.
-    """
-    if not isinstance(resp, list) or not resp or not isinstance(resp[0], dict):
-        raise RuntimeError(f"Malformed Kea response for {what}")
-    return resp[0]
 
 
 def _fetch_leases_from_server(
@@ -170,83 +152,21 @@ def _filter_subnets(subnets: list[dict[str, Any]], q: str, subnet_id: int | None
     return result
 
 
-def _option_payload(option: DHCPOption) -> dict[str, Any]:
-    """Serialize a catalogue option for existing option display formatting."""
-    return {
-        "data": option.data,
-        **{
-            key: value
-            for key, value in (
-                ("code", option.code),
-                ("name", option.name),
-                ("space", option.space),
-                ("csv-format", option.csv_format),
-                ("always-send", option.always_send),
-                ("never-send", option.never_send),
-            )
-            if value is not None
-        },
-    }
-
-
-def _catalogue_subnet_row(
-    subnet: VerifiedSubnet | ConfiguredSubnet,
-    server: Server,
-    version: Family,
-) -> dict[str, Any]:
-    """Build one combined-table row from a typed catalogue subnet."""
-    from ..utilities import format_option_data
-
-    identity = subnet.identity if isinstance(subnet, VerifiedSubnet) else subnet.candidate_identity
-    configuration = subnet.configuration
-    row = {
-        "id": identity.subnet_id,
-        "subnet": identity.cidr,
-        "_subnet_sort_key": int(identity.network.network_address),
-        "dhcp_version": version,
-        "server_pk": server.pk,
-        "server_name": server.name,
-        "identity_verified": isinstance(subnet, VerifiedSubnet),
-        "ddns_qualifying_suffix": configuration.settings.ddns_qualifying_suffix if configuration else None,
-        "options": format_option_data(
-            [_option_payload(option) for option in configuration.options] if configuration else [],
-            version=version,
-        ),
-        "pools": [pool.range for pool in configuration.pools] if configuration else [],
-    }
-    if subnet.shared_network is not None:
-        row["shared_network"] = subnet.shared_network.name
-    return row
-
-
 def _fetch_subnets_from_server(
     server: "Server",
     version: Family,
-) -> tuple[list[dict[str, Any]], tuple[Diagnostic, ...]]:
+) -> tuple[list[dict[str, Any]], CatalogueSnapshot]:
     """Fetch safe Subnet Catalogue facts for one server and tag them for the combined table."""
     snapshot = display(server, version)
     if snapshot.unavailable:
-        return [], snapshot.diagnostics
+        return [], snapshot
     result = [
-        _catalogue_subnet_row(subnet, server, version) for subnet in (*snapshot.subnets, *snapshot.configured_subnets)
+        _catalogue_subnet_row(subnet, server, version, can_change=False)
+        for subnet in (*snapshot.subnets, *snapshot.configured_subnets)
     ]
 
-    # Enrich with utilisation stats when stat_cmds hook is available.
-    try:
-        client = server.get_client(version=version)
-        stat_resp = client.command(
-            f"stat-lease{version}-get",
-            service=[f"dhcp{version}"],
-        )
-        from ..utilities import parse_subnet_stats
-
-        stats = parse_subnet_stats(stat_resp, version)
-        for s in result:
-            if s["id"] in stats:
-                s.update(stats[s["id"]])
-    except (KeaException, requests.RequestException, KeyError, ValueError, TypeError, RuntimeError):
-        logger.debug("stat_cmds hook unavailable or failed", exc_info=True)
-    return result, snapshot.diagnostics
+    _enrich_subnet_statistics(result, server, version)
+    return result, snapshot
 
 
 class _CombinedSubnetsView(_CombinedViewMixin):
@@ -262,17 +182,19 @@ class _CombinedSubnetsView(_CombinedViewMixin):
 
         all_subnets: list[dict[str, Any]] = []
         errors: list[tuple[str, str]] = []
+        warnings: list[tuple[str, str]] = []
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
             future_to_server = {executor.submit(_fetch_subnets_from_server, s, self.dhcp_version): s for s in servers}
             for future in concurrent.futures.as_completed(future_to_server):
                 server = future_to_server[future]
                 try:
-                    subnets, diagnostics = future.result()
+                    subnets, snapshot = future.result()
                     all_subnets.extend(subnets)
-                    errors.extend(
+                    diagnostics = errors if snapshot.unavailable else warnings
+                    diagnostics.extend(
                         (server.name, message)
-                        for message in dict.fromkeys(diagnostic.message for diagnostic in diagnostics)
+                        for message in dict.fromkeys(diagnostic.message for diagnostic in snapshot.diagnostics)
                     )
                 except Exception:
                     logger.exception("Failed to query server %s", server.name)
@@ -285,10 +207,9 @@ class _CombinedSubnetsView(_CombinedViewMixin):
             .values_list("pk", flat=True)
         )
         for subnet in all_subnets:
-            subnet.setdefault(
-                "can_change",
-                bool(subnet.get("identity_verified")) and subnet.get("server_pk") in writable_pks,
-            )
+            can_change = subnet.get("server_pk") in writable_pks
+            subnet["can_change"] = bool(subnet.get("identity_verified")) and can_change
+            subnet["can_edit_options"] = bool(subnet.get("configuration_available")) and can_change
 
         table_cls = tables.GlobalSubnetTable4 if self.dhcp_version == 4 else tables.GlobalSubnetTable6
 
@@ -311,6 +232,7 @@ class _CombinedSubnetsView(_CombinedViewMixin):
                 "table": table,
                 "search_form": search_form,
                 "errors": errors,
+                "warnings": warnings,
                 "dhcp_version": self.dhcp_version,
                 "page_title": f"DHCPv{self.dhcp_version} Subnets",
             }
@@ -332,46 +254,6 @@ class CombinedSubnets6View(_CombinedSubnetsView):
     active_tab = "subnets6"
 
 
-def _fetch_shared_networks_from_server(server: "Server", version: Family) -> list[dict[str, Any]]:
-    """Fetch all shared networks from a single server's config-get and tag with server info."""
-    client = server.get_client(version=version)
-    config = client.command("config-get", service=[f"dhcp{version}"])
-    entry = _require_first_entry(config, f"config-get for dhcp{version}")
-    if entry["arguments"] is None:
-        raise RuntimeError(f"Unexpected None arguments from config-get for dhcp{version}")
-    dhcp_conf = entry["arguments"].get(f"Dhcp{version}", {})
-    result = []
-    for sn in dhcp_conf.get("shared-networks", []):
-        subnets = sn.get(f"subnet{version}", [])
-        subnet_links = [
-            {
-                "cidr": s["subnet"],
-                "url": (
-                    reverse(
-                        f"plugins:netbox_kea:server_leases{version}",
-                        args=[server.pk],
-                    )
-                    + "?"
-                    + _urlencode({"by": "subnet", "q": s["subnet"]})
-                ),
-            }
-            for s in subnets
-            if s.get("subnet")
-        ]
-        result.append(
-            {
-                "name": sn.get("name", ""),
-                "description": sn.get("description", ""),
-                "subnet_count": len(subnets),
-                "subnet_links": subnet_links,
-                "server_pk": server.pk,
-                "server_name": server.name,
-                "dhcp_version": version,
-            }
-        )
-    return result
-
-
 class _CombinedSharedNetworksView(_CombinedViewMixin):
     """Base view: fetch shared networks from all selected servers concurrently."""
 
@@ -385,27 +267,38 @@ class _CombinedSharedNetworksView(_CombinedViewMixin):
 
         all_networks: list[dict[str, Any]] = []
         errors: list[tuple[str, str]] = []
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-            future_to_server = {
-                executor.submit(_fetch_shared_networks_from_server, s, self.dhcp_version): s for s in servers
-            }
-            for future in concurrent.futures.as_completed(future_to_server):
-                server = future_to_server[future]
-                try:
-                    all_networks.extend(future.result())
-                except Exception:
-                    logger.exception("Failed to query server %s", server.name)
-                    errors.append((server.name, "Failed to query server"))
-
-        # Annotate can_change per server so SharedNetworkTable.actions renders correctly.
+        warnings: list[tuple[str, str]] = []
         writable_pks = set(
             Server.objects.restrict(request.user, "change")
             .filter(pk__in=[s.pk for s in servers])
             .values_list("pk", flat=True)
         )
-        for network in all_networks:
-            network.setdefault("can_change", network.get("server_pk") in writable_pks)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+            future_to_server = {executor.submit(server_configuration.display, s, self.dhcp_version): s for s in servers}
+            for future in concurrent.futures.as_completed(future_to_server):
+                server = future_to_server[future]
+                try:
+                    snapshot = future.result()
+                    diagnostics = errors if not snapshot.available else warnings
+                    diagnostics.extend(
+                        (server.name, message)
+                        for message in dict.fromkeys(diagnostic.message for diagnostic in snapshot.diagnostics)
+                    )
+                    if snapshot.available:
+                        all_networks.extend(
+                            _shared_network_row(
+                                network,
+                                server,
+                                self.dhcp_version,
+                                can_change=server.pk in writable_pks,
+                                include_server_name=True,
+                            )
+                            for network in snapshot.shared_networks
+                        )
+                except Exception:
+                    logger.exception("Failed to query server %s", server.name)
+                    errors.append((server.name, "Failed to query server"))
 
         table = tables.GlobalSharedNetworkTable(all_networks, user=request.user)
         table.configure(request)
@@ -417,6 +310,7 @@ class _CombinedSharedNetworksView(_CombinedViewMixin):
             {
                 "table": table,
                 "errors": errors,
+                "warnings": warnings,
                 "dhcp_version": self.dhcp_version,
                 "page_title": f"DHCPv{self.dhcp_version} Shared Networks",
             }

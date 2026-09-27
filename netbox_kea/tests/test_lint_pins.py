@@ -19,11 +19,16 @@ from __future__ import annotations
 
 import re
 import shlex
+import sys
 from pathlib import Path
 
 import pytest
-import tomllib
 import yaml
+
+if sys.version_info >= (3, 11):
+    import tomllib
+else:  # Python 3.10 needs the dev group's explicit TOML reader.
+    import tomli as tomllib
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 PRE_COMMIT = REPOSITORY_ROOT / ".pre-commit-config.yaml"

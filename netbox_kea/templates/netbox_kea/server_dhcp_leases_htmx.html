@@ -23,11 +23,15 @@
         <div class="alert alert-warning d-flex align-items-start py-2 px-3 mb-3 small" role="alert">
           <i class="mdi mdi-alert-circle-outline me-2" aria-hidden="true"></i>
           <div>
-            The <code>subnet_cmds</code> hook library is not loaded on this Kea server, so the Search
-            field cannot offer the configured subnets. Searching still works: type an exact configured subnet CIDR or ID.
+            The <code>subnet_cmds</code> hook library is not loaded on this Kea server.
+            Subnet suggestions come from the running configuration.
+            Searching by subnet CIDR or ID does not require this hook.
           </div>
         </div>
         {% endif %}
+        {% for message in form.subnet_diagnostics %}
+        <div class="alert alert-{% if form.subnet_catalogue_unavailable %}danger{% else %}warning{% endif %} py-2 px-3 mb-3 small" role="alert">{{ message }}</div>
+        {% endfor %}
         {% render_form form %}
         {% if form.subnet_choices %}
         {% comment %}

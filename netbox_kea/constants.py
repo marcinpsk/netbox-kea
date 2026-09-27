@@ -34,9 +34,12 @@ HEX_STRING_REGEX = r"^([0-9A-Fa-f]{2}[:-]?)*([0-9A-Fa-f]{2})$"
 # Shared by the form widget's `list` attribute and the template that emits the element.
 RESERVATION_SUBNET_DATALIST_ID = "kea-reservation-subnet-cidrs"
 
-# How long a server's subnet list stays cached, in seconds. Both subnet datalists (lease
-# search, reservation add form) describe the same rarely-changing Kea config, so one bound.
-SUBNET_CHOICES_TTL = 300
+# Cache namespaces shared by the producers and test cleanup.
+SERVER_CONFIGURATION_CACHE_PREFIX = "netbox_kea:server_configuration:"
+SUBNET_CATALOGUE_CACHE_PREFIX = "netbox_kea:subnet_catalogue:"
+
+# Maximum age of an interactive configuration or catalogue snapshot, in seconds.
+DISPLAY_SNAPSHOT_TTL = 300
 
 # kea/src/lib/dhcp
 # RFC8415 section 11.1

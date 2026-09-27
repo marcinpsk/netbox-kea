@@ -23,7 +23,7 @@ from netbox.views import generic
 from utilities.paginator import EnhancedPaginator, get_paginate_count
 from utilities.views import GetReturnURLMixin, register_model_view
 
-from .. import constants, forms, tables
+from .. import constants, forms, subnet_catalogue, tables
 from ..constants import Family
 from ..kea import (
     KeaClient,
@@ -39,12 +39,12 @@ from ..reservations import (
     lease_identities,
 )
 from ..signals import lease_added, leases_deleted
+from ..subnet_catalogue import VerifiedSubnet
 from ..sync import sync_lease_to_netbox
 from ..utilities import (
     OptionalViewTab,
     check_dhcp_enabled,
     export_table,
-    fetch_subnet_choices,
     format_leases,
     kea_error_hint,
 )
@@ -149,9 +149,14 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
         return table
 
     def _make_search_form(self, server: Server, data: Any | None = None):
-        """Build the lease-search form with the subnet quick-select choices populated."""
-        subnet_choices, subnet_cmds_available = fetch_subnet_choices(server, self.dhcp_version)
-        kwargs = {"subnet_choices": subnet_choices, "subnet_cmds_available": subnet_cmds_available}
+        """Build the lease-search form with the subnet quick-select choices and their diagnostics."""
+        snapshot = subnet_catalogue.display(server, self.dhcp_version)
+        kwargs = {
+            "subnet_choices": snapshot.subnet_choices,
+            "subnet_cmds_available": snapshot.subnet_cmds_available,
+            "subnet_diagnostics": tuple(dict.fromkeys(diagnostic.message for diagnostic in snapshot.diagnostics)),
+            "subnet_catalogue_unavailable": snapshot.unavailable,
+        }
         if data is None:
             return self.form(**kwargs)
         return self.form(data, **kwargs)
@@ -967,7 +972,7 @@ def _reservation_for_lease_worker(worker_clients, version, catalogue, lease, loo
     if not ip or isinstance(subnet_id, bool) or not isinstance(subnet_id, int):
         return ip, None, None
     subnet = catalogue.find_by_id(subnet_id)
-    if subnet is None:
+    if not isinstance(subnet, VerifiedSubnet):
         return ip, None, None
     scope = InSubnetReservationScope(subnet.identity)
     identities = lease_identities(lease, version)
@@ -985,7 +990,7 @@ def _reservation_for_lease_worker(worker_clients, version, catalogue, lease, loo
                 if reservation is not None:
                     return ip, reservation, True
     except KeaException as exc:
-        if exc.response.get("result") == 2:
+        if exc.unsupported_command:
             return ip, None, False
         logger.debug("Reservation lookup failed for lease %s", ip, exc_info=True)
         return ip, None, None
@@ -1144,7 +1149,7 @@ def _enrich_leases_with_badges(
             client, version, catalogue, leases
         )
     except KeaException as exc:
-        if exc.response.get("result") == 2:
+        if exc.unsupported_command:
             host_cmds_available = False
         else:
             failed_ips = {lease.get("ip_address", "") for lease in leases}
@@ -1169,7 +1174,7 @@ def _enrich_leases_with_badges(
             reservation_by_ip.get(ip),
             server.pk,
             version,
-            subnet.cidr if subnet is not None else None,
+            subnet.cidr if isinstance(subnet, VerifiedSubnet) else None,
             host_cmds_available,
             failed_ips,
             can_change,

@@ -4,10 +4,21 @@
 {% block tab_content %}
 
 {% if errors %}
-<div class="alert alert-warning mt-3">
+<div class="alert alert-danger mt-3">
   <strong>Some servers could not be reached:</strong>
   <ul class="mb-0 mt-1">
     {% for name, msg in errors %}
+    <li><strong>{{ name }}</strong>: {{ msg }}</li>
+    {% endfor %}
+  </ul>
+</div>
+{% endif %}
+
+{% if warnings %}
+<div class="alert alert-warning mt-3">
+  <strong>Some server data is incomplete:</strong>
+  <ul class="mb-0 mt-1">
+    {% for name, msg in warnings %}
     <li><strong>{{ name }}</strong>: {{ msg }}</li>
     {% endfor %}
   </ul>

@@ -9,7 +9,15 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import SimpleTestCase, TestCase
 
 from netbox_kea import constants
-from netbox_kea.forms import Leases4SearchForm, Leases6SearchForm, MultipleIPField, PoolAddForm, ServerForm
+from netbox_kea.forms import (
+    Leases4SearchForm,
+    Leases6SearchForm,
+    MultipleIPField,
+    PoolAddForm,
+    ServerForm,
+    ServerImportForm,
+)
+from netbox_kea.models import Server
 from netbox_kea.reservations import ReservationCapabilities, reservation_identifier_types
 
 
@@ -262,10 +270,67 @@ class TestServerFormFields(TestCase):
         form = ServerForm()
         self.assertIsInstance(form.fields["dhcp6_password"].widget, forms.PasswordInput)
 
+    def test_server_form_offers_every_editable_server_field(self):
+        """A model field no form lists can only be set through the ORM.
+
+        sync_dhcp_plugin_enabled shipped that way: the model, the migration and the
+        DHCP-plugin tab gate all read it, but nothing rendered it, so no operator could
+        turn the tab on. custom_field_data is NetBox's own JSON store, which
+        NetBoxModelForm renders from the CustomField rows rather than as a model field.
+        """
+        editable = {
+            field.name
+            for field in Server._meta.get_fields()
+            if getattr(field, "editable", False) and not field.auto_created
+        }
+
+        self.assertEqual(editable - set(ServerForm.Meta.fields), {"custom_field_data"})
+
+    def test_server_form_sync_vrf_offers_every_vrf(self):
+        """The field is generated from the FK, so its queryset must need no fixing up."""
+        from ipam.models import VRF
+
+        vrf = VRF.objects.create(name="edit-form-vrf")
+
+        self.assertIn(vrf, ServerForm().fields["sync_vrf"].queryset)
+
+    def test_server_form_has_the_dhcp_plugin_sync_toggle(self):
+        form = ServerForm()
+        self.assertIn("sync_dhcp_plugin_enabled", form.fields)
+
     def test_server_form_has_per_protocol_credential_fields(self):
         form = ServerForm()
         for field in ("dhcp4_username", "dhcp4_password", "dhcp6_username", "dhcp6_password"):
             self.assertIn(field, form.fields, f"Missing field: {field}")
+
+
+class TestServerImportFormFields(TestCase):
+    """ServerImportForm must reach every field an operator can set in the edit form."""
+
+    def test_import_form_offers_every_editable_server_field(self):
+        """A field the import form omits cannot be set by CSV, only row by row in the UI.
+
+        The sync fields shipped that way: the import form stopped at
+        has_control_agent, so a bulk-imported server always landed on the model
+        defaults. custom_field_data is NetBox's own JSON store, which
+        NetBoxModelImportForm renders from the CustomField rows.
+        """
+        editable = {
+            field.name
+            for field in Server._meta.get_fields()
+            if getattr(field, "editable", False) and not field.auto_created
+        }
+
+        self.assertEqual(editable - set(ServerImportForm().fields), {"custom_field_data"})
+
+    def test_import_form_matches_the_sync_vrf_by_name(self):
+        """CSV carries names, not primary keys."""
+        from ipam.models import VRF
+
+        vrf = VRF.objects.create(name="import-form-vrf")
+        field = ServerImportForm().fields["sync_vrf"]
+
+        self.assertEqual(field.to_python("import-form-vrf"), vrf)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -421,7 +486,7 @@ class TestReservationForm4(SimpleTestCase):
     def test_netmask_form_is_canonicalized_to_prefix_length(self):
         """A dotted-decimal netmask CIDR is canonicalized so it matches Kea's own reporting.
 
-        subnet_id_from_cidr() matches Kea's subnet4-list entries by exact string, and
+        configured_subnet_id_from_cidr() matches running configuration entries, and
         Kea always reports subnets with a prefix-length suffix, never a netmask.
         """
         form = self._form(self._valid_data(subnet_cidr="10.0.0.0/255.255.255.0"))
@@ -579,7 +644,7 @@ class TestReservationForm6(SimpleTestCase):
     def test_expanded_notation_is_canonicalized_to_compressed_form(self):
         """A fully-expanded IPv6 CIDR is canonicalized so it matches Kea's own reporting.
 
-        subnet_id_from_cidr() matches Kea's subnet6-list entries by exact string, and
+        configured_subnet_id_from_cidr() matches running configuration entries, and
         Kea always reports subnets in compressed form.
         """
         form = self._form(self._valid_data(subnet_cidr="2001:0db8:0000:0000:0000:0000:0000:0000/32"))
@@ -1231,16 +1296,10 @@ class TestSharedNetworkEditForm(SimpleTestCase):
 
         self.assertIsInstance(SharedNetworkEditForm().fields["name"].widget, HiddenInput)
 
-    def test_description_accepts_255_chars(self):
-        """description accepts strings up to 255 characters."""
-        form = self._form(description="x" * 255)
+    def test_description_accepts_a_comment_of_any_length(self):
+        """Kea puts no length limit on a comment, so an existing long comment must not block an edit."""
+        form = self._form(description="x" * 1000)
         self.assertTrue(form.is_valid(), form.errors)
-
-    def test_description_rejects_256_chars(self):
-        """description rejects strings longer than 255 characters."""
-        form = self._form(description="x" * 256)
-        self.assertFalse(form.is_valid())
-        self.assertIn("description", form.errors)
 
     def test_valid_single_dns_server(self):
         """A single valid DNS server IP is accepted and normalized."""
@@ -1290,15 +1349,15 @@ class TestLeasesSearchFormSubnetCombobox(SimpleTestCase):
 
     def test_no_subnet_field_even_when_choices_supplied(self):
         # Previously a separate ``subnet`` quick-select field was added; it's gone now.
-        form = Leases4SearchForm(subnet_choices=[("10.0.0.0/24", 1)])
+        form = Leases4SearchForm(subnet_choices=(("198.18.0.0/24", 1),))
         self.assertNotIn("subnet", form.fields)
 
     def test_subnet_choices_exposed_for_template(self):
-        form = Leases6SearchForm(subnet_choices=[("2001:db8::/64", 5)])
-        self.assertEqual(form.subnet_choices, [("2001:db8::/64", 5)])
+        form = Leases6SearchForm(subnet_choices=(("2001:db8::/64", 5),))
+        self.assertEqual(form.subnet_choices, (("2001:db8::/64", 5),))
 
     def test_subnet_choices_defaults_to_empty(self):
-        self.assertEqual(Leases4SearchForm().subnet_choices, [])
+        self.assertEqual(Leases4SearchForm().subnet_choices, ())
 
     def test_subnet_search_still_validates(self):
         form = Leases4SearchForm(data={"by": "subnet", "q": "192.168.1.0/24"})

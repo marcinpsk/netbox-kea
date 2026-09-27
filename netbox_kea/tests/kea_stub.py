@@ -17,11 +17,15 @@ threads used by the reservation/lease-enrichment views.
 from __future__ import annotations
 
 import ipaddress
+import json
 import threading
 from collections import deque
+from collections.abc import Sequence
 from contextlib import contextmanager
+from functools import cache
+from pathlib import Path
 from typing import Any, cast
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import requests
 
@@ -38,16 +42,15 @@ from netbox_kea.reservations import (
 from netbox_kea.subnet_catalogue import SubnetIdentity
 
 
-def _http_response(payload: Any, status: int = 200) -> MagicMock:
-    """Build a spec'd ``requests.Response`` returning *payload* from ``.json()``."""
-    resp = MagicMock(spec=requests.Response)
-    resp.status_code = status
-    resp.json.return_value = payload
-    if status >= 400:
-        resp.raise_for_status.side_effect = requests.HTTPError(f"HTTP {status}")
-    else:
-        resp.raise_for_status.return_value = None
-    return resp
+def _http_response(payload: Any, status: int = 200, url: str = "") -> requests.Response:
+    """Build a concrete ``requests.Response`` with a JSON body."""
+    response = requests.Response()
+    response.status_code = status
+    response.url = url
+    response.encoding = "utf-8"
+    response.headers["Content-Type"] = "application/json"
+    response._content = json.dumps(payload).encode(response.encoding)
+    return response
 
 
 def _is_exc(obj: Any) -> bool:
@@ -81,6 +84,42 @@ def queued(*responses: Any) -> ResponseQueue:
     on the first call, ``page2`` on the second, then ``end`` for every call after.
     """
     return ResponseQueue(responses)
+
+
+_RECORDINGS = Path(__file__).with_name("kea_recordings")
+
+
+@cache
+def _accepted_keys(family: int) -> dict[str, frozenset[str]]:
+    """Return the keys Kea's config-test and config-set accept on a Shared Network and on a Subnet."""
+    accepted = json.loads((_RECORDINGS / "accepted-keys.json").read_text())[f"dhcp{family}"]
+    return {kind: frozenset(keys) for kind, keys in accepted.items()}
+
+
+def _assert_kea_would_accept(body: dict[str, Any]) -> None:
+    """Fail on a Shared Network or Subnet key that Kea's keyword tables do not accept.
+
+    Kea rejects unknown keys, so a config-test or config-set that sends one fails
+    against a real Kea even when a hand-written stub answers it.
+    """
+    arguments = body.get("arguments")
+    for family in (4, 6):
+        daemon = arguments.get(f"Dhcp{family}") if isinstance(arguments, dict) else None
+        if not isinstance(daemon, dict):
+            continue
+        known = _accepted_keys(family)
+        networks = [n for n in daemon.get("shared-networks") or [] if isinstance(n, dict)]
+        subnets = [
+            *(daemon.get(f"subnet{family}") or []),
+            *(s for n in networks for s in n.get(f"subnet{family}") or []),
+        ]
+        for kind, entries in (("shared-networks", networks), (f"subnet{family}", subnets)):
+            unknown = {key for entry in entries if isinstance(entry, dict) for key in entry} - known[kind]
+            if unknown:
+                raise AssertionError(
+                    f"KeaHttpStub: {body.get('command')} sends {sorted(unknown)} in {kind}, which the "
+                    f"DHCPv{family} Kea keyword tables in kea_recordings/accepted-keys.json do not accept."
+                )
 
 
 class KeaHttpStub:
@@ -118,12 +157,14 @@ class KeaHttpStub:
         self._urls: list[str] = []
         self._lock = threading.Lock()
 
-    def __call__(self, url: str, **kwargs: Any) -> MagicMock:
+    def __call__(self, url: str, **kwargs: Any) -> requests.Response:
         body = kwargs.get("json") or {}
         with self._lock:
             self.requests.append(body)
             self._urls.append(url)
             cmd = body.get("command")
+            if cmd in ("config-test", "config-set"):
+                _assert_kea_would_accept(body)
             if cmd not in self._responses:
                 raise AssertionError(f"KeaHttpStub: no response registered for command {cmd!r} (url={url})")
             spec = self._responses[cmd]
@@ -134,7 +175,9 @@ class KeaHttpStub:
             spec = spec(body)
         if _is_exc(spec):
             raise spec() if isinstance(spec, type) else spec
-        return _http_response(spec if isinstance(spec, list) else [spec])
+        if isinstance(spec, requests.Response):
+            return spec
+        return _http_response(spec if isinstance(spec, list) else [spec], url=url)
 
     # --- assertion helpers ---
     def commands(self) -> list[str]:
@@ -232,22 +275,6 @@ def _res_get(reservation: dict[str, Any]) -> dict[str, Any]:
     return {"result": 0, "arguments": dict(reservation)}
 
 
-def _subnet_get(
-    version: int, pools: list[str] | None = None, subnet_id: int = 1, subnet_cidr: str | None = None
-) -> dict[str, Any]:
-    """A ``subnet{v}-get`` payload for the reservation-add pool-overlap probe and CIDR display.
-
-    *pools* is a list of pool range strings; the probe warns only when the
-    reservation IP falls inside one of them. *subnet_cidr*, when given, is the
-    ``subnet`` field ``KeaClient.get_subnet_cidr`` reads to display the CIDR on the
-    reservation edit views — omit it only for callers that never reach that lookup.
-    """
-    subnet: dict[str, Any] = {"id": subnet_id, "pools": [{"pool": p} for p in (pools or [])]}
-    if subnet_cidr is not None:
-        subnet["subnet"] = subnet_cidr
-    return {"result": 0, "arguments": {f"subnet{version}": [subnet]}}
-
-
 def _leases_per_subnet(leases_by_subnet: dict[Any, list[dict[str, Any]]]):
     """A Subnet lease responder that answers only for the Subnet it was asked about.
 
@@ -267,9 +294,7 @@ def _leases_per_subnet(leases_by_subnet: dict[Any, list[dict[str, Any]]]):
     return _respond
 
 
-def _subnet_list(
-    version: int, subnets: list[dict[str, Any]]
-) -> dict[str, Any]:  # version kept for symmetry with _subnet_get
+def _subnet_list(version: int, subnets: list[dict[str, Any]]) -> dict[str, Any]:
     """A ``subnet{v}-list`` payload, the ``subnet_cmds`` source every subnet lookup reads.
 
     Used by Subnet catalogue and Reservation form tests. *subnets* is the list of
@@ -307,6 +332,8 @@ def _catalogue_responses(
     cidr: str,
     *,
     config_hash: str = "shared-catalogue",
+    global_options: tuple[dict[str, Any], ...] = (),
+    option_definitions: tuple[dict[str, Any], ...] = (),
 ) -> dict[str, Any]:
     """Every response one Subnet Catalogue read of a single subnet needs.
 
@@ -315,7 +342,13 @@ def _catalogue_responses(
     when the code under test actually issues that command, so the extra entry cannot
     change what :meth:`KeaHttpStub.commands` records.
     """
-    return _catalogue_responses_for_subnets(version, [{"id": subnet_id, "subnet": cidr}], config_hash=config_hash)
+    return _catalogue_responses_for_subnets(
+        version,
+        [{"id": subnet_id, "subnet": cidr}],
+        config_hash=config_hash,
+        global_options=global_options,
+        option_definitions=option_definitions,
+    )
 
 
 def _catalogue_responses_for_subnets(
@@ -323,6 +356,9 @@ def _catalogue_responses_for_subnets(
     subnets: list[dict[str, Any]],
     *,
     config_hash: str = "shared-catalogue",
+    shared_networks: Sequence[Any] = (),
+    global_options: tuple[dict[str, Any], ...] = (),
+    option_definitions: tuple[dict[str, Any], ...] = (),
 ) -> dict[str, Any]:
     """The same Catalogue responses for an explicit *subnets* list.
 
@@ -330,13 +366,18 @@ def _catalogue_responses_for_subnets(
     through this entry point, so it stays defined once.
     """
     subnets = list(subnets)
+    configuration: dict[str, Any] = {f"subnet{version}": subnets, "shared-networks": list(shared_networks)}
+    if global_options:
+        configuration["option-data"] = list(global_options)
+    if option_definitions:
+        configuration["option-def"] = list(option_definitions)
     return {
         f"subnet{version}-list": _subnet_list(version, subnets),
         "list-commands": _reservation_mutation_commands(),
         "config-get": {
             "result": 0,
             "arguments": {
-                f"Dhcp{version}": {f"subnet{version}": subnets, "shared-networks": []},
+                f"Dhcp{version}": configuration,
                 "hash": config_hash,
             },
         },

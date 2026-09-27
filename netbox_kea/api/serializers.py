@@ -1,4 +1,5 @@
 from django.http import QueryDict
+from ipam.api.serializers import VRFSerializer
 from netbox.api.serializers import NetBoxModelSerializer
 from rest_framework import serializers
 
@@ -27,6 +28,7 @@ class ServerSerializer(NetBoxModelSerializer):
     """DRF serializer for the Server model."""
 
     url = serializers.HyperlinkedIdentityField(view_name="plugins-api:netbox_kea-api:server-detail")
+    sync_vrf = VRFSerializer(nested=True, required=False, allow_null=True)
 
     def to_internal_value(self, data):
         """Read an explicit null on an optional text field as "".
@@ -63,6 +65,13 @@ class ServerSerializer(NetBoxModelSerializer):
             "dhcp4_url",
             "dhcp6_url",
             "has_control_agent",
+            "sync_enabled",
+            "sync_leases_enabled",
+            "sync_reservations_enabled",
+            "sync_prefixes_enabled",
+            "sync_ip_ranges_enabled",
+            "sync_dhcp_plugin_enabled",
+            "sync_vrf",
             "url",
             "display",
             "tags",

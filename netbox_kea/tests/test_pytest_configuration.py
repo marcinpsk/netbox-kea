@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import operator
 import os
 import re
 import runpy
@@ -2560,3 +2561,316 @@ def test_the_setup_script_refuses_an_ambiguous_wheel_set(wheel_names):
 
         assert result.returncode == 1, result.stdout
         assert "Expected exactly one wheel" in result.stderr, result.stderr
+
+
+# ---------------------------------------------------------------------------
+# Standalone-loaded files must not use runtime relative imports
+# ---------------------------------------------------------------------------
+
+
+def _resolve_path_expression(node: ast.expr) -> Path | None:
+    """Resolve a ``ROOT / "a" / "b"`` expression to a path, or None if unrecognised."""
+    if isinstance(node, ast.Name):
+        value = globals().get(node.id)
+        return value if isinstance(value, Path) else None
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return Path(node.value)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+        left = _resolve_path_expression(node.left)
+        right = _resolve_path_expression(node.right)
+        return left / right if left is not None and right is not None else None
+    return None
+
+
+def _standalone_loaded_files() -> list[Path]:
+    """Return every file this module execs with ``spec_from_file_location``."""
+    tree = ast.parse(Path(__file__).read_text())
+    found = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
+        if name != "spec_from_file_location":
+            continue
+        assert len(node.args) >= 2, f"line {node.lineno}: spec_from_file_location without a path argument."
+        path = _resolve_path_expression(node.args[1])
+        assert path is not None, (
+            f"line {node.lineno}: this guard cannot resolve the loaded path. "
+            "Extend _resolve_path_expression rather than leaving the file unguarded."
+        )
+        found.add(path)
+    assert found, "no spec_from_file_location call was found; this guard has stopped reading its own source."
+    return sorted(found)
+
+
+def _is_type_checking_test(node: ast.expr) -> bool:
+    """Report whether *node* is the ``TYPE_CHECKING`` test of an ``if`` statement."""
+    if isinstance(node, ast.Name):
+        return node.id == "TYPE_CHECKING"
+    return (
+        isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "typing"
+        and node.attr == "TYPE_CHECKING"
+    )
+
+
+def _runtime_relative_imports(tree: ast.Module) -> list[str]:
+    """Return every relative import in *tree* that a standalone load can execute.
+
+    Only the *body* of an ``if TYPE_CHECKING:`` block never runs. Its ``else`` branch
+    runs instead, and a function body runs when the caller drives the module's helpers.
+    """
+    deferred = {
+        node
+        for statement in ast.walk(tree)
+        if isinstance(statement, ast.If) and _is_type_checking_test(statement.test)
+        for deferred_statement in statement.body
+        for node in ast.walk(deferred_statement)
+    }
+    return [
+        f"line {node.lineno}: from {'.' * node.level}{node.module or ''}"
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.level > 0 and node not in deferred
+    ]
+
+
+@pytest.mark.parametrize("loaded", _standalone_loaded_files(), ids=lambda path: path.name)
+def test_a_standalone_loaded_file_has_no_runtime_relative_import(loaded: Path):
+    """``spec_from_file_location`` gives a module no package, so ``from .x`` raises there.
+
+    The tests below exec browser-suite files that way to drive their pure helpers without
+    a Playwright session. A relative import added to one of those files fails every such
+    test with an obscure ImportError, which is what happened once already. This names the
+    constraint instead, and unlike those tests it needs no browser dependency to run.
+    """
+    offenders = _runtime_relative_imports(ast.parse(loaded.read_text()))
+
+    assert not offenders, (
+        f"{loaded.relative_to(REPOSITORY_ROOT)} imports relatively at runtime: {'; '.join(offenders)}. "
+        "The unit suite execs this file standalone, where that raises "
+        "'attempted relative import with no known parent package'. "
+        "Move the import into an 'if TYPE_CHECKING:' block and quote the annotation."
+    )
+
+
+#: Sources the guard must flag, keyed by what makes each one execute in a standalone load.
+_EXECUTING_RELATIVE_IMPORTS = {
+    "module level": "from .conftest import Thing\n",
+    "the else branch of a TYPE_CHECKING block": (
+        "from typing import TYPE_CHECKING\n\nif TYPE_CHECKING:\n    Thing = object\nelse:\n"
+        "    from .conftest import Thing\n"
+    ),
+    "an unrelated TYPE_CHECKING attribute": "if runtime.TYPE_CHECKING:\n    from .conftest import Thing\n",
+    "a function body the unit suite calls": "def cleanup():\n    from .conftest import Thing\n\n    return Thing\n",
+}
+#: Sources the guard must clear: only a TYPE_CHECKING body never executes.
+_DEFERRED_OR_ABSOLUTE_IMPORTS = {
+    "the body of a TYPE_CHECKING block": (
+        "from typing import TYPE_CHECKING\n\nif TYPE_CHECKING:\n    from .conftest import Thing\n"
+    ),
+    "the typing.TYPE_CHECKING body": "import typing\n\nif typing.TYPE_CHECKING:\n    from .conftest import Thing\n",
+    "an absolute import": "from pathlib import Path\n",
+}
+
+
+@pytest.mark.parametrize("source", _EXECUTING_RELATIVE_IMPORTS.values(), ids=_EXECUTING_RELATIVE_IMPORTS)
+def test_the_relative_import_guard_flags_every_import_a_standalone_load_can_run(source):
+    """Only a TYPE_CHECKING body is safe. An else branch and a function body both run.
+
+    The tests above exec a module and then call helpers out of it, so a relative import
+    inside a function raises as surely as one at module level: later, and with the same
+    unresolvable package.
+    """
+    assert len(_runtime_relative_imports(ast.parse(source))) == 1
+
+
+@pytest.mark.parametrize("source", _DEFERRED_OR_ABSOLUTE_IMPORTS.values(), ids=_DEFERRED_OR_ABSOLUTE_IMPORTS)
+def test_the_relative_import_guard_clears_an_import_no_standalone_load_runs(source):
+    assert _runtime_relative_imports(ast.parse(source)) == []
+
+
+# ---------------------------------------------------------------------------
+# Imports must exist on the oldest supported Python
+# ---------------------------------------------------------------------------
+
+#: Standard-library modules added after the oldest Python this package supports, and the
+#: version that added each one. An import of one of these belongs under a
+#: ``sys.version_info`` branch whose other arm names the backport the dev group ships.
+#: Add an entry when the tree reaches for a newer module; raising the floor retires it.
+_STDLIB_ADDED_IN = {"tomllib": (3, 11)}
+
+
+def _declared_python_floor() -> tuple[int, int]:
+    """Return the lowest Python version ``requires-python`` accepts."""
+    source = (REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    found = re.search(r'^requires-python\s*=\s*">=(\d+)\.(\d+)"', source, re.MULTILINE)
+    assert found, "pyproject declares no requires-python floor for this guard to read."
+    return int(found.group(1)), int(found.group(2))
+
+
+def _is_version_info_test(node: ast.expr) -> bool:
+    """Report whether *node* is exactly ``version_info`` or ``sys.version_info``."""
+    if isinstance(node, ast.Name):
+        return node.id == "version_info"
+    return (
+        isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "sys"
+        and node.attr == "version_info"
+    )
+
+
+#: How each comparison operator decides a ``sys.version_info`` branch.
+_VERSION_COMPARISONS = {
+    ast.Lt: operator.lt,
+    ast.LtE: operator.le,
+    ast.Gt: operator.gt,
+    ast.GtE: operator.ge,
+    ast.Eq: operator.eq,
+    ast.NotEq: operator.ne,
+}
+
+
+def _floor_takes_body(test: ast.expr, floor: tuple[int, int]) -> bool | None:
+    """Report whether *floor* runs the body of a ``sys.version_info`` comparison.
+
+    Compares the oldest release of *floor* as the five-field tuple ``sys.version_info``
+    really is, so ``> (3, 10)`` and ``!= (3, 10)`` come out true the way they do on 3.10.0.
+    Returns None for anything but a plain ``sys.version_info <op> (int, ...)``, so an
+    unreadable test clears nothing rather than clearing an arm no one has reasoned about.
+    """
+    if not (isinstance(test, ast.Compare) and len(test.ops) == 1 and len(test.comparators) == 1):
+        return None
+    if not _is_version_info_test(test.left):
+        return None
+    right = test.comparators[0]
+    if not isinstance(right, ast.Tuple):
+        return None
+    parts = [element.value for element in right.elts if isinstance(element, ast.Constant)]
+    if len(parts) != len(right.elts) or not all(isinstance(part, int) for part in parts):
+        return None
+    compare = _VERSION_COMPARISONS.get(type(test.ops[0]))
+    if compare is None:
+        return None
+    try:
+        oldest = bool(compare((*floor, 0, "final", 0), tuple(parts)))
+        newest = bool(compare((*floor, sys.maxsize, "final", 0), tuple(parts)))
+    except TypeError:
+        return None  # the literal mixes types with the releaselevel field; clear nothing
+    # A patch-level literal can split the floor line; clear nothing unless every release agrees.
+    return oldest if oldest == newest else None
+
+
+def _unguarded_new_stdlib_imports(tree: ast.Module, floor: tuple[int, int]) -> list[str]:
+    """Return every import of a module *floor* does not ship, outside a version branch.
+
+    A ``sys.version_info`` branch clears only the arm *floor* does not run. The arm it does
+    run stays in scope, so an inverted test such as ``if sys.version_info < (3, 11)`` is
+    still reported: that arm is the one 3.10 executes.
+    """
+    guarded: set[ast.AST] = set()
+    for statement in ast.walk(tree):
+        if not isinstance(statement, ast.If):
+            continue
+        takes_body = _floor_takes_body(statement.test, floor)
+        if takes_body is None:
+            continue
+        skipped = statement.orelse if takes_body else statement.body
+        guarded.update(node for entry in skipped for node in ast.walk(entry))
+    offenders: list[str] = []
+    for node in ast.walk(tree):
+        if node in guarded:
+            continue
+        if isinstance(node, ast.Import):
+            names = [alias.name for alias in node.names]
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            names = [node.module]
+        else:
+            continue
+        offenders.extend(
+            f"line {node.lineno}: {name}"
+            for name in names
+            if _STDLIB_ADDED_IN.get(name.partition(".")[0], floor) > floor
+        )
+    return offenders
+
+
+def test_no_module_imports_a_standard_library_module_the_floor_lacks():
+    """`requires-python` promises 3.10, and the dev group ships tomli to keep that promise.
+
+    A bare ``import tomllib`` runs here, where CI uses a newer interpreter, and raises
+    ModuleNotFoundError on the oldest interpreter the package claims to support.
+    """
+    floor = _declared_python_floor()
+    offenders = []
+    for source in sorted((REPOSITORY_ROOT / "netbox_kea").rglob("*.py")):
+        relative = source.relative_to(REPOSITORY_ROOT).as_posix()
+        found = _unguarded_new_stdlib_imports(ast.parse(source.read_text(encoding="utf-8")), floor)
+        offenders.extend(f"{relative}: {entry}" for entry in found)
+
+    assert not offenders, (
+        f"these imports need Python newer than the declared floor {floor[0]}.{floor[1]}: {offenders}. "
+        "Put the import under a sys.version_info branch whose other arm names the backport."
+    )
+
+
+#: Sources the floor guard must flag, keyed by why Python 3.10 still reaches the import.
+_IMPORTS_THE_FLOOR_REACHES = {
+    "a patch-level guard the floor line straddles": (
+        "import sys\n\nif sys.version_info >= (3, 10, 1):\n    import tomllib\n"
+    ),
+    "a dotted import of a submodule": "import tomllib._parser\n",
+    "a dotted from-import": "from tomllib._parser import loads\n",
+    "a bare import": "import tomllib\n",
+    "the from spelling": "from tomllib import loads\n",
+    "an inverted comparison, whose body is the arm 3.10 runs": (
+        "import sys\n\nif sys.version_info < (3, 11):\n    import tomllib\n"
+    ),
+    "a strict > against the floor, which 3.10.0 already satisfies": (
+        "import sys\n\nif sys.version_info > (3, 10):\n    import tomllib\n"
+    ),
+    "a != against the floor, which every 3.10 release satisfies": (
+        "import sys\n\nif sys.version_info != (3, 10):\n    import tomllib\n"
+    ),
+    "a test this guard cannot read": "import sys\n\nif supports(sys.version_info):\n    import tomllib\n",
+    "a compound left operand at the declared floor": (
+        "import sys\n\nif supports(sys.version_info) >= (3, 10):\n    import tomli\nelse:\n    import tomllib\n"
+    ),
+    "a literal that would compare an int with the releaselevel field": (
+        "import sys\n\nif sys.version_info >= (3, 10, 0, 1):\n    import tomllib\n"
+    ),
+}
+#: Sources the floor guard must clear: 3.10 runs the other arm, or the module is older.
+_IMPORTS_THE_FLOOR_SKIPS = {
+    "a patch-level guard every floor release skips": (
+        "import sys\n\nif sys.version_info >= (3, 11, 0):\n    import tomllib\n"
+    ),
+    "the documented fallback": (
+        "import sys\n\nif sys.version_info >= (3, 11):\n    import tomllib\nelse:\n    import tomli\n"
+    ),
+    "an inverted fallback": (
+        "import sys\n\nif sys.version_info < (3, 11):\n    import tomli\nelse:\n    import tomllib\n"
+    ),
+    "an == against the floor, which no 3.10 release satisfies": (
+        "import sys\n\nif sys.version_info == (3, 10):\n    import tomllib\n"
+    ),
+    "a module the floor ships": "import re\n",
+}
+
+
+@pytest.mark.parametrize("source", _IMPORTS_THE_FLOOR_REACHES.values(), ids=_IMPORTS_THE_FLOOR_REACHES)
+def test_the_floor_import_guard_flags_an_import_the_floor_reaches(source):
+    """Only the arm the floor skips is cleared, and an unreadable test clears nothing."""
+    assert len(_unguarded_new_stdlib_imports(ast.parse(source), (3, 10))) == 1
+
+
+@pytest.mark.parametrize("source", _IMPORTS_THE_FLOOR_SKIPS.values(), ids=_IMPORTS_THE_FLOOR_SKIPS)
+def test_the_floor_import_guard_clears_an_import_the_floor_skips(source):
+    assert _unguarded_new_stdlib_imports(ast.parse(source), (3, 10)) == []
+
+
+def test_the_floor_guard_reads_the_declared_floor():
+    """A guard that read no floor would accept anything."""
+    assert _declared_python_floor() >= (3, 10)

@@ -4,11 +4,15 @@
 
 from __future__ import annotations
 
+import ast
+import re
 from pathlib import Path
 
+from django.apps import apps
 from django.test import SimpleTestCase
 
 import netbox_kea
+from netbox_kea.models import Server
 
 _TEMPLATES_DIR = Path(netbox_kea.__file__).parent / "templates"
 
@@ -80,3 +84,149 @@ class TestTemplateComments(SimpleTestCase):
             "Multi-line {# #} Django comments leak as literal text — use "
             "{% comment %}…{% endcomment %} instead:\n  " + "\n  ".join(offenders),
         )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Model attributes the templates name
+# ─────────────────────────────────────────────────────────────────────────────
+
+_TAG = re.compile(r"\{\{.*?\}\}|\{%.*?%\}", re.DOTALL)
+_QUOTED = re.compile(r"\"[^\"]*\"|'[^']*'")
+_ATTRIBUTE = re.compile(r"\b(object|server)\.([A-Za-z_][A-Za-z0-9_]*)")
+
+# `object` is NetBox's generic context name, so it is not always a Server. Name every
+# template whose view renders something else; everything else renders a Server.
+_OBJECT_IS_NOT_A_SERVER = {"netbox_kea/ip_kea_reservations.html": "ipam.IPAddress"}
+
+
+def _attributes_in_template_source(text: str) -> list[tuple[str, str]]:
+    """Return every ``(context name, attribute)`` pair the template tags in *text* read."""
+    return [pair for tag in _TAG.findall(text) for pair in _ATTRIBUTE.findall(_QUOTED.sub(" ", tag))]
+
+
+def _model_attributes_named_by_templates() -> dict[tuple[str, str], set[str]]:
+    """Map each ``(model label, attribute)`` the templates read to the templates reading it.
+
+    Every tag, not only ``{{ }}`` and ``{% if %}``: ``{% checkmark object.dhcp4 %}`` and
+    ``{% url ... object.pk %}`` read the object just as hard, and a guard that cannot see
+    them lets exactly the rename it exists to catch go quiet. Quoted text is stripped
+    first, because ``{% include "netbox_kea/server.html" %}`` is a path, not an attribute.
+    """
+    named: dict[tuple[str, str], set[str]] = {}
+    for template in sorted(_TEMPLATES_DIR.rglob("*.html")):
+        relative = template.relative_to(_TEMPLATES_DIR).as_posix()
+        other = _OBJECT_IS_NOT_A_SERVER.get(relative)
+        for name, attribute in _attributes_in_template_source(template.read_text(encoding="utf-8")):
+            label = other if name == "object" and other else "netbox_kea.Server"
+            named.setdefault((label, attribute), set()).add(relative)
+    return named
+
+
+class TestTemplatesNameRealModelAttributes(SimpleTestCase):
+    """A template that reads a renamed field renders blank and raises nothing.
+
+    Migration 0009 renamed server_url to ca_url. Three places kept the old name for two
+    releases: the Server panel, the combined overview, and the devcontainer seed script.
+    Django resolves a missing attribute to the empty string, so the URL row just went
+    blank and nothing failed.
+    """
+
+    def test_every_model_attribute_a_template_reads_exists(self):
+        named = _model_attributes_named_by_templates()
+        missing = sorted(
+            f"{label}.{attribute} (in {', '.join(sorted(templates))})"
+            for (label, attribute), templates in named.items()
+            if not hasattr(apps.get_model(label), attribute)
+        )
+
+        self.assertEqual(
+            missing,
+            [],
+            "These templates read a model attribute that does not exist, so Django renders "
+            f"an empty string there instead of raising: {missing}",
+        )
+
+    def test_the_scan_sees_an_attribute_no_output_tag_holds(self):
+        """An earlier version read only `{{ }}` and `{% if %}`, and missed all three of these.
+
+        Asserting against the shipped templates cannot pin this: every attribute they read
+        through another tag is also read through a `{{ }}` somewhere, so the narrow scan
+        produced the same set and a revert would stay green.
+        """
+        source = (
+            "<td>{% checkmark object.only_in_checkmark %}</td>\n"
+            "<form action=\"{% url 'plugins:netbox_kea:server' object.only_in_url %}\"></form>\n"
+            "{% with flag=server.only_in_with %}{% endwith %}\n"
+        )
+
+        self.assertEqual(
+            _attributes_in_template_source(source),
+            [("object", "only_in_checkmark"), ("object", "only_in_url"), ("server", "only_in_with")],
+        )
+
+    def test_the_scan_reads_no_attribute_out_of_a_quoted_path(self):
+        """`{% include "netbox_kea/server.html" %}` is a path; `server.html` is not an attribute."""
+        source = "{% include \"netbox_kea/server.html\" %}{% extends 'generic/object.html' %}"
+
+        self.assertEqual(_attributes_in_template_source(source), [])
+
+    def test_the_scan_reads_the_real_templates(self):
+        """An empty scan would make the guard above pass without checking anything."""
+        self.assertIn(("netbox_kea.Server", "ca_url"), _model_attributes_named_by_templates())
+
+    def test_the_scan_reads_every_attribute_in_one_tag(self):
+        """`{% if object.a and object.b %}` names two attributes, not one."""
+        source = "{% if object.sync_enabled and object.sync_leases_enabled %}"
+
+        self.assertEqual(
+            _attributes_in_template_source(source),
+            [("object", "sync_enabled"), ("object", "sync_leases_enabled")],
+        )
+
+    def test_the_non_server_template_map_is_current(self):
+        """A stale entry would silently check a template against the wrong model."""
+        for template, label in _OBJECT_IS_NOT_A_SERVER.items():
+            with self.subTest(template):
+                self.assertTrue((_TEMPLATES_DIR / template).is_file(), template)
+                self.assertIsNotNone(apps.get_model(label))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Server fields the devcontainer seed script names
+# ─────────────────────────────────────────────────────────────────────────────
+
+_SEED_SCRIPT = Path(netbox_kea.__file__).parent.parent / ".devcontainer" / "scripts" / "load-sample-data.py"
+
+
+def _seed_script_server_kwargs() -> set[str]:
+    """Return every keyword the seed script passes to ``Server(**kwargs)``."""
+    tree = ast.parse(_SEED_SCRIPT.read_text(encoding="utf-8"))
+    return {
+        keyword.arg
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "dict"
+        for keyword in node.keywords
+        if keyword.arg is not None
+    }
+
+
+class TestSeedScriptNamesRealServerFields(SimpleTestCase):
+    """`update_or_create(defaults=...)` raises TypeError on a renamed field.
+
+    The same 0009 rename left server_url, username and password in this script. Nothing
+    imports it, so no other gate reaches it; this reads its source instead.
+    """
+
+    def test_every_field_the_seed_script_sets_exists(self):
+        fields = {field.name for field in Server._meta.get_fields()}
+        unknown = sorted(_seed_script_server_kwargs() - fields)
+
+        self.assertEqual(
+            unknown,
+            [],
+            f"The devcontainer seed script passes Server kwargs that are not fields: {unknown}",
+        )
+
+    def test_the_seed_scan_reads_a_real_script(self):
+        """No kwargs found would make the test above pass without checking anything."""
+        self.assertIn("ca_url", _seed_script_server_kwargs())
