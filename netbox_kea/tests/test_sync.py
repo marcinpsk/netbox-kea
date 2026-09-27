@@ -1699,7 +1699,7 @@ class TestSyncPoolToNetboxIPRange(TestCase):
     def _sync(self, pool_str, subnet_cidr, vrf=None):
         from netbox_kea.sync import sync_pool_to_netbox_ip_range
 
-        return sync_pool_to_netbox_ip_range(pool_str, subnet_cidr, vrf=vrf)
+        return sync_pool_to_netbox_ip_range(pool_str, ipaddress.ip_network(subnet_cidr), vrf=vrf)
 
     def test_creates_range_for_dash_pool(self):
         from ipam.models import IPRange
@@ -1739,6 +1739,17 @@ class TestSyncPoolToNetboxIPRange(TestCase):
         _, created, did_update = result
         self.assertFalse(created)
         self.assertTrue(did_update)
+
+    def test_dash_pool_takes_the_prefix_length_of_the_subnet_network(self):
+        from netbox_kea.kea import subnet_network
+        from netbox_kea.sync import sync_pool_to_netbox_ip_range
+
+        result = sync_pool_to_netbox_ip_range("10.9.1.10-10.9.1.20", subnet_network("10.9.1.5/22", 4))
+        self.assertIsNotNone(result)
+        range_obj, created, _ = result
+        self.assertTrue(created)
+        self.assertEqual(str(range_obj.start_address), "10.9.1.10/22")
+        self.assertEqual(str(range_obj.end_address), "10.9.1.20/22")
 
     def test_returns_none_for_invalid_pool(self):
         result = self._sync("invalid-pool-string!", "192.168.1.0/24")
@@ -1828,7 +1839,9 @@ class TestDuplicateRowsListUrl(TestCase):
         from netbox_kea.sync import DuplicateNetBoxRowsError, sync_pool_to_netbox_ip_range
 
         with self.assertRaises(DuplicateNetBoxRowsError) as ctx:
-            sync_pool_to_netbox_ip_range("192.168.13.50-192.168.13.100", "192.168.13.0/24", vrf=vrf)
+            sync_pool_to_netbox_ip_range(
+                "192.168.13.50-192.168.13.100", ipaddress.ip_network("192.168.13.0/24"), vrf=vrf
+            )
         return ctx.exception
 
     def _prefix_error(self, vrf):

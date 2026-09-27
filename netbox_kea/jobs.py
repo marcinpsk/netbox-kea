@@ -361,7 +361,7 @@ def _sync_subnet_entry(
         for pool in pools:
             pool_str = pool.range
             try:
-                result = sync_pool_to_netbox_ip_range(pool_str, subnet_cidr, vrf=vrf)
+                result = sync_pool_to_netbox_ip_range(pool_str, subnet.network, vrf=vrf)
                 if result is _POOL_TOO_LARGE:
                     # Intentional skip; not an error.
                     pass

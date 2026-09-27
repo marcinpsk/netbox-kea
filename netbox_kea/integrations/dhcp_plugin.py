@@ -149,15 +149,15 @@ def _ensure_prefix(network: IPNetworkValue, vrf, description: str | None = None)
     return prefix_obj
 
 
-def _ensure_ip_range(pool_str: str, subnet_cidr: str, vrf):
-    """Get/create the shared ``ipam.IPRange`` for a Kea pool, or ``None`` if unusable.
+def _ensure_ip_range(pool_str: str, subnet: IPNetworkValue, vrf):
+    """Get/create the shared ``ipam.IPRange`` for a Kea pool in *subnet*, or ``None`` if unusable.
 
     Refreshed from the DB so ``.range``/address fields are netaddr objects for
     ``netbox_dhcp``'s containment validators.
     """
     from ..sync import _POOL_TOO_LARGE, sync_pool_to_netbox_ip_range
 
-    result = sync_pool_to_netbox_ip_range(pool_str, subnet_cidr, vrf=vrf)
+    result = sync_pool_to_netbox_ip_range(pool_str, subnet, vrf=vrf)
     if result is None or result is _POOL_TOO_LARGE:
         return None
     range_obj, _created, _updated = result
@@ -292,7 +292,8 @@ def _create_custom_option_def(def_intent: OptionDefIntent, family: int, dhcp_ser
             standard=False,
             dhcp_server=dhcp_server,
         )
-        obj.save()
+        with transaction.atomic():
+            obj.save()
         summary.option_defs_created += 1
     except Exception as exc:  # noqa: BLE001 — a bad definition must not abort the import
         summary.warn(f"option-def code={def_intent.code}: {exc}")
@@ -356,15 +357,18 @@ def upsert_options(parent_obj, options, family: int, dhcp_server, custom_defs, s
             summary.warn(f"option {opt.match_key}: no matching definition, skipped")
             continue
         try:
-            existing = Option.objects.filter(
-                assigned_object_type=ct, assigned_object_id=parent_obj.pk, definition=definition
-            ).first()
-            created = existing is None
-            obj = existing or Option(definition=definition, assigned_object_type=ct, assigned_object_id=parent_obj.pk)
-            obj.data = opt.data or ""
-            obj.csv_format = opt.csv_format
-            obj.send_option = _send_option(opt)
-            obj.save()
+            with transaction.atomic():
+                existing = Option.objects.filter(
+                    assigned_object_type=ct, assigned_object_id=parent_obj.pk, definition=definition
+                ).first()
+                created = existing is None
+                obj = existing or Option(
+                    definition=definition, assigned_object_type=ct, assigned_object_id=parent_obj.pk
+                )
+                obj.data = opt.data or ""
+                obj.csv_format = opt.csv_format
+                obj.send_option = _send_option(opt)
+                obj.save()
             if created:
                 summary.options_created += 1
             else:
@@ -508,7 +512,7 @@ def _apply_global_settings(dhcp_server, settings: dict, summary: ImportSummary, 
     if not settings:
         return
     model_fields = {f.name for f in dhcp_server._meta.get_fields()}
-    changed = False
+    changed: list[str] = []
     for kea_key, attr, transform in _SERVER_FIELDS:
         if attr not in model_fields or kea_key not in settings:
             continue
@@ -520,17 +524,20 @@ def _apply_global_settings(dhcp_server, settings: dict, summary: ImportSummary, 
             # This family owns the global config — mirror changed values on re-import.
             if current != value:
                 setattr(dhcp_server, attr, value)
-                changed = True
+                changed.append(attr)
         elif _is_unset(current):
             # Secondary protocol only fills gaps the primary family did not set.
             setattr(dhcp_server, attr, value)
-            changed = True
+            changed.append(attr)
     if changed:
         try:
-            dhcp_server.save()
+            with transaction.atomic():
+                dhcp_server.save()
         except Exception as exc:  # noqa: BLE001
             summary.errors += 1
             summary.warn(f"DHCPServer settings: {exc}")
+            # Children diff against this instance, so it must hold the persisted values.
+            dhcp_server.refresh_from_db(fields=changed)
 
 
 def _apply_inherited_settings(obj, parent, settings: dict, field_map, summary: ImportSummary) -> bool:
@@ -618,7 +625,8 @@ def upsert_client_class(server, dhcp_server, intent: ClientClassIntent, custom_d
 
     try:
         if changed:
-            obj.save()
+            with transaction.atomic():
+                obj.save()
     except Exception as exc:  # noqa: BLE001 — one bad class must not abort the import
         summary.errors += 1
         summary.warn(f"client-class {intent.name}: {exc}")
@@ -672,56 +680,59 @@ def upsert_subnet(server, dhcp_server, intent: SubnetIntent, summary: ImportSumm
     if intent.kea_subnet_id is not None:
         existing = _linked_subnet(server, intent.family, intent.kea_subnet_id)
 
+    changed = False
     try:
-        # Inside the try so one bad CIDR is counted as a per-subnet error, not fatal.
-        network = subnet_network(intent.cidr, intent.family)
-        prefix_obj = _ensure_prefix(network, server.sync_vrf)
-        if existing is not None:
-            changed = False
-            if existing.prefix_id != prefix_obj.pk:
-                existing.prefix = prefix_obj
-                changed = True
-            if existing.dhcp_server_id != dhcp_server.pk or existing.shared_network_id is not None:
-                existing.dhcp_server = dhcp_server
-                existing.shared_network = None
-                changed = True
-            if _apply_inherited_settings(existing, dhcp_server, intent.settings, _SUBNET_FIELDS, summary):
-                changed = True
-            if changed:
-                existing.save()
-                summary.subnets_updated += 1
-            subnet_obj = existing
-        else:
-            # Let the plugin auto-allocate its own (global) subnet_id; never write Kea's.
-            subnet_obj = Subnet(
-                name=_subnet_name(server, intent, network),
-                prefix=prefix_obj,
-                dhcp_server=dhcp_server,
-                shared_network=None,
-            )
-            _apply_inherited_settings(subnet_obj, dhcp_server, intent.settings, _SUBNET_FIELDS, summary)
-            subnet_obj.save()
-            summary.subnets_created += 1
-            if intent.kea_subnet_id is not None:
-                # Key on the authoritative Kea identity, not the sys4 object: a stale
-                # link (its subnet deleted out from under it) must be *relinked* to the
-                # new subnet, not collide with the keadhcplink_unique_subnet_identity
-                # constraint as a fresh (object_type, object_id) create would.
-                KeaDhcpLink.objects.update_or_create(
-                    server=server,
-                    family=intent.family,
-                    kea_subnet_id=intent.kea_subnet_id,
-                    defaults={
-                        "kea_identity": None,
-                        "object_type": ContentType.objects.get_for_model(Subnet),
-                        "object_id": subnet_obj.pk,
-                    },
+        with transaction.atomic():
+            # Inside the try so one bad CIDR is counted as a per-subnet error, not fatal.
+            network = subnet_network(intent.cidr, intent.family)
+            prefix_obj = _ensure_prefix(network, server.sync_vrf)
+            if existing is not None:
+                if existing.prefix_id != prefix_obj.pk:
+                    existing.prefix = prefix_obj
+                    changed = True
+                if existing.dhcp_server_id != dhcp_server.pk or existing.shared_network_id is not None:
+                    existing.dhcp_server = dhcp_server
+                    existing.shared_network = None
+                    changed = True
+                if _apply_inherited_settings(existing, dhcp_server, intent.settings, _SUBNET_FIELDS, summary):
+                    changed = True
+                if changed:
+                    existing.save()
+                subnet_obj = existing
+            else:
+                # Let the plugin auto-allocate its own (global) subnet_id; never write Kea's.
+                subnet_obj = Subnet(
+                    name=_subnet_name(server, intent, network),
+                    prefix=prefix_obj,
+                    dhcp_server=dhcp_server,
+                    shared_network=None,
                 )
+                _apply_inherited_settings(subnet_obj, dhcp_server, intent.settings, _SUBNET_FIELDS, summary)
+                subnet_obj.save()
+                if intent.kea_subnet_id is not None:
+                    # Key on the authoritative Kea identity, not the sys4 object: a stale
+                    # link (its subnet deleted out from under it) must be *relinked* to the
+                    # new subnet, not collide with the keadhcplink_unique_subnet_identity
+                    # constraint as a fresh (object_type, object_id) create would.
+                    KeaDhcpLink.objects.update_or_create(
+                        server=server,
+                        family=intent.family,
+                        kea_subnet_id=intent.kea_subnet_id,
+                        defaults={
+                            "kea_identity": None,
+                            "object_type": ContentType.objects.get_for_model(Subnet),
+                            "object_id": subnet_obj.pk,
+                        },
+                    )
     except Exception as exc:  # noqa: BLE001 — one bad subnet must not abort the import
         summary.errors += 1
         summary.warn(f"subnet {intent.cidr} (id={intent.kea_subnet_id}): {exc}")
         return None
 
+    if existing is None:
+        summary.subnets_created += 1
+    elif changed:
+        summary.subnets_updated += 1
     if intent.shared_network is not None:
         summary.shared_networks_deferred += 1
 
@@ -731,24 +742,27 @@ def upsert_subnet(server, dhcp_server, intent: SubnetIntent, summary: ImportSumm
 def upsert_pools(subnet_obj, intent: SubnetIntent, server, summary: ImportSummary, dhcp_server, custom_defs):
     """Get/create DHCP-plugin ``Pool`` rows (and their options) for each Kea pool in *intent*."""
     Pool = _model("Pool")
-    subnet_cidr = str(subnet_obj.prefix.prefix)
+    # upsert_subnet already parsed this CIDR, so this cannot raise.
+    network = subnet_network(intent.cidr, intent.family)
     for pool_intent in intent.pools:
-        range_obj = _ensure_ip_range(pool_intent.pool, subnet_cidr, server.sync_vrf)
-        if range_obj is None:
-            summary.warn(f"pool {pool_intent.pool} in {intent.cidr}: unusable range, skipped")
-            continue
         try:
-            pool_obj, created = Pool.objects.get_or_create(
-                subnet=subnet_obj,
-                ip_range=range_obj,
-                defaults={"name": _pool_name(subnet_obj, pool_intent)},
-            )
-            if created:
-                summary.pools_created += 1
-        except Exception as exc:  # noqa: BLE001
+            with transaction.atomic():
+                range_obj = _ensure_ip_range(pool_intent.pool, network, server.sync_vrf)
+                if range_obj is not None:
+                    pool_obj, created = Pool.objects.get_or_create(
+                        subnet=subnet_obj,
+                        ip_range=range_obj,
+                        defaults={"name": _pool_name(subnet_obj, pool_intent)},
+                    )
+        except Exception as exc:  # noqa: BLE001 — one bad pool must not abort the import
             summary.errors += 1
             summary.warn(f"pool {pool_intent.pool} in {intent.cidr}: {exc}")
             continue
+        if range_obj is None:
+            summary.warn(f"pool {pool_intent.pool} in {intent.cidr}: unusable range, skipped")
+            continue
+        if created:
+            summary.pools_created += 1
         upsert_options(pool_obj, pool_intent.options, intent.family, dhcp_server, custom_defs, summary)
 
 
