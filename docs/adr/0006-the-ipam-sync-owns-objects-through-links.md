@@ -31,15 +31,17 @@ DHCP plugin import. Each one applies its own cleanup policy.
 A new link model records IPAM Ownership: `(server, family, source, object)`. The object is exactly one of three
 nullable foreign keys, `ip_address`, `prefix` or `ip_range`, each with `on_delete=CASCADE`. A check constraint
 requires exactly one. The source is `lease`, `reservation`, `subnet`, `pool` or `delegated-prefix`. The link is
-unique per `(server, family, source, object)`.
+unique per `(server, family, source, object)`. Each link also stores the facts that its owner last reported for
+the object.
 
 An object is owned when it has at least one link and its description still starts with the marker. An operator
 who changes the description releases the object. The next run drops the links and reports a conflict. The
 `lease + reservation` status comes from the links of the object.
 
-Several Servers can own one object, for example the two members of a Kea HA pair. When owners report different
-facts for one object, the object keeps its current facts, the links stay, and the run reports an owner
-disagreement.
+Several Servers can own one object, for example the two members of a Kea HA pair. A run compares the facts that
+its phase reports with the facts stored on the other links of the object. When they differ, the object keeps its
+current facts, the run stores its own facts on its link, and it reports an owner disagreement. When the
+disagreeing link goes, the next run of a remaining owner applies its facts.
 
 ### Identity
 
@@ -125,6 +127,8 @@ per Server, and the synchronization never removes them.
 - The link as the only ownership fact: rejected because an operator could no longer protect a curated object
   by editing its description.
 - Last writer wins when owners disagree: rejected because the object changes on every run.
+- Read the current reports of all owners during a run: rejected because one run then calls the Kea API of other
+  Servers, and an unreachable Server then blocks the run of another.
 - A data migration that assigns owners: rejected because overlapping Subnets make it a guess.
 - Move a legacy global-VRF row into the `sync_vrf` of the first Server that adopts it: rejected because the row's
   ID and changelog then depend on which job runs first.
