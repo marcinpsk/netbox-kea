@@ -146,7 +146,9 @@ identities, the global VRF first. For a marker IP address in the global VRF, the
 Adoption marks the links that it creates, and a link that a run creates for an object with a marked link is marked
 too. Each Server records when its first complete run after the upgrade finished. Until every Server that
 synchronizes IPAM has finished that run, a phase does not remove the last link of an object with a marked link, so
-an owner that is not yet known cannot lose the object. The job summary counts the objects that wait for this.
+an owner that is not yet known cannot lose the object. A run is complete when every phase that the Server enables
+is complete. A family or source that a Server does not synchronize makes that Server no owner, so the barrier
+does not wait for it. The job summary counts the objects that wait for this.
 
 Marker objects that no Server adopts stay unowned, and the job summary counts them for explicit handling by the
 operator.
