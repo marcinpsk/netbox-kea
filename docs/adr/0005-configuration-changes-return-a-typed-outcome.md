@@ -120,8 +120,19 @@ changed the target, so the module leaves it and does not roll back earlier steps
 - An undo fails, or a target changed: the operation returns `application="unknown"` with a diagnostic that names
   each step and its state.
 
-Kea's control API has no conditional write, so a writer can still change a target between the check and the
-undo. The check narrows that window. It does not close it.
+Kea's control API has no conditional write, so a writer outside NetBox can still change a target between the
+check and the undo. The check narrows that window. It does not close it.
+
+### Serialization
+
+Every operation holds a transaction-level PostgreSQL advisory lock on `(server, family)` from its first read to
+the end of its persist step. Two NetBox operations on one Server and family therefore run one at a time. A
+read-modify-write through `config-set` cannot erase the change of another NetBox operation, and no NetBox
+operation changes a target between a rollback check and its undo. The wait for the lock is bounded. When it
+expires, the operation raises a rejection because the request was never sent.
+
+The lock does not stop Kea administrators or other tools, because they write to Kea directly. A `config-set`
+can still erase a change that such a writer made after the read.
 
 ### Placement
 
@@ -146,6 +157,9 @@ Configuration. They are not Configuration Changes.
 
 Views lose their exception handlers and the Shared Network move rollback. A new failure mode needs one change
 in `config_write` and one row in the message mapper.
+
+Configuration Changes to one Server and family wait for each other. A slow Kea reply delays the next change by
+up to the bounded lock wait, and then that change is rejected.
 
 A caller that ignores the returned outcome loses a persistence warning or an `unknown` application. It cannot
 mistake a rejection for success, because a rejection raises.
@@ -180,9 +194,9 @@ real `KeaClient`, and stub only `requests.Session.post`.
 - Report `applied` after a lost reply when a Verified Subnet has the same CIDR and ID: rejected because
   another writer can create that identity after `prepare_creation`, which reserves nothing. The match proves the
   current state, not that this request applied.
-- Serialize all configuration writes for one Server and family with a NetBox lock: rejected because Kea
-  administrators and other tools also write Kea, and a NetBox lock does not stop them. The check before each
-  undo covers every writer as far as Kea allows.
+- No NetBox lock, because it cannot stop Kea administrators or other tools: rejected because two NetBox
+  read-modify-write operations then erase each other's changes. The lock covers NetBox operations, and the check
+  before each undo narrows the window for other writers as far as Kea allows.
 - Undo a step without checking its target: rejected because the undo can remove a concurrent writer's change.
 - Identify a Subnet for edit or delete by ID only: rejected because an ID can be reused by another Subnet
   between the form and the write.

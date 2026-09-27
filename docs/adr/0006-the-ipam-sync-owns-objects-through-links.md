@@ -46,8 +46,10 @@ Several Servers can own one object, for example the two members of a Kea HA pair
 phase reports with the facts stored on the other links of the object. When they differ, the object keeps its
 current facts, the run stores its own facts on its link, and it reports an owner disagreement. When one phase
 reports one object twice with different facts, for example two Reservations in overlapping Subnets, the run does
-not create, change, link or unlink that object. It reports an owner disagreement, and an existing link of that owner keeps
-the facts it stored before. When the disagreeing link goes, the next run of a remaining owner applies its facts.
+not create or change that object, does not add or remove a link of it, and does not change the facts that an
+existing link of that owner stored before. It reports an owner disagreement. The phase still reports the object, so
+the run confirms that existing link, and stale cleanup keeps it. When the disagreeing link goes, the next run of a
+remaining owner applies its facts.
 
 ### Identity
 
