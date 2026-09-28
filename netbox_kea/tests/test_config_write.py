@@ -13,7 +13,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import requests
-from django.db import connection
+from django.db import OperationalError, connection
 from django.test import TestCase, TransactionTestCase, override_settings
 from urllib3.exceptions import ProtocolError
 
@@ -240,6 +240,17 @@ class RejectionReasonTests(TestCase):
         self.assertEqual(
             rejection.diagnostics, ("A TLS certificate, key or CA file of the Server could not be found.",)
         )
+
+    def test_a_missing_tls_file_on_the_change_is_an_invalid_client_configuration(self):
+        # requests raises a plain OSError for a missing TLS file before it sends the request.
+        missing = OSError("Could not find the TLS certificate file, invalid path: /nonexistent/client.pem")
+        with stub_kea(_add("net-a", missing)) as kea:
+            rejection = self._rejection(lambda: config_write.add_shared_network(self.server, 4, "net-a"))
+        self.assertEqual(rejection.reason, "invalid-client-configuration")
+        self.assertEqual(
+            rejection.diagnostics, ("A TLS certificate, key or CA file of the Server could not be found.",)
+        )
+        self.assertEqual(kea.commands(), ["network4-get", "network4-add"])
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
@@ -532,3 +543,21 @@ class LockTests(TransactionTestCase):
         with stub_kea({**self._responses(), "config-write": config_write_reply}):
             config_write.add_shared_network(self.holder, 4, "net-a")
         self.assertEqual(seen, [before])
+
+    def test_a_database_error_other_than_the_lock_wait_is_not_a_rejection(self):
+        with stub_kea(self._responses()) as kea, patch.object(config_write, "LOCK_WAIT_SECONDS", 30):
+            holder = self._hold()
+            try:
+                with connection.cursor() as cursor:
+                    cursor.execute("SET statement_timeout = 200")
+                with self.assertRaises(OperationalError) as raised:
+                    config_write.add_shared_network(self.same_url, 4, "cancelled")
+            finally:
+                with connection.cursor() as cursor:
+                    cursor.execute("RESET statement_timeout")
+            self.release.set()
+            holder.join(timeout=30)
+        self.assertEqual(raised.exception.__cause__.sqlstate, "57014")
+        self.assertEqual(kea.commands(), ["network4-get", "network4-add", *_PERSIST])
+        self.assertEqual(self._names(kea), ["held"])
+        self.assertEqual(self.results["holder"], ConfigChangeOutcome("applied", "persisted"))
