@@ -38,16 +38,6 @@ def bad_view_names_the_rejection_in_a_tuple(request, server):
         messages.error(request, type(exc).__name__)
 
 
-def _run_config_change(request, confirmed, change):
-    try:
-        outcome = change()
-    # ok: kea-config-change-rejection-caught-outside-mapper
-    except ConfigChangeRejected as rejection:
-        messages.error(request, rejection.reason)
-        return None
-    return outcome
-
-
 def ok_view_runs_the_change_through_the_mapper(request, server):
     # ok: kea-config-change-rejection-caught-outside-mapper
     return _run_config_change(request, "Deleted.", lambda: config_write.delete_shared_network(server, 4, "net"))

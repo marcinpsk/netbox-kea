@@ -45,6 +45,7 @@ out of CI so CodeRabbit can run its own analysis on pull requests.
 | `kea-config-read-modify-write-without-reader` | error | A `config-get` read in a function that calls `config_set()`, bypassing `config_candidate()` and its `Dhcp4`/`Dhcp6` shape check. |
 | `kea-unsupported-command-inline-check` | error | `exc.response.get("result") == 2` (or `["result"]`) outside `KeaException`; use the `unsupported_command` property. |
 | `kea-config-change-rejection-caught-outside-mapper` | error | An `except` that names `ConfigChangeRejected` in `views/` outside a function named `_run_config_change()`. The one such function, in `views/_base.py`, is the one place that turns a Configuration Change outcome or rejection into a message. |
+| `kea-config-change-mapper-outside-base` | error | A `def _run_config_change` under `views/` in any file but `views/_base.py`. It closes the name exemption of the rule above. |
 | `netbox-ipam-get-or-create-non-unique-key` | error | `get_or_create()` or `update_or_create()` on `Prefix`, `IPRange`, or `IPAddress`, directly or on a queryset chain such as `.filter(...)`. An exact `pk=` or `id=` lookup is exempt. NetBox does not enforce these keys in the database, so a duplicate row makes every call raise `MultipleObjectsReturned`. |
 
 ## Running locally
