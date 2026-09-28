@@ -431,6 +431,115 @@
     "result": 0
   },
   "kea-version": "3.2.0",
+  "network4-get": {
+    "absent": {
+      "result": 3,
+      "text": "No 'absent' shared network found"
+    },
+    "present": {
+      "arguments": {
+        "shared-networks": [
+          {
+            "allocator": "iterative",
+            "cache-threshold": 0.25,
+            "calculate-tee-times": false,
+            "interface": "eth0",
+            "max-valid-lifetime": 4000,
+            "min-valid-lifetime": 4000,
+            "name": "office",
+            "option-data": [
+              {
+                "always-send": false,
+                "code": 6,
+                "csv-format": true,
+                "data": "198.51.100.53",
+                "name": "domain-name-servers",
+                "never-send": false,
+                "space": "dhcp4"
+              }
+            ],
+            "rebind-timer": 2000,
+            "relay": {
+              "ip-addresses": [
+                "198.51.100.2",
+                "198.51.100.3"
+              ]
+            },
+            "renew-timer": 1000,
+            "store-extended-info": false,
+            "subnet4": [
+              {
+                "4o6-interface": "",
+                "4o6-interface-id": "",
+                "4o6-subnet": "",
+                "allocator": "iterative",
+                "cache-threshold": 0.25,
+                "calculate-tee-times": false,
+                "id": 20,
+                "max-valid-lifetime": 4000,
+                "min-valid-lifetime": 4000,
+                "option-data": [],
+                "pools": [
+                  {
+                    "option-data": [],
+                    "pool": "198.51.100.10-198.51.100.50"
+                  }
+                ],
+                "rebind-timer": 2000,
+                "relay": {
+                  "ip-addresses": [
+                    "198.51.100.2",
+                    "198.51.100.3"
+                  ]
+                },
+                "renew-timer": 1000,
+                "store-extended-info": false,
+                "subnet": "198.51.100.0/25",
+                "t1-percent": 0.5,
+                "t2-percent": 0.875,
+                "valid-lifetime": 4000
+              },
+              {
+                "4o6-interface": "",
+                "4o6-interface-id": "",
+                "4o6-subnet": "",
+                "allocator": "iterative",
+                "cache-threshold": 0.25,
+                "calculate-tee-times": false,
+                "ddns-qualifying-suffix": "office.example.org.",
+                "id": 21,
+                "max-valid-lifetime": 4000,
+                "min-valid-lifetime": 4000,
+                "option-data": [],
+                "pools": [],
+                "rebind-timer": 2000,
+                "relay": {
+                  "ip-addresses": [
+                    "198.51.100.2",
+                    "198.51.100.3"
+                  ]
+                },
+                "renew-timer": 1000,
+                "store-extended-info": false,
+                "subnet": "198.51.100.128/25",
+                "t1-percent": 0.5,
+                "t2-percent": 0.875,
+                "valid-lifetime": 4000
+              }
+            ],
+            "t1-percent": 0.5,
+            "t2-percent": 0.875,
+            "user-context": {
+              "comment": "Office floors"
+            },
+            "valid-lifetime": 4000
+          }
+        ]
+      },
+      "result": 0,
+      "text": "Info about IPv4 shared network 'office' returned"
+    }
+  },
   "subnet4-list": {
     "arguments": {
       "subnets": [

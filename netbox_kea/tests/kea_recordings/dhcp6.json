@@ -451,6 +451,121 @@
     "result": 0
   },
   "kea-version": "3.2.0",
+  "network6-get": {
+    "absent": {
+      "result": 3,
+      "text": "No 'absent' shared network found"
+    },
+    "present": {
+      "arguments": {
+        "shared-networks": [
+          {
+            "allocator": "iterative",
+            "cache-threshold": 0.25,
+            "calculate-tee-times": true,
+            "interface": "eth0",
+            "max-preferred-lifetime": 3000,
+            "max-valid-lifetime": 4000,
+            "min-preferred-lifetime": 3000,
+            "min-valid-lifetime": 4000,
+            "name": "office",
+            "option-data": [
+              {
+                "always-send": false,
+                "code": 23,
+                "csv-format": true,
+                "data": "2001:db8:2::53",
+                "name": "dns-servers",
+                "never-send": false,
+                "space": "dhcp6"
+              }
+            ],
+            "pd-allocator": "iterative",
+            "preferred-lifetime": 3000,
+            "rapid-commit": false,
+            "rebind-timer": 2000,
+            "relay": {
+              "ip-addresses": [
+                "2001:db8:ffff::2"
+              ]
+            },
+            "renew-timer": 1000,
+            "store-extended-info": false,
+            "subnet6": [
+              {
+                "allocator": "iterative",
+                "cache-threshold": 0.25,
+                "calculate-tee-times": true,
+                "id": 20,
+                "max-preferred-lifetime": 3000,
+                "max-valid-lifetime": 4000,
+                "min-preferred-lifetime": 3000,
+                "min-valid-lifetime": 4000,
+                "option-data": [],
+                "pd-allocator": "iterative",
+                "pd-pools": [],
+                "pools": [
+                  {
+                    "option-data": [],
+                    "pool": "2001:db8:2::10-2001:db8:2::50"
+                  }
+                ],
+                "preferred-lifetime": 3000,
+                "rebind-timer": 2000,
+                "relay": {
+                  "ip-addresses": [
+                    "2001:db8:ffff::2"
+                  ]
+                },
+                "renew-timer": 1000,
+                "store-extended-info": false,
+                "subnet": "2001:db8:2::/64",
+                "t1-percent": 0.5,
+                "t2-percent": 0.8,
+                "valid-lifetime": 4000
+              },
+              {
+                "allocator": "iterative",
+                "cache-threshold": 0.25,
+                "calculate-tee-times": true,
+                "ddns-qualifying-suffix": "office.example.org.",
+                "id": 21,
+                "max-preferred-lifetime": 3000,
+                "max-valid-lifetime": 4000,
+                "min-preferred-lifetime": 3000,
+                "min-valid-lifetime": 4000,
+                "option-data": [],
+                "pd-allocator": "iterative",
+                "pd-pools": [],
+                "pools": [],
+                "preferred-lifetime": 3000,
+                "rebind-timer": 2000,
+                "relay": {
+                  "ip-addresses": [
+                    "2001:db8:ffff::2"
+                  ]
+                },
+                "renew-timer": 1000,
+                "store-extended-info": false,
+                "subnet": "2001:db8:3::/64",
+                "t1-percent": 0.5,
+                "t2-percent": 0.8,
+                "valid-lifetime": 4000
+              }
+            ],
+            "t1-percent": 0.5,
+            "t2-percent": 0.8,
+            "user-context": {
+              "comment": "Office floors"
+            },
+            "valid-lifetime": 4000
+          }
+        ]
+      },
+      "result": 0,
+      "text": "Info about IPv6 shared network 'office' returned"
+    }
+  },
   "subnet6-list": {
     "arguments": {
       "subnets": [

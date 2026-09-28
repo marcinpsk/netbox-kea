@@ -1,5 +1,6 @@
 import logging
 import re
+from collections.abc import Callable
 from typing import Any, TypeVar, cast
 from urllib.parse import parse_qsl, urlparse
 from urllib.parse import urlencode as _urlencode
@@ -12,6 +13,7 @@ from django.http.request import HttpRequest
 from django.urls import reverse
 from netbox.tables import BaseTable
 
+from ..config_write import ConfigChangeOutcome, ConfigChangeRejected, RejectionReason
 from ..constants import Family
 from ..dhcp_options import DHCPOption, form_managed_options
 from ..kea import KeaException
@@ -36,6 +38,14 @@ _POOL_RE = re.compile(r"^[0-9a-fA-F.:/-]{3,100}$")
 
 # The warning for a PartialPersistError: the change is live, but Kea did not write it to disk.
 _LIVE_NOT_PERSISTED = "Change applied but may not survive a Kea restart (not written to disk)."
+
+_UNCONFIRMED = "Kea did not confirm the change. Check the server configuration before retrying."
+_REJECTED: dict[RejectionReason, str] = {
+    "kea-rejected": "Kea rejected the change.",
+    "config-test-rejected": "Kea's config-test rejected the change, so it was not applied.",
+    "not-sent": "The change was not sent to Kea.",
+    "invalid-client-configuration": "The change was not sent to Kea, because the Server settings are not valid.",
+}
 
 
 def _strip_empty_params(path: str) -> str:
@@ -74,6 +84,28 @@ class _KeaChangeMixin:
         elif not cast(PermissionsMixin, request.user).has_perm("netbox_kea.change_server"):
             return HttpResponseForbidden("You do not have permission to modify Kea server data.")
         return super().dispatch(request, *args, **kwargs)  # type: ignore[misc]
+
+
+def _run_config_change(request: HttpRequest, confirmed: str, change: Callable[[], ConfigChangeOutcome]) -> None:
+    """Run one Configuration Change and show one message for its outcome or its rejection.
+
+    *confirmed* is the message for a change that Kea applied, such as "Shared network 'x' created."
+    """
+    try:
+        outcome = change()
+    except ConfigChangeRejected as rejection:
+        messages.error(request, " ".join((_REJECTED[rejection.reason], *rejection.diagnostics)))
+        return
+    if outcome.application == "unknown":
+        # Never claim the change is live: the disk warning names the running configuration only.
+        not_saved = ("Kea also could not save its running configuration to disk.",)
+        text = (_UNCONFIRMED, *(not_saved if outcome.persistence == "failed" else ()), *outcome.diagnostics)
+        messages.warning(request, " ".join(text))
+    elif outcome.persistence == "failed":
+        restart = "It is live, but it may not survive a Kea restart, because Kea did not save it to disk."
+        messages.warning(request, " ".join((confirmed, restart, *outcome.diagnostics)))
+    else:
+        messages.success(request, confirmed)
 
 
 def _option_payload(option: DHCPOption) -> dict[str, Any]:

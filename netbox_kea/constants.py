@@ -12,6 +12,9 @@ Family = Literal[4, 6]
 IPAddressValue = ipaddress.IPv4Address | ipaddress.IPv6Address
 IPNetworkValue = ipaddress.IPv4Network | ipaddress.IPv6Network
 
+# Whether Kea wrote the running configuration to disk after a Configuration Change.
+Persistence = Literal["persisted", "failed", "not-requested"]
+
 BY_IP = "ip"
 BY_HOSTNAME = "hostname"
 BY_DUID = "duid"

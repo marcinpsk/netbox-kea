@@ -12,22 +12,20 @@ are exercised and can be asserted on.
 Command chains (all issued through the real client):
 
 * **list** (``ServerSharedNetworks{4,6}View``): a single ``config-get`` per GET.
-* **add** (``network_add``): ``network{v}-add`` then ``_persist_config``
-  (``config-get`` → ``config-test`` → ``config-write``; ``persist_config``
-  defaults True).
-* **delete** (``network_del``): ``network{v}-del`` then the same persist chain.
+* **add** (``config_write.add_shared_network``): ``network{v}-get`` (the read
+  before the change), ``network{v}-add``, then the persist step (``config-get`` →
+  ``config-test`` → ``config-write``; ``persist_config`` defaults True).
+* **delete** (``config_write.delete_shared_network``): ``network{v}-get``,
+  ``network{v}-del``, then the same persist step.
 * **edit** (``network_update``): the POST verifies a live Server Configuration,
   then ``network_update`` runs its read-modify-write cycle. The resulting body
   proves the version, network, and DHCP Options end to end.
 
-Error paths are driven through the real client:
-
-* ``KeaException`` ← a mutation command returns ``{"result": 1}``;
-* ``KeaConfigTestError`` (a ``KeaException`` subclass) ← ``config-test`` returns
-  result 1 during ``network_update``;
-* ``PartialPersistError`` ← ``config-write`` returns result 1 on a persisting op;
-* transport error ← the failing command is registered as a
-  ``requests.RequestException`` instance (raised at the HTTP boundary).
+Error paths are driven through the real client: a failure result is a payload
+with a non-zero ``result``, and a transport error is a ``requests`` exception
+instance raised at the HTTP boundary. ``test_config_write`` covers the add and
+delete outcomes in depth; the tests here cover one message per outcome and per
+rejection.
 """
 
 import copy
@@ -37,7 +35,17 @@ from django.contrib import messages as django_messages
 from django.test import override_settings
 from django.urls import reverse
 
-from .kea_stub import _catalogue_responses_for_subnets, queued, stub_kea
+from netbox_kea.config_write import ConfigChangeRejected
+from netbox_kea.views._base import _run_config_change
+
+from .kea_stub import (
+    _catalogue_responses_for_subnets,
+    _network_absent,
+    _network_present,
+    _refused_connection,
+    queued,
+    stub_kea,
+)
 from .utils import _PLUGINS_CONFIG, _make_db_server, _ViewTestBase
 
 _CONFIG_OK = {"result": 0}
@@ -92,24 +100,27 @@ def _sn_config(version=4, name="prod-net", description="", option_data=None, sub
     return _catalogue_responses_for_subnets(version, [], shared_networks=[network])["config-get"]
 
 
-def _mutate_stub(command, response=_CONFIG_OK, **overrides):
-    """Stub a ``network{v}-add``/``-del`` mutation plus its ``_persist_config`` chain.
-
-    ``network_add``/``network_del`` issue the mutation command then
-    ``_persist_config`` (``config-get`` → ``config-test`` → ``config-write``,
-    because ``persist_config`` defaults True). When *response* carries an error
-    (or is an exception), the mutation raises before persistence, so the persist
-    registrations simply go unused.
-    """
-    version = 4 if command.startswith("network4") else 6
+def _change_stub(version, command, reply=_CONFIG_OK, *, before, after=None, **overrides):
+    """Stub one Shared Network add or delete: the read before it, the change, a check read, and persist."""
     base = {
-        command: response,
+        f"network{version}-get": before if after is None else queued(before, after),
+        f"network{version}-{command}": reply,
         "config-get": _catalogue_responses_for_subnets(version, [])["config-get"],
         "config-test": _CONFIG_OK,
         "config-write": _CONFIG_OK,
     }
     base.update(overrides)
     return stub_kea(base)
+
+
+def _add_stub(name, reply=_CONFIG_OK, *, version=4, **overrides):
+    """Stub an add of *name*, which the read before the change does not find."""
+    return _change_stub(version, "add", reply, before=_network_absent(name), **overrides)
+
+
+def _delete_stub(name, reply=_CONFIG_OK, *, version=4, **overrides):
+    """Stub a delete of *name*, which the read before the change finds."""
+    return _change_stub(version, "del", reply, before=_network_present(version, name), **overrides)
 
 
 def _edit_stub(config_get, **overrides):
@@ -329,15 +340,15 @@ class TestServerSharedNetwork4AddView(_ViewTestBase):
 
     def test_post_valid_creates_network(self):
         """POST with valid name issues network4-add and redirects."""
-        with _mutate_stub("network4-add") as kea:
+        with _add_stub("net-prod") as kea:
             response = self.client.post(self._url(), {"name": "net-prod"})
         self.assertEqual(response.status_code, 302)
         self._assert_no_none_pk_redirect(response)
-        self.assertIn("network4-add", kea.commands())
+        self.assertEqual(kea.commands(), ["network4-get", "network4-add", "config-get", "config-test", "config-write"])
 
     def test_post_calls_network_add_with_correct_version(self):
         """POST must send network4-add to the dhcp4 service with the network name."""
-        with _mutate_stub("network4-add") as kea:
+        with _add_stub("net-prod") as kea:
             self.client.post(self._url(), {"name": "net-prod"})
         body = kea.bodies("network4-add")[0]
         self.assertEqual(body["service"], ["dhcp4"])
@@ -349,32 +360,6 @@ class TestServerSharedNetwork4AddView(_ViewTestBase):
             response = self.client.post(self._url(), {"name": ""})
         self.assertEqual(response.status_code, 200)
         self.assertEqual(kea.commands(), [])
-
-    def test_post_kea_exception_shows_error_and_redirects(self):
-        """POST that raises KeaException must redirect with an error (no 500)."""
-        with _mutate_stub("network4-add", response={"result": 1, "text": "subnet_cmds not loaded"}):
-            response = self.client.post(self._url(), {"name": "net-prod"})
-        self.assertEqual(response.status_code, 302)
-        self._assert_no_none_pk_redirect(response)
-
-    def test_post_config_test_rejection_warns_that_the_network_is_live(self):
-        """A config-test rejection after network4-add means the network is live but not persisted."""
-        with _mutate_stub("network4-add", **{"config-test": {"result": 1, "text": "config-test rejected"}}) as kea:
-            response = self.client.post(self._url(), {"name": "net-prod"})
-        self.assertEqual(response.status_code, 302)
-        self.assertNotIn("config-write", kea.commands())
-        self.assertEqual(
-            [(m.level, str(m)) for m in django_messages.get_messages(response.wsgi_request)],
-            [
-                (
-                    django_messages.WARNING,
-                    (
-                        "Shared network 'net-prod' created on the live server but config persistence failed. "
-                        "Manual reconciliation may be required."
-                    ),
-                )
-            ],
-        )
 
     def test_get_requires_login(self):
         """Unauthenticated GET must redirect to login."""
@@ -404,7 +389,7 @@ class TestServerSharedNetwork6AddView(_ViewTestBase):
 
     def test_post_calls_network_add_with_version_6(self):
         """POST must send network6-add to the dhcp6 service."""
-        with _mutate_stub("network6-add") as kea:
+        with _add_stub("net6-prod", version=6) as kea:
             self.client.post(self._url(), {"name": "net6-prod"})
         body = kea.bodies("network6-add")[0]
         self.assertEqual(body["service"], ["dhcp6"])
@@ -427,45 +412,19 @@ class TestServerSharedNetwork4DeleteView(_ViewTestBase):
 
     def test_post_calls_network_del_and_redirects(self):
         """POST must issue network4-del and redirect to the shared networks tab."""
-        with _mutate_stub("network4-del") as kea:
+        with _delete_stub("net-alpha") as kea:
             response = self.client.post(self._url())
         self.assertEqual(response.status_code, 302)
         self._assert_no_none_pk_redirect(response)
-        self.assertIn("network4-del", kea.commands())
+        self.assertEqual(kea.commands(), ["network4-get", "network4-del", "config-get", "config-test", "config-write"])
 
     def test_post_passes_correct_version_and_name(self):
         """POST must send network4-del to dhcp4 with the correct network name."""
-        with _mutate_stub("network4-del") as kea:
+        with _delete_stub("net-alpha") as kea:
             self.client.post(self._url(name="net-alpha"))
         body = kea.bodies("network4-del")[0]
         self.assertEqual(body["service"], ["dhcp4"])
         self.assertEqual(body["arguments"], {"name": "net-alpha"})
-
-    def test_post_kea_exception_redirects_with_error(self):
-        """POST that raises KeaException must redirect with an error (no 500)."""
-        with _mutate_stub("network4-del", response={"result": 1, "text": "network not found"}):
-            response = self.client.post(self._url())
-        self.assertEqual(response.status_code, 302)
-        self._assert_no_none_pk_redirect(response)
-
-    def test_post_config_test_rejection_warns_that_the_delete_is_live(self):
-        """A config-test rejection after network4-del means the delete is live but not persisted."""
-        with _mutate_stub("network4-del", **{"config-test": {"result": 1, "text": "config-test rejected"}}) as kea:
-            response = self.client.post(self._url())
-        self.assertEqual(response.status_code, 302)
-        self.assertNotIn("config-write", kea.commands())
-        self.assertEqual(
-            [(m.level, str(m)) for m in django_messages.get_messages(response.wsgi_request)],
-            [
-                (
-                    django_messages.WARNING,
-                    (
-                        "Shared network 'net-alpha' deleted on the live server but config persistence failed. "
-                        "Manual reconciliation may be required."
-                    ),
-                )
-            ],
-        )
 
     def test_get_requires_login(self):
         """Unauthenticated GET must redirect to login."""
@@ -495,10 +454,218 @@ class TestServerSharedNetwork6DeleteView(_ViewTestBase):
 
     def test_post_calls_network_del_with_version_6(self):
         """POST must send network6-del to the dhcp6 service."""
-        with _mutate_stub("network6-del") as kea:
+        with _delete_stub("net-beta", version=6) as kea:
             self.client.post(self._url(name="net-beta"))
         body = kea.bodies("network6-del")[0]
         self.assertEqual(body["service"], ["dhcp6"])
+
+
+class _SharedNetworkChangeMessages:
+    """One message per Configuration Change outcome and per rejection, for a Shared Network add or delete.
+
+    Subclasses name the view, the change, and the read results that decide each case.
+    """
+
+    change: str
+    confirmed: str
+    not_sent: str
+
+    def _url(self):
+        raise NotImplementedError
+
+    def _stub(self, reply=_CONFIG_OK, **overrides):
+        raise NotImplementedError
+
+    def _unchanged(self):
+        """The check read that proves the failed change is not live."""
+        raise NotImplementedError
+
+    def _refusing(self):
+        """The read before the change that makes the operation refuse to send it."""
+        raise NotImplementedError
+
+    def _post(self, stub, **server_fields):
+        for field, value in server_fields.items():
+            setattr(self.server, field, value)
+        self.server.save()
+        with stub as kea:
+            response = self.client.post(self._url(), {"name": "net-prod"})
+        self.assertEqual(response.status_code, 302)
+        messages = [(m.level, str(m)) for m in django_messages.get_messages(response.wsgi_request)]
+        return messages, kea.commands()
+
+    def test_applied_and_persisted(self):
+        messages, commands = self._post(self._stub())
+        self.assertEqual(messages, [(django_messages.SUCCESS, self.confirmed)])
+        self.assertEqual(commands, ["network4-get", self.change, "config-get", "config-test", "config-write"])
+
+    def test_applied_and_persistence_not_requested(self):
+        messages, commands = self._post(self._stub(), persist_config=False)
+        self.assertEqual(messages, [(django_messages.SUCCESS, self.confirmed)])
+        self.assertEqual(commands, ["network4-get", self.change])
+
+    def test_applied_and_persistence_failed_shows_the_restart_warning(self):
+        failure = {"result": 1, "text": "Unable to open file for writing"}
+        messages, commands = self._post(self._stub(**{"config-write": failure}))
+        self.assertEqual(
+            messages,
+            [
+                (
+                    django_messages.WARNING,
+                    (
+                        f"{self.confirmed} It is live, but it may not survive a Kea restart, because Kea did not save "
+                        "it to disk. config-write failed: Unable to open file for writing"
+                    ),
+                )
+            ],
+        )
+        self.assertEqual(commands, ["network4-get", self.change, "config-get", "config-test", "config-write"])
+
+    def test_unknown_and_persisted(self):
+        messages, commands = self._post(self._stub(requests.ReadTimeout("read timed out")))
+        self.assertEqual(
+            messages,
+            [
+                (
+                    django_messages.WARNING,
+                    (
+                        "Kea did not confirm the change. Check the server configuration before retrying. "
+                        "Kea's reply to the change was lost or unreadable."
+                    ),
+                )
+            ],
+        )
+        self.assertEqual(commands, ["network4-get", self.change, "config-get", "config-test", "config-write"])
+
+    def test_unknown_and_persistence_failed_never_claims_the_change_is_live(self):
+        stub = self._stub(requests.ReadTimeout("read timed out"), **{"config-write": requests.ReadTimeout()})
+        messages, _ = self._post(stub)
+        self.assertEqual(
+            messages,
+            [
+                (
+                    django_messages.WARNING,
+                    (
+                        "Kea did not confirm the change. Check the server configuration before retrying. "
+                        "Kea also could not save its running configuration to disk. "
+                        "Kea's reply to the change was lost or unreadable. "
+                        "The reply to config-write was lost or unreadable."
+                    ),
+                )
+            ],
+        )
+
+    def test_unknown_and_persistence_not_requested(self):
+        messages, commands = self._post(self._stub(requests.ReadTimeout("read timed out")), persist_config=False)
+        self.assertEqual(
+            messages,
+            [
+                (
+                    django_messages.WARNING,
+                    (
+                        "Kea did not confirm the change. Check the server configuration before retrying. "
+                        "Kea's reply to the change was lost or unreadable."
+                    ),
+                )
+            ],
+        )
+        self.assertEqual(commands, ["network4-get", self.change])
+
+    def test_kea_rejected(self):
+        failure = {"result": 1, "text": "invalid shared network"}
+        messages, commands = self._post(self._stub(failure, after=self._unchanged()))
+        self.assertEqual(
+            messages, [(django_messages.ERROR, "Kea rejected the change. Kea replied: invalid shared network")]
+        )
+        self.assertEqual(commands, ["network4-get", self.change, "network4-get"])
+
+    def test_not_sent_after_the_read_before_the_change(self):
+        messages, commands = self._post(self._stub(**{"network4-get": self._refusing()}))
+        self.assertEqual(messages, [(django_messages.ERROR, f"The change was not sent to Kea. {self.not_sent}")])
+        self.assertEqual(commands, ["network4-get"])
+
+    def test_not_sent_after_a_refused_connection(self):
+        messages, commands = self._post(self._stub(_refused_connection()))
+        self.assertEqual(
+            messages, [(django_messages.ERROR, "The change was not sent to Kea. Kea could not be reached.")]
+        )
+        self.assertEqual(commands, ["network4-get", self.change])
+
+    def test_invalid_client_configuration(self):
+        messages, commands = self._post(self._stub(), client_cert_path="/etc/kea/client.pem")
+        self.assertEqual(
+            messages,
+            [
+                (
+                    django_messages.ERROR,
+                    (
+                        "The change was not sent to Kea, because the Server settings are not valid. "
+                        "NetBox could not build a Kea client from the Server connection settings."
+                    ),
+                )
+            ],
+        )
+        self.assertEqual(commands, [])
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestSharedNetworkAddMessages(_SharedNetworkChangeMessages, _ViewTestBase):
+    change = "network4-add"
+    confirmed = "Shared network 'net-prod' created."
+    not_sent = "Shared Network 'net-prod' already exists."
+
+    def _url(self):
+        return reverse("plugins:netbox_kea:server_shared_network4_add", args=[self.server.pk])
+
+    def _stub(self, reply=_CONFIG_OK, **overrides):
+        return _add_stub("net-prod", reply, **overrides)
+
+    def _unchanged(self):
+        return _network_absent("net-prod")
+
+    def _refusing(self):
+        return _network_present(4, "net-prod")
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestSharedNetworkDeleteMessages(_SharedNetworkChangeMessages, _ViewTestBase):
+    change = "network4-del"
+    confirmed = "Shared network 'net-prod' deleted."
+    not_sent = "Shared Network 'net-prod' not found."
+
+    def _url(self):
+        return reverse("plugins:netbox_kea:server_shared_network4_delete", args=[self.server.pk, "net-prod"])
+
+    def _stub(self, reply=_CONFIG_OK, **overrides):
+        return _delete_stub("net-prod", reply, **overrides)
+
+    def _unchanged(self):
+        return _network_present(4, "net-prod")
+
+    def _refusing(self):
+        return _network_absent("net-prod")
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestConfigChangeMessage(_ViewTestBase):
+    """The message for a config-test rejection, which no Shared Network add or delete can raise."""
+
+    def test_a_config_test_rejection_says_the_change_was_not_applied(self):
+        request = self._make_request()
+
+        def change():
+            raise ConfigChangeRejected("config-test-rejected", ("Kea replied: subnet overlaps",))
+
+        _run_config_change(request, "Shared network 'x' updated.", change)
+        self.assertEqual(
+            [(m.level, str(m)) for m in django_messages.get_messages(request)],
+            [
+                (
+                    django_messages.ERROR,
+                    "Kea's config-test rejected the change, so it was not applied. Kea replied: subnet overlaps",
+                )
+            ],
+        )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -894,18 +1061,18 @@ class TestSharedNetworkEditAmbiguousWrite(_ViewTestBase):
                 for payload in ([], [{}], [None], [{"result": 2}, {"result": 0}], [{"result": False}]):
                     with self.subTest(version=version, phase=phase, payload=repr(payload)):
                         url = reverse(f"plugins:netbox_kea:server_shared_network{version}_add", args=[self.server.pk])
-                        with _mutate_stub(f"network{version}-add", **{phase: payload}) as kea:
+                        with _add_stub("clients", version=version, **{phase: payload}) as kea:
                             response = self.client.post(url, {"name": "clients"}, follow=True)
                         self.assertEqual(response.status_code, 200)
                         self.assertIn(f"network{version}-add", kea.commands())
                         messages = list(django_messages.get_messages(response.wsgi_request))
                         self.assertFalse(any(message.level == django_messages.SUCCESS for message in messages))
-                        # The mutation is live in both phases, so the view warns and never reports a failure.
+                        # The add is applied in both phases, so the view warns and never reports a failure.
                         if phase == "config-test":
                             self.assertNotIn("config-write", kea.commands())
                         self.assertFalse(any(message.level == django_messages.ERROR for message in messages))
                         self.assertTrue(any(message.level == django_messages.WARNING for message in messages))
-                        self.assertTrue(any("created on the live server" in str(message) for message in messages))
+                        self.assertTrue(any("may not survive a Kea restart" in str(message) for message in messages))
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
@@ -1096,40 +1263,6 @@ class TestSharedNetworkListEdgeCases(_ViewTestBase):
             response = self.client.get(url)
         self.assertEqual(response.status_code, 302)
         self.assertEqual(kea.commands(), [])
-
-
-# ---------------------------------------------------------------------------
-# SharedNetworkAdd/Delete — generic exception paths
-# ---------------------------------------------------------------------------
-
-
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
-class TestSharedNetworkCRUDGenericException(_ViewTestBase):
-    """A transport error on add/delete shows a generic internal-error message."""
-
-    def test_add_generic_exception_shows_error(self):
-        """Transport exception on network4-add redirects with a generic error."""
-        url = reverse("plugins:netbox_kea:server_shared_network4_add", args=[self.server.pk])
-        stub = {
-            "network4-add": requests.ConnectionError("connection reset"),
-            "config-get": _EMPTY_SN_CONFIG_V4,  # follow=True lands on the list view
-        }
-        with stub_kea(stub):
-            response = self.client.post(url, {"name": "new-net"}, follow=True)
-        msgs = [m.message for m in response.context["messages"]]
-        self.assertTrue(any("internal error" in m.lower() for m in msgs))
-
-    def test_delete_generic_exception_shows_error(self):
-        """Transport exception on network4-del redirects with a generic error."""
-        url = reverse("plugins:netbox_kea:server_shared_network4_delete", args=[self.server.pk, "old-net"])
-        stub = {
-            "network4-del": requests.ConnectionError("timeout"),
-            "config-get": _EMPTY_SN_CONFIG_V4,  # follow=True lands on the list view
-        }
-        with stub_kea(stub):
-            response = self.client.post(url, {}, follow=True)
-        msgs = [m.message for m in response.context["messages"]]
-        self.assertTrue(any("internal error" in m.lower() for m in msgs))
 
 
 # ---------------------------------------------------------------------------
