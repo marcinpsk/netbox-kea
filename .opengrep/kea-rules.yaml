@@ -381,5 +381,5 @@ rules:
               except:
                   ...
       - pattern: config_write.$OP(...)
-      # The mapper catches the rejection before an outer handler sees it.
-      - pattern-not-inside: _run_config_change(...)
+      # The mapper catches the rejection only when it runs the change: a lambda, not an eager call.
+      - pattern-not-inside: "_run_config_change(..., lambda: ..., ...)"
