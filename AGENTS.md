@@ -184,26 +184,21 @@ URL request
 
 ```text
 Exception
- └── KeaException                  # base — any non-ok result from Kea
-      ├── PartialPersistError      # mutation is live; config-write failed
-      │    └── KeaConfigPersistError    # mutation is live; config-test rejected it, so no config-write
-      └── (generic Kea errors)
+ ├── KeaException                  # base: any non-ok result from Kea
+ └── ConfigChangeRejected          # config_write: the change is not live, with a reason
 ```
 
-No write path raises `PartialPersistError` or `KeaConfigPersistError` now, so no handler
-catches them. `KeaClient.persist` reports a failed persist step as a `Persistence` value.
-#207 deletes both classes.
-
-**`config_write` replaces this hierarchy** (ADR 0005), one operation at a time. An
+**`config_write` owns every Configuration Change** (ADR 0005). An
 operation returns a `ConfigChangeOutcome` (`applied`/`unknown` and
 `persisted`/`failed`/`not-requested`) or raises `ConfigChangeRejected` with a reason.
 A view runs it through `_run_config_change` in `views/_base.py`, which owns the
 messages, and catches nothing itself. Shared Network add, edit and delete, Subnet add, edit and
 delete, Pool add and delete, Subnet and server DHCP Options, and Option Definition add and
-delete use it. Only `config_write` operations take the per-daemon advisory lock,
-so the old write paths do not wait for it. A Subnet, Pool or Subnet DHCP Options operation
-takes the Subnet ID and the CIDR that the page showed, and sends nothing unless its
-`MutationScope` returns a Verified Subnet with both.
+delete use it. An OpenGrep rule refuses an `except` of `ConfigChangeRejected` in `views/`
+outside `_run_config_change`. Only `config_write` operations take the per-daemon advisory
+lock. Reservation mutations call `KeaClient.persist`, but they do not wait for the lock. A Subnet, Pool
+or Subnet DHCP Options operation takes the Subnet ID and the CIDR that the page showed, and
+sends nothing unless its `MutationScope` returns a Verified Subnet with both.
 
 Subnet add is the first multi-step change: `add_subnet` adds the Subnet and then assigns it to
 a Shared Network. When the assignment does not apply, it deletes the Subnet again, but only
