@@ -519,7 +519,8 @@ class SubnetDefinition:
             subnet["ddns-qualifying-suffix"] = fields.ddns_qualifying_suffix
         else:
             subnet.pop("ddns-qualifying-suffix", None)
-        subnet["pools"] = [{"pool": pool} for pool in fields.pools]
+        live_pools = self._pools_by_range(subnet.get("pools", []))
+        subnet["pools"] = [{**live_pools.get(pool, {}), "pool": pool} for pool in fields.pools]
         # A Subnet takes the *-lifetime keys; valid-lft is a lease field that Kea refuses here.
         for key, value in (
             ("valid-lifetime", edit.valid_lifetime),
@@ -531,6 +532,20 @@ class SubnetDefinition:
             if value is not None:
                 subnet[key] = value
         return subnet
+
+    def _pools_by_range(self, pools: list[Any]) -> dict[str, dict[str, Any]]:
+        """Return each live Pool entry by its range text, so that a kept Pool keeps its Pool-level fields."""
+        from .server_configuration import parse_pool
+
+        by_range: dict[str, dict[str, Any]] = {}
+        for entry in pools:
+            if not isinstance(entry, dict):
+                continue
+            try:
+                by_range[parse_pool(entry.get("pool"), self.network).range] = entry
+            except ValueError:
+                continue
+        return by_range
 
 
 class CandidateConfiguration:
