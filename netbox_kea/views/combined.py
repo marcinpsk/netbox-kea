@@ -209,7 +209,7 @@ class _CombinedSubnetsView(_CombinedViewMixin):
         for subnet in all_subnets:
             can_change = subnet.get("server_pk") in writable_pks
             subnet["can_change"] = bool(subnet.get("identity_verified")) and can_change
-            subnet["can_edit_options"] = bool(subnet.get("configuration_available")) and can_change
+            subnet["can_edit_options"] = subnet["can_change"] and bool(subnet.get("configuration_available"))
 
         table_cls = tables.GlobalSubnetTable4 if self.dhcp_version == 4 else tables.GlobalSubnetTable6
 

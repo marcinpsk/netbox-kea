@@ -1293,6 +1293,22 @@ class TestSharedNetworkEditForm(SimpleTestCase):
         self.assertTrue(form.is_valid(), form.errors)
         self.assertEqual(form.cleaned_data["relay_addresses"], "")
 
+    def test_to_edit_applies_one_strip_rule_to_every_address_list(self):
+        from netbox_kea.kea import SharedNetworkEdit
+
+        form = self._form(
+            description=" Office ",
+            interface=" eth1 ",
+            relay_addresses=" 10.0.0.1 , ,10.0.0.2 ",
+            dns_servers=" 8.8.8.8 , , 1.1.1.1",
+            ntp_servers=" , ",
+        )
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(
+            form.to_edit(),
+            SharedNetworkEdit("Office", "eth1", ("10.0.0.1", "10.0.0.2"), ("8.8.8.8", "1.1.1.1"), ()),
+        )
+
     def test_form_has_description_field(self):
         """Form exposes a description field."""
         from netbox_kea.forms import SharedNetworkEditForm

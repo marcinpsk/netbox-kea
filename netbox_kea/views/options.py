@@ -20,7 +20,7 @@ from ..kea import KeaException
 from ..models import Server
 from ..utilities import OptionalViewTab, check_dhcp_enabled
 from ._base import ConditionalLoginRequiredMixin, _diagnostic_messages, _KeaChangeMixin, _run_config_change
-from .subnets import _NO_SUBNET_CIDR, _SUBNETS_TAB
+from .subnets import _NO_SUBNET_CIDR, _SUBNETS_TAB, _displayed_subnet
 
 # One Config tab for both sections and both families; ServerOptionDef4View owns it.
 _CONFIG_TAB = OptionalViewTab(label="Config", weight=1050, is_enabled=lambda s: s.dhcp4 or s.dhcp6)
@@ -81,6 +81,15 @@ class _BaseSubnetOptionsEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin,
             pk=pk,
         )
         return_url = reverse(f"plugins:netbox_kea:server_subnets{self.dhcp_version}", args=[pk])
+        catalogue, verified = _displayed_subnet(request, server, self.dhcp_version, subnet_id)
+        if verified is None:
+            reason = ", because the subnet_cmds hook is not loaded" if not catalogue.subnet_cmds_available else ""
+            messages.error(
+                request,
+                f"Kea did not confirm the identity of Subnet {subnet_id}{reason}. "
+                "NetBox changes the DHCP Options of a Subnet only after Kea confirms its identity.",
+            )
+            return redirect(return_url)
         subnet = self._get_subnet_from_config(request, server, subnet_id)
         if subnet is None:
             messages.error(request, "Could not load subnet configuration from Kea. The form cannot be displayed.")
@@ -219,7 +228,7 @@ class _BaseServerOptionsEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin,
                 },
             )
 
-        rows = [form.cleaned_data for form in formset.forms if form.cleaned_data]
+        rows = [row.cleaned_data for row in formset.forms if row.cleaned_data]
         _run_option_change(
             request,
             f"DHCPv{self.dhcp_version} server options updated.",
