@@ -11,7 +11,13 @@ from requests.models import HTTPBasicAuth
 
 from . import constants
 from .constants import Family, IPNetworkValue, Persistence
-from .dhcp_options import DHCPOption, FormManagedOption, form_managed_options, merge_option_form_rows
+from .dhcp_options import (
+    DHCPOption,
+    FormManagedOption,
+    form_managed_options,
+    merge_option_form_rows,
+    parse_dhcp_options,
+)
 from .reservations import (
     RESERVATION_PAGE_FETCH_FAILED,
     RESERVATION_PAGE_LIMIT_REACHED,
@@ -402,7 +408,10 @@ def _set_shared_network_description(network: dict[str, Any], description: str) -
     An empty *description* keeps a comment the form cannot show, the same as a binary option.
     A *description* equal to the comment as a text input shows it keeps the comment unchanged.
     """
-    existing = shared_network_description(network)
+    try:
+        existing = shared_network_description(network)
+    except ValueError as exc:
+        raise MalformedConfiguration(str(exc)) from exc
     if existing is not None and description == existing.replace("\r", "").replace("\n", "").strip():
         return
     context = dict(network.get("user-context") or {})
@@ -416,16 +425,30 @@ def _set_shared_network_description(network: dict[str, Any], description: str) -
         network.pop("user-context", None)
 
 
-def _config_entries(container: dict[str, Any], key: str, service: str) -> list[dict[str, Any]]:
-    """Return the objects listed at *key* in a live configuration, or raise ``RuntimeError``."""
-    entries = container.get(key, [])
-    if not isinstance(entries, list) or not all(isinstance(entry, dict) for entry in entries):
-        raise RuntimeError(f"config-get returned a malformed {key} list for {service}.")
-    return entries
+class MalformedConfiguration(RuntimeError):
+    """The running configuration from ``config-get`` has a shape that NetBox cannot edit safely."""
 
 
 class CandidateTargetMissing(Exception):
     """The candidate configuration has no object that the edit names."""
+
+
+def _config_entries(container: dict[str, Any], key: str, service: str) -> list[dict[str, Any]]:
+    """Return the objects listed at *key* in a live configuration, or raise ``MalformedConfiguration``."""
+    entries = container.get(key, [])
+    if not isinstance(entries, list) or not all(isinstance(entry, dict) for entry in entries):
+        raise MalformedConfiguration(f"config-get returned a malformed {key} list for {service}.")
+    return entries
+
+
+def _config_options(container: dict[str, Any], service: str) -> list[dict[str, Any]]:
+    """Return the ``option-data`` of *container* after a check that each entry is a valid DHCP Option."""
+    options = _config_entries(container, "option-data", service)
+    try:
+        parse_dhcp_options(options)
+    except ValueError as exc:
+        raise MalformedConfiguration(f"config-get returned a malformed option-data list for {service}.") from exc
+    return options
 
 
 @dataclass(frozen=True)
@@ -443,20 +466,20 @@ class CandidateConfiguration:
     """The running configuration of one daemon from ``config-get``, which a read-modify-write edits in place.
 
     Every field that Kea returned stays, so a ``config-set`` of it keeps the fields that NetBox does not model.
-    An edit raises ``RuntimeError`` or ``ValueError`` for a malformed configuration, and
-    ``CandidateTargetMissing`` when the object it names is absent.
+    An edit raises ``MalformedConfiguration`` for a configuration that it cannot edit safely, and
+    ``CandidateTargetMissing`` when the object it names is absent. An error in the submitted rows propagates.
     """
 
     def __init__(self, family: Family, arguments: dict[str, Any]) -> None:
         """Keep *arguments*, the ``config-get`` arguments without ``hash``.
 
         Raises:
-            RuntimeError: If the ``Dhcp{v}`` block is not an object.
+            MalformedConfiguration: If the ``Dhcp{v}`` block is not an object.
 
         """
         daemon = arguments.get(f"Dhcp{family}")
         if not isinstance(daemon, dict):
-            raise RuntimeError(f"config-get returned a non-object Dhcp{family} for dhcp{family}.")
+            raise MalformedConfiguration(f"config-get returned a non-object Dhcp{family} for dhcp{family}.")
         self.family = family
         self.service = f"dhcp{family}"
         self.arguments = arguments
@@ -464,7 +487,7 @@ class CandidateConfiguration:
 
     def set_global_options(self, rows: list[dict[str, Any]]) -> None:
         """Merge the options form *rows* into the server-global DHCP Options."""
-        self._daemon["option-data"] = merge_option_form_rows(rows, self._daemon.get("option-data", []))
+        self._daemon["option-data"] = merge_option_form_rows(rows, _config_options(self._daemon, self.service))
 
     def set_subnet_options(self, subnet_id: int, network: IPNetworkValue, rows: list[dict[str, Any]]) -> None:
         """Merge the options form *rows* into the Subnet with *subnet_id*, only while that ID names *network*."""
@@ -474,10 +497,16 @@ class CandidateConfiguration:
             subnets.extend(_config_entries(shared_network, subnet_key, self.service))
         matches = [subnet for subnet in subnets if _is_subnet_id(subnet.get("id"), subnet_id)]
         if len(matches) > 1:
-            raise RuntimeError(f"config-get declares more than one Subnet with ID {subnet_id}.")
-        if not matches or subnet_network(matches[0].get("subnet"), self.family) != network:
+            raise MalformedConfiguration(f"config-get declares more than one Subnet with ID {subnet_id}.")
+        if not matches:
             raise CandidateTargetMissing
-        matches[0]["option-data"] = merge_option_form_rows(rows, matches[0].get("option-data", []))
+        try:
+            declared = subnet_network(matches[0].get("subnet"), self.family)
+        except ValueError as exc:
+            raise MalformedConfiguration(f"config-get returned Subnet {subnet_id} without a valid CIDR.") from exc
+        if declared != network:
+            raise CandidateTargetMissing
+        matches[0]["option-data"] = merge_option_form_rows(rows, _config_options(matches[0], self.service))
 
     def add_option_definition(self, option_def: dict[str, Any]) -> None:
         """Append *option_def* to the Option Definitions."""
@@ -499,7 +528,7 @@ class CandidateConfiguration:
             if network.get("name") == name
         ]
         if len(matches) > 1:
-            raise RuntimeError(f"config-get declares more than one Shared Network named {name!r}.")
+            raise MalformedConfiguration(f"config-get declares more than one Shared Network named {name!r}.")
         if not matches:
             raise CandidateTargetMissing
         network = matches[0]
@@ -1976,12 +2005,13 @@ class KeaClient:
             response = self.command(command, service=[service], arguments=arguments, check=None)
         _one_reply(command, service, response)
 
-    def config_candidate(self, version: Family) -> "CandidateConfiguration":
+    def config_candidate(self, version: Family) -> CandidateConfiguration:
         """Send one ``config-get`` and return the running configuration, for a read-modify-write.
 
         Raises:
             KeaException: If Kea returns a failure result.
-            RuntimeError: If the reply or its ``Dhcp{v}`` block is malformed.
+            RuntimeError: If the reply is malformed.
+            MalformedConfiguration: If the ``Dhcp{v}`` block is not an object.
 
         """
         command, service = "config-get", f"dhcp{version}"
@@ -1993,7 +2023,7 @@ class KeaClient:
         arguments.pop("hash", None)
         return CandidateConfiguration(version, arguments)
 
-    def config_test(self, candidate: "CandidateConfiguration") -> None:
+    def config_test(self, candidate: CandidateConfiguration) -> None:
         """Send one ``config-test`` of *candidate*. It changes nothing.
 
         Raises:
@@ -2003,7 +2033,7 @@ class KeaClient:
         """
         self._config_phase_command("config-test", candidate.service, candidate.arguments)
 
-    def config_set(self, candidate: "CandidateConfiguration") -> None:
+    def config_set(self, candidate: CandidateConfiguration) -> None:
         """Send one ``config-set`` of *candidate*. It does not persist.
 
         Raises:

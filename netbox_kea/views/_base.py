@@ -152,7 +152,7 @@ def _catalogue_subnet_row(
         "identity_verified": isinstance(subnet, VerifiedSubnet),
         "configuration_available": configuration is not None,
         "can_change": can_change and isinstance(subnet, VerifiedSubnet),
-        "can_edit_options": can_change and configuration is not None,
+        "can_edit_options": can_change and isinstance(subnet, VerifiedSubnet) and configuration is not None,
         "ddns_qualifying_suffix": configuration.settings.ddns_qualifying_suffix if configuration else None,
         "options": format_option_data(
             [_option_payload(option) for option in configuration.options] if configuration else [],

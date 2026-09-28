@@ -23,7 +23,7 @@ from netbox_kea import config_write
 from netbox_kea.config_write import ConfigChangeOutcome, ConfigChangeRejected
 from netbox_kea.constants import Family
 from netbox_kea.dhcp_options import DHCPOptionConflict, DHCPOptionNameChange
-from netbox_kea.kea import SharedNetworkEdit
+from netbox_kea.kea import CandidateTargetMissing, SharedNetworkEdit
 from netbox_kea.server_configuration import parse_pool
 
 from .kea_stub import (
@@ -1171,6 +1171,45 @@ class ReadModifyWriteTests(TestCase):
                     rejection = self._rejection(operations[name][0])
                 self.assertEqual(rejection.reason, "not-sent")
                 self.assertEqual(kea.commands(), reads)
+
+    def test_a_malformed_dhcp_option_in_the_configuration_is_not_sent(self):
+        running = _running(4, **{"option-data": [{"name": "routers", "data": 5}]})
+        with stub_kea(_rmw_responses(4, config_get=running)) as kea:
+            rejection = self._rejection(lambda: config_write.set_server_options(self.server, 4, [_new_row(*_DNS[4])]))
+        self.assertEqual(
+            (rejection.reason, rejection.diagnostics),
+            ("not-sent", ("Kea returned a configuration that NetBox cannot edit safely.",)),
+        )
+        self.assertEqual(kea.commands(), ["config-get"])
+
+    def test_a_bad_submitted_option_row_is_not_blamed_on_kea(self):
+        row = {**_new_row("routers", "10.0.0.1"), "original_option": {"code": "six"}}
+        with stub_kea(_rmw_responses(4)) as kea, self.assertRaises(ValueError) as raised:
+            config_write.set_server_options(self.server, 4, [row])
+        self.assertNotIsInstance(raised.exception, ConfigChangeRejected)
+        self.assertEqual(str(raised.exception), "A DHCP Option code must be an integer from 0 through 65535.")
+        self.assertEqual(kea.commands(), ["config-get"])
+
+    def test_a_missing_target_without_a_diagnostic_is_not_an_empty_rejection(self):
+        def edit(candidate):
+            raise CandidateTargetMissing
+
+        with stub_kea(_rmw_responses(4)) as kea, self.assertRaises(CandidateTargetMissing):
+            config_write._read_modify_write(self.server, 4, edit, missing=None)
+        self.assertEqual(kea.commands(), ["config-get"])
+
+    def test_an_unusable_config_test_reply_names_config_test(self):
+        for label, failure in {"refused": _refused_connection(), "malformed": [_OK, _OK]}.items():
+            with self.subTest(label):
+                with stub_kea(_rmw_responses(4, **{"config-test": failure})) as kea:
+                    rejection = self._rejection(
+                        lambda: config_write.set_server_options(self.server, 4, [_new_row(*_DNS[4])])
+                    )
+                self.assertEqual(
+                    (rejection.reason, rejection.diagnostics),
+                    ("not-sent", ("Kea did not return a usable reply to config-test.",)),
+                )
+                self.assertEqual(kea.commands(), ["config-get", "config-test"])
 
     def test_a_dhcp_option_form_error_propagates_before_any_change(self):
         running = _running(4, **{"option-data": [{"code": 6, "name": "domain-name-servers", "data": "192.0.2.1"}]})

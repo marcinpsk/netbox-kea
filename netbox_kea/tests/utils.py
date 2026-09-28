@@ -176,7 +176,7 @@ def _read_modify_write_cases(confirmed: str) -> tuple:
             {},
             (
                 django_messages.ERROR,
-                "The change was not sent to Kea. Kea did not return a usable reply to the read before the change.",
+                "The change was not sent to Kea. Kea did not return a usable reply to config-test.",
             ),
         ),
         (
