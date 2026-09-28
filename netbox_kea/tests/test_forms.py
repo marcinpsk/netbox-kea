@@ -16,6 +16,7 @@ from netbox_kea.forms import (
     PoolAddForm,
     ServerForm,
     ServerImportForm,
+    SubnetConfirmForm,
 )
 from netbox_kea.models import Server
 from netbox_kea.reservations import ReservationCapabilities, reservation_identifier_types
@@ -1553,6 +1554,7 @@ def _verified_subnet(cidr="10.0.0.0/24", pools=("10.0.0.10-10.0.0.20",), *, conf
     )
     return VerifiedSubnet(
         identity=SubnetIdentity(subnet_id=1, network=network),
+        declared_cidr=cidr,
         configuration=facts if configuration else None,
         shared_network=None,
     )
@@ -1562,13 +1564,15 @@ class TestPoolAddForm(SimpleTestCase):
     """The Pool is parsed inside the Verified Subnet and must not overlap an existing Pool."""
 
     def test_a_cidr_pool_parses_to_its_range(self):
-        form = PoolAddForm(data={"pool": "10.0.0.64/28"}, subnet=_verified_subnet())
+        form = PoolAddForm(data={"subnet_cidr": "10.0.0.0/24", "pool": "10.0.0.64/28"}, subnet=_verified_subnet())
 
         self.assertTrue(form.is_valid(), form.errors)
         self.assertEqual(form.cleaned_data["pool"].range, "10.0.0.64-10.0.0.79")
 
     def test_a_range_pool_is_normalized(self):
-        form = PoolAddForm(data={"pool": " 10.0.0.50 - 10.0.0.99 "}, subnet=_verified_subnet())
+        form = PoolAddForm(
+            data={"subnet_cidr": "10.0.0.0/24", "pool": " 10.0.0.50 - 10.0.0.99 "}, subnet=_verified_subnet()
+        )
 
         self.assertTrue(form.is_valid(), form.errors)
         self.assertEqual(form.cleaned_data["pool"].range, "10.0.0.50-10.0.0.99")
@@ -1581,31 +1585,69 @@ class TestPoolAddForm(SimpleTestCase):
             ("10.0.0.90-10.0.0.80", "Pool 10.0.0.90-10.0.0.80 starts after it ends."),
         ):
             with self.subTest(value=value):
-                form = PoolAddForm(data={"pool": value}, subnet=_verified_subnet())
+                form = PoolAddForm(data={"subnet_cidr": "10.0.0.0/24", "pool": value}, subnet=_verified_subnet())
 
                 self.assertFalse(form.is_valid())
                 self.assertIn(message, form.errors["pool"][0])
 
     def test_a_pool_outside_the_subnet_is_a_pool_error(self):
-        form = PoolAddForm(data={"pool": "10.0.1.0/28"}, subnet=_verified_subnet())
+        form = PoolAddForm(data={"subnet_cidr": "10.0.0.0/24", "pool": "10.0.1.0/28"}, subnet=_verified_subnet())
 
         self.assertFalse(form.is_valid())
         self.assertEqual(form.errors["pool"], ["Pool 10.0.1.0/28 is outside Subnet 10.0.0.0/24."])
 
     def test_an_overlap_with_an_existing_pool_is_a_pool_error(self):
-        form = PoolAddForm(data={"pool": "10.0.0.20-10.0.0.30"}, subnet=_verified_subnet())
+        form = PoolAddForm(
+            data={"subnet_cidr": "10.0.0.0/24", "pool": "10.0.0.20-10.0.0.30"}, subnet=_verified_subnet()
+        )
 
         self.assertFalse(form.is_valid())
         self.assertEqual(form.errors["pool"], ["Pool 10.0.0.20-10.0.0.30 overlaps existing Pool 10.0.0.10-10.0.0.20."])
 
     def test_missing_configuration_facts_skip_the_overlap_check(self):
-        form = PoolAddForm(data={"pool": "10.0.0.20-10.0.0.30"}, subnet=_verified_subnet(configuration=False))
+        form = PoolAddForm(
+            data={"subnet_cidr": "10.0.0.0/24", "pool": "10.0.0.20-10.0.0.30"},
+            subnet=_verified_subnet(configuration=False),
+        )
 
         self.assertTrue(form.is_valid(), form.errors)
 
     def test_an_unknown_subnet_is_a_form_error(self):
-        form = PoolAddForm(data={"pool": "10.0.0.50-10.0.0.60"}, subnet=None)
+        form = PoolAddForm(data={"subnet_cidr": "10.0.0.0/24", "pool": "10.0.0.50-10.0.0.60"}, subnet=None)
 
         self.assertFalse(form.is_valid())
         self.assertNotIn("pool", form.errors)
         self.assertIn("Reload the Subnets page", form.non_field_errors()[0])
+
+    def test_a_cidr_that_is_not_the_subnet_is_a_form_error(self):
+        for cidr in ("10.0.1.0/24", "", "not-a-cidr", "2001:db8::/64"):
+            with self.subTest(cidr=cidr):
+                form = PoolAddForm(data={"subnet_cidr": cidr, "pool": "10.0.1.50-10.0.1.60"}, subnet=_verified_subnet())
+
+                self.assertFalse(form.is_valid())
+                self.assertNotIn("pool", form.errors)
+                self.assertIn("Reload the Subnets page", form.non_field_errors()[0])
+
+    def test_the_cidr_that_kea_declares_with_host_bits_names_the_subnet(self):
+        form = PoolAddForm(
+            data={"subnet_cidr": "10.0.0.5/24", "pool": "10.0.0.50-10.0.0.60"}, subnet=_verified_subnet()
+        )
+
+        self.assertTrue(form.is_valid(), form.errors)
+
+
+class TestSubnetConfirmForm(SimpleTestCase):
+    """The hidden CIDR of a Subnet change page must be a CIDR of the family."""
+
+    def test_a_cidr_of_the_family_is_valid_with_host_bits(self):
+        for family, cidr in ((4, " 10.0.0.5/24 "), (6, "2001:db8:1::1/64")):
+            with self.subTest(family=family):
+                form = SubnetConfirmForm(data={"subnet_cidr": cidr}, family=family)
+
+                self.assertTrue(form.is_valid(), form.errors)
+                self.assertEqual(form.cleaned_data["subnet_cidr"], cidr.strip())
+
+    def test_a_missing_invalid_or_other_family_cidr_is_invalid(self):
+        for cidr in ("", "nonsense", "2001:db8::/64"):
+            with self.subTest(cidr=cidr):
+                self.assertFalse(SubnetConfirmForm(data={"subnet_cidr": cidr}, family=4).is_valid())

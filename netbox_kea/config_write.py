@@ -20,7 +20,9 @@ from django.db import DatabaseError, OperationalError, connection, transaction
 from urllib3.exceptions import MaxRetryError, NewConnectionError
 
 from .constants import Family, Persistence
-from .kea import KeaClient, KeaException
+from .kea import KeaClient, KeaException, PoolAction, subnet_network
+from .server_configuration import Pool
+from .subnet_catalogue import CatalogueUnavailable, MutationScope, VerifiedSubnet, mutation
 
 if TYPE_CHECKING:
     from .models import Server
@@ -95,6 +97,49 @@ def delete_shared_network(server: Server, family: Family, name: str) -> ConfigCh
     return ConfigChangeOutcome(application, persisted.persistence, diagnostics + persisted.diagnostics)
 
 
+def delete_subnet(server: Server, family: Family, subnet_id: int, cidr: str) -> ConfigChangeOutcome:
+    """Delete the Subnet with *subnet_id*, only while that ID names the network *cidr*."""
+    with _client(server, family) as client, _serialized(client, family):
+        with mutation(server, family) as scope:
+            subnet = _subnet_as_seen(scope, subnet_id, cidr)
+        application, diagnostics = _mutate(
+            client,
+            family,
+            lambda: client.subnet_del(family, subnet.subnet_id),
+            not_live=lambda: _still_there(server, family, subnet) is not None,
+        )
+        persisted = client.persist(family)
+    return ConfigChangeOutcome(application, persisted.persistence, diagnostics + persisted.diagnostics)
+
+
+def add_pool(server: Server, family: Family, subnet_id: int, cidr: str, pool: Pool) -> ConfigChangeOutcome:
+    """Add *pool* to the Subnet with *subnet_id*, only while that ID names the network *cidr*."""
+    return _change_pool(server, family, "add", subnet_id, cidr, pool)
+
+
+def delete_pool(server: Server, family: Family, subnet_id: int, cidr: str, pool: Pool) -> ConfigChangeOutcome:
+    """Delete *pool* from the Subnet with *subnet_id*, only while that ID names the network *cidr*."""
+    return _change_pool(server, family, "del", subnet_id, cidr, pool)
+
+
+def _change_pool(
+    server: Server, family: Family, action: PoolAction, subnet_id: int, cidr: str, pool: Pool
+) -> ConfigChangeOutcome:
+    with _client(server, family) as client, _serialized(client, family):
+        with mutation(server, family) as scope:
+            subnet = _subnet_as_seen(scope, subnet_id, cidr)
+        delta = _read_before(lambda: client.pool_uses_delta(family, action))
+        application, diagnostics = _mutate(
+            client,
+            family,
+            lambda: client.pool_change(family, action, subnet.subnet_id, subnet.declared_cidr, pool.range, delta=delta),
+            # Not live: an added Pool is absent, or a deleted Pool is still there.
+            not_live=lambda: (pool in _pools_now(server, family, subnet)) == (action == "del"),
+        )
+        persisted = client.persist(family)
+    return ConfigChangeOutcome(application, persisted.persistence, diagnostics + persisted.diagnostics)
+
+
 def _client(server: Server, family: Family) -> KeaClient:
     try:
         return server.get_client(version=family)
@@ -135,6 +180,44 @@ def _serialized(client: KeaClient, family: Family) -> Iterator[None]:
             raise
         # The transaction holds only the lock, and the change is already live in Kea.
         logger.warning("The lock transaction failed to end after the Configuration Change", exc_info=True)
+
+
+def _subnet_as_seen(scope: MutationScope, subnet_id: int, cidr: str) -> VerifiedSubnet:
+    """Return the Verified Subnet with *subnet_id* and the network *cidr*: the Subnet that the operator saw."""
+    try:
+        subnet = scope.find_by_id(subnet_id)
+    except CatalogueUnavailable as exc:
+        raise ConfigChangeRejected(
+            "not-sent", ("NetBox could not confirm Kea's Subnet list, so it did not send the change. Try again later.",)
+        ) from exc
+    if subnet is None or subnet.network != subnet_network(cidr, scope.family):
+        raise ConfigChangeRejected(
+            "not-sent",
+            (f"Subnet {subnet_id} ({cidr}) changed in Kea. Reload the page and try again.",),
+        )
+    return subnet
+
+
+def _still_there(server: Server, family: Family, subnet: VerifiedSubnet) -> VerifiedSubnet | None:
+    """Read *subnet* again in a fresh scope. Return it while its ID still names its network, else None."""
+    with mutation(server, family) as scope:
+        current = scope.find_by_id(subnet.subnet_id)
+    return current if current is not None and current.network == subnet.network else None
+
+
+def _pools_now(server: Server, family: Family, subnet: VerifiedSubnet) -> tuple[Pool, ...]:
+    """Return the Pools that *subnet* holds now, and none when the Subnet is gone.
+
+    Raises:
+        CatalogueUnavailable: If Kea did not return the configuration facts of the Subnet, so its Pools are unknown.
+
+    """
+    current = _still_there(server, family, subnet)
+    if current is None:
+        return ()
+    if current.configuration is None:
+        raise CatalogueUnavailable("Kea did not return the configuration facts of the Subnet.")
+    return current.configuration.pools
 
 
 def _read_before(read: Callable[[], bool]) -> bool:

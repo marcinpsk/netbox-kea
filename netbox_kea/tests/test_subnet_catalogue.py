@@ -286,13 +286,14 @@ class TestSubnetCatalogue(TestCase):
             {
                 "subnet4-list": queued(identities, identities),
                 "config-get": queued(before, after),
-                "list-commands": {"result": 0, "arguments": ["subnet4-pool-add"]},
                 "subnet4-pool-add": {"result": 0},
             }
         ) as kea:
             initial = display(self.server, 4)
             display(self.server, 4)
-            self.server.get_client(version=4).pool_add(4, 1, "198.18.1.10 - 198.18.1.20")
+            self.server.get_client(version=4).pool_change(
+                4, "add", 1, "198.18.1.0/24", "198.18.1.10-198.18.1.20", delta=False
+            )
             refreshed = display(self.server, 4)
 
         self.assertEqual(initial.find_by_id(1).configuration.pools, ())
@@ -352,13 +353,14 @@ class TestSubnetCatalogue(TestCase):
             {
                 "subnet4-list": queued(identities, identities),
                 "config-get": queued(before, after),
-                "list-commands": {"result": 0, "arguments": ["subnet4-pool-add"]},
                 "subnet4-pool-add": requests.ReadTimeout("response lost after apply"),
             }
         ):
             initial = display(self.server, 4)
             with self.assertRaises(requests.ReadTimeout):
-                self.server.get_client(version=4).pool_add(4, 1, "198.18.1.10 - 198.18.1.20")
+                self.server.get_client(version=4).pool_change(
+                    4, "add", 1, "198.18.1.0/24", "198.18.1.10-198.18.1.20", delta=False
+                )
             refreshed = display(self.server, 4)
 
         self.assertEqual(initial.find_by_id(1).configuration.pools, ())

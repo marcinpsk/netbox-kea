@@ -200,9 +200,12 @@ Order: `AmbiguousConfigSetError` → `PartialPersistError` → `KeaException`.
 operation returns a `ConfigChangeOutcome` (`applied`/`unknown` and
 `persisted`/`failed`/`not-requested`) or raises `ConfigChangeRejected` with a reason.
 A view runs it through `_run_config_change` in `views/_base.py`, which owns the
-messages, and catches nothing itself. Shared Network add and delete use it; the
-classes above stay for the other callers until #207 removes them. Only `config_write`
-operations take the per-daemon advisory lock, so the old write paths do not wait for it.
+messages, and catches nothing itself. Shared Network add and delete, Subnet delete, and
+Pool add and delete use it; the classes above stay for the other callers until #207
+removes them. Only `config_write` operations take the per-daemon advisory lock, so the
+old write paths do not wait for it. A Subnet or Pool operation takes the Subnet ID and
+the CIDR that the page showed, and sends nothing unless its `MutationScope` returns a
+Verified Subnet with both.
 
 ## Security & Code Quality Rules
 

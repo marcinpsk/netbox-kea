@@ -33,7 +33,8 @@ from django.contrib.messages import get_messages
 from django.test import override_settings
 from django.urls import reverse
 
-from .kea_stub import _res_page, _subnet_list, queued, stub_kea
+from ..views.subnets import _NO_SUBNET_CIDR
+from .kea_stub import _catalogue_responses_for_subnets, _res_page, _subnet_list, queued, stub_kea
 from .utils import _PLUGINS_CONFIG, _make_db_server, _ViewTestBase
 
 # Shared stub responses for the subnet list/table views, which issue config-get
@@ -503,7 +504,7 @@ _SUBNET4_GET_FULL = [
                 {
                     "id": 42,
                     "subnet": "10.0.0.0/24",
-                    "pools": [{"pool": "10.0.0.100-10.0.0.200"}],
+                    "pools": [{"subnet_cidr": "10.0.0.0/24", "pool": "10.0.0.100-10.0.0.200"}],
                     "option-data": [
                         {"name": "routers", "data": "10.0.0.1"},
                         {"name": "domain-name-servers", "data": "8.8.8.8"},
@@ -1490,60 +1491,23 @@ class TestSubnetEditZeroTimers(_ViewTestBase):
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
-class TestPoolAddExceptions(_ViewTestBase):
-    """_BasePoolAddView POST exception paths."""
-
-    def _url(self, subnet_id=42):
-        return reverse("plugins:netbox_kea:server_subnet4_pool_add", args=[self.server.pk, subnet_id])
-
-    def test_partial_persist_error_redirects_with_warning(self):
-        """A real config-write failure (PartialPersistError) on pool_add must warn."""
-        # pool_add: reservation-get-page (overlap probe) → list-commands → subnet4-pool-add →
-        # persist (config-get/test/write). config-write result 1 → real PartialPersistError.
-        # follow=True lands on the subnets list, which issues config-get + stat-lease4-get.
-        stub = {**_pool_add_registry(42, "10.0.0.0/24"), "config-write": {"result": 1, "text": "disk full"}}
-        with stub_kea({**_ABSENT_READ_HOOKS, **stub}) as kea:
-            response = self.client.post(self._url(), {"pool": "10.0.0.100-10.0.0.200"}, follow=True)
-        self.assertIn("subnet4-pool-add", kea.commands())
-        msgs = list(response.context["messages"])
-        self.assertTrue(any(m.level == django_messages.WARNING for m in msgs))
-
-    def test_generic_exception_shows_error(self):
-        """A generic (ValueError) failure at the HTTP boundary during pool_add must show an error."""
-        # list-commands raises ValueError at the boundary; the real client surfaces it as a
-        # ValueError out of pool_add, hitting the view's generic-error branch.
-        stub = {**_pool_add_registry(42, "10.0.0.0/24"), "list-commands": ValueError("crash")}
-        with stub_kea({**_ABSENT_READ_HOOKS, **stub}):
-            response = self.client.post(self._url(), {"pool": "10.0.0.100-10.0.0.200"}, follow=True)
-        msgs = list(response.context["messages"])
-        self.assertTrue(any(m.level == django_messages.ERROR for m in msgs))
-
-
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestPoolDeleteExceptions(_ViewTestBase):
-    """_BasePoolDeleteView GET/POST exception paths."""
+    """_BasePoolDeleteView checks the Pool text in the URL."""
 
-    def _url(self, subnet_id=42, pool="10.0.0.100-10.0.0.200"):
-        return reverse("plugins:netbox_kea:server_subnet4_pool_delete", args=[self.server.pk, subnet_id, pool])
+    _SPACED = "192.0.2.10 - 192.0.2.20"
 
-    def _pool_del_stub(self, **overrides):
-        """pool_del chain (list-commands → subnet4-pool-del → persist) + the followed subnets list.
-
-        config-write defaults to success; override it (or list-commands) to drive error paths.
-        """
-        base = {
-            "list-commands": {
-                "result": 0,
-                "arguments": ["subnet4-pool-del", "config-get", "config-test", "config-write"],
-            },
-            "subnet4-pool-del": {"result": 0},
-            "config-get": _EMPTY_CONFIG4,
-            "config-test": {"result": 0},
-            "config-write": {"result": 0},
-            "stat-lease4-get": _STAT_ABSENT4,
-        }
-        base.update(overrides)
-        return stub_kea({**_ABSENT_READ_HOOKS, **base})
+    def _stub(self):
+        subnet = {"id": 42, "subnet": "192.0.2.0/24", "pools": [{"pool": self._SPACED}]}
+        return stub_kea(
+            {
+                **_ABSENT_READ_HOOKS,
+                **_catalogue_responses_for_subnets(4, [subnet]),
+                "list-commands": {"result": 0, "arguments": ["subnet4-pool-del"]},
+                "subnet4-pool-del": {"result": 0},
+                "config-test": {"result": 0},
+                "config-write": {"result": 0},
+            }
+        )
 
     def test_get_invalid_pool_format_returns_400(self):
         """GET with invalid pool string must return 400 (before any Kea call)."""
@@ -1553,13 +1517,10 @@ class TestPoolDeleteExceptions(_ViewTestBase):
 
     def test_get_range_pool_with_spaces_returns_200(self):
         """GET with a Kea range pool string like '192.0.2.10 - 192.0.2.20' must not return 400."""
-        # The delete-confirm GET renders without contacting Kea, so no stub is needed.
-        url = reverse(
-            "plugins:netbox_kea:server_subnet4_pool_delete",
-            args=[self.server.pk, 42, "192.0.2.10 - 192.0.2.20"],
-        )
-        response = self.client.get(url)
-        self.assertNotEqual(response.status_code, 400)
+        url = reverse("plugins:netbox_kea:server_subnet4_pool_delete", args=[self.server.pk, 42, self._SPACED])
+        with self._stub():
+            response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
 
     def test_post_invalid_pool_format_returns_400(self):
         """POST with invalid pool string must return 400 (before any Kea call)."""
@@ -1567,29 +1528,16 @@ class TestPoolDeleteExceptions(_ViewTestBase):
         response = self.client.post(url)
         self.assertEqual(response.status_code, 400)
 
-    def test_post_range_pool_with_spaces_accepted(self):
-        """POST with a Kea range pool string like '192.0.2.10 - 192.0.2.20' must not return 400."""
-        url = reverse(
-            "plugins:netbox_kea:server_subnet4_pool_delete",
-            args=[self.server.pk, 42, "192.0.2.10 - 192.0.2.20"],
+    def test_post_range_pool_with_spaces_sends_the_normalized_range(self):
+        """POST with a Kea range pool string like '192.0.2.10 - 192.0.2.20' deletes that Pool."""
+        url = reverse("plugins:netbox_kea:server_subnet4_pool_delete", args=[self.server.pk, 42, self._SPACED])
+        with self._stub() as kea:
+            response = self.client.post(url, {"subnet_cidr": "192.0.2.0/24"})
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(
+            kea.bodies("subnet4-pool-del")[0]["arguments"],
+            {"subnet4": [{"id": 42, "pools": [{"pool": "192.0.2.10-192.0.2.20"}]}]},
         )
-        with self._pool_del_stub():
-            response = self.client.post(url, follow=True)
-        self.assertNotEqual(response.status_code, 400)
-
-    def test_partial_persist_error_redirects_with_warning(self):
-        """A real config-write failure (PartialPersistError) on pool_del must warn."""
-        with self._pool_del_stub(**{"config-write": {"result": 1, "text": "disk full"}}):
-            response = self.client.post(self._url(), follow=True)
-        msgs = list(response.context["messages"])
-        self.assertTrue(any(m.level == django_messages.WARNING for m in msgs))
-
-    def test_generic_exception_shows_error(self):
-        """A generic (ValueError) failure at the HTTP boundary during pool_del must show an error."""
-        with self._pool_del_stub(**{"list-commands": ValueError("crash")}):
-            response = self.client.post(self._url(), follow=True)
-        msgs = list(response.context["messages"])
-        self.assertTrue(any(m.level == django_messages.ERROR for m in msgs))
 
 
 class _SubnetStoreKea:
@@ -2261,6 +2209,256 @@ class TestSubnetListViewEdgeCases(_ViewTestBase):
 # ---------------------------------------------------------------------------
 
 
+_SEEN = "10.0.0.0/24"
+_OLD_POOL = "10.0.0.10-10.0.0.20"
+_NEW_POOL = "10.0.0.100-10.0.0.110"
+_KEA_OK = {"result": 0, "text": "ok"}
+
+
+def _subnet_1(cidr: str = _SEEN, pools: tuple[str, ...] = (_OLD_POOL,)) -> dict:
+    return {"id": 1, "subnet": cidr, "pools": [{"pool": pool} for pool in pools]}
+
+
+def _change_responses(*states: dict | None, **overrides) -> dict:
+    """Answer one Subnet Catalogue read per state in turn, the Pool command probe, each change, and the persist step.
+
+    A state of None is a Server without Subnets. The last state repeats, and its config-get also answers the persist step.
+    """
+    reads = [_catalogue_responses_for_subnets(4, [state] if state else []) for state in states]
+    responses = {
+        **_ABSENT_READ_HOOKS,
+        "subnet4-list": queued(*(read["subnet4-list"] for read in reads)),
+        "config-get": queued(*(read["config-get"] for read in reads)),
+        "list-commands": {"result": 0, "arguments": ["subnet4-pool-add", "subnet4-pool-del"]},
+        "reservation-get-page": {"result": 3},
+        "subnet4-del": _KEA_OK,
+        "subnet4-pool-add": _KEA_OK,
+        "subnet4-pool-del": _KEA_OK,
+        "config-test": _KEA_OK,
+        "config-write": _KEA_OK,
+    }
+    responses.update(overrides)
+    return responses
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestSubnetAndPoolChangesRequireTheVerifiedSubnet(_ViewTestBase):
+    """Subnet delete, Pool add and Pool delete run only on the Subnet whose ID and CIDR the page showed.
+
+    Each view maps the Configuration Change Outcome through the shared mapper.
+    """
+
+    def _cases(self):
+        """Each view: its name, URL, form data, Kea command, the reads before its scope, and its confirmed text."""
+        pk = self.server.pk
+        return (
+            (
+                "subnet delete",
+                reverse("plugins:netbox_kea:server_subnet4_delete", args=[pk, 1]),
+                {"subnet_cidr": _SEEN},
+                "subnet4-del",
+                0,
+                f"Subnet 1 ({_SEEN}) deleted.",
+            ),
+            (
+                "pool add",
+                reverse("plugins:netbox_kea:server_subnet4_pool_add", args=[pk, 1]),
+                {"subnet_cidr": _SEEN, "pool": _NEW_POOL},
+                "subnet4-pool-add",
+                # The form reads the Subnet Catalogue before the operation opens its scope.
+                1,
+                f"Pool {_NEW_POOL} added to subnet 1.",
+            ),
+            (
+                "pool delete",
+                reverse("plugins:netbox_kea:server_subnet4_pool_delete", args=[pk, 1, _OLD_POOL]),
+                {"subnet_cidr": _SEEN},
+                "subnet4-pool-del",
+                0,
+                f"Pool {_OLD_POOL} removed from subnet 1.",
+            ),
+        )
+
+    def _post(self, url, data, responses):
+        # The messages of an earlier subtest wait in the cookie until a page shows them.
+        self.client.cookies.pop("messages", None)
+        with stub_kea(responses) as kea:
+            response = self.client.post(url, data)
+        self.assertEqual(response.status_code, 302)
+        return [(m.level, str(m)) for m in get_messages(response.wsgi_request)], kea
+
+    def test_an_id_that_now_names_another_cidr_is_not_deleted(self):
+        """The red test of #204: the delete POST names an ID that now belongs to another CIDR."""
+        url = reverse("plugins:netbox_kea:server_subnet4_delete", args=[self.server.pk, 1])
+        messages, kea = self._post(url, {"subnet_cidr": _SEEN}, _change_responses(_subnet_1("10.0.1.0/24")))
+        self.assertEqual(kea.commands(), ["subnet4-list", "config-get"])
+        self.assertEqual(
+            messages,
+            [
+                (
+                    django_messages.ERROR,
+                    f"The change was not sent to Kea. Subnet 1 ({_SEEN}) changed in Kea. Reload the page and try again.",
+                )
+            ],
+        )
+
+    def test_the_get_puts_the_cidr_that_it_shows_into_the_form(self):
+        for name, url, _data, _command, _reads, _confirmed in self._cases():
+            with self.subTest(name), stub_kea(_change_responses(_subnet_1())):
+                response = self.client.get(url)
+                self.assertContains(response, f'name="subnet_cidr" value="{_SEEN}"')
+
+    def test_an_applied_and_persisted_change_is_a_success(self):
+        for name, url, data, command, _reads, confirmed in self._cases():
+            with self.subTest(name):
+                messages, kea = self._post(url, data, _change_responses(_subnet_1()))
+                self.assertEqual(messages, [(django_messages.SUCCESS, confirmed)])
+                self.assertEqual(kea.commands()[-4:], [command, "config-get", "config-test", "config-write"])
+
+    def test_the_commands_name_the_verified_subnet_and_the_typed_pool(self):
+        bodies = {
+            "subnet4-del": {"id": 1},
+            "subnet4-pool-add": {"subnet4": [{"id": 1, "pools": [{"pool": _NEW_POOL}]}]},
+            "subnet4-pool-del": {"subnet4": [{"id": 1, "pools": [{"pool": _OLD_POOL}]}]},
+        }
+        for name, url, data, command, _reads, _confirmed in self._cases():
+            with self.subTest(name):
+                _, kea = self._post(url, data, _change_responses(_subnet_1()))
+                self.assertEqual([body["arguments"] for body in kea.bodies(command)], [bodies[command]])
+
+    def test_a_failed_persist_step_is_a_warning_that_the_change_is_live(self):
+        failure = {"result": 1, "text": "disk full"}
+        for name, url, data, _command, _reads, confirmed in self._cases():
+            with self.subTest(name):
+                messages, _ = self._post(url, data, _change_responses(_subnet_1(), **{"config-write": failure}))
+                restart = "It is live, but it may not survive a Kea restart, because Kea did not save it to disk."
+                self.assertEqual(
+                    messages, [(django_messages.WARNING, f"{confirmed} {restart} config-write failed: disk full")]
+                )
+
+    def test_a_lost_reply_is_a_warning_that_kea_did_not_confirm_the_change(self):
+        for name, url, data, command, _reads, _confirmed in self._cases():
+            with self.subTest(name):
+                messages, kea = self._post(
+                    url, data, _change_responses(_subnet_1(), **{command: requests.ReadTimeout("read timed out")})
+                )
+                self.assertEqual(
+                    messages,
+                    [
+                        (
+                            django_messages.WARNING,
+                            (
+                                "Kea did not confirm the change. Check the server configuration before retrying. "
+                                "Kea's reply to the change was lost or unreadable."
+                            ),
+                        )
+                    ],
+                )
+                self.assertIn(command, kea.commands())
+
+    def test_a_failure_that_changed_nothing_is_a_kea_rejection(self):
+        failure = {"result": 1, "text": "command failed"}
+        for name, url, data, command, _reads, _confirmed in self._cases():
+            with self.subTest(name):
+                messages, _ = self._post(url, data, _change_responses(_subnet_1(), **{command: failure}))
+                self.assertEqual(
+                    messages, [(django_messages.ERROR, "Kea rejected the change. Kea replied: command failed")]
+                )
+
+    def test_an_id_that_now_names_another_cidr_is_not_sent(self):
+        for name, url, data, command, reads, _confirmed in self._cases():
+            with self.subTest(name):
+                states = (_subnet_1(),) * reads + (_subnet_1("10.0.1.0/24"),)
+                messages, kea = self._post(url, data, _change_responses(*states))
+                self.assertNotIn(command, kea.commands())
+                self.assertEqual(
+                    messages,
+                    [
+                        (
+                            django_messages.ERROR,
+                            (
+                                f"The change was not sent to Kea. Subnet 1 ({_SEEN}) changed in Kea. "
+                                "Reload the page and try again."
+                            ),
+                        )
+                    ],
+                )
+
+    def test_an_incomplete_identity_observation_is_not_sent_and_never_reads_as_absent(self):
+        failed = {"result": 1, "text": "internal error"}
+        for name, url, data, command, reads, _confirmed in self._cases():
+            with self.subTest(name):
+                listed = _catalogue_responses_for_subnets(4, [_subnet_1()])["subnet4-list"]
+                responses = _change_responses(_subnet_1(), **{"subnet4-list": queued(*(listed,) * reads, failed)})
+                messages, kea = self._post(url, data, responses)
+                self.assertNotIn(command, kea.commands())
+                self.assertEqual(
+                    messages,
+                    [
+                        (
+                            django_messages.ERROR,
+                            (
+                                "The change was not sent to Kea. NetBox could not confirm Kea's Subnet list, "
+                                "so it did not send the change. Try again later."
+                            ),
+                        )
+                    ],
+                )
+
+    def test_a_delete_without_the_cidr_sends_nothing(self):
+        for name, url, _data, _command, reads, _confirmed in self._cases():
+            if reads:
+                continue  # The Pool add form reports a missing CIDR itself.
+            with self.subTest(name):
+                messages, kea = self._post(url, {}, _change_responses(_subnet_1()))
+                self.assertEqual(kea.commands(), [])
+                self.assertEqual(messages, [(django_messages.ERROR, _NO_SUBNET_CIDR)])
+
+    def test_a_pool_add_without_the_cidr_is_a_form_error(self):
+        url = reverse("plugins:netbox_kea:server_subnet4_pool_add", args=[self.server.pk, 1])
+        with stub_kea(_change_responses(_subnet_1())) as kea:
+            response = self.client.post(url, {"pool": _NEW_POOL})
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Reload the Subnets page and try again.")
+        self.assertNotIn("subnet4-pool-add", kea.commands())
+
+    def test_an_invalid_client_configuration_sends_nothing(self):
+        bad = _make_db_server(name="bad-cert-change", client_cert_path="/nonexistent/cert.pem")
+        for name, url, data, _command, reads, _confirmed in self._cases():
+            if reads:
+                continue  # The Pool add form cannot read the Subnet Catalogue either, so it shows a form error.
+            with self.subTest(name):
+                bad_url = url.replace(f"/servers/{self.server.pk}/", f"/servers/{bad.pk}/")
+                messages, kea = self._post(bad_url, data, _change_responses(_subnet_1()))
+                self.assertEqual(kea.commands(), [])
+                self.assertEqual(
+                    messages,
+                    [
+                        (
+                            django_messages.ERROR,
+                            (
+                                "The change was not sent to Kea, because the Server settings are not valid. "
+                                "NetBox could not build a Kea client from the Server connection settings."
+                            ),
+                        )
+                    ],
+                )
+
+    def test_a_pool_delete_whose_pool_is_outside_the_cidr_sends_nothing(self):
+        url = reverse("plugins:netbox_kea:server_subnet4_pool_delete", args=[self.server.pk, 1, "10.0.1.10-10.0.1.20"])
+        messages, kea = self._post(url, {"subnet_cidr": _SEEN}, _change_responses(_subnet_1()))
+        self.assertEqual(kea.commands(), [])
+        self.assertEqual(
+            messages,
+            [
+                (
+                    django_messages.ERROR,
+                    "Pool 10.0.1.10-10.0.1.20 is not a valid Pool of Subnet 10.0.0.0/24. Nothing was sent to Kea.",
+                )
+            ],
+        )
+
+
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestSubnetDeleteExceptionPaths(_ViewTestBase):
     """Lines 3177-3178, 3203-3205: subnet delete GET exception and POST generic."""
@@ -2273,38 +2471,6 @@ class TestSubnetDeleteExceptionPaths(_ViewTestBase):
         with stub_kea({**_ABSENT_READ_HOOKS, "config-get": {"result": 1, "text": "configuration unavailable"}}):
             response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
-
-    def test_post_generic_exception_shows_error(self):
-        """A generic (ValueError) failure on subnet_del must redirect with an error, no 500."""
-        # subnet4-del raises ValueError at the boundary → view's generic-error branch redirects.
-        with stub_kea({**_ABSENT_READ_HOOKS, "subnet4-del": ValueError("crash")}):
-            response = self.client.post(self._url())
-        self.assertEqual(response.status_code, 302)
-
-    def _assert_live_unpersisted_delete_warns(self, phase):
-        stub = {
-            "subnet4-del": {"result": 0},
-            "config-get": _EMPTY_CONFIG4,
-            "config-test": {"result": 0},
-            "config-write": {"result": 0},
-            phase: {"result": 1, "text": "persist failed"},
-        }
-        with stub_kea({**_ABSENT_READ_HOOKS, **stub}) as kea:
-            response = self.client.post(self._url())
-        self.assertEqual(response.status_code, 302)
-        self.assertIn("subnet4-del", kea.commands())
-        self.assertEqual(
-            [(m.level, str(m)) for m in get_messages(response.wsgi_request)],
-            [(django_messages.WARNING, "Change applied but may not survive a Kea restart (not written to disk).")],
-        )
-
-    def test_post_config_write_failure_warns_that_the_delete_is_live(self):
-        """A config-write failure after subnet4-del means the delete is live but not persisted."""
-        self._assert_live_unpersisted_delete_warns("config-write")
-
-    def test_post_config_test_rejection_warns_that_the_delete_is_live(self):
-        """A config-test rejection after subnet4-del means the delete is live but not persisted."""
-        self._assert_live_unpersisted_delete_warns("config-test")
 
 
 # ---------------------------------------------------------------------------
@@ -2369,7 +2535,7 @@ class TestFetchSubnetsFromServer(_ViewTestBase):
                         {
                             "id": 1,
                             "subnet": "10.0.0.0/24",
-                            "pools": [{"pool": "10.0.0.10-10.0.0.20"}],
+                            "pools": [{"subnet_cidr": "10.0.0.0/24", "pool": "10.0.0.10-10.0.0.20"}],
                             "option-data": [
                                 {
                                     "code": 6,
@@ -3132,13 +3298,6 @@ class TestSubnetAddPartialPersistNetworkAssign(_ViewTestBase):
 class TestSubnetDeleteClientError(_ViewTestBase):
     """Subnet delete handlers must handle get_client() failures gracefully."""
 
-    def test_post_with_get_client_failure_redirects(self):
-        """A real get_client() failure (cert without key → ValueError) in delete POST must redirect."""
-        bad = _make_db_server(name="bad-cert-del-post", client_cert_path="/nonexistent/cert.pem")
-        url = reverse("plugins:netbox_kea:server_subnet4_delete", args=[bad.pk, 1])
-        response = self.client.post(url, {"confirm": "1"})
-        self.assertIn(response.status_code, [200, 302])
-
     def test_get_with_get_client_failure_renders(self):
         """A real get_client() failure in delete GET must still render the confirm page, not 500."""
         bad = _make_db_server(name="bad-cert-del-get", client_cert_path="/nonexistent/cert.pem")
@@ -3164,21 +3323,6 @@ class TestSubnetWipeClientError(_ViewTestBase):
         url = reverse("plugins:netbox_kea:server_subnet4_wipe_leases", args=[bad.pk, 1])
         response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
-
-
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
-class TestPoolDeleteClientError(_ViewTestBase):
-    """Pool delete POST handler must handle get_client() failures gracefully."""
-
-    def test_post_with_get_client_failure_redirects(self):
-        """A real get_client() failure (cert without key → ValueError) in pool-delete POST must redirect."""
-        bad = _make_db_server(name="bad-cert-pool-del", client_cert_path="/nonexistent/cert.pem")
-        url = reverse(
-            "plugins:netbox_kea:server_subnet4_pool_delete",
-            args=[bad.pk, 1, "10.0.0.1-10.0.0.100"],
-        )
-        response = self.client.post(url, {"confirm": "1"})
-        self.assertIn(response.status_code, [200, 302])
 
 
 # ---------------------------------------------------------------------------
@@ -3220,7 +3364,10 @@ class TestGetSubnetsConfigShapeGuard(_ViewTestBase):
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestPoolDeltaHostBitsSubnet(_ViewTestBase):
-    """Kea 3.x delta commands must echo the Subnet prefix exactly as Kea declares it, host bits included."""
+    """Kea 3.x delta commands must echo the Subnet prefix exactly as Kea declares it, host bits included.
+
+    The page shows the canonical CIDR; the Verified Subnet supplies Kea's text, so no Subnet lookup by ID runs.
+    """
 
     def _stub(self, version, cidr, command):
         subnet = {"id": 1, "subnet": cidr}
@@ -3232,8 +3379,7 @@ class TestPoolDeltaHostBitsSubnet(_ViewTestBase):
                     "arguments": {f"Dhcp{version}": {f"subnet{version}": [subnet], "shared-networks": []}},
                 },
                 "reservation-get-page": {"result": 3},
-                "list-commands": {"result": 0, "arguments": [command, f"subnet{version}-get", "config-write"]},
-                f"subnet{version}-get": {"result": 0, "arguments": {f"subnet{version}": [subnet]}},
+                "list-commands": {"result": 0, "arguments": [command, "config-write"]},
                 command: {"result": 0},
                 "config-test": {"result": 0},
                 "config-write": {"result": 0},
@@ -3243,18 +3389,26 @@ class TestPoolDeltaHostBitsSubnet(_ViewTestBase):
     def test_pool_add_sends_the_declared_ipv4_prefix(self):
         url = reverse("plugins:netbox_kea:server_subnet4_pool_add", args=[self.server.pk, 1])
         with self._stub(4, "198.18.1.5/24", "subnet4-delta-add") as kea:
-            response = self.client.post(url, {"pool": "198.18.1.100-198.18.1.110"})
+            response = self.client.post(url, {"subnet_cidr": "198.18.1.0/24", "pool": "198.18.1.100-198.18.1.110"})
         self.assertEqual(response.status_code, 302)
-        self.assertEqual(kea.bodies("subnet4-delta-add")[0]["arguments"]["subnet4"][0]["subnet"], "198.18.1.5/24")
+        self.assertEqual(
+            kea.bodies("subnet4-delta-add")[0]["arguments"],
+            {"subnet4": [{"id": 1, "subnet": "198.18.1.5/24", "pools": [{"pool": "198.18.1.100-198.18.1.110"}]}]},
+        )
+        self.assertNotIn("subnet4-get", kea.commands())
         self.assertIn("config-write", kea.commands())
 
     def test_pool_delete_sends_the_declared_ipv6_prefix(self):
         pool = "2001:db8:1::100-2001:db8:1::1ff"
         url = reverse("plugins:netbox_kea:server_subnet6_pool_delete", args=[self.server.pk, 1, pool])
         with self._stub(6, "2001:db8:1::5/64", "subnet6-delta-del") as kea:
-            response = self.client.post(url)
+            response = self.client.post(url, {"subnet_cidr": "2001:db8:1::/64"})
         self.assertEqual(response.status_code, 302)
-        self.assertEqual(kea.bodies("subnet6-delta-del")[0]["arguments"]["subnet6"][0]["subnet"], "2001:db8:1::5/64")
+        self.assertEqual(
+            kea.bodies("subnet6-delta-del")[0]["arguments"],
+            {"subnet6": [{"id": 1, "subnet": "2001:db8:1::5/64", "pools": [{"pool": pool}]}]},
+        )
+        self.assertNotIn("subnet6-get", kea.commands())
         self.assertIn("config-write", kea.commands())
 
 
@@ -3266,19 +3420,13 @@ class TestPoolAddPostErrors(_ViewTestBase):
         return reverse("plugins:netbox_kea:server_subnet4_pool_add", args=[self.server.pk, subnet_id])
 
     def _pool_add_stub(self, **overrides):
-        """pool_add chain: reservation overlap probe → list-commands → subnet4-pool-add → persist.
+        """Pool add chain: Subnet Catalogue reads, reservation overlap probe, list-commands, subnet4-pool-add, persist.
 
         follow=True lands on the subnets list (config-get + stat). Override a leg to drive errors.
         """
         base = _pool_add_registry(1, "10.0.0.0/24")
         base.update(overrides)
         return stub_kea({**_ABSENT_READ_HOOKS, **base})
-
-    def test_partial_persist_shows_warning(self):
-        """A config-write failure (PartialPersistError) from pool_add re-renders without a 500."""
-        with self._pool_add_stub(**{"config-write": {"result": 1, "text": "disk full"}}):
-            response = self.client.post(self._url(), {"pool": "10.0.0.10-10.0.0.20"}, follow=True)
-        self.assertEqual(response.status_code, 200)
 
     def test_the_overlap_probe_asks_kea_for_one_subnet(self):
         """The probe needs one subnet, so it must not page through the whole server.
@@ -3287,7 +3435,9 @@ class TestPoolAddPostErrors(_ViewTestBase):
         every reservation on the server and the view filters them client-side.
         """
         with self._pool_add_stub() as kea:
-            response = self.client.post(self._url(subnet_id=1), {"pool": "10.0.0.10-10.0.0.20"}, follow=True)
+            response = self.client.post(
+                self._url(subnet_id=1), {"subnet_cidr": "10.0.0.0/24", "pool": "10.0.0.10-10.0.0.20"}, follow=True
+            )
 
         self.assertEqual(response.status_code, 200)
         probe = kea.bodies("reservation-get-page")
@@ -3304,7 +3454,9 @@ class TestPoolAddPostErrors(_ViewTestBase):
         quarantined = _res_page([{"subnet-id": 1, "remote-id": "relay-value"}])
 
         with self._pool_add_stub(**{"reservation-get-page": quarantined}) as kea:
-            response = self.client.post(self._url(), {"pool": "10.0.0.10-10.0.0.20"}, follow=True)
+            response = self.client.post(
+                self._url(), {"subnet_cidr": "10.0.0.0/24", "pool": "10.0.0.10-10.0.0.20"}, follow=True
+            )
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "incomplete list")
@@ -3320,31 +3472,15 @@ class TestPoolAddPostErrors(_ViewTestBase):
 
         with self._pool_add_stub(**{"reservation-get-page": malformed_probe}) as kea:
             with self.assertLogs("netbox_kea.views.subnets", level="WARNING") as logs:
-                response = self.client.post(self._url(), {"pool": "10.0.0.10-10.0.0.20"}, follow=True)
+                response = self.client.post(
+                    self._url(), {"subnet_cidr": "10.0.0.0/24", "pool": "10.0.0.10-10.0.0.20"}, follow=True
+                )
 
         self.assertEqual(response.status_code, 200)
         self.assertIn("subnet4-pool-add", kea.commands())
         overlap_records = [record for record in logs.records if "overlap" in record.getMessage()]
         self.assertTrue(overlap_records)
         self.assertIsNotNone(overlap_records[0].exc_info)
-
-    def test_kea_exception_shows_error(self):
-        """A KeaException (subnet4-pool-add result 1) from pool_add shows a Kea error, no 500."""
-        with self._pool_add_stub(**{"subnet4-pool-add": {"result": 1, "text": "pool overlap"}}):
-            response = self.client.post(self._url(), {"pool": "10.0.0.10-10.0.0.20"}, follow=True)
-        self.assertEqual(response.status_code, 200)
-
-    def test_request_exception_shows_error(self):
-        """A transport error from pool_add shows a transport error message, no 500."""
-        with self._pool_add_stub(**{"subnet4-pool-add": requests.ConnectionError("down")}):
-            response = self.client.post(self._url(), {"pool": "10.0.0.10-10.0.0.20"}, follow=True)
-        self.assertEqual(response.status_code, 200)
-
-    def test_generic_exception_shows_error(self):
-        """A generic (ValueError) failure from pool_add shows a generic error, no 500."""
-        with self._pool_add_stub(**{"subnet4-pool-add": ValueError("unexpected")}):
-            response = self.client.post(self._url(), {"pool": "10.0.0.10-10.0.0.20"}, follow=True)
-        self.assertEqual(response.status_code, 200)
 
 
 # Every command that changes Kea state on the Pool add path.
@@ -3369,7 +3505,7 @@ class TestPoolAddChecksTheVerifiedSubnet(_ViewTestBase):
 
     def _post(self, pool, *, subnet_id=1, **stub_overrides):
         with stub_kea({**_ABSENT_READ_HOOKS, **_pool_add_catalogue(), **stub_overrides}) as kea:
-            response = self.client.post(self._url(subnet_id), {"pool": pool})
+            response = self.client.post(self._url(subnet_id), {"subnet_cidr": "10.0.0.0/24", "pool": pool})
         return response, kea
 
     def _assert_no_write(self, kea):
@@ -3407,7 +3543,7 @@ class TestPoolAddChecksTheVerifiedSubnet(_ViewTestBase):
 
     def test_missing_configuration_facts_skip_the_overlap_check_and_kea_decides(self):
         with stub_kea({**_ABSENT_READ_HOOKS, **_pool_add_catalogue(configuration=False)}) as kea:
-            response = self.client.post(self._url(), {"pool": "10.0.0.15-10.0.0.30"})
+            response = self.client.post(self._url(), {"subnet_cidr": "10.0.0.0/24", "pool": "10.0.0.15-10.0.0.30"})
 
         self.assertEqual(response.status_code, 302)
         self.assertEqual(
@@ -3481,61 +3617,6 @@ class TestPoolAddChecksTheVerifiedSubnet(_ViewTestBase):
 # ─────────────────────────────────────────────────────────────────────────────
 # Pool delete POST exception branches
 # ─────────────────────────────────────────────────────────────────────────────
-
-
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
-class TestPoolDeletePostErrors(_ViewTestBase):
-    """Cover pool delete POST error handling."""
-
-    def _url(self):
-        return reverse("plugins:netbox_kea:server_subnet4_pool_delete", args=[self.server.pk, 1, "10.0.0.1-10.0.0.100"])
-
-    def _pool_del_stub(self, **overrides):
-        """pool_del chain: list-commands → subnet4-pool-del → persist, + the followed subnets list."""
-        base = {
-            "list-commands": {
-                "result": 0,
-                "arguments": ["subnet4-pool-del", "config-get", "config-test", "config-write"],
-            },
-            "subnet4-pool-del": {"result": 0},
-            "config-get": _EMPTY_CONFIG4,
-            "config-test": {"result": 0},
-            "config-write": {"result": 0},
-            "stat-lease4-get": _STAT_ABSENT4,
-        }
-        base.update(overrides)
-        return stub_kea({**_ABSENT_READ_HOOKS, **base})
-
-    def test_partial_persist_shows_warning(self):
-        """A config-write failure (PartialPersistError) from pool_del re-renders without a 500."""
-        with self._pool_del_stub(**{"config-write": {"result": 1, "text": "disk full"}}):
-            response = self.client.post(self._url(), follow=True)
-        self.assertEqual(response.status_code, 200)
-
-    def test_kea_exception_shows_error(self):
-        """A KeaException (subnet4-pool-del result 1) from pool_del shows a Kea error, no 500."""
-        with self._pool_del_stub(**{"subnet4-pool-del": {"result": 1, "text": "not found"}}):
-            response = self.client.post(self._url(), follow=True)
-        self.assertEqual(response.status_code, 200)
-
-    def test_request_exception_shows_error(self):
-        """A transport error from pool_del shows a transport error message, no 500."""
-        with self._pool_del_stub(**{"subnet4-pool-del": requests.ConnectionError("down")}):
-            response = self.client.post(self._url(), follow=True)
-        self.assertEqual(response.status_code, 200)
-
-    def test_generic_exception_shows_error(self):
-        """A generic (ValueError) failure from pool_del shows a generic error, no 500."""
-        with self._pool_del_stub(**{"subnet4-pool-del": ValueError("unexpected")}):
-            response = self.client.post(self._url(), follow=True)
-        self.assertEqual(response.status_code, 200)
-
-    def test_get_client_failure_redirects(self):
-        """A real get_client() failure (cert without key → ValueError) in pool delete redirects."""
-        bad = _make_db_server(name="bad-cert-pool-del-err", client_cert_path="/nonexistent/cert.pem")
-        url = reverse("plugins:netbox_kea:server_subnet4_pool_delete", args=[bad.pk, 1, "10.0.0.1-10.0.0.100"])
-        response = self.client.post(url)
-        self.assertEqual(response.status_code, 302)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -3774,24 +3855,8 @@ class TestSubnetViewCoverageGaps(_ViewTestBase):
         )
 
     def _pool_add_stub(self, **overrides):
-        """pool_add chain: reservation overlap probe → list-commands → subnet4-pool-add → persist + list."""
+        """Pool add chain: Subnet Catalogue reads, overlap probe, list-commands, subnet4-pool-add, persist, list."""
         base = _pool_add_registry(42, "10.0.0.0/24")
-        base.update(overrides)
-        return stub_kea({**_ABSENT_READ_HOOKS, **base})
-
-    def _pool_del_stub(self, **overrides):
-        """pool_del chain: list-commands → subnet4-pool-del → persist + the followed subnets list."""
-        base = {
-            "list-commands": {
-                "result": 0,
-                "arguments": ["subnet4-pool-del", "config-get", "config-test", "config-write"],
-            },
-            "subnet4-pool-del": {"result": 0},
-            "config-get": _EMPTY_CONFIG4,
-            "config-test": {"result": 0},
-            "config-write": {"result": 0},
-            "stat-lease4-get": _STAT_ABSENT4,
-        }
         base.update(overrides)
         return stub_kea({**_ABSENT_READ_HOOKS, **base})
 
@@ -3971,16 +4036,13 @@ class TestSubnetViewCoverageGaps(_ViewTestBase):
     def _pool_add_url(self):
         return reverse("plugins:netbox_kea:server_subnet4_pool_add", args=[self.server.pk, 42])
 
-    def _pool_del_url(self):
-        return reverse(
-            "plugins:netbox_kea:server_subnet4_pool_delete", args=[self.server.pk, 42, "10.0.0.100-10.0.0.200"]
-        )
-
     def test_pool_add_reservation_lookup_failure_warns_that_the_check_did_not_run(self):
         """A Kea contract error must tell the operator that no overlap check ran."""
         with self.assertLogs("netbox_kea.views.subnets", level="WARNING") as logs:
             with self._pool_add_stub(**{"reservation-get-page": {"result": 2, "text": "host_cmds not loaded"}}):
-                response = self.client.post(self._pool_add_url(), {"pool": "10.0.0.100-10.0.0.200"}, follow=True)
+                response = self.client.post(
+                    self._pool_add_url(), {"subnet_cidr": "10.0.0.0/24", "pool": "10.0.0.100-10.0.0.200"}, follow=True
+                )
         self.assertEqual(response.status_code, 200)
         msgs = list(response.context["messages"])
         self.assertTrue(any(m.level == django_messages.SUCCESS for m in msgs))
@@ -3993,58 +4055,22 @@ class TestSubnetViewCoverageGaps(_ViewTestBase):
     def test_pool_add_reservation_lookup_request_exception_warns_that_the_check_did_not_run(self):
         """A transport error must tell the operator that no overlap check ran."""
         with self._pool_add_stub(**{"reservation-get-page": requests.RequestException("timeout")}):
-            response = self.client.post(self._pool_add_url(), {"pool": "10.0.0.100-10.0.0.200"}, follow=True)
+            response = self.client.post(
+                self._pool_add_url(), {"subnet_cidr": "10.0.0.0/24", "pool": "10.0.0.100-10.0.0.200"}, follow=True
+            )
         self.assertEqual(response.status_code, 200)
         msgs = list(response.context["messages"])
         self.assertTrue(any(m.level == django_messages.SUCCESS for m in msgs))
         self.assertTrue(any("overlap check did not run" in m.message.lower() for m in msgs))
 
-    def test_pool_add_kea_exception_shows_error(self):
-        """A KeaException (subnet4-pool-add result 1) on pool_add must show an error."""
-        with self._pool_add_stub(**{"subnet4-pool-add": {"result": 1, "text": "pool already exists"}}):
-            response = self.client.post(self._pool_add_url(), {"pool": "10.0.0.100-10.0.0.200"}, follow=True)
-        msgs = list(response.context["messages"])
-        self.assertTrue(any(m.level == django_messages.ERROR for m in msgs))
-
-    def test_pool_add_request_exception_shows_network_error(self):
-        """A transport error on pool_add must show a network error message."""
-        with self._pool_add_stub(**{"subnet4-pool-add": requests.RequestException("connection refused")}):
-            response = self.client.post(self._pool_add_url(), {"pool": "10.0.0.100-10.0.0.200"}, follow=True)
-        msgs = list(response.context["messages"])
-        self.assertTrue(any(m.level == django_messages.ERROR for m in msgs))
-
     def test_pool_add_client_creation_failure_shows_an_error(self):
         """A real get_client() failure (cert without key → ValueError) leaves no Subnet to add the Pool to."""
         bad = _make_db_server(name="bad-cert-pooladd-cov", client_cert_path="/nonexistent/cert.pem")
         url = reverse("plugins:netbox_kea:server_subnet4_pool_add", args=[bad.pk, 42])
-        response = self.client.post(url, {"pool": "10.0.0.100-10.0.0.200"})
+        response = self.client.post(url, {"subnet_cidr": "10.0.0.0/24", "pool": "10.0.0.100-10.0.0.200"})
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Reload the Subnets page and try again.")
         msgs = list(get_messages(response.wsgi_request))
-        self.assertTrue(any(m.level == django_messages.ERROR for m in msgs))
-
-    # ── Pool delete exception paths ──────────────────────────────────────
-
-    def test_pool_delete_kea_exception_shows_error(self):
-        """A KeaException (subnet4-pool-del result 1) on pool_del must show an error."""
-        with self._pool_del_stub(**{"subnet4-pool-del": {"result": 1, "text": "pool not found"}}):
-            response = self.client.post(self._pool_del_url(), follow=True)
-        msgs = list(response.context["messages"])
-        self.assertTrue(any(m.level == django_messages.ERROR for m in msgs))
-
-    def test_pool_delete_request_exception_shows_network_error(self):
-        """A transport error on pool_del must show a network error message."""
-        with self._pool_del_stub(**{"subnet4-pool-del": requests.RequestException("timeout")}):
-            response = self.client.post(self._pool_del_url(), follow=True)
-        msgs = list(response.context["messages"])
-        self.assertTrue(any(m.level == django_messages.ERROR for m in msgs))
-
-    def test_pool_delete_client_creation_failure_redirects(self):
-        """A real get_client() failure (cert without key → ValueError) in pool delete POST shows an error."""
-        bad = _make_db_server(name="bad-cert-pooldel-cov", client_cert_path="/nonexistent/cert.pem")
-        url = reverse("plugins:netbox_kea:server_subnet4_pool_delete", args=[bad.pk, 42, "10.0.0.100-10.0.0.200"])
-        response = self.client.post(url, follow=True)
-        msgs = list(response.context["messages"])
         self.assertTrue(any(m.level == django_messages.ERROR for m in msgs))
 
 
