@@ -128,6 +128,7 @@ URL request
       combined.py       (cross-server dashboard, leases, reservations, subnets)
       sync_views.py     (per-server IPAM sync UI)
       sync_jobs.py      (jobs tab, periodic sync management, SyncConfig admin)
+  → config_write.py     (Configuration Changes: typed outcome, advisory lock, persist step)
   → kea.py              (HTTP POST to each daemon's / control socket)
   → sync.py             (bridges Kea data to NetBox IPAM)
   → jobs.py             (KeaIpamSyncJob — periodic background sync)
@@ -194,6 +195,13 @@ Exception
 Order: `AmbiguousConfigSetError` → `PartialPersistError` → `KeaException`.
 `PartialPersistError` means the change is live but not written to disk. It covers
 `KeaConfigPersistError` by type, so do not catch that subclass separately.
+
+**`config_write` replaces this hierarchy** (ADR 0005), one operation at a time. An
+operation returns a `ConfigChangeOutcome` (`applied`/`unknown` and
+`persisted`/`failed`/`not-requested`) or raises `ConfigChangeRejected` with a reason.
+A view runs it through `_run_config_change` in `views/_base.py`, which owns the
+messages, and catches nothing itself. Shared Network add and delete use it; the
+classes above stay for the other callers until the contract ticket removes them.
 
 ## Security & Code Quality Rules
 

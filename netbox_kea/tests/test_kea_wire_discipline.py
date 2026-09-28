@@ -101,6 +101,10 @@ _NON_WIRE_HYPHENATED = {
     "kea-reservation-subnet-cidrs": "NetBox custom-field name",
     "utf-8": "Transfer document encoding",
     "stat-lease": "Static fragment of a family-specific command f-string",
+    "kea-rejected": "Configuration Change rejection reason",
+    "config-test-rejected": "Configuration Change rejection reason",
+    "not-sent": "Configuration Change rejection reason",
+    "invalid-client-configuration": "Configuration Change rejection reason",
 }
 
 
