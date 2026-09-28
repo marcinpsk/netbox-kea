@@ -916,7 +916,7 @@ wheels = [
 
 [[package]]
 name = "netbox-kea-ng"
-version = "1.10.1"
+version = "1.10.2"
 source = { editable = "." }
 dependencies = [
     { name = "netaddr" },

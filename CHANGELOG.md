@@ -13,6 +13,45 @@ forked, and predate its conventional-commit history.
 
 <!-- version list -->
 
+## v1.10.2 (2026-09-28)
+
+### Bug Fixes
+
+- Run each DHCP-plugin import write in a savepoint, and pass sync a parsed Subnet network (#199)
+  ([#215](https://github.com/marcinpsk/netbox-kea/pull/215),
+  [`c449171`](https://github.com/marcinpsk/netbox-kea/commit/c449171cb341bd5aab853459871e04138966819f))
+
+### Chores
+
+- **deps**: Bump the github-actions group with 4 updates
+  ([#193](https://github.com/marcinpsk/netbox-kea/pull/193),
+  [`c5abb6b`](https://github.com/marcinpsk/netbox-kea/commit/c5abb6b9e1b5269e9f22acaac60e724cd0e2e44a))
+
+- **deps-dev**: Bump djangorestframework-stubs from 3.17.1 to 3.18.0
+  ([#163](https://github.com/marcinpsk/netbox-kea/pull/163),
+  [`3f91cd8`](https://github.com/marcinpsk/netbox-kea/commit/3f91cd8c3b7cf3f2db64bf61df1ed497039c9aa8))
+
+- **deps-dev**: Bump python-semantic-release from 10.6.2 to 10.7.0
+  ([#192](https://github.com/marcinpsk/netbox-kea/pull/192),
+  [`242ed87`](https://github.com/marcinpsk/netbox-kea/commit/242ed87fd5356d891b371e32e7716844a61539b3))
+
+- **deps-dev**: Bump ruff from 0.16.7 to 0.16.8
+  ([#191](https://github.com/marcinpsk/netbox-kea/pull/191),
+  [`e059a51`](https://github.com/marcinpsk/netbox-kea/commit/e059a51d46c8aafb624f39ebcfa116df814cdde9))
+
+### Documentation
+
+- Record the Config Write outcome and IPAM ownership decisions
+  ([#195](https://github.com/marcinpsk/netbox-kea/pull/195),
+  [`cb2d712`](https://github.com/marcinpsk/netbox-kea/commit/cb2d712ea65d961552c698b1236708266f243a39))
+
+### Testing
+
+- **ui**: Assert the harness data exists instead of skipping (#160)
+  ([#194](https://github.com/marcinpsk/netbox-kea/pull/194),
+  [`046e625`](https://github.com/marcinpsk/netbox-kea/commit/046e625e9bcda336972b7a5559672a5c9b8159db))
+
+
 ## v1.10.1 (2026-09-21)
 
 ### Bug Fixes
