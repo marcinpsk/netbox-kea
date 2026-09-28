@@ -272,6 +272,14 @@ resort, reserved for true external boundaries you cannot run locally.
   outside that file, because Kea rejects unknown keys. When you bump `KEA_VERSION` or
   make the parser read a new field, add the field to `kea-dhcp{4,6}.conf` and run
   `scripts/record_kea_config_get.py` (Docker and curl required).
+- **Kea command names come from a real Kea.** The script also records the
+  `list-commands` reply of each daemon. The coverage configurations load the same hook
+  libraries as `tests/docker/kea_configs/`. `WIRE_COMMANDS` in `kea_wire_discipline.py`
+  is that recorded set, and `stub_kea()` fails a command outside it: registered, sent, or
+  listed in a stubbed `list-commands` reply. Never add a command name by hand. The
+  black-box test `tests/test_kea_commands.py` compares the live harness daemons with the
+  recording in CI. When you change `KEA_VERSION` or the harness hook libraries, run the
+  script again.
 - **Type-check gate.** `scripts/mypy-gate.sh` (+ `test_mypy_gate.py`, a pre-push hook,
   the CI `lint` job) type-checks `netbox_kea/` and fails only on errors that are absent
   from `mypy-baseline.txt`. It exists to catch annotation drift between a producer and

@@ -5,6 +5,8 @@
 
 Starts each Kea daemon image with the coverage configuration in
 netbox_kea/tests/kea_recordings/, then writes the replies to dhcp4.json and dhcp6.json.
+The list-commands reply is the set of command names the tests accept, so the coverage
+configurations load the same hook libraries as the Compose harness.
 It also reads the keyword tables that Kea's config-test and config-set check in the same
 release, and writes the keys Kea accepts on a Shared Network and on a Subnet to
 accepted-keys.json.
@@ -117,6 +119,7 @@ def _record(family: int, version: str) -> None:
         recording = {
             "kea-version": version,
             "config-get": _command(port, "config-get"),
+            "list-commands": _command(port, "list-commands"),
             f"subnet{family}-list": _command(port, f"subnet{family}-list"),
             f"network{family}-get": {
                 "present": _command(port, f"network{family}-get", {"name": network}),
