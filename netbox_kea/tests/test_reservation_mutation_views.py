@@ -257,6 +257,39 @@ class TestReservationMutationViews(_ViewTestBase):
         )
         self.assertNotIn("subnet4-get", kea.commands())
 
+    def test_create_warns_for_an_address_inside_a_cidr_pool(self):
+        from django.contrib import messages
+        from django.contrib.messages import get_messages
+
+        pools = [{"pool": "198.18.0.16/28"}, {"pool": "198.18.0.100-198.18.0.110"}]
+        responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"], pools=pools)
+        raw = {"subnet-id": 20, "hw-address": "aa:bb:cc:dd:ee:ff", "ip-address": "198.18.0.20"}
+        responses.update({"reservation-add": {"result": 0}, "reservation-get": _res_get(raw)})
+
+        with stub_kea(responses) as kea:
+            response = self.client.post(
+                reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk]),
+                {
+                    "subnet_cidr": "198.18.0.0/24",
+                    "ip_address": "198.18.0.20",
+                    "identifier_type": "hw-address",
+                    "identifier": "aa:bb:cc:dd:ee:ff",
+                },
+            )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(kea.commands().count("reservation-add"), 1)
+        warnings = [str(m) for m in get_messages(response.wsgi_request) if m.level == messages.WARNING]
+        self.assertEqual(
+            warnings,
+            [
+                (
+                    "IP 198.18.0.20 is within existing pool 198.18.0.16-198.18.0.31. "
+                    "Kea allows this. Reservations take priority over pool allocation."
+                )
+            ],
+        )
+
     def test_a_malformed_pool_entry_does_not_stop_the_overlap_check(self):
         from django.contrib import messages
         from django.contrib.messages import get_messages
