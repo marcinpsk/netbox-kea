@@ -11,6 +11,7 @@ from utilities.forms.fields import CSVModelChoiceField, TagFilterField
 from utilities.forms.rendering import FieldSet
 
 from . import constants
+from .config_write import SUBNET_LIST_UNCONFIRMED, subnet_changed
 from .constants import Family, IPNetworkValue
 from .dhcp_options import parse_dhcp_option
 from .kea import subnet_network
@@ -813,6 +814,14 @@ class GlobalServer6FilterForm(forms.Form):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+def _seen_network(value: str, family: Family) -> IPNetworkValue:
+    """Parse the CIDR that a Subnet change page showed. Accept host bits: the page shows the CIDR that Kea declares."""
+    try:
+        return subnet_network(value, family)
+    except ValueError as exc:
+        raise forms.ValidationError(f"Invalid subnet CIDR: {exc}") from exc
+
+
 class SubnetConfirmForm(forms.Form):
     """The CIDR that a Subnet change page showed, so that the change reaches only that Subnet."""
 
@@ -824,19 +833,16 @@ class SubnetConfirmForm(forms.Form):
         self.family = family
 
     def clean_subnet_cidr(self) -> str:
-        """Accept host bits: the page shows the CIDR that Kea declares."""
-        value = self.cleaned_data["subnet_cidr"].strip()
-        try:
-            subnet_network(value, self.family)
-        except ValueError as exc:
-            raise forms.ValidationError(f"Invalid subnet CIDR: {exc}") from exc
+        """Require a CIDR of the family."""
+        value: str = self.cleaned_data["subnet_cidr"]
+        _seen_network(value, self.family)
         return value
 
 
 class PoolAddForm(forms.Form):
     """Form for adding a DHCP pool to an existing Verified Subnet."""
 
-    # Declared before `pool`, so that its check runs first. A missing value fails in clean(), which can show it.
+    # Not required: a missing value is a non-field error in clean(), which the page shows.
     subnet_cidr = forms.CharField(required=False, widget=forms.HiddenInput)
     pool = forms.CharField(
         label="Pool",
@@ -844,46 +850,47 @@ class PoolAddForm(forms.Form):
         max_length=255,
     )
 
-    def __init__(self, *args: Any, subnet: VerifiedSubnet | None, **kwargs: Any) -> None:
-        """Keep the Verified Subnet that the Pool must fit; ``None`` means the Subnet is unknown."""
+    def __init__(self, *args: Any, subnet: VerifiedSubnet | None, absence_confirmed: bool, **kwargs: Any) -> None:
+        """Keep the Verified Subnet that the Pool must fit, and whether a missing Subnet is absent from Kea."""
         super().__init__(*args, **kwargs)
         self.subnet = subnet
+        self.absence_confirmed = absence_confirmed
 
-    def clean_subnet_cidr(self) -> str:
-        """Forget the Verified Subnet when its network is not the CIDR that the page showed."""
-        value = self.cleaned_data["subnet_cidr"].strip()
-        if self.subnet is not None:
+    def clean(self) -> dict[str, Any]:
+        """Require the Subnet that the page showed, then parse the Pool inside it."""
+        cleaned = self.cleaned_data
+        subnet = self._subnet_as_seen(cleaned.get("subnet_cidr", ""))
+        if "pool" in cleaned:
             try:
-                seen = subnet_network(value, self.subnet.network.version)
-            except ValueError:
-                seen = None
-            if seen != self.subnet.network:
-                self.subnet = None
-        return value
+                cleaned["pool"] = self._pool_in(subnet, cleaned["pool"])
+            except forms.ValidationError as exc:
+                self.add_error("pool", exc)
+        return cleaned
 
-    def clean_pool(self) -> Pool | None:
-        """Parse the Pool inside the Subnet and reject an overlap with an existing Pool."""
+    def _subnet_as_seen(self, cidr: str) -> VerifiedSubnet:
         if self.subnet is None:
-            return None
+            if self.absence_confirmed:
+                raise forms.ValidationError(
+                    "This Subnet is not in the current Subnet Catalogue. Reload the Subnets page and try again."
+                )
+            raise forms.ValidationError(SUBNET_LIST_UNCONFIRMED)
+        if _seen_network(cidr, self.subnet.network.version) != self.subnet.network:
+            raise forms.ValidationError(subnet_changed(self.subnet.subnet_id, cidr))
+        return self.subnet
+
+    @staticmethod
+    def _pool_in(subnet: VerifiedSubnet, text: str) -> Pool:
+        """Parse the Pool inside *subnet* and reject an overlap with an existing Pool."""
         try:
-            pool = parse_pool(self.cleaned_data["pool"], self.subnet.network)
+            pool = parse_pool(text, subnet.network)
         except ValueError as exc:
             raise forms.ValidationError(str(exc)) from exc
         # Without configuration facts the existing Pools are unknown, so Kea decides.
-        existing = self.subnet.configuration.pools if self.subnet.configuration is not None else ()
+        existing = subnet.configuration.pools if subnet.configuration is not None else ()
         overlapping = next((other for other in existing if other.overlaps(pool)), None)
         if overlapping is not None:
             raise forms.ValidationError(f"Pool {pool.range} overlaps existing Pool {overlapping.range}.")
         return pool
-
-    def clean(self) -> dict[str, Any] | None:
-        """Reject the form when the Subnet is not in the Subnet Catalogue as the page showed it."""
-        cleaned = super().clean()
-        if self.subnet is None:
-            raise forms.ValidationError(
-                "This Subnet is not in the current Subnet Catalogue. Reload the Subnets page and try again."
-            )
-        return cleaned
 
 
 class _SubnetBaseForm(forms.Form):

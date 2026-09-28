@@ -11,11 +11,7 @@
       <div class="card-body">
         <p>
           Are you sure you want to delete
-          {% if subnet_cidr %}
-            subnet <strong>{{ subnet_cidr }}</strong> (ID {{ subnet_id }})
-          {% else %}
-            DHCPv{{ dhcp_version }} subnet <strong>{{ subnet_id }}</strong>
-          {% endif %}
+          subnet <strong>{{ subnet_cidr }}</strong> (ID {{ subnet_id }})
           from Kea?
         </p>
         <p class="text-danger">
