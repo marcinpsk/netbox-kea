@@ -1623,11 +1623,15 @@ class ReadModifyWriteTests(TestCase):
         moved = _running(4)
         moved["arguments"]["Dhcp4"]["subnet4"][0]["subnet"] = "10.0.9.0/24"
         moved_list = _subnet_list(4, [{"id": 1, "subnet": "10.0.9.0/24"}, {"id": 2, "subnet": _MOVED[4], **_IN_NET_A}])
+        gone = _running(4)
+        gone["arguments"]["Dhcp4"]["subnet4"] = []
         cases = {
             # The Subnet scope already shows ID 1 with another network.
             "scope": (_rmw_responses(4, config_get=moved, **{"subnet4-list": moved_list}), 2),
             # The scope still showed the network, but the config-get of the change does not.
             "configuration": (_rmw_responses(4, config_get=queued(_running(4), moved)), 3),
+            # The scope still showed the Subnet, but the config-get of the change no longer declares its ID.
+            "removed": (_rmw_responses(4, config_get=queued(_running(4), gone)), 3),
         }
         for label, (responses, reads) in cases.items():
             with self.subTest(label):
@@ -1669,8 +1673,10 @@ class ReadModifyWriteTests(TestCase):
             ("set_server_options", {"Dhcp4": []}),
             ("set_server_options", {}),
             ("set_server_options", {"Dhcp4": {"option-data": "text"}}),
+            ("set_server_options", []),
             ("set_subnet_options", {"Dhcp4": {"subnet4": {}}}),
             ("set_subnet_options", {"Dhcp4": {"subnet4": [_subnet(4), _subnet(4)]}}),
+            ("set_subnet_options", {"Dhcp4": {"subnet4": [{**_subnet(4), "subnet": "not-a-cidr"}]}}),
             ("set_subnet_options", {"Dhcp4": {"subnet4": [], "shared-networks": [{"subnet4": "text"}]}}),
             ("add_option_definition", {"Dhcp4": {"option-def": {}}}),
             ("delete_option_definition", {"Dhcp4": {"option-def": ["text"]}}),
