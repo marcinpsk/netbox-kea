@@ -77,15 +77,11 @@ def _edit_responses(version, subnet_response, config_response):
 
 
 def _pool_add_registry(subnet_id: int, cidr: str) -> dict:
-    """Return the pool-add command chain for one Subnet."""
+    """Return the Pool add command chain for one Subnet."""
     return {
         "subnet4-list": _subnet_list(4, [{"id": subnet_id, "subnet": cidr}]),
         "reservation-get-page": {"result": 3},
-        "list-commands": {
-            "result": 0,
-            "arguments": ["subnet4-pool-add", "config-get", "config-test", "config-write"],
-        },
-        "subnet4-pool-add": {"result": 0},
+        "subnet4-delta-add": {"result": 0},
         "config-get": _EMPTY_CONFIG4,
         "config-test": {"result": 0},
         "config-write": {"result": 0},
@@ -1502,8 +1498,7 @@ class TestPoolDeleteExceptions(_ViewTestBase):
             {
                 **_ABSENT_READ_HOOKS,
                 **_catalogue_responses_for_subnets(4, [subnet]),
-                "list-commands": {"result": 0, "arguments": ["subnet4-pool-del"]},
-                "subnet4-pool-del": {"result": 0},
+                "subnet4-delta-del": {"result": 0},
                 "config-test": {"result": 0},
                 "config-write": {"result": 0},
             }
@@ -1535,8 +1530,8 @@ class TestPoolDeleteExceptions(_ViewTestBase):
             response = self.client.post(url, {"subnet_cidr": "192.0.2.0/24"})
         self.assertEqual(response.status_code, 302)
         self.assertEqual(
-            kea.bodies("subnet4-pool-del")[0]["arguments"],
-            {"subnet4": [{"id": 42, "pools": [{"pool": "192.0.2.10-192.0.2.20"}]}]},
+            kea.bodies("subnet4-delta-del")[0]["arguments"],
+            {"subnet4": [{"id": 42, "subnet": "192.0.2.0/24", "pools": [{"pool": "192.0.2.10-192.0.2.20"}]}]},
         )
 
 
@@ -2220,7 +2215,7 @@ def _subnet_1(cidr: str = _SEEN, pools: tuple[str, ...] = (_OLD_POOL,)) -> dict:
 
 
 def _change_responses(*states: dict | None, **overrides) -> dict:
-    """Answer one Subnet Catalogue read per state in turn, the Pool command probe, each change, and the persist step.
+    """Answer one Subnet Catalogue read per state in turn, each change, and the persist step.
 
     A state of None is a Server without Subnets. The last state repeats, and its config-get also answers the persist step.
     """
@@ -2229,11 +2224,10 @@ def _change_responses(*states: dict | None, **overrides) -> dict:
         **_ABSENT_READ_HOOKS,
         "subnet4-list": queued(*(read["subnet4-list"] for read in reads)),
         "config-get": queued(*(read["config-get"] for read in reads)),
-        "list-commands": {"result": 0, "arguments": ["subnet4-pool-add", "subnet4-pool-del"]},
         "reservation-get-page": {"result": 3},
         "subnet4-del": _KEA_OK,
-        "subnet4-pool-add": _KEA_OK,
-        "subnet4-pool-del": _KEA_OK,
+        "subnet4-delta-add": _KEA_OK,
+        "subnet4-delta-del": _KEA_OK,
         "config-test": _KEA_OK,
         "config-write": _KEA_OK,
     }
@@ -2264,7 +2258,7 @@ class TestSubnetAndPoolChangesRequireTheVerifiedSubnet(_ViewTestBase):
                 "pool add",
                 reverse("plugins:netbox_kea:server_subnet4_pool_add", args=[pk, 1]),
                 {"subnet_cidr": _SEEN, "pool": _NEW_POOL},
-                "subnet4-pool-add",
+                "subnet4-delta-add",
                 # The form reads the Subnet Catalogue before the operation opens its scope.
                 1,
                 f"Pool {_NEW_POOL} added to subnet 1.",
@@ -2273,7 +2267,7 @@ class TestSubnetAndPoolChangesRequireTheVerifiedSubnet(_ViewTestBase):
                 "pool delete",
                 reverse("plugins:netbox_kea:server_subnet4_pool_delete", args=[pk, 1, _OLD_POOL]),
                 {"subnet_cidr": _SEEN},
-                "subnet4-pool-del",
+                "subnet4-delta-del",
                 0,
                 f"Pool {_OLD_POOL} removed from subnet 1.",
             ),
@@ -2320,8 +2314,8 @@ class TestSubnetAndPoolChangesRequireTheVerifiedSubnet(_ViewTestBase):
     def test_the_commands_name_the_verified_subnet_and_the_typed_pool(self):
         bodies = {
             "subnet4-del": {"id": 1},
-            "subnet4-pool-add": {"subnet4": [{"id": 1, "pools": [{"pool": _NEW_POOL}]}]},
-            "subnet4-pool-del": {"subnet4": [{"id": 1, "pools": [{"pool": _OLD_POOL}]}]},
+            "subnet4-delta-add": {"subnet4": [{"id": 1, "subnet": _SEEN, "pools": [{"pool": _NEW_POOL}]}]},
+            "subnet4-delta-del": {"subnet4": [{"id": 1, "subnet": _SEEN, "pools": [{"pool": _OLD_POOL}]}]},
         }
         for name, url, data, command, _reads, _confirmed in self._cases():
             with self.subTest(name):
@@ -2440,7 +2434,7 @@ class TestSubnetAndPoolChangesRequireTheVerifiedSubnet(_ViewTestBase):
             response = self.client.post(url, {"pool": _NEW_POOL})
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Invalid subnet CIDR")
-        self.assertNotIn("subnet4-pool-add", kea.commands())
+        self.assertNotIn("subnet4-delta-add", kea.commands())
 
     def test_an_invalid_client_configuration_sends_nothing(self):
         bad = _make_db_server(name="bad-cert-change", client_cert_path="/nonexistent/cert.pem")
@@ -3386,7 +3380,7 @@ class TestGetSubnetsConfigShapeGuard(_ViewTestBase):
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestPoolDeltaHostBitsSubnet(_ViewTestBase):
-    """Kea 3.x delta commands must echo the Subnet prefix exactly as Kea declares it, host bits included.
+    """The delta commands must echo the Subnet prefix exactly as Kea declares it, host bits included.
 
     The page shows the canonical CIDR; the Verified Subnet supplies Kea's text, so no Subnet lookup by ID runs.
     """
@@ -3401,7 +3395,6 @@ class TestPoolDeltaHostBitsSubnet(_ViewTestBase):
                     "arguments": {f"Dhcp{version}": {f"subnet{version}": [subnet], "shared-networks": []}},
                 },
                 "reservation-get-page": {"result": 3},
-                "list-commands": {"result": 0, "arguments": [command, "config-write"]},
                 command: {"result": 0},
                 "config-test": {"result": 0},
                 "config-write": {"result": 0},
@@ -3442,7 +3435,7 @@ class TestPoolAddPostErrors(_ViewTestBase):
         return reverse("plugins:netbox_kea:server_subnet4_pool_add", args=[self.server.pk, subnet_id])
 
     def _pool_add_stub(self, **overrides):
-        """Pool add chain: Subnet Catalogue reads, reservation overlap probe, list-commands, subnet4-pool-add, persist.
+        """Pool add chain: Subnet Catalogue reads, reservation overlap probe, subnet4-delta-add, persist.
 
         follow=True lands on the subnets list (config-get + stat). Override a leg to drive errors.
         """
@@ -3482,7 +3475,7 @@ class TestPoolAddPostErrors(_ViewTestBase):
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "incomplete list")
-        self.assertIn("subnet4-pool-add", kea.commands())
+        self.assertIn("subnet4-delta-add", kea.commands())
 
     def test_failed_overlap_probe_logs_its_traceback(self):
         """Record why the overlap warning was skipped, and keep the pool add working.
@@ -3499,14 +3492,14 @@ class TestPoolAddPostErrors(_ViewTestBase):
                 )
 
         self.assertEqual(response.status_code, 200)
-        self.assertIn("subnet4-pool-add", kea.commands())
+        self.assertIn("subnet4-delta-add", kea.commands())
         overlap_records = [record for record in logs.records if "overlap" in record.getMessage()]
         self.assertTrue(overlap_records)
         self.assertIsNotNone(overlap_records[0].exc_info)
 
 
 # Every command that changes Kea state on the Pool add path.
-_POOL_WRITE_COMMANDS = {"subnet4-pool-add", "subnet4-delta-add", "config-test", "config-set", "config-write"}
+_POOL_WRITE_COMMANDS = {"subnet4-delta-add", "config-test", "config-set", "config-write"}
 
 
 def _pool_add_catalogue(pools: tuple[str, ...] = ("10.0.0.10-10.0.0.20",), *, configuration: bool = True) -> dict:
@@ -3569,8 +3562,8 @@ class TestPoolAddChecksTheVerifiedSubnet(_ViewTestBase):
 
         self.assertEqual(response.status_code, 302)
         self.assertEqual(
-            kea.bodies("subnet4-pool-add")[0]["arguments"]["subnet4"],
-            [{"id": 1, "pools": [{"pool": "10.0.0.15-10.0.0.30"}]}],
+            kea.bodies("subnet4-delta-add")[0]["arguments"]["subnet4"],
+            [{"id": 1, "subnet": "10.0.0.0/24", "pools": [{"pool": "10.0.0.15-10.0.0.30"}]}],
         )
 
     def test_explicit_range_and_cidr_both_reach_kea_as_a_range(self):
@@ -3583,8 +3576,8 @@ class TestPoolAddChecksTheVerifiedSubnet(_ViewTestBase):
 
                 self.assertEqual(response.status_code, 302)
                 self.assertEqual(
-                    kea.bodies("subnet4-pool-add")[0]["arguments"]["subnet4"],
-                    [{"id": 1, "pools": [{"pool": sent}]}],
+                    kea.bodies("subnet4-delta-add")[0]["arguments"]["subnet4"],
+                    [{"id": 1, "subnet": "10.0.0.0/24", "pools": [{"pool": sent}]}],
                 )
                 self.assertIn(f"Pool {sent} added to subnet 1.", [str(m) for m in get_messages(response.wsgi_request)])
 
@@ -3628,7 +3621,7 @@ class TestPoolAddChecksTheVerifiedSubnet(_ViewTestBase):
         reservations = _res_page([{"subnet-id": 1, "hw-address": "aa:bb:cc:dd:ee:01", "ip-address": "10.0.0.50"}])
         response, kea = self._post(
             "10.0.0.32/27",
-            **{"reservation-get-page": reservations, "subnet4-pool-add": {"result": 1, "text": "command failed"}},
+            **{"reservation-get-page": reservations, "subnet4-delta-add": {"result": 1, "text": "command failed"}},
         )
 
         self.assertEqual(response.status_code, 302)
@@ -3648,7 +3641,7 @@ class TestPoolAddChecksTheVerifiedSubnet(_ViewTestBase):
         response, kea = self._post("10.0.0.32/27", **{"reservation-get-page": reservations})
 
         self.assertEqual(response.status_code, 302)
-        self.assertIn("subnet4-pool-add", kea.commands())
+        self.assertIn("subnet4-delta-add", kea.commands())
         warnings = [str(m) for m in get_messages(response.wsgi_request) if m.level == django_messages.WARNING]
         self.assertEqual(
             warnings,
@@ -3902,7 +3895,7 @@ class TestSubnetViewCoverageGaps(_ViewTestBase):
         )
 
     def _pool_add_stub(self, **overrides):
-        """Pool add chain: Subnet Catalogue reads, overlap probe, list-commands, subnet4-pool-add, persist, list."""
+        """Pool add chain: Subnet Catalogue reads, overlap probe, subnet4-delta-add, persist, list."""
         base = _pool_add_registry(42, "10.0.0.0/24")
         base.update(overrides)
         return stub_kea({**_ABSENT_READ_HOOKS, **base})

@@ -141,7 +141,7 @@ def _reservation_get_arguments(response: list[KeaResponse]) -> dict[str, Any] | 
     return arguments
 
 
-# The Pool commands exist as an add and a delete, each as ``subnet{v}-pool-*`` or ``subnet{v}-delta-*``.
+# A Pool change is ``subnet{v}-delta-add`` or ``subnet{v}-delta-del``.
 PoolAction = Literal["add", "del"]
 
 
@@ -2006,32 +2006,17 @@ class KeaClient:
         """
         self.command("dhcp-enable", service=[service])
 
-    def pool_uses_delta(self, version: Family, action: PoolAction) -> bool:
-        """Return whether a Pool change needs ``subnet{v}-delta-{action}``, because ``subnet{v}-pool-{action}`` is absent.
-
-        Raises:
-            KeaException: If ``list-commands`` fails.
-            RuntimeError: If the ``list-commands`` reply is malformed.
-
-        """
-        return f"subnet{version}-pool-{action}" not in self.get_available_commands(f"dhcp{version}")
-
-    def pool_change(
-        self, version: Family, action: PoolAction, subnet_id: int, declared_cidr: str, pool: str, *, delta: bool
-    ) -> None:
-        """Send one Pool add or delete for the Subnet. It does not persist.
-
-        *declared_cidr* is the Subnet text that Kea declares; only the delta command sends it.
+    def pool_change(self, version: Family, action: PoolAction, subnet_id: int, declared_cidr: str, pool: str) -> None:
+        """Send one ``subnet{v}-delta-{action}`` for the Pool of the Subnet. It does not persist.
 
         Raises:
             KeaException: If Kea returns a failure result.
             RuntimeError: If the reply is malformed.
 
         """
-        command = f"subnet{version}-{'delta' if delta else 'pool'}-{action}"
+        command = f"subnet{version}-delta-{action}"
         service = f"dhcp{version}"
-        subnet: dict[str, Any] = {"id": subnet_id, "subnet": declared_cidr} if delta else {"id": subnet_id}
-        subnet["pools"] = [{"pool": pool}]
+        subnet = {"id": subnet_id, "subnet": declared_cidr, "pools": [{"pool": pool}]}
         response = self._config_mutation_command(command, service, {f"subnet{version}": [subnet]}, check=None)
         _one_reply(command, service, response)
 
